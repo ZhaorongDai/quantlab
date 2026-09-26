@@ -390,7 +390,7 @@ array([-0.00857,  0.01526,  0.00988])
 
 ## Notes
 
-Batch mode requires the number of symbols to be a multiple of the SIMD block width of the host. On the machine used for these examples 4, 8 and 12 symbols run and 5 fails with `RuntimeError: Bad shape at close`. The message does not mention symbols; pad or trim the symbol axis.
+On macOS, batch mode needs the number of symbols to be a multiple of the SIMD block width, and `cal()` pads the symbol axis with all-NaN dummy symbols to a multiple of 8 and cuts them back, so any count runs; 5 symbols without that padding fail with `RuntimeError: Bad shape at close`, a message that does not mention symbols. On Linux x86 (AVX2) any count runs and nothing is padded.
 
 In stream mode every entry of `data_columns` must be consumed by an `Output`, because KunQuant prunes unused inputs. An extra column fails in `init_stream()` with `RuntimeError: Cannot find the buffer name`. Batch mode tolerates extra inputs.
 

@@ -2,7 +2,7 @@
 
 [English](README.md) | 简体中文
 
-每个"股票池 × 模型"一个自成一体的脚本，外加每个股票池一个因子分析脚本，都跑在 CRSP 日线数据上：point-in-time 的 S&P 500 或 Nasdaq-100 成分股，或 CRSP 全市场（所有上市普通股，以其上市面板作为成分）。每个文件只 import quantlab，可以单独拷走修改。
+每个"股票池 × 模型"一个自成一体的脚本，外加每个股票池一个因子分析脚本，都跑在 CRSP 日线数据上：point-in-time 的 S&P 500 或 Nasdaq-100 成分股，或 CRSP 全市场（所有上市普通股）。每个文件只 import quantlab，可以单独拷走修改。
 
 | 股票池 | 模型 pipeline | 因子分析 |
 | --- | --- | --- |
@@ -18,7 +18,7 @@
 4. **模型训练**：在训练窗口上训练一次。
 5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500 和全市场）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
 
-因子分析 pipeline 跑第 1 到 3 步，然后对两个因子库的每一列调用 `Factor.analyze()`，不训练模型。不使用命令行参数，也没有设置对象：每个文件顶部只有几个常量（`DATA_ROOT`、日期、`HORIZON`、`WANDB_MODE`），quantlab 的各个 config 都在用到的地方直接构造（`DatasetConfig`、`FactorConfig`、`MLConfig`、`CrossSectionBacktestConfig`），每一步做什么就是它拿到的 config。
+全市场脚本没有第 1 步：全市场 store 在转换时已按天筛成普通股，所以每一步都通过 `CrspStockDataset` 直接读它，不写派生仓库。因子分析 pipeline 跑数据、因子、标签几步，然后对两个因子库的每一列调用 `Factor.analyze()`，不训练模型。不使用命令行参数，也没有设置对象：每个文件顶部只有几个常量（`DATA_ROOT`、日期、`HORIZON`、`WANDB_MODE`），quantlab 的各个 config 都在用到的地方直接构造（`DatasetConfig`、`FactorConfig`、`MLConfig`、`CrossSectionBacktestConfig`），每一步做什么就是它拿到的 config。
 
 ## 前置条件
 
@@ -43,7 +43,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 
 `--end` 默认为今天，并截到 CRSP 年度发布的最后一天；每个脚本都会转换成 Zarr；`--refresh` 让每个 PERMNO 从各自的水位继续。`--download-dir` 和 `--zarr-dir` 默认为当前目录；上面这组相对仓库根目录的取值会把 store 放到 pipeline 读取的位置。
 
-每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr` 和 `wrds_crsp_market_membership.zarr`（上市面板）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
+每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr`（全市场脚本直接读它）和 `wrds_crsp_market_membership.zarr`（上市面板，全市场脚本用不到）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
 
 KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。
 
@@ -81,7 +81,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 所有内容都写在 `<数据根目录>/data/pipeline/wrds_<universe>/` 下：
 
 ```text
-prices.zarr, members.zarr     派生价格仓库（第 1 步）
+prices.zarr, members.zarr     派生价格仓库（第 1 步；仅指数脚本）
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 models/<model>/...            checkpoint、config.json
 backtests/<model>/...         权重、净值、metrics.json、report.html
@@ -113,7 +113,6 @@ analysis/alpha101/, analysis/alpha158/
 
 - **幸存者偏差**：CRSP 成分股名单包含窗口内任何时候是成分股的所有 PERMNO（含已退市的），CRSP 也带有退市收益。
 - **point-in-time 成分**：`members.zarr` 是把非成分股格子置为 NaN 的价格面板。标签读取它，所以训练样本只包含成分股行；回测用它定价，所以只能买入当时的成分股，被剔除出指数的持仓会在下一个 bar 卖出。因子读取 `prices.zarr`，滚动窗口能看到完整历史。
-- **补齐 symbol**：symbol 轴用全 NaN 的 PERMNO（-1、-2、……）补齐到 16 的倍数，因为 KunQuant 批量计算要求 symbol 数是 SIMD 宽度的倍数。补齐列既没有标签也没有价格，因此不会被训练，也不会被交易。
 
 ## 注意事项
 

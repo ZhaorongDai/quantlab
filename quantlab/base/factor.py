@@ -21,6 +21,7 @@ extra calendar days and trims them off again afterwards.
 
 import copy
 import dataclasses
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -1008,6 +1009,7 @@ class FactorKunQuant(Factor):
         )
         # Every input is laid out [time, symbol]; any one gives the time count.
         num_time = next(iter(input_dict.values())).shape[0]
+        input_dict = self._pad_symbols(input_dict, len(symbols))
 
         if self._lib is None:
             self._lib = self._make()
@@ -1020,7 +1022,9 @@ class FactorKunQuant(Factor):
 
         self._lib = None
 
-        self._to_xarray_dataset(out_dict, timestamp, symbols)
+        self._to_xarray_dataset(
+            self._cut_symbols(out_dict, len(symbols)), timestamp, symbols
+        )
 
         return self
 
@@ -1081,6 +1085,56 @@ class FactorKunQuant(Factor):
         )
 
         return self
+
+    #: Symbol count a batch run is padded to a multiple of on macOS. KunQuant's
+    #: compiled loops process symbols in fixed-size SIMD blocks and cannot
+    #: handle a remainder: four values per block on Apple silicon, eight with
+    #: AVX2 on an Intel Mac; eight covers both.
+    SYMBOL_BLOCK_DARWIN = 8
+
+    @staticmethod
+    def _symbol_padding(num_symbols: int) -> int:
+        """Return how many all-NaN dummy symbols a batch run appends.
+
+        Only macOS pads (``sys.platform == "darwin"``), to a multiple of
+        ``SYMBOL_BLOCK_DARWIN``; elsewhere the panel is passed as it is.
+
+        Examples
+        --------
+        >>> FactorKunQuant._symbol_padding(5)   # on macOS
+        3
+        >>> FactorKunQuant._symbol_padding(16)
+        0
+        """
+        if sys.platform != "darwin":
+            return 0
+        return (-num_symbols) % FactorKunQuant.SYMBOL_BLOCK_DARWIN
+
+    @classmethod
+    def _pad_symbols(
+        cls, inputs: dict[str, np.ndarray], num_symbols: int
+    ) -> dict[str, np.ndarray]:
+        """Append ``_symbol_padding`` all-NaN columns to every ``[time, symbol]`` input.
+
+        NaN symbols never enter a cross-sectional statistic, and
+        ``_cut_symbols`` removes their outputs again.
+        """
+        padding = cls._symbol_padding(num_symbols)
+        if not padding:
+            return inputs
+        return {
+            name: np.pad(
+                values, ((0, 0), (0, padding)), mode="constant", constant_values=np.nan
+            )
+            for name, values in inputs.items()
+        }
+
+    @staticmethod
+    def _cut_symbols(
+        outputs: dict[str, np.ndarray], num_symbols: int
+    ) -> dict[str, np.ndarray]:
+        """Drop the padded columns from every ``[time, symbol]`` output."""
+        return {name: values[:, :num_symbols] for name, values in outputs.items()}
 
     def _make(self):
         """Compile the graph for batch execution with the ``TS`` layout."""

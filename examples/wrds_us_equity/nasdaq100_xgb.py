@@ -22,7 +22,6 @@ if sys.platform == "darwin":
 
 from pathlib import Path
 
-import numpy as np
 from loguru import logger
 
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
@@ -103,9 +102,6 @@ def factors_and_label() -> tuple[list, list]:
 def prepare_stores() -> None:
     """Write ``prices`` (full history of every member ever) and ``members``
     (the same panel, NaN where the PERMNO was not a member that day).
-
-    The symbol axis is padded with all-NaN PERMNOs to a multiple of 16, the
-    SIMD block width KunQuant batch runs need.
     """
     crsp = CrspStockDataset(CrspDatasetConfig(
         zarr_file_path=str(STORES / "wrds_crsp_nasdaq100_1d.zarr"),
@@ -123,9 +119,6 @@ def prepare_stores() -> None:
             )
     prices = crsp.read().get_xarray_dataset()[[*ALPHA_COLUMNS, "close", "volume", "ret"]]
     prices = prices.sel(timestamp=slice(None, END))
-    n_pad = -prices.sizes["symbol"] % 16
-    pad = np.arange(-1, -n_pad - 1, -1, dtype=prices["symbol"].dtype)
-    prices = prices.reindex(symbol=np.concatenate([prices["symbol"].values, pad]))
     member = (
         membership.read().get_xarray_dataset()["is_member"]
         .reindex(timestamp=prices.timestamp, symbol=prices.symbol)

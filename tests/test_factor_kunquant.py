@@ -327,3 +327,41 @@ def test_normalization_matrix_matches_recorded_strategy_types() -> None:
         f"expected: { {c.__name__: v for c, v in _EXPECTED_NORMALIZATION_MATRIX.items()} }\n"
         f"actual:   { {c.__name__: v for c, v in actual.items()} }"
     )
+
+
+# -- SIMD padding of the symbol axis (macOS only) --------------------------------
+
+
+def test_batch_cal_pads_the_symbol_axis_on_macos(
+    spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path, monkeypatch
+) -> None:
+    """On macOS a symbol count that is not a SIMD block multiple still runs:
+    ``FactorKunQuant.cal`` appends all-NaN dummy symbols and cuts them back,
+    so the stored panel has exactly the real symbols. Elsewhere nothing is
+    padded, by decision."""
+    import sys
+
+    from quantlab.base.factor import FactorKunQuant
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert FactorKunQuant._symbol_padding(5) == 0
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert FactorKunQuant._symbol_padding(5) == 3
+    assert FactorKunQuant._symbol_padding(16) == 0
+    monkeypatch.undo()
+
+    if sys.platform != "darwin":
+        pytest.skip("padding is a macOS-only behaviour")
+    dataset_config = spot_kline_zarr(symbols=[f"S{i}USDT" for i in range(5)], periods=40)
+    factor = Alpha158SpotKline(
+        _factor_config(
+            dataset_config,
+            factor_names=["KMID", "VOLUME0"],
+            data_columns=["open", "close", "volume"],
+            tmp_path=tmp_path,
+        )
+    )
+    result = factor.cal().get_features()
+    assert dict(result.sizes) == {"timestamp": 40, "symbol": 5}
+    assert list(result["symbol"].values) == [f"S{i}USDT" for i in range(5)]
+    assert np.isfinite(result["KMID"].to_numpy()).sum() > 0

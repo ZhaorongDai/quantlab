@@ -2,7 +2,7 @@
 
 English | [简体中文](README.zh-CN.md)
 
-One self-contained script per universe and model, plus one factor analysis per universe, all on CRSP daily data: the point-in-time S&P 500 or Nasdaq-100, or the whole CRSP market (every listed common stock, with its listing panel as the membership). Each file imports only quantlab, so it can be copied out and edited on its own.
+One self-contained script per universe and model, plus one factor analysis per universe, all on CRSP daily data: the point-in-time S&P 500 or Nasdaq-100, or the whole CRSP market (every listed common stock). Each file imports only quantlab, so it can be copied out and edited on its own.
 
 | Universe | Model pipelines | Factor analysis |
 | --- | --- | --- |
@@ -18,7 +18,7 @@ The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDReg
 4. **Model**: trained once on the training window.
 5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500 and market) or QQQ (Nasdaq-100), logged to Weights & Biases.
 
-A factor-analysis pipeline runs steps 1 to 3 and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, `WANDB_MODE`) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `MLConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
+The market scripts skip step 1: the market store already holds only common stock, filtered per day when it was converted, so every step reads it directly through `CrspStockDataset` and no derived stores are written. A factor-analysis pipeline runs the data, factor and label steps and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, `WANDB_MODE`) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `MLConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
 
 ## Prerequisites
 
@@ -43,7 +43,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12
 
 `--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--zarr-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
 
-Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `market.py` writes `wrds_crsp_market_1d.zarr` and `wrds_crsp_market_membership.zarr`, the listing panel. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
+Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `market.py` writes `wrds_crsp_market_1d.zarr`, which the market scripts read directly, and `wrds_crsp_market_membership.zarr`, the listing panel, which they do not need. `etf.py` writes `wrds_crsp_spy_1d.zarr` and `wrds_crsp_qqq_1d.zarr`. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
 
 KunQuant compiles the factor graphs, so a C++ compiler is required. The model scripts set `OMP_NUM_THREADS=1` on macOS themselves (xgboost and torch in one process).
 
@@ -81,7 +81,7 @@ Everything lives at the top of each script, in this order:
 Everything is written under `<data root>/data/pipeline/wrds_<universe>/`:
 
 ```text
-prices.zarr, members.zarr     derived price stores (step 1)
+prices.zarr, members.zarr     derived price stores (step 1; index scripts only)
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 models/<model>/...            checkpoints, config.json
 backtests/<model>/...         weights, equity, metrics.json, report.html
@@ -113,7 +113,6 @@ A backtest run directory can be rebuilt and re-run with `quantlab.utils.module.l
 
 - **Survivorship**: the CRSP roster contains every PERMNO that was a member at any time in the window, delisted ones included, and CRSP carries delisting returns.
 - **Point-in-time membership**: `members.zarr` is the price panel with non-member cells set to NaN. The label reads it, so training rows are member rows only. The backtest prices from it, so only current members can be bought, and a holding that leaves the index is sold on the next bar. Factors read `prices.zarr`, so their rolling windows see full history.
-- **Symbol padding**: the symbol axis is padded with all-NaN PERMNOs (-1, -2, ...) to a multiple of 16, because KunQuant batch runs need a multiple of the SIMD block width. Padded columns never have a label or a price, so they are never trained on or traded.
 
 ## Notes
 

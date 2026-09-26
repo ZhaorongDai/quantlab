@@ -390,7 +390,7 @@ array([-0.00857,  0.01526,  0.00988])
 
 ## 注意事项
 
-批量模式要求标的数是所在机器 SIMD 块宽度的整数倍。在运行这些示例的机器上，4、8、12 个标的可以运行，5 个会报 `RuntimeError: Bad shape at close`。报错信息没有提到标的数，需要补齐或裁剪标的轴。
+在 macOS 上，批量模式要求标的数是 SIMD 块宽度的整数倍，`cal()` 会用全 NaN 的假标的把标的轴补到 8 的倍数、算完再裁掉，因此任何标的数都能运行；不补的话 5 个标的会报 `RuntimeError: Bad shape at close`，报错信息没有提到标的数。在 Linux x86（AVX2）上任何标的数都能运行，不做补齐。
 
 流式模式下，`data_columns` 的每一项都必须被某个 `Output` 用到，因为 KunQuant 会剪掉没用到的输入。多给一列会在 `init_stream()` 中报 `RuntimeError: Cannot find the buffer name`。批量模式容忍多余的输入。
 
