@@ -265,7 +265,7 @@ True
 (['factor', 'frets'], 'Return')
 ```
 
-结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `load_factor_from_config` 重建。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。实现位于 `quantlab.analysis.factor_report`。
+结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、其累计和 `cumulative_ic`、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图，只在不传 `output_dir` 时保留），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `load_factor_from_config` 重建；此时各图在所有 CPU 上并行绘制并直接写成 PNG，不保留在内存里，因为对整个因子库做报告时画图是主要开销。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。IC 面板的右轴画累计 IC。指标用 polars 计算：每一批因子变量（`chunk_size`，默认 32）在 `(timestamp, symbol)` 长表上构成一个惰性计划，只 collect 一次。实现位于 `quantlab.analysis.factor_report`。
 
 ### 沿时间或跨标的做标准化
 

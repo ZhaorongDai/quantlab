@@ -303,3 +303,104 @@ def test_analyze_against_the_kunquant_return_label(tmp_path):
     # Momentum needs 3 bars of history; the label loses its last 3 bars.
     assert pair.ic.notna().sum() == 40 - 3 - 3
     assert set(result.summary_table()["fret"]) == {"ret_2"}
+
+
+# -- the polars metrics agree with a plain per-period reference ------------------
+
+
+def _reference_pair(f: np.ndarray, r: np.ndarray, quantiles: int) -> dict:
+    """Per-period metrics computed the slow, obvious way with pandas and scipy."""
+    from scipy import stats
+
+    T = f.shape[0]
+    ic = np.full(T, np.nan)
+    rac = np.full(T, np.nan)
+    qret = np.full((T, quantiles), np.nan)
+    turnover = np.full((T, quantiles), np.nan)
+    previous_bucket = None
+    for t in range(T):
+        both = np.isfinite(f[t]) & np.isfinite(r[t])
+        if both.sum() >= 2:
+            ic[t] = stats.spearmanr(f[t][both], r[t][both]).statistic
+        if t > 0:
+            lag_both = np.isfinite(f[t]) & np.isfinite(f[t - 1])
+            if lag_both.sum() >= 2:
+                rac[t] = stats.spearmanr(f[t][lag_both], f[t - 1][lag_both]).statistic
+        bucket = np.full(f.shape[1], np.nan)
+        if both.sum() >= quantiles:
+            order = pd.Series(np.where(both, f[t], np.nan)).rank(method="first")
+            bucket = np.floor((order - 1) / both.sum() * quantiles).to_numpy() + 1
+            for q in range(1, quantiles + 1):
+                in_q = bucket == q
+                qret[t, q - 1] = r[t][in_q].mean()
+                if previous_bucket is not None and np.isfinite(previous_bucket).any():
+                    turnover[t, q - 1] = (in_q & (previous_bucket != q)).sum() / in_q.sum()
+        previous_bucket = bucket
+    return {"ic": ic, "rank_autocorrelation": rac, "quantile_returns": qret, "turnover": turnover}
+
+
+def test_polars_metrics_match_a_per_period_reference():
+    rng = np.random.default_rng(7)
+    T, S, Q = 60, 24, 4
+    f = rng.normal(size=(T, S))
+    r = 0.3 * f + rng.normal(size=(T, S))
+    f[rng.random((T, S)) < 0.15] = np.nan
+    r[rng.random((T, S)) < 0.15] = np.nan
+    f[3] = np.nan          # no IC, no buckets
+    f[10, :22] = np.nan    # fewer usable symbols than buckets
+    coords = {"timestamp": pd.date_range("2024-01-01", periods=T), "symbol": [f"S{i}" for i in range(S)]}
+    factor = xr.DataArray(f, dims=("timestamp", "symbol"), coords=coords)
+    fret = xr.DataArray(r, dims=("timestamp", "symbol"), coords=coords)
+
+    pair = FactorAnalyzer(quantiles=Q, plot=False).analyze_pair(factor, fret, "f", "r", horizon=2)
+    reference = _reference_pair(f, r, Q)
+
+    np.testing.assert_allclose(pair.ic.to_numpy(), reference["ic"], rtol=1e-12, equal_nan=True)
+    np.testing.assert_allclose(
+        pair.rank_autocorrelation.to_numpy(), reference["rank_autocorrelation"], rtol=1e-12, equal_nan=True
+    )
+    np.testing.assert_allclose(
+        pair.quantile_returns.to_numpy(), reference["quantile_returns"], rtol=1e-12, equal_nan=True
+    )
+    np.testing.assert_allclose(
+        pair.turnover.to_numpy(), reference["turnover"], rtol=1e-12, equal_nan=True
+    )
+    assert np.isnan(pair.ic.iloc[3]) and np.isnan(pair.quantile_returns.iloc[10]).all()
+    assert pair.cumulative_ic.iloc[-1] == pytest.approx(np.nansum(reference["ic"]))
+    assert pair.summary["n_symbols"] == S
+
+
+def test_many_columns_give_the_same_metrics_as_one_at_a_time():
+    rng = np.random.default_rng(11)
+    T, S = 40, 16
+    coords = {"timestamp": pd.date_range("2024-01-01", periods=T), "symbol": [f"S{i}" for i in range(S)]}
+    r = rng.normal(size=(T, S))
+    features = xr.Dataset(
+        {f"a{i}": (("timestamp", "symbol"), 0.2 * r + rng.normal(size=(T, S))) for i in range(5)},
+        coords=coords,
+    )
+    labels = xr.Dataset({"ret_1": (("timestamp", "symbol"), r)}, coords=coords)
+
+    analyzer = FactorAnalyzer(quantiles=3, plot=False, chunk_size=2)
+    together = {p.key: p for p in analyzer.analyze_many(features, labels)}
+    for name in features.data_vars:
+        alone = analyzer.analyze_pair(features[name], labels["ret_1"], name, "ret_1")
+        pd.testing.assert_series_equal(together[alone.key].ic, alone.ic)
+        pd.testing.assert_frame_equal(together[alone.key].turnover, alone.turnover)
+        assert together[alone.key].summary == alone.summary
+
+
+def test_output_dir_with_several_pairs_draws_every_figure_in_parallel(oracle_and_label, tmp_path):
+    factor, label = oracle_and_label
+    panel = factor.get_features()
+    two = panel.assign(oracle_neg=-panel["oracle"])
+    factor.data_backend.to_internal(two)
+    factor.config.factor_names = ("oracle", "oracle_neg")
+
+    result = factor.analyze(frets=[label], output_dir=str(tmp_path / "report"))
+
+    assert result.figures == {}
+    assert sorted(p.name for p in (tmp_path / "report").glob("*.png")) == [
+        "oracle__fwd_1.png", "oracle_neg__fwd_1.png",
+    ]
+    assert result.pairs["oracle_neg__fwd_1"].summary["ic_mean"] == pytest.approx(-1.0)
