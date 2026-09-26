@@ -114,3 +114,69 @@ def test_rename_13407_is_fb_through_2022_06_08_and_meta_after():
 
     fb = intervals.filter((pl.col("permno") == 13407) & (pl.col("symbol") == "FB"))
     assert fb["end_date"].max() == date(2022, 6, 8)
+
+
+# ---------------------------------------------------------------------------
+# The reverse mapping and the sidecar payload, shared with the NBBO panel.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_maps_each_date_ticker_pair_to_the_permno_that_used_it():
+    """FB and META are one PERMNO; BRK.B is spelled in dot notation; an
+    unknown ticker is left out rather than raising."""
+    pairs = pl.DataFrame(
+        {
+            "date": [date(2022, 6, 8), date(2022, 6, 9), date(2024, 1, 24), date(2024, 1, 24)],
+            "symbol": ["FB", "META", "BRK.B", "ZZZZ"],
+        }
+    )
+    resolved = _symbology().resolve(pairs)
+    assert resolved.schema == {"date": pl.Date, "symbol": pl.String, "permno": pl.Int64}
+    assert resolved.to_dicts() == [
+        {"date": date(2022, 6, 8), "symbol": "FB", "permno": 13407},
+        {"date": date(2022, 6, 9), "symbol": "META", "permno": 13407},
+        {"date": date(2024, 1, 24), "symbol": "BRK.B", "permno": 83443},
+    ]
+
+
+def test_resolve_leaves_out_a_ticker_outside_every_interval_of_its_permno():
+    """META before 2022-06-09 names nothing in the fixture table, and FB after
+    2022-06-08 names nothing either: a ticker is only a name for its dates."""
+    pairs = pl.DataFrame(
+        {"date": [date(2022, 6, 8), date(2022, 6, 9)], "symbol": ["META", "FB"]}
+    )
+    assert _symbology().resolve(pairs).is_empty()
+
+
+def test_resolve_refuses_a_pair_two_permnos_claim():
+    """Two PERMNOs naming the same ticker on the same day is a reference-table
+    fault, not a choice to make silently."""
+    import pytest
+    from tests.crsp_fixtures import secinfo_row
+
+    rows = list(SECINFO_ROWS) + [
+        secinfo_row(99999, "2024-01-01", "2024-12-31", "AAPL", "AAPL", None),
+    ]
+    pairs = pl.DataFrame({"date": [date(2024, 1, 24)], "symbol": ["AAPL"]})
+    with pytest.raises(ValueError, match="more than one PERMNO"):
+        _symbology(rows).resolve(pairs)
+
+
+def test_sidecar_payload_holds_only_the_requested_permnos_named_intervals():
+    payload = _symbology().sidecar_payload([83443, 80599, 7000], date(2025, 12, 31))
+    assert payload["generated_from"] == "stksecurityinfohist"
+    assert payload["vintage_product_end"] == "2025-12-31"
+    assert payload["intervals"]["83443"] == [
+        {"ticker": "BRK", "start": "1996-05-09", "end": "2002-01-01"},
+        {"ticker": "BRK.B", "start": "2002-01-02", "end": "2025-12-31"},
+    ]
+    # Lehman's delisting-day row carries LEH forward, so every interval is named.
+    assert [span["ticker"] for span in payload["intervals"]["80599"]] == ["LEH"] * 7
+    # 7000 never had a ticker: no entry rather than a nameless span.
+    assert "7000" not in payload["intervals"]
+    assert "14593" not in payload["intervals"]
+    assert CrspSymbology.empty_sidecar_payload("2025-12-31T00:00:00") == {
+        "generated_from": "stksecurityinfohist",
+        "vintage_product_end": "2025-12-31",
+        "intervals": {},
+    }

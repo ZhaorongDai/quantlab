@@ -297,7 +297,7 @@ export WRDS_USERNAME=your-username
 uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01
 uv run python scripts/wrds/market.py --start 2015-01-01 --security-filter equity_common
 uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT --start 2024-01-02 --end 2024-01-31
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107 --start 2024-01-02 --end 2024-01-31
 ```
 
 Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的方式通过 `quantlab.registry.run` 和 `convert` 驱动。

@@ -183,7 +183,7 @@ Listing PERMNOs in `permnos` names them explicitly, and an explicit roster overr
 
 A share class is a class of the same company's stock (Berkshire A and B, Alphabet GOOG and GOOGL). Each class is a separate security with its own PERMNO. This is unrelated to CRSP's `sharetype`, which says what kind of share it is (normal, ADR, unit) and is what the filters read.
 
-The conversion writes `<store>.crsp_tickers.json`, a table of `{PERMNO: [{ticker, start, end}]}` intervals derived from `stksecurityinfohist`. A class shows as `BRK.B`, and a delisting-day row, which has no ticker of its own, carries the previous name forward. `CrspTickerLookup` answers "what was this PERMNO called on this date":
+The conversion writes `<store>.crsp_tickers.json`, a table of `{PERMNO: [{ticker, start, end}]}` intervals derived from `stksecurityinfohist`. A class shows as `BRK.B`, and a delisting-day row, which has no ticker of its own, carries the previous name forward. The NBBO conversion (`docs/wrds_taq.md`) writes the same sidecar next to its store. `CrspTickerLookup` answers "what was this PERMNO called on this date":
 
 ```python
 >>> from datetime import date

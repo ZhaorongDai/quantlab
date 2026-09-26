@@ -4,20 +4,24 @@ TAQ (Trade and Quote) is the NYSE's millisecond record of US equity trading,
 served through WRDS one ``taqm_YYYY.complete_nbbo_YYYYMMDD`` table per
 trading day. The NBBO (National Best Bid and Offer) is the highest bid and
 lowest ask across all exchanges at each instant. This script pulls the NBBO
-rows of a symbol roster over a window and resamples them into
+rows of a PERMNO roster over a window and resamples them into
 ``--interval`` bars inside the ``--session`` window (US Eastern time),
 written as ``wrds_nbbo_{interval}_{HHMM-HHMM}.zarr`` into ``--zarr-dir``
-with its filter-statistics sidecar. The raw rows go to
+with its filter-statistics and ticker sidecars. The raw rows go to
 ``<download-dir>/wrds/``; both directories default to the current one.
 
-The roster is exactly one of:
+The panel's ``symbol`` axis is the CRSP PERMNO, the same axis as the CRSP
+stores ``index.py``, ``market.py`` and ``etf.py`` write. TAQ itself is keyed
+by ticker, so the roster is resolved through the CRSP reference tables
+(pulled into ``<download-dir>/_reference/``, where the CRSP scripts keep
+them for the same ``--download-dir``): each PERMNO is downloaded under
+every ticker it traded under inside the window, and the conversion maps
+each day's ticker back to its PERMNO. This needs the CRSP subscription
+beside the TAQ one. The roster is exactly one of:
 
-- ``--symbols``, explicit tickers in TAQ's dot notation (``BRK.B``);
+- ``--permnos``, explicit CRSP PERMNOs (``14593,10107``);
 - ``--index sp500|nasdaq100``, the point-in-time members of that index over
-  the window, resolved from the CRSP reference tables (pulled into
-  ``<download-dir>/_reference/``, where ``index.py`` keeps them for the same
-  ``--download-dir``) and mapped to the tickers they traded under. This
-  needs the CRSP subscription beside the TAQ one.
+  the window.
 
 ``WRDS_USERNAME`` must be set in the environment. The password is never read
 by this code; the PostgreSQL client library takes it from ``~/.pgpass``. One
@@ -28,15 +32,15 @@ whether the run succeeded or failed.
 Usage::
 
     export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
-    uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \\
+    uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \\
         --start 2024-01-02 --end 2024-01-31
     uv run python scripts/wrds/nbbo.py --index nasdaq100 --start 2024-01-02 \\
         --interval 5m --session 09:30-16:00 --refresh
-    uv run python scripts/wrds/nbbo.py --symbols AAPL --start 2024-01-02 \\
+    uv run python scripts/wrds/nbbo.py --permnos 14593 --start 2024-01-02 \\
         --download-dir /data/taq/raw --zarr-dir /data/taq/zarr
 
 ``--end`` defaults to today and is clipped to the last trading day TAQ has
-published. ``--refresh`` continues each symbol from its recorded watermark
+published. ``--refresh`` continues each ticker from its recorded watermark
 instead of downloading the whole window again. ``--download-dir`` and
 ``--zarr-dir`` choose where the raw files and the Zarr store go; both
 default to the current directory.
@@ -46,6 +50,7 @@ import argparse
 import typing
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 
 import polars as pl
 
@@ -89,25 +94,26 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Download TAQ NBBO quotes from WRDS and resample them into a bar "
-            "panel in Zarr. Requires WRDS_USERNAME in the environment and the "
-            "password in ~/.pgpass."
+            "panel in Zarr, on the CRSP PERMNO axis. Requires WRDS_USERNAME in "
+            "the environment, the password in ~/.pgpass, and the CRSP "
+            "subscription beside the TAQ one."
         )
     )
     roster = parser.add_mutually_exclusive_group(required=True)
     roster.add_argument(
-        "--symbols",
+        "--permnos",
         help=(
-            "Comma-separated tickers in TAQ dot notation, e.g. AAPL,MSFT,BRK.B. "
-            "Hyphenated forms (BRK-B) are refused."
+            "Comma-separated CRSP PERMNOs, e.g. 14593,10107,83443. Each is "
+            "downloaded under every ticker it traded under inside the window."
         ),
     )
     roster.add_argument(
         "--index",
         choices=sorted(INDEXES),
         help=(
-            "Point-in-time index members over the window, every ticker that "
+            "Point-in-time index members over the window, every PERMNO that "
             "was a member at any point in it, resolved from the CRSP "
-            "reference tables (needs the CRSP subscription)."
+            "reference tables."
         ),
     )
     parser.add_argument(
@@ -143,25 +149,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--refresh",
         action="store_true",
-        help="Continue each symbol from its watermark instead of re-downloading.",
+        help="Continue each ticker from its watermark instead of re-downloading.",
     )
     add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
     add_output_dir_args(parser)
     return parser
 
 
-def _parse_symbols(parser: argparse.ArgumentParser, value: str) -> list[str]:
-    """Return the sorted, upper-cased ``--symbols`` roster; refuse hyphenated forms."""
-    symbols = sorted({token.strip().upper() for token in value.split(",") if token.strip()})
-    hyphenated = [symbol for symbol in symbols if "-" in symbol]
-    if hyphenated:
+def _parse_permnos(parser: argparse.ArgumentParser, value: str) -> list[int]:
+    """Return the sorted, distinct ``--permnos`` roster; refuse anything that is not digits."""
+    tokens = [token.strip() for token in value.split(",") if token.strip()]
+    bad = [token for token in tokens if not token.isdigit()]
+    if bad:
         parser.error(
-            f"--symbols {hyphenated} use a hyphen; WRDS TAQ uses dot notation "
-            f"(BRK.B, not BRK-B)."
+            f"--permnos {bad} are not PERMNOs. A PERMNO is CRSP's integer "
+            f"security id (AAPL is 14593); a ticker cannot go here, because the "
+            f"panel is keyed by PERMNO and a ticker names different securities "
+            f"over time."
         )
-    if not symbols:
-        parser.error("--symbols names no symbol.")
-    return symbols
+    permnos = sorted({int(token) for token in tokens})
+    if not permnos:
+        parser.error("--permnos names no PERMNO.")
+    return permnos
 
 
 def _parse_session(parser: argparse.ArgumentParser, value: str) -> XnysSessionCalendar:
@@ -184,20 +193,42 @@ def _last_published_day(session, end: date) -> date | None:
     return None
 
 
-def _index_tickers(session, index: str, start: str, end: str, download_dir) -> list[str]:
-    """Resolve an index's point-in-time members to the tickers they traded under.
+def _resolve_roster(
+    session,
+    permnos: list[int] | None,
+    index: str | None,
+    start: str,
+    end: str,
+    download_dir,
+) -> tuple[list[int], list[str], list[int], Path]:
+    """Resolve the roster to PERMNOs and to the tickers to download.
 
     The CRSP reference tables are pulled into ``<download_dir>/_reference``,
-    the directory ``index.py`` uses for the same ``--download-dir``.
+    the directory ``index.py`` uses for the same ``--download-dir``. With
+    ``index`` set, the PERMNOs are the index's point-in-time members over
+    the window; otherwise they are ``permnos``. The tickers are every name
+    those PERMNOs traded under in an interval overlapping the window, in
+    TAQ dot notation.
+
+    Returns
+    -------
+    permnos : list of int
+        The roster, sorted.
+    tickers : list of str
+        The tickers to download, sorted.
+    unnamed : list of int
+        Roster PERMNOs with no ticker interval overlapping the window.
+    reference_dir : Path
+        Where the reference tables were written.
     """
     from quantlab.acquisition.wrds.crsp import CrspQueries
     from quantlab.acquisition.wrds.crsp_reference import CrspReferenceTables
 
-    universe = INDEXES[index]
+    universe = INDEXES[index] if index is not None else None
     schemas = [CrspQueries.STOCK_SCHEMA]
     if universe == CrspMembership.SP500:
         schemas.append(CrspQueries.INDEX_SCHEMA)
-    else:
+    elif universe == CrspMembership.NASDAQ100:
         schemas.extend((CrspQueries.COMPUSTAT_SCHEMA, CrspQueries.CCM_SCHEMA))
     CrspQueries.assert_entitled(session, schemas)
 
@@ -211,14 +242,20 @@ def _index_tickers(session, index: str, start: str, end: str, download_dir) -> l
         include_nasdaq100=universe == CrspMembership.NASDAQ100,
     )
     reference = CrspReference(reference_dir)
-    permnos = [int(p) for p in CrspMembership(reference).permnos_in_range(universe, start, end)]
+    if universe is not None:
+        permnos = sorted(
+            int(p) for p in CrspMembership(reference).permnos_in_range(universe, start, end)
+        )
+    assert permnos is not None
     intervals = CrspSymbology(reference.table("stksecurityinfohist")).symbol_intervals()
     overlapping = intervals.filter(
         pl.col("permno").is_in(permnos)
         & (pl.col("start_date") <= date.fromisoformat(end))
         & (pl.col("end_date") >= date.fromisoformat(start))
     ).drop_nulls("symbol")
-    return sorted(set(overlapping["symbol"].to_list()))
+    named = set(overlapping["permno"].to_list())
+    unnamed = [permno for permno in permnos if permno not in named]
+    return permnos, sorted(set(overlapping["symbol"].to_list())), unnamed, Path(reference_dir)
 
 
 if __name__ == "__main__":
@@ -226,7 +263,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     download_dir, zarr_dir = resolve_output_dirs(args)
     calendar = _parse_session(parser, args.session)
-    explicit = _parse_symbols(parser, args.symbols) if args.symbols else None
+    explicit = _parse_permnos(parser, args.permnos) if args.permnos else None
     requested_end = args.end or date.today().isoformat()
 
     # Imported here so the session class is resolved at run time.
@@ -254,15 +291,27 @@ if __name__ == "__main__":
             start, end = start_day.isoformat(), end_day.isoformat()
             session.assert_entitled(range(start_day.year, end_day.year + 1))
 
-            # 2. The roster.
-            symbols = explicit if explicit is not None else _index_tickers(session, args.index, start, end, download_dir)
+            # 2. The roster: PERMNOs for the panel, tickers for the download.
+            permnos, symbols, unnamed, reference_dir = _resolve_roster(
+                session, explicit, args.index, start, end, download_dir
+            )
         except (RuntimeError, ValueError, FileNotFoundError) as exc:
             parser.exit(1, f"{exc}\n")
+        if unnamed and explicit is not None:
+            parser.exit(
+                1,
+                f"--permnos {unnamed} traded under no ticker inside {start}..{end} "
+                f"according to CRSP; TAQ has nothing to download for them.\n",
+            )
+        if unnamed:
+            print(f"{len(unnamed)} member PERMNO(s) had no ticker inside {start}..{end}: {unnamed}")
         if not symbols:
-            parser.exit(1, f"the roster resolved to no symbols over {start}..{end}.\n")
-        print(f"Roster: {len(symbols)} symbol(s) over {start}..{end}")
+            parser.exit(1, f"the roster resolved to no ticker over {start}..{end}.\n")
+        print(
+            f"Roster: {len(permnos)} PERMNO(s) under {len(symbols)} ticker(s) over {start}..{end}"
+        )
 
-        # 3. Download.
+        # 3. Download, by ticker: that is the only key TAQ has.
         acq_config = place_downloads(
             SOURCE.config_factory_for(*NBBO_CAPABILITY)(
                 symbols=symbols,
@@ -274,10 +323,10 @@ if __name__ == "__main__":
         )
         print(f"Acquiring from {SOURCE.display_name} (refresh={args.refresh})")
         result = run(SOURCE, acq_config, refresh=args.refresh)
-        print(f"{len(result.succeeded)} symbol(s) succeeded, {len(result.failures)} failed")
+        print(f"{len(result.succeeded)} ticker(s) succeeded, {len(result.failures)} failed")
         print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
-        # 4. Resample into the bar panel.
+        # 4. Resample into the bar panel, keyed by PERMNO.
         store_name = STORE_TEMPLATE.format(
             interval=args.interval,
             session_start=calendar.session_start.strftime("%H%M"),
@@ -286,23 +335,25 @@ if __name__ == "__main__":
         ds_config = NbboDatasetConfig(
             zarr_file_path=str(zarr_dir / store_name),
             raw_data_dir_path=acq_config.raw_data_dir_path,
+            reference_dir=str(reference_dir),
             start_date=start,
             end_date=end,
-            symbols=tuple(symbols),
+            permnos=tuple(str(permno) for permno in permnos),
             bar_interval=args.interval,
             session_start=calendar.session_start.strftime("%H:%M"),
             session_end=calendar.session_end.strftime("%H:%M"),
         )
-        probe = NbboPanelDataset(replace(ds_config, symbols=None))
+        probe = NbboPanelDataset(replace(ds_config, permnos=None))
         if not probe.has_raw_data():
             parser.exit(
                 1,
                 f"Refusing to convert: no raw data under "
-                f"{acq_config.raw_data_dir_path} ({len(result.failures)} symbol(s) "
+                f"{acq_config.raw_data_dir_path} ({len(result.failures)} ticker(s) "
                 f"failed this run). No store was written.\n",
             )
         print(f"Resampling to {args.interval} bars over {args.session} ET")
         print_conversion_result(convert(SOURCE, ds_config, data_type="nbbo", granularity="day"))
         print(f"Filter statistics sidecar: {probe.filter_stats_path}")
+        print(f"Ticker sidecar: {probe.ticker_sidecar_path()}")
     finally:
         WrdsSession.close_shared()

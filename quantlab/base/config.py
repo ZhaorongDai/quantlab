@@ -135,15 +135,23 @@ class NbboDatasetConfig(DatasetConfig):
     resampler's record filter and are config fields, not ``kwargs``, so a
     rebuild from ``config.json`` reproduces the panel exactly.
 
+    The panel's ``symbol`` axis is the integer PERMNO, the same axis as the
+    CRSP panels, although the raw TAQ files are keyed by ticker. The
+    conversion maps each raw ``(date, ticker)`` to its PERMNO through the
+    CRSP symbology in ``reference_dir``, so the inherited ticker-side
+    ``symbols`` field is refused by the dataset's config setter; use
+    ``permnos`` instead. See ``docs/wrds_taq.md``.
+
     Examples
     --------
     >>> cfg = NbboDatasetConfig(
     ...     zarr_file_path="/data/us_equity/tick/nbbo_5m.zarr",
     ...     raw_data_dir_path="/data/downloads/us_equity/tick/wrds",
+    ...     reference_dir="/data/downloads/_reference",
     ...     bar_interval="5m",
     ...     start_date="2024-01-02",
     ...     end_date="2024-01-31",
-    ...     symbols=("AAPL",),
+    ...     permnos=("14593",),
     ... )
     >>> cfg.frequency, cfg.bar_interval, cfg.drop_crossed
     ('tick', '5m', True)
@@ -155,6 +163,17 @@ class NbboDatasetConfig(DatasetConfig):
     frequency: Frequency = "tick"
     #: Always WRDS for this dataset.
     vendor: Vendor | None = "wrds"
+    #: Directory of the CRSP reference tables (``stksecurityinfohist`` and
+    #: friends) the conversion reads its symbology from: the mapping from a
+    #: ticker on a date to the PERMNO that traded under it. The same
+    #: directory ``scripts/wrds/index.py`` fills for the CRSP panels.
+    reference_dir: str
+    #: Restrict the panel to these PERMNOs, as digit strings. ``None`` means
+    #: every PERMNO the raw tier's tickers resolve to; an empty tuple is
+    #: refused at config assignment because it could mean either "none" or
+    #: "all". A listed PERMNO is on the axis even when the raw tier has no
+    #: record for it, as an all-NaN column.
+    permnos: tuple[str, ...] | None = None
     #: Bar size the tick records are resampled to.
     bar_interval: BarInterval = "1m"
     #: Start of the session window, US/Eastern wall clock ``HH:MM``.

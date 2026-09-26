@@ -128,7 +128,7 @@ account, as the CSV `ResidualMomentumFF3` reads.
 | `index.py` | An index's daily bars and its membership panel | `--index sp500\|nasdaq100` |
 | `market.py` | Every CRSP security's daily bars and the listing panel | `--security-filter` preset |
 | `etf.py` | One store per ETF | `--etf spy,qqq,name=PERMNO` |
-| `nbbo.py` | TAQ NBBO quotes resampled into a bar panel | `--symbols` or `--index` |
+| `nbbo.py` | TAQ NBBO quotes resampled into a bar panel on the PERMNO axis | `--permnos` or `--index` |
 
 They share `--start` (required), `--end` (default today, clipped to the
 vendor product's last date), `--refresh` (fetch forward from each symbol's
@@ -144,7 +144,7 @@ made only of companies that survived) out of the data.
 uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01
 uv run python scripts/wrds/market.py --start 2024-01-01
 uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
-uv run python scripts/wrds/nbbo.py --symbols AAPL,MSFT,BRK.B \
+uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \
     --start 2024-01-24 --end 2024-01-25 --interval 1m
 ```
 
@@ -290,8 +290,8 @@ locations are:
 
 Given the same `--download-dir`, the three CRSP scripts share one raw tier,
 one set of watermarks and one reference directory (`<download-dir>/_reference`).
-Point `nbbo.py --index` at that directory too and it reuses the reference
-tables.
+Point `nbbo.py` at that directory too and it reuses the reference tables,
+which it needs in both roster forms to map tickers to PERMNOs.
 
 ## Resuming an interrupted download
 
