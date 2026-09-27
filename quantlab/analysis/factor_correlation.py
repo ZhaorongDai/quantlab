@@ -334,37 +334,45 @@ def _cluster(mean: np.ndarray, threshold: float) -> tuple[np.ndarray, np.ndarray
     return order, numbered
 
 
-_RED = "#e34948"
-_BLUE = "#2a78d6"
-_NEUTRAL = "#b8b7b2"
-_NEUTRAL_LIGHT = "#f0efec"
+# Chart chrome and ink of the reference palette.
+_SURFACE = "#fcfcfb"
 _INK = "#0b0b0b"
 _INK_SECONDARY = "#52514e"
-_GRID = "#e6e5e0"
-_SURFACE = "#fcfcfb"
+_INK_MUTED = "#898781"
+_GRID = "#e1e0d9"
+_AXIS = "#c3c2b7"
+_BLUE = "#2a78d6"
+_RED = "#e34948"
+#: Diverging ramp for correlations: red arm, neutral gray midpoint, blue arm,
+#: with the same number of steps and matching lightness per arm.
+_DIVERGING = [
+    "#8f2a2a", "#c23b3a", "#e8736f", "#f4b4ae",
+    "#f0efec",
+    "#b7d3f6", "#6da7ec", "#2a78d6", "#184f95",
+]
 
 
 class FactorCorrelationFigure:
     """Draw a ``FactorCorrelation`` so that hundreds of variables stay readable.
 
-    The heatmap shows the mean correlation in cluster order on a fixed
-    ``-1..1`` diverging scale (red negative, blue positive), with every
-    cluster of two or more variables outlined. Up to ``label_limit``
-    variables every row and column is named; beyond that the axes name the
-    clusters of two or more variables instead, and ``factor_clusters.csv``
-    maps every variable to its cluster and position. Beside the heatmap, the
-    strongest pairs are listed by name as bars, the largest clusters are
-    listed with their size, mean inner ``|correlation|`` and first
-    members, and a histogram shows how the correlations of all pairs are
-    distributed against the threshold.
+    The main panel is the mean correlation in cluster order on a fixed
+    ``-1..1`` diverging scale (red negative, gray none, blue positive), so
+    redundant factors form blocks on the diagonal; every cluster of two or
+    more variables is outlined, and the diagonal, always 1, is left blank.
+    Up to ``label_limit`` variables every row and column is named; beyond
+    that the axes name the clusters of two or more variables, and
+    ``factor_clusters.csv`` maps every variable to its cluster and
+    position. Beside it: the strongest pairs by ``|correlation|``, the
+    largest clusters with their first members, and the distribution of all
+    pairs on a log count scale so the few strong pairs stay visible.
 
     Parameters
     ----------
     label_limit : int, default 60
         Most variables whose names are written on the heatmap axes.
-    top_pairs : int, default 25
+    top_pairs : int, default 20
         Strongest pairs listed beside the heatmap.
-    top_clusters : int, default 15
+    top_clusters : int, default 12
         Largest clusters listed beside the heatmap.
 
     Examples
@@ -373,7 +381,7 @@ class FactorCorrelationFigure:
     >>> fig.savefig("factor_correlation.png")
     """
 
-    def __init__(self, label_limit: int = 60, top_pairs: int = 25, top_clusters: int = 15):
+    def __init__(self, label_limit: int = 60, top_pairs: int = 20, top_clusters: int = 12):
         """Initialize the renderer; see the class docstring for parameters."""
         self.label_limit = int(label_limit)
         self.top_pairs = int(top_pairs)
@@ -393,157 +401,212 @@ class FactorCorrelationFigure:
         from matplotlib.figure import Figure
 
         n = len(corr.mean)
-        side = float(np.clip(7.0 + 0.03 * n, 8.0, 22.0))
-        fig = Figure(figsize=(side + 9.0, max(side, 14.0) + 1.0), facecolor=_SURFACE,
-                     layout="constrained")
-        grid = fig.add_gridspec(3, 2, width_ratios=[side, 8.5], height_ratios=[1.2, 1.0, 0.8])
+        named = n <= self.label_limit
+        # Layout in inches: a square heatmap under a header, and a right
+        # column of three panels spanning the same height.
+        side = float(np.clip(6.0 + 0.035 * n, 7.5, 16.0))
+        left, bottom = (1.5, 1.5) if named else (0.7, 1.0)
+        header, gap, right_w, margin = 1.55, 2.3, 5.6, 0.35
+        height = max(header + side + bottom, 11.0)
+        width = left + side + gap + right_w + margin
+        fig = Figure(figsize=(width, height), facecolor=_SURFACE)
+
+        def box(x, y_top, w, h):
+            return [x / width, 1 - (y_top + h) / height, w / width, h / height]
+
         summary = corr.summary
-        fig.suptitle(
-            f"Factor correlation   |   {summary['n_factors']} factors, "
-            f"{summary['n_clusters']} clusters at |corr| >= {corr.threshold:g}",
-            fontsize=18, fontweight="bold", color=_INK,
-        )
-        self._heatmap(fig, fig.add_subplot(grid[:, 0]), corr)
-        self._top_pairs(fig.add_subplot(grid[0, 1]), corr)
-        self._top_clusters(fig.add_subplot(grid[1, 1]), corr)
-        self._histogram(fig.add_subplot(grid[2, 1]), corr)
+        fig.suptitle(x=0.35 / width, y=1 - 0.3 / height, t=
+                 f"Factor correlation   |   {summary['n_factors']} factors, "
+                 f"{summary['n_clusters']} clusters at |corr| >= {corr.threshold:g}",
+                 ha="left", va="top", fontsize=16, fontweight="bold", color=_INK)
+        fig.text(0.35 / width, 1 - 0.72 / height,
+                 f"Mean cross-sectional rank correlation over "
+                 f"{int(corr.periods.to_numpy().max())} periods; "
+                 f"{summary['n_pairs_above_threshold']} of {n * (n - 1) // 2} pairs at "
+                 f"|corr| >= {corr.threshold:g}, mean |corr| "
+                 f"{summary['mean_abs_correlation']:.2f}",
+                 ha="left", va="top", fontsize=10, color=_INK_SECONDARY)
+        heat = fig.add_axes(box(left, header, side, side))
+        legend = fig.add_axes(box(left + side * 0.6, header - 0.42, side * 0.4, 0.12))
+        self._heatmap(heat, legend, corr)
+
+        column_h = height - header - 0.8
+        x = left + side + gap
+        spacing = 0.95
+        heights = np.array([0.46, 0.31, 0.23]) * (column_h - 2 * spacing)
+        tops = [header, header + heights[0] + spacing,
+                header + heights[0] + heights[1] + 2 * spacing]
+        self._top_pairs(fig.add_axes(box(x, tops[0], right_w, heights[0])), corr,
+                        rows=int(max(5, min(self.top_pairs, heights[0] / 0.27))))
+        self._top_clusters(fig.add_axes(box(x, tops[1], right_w, heights[1])), corr,
+                           rows=int(max(3, min(self.top_clusters, heights[1] / 0.3))))
+        self._histogram(fig.add_axes(box(x, tops[2], right_w, heights[2])), corr)
         return fig
 
     @staticmethod
     def _cmap():
-        """Diverging map: red at -1, light neutral at 0, blue at +1."""
+        """The diverging ramp as a colormap, gray at 0."""
         from matplotlib.colors import LinearSegmentedColormap
 
-        return LinearSegmentedColormap.from_list("corr", [_RED, _NEUTRAL_LIGHT, _BLUE])
+        return LinearSegmentedColormap.from_list("corr", _DIVERGING)
 
     @staticmethod
-    def _style(ax, title: str, xlabel: str = "", ylabel: str = "") -> None:
-        """Recessive spines and grid, left-aligned bold title."""
+    def _style(ax, title: str, xlabel: str = "") -> None:
+        """Hairline recessive chrome and a left-aligned title."""
         ax.set_facecolor(_SURFACE)
-        ax.set_title(title, loc="left", fontsize=13, fontweight="bold", color=_INK)
-        ax.set_xlabel(xlabel, color=_INK_SECONDARY)
-        ax.set_ylabel(ylabel, color=_INK_SECONDARY)
-        ax.tick_params(colors=_INK_SECONDARY, labelsize=9)
-        for side in ("top", "right"):
+        ax.set_title(title, loc="left", fontsize=12, fontweight="bold", color=_INK, pad=8)
+        ax.set_xlabel(xlabel, color=_INK_SECONDARY, fontsize=9)
+        ax.tick_params(colors=_INK_SECONDARY, labelsize=8.5, length=0)
+        for side in ("top", "right", "left"):
             ax.spines[side].set_visible(False)
-        for side in ("left", "bottom"):
-            ax.spines[side].set_color(_NEUTRAL)
+        ax.spines["bottom"].set_color(_AXIS)
+        ax.spines["bottom"].set_linewidth(0.8)
 
-    def _heatmap(self, fig, ax, corr: FactorCorrelation) -> None:
-        """The ordered matrix with clusters outlined and readable axis labels."""
+    def _heatmap(self, ax, legend, corr: FactorCorrelation) -> None:
+        """The ordered matrix, clusters outlined, diagonal blank."""
         from matplotlib.patches import Rectangle
 
         n = len(corr.mean)
-        self._style(ax, "Mean rank correlation, clustered")
-        values = corr.mean.to_numpy()
-        image = ax.imshow(
-            np.ma.masked_invalid(values), cmap=self._cmap(), vmin=-1.0, vmax=1.0,
-            interpolation="nearest", aspect="equal",
+        ax.set_title("Clustered correlation matrix", loc="left", fontsize=12,
+                     fontweight="bold", color=_INK, pad=8)
+        values = corr.mean.to_numpy().copy()
+        np.fill_diagonal(values, np.nan)
+        cmap = self._cmap()
+        cmap.set_bad(_SURFACE)
+        # A surface gap between cells while they are large enough to see it.
+        gap = _SURFACE if n <= 40 else "face"
+        image = ax.pcolormesh(
+            np.ma.masked_invalid(values), cmap=cmap, vmin=-1.0, vmax=1.0,
+            edgecolors=gap, linewidth=1.0 if n <= 40 else 0.0, rasterized=n > 40,
         )
+        ax.set_xlim(0, n)
+        ax.set_ylim(n, 0)
+        ax.set_aspect("equal")
+        for spine in ax.spines.values():
+            spine.set_visible(False)
         clusters = corr.clusters.to_numpy()
         starts = np.flatnonzero(np.r_[True, clusters[1:] != clusters[:-1]])
         ends = np.r_[starts[1:], n]
-        edge = max(0.6, 2.0 - n / 200)
+        edge = float(np.clip(1.6 - n / 300, 0.6, 1.6))
         for start, end in zip(starts, ends):
             if end - start >= 2:
                 ax.add_patch(Rectangle(
-                    (start - 0.5, start - 0.5), end - start, end - start,
+                    (start, start), end - start, end - start,
                     fill=False, edgecolor=_INK, linewidth=edge,
                 ))
+        ax.tick_params(colors=_INK_SECONDARY, length=0)
         if n <= self.label_limit:
-            size = float(np.clip(260 / n, 5, 10))
-            names = list(corr.mean.index)
-            ax.set_xticks(range(n), names, rotation=90, fontsize=size)
-            ax.set_yticks(range(n), names, fontsize=size)
-            if n <= 15:
-                for (row, col), value in np.ndenumerate(values):
-                    if np.isfinite(value) and row != col:
-                        ax.text(col, row, f"{value:.2f}", ha="center", va="center",
-                                fontsize=8, color=_INK)
+            size = float(np.clip(300 / n, 5.5, 10))
+            names = [_short(name, 24) for name in corr.mean.index]
+            ax.set_xticks(np.arange(n) + 0.5, names, rotation=90, fontsize=size)
+            ax.set_yticks(np.arange(n) + 0.5, names, fontsize=size)
         else:
             groups = [(s, e) for s, e in zip(starts, ends) if e - s >= 2]
             groups = sorted(groups, key=lambda g: g[0] - g[1])[: self.label_limit]
             groups.sort()
-            ticks = [(s + e - 1) / 2 for s, e in groups]
-            labels = [f"C{clusters[s]} ({e - s})" for s, e in groups]
-            ax.set_xticks(ticks, labels, rotation=90, fontsize=7)
-            ax.set_yticks(ticks, labels, fontsize=7)
+            ticks = [(s + e) / 2 for s, e in groups]
+            labels = [f"C{clusters[s]}" for s, e in groups]
+            ax.set_xticks(ticks, labels, rotation=90, fontsize=7.5)
+            ax.set_yticks(ticks, labels, fontsize=7.5)
             ax.set_xlabel(
-                "clusters of 2+ factors; every factor's cluster and position "
-                "is in factor_clusters.csv",
-                color=_INK_SECONDARY,
+                "Outlined: clusters of 2+ factors, labelled C<n>. Each factor's cluster "
+                "and position: factor_clusters.csv",
+                color=_INK_MUTED, fontsize=9,
             )
-        ax.tick_params(length=0)
-        fig.colorbar(image, ax=ax, shrink=0.6, label="mean Spearman correlation")
+        bar = ax.figure.colorbar(image, cax=legend, orientation="horizontal")
+        bar.set_ticks([-1, -0.5, 0, 0.5, 1])
+        bar.ax.tick_params(labelsize=8, colors=_INK_SECONDARY, length=0)
+        bar.ax.xaxis.set_ticks_position("top")
+        bar.outline.set_visible(False)
 
-    def _top_pairs(self, ax, corr: FactorCorrelation) -> None:
-        """The strongest pairs by ``|mean|``, named, as horizontal bars."""
-        pairs = corr.pairs_table().dropna(subset=["mean"]).head(self.top_pairs)
-        self._style(ax, f"Strongest {len(pairs)} pairs", "mean correlation")
+    def _top_pairs(self, ax, corr: FactorCorrelation, rows: int) -> None:
+        """The strongest pairs: ``|corr|`` as thin bars, sign as color, value labelled."""
+        pairs = corr.pairs_table().dropna(subset=["mean"]).head(rows)
+        self._style(ax, f"Strongest {len(pairs)} pairs", "|mean correlation|")
         if pairs.empty:
             ax.text(0.5, 0.5, "no data", ha="center", va="center",
-                    color=_INK_SECONDARY, transform=ax.transAxes)
+                    color=_INK_MUTED, transform=ax.transAxes)
             return
         rows = np.arange(len(pairs))[::-1]
+        strength = pairs["mean"].abs().to_numpy()
         colors = [_BLUE if v >= 0 else _RED for v in pairs["mean"]]
-        ax.barh(rows, pairs["mean"], color=colors, height=0.7)
+        ax.barh(rows, strength, color=colors, height=0.56)
+        for row, value, s in zip(rows, pairs["mean"], strength):
+            ax.text(s + 0.015, row, f"{value:+.2f}", va="center", fontsize=8,
+                    color=_INK_SECONDARY)
         ax.set_yticks(rows, [
-            f"{_short(a)}  ×  {_short(b)}" for a, b in zip(pairs["factor_a"], pairs["factor_b"])
+            f"{_short(a, 18)}  ·  {_short(b, 18)}"
+            for a, b in zip(pairs["factor_a"], pairs["factor_b"])
         ], fontsize=8)
-        ax.set_xlim(-1.0, 1.0)
-        ax.axvline(0.0, color=_INK_SECONDARY, linewidth=1)
-        for x in (-corr.threshold, corr.threshold):
-            ax.axvline(x, color=_NEUTRAL, linewidth=1, linestyle="--")
-        ax.grid(True, axis="x", color=_GRID, linewidth=0.8)
+        ax.set_xlim(0, 1.12)
+        ax.set_xticks([0, 0.25, 0.5, 0.75, 1.0])
+        ax.set_ylim(-0.7, len(pairs) - 0.3)
+        ax.axvline(corr.threshold, color=_INK_MUTED, linewidth=0.8, linestyle=(0, (3, 3)))
+        ax.grid(True, axis="x", color=_GRID, linewidth=0.6)
         ax.set_axisbelow(True)
+        ax.text(1.0, 1.02, "blue positive · red negative", transform=ax.transAxes,
+                ha="right", va="bottom", fontsize=7.5, color=_INK_MUTED)
 
-    def _top_clusters(self, ax, corr: FactorCorrelation) -> None:
-        """The largest clusters: size as bars, members and inner |corr| as labels."""
-        clusters = corr.cluster_summary().head(self.top_clusters)
-        self._style(ax, f"Largest {len(clusters)} clusters", "factors in cluster")
+    def _top_clusters(self, ax, corr: FactorCorrelation, rows: int) -> None:
+        """The largest clusters: size as thin bars, inner |corr| and members as columns.
+
+        The bars take the left third of the axis; the columns to their right
+        are placed in axis fractions, so they never overlap the bars.
+        """
+        from matplotlib.transforms import blended_transform_factory
+
+        clusters = corr.cluster_summary().head(rows)
+        self._style(ax, f"Largest {len(clusters)} clusters", "")
         if clusters.empty:
             ax.text(0.5, 0.5, f"no two factors reach |corr| >= {corr.threshold:g}",
-                    ha="center", va="center", color=_INK_SECONDARY, transform=ax.transAxes)
+                    ha="center", va="center", color=_INK_MUTED, transform=ax.transAxes)
             ax.set_yticks([])
+            ax.set_xticks([])
             return
-        rows = np.arange(len(clusters))[::-1]
-        ax.barh(rows, clusters["size"], color=_BLUE, height=0.7)
-        ax.set_yticks(rows, [f"C{c}" for c in clusters["cluster"]], fontsize=8)
+        slots = max(rows, len(clusters))
+        positions = np.arange(len(clusters))
         largest = int(clusters["size"].max())
-        # The right part of the axis holds each bar's label.
-        ax.set_xlim(0, largest * 2.6)
-        ax.set_xticks([t for t in ax.get_xticks() if 0 <= t <= largest])
-        for row, (_, item) in zip(rows, clusters.iterrows()):
-            shown = ", ".join(_short(m, 14) for m in item["members"][:3])
+        ax.barh(positions, clusters["size"], color=_BLUE, height=0.56)
+        ax.set_yticks(positions, [f"C{c}" for c in clusters["cluster"]], fontsize=8)
+        ax.set_ylim(slots - 0.4, -1.1)
+        ax.set_xlim(0, largest / 0.3)
+        ax.set_xticks([])
+        ax.spines["bottom"].set_visible(False)
+        text = blended_transform_factory(ax.transAxes, ax.transData)
+        for column, heading in ((0.32, "size"), (0.43, "|corr|"), (0.56, "members")):
+            ax.text(column, -0.95, heading, transform=text, fontsize=7.5,
+                    color=_INK_MUTED, va="center")
+        for row, (_, item) in zip(positions, clusters.iterrows()):
+            shown = ", ".join(_short(m, 12) for m in item["members"][:3])
             more = len(item["members"]) - 3
-            text = f" {item['size']}  |corr| {item['mean_abs_correlation']:.2f}  {shown}" + (
-                f" +{more}" if more > 0 else ""
-            )
-            ax.text(item["size"], row, text, va="center", fontsize=7.5, color=_INK,
-                    clip_on=True)
-        ax.grid(True, axis="x", color=_GRID, linewidth=0.8)
-        ax.set_axisbelow(True)
+            ax.text(0.32, row, f"{item['size']}", transform=text, va="center",
+                    fontsize=8, color=_INK)
+            ax.text(0.43, row, f"{item['mean_abs_correlation']:.2f}", transform=text,
+                    va="center", fontsize=8, color=_INK)
+            ax.text(0.56, row, shown + (f" +{more}" if more > 0 else ""), transform=text,
+                    va="center", fontsize=7.5, color=_INK_SECONDARY, clip_on=True)
 
     def _histogram(self, ax, corr: FactorCorrelation) -> None:
-        """Distribution of every pair's mean correlation, threshold marked."""
+        """Every pair's mean correlation, on a log count scale, threshold shaded."""
         values = corr.pairs_table()["mean"].dropna().to_numpy()
-        summary = corr.summary
-        self._style(ax, "All pairs", "mean correlation", "pairs")
+        self._style(ax, "All pairs", "mean correlation")
         if values.size == 0:
             return
-        ax.hist(values, bins=np.linspace(-1.0, 1.0, 41), color=_NEUTRAL, edgecolor=_SURFACE)
-        for x in (-corr.threshold, corr.threshold):
-            ax.axvline(x, color=_INK_SECONDARY, linewidth=1, linestyle="--")
+        edges = np.linspace(-1.0, 1.0, 41)
+        counts, _ = np.histogram(values, bins=edges)
+        centers = (edges[:-1] + edges[1:]) / 2
+        colors = [
+            _RED if c <= -corr.threshold else _BLUE if c >= corr.threshold else "#b8b7b2"
+            for c in centers
+        ]
+        ax.bar(centers, np.where(counts > 0, counts, np.nan), width=0.045,
+               color=colors, bottom=0.8)
+        ax.set_yscale("log")
+        ax.set_ylim(0.8, max(counts.max(), 1) * 3)
         ax.set_xlim(-1.0, 1.0)
-        ax.grid(True, axis="y", color=_GRID, linewidth=0.8)
+        ax.set_ylabel("pairs (log)", color=_INK_SECONDARY, fontsize=9)
+        ax.grid(True, axis="y", color=_GRID, linewidth=0.6)
         ax.set_axisbelow(True)
-        ax.text(
-            0.02, 0.97,
-            f"{summary['n_pairs_above_threshold']} of {values.size} pairs "
-            f"at |corr| >= {corr.threshold:g}\nmean |corr| "
-            f"{summary['mean_abs_correlation']:.2f}",
-            transform=ax.transAxes, va="top", fontsize=9, color=_INK,
-        )
 
 
 def _short(name: str, limit: int = 22) -> str:
