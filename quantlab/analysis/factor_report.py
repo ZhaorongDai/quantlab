@@ -1475,19 +1475,14 @@ class FactorReportFigure:
         return [ramp(i / (count - 1)) for i in range(count)]
 
     def _rank_autocorrelation(self, ax, pair: PairAnalysis) -> None:
-        """Rolling mean of the rank autocorrelation at every lag, lag 1 with its range."""
+        """Rolling range and mean of the rank autocorrelation at every lag."""
         lags = list(pair.rank_autocorrelations.columns)
         window = self._window_of(pair.rank_autocorrelation)
-        self._style(ax, f"Rank autocorrelation by lag, {window}-period", "", "autocorrelation")
+        self._style(ax, f"Rank autocorrelation by lag, {window}-period range and mean",
+                    "", "autocorrelation")
         ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
         for lag, color in zip(lags, self._lag_colors(len(lags))):
-            series = pair.rank_autocorrelations[lag]
-            label = f"lag {lag} (mean {series.mean():.2f})"
-            if lag == lags[0]:
-                self._band(ax, series, color, label, band_label=f"lag {lag} range")
-            else:
-                rolling = series.rolling(window, min_periods=max(1, window // 2)).mean()
-                ax.plot(rolling.index, rolling.to_numpy(), color=color, linewidth=2, label=label)
+            self._band(ax, pair.rank_autocorrelations[lag], color, f"lag {lag}")
         # Headroom above the highest line for the legend.
         bottom, top = ax.get_ylim()
         ax.set_ylim(bottom, top + 0.3 * (top - bottom))
