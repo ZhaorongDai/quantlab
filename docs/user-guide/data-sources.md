@@ -280,16 +280,18 @@ locations are:
 
 | Download | Raw tier | Panel |
 |---|---|---|
-| `scripts/wrds/index.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_{sp500,nasdaq100}_1d.zarr` and `_membership.zarr` |
-| `scripts/wrds/market.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
-| `scripts/wrds/etf.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_crsp_{name}_1d.zarr` |
-| `scripts/wrds/nbbo.py` | `<download-dir>/wrds` | `<zarr-dir>/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
+| `scripts/wrds/index.py` | `<download-dir>/wrds/crsp_daily` | `<zarr-dir>/wrds_crsp_{sp500,nasdaq100}_1d.zarr` and `_membership.zarr` |
+| `scripts/wrds/market.py` | `<download-dir>/wrds/crsp_daily` | `<zarr-dir>/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
+| `scripts/wrds/etf.py` | `<download-dir>/wrds/crsp_daily` | `<zarr-dir>/wrds_crsp_{name}_1d.zarr` |
+| `scripts/wrds/nbbo.py` | `<download-dir>/wrds/nbbo` | `<zarr-dir>/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
 | `scripts/fama_french.py` | `<download-dir>/fama_french/ff3_{daily,monthly}.csv` | none: the CSV is read by `ResidualMomentumFF3` |
 | Tiingo (library) | `downloads/us_equity/1d/nasdaq_data/tiingo` | `data/us_equity/1d/stock.zarr` |
 | Alpaca (library) | `downloads/us_equity/{1d,1m,tick}/nasdaq_data/alpaca` | `data/us_equity/{1d,1m}/stock_alpaca.zarr` |
 
 Given the same `--download-dir`, the three CRSP scripts share one raw tier,
-one set of watermarks and one reference directory (`<download-dir>/_reference`).
+one set of watermarks (`<download-dir>/_watermarks/wrds/crsp_daily`) and one
+reference directory (`<download-dir>/_reference`); `nbbo.py` keeps its own
+`wrds/nbbo` and `_watermarks/wrds/nbbo` beside them.
 Point `nbbo.py` at that directory too and it reuses the reference tables,
 which it needs in both roster forms to map tickers to PERMNOs.
 

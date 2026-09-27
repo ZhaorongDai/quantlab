@@ -591,28 +591,30 @@ def test_the_minute_window_predicate_keeps_the_tail_of_its_first_session(
 
 
 # ---------------------------------------------------------------------------
-# 03.2-06 Task 2 -- the three-key `tick` layout, and why `data_type=` leads.
+# 03.2-06 Task 2 -- the tick layout, and why each data type gets its own root.
 #
 # Quotes and trades carry DIFFERENT column sets. A directory scan derives ONE
 # schema from the first file it opens and enforces it across all of them
-# (RESEARCH Pitfall 6), so an unfiltered scan of a tick root holding both must
-# RAISE rather than return a blended frame. That strictness is the structural
+# (RESEARCH Pitfall 6), so a scan of the vendor root holding both must RAISE
+# rather than return a blended frame. That strictness is the structural
 # guarantee, not a bug: `extra_columns` / `missing_columns` stay at their
-# raising defaults.
+# raising defaults. The data type is a plain directory under the vendor root
+# (`alpaca/quotes/`, `alpaca/trades/`), never a hive key: the scan root, not a
+# predicate, is what keeps the two schemas apart.
 # ---------------------------------------------------------------------------
 
-_TICK_HIVE_SCHEMA = {"data_type": pl.String, "date": pl.Date, "symbol": pl.String}
+_TICK_HIVE_SCHEMA = {"date": pl.Date, "symbol": pl.String}
 
 
 def _write_tick_shard(
     root: Path, data_type: str, session_date: str, symbol: str, rows: list[dict]
 ) -> Path:
-    """One tick shard at `data_type=/date=/symbol=`, in that nesting order.
+    """One tick shard at `<data type>/date=/symbol=`, in that nesting order.
 
     `symbol` is carried by the path segment rather than duplicated into the
     rows, exactly as `Acquisition._write_shard` writes it.
     """
-    part = root / f"data_type={data_type}" / f"date={session_date}" / f"symbol={symbol}"
+    part = root / data_type / f"date={session_date}" / f"symbol={symbol}"
     part.mkdir(parents=True, exist_ok=True)
     path = part / "part-batch0000-00000.pqt"
     pl.DataFrame(rows).with_columns(pl.lit("alpaca").alias("vendor")).write_parquet(
@@ -683,29 +685,16 @@ def test_an_unfiltered_tick_scan_of_a_mixed_root_raises_rather_than_blending(
     root = _tick_tree(tmp_path)
 
     unfiltered = pl.scan_parquet(
-        root, hive_partitioning=True, hive_schema=_TICK_HIVE_SCHEMA
+        str(root / "**" / "*.pqt"), hive_partitioning=True, hive_schema=_TICK_HIVE_SCHEMA
     )
     with pytest.raises(Exception):
         unfiltered.collect()
 
-    # And -- the finding that decides `_scan_root`'s shape -- a `data_type`
-    # PREDICATE does not rescue it either. The plan below correctly prunes to
-    # the single trades shard, and the collect still raises, because the
-    # expected schema was already fixed from the alphabetically-first QUOTES
-    # file at scan time.
-    filtered = unfiltered.filter(pl.col("data_type") == "trades")
-    assert "data_type=trades" in filtered.explain()
-    assert "data_type=quotes" not in filtered.explain(), (
-        "the plan is expected to prune correctly -- which is exactly why the "
-        "collect below failing is surprising, and why it is pinned here"
-    )
-    with pytest.raises(Exception):
-        filtered.collect()
-
     # Scoping the ROOT is what actually isolates a data type, and it is what
-    # `StockDataset._scan_root` does.
+    # `StockDataset._scan_root` does: the data type is a plain directory, so
+    # no predicate could select it, only the root can.
     scoped = pl.scan_parquet(
-        root / "data_type=trades",
+        root / "trades",
         hive_partitioning=True,
         hive_schema={"date": pl.Date, "symbol": pl.String},
     ).collect()
@@ -739,10 +728,10 @@ def test_a_tick_scan_with_no_data_type_raises_legibly_rather_than_guessing(
 def test_scan_raw_prunes_tick_directories_on_the_data_type_and_date_keys(
     tmp_path: Path
 ):
-    """Both tick keys prune, and the negative control shows `timestamp` does
-    not.
+    """The data-type root and the `date` key prune, and the negative control
+    shows `timestamp` does not.
 
-    Ten shards (two data types x five session dates); a scan narrowed to
+    Ten shards (two data types x five session dates); a scan rooted in
     `quotes` over two of the five dates must name strictly fewer sources than
     the tree contains.
     """
@@ -758,7 +747,7 @@ def test_scan_raw_prunes_tick_directories_on_the_data_type_and_date_keys(
     )
 
     assert whole == 5, (
-        f"the `data_type=quotes` filter alone must halve the tree, got {whole}"
+        f"the `quotes` scan root alone must halve the tree, got {whole}"
     )
     assert narrowed == 2, narrowed
     assert narrowed < whole
@@ -766,7 +755,7 @@ def test_scan_raw_prunes_tick_directories_on_the_data_type_and_date_keys(
     # NEGATIVE CONTROL: a timestamp-only predicate prunes nothing -- and on a
     # mixed root it cannot even be collected.
     timestamp_only = pl.scan_parquet(
-        root, hive_partitioning=True, hive_schema=_TICK_HIVE_SCHEMA
+        str(root / "**" / "*.pqt"), hive_partitioning=True, hive_schema=_TICK_HIVE_SCHEMA
     ).filter(pl.col("timestamp") >= pl.lit(datetime.fromisoformat("2024-04-01")))
     assert _scan_source_count(timestamp_only.explain()) == 10
 
@@ -912,21 +901,13 @@ def test_a_tick_scan_also_survives_a_foreign_file_in_its_scan_root(
 ):
     """The `.DS_Store` regression, on the OTHER layout.
 
-    Pinned separately from the `1d` case because the two failed for different
-    reasons and were fixed by different halves of the same change. Before the
-    fix `1d` died on the extension mismatch; tick died on it too, and then --
-    once the glob replaced the bare directory -- died instead on
-    `SchemaFieldNotFoundError: path contains column not present in the given
-    Hive schema: "data_type"`, because a glob has no directory to treat as the
-    hive boundary and polars walks up into the key `_scan_root` had consumed.
-
-    Declaring that key in the schema and dropping it alongside the other
-    derived keys is what makes both layouts survive. This test is what stops a
-    later narrowing of either set from reopening the tick half silently, since
-    the tick tree scans fine with no foreign file present.
+    Pinned separately from the `1d` case because the two layouts scan from
+    different roots (the vendor root, and the data type's directory under
+    it), and a foreign file in the tick scan root must be ignored by the
+    shard glob just like one in the daily root.
     """
     root = _tick_tree(tmp_path)
-    scan_root = root / "data_type=trades"
+    scan_root = root / "trades"
     (scan_root / ".DS_Store").write_bytes(b"\x00\x01Bud1 junk")
 
     frame = StockDataset(_tick_config(root, data_type="trades"))._scan_raw().collect()
@@ -938,3 +919,57 @@ def test_a_tick_scan_also_survives_a_foreign_file_in_its_scan_root(
     # removes it, and the downstream column set is unchanged.
     assert "data_type" not in frame.columns
     assert "date" not in frame.columns
+
+
+# ---------------------------------------------------------------------------
+# One vendor, two data types, one download directory: `wrds/crsp_daily/` and
+# `wrds/nbbo/` side by side, as `scripts/wrds/market.py` and
+# `scripts/wrds/nbbo.py` write them with the same `--download-dir`.
+# ---------------------------------------------------------------------------
+
+
+def test_a_daily_scan_reads_only_its_data_type_directory_beside_a_tick_tree(
+    tmp_path: Path, hive_raw_tree, stock_pqt_row
+):
+    """CRSP daily bars and NBBO quotes share the `wrds` vendor root and must
+    never share a scan.
+
+    The daily dataset scans `wrds/crsp_daily/` and sees five months of bars;
+    the quote shards under `wrds/nbbo/` have other columns, and a scan of the
+    vendor root itself, which is what a data-type-less layout would have to
+    do, raises on the mixed schemas instead of returning a blend.
+    """
+    root = tmp_path / "downloads"
+    vendor_root = hive_raw_tree(
+        root, "wrds", _five_month_rows(stock_pqt_row), data_type="crsp_daily"
+    )
+    quote_dir = vendor_root / "nbbo" / "date=2024-01-02" / "symbol=AAPL"
+    quote_dir.mkdir(parents=True)
+    pl.DataFrame(
+        [
+            {
+                "timestamp": datetime.fromisoformat("2024-01-02T14:31:00"),
+                "bid": 1.0,
+                "ask": 1.1,
+                "vendor": "wrds",
+            }
+        ]
+    ).write_parquet(quote_dir / "part-batch0000-00000.pqt")
+    assert sorted(p.name for p in vendor_root.iterdir()) == ["crsp_daily", "nbbo"]
+
+    dataset = StockDataset(
+        _make_config(vendor_root, vendor="wrds", kwargs={"data_type": "crsp_daily"})
+    )
+    assert dataset._scan_root() == vendor_root / "crsp_daily"
+    assert dataset.has_raw_data()
+    frame = dataset._scan_raw().collect()
+    assert frame.height == 5
+    assert "bid" not in frame.columns
+
+    mixed = pl.scan_parquet(
+        str(vendor_root / "**" / "*.pqt"),
+        hive_partitioning=True,
+        hive_schema={"month": pl.String},
+    )
+    with pytest.raises(Exception):
+        mixed.collect()

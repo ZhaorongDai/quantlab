@@ -8,7 +8,7 @@ indexed by ``timestamp`` and ``symbol``, the format every quantlab layer
 exchanges.
 
 ``NbboPanelDataset`` reads the tick-level raw files that the WRDS TAQ
-download writes (``.../wrds/data_type=nbbo/date=.../symbol=.../*.pqt``),
+download writes (``.../wrds/nbbo/date=.../symbol=.../*.pqt``),
 resamples each trading session onto a regular bar grid with
 ``quantlab.dataset.nbbo.resample``, and returns the panel the rest of the
 pipeline stores and uses. Bars are *right-closed*: a bar labelled 09:31
@@ -70,8 +70,8 @@ FILTER_STATS_SUFFIX = ".nbbo_filter_stats.json"
 class NbboPanelDataset(StockDataset):
     """Dense NBBO bar panel resampled from WRDS TAQ ``complete_nbbo`` records.
 
-    It inherits from ``StockDataset`` the vendor-root check, the tick-data
-    ``data_type=`` scan root, the hive schema and ``has_raw_data``. It
+    It inherits from ``StockDataset`` the vendor-root check, the scan root
+    inside the ``nbbo`` directory, the hive schema and ``has_raw_data``. It
     overrides how the axes and each window's panel are built, and
     ``_clean``: the panel has no OHLCV (open, high, low, close, volume)
     columns, so ``clean_nbbo_panel`` validates it instead.
@@ -147,7 +147,7 @@ class NbboPanelDataset(StockDataset):
     #: The config class used to rebuild the dataset from a saved ``config.json``.
     config_cls = NbboDatasetConfig
 
-    #: The ``data_type=`` hive-key value of the raw files this panel reads.
+    #: The data type whose directory under the vendor root holds the raw files.
     DATA_TYPE = "nbbo"
 
     #: Factor-config fields that are refused for this panel, read by the
@@ -268,8 +268,8 @@ class NbboPanelDataset(StockDataset):
         self._symbology_cache: CrspSymbology | None = None
 
     @property
-    def _tick_data_type(self) -> str:
-        """Return the ``data_type=`` value used to build the scan root, ``"nbbo"``."""
+    def _raw_data_type(self) -> str:
+        """Return ``"nbbo"``, the directory under the vendor root the scan starts in."""
         return self.DATA_TYPE
 
     @property

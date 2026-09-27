@@ -180,7 +180,7 @@ Before resuming, the engine checks that every page in the ledger still has its f
 >>> PagedAcquisition.fail_on = None
 >>> message = acq.download().last_result.failures["AAPL"]
 >>> print(message.replace(str(root), "<root>")[:240])
-ValueError: PageLedger: refusing to resume <root>/missing/_watermarks/alpaca/_pages/0d30843c2da0767d.pages.json -- error 2 of 2: the ledger records page 0 but its shard <root>/missing/alpaca/month=2024-01/part-0d30843c2da0767d-00000.pqt doe
+ValueError: PageLedger: refusing to resume <root>/missing/_watermarks/alpaca/_pages/0d30843c2da0767d.pages.json -- error 2 of 2: the ledger records page 0 but its shard <root>/missing/alpaca/bars/month=2024-01/part-0d30843c2da0767d-00000.pqt doe
 ```
 
 Either restore the missing file, or delete the ledger so that the batch restarts at page 0 and rewrites every shard.

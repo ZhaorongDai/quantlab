@@ -301,7 +301,7 @@ class AlpacaAcquisition(Acquisition):
 
     #: The values ``kwargs["data_type"]`` accepts under ``frequency="tick"``.
     #: There is no default: quotes and trades share one vendor directory and
-    #: differ only by the ``data_type=`` directory level, so a guess would
+    #: differ only by their data-type directory beneath it, so a guess would
     #: file one as the other with the wrong columns.
     TICK_DATA_TYPES = ("quotes", "trades")
 
@@ -551,8 +551,8 @@ class AlpacaAcquisition(Acquisition):
                 f"kwargs['data_type'] set to one of "
                 f"{sorted(self.TICK_DATA_TYPES)}; got {data_type!r}. There is "
                 f"deliberately no default: quotes and trades land under the "
-                f"same vendor directory, distinguished only by the "
-                f"`data_type=` directory level, so guessing here would file "
+                f"same vendor directory, distinguished only by their "
+                f"data-type directory beneath it, so guessing here would file "
                 f"one as the other with the other's columns."
             )
         return data_type

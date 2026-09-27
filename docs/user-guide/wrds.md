@@ -134,7 +134,7 @@ questions, which is why they are fetched before the roster is resolved, and
 tables already on disk for the same CRSP release are reused rather than
 downloaded again.
 
-The raw tier lands under `<download-dir>/wrds/month=YYYY-MM/`, one row per
+The raw tier lands under `<download-dir>/wrds/crsp_daily/month=YYYY-MM/`, one row per
 PERMNO and day, exactly as CRSP serves it, with the reference tables in
 `<download-dir>/_reference/`. The Zarr stores go into `<zarr-dir>`, named as
 above.
@@ -358,7 +358,8 @@ records and the market about 314 million. Nothing estimates or refuses a
 download by size, so scope a pull by symbol list and date range.
 
 Every record is kept in the raw tier, unfiltered and keyed by ticker, under
-`<download-dir>/wrds/data_type=nbbo/date=YYYY-MM-DD/symbol=AAPL/`.
+`<download-dir>/wrds/nbbo/date=YYYY-MM-DD/symbol=AAPL/`, with the watermarks under
+`<download-dir>/_watermarks/wrds/nbbo/`, apart from the CRSP ones in `_watermarks/wrds/crsp_daily/`.
 The `date=` directory is the US/Eastern session date; timestamps are stored as
 naive UTC. Each record also keeps the order in which the server returned it
 (`wrds_row_ord`), because before 2018 the tables have only microsecond
@@ -488,7 +489,7 @@ date for you; a start date past the end cannot be clipped.
 `this raw tier was built from the CRSP vintage ending ..., but the account now
 reads the vintage ending ...` (a `CrspVintageError`)
 WRDS has loaded a new annual release. Start a new raw tier (a new `subdir`) or
-delete the old raw tier with its `_watermarks/wrds` and `_vintage` siblings and
+delete the old raw tier with its `_watermarks/wrds/crsp_daily` and `_vintage` siblings and
 download again.
 
 `symbol 'AAPL' is not a PERMNO.`

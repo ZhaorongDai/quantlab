@@ -4,7 +4,7 @@ ONE path, end to end, entirely offline:
 
     FakeCrspSession (AAPL's real 2020-08 `crsp_a_stock.dsf_v2` rows)
       -> registry.run(WRDS_SOURCE, cfg)        # the new crsp_daily capability
-      -> PERMNO-keyed raw shards under month=2020-08/
+      -> PERMNO-keyed raw shards under crsp_daily/month=2020-08/
       -> registry.convert(WRDS_SOURCE, CrspDatasetConfig, ...)
       -> a [timestamp, symbol] Zarr panel whose symbol axis is the int64
          PERMNO [14593] and whose total-return adjClose matches a hand
@@ -95,7 +95,11 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
         str(Path("downloads") / "us_equity" / "1d" / "wrds_crsp" / "wrds")
     ), raw_root
 
-    partitions = sorted(p.name for p in raw_root.iterdir() if p.is_dir())
+    # The data type's own directory under the vendor root, then the month.
+    assert [p.name for p in raw_root.iterdir() if p.is_dir()] == ["crsp_daily"]
+    partitions = sorted(
+        p.name for p in (raw_root / "crsp_daily").iterdir() if p.is_dir()
+    )
     assert partitions == ["month=2020-08"], partitions
 
     import polars as pl
@@ -122,7 +126,7 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
         "2020-08-31 00:00:00",
     ]
 
-    watermark = Path(cfg.watermark_path) / f"{AAPL_PERMNO}.json"
+    watermark = Path(cfg.watermark_path) / "crsp_daily" / f"{AAPL_PERMNO}.json"
     assert watermark.exists(), sorted(Path(cfg.watermark_path).rglob("*"))
 
     # -- 2. the SQL --------------------------------------------------------

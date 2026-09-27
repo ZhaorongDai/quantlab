@@ -614,7 +614,7 @@ def _sidecar_json(acq, symbol: str) -> dict:
     """
     import json
 
-    with open(Path(acq.config.watermark_path) / f"{symbol}.json") as f:
+    with open(acq._coverage.watermark_path(symbol)) as f:
         return json.load(f)
 
 
@@ -628,7 +628,7 @@ def _observed_state(acq, symbol: str) -> str:
     import json
 
     coverage = acq._read_coverage(symbol)
-    manifest_path = Path(acq.config.watermark_path) / acq.FAILURE_MANIFEST_NAME
+    manifest_path = acq._coverage.failure_manifest_path
     manifest: dict = {}
     if manifest_path.exists():
         with open(manifest_path) as f:
@@ -899,7 +899,10 @@ def _marked_symbols(acq) -> set[str]:
     this guards against is a marker that reaches disk, and an assertion
     against a variable would not see it.
     """
-    directory = Path(acq.config.watermark_path)
+    # The ledger's root: the data type's directory under `watermark_path`
+    # for a vendor that names one (Alpaca's `bars`), `watermark_path` itself
+    # otherwise.
+    directory = acq._coverage.watermark_root
     if not directory.exists():
         return set()
     marked = set()

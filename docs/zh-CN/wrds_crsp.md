@@ -44,9 +44,9 @@ uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2
 
 ```text
 <download-dir>/
-    wrds/month=YYYY-MM/     原始 parquet 分片，每个 (permno, date) 一行
+    wrds/crsp_daily/month=YYYY-MM/   原始 parquet 分片，每个 (permno, date) 一行
     _reference/             参考表 parquet 和 manifest.json
-    _watermarks/wrds/       每个 PERMNO 的进度，供 --refresh 使用
+    _watermarks/wrds/crsp_daily/     每个 PERMNO 的进度，供 --refresh 使用
     _vintage/wrds.json      原始层来自 CRSP 的哪一个年度版本
 <zarr-dir>/                 转换后的 Zarr store 及其 JSON 边车文件
 ```

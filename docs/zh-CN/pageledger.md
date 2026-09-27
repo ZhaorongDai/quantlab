@@ -180,7 +180,7 @@ True
 >>> PagedAcquisition.fail_on = None
 >>> message = acq.download().last_result.failures["AAPL"]
 >>> print(message.replace(str(root), "<root>")[:240])
-ValueError: PageLedger: refusing to resume <root>/missing/_watermarks/alpaca/_pages/0d30843c2da0767d.pages.json -- error 2 of 2: the ledger records page 0 but its shard <root>/missing/alpaca/month=2024-01/part-0d30843c2da0767d-00000.pqt doe
+ValueError: PageLedger: refusing to resume <root>/missing/_watermarks/alpaca/_pages/0d30843c2da0767d.pages.json -- error 2 of 2: the ledger records page 0 but its shard <root>/missing/alpaca/bars/month=2024-01/part-0d30843c2da0767d-00000.pqt doe
 ```
 
 要么把缺失的文件恢复回来，要么删除账本，让这个批次从第 0 页重新开始并重写每个分片。

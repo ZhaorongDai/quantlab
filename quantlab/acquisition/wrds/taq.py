@@ -989,8 +989,9 @@ class WrdsTaqNbboAcquisition(Acquisition):
     ``Acquisition`` base class runs the batch loop, writes the parquet files
     (shards), records finished pages and resumes interrupted runs.
 
-    The raw tier is written under ``.../wrds/data_type=nbbo/date=/symbol=/``
-    (directories named ``key=value``, a layout called hive partitioning),
+    The raw tier is written under ``.../wrds/nbbo/date=/symbol=/`` (the
+    ``nbbo`` directory is the data type's own; below it the directories are
+    named ``key=value``, a layout called hive partitioning),
     with one row per NBBO record for the full trading day, unfiltered. The
     position at which each row arrived is stored as ``wrds_row_ord`` before
     anything else touches the frame, because before 2018 the tables have no
@@ -1022,8 +1023,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
         acq = WrdsTaqNbboAcquisition(cfg).download()
         report = acq.coverage_report()
 
-    Shards land under ``.../wrds_taq/wrds/data_type=nbbo/date=2024-01-24/
-    symbol=AAPL/`` and the watermarks under ``.../wrds_taq/_watermarks/wrds/``.
+    Shards land under ``.../wrds_taq/wrds/nbbo/date=2024-01-24/symbol=AAPL/``
+    and the watermarks under ``.../wrds_taq/_watermarks/wrds/nbbo/``.
     """
 
     VENDOR = "wrds"
@@ -1149,8 +1150,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
     def _data_type(self) -> str:
         """Return ``"nbbo"``, or raise if the config does not say so.
 
-        There is deliberately no default, because the value names the
-        ``data_type=`` directory and the watermark directory.
+        There is deliberately no default, because the value names the raw
+        directory under the vendor root and the watermark directory.
         """
         frequency = self.config.frequency
         data_type = self._knob("data_type", None)
@@ -1160,8 +1161,8 @@ class WrdsTaqNbboAcquisition(Acquisition):
                 f"kwargs['data_type'] set to one of "
                 f"{sorted(self.TICK_DATA_TYPES)}; got frequency {frequency!r} "
                 f"and data_type {data_type!r}. There is deliberately no "
-                f"default: the data type names the raw tier's `data_type=` "
-                f"directory and the watermark directory."
+                f"default: the data type names the raw directory under the "
+                f"vendor root and the watermark directory."
             )
         return data_type
 

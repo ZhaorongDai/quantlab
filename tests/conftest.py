@@ -1351,8 +1351,13 @@ def hive_raw_tree() -> Callable[..., Path]:
         hive_key: str = "month",
         batch_key: str = "batch0000",
         page_index: int = 0,
+        data_type: str | None = None,
     ) -> Path:
+        # A vendor that names its data type (Alpaca `bars`, WRDS `crsp_daily`)
+        # keeps the shards one directory below the vendor root, which is what
+        # the acquisition engine writes and the dataset scans.
         vendor_root = Path(root) / vendor
+        shard_root = vendor_root if data_type is None else vendor_root / data_type
         by_partition: dict[str, list[dict]] = {}
         for row in rows:
             by_partition.setdefault(
@@ -1360,7 +1365,7 @@ def hive_raw_tree() -> Callable[..., Path]:
             ).append(row)
 
         for value, part_rows in by_partition.items():
-            part_dir = vendor_root / f"{hive_key}={value}"
+            part_dir = shard_root / f"{hive_key}={value}"
             part_dir.mkdir(parents=True, exist_ok=True)
             frame = pl.DataFrame(part_rows).with_columns(
                 pl.lit(vendor).alias("vendor")

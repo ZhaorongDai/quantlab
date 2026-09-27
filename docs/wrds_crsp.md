@@ -44,9 +44,9 @@ Before the first daily row is copied the script checks the account's schema enti
 
 ```text
 <download-dir>/
-    wrds/month=YYYY-MM/     raw parquet shards, one row per (permno, date)
-    _reference/             parquet reference tables and manifest.json
-    _watermarks/wrds/       per-PERMNO progress, used by --refresh
+    wrds/crsp_daily/month=YYYY-MM/   raw parquet shards, one row per (permno, date)
+    _reference/                      parquet reference tables and manifest.json
+    _watermarks/wrds/crsp_daily/     per-PERMNO progress, used by --refresh
     _vintage/wrds.json      which annual CRSP release the raw tier came from
 <zarr-dir>/                 converted Zarr stores and their JSON sidecars
 ```

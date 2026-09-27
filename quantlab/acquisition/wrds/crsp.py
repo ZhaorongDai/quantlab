@@ -584,7 +584,7 @@ class WrdsCrspDailyAcquisition(Acquisition):
     ``Acquisition`` base class runs the batch loop, writes the parquet files
     (shards), records finished pages and resumes interrupted runs.
 
-    The raw tier is written under ``.../wrds_crsp/wrds/month=YYYY-MM/``, with
+    The raw tier is written under ``.../wrds_crsp/wrds/crsp_daily/month=YYYY-MM/``, with
     one row per ``(permno, dlycaldt)`` exactly as CRSP serves it: no derived
     price, no adjusted series and no filtering. The ``symbol`` column holds
     the PERMNO as a string, and an ``Int64`` ``permno`` column is stored
@@ -617,9 +617,9 @@ class WrdsCrspDailyAcquisition(Acquisition):
         acq = WrdsCrspDailyAcquisition(cfg).download()
         report = acq.coverage_report()
 
-    Shards land under ``.../wrds_crsp/wrds/month=2020-08/``, watermarks
-    under ``.../wrds_crsp/_watermarks/wrds/`` and the vintage stamp at
-    ``.../wrds_crsp/_vintage/wrds.json``.
+    Shards land under ``.../wrds_crsp/wrds/crsp_daily/month=2020-08/``,
+    watermarks under ``.../wrds_crsp/_watermarks/wrds/crsp_daily/`` and the
+    vintage stamp at ``.../wrds_crsp/_vintage/wrds.json``.
     """
 
     VENDOR = "wrds"
@@ -761,9 +761,10 @@ class WrdsCrspDailyAcquisition(Acquisition):
     def _data_type(self) -> str:
         """Return ``"crsp_daily"``, or raise if the config does not say so.
 
-        There is deliberately no default. The value names the watermark
-        directory and is the key the registry uses to find this class, so a
-        config without it could have been meant for another daily source.
+        There is deliberately no default. The value names the raw and
+        watermark directories under the vendor's and is the key the registry
+        uses to find this class, so a config without it could have been
+        meant for another daily source.
         """
         frequency = self.config.frequency
         data_type = self._knob("data_type", None)
@@ -772,9 +773,9 @@ class WrdsCrspDailyAcquisition(Acquisition):
                 f"{self.class_name}: needs frequency '1d' with "
                 f"kwargs['data_type'] set to {self.DATA_TYPE!r}; got frequency "
                 f"{frequency!r} and data_type {data_type!r}. There is "
-                f"deliberately no default: the data type names the watermark "
-                f"directory and is the key the registry uses to find this "
-                f"class."
+                f"deliberately no default: the data type names the raw and "
+                f"watermark directories and is the key the registry uses to "
+                f"find this class."
             )
         return data_type
 

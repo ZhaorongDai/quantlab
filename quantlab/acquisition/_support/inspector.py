@@ -32,7 +32,6 @@ import xarray as xr
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.base.coverage import CoverageLedger, validate_symbols
 from quantlab.dataset.stock import StockDataset
-from quantlab.enums.data import RAW_HIVE_KEYS
 
 
 class _RawTierReader(StockDataset):
@@ -204,12 +203,12 @@ class SourceInspector:
     def _raw_root(config: AcquisitionConfig, ledger: CoverageLedger) -> Path:
         """Return the directory this config's raw shards are written under.
 
-        For tick data this is the ``data_type=quotes`` or ``data_type=trades``
-        subdirectory, so quotes and trades are never counted together.
+        A run with a data type writes under ``<vendor root>/<data type>``,
+        so two data types of one vendor are never counted together.
         """
         root = Path(config.raw_data_dir_path)
-        if "data_type" in RAW_HIVE_KEYS[config.frequency]:
-            root = root / f"data_type={ledger.data_type}"
+        if ledger.data_type is not None:
+            root = root / str(ledger.data_type)
         return root
 
     def _raw_inventory(

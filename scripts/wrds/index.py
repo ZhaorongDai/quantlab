@@ -14,7 +14,7 @@ into ``--zarr-dir`` (default: the current directory):
 - ``wrds_crsp_{index}_membership.zarr``, the membership panel that marks
   the days each security was a member.
 
-The raw rows go to ``<download-dir>/wrds/`` and the CRSP, Compustat and CCM
+The raw rows go to ``<download-dir>/wrds/crsp_daily/`` and the CRSP, Compustat and CCM
 reference tables to ``<download-dir>/_reference/``; ``--download-dir`` also
 defaults to the current directory. Reference tables already on disk for the
 same CRSP release are reused, so running this script and ``market.py`` back

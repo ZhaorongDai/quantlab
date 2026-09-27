@@ -99,7 +99,7 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
     assert raw_root.name == "wrds"
     shard_dirs = sorted({path.parent for path in raw_root.rglob("*.pqt")})
     assert shard_dirs == [
-        raw_root / "data_type=nbbo" / "date=2024-01-24" / "symbol=AAPL"
+        raw_root / "nbbo" / "date=2024-01-24" / "symbol=AAPL"
     ]
     raw = pl.concat(
         [pl.read_parquet(path) for path in sorted(shard_dirs[0].glob("*.pqt"))]

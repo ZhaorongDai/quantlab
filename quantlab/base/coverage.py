@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Iterator, Sequence
 
 from quantlab.base.config import AcquisitionConfig
-from quantlab.enums.data import RAW_HIVE_KEYS, TRADEABLE_TICKER_PATTERN
+from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: Filename of the failure manifest, written under ``watermark_root`` next to
 #: the per-symbol sidecars. Defined here and reused by the acquisition engine,
@@ -139,14 +139,13 @@ class CoverageLedger:
     ) -> "CoverageLedger":
         """Build a ledger from a config alone, without any vendor class.
 
-        ``data_type`` is read from ``config.kwargs`` only when the frequency's
-        raw files are partitioned by data type (tick data), the same condition
-        ``watermark_root`` uses. So bar-frequency ledgers built this way have
-        ``data_type=None``, and their sidecar paths match those of the ledger
-        the acquisition engine creates. The value is not checked against the
-        vendor's supported data types, because there is no vendor here; an
-        invalid value names a directory that does not exist, so every symbol
-        reads back as uncovered.
+        ``data_type`` is ``config.kwargs["data_type"]`` when set and
+        ``None`` otherwise, the same value the acquisition engine's ledger
+        carries for a vendor that names its data type there (WRDS, Alpaca
+        tick data), so the sidecar paths of the two match. The value is not
+        checked against the vendor's supported data types, because there is
+        no vendor here; an invalid value names a directory that does not
+        exist, so every symbol reads back as uncovered.
 
         Parameters
         ----------
@@ -160,53 +159,17 @@ class CoverageLedger:
         CoverageLedger
             The new ledger.
 
-        Raises
-        ------
-        ValueError
-            If the frequency needs ``data_type`` and the config does not set
-            it.
-
         Examples
         --------
         >>> CoverageLedger.for_config(config)
         CoverageLedger(vendor='tiingo', frequency='1d', data_type=None)
         """
+        data_type = (config.kwargs or {}).get("data_type")
         return cls(
             config,
-            data_type=cls._resolve_data_type(config),
+            data_type=None if data_type is None else str(data_type),
             owner_label=owner_label,
         )
-
-    @staticmethod
-    def _resolve_data_type(config: AcquisitionConfig) -> str | None:
-        """Return ``config.kwargs["data_type"]`` for frequencies that need it.
-
-        Returns None for frequencies whose raw layout has no ``data_type``
-        level. When the value is required there is no default on purpose:
-        the data types share one vendor directory and their sidecars are
-        separated by data type, so a guess could let a finished download of
-        one type tell a run for another that every symbol is already covered.
-
-        Raises
-        ------
-        ValueError
-            If the layout uses ``data_type`` and it is unset.
-        """
-        if "data_type" not in RAW_HIVE_KEYS[config.frequency]:
-            return None
-        data_type = (config.kwargs or {}).get("data_type")
-        if not data_type:
-            raise ValueError(
-                f"CoverageLedger: frequency {config.frequency!r} partitions on "
-                f"`data_type`, so kwargs['data_type'] must be set (e.g. "
-                f"'quotes' or 'trades'); got {data_type!r}. There is "
-                f"deliberately no default: both types are stored under one "
-                f"vendor directory and their watermark sidecars are separated "
-                f"by data type, so a guess here could let a finished quotes "
-                f"download tell a trades run that every symbol is already "
-                f"covered."
-            )
-        return str(data_type)
 
     # -- per-run settings ---------------------------------------------------
 
@@ -217,24 +180,17 @@ class CoverageLedger:
     # -- sidecar paths ------------------------------------------------------
 
     @property
-    def _hive_keys(self) -> tuple[str, ...]:
-        """Return the directory partition keys of the raw layout for this frequency.
-
-        The raw tier uses a *hive* layout, where each directory level is
-        named ``key=value`` (for example ``symbol=AAPL``).
-        """
-        return RAW_HIVE_KEYS[self.config.frequency]
-
-    @property
     def watermark_root(self) -> Path:
-        """Return ``config.watermark_path``, with a data-type subdirectory if needed.
+        """Return ``config.watermark_path``, plus the data type's directory when there is one.
 
-        Tick-data quotes and trades share one vendor raw directory and are
-        separated only by a leading ``data_type=`` directory, but their
-        sidecar filenames do not include the data type. Without the extra
-        subdirectory, a finished quotes download would tell a later trades
-        run that every symbol is covered, and that run would skip every
-        symbol. Frequencies without a ``data_type`` level are unaffected.
+        A vendor's data types (CRSP daily bars and NBBO quotes under
+        ``wrds``, quotes and trades under ``alpaca``) keep their sidecars
+        apart, in the directory named after the data type, exactly as their
+        shards do under the vendor's raw root. Without that, a finished
+        download of one type would tell a later run for another type that
+        every symbol is covered, and that run would skip every symbol. A
+        run with no data type (Tiingo) writes into ``watermark_path``
+        itself.
 
         Examples
         --------
@@ -244,7 +200,7 @@ class CoverageLedger:
         'quotes'
         """
         root = Path(self.config.watermark_path)
-        if "data_type" in self._hive_keys:
+        if self.data_type is not None:
             root = root / str(self.data_type)
         return root
 

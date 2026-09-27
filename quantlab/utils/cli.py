@@ -53,11 +53,12 @@ def add_output_dir_args(
         type=str,
         default=".",
         help=(
-            "Directory for the raw downloads. The vendor's raw files go to "
-            "<download-dir>/<vendor>/, the watermarks that --refresh reads to "
-            "<download-dir>/_watermarks/<vendor>/ and, for CRSP, the reference "
-            "tables to <download-dir>/_reference/. Default: the current "
-            "directory. It is created as needed."
+            "Directory for the raw downloads. The raw files go to "
+            "<download-dir>/<vendor>/<data type>/ (wrds/crsp_daily/ or "
+            "wrds/nbbo/), the watermarks that --refresh reads to "
+            "<download-dir>/_watermarks/<vendor>/<data type>/ and, for CRSP, "
+            "the reference tables to <download-dir>/_reference/. Default: the "
+            "current directory. It is created as needed."
         ),
     )
     parser.add_argument(
@@ -148,9 +149,11 @@ def place_downloads(config, download_dir):
     A config factory builds ``raw_data_dir_path`` as ``.../<subdir>/<vendor>``
     under the library's data root. This keeps the vendor directory name and
     moves it: the result reads and writes ``<download_dir>/<vendor>`` and
-    ``<download_dir>/_watermarks/<vendor>``. Everything an acquisition
-    derives from the raw directory's parent (the CRSP ``_reference/`` and
-    ``_vintage/`` directories) therefore lands in ``download_dir`` too.
+    ``<download_dir>/_watermarks/<vendor>``, each of which the acquisition
+    extends with its data type's directory (``crsp_daily``, ``nbbo``).
+    Everything an acquisition derives from the raw directory's parent (the
+    CRSP ``_reference/`` and ``_vintage/`` directories) therefore lands in
+    ``download_dir`` too.
 
     Parameters
     ----------

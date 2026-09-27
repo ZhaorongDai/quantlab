@@ -181,8 +181,11 @@ def test_tracer_one_alpaca_daily_batch_lands_as_a_hive_shard_and_reads_back(
     batch_key = PageLedger.batch_key(
         "alpaca", "1d", cfg.start_date, cfg.end_date, ("AAPL",)
     )
+    # Bars have a data type ("bars"), so they live one directory below the
+    # vendor root, beside where the vendor's quotes and trades would go.
     shard = (
         Path(cfg.raw_data_dir_path)
+        / "bars"
         / "month=2024-01"
         / f"part-{batch_key}-00000.pqt"
     )
@@ -195,8 +198,10 @@ def test_tracer_one_alpaca_daily_batch_lands_as_a_hive_shard_and_reads_back(
     assert Path(cfg.raw_data_dir_path).name == "alpaca"
 
     # -- 2. the page ledger recorded the batch and marked it complete -------
+    # The ledger lives under the run's watermark root, the `bars/` directory
+    # of the vendor's watermark path.
     ledger_path = Path(
-        PageLedger.default_path(cfg.watermark_path, batch_key)
+        PageLedger.default_path(Path(cfg.watermark_path) / "bars", batch_key)
     )
     assert ledger_path.exists()
     assert ledger_path.name.endswith(".pages.json")
@@ -212,7 +217,7 @@ def test_tracer_one_alpaca_daily_batch_lands_as_a_hive_shard_and_reads_back(
     assert not str(ledger_path).startswith(cfg.raw_data_dir_path)
 
     # -- 3. the watermark sidecar was written -------------------------------
-    watermark = Path(cfg.watermark_path) / "AAPL.json"
+    watermark = Path(cfg.watermark_path) / "bars" / "AAPL.json"
     assert watermark.exists()
     assert json.loads(watermark.read_text())["last_date"] == cfg.end_date
 
@@ -554,10 +559,10 @@ def test_a_rate_limited_alpaca_batch_backs_off_retries_and_stays_out_of_the_mani
     )
 
     manifest = json.loads(
-        (Path(cfg.watermark_path) / "_failures.json").read_text()
+        (Path(cfg.watermark_path) / "bars" / "_failures.json").read_text()
     )
     assert manifest == {}, manifest
-    assert (Path(cfg.watermark_path) / "AAPL.json").exists(), (
+    assert (Path(cfg.watermark_path) / "bars" / "AAPL.json").exists(), (
         "the retry succeeded, so the watermark must be written"
     )
 
@@ -592,10 +597,10 @@ def test_the_rate_limit_backoff_is_bounded_and_degrades_to_failed(
     assert not acq._abort.is_set()
 
     manifest = json.loads(
-        (Path(cfg.watermark_path) / "_failures.json").read_text()
+        (Path(cfg.watermark_path) / "bars" / "_failures.json").read_text()
     )
     assert set(manifest) == {"AAPL"}, manifest
-    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
+    assert not (Path(cfg.watermark_path) / "bars" / "AAPL.json").exists()
 
 
 def test_an_alpaca_500_classifies_failed_and_isolates_to_its_batch(
@@ -631,11 +636,11 @@ def test_an_alpaca_500_classifies_failed_and_isolates_to_its_batch(
     acq.download()
 
     manifest = json.loads(
-        (Path(cfg.watermark_path) / "_failures.json").read_text()
+        (Path(cfg.watermark_path) / "bars" / "_failures.json").read_text()
     )
     assert set(manifest) == {"AAPL"}, manifest
-    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
-    assert (Path(cfg.watermark_path) / "MSFT.json").exists()
+    assert not (Path(cfg.watermark_path) / "bars" / "AAPL.json").exists()
+    assert (Path(cfg.watermark_path) / "bars" / "MSFT.json").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -669,9 +674,9 @@ def _minute_config(acquisition_config, **overrides):
     return acquisition_config(**kwargs)
 
 
-def _partition_dirs(raw_root: str) -> set[str]:
-    """Every hive partition directory name directly beneath the raw root."""
-    return {p.name for p in Path(raw_root).iterdir() if p.is_dir()}
+def _partition_dirs(raw_root: str, data_type: str = "bars") -> set[str]:
+    """Every hive partition directory name beneath the data type's directory."""
+    return {p.name for p in (Path(raw_root) / data_type).iterdir() if p.is_dir()}
 
 
 def test_a_minute_config_requests_the_vendors_minute_timeframe_token(
@@ -741,6 +746,7 @@ def test_a_minute_fetch_lands_one_date_partition_per_session_date(
     for day in ("2024-01-02", "2024-01-03"):
         shard = (
             Path(cfg.raw_data_dir_path)
+            / "bars"
             / f"date={day}"
             / f"part-{batch_key}-00000.pqt"
         )
@@ -771,7 +777,7 @@ def test_a_2030_utc_bar_lands_in_that_days_session_partition_not_the_next(
     AlpacaAcquisition(cfg).download()
 
     assert _partition_dirs(cfg.raw_data_dir_path) == {"date=2024-01-02"}
-    assert not (Path(cfg.raw_data_dir_path) / "date=2024-01-03").exists()
+    assert not (Path(cfg.raw_data_dir_path) / "bars" / "date=2024-01-03").exists()
 
 
 def test_an_0200_utc_bar_lands_in_the_previous_days_session_partition(
@@ -840,12 +846,14 @@ def test_the_minute_path_paginates_through_the_same_base_class_loop_as_daily(
     batch_key = PageLedger.batch_key(
         "alpaca", "1m", cfg.start_date, cfg.end_date, ("AAPL",)
     )
-    partition = Path(cfg.raw_data_dir_path) / "date=2024-01-02"
+    partition = Path(cfg.raw_data_dir_path) / "bars" / "date=2024-01-02"
     assert (partition / f"part-{batch_key}-00000.pqt").exists()
     assert (partition / f"part-{batch_key}-00001.pqt").exists()
 
     payload = json.loads(
-        Path(PageLedger.default_path(cfg.watermark_path, batch_key)).read_text()
+        Path(
+            PageLedger.default_path(Path(cfg.watermark_path) / "bars", batch_key)
+        ).read_text()
     )
     assert [page["index"] for page in payload["pages"]] == [0, 1]
     assert payload["complete"] is True
@@ -1066,11 +1074,11 @@ def test_quotes_and_trades_are_written_through_disjoint_projections(
 def test_tick_shards_land_under_data_type_then_session_date_then_symbol(
     mock_alpaca_client, acquisition_config
 ):
-    """The three-key tick layout, in the order `enums.data.RAW_HIVE_KEYS`
-    declares it, with both data types under the same vendor root.
+    """The tick layout: the data type's own directory under the vendor root,
+    then the two hive keys in the order `enums.data.RAW_HIVE_KEYS` declares.
 
-    The ORDER is the directory nesting order. `data_type=` must lead: it is
-    what keeps two different column sets from meeting inside one scan.
+    The data-type directory leads: it is what keeps two different column
+    sets from meeting inside one scan.
     """
     from quantlab.base.pageledger import PageLedger
 
@@ -1098,7 +1106,7 @@ def test_tick_shards_land_under_data_type_then_session_date_then_symbol(
         for symbol in ("AAPL", "MSFT"):
             shard = (
                 root
-                / f"data_type={data_type}"
+                / data_type
                 / "date=2024-01-02"
                 / f"symbol={symbol}"
                 / f"part-{batch_key}-00000.pqt"
@@ -1106,8 +1114,8 @@ def test_tick_shards_land_under_data_type_then_session_date_then_symbol(
             assert shard.exists(), sorted(str(p) for p in root.rglob("*"))
 
     assert sorted(p.name for p in root.iterdir() if p.is_dir()) == [
-        "data_type=quotes",
-        "data_type=trades",
+        "quotes",
+        "trades",
     ]
 
 
@@ -1462,8 +1470,8 @@ def test_a_quotes_backfills_watermarks_do_not_mark_the_trades_run_covered(
 ):
     """Quotes and trades share one vendor root; their SIDECARS must not.
 
-    The raw tier separates the two with the leading `data_type=` hive key, but
-    a watermark sidecar is `{symbol}.json` and carries no such key. Without a
+    The raw tier separates the two with their data-type directories, but a
+    watermark sidecar is `{symbol}.json` and carries no such name. Without a
     data-type-namespaced watermark root, a completed quotes backfill tells the
     subsequent trades run that every symbol is already covered -- and that run
     skips the entire roster, writes nothing, and reports success.
@@ -1494,15 +1502,17 @@ def test_a_quotes_backfills_watermarks_do_not_mark_the_trades_run_covered(
     assert not (watermarks / "AAPL.json").exists(), (
         "an un-namespaced sidecar is the collision itself"
     )
-    assert (root / "data_type=quotes").exists()
-    assert (root / "data_type=trades").exists()
+    assert (root / "quotes").exists()
+    assert (root / "trades").exists()
 
 
-def test_the_daily_watermark_layout_is_unchanged_by_the_tick_namespacing(
+def test_the_bar_watermarks_and_shards_live_in_the_bars_directory(
     mock_alpaca_client, alpaca_bars_page, acquisition_config
 ):
-    """The namespacing applies ONLY where `RAW_HIVE_KEYS` declares a
-    `data_type` key, so no existing `1d` or `1m` watermark tree moves."""
+    """Every run with a data type is namespaced the same way, bars included:
+    `1d` and `1m` bars write their sidecars under `<watermark_path>/bars/`
+    and their shards under `<raw root>/bars/`, beside the vendor's `quotes/`
+    and `trades/`, never into the vendor directory itself."""
     from quantlab.acquisition.alpaca import AlpacaAcquisition
 
     for frequency in ("1d", "1m"):
@@ -1515,8 +1525,9 @@ def test_the_daily_watermark_layout_is_unchanged_by_the_tick_namespacing(
         )
         AlpacaAcquisition(cfg).download()
 
-        assert (Path(cfg.watermark_path) / "AAPL.json").exists(), frequency
-        assert not (Path(cfg.watermark_path) / "bars").exists(), frequency
+        assert (Path(cfg.watermark_path) / "bars" / "AAPL.json").exists(), frequency
+        assert not (Path(cfg.watermark_path) / "AAPL.json").exists(), frequency
+        assert {p.name for p in Path(cfg.raw_data_dir_path).iterdir()} == {"bars"}
 
 
 def test_the_quote_and_trade_field_maps_are_pinned_and_map_nothing_twice(

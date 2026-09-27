@@ -8,7 +8,7 @@ rows of a PERMNO roster over a window and resamples them into
 ``--interval`` bars inside the ``--session`` window (US Eastern time),
 written as ``wrds_nbbo_{interval}_{HHMM-HHMM}.zarr`` into ``--zarr-dir``
 with its filter-statistics and ticker sidecars. The raw rows go to
-``<download-dir>/wrds/``; both directories default to the current one.
+``<download-dir>/wrds/nbbo/``; both directories default to the current one.
 
 The panel's ``symbol`` axis is the CRSP PERMNO, the same axis as the CRSP
 stores ``index.py``, ``market.py`` and ``etf.py`` write. TAQ itself is keyed

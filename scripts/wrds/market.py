@@ -13,7 +13,7 @@ into ``--zarr-dir`` (default: the current directory):
 - ``wrds_crsp_market_membership.zarr``, the listing panel that marks the
   days each security was listed and of the requested type.
 
-The raw rows go to ``<download-dir>/wrds/`` and the CRSP reference tables to
+The raw rows go to ``<download-dir>/wrds/crsp_daily/`` and the CRSP reference tables to
 ``<download-dir>/_reference/``; ``--download-dir`` also defaults to the
 current directory. Given the same ``--download-dir``, both tiers are shared
 with ``index.py`` and ``etf.py``, so reference tables already on disk for

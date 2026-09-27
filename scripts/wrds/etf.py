@@ -9,7 +9,7 @@ would be the index competing with itself.
 
 ``--etf`` takes a comma-separated list of ``spy``, ``qqq`` (built-in PERMNOs)
 or ``name=PERMNO`` for any other fund. The raw rows go to
-``<download-dir>/wrds/`` and the CRSP reference tables to
+``<download-dir>/wrds/crsp_daily/`` and the CRSP reference tables to
 ``<download-dir>/_reference/``; ``--download-dir`` also defaults to the
 current directory. Given the same ``--download-dir``, both are shared with
 ``index.py`` and ``market.py``, so reference tables already on disk for the

@@ -67,7 +67,7 @@ Acquisition 是 quantlab 中把厂商原始数据下载到本地 parquet 文件�
 
 ### 磁盘上的文件
 
-每次请求都会在原始目录下写 parquet 文件，按 hive 风格（`key=value` 目录）分区。分区键取决于频率：日线是 `month=YYYY-MM`，分钟线是 `date=YYYY-MM-DD`，tick 数据是 `data_type=.../date=.../symbol=...`。文件名是 `part-<批次键>-<页号>.pqt`。批次键是厂商、频率、窗口和标的的哈希，所以同一个请求总是写出同样的文件名。
+每次请求都会在原始目录下写 parquet 文件，按 hive 风格（`key=value` 目录）分区。分区键取决于频率：日线是 `month=YYYY-MM`，分钟线是 `date=YYYY-MM-DD`，tick 数据是 `date=.../symbol=...`。有多种数据类型的厂商（WRDS 的 `crsp_daily` 和 `nbbo`，Alpaca 的 `bars`、`quotes`、`trades`）把每种类型放在厂商目录下以类型命名的普通子目录里，水位线也放在厂商水位线目录下的同名子目录，所以 `wrds/crsp_daily/month=2024-01/` 和 `wrds/nbbo/date=2024-01-02/symbol=AAPL/` 永远不会被同一次扫描读到，边车也不会混用。Tiingo 只有一种数据类型，直接写在厂商目录下。文件名是 `part-<批次键>-<页号>.pqt`。批次键是厂商、频率、窗口和标的的哈希，所以同一个请求总是写出同样的文件名。
 
 ```python
 >>> def tree(path):
@@ -350,7 +350,7 @@ RuntimeError: TIINGO_API_KEY environment variable is not set. Export it before r
 RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must both be set. ...
 ```
 
-导出变量后重新运行即可。tick 数据没有默认的 data type：`frequency="tick"` 的 `AlpacaAcquisition` 需要 `kwargs={"data_type": "quotes"}` 或 `"trades"`，否则会抛出 `ValueError: AlpacaAcquisition: frequency 'tick' needs kwargs['data_type'] set to one of ['quotes', 'trades']; got None. ...`。报价和成交共用一个原始目录，只靠 `data_type=` 分区区分，它们的边车则分别放在 `watermark_path` 的不同子目录下。
+导出变量后重新运行即可。tick 数据没有默认的 data type：`frequency="tick"` 的 `AlpacaAcquisition` 需要 `kwargs={"data_type": "quotes"}` 或 `"trades"`，否则会抛出 `ValueError: AlpacaAcquisition: frequency 'tick' needs kwargs['data_type'] set to one of ['quotes', 'trades']; got None. ...`。报价和成交共用一个厂商目录，靠各自的数据类型子目录（`alpaca/quotes/`、`alpaca/trades/`）区分，它们的边车也放在 `watermark_path` 下的同名子目录里。
 
 因配额而中止的运行不等于成功的运行：失败清单可能是空的，而仍有标的没抓。应检查 `coverage_report()["pending"]` 或 `quota_aborted` 标志。
 

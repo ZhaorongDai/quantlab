@@ -807,15 +807,16 @@ def test_tick_watermark_roots_agree_between_the_two_ledger_constructors(
         != from_config.watermark_root
     )
 
-    # `1d` is NOT namespaced, for either constructor: every sidecar tree
-    # already on disk keeps its path.
+    # `1d` bars are namespaced too, and the two constructors must agree on
+    # that as well: the engine's ledger resolves "bars" from the frequency,
+    # so a config built without the knob must land on the same directory.
     daily = acquisition_config(vendor="alpaca", frequency="1d")
-    assert CoverageLedger.for_config(daily).watermark_root == Path(
-        daily.watermark_path
-    )
     assert AlpacaAcquisition(daily)._coverage.watermark_root == Path(
         daily.watermark_path
-    )
+    ) / "bars"
+    assert CoverageLedger.for_config(
+        acquisition_config(vendor="alpaca", frequency="1d", kwargs={"data_type": "bars"})
+    ).watermark_root == Path(daily.watermark_path) / "bars"
 
 
 def test_inventory_reports_the_two_tiers_separately(

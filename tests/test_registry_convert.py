@@ -215,8 +215,13 @@ def alpaca_raw_tier(
     has to be threaded through both the path and the config -- which is also
     the reason this cannot reuse `tiingo_raw_tier` with a renamed config.
     """
+    # Alpaca names its data type, so the bars sit in `alpaca/bars/`, one
+    # level below the vendor root the config points at; `convert()` fills
+    # `kwargs["data_type"]` in from the capability and scans there.
     raw_dir = tmp_path / "raw"
-    hive_raw_tree(raw_dir, "alpaca", _raw_rows(stock_pqt_row), batch_key="panel")
+    hive_raw_tree(
+        raw_dir, "alpaca", _raw_rows(stock_pqt_row), batch_key="panel", data_type="bars"
+    )
 
     def _build(frequency: str = "1d", store_name: str = "alpaca.zarr") -> DatasetConfig:
         return DatasetConfig(

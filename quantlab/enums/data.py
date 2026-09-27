@@ -148,15 +148,20 @@ Vendor = Literal["tiingo", "alpaca", "wrds"]
 #: Daily data is partitioned by ``month`` rather than by date or symbol: a
 #: full-market roster over a decade would otherwise produce tens of millions
 #: of one-row files. For tick data one symbol-day is large enough to justify
-#: its own directory, and the leading ``data_type`` key separates quotes from
-#: trades, which have different column sets. For the intraday keys the
-#: ``date`` value is the US/Eastern session date, not the naive-UTC date, so a
-#: one-trading-day query does not lose the last hours of the session to the
-#: following day; timestamp values themselves stay naive UTC.
+#: its own directory. For the intraday keys the ``date`` value is the
+#: US/Eastern session date, not the naive-UTC date, so a one-trading-day
+#: query does not lose the last hours of the session to the following day;
+#: timestamp values themselves stay naive UTC.
+#:
+#: The data type (``crsp_daily``, ``nbbo``, ``bars``, ``quotes``, ``trades``)
+#: is not a hive key. A run that has one writes under a plain directory of
+#: that name directly beneath the vendor root, at every frequency, and its
+#: watermarks under the same name beneath the vendor's watermark directory,
+#: so one vendor's data types never share a directory scan or a sidecar set.
 RAW_HIVE_KEYS: dict[str, tuple[str, ...]] = {
     "1d": ("month",),
     "1m": ("date",),
-    "tick": ("data_type", "date", "symbol"),
+    "tick": ("date", "symbol"),
 }
 
 

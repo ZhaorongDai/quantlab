@@ -43,16 +43,20 @@ class StockDataset(MarketDataset):
     merge into a blended price series, so the root name, the ``vendor``
     column and the parquet schema are all checked before any row is used.
     Daily (``1d``) data is partitioned by ``month``, minute (``1m``) data by
-    trading-session ``date``, and ``tick`` data by ``data_type``, ``date`` and
-    ``symbol``. Tick data has no dense-panel form and can only be read with
+    trading-session ``date``, and ``tick`` data by ``date`` and ``symbol``.
+    A vendor that names its data types (``bars``, ``quotes``, ``trades``,
+    ``crsp_daily``, ``nbbo``) keeps each one in its own directory beneath the
+    vendor root, and the scan starts there; ``kwargs["data_type"]`` names
+    it, which the registry's ``convert()`` fills in from the capability.
+    Tick data has no dense-panel form and can only be read with
     ``_scan_raw``.
 
     Parameters
     ----------
     dataset_config : DatasetConfig
         Paths, market, frequency, vendor and date range of the dataset. For
-        tick data, ``kwargs["data_type"]`` must be ``"quotes"`` or
-        ``"trades"``.
+        tick data, ``kwargs["data_type"]`` must be set (``"quotes"`` or
+        ``"trades"`` for Alpaca).
 
     Examples
     --------
@@ -76,13 +80,13 @@ class StockDataset(MarketDataset):
     HIVE_SCHEMA_BY_FREQUENCY = {
         "1d": {"month": pl.String},
         "1m": {"date": pl.Date},
-        "tick": {"data_type": pl.String, "date": pl.Date, "symbol": pl.String},
+        "tick": {"date": pl.Date, "symbol": pl.String},
     }
 
     #: Hive keys that only describe the partition and are dropped after the
     #: scan. ``symbol`` is left out on purpose: in the tick layout the
     #: directory name is the only place the symbol is stored.
-    DERIVED_HIVE_KEYS = ("month", "date", "data_type")
+    DERIVED_HIVE_KEYS = ("month", "date")
 
     #: Filename suffix of one raw shard. The scan glob and ``has_raw_data``
     #: both use it, so they always look at the same set of files.
@@ -149,12 +153,12 @@ class StockDataset(MarketDataset):
     def _scan_root(self) -> Path:
         """Return the directory handed to ``pl.scan_parquet``.
 
-        For ``1d`` and ``1m`` this is the vendor root. For ``tick`` it is one
-        level deeper, ``{vendor_root}/data_type={quotes|trades}``. Polars
-        takes the scan's schema from the first file it finds and enforces it
-        on every file, even files a filter would skip. Quotes and trades have
-        different columns, so they can only be separated by the root
-        directory, never by a filter.
+        The vendor root, or ``{vendor_root}/{data type}`` when the dataset
+        has a data type (``_raw_data_type``), which is where the acquisition
+        wrote the shards. Polars takes the scan's schema from the first file
+        it finds and enforces it on every file, even files a filter would
+        skip. Two data types of one vendor have different columns, so they
+        can only be separated by the root directory, never by a filter.
 
         Returns
         -------
@@ -162,35 +166,12 @@ class StockDataset(MarketDataset):
             The directory to scan.
         """
         root = Path(self.config.raw_data_dir_path)
-        if "data_type" in self._hive_keys:
-            return root / f"data_type={self._tick_data_type}"
-        return root
-
-    @property
-    def _scanned_hive_keys(self) -> tuple[str, ...]:
-        """Return the hive keys the date-window filter may use.
-
-        ``data_type`` is excluded because ``_scan_root`` already limits the
-        scan to one value of it.
-        """
-        return tuple(key for key in self._hive_keys if key != "data_type")
-
-    @property
-    def _materialised_hive_keys(self) -> tuple[str, ...]:
-        """Return every hive key that polars turns into a column.
-
-        The recursive glob makes polars parse every ``key=value`` directory
-        on the path, including ``data_type`` above the scan root. So this is
-        the full key set: the hive schema must declare all of them, and the
-        drop after the scan must remove every one that is only metadata.
-        """
-        return self._hive_keys
+        data_type = self._raw_data_type
+        return root if data_type is None else root / data_type
 
     def _scanned_hive_schema(self) -> dict:
-        """Return the ``HIVE_SCHEMA_BY_FREQUENCY`` entry, limited to keys polars turns into columns."""
-        schema = self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency]
-        keys = self._materialised_hive_keys
-        return {name: dtype for name, dtype in schema.items() if name in keys}
+        """Return the ``HIVE_SCHEMA_BY_FREQUENCY`` entry for this frequency."""
+        return dict(self.HIVE_SCHEMA_BY_FREQUENCY[self.config.frequency])
 
     def _hive_window_predicate(self, start, end) -> pl.Expr:
         """Return the filter on hive keys that skips partitions outside the window.
@@ -214,7 +195,7 @@ class StockDataset(MarketDataset):
         NotImplementedError
             For a frequency with no known window key.
         """
-        keys = self._scanned_hive_keys
+        keys = self._hive_keys
         if keys == ("month",):
             return (pl.col("month") >= pl.lit(start.strftime("%Y-%m"))) & (
                 pl.col("month") <= pl.lit(end.strftime("%Y-%m"))
@@ -229,30 +210,35 @@ class StockDataset(MarketDataset):
         )
 
     @property
-    def _tick_data_type(self) -> str:
-        """Return which tick data type (``quotes`` or ``trades``) to read.
+    def _raw_data_type(self) -> str | None:
+        """Return the data type whose directory the scan starts in, or None.
 
-        It comes from ``config.kwargs["data_type"]``. Quotes and trades share
-        one vendor root but have different columns, so the choice is
-        required.
+        It comes from ``config.kwargs["data_type"]``; a dataset class bound
+        to one vendor product (CRSP, NBBO) overrides this with a constant.
+        ``None`` means the vendor keeps one shape of data at this frequency
+        under the vendor root itself (Tiingo). Tick data always needs one:
+        quotes and trades share one vendor root but have different columns.
 
         Raises
         ------
         ValueError
-            If the config does not say which one to read.
+            If the frequency is ``tick`` and the config does not say which
+            data type to read.
         """
         data_type = (self.config.kwargs or {}).get("data_type")
-        if not data_type:
+        if data_type:
+            return str(data_type)
+        if self.config.frequency == "tick":
             raise ValueError(
                 f"{self.__class__.__name__}: frequency "
-                f"{self.config.frequency!r} needs kwargs['data_type'] set to "
-                f"'quotes' or 'trades'; got {data_type!r}. Both are stored under "
-                f"one vendor root, separated by the leading `data_type=` "
-                f"hive key, and they have different columns. Scanning a root "
-                f"that holds both raises a schema error instead of returning a "
-                f"mixed frame. Say which one you want."
+                f"{self.config.frequency!r} needs kwargs['data_type'] set "
+                f"(for Alpaca, 'quotes' or 'trades'); got {data_type!r}. Each "
+                f"data type is stored in its own directory under the vendor "
+                f"root and they have different columns. Scanning the vendor "
+                f"root itself would raise a schema error instead of returning "
+                f"a mixed frame. Say which one you want."
             )
-        return str(data_type)
+        return None
 
     #: How far the intraday ``date`` filter widens the window at each edge.
     #: The ``date=`` key is a session date in the exchange's time zone, while
@@ -326,8 +312,8 @@ class StockDataset(MarketDataset):
         This is the one place that checks whether raw data exists.
         ``_scan_raw`` uses it to tell a missing root apart from a window that
         simply has no rows, and the ingest scripts call it to refuse a
-        conversion before it starts. It looks inside the tick layout's
-        ``data_type=`` subdirectory, which a plain check of
+        conversion before it starts. It looks inside the data type's
+        directory (``_scan_root``), which a plain check of
         ``config.raw_data_dir_path`` would miss. It only lists files and
         opens no parquet file.
 
@@ -417,14 +403,9 @@ class StockDataset(MarketDataset):
 
         data = self._assert_single_vendor_and_drop(data)
         # Drop only the metadata keys; `symbol` is real data that the tick
-        # layout stores as a directory name. Loop over every key polars
-        # created so `data_type` is dropped too for tick data.
+        # layout stores as a directory name.
         data = data.drop(
-            [
-                key
-                for key in self._materialised_hive_keys
-                if key in self.DERIVED_HIVE_KEYS
-            ]
+            [key for key in self._hive_keys if key in self.DERIVED_HIVE_KEYS]
         )
 
         data = data.sort(by=["timestamp", "symbol"])

@@ -883,13 +883,28 @@ class Acquisition(ABC):
         """Return which of the vendor's data types this run fetches, or None.
 
         ``None`` on the base, because a vendor with one shape of data per
-        frequency has no such concept. A multi-type vendor overrides this,
+        frequency has no such concept. A vendor that has one overrides this,
         validates the value against its own accepted set, and uses the same
-        resolved value for both the endpoint and the written partition so
-        the two cannot disagree. ``_hive_key_expr`` raises if a frequency
-        that partitions on ``data_type`` reaches it with nothing declared.
+        resolved value for the endpoint, the raw directory (``_raw_root``)
+        and the watermark directory, so the three cannot disagree.
         """
         return None
+
+    @property
+    def _raw_root(self) -> Path:
+        """Return the directory this run's shards are written under.
+
+        ``config.raw_data_dir_path`` is the vendor root. A run with a data
+        type writes one level down, ``<vendor root>/<data type>``, so a
+        vendor's data types (CRSP daily bars and NBBO quotes, or quotes and
+        trades) never share a directory: their shards have different
+        columns, and a scan that mixed them would fail or, worse, blend
+        them. ``CoverageLedger.watermark_root`` adds the same level to the
+        watermark directory.
+        """
+        root = Path(self.config.raw_data_dir_path)
+        data_type = self._data_type
+        return root if data_type is None else root / str(data_type)
 
     def _hive_key_expr(self, key: str) -> pl.Expr:
         """Return the expression that derives one hive key from a raw frame.
@@ -917,22 +932,6 @@ class Acquisition(ABC):
             # Symbols were validated before any frame gets here, so the value
             # is safe to use as a directory name.
             return pl.col("symbol")
-        if key == "data_type":
-            # A constant for the whole run: one fetch asks one endpoint for
-            # one data type. It is the outermost key, so files with different
-            # column sets never share a directory scan.
-            data_type = self._data_type
-            if data_type is None:
-                raise ValueError(
-                    f"{self.class_name}: frequency "
-                    f"{self.config.frequency!r} partitions on a `data_type=` "
-                    f"hive key but this class resolves no data type. Override "
-                    f"`_data_type` to return the one this run fetches. It "
-                    f"must be the same value that selected the endpoint, or a "
-                    f"shard's directory name and its columns would describe "
-                    f"different things."
-                )
-            return pl.lit(data_type)
         raise NotImplementedError(
             f"{self.class_name}: no derivation for hive key {key!r} "
             f"(frequency {self.config.frequency!r}, keys {self._hive_keys}). "
@@ -953,7 +952,10 @@ class Acquisition(ABC):
     def _shard_path(
         self, partition_values: Sequence[str], batch_key: str, page_index: int
     ) -> Path:
-        """Return ``{raw_root}/{k1}={v1}/.../part-{batch_key}-{page:05d}.pqt``.
+        """Return ``{raw root}/{k1}={v1}/.../part-{batch_key}-{page:05d}.pqt``.
+
+        The raw root is ``_raw_root``: the vendor directory, plus the data
+        type's own directory when the run has one.
 
         The name is deterministic, with no timestamp, uuid or counter, so a
         page re-fetched after a crash overwrites its shard instead of adding
@@ -974,7 +976,7 @@ class Acquisition(ABC):
         page_index : int
             Zero-based page number within the batch.
         """
-        directory = Path(self.config.raw_data_dir_path)
+        directory = self._raw_root
         for key, value in zip(self._hive_keys, partition_values):
             directory = directory / f"{key}={value}"
         return directory / f"part-{batch_key}-{page_index:05d}.pqt"

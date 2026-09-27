@@ -134,6 +134,11 @@ import json
 from pathlib import Path
 
 
+
+def _watermark_root(cfg) -> Path:
+    """Where an Alpaca bars run keeps its sidecars: `<watermark_path>/bars/`."""
+    return Path(cfg.watermark_path) / "bars"
+
 def _five_page_chain(alpaca_bars_page):
     """A five-page symbol-major chain, last page terminating with None.
 
@@ -170,7 +175,9 @@ def _batch_key_for(cfg):
 def _ledger_path_for(cfg):
     from quantlab.base.pageledger import PageLedger
 
-    return Path(PageLedger.default_path(cfg.watermark_path, _batch_key_for(cfg)))
+    # Bars are a named data type, so the ledger sits under the `bars/`
+    # watermark root, not under the vendor's watermark path itself.
+    return Path(PageLedger.default_path(_watermark_root(cfg), _batch_key_for(cfg)))
 
 
 def test_an_interrupted_batch_resumes_at_the_failed_page(
@@ -204,13 +211,13 @@ def test_an_interrupted_batch_resumes_at_the_failed_page(
     AlpacaAcquisition(cfg).download()
 
     manifest = json.loads(
-        (Path(cfg.watermark_path) / "_failures.json").read_text()
+        (_watermark_root(cfg) / "_failures.json").read_text()
     )
     assert set(manifest) == {"AAPL", "MSFT"}
     assert "simulated page-3 failure" in manifest["AAPL"]
     # No watermark for a failed batch => the next run retries it rather than
     # skipping past the hole.
-    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
+    assert not (_watermark_root(cfg) / "AAPL.json").exists()
 
     # Pages 0-2 landed and were recorded; the ledger was FLUSHED for every page
     # that completed. Losing it on failure is what turns a resume into a
@@ -261,7 +268,7 @@ def test_a_resumed_run_does_not_re_request_page_zero(
     mock_alpaca_client.raise_on = {3: RuntimeError("boom")}
     # Isolated, not raised, since the 03.2-03 lift -- see the previous test.
     AlpacaAcquisition(cfg).download()
-    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
+    assert not (_watermark_root(cfg) / "AAPL.json").exists()
 
     mock_alpaca_client.calls.clear()
     mock_alpaca_client.raise_on = None
@@ -363,7 +370,7 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
     AlpacaAcquisition(cfg).download()
 
     message = json.loads(
-        (Path(cfg.watermark_path) / "_failures.json").read_text()
+        (_watermark_root(cfg) / "_failures.json").read_text()
     )["AAPL"]
     assert "refusing to resume" in message
     assert victim.name in message or str(victim) in message
@@ -374,7 +381,7 @@ def test_a_ledger_recording_a_page_with_no_shard_is_not_idempotently_resumed(
     # The refusal happens BEFORE any request, so nothing was fetched past the
     # hole, and no watermark was written to mark the short batch complete.
     assert len(mock_alpaca_client.calls) == calls_before
-    assert not (Path(cfg.watermark_path) / "AAPL.json").exists()
+    assert not (_watermark_root(cfg) / "AAPL.json").exists()
 
 
 def test_a_ledger_whose_roster_fingerprint_differs_is_not_resumed_onto(

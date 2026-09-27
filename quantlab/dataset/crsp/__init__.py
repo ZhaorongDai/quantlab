@@ -273,9 +273,10 @@ def resolve_security_filter(
 class CrspStockDataset(StockDataset):
     """Dense daily panel built from the CRSP raw files, keyed by PERMNO.
 
-    The class reuses ``StockDataset``'s scan of the raw tree (vendor root,
-    ``month=`` hive partitions, the single-vendor check, date-window filters
-    and ``has_raw_data``). It overrides how the axes and each window's dense
+    The class reuses ``StockDataset``'s scan of the raw tree (the
+    ``crsp_daily`` directory under the vendor root, ``month=`` hive
+    partitions, the single-vendor check, date-window filters and
+    ``has_raw_data``). It overrides how the axes and each window's dense
     panel are built, because both must use the adjusted *derivation* (the
     frame of computed panel variables) rather than the raw rows: the raw
     ``symbol`` column is the PERMNO as a string, and every derived variable
@@ -323,6 +324,10 @@ class CrspStockDataset(StockDataset):
     #: The config class the module loader rebuilds this dataset with.
     config_cls = CrspDatasetConfig
 
+    #: The data type whose directory under the vendor root holds the raw files;
+    #: the same value the WRDS capability and the CRSP acquisition name.
+    DATA_TYPE = "crsp_daily"
+
     #: Factor-config fields that are refused for this panel, read by the
     #: factor base class. ``BaseFactorConfig.symbols`` is a different field
     #: from the dataset's ``symbols``, but it also selects by ticker and would
@@ -350,6 +355,11 @@ class CrspStockDataset(StockDataset):
     #: subclass can narrow or extend the set without changing the module
     #: constant.
     EXTRA_VARIABLES: tuple[str, ...] = CRSP_EXTRA_VARIABLES
+
+    @property
+    def _raw_data_type(self) -> str:
+        """Return ``"crsp_daily"``, the directory under the vendor root the scan starts in."""
+        return self.DATA_TYPE
 
     @BaseDataset.config.setter
     def config(self, config: DatasetConfig):

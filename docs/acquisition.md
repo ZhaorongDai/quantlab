@@ -67,7 +67,7 @@ A run is described by an `AcquisitionConfig`: the market, frequency and vendor, 
 
 ### Files on disk
 
-Every request writes parquet files under the raw directory, partitioned in hive style (`key=value` directories). The partition keys depend on the frequency: `month=YYYY-MM` for daily bars, `date=YYYY-MM-DD` for minute bars, and `data_type=.../date=.../symbol=...` for tick data. File names are `part-<batch key>-<page number>.pqt`. The batch key is a hash of the vendor, frequency, window and symbols, so the same request always writes the same file names.
+Every request writes parquet files under the raw directory, partitioned in hive style (`key=value` directories). The partition keys depend on the frequency: `month=YYYY-MM` for daily bars, `date=YYYY-MM-DD` for minute bars, and `date=.../symbol=...` for tick data. A vendor that names its data types (`crsp_daily` and `nbbo` for WRDS, `bars`, `quotes` and `trades` for Alpaca) keeps each one in a plain directory of that name directly under the vendor root, and its watermarks under the same name beneath the vendor's watermark directory, so `wrds/crsp_daily/month=2024-01/` and `wrds/nbbo/date=2024-01-02/symbol=AAPL/` never share a scan or a sidecar set. Tiingo has one data type and writes into the vendor root itself. File names are `part-<batch key>-<page number>.pqt`. The batch key is a hash of the vendor, frequency, window and symbols, so the same request always writes the same file names.
 
 ```python
 >>> def tree(path):
@@ -353,7 +353,7 @@ RuntimeError: TIINGO_API_KEY environment variable is not set. Export it before r
 RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must both be set. ...
 ```
 
-Export the variables and rerun. Tick data has no default data type: `AlpacaAcquisition` with `frequency="tick"` needs `kwargs={"data_type": "quotes"}` or `"trades"` and otherwise raises `ValueError: AlpacaAcquisition: frequency 'tick' needs kwargs['data_type'] set to one of ['quotes', 'trades']; got None. ...`. Quotes and trades share one raw directory and differ only by the `data_type=` partition, and their sidecars are kept in separate subdirectories of `watermark_path`.
+Export the variables and rerun. Tick data has no default data type: `AlpacaAcquisition` with `frequency="tick"` needs `kwargs={"data_type": "quotes"}` or `"trades"` and otherwise raises `ValueError: AlpacaAcquisition: frequency 'tick' needs kwargs['data_type'] set to one of ['quotes', 'trades']; got None. ...`. Quotes and trades share one vendor directory and are kept apart by their data-type directories (`alpaca/quotes/`, `alpaca/trades/`), with their sidecars in the same-named subdirectories of `watermark_path`.
 
 A run that hit a quota is not a run that succeeded: the failure manifest can be empty while symbols remain. Check `coverage_report()["pending"]` or the `quota_aborted` flag.
 

@@ -816,6 +816,24 @@ def convert(
             f"writes are the usable output and can be queried with polars."
         )
 
+    # The raw shards of a capability with a data type sit in that type's own
+    # directory under the vendor root, and the dataset finds it through
+    # ``kwargs["data_type"]``. Fill it in from the capability, so a caller who
+    # named the capability by ``data_type`` (or let a unique one resolve) does
+    # not have to say it twice; a value already there must agree.
+    if capability.data_type is not None:
+        kwargs = dict(dataset_config.kwargs or {})
+        stated = kwargs.get("data_type")
+        if stated is not None and str(stated) != capability.data_type:
+            raise ValueError(
+                f"{descriptor.display_name}: dataset_config.kwargs['data_type']="
+                f"{stated!r} but the capability being converted is "
+                f"{capability.data_type!r}; the two name the same raw "
+                f"directory, so they must agree."
+            )
+        kwargs["data_type"] = capability.data_type
+        dataset_config.kwargs = kwargs
+
     dataset = capability.dataset_cls(dataset_config)
     dataset.from_raw_data_chunked(
         granularity=granularity,
