@@ -2,11 +2,15 @@
 
 Each domain object (dataset, factor, model, backtester, acquisition, universe
 catalog) is constructed from one of the config classes here and exposes it as
-``self.config``. The object's config setter fills in derived values on
-assignment, such as inherited dates and the ``name`` field, which records the
-owning class's dotted import path so the object can be rebuilt from the
-serialised dict (see ``quantlab.utils.module``). ``to_dict()`` on each config
-produces that dict.
+``self.config``. Dataset, factor and model configs are frozen: a field
+cannot be assigned after creation, and a changed config is a new one made
+with ``dataclasses.replace``. The object's config setter normalises the
+config it is given into a new config, filling in derived values such as
+open-ended dates and the ``name`` field, which records the owning class's
+dotted import path so the object can be rebuilt from the serialised dict (see
+``quantlab.utils.module``); the caller's config is never edited. ``to_dict()``
+on each config produces that dict. Acquisition, universe and backtest configs
+are not frozen.
 
 Throughout, a *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and
 ``symbol``. Several configs describe US-equity data from WRDS (Wharton
@@ -21,7 +25,8 @@ beside its definition.
 """
 
 from dataclasses import asdict, dataclass, field, fields
-from typing import TYPE_CHECKING, Literal
+from types import UnionType
+from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
 
 from quantlab.enums.data import (
     BarInterval,
@@ -37,8 +42,42 @@ if TYPE_CHECKING:
     from .model import BaseModel
 
 
-@dataclass(kw_only=True)
-class BaseDatasetConfig:
+def _allows_tuple(annotation) -> bool:
+    """Return whether a field annotation is a tuple, or a union with one."""
+    if annotation is tuple or get_origin(annotation) is tuple:
+        return True
+    if get_origin(annotation) in (Union, UnionType):
+        return any(_allows_tuple(arg) for arg in get_args(annotation))
+    return False
+
+
+class _FrozenConfig:
+    """Base of the frozen dataset, factor and model configs.
+
+    A list given to a tuple-typed field is stored as a tuple, so a config
+    rebuilt from JSON, where every tuple was written as a list, equals the
+    one that was saved.
+
+    Examples
+    --------
+    >>> cfg = BaseDatasetConfig(zarr_file_path="stock.zarr", symbols=["AAPL"])
+    >>> cfg.symbols
+    ('AAPL',)
+    >>> cfg.symbols = ("MSFT",)
+    Traceback (most recent call last):
+    dataclasses.FrozenInstanceError: cannot assign to field 'symbols'
+    """
+
+    def __post_init__(self):
+        """Store a list given to a tuple-typed field as a tuple."""
+        for spec in fields(self):
+            value = getattr(self, spec.name)
+            if isinstance(value, list) and _allows_tuple(spec.type):
+                object.__setattr__(self, spec.name, tuple(value))
+
+
+@dataclass(kw_only=True, frozen=True)
+class BaseDatasetConfig(_FrozenConfig):
     """Fields every dataset shares, whatever it holds.
 
     Both market panels and constituent (index membership) panels build on
@@ -96,7 +135,7 @@ class BaseDatasetConfig:
         return asdict(self)
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class DatasetConfig(BaseDatasetConfig):
     """Config of a market data panel built from a raw download tree.
 
@@ -131,7 +170,7 @@ class DatasetConfig(BaseDatasetConfig):
     vendor: Vendor | None = None
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class NbboDatasetConfig(DatasetConfig):
     """Config of the intraday bar panel built from WRDS TAQ NBBO quotes.
 
@@ -205,7 +244,7 @@ QQQ_PERMNO: str = "86755"
 SPY_PERMNO: str = "84398"
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class CrspDatasetConfig(DatasetConfig):
     """Config of the CRSP Stock v2 daily panel.
 
@@ -387,7 +426,7 @@ class CrspDatasetConfig(DatasetConfig):
         )
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 
@@ -508,8 +547,8 @@ class UniverseConfig:
         return asdict(self)
 
 
-@dataclass(kw_only=True)
-class BaseFactorConfig:
+@dataclass(kw_only=True, frozen=True)
+class BaseFactorConfig(_FrozenConfig):
     """Fields every factor (and label) shares, whichever backend computes it.
 
     The config says what is computed, not when: the date range is an
@@ -567,7 +606,7 @@ class BaseFactorConfig:
         return asdict(self)
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class FactorConfig(BaseFactorConfig):
     """Config of a KunQuant-computed factor.
 
@@ -594,7 +633,7 @@ class FactorConfig(BaseFactorConfig):
     njobs: int = 128
 
 
-@dataclass(kw_only=True)
+@dataclass(kw_only=True, frozen=True)
 class PolarsFactorConfig(BaseFactorConfig):
     """Config of a Polars-computed factor.
 
@@ -614,8 +653,8 @@ class PolarsFactorConfig(BaseFactorConfig):
     """
 
 
-@dataclass
-class DLConfig:
+@dataclass(frozen=True)
+class DLConfig(_FrozenConfig):
     """Config of a torch model head trained through the epoch loop.
 
     ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
@@ -707,8 +746,8 @@ class DLConfig:
         return asdict(self)
 
 
-@dataclass
-class MLConfig:
+@dataclass(frozen=True)
+class MLConfig(_FrozenConfig):
     """Config of a tree or other non-torch model head.
 
     There is no ``epochs`` field: an ML head has no outer epoch loop, and

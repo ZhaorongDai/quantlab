@@ -60,13 +60,15 @@ Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 datase
 'quantlab.dataset.stock.StockDataset'
 ```
 
-给 dataset 赋值 config 时，会把 `name` 填成类的点分导入路径，保存下来的 config 就是靠它还原成对象的。缺少 `start_date` 或 `end_date` 时分别取 `1900-01-01` 和 `2100-01-01`，这样日期过滤总有两个端点。这两个日期和 `symbols` 只限定构建路径（`from_raw_data()`、`from_raw_data_chunked()`、`update()`）转换什么、`save()` 写入什么；读取时的区间则作为参数传入。两个日期都必须是 ISO `YYYY-MM-DD` 字符串，因为流水线里所有日期比较都是字符串比较。
+Config 是冻结的：不能给字段赋值，要改就用 `dataclasses.replace` 生成一个新的。Dataset 持有的是你传入的 config 归一化后的副本，从不改动你的那一个。副本里 `name` 被填成类的点分导入路径，保存下来的 config 就是靠它还原成对象的；缺少 `start_date` 或 `end_date` 时分别取 `1900-01-01` 和 `2100-01-01`，这样日期过滤总有两个端点。这两个日期和 `symbols` 只限定构建路径（`from_raw_data()`、`from_raw_data_chunked()`、`update()`）转换什么、`save()` 写入什么；读取时的区间则作为参数传入。两个日期都必须是 ISO `YYYY-MM-DD` 字符串，因为流水线里所有日期比较都是字符串比较。
 
 ```python
 >>> open_ended = dataclasses.replace(config, start_date=None, end_date=None)
 >>> d = StockDataset(open_ended)
 >>> d.config.start_date, d.config.end_date
 ('1900-01-01', '2100-01-01')
+>>> open_ended.start_date, open_ended.name
+(None, None)
 >>> bad = dataclasses.replace(config, end_date="2024-2-29")
 >>> try:
 ...     StockDataset(bad)
@@ -360,6 +362,8 @@ Traceback (most recent call last):
     ...
 TypeError: Can't instantiate abstract class Incomplete without an implementation for abstract method '_raw_data_to_xr'
 ```
+
+需要校验或补全自己 config 的 dataset，重写 `_normalize_config(config)`：先调用 `super()._normalize_config(config)`，再检查结果，最后返回用 `dataclasses.replace` 生成的新 config。它在每次赋值、config 生效之前运行，所以无效的 config 在创建 dataset 时就被拒绝。`CrspStockDataset` 就是这样拒绝 `symbols` 并归一化 `permnos` 的。不要重新定义 `config` 属性。
 
 如果原始数据源能在加载前按日期过滤，就让 `_raw_data_to_xr_window` 只读取那个窗口。`StockDataset` 通过裁剪 Parquet 分区做到这一点，内存上限由窗口决定；上面的切片写法只限制了写入的量。
 

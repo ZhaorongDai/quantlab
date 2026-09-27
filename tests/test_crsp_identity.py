@@ -1809,9 +1809,10 @@ def test_an_empty_roster_reaching_derivation_selects_no_security(
     assert dataset._derivation().height == 10, dataset._derivation().height
 
     # Now reach `_derivation` with an EMPTY roster the setter never saw. The
-    # field is assigned on the CONFIG object, not through the dataset's `config`
-    # property, which is precisely the shape of the paths named above.
-    dataset.config.permnos = ()
+    # config is frozen, so the field is forced onto the installed CONFIG
+    # object behind the dataset's `config` property, which is precisely the
+    # shape of the paths named above.
+    object.__setattr__(dataset.config, "permnos", ())
     dataset._derivation_cache = None
 
     assert dataset._derivation().height == 0, dataset._derivation().height

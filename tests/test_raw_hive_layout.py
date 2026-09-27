@@ -37,6 +37,7 @@ with zero collected tests exits 5 ("no tests ran"), which a later task's
 automated command reads as green.
 """
 
+import dataclasses
 from datetime import datetime
 from pathlib import Path
 
@@ -447,8 +448,7 @@ def test_vendor_isolation_an_unset_vendor_raises_rather_than_scanning(
     parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
     root = hive_raw_tree(parent, "tiingo", _rows(stock_pqt_row, "AAPL", 1.0))
 
-    config = _make_config(root)
-    config.vendor = None
+    config = dataclasses.replace(_make_config(root), vendor=None)
     with pytest.raises(ValueError) as excinfo:
         StockDataset(config)._scan_raw()
 

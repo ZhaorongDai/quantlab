@@ -35,6 +35,8 @@ Both backends take a config with the fields below. `FactorConfig` adds `mode` (`
 | `factor_names` | output column names; derived from the factor when left `None` |
 | `kwargs` | free-form options a factor class reads |
 
+Configs are frozen. The factor holds a normalised copy with `name` and `factor_names` filled in; the config you pass is never edited, and a saved `config.json` rebuilds into a factor with an equal config.
+
 The config says what is computed, not when. The date range is an argument of `compute(start, end)`, `build(start, end)` and `read(start, end)`, and none of these calls changes the factor's config or its dataset's config.
 
 ### Compute a factor
@@ -380,7 +382,7 @@ Subclass `FactorPolars` and implement `_get_factor_lazyframe`. It receives the d
 
 ### A KunQuant factor
 
-Subclass `FactorKunQuant` and implement `_get_factor_names`, `_get_factor_func` (the KunQuant graph, with one `Input` per entry of `data_columns` and one `Output` per factor name) and `_get_features`. The graph below outputs a moving-average deviation raw, z-scored over time and z-scored across symbols. KunQuant compiles on every `compute()` (about a second here).
+Subclass `FactorKunQuant` and implement `_get_factor_names`, `_get_factor_func` (the KunQuant graph, with one `Input` per entry of `data_columns` and one `Output` per factor name) and `_get_features`. The graph below outputs a moving-average deviation raw, z-scored over time and z-scored across symbols. KunQuant compiles on every `compute()` (about a second here). A factor whose fields constrain each other (its `data_columns` against its parameters, say) overrides `_validate_config`, reads `self.config` and raises `ValueError`; it runs on every config assignment, including those made by `copy()` and `resample()`, and a refused config leaves the factor's previous one in place. `LiteratureAlpha` and `ResidualMomentumFF3` check their `data_columns` this way.
 
 ```python
 >>> import KunQuant.ops as op

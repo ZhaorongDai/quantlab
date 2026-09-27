@@ -35,6 +35,7 @@ Everything is synthetic, CPU-only and offline. Configs are built directly,
 never through `quantlab/config/__init__.py` (D-32).
 """
 
+import dataclasses
 import json
 import math
 import types
@@ -203,7 +204,8 @@ def test_training_window_end_adds_the_horizon_in_bars_across_a_weekend(tmp_path)
 
 def test_label_without_n_forward_periods_warns_and_uses_zero(tmp_path, warnings_sink):
     backtester = _unit_backtester(tmp_path)
-    backtester.config.model.config.labels[0].config.kwargs = {}
+    label = backtester.config.model.config.labels[0]
+    label.config = dataclasses.replace(label.config, kwargs={})
 
     assert backtester._label_horizon_bars() == 0
     assert any("ForwardReturnLabel" in message for message in warnings_sink), (
@@ -450,7 +452,8 @@ def test_disjoint_window_does_not_warn_and_has_no_in_sample_range(
 
 def test_model_without_train_dates_warns_and_records_null(tmp_path, warnings_sink):
     backtester = _run_backtester(tmp_path, window_start_bar=20, window_end_bar=45)
-    backtester.config.model.config.train_start = None
+    model = backtester.config.model
+    model.config = dataclasses.replace(model.config, train_start=None)
     # Code review WR-01: in load mode the checkpoint's own config.json records
     # the dates it really trained on and takes precedence over config.model.
     # The "no training dates at all" arm is therefore reached only when no such

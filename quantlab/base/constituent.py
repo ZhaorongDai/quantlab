@@ -17,6 +17,7 @@ mask*: a filter that restricts a price panel to the symbols that were index
 members on each date.
 """
 
+import dataclasses
 from abc import abstractmethod
 
 import numpy as np
@@ -37,7 +38,7 @@ class IndexConstituentDataset(BaseDataset):
 
     A subclass implements two hooks: ``_pit_coverage_start`` (the earliest
     date the source can answer membership for) and ``_build_intervals`` (the
-    membership intervals). Everything else is shared. The config setter
+    membership intervals). Everything else is shared. Config normalisation
     raises ``start_date`` to the coverage start, ``_densify`` turns the
     intervals into the ``is_member`` grid, and ``_clean`` validates the panel
     instead of running the price-data (OHLCV) cleaner. The class derives
@@ -98,49 +99,10 @@ class IndexConstituentDataset(BaseDataset):
     #: The config class a saved ``config.json`` is rebuilt with.
     config_cls = ConstituentDatasetConfig
 
-    @property
-    def config(self) -> ConstituentDatasetConfig:
-        """Return the dataset config.
-
-        Redefined here so that the setter can adjust the start date after the
-        shared base-class setter has run, and to give the property the
-        narrower config type.
-
-        Examples
-        --------
-        >>> ds.config.start_date
-        '2020-01-01'
-        """
-        return self._config  # type: ignore[return-value]
-
-    @config.setter
-    def config(self, config: ConstituentDatasetConfig):
-        """Assign the config, then raise ``start_date`` to the coverage start.
-
-        The base setter runs first because it fills in ``name`` and the
-        default ``start_date`` and ``end_date``. The adjustment reads the
-        resolved ``start_date`` and would otherwise see ``None``.
-
-        Parameters
-        ----------
-        config : ConstituentDatasetConfig
-            The config to assign. It is modified in place.
-
-        Examples
-        --------
-        A requested date before the coverage start is raised, with a
-        warning, at assignment time:
-
-        >>> config.start_date = "2019-06-01"
-        >>> ds.config = config
-        >>> ds.config.start_date
-        '2020-01-01'
-        """
-        BaseDataset.config.fset(self, config)  # type: ignore[attr-defined]
-        self._clamp_coverage_start()
-
-    def _clamp_coverage_start(self) -> None:
-        """Raise ``config.start_date`` to this index's coverage start.
+    def _normalize_config(
+        self, config: ConstituentDatasetConfig
+    ) -> ConstituentDatasetConfig:
+        """Normalise as the base class does, then raise ``start_date`` to the coverage start.
 
         The source cannot answer membership before ``_pit_coverage_start()``.
         Without this adjustment, the inherited default start date
@@ -148,14 +110,35 @@ class IndexConstituentDataset(BaseDataset):
         as "not a member" when the truth is "unknown". A warning is logged
         only when the caller explicitly asked for an earlier date; the
         default is adjusted silently so that ordinary construction does not
-        warn.
-        """
-        requested = self._config.start_date
-        coverage_start = self._pit_coverage_start()
-        if requested is not None and requested >= coverage_start:
-            return
+        warn. The base normalisation runs first because the adjustment reads
+        the resolved ``start_date``.
 
-        self._config.start_date = coverage_start
+        Parameters
+        ----------
+        config : ConstituentDatasetConfig
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        ConstituentDatasetConfig
+            A new config whose ``start_date`` is not before the coverage
+            start.
+
+        Examples
+        --------
+        A requested date before the coverage start is raised, with a
+        warning, on the dataset's own config:
+
+        >>> ds = DemoPanel(dataclasses.replace(config, start_date="2019-06-01"))
+        >>> ds.config.start_date
+        '2020-01-01'
+        """
+        config = super()._normalize_config(config)
+        requested = config.start_date
+        coverage_start = self._pit_coverage_start()
+        if requested >= coverage_start:
+            return config
+
         if requested != Date.START_DATE:
             logger.warning(
                 f"{self.class_name}: requested start_date {requested} is "
@@ -164,6 +147,7 @@ class IndexConstituentDataset(BaseDataset):
                 f"{coverage_start}. Membership before that date cannot be "
                 f"answered from the source."
             )
+        return dataclasses.replace(config, start_date=coverage_start)
 
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
         """Validate the membership panel instead of running the OHLCV cleaner."""

@@ -15,6 +15,7 @@ written by the shared `hive_raw_tree` fixture, in the shape
 `StockDataset._scan_raw` asserts: `Path(raw_data_dir_path).name == vendor`.
 """
 
+import dataclasses
 from pathlib import Path
 from typing import Callable
 
@@ -311,8 +312,7 @@ def test_an_unserved_combination_names_the_request_and_what_is_served(
     mistyped vendor token.
     """
     descriptor = DataSourceRegistry.get("tiingo")
-    config = tiingo_raw_tier()
-    config.frequency = "1m"  # type: ignore[assignment]
+    config = dataclasses.replace(tiingo_raw_tier(), frequency="1m")
 
     with pytest.raises(ValueError) as excinfo:
         convert(descriptor, config)

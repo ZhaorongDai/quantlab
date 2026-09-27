@@ -21,6 +21,7 @@ checkpoints. Concrete heads live in ``quantlab/dl_model`` and
 """
 
 import copy
+import dataclasses
 import json
 import random
 from abc import ABC, abstractmethod
@@ -189,10 +190,11 @@ class BaseModel(ABC):
 
     @config.setter
     def config(self, config: DLConfig | MLConfig):
-        """Install ``config`` after checking its class.
+        """Install a normalised copy of ``config`` after checking its class.
 
         Missing ``start_date`` / ``end_date`` fall back to the project-wide
-        defaults, and ``config.name`` is set to the model's import path. The
+        defaults, and ``name`` is set to the model's import path, on the
+        model's own config; the config passed in is never edited. The
         factors and labels are left untouched: ``collect()`` passes the
         model's date range to each of them per request, so one factor object
         can serve several models with different ranges.
@@ -212,18 +214,49 @@ class BaseModel(ABC):
         >>> model.config.end_date
         '2100-01-01'
         """
+        self._config = self._normalize_config(config)
+
+    def _normalize_config(self, config: DLConfig | MLConfig) -> DLConfig | MLConfig:
+        """Return ``config`` checked against ``config_cls`` with its defaults filled in.
+
+        A model variant that validates or completes its config overrides
+        this, calls ``super()._normalize_config(config)`` first and returns a
+        new config built with ``dataclasses.replace``. It reads the config
+        it is given, never ``self.config``.
+
+        Parameters
+        ----------
+        config : DLConfig or MLConfig
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        DLConfig or MLConfig
+            A new config with ``name``, ``start_date`` and ``end_date`` set.
+
+        Raises
+        ------
+        TypeError
+            If ``config`` is not an instance of ``config_cls``.
+
+        Examples
+        --------
+        >>> model._normalize_config(config).name
+        'quantlab.ml_model.xgb.XGBoostRegressor'
+        """
         if not isinstance(config, self.config_cls):
             raise TypeError(
                 f"{self.class_name} requires a {self.config_cls.__name__}, "
                 f"got {type(config).__name__}"
             )
-        self._config = config
-        self._config.name = self.import_path
-
-        if self._config.start_date is None:
-            self._config.start_date = Date.START_DATE
-        if self._config.end_date is None:
-            self._config.end_date = Date.END_DATE
+        return dataclasses.replace(
+            config,
+            name=self.import_path,
+            start_date=(
+                Date.START_DATE if config.start_date is None else config.start_date
+            ),
+            end_date=Date.END_DATE if config.end_date is None else config.end_date,
+        )
 
     @property
     def num_times(self) -> int:
@@ -1031,10 +1064,13 @@ class BaseModel(ABC):
         read from another working directory) and whatever ``test_*`` metrics
         ``_fit`` returned.
         """
-        self.config.train_start = fold["train_start"]
-        self.config.train_end = fold["train_end"]
-        self.config.test_start = fold["test_start"]
-        self.config.test_end = fold["test_end"]
+        self.config = dataclasses.replace(
+            self.config,
+            train_start=fold["train_start"],
+            train_end=fold["train_end"],
+            test_start=fold["test_start"],
+            test_end=fold["test_end"],
+        )
 
         experiment_name = f"{self.class_name}_cv_fold_{fold['fold']}"
         model_name = f"{experiment_name}{self.checkpoint_suffix}"

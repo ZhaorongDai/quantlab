@@ -60,13 +60,15 @@ A dataset is built from a config dataclass. `BaseDatasetConfig` carries what eve
 'quantlab.dataset.stock.StockDataset'
 ```
 
-Assigning a config fills in `name` with the dotted import path of the class, which is how a saved config is turned back into an object. A missing `start_date` or `end_date` becomes `1900-01-01` or `2100-01-01`, so a date filter always has two ends. The dates and `symbols` bound what the build path converts (`from_raw_data()`, `from_raw_data_chunked()`, `update()`) and what `save()` writes; reading takes its range as arguments instead. Both dates must be ISO `YYYY-MM-DD` strings, because every date comparison in the pipeline is a string comparison.
+Configs are frozen: a field cannot be assigned, and a changed config is made with `dataclasses.replace`. The dataset holds a normalised copy of the config it is given and never edits yours. The copy has `name` filled in with the dotted import path of the class, which is how a saved config is turned back into an object, and a missing `start_date` or `end_date` becomes `1900-01-01` or `2100-01-01`, so a date filter always has two ends. The dates and `symbols` bound what the build path converts (`from_raw_data()`, `from_raw_data_chunked()`, `update()`) and what `save()` writes; reading takes its range as arguments instead. Both dates must be ISO `YYYY-MM-DD` strings, because every date comparison in the pipeline is a string comparison.
 
 ```python
 >>> open_ended = dataclasses.replace(config, start_date=None, end_date=None)
 >>> d = StockDataset(open_ended)
 >>> d.config.start_date, d.config.end_date
 ('1900-01-01', '2100-01-01')
+>>> open_ended.start_date, open_ended.name
+(None, None)
 >>> bad = dataclasses.replace(config, end_date="2024-2-29")
 >>> try:
 ...     StockDataset(bad)
@@ -360,6 +362,8 @@ Traceback (most recent call last):
     ...
 TypeError: Can't instantiate abstract class Incomplete without an implementation for abstract method '_raw_data_to_xr'
 ```
+
+A dataset that validates or completes its config overrides `_normalize_config(config)`: call `super()._normalize_config(config)` first, check the result, and return a new config made with `dataclasses.replace`. It runs on every assignment, before the config is installed, so an invalid config is refused when the dataset is created. `CrspStockDataset` refuses `symbols` and normalises `permnos` this way. Do not redefine the `config` property.
 
 For a raw source that can filter by date before it loads, implement `_raw_data_to_xr_window` to read only that window. `StockDataset` does so by pruning Parquet partitions, which bounds memory by the window. The slicing form above bounds only the write.
 

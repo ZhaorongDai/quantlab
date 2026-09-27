@@ -532,7 +532,8 @@ class RNNRegressor(DLModel):
 
         Examples
         --------
-        >>> model.config.lr_refit = 1e-4
+        >>> from dataclasses import replace
+        >>> model.config = replace(model.config, lr_refit=1e-4)
         >>> model.update(torch.randn(4, 2, 3), torch.randn(4, 2, 2))
         """
         if self.config.lr_refit <= 0.0:

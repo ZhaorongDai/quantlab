@@ -434,10 +434,9 @@ class LiteratureAlpha(FactorKunQuant):
     )
     _DIAGNOSTIC_FACTOR_NAMES = tuple(_DIAGNOSTIC_FAMILIES)
 
-    def __init__(self, factor_config: FactorConfig):
-        """Initialize the factor and validate its selected input contract."""
+    def _validate_config(self) -> None:
+        """Refuse unknown ``factor_names`` or ``data_columns`` that do not fit them."""
 
-        super().__init__(factor_config)
         params = self._parameters()
         known = set(self._get_factor_names())
         unknown_outputs = sorted(set(self.get_factor_names()) - known)

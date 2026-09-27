@@ -35,6 +35,8 @@ object, so `FakePanel` stands in for the whole KunQuant + zarr stack.
 documented `WANDB_MODE=disabled` bypass.
 """
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -508,7 +510,7 @@ def test_refit_optimizer_is_rebuilt_when_lr_refit_changes(tmp_path):
     first = model._get_refit_optim()
     assert first.param_groups[0]["lr"] == pytest.approx(1e-2)
 
-    model.config.lr_refit = 5e-3
+    model.config = dataclasses.replace(model.config, lr_refit=5e-3)
     second = model._get_refit_optim()
     assert second is not first
     assert second.param_groups[0]["lr"] == pytest.approx(5e-3)

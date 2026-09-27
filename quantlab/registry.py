@@ -832,7 +832,7 @@ def convert(
                 f"directory, so they must agree."
             )
         kwargs["data_type"] = capability.data_type
-        dataset_config.kwargs = kwargs
+        dataset_config = dataclasses.replace(dataset_config, kwargs=kwargs)
 
     dataset = capability.dataset_cls(dataset_config)
     dataset.from_raw_data_chunked(

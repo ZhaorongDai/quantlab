@@ -186,9 +186,8 @@ def test_resample_returns_an_independent_copy(minute_config: DatasetConfig):
     assert dict(panel.sizes) == {"timestamp": DAYS, "symbol": 2}
     assert panel["Close"].values[:, 0].tolist() == [6.0, 12.0, 18.0]
     assert (np.diff(panel["timestamp"].values) == np.timedelta64(1, "D")).all()
-    # The config is not shared.
-    daily.config.resample_how = "last"
-    assert minute.config.resample_how is None
+    # Resampling built a new config; the source's is unchanged.
+    assert (minute.config.resample_freq, minute.config.resample_how) == (None, None)
 
 
 def test_a_resampled_dataset_answers_requests_from_the_source_store(

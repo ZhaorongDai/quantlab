@@ -19,6 +19,7 @@ Import-safety rule (tests/conftest.py module docstring): nothing here may
 import a module that does not exist yet at module level.
 """
 
+import dataclasses
 from pathlib import Path
 from typing import Callable
 
@@ -76,8 +77,10 @@ def _stream_factor(
     `_reset_symbols()` (which reads the Zarr) whenever `symbols` is not None;
     the fixture guarantees the store is already on disk.
     """
-    dataset_config = spot_kline_zarr(periods=periods, seed=0)
-    dataset_config.symbols = tuple(f"S{i}USDT" for i in range(8))
+    dataset_config = dataclasses.replace(
+        spot_kline_zarr(periods=periods, seed=0),
+        symbols=tuple(f"S{i}USDT" for i in range(8)),
+    )
 
     return Alpha158SpotKline(
         FactorConfig(

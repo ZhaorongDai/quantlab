@@ -22,6 +22,7 @@ A concrete dataset lives under ``quantlab/dataset/`` and implements
 """
 
 import copy
+import dataclasses
 import datetime
 import os
 import shutil
@@ -157,8 +158,8 @@ class BaseDataset(ABC):
     Parameters
     ----------
     config : BaseDatasetConfig
-        The dataset config. It is modified in place on assignment; see the
-        ``config`` property.
+        The dataset config. It is not modified: the dataset holds a
+        normalised copy; see the ``config`` property.
 
     Attributes
     ----------
@@ -219,6 +220,23 @@ class BaseDataset(ABC):
     def __repr__(self):
         """Return ``ClassName(config=...)``."""
         return f"{self.__class__.__name__}(config={self.config})"
+
+    def __eq__(self, other: object) -> bool:
+        """Return whether ``other`` is a dataset of the same class with an equal config.
+
+        A dataset is identified by its config, so a dataset rebuilt from its
+        ``config.json`` equals the one that wrote it, and so does a config
+        holding it. What a build call holds in memory is not compared.
+        Datasets are unhashable.
+
+        Examples
+        --------
+        >>> DemoDataset(config) == DemoDataset(config)
+        True
+        """
+        if type(other) is not type(self):
+            return NotImplemented
+        return self.config == other.config
 
     @property
     def num_symbols(self) -> int:
@@ -348,15 +366,11 @@ class BaseDataset(ABC):
 
     @config.setter
     def config(self, config: BaseDatasetConfig):
-        """Assign the config, filling in defaults and checking its dates.
+        """Install ``_normalize_config(config)`` as this dataset's config.
 
-        The config is modified in place. ``name`` is set to the class's
-        import path. A missing ``start_date`` or ``end_date`` falls back to
-        ``Date.START_DATE`` or ``Date.END_DATE``. Both dates must be ISO
-        ``YYYY-MM-DD`` strings; a ``datetime.date`` is accepted and converted.
-        Later code compares dates as plain strings, so a value such as
-        ``"2007-2-1"`` would silently compare wrong; it is refused here
-        instead.
+        The config passed in is never edited: configs are frozen, and the
+        normalised one is a new object. Subclasses that validate or complete
+        their config extend ``_normalize_config`` rather than this property.
 
         Parameters
         ----------
@@ -366,33 +380,82 @@ class BaseDataset(ABC):
         Raises
         ------
         ValueError
-            If a date is not an ISO ``YYYY-MM-DD`` date.
+            If ``_normalize_config`` refuses the config.
 
         Examples
         --------
-        >>> ds.config = dataclasses.replace(ds.config, start_date="2024-01-03")
-        >>> ds.config.start_date
-        '2024-01-03'
-        >>> ds.config = dataclasses.replace(ds.config, start_date="01/02/2024")
+        >>> config = dataclasses.replace(ds.config, start_date=None)
+        >>> ds.config = config
+        >>> config.start_date, ds.config.start_date
+        (None, '1900-01-01')
+        """
+        self._config = self._normalize_config(config)
+        self._on_config_installed()
+
+    def _on_config_installed(self) -> None:
+        """Reset state derived from the config, after a new one is installed.
+
+        Does nothing here. A subclass that caches values derived from its
+        config (a resolved filter, a symbology, a calendar) rebuilds or
+        clears them in this hook, reading ``self.config``. It runs only after
+        ``_normalize_config`` accepted the config, so a refused config leaves
+        the dataset's config and caches as they were.
+        """
+
+    def _normalize_config(self, config: BaseDatasetConfig) -> BaseDatasetConfig:
+        """Return ``config`` with its defaults filled in and its dates checked.
+
+        ``name`` is set to the class's import path. A missing ``start_date``
+        or ``end_date`` falls back to ``Date.START_DATE`` or
+        ``Date.END_DATE``. Both dates must be ISO ``YYYY-MM-DD`` strings; a
+        ``datetime.date`` is accepted and converted. Later code compares
+        dates as plain strings, so a value such as ``"2007-2-1"`` would
+        silently compare wrong; it is refused here instead. The resample
+        fields are checked.
+
+        A subclass that validates or completes its config overrides this,
+        calls ``super()._normalize_config(config)`` first and returns a new
+        config built with ``dataclasses.replace``. It runs before the result
+        is installed, so it reads the config it is given, never
+        ``self.config``, and changes nothing on ``self``; state derived from
+        the config is reset in ``_on_config_installed``.
+
+        Parameters
+        ----------
+        config : BaseDatasetConfig
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        BaseDatasetConfig
+            A new config of the same class.
+
+        Raises
+        ------
+        ValueError
+            If a date is not an ISO ``YYYY-MM-DD`` date, or the resample
+            fields are invalid.
+
+        Examples
+        --------
+        >>> ds._normalize_config(
+        ...     dataclasses.replace(ds.config, start_date="01/02/2024")
+        ... )
         Traceback (most recent call last):
         ValueError: DemoDataset: start_date must be an ISO YYYY-MM-DD date ...
         """
-        self._config = config
-        self._config.name = self.import_path
-
-        if self._config.start_date is None:
-            self._config.start_date = Date.START_DATE
-        if self._config.end_date is None:
-            self._config.end_date = Date.END_DATE
-
-        self._config.start_date = self._normalize_date(
-            self._config.start_date, "start_date"
+        start_date = (
+            Date.START_DATE if config.start_date is None else config.start_date
         )
-        self._config.end_date = self._normalize_date(
-            self._config.end_date, "end_date"
-        )
+        end_date = Date.END_DATE if config.end_date is None else config.end_date
         validate_resample_config(
-            self._config.resample_freq, self._config.resample_how, self.class_name
+            config.resample_freq, config.resample_how, self.class_name
+        )
+        return dataclasses.replace(
+            config,
+            name=self.import_path,
+            start_date=self._normalize_date(start_date, "start_date"),
+            end_date=self._normalize_date(end_date, "end_date"),
         )
 
     def _normalize_date(self, value: str, field_name: str) -> str:
@@ -444,9 +507,9 @@ class BaseDataset(ABC):
     def copy(self) -> Self:
         """Return a copy with its own config and an empty storage backend.
 
-        The config is deep-copied and re-assigned through the ``config``
-        setter, so the copy shares no mutable state with this object. The
-        copy holds no panel until it is built.
+        The config is deep-copied, so the copy shares no mutable state with
+        this object, not even a ``kwargs`` dict. The copy holds no panel
+        until it is built.
 
         Examples
         --------
@@ -507,10 +570,9 @@ class BaseDataset(ABC):
         780
         """
         other = self.copy()
-        config = other.config
-        config.resample_freq = freq
-        config.resample_how = how
-        other.config = config
+        other.config = dataclasses.replace(
+            other.config, resample_freq=freq, resample_how=how
+        )
         if self._holds_data():
             other.data_backend.to_internal(
                 self.data_backend.get_xarray_dataset()

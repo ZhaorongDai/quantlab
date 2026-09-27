@@ -35,6 +35,8 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 | `factor_names` | 输出列名；为 `None` 时由因子自己推出 |
 | `kwargs` | 因子类自行读取的自由选项 |
 
+配置是冻结的。因子持有的是归一化后的副本，其中 `name` 和 `factor_names` 已填好；你传入的配置从不被改动，保存下来的 `config.json` 能重建出配置相等的因子。
+
 配置只说明算什么，不说明算哪段时间。日期区间是 `compute(start, end)`、`build(start, end)` 和 `read(start, end)` 的参数，这些调用都不会改动因子自己或其数据集的配置。
 
 ### 计算一个因子
@@ -375,7 +377,7 @@ features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
 
 ### 一个 KunQuant 因子
 
-继承 `FactorKunQuant`，实现 `_get_factor_names`、`_get_factor_func`（KunQuant 计算图：`data_columns` 的每一项对应一个 `Input`，每个因子名对应一个 `Output`）和 `_get_features`。下面的计算图输出一个均线偏离度，分别给出原始值、沿时间的 z-score 和跨标的的 z-score。KunQuant 在每次 `compute()` 时编译（这里约一秒）。
+继承 `FactorKunQuant`，实现 `_get_factor_names`、`_get_factor_func`（KunQuant 计算图：`data_columns` 的每一项对应一个 `Input`，每个因子名对应一个 `Output`）和 `_get_features`。下面的计算图输出一个均线偏离度，分别给出原始值、沿时间的 z-score 和跨标的的 z-score。KunQuant 在每次 `compute()` 时编译（这里约一秒）。字段之间互相约束的因子（例如 `data_columns` 要和参数对应）重写 `_validate_config`，读取 `self.config`，不合格时抛 `ValueError`；它在每次给 config 赋值时运行，包括 `copy()` 和 `resample()` 所做的赋值，被拒绝的 config 不会生效，因子保留原来的 config。`LiteratureAlpha` 和 `ResidualMomentumFF3` 就是这样检查 `data_columns` 的。
 
 ```python
 >>> import KunQuant.ops as op

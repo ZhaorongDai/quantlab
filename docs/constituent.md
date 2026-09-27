@@ -105,7 +105,7 @@ The `symbol` axis is the sorted union of every symbol in the interval table, com
 
 ### Coverage start and the as-of date
 
-A source cannot answer for dates before its coverage start. The config setter raises `start_date` to that date, so a default window does not produce decades of `False` rows that would read as "not a member" rather than "unknown". A warning is logged only when the caller asked for an earlier date explicitly.
+A source cannot answer for dates before its coverage start. Config normalisation raises `start_date` to that date on the dataset's own config (the config you passed is left as written), so a default window does not produce decades of `False` rows that would read as "not a member" rather than "unknown". A warning is logged only when the caller asked for an earlier date explicitly.
 
 The right edge is the requested `end_date`, limited to the latest date the intervals justify. When any interval is open, that limit is `as_of`, or the current date if `as_of` is unset. An unset `as_of` therefore makes the panel's shape depend on the day it was built; set it whenever the panel must be reproducible.
 

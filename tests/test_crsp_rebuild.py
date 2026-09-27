@@ -18,6 +18,7 @@ re-converts the on-disk panel.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -388,9 +389,11 @@ def test_required_inputs_resolve_relative_config_paths_under_data_root(
     tmp_path: Path,
 ):
     """A relative config path is joined onto `data_root`, never onto the cwd."""
-    config = _crsp_config(tmp_path)
-    config.raw_data_dir_path = "data/downloads/us_equity/1d/wrds_crsp/wrds"
-    config.reference_dir = "data/downloads/us_equity/1d/wrds_crsp/_reference"
+    config = dataclasses.replace(
+        _crsp_config(tmp_path),
+        raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
+        reference_dir="data/downloads/us_equity/1d/wrds_crsp/_reference",
+    )
     rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
 
     raw, reference = rebuilder._required_inputs()

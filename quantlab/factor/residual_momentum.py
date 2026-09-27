@@ -152,7 +152,8 @@ class ResidualMomentumParameters:
 
         Examples
         --------
-        >>> config.kwargs = {"regression_window": 504}
+        >>> from dataclasses import replace
+        >>> config = replace(config, kwargs={"regression_window": 504})
         >>> ResidualMomentumParameters.from_config(config).regression_window
         504
         """
@@ -571,9 +572,8 @@ class ResidualMomentumFF3(FactorKunQuant):
         "factor_cov_determinant",
     )
 
-    def __init__(self, factor_config: FactorConfig):
-        """Initialize the factor and validate its config; see the class docstring."""
-        super().__init__(factor_config)
+    def _validate_config(self) -> None:
+        """Refuse ``data_columns`` or ``factor_names`` the parameters do not produce."""
         params = self._parameters()
         configured_columns = tuple(self.config.data_columns)
         if len(configured_columns) != len(set(configured_columns)) or set(

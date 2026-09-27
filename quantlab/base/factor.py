@@ -126,26 +126,45 @@ class Factor(ABC):
         """Return the class name and its config."""
         return f"{self.__class__.__name__}(config={self.config})"
 
+    def __eq__(self, other: object) -> bool:
+        """Return whether ``other`` is a factor of the same class with an equal config.
+
+        A factor is identified by its config, so a factor rebuilt from its
+        ``config.json`` equals the one that wrote it, and so does a config
+        holding it. What a build call holds in memory is not compared.
+        Factors are unhashable.
+
+        Examples
+        --------
+        >>> MyFactor(config) == MyFactor(config)
+        True
+        """
+        if type(other) is not type(self):
+            return NotImplemented
+        return self.config == other.config
+
     @property
     def config(self) -> BaseFactorConfig:
-        """The factor's config; assigning it fills in ``name`` and ``factor_names``.
+        """The factor's normalised config: ``name`` and ``factor_names`` filled in.
 
         Examples
         --------
         >>> factor.config is config
-        True
-        >>> factor.config.name
-        'quantlab.factor.momentum.Momentum'
+        False
+        >>> factor.config.name, config.name
+        ('quantlab.factor.momentum.Momentum', None)
         """
         return self._config
 
     @config.setter
     def config(self, config: BaseFactorConfig):
-        """Take ownership of ``config`` and fill in what it leaves unset.
+        """Install a normalised copy of ``config``.
 
         ``name`` is set to this class's import path, the resample fields are
-        checked, and ``factor_names`` are resolved if unset. Nothing is
-        written into the dataset's config. Nothing here touches the storage
+        checked, ``factor_names`` are resolved if unset, and
+        ``_validate_config`` runs. The config passed in is never edited, and
+        nothing is written into the dataset's config. If any step raises, the
+        factor keeps the config it had. Nothing here touches the storage
         backend, which does not exist yet when ``__init__`` assigns the
         config.
 
@@ -156,28 +175,47 @@ class Factor(ABC):
 
         Examples
         --------
-        >>> factor.config = PolarsFactorConfig(
+        >>> config = PolarsFactorConfig(
         ...     warmup_bars=5, dataset=dataset, kwargs={"n": 5},
         ...     file_path="momentum_5.zarr",
         ... )
-        >>> factor.get_factor_names()
-        ('momentum_5',)
+        >>> factor.config = config
+        >>> factor.config.factor_names, config.factor_names
+        (('momentum_5',), None)
         >>> factor.config.dataset.config is dataset.config   # left untouched
         True
         """
-        self._config = config
-        self._config.name = self.import_path
-
         validate_resample_config(
-            self._config.resample_freq, self._config.resample_how, self.class_name
+            config.resample_freq, config.resample_how, self.class_name
         )
+        # `_get_factor_names` and `_validate_config` read `self.config` (a
+        # label's horizon sits in its kwargs), so the candidate is installed
+        # first and the previous config restored if either raises.
+        previous = self.__dict__.get("_config")
+        self._config = dataclasses.replace(config, name=self.import_path)
+        try:
+            if self._config.factor_names is None:
+                self._config = dataclasses.replace(
+                    self._config, factor_names=tuple(self._get_factor_names())
+                )
+            self._validate_config()
+        except Exception:
+            if previous is None:
+                del self._config
+            else:
+                self._config = previous
+            raise
 
-        self._maybe_resolve_factor_names()
+    def _validate_config(self) -> None:
+        """Refuse an installed config this factor cannot compute from.
 
-    def _maybe_resolve_factor_names(self) -> None:
-        """Fill ``config.factor_names`` from ``_get_factor_names()`` when unset."""
-        if self._config.factor_names is None:
-            self._config.factor_names = self._get_factor_names()
+        Does nothing here. A subclass with constraints across fields (its
+        ``data_columns`` against its parameters, its ``factor_names``
+        against what it can produce) overrides this, reads ``self.config``
+        and raises ``ValueError``. It runs on every assignment, including
+        the ones ``copy()`` and ``resample()`` make, and a raise leaves the
+        factor's previous config in place.
+        """
 
     @property
     def num_factors(self) -> int:
@@ -562,9 +600,9 @@ class Factor(ABC):
     def copy(self) -> Self:
         """Return a copy with its own config, dataset and empty backend.
 
-        The config is deep-copied, its ``dataset`` replaced by
-        ``dataset.copy()``, and re-assigned through the ``config`` setter,
-        so the copy shares no mutable state with this factor.
+        The config is deep-copied with its ``dataset`` replaced by
+        ``dataset.copy()``, so the copy shares no mutable state with this
+        factor, not even a ``kwargs`` dict.
 
         Examples
         --------
@@ -575,8 +613,9 @@ class Factor(ABC):
         other = copy.copy(self)
         other.data_backend = XrBackend()
         config = copy.deepcopy(dataclasses.replace(self.config, dataset=None))
-        config.dataset = self.config.dataset.copy()
-        other.config = config
+        other.config = dataclasses.replace(
+            config, dataset=self.config.dataset.copy()
+        )
         return other
 
     def resample(
@@ -625,10 +664,9 @@ class Factor(ABC):
         2
         """
         other = self.copy()
-        config = other.config
-        config.resample_freq = freq
-        config.resample_how = how
-        other.config = config
+        other.config = dataclasses.replace(
+            other.config, resample_freq=freq, resample_how=how
+        )
         return other
 
     def _refuse_if_resampled(self, method: str) -> None:

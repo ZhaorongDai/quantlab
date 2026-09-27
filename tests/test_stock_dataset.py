@@ -7,6 +7,7 @@ Test 3 is a full mocked-network integration test proving the
 TiingoAcquisition -> StockDataset -> Zarr round trip end-to-end (Task 2).
 """
 
+import dataclasses
 from pathlib import Path
 from typing import Callable
 
@@ -162,10 +163,10 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
 
     # A (timestamp, symbol) combination absent from the fetched data is NaN
     # in the read-back result -- not forward-filled.
-    other_config = _make_dataset_config(
-        raw_data_dir_path, str(tmp_path / "stock_multi.zarr")
+    other_config = dataclasses.replace(
+        _make_dataset_config(raw_data_dir_path, str(tmp_path / "stock_multi.zarr")),
+        symbols=None,
     )
-    other_config.symbols = None
     multi_symbol_dataset = StockDataset(other_config)
     # Write a second symbol's raw data covering a disjoint date so a gap
     # exists for AAPL on that date once both symbols share the same

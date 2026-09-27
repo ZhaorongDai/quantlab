@@ -33,6 +33,7 @@ ticker sidecar as the CRSP conversion (``<store>.crsp_tickers.json``), which
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import date
 from pathlib import Path
@@ -44,7 +45,6 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import DatasetConfig, NbboDatasetConfig
-from quantlab.base.data import BaseDataset
 from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 from quantlab.dataset.crsp.reference import CrspReference
@@ -155,23 +155,26 @@ class NbboPanelDataset(StockDataset):
     #: chunk ledger marks them done leave it, and the sidecar, unchanged.
     last_filter_stats: dict | None = None
 
-    @BaseDataset.config.setter
-    def config(self, config: DatasetConfig):
-        """Assign the config after checking the NBBO-specific fields.
+    def _normalize_config(self, config: DatasetConfig) -> NbboDatasetConfig:
+        """Normalise as the base class does, then check the NBBO-specific fields.
 
-        After the base class processes the config, it must be an
-        ``NbboDatasetConfig`` with ``frequency="tick"`` and a ``bar_interval``
-        from ``BAR_INTERVAL_SECONDS``. The ticker-side ``symbols`` field is
+        The config must be an ``NbboDatasetConfig`` with
+        ``frequency="tick"`` and a ``bar_interval`` from
+        ``BAR_INTERVAL_SECONDS``. The ticker-side ``symbols`` field is
         refused with any value, and ``permnos`` is normalized to a tuple of
         digit strings, or refused when empty or not made of digits. The
-        session calendar is created here so that a bad window fails when
-        the dataset is created rather than on the first conversion. The
-        symbology cache is cleared, since it depends on ``reference_dir``.
+        session window is checked here so that a bad window fails when the
+        dataset is created rather than on the first conversion.
 
         Parameters
         ----------
         config : NbboDatasetConfig
-            The new configuration.
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        NbboDatasetConfig
+            A new, normalised config.
 
         Raises
         ------
@@ -185,15 +188,14 @@ class NbboPanelDataset(StockDataset):
 
         Examples
         --------
-        >>> ds.config = replace(config, symbols=("AAPL",))
+        >>> NbboPanelDataset(replace(config, symbols=("AAPL",)))
         Traceback (most recent call last):
         ...
         ValueError: NbboPanelDataset: config.symbols is not selectable ...
-        >>> ds.config = replace(config, permnos=(14593,))
-        >>> ds.config.permnos
+        >>> NbboPanelDataset(replace(config, permnos=(14593,))).config.permnos
         ('14593',)
         """
-        BaseDataset.config.fset(self, config)
+        config = super()._normalize_config(config)
         if not isinstance(config, NbboDatasetConfig):
             raise TypeError(
                 f"{self.class_name} needs an NbboDatasetConfig, got "
@@ -247,10 +249,21 @@ class NbboPanelDataset(StockDataset):
                     f"is assumed: pass None for every PERMNO, or a non-empty "
                     f"roster."
                 )
-            config.permnos = permnos
+            config = dataclasses.replace(config, permnos=permnos)
         # The exchange calendar itself loads on the first session_bounds
         # call; only the window is checked here.
-        self._calendar = XnysSessionCalendar(config.session_start, config.session_end)
+        XnysSessionCalendar(config.session_start, config.session_end)
+        return config
+
+    def _on_config_installed(self) -> None:
+        """Create the session calendar and clear the symbology cache.
+
+        The symbology depends on ``reference_dir``, so a new config must not
+        reuse it.
+        """
+        self._calendar = XnysSessionCalendar(
+            self.config.session_start, self.config.session_end
+        )
         self._symbology_cache: CrspSymbology | None = None
 
     @property

@@ -44,6 +44,7 @@ See ``docs/wrds_crsp.md``.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import polars as pl
@@ -51,7 +52,6 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import CrspDatasetConfig, DatasetConfig
-from quantlab.base.data import BaseDataset
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
 from quantlab.dataset.stock import StockDataset
@@ -343,19 +343,17 @@ class CrspStockDataset(StockDataset):
         """Return ``"crsp_daily"``, the directory under the vendor root the scan starts in."""
         return self.DATA_TYPE
 
-    @BaseDataset.config.setter
-    def config(self, config: DatasetConfig):
-        """Assign the config after checking the CRSP-specific fields.
+    def _normalize_config(self, config: DatasetConfig) -> CrspDatasetConfig:
+        """Normalise as the base class does, then check the CRSP-specific fields.
 
-        After the base class normalizes the dates, this refuses anything that
-        is not a ``CrspDatasetConfig``, a ``frequency`` other than ``"1d"``,
-        a ``vendor`` other than ``"wrds"``, any value of the ticker-based
-        ``symbols`` field, a ``permnos`` entry that is not a digit string, an
-        empty ``permnos`` tuple, an unknown ``security_filter`` and an
-        unknown ``roster_universe``. ``permnos`` is stored as a tuple of
-        strings and a dict ``security_filter`` as tuples of strings, so the
-        config survives a round trip through JSON unchanged. Every cache
-        built from the previous config is cleared.
+        This refuses anything that is not a ``CrspDatasetConfig``, a
+        ``frequency`` other than ``"1d"``, a ``vendor`` other than
+        ``"wrds"``, any value of the ticker-based ``symbols`` field, a
+        ``permnos`` entry that is not a digit string, an empty ``permnos``
+        tuple, an unknown ``security_filter`` and an unknown
+        ``roster_universe``. The returned config holds ``permnos`` as a tuple
+        of strings and a dict ``security_filter`` as tuples of strings, so it
+        survives a round trip through JSON unchanged.
 
         Checking here rather than at first use means a wrong field is
         reported by name before any raw data is scanned.
@@ -363,7 +361,12 @@ class CrspStockDataset(StockDataset):
         Parameters
         ----------
         config : CrspDatasetConfig
-            The new configuration.
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        CrspDatasetConfig
+            A new, normalised config.
 
         Raises
         ------
@@ -375,14 +378,14 @@ class CrspStockDataset(StockDataset):
         Examples
         --------
         >>> from dataclasses import replace
-        >>> ds.config = replace(config, permnos=(14593,))
-        >>> ds.config.permnos
-        ('14593',)
-        >>> ds.config = replace(config, symbols=("AAPL",))
+        >>> config = replace(config, permnos=(14593,))
+        >>> CrspStockDataset(config).config.permnos, config.permnos
+        (('14593',), (14593,))
+        >>> CrspStockDataset(replace(config, symbols=("AAPL",)))
         Traceback (most recent call last):
         ValueError: CrspStockDataset: config.symbols is not selectable ...
         """
-        BaseDataset.config.fset(self, config)
+        config = super()._normalize_config(config)
         if not isinstance(config, CrspDatasetConfig):
             raise TypeError(
                 f"{self.class_name} needs a CrspDatasetConfig, got "
@@ -439,18 +442,20 @@ class CrspStockDataset(StockDataset):
                     f"pass None to mean 'every PERMNO in the raw tier', or a "
                     f"non-empty roster to name the securities you want."
                 )
-            config.permnos = permnos
+            config = dataclasses.replace(config, permnos=permnos)
 
         # Check the filter now: a malformed filter is a config error and
         # should not appear only after the raw files are scanned.
         # `_security_filter` holds the resolved mapping, while
         # `config.security_filter` keeps what the user wrote (a preset stays a
         # name) so the config round-trips; a dict is normalized to tuples.
-        self._security_filter = resolve_security_filter(
+        security_filter = resolve_security_filter(
             config.security_filter, owner=self.class_name
         )
         if isinstance(config.security_filter, dict):
-            config.security_filter = dict(self._security_filter)
+            config = dataclasses.replace(
+                config, security_filter=dict(security_filter)
+            )
         if config.roster_universe is not None:
             from quantlab.dataset.crsp.membership import CrspMembership
 
@@ -461,8 +466,17 @@ class CrspStockDataset(StockDataset):
                     f"this vendor serves {CrspMembership.INDEXES}."
                 )
 
-        # Every cache below depends on the configured window and roster, so
-        # a new config must not reuse any of them.
+        return config
+
+    def _on_config_installed(self) -> None:
+        """Resolve the security filter and clear every cache of the previous config.
+
+        Every cache below depends on the configured window and roster, so a
+        new config must not reuse any of them.
+        """
+        self._security_filter = resolve_security_filter(
+            self.config.security_filter, owner=self.class_name
+        )
         self._derivation_cache: pl.DataFrame | None = None
         self._symbology: CrspSymbology | None = None
         self._filter_report: dict | None = None
