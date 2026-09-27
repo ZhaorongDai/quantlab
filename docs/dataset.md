@@ -131,7 +131,7 @@ np.timedelta64(86400000000,'us')
 
 ### Request a date range or symbols
 
-`panel(start, end, symbols=None)` returns the stored panel for an inclusive date range. It opens the store lazily on every call, loads no variable until it is used, keeps nothing on the dataset and leaves the config alone, so one dataset object answers any number of requests.
+`panel(start, end, symbols=None)` returns the stored panel for an inclusive date range. It opens the store lazily on every call, loads no variable until it is used, keeps nothing on the dataset and leaves the config alone, so one dataset object answers any number of requests. The store is opened through a fresh backend of the same type as the dataset's `data_backend`, so a dataset that writes another storage medium reads it back the same way.
 
 ```python
 >>> ds = StockDataset(config)

@@ -166,7 +166,9 @@ class BaseDataset(ABC):
     Attributes
     ----------
     data_backend : XrBackend
-        Holds the panel the build path converted, and writes the Zarr store.
+        Holds the panel the build path converted, and writes the store.
+        Requests read through a fresh instance of its type, so a dataset
+        reads the medium it writes.
     last_chunk_result : ConversionResult or None
         Summary of the last ``from_raw_data_chunked`` or ``update`` run, or
         ``None`` if neither has completed on this object.
@@ -520,7 +522,7 @@ class BaseDataset(ABC):
         (False, False)
         """
         other = copy.copy(self)
-        other.data_backend = XrBackend()
+        other.data_backend = type(self.data_backend)()
         other.last_chunk_result = None
         other.config = copy.deepcopy(self.config)
         return other
@@ -662,8 +664,18 @@ class BaseDataset(ABC):
         )
 
     def _open_store(self, path: str) -> xr.Dataset:
-        """Open the Zarr store at ``path`` lazily, in a backend of its own."""
-        return XrBackend().read(path).data
+        """Open the store at ``path`` through a fresh backend of this dataset's type.
+
+        The backend is a new instance of ``type(self.data_backend)``, so a
+        dataset configured with another storage medium reads through the
+        same medium it writes, and nothing is held on ``self.data_backend``
+        afterwards. The backend class must construct without arguments.
+        """
+        return (
+            type(self.data_backend)()
+            .read(path)
+            .get_xarray_dataset(["timestamp", "symbol"])
+        )
 
     def panel(
         self,

@@ -370,10 +370,12 @@ the dataset round trip give:
 
 `read` opens the store again on every call and replaces whatever `data`
 held; it caches nothing. The build path (`from_raw_data`, `save`) goes
-through `data_backend`. The read path does not: `panel(start, end)` and
-`bar_before(date, n)` open the store through a fresh `XrBackend`, that is
-`xarray.open_dataset(path)`, which reads the NetCDF file above because
-xarray detects its format. For a medium that does not
+through `data_backend`. The read path uses the same medium without holding
+anything: `panel(start, end)` and `bar_before(date, n)` open the store
+through a fresh instance of `type(data_backend)`, call its `read(path)` and
+take `get_xarray_dataset(["timestamp", "symbol"])`, and `copy()` and
+`resample()` give the copy a backend of the same type. The backend class
+must therefore construct without arguments. For a medium that does not
 hold an xarray object, implement all eight methods; `PlBackend` in
 `quantlab/backend.py` is the reference for a table-shaped medium, and its
 `get_xarray_dataset(indexes)` shows how to turn the named columns into the

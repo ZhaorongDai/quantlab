@@ -131,7 +131,7 @@ np.timedelta64(86400000000,'us')
 
 ### 按日期区间或标的请求面板
 
-`panel(start, end, symbols=None)` 返回已存储面板在一个闭区间内的部分。每次调用都惰性打开 store，变量在被用到之前不会载入内存；dataset 自身不保留任何数据，config 也不会被改动，所以同一个 dataset 对象可以应答任意多次请求。
+`panel(start, end, symbols=None)` 返回已存储面板在一个闭区间内的部分。每次调用都惰性打开 store，变量在被用到之前不会载入内存；dataset 自身不保留任何数据，config 也不会被改动，所以同一个 dataset 对象可以应答任意多次请求。打开 store 用的是一个与 dataset 的 `data_backend` 同类型的新后端，所以换了存储介质的 dataset 也用同一种介质读回数据。
 
 ```python
 >>> ds = StockDataset(config)

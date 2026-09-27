@@ -8,7 +8,9 @@ dataset is resampled.
 """
 
 import copy
+import dataclasses
 import inspect
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -274,3 +276,63 @@ def test_panel_selects_integer_symbol_labels(tmp_path):
 
     assert panel["symbol"].values.tolist() == [14593]
     assert panel["Close"].values[:, 0].tolist() == [3.0, 5.0]
+
+
+# -- the read path goes through the dataset's own backend --------------------------
+
+
+class PickleBackend(XrBackend):
+    """Keeps a panel in one pickle file, which the Zarr backend cannot open."""
+
+    def read(self, path: str, **kwargs):
+        with open(path, "rb") as f:
+            self.data = pickle.load(f)
+        return self
+
+    def write(self, path: str, **kwargs):
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            pickle.dump(self.data.load(), f)
+        return self
+
+
+class PickleStockDataset(StockDataset):
+    def __init__(self, config):
+        super().__init__(config)
+        self.data_backend = PickleBackend()
+
+
+@pytest.fixture
+def pickled(stock_zarr, tmp_path):
+    """A dataset over a pickle store holding the 60-day synthetic stock panel."""
+    config = stock_zarr()
+    store = tmp_path / "stock.pkl"
+    PickleBackend().to_internal(xr.open_zarr(config.zarr_file_path).load()).write(str(store))
+    return PickleStockDataset(dataclasses.replace(config, zarr_file_path=str(store)))
+
+
+def test_panel_and_bar_before_read_through_the_dataset_backend(pickled):
+    panel = pickled.panel("2024-01-03", "2024-01-07")
+
+    assert _days(panel) == [f"2024-01-0{d}" for d in range(3, 8)]
+    assert pickled.bar_before("2024-01-10", 2) == pd.Timestamp("2024-01-08")
+    with pytest.raises(AttributeError):
+        pickled.get_xarray_dataset()
+
+
+def test_a_resampled_copy_reads_its_source_through_the_same_backend(
+    stock_zarr, tmp_path
+):
+    config = stock_zarr()
+    hourly = xr.open_zarr(config.zarr_file_path).load().assign_coords(
+        timestamp=pd.date_range("2024-01-01", periods=60, freq="h")
+    )
+    store = tmp_path / "hourly.pkl"
+    PickleBackend().to_internal(hourly).write(str(store))
+    dataset = PickleStockDataset(dataclasses.replace(config, zarr_file_path=str(store)))
+
+    daily = dataset.resample("1d", "last")
+
+    assert type(daily.data_backend) is PickleBackend
+    assert daily.panel("2024-01-01", "2024-01-03").sizes["timestamp"] == 3
+    assert daily.bar_before("2024-01-03", 2) == pd.Timestamp("2024-01-01")
