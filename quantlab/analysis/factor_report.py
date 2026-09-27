@@ -52,7 +52,6 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
-from types import SimpleNamespace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -252,19 +251,11 @@ def pair_cumulative_ic(ic: pd.Series) -> pd.Series:
     return ic.fillna(0.0).cumsum().rename("cumulative_ic")
 
 
-def _render_and_save(pair: "PairAnalysis", path: str) -> str:
-    """Draw ``pair`` and save it to ``path``; the process-pool worker of ``save``."""
-    FactorReportFigure().render(pair).savefig(path, dpi=FIGURE_DPI)
-    return path
-
-
-def _render_decay_and_save(
-    factor_name: str, decay: pd.DataFrame, autocorrelation: pd.Series, path: str
+def _render_and_save(
+    pair: "PairAnalysis", path: str, decay: "pd.DataFrame | None" = None
 ) -> str:
-    """Draw one factor's decay figure and save it; a process-pool worker of ``save``."""
-    FactorDecayFigure().render(factor_name, decay, autocorrelation).savefig(
-        path, dpi=FIGURE_DPI
-    )
+    """Draw ``pair`` and save it to ``path``; the process-pool worker of ``save``."""
+    FactorReportFigure().render(pair, decay=decay).savefig(path, dpi=FIGURE_DPI)
     return path
 
 
@@ -399,9 +390,6 @@ class FactorAnalysis:
     correlation_figure : matplotlib.figure.Figure or None
         The figure of ``correlation``, held when no ``output_dir`` was
         given.
-    decay_figures : dict[str, matplotlib.figure.Figure]
-        With two or more frets, one IC-decay figure per factor variable
-        (see ``FactorDecayFigure``), held when no ``output_dir`` was given.
     """
 
     pairs: dict[str, PairAnalysis]
@@ -409,7 +397,6 @@ class FactorAnalysis:
     config: dict = field(default_factory=dict)
     correlation: FactorCorrelation | None = None
     correlation_figure: "Figure | None" = None
-    decay_figures: dict[str, "Figure"] = field(default_factory=dict)
 
     def summary_table(self) -> pd.DataFrame:
         """Return the scalar metrics, one row per pair.
@@ -539,17 +526,20 @@ class FactorAnalysis:
         """
         return len({pair.fret_name for pair in self.pairs.values()}) >= 2
 
-    def _decay_inputs(self) -> dict[str, tuple[pd.DataFrame, pd.Series]]:
-        """Each factor's decay rows and its mean rank autocorrelation per lag."""
+    def decay_of(self, factor_name: str) -> pd.DataFrame | None:
+        """Return ``factor_name``'s rows of ``ic_decay_table()``, or None with one fret.
+
+        The pair figures draw these rows as their IC-decay panel.
+
+        Examples
+        --------
+        >>> analysis.decay_of("signal") is None      # one fret
+        True
+        """
+        if not self.has_decay():
+            return None
         table = self.ic_decay_table()
-        inputs = {}
-        for pair in self.pairs.values():
-            if pair.factor_name not in inputs:
-                inputs[pair.factor_name] = (
-                    table[table["factor"] == pair.factor_name].reset_index(drop=True),
-                    pair.rank_autocorrelations.mean().rename("rank_autocorrelation"),
-                )
-        return inputs
+        return table[table["factor"] == factor_name].reset_index(drop=True)
 
     def save(self, output_dir: str | Path, workers: int | None = None) -> Path:
         """Write the analysis to ``output_dir``, creating it if needed.
@@ -564,8 +554,8 @@ class FactorAnalysis:
         ``factor_clusters.csv`` (``cluster_table()``) and
         ``factor_correlation.png``, and ``summary.json`` gains a
         ``"correlation"`` entry (``FactorCorrelation.summary``). With two
-        or more frets, also ``ic_decay.csv`` (``ic_decay_table()``) and one
-        ``<factor>__decay.png`` per factor variable. Floats that are NaN or infinite are written to JSON as
+        or more frets, also ``ic_decay.csv`` (``ic_decay_table()``), and
+        every pair figure gains an IC-decay panel. Floats that are NaN or infinite are written to JSON as
         ``null``. Figures held in ``figures`` are saved as they are; when
         none is held, every pair is drawn from its metrics and saved, on
         ``workers`` processes, without being kept.
@@ -605,8 +595,6 @@ class FactorAnalysis:
         if self.figures:
             for key, figure in self.figures.items():
                 figure.savefig(out / f"{key}.png", dpi=FIGURE_DPI)
-            for name, figure in self.decay_figures.items():
-                figure.savefig(out / f"{name}__decay.png", dpi=FIGURE_DPI)
         elif self.pairs:
             self._render_to(out, workers)
         if self.correlation is not None:
@@ -632,22 +620,19 @@ class FactorAnalysis:
         fan-out this repository uses (see ``tests/test_acquisition_progress
         .py::test_no_task_isolation_was_added``).
         """
+        decays = {name: self.decay_of(name) for name in
+                  dict.fromkeys(pair.factor_name for pair in self.pairs.values())}
         jobs = [
-            (_render_and_save, (pair, str(out / f"{key}.png")))
+            (pair, str(out / f"{key}.png"), decays[pair.factor_name])
             for key, pair in self.pairs.items()
         ]
-        if self.has_decay():
-            jobs += [
-                (_render_decay_and_save, (name, decay, autocorr, str(out / f"{name}__decay.png")))
-                for name, (decay, autocorr) in self._decay_inputs().items()
-            ]
         count = workers if workers is not None else (os.cpu_count() or 1)
         if len(jobs) == 1 or count <= 1:
-            for render, args in jobs:
-                render(*args)
+            for args in jobs:
+                _render_and_save(*args)
             return
         Parallel(n_jobs=min(count, len(jobs)), backend="loky")(
-            delayed(render)(*args) for render, args in jobs
+            delayed(_render_and_save)(*args) for args in jobs
         )
 
     def _tidy(self, frame_of) -> pd.DataFrame:
@@ -849,15 +834,12 @@ class FactorAnalyzer:
             analysis.save(output_dir, workers=self.workers if self.plot else 0)
         elif self.plot:
             renderer = FactorReportFigure(rolling_window=self.rolling_window)
-            analysis.figures = {key: renderer.render(pair) for key, pair in pairs.items()}
+            analysis.figures = {
+                key: renderer.render(pair, decay=analysis.decay_of(pair.factor_name))
+                for key, pair in pairs.items()
+            }
             if correlation is not None:
                 analysis.correlation_figure = FactorCorrelationFigure().render(correlation)
-            if analysis.has_decay():
-                decay_renderer = FactorDecayFigure()
-                analysis.decay_figures = {
-                    name: decay_renderer.render(name, decay, autocorr)
-                    for name, (decay, autocorr) in analysis._decay_inputs().items()
-                }
         return analysis
 
     @staticmethod
@@ -1232,7 +1214,7 @@ class FactorReportFigure:
         """Initialize the renderer; see the class docstring for parameters."""
         self.rolling_window = int(rolling_window)
 
-    def render(self, pair: PairAnalysis) -> "Figure":
+    def render(self, pair: PairAnalysis, decay: pd.DataFrame | None = None) -> "Figure":
         """Return the composite figure of ``pair``.
 
         The figure is built with ``matplotlib.figure.Figure`` rather than
@@ -1242,6 +1224,10 @@ class FactorReportFigure:
         ----------
         pair : PairAnalysis
             The metrics to draw.
+        decay : pandas.DataFrame, optional
+            The factor's rows of ``FactorAnalysis.ic_decay_table()``. With
+            two or more rows the figure gains a panel of the mean IC by
+            horizon, this pair's fret highlighted.
 
         Returns
         -------
@@ -1256,8 +1242,11 @@ class FactorReportFigure:
         """
         from matplotlib.figure import Figure
 
-        fig = Figure(figsize=(16, 25), facecolor=_SURFACE, layout="constrained")
-        grid = fig.add_gridspec(6, 2, height_ratios=[1.0, 1.0, 1.0, 1.0, 1.0, 1.15])
+        with_decay = decay is not None and len(decay) >= 2
+        ratios = [1.0, 1.0, 1.0, 1.0, 1.0] + ([0.9] if with_decay else []) + [1.15]
+        fig = Figure(figsize=(16, 25 + (4.2 if with_decay else 0.0)), facecolor=_SURFACE,
+                     layout="constrained")
+        grid = fig.add_gridspec(len(ratios), 2, height_ratios=ratios)
         fig.suptitle(
             f"{pair.factor_name}  vs  {pair.fret_name}   |   "
             f"{pair.start:%Y-%m-%d} to {pair.end:%Y-%m-%d}",
@@ -1273,10 +1262,10 @@ class FactorReportFigure:
         self._cumulative_quantiles(fig.add_subplot(grid[3, 0]), pair)
         self._cumulative_long_short(fig.add_subplot(grid[3, 1]), pair)
         self._turnover(fig.add_subplot(grid[4, 0]), pair)
-        autocorr = grid[4, 1].subgridspec(1, 2, width_ratios=[1.6, 1.0], wspace=0.25)
-        self._rank_autocorrelation(fig.add_subplot(autocorr[0, 0]), pair)
-        self._autocorrelation_by_lag(fig.add_subplot(autocorr[0, 1]), pair)
-        self._summary_table(fig.add_subplot(grid[5, :]), pair)
+        self._rank_autocorrelation(fig.add_subplot(grid[4, 1]), pair)
+        if with_decay:
+            self._ic_by_horizon(fig.add_subplot(grid[5, :]), decay, pair.fret_name)
+        self._summary_table(fig.add_subplot(grid[-1, :]), pair)
         return fig
 
     @staticmethod
@@ -1472,37 +1461,61 @@ class FactorReportFigure:
         self._inset_legend(ax)
         self._percent(ax)
 
+    #: Ordinal blue ramp for the autocorrelation lags, darkest for the
+    #: shortest lag (steps 700, 550, 400 and 250 of the blue ramp).
+    _LAG_RAMP = ("#0d366b", "#1c5cab", "#3987e5", "#86b6ef")
+
+    def _lag_colors(self, count: int) -> list:
+        """``count`` colors along the lag ramp, darkest first."""
+        if count <= len(self._LAG_RAMP):
+            return list(self._LAG_RAMP[:count])
+        from matplotlib.colors import LinearSegmentedColormap
+
+        ramp = LinearSegmentedColormap.from_list("lags", self._LAG_RAMP)
+        return [ramp(i / (count - 1)) for i in range(count)]
+
     def _rank_autocorrelation(self, ax, pair: PairAnalysis) -> None:
-        """Rolling range and mean of the lag-1 factor rank autocorrelation."""
+        """Rolling mean of the rank autocorrelation at every lag, lag 1 with its range."""
+        lags = list(pair.rank_autocorrelations.columns)
         window = self._window_of(pair.rank_autocorrelation)
-        self._style(ax, f"Rank autocorrelation (lag 1), {window}-period", "", "autocorrelation")
+        self._style(ax, f"Rank autocorrelation by lag, {window}-period", "", "autocorrelation")
         ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
-        self._band(ax, pair.rank_autocorrelation, _BLUE_DARK, "mean", band_label="range")
+        for lag, color in zip(lags, self._lag_colors(len(lags))):
+            series = pair.rank_autocorrelations[lag]
+            label = f"lag {lag} (mean {series.mean():.2f})"
+            if lag == lags[0]:
+                self._band(ax, series, color, label, band_label=f"lag {lag} range")
+            else:
+                rolling = series.rolling(window, min_periods=max(1, window // 2)).mean()
+                ax.plot(rolling.index, rolling.to_numpy(), color=color, linewidth=2, label=label)
+        # Headroom above the highest line for the legend.
+        bottom, top = ax.get_ylim()
+        ax.set_ylim(bottom, top + 0.3 * (top - bottom))
         self._inset_legend(ax)
-        # The panel shares its cell with the by-lag bars, so it has room for
-        # only a few date labels.
-        from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
 
-        locator = AutoDateLocator(minticks=2, maxticks=4)
-        ax.xaxis.set_major_locator(locator)
-        ax.xaxis.set_major_formatter(ConciseDateFormatter(locator))
-
-    def _autocorrelation_by_lag(self, ax, pair: PairAnalysis) -> None:
-        """Mean rank autocorrelation at every lag: how slowly the factor changes."""
-        self._style(ax, "Mean by lag", "lag (periods)", "")
-        means = pair.rank_autocorrelations.mean()
-        if means.dropna().empty:
-            self._no_data(ax)
-            return
-        positions = np.arange(len(means))
-        ax.bar(positions, means.to_numpy(), color=_BLUE_DARK, width=0.55)
-        for x, value in zip(positions, means.to_numpy()):
-            if np.isfinite(value):
-                ax.text(x, value, f"{value:.2f}", ha="center",
-                        va="bottom" if value >= 0 else "top", fontsize=8, color=_INK_SECONDARY)
-        ax.set_xticks(positions, [str(k) for k in means.index])
+    def _ic_by_horizon(self, ax, decay: pd.DataFrame, fret_name: str) -> None:
+        """Mean IC by horizon with its 95% Newey-West interval, this pair's fret ringed."""
+        self._style(ax, "Mean IC by horizon (95% Newey-West interval)",
+                    "forward-return horizon (bars)", "mean IC")
+        x = decay["horizon"].to_numpy(dtype=float)
+        mean = decay["ic_mean"].to_numpy(dtype=float)
         ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
-        ax.set_ylim(min(0.0, float(np.nanmin(means)) - 0.1), 1.05)
+        ax.fill_between(x, decay["ci_low"].to_numpy(dtype=float),
+                        decay["ci_high"].to_numpy(dtype=float),
+                        color=_BLUE_LIGHT, alpha=0.35, linewidth=0, label="95% interval")
+        ax.plot(x, mean, color=_BLUE, linewidth=2, marker="o", markersize=7,
+                markeredgecolor=_SURFACE, markeredgewidth=2, label="mean IC")
+        here = (decay["fret"] == fret_name).to_numpy()
+        ax.plot(x[here], mean[here], linestyle="none", marker="o", markersize=14,
+                markerfacecolor="none", markeredgecolor=_INK, markeredgewidth=1.5,
+                label=f"this figure ({fret_name})")
+        for xi, yi, name in zip(x, mean, decay["fret"]):
+            ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(0, 11),
+                        ha="center", fontsize=8, color=_INK_SECONDARY)
+        ax.set_xticks(np.unique(x))
+        bottom, top = ax.get_ylim()
+        ax.set_ylim(bottom, top + 0.25 * (top - bottom))
+        self._inset_legend(ax)
 
     def _summary_table(self, ax, pair: PairAnalysis) -> None:
         """The scalar metrics as a two-block text table."""
@@ -1564,74 +1577,3 @@ class FactorReportFigure:
             if row == 0:
                 cell.get_text().set_fontweight("bold")
 
-
-class FactorDecayFigure:
-    """Draw how one factor's signal decays with the forward-return horizon.
-
-    The left panel is the mean IC against each fret's horizon with its 95%
-    Newey-West interval, one point per fret; a signal whose IC falls fast
-    wants a short holding period. The right panel is the mean rank
-    autocorrelation at every lag: a factor that changes slowly can be held
-    longer and traded less. ``FactorAnalysis`` draws one per factor
-    variable when two or more frets are analyzed.
-
-    Examples
-    --------
-    >>> decay, autocorr = analysis._decay_inputs()["signal"]
-    >>> fig = FactorDecayFigure().render("signal", decay, autocorr)
-    >>> fig.savefig("signal__decay.png")
-    """
-
-    def render(
-        self, factor_name: str, decay: pd.DataFrame, autocorrelation: pd.Series
-    ) -> "Figure":
-        """Return the decay figure of ``factor_name``.
-
-        Parameters
-        ----------
-        factor_name : str
-            The factor variable.
-        decay : pandas.DataFrame
-            Its rows of ``FactorAnalysis.ic_decay_table()``.
-        autocorrelation : pandas.Series
-            Its mean rank autocorrelation, indexed by lag.
-
-        Examples
-        --------
-        >>> FactorDecayFigure().render("signal", decay, autocorr).get_suptitle()
-        'signal   |   IC decay and persistence'
-        """
-        from matplotlib.figure import Figure
-
-        fig = Figure(figsize=(14, 5.2), facecolor=_SURFACE, layout="constrained")
-        fig.suptitle(f"{factor_name}   |   IC decay and persistence",
-                     fontsize=15, fontweight="bold", color=_INK)
-        left, right = fig.subplots(1, 2, width_ratios=[1.4, 1.0])
-        self._ic_by_horizon(left, decay)
-        FactorReportFigure()._autocorrelation_by_lag(
-            right, SimpleNamespace(rank_autocorrelations=autocorrelation.to_frame().T)
-        )
-        right.set_title("Rank autocorrelation by lag", loc="left", fontsize=13,
-                        fontweight="bold", color=_INK)
-        return fig
-
-    @staticmethod
-    def _ic_by_horizon(ax, decay: pd.DataFrame) -> None:
-        """Mean IC per horizon with its 95% Newey-West interval."""
-        FactorReportFigure._style(ax, "Mean IC by horizon (95% Newey-West interval)",
-                                  "forward-return horizon (bars)", "mean IC")
-        if decay.empty:
-            FactorReportFigure._no_data(ax)
-            return
-        x = decay["horizon"].to_numpy(dtype=float)
-        mean = decay["ic_mean"].to_numpy(dtype=float)
-        low = decay["ci_low"].to_numpy(dtype=float)
-        high = decay["ci_high"].to_numpy(dtype=float)
-        ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
-        ax.fill_between(x, low, high, color=_BLUE_LIGHT, alpha=0.35, linewidth=0)
-        ax.plot(x, mean, color=_BLUE, linewidth=2, marker="o", markersize=7,
-                markeredgecolor=_SURFACE, markeredgewidth=2)
-        for xi, yi, name in zip(x, mean, decay["fret"]):
-            ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(0, 9),
-                        ha="center", fontsize=8, color=_INK_SECONDARY)
-        ax.set_xticks(np.unique(x))

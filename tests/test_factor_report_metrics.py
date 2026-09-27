@@ -233,10 +233,13 @@ def test_two_or_more_frets_add_an_ic_decay_table_and_figure(tmp_path):
     assert (a["ci_low"] < a["ic_mean"]).all() and (a["ic_mean"] < a["ci_high"]).all()
     out = tmp_path / "report"
     assert (out / "ic_decay.csv").is_file()
-    for name in ("a", "b"):
-        assert (out / f"{name}__decay.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    assert not list(out.glob("*decay*.png"))  # the decay is a panel of each pair figure
     summary = json.loads((out / "summary.json").read_text())
     assert "ic_nw_t_stat" in summary["pairs"][0]
+
+    held = FactorAnalyzer(quantiles=3).run(_Factor(["a"]), frets, features, labels)
+    titles = [ax.get_title(loc="left") for ax in held.figures["a__ret_5"].axes]
+    assert any(title.startswith("Mean IC by horizon") for title in titles)
 
 
 def test_one_fret_writes_no_decay_files(tmp_path):
@@ -251,6 +254,10 @@ def test_one_fret_writes_no_decay_files(tmp_path):
     assert len(analysis.ic_decay_table()) == 1
     assert not list((tmp_path / "r").glob("*decay*"))
 
+    held = FactorAnalyzer(quantiles=3).run(_Factor(["a"]), [_Fret("ret_1", 1)], features, [labels])
+    titles = [ax.get_title(loc="left") for ax in held.figures["a__ret_1"].axes]
+    assert not any(title.startswith("Mean IC by horizon") for title in titles)
+
 
 def test_a_long_short_that_loses_everything_stays_at_zero():
     spread = np.r_[np.full(10, 0.01), np.full(1, -1.5), np.full(20, 0.01)]
@@ -258,3 +265,17 @@ def test_a_long_short_that_loses_everything_stays_at_zero():
 
     assert s["long_short_annual_return"] == pytest.approx(-1.0)
     assert s["long_short_max_drawdown"] == pytest.approx(-1.0)
+
+
+def test_the_autocorrelation_panel_draws_every_lag(signal_and_return):
+    f, r = signal_and_return
+    analyzer = FactorAnalyzer(autocorrelation_lags=(1, 5, 10))
+    pair = analyzer.analyze_pair(_da(f), _da(r), "f", "ret_1")
+
+    from quantlab.analysis.factor_report import FactorReportFigure
+
+    fig = FactorReportFigure().render(pair)
+    panel = next(ax for ax in fig.axes if ax.get_title(loc="left").startswith("Rank autocorrelation"))
+    labels = [line.get_label() for line in panel.get_lines() if not line.get_label().startswith("_")]
+    assert [label.split()[1] for label in labels] == ["1", "5", "10"]
+    assert not any(ax.get_title(loc="left") == "Mean by lag" for ax in fig.axes)
