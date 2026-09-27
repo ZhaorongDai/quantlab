@@ -190,7 +190,7 @@ def test_output_dir_writes_tables_figure_and_rebuildable_config(
     )
     assert (out / "momentum_5__fwd_1.png").read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     ic = pd.read_csv(out / "ic.csv")
-    assert list(ic.columns) == ["timestamp", "factor", "fret", "ic"]
+    assert list(ic.columns) == ["timestamp", "factor", "fret", "ic", "pearson_ic"]
     quantile_returns = pd.read_csv(out / "quantile_returns.csv")
     assert sorted(quantile_returns["quantile"].unique()) == [1, 2, 3, 4, 5]
 

@@ -52,6 +52,7 @@ import json
 import math
 import os
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
 
@@ -121,6 +122,131 @@ FRET_COLUMN = "__fret"
 FIGURE_DPI = 110
 
 
+def newey_west_lags(n_periods: int, horizon: int) -> int:
+    """Return the Newey-West lag count used for a mean IC.
+
+    The larger of ``horizon - 1``, the autocorrelation that overlapping
+    ``horizon``-bar forward returns induce, and the Newey-West (1994) rule
+    of thumb ``floor(4 * (n / 100) ** (2 / 9))`` for ``n`` periods.
+
+    Examples
+    --------
+    >>> newey_west_lags(250, 1), newey_west_lags(250, 10)
+    (4, 9)
+    """
+    rule = int(math.floor(4.0 * (max(n_periods, 0) / 100.0) ** (2.0 / 9.0)))
+    return max(int(horizon) - 1, rule, 0)
+
+
+def newey_west_t_stat(values: pd.Series, lags: int) -> tuple[float, float]:
+    """Return the t-statistic of the mean of ``values`` and its two-sided p-value.
+
+    The standard error is Newey-West's, with Bartlett weights
+    ``1 - l / (lags + 1)`` on the autocovariances up to ``lags``, so a
+    series whose neighbours are correlated, such as the IC of overlapping
+    multi-bar forward returns, is not credited with more independent
+    periods than it has. Missing values are dropped and the rest treated as
+    consecutive. ``lags=0`` gives the ordinary t-statistic with the
+    population variance. The p-value uses a t distribution with ``n - 1``
+    degrees of freedom.
+
+    Parameters
+    ----------
+    values : pandas.Series
+        The series, for example a per-period IC.
+    lags : int
+        Autocovariance lags included; see ``newey_west_lags``.
+
+    Returns
+    -------
+    tuple of float
+        ``(t_stat, p_value)``; both NaN with fewer than two values or zero
+        variance.
+
+    Examples
+    --------
+    >>> t, p = newey_west_t_stat(pair.ic, lags=4)
+    >>> round(t, 2), p < 1e-6
+    (10.91, True)
+    """
+    x = np.asarray(values, dtype=np.float64)
+    x = x[np.isfinite(x)]
+    n = len(x)
+    if n < 2:
+        return math.nan, math.nan
+    e = x - x.mean()
+    variance = float(e @ e) / n
+    for lag in range(1, min(int(lags), n - 1) + 1):
+        variance += 2.0 * (1.0 - lag / (lags + 1.0)) * float(e[lag:] @ e[:-lag]) / n
+    if not variance > 0:
+        return math.nan, math.nan
+    t_stat = float(x.mean() / math.sqrt(variance / n))
+    return t_stat, float(2.0 * stats.t.sf(abs(t_stat), n - 1))
+
+
+def long_short_statistics(rate: pd.Series) -> dict[str, float]:
+    """Return annualized statistics of a per-bar long-short return series.
+
+    The number of periods per year is measured from the data: the periods
+    between the first and last timestamp over the years they span, so daily
+    stock bars give about 252 and daily crypto bars about 365.
+
+    Parameters
+    ----------
+    rate : pandas.Series
+        Per-bar long-short return, indexed by ``timestamp``; missing
+        periods count as 0.
+
+    Returns
+    -------
+    dict
+        ``periods_per_year``, ``long_short_annual_return`` (compounded),
+        ``long_short_annual_volatility``, ``long_short_sharpe``
+        (annualized mean over annualized volatility, no risk-free rate) and
+        ``long_short_max_drawdown`` (the worst fall from a running peak of
+        the compounded value, a negative fraction or 0). A value that
+        reaches 0 stays there: annual return and drawdown are then -1.
+
+    Examples
+    --------
+    >>> stats_ = long_short_statistics(rate)
+    >>> sorted(stats_)
+    ['long_short_annual_return', 'long_short_annual_volatility', 'long_short_max_drawdown', 'long_short_sharpe', 'periods_per_year']
+    """
+    rate = rate.fillna(0.0).astype(np.float64)
+    n = len(rate)
+    nan = {
+        "periods_per_year": math.nan,
+        "long_short_annual_return": math.nan,
+        "long_short_annual_volatility": math.nan,
+        "long_short_sharpe": math.nan,
+        "long_short_max_drawdown": math.nan,
+    }
+    if n < 2:
+        return nan
+    years = (rate.index[-1] - rate.index[0]) / pd.Timedelta(days=365.25)
+    if not years > 0:
+        return nan
+    per_year = (n - 1) / years
+    wealth = (1.0 + rate).cumprod()
+    # A period losing more than everything leaves nothing to compound: the
+    # value stays at 0 from the first time it reaches it.
+    wiped = (wealth <= 0.0).cummax()
+    wealth = wealth.mask(wiped, 0.0)
+    drawdown = float((wealth / wealth.cummax() - 1.0).min())
+    std = float(rate.std(ddof=1))
+    volatility = std * math.sqrt(per_year)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sharpe = float(np.float64(rate.mean()) / np.float64(std) * math.sqrt(per_year))
+    return {
+        "periods_per_year": float(per_year),
+        "long_short_annual_return": float(wealth.iloc[-1] ** (per_year / n) - 1.0),
+        "long_short_annual_volatility": volatility,
+        "long_short_sharpe": sharpe if std > 1e-15 else math.nan,
+        "long_short_max_drawdown": min(drawdown, 0.0),
+    }
+
+
 def pair_cumulative_ic(ic: pd.Series) -> pd.Series:
     """Return the running sum of ``ic`` with missing periods counted as 0."""
     return ic.fillna(0.0).cumsum().rename("cumulative_ic")
@@ -129,6 +255,16 @@ def pair_cumulative_ic(ic: pd.Series) -> pd.Series:
 def _render_and_save(pair: "PairAnalysis", path: str) -> str:
     """Draw ``pair`` and save it to ``path``; the process-pool worker of ``save``."""
     FactorReportFigure().render(pair).savefig(path, dpi=FIGURE_DPI)
+    return path
+
+
+def _render_decay_and_save(
+    factor_name: str, decay: pd.DataFrame, autocorrelation: pd.Series, path: str
+) -> str:
+    """Draw one factor's decay figure and save it; a process-pool worker of ``save``."""
+    FactorDecayFigure().render(factor_name, decay, autocorrelation).savefig(
+        path, dpi=FIGURE_DPI
+    )
     return path
 
 
@@ -149,7 +285,10 @@ class PairAnalysis:
     quantiles : int
         Number of buckets.
     ic : pandas.Series
-        Per-period Spearman IC.
+        Per-period Spearman (rank) IC.
+    pearson_ic : pandas.Series
+        Per-period Pearson IC, on the same cells as ``ic``. A large gap
+        between the two means a few extreme values drive the linear one.
     monthly_ic : pandas.Series
         Mean IC per calendar month, indexed by month end.
     quantile_returns : pandas.DataFrame
@@ -168,6 +307,9 @@ class PairAnalysis:
     rank_autocorrelation : pandas.Series
         Spearman correlation of the factor with its value one period
         earlier.
+    rank_autocorrelations : pandas.DataFrame
+        The same at every lag of ``FactorAnalyzer.autocorrelation_lags``,
+        one column per lag; column 1 is ``rank_autocorrelation``.
     cumulative_ic : pandas.Series
         Running sum of ``ic`` (a property).
     summary : dict
@@ -179,6 +321,7 @@ class PairAnalysis:
     horizon: int
     quantiles: int
     ic: pd.Series
+    pearson_ic: pd.Series
     monthly_ic: pd.Series
     quantile_returns: pd.DataFrame
     mean_quantile_returns: pd.Series
@@ -187,6 +330,7 @@ class PairAnalysis:
     cumulative_long_short: pd.Series
     turnover: pd.DataFrame
     rank_autocorrelation: pd.Series
+    rank_autocorrelations: pd.DataFrame
     summary: dict = field(default_factory=dict)
 
     @property
@@ -255,6 +399,9 @@ class FactorAnalysis:
     correlation_figure : matplotlib.figure.Figure or None
         The figure of ``correlation``, held when no ``output_dir`` was
         given.
+    decay_figures : dict[str, matplotlib.figure.Figure]
+        With two or more frets, one IC-decay figure per factor variable
+        (see ``FactorDecayFigure``), held when no ``output_dir`` was given.
     """
 
     pairs: dict[str, PairAnalysis]
@@ -262,6 +409,7 @@ class FactorAnalysis:
     config: dict = field(default_factory=dict)
     correlation: FactorCorrelation | None = None
     correlation_figure: "Figure | None" = None
+    decay_figures: dict[str, "Figure"] = field(default_factory=dict)
 
     def summary_table(self) -> pd.DataFrame:
         """Return the scalar metrics, one row per pair.
@@ -278,16 +426,19 @@ class FactorAnalysis:
     def ic_table(self) -> pd.DataFrame:
         """Return every pair's IC series as one tidy table.
 
-        Columns are ``timestamp``, ``factor``, ``fret`` and ``ic``.
+        Columns are ``timestamp``, ``factor``, ``fret``, ``ic`` (rank) and
+        ``pearson_ic``.
 
         Examples
         --------
-        >>> analysis.ic_table().head(2).round({"ic": 4})
-           timestamp  factor   fret      ic
-        0 2024-01-01  signal  ret_1  0.1308
-        1 2024-01-02  signal  ret_1 -0.1353
+        >>> analysis.ic_table().head(2).round({"ic": 4, "pearson_ic": 4})
+           timestamp  factor   fret      ic  pearson_ic
+        0 2024-01-01  signal  ret_1  0.1308      0.1260
+        1 2024-01-02  signal  ret_1 -0.1353     -0.0991
         """
-        return self._tidy(lambda p: p.ic.rename("ic").to_frame())
+        return self._tidy(
+            lambda p: pd.concat([p.ic.rename("ic"), p.pearson_ic.rename("pearson_ic")], axis=1)
+        )
 
     def quantile_returns_table(self) -> pd.DataFrame:
         """Return every pair's mean return per bucket and period, tidy.
@@ -307,17 +458,25 @@ class FactorAnalysis:
 
         Columns are ``timestamp``, ``factor``, ``fret``, ``quantile`` and
         ``turnover``; the factor's lag-1 rank autocorrelation is repeated on
-        each bucket row as ``rank_autocorrelation``.
+        each bucket row as ``rank_autocorrelation``, and every further lag
+        ``k`` as ``rank_autocorrelation_lag<k>``.
 
         Examples
         --------
         >>> list(analysis.turnover_table().columns)
-        ['timestamp', 'factor', 'fret', 'quantile', 'turnover', 'rank_autocorrelation']
+        ['timestamp', 'factor', 'fret', 'quantile', 'turnover', 'rank_autocorrelation', 'rank_autocorrelation_lag5', 'rank_autocorrelation_lag10', 'rank_autocorrelation_lag20']
         """
         table = self._tidy_by_quantile(lambda p: p.turnover, "turnover")
-        autocorr = self._tidy(
-            lambda p: p.rank_autocorrelation.rename("rank_autocorrelation").to_frame()
-        )
+
+        def autocorrelations(pair):
+            frame = pair.rank_autocorrelations.copy()
+            frame.columns = [
+                "rank_autocorrelation" if k == 1 else f"rank_autocorrelation_lag{k}"
+                for k in frame.columns
+            ]
+            return frame
+
+        autocorr = self._tidy(autocorrelations)
         return table.merge(autocorr, on=["timestamp", "factor", "fret"], how="left")
 
     def monthly_ic_table(self) -> pd.DataFrame:
@@ -337,6 +496,61 @@ class FactorAnalysis:
         table = self._tidy(lambda p: p.monthly_ic.rename("ic").to_frame())
         return table.rename(columns={"timestamp": "month"})
 
+    def ic_decay_table(self) -> pd.DataFrame:
+        """Return every pair's mean IC with its horizon, ordered by factor then horizon.
+
+        Columns are ``factor``, ``fret``, ``horizon``, ``ic_mean``,
+        ``ic_nw_t_stat`` and ``ci_low``/``ci_high``, the 95% interval
+        ``ic_mean ± 1.96 * se`` with the Newey-West standard error
+        ``se = |ic_mean / ic_nw_t_stat|``. Read down one factor's rows to see
+        how fast its signal decays as the forward return lengthens.
+
+        Examples
+        --------
+        >>> analysis.ic_decay_table()[["factor", "fret", "horizon"]]
+           factor   fret  horizon
+        0  signal  ret_1        1
+        """
+        rows = []
+        for order, pair in enumerate(self.pairs.values()):
+            s = pair.summary
+            mean, t = s["ic_mean"], s["ic_nw_t_stat"]
+            with np.errstate(invalid="ignore", divide="ignore"):
+                se = abs(np.float64(mean) / np.float64(t))
+            rows.append({
+                "factor": pair.factor_name, "fret": pair.fret_name,
+                "horizon": pair.horizon, "ic_mean": mean, "ic_nw_t_stat": t,
+                "ci_low": mean - 1.96 * se, "ci_high": mean + 1.96 * se,
+                "_order": order,
+            })
+        table = pd.DataFrame(rows)
+        factors = {name: i for i, name in enumerate(dict.fromkeys(table["factor"]))}
+        table["_factor"] = table["factor"].map(factors)
+        table = table.sort_values(["_factor", "horizon", "_order"], kind="stable")
+        return table.drop(columns=["_order", "_factor"]).reset_index(drop=True)
+
+    def has_decay(self) -> bool:
+        """Whether two or more frets were analyzed, so an IC decay is drawn.
+
+        Examples
+        --------
+        >>> analysis.has_decay()      # one fret
+        False
+        """
+        return len({pair.fret_name for pair in self.pairs.values()}) >= 2
+
+    def _decay_inputs(self) -> dict[str, tuple[pd.DataFrame, pd.Series]]:
+        """Each factor's decay rows and its mean rank autocorrelation per lag."""
+        table = self.ic_decay_table()
+        inputs = {}
+        for pair in self.pairs.values():
+            if pair.factor_name not in inputs:
+                inputs[pair.factor_name] = (
+                    table[table["factor"] == pair.factor_name].reset_index(drop=True),
+                    pair.rank_autocorrelations.mean().rename("rank_autocorrelation"),
+                )
+        return inputs
+
     def save(self, output_dir: str | Path, workers: int | None = None) -> Path:
         """Write the analysis to ``output_dir``, creating it if needed.
 
@@ -349,7 +563,9 @@ class FactorAnalysis:
         ``factor_correlation_pairs.csv`` (``pairs_table()``),
         ``factor_clusters.csv`` (``cluster_table()``) and
         ``factor_correlation.png``, and ``summary.json`` gains a
-        ``"correlation"`` entry (``FactorCorrelation.summary``). Floats that are NaN or infinite are written to JSON as
+        ``"correlation"`` entry (``FactorCorrelation.summary``). With two
+        or more frets, also ``ic_decay.csv`` (``ic_decay_table()``) and one
+        ``<factor>__decay.png`` per factor variable. Floats that are NaN or infinite are written to JSON as
         ``null``. Figures held in ``figures`` are saved as they are; when
         none is held, every pair is drawn from its metrics and saved, on
         ``workers`` processes, without being kept.
@@ -384,9 +600,13 @@ class FactorAnalysis:
         self.monthly_ic_table().to_csv(out / "monthly_ic.csv", index=False)
         self.quantile_returns_table().to_csv(out / "quantile_returns.csv", index=False)
         self.turnover_table().to_csv(out / "turnover.csv", index=False)
+        if self.has_decay():
+            self.ic_decay_table().to_csv(out / "ic_decay.csv", index=False)
         if self.figures:
             for key, figure in self.figures.items():
                 figure.savefig(out / f"{key}.png", dpi=FIGURE_DPI)
+            for name, figure in self.decay_figures.items():
+                figure.savefig(out / f"{name}__decay.png", dpi=FIGURE_DPI)
         elif self.pairs:
             self._render_to(out, workers)
         if self.correlation is not None:
@@ -412,14 +632,22 @@ class FactorAnalysis:
         fan-out this repository uses (see ``tests/test_acquisition_progress
         .py::test_no_task_isolation_was_added``).
         """
-        jobs = [(pair, str(out / f"{key}.png")) for key, pair in self.pairs.items()]
+        jobs = [
+            (_render_and_save, (pair, str(out / f"{key}.png")))
+            for key, pair in self.pairs.items()
+        ]
+        if self.has_decay():
+            jobs += [
+                (_render_decay_and_save, (name, decay, autocorr, str(out / f"{name}__decay.png")))
+                for name, (decay, autocorr) in self._decay_inputs().items()
+            ]
         count = workers if workers is not None else (os.cpu_count() or 1)
         if len(jobs) == 1 or count <= 1:
-            for pair, path in jobs:
-                _render_and_save(pair, path)
+            for render, args in jobs:
+                render(*args)
             return
         Parallel(n_jobs=min(count, len(jobs)), backend="loky")(
-            delayed(_render_and_save)(pair, path) for pair, path in jobs
+            delayed(render)(*args) for render, args in jobs
         )
 
     def _tidy(self, frame_of) -> pd.DataFrame:
@@ -478,6 +706,9 @@ class FactorAnalyzer:
     correlation_threshold : float, default 0.7
         ``|correlation|`` at which the factor-correlation clusters are cut;
         see ``quantlab.analysis.factor_correlation``.
+    autocorrelation_lags : sequence of int, default (1, 5, 10, 20)
+        Lags, in periods, of the factor rank autocorrelation. Lag 1 is
+        always included.
 
     Examples
     --------
@@ -495,6 +726,7 @@ class FactorAnalyzer:
         workers: int | None = None,
         chunk_size: int = 32,
         correlation_threshold: float = 0.7,
+        autocorrelation_lags: Sequence[int] = (1, 5, 10, 20),
     ):
         """Initialize the analyzer; see the class docstring for parameters."""
         if quantiles < 2:
@@ -505,6 +737,10 @@ class FactorAnalyzer:
         self.workers = workers
         self.chunk_size = max(int(chunk_size), 1)
         self.correlation_threshold = float(correlation_threshold)
+        lags = sorted({int(lag) for lag in autocorrelation_lags} | {1})
+        if lags[0] < 1:
+            raise ValueError(f"autocorrelation lags must be positive, got {lags}")
+        self.autocorrelation_lags = tuple(lags)
 
     def run(
         self,
@@ -616,6 +852,12 @@ class FactorAnalyzer:
             analysis.figures = {key: renderer.render(pair) for key, pair in pairs.items()}
             if correlation is not None:
                 analysis.correlation_figure = FactorCorrelationFigure().render(correlation)
+            if analysis.has_decay():
+                decay_renderer = FactorDecayFigure()
+                analysis.decay_figures = {
+                    name: decay_renderer.render(name, decay, autocorr)
+                    for name, (decay, autocorr) in analysis._decay_inputs().items()
+                }
         return analysis
 
     @staticmethod
@@ -740,7 +982,10 @@ class FactorAnalyzer:
                 fv.alias(f"fv{i}"),
                 pl.when(both).then(fret).alias(f"rv{i}"),
                 pl.when(n_valid >= q_count).then(bucket).alias(f"b{i}"),
-                f.shift(1).over("symbol").alias(f"lag{i}"),
+                *(
+                    f.shift(k).over("symbol").alias(f"lag{i}_{k}")
+                    for k in self.autocorrelation_lags
+                ),
             ]
         lf = lf.with_columns(pl.all().exclude("timestamp", "symbol").fill_nan(None))
         lf = lf.with_columns(row_exprs)
@@ -751,14 +996,17 @@ class FactorAnalyzer:
         aggs = []
         for i in range(n_factors):
             fv, rv, bucket, prev = (pl.col(f"{c}{i}") for c in ("fv", "rv", "b", "pb"))
-            f, lag = pl.col(f"f{i}"), pl.col(f"lag{i}")
-            both = f.is_not_null() & lag.is_not_null()
+            f = pl.col(f"f{i}")
             had_previous = prev.is_not_null().any()
             aggs.append(pl.corr(fv.rank(), rv.rank()).alias(f"ic{i}"))
-            aggs.append(
-                pl.corr(pl.when(both).then(f).rank(), pl.when(both).then(lag).rank())
-                .alias(f"rac{i}")
-            )
+            aggs.append(pl.corr(fv, rv).alias(f"pic{i}"))
+            for k in self.autocorrelation_lags:
+                lag = pl.col(f"lag{i}_{k}")
+                both = f.is_not_null() & lag.is_not_null()
+                aggs.append(
+                    pl.corr(pl.when(both).then(f).rank(), pl.when(both).then(lag).rank())
+                    .alias(f"rac{i}_{k}")
+                )
             for q in range(1, q_count + 1):
                 in_q = bucket == q
                 count = in_q.sum()
@@ -801,9 +1049,16 @@ class FactorAnalyzer:
             {q: table[f"t{i}_{q}"].to_numpy(dtype=np.float64) for q in columns},
             index=index, columns=columns,
         )
-        rank_autocorr = (
-            table[f"rac{i}"].astype(np.float64).reindex(index).rename("rank_autocorrelation")
+        pearson_ic = table[f"pic{i}"].astype(np.float64).reindex(index).rename("pearson_ic")
+        rank_autocorrs = pd.DataFrame(
+            {
+                k: table[f"rac{i}_{k}"].astype(np.float64).reindex(index).to_numpy()
+                for k in self.autocorrelation_lags
+            },
+            index=index,
         )
+        rank_autocorrs.columns.name = "lag"
+        rank_autocorr = rank_autocorrs[1].rename("rank_autocorrelation")
 
         spread = (quantile_returns[self.quantiles] - quantile_returns[1]).rename("spread")
         per_bar = _per_bar_rate(quantile_returns, horizon)
@@ -818,6 +1073,7 @@ class FactorAnalyzer:
             horizon=int(horizon),
             quantiles=self.quantiles,
             ic=ic,
+            pearson_ic=pearson_ic,
             monthly_ic=monthly_ic,
             quantile_returns=quantile_returns,
             mean_quantile_returns=quantile_returns.mean().rename("mean_return"),
@@ -826,6 +1082,7 @@ class FactorAnalyzer:
             cumulative_long_short=cumulative_long_short,
             turnover=turnover,
             rank_autocorrelation=rank_autocorr,
+            rank_autocorrelations=rank_autocorrs,
         )
         pair.summary = self._summary(pair, n_symbols=n_symbols)
         return pair
@@ -903,6 +1160,21 @@ class FactorAnalyzer:
             "ic_kurtosis": float(stats.kurtosis(ic)) if varies else math.nan,
             "ic_positive_ratio": float((ic > 0).mean()) if n else math.nan,
         }
+        nw_lags = newey_west_lags(n, pair.horizon)
+        nw_t, nw_p = newey_west_t_stat(pair.ic, nw_lags)
+        summary.update(ic_nw_lags=nw_lags, ic_nw_t_stat=nw_t, ic_nw_p_value=nw_p)
+        pearson = pair.pearson_ic.dropna().to_numpy()
+        m = len(pearson)
+        p_mean = float(pearson.mean()) if m else math.nan
+        p_std = float(pearson.std(ddof=1)) if m > 1 else math.nan
+        with np.errstate(invalid="ignore", divide="ignore"):
+            p_ir = float(np.float64(p_mean) / np.float64(p_std))
+        summary.update(
+            pearson_ic_mean=p_mean,
+            pearson_ic_std=p_std,
+            pearson_ir=p_ir,
+            pearson_ic_t_stat=p_ir * math.sqrt(m) if m > 1 else math.nan,
+        )
         for q, value in pair.mean_quantile_returns.items():
             summary[f"mean_return_q{q}"] = float(value)
         summary["mean_spread"] = float(pair.spread.mean())
@@ -910,6 +1182,10 @@ class FactorAnalyzer:
         summary["mean_turnover_top"] = float(pair.turnover[pair.quantiles].mean())
         summary["mean_turnover_bottom"] = float(pair.turnover[1].mean())
         summary["mean_rank_autocorrelation"] = float(pair.rank_autocorrelation.mean())
+        for k in pair.rank_autocorrelations.columns:
+            summary[f"rank_autocorrelation_lag{k}"] = float(pair.rank_autocorrelations[k].mean())
+        per_bar = _per_bar_rate(pair.quantile_returns, pair.horizon)
+        summary.update(long_short_statistics(per_bar[pair.quantiles] - per_bar[1]))
         return summary
 
 
@@ -997,7 +1273,9 @@ class FactorReportFigure:
         self._cumulative_quantiles(fig.add_subplot(grid[3, 0]), pair)
         self._cumulative_long_short(fig.add_subplot(grid[3, 1]), pair)
         self._turnover(fig.add_subplot(grid[4, 0]), pair)
-        self._rank_autocorrelation(fig.add_subplot(grid[4, 1]), pair)
+        autocorr = grid[4, 1].subgridspec(1, 2, width_ratios=[1.6, 1.0], wspace=0.25)
+        self._rank_autocorrelation(fig.add_subplot(autocorr[0, 0]), pair)
+        self._autocorrelation_by_lag(fig.add_subplot(autocorr[0, 1]), pair)
         self._summary_table(fig.add_subplot(grid[5, :]), pair)
         return fig
 
@@ -1201,6 +1479,30 @@ class FactorReportFigure:
         ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
         self._band(ax, pair.rank_autocorrelation, _BLUE_DARK, "mean", band_label="range")
         self._inset_legend(ax)
+        # The panel shares its cell with the by-lag bars, so it has room for
+        # only a few date labels.
+        from matplotlib.dates import AutoDateLocator, ConciseDateFormatter
+
+        locator = AutoDateLocator(minticks=2, maxticks=4)
+        ax.xaxis.set_major_locator(locator)
+        ax.xaxis.set_major_formatter(ConciseDateFormatter(locator))
+
+    def _autocorrelation_by_lag(self, ax, pair: PairAnalysis) -> None:
+        """Mean rank autocorrelation at every lag: how slowly the factor changes."""
+        self._style(ax, "Mean by lag", "lag (periods)", "")
+        means = pair.rank_autocorrelations.mean()
+        if means.dropna().empty:
+            self._no_data(ax)
+            return
+        positions = np.arange(len(means))
+        ax.bar(positions, means.to_numpy(), color=_BLUE_DARK, width=0.55)
+        for x, value in zip(positions, means.to_numpy()):
+            if np.isfinite(value):
+                ax.text(x, value, f"{value:.2f}", ha="center",
+                        va="bottom" if value >= 0 else "top", fontsize=8, color=_INK_SECONDARY)
+        ax.set_xticks(positions, [str(k) for k in means.index])
+        ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
+        ax.set_ylim(min(0.0, float(np.nanmin(means)) - 0.1), 1.05)
 
     def _summary_table(self, ax, pair: PairAnalysis) -> None:
         """The scalar metrics as a two-block text table."""
@@ -1228,6 +1530,9 @@ class FactorReportFigure:
             ("IC skew", fmt(s["ic_skew"])),
             ("IC excess kurtosis", fmt(s["ic_kurtosis"])),
             ("IC > 0", fmt(s["ic_positive_ratio"], "%")),
+            (f"Newey-West t-stat ({s['ic_nw_lags']} lags)", fmt(s["ic_nw_t_stat"])),
+            ("Pearson IC mean / IR",
+             f"{fmt(s['pearson_ic_mean'])} / {fmt(s['pearson_ir'])}"),
         ]
         right = [
             ("periods / symbols", f"{s['n_periods']} / {s['n_symbols']}"),
@@ -1239,6 +1544,11 @@ class FactorReportFigure:
             ("turnover top / bottom",
              f"{fmt(s['mean_turnover_top'], '%')} / {fmt(s['mean_turnover_bottom'], '%')}"),
             ("rank autocorrelation", fmt(s["mean_rank_autocorrelation"])),
+            ("long-short annual return / vol",
+             f"{fmt(s['long_short_annual_return'], '%')} / "
+             f"{fmt(s['long_short_annual_volatility'], '%')}"),
+            ("long-short Sharpe / max drawdown",
+             f"{fmt(s['long_short_sharpe'])} / {fmt(s['long_short_max_drawdown'], '%')}"),
         ]
         rows = [[a, b, c, d] for (a, b), (c, d) in zip(left, right)]
         table = ax.table(cellText=rows, colLabels=["metric", "value", "metric", "value"],
@@ -1246,10 +1556,82 @@ class FactorReportFigure:
                          colWidths=[0.25, 0.2, 0.3, 0.25])
         table.auto_set_font_size(False)
         table.set_fontsize(11)
-        table.scale(1.0, 1.9)
+        table.scale(1.0, 1.65)
         for (row, _), cell in table.get_celld().items():
             cell.set_edgecolor(_GRID)
             cell.set_facecolor(_NEUTRAL_LIGHT if row == 0 else _SURFACE)
             cell.get_text().set_color(_INK if row == 0 else _INK_SECONDARY)
             if row == 0:
                 cell.get_text().set_fontweight("bold")
+
+
+class FactorDecayFigure:
+    """Draw how one factor's signal decays with the forward-return horizon.
+
+    The left panel is the mean IC against each fret's horizon with its 95%
+    Newey-West interval, one point per fret; a signal whose IC falls fast
+    wants a short holding period. The right panel is the mean rank
+    autocorrelation at every lag: a factor that changes slowly can be held
+    longer and traded less. ``FactorAnalysis`` draws one per factor
+    variable when two or more frets are analyzed.
+
+    Examples
+    --------
+    >>> decay, autocorr = analysis._decay_inputs()["signal"]
+    >>> fig = FactorDecayFigure().render("signal", decay, autocorr)
+    >>> fig.savefig("signal__decay.png")
+    """
+
+    def render(
+        self, factor_name: str, decay: pd.DataFrame, autocorrelation: pd.Series
+    ) -> "Figure":
+        """Return the decay figure of ``factor_name``.
+
+        Parameters
+        ----------
+        factor_name : str
+            The factor variable.
+        decay : pandas.DataFrame
+            Its rows of ``FactorAnalysis.ic_decay_table()``.
+        autocorrelation : pandas.Series
+            Its mean rank autocorrelation, indexed by lag.
+
+        Examples
+        --------
+        >>> FactorDecayFigure().render("signal", decay, autocorr).get_suptitle()
+        'signal   |   IC decay and persistence'
+        """
+        from matplotlib.figure import Figure
+
+        fig = Figure(figsize=(14, 5.2), facecolor=_SURFACE, layout="constrained")
+        fig.suptitle(f"{factor_name}   |   IC decay and persistence",
+                     fontsize=15, fontweight="bold", color=_INK)
+        left, right = fig.subplots(1, 2, width_ratios=[1.4, 1.0])
+        self._ic_by_horizon(left, decay)
+        FactorReportFigure()._autocorrelation_by_lag(
+            right, SimpleNamespace(rank_autocorrelations=autocorrelation.to_frame().T)
+        )
+        right.set_title("Rank autocorrelation by lag", loc="left", fontsize=13,
+                        fontweight="bold", color=_INK)
+        return fig
+
+    @staticmethod
+    def _ic_by_horizon(ax, decay: pd.DataFrame) -> None:
+        """Mean IC per horizon with its 95% Newey-West interval."""
+        FactorReportFigure._style(ax, "Mean IC by horizon (95% Newey-West interval)",
+                                  "forward-return horizon (bars)", "mean IC")
+        if decay.empty:
+            FactorReportFigure._no_data(ax)
+            return
+        x = decay["horizon"].to_numpy(dtype=float)
+        mean = decay["ic_mean"].to_numpy(dtype=float)
+        low = decay["ci_low"].to_numpy(dtype=float)
+        high = decay["ci_high"].to_numpy(dtype=float)
+        ax.axhline(0.0, color=_INK_SECONDARY, linewidth=1)
+        ax.fill_between(x, low, high, color=_BLUE_LIGHT, alpha=0.35, linewidth=0)
+        ax.plot(x, mean, color=_BLUE, linewidth=2, marker="o", markersize=7,
+                markeredgecolor=_SURFACE, markeredgewidth=2)
+        for xi, yi, name in zip(x, mean, decay["fret"]):
+            ax.annotate(name, (xi, yi), textcoords="offset points", xytext=(0, 9),
+                        ha="center", fontsize=8, color=_INK_SECONDARY)
+        ax.set_xticks(np.unique(x))
