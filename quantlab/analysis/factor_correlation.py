@@ -54,6 +54,13 @@ from scipy.spatial.distance import squareform
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
+#: Resolution the saved correlation figure is written at; a large matrix
+#: names every factor at a small size meant to be read zoomed in.
+FIGURE_DPI = 150
+
+#: Smallest row height, in points, that keeps factor names from overlapping.
+_MIN_ROW_PT = 6.5
+
 #: Symbols a timestamp needs, finite in both variables, to enter a pair.
 MIN_SYMBOLS = 3
 
@@ -359,8 +366,11 @@ class FactorCorrelationFigure:
     ``-1..1`` diverging scale (red negative, gray none, blue positive), so
     redundant factors form blocks on the diagonal; every cluster of two or
     more variables is outlined, and the diagonal, always 1, is left blank.
-    Up to ``label_limit`` variables every row and column is named; beyond
-    that the axes name the clusters of two or more variables, and
+    Up to ``label_limit`` variables every row and column is named: the
+    heatmap grows so each row is at least 6.5 points high, and past about
+    a hundred variables the names are meant to be read zoomed in (the
+    saved PNG is written at ``FIGURE_DPI``). Beyond ``label_limit`` the
+    axes name the clusters of two or more variables instead, and
     ``factor_clusters.csv`` maps every variable to its cluster and
     position. Beside it: the strongest pairs by ``|correlation|``, the
     largest clusters with their first members, and the distribution of all
@@ -368,8 +378,10 @@ class FactorCorrelationFigure:
 
     Parameters
     ----------
-    label_limit : int, default 60
-        Most variables whose names are written on the heatmap axes.
+    label_limit : int, default 800
+        Most variables whose names are written on the heatmap axes. At
+        800 the heatmap is about 72 inches, some 10,800 pixels at
+        ``FIGURE_DPI``.
     top_pairs : int, default 20
         Strongest pairs listed beside the heatmap.
     top_clusters : int, default 12
@@ -381,7 +393,7 @@ class FactorCorrelationFigure:
     >>> fig.savefig("factor_correlation.png")
     """
 
-    def __init__(self, label_limit: int = 60, top_pairs: int = 20, top_clusters: int = 12):
+    def __init__(self, label_limit: int = 800, top_pairs: int = 20, top_clusters: int = 12):
         """Initialize the renderer; see the class docstring for parameters."""
         self.label_limit = int(label_limit)
         self.top_pairs = int(top_pairs)
@@ -405,7 +417,13 @@ class FactorCorrelationFigure:
         # Layout in inches: a square heatmap under a header, and a right
         # column of three panels spanning the same height.
         side = float(np.clip(6.0 + 0.035 * n, 7.5, 16.0))
-        left, bottom = (1.5, 1.5) if named else (0.7, 1.0)
+        if named:
+            side = max(side, n * _MIN_ROW_PT / 72)
+            longest = max(len(_short(str(name), 24)) for name in corr.mean.index)
+            font = self._label_size(side, n)
+            left = bottom = max(1.0, 0.3 + longest * font * 0.62 / 72)
+        else:
+            left, bottom = 0.7, 1.0
         header, gap, right_w, margin = 1.55, 2.3, 5.6, 0.35
         height = max(header + side + bottom, 11.0)
         width = left + side + gap + right_w + margin
@@ -442,6 +460,11 @@ class FactorCorrelationFigure:
                            rows=int(max(3, min(self.top_clusters, heights[1] / 0.3))))
         self._histogram(fig.add_axes(box(x, tops[2], right_w, heights[2])), corr)
         return fig
+
+    @staticmethod
+    def _label_size(side: float, n: int) -> float:
+        """Font size, in points, of ``n`` names along a ``side``-inch axis."""
+        return float(np.clip(side * 72 / n * 0.78, 5.0, 10.0))
 
     @staticmethod
     def _cmap():
@@ -496,8 +519,9 @@ class FactorCorrelationFigure:
                 ))
         ax.tick_params(colors=_INK_SECONDARY, length=0)
         if n <= self.label_limit:
-            size = float(np.clip(300 / n, 5.5, 10))
-            names = [_short(name, 24) for name in corr.mean.index]
+            box = ax.get_position()
+            size = self._label_size(box.height * ax.figure.get_size_inches()[1], n)
+            names = [_short(str(name), 24) for name in corr.mean.index]
             ax.set_xticks(np.arange(n) + 0.5, names, rotation=90, fontsize=size)
             ax.set_yticks(np.arange(n) + 0.5, names, fontsize=size)
         else:

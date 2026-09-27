@@ -63,6 +63,7 @@ from joblib import Parallel, delayed
 from scipy import stats
 
 from quantlab.analysis.factor_correlation import (
+    FIGURE_DPI as CORRELATION_FIGURE_DPI,
     FactorCorrelation,
     FactorCorrelationFigure,
 )
@@ -399,7 +400,7 @@ class FactorAnalysis:
         corr.pairs_table().to_csv(out / "factor_correlation_pairs.csv", index=False)
         corr.cluster_table().to_csv(out / "factor_clusters.csv", index=False)
         figure = self.correlation_figure or FactorCorrelationFigure().render(corr)
-        figure.savefig(out / "factor_correlation.png", dpi=FIGURE_DPI)
+        figure.savefig(out / "factor_correlation.png", dpi=CORRELATION_FIGURE_DPI)
 
     def _render_to(self, out: Path, workers: int | None) -> None:
         """Draw and save one PNG per pair, on ``workers`` processes.

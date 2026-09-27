@@ -129,25 +129,38 @@ def test_the_summary_counts_clusters_and_strong_pairs(features):
     assert summary["threshold"] == 0.7
 
 
-@pytest.mark.parametrize("n_factors", [3, 300])
-def test_the_figure_stays_readable_for_many_factors(n_factors):
+def _many(n_factors: int) -> FactorCorrelation:
     rng = np.random.default_rng(1)
     base = rng.normal(size=(T, S, 10))
     variables = {
         f"f{i:03d}": base[:, :, i % 10] + 0.3 * rng.normal(size=(T, S))
         for i in range(n_factors)
     }
-    corr = FactorCorrelation.compute(_panel(**variables))
+    return FactorCorrelation.compute(_panel(**variables))
+
+
+@pytest.mark.parametrize("n_factors", [3, 300])
+def test_every_factor_is_named_without_overlapping_names(n_factors):
+    corr = _many(n_factors)
 
     fig = FactorCorrelationFigure().render(corr)
 
     heatmap = fig.axes[0]
     labels = [t.get_text() for t in heatmap.get_yticklabels() if t.get_text()]
-    if n_factors <= 3:
-        assert sorted(labels) == sorted(variables)
-    else:
-        assert 0 < len(labels) <= 60
+    assert sorted(labels) == sorted(corr.mean.index)
+    row_pt = heatmap.get_position().height * fig.get_size_inches()[1] * 72 / n_factors
+    assert heatmap.get_yticklabels()[0].get_fontsize() <= row_pt
     assert str(n_factors) in fig.get_suptitle()
+
+
+def test_past_the_label_limit_the_axes_name_clusters():
+    corr = _many(300)
+
+    fig = FactorCorrelationFigure(label_limit=100).render(corr)
+
+    labels = [t.get_text() for t in fig.axes[0].get_yticklabels() if t.get_text()]
+    assert 0 < len(labels) <= 100
+    assert all(label.startswith("C") for label in labels)
 
 
 def test_analyze_adds_the_correlation_for_two_or_more_factors(features, tmp_path):
