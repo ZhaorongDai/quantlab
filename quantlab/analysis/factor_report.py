@@ -22,7 +22,10 @@ library:
 
 ``FactorAnalyzer`` computes the metrics, ``FactorReportFigure`` draws one
 composite matplotlib figure per pair, and ``FactorAnalysis`` holds the
-results and writes them to disk. ``Factor.analyze`` is the usual entry point.
+results and writes them to disk. With two or more factor variables the
+analysis also holds their ``FactorCorrelation``
+(``quantlab.analysis.factor_correlation``). ``Factor.analyze`` is the usual
+entry point.
 The inputs are ``xarray`` panels; the results are small tidy pandas tables.
 matplotlib is imported only when a figure is drawn.
 
@@ -59,6 +62,10 @@ import xarray as xr
 from joblib import Parallel, delayed
 from scipy import stats
 
+from quantlab.analysis.factor_correlation import (
+    FactorCorrelation,
+    FactorCorrelationFigure,
+)
 from quantlab.utils.jsonable import to_jsonable
 
 if TYPE_CHECKING:
@@ -241,11 +248,19 @@ class FactorAnalysis:
     config : dict
         ``{"factor": factor config, "frets": [fret configs]}``, the dicts
         ``load_factor_from_config`` rebuilds each object from.
+    correlation : FactorCorrelation or None
+        The correlation between the analyzed factor variables, when there
+        are two or more; ``None`` otherwise.
+    correlation_figure : matplotlib.figure.Figure or None
+        The figure of ``correlation``, held when no ``output_dir`` was
+        given.
     """
 
     pairs: dict[str, PairAnalysis]
     figures: dict[str, "Figure"] = field(default_factory=dict)
     config: dict = field(default_factory=dict)
+    correlation: FactorCorrelation | None = None
+    correlation_figure: "Figure | None" = None
 
     def summary_table(self) -> pd.DataFrame:
         """Return the scalar metrics, one row per pair.
@@ -328,7 +343,12 @@ class FactorAnalysis:
         ``summary.csv``, ``ic.csv``, ``monthly_ic.csv``,
         ``quantile_returns.csv``, ``turnover.csv``, one
         ``<factor>__<fret>.png`` per pair and ``config.json`` (see
-        ``config``). Floats that are NaN or infinite are written to JSON as
+        ``config``). With a ``correlation``, also
+        ``factor_correlation.csv`` (the mean matrix in cluster order),
+        ``factor_correlation_pairs.csv`` (``pairs_table()``),
+        ``factor_clusters.csv`` (``cluster_table()``) and
+        ``factor_correlation.png``, and ``summary.json`` gains a
+        ``"correlation"`` entry (``FactorCorrelation.summary``). Floats that are NaN or infinite are written to JSON as
         ``null``. Figures held in ``figures`` are saved as they are; when
         none is held, every pair is drawn from its metrics and saved, on
         ``workers`` processes, without being kept.
@@ -353,10 +373,10 @@ class FactorAnalysis:
         """
         out = Path(output_dir)
         out.mkdir(parents=True, exist_ok=True)
-        summaries = [pair.summary for pair in self.pairs.values()]
-        (out / "summary.json").write_text(
-            json.dumps(to_jsonable({"pairs": summaries}), indent=2)
-        )
+        summaries = {"pairs": [pair.summary for pair in self.pairs.values()]}
+        if self.correlation is not None:
+            summaries["correlation"] = self.correlation.summary
+        (out / "summary.json").write_text(json.dumps(to_jsonable(summaries), indent=2))
         (out / "config.json").write_text(json.dumps(to_jsonable(self.config), indent=2))
         self.summary_table().to_csv(out / "summary.csv", index=False)
         self.ic_table().to_csv(out / "ic.csv", index=False)
@@ -368,7 +388,18 @@ class FactorAnalysis:
                 figure.savefig(out / f"{key}.png", dpi=FIGURE_DPI)
         elif self.pairs:
             self._render_to(out, workers)
+        if self.correlation is not None:
+            self._save_correlation(out)
         return out
+
+    def _save_correlation(self, out: Path) -> None:
+        """Write the correlation tables and figure into ``out``."""
+        corr = self.correlation
+        corr.mean.rename_axis("factor").to_csv(out / "factor_correlation.csv")
+        corr.pairs_table().to_csv(out / "factor_correlation_pairs.csv", index=False)
+        corr.cluster_table().to_csv(out / "factor_clusters.csv", index=False)
+        figure = self.correlation_figure or FactorCorrelationFigure().render(corr)
+        figure.savefig(out / "factor_correlation.png", dpi=FIGURE_DPI)
 
     def _render_to(self, out: Path, workers: int | None) -> None:
         """Draw and save one PNG per pair, on ``workers`` processes.
@@ -443,6 +474,9 @@ class FactorAnalyzer:
     chunk_size : int, default 32
         Factor variables per lazy plan. Each plan holds ``chunk_size + 3``
         float columns of ``timestamps * symbols`` rows in memory.
+    correlation_threshold : float, default 0.7
+        ``|correlation|`` at which the factor-correlation clusters are cut;
+        see ``quantlab.analysis.factor_correlation``.
 
     Examples
     --------
@@ -459,6 +493,7 @@ class FactorAnalyzer:
         plot: bool = True,
         workers: int | None = None,
         chunk_size: int = 32,
+        correlation_threshold: float = 0.7,
     ):
         """Initialize the analyzer; see the class docstring for parameters."""
         if quantiles < 2:
@@ -468,6 +503,7 @@ class FactorAnalyzer:
         self.plot = plot
         self.workers = workers
         self.chunk_size = max(int(chunk_size), 1)
+        self.correlation_threshold = float(correlation_threshold)
 
     def run(
         self,
@@ -564,12 +600,21 @@ class FactorAnalyzer:
             "factor": factor.get_config(),
             "frets": [fret.get_config() for fret in frets],
         }
-        analysis = FactorAnalysis(pairs=pairs, figures={}, config=config)
+        correlation = None
+        if len(names) >= 2:
+            correlation = FactorCorrelation.compute(
+                features[names], threshold=self.correlation_threshold
+            )
+        analysis = FactorAnalysis(
+            pairs=pairs, figures={}, config=config, correlation=correlation
+        )
         if output_dir is not None:
             analysis.save(output_dir, workers=self.workers if self.plot else 0)
         elif self.plot:
             renderer = FactorReportFigure(rolling_window=self.rolling_window)
             analysis.figures = {key: renderer.render(pair) for key, pair in pairs.items()}
+            if correlation is not None:
+                analysis.correlation_figure = FactorCorrelationFigure().render(correlation)
         return analysis
 
     @staticmethod

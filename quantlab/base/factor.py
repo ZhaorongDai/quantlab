@@ -879,7 +879,10 @@ class Factor(ABC):
             ``summary.csv``, ``ic.csv``, ``monthly_ic.csv``,
             ``quantile_returns.csv``, ``turnover.csv``, one
             ``<factor>__<fret>.png`` per pair and ``config.json`` are written
-            there. ``config.json`` holds ``{"factor": ..., "frets": [...]}``,
+            there, plus ``factor_correlation.csv``,
+            ``factor_correlation_pairs.csv``, ``factor_clusters.csv`` and
+            ``factor_correlation.png`` when two or more factor variables are
+            analyzed. ``config.json`` holds ``{"factor": ..., "frets": [...]}``,
             each rebuildable with ``load_factor_from_config``. When None,
             nothing is written.
         quantiles : int, default 5
@@ -894,7 +897,9 @@ class Factor(ABC):
             ``pairs`` (metrics per ``"<factor>__<fret>"``), ``figures``
             (matplotlib figures, same keys) and tidy tables through
             ``summary_table()``, ``ic_table()``, ``quantile_returns_table()``,
-            ``turnover_table()`` and ``monthly_ic_table()``.
+            ``turnover_table()`` and ``monthly_ic_table()``; with two or more
+            factor variables also ``correlation``, their
+            ``FactorCorrelation``.
 
         Raises
         ------

@@ -442,6 +442,7 @@ def test_output_dir_with_several_pairs_draws_every_figure_in_parallel(oracle_and
 
     assert result.figures == {}
     assert sorted(p.name for p in (tmp_path / "report").glob("*.png")) == [
-        "oracle__fwd_1.png", "oracle_neg__fwd_1.png",
+        "factor_correlation.png", "oracle__fwd_1.png", "oracle_neg__fwd_1.png",
     ]
+    assert result.correlation.mean.loc["oracle", "oracle_neg"] == pytest.approx(-1.0)
     assert result.pairs["oracle_neg__fwd_1"].summary["ic_mean"] == pytest.approx(-1.0)
