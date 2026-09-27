@@ -140,6 +140,34 @@ timestamp
 2024-02-02  302.0
 ```
 
+### Request a date range without touching the config
+
+`panel(start, end, symbols=None)` returns the stored panel for an inclusive date range. It opens the store lazily on every call, loads no variable until it is used, keeps nothing on the dataset and leaves the config alone, so one dataset object answers any number of requests.
+
+```python
+>>> ds = StockDataset(config)
+>>> ds.panel("2024-02-01", "2024-02-29", symbols=["MSFT"])["close"].to_pandas()
+symbol       MSFT
+timestamp        
+2024-02-01  301.0
+2024-02-02  302.0
+>>> ds.panel("2024-01-03", "2024-01-04")["close"].to_pandas()
+symbol       AAPL   MSFT
+timestamp               
+2024-01-03  103.0  303.0
+2024-01-04  104.0  304.0
+```
+
+`bar_before(date, n)` counts `n` bars back from `date` on the store's own calendar, so days without data are skipped. It raises when fewer than `n` bars exist before `date`. A resampled dataset answers both calls on its resampled bars.
+
+```python
+>>> ds.bar_before("2024-02-01", 2)
+Timestamp('2024-01-03 00:00:00')
+>>> ds.bar_before("2024-01-03", 2)
+Traceback (most recent call last):
+ValueError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
+```
+
 ### Read the anomaly flags
 
 Cleaning runs inside `from_raw_data()`. It checks that the required columns exist, reports nulls, and adds `anomaly_flag`. A cell is flagged when a price is zero or negative, or when `close` moves by more than 50 percent from a positive previous close. Values are never changed, filled or dropped; the flag only marks them. The functions can be called on any panel.

@@ -140,6 +140,34 @@ timestamp
 2024-02-02  302.0
 ```
 
+### 不改 config，按日期区间请求面板
+
+`panel(start, end, symbols=None)` 返回已存储面板在一个闭区间内的部分。每次调用都惰性打开 store，变量在被用到之前不会载入内存；dataset 自身不保留任何数据，config 也不会被改动，所以同一个 dataset 对象可以应答任意多次请求。
+
+```python
+>>> ds = StockDataset(config)
+>>> ds.panel("2024-02-01", "2024-02-29", symbols=["MSFT"])["close"].to_pandas()
+symbol       MSFT
+timestamp        
+2024-02-01  301.0
+2024-02-02  302.0
+>>> ds.panel("2024-01-03", "2024-01-04")["close"].to_pandas()
+symbol       AAPL   MSFT
+timestamp               
+2024-01-03  103.0  303.0
+2024-01-04  104.0  304.0
+```
+
+`bar_before(date, n)` 在 store 自己的日历上从 `date` 往前数 `n` 根 bar，没有数据的日子会被跳过。`date` 之前不足 `n` 根 bar 时抛出异常。重采样后的 dataset 在重采样后的 bar 上应答这两个调用。
+
+```python
+>>> ds.bar_before("2024-02-01", 2)
+Timestamp('2024-01-03 00:00:00')
+>>> ds.bar_before("2024-01-03", 2)
+Traceback (most recent call last):
+ValueError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
+```
+
 ### 读取异常标记
 
 清洗在 `from_raw_data()` 内部运行。它检查必需列是否存在，报告空值，并添加 `anomaly_flag`。当某个价格为零或负数，或者 `close` 相对于为正的前一个收盘价变动超过 50% 时，该单元格被标记。数值本身不会被修改、填充或删除，标记只是做记号。这些函数可以对任意面板调用。

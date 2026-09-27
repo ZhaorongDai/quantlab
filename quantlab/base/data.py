@@ -28,7 +28,7 @@ import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Self
+from typing import Optional, Self, Sequence
 
 import numpy as np
 import pandas as pd
@@ -44,12 +44,32 @@ from quantlab.enums.constant import Date
 from quantlab.utils.resample import (
     assert_coarser,
     clock_labels,
+    resample_seconds,
     resample_store_path,
     resolve_resample_how,
     validate_resample_config,
 )
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
+
+
+def _as_label(value):
+    """Return ``value`` as a label ``xarray`` slices ``timestamp`` with.
+
+    Strings pass through, so a date-only end keeps covering its whole day;
+    anything else becomes a ``pd.Timestamp``.
+    """
+    return value if isinstance(value, str) else pd.Timestamp(value)
+
+
+def _last_moment(value) -> pd.Timestamp:
+    """Return the latest instant an inclusive ``end`` label covers.
+
+    A date-only ISO string covers its whole day, as ``xarray`` slices it.
+    """
+    if isinstance(value, str) and len(value) == len("YYYY-MM-DD"):
+        return pd.Timestamp(value) + pd.Timedelta(days=1) - pd.Timedelta(1, "ns")
+    return pd.Timestamp(value)
 
 
 @dataclass(frozen=True)
@@ -539,10 +559,18 @@ class BaseDataset(ABC):
 
     def _apply_resample(self) -> None:
         """Replace the held panel with its resample, per the config."""
-        freq = self.config.resample_freq
-        if freq is None:
+        if self.config.resample_freq is None:
             return
-        data = self.data_backend.get_xarray_dataset()
+        self.data_backend.to_internal(
+            self._resample_panel(self.data_backend.get_xarray_dataset())
+        )
+
+    def _resample_panel(self, data: xr.Dataset) -> xr.Dataset:
+        """Return ``data`` aggregated onto ``config.resample_freq`` bars.
+
+        ``data`` is not changed; the grouping runs in a backend of its own.
+        """
+        freq = self.config.resample_freq
         timestamps = data["timestamp"].values
         assert_coarser(timestamps, freq, self.class_name)
         how = resolve_resample_how(
@@ -550,7 +578,170 @@ class BaseDataset(ABC):
         )
         labels = pd.Series(self._resample_labels(timestamps, freq), index=timestamps)
         with Timer(f"{self.__class__.__name__}: resample to {freq}"):
-            self.data_backend.resample(labels, how)
+            return XrBackend().to_internal(data).resample(labels, how).data
+
+    def _reads_source_store(self) -> bool:
+        """Return whether requests must resample the source store.
+
+        True for a resampled dataset whose own store has not been saved.
+        """
+        return (
+            self.config.resample_freq is not None
+            and not Path(self.store_path).exists()
+        )
+
+    def _open_store(self, path: str) -> xr.Dataset:
+        """Open the Zarr store at ``path`` lazily, in a backend of its own."""
+        return XrBackend().read(path).data
+
+    def panel(
+        self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+        symbols: "Sequence | None" = None,
+    ) -> xr.Dataset:
+        """Return the stored panel from ``start`` to ``end``, both inclusive.
+
+        The store is opened lazily on every call: no variable is loaded
+        until it is used, and the dataset holds nothing afterwards, so one
+        dataset object can answer several requests with different ranges
+        and serve several consumers at once. The config is not changed.
+
+        A date-only ``end`` such as ``"2024-01-05"`` includes every bar of
+        that day. A resampled dataset answers on its resampled bars: from
+        its own store when one has been saved (see ``store_path``),
+        otherwise by resampling the part of the source store the range
+        needs, which loads that part into memory.
+
+        Parameters
+        ----------
+        start : str, datetime.date or pd.Timestamp
+            First bar to include.
+        end : str, datetime.date or pd.Timestamp
+            Last bar to include.
+        symbols : sequence, optional
+            Symbol labels to keep, in the order given, of the store's own
+            label type (integer PERMNOs on CRSP and NBBO stores). ``None``
+            keeps every symbol of the store.
+
+        Returns
+        -------
+        xr.Dataset
+            The panel on ``(timestamp, symbol)``.
+
+        Raises
+        ------
+        ValueError
+            If ``start`` is after ``end``.
+        KeyError
+            If a requested symbol is not in the store.
+        FileNotFoundError
+            If the store does not exist.
+
+        Examples
+        --------
+        >>> panel = ds.panel("2024-01-03", "2024-01-04", symbols=["BBB"])
+        >>> dict(panel.sizes)
+        {'timestamp': 2, 'symbol': 1}
+        >>> dict(ds.panel("2024-01-02", "2024-01-05").sizes)  # same object
+        {'timestamp': 4, 'symbol': 3}
+        """
+        first, last = pd.Timestamp(start), _last_moment(end)
+        if first > last:
+            raise ValueError(
+                f"{self.class_name}.panel(): start {start!r} is after end "
+                f"{end!r}."
+            )
+        window = slice(_as_label(start), _as_label(end))
+        if self._reads_source_store():
+            # A resampled bar inside the range draws on source bars up to
+            # one resample period (plus the rest of the end day) outside it.
+            pad = pd.Timedelta(
+                seconds=resample_seconds(self.config.resample_freq)
+            ) + pd.Timedelta(days=1)
+            source = self._open_store(self.config.zarr_file_path).sel(
+                timestamp=slice(first - pad, last + pad)
+            )
+            if symbols is not None:
+                source = source.sel(symbol=list(symbols))
+            data = self._resample_panel(source).sel(timestamp=window)
+        else:
+            data = self._open_store(self.store_path).sel(timestamp=window)
+            if symbols is not None:
+                data = data.sel(symbol=list(symbols))
+        return XrBackend().to_internal(data).get_xarray_dataset(
+            ["timestamp", "symbol"]
+        )
+
+    def bar_before(
+        self, date: "str | datetime.date | pd.Timestamp", n: int
+    ) -> pd.Timestamp:
+        """Return the bar ``n`` bars before ``date`` on this dataset's calendar.
+
+        The calendar is the store's own timestamps, so gaps such as
+        weekends and holidays are skipped rather than counted. The bars
+        before ``date`` are those stamped strictly earlier; ``n=1`` is the
+        last of them. ``n=0`` returns ``date`` itself. A resampled dataset
+        counts its resampled bars. Only the timestamps are read.
+
+        Parameters
+        ----------
+        date : str, datetime.date or pd.Timestamp
+            The date to count back from.
+        n : int
+            How many bars to count back; non-negative.
+
+        Returns
+        -------
+        pd.Timestamp
+            The timestamp of that bar.
+
+        Raises
+        ------
+        ValueError
+            If ``n`` is negative, or fewer than ``n`` bars exist before
+            ``date``.
+
+        Examples
+        --------
+        >>> ds.bar_before("2024-01-08", 1)  # Monday: the bar before is Friday
+        Timestamp('2024-01-05 00:00:00')
+        >>> ds.bar_before("2024-01-03", 5)
+        Traceback (most recent call last):
+        ValueError: DemoDataset.bar_before(): only 2 bar(s) exist before ...
+        """
+        if n < 0:
+            raise ValueError(
+                f"{self.class_name}.bar_before(): n must be non-negative, "
+                f"got {n}."
+            )
+        target = pd.Timestamp(date)
+        if n == 0:
+            return target
+        calendar = self._calendar()
+        position = int(calendar.searchsorted(target, side="left"))
+        if position < n:
+            store = (
+                self.config.zarr_file_path
+                if self._reads_source_store()
+                else self.store_path
+            )
+            raise ValueError(
+                f"{self.class_name}.bar_before(): only {position} bar(s) "
+                f"exist before {date!r} in {store}, but {n} were requested."
+            )
+        return calendar[position - n]
+
+    def _calendar(self) -> pd.DatetimeIndex:
+        """Return the sorted timestamps requests are answered on."""
+        if not self._reads_source_store():
+            timestamps = self._open_store(self.store_path)["timestamp"].values
+            return pd.DatetimeIndex(timestamps)
+        timestamps = self._open_store(self.config.zarr_file_path)[
+            "timestamp"
+        ].values
+        labels = self._resample_labels(timestamps, self.config.resample_freq)
+        return pd.DatetimeIndex(np.unique(labels))
 
     def read(self, **kwargs):
         """Open the Zarr store and narrow it to the config's window.

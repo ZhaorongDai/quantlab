@@ -1,0 +1,249 @@
+"""Datasets answer panel requests by date range, and count bars before a date.
+
+``panel(start, end, symbols)`` opens the store lazily on every call and holds
+nothing afterwards, so one dataset object can feed several consumers with
+different ranges. ``bar_before(date, n)`` answers which bar lies ``n`` bars
+before ``date`` on the dataset's own calendar, the resampled one when the
+dataset is resampled.
+"""
+
+import copy
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+
+from quantlab.base.config import DatasetConfig
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.dataset.stock import StockDataset
+
+MARKET_DATASETS = [
+    pytest.param((SpotKlineDataset, "spot_kline_zarr"), id="spot"),
+    pytest.param((StockDataset, "stock_zarr"), id="stock"),
+]
+
+
+@pytest.fixture(params=MARKET_DATASETS)
+def dataset(request):
+    """A dataset over a 60-day synthetic store starting 2024-01-01."""
+    cls, fixture = request.param
+    return cls(request.getfixturevalue(fixture)())
+
+
+def _days(panel: xr.Dataset) -> list[str]:
+    """Return the panel's timestamps as ISO day strings."""
+    return [str(d) for d in panel["timestamp"].values.astype("datetime64[D]")]
+
+
+def test_panel_covers_exactly_the_inclusive_range(dataset):
+    panel = dataset.panel("2024-01-03", "2024-01-07")
+
+    assert tuple(panel.dims) == ("timestamp", "symbol")
+    assert _days(panel) == [f"2024-01-0{d}" for d in range(3, 8)]
+    assert panel.sizes["symbol"] == dataset.panel("2024-01-01", "2024-03-01").sizes["symbol"]
+
+
+def test_panel_restricts_to_the_requested_symbols(dataset):
+    every = dataset.panel("2024-01-03", "2024-01-07")["symbol"].values.tolist()
+    wanted = [every[-1], every[0]]
+
+    panel = dataset.panel("2024-01-03", "2024-01-07", symbols=wanted)
+
+    assert panel["symbol"].values.tolist() == wanted
+
+
+def test_panel_is_lazy(dataset):
+    panel = dataset.panel("2024-01-03", "2024-01-07")
+
+    assert not any(v.variable._in_memory for v in panel.data_vars.values())
+
+
+def test_repeated_requests_return_their_own_range_in_either_order(dataset):
+    narrow_first = dataset.panel("2024-01-10", "2024-01-12")
+    wide_after = dataset.panel("2024-01-01", "2024-01-31")
+    narrow_again = dataset.panel("2024-01-10", "2024-01-12")
+
+    assert _days(narrow_first) == _days(narrow_again)
+    assert len(_days(narrow_first)) == 3
+    assert len(_days(wide_after)) == 31
+    xr.testing.assert_identical(narrow_first.load(), narrow_again.load())
+
+
+def test_dataset_holds_no_panel_after_a_request(dataset):
+    dataset.panel("2024-01-03", "2024-01-07")
+
+    with pytest.raises(AttributeError):
+        dataset.get_xarray_dataset()
+
+
+def test_a_request_leaves_the_config_unchanged(dataset):
+    before = copy.deepcopy(dataset.config)
+
+    dataset.panel("2024-01-03", "2024-01-07", symbols=None)
+
+    assert dataset.config == before
+
+
+def test_panel_refuses_a_start_after_the_end(dataset):
+    with pytest.raises(ValueError, match="after"):
+        dataset.panel("2024-01-07", "2024-01-03")
+
+
+def test_panel_refuses_an_unknown_symbol(dataset):
+    with pytest.raises(KeyError):
+        dataset.panel("2024-01-03", "2024-01-07", symbols=["NOPE"])
+
+
+# -- bar arithmetic ---------------------------------------------------------------
+
+
+def test_bar_before_counts_bars_on_the_dataset_calendar(dataset):
+    assert dataset.bar_before("2024-01-10", 3) == pd.Timestamp("2024-01-07")
+    assert dataset.bar_before("2024-01-10", 9) == pd.Timestamp("2024-01-01")
+
+
+def test_bar_before_zero_is_the_date_itself(dataset):
+    assert dataset.bar_before("2024-01-10", 0) == pd.Timestamp("2024-01-10")
+
+
+def test_bar_before_skips_calendar_gaps(tmp_path):
+    days = pd.bdate_range("2024-01-01", periods=10)  # Mon 1st .. Fri 12th
+    store = tmp_path / "klines.zarr"
+    xr.Dataset(
+        {"Close": (["timestamp", "symbol"], np.ones((len(days), 1)))},
+        coords={"timestamp": days, "symbol": ["AUSDT"]},
+    ).to_zarr(store, mode="w")
+    ds = SpotKlineDataset(
+        DatasetConfig(
+            raw_data_dir_path=str(tmp_path / "raw"),
+            zarr_file_path=str(store),
+            market="crypto_spot",
+            frequency="1d",
+        )
+    )
+
+    # Monday 8th: one bar back is Friday 5th, not Sunday 7th.
+    assert ds.bar_before("2024-01-08", 1) == pd.Timestamp("2024-01-05")
+
+
+def test_bar_before_reports_too_few_bars(dataset):
+    with pytest.raises(ValueError, match=r"only 9 bar"):
+        dataset.bar_before("2024-01-10", 10)
+
+
+def test_bar_before_refuses_a_negative_count(dataset):
+    with pytest.raises(ValueError, match="non-negative"):
+        dataset.bar_before("2024-01-10", -1)
+
+
+# -- resampled datasets -----------------------------------------------------------
+
+HOW = {
+    "Open": "first",
+    "High": "max",
+    "Low": "min",
+    "Close": "last",
+    "Volume": "sum",
+    "Quote asset volume": "sum",
+}
+
+
+@pytest.fixture
+def minute_dataset(tmp_path: Path) -> SpotKlineDataset:
+    """Five days of four minute bars each; ``Close`` counts bars from 1."""
+    timestamps = pd.DatetimeIndex(
+        np.concatenate(
+            [
+                pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values
+                for d in range(1, 6)
+            ]
+        )
+    )
+    close = np.arange(1.0, len(timestamps) + 1.0)[:, None]
+    store = tmp_path / "klines.zarr"
+    xr.Dataset(
+        {name: (["timestamp", "symbol"], close) for name in HOW},
+        coords={"timestamp": timestamps, "symbol": ["AUSDT"]},
+    ).to_zarr(store, mode="w")
+    return SpotKlineDataset(
+        DatasetConfig(
+            raw_data_dir_path=str(tmp_path / "raw"),
+            zarr_file_path=str(store),
+            market="crypto_spot",
+            frequency="1m",
+        )
+    )
+
+
+def test_resampled_panel_is_on_resampled_bars(minute_dataset):
+    daily = minute_dataset.resample("1d", HOW)
+
+    panel = daily.panel("2024-01-02", "2024-01-04")
+
+    assert _days(panel) == ["2024-01-02", "2024-01-03", "2024-01-04"]
+    assert panel["Close"].values[:, 0].tolist() == [8.0, 12.0, 16.0]
+    assert panel["Open"].values[:, 0].tolist() == [5.0, 9.0, 13.0]
+    assert panel["Volume"].values[:, 0].tolist() == [26.0, 42.0, 58.0]
+
+
+def test_resampled_panel_reads_the_sibling_store_when_present(minute_dataset):
+    daily = minute_dataset.resample("1d", HOW)
+    days = pd.date_range("2024-01-01", periods=5, freq="D")
+    xr.Dataset(
+        {name: (["timestamp", "symbol"], np.full((5, 1), -1.0)) for name in HOW},
+        coords={"timestamp": days, "symbol": ["AUSDT"]},
+    ).to_zarr(daily.store_path, mode="w")
+
+    panel = daily.panel("2024-01-02", "2024-01-04")
+
+    assert not panel["Close"].variable._in_memory
+    assert panel["Close"].values[:, 0].tolist() == [-1.0, -1.0, -1.0]
+
+
+def test_resampled_bar_before_counts_resampled_bars(minute_dataset):
+    daily = minute_dataset.resample("1d", HOW)
+
+    assert daily.bar_before("2024-01-04", 2) == pd.Timestamp("2024-01-02")
+    with pytest.raises(ValueError, match=r"only 3 bar"):
+        daily.bar_before("2024-01-04", 4)
+
+
+def test_intraday_start_inside_a_date_only_end_day_is_accepted(minute_dataset):
+    panel = minute_dataset.panel("2024-01-04 00:02", "2024-01-04")
+
+    assert panel["Close"].values[:, 0].tolist() == [15.0, 16.0]
+
+
+def test_resampled_request_leaves_source_and_config_unchanged(minute_dataset):
+    daily = minute_dataset.resample("1d", HOW)
+    before = copy.deepcopy(daily.config)
+
+    daily.panel("2024-01-02", "2024-01-04")
+
+    assert daily.config == before
+    assert minute_dataset.panel("2024-01-01", "2024-01-05").sizes["timestamp"] == 20
+
+
+def test_panel_selects_integer_symbol_labels(tmp_path):
+    """CRSP and NBBO stores key symbols by integer PERMNO."""
+    days = pd.date_range("2024-01-01", periods=5, freq="D")
+    store = tmp_path / "permno.zarr"
+    xr.Dataset(
+        {"Close": (["timestamp", "symbol"], np.arange(10.0).reshape(5, 2))},
+        coords={"timestamp": days, "symbol": np.array([10107, 14593], dtype="int64")},
+    ).to_zarr(store, mode="w")
+    ds = SpotKlineDataset(
+        DatasetConfig(
+            raw_data_dir_path=str(tmp_path / "raw"),
+            zarr_file_path=str(store),
+            market="us_equity",
+            frequency="1d",
+        )
+    )
+
+    panel = ds.panel("2024-01-02", "2024-01-03", symbols=[14593])
+
+    assert panel["symbol"].values.tolist() == [14593]
+    assert panel["Close"].values[:, 0].tolist() == [3.0, 5.0]
