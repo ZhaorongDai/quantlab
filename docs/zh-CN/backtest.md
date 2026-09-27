@@ -343,7 +343,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 - `benchmark`：基准的 `symbol` 及其自身的收益统计（总收益、年化收益、波动率、Sharpe、最大回撤等）；
 - `relative`：组合相对基准的表现，命名沿用 vectorbt 的风格，所有带 `[%]` 的行都是百分数。*相对净值* = 组合净值 / 基准净值。`Excess Return [%]` 是期末相对净值减 1（即通常所说的超额收益 alpha），`Annualized Excess Return [%]` 为其年化值，`Excess Max Drawdown [%]` 是相对净值从其历史高点的最大回落（*超额回撤*，为负数或 0），另有 `Strategy Total Return [%]`、`Benchmark Total Return [%]`、`Total Return Difference [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`（年化回归截距）和 `Win Rate vs Benchmark [%]`。
 
-`report.html` 在组合净值的同一面板上画出基准净值（灰色虚线），其下新增超额收益和超额回撤两行，回撤和月度收益面板中也并列显示基准，并新增“Excess over benchmark”和“Benchmark (buy and hold)”两张表。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
+`report.html` 在组合净值的同一面板上画出基准净值（灰色虚线），其下是超额收益和超额回撤两行，回撤和月度收益面板中并列显示基准，另有“Excess over benchmark”和“Benchmark (buy and hold)”两张表。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
 
 ### 从配置重建一次运行
 

@@ -552,10 +552,10 @@ class FactorAnalysis:
         ``factor_correlation.csv`` (the mean matrix in cluster order),
         ``factor_correlation_pairs.csv`` (``pairs_table()``),
         ``factor_clusters.csv`` (``cluster_table()``) and
-        ``factor_correlation.png``, and ``summary.json`` gains a
+        ``factor_correlation.png``, and ``summary.json`` holds a
         ``"correlation"`` entry (``FactorCorrelation.summary``). With two
         or more frets, also ``ic_decay.csv`` (``ic_decay_table()``), and
-        every pair figure gains an IC-decay panel. Floats that are NaN or infinite are written to JSON as
+        every pair figure includes an IC-decay panel. Floats that are NaN or infinite are written to JSON as
         ``null``. Figures held in ``figures`` are saved as they are; when
         none is held, every pair is drawn from its metrics and saved, on
         ``workers`` processes, without being kept.
@@ -1226,7 +1226,7 @@ class FactorReportFigure:
             The metrics to draw.
         decay : pandas.DataFrame, optional
             The factor's rows of ``FactorAnalysis.ic_decay_table()``. With
-            two or more rows the figure gains a panel of the mean IC by
+            two or more rows the figure includes a panel of the mean IC by
             horizon, this pair's fret highlighted.
 
         Returns
