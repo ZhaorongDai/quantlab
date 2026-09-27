@@ -580,7 +580,7 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
     marker. That arm proves the mismatch is detectable at all and that the happy
     path gained no extra or reworded warning.
 
-    Probe arm: `predict_panel` raises after `_redate_factors` has already
+    Probe arm: `predict_panel` raises after `_record_factor_fingerprints` has already
     recorded the factor fingerprint and before the price fingerprint exists. The
     factor mismatch must be reported, marked partial, and the original
     `ValueError` must be what propagates.

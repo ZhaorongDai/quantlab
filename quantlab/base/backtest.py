@@ -35,7 +35,7 @@ import wandb
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.data import InsufficientHistoryError, MarketDataset
+from quantlab.base.data import MarketDataset
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
@@ -284,9 +284,9 @@ class BaseBacktester(ABC):
 
     The public entry points ``run()`` and ``run_cv()`` are defined here and
     never overridden. Both run the same fixed sequence of steps and call the
-    hooks above along the way: prepare the model, re-date the factors and
-    predict, generate signals, simulate, compute metrics, then write the run
-    directory.
+    hooks above along the way: prepare the model, request the factor
+    panels for the window and predict, generate signals, simulate, compute
+    metrics, then write the run directory.
 
     Parameters
     ----------
@@ -615,9 +615,10 @@ class BaseBacktester(ABC):
         model is trained on its own dates first; in load mode the checkpoint
         is restored and the training dates recorded beside it define the
         in-sample split (a warning is logged if they select different bars
-        than ``config.model``'s dates). The factors are re-dated to cover the
-        warm-up, the model predicts the window, the concrete class turns the
-        predictions into target weights, the engine simulates them, metrics
+        than ``config.model``'s dates). Each factor is computed (or read)
+        for the window, warming itself up by its own ``warmup_bars``; no
+        dataset, factor or label config is changed. The model predicts the
+        window, the concrete class turns the predictions into target weights, the engine simulates them, metrics
         are computed for the whole window and for the in-sample and
         out-of-sample parts, and everything is written to a new directory
         under ``config.output_dir``. Data fingerprints are compared against
@@ -845,13 +846,13 @@ class BaseBacktester(ABC):
             [record["weights"] for record in records], dim="timestamp"
         )
 
-        # The per-fold loop left only the last fold's fingerprints. Re-date
-        # the factors to the whole stitched window (with the first fold's
-        # warm-up), re-read, take the price fingerprint from the stitched
-        # prices, then compare.
+        # The per-fold loop left only the last fold's fingerprints. Take the
+        # factor fingerprints over the whole stitched window (with the first
+        # fold's warm-up) and the price fingerprint from the stitched prices,
+        # then compare.
         self._fingerprints = {}
         try:
-            self._redate_factors(first_start, last_end, calendar)
+            self._record_factor_fingerprints(first_start, last_end)
             stitched_prices = self._load_prices(first_start, last_end)
             stitched_benchmark_prices = self._load_benchmark_prices(
                 first_start, last_end, stitched_prices.timestamp.values
@@ -1150,10 +1151,10 @@ class BaseBacktester(ABC):
     ) -> _BacktestWindow:
         """Run every step of one backtest window without persisting anything.
 
-        Shared by ``run()`` and by each fold of ``run_cv()``: align the factor
-        dates and predict, load the prices, reindex the predictions onto the
-        price axes (symbols without a prediction become NaN and are never
-        selected), split the window against ``[train_start, train_end +
+        Shared by ``run()`` and by each fold of ``run_cv()``: request the
+        factor panels for the window and predict, load the prices, reindex
+        the predictions onto the price axes (symbols without a prediction
+        become NaN and are never selected), split the window against ``[train_start, train_end +
         label horizon]``, generate and check the weights, simulate, simulate
         the benchmark (when one is configured, on the same bars) and compute
         the metrics. The model must already be prepared.
@@ -1163,7 +1164,7 @@ class BaseBacktester(ABC):
         ValueError
             If the window contains no price bars.
         """
-        predictions = self._align_and_predict(start_date, end_date, calendar)
+        predictions = self._predict_window(start_date, end_date)
 
         prices = self._load_prices(start_date, end_date)
         if prices.sizes.get("timestamp", 0) == 0:
@@ -1378,90 +1379,31 @@ class BaseBacktester(ABC):
     def _price_calendar(self, end_date: str) -> np.ndarray:
         """Return the price dataset's sorted bar timestamps up to ``end_date``.
 
-        Used wherever the backtester counts bars. The dates are written
-        straight into the dataset config as ISO strings, and
-        ``read(overwrite=True)`` bypasses the backend's read cache, which
-        would otherwise return an earlier, narrower read.
+        Used wherever the backtester counts bars on the strategy's calendar:
+        the effective training window and the fold contiguity checks. Only
+        the timestamps of a date-range request are read; the dataset's
+        config is not touched.
         """
-        dataset = self.config.price_dataset
-        dataset.config.start_date = Date.START_DATE
-        dataset.config.end_date = end_date
-        dataset.read(overwrite=True)
-        return np.sort(dataset.get_xarray_dataset().timestamp.values)
+        panel = self.config.price_dataset.panel(Date.START_DATE, end_date)
+        return np.sort(panel.timestamp.values)
 
-    def _warmup_start(self, calendar: np.ndarray, start_date: str) -> str:
-        """Return the bar-counted warm-up start before ``start_date``.
+    def _predict_window(self, start_date: str, end_date: str) -> xr.Dataset:
+        """Fingerprint the factor inputs, predict, and cut to the window.
 
-        Counted in calendar bars, not calendar days; the calendar-day buffer
-        a factor subtracts on its own is only extra slack. When the calendar
-        is too short the start is clamped to its first bar and a warning
-        says by how many bars.
+        Each factor is asked for ``start_date`` to ``end_date`` by the
+        model's factor strategy; no config is changed.
         """
-        factors = self.config.model.config.factors
-        window = max((int(f.config.window) for f in factors), default=0)
-        idx = int(
-            np.searchsorted(
-                calendar, np.datetime64(pd.Timestamp(start_date)), side="left"
-            )
-        )
-        warmup = self._iso_date(calendar[max(idx - window, 0)])
-        if idx - window < 0:
-            logger.warning(
-                f"{self.class_name}: warm-up needs {window} bars before "
-                f"{start_date} but the price calendar has only {idx}; short by "
-                f"{window - idx} bar(s), clamping the warm-up start to the "
-                f"first bar {warmup}"
-            )
-        return warmup
-
-    def _refresh_factor_reads(self, factor) -> None:
-        """Force ``factor``'s underlying data to be re-read after its dates changed.
-
-        The Zarr backend returns its cached data once it holds any, and both
-        the dataset and the factor narrow that cache in place when they
-        filter. After the model has collected on its own dates, widening the
-        factor dates to warm-up plus window without this refresh would
-        silently return the old, narrower panel: a shorter warm-up or a
-        first rebalance bar with no predictions. The dataset is always
-        re-read; the factor store is re-read as well under the ``"read"``
-        strategy, whose features come from that store.
-        """
-        factor.config.dataset.read(overwrite=True)
-        if self.config.model.config.factor_data_strategy == "read":
-            factor.read(overwrite=True)
-
-    def _redate_factors(
-        self, start_date: str, end_date: str, calendar: np.ndarray
-    ) -> None:
-        """Re-date every factor to warm-up plus window, re-read and fingerprint it.
-
-        Used for the ``run()`` window, each ``run_cv()`` fold and the
-        stitched window. The fingerprints are recorded right after the
-        re-read, when each factor's dataset holds exactly warm-up plus
-        window.
-        """
-        warmup = self._warmup_start(calendar, start_date)
-        for factor in self.config.model.config.factors:
-            factor.config.start_date = warmup
-            factor.config.end_date = end_date
-            factor._reset_dataset_config()
-            self._refresh_factor_reads(factor)
-        self._record_factor_fingerprints()
-
-    def _align_and_predict(
-        self, start_date: str, end_date: str, calendar: np.ndarray
-    ) -> xr.Dataset:
-        """Re-date the factors, compute the features, predict, and cut to the window."""
-        with Timer(f"{self.class_name}: align_and_predict"):
+        with Timer(f"{self.class_name}: predict_window"):
             model = self.config.model
             # The model's missing/extra symbol lists are bare identifiers.
             # It cannot reach the price store, so the labelling callable is
             # handed over here; the model knows no vendor, only a
             # `(symbols, day) -> list[str]` callable.
             model.symbol_labeller = self.ticker_lookup.label
-            self._redate_factors(start_date, end_date, calendar)
+            self._record_factor_fingerprints(start_date, end_date)
 
-            # Each factor warms itself up from the bars before start_date.
+            # Each factor warms itself up by its own warmup_bars, counted on
+            # its dataset's calendar, from the bars before start_date.
             features = model._collect_all_features(start_date, end_date)
             return model.predict_panel(features).sel(
                 timestamp=slice(start_date, end_date)
@@ -1470,9 +1412,9 @@ class BaseBacktester(ABC):
     def _load_prices(self, start_date: str, end_date: str) -> xr.Dataset:
         """Return the fill and valuation price columns over the window.
 
-        The result is a deep copy, because the price dataset object may be
-        shared with a factor whose dates change later. The price
-        fingerprint is recorded here.
+        The columns come from a date-range request, which leaves the
+        dataset untouched, so the price dataset may be the same object as a
+        factor's dataset. The price fingerprint is recorded here.
 
         Raises
         ------
@@ -1480,9 +1422,7 @@ class BaseBacktester(ABC):
             If either price column is missing from the store.
         """
         dataset = self.config.price_dataset
-        dataset.config.start_date = start_date
-        dataset.config.end_date = end_date
-        ds = dataset.read(overwrite=True).get_xarray_dataset()
+        ds = dataset.panel(start_date, end_date)
 
         fill = self.MARKET.fill_price_column  # type: ignore[union-attr]
         valuation = self.MARKET.valuation_price_column  # type: ignore[union-attr]
@@ -1492,7 +1432,7 @@ class BaseBacktester(ABC):
                     f"{self.class_name}: price column {column!r} not found in "
                     f"{dataset.config.zarr_file_path}"
                 )
-        prices = ds[[fill, valuation]].load().copy(deep=True)
+        prices = ds[[fill, valuation]].load()
         self._record_price_fingerprint(prices)
         return prices
 
@@ -1532,9 +1472,7 @@ class BaseBacktester(ABC):
         dataset = self.config.benchmark_dataset
         if dataset is None:
             return None
-        dataset.config.start_date = start_date
-        dataset.config.end_date = end_date
-        ds = dataset.read(overwrite=True).get_xarray_dataset()
+        ds = dataset.panel(start_date, end_date)
 
         fill = self.MARKET.fill_price_column  # type: ignore[union-attr]
         valuation = self.MARKET.valuation_price_column  # type: ignore[union-attr]
@@ -1552,7 +1490,7 @@ class BaseBacktester(ABC):
                 f"{dataset.config.zarr_file_path}: {symbols[:10]}"
             )
         self._benchmark_axis_symbol = symbols[0]
-        read = ds[[fill, valuation]].load().copy(deep=True)
+        read = ds[[fill, valuation]].load()
         self._fingerprints["benchmark_dataset"] = dataset_fingerprint(
             read, [fill, valuation]
         )
@@ -1591,16 +1529,13 @@ class BaseBacktester(ABC):
         return aligned
 
     @staticmethod
-    def _dataset_variables_fingerprint(factor, ds: xr.Dataset | None = None) -> dict:
+    def _dataset_variables_fingerprint(factor, ds: xr.Dataset) -> dict:
         """Fingerprint the data a factor (or label) consumes from its dataset.
 
-        ``ds`` is the dataset panel to fingerprint; by default the panel the
-        dataset holds. A KunQuant factor (``FactorConfig``) reads
-        ``data_columns``; a Polars factor consumes the whole frame, so every
-        data variable is covered.
+        ``ds`` is the dataset panel to fingerprint. A KunQuant factor
+        (``FactorConfig``) reads ``data_columns``; a Polars factor consumes
+        the whole frame, so every data variable is covered.
         """
-        if ds is None:
-            ds = factor.config.dataset.get_xarray_dataset()
         if isinstance(factor.config, FactorConfig):
             variables = list(factor.config.data_columns)
         else:
@@ -1612,25 +1547,30 @@ class BaseBacktester(ABC):
         """Fingerprint a panel read from a factor or label store, all variables."""
         return dataset_fingerprint(ds, list(ds.data_vars))
 
-    def _record_factor_fingerprints(self) -> None:
-        """Record one fingerprint per factor of the model.
+    def _record_factor_fingerprints(self, start: str, end: str) -> None:
+        """Record one fingerprint per factor of the model over ``start`` to ``end``.
 
-        Keys are ``factor[{i}]:{ClassName}`` over the variables the factor
-        consumes, for the range its dataset currently holds (the caller
-        guarantees this includes the warm-up). Under the ``"read"``
-        strategy a second key ``factor_store[{i}]:{ClassName}`` covers the
-        panel returned by ``factor.get_features()``, because that store, not
-        the dataset, is what the predictions are built from.
+        Used for the ``run()`` window, each ``run_cv()`` fold and the
+        stitched window. Keys are ``factor[{i}]:{ClassName}`` over the
+        variables the factor consumes from the panel ``compute(start, end)``
+        reads, its warm-up bars included. Under the ``"read"`` strategy a
+        second key ``factor_store[{i}]:{ClassName}`` covers the features of
+        ``factor.read(start, end)``, because that store, not the dataset,
+        is what the predictions are built from.
         """
         strategy = self.config.model.config.factor_data_strategy
         for i, factor in enumerate(self.config.model.config.factors):
             name = type(factor).__name__
             self._fingerprints[f"factor[{i}]:{name}"] = (
-                self._dataset_variables_fingerprint(factor)
+                self._dataset_variables_fingerprint(
+                    factor, self._compute_inputs(factor, start, end)
+                )
             )
             if strategy == "read":
                 self._fingerprints[f"factor_store[{i}]:{name}"] = (
-                    self._store_fingerprint(factor.get_features())
+                    self._store_fingerprint(
+                        factor.get_features(factor.read(start, end))
+                    )
                 )
 
     def _record_training_fingerprints(self) -> None:
@@ -1672,15 +1612,10 @@ class BaseBacktester(ABC):
     def _compute_inputs(item, start, end) -> xr.Dataset:
         """Return the dataset panel ``item.compute(start, end)`` reads.
 
-        That is ``start`` to ``end`` plus ``item.warmup_bars`` bars before
-        ``start``, or every bar before it when the dataset holds fewer.
+        The range comes from the factor itself, so the fingerprint covers
+        exactly the warm-up and resample padding ``compute`` reads.
         """
-        dataset = item.config.dataset
-        try:
-            first = dataset.bar_before(start, item.warmup_bars)
-        except InsufficientHistoryError as exc:
-            first = dataset.bar_before(start, exc.available)
-        return dataset.panel(first, end)
+        return item.config.dataset.panel(*item._input_range(start, end, warn=False))
 
     def _compare_fingerprints(self, *, partial: bool = False) -> None:
         """Compare this run's fingerprints against ``expected_fingerprint``.

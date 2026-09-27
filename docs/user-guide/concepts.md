@@ -136,8 +136,8 @@ that were left out, resolves factor names and, for factors, moves the dataset's 
 back by the warm-up `window`. So give each object its own config instance; the quickstart
 copies the dataset config with `dataclasses.replace` for each factor. Second, a model passes
 its dates to its factors and labels per request (`read(start, end)` or `compute(start, end)`)
-and leaves their configs alone, while a backtester re-dates the factors to cover its window
-plus the warm-up bars, so the dates you set on the outermost object win.
+and leaves their configs alone, and a backtester does the same with its window, so the
+dates you set on the outermost object win.
 
 ## Rebuilding objects from config.json
 

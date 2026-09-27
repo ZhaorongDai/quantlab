@@ -37,9 +37,10 @@ A call to `run()` performs these steps in order:
 
 1. Prepare the model. In `model_mode="train"` the model is trained on the
    dates in its own config; in `model_mode="load"` a checkpoint is restored.
-2. Re-date every factor so that it covers the backtest window plus a warm-up
-   period, recompute the features, and let the model predict a *panel* (an
-   `xarray.Dataset` indexed by `timestamp` and `symbol`) of scores.
+2. Ask every factor for the backtest window by date range (each computed
+   factor reads its own warm-up bars before the window), and let the model
+   predict a *panel* (an `xarray.Dataset` indexed by `timestamp` and
+   `symbol`) of scores.
 3. Turn the scores into target weights on the rebalance bars.
 4. Simulate the weights with vectorbt.
 5. Compute metrics for the whole window and separately for the parts of it
@@ -229,12 +230,18 @@ bar.
 A factor needs history before it has a value: a 20-bar momentum is undefined
 for the first 20 bars it sees. The *warm-up* is the extra history read before
 the backtest window so that every factor has a value on the first bar of the
-window. The backtester takes the largest `window` among the model's factor
-configs and starts every factor that many price bars before `start_date`.
-The count is in bars on the price calendar, not in calendar days, so weekends
-and holidays do not shorten it. If the price data does not reach back far
-enough, the warm-up starts at the first available bar and a warning says how
-many bars short it is.
+window. The backtester does not count it: it calls `compute(start_date,
+end_date)` on each factor, which reads the factor's own `warmup_bars` bars
+before `start_date` on its dataset's calendar, so a backtest and a standalone
+`compute` agree on the first bar. The count is in bars, not in calendar days,
+so weekends and holidays do not shorten it. If the data does not reach back
+far enough, the factor starts at the first available bar and a `UserWarning`
+says how many bars short it is. Under the `"read"` strategy the factor values
+come from the factor store, which needs no warm-up.
+
+None of this changes a config: prices, benchmark prices and factor panels are
+all date-range requests, so the price dataset may be the very object a factor
+reads.
 
 ## Universe, listings and delistings
 

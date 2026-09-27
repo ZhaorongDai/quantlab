@@ -566,13 +566,7 @@ class Factor(ABC):
             before '2024-01-03' but the dataset holds only 2; the first
             bars are short by 18 bar(s) of warm-up.
         """
-        first, last = check_range(start, end, f"{self.class_name}.compute()")
-        source_start, source_end = self._warm_start(first, start), end
-        if self.config.resample_freq is not None:
-            pad = resample_padding(self.config.resample_freq)
-            source_start = min(source_start, first - pad)
-            source_end = last + pad
-        inputs = self.config.dataset.panel(source_start, source_end)
+        inputs = self.config.dataset.panel(*self._input_range(start, end))
         panel = self._compute_panel(inputs)
         if self.config.resample_freq is not None:
             panel = self._resample_panel(panel)
@@ -580,23 +574,46 @@ class Factor(ABC):
             panel.sel(timestamp=slice(as_label(start), as_label(end)))
         )
 
-    def _warm_start(self, first: pd.Timestamp, start) -> pd.Timestamp:
+    def _input_range(self, start, end, *, warn: bool = True) -> tuple:
+        """Return the ``(start, end)`` of the dataset panel ``compute`` reads.
+
+        That is ``start`` to ``end`` plus ``warmup_bars`` bars before
+        ``start``, widened by the resample padding for a resampled factor.
+        The backtester fingerprints the same range with ``warn=False``.
+
+        Raises
+        ------
+        ValueError
+            If ``start`` is after ``end``.
+        """
+        first, last = check_range(start, end, f"{self.class_name}.compute()")
+        source_start, source_end = self._warm_start(first, start, warn), end
+        if self.config.resample_freq is not None:
+            pad = resample_padding(self.config.resample_freq)
+            source_start = min(source_start, first - pad)
+            source_end = last + pad
+        return source_start, source_end
+
+    def _warm_start(self, first: pd.Timestamp, start, warn: bool) -> pd.Timestamp:
         """Return the bar ``warmup_bars`` bars before ``first``, or the earliest.
 
-        Warns with the shortfall in bars when the dataset holds fewer.
+        Warns with the shortfall in bars when the dataset holds fewer and
+        ``warn`` is true.
         """
         dataset = self.config.dataset
         needed = self.warmup_bars
         try:
             return dataset.bar_before(first, needed)
         except InsufficientHistoryError as exc:
+            if not warn:
+                return dataset.bar_before(first, exc.available)
             warnings.warn(
                 f"{self.class_name}.compute(): {needed} warm-up bar(s) are "
                 f"needed before {start!r} but {dataset.class_name} holds only "
                 f"{exc.available}; the first bars are short by "
                 f"{needed - exc.available} bar(s) of warm-up.",
                 UserWarning,
-                stacklevel=3,
+                stacklevel=4,
             )
             return dataset.bar_before(first, exc.available)
 

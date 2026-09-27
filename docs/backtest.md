@@ -216,7 +216,7 @@ A symbol with no prices at the start of the window that was never held is treate
 
 ### Warm-up
 
-The model's factors need history before `start_date`. The backtester reads as many bars before the window as the largest `window` among the model's factors, counted in price bars rather than calendar days. If the price calendar is shorter, the warm-up start is clamped to the first bar and a warning gives the shortfall. Predictions cover exactly the window bars, and a price symbol without a prediction gets NaN scores and is never selected.
+The model's factors need history before `start_date`. The backtester asks each factor for the window by date range, `compute(start_date, end_date)` under the `"cal"` strategy or `read(start_date, end_date)` under `"read"`, and a computed factor reads its own `warmup_bars` bars before `start_date`, counted on its dataset's calendar rather than in calendar days. A backtest and a standalone `compute` over the same window therefore give the same factor values. If the dataset holds fewer bars, the factor starts from the first one and a `UserWarning` gives the shortfall in bars. No dataset, factor or label config is changed, so the price dataset may be the same object as a factor's dataset. Predictions cover exactly the window bars, and a price symbol without a prediction gets NaN scores and is never selected.
 
 ### In-sample and out-of-sample
 

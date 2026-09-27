@@ -648,7 +648,7 @@ def test_a_symbol_labeller_spells_the_dropped_permnos(tmp_path, warning_messages
 
     The model layer knows no vendor and no store path -- the backtester hands
     it a `(symbols, day) -> list[str]` callable and nothing else
-    (`base/backtest.py:_align_and_predict`). The labeller touches the MESSAGE
+    (`base/backtest.py:_predict_window`). The labeller touches the MESSAGE
     only: the panel is still selected by the int64 identity, which is why the
     returned axis below is unchanged.
     """

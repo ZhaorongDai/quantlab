@@ -1,29 +1,18 @@
 """Model preparation and date alignment in `BaseBacktester.run()` (phase 03.7, plan 06).
 
-This module locks D-06, D-13, D-14 and D-15, plus the read-cache trap that
-sits underneath D-14.
+This module locks D-06, D-13, D-14 and D-15.
 
-- **D-15, bar-accurate warm-up.** The warm-up start is the largest factor
-  `config.window`, counted in bars on the price dataset's own timestamp axis.
-  `Factor._reset_dataset_config` subtracts `window` *calendar* days from the
-  dataset start, and that is only an extra buffer. The warm-up test uses a
-  5-bar lookback, so the buffer alone is not enough (5 calendar days before a
-  Monday reach back only 3 bars). A zero-bar warm-up therefore goes red on the
-  factor start date and on NaN first-bar predictions. Calendar-day
-  arithmetic goes red too, because it lands on the preceding Wednesday rather
-  than the Monday one week earlier. A short history clamps to the first bar
-  and logs a warning that names the clamped start.
-- **D-14, re-dating through the factor configs, and the read cache.**
-  `XrBackend.read` returns early once the backend holds data, and
-  `BaseDataset.read()` / `Factor.read()` then narrow that cached panel IN
-  PLACE. A model trained first has already read its data narrowed to its own
-  dates. Widening the factor dates for the backtest and reading again returns
-  the same narrow panel, and nothing raises. RESEARCH Pitfall 1 measured it:
-  a 10-bar store read from a later start gave 6 bars, still 6 after widening,
-  and 10 only with `overwrite=True`. So the two strategy tests put the backtest
-  window BEFORE the model's own start date. Without the dataset refresh
-  ("cal"), or without the factor-store refresh ("read"), the window's first bar
-  is absent from the features and its predictions are NaN.
+- **D-15, bar-accurate warm-up.** Each factor warms itself up: the
+  backtester asks it for the window by date range and `compute` reads
+  `warmup_bars` bars before the start, counted on the factor dataset's own
+  calendar (#25). The warm-up test uses a 5-bar lookback, so a calendar-day
+  count (5 days before a Monday reach back only 3 bars) leaves the first
+  window bar NaN. A short history warns with the shortfall in bars.
+- **D-14, date-range requests.** No factor config is re-dated and nothing is
+  re-read with `overwrite=True`. The two strategy tests put the backtest
+  window BEFORE the model's own start date: under "cal" the factor computes
+  the window from its dataset, under "read" it reads the window from its
+  store, and either way the window's first bar is predicted and traded.
 - **D-06, the universe is every price symbol.** Predictions are reindexed onto
   the price dataset's symbol and timestamp axes before selection. A symbol the
   factor never saw scores NaN and gets 0.0 on every rebalance row. Predictions
@@ -162,6 +151,10 @@ def _adj_close(dataset_config) -> xr.DataArray:
     )
 
 
+def _factor_dates(model) -> list[tuple]:
+    return [(f.config.start_date, f.config.end_date) for f in model.config.factors]
+
+
 # --------------------------------------------------------------------------
 # D-15: bar-accurate warm-up
 # --------------------------------------------------------------------------
@@ -176,45 +169,41 @@ def test_warmup_counts_bars_on_the_price_calendar_not_calendar_days(tmp_path):
     model, checkpoint = _loaded_model(
         tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), n=5, window=5
     )
+    factor_dates = _factor_dates(model)
     result = _backtester(
         tmp_path, dataset_config, model, bars,
         start_bar=start_bar, end_bar=50, checkpoint=checkpoint,
     ).run()
 
-    # 5 bars before Monday 2024-02-12 is Monday 2024-02-05 (7 calendar days).
-    # Subtracting 5 calendar days would give Wednesday 2024-02-07.
-    factor = model.config.factors[0]
-    assert factor.config.start_date == _day(bars[start_bar - 5]) == "2024-02-05"
-
-    # The 5-bar lookback of the first window bar is fully inside the warm-up.
+    # The 5-bar lookback of the first window bar is fully inside the warm-up:
+    # 5 bars before Monday 2024-02-12 is Monday 2024-02-05 (7 calendar days),
+    # while 5 calendar days would reach only Wednesday 2024-02-07.
     first = result.predictions["fwd_ret_1"].isel(timestamp=0)
     assert np.isfinite(first.values).all(), first.values
+    # The factor config is not re-dated.
+    assert _factor_dates(model) == factor_dates
 
 
-def test_warmup_clamps_to_first_bar_and_warns_on_short_history(
-    tmp_path, warning_messages
-):
+def test_warmup_warns_with_the_shortfall_in_bars_on_short_history(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
 
     model, checkpoint = _loaded_model(
         tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), window=5
     )
-    _backtester(
+    backtester = _backtester(
         tmp_path, dataset_config, model, bars,
         start_bar=2, end_bar=20, checkpoint=checkpoint,
-    ).run()
+    )
+    with pytest.warns(UserWarning) as caught:
+        backtester.run()
 
-    first_day = _day(bars[0])
-    assert model.config.factors[0].config.start_date == first_day
-
-    shortfall = [m for m in warning_messages if "warm-up" in m]
-    assert len(shortfall) == 1, warning_messages
+    shortfall = [str(w.message) for w in caught if "warm-up" in str(w.message)]
+    assert shortfall, [str(w.message) for w in caught]
     message = shortfall[0]
-    assert "5 bars" in message
+    assert "5 warm-up bar(s)" in message
     assert "only 2" in message
     assert "short by 3" in message
-    assert first_day in message
 
 
 # --------------------------------------------------------------------------
@@ -253,28 +242,27 @@ def _two_factor_model(root: Path, dataset_config, dates: dict) -> FirstFeatureHe
     )
 
 
-def test_factor_dates_are_pushed_and_predictions_cover_exactly_the_window(tmp_path):
+def test_predictions_cover_exactly_the_window_without_redating_factors(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
     start_bar, end_bar = 30, 50
 
     model = _two_factor_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    factor_dates = _factor_dates(model)
     result = _backtester(
         tmp_path, dataset_config, model, bars,
         start_bar=start_bar, end_bar=end_bar, model_mode="train",
     ).run()
 
-    # The warm-up is the LARGEST window (7), applied to every factor.
-    for factor in model.config.factors:
-        assert factor.config.start_date == _day(bars[start_bar - 7])
-        assert factor.config.end_date == _day(bars[end_bar])
+    # Each factor warms itself up; no factor config is re-dated.
+    assert _factor_dates(model) == factor_dates
 
     np.testing.assert_array_equal(
         result.predictions.timestamp.values.astype("datetime64[ns]"),
         bars[start_bar : end_bar + 1].astype("datetime64[ns]"),
     )
     # The model's own end date is bar 29; the last window bar is predicted
-    # only because the end date was pushed into the factors.
+    # because the factors are asked for the backtest window.
     last = result.predictions["fwd_ret_1"].isel(timestamp=-1)
     assert np.isfinite(last.values).all(), last.values
 

@@ -1,7 +1,7 @@
 """End-to-end tracer for `BaseBacktester.run()` (phase 03.7, plan 01).
 
-One test drives the whole slice: load a checkpoint, re-date the factors with a
-bar-accurate warm-up, predict a panel, pick TopN target weights, simulate with
+One test drives the whole slice: load a checkpoint, request the factor panels
+for the window (each factor warms itself up in bars), predict a panel, pick TopN target weights, simulate with
 t+1-open fills in vectorbt, and persist the run directory.
 
 What is locked, and what turns it red:
@@ -25,9 +25,9 @@ What is locked, and what turns it red:
 What this tracer does NOT lock (mutation-verified to stay green here, owned by
 later plans):
 
-- bar-accurate warm-up (D-15): with n=1, `Factor._reset_dataset_config`'s
-  calendar-day buffer alone covers the lookback, so a zero-bar warm-up passes
-  (plan 03.7-06);
+- bar-accurate warm-up (D-15): with n=1 a one-bar warm-up covers the
+  lookback (locked in tests/test_backtest_dates.py and
+  tests/test_backtest_date_range.py);
 - the predictions reindex onto the price symbol axis (D-06): the fixture's
   factor and price stores carry the same symbols (plan 03.7-06);
 - NaN/inf -> null in `to_jsonable`: this seed's stats contain no non-finite

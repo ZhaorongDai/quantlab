@@ -7,11 +7,9 @@ already holds data. Both read paths then narrow that cached panel IN PLACE:
 widening `config.start_date` and calling `read()` again returns the same narrow
 panel. Nothing raises, and the missing bars simply are not there.
 
-The backtester hits this directly. D-14 re-dates the factors and datasets a
-model was trained on, widening their window to cover the backtest plus the
-factor warm-up, and then reads again. Without a refresh the warm-up silently
-shrinks or the prediction window comes back empty. The RESEARCH probe measured
-it: a 10-bar store read from a later start gave 6 bars, still 6 after widening,
+Any caller that widens a config and reads again hits this. The backtester
+used to (D-14); since #25 it requests panels by date range instead. The
+RESEARCH probe measured it: a 10-bar store read from a later start gave 6 bars, still 6 after widening,
 and 10 only with `overwrite=True`.
 
 What is locked here, in both directions:
