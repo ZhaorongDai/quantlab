@@ -75,7 +75,7 @@ working on.
 | [Datasets](dataset.md) | From raw files to the `(timestamp, symbol)` panel, and adding a market |
 | [Chunked conversion](chunking.md) | Converting a large date range one window at a time |
 | [Storage backends](backend.md) | Zarr and Parquet storage, appending, and writing a backend |
-| [Factors](factor.md) | The KunQuant and Polars factor backends, labels and normalization |
+| [Factors](factor.md) | The KunQuant and Polars factor backends, merged inputs, labels and normalization |
 | [Models](model.md) | The model hierarchy, training, cross-validation and checkpoints |
 | [Backtesting](backtest.md) | Target weights, simulation, metrics and run directories |
 

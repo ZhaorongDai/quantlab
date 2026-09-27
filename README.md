@@ -47,7 +47,8 @@ full-market listings that include delisted stocks.
 
 Factors are computed with [KunQuant](https://github.com/Menooker/KunQuant), which compiles
 factor formulas to native code and can run both on a history and bar by bar, or with Polars
-for quick batch experiments. Tree models and neural networks share one interface, with
+for quick batch experiments. A factor reads one dataset or several merged into one panel,
+such as an index store with an ETF store, or prices with quotes. Tree models and neural networks share one interface, with
 walk-forward cross-validation built in. The backtester, built on
 [vectorbt](https://vectorbt.dev/), reports in-sample and out-of-sample results separately and
 writes a run directory that can be rebuilt and re-run later.

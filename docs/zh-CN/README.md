@@ -35,7 +35,7 @@
 
 | 指南 | 内容 |
 |------|------|
-| [因子](factor.md) | KunQuant 与 Polars 两个因子后端、标签和标准化 |
+| [因子](factor.md) | KunQuant 与 Polars 两个因子后端、合并输入、标签和标准化 |
 | [模型](model.md) | 模型层级、训练、交叉验证和检查点 |
 | [回测](backtest.md) | 目标权重、模拟、指标和运行目录 |
 
@@ -45,7 +45,7 @@
 quantlab/
   base/         抽象契约：数据集、因子、模型、回测器、采集
   acquisition/  Tiingo、Alpaca、WRDS 下载器
-  dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分
+  dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
   factor/       因子集合：Alpha101、Alpha158、动量、股票池过滤
   label/        未来收益标签
   dl_model/     PyTorch 模型头：MLP、GRU、LSTM
