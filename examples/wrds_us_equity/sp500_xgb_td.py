@@ -39,6 +39,7 @@ from quantlab.config import get_data_root
 from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.stock import StockDataset
+from quantlab.enums.constant import Date
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
@@ -81,20 +82,20 @@ def factors_and_label() -> tuple[list, list]:
     the label reads ``members.zarr`` so returns exist on member rows only.
     """
     alpha101 = Alpha101Stock(FactorConfig(
-        window=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
+        warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha101.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        window=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
+        warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha158.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     label = Return(FactorConfig(
-        window=2 * HORIZON + 5, dataset=stock_dataset(WORK / "members.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "members.zarr"), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     return [alpha101, alpha158], [label]
 
@@ -118,10 +119,10 @@ def prepare_stores() -> None:
                 f"{store} not found; run scripts/wrds/index.py --index sp500 "
                 f"first (see README.md)."
             )
-    prices = crsp.read().get_xarray_dataset()[[*ALPHA_COLUMNS, "close", "volume", "ret"]]
-    prices = prices.sel(timestamp=slice(None, END))
+    # Every bar up to END: the factors warm up on the history before START.
+    prices = crsp.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume", "ret"]]
     member = (
-        membership.read().get_xarray_dataset()["is_member"]
+        membership.panel(Date.START_DATE, END)["is_member"]
         .reindex(timestamp=prices.timestamp, symbol=prices.symbol)
         .fillna(False)
         .astype(bool)

@@ -1,43 +1,31 @@
-"""`Factor.update()` -- the AUTOMATIC incremental interface (260907-vyr).
+"""`Factor.extend(end)` -- the AUTOMATIC incremental interface of a factor store.
 
-`Factor` had exactly one write path, `save()`, and it is a WHOLESALE one:
-zarr's `mode="a"` means "overwrite variables in an existing store", not
-"append along time", so a second date range fails outright
-(`tests/test_factor_save_mode.py` pins that failure and its message). The
-incremental path existed one layer down -- `XrBackend.append` and, since
-260906-x2s and this task, `widen_and_append` -- with no route to it from the
-factor layer at all. Measured 2026-09-07: `widen_and_append` had NO production
-caller anywhere in the repo, only tests.
-
-`update()` is that route, and it is AUTOMATIC: it works out for itself what
+`build(start, end)` writes a factor store WHOLESALE and records its range;
+`extend(end)` appends the bars after the recorded end. The incremental path
+lives one layer down, in `XrBackend.widen_and_append`, and `extend()` is the
+factor layer's route to it. It is AUTOMATIC: it works out for itself what
 changed -- later dates, new symbols, new variables -- and reconciles each axis
-without the caller naming which widening to perform. The two interfaces are how
-a caller says which it means:
+without the caller naming which widening to perform:
 
-    save()    writes WHOLESALE     (save(mode="w") replaces the store)
-    update()  EXTENDS              (no mode, no route to overwrite a stored range)
+    build(start, end)  writes WHOLESALE  (replaces the store)
+    extend(end)        EXTENDS           (no route to overwrite a stored range)
 
 Every test here names, in its docstring, the mutation that reddens it.
 
-WHY EVERY STORE-TOUCHING TEST HERE RUNS TWICE (260908-dvv). `update()` reaches
-`widen_and_append` and through it `widen_data_vars`, which is where the defect
-described above actually shipped -- and this suite could not see it, because
-`PanelFactor.cal()` built its `symbol` coordinate from a python list. That
-round-trips through zarr to a FIXED-WIDTH unicode store, while the store the
-real chunked ingest writes is `object`-encoded and decodes to `StringDType()`.
-The coordinate now comes from `conftest.symbol_coord` and the encoding is
-carried on the factor instance by `_factor(..., encoding=...)`, so seven of
-the eight tests get a `[fixed_width]` and a `[variable_length]` id (the eighth
-arrived with 260908-g30). Measured
-2026-09-08 with `quantlab/backend.py` reverted to `dea1e85`, two of
-those `[variable_length]` ids go red while every `[fixed_width]` twin stays
-green.
+WHY EVERY STORE-TOUCHING TEST HERE RUNS TWICE (260908-dvv). `extend()` reaches
+`widen_and_append` and through it `widen_data_vars`, which is where a
+coordinate-encoding defect once shipped unseen, because the test factor built
+its `symbol` coordinate from a python list. That round-trips through zarr to a
+FIXED-WIDTH unicode store, while the store the real chunked ingest writes is
+`object`-encoded and decodes to `StringDType()`. The coordinate now comes from
+`conftest.symbol_coord` and the encoding is carried on the factor instance by
+`_factor(..., encoding=...)`, so every store-touching test gets a
+`[fixed_width]` and a `[variable_length]` id.
 """
 
 import inspect
 import re
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -57,30 +45,23 @@ from quantlab.backend import XrBackend
 
 
 class _FakeDataset:
-    """Only what `Factor`'s config setter touches.
-
-    `_reset_dataset_config()` writes `start_date`/`end_date` onto
-    `config.dataset.config`; nothing else on the dataset is reached by the
-    `update()` path. Copied in shape from `tests/test_factor_save_mode.py`.
-    """
-
-    def __init__(self):
-        self.config = SimpleNamespace(start_date=None, end_date=None)
+    """A dataset `PanelFactor` never reads: its `compute` builds the panel."""
 
 
 class PanelFactor(Factor):
     """The smallest concrete `Factor`: a `(timestamp, symbol)` panel.
 
-    `cal()` takes the dates, symbols and variables explicitly so one class can
-    express every axis the update path reconciles. No KunQuant graph, no
-    compiled code, no real dataset.
+    `prepare()` takes the dates, symbols and variables of the panel the next
+    `compute()` returns, so one class can express every axis the extend path
+    reconciles. `build()` and `extend()` are the real ones. No KunQuant graph,
+    no compiled code, no real dataset.
     """
 
     SYMBOLS = ["AAA", "BBB"]
 
     #: Which of `conftest.SYMBOL_COORD_ENCODINGS` this instance's panels are
     #: built at. Deliberately NOT given a default: a factor constructed
-    #: without one raises `AttributeError` inside `cal()` rather than silently
+    #: without one raises `AttributeError` inside `prepare()` rather than silently
     #: falling back to one arm, which is the failure mode this whole task
     #: exists to close.
     symbol_encoding: str
@@ -88,7 +69,11 @@ class PanelFactor(Factor):
     def _get_factor_names(self) -> tuple[str, ...]:
         return ("alpha",)
 
-    def cal(
+    def compute(self, start, end) -> xr.Dataset:
+        """Return the prepared panel, whatever range is asked for."""
+        return self._prepared
+
+    def prepare(
         self,
         dates: Sequence[str],
         symbols: Sequence[str] | None = None,
@@ -112,14 +97,12 @@ class PanelFactor(Factor):
                 ).astype(dtype)
             data[name] = (["timestamp", "symbol"], values)
 
-        self.data_backend.to_internal(
-            xr.Dataset(
-                data,
-                coords={
-                    "timestamp": pd.to_datetime(list(dates)),
-                    "symbol": symbol_coord(symbols, self.symbol_encoding),
-                },
-            )
+        self._prepared = xr.Dataset(
+            data,
+            coords={
+                "timestamp": pd.to_datetime(list(dates)),
+                "symbol": symbol_coord(symbols, self.symbol_encoding),
+            },
         )
         return self
 
@@ -140,11 +123,9 @@ def _factor(tmp_path: Path, cls=PanelFactor, *, encoding: str) -> PanelFactor:
     """
     factor = cls(
         BaseFactorConfig(
-            window=1,
+            warmup_bars=1,
             dataset=_FakeDataset(),  # type: ignore[arg-type]
             file_path=str(tmp_path / "alpha.zarr"),
-            start_date="2024-01-01",
-            end_date="2024-12-31",
         )
     )
     factor.symbol_encoding = encoding
@@ -160,44 +141,47 @@ LATER = ["2024-03-01", "2024-03-02"]
 
 #: A stored range LONGER than `XrBackend.APPEND_DIM_CHUNK` (260908-g30).
 #:
-#: Hourly rather than daily so all 600 rows fall inside the factor config's
-#: 2024-01-01..2024-12-31 window -- `Factor.update()` runs `_auto_filter()`
-#: first, which would truncate a 600-DAY range to that window and leave the
-#: store at 366 rows, below the 512-row block floor.
-#:
 #: The length is load-bearing for the same reason it is in
 #: `tests/test_symbol_axis_widening.py`: a widen forced over budget by
 #: `MAX_WIDEN_BYTES = 0` floors its block at `APPEND_DIM_CHUNK`, so a shorter
 #: store makes the chunked path a single write that no multi-block assertion
 #: can tell from a correct one. This is an ARGUMENT to the existing
-#: `PanelFactor.cal()`, not a new builder.
+#: `PanelFactor.prepare()`, not a new builder.
 LONG = [d.isoformat() for d in pd.date_range("2024-02-01", periods=600, freq="h")]
 AFTER_LONG = ["2024-03-01", "2024-03-02"]
 
 
+def _build(factor: PanelFactor, dates: Sequence[str], **kwargs) -> PanelFactor:
+    """Write the store from ``dates`` with ``build()``, recording their range."""
+    return factor.prepare(dates, **kwargs).build(dates[0], dates[-1])
+
+
+def _extend(factor: PanelFactor, dates: Sequence[str], **kwargs) -> PanelFactor:
+    """Append ``dates`` with ``extend()`` up to their last one."""
+    return factor.prepare(dates, **kwargs).extend(dates[-1])
+
+
 # ---------------------------------------------------------------------------
-# Task 3 -- the automatic update interface
+# The automatic extend interface
 # ---------------------------------------------------------------------------
 
 
-def test_update_extends_the_store_with_a_later_date_range(
+def test_extend_appends_a_later_date_range_to_the_store(
     tmp_path: Path, symbol_encoding: str
 ) -> None:
-    """The tracer: the thing `save()` measurably cannot do.
+    """The tracer: "build February, then extend to March" simply works.
 
-    "Compute February, then compute March" is the call that raises under
-    `save()` -- `tests/test_factor_save_mode.py` pins that -- and must simply
-    work here. Both ranges present, the axis unique and strictly increasing,
-    and February's values bit-identical afterwards.
+    Both ranges present, the axis unique and strictly increasing, and
+    February's values bit-identical afterwards.
 
-    RED under: routing `update()` through `data_backend.write` (it would raise
-    zarr's dimension-size error), or through anything that does not extend.
+    RED under: routing `extend()` through a wholesale write, or through
+    anything that does not extend.
     """
     factor = _factor(tmp_path, encoding=symbol_encoding)
-    factor.cal(EARLY).update()
+    _build(factor, EARLY)
     before = _stored(factor)
 
-    factor.cal(LATER, offset=100.0).update()
+    _extend(factor, LATER, offset=100.0)
 
     after = _stored(factor)
     assert after.sizes["timestamp"] == len(EARLY) + len(LATER)
@@ -208,7 +192,7 @@ def test_update_extends_the_store_with_a_later_date_range(
     )
 
 
-def test_update_reconciles_a_new_symbol_without_being_told_to(
+def test_extend_reconciles_a_new_symbol_without_being_told_to(
     tmp_path: Path, symbol_encoding: str
 ) -> None:
     """AUTOMATIC is the whole point: the caller names no widening.
@@ -216,15 +200,15 @@ def test_update_reconciles_a_new_symbol_without_being_told_to(
     A roster that grew between two runs is the ordinary case, not an
     exceptional one, and a factor-layer caller has no business knowing that
     the storage layer calls this "widening the symbol axis". It passes a
-    panel; `update()` works out what changed.
+    panel; `extend()` works out what changed.
 
-    RED under: M11 (route `update()` through `append()` instead of
+    RED under: M11 (route `extend()` through `append()` instead of
     `widen_and_append()`) -- the symbol-coordinate guard refuses.
     """
     factor = _factor(tmp_path, encoding=symbol_encoding)
-    factor.cal(EARLY).update()
+    _build(factor, EARLY)
 
-    factor.cal(LATER, symbols=["AAA", "BBB", "CCC"], offset=100.0).update()
+    _extend(factor, LATER, symbols=["AAA", "BBB", "CCC"], offset=100.0)
 
     after = _stored(factor)
     assert after["symbol"].values.tolist() == ["AAA", "BBB", "CCC"]
@@ -237,7 +221,7 @@ def test_update_reconciles_a_new_symbol_without_being_told_to(
     ).any()
 
 
-def test_update_reconciles_a_new_variable_without_being_told_to(
+def test_extend_reconciles_a_new_variable_without_being_told_to(
     tmp_path: Path, symbol_encoding: str
 ) -> None:
     """The third axis, reconciled just as automatically as the second.
@@ -249,7 +233,7 @@ def test_update_reconciles_a_new_variable_without_being_told_to(
     BOTH axes would be reconciled by the symbol widen regardless and would
     stay green under M9, proving nothing about the variable axis.
 
-    This is also the property that proves `update()` routes through the
+    This is also the property that proves `extend()` routes through the
     three-axis path rather than a plain append.
 
     RED under: M11 (via the Task 1 new-variable refusal) and M9 (leaving
@@ -257,9 +241,9 @@ def test_update_reconciles_a_new_variable_without_being_told_to(
     fast path is taken and the closing `append()` refuses `beta`).
     """
     factor = _factor(tmp_path, encoding=symbol_encoding)
-    factor.cal(EARLY).update()
+    _build(factor, EARLY)
 
-    factor.cal(LATER, variables=["alpha", "beta"], offset=100.0).update()
+    _extend(factor, LATER, variables=["alpha", "beta"], offset=100.0)
 
     after = _stored(factor)
     assert sorted(after.data_vars) == ["alpha", "beta"]
@@ -270,81 +254,26 @@ def test_update_reconciles_a_new_variable_without_being_told_to(
     assert not np.isnan(after["beta"].values[len(EARLY) :]).any()
 
 
-def test_update_declares_no_overwrite_parameter(tmp_path: Path) -> None:
-    """The DECLARED half of D-10 -- and only that half. Read it with the next
-    test; neither is sufficient alone.
+def test_extend_declares_no_overwrite_parameter(tmp_path: Path) -> None:
+    """`extend()` EXTENDS, and offers no route to overwrite a range the store
+    already holds. Recomputing is `build()`'s job; a `mode=` on `extend()`
+    would blur the boundary the two interfaces exist to keep sharp. The
+    behavioural half, refusing an end the store already covers, is
+    `tests/test_factor_date_range.py::test_extend_refuses_an_end_the_store_already_covers`.
 
-    D-10: `update()` EXTENDS, and offers no route to overwrite a range the
-    store already holds. Recomputing is `save(mode="w")`'s job. A `mode=` on
-    `update()` would blur exactly the boundary the two interfaces exist to
-    keep sharp.
-
-    **This assertion is a structural PROXY that measurably does NOT span the
-    property it stands for.** Quick task 260907-uac demonstrated live that a
-    hatch popped from `**kwargs` INSIDE a method body makes the guard's
-    `ValueError` disappear while `inspect.signature` still returns a
-    byte-identical parameter tuple. So on its own this test stays green
-    through precisely the drift D-10 exists to catch. The behavioural half is
-    `test_update_refuses_a_range_the_store_already_holds` directly below.
-
-    RED under: M10 (give `Factor.update` a `mode` parameter), under which the
-    behavioural half below stays GREEN -- a declared-but-unpassed `mode` opens
-    no route past a guard that runs before `kwargs` is read.
+    RED under: giving `Factor.extend` any parameter besides `end`.
 
     THE ONE TEST IN THIS MODULE THAT DOES NOT TAKE `symbol_encoding`, and that
     is a DECISION rather than an oversight (260908-dvv). It never builds a
-    panel and never opens a store: `inspect.signature(Factor.update)` reads the
+    panel and never opens a store: `inspect.signature(Factor.extend)` reads the
     same tuple whatever a coordinate is encoded as, so a second id here would
     be a case with byte-identical behaviour -- cost without coverage. It is the
     single member of the exemption set in
     `tests/test_widening_fixture_realism.py`, so removing it from there without
     also giving this test the fixture fails the family guard.
     """
-    parameters = tuple(inspect.signature(Factor.update).parameters)
-    assert parameters == ("self", "kwargs")
-
-
-def test_update_refuses_a_range_the_store_already_holds(
-    tmp_path: Path,
-    symbol_encoding: str,
-) -> None:
-    """The BEHAVIOURAL half of D-10, and the half that spans the realistic
-    drift. Read it with `test_update_declares_no_overwrite_parameter` above,
-    whose signature assertion measurably does not cover this.
-
-    `update()` inherits the unconditional append-dim overlap refusal shipped
-    by 260907-uac, through `widen_and_append` -> the UNCHANGED `append()`. It
-    still refuses when the same call carries an unrecognised keyword, because
-    the guard runs before `kwargs` is touched anywhere along that chain.
-
-    Tests 4 and 5 are two functions rather than two assertions in one, for the
-    measured reason the repo's own pair at `tests/test_chunked_ingest.py:603`
-    and `:633` is two: a single pytest function cannot be half-red, so the
-    split M10 predicts -- structural red, behavioural green -- would be
-    unobservable inside one function.
-
-    RED under: any hatch consumed from `**kwargs` ahead of the guard, or
-    giving `update()` a working overwrite route.
-    """
-    factor = _factor(tmp_path, encoding=symbol_encoding)
-    factor.cal(EARLY).update()
-    before = _stored(factor)["alpha"].values.copy()
-
-    overlapping = ["2024-02-03", "2024-02-04"]
-
-    with pytest.raises(ValueError) as plain_error:
-        factor.cal(overlapping, offset=100.0).update()
-    assert "already ends at" in str(plain_error.value), str(plain_error.value)
-
-    with pytest.raises(ValueError) as smuggled_error:
-        factor.cal(overlapping, offset=100.0).update(force=True)
-    assert "already ends at" in str(smuggled_error.value), str(
-        smuggled_error.value
-    )
-
-    after = _stored(factor)
-    assert after.sizes["timestamp"] == len(EARLY)
-    np.testing.assert_array_equal(after["alpha"].values, before)
+    parameters = tuple(inspect.signature(Factor.extend).parameters)
+    assert parameters == ("self", "end")
 
 
 def test_the_widen_fill_seam_reaches_the_widening_call(
@@ -374,11 +303,11 @@ def test_the_widen_fill_seam_reaches_the_widening_call(
     ) == {}
 
     plain = _factor(tmp_path / "plain", encoding=symbol_encoding)
-    plain.cal(EARLY).update()
+    _build(plain, EARLY)
     with pytest.raises(ValueError) as excinfo:
-        plain.cal(
-            LATER, variables={"alpha": "float64", "anomaly_flag": "bool"}
-        ).update()
+        _extend(
+            plain, LATER, variables={"alpha": "float64", "anomaly_flag": "bool"}
+        )
     assert "anomaly_flag" in str(excinfo.value), str(excinfo.value)
     assert "fill_values" in str(excinfo.value), str(excinfo.value)
 
@@ -387,10 +316,8 @@ def test_the_widen_fill_seam_reaches_the_widening_call(
         cls=FilledPanelFactor,
         encoding=symbol_encoding,
     )
-    filled.cal(EARLY).update()
-    filled.cal(
-        LATER, variables={"alpha": "float64", "anomaly_flag": "bool"}
-    ).update()
+    _build(filled, EARLY)
+    _extend(filled, LATER, variables={"alpha": "float64", "anomaly_flag": "bool"})
 
     after = _stored(filled)
     assert after["anomaly_flag"].dtype == np.dtype(bool)
@@ -400,43 +327,7 @@ def test_the_widen_fill_seam_reaches_the_widening_call(
     assert after["anomaly_flag"].values[len(EARLY) :].all()
 
 
-def test_save_is_unchanged_by_the_arrival_of_update(
-    tmp_path: Path,
-    symbol_encoding: str,
-) -> None:
-    """DVAR-12: a no-change lock, not a new behaviour.
-
-    `save()` keeps its `mode="a"` default and keeps raising its wrapped,
-    actionable `ValueError` on a differently-sized second range. Only its
-    PROSE moved -- the two clauses asserting this method has no incremental
-    route became false the moment `update()` landed and were re-pointed, not
-    deleted.
-
-    Whether that `"a"` default is now vestigial is a real question and is
-    deliberately NOT answered here; it is filed for the developer at
-    `.planning/todos/pending/`.
-
-    RED under: changing `save()`'s default, its wrapping, or the substring it
-    matches on.
-    """
-    assert inspect.signature(Factor.save).parameters["mode"].default == "a"
-
-    factor = _factor(tmp_path, encoding=symbol_encoding)
-    factor.cal(EARLY).save()
-
-    with pytest.raises(ValueError) as excinfo:
-        factor.cal(["2024-03-01", "2024-03-02", "2024-03-03", "2024-03-04"]).save()
-
-    message = str(excinfo.value)
-    assert 'save(mode="w")' in message, message
-    assert str(factor.config.file_path) in message, message
-    assert isinstance(excinfo.value.__cause__, ValueError)
-    assert "already exists with different dimension sizes" in str(
-        excinfo.value.__cause__
-    )
-
-
-def test_update_reaches_the_bounded_widen_path_with_no_call_site_change(
+def test_extend_reaches_the_bounded_widen_path_with_no_call_site_change(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, symbol_encoding: str
 ) -> None:
     """260908-g30's sharp case, proved from the FACTOR side rather than
@@ -444,24 +335,24 @@ def test_update_reaches_the_bounded_widen_path_with_no_call_site_change(
 
     `Factor` has no raw tier. `BaseDataset`'s `on_new_listing="rebuild"` escape
     -- re-densify every window from raw -- does not exist for it, so
-    `Factor.update()` -> `XrBackend.widen_and_append` -> `widen_symbol_axis` is
+    `Factor.extend()` -> `XrBackend.widen_and_append` -> `widen_symbol_axis` is
     the ONLY path a new listing can take here. Before the router that path
     materialised the whole store unconditionally: a 3,000-symbol 1-minute year
     of 20 factors is a 43.9 GiB allocation triggered by a single IPO.
 
     The proof that matters is that routing arrived WITHOUT a call-site change.
-    Nothing in `Factor.update()` names a strategy, passes a budget or knows the
+    Nothing in `Factor.extend()` names a strategy, passes a budget or knows the
     storage layer chunks anything; the only thing this test does differently
-    from `test_update_reconciles_a_new_symbol_without_being_told_to` is move
+    from `test_extend_reconciles_a_new_symbol_without_being_told_to` is move
     the constant.
 
     600 hourly rows so the block loop genuinely iterates -- see `LONG`. RED
     under: reverting the router; giving `widen_symbol_axis` a strategy
-    parameter that `update()` would then have to pass; or a chunked path that
+    parameter that `extend()` would then have to pass; or a chunked path that
     collapses to one write (the reported block count is then 1).
     """
     factor = _factor(tmp_path, encoding=symbol_encoding)
-    factor.cal(LONG).update()
+    _build(factor, LONG)
     before = _stored(factor)
     assert before.sizes["timestamp"] == len(LONG) > XrBackend.APPEND_DIM_CHUNK
 
@@ -469,9 +360,7 @@ def test_update_reaches_the_bounded_widen_path_with_no_call_site_change(
     messages: list[str] = []
     sink_id = logger.add(messages.append, level="WARNING", format="{message}")
     try:
-        factor.cal(
-            AFTER_LONG, symbols=["AAA", "BBB", "CCC"], offset=100.0
-        ).update()
+        _extend(factor, AFTER_LONG, symbols=["AAA", "BBB", "CCC"], offset=100.0)
     finally:
         logger.remove(sink_id)
 

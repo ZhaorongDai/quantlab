@@ -7,6 +7,7 @@ Configuring a model never writes into a factor's or a label's config, so one
 factor object can feed several models with different date ranges.
 """
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -85,7 +86,7 @@ class LeastSquaresHead(MLModel):
 def _factor(cls, dataset, tmp_path: Path, name: str):
     return cls(
         FactorConfig(
-            window=5,
+            warmup_bars=5,
             dataset=dataset,
             mode="batch",
             data_columns=("close",),
@@ -129,11 +130,10 @@ def _dates(panel: xr.Dataset) -> tuple[str, str]:
 
 
 def _config_state(obj) -> tuple:
+    """The config without its dataset object, and the dataset's config."""
     return (
-        obj.config.start_date,
-        obj.config.end_date,
-        obj.config.dataset.config.start_date,
-        obj.config.dataset.config.end_date,
+        copy.deepcopy({k: v for k, v in obj.config.to_dict().items() if k != "dataset"}),
+        copy.deepcopy(obj.config.dataset.config),
     )
 
 

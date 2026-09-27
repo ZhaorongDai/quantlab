@@ -82,20 +82,20 @@ def market_dataset() -> CrspStockDataset:
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects."""
     alpha101 = Alpha101Stock(FactorConfig(
-        window=400, dataset=market_dataset(), mode="batch",
+        warmup_bars=400, dataset=market_dataset(), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha101.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        window=400, dataset=market_dataset(), mode="batch",
+        warmup_bars=400, dataset=market_dataset(), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha158.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     label = Return(FactorConfig(
-        window=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     return [alpha101, alpha158], [label]
 

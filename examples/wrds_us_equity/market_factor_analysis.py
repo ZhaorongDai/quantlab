@@ -70,20 +70,20 @@ def market_dataset() -> CrspStockDataset:
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects."""
     alpha101 = Alpha101Stock(FactorConfig(
-        window=400, dataset=market_dataset(), mode="batch",
+        warmup_bars=400, dataset=market_dataset(), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha101.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        window=400, dataset=market_dataset(), mode="batch",
+        warmup_bars=400, dataset=market_dataset(), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha158.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     label = Return(FactorConfig(
-        window=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     return [alpha101, alpha158], [label]
 
@@ -96,31 +96,31 @@ def compute_factors() -> None:
         )
     factors, labels = factors_and_label()
     for factor in factors + labels:
-        factor.cal().save(mode="w")
+        factor.build(START, END)
         logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
 
 
 # %% 3. Analyze
 def analyze() -> dict:
-    """``Factor.analyze()`` per library; returns ``{{"alpha101": ..., "alpha158": ...}}``.
+    """``Factor.analyze()`` per library; returns ``{"alpha101": ..., "alpha158": ...}``.
 
     Set ``factor_names`` to analyze a subset; the whole libraries give
     82 + 169 figures, drawn in parallel.
     """
     factors, labels = factors_and_label()
-    frets = [label.read() for label in labels]
-    results = {{}}
+    results = {}
     for factor in factors:
         library = type(factor).__name__.removesuffix("Stock").lower()
         out = WORK / "analysis" / library
-        results[library] = factor.read().analyze(
-            frets=frets, factor_names=None, quantiles=5, output_dir=str(out)
+        results[library] = factor.analyze(
+            START, END, frets=labels, factor_names=None, quantiles=5,
+            output_dir=str(out), data_strategy="read",
         )
         table = results[library].summary_table()
         best = table.reindex(table["ic_mean"].abs().sort_values(ascending=False).index).head(10)
         logger.info(
-            f"{{library}}: {{len(table)}} column(s) -> {{out}}\n"
-            f"{{best[['factor', 'fret', 'ic_mean', 'ic_t_stat', 'mean_spread']]}}"
+            f"{library}: {len(table)} column(s) -> {out}\n"
+            f"{best[['factor', 'fret', 'ic_mean', 'ic_t_stat', 'mean_spread']]}"
         )
     return results
 

@@ -37,8 +37,8 @@ Downloads are resumable: completed pieces are recorded on disk and skipped next 
 [data sources](data-sources.md).
 
 A dataset converts the raw tier into a dense panel and stores it as Zarr. The dataset object
-is also how every later stage reads prices; it knows its store, its date range and its
-symbols. See [datasets](datasets.md). A related kind of dataset holds index membership as a
+is also how every later stage reads prices: it knows its store and answers a request for a
+date range with `panel(start, end)`. See [datasets](datasets.md). A related kind of dataset holds index membership as a
 boolean panel, used to restrict research to the stocks that were actually in an index on each
 date; see [universes](universes.md).
 
@@ -132,12 +132,13 @@ fields rather than constants in the code for the same reason.
 
 Two behaviours of configs are worth knowing. First, an object takes ownership of its config
 and completes it on assignment: it records its own class in the `name` field, fills in dates
-that were left out, resolves factor names and, for factors, moves the dataset's start date
-back by the warm-up `window`. So give each object its own config instance; the quickstart
-copies the dataset config with `dataclasses.replace` for each factor. Second, a model passes
-its dates to its factors and labels per request (`read(start, end)` or `compute(start, end)`)
-and leaves their configs alone, and a backtester does the same with its window, so the
-dates you set on the outermost object win.
+that were left out and, for factors, resolves factor names. Second, reading is a query with
+the date range as an argument: a dataset answers `panel(start, end)`, a factor answers
+`compute(start, end)` or `read(start, end)`, and neither changes a config. A factor config
+holds no dates; its `warmup_bars` says how many bars before `start` it reads. A model passes
+its dates to its factors and labels per request and a backtester does the same with its
+window, so the dates you set on the outermost object win, and one dataset or factor object
+can serve several consumers.
 
 ## Rebuilding objects from config.json
 
@@ -147,7 +148,7 @@ holds the dotted import path of the class, for example
 `quantlab.dataset.stock.StockDataset`. The loaders in `quantlab.utils.module` reverse this:
 they import the named class, rebuild any nested objects first, and construct the object with
 the config class the class declares. In the example below, `root` is a directory holding a
-small `stock.zarr` store with 30 daily bars for three symbols.
+small `stock.zarr` store with 30 daily bars for three symbols, from 1 January 2024.
 
 ```python
 from quantlab.base.config import DatasetConfig
@@ -163,7 +164,7 @@ dataset = StockDataset(DatasetConfig(
 config = dataset.get_config()
 print(config["name"], config["start_date"])
 rebuilt = load_dataset_from_config(config)
-print(type(rebuilt).__name__, rebuilt.read().get_xarray_dataset().sizes)
+print(type(rebuilt).__name__, rebuilt.panel("2024-01-08", "2024-02-09").sizes)
 ```
 
 ```text

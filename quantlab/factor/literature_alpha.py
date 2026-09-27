@@ -413,7 +413,7 @@ class LiteratureAlpha(FactorKunQuant):
     fundamental and earnings-event columns::
 
         factor = LiteratureAlpha(FactorConfig(
-            window=400,
+            warmup_bars=400,
             dataset=dataset,
             mode="batch",
             data_columns=(
@@ -424,7 +424,7 @@ class LiteratureAlpha(FactorKunQuant):
             ),
             file_path="data/factors/literature_alpha.zarr",
         ))
-        features = factor.cal().get_features()
+        features = factor.get_features(factor.compute("2015-01-01", "2024-12-31"))
     """
 
     _CORE_FACTOR_NAMES = tuple(
@@ -674,8 +674,7 @@ class LiteratureAlpha(FactorKunQuant):
 
         The base export is used unless an IVOL output requests the optional
         Fama-French CSV. In that case the four common series are aligned to
-        panel bars and added, and ``cal()`` and ``compute()`` run the same
-        graph on them.
+        panel bars and added, and ``compute()`` runs the graph on them.
         """
 
         input_dict, symbols, timestamps = super()._kunquant_inputs(inputs)

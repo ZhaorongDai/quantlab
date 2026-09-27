@@ -521,7 +521,7 @@ def _read_strategy_backtester(root, dataset_config, checkpoint, factor_store, *,
 
     factor = PastReturnFactor(
         PolarsFactorConfig(
-            window=5,
+            warmup_bars=5,
             dataset=make_stock_dataset(dataset_config),
             file_path=str(factor_store),
             kwargs={"n": 1},
@@ -529,7 +529,7 @@ def _read_strategy_backtester(root, dataset_config, checkpoint, factor_store, *,
     )
     label = ForwardReturnLabel(
         PolarsFactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=make_stock_dataset(dataset_config),
             kwargs={"n_forward_periods": 1},
         )
@@ -583,7 +583,7 @@ def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
     factor_store = tmp_path / "factors" / "past_ret.zarr"
     PastReturnFactor(
         PolarsFactorConfig(
-            window=5,
+            warmup_bars=5,
             dataset=make_stock_dataset(dataset_config),
             file_path=str(factor_store),
             kwargs={"n": 1},

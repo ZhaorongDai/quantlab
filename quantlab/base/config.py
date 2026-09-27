@@ -42,7 +42,11 @@ class BaseDatasetConfig:
     """Fields every dataset shares, whatever it holds.
 
     Both market panels and constituent (index membership) panels build on
-    this class. Market-specific fields live on ``DatasetConfig``.
+    this class. Market-specific fields live on ``DatasetConfig``. The dates
+    and symbols bound what the build path (``from_raw_data``,
+    ``from_raw_data_chunked``, ``update``) converts from raw files; reading
+    a range of the store is ``panel(start, end, symbols)``, which does not
+    use them.
 
     Examples
     --------
@@ -58,16 +62,18 @@ class BaseDatasetConfig:
 
     #: Path of the Zarr store the dataset reads from and writes to.
     zarr_file_path: str
-    #: First date to keep, inclusive. ``None`` means no lower bound.
+    #: First date to convert from raw files, inclusive. ``None`` means no
+    #: lower bound.
     start_date: str | None = None
-    #: Last date to keep, inclusive. ``None`` means no upper bound.
+    #: Last date to convert from raw files, inclusive. ``None`` means no
+    #: upper bound.
     end_date: str | None = None
-    #: Restrict the panel to these symbols. ``None`` means every symbol.
+    #: Convert only these symbols. ``None`` means every symbol.
     symbols: tuple | None = None
     #: Free-form options a specific dataset class may read (for example
     #: ``data_type`` for tick data). ``None`` is treated as empty.
     kwargs: dict | None = None
-    #: Bar size the panel is resampled onto when it is read or built;
+    #: Bar size the panel is resampled onto when it is requested or saved;
     #: ``None`` keeps the store's own bars. Set by ``resample()``.
     resample_freq: ResampleFrequency | None = None
     #: How each variable is aggregated into a resampled bar: one
@@ -506,46 +512,36 @@ class UniverseConfig:
 class BaseFactorConfig:
     """Fields every factor (and label) shares, whichever backend computes it.
 
-    The factor's config setter fills in missing dates with the open-ended
-    bounds of ``quantlab.enums.constant.Date`` and then moves the dataset's
-    dates to match the factor's. It also starts the dataset ``window``
-    calendar days before ``start_date``, so rolling computations have enough
-    history (are "warm") at the first requested bar. Leaving ``symbols`` as
-    ``None`` keeps every symbol of the dataset.
+    The config says what is computed, not when: the date range is an
+    argument of ``compute``, ``read`` and ``build``. ``compute(start, end)``
+    requests ``warmup_bars`` bars of the dataset before ``start``, counted
+    on the dataset's own calendar, so rolling computations are warm at the
+    first requested bar.
 
     Examples
     --------
     With ``dataset`` a market dataset built earlier:
 
     >>> cfg = BaseFactorConfig(
-    ...     window=20,
+    ...     warmup_bars=20,
     ...     dataset=dataset,
     ...     file_path="/data/factor/momentum.zarr",
-    ...     start_date="2020-01-01",
-    ...     end_date="2020-12-31",
     ... )
-    >>> cfg.factor_names, cfg.symbols
-    (None, None)
+    >>> cfg.factor_names, cfg.warmup_bars
+    (None, 20)
     """
 
-    #: Lookback, in calendar days, read before ``start_date`` to warm up
-    #: rolling computations.
-    window: int
+    #: Bars of history read before the requested start to warm up rolling
+    #: computations, counted on the dataset's own calendar.
+    warmup_bars: int
     #: The market dataset the factor is computed from.
     dataset: "MarketDataset"
-    #: Path of the Zarr store the computed factor values are saved to and
-    #: read back from.
+    #: Path of the Zarr store ``build`` writes the factor values to and
+    #: ``read`` reads them back from.
     file_path: str | None = None
     #: Names of the factor variables this factor produces; filled from the
     #: factor definition when left ``None``.
     factor_names: tuple[str, ...] | None = None
-    #: First date to compute, inclusive. ``None`` means no lower bound.
-    start_date: str | None = None
-    #: Last date to compute, inclusive. ``None`` means no upper bound.
-    end_date: str | None = None
-    #: Restrict the output to these symbols. ``None`` keeps every symbol of
-    #: the dataset.
-    symbols: tuple[str, ...] | None = None
     #: Free-form options a specific factor class may read.
     kwargs: dict | None = None
     #: Bar size the computed factor panel is resampled onto; ``None`` keeps
@@ -565,7 +561,7 @@ class BaseFactorConfig:
 
         Examples
         --------
-        >>> cfg.to_dict()["window"]
+        >>> cfg.to_dict()["warmup_bars"]
         20
         """
         return asdict(self)
@@ -578,20 +574,18 @@ class FactorConfig(BaseFactorConfig):
     Examples
     --------
     >>> cfg = FactorConfig(
-    ...     window=128,
+    ...     warmup_bars=128,
     ...     dataset=dataset,
     ...     file_path="/data/factor/alpha101.zarr",
     ...     mode="batch",
     ...     data_columns=("open", "high", "low", "close", "volume", "amount"),
     ...     factor_names=("alpha001", "alpha002"),
-    ...     start_date="2020-01-01",
-    ...     end_date="2020-12-31",
     ... )
     >>> cfg.mode, cfg.njobs
     ('batch', 128)
     """
 
-    #: ``"batch"`` compiles the graph for a full historical window;
+    #: ``"batch"`` compiles the graph for a whole date range;
     #: ``"stream"`` compiles it for incremental per-bar updates.
     mode: Literal["stream", "batch"]
     #: The dataset variables fed into the compiled graph as inputs.
@@ -610,7 +604,7 @@ class PolarsFactorConfig(BaseFactorConfig):
     Examples
     --------
     >>> cfg = PolarsFactorConfig(
-    ...     window=20,
+    ...     warmup_bars=20,
     ...     dataset=dataset,
     ...     file_path="/data/factor/momentum.zarr",
     ...     kwargs={"n": 20},

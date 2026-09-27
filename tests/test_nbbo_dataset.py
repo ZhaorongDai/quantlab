@@ -15,6 +15,7 @@ import pandas as pd
 import polars as pl
 import pytest
 
+from conftest import WHOLE_STORE
 from tests.wrds_fixtures import taq_row
 
 DAY = date(2024, 1, 24)
@@ -134,7 +135,7 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
         WRDS_SOURCE, dataset_config(), data_type="nbbo", granularity="day"
     )
 
-    panel = NbboPanelDataset(dataset_config()).read().get_xarray_dataset()
+    panel = NbboPanelDataset(dataset_config()).panel(*WHOLE_STORE)
 
     timestamps = pd.DatetimeIndex(panel["timestamp"].values)
     assert len(timestamps) == 390

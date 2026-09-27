@@ -8,16 +8,15 @@ concrete backend's private path (`xr.open_zarr(...).isel(...)`) would use a
 backend-specific escape hatch to fix a backend-dependence gap.
 
 **The store PATH is threaded in, and that is the RV-01 fix.** `head` used to
-read `self.data`, so the only way for a caller to reach the store was to call
-`read()` first. `BaseDataset.read()` runs `_filter()`, which narrows
-`data_backend.data` IN PLACE via `filter_by_date`, and `XrBackend.read()`'s
-cache early-return makes that narrowing SURVIVE every later read. Because the
-`FactorPolars` name probe fires from the `Factor.config` setter -- before
-`_reset_dataset_config()` widens the window by the factor's `window` days, and
-`filter_by_date` can only narrow -- a probe that went through `read()` silently
-dropped the factor's entire lookback (RV-01: 29 timestamps instead of 49, and
-a 17%-NaN factor column, with nothing raised). A reader who does not know that
-will "simplify" these implementations back to `self.data`; that is the change
+read `self.data`, so the only way for a caller to reach the store was to
+load a panel into the backend first. Back then that load narrowed the held
+panel in place to a dataset's config dates and a read cache kept the narrow
+copy, so the `FactorPolars` name probe, which fires from the `Factor.config`
+setter, silently cut the factor's lookback (RV-01: 29 timestamps instead of
+49, and a 17%-NaN factor column, with nothing raised). Both the narrowing and
+the cache are gone since #26, but `head` still must not depend on what a
+backend happens to hold: a reader who "simplifies" these implementations
+back to `self.data` is the change
 `test_head_opens_the_store_without_a_prior_read` exists to catch.
 
 Every behavioural test below drives BOTH concrete backends from one shared
@@ -31,8 +30,8 @@ to pass it.
 **The non-mutation test carries the hazard.** `filter_by_date` and
 `filter_by_symbol` on `XrBackend` mutate `self.data` IN PLACE, so a `head`
 implementation copied from them would silently truncate the dataset object
-every consumer shares -- after which `cal()` computes over a handful of rows
-forever and nothing downstream can tell.
+every consumer shares -- after which a computation over its held panel runs
+over a handful of rows and nothing downstream can tell.
 """
 
 from pathlib import Path
@@ -148,7 +147,7 @@ def test_head_does_not_mutate_backend_state(
 
     `filter_by_date`/`filter_by_symbol` on `XrBackend` DO mutate `self.data`
     in place. An implementation copied from them would truncate the dataset
-    object shared with `cal()` down to the probe size, and every later
+    object every consumer shares down to the probe size, and every later
     computation would silently run over those few rows.
     """
     for backend, path in backends:

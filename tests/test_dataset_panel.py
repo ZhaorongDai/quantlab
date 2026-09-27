@@ -8,6 +8,7 @@ dataset is resampled.
 """
 
 import copy
+import inspect
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from quantlab.backend import XrBackend
 from quantlab.base.config import DatasetConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
@@ -76,6 +78,31 @@ def test_dataset_holds_no_panel_after_a_request(dataset):
 
     with pytest.raises(AttributeError):
         dataset.get_xarray_dataset()
+
+
+def test_the_panel_request_is_the_only_read_path(dataset):
+    """No read narrows a dataset to its config dates any more; a range is an argument."""
+    assert not hasattr(dataset, "read")
+
+
+def test_a_rewritten_store_is_seen_by_the_next_request(dataset):
+    before = dataset.panel("2024-01-01", "2024-03-01").load()
+    shorter = before.isel(timestamp=slice(0, 10))
+    shorter.to_zarr(dataset.config.zarr_file_path, mode="w")
+
+    after = dataset.panel("2024-01-01", "2024-03-01")
+
+    assert after.sizes["timestamp"] == 10
+
+
+def test_the_zarr_backend_opens_the_store_on_every_read(tmp_path):
+    store = str(tmp_path / "panel.zarr")
+    xr.Dataset({"v": ("timestamp", [1.0, 2.0])}, coords={"timestamp": [0, 1]}).to_zarr(store)
+    backend = XrBackend().read(store)
+    xr.Dataset({"v": ("timestamp", [5.0])}, coords={"timestamp": [0]}).to_zarr(store, mode="w")
+
+    assert backend.read(store).data["v"].values.tolist() == [5.0]
+    assert "overwrite" not in inspect.signature(XrBackend.read).parameters
 
 
 def test_a_request_leaves_the_config_unchanged(dataset):

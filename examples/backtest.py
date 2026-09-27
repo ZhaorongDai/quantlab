@@ -117,8 +117,8 @@ def write_synthetic_prices(root: Path) -> DatasetConfig:
 def fresh_dataset(config: DatasetConfig) -> StockDataset:
     """Return a dataset over a copy of ``config``.
 
-    Factors and the backtester move a dataset's dates around, so every
-    consumer gets its own dataset object.
+    Reading never changes a dataset, so one object could be shared; a fresh
+    one per consumer keeps each config independent in its ``config.json``.
     """
     return StockDataset(dataclasses.replace(config))
 
@@ -198,15 +198,15 @@ class LeastSquaresHead(MLModel):
 def make_model(root: Path, prices: DatasetConfig, **dates) -> LeastSquaresHead:
     """Build the model with one factor and one label from plain config objects."""
     factor = PastReturn(
-        # `window` is the factor's look-back in bars; the backtester uses it
-        # to start the factor computation early enough (the warm-up).
-        PolarsFactorConfig(window=5, dataset=fresh_dataset(prices), kwargs={"n": 5})
+        # `warmup_bars` is the factor's look-back in bars: `compute` reads that
+        # many bars before the requested start (the warm-up).
+        PolarsFactorConfig(warmup_bars=5, dataset=fresh_dataset(prices), kwargs={"n": 5})
     )
     label = ForwardReturn(
         # `n_forward_periods` tells the backtester how far each label looks
         # ahead, which extends the in-sample window past train_end.
         PolarsFactorConfig(
-            window=0, dataset=fresh_dataset(prices), kwargs={"n_forward_periods": 5}
+            warmup_bars=0, dataset=fresh_dataset(prices), kwargs={"n_forward_periods": 5}
         )
     )
     return LeastSquaresHead(
@@ -239,7 +239,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         prices = write_synthetic_prices(root)
-        bars = fresh_dataset(prices).read().get_xarray_dataset().timestamp.values
+        bars = fresh_dataset(prices).panel("2000-01-01", "2100-01-01").timestamp.values
         day = lambda i: pd.Timestamp(bars[i]).strftime("%Y-%m-%d")
 
         # --- 3. run() in train mode, long-only --------------------------------

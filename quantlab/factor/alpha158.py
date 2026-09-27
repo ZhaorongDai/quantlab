@@ -35,7 +35,7 @@ class Alpha158SpotKline(FactorKunQuant):
     k-bar shape features, price and volume ratios lagged 0 to 4 bars, and
     rolling features over 5, 10, 20, 30 and 60 bars. The rolling regression
     features ``BETA``, ``RSQR`` and ``RESI`` are left out. Every output is
-    wrapped in ``WindowedZScore`` over ``config.window`` bars, which
+    wrapped in ``WindowedZScore`` over ``config.warmup_bars`` bars, which
     standardizes each symbol against its own recent past. That suits the
     time-series strategies spot data is traded with here; ``Alpha158Stock``
     z-scores across symbols for cross-sectional strategies instead.
@@ -46,7 +46,7 @@ class Alpha158SpotKline(FactorKunQuant):
     Parameters
     ----------
     factor_config : FactorConfig
-        The KunQuant factor config. ``window`` sets the z-score window,
+        The KunQuant factor config. ``warmup_bars`` also sets the z-score window,
         ``data_columns`` lists the six input columns above, and
         ``factor_names`` selects which features to compute (all when
         unset).
@@ -54,11 +54,11 @@ class Alpha158SpotKline(FactorKunQuant):
     Examples
     --------
     >>> factor = Alpha158SpotKline(FactorConfig(
-    ...     window=10, dataset=dataset, mode="batch",
+    ...     warmup_bars=10, dataset=dataset, mode="batch",
     ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
     ...     factor_names=["KMID", "STD5"], file_path="alpha158.zarr",
     ... ))
-    >>> panel = factor.cal().get_features()
+    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -137,7 +137,7 @@ class Alpha158SpotKline(FactorKunQuant):
             alpha158, names = self._get_func_names()
             for v, k in zip(alpha158, names):
                 if k in factor_names:
-                    Output(WindowedZScore(v, self.config.window), k)
+                    Output(WindowedZScore(v, self.config.warmup_bars), k)
         return Function(builder.ops)
 
     def _get_factor_func(self):
@@ -176,12 +176,12 @@ class Alpha158Stock(FactorKunQuant):
     Examples
     --------
     >>> factor = Alpha158Stock(FactorConfig(
-    ...     window=10, dataset=dataset, mode="batch",
+    ...     warmup_bars=10, dataset=dataset, mode="batch",
     ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
     ...                   "adjVolume"],
     ...     factor_names=["KMID", "STD5"], file_path="alpha158_stock.zarr",
     ... ))
-    >>> panel = factor.cal().get_features()
+    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: FactorConfig):

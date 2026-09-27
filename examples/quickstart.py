@@ -107,13 +107,12 @@ def write_synthetic_prices(root: Path) -> DatasetConfig:
 
 def make_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoostRegressor:
     """Build the factors, the label and the model from plain config objects."""
-    # Each factor gets its own dataset object (over a copy of the config),
-    # because a factor moves its dataset's start date `window` calendar days
-    # earlier so rolling computations are warm on the first requested bar.
-    # Alpha158 looks back up to 60 bars, about 90 calendar days.
+    # `warmup_bars` is how many bars before the requested start the factor
+    # reads, so rolling computations are warm on the first requested bar.
+    # Alpha158 looks back up to 60 bars.
     factor = Alpha158Stock(
         FactorConfig(
-            window=90,
+            warmup_bars=60,
             dataset=StockDataset(dataclasses.replace(dataset_config)),
             mode="batch",
             data_columns=ADJUSTED,
@@ -123,7 +122,7 @@ def make_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoos
     )
     label = Return(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=StockDataset(dataclasses.replace(dataset_config)),
             mode="batch",
             data_columns=("adjOpen",),
@@ -157,8 +156,8 @@ def main() -> None:
 
         # 1. Data -----------------------------------------------------------
         dataset_config = write_synthetic_prices(root)
-        prices = StockDataset(dataclasses.replace(dataset_config)).read()
-        panel = prices.get_xarray_dataset()
+        prices = StockDataset(dataset_config)
+        panel = prices.panel("2000-01-01", "2100-01-01")
         print("Price panel:", dict(panel.sizes), "variables:", list(panel.data_vars))
 
         # 2. Factors and label ------------------------------------------------

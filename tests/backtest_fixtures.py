@@ -172,7 +172,7 @@ def make_model(
     dataset_config: DatasetConfig,
     *,
     n: int = 1,
-    window: int = 5,
+    warmup_bars: int = 5,
     n_forward_periods: int = 1,
     start_date: str,
     end_date: str,
@@ -184,14 +184,14 @@ def make_model(
     """A `FirstFeatureHead` over one `PastReturnFactor` and one `ForwardReturnLabel`."""
     factor = PastReturnFactor(
         PolarsFactorConfig(
-            window=window,
+            warmup_bars=warmup_bars,
             dataset=make_stock_dataset(dataset_config),
             kwargs={"n": n},
         )
     )
     label = ForwardReturnLabel(
         PolarsFactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=make_stock_dataset(dataset_config),
             kwargs={"n_forward_periods": n_forward_periods},
         )

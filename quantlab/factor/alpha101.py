@@ -32,7 +32,7 @@ class Alpha101SpotKline(FactorKunQuant):
     Reads the lowercase ``open``, ``high``, ``low``, ``close``, ``volume``
     and ``amount`` (traded value in quote currency) columns of the spot kline
     dataset. Every output is wrapped in ``WindowedZScore`` over
-    ``config.window`` bars, which standardizes each symbol against its own
+    ``config.warmup_bars`` bars, which standardizes each symbol against its own
     trailing window. That time-series normalization suits the strategies
     spot data is traded with here, which follow one asset over time. The
     US-equity sibling ``Alpha101Stock`` z-scores across symbols instead,
@@ -42,7 +42,7 @@ class Alpha101SpotKline(FactorKunQuant):
     Parameters
     ----------
     factor_config : FactorConfig
-        The KunQuant factor config. ``window`` sets the z-score window,
+        The KunQuant factor config. ``warmup_bars`` also sets the z-score window,
         ``data_columns`` lists the six input columns above, and
         ``factor_names`` selects which alphas to compute (all 101 when
         unset).
@@ -50,11 +50,11 @@ class Alpha101SpotKline(FactorKunQuant):
     Examples
     --------
     >>> factor = Alpha101SpotKline(FactorConfig(
-    ...     window=20, dataset=dataset, mode="batch",
+    ...     warmup_bars=20, dataset=dataset, mode="batch",
     ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
     ...     factor_names=["alpha001", "alpha002"], file_path="alpha101.zarr",
     ... ))
-    >>> panel = factor.cal().get_features()
+    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -83,7 +83,7 @@ class Alpha101SpotKline(FactorKunQuant):
             for alpha in Alpha101.all_alpha:
                 if alpha.__name__ in factor_names:
                     Output(
-                        WindowedZScore(alpha(all_data), self.config.window),
+                        WindowedZScore(alpha(all_data), self.config.warmup_bars),
                         alpha.__name__,
                     )
         return Function(builder.ops)
@@ -130,12 +130,12 @@ class Alpha101Stock(FactorKunQuant):
     Examples
     --------
     >>> factor = Alpha101Stock(FactorConfig(
-    ...     window=20, dataset=dataset, mode="batch",
+    ...     warmup_bars=20, dataset=dataset, mode="batch",
     ...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose",
     ...                   "adjVolume"],
     ...     file_path="alpha101_stock.zarr",
     ... ))
-    >>> panel = factor.cal().get_features()
+    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: FactorConfig):

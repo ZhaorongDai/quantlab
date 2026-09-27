@@ -1,7 +1,7 @@
 """Abstract factor layer and its two computation backends.
 
 A *factor* turns market data into engineered features, for example a
-20-day momentum or a moving-average deviation. It reads the *panel* held by
+20-day momentum or a moving-average deviation. It reads a *panel* of
 a dataset (an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``)
 and produces a panel of the same shape. Label classes use the same machinery
 to produce prediction targets, such as forward returns.
@@ -15,10 +15,9 @@ expression chain. Concrete factor sets live under ``quantlab/factor`` and
 labels under ``quantlab/label``.
 
 Rolling operators need history before the first bar they report. That extra
-history is the *warm-up*. ``compute(start, end)`` reads ``warmup_bars`` bars
-before ``start``, counted on the input dataset's own calendar, and trims them
-off again; ``cal()`` asks its dataset for ``config.window`` extra calendar
-days instead.
+history is the *warm-up*. ``compute(start, end)`` reads ``config.warmup_bars``
+bars before ``start``, counted on the input dataset's own calendar, and trims
+them off again.
 """
 
 import copy
@@ -48,7 +47,6 @@ from quantlab.base.config import (
 )
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.date_range import (
     as_label,
@@ -80,35 +78,34 @@ class Factor(ABC):
     A ``Factor`` holds a config whose ``dataset`` attribute is the dataset it
     reads from. Asked for a date range, it answers ``compute(start, end)``
     from its inputs or ``read(start, end)`` from its own store, which
-    ``build(start, end)`` writes and ``extend(end)`` lengthens; these hold
-    nothing and change no config. The ``cal()`` path computes with ``cal()``,
-    persists with ``save()`` or ``update()``, reads back with ``read()``, and
-    hands the model layer an ``xarray.Dataset`` through ``get_features()`` or
-    ``get_labels()``. Subclasses implement ``cal`` and ``_get_factor_names``
-    and override ``_get_features`` and/or ``_get_labels`` for the half they
-    support.
+    ``build(start, end)`` writes and ``extend(end)`` lengthens. None of these
+    holds a panel or changes a config, the factor's or its dataset's, so one
+    dataset object can feed several factors. ``get_features(panel)`` and
+    ``get_labels(panel)`` turn a returned panel into what the model layer
+    consumes. Subclasses implement ``_get_factor_names`` and
+    ``_compute_panel`` (both backends here do) and override
+    ``_get_features`` and/or ``_get_labels`` for the half they support.
 
-    Assigning ``config`` runs the property setter, which fills in default
-    dates, resolves ``factor_names`` when they are not pinned, and moves the
-    dataset's start date ``config.window`` days earlier so rolling windows are
-    warm on the first requested bar. Factor names are therefore known as soon
-    as the object is constructed, before anything is computed.
+    Assigning ``config`` runs the property setter, which sets ``name`` and
+    resolves ``factor_names`` when they are not pinned, so factor names are
+    known as soon as the object is constructed, before anything is
+    computed.
 
     Parameters
     ----------
     config : BaseFactorConfig
-        The factor config. Its ``dataset`` field is the dataset the factor
-        reads from. The object normalizes the config in place.
+        The factor config. Its ``dataset`` field is the dataset it
+        reads from.
 
     Attributes
     ----------
     data_backend : XrBackend
-        Holds the computed or loaded factor panel.
+        Holds the last bar a stream-mode factor computed; empty otherwise.
 
     Examples
     --------
     >>> factor = MyFactor(config)
-    >>> factor.get_factor_names()          # known before cal()
+    >>> factor.get_factor_names()          # known before anything is computed
     >>> panel = factor.compute("2024-02-01", "2024-02-29")
     >>> factor.build("2024-01-01", "2024-06-30")
     >>> panel = factor.read("2024-02-01", "2024-02-29")
@@ -129,19 +126,9 @@ class Factor(ABC):
         """Return the class name and its config."""
         return f"{self.__class__.__name__}(config={self.config})"
 
-    def _auto_filter(self):
-        """Narrow the held panel to the configured dates and, if set, symbols."""
-        self.data_backend.filter_by_date(
-            col="timestamp",
-            start_date=self.config.start_date,
-            end_date=self.config.end_date,
-        )
-        if self.config.symbols is not None:
-            self.data_backend.filter_by_symbol("symbol", self.config.symbols)
-
     @property
     def config(self) -> BaseFactorConfig:
-        """The factor's config; assigning it normalizes the config in place.
+        """The factor's config; assigning it fills in ``name`` and ``factor_names``.
 
         Examples
         --------
@@ -154,14 +141,13 @@ class Factor(ABC):
 
     @config.setter
     def config(self, config: BaseFactorConfig):
-        """Take ownership of ``config`` and normalize it in place.
+        """Take ownership of ``config`` and fill in what it leaves unset.
 
-        In order: ``name`` is set to this class's import path, fields the
-        dataset declares unusable are refused, missing dates default to the
-        open-ended ``Date`` bounds, ``factor_names`` are resolved if unset,
-        and the dataset's date range is widened to cover the warm-up window.
-        Nothing here touches the storage backend, which does not exist yet
-        when ``__init__`` assigns the config.
+        ``name`` is set to this class's import path, the resample fields are
+        checked, and ``factor_names`` are resolved if unset. Nothing is
+        written into the dataset's config. Nothing here touches the storage
+        backend, which does not exist yet when ``__init__`` assigns the
+        config.
 
         Parameters
         ----------
@@ -171,25 +157,16 @@ class Factor(ABC):
         Examples
         --------
         >>> factor.config = PolarsFactorConfig(
-        ...     window=5, dataset=dataset, kwargs={"n": 5},
-        ...     start_date="2024-02-01", file_path="momentum_5.zarr",
+        ...     warmup_bars=5, dataset=dataset, kwargs={"n": 5},
+        ...     file_path="momentum_5.zarr",
         ... )
         >>> factor.get_factor_names()
         ('momentum_5',)
-        >>> factor.config.dataset.config.start_date   # 5 days of warm-up
-        '2024-01-27'
+        >>> factor.config.dataset.config is dataset.config   # left untouched
+        True
         """
         self._config = config
         self._config.name = self.import_path
-
-        # Refuse before names are resolved (which may probe the store) and
-        # before anything is filtered.
-        self._reject_declared_config_fields()
-
-        if self._config.start_date is None:
-            self._config.start_date = Date.START_DATE
-        if self._config.end_date is None:
-            self._config.end_date = Date.END_DATE
 
         validate_resample_config(
             self._config.resample_freq, self._config.resample_how, self.class_name
@@ -197,66 +174,10 @@ class Factor(ABC):
 
         self._maybe_resolve_factor_names()
 
-        self._reset_dataset_config()
-
-    def _reject_declared_config_fields(self) -> None:
-        """Refuse config fields the dataset declares unusable.
-
-        A dataset may publish ``REJECTED_FACTOR_CONFIG_FIELDS``, a mapping
-        from a config field name to the reason it cannot select on that
-        dataset's panel (for example a ticker list against an integer
-        identifier axis). The check runs at assignment time, before any store
-        is probed, so the error names the offending field instead of
-        surfacing later as a ``KeyError`` deep inside a ``.sel`` call. Only
-        the mapping is read; this module names no dataset class.
-
-        Raises
-        ------
-        ValueError
-            If any declared field is set on the config.
-        """
-        dataset = getattr(self._config, "dataset", None)
-        rejected = getattr(dataset, "REJECTED_FACTOR_CONFIG_FIELDS", None) or {}
-        for name, reason in rejected.items():
-            value = getattr(self._config, name, None)
-            if value is None:
-                continue
-            raise ValueError(
-                f"{self.class_name}: config.{name} is not selectable on a "
-                f"{type(dataset).__name__} panel; got {value!r}. {reason}"
-            )
-
     def _maybe_resolve_factor_names(self) -> None:
         """Fill ``config.factor_names`` from ``_get_factor_names()`` when unset."""
         if self._config.factor_names is None:
             self._config.factor_names = self._get_factor_names()
-
-    def _reset_dataset_config(self):
-        """Point the dataset at the factor's window plus warm-up history.
-
-        The dataset's start date is moved ``config.window`` calendar days
-        before the factor's start date so rolling operators are warm on the
-        first requested bar; ``read()`` and ``save()`` narrow the result back
-        through ``_auto_filter``. The symbol axis is left alone: symbols with
-        no data show up as NaN columns rather than missing ones.
-        """
-        start_date = pd.to_datetime(self._config.start_date)
-        start_date = start_date - pd.DateOffset(days=self._config.window)
-        self._config.dataset.config.start_date = start_date.strftime("%Y-%m-%d")
-        self._config.dataset.config.end_date = self._config.end_date
-
-    @property
-    def num_symbols(self) -> int:
-        """Number of symbols on the dataset's symbol axis.
-
-        The dataset must already be loaded; ``cal()`` loads it.
-
-        Examples
-        --------
-        >>> factor.cal().num_symbols
-        8
-        """
-        return self.config.dataset.num_symbols
 
     @property
     def num_factors(self) -> int:
@@ -281,19 +202,6 @@ class Factor(ABC):
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     @property
-    def symbols(self) -> list[str]:
-        """Symbols on the dataset's symbol axis.
-
-        The dataset must already be loaded; ``cal()`` loads it.
-
-        Examples
-        --------
-        >>> factor.cal().symbols[:3]
-        ['S0USDT', 'S1USDT', 'S2USDT']
-        """
-        return self.config.dataset.symbols
-
-    @property
     def class_name(self) -> str:
         """Bare class name, used in log and error messages.
 
@@ -306,49 +214,33 @@ class Factor(ABC):
 
     def read(
         self,
-        start: "str | datetime.date | pd.Timestamp | None" = None,
-        end: "str | datetime.date | pd.Timestamp | None" = None,
-        *,
-        overwrite: bool = False,
-    ) -> "Self | xr.Dataset":
-        """Return a date range from the factor store, or load the store.
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+    ) -> xr.Dataset:
+        """Return the factor store from ``start`` to ``end``, both inclusive.
 
-        With ``start`` and ``end``, the stored panel from ``start`` to
-        ``end``, both inclusive, is returned, opened lazily; the factor holds
-        nothing afterwards. The range must lie inside the one recorded
-        beside the store by ``build`` and ``extend`` (see ``store_range``).
-        A resampled factor reads its own store when one has been built,
-        otherwise it resamples the part of the source factor's store the
-        range needs.
-
-        Without them, the store is opened into the factor's backend and
-        narrowed to the configured window, and the factor itself is
-        returned.
+        The stored panel is opened lazily; the factor holds nothing
+        afterwards. The range must lie inside the one recorded beside the
+        store by ``build`` and ``extend`` (see ``store_range``). A resampled
+        factor reads its own store when one has been built, otherwise it
+        resamples the part of the source factor's store the range needs.
 
         Parameters
         ----------
-        start, end : str, datetime.date or pd.Timestamp, optional
-            The range to return. Give both or neither. A date-only ``end``
-            includes every bar of that day.
-        overwrite : bool, default False
-            Re-open the store even if the backend already holds data. By
-            default the cached panel is reused and only narrowed. Pass
-            ``True`` after changing ``config.start_date`` or
-            ``config.end_date``, because the cached panel was cut to the
-            old dates.
+        start, end : str, datetime.date or pd.Timestamp
+            The range to return. A date-only ``end`` includes every bar of
+            that day.
 
         Returns
         -------
-        xr.Dataset or Self
-            The panel on ``(timestamp, symbol)`` when a range is given,
-            otherwise ``self``, for chaining.
+        xr.Dataset
+            The panel on ``(timestamp, symbol)``.
 
         Raises
         ------
         ValueError
-            If only one of ``start`` and ``end`` is given, ``start`` is
-            after ``end``, the store has no recorded range, or the recorded
-            range does not contain the requested one.
+            If ``start`` is after ``end``, the store has no recorded range,
+            or the recorded range does not contain the requested one.
 
         Examples
         --------
@@ -359,166 +251,34 @@ class Factor(ABC):
         >>> factor.read("2024-03-20", "2024-04-10")
         Traceback (most recent call last):
         ValueError: Momentum.read(): the store at ... covers 2024-01-01 to 2024-03-31, ...
-
-        Without a range, with config dates 2024-02-01 to 2024-02-10 and a
-        store of 60 bars:
-
-        >>> factor.read().get_features().sizes
-        Frozen({'timestamp': 10, 'symbol': 8})
-        >>> factor.config.end_date = "2024-02-20"
-        >>> factor.read(overwrite=True).get_features().sizes
-        Frozen({'timestamp': 20, 'symbol': 8})
-
-        A resampled factor reads its own store when one has been saved, and
-        otherwise reads the source store and resamples it:
-
-        >>> daily = factor.resample("1d", "last")
-        >>> daily.read().get_features().sizes
-        Frozen({'timestamp': 10, 'symbol': 8})
         """
-        if start is not None or end is not None:
-            if start is None or end is None:
-                raise ValueError(
-                    f"{self.class_name}.read(): give both start and end, or "
-                    f"neither; got start={start!r}, end={end!r}."
-                )
-            return self._read_range(start, end)
-
-        if self.config.resample_freq is None:
-            self.data_backend.read(self.config.file_path, overwrite=overwrite)
-            self._auto_filter()
-            return self
-
-        if Path(self.store_path).exists():
-            self.data_backend.read(self.store_path, overwrite=overwrite)
-            self._auto_filter()
-            return self
-
-        fresh = overwrite or not self._holds_data()
-        self.data_backend.read(self.config.file_path, overwrite=overwrite)
-        self._auto_filter()
-        if fresh:
-            self._apply_resample()
-        return self
-
-    def save(self, mode: Literal["a", "w"] = "a", **kwargs) -> Self:
-        """Write the held panel to ``store_path`` as a Zarr store.
-
-        ``store_path`` is ``config.file_path``, or the resampled store beside
-        it when the factor is resampled. A range recorded by ``build`` is
-        removed, since this panel was not requested by date range.
-
-        Parameters
-        ----------
-        mode : {"a", "w"}, default "a"
-            ``"a"`` overwrites variables in an existing store and fails if
-            that store has a different time or symbol axis. ``"w"``
-            replaces the store. To extend a store with a later date range,
-            use ``update()`` instead.
-        **kwargs
-            Passed through to the backend's ``write``.
-
-        Returns
-        -------
-        Self
-            ``self``, for chaining.
-
-        Raises
-        ------
-        ValueError
-            If ``mode="a"`` meets a store whose dimension sizes
-            differ from the panel being written.
-
-        Examples
-        --------
-        >>> factor.cal().save(mode="w")    # replace the store
-        >>> sorted(p.name for p in Path(factor.config.file_path).iterdir())
-        ['momentum_20', 'symbol', 'timestamp', 'zarr.json']
-        >>> factor.save()                  # same axes: rewrite in place
-        """
-        with Timer(f"{self.__class__.__name__}: save"):
-            self._auto_filter()
-            # The panel written here was not requested by date range, so no
-            # range recorded by an earlier build() describes it any more.
-            self._drop_range(self.store_path)
-            try:
-                self.data_backend.write(
-                    self.store_path,
-                    mode=mode,
-                    **kwargs,
-                )
-            except ValueError as exc:
-                if "already exists with different dimension sizes" not in str(
-                    exc
-                ):
-                    raise
-                raise ValueError(
-                    f'{self.class_name}.save(mode="a"): cannot write this '
-                    f"date range into the existing store at "
-                    f'{self.store_path}. In zarr, mode "a" means '
-                    f'"overwrite variables in an existing store", not "append '
-                    f'along time", so a date range of a different size is '
-                    f'rejected. Use save(mode="w") to replace the store, or '
-                    f"delete it first. To extend the store with a later date "
-                    f"range, call update() instead: it widens the timestamp, "
-                    f"symbol and variable axes to fit and applies the same "
-                    f"safety checks as XrBackend.append(). "
-                    f"Original error: {exc}"
-                ) from exc
-            return self
-
-    def update(self, **kwargs) -> Self:
-        """Append the held panel to the store at ``config.file_path``.
-
-        The store's timestamp, symbol and variable axes are widened to the
-        union of what it holds and what the panel carries, then the panel is
-        appended. Cells created by widening are filled from
-        ``_widen_fill_values()``.
-
-        Parameters
-        ----------
-        **kwargs
-            Passed through to the backend's ``widen_and_append``.
-
-        Returns
-        -------
-        Self
-            ``self``, for chaining.
-
-        Examples
-        --------
-        >>> factor.read().get_features().sizes       # the store so far
-        Frozen({'timestamp': 60, 'symbol': 8})
-        >>> later.cal().get_features().sizes         # same store, later dates
-        Frozen({'timestamp': 30, 'symbol': 8})
-        >>> later.update()
-        >>> factor.read(overwrite=True).get_features().sizes
-        Frozen({'timestamp': 90, 'symbol': 8})
-        """
-        self._refuse_if_resampled("update")
-        with Timer(f"{self.__class__.__name__}: update"):
-            self._auto_filter()
-            self.data_backend.widen_and_append(
-                self.config.file_path,
-                fill_values=self._widen_fill_values(),
-                **kwargs,
+        first, last = check_range(start, end, f"{self.class_name}.read()")
+        window = slice(as_label(start), as_label(end))
+        if self.config.resample_freq is None or Path(self.store_path).exists():
+            self._check_covers(self.store_path, start, end)
+            data = XrBackend().read(self.store_path).data.sel(timestamp=window)
+        else:
+            self._check_covers(self.config.file_path, start, end)
+            pad = resample_padding(self.config.resample_freq)
+            source = XrBackend().read(self.config.file_path).data.sel(
+                timestamp=slice(first - pad, last + pad)
             )
-            return self
+            data = self._resample_panel(source).sel(timestamp=window)
+        return _on_panel_axes(data)
 
     @property
     def warmup_bars(self) -> int:
         """Bars of history ``compute`` reads before the requested start.
 
         Counted on the input dataset's own calendar, so weekends and
-        holidays are skipped, not counted. It is ``config.window`` read as a
-        bar count; ``cal()`` reads the same field as calendar days.
+        holidays are skipped, not counted. It is ``config.warmup_bars``.
 
         Examples
         --------
         >>> factor.warmup_bars
         20
         """
-        return self.config.window
+        return self.config.warmup_bars
 
     def compute(
         self,
@@ -671,8 +431,9 @@ class Factor(ABC):
         """Append the bars after the recorded range, up to ``end``.
 
         The bars are computed with ``compute``, so they are warmed from the
-        dataset's history, then appended to the store; its symbol and
-        variable axes widen if the new bars carry more (see ``update``).
+        dataset's history, then appended to the store; its timestamp, symbol
+        and variable axes widen to fit, and cells created by widening are
+        filled from ``_widen_fill_values()``.
         The recorded range then ends at ``end``.
 
         Parameters
@@ -726,8 +487,7 @@ class Factor(ABC):
     def store_range(self) -> tuple[str, str] | None:
         """Return the ``(start, end)`` the store was built for, if recorded.
 
-        ``None`` when the store was not written by ``build``, or was since
-        overwritten by ``save``.
+        ``None`` when the store was not written by ``build``.
 
         Examples
         --------
@@ -735,22 +495,6 @@ class Factor(ABC):
         ('2024-01-01', '2024-03-31')
         """
         return self._stored_range(self.store_path)
-
-    def _read_range(self, start, end) -> xr.Dataset:
-        """Return ``start`` to ``end`` from the store; see ``read``."""
-        first, last = check_range(start, end, f"{self.class_name}.read()")
-        window = slice(as_label(start), as_label(end))
-        if self.config.resample_freq is None or Path(self.store_path).exists():
-            self._check_covers(self.store_path, start, end)
-            data = XrBackend().read(self.store_path).data.sel(timestamp=window)
-        else:
-            self._check_covers(self.config.file_path, start, end)
-            pad = resample_padding(self.config.resample_freq)
-            source = XrBackend().read(self.config.file_path).data.sel(
-                timestamp=slice(first - pad, last + pad)
-            )
-            data = self._resample_panel(source).sel(timestamp=window)
-        return _on_panel_axes(data)
 
     def _check_covers(self, path: str, start, end) -> None:
         """Raise unless the range recorded for ``path`` contains the request."""
@@ -820,8 +564,7 @@ class Factor(ABC):
 
         The config is deep-copied, its ``dataset`` replaced by
         ``dataset.copy()``, and re-assigned through the ``config`` setter,
-        so the copy shares no mutable state with this factor. The copy
-        holds no panel until it is read or computed.
+        so the copy shares no mutable state with this factor.
 
         Examples
         --------
@@ -844,14 +587,12 @@ class Factor(ABC):
         The factor is still computed on its dataset's own bars; only the
         computed panel is aggregated, so a minute-bar factor becomes a
         daily one without changing what it measures. The copy's config
-        carries ``resample_freq=freq`` and ``resample_how=how``; ``cal()``,
-        ``read()``, ``get_features()`` and ``get_labels()`` on it give the
-        resampled panel. If this factor already holds a panel, the copy
-        holds that panel resampled, in memory of its own; otherwise the copy
-        is empty. This factor and its dataset are not changed.
+        carries ``resample_freq=freq`` and ``resample_how=how``;
+        ``compute``, ``read`` and ``build`` on it answer on the resampled
+        bars. This factor and its dataset are not changed.
 
-        A resampled factor cannot ``update()`` its store or stream, and
-        ``save()`` writes to ``store_path``, the resampled store beside the
+        A resampled factor cannot ``extend()`` its store or stream, and
+        ``build()`` writes to ``store_path``, the resampled store beside the
         source. The bars are cut the way the dataset cuts them (see
         ``BaseDataset._resample_labels``).
 
@@ -871,38 +612,24 @@ class Factor(ABC):
         Raises
         ------
         ValueError
-            If ``freq`` or a method is not a known token, or, when this
-            factor holds a panel, if ``freq`` is not coarser than its bars
-            or ``how`` does not name every variable.
+            If ``freq`` or a method is not a known token. Whether ``freq`` is
+            coarser than the bars and ``how`` names every variable is checked
+            when a panel is requested.
 
         Examples
         --------
-        >>> minute = factor.cal()                      # minute bars
-        >>> daily = minute.resample("1d", "last")
-        >>> daily.get_features().sizes["timestamp"]
-        2
-        >>> minute.get_features().sizes["timestamp"]   # unchanged
+        >>> daily = factor.resample("1d", "last")      # factor on minute bars
+        >>> factor.compute("2024-01-02", "2024-01-03").sizes["timestamp"]
         780
+        >>> daily.compute("2024-01-02", "2024-01-03").sizes["timestamp"]
+        2
         """
         other = self.copy()
         config = other.config
         config.resample_freq = freq
         config.resample_how = how
         other.config = config
-        if self._holds_data():
-            other.data_backend.to_internal(
-                self.data_backend.get_xarray_dataset()
-            )
-            other._apply_resample()
         return other
-
-    def _holds_data(self) -> bool:
-        """Return whether the storage backend holds a panel."""
-        try:
-            self.data_backend.data
-        except AttributeError:
-            return False
-        return True
 
     def _refuse_if_resampled(self, method: str) -> None:
         """Raise if ``method`` is called on a resampled factor.
@@ -924,14 +651,6 @@ class Factor(ABC):
         """Return the bar each timestamp belongs to, as the dataset cuts bars."""
         return self.config.dataset._resample_labels(timestamps, freq)
 
-    def _apply_resample(self) -> None:
-        """Replace the held panel with its resample, per the config."""
-        if self.config.resample_freq is None:
-            return
-        self.data_backend.to_internal(
-            self._resample_panel(self.data_backend.get_xarray_dataset())
-        )
-
     def _resample_panel(self, data: xr.Dataset) -> xr.Dataset:
         """Return ``data`` aggregated onto ``config.resample_freq`` bars.
 
@@ -947,12 +666,6 @@ class Factor(ABC):
         with Timer(f"{self.__class__.__name__}: resample to {freq}"):
             return XrBackend().to_internal(data).resample(labels, how).data
 
-    def _hold_panel(self, data: xr.Dataset) -> None:
-        """Hand a computed panel to the backend, narrow it and resample it."""
-        self.data_backend.to_internal(data)
-        self._auto_filter()
-        self._apply_resample()
-
     def _widen_fill_values(self) -> dict:
         """Return per-variable fill values for cells that widening creates.
 
@@ -960,18 +673,12 @@ class Factor(ABC):
         """
         return {}
 
-    def _get_lazyframe(self) -> pl.LazyFrame:
-        """Return the held panel as a ``LazyFrame`` with the index as columns."""
-        df = self.data_backend.get_xarray_dataset().to_pandas()  # type: ignore
-        df = pl.LazyFrame(df.reset_index())
-        return df
-
     def _get_xarray_dataset(self) -> xr.Dataset:
-        """Return the held panel as an ``xarray.Dataset``."""
+        """Return the last streamed bar as an ``xarray.Dataset``."""
         return self.data_backend.get_xarray_dataset()  # type: ignore
 
     def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Turn the held panel into features; factor classes override this.
+        """Turn a factor panel into features; factor classes override this.
 
         Raises
         ------
@@ -981,29 +688,27 @@ class Factor(ABC):
         raise NotImplementedError
 
     def get_features(self, panel: xr.Dataset | None = None) -> xr.Dataset:
-        """Return ``panel``, or the held panel, as model features.
+        """Return ``panel`` as model features.
 
         Parameters
         ----------
         panel : xr.Dataset, optional
             A panel returned by ``read(start, end)`` or
-            ``compute(start, end)``. When omitted, the panel held by the
-            last ``cal()`` or ``read()`` is used.
+            ``compute(start, end)``. Omit it only in stream mode, where the
+            bar the last ``cal_stream()`` computed is used.
 
         Examples
         --------
         >>> panel = factor.get_features(factor.compute("2024-02-01", "2024-02-10"))
         >>> list(panel.data_vars), dict(panel.sizes)
         (['momentum_20'], {'timestamp': 10, 'symbol': 8})
-        >>> dict(factor.cal().get_features().sizes)
-        {'timestamp': 60, 'symbol': 8}
         """
         if panel is None:
             panel = self._get_xarray_dataset()
         return self._get_features(panel)
 
     def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
-        """Turn the held panel into labels; label classes override this.
+        """Turn a factor panel into labels; label classes override this.
 
         Raises
         ------
@@ -1013,14 +718,14 @@ class Factor(ABC):
         raise NotImplementedError
 
     def get_labels(self, panel: xr.Dataset | None = None) -> xr.Dataset:
-        """Return ``panel``, or the held panel, as model labels.
+        """Return ``panel`` as model labels.
 
         Parameters
         ----------
         panel : xr.Dataset, optional
             A panel returned by ``read(start, end)`` or
-            ``compute(start, end)``. When omitted, the panel held by the
-            last ``cal()`` or ``read()`` is used.
+            ``compute(start, end)``. Omit it only in stream mode, where the
+            bar the last ``cal_stream()`` computed is used.
 
         Examples
         --------
@@ -1067,34 +772,15 @@ class Factor(ABC):
         """Return the names of every column this factor can produce."""
         ...
 
-    @abstractmethod
-    def cal(self) -> Self:
-        """Compute the factor panel and hold it in the storage backend.
-
-        Returns
-        -------
-        Self
-            ``self``, for chaining.
-
-        Examples
-        --------
-        A backend override computes a ``(timestamp, symbol)`` panel, hands
-        it to the storage backend and narrows it to the configured window::
-
-            def cal(self) -> Self:
-                panel = self._compute()            # an xarray.Dataset
-                self.data_backend.to_internal(panel)
-                self._auto_filter()
-                return self
-        """
-        ...
-
     def analyze(
         self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
         factor_names: list[str] | None = None,
         frets: list["Factor"] | None = None,
         output_dir: str | None = None,
         quantiles: int = 5,
+        data_strategy: Literal["cal", "read"] = "cal",
     ) -> "FactorAnalysis":
         """Report how well this factor predicts forward returns, alphalens style.
 
@@ -1109,11 +795,15 @@ class Factor(ABC):
         turnover, lag-1 factor rank autocorrelation), and draws one
         composite matplotlib figure.
 
-        The factor and every fret must already hold their panels (after
-        ``cal()`` or ``read()``); nothing is computed here.
+        The factor and every fret are asked for their panels from ``start``
+        to ``end``: computed from their inputs with ``compute(start, end)``
+        under ``data_strategy="cal"``, read from their stores with
+        ``read(start, end)`` under ``"read"``.
 
         Parameters
         ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range to analyze, both inclusive.
         factor_names : list of str, optional
             Variables of this factor to analyze. All of
             ``get_factor_names()`` when None.
@@ -1130,6 +820,9 @@ class Factor(ABC):
             nothing is written.
         quantiles : int, default 5
             Number of equal-count factor buckets per timestamp.
+        data_strategy : {"cal", "read"}, default "cal"
+            Whether the panels are computed or read from the stores
+            ``build`` wrote, for the factor and every fret alike.
 
         Returns
         -------
@@ -1142,19 +835,20 @@ class Factor(ABC):
         Raises
         ------
         ValueError
-            If ``frets`` is empty, a factor name is unknown, a fret's most
-            common bar spacing differs from the factor's, or the panels share
-            no cells.
+            If ``frets`` is empty, ``data_strategy`` is neither ``"cal"``
+            nor ``"read"``, a factor name is unknown, a fret's most common
+            bar spacing differs from the factor's, or the panels share no
+            cells.
 
         Examples
         --------
-        ``factor`` is a computed ``Momentum`` (``momentum_5``) over eight
-        symbols in February 2024, and ``fwd`` a computed
-        ``quantlab.label.fret.Return`` with ``n_forward_periods=1`` over the
-        same symbols and dates:
+        ``factor`` is a ``Momentum`` (``momentum_5``) over eight symbols, and
+        ``fwd`` a ``quantlab.label.fret.Return`` with ``n_forward_periods=1``
+        on the same dataset:
 
         >>> result = factor.analyze(
-        ...     frets=[fwd], quantiles=4, output_dir="data/analysis/momentum"
+        ...     "2024-02-01", "2024-02-29", frets=[fwd], quantiles=4,
+        ...     output_dir="data/analysis/momentum",
         ... )
         >>> list(result.pairs)
         ['momentum_5__ret_1']
@@ -1169,8 +863,29 @@ class Factor(ABC):
         # layer at import time; the report is an optional terminal step.
         from quantlab.analysis.factor_report import FactorAnalyzer
 
+        if data_strategy not in ("cal", "read"):
+            raise ValueError(
+                f"{self.class_name}.analyze(): data_strategy must be \"cal\" "
+                f"or \"read\", got {data_strategy!r}."
+            )
+        frets = frets or []
+        if not frets:
+            raise ValueError(
+                "analyze needs at least one forward-return label in `frets`"
+            )
+
+        def request(obj: "Factor") -> xr.Dataset:
+            if data_strategy == "read":
+                return obj.read(start, end)
+            return obj.compute(start, end)
+
         return FactorAnalyzer(quantiles=quantiles).run(
-            self, frets or [], factor_names=factor_names, output_dir=output_dir
+            self,
+            frets,
+            features=self.get_features(request(self)),
+            labels=[fret.get_labels(request(fret)) for fret in frets],
+            factor_names=factor_names,
+            output_dir=output_dir,
         )
 
 
@@ -1180,8 +895,8 @@ class FactorKunQuant(Factor):
     A subclass describes its factor as a KunQuant graph in
     ``_get_factor_func``: ``Input`` nodes named after ``config.data_columns``,
     operator nodes, and one ``Output`` per factor name. The same graph is
-    compiled on demand in two layouts, ``TS`` for ``cal()`` (the whole history
-    in one call) and ``STREAM`` for ``cal_stream()`` (one bar at a time), so a
+    compiled on demand in two layouts, ``TS`` for ``compute()`` (a whole date
+    range in one call) and ``STREAM`` for ``cal_stream()`` (one bar at a time), so a
     factor validated in a backtest runs unchanged on live data.
     ``config.mode`` says which of the two the object is used in.
 
@@ -1232,7 +947,7 @@ class FactorKunQuant(Factor):
 
         See ``Factor.copy``. The compiled batch library, the stream context
         and its buffer handles belong to this object's own graph and are
-        not carried over; the copy compiles again on its first ``cal()``.
+        not carried over; the copy compiles again on its first ``compute()``.
 
         Examples
         --------
@@ -1270,60 +985,50 @@ class FactorKunQuant(Factor):
             )
         return super().compute(start, end)
 
-    def _auto_filter(self):
-        """Narrow the panel in batch mode; a stream holds one bar, so skip."""
-        if self.config.mode == "batch":
-            super()._auto_filter()
-
     @property
     def num_symbols(self) -> int:
-        """Number of symbols the graph runs over.
+        """Number of symbols the streaming graph runs over.
 
-        Batch mode asks the dataset; stream mode reads the symbol list pinned
-        on the dataset config, since no panel has been loaded.
+        This is the symbol list pinned on the dataset config, since a
+        stream loads no panel.
 
         Raises
         ------
         ValueError
-            If ``config.mode`` is neither ``"batch"`` nor
-            ``"stream"``.
+            If ``config.mode`` is not ``"stream"``.
 
         Examples
         --------
         >>> factor.num_symbols        # stream config pinning 16 symbols
         16
         """
-        if self.config.mode == "batch":
-            return super().num_symbols
-        elif self.config.mode == "stream":
-            return len(self.config.dataset.config.symbols)
-        else:
-            raise ValueError(f"mode {self.config.mode} is not supported")
+        return len(self.symbols)
 
     @property
     def symbols(self) -> list[str]:
-        """Symbols the graph runs over, in axis order.
+        """Symbols the streaming graph runs over, in axis order.
 
-        Batch mode asks the dataset; stream mode reads the symbol list pinned
-        on the dataset config.
+        This is the symbol list pinned on the dataset config. In batch mode
+        the symbols are those of the requested panel instead.
 
         Raises
         ------
         ValueError
-            If ``config.mode`` is neither ``"batch"`` nor
-            ``"stream"``.
+            If ``config.mode`` is not ``"stream"``.
 
         Examples
         --------
         >>> factor.symbols[:3]
         ['AAPL', 'MSFT', 'NVDA']
         """
-        if self.config.mode == "batch":
-            return super().symbols
-        elif self.config.mode == "stream":
-            return list(self.config.dataset.config.symbols)
-        else:
-            raise ValueError(f"mode {self.config.mode} is not supported")
+        if self.config.mode != "stream":
+            raise ValueError(
+                f"{self.class_name}.symbols: only a stream-mode factor has a "
+                f"fixed symbol list; a batch computation runs over the "
+                f"symbols of the requested panel. config.mode is "
+                f"{self.config.mode!r}."
+            )
+        return list(self.config.dataset.config.symbols)
 
     def init_stream(self) -> Self:
         """Compile the graph in the streaming layout and bind its buffers.
@@ -1371,7 +1076,7 @@ class FactorKunQuant(Factor):
         timestamps: np.ndarray,
         symbols: np.ndarray,
     ):
-        """Wrap raw ``[time, symbol]`` arrays in an ``xarray.Dataset`` and hold it.
+        """Wrap one streamed bar's arrays in an ``xarray.Dataset`` and hold it.
 
         Parameters
         ----------
@@ -1387,7 +1092,9 @@ class FactorKunQuant(Factor):
         Factor
             ``self``, for chaining.
         """
-        self._hold_panel(self._output_panel(raw_factor, timestamps, symbols))
+        self.data_backend.to_internal(
+            self._output_panel(raw_factor, timestamps, symbols)
+        )
         return self
 
     @staticmethod
@@ -1413,30 +1120,6 @@ class FactorKunQuant(Factor):
         factor names.
         """
         ...
-
-    def cal(self) -> Self:
-        """Run the compiled graph over the dataset's full history.
-
-        The dataset is converted with ``to_kunquant``, the graph is compiled
-        if no library is cached, run from bar 0 on an executor of
-        ``config.njobs`` threads, and the outputs are wrapped as a panel. The
-        compiled library is dropped afterwards, so each call compiles again.
-
-        Returns
-        -------
-        Self
-            ``self``, for chaining.
-
-        Examples
-        --------
-        >>> factor.get_factor_names()
-        ('rank_close', 'ma_close', 'ma_rank')
-        >>> factor.cal().get_features().sizes   # 21 configured bars
-        Frozen({'timestamp': 21, 'symbol': 16})
-        """
-        inputs = self.config.dataset.read().get_xarray_dataset()
-        self._hold_panel(self._compute_panel(inputs))
-        return self
 
     def _kunquant_inputs(
         self, inputs: xr.Dataset
@@ -1630,7 +1313,7 @@ class FactorPolars(Factor):
 
     A subclass overrides ``_get_factor_lazyframe``, which receives the dataset
     as a ``LazyFrame`` and returns a lazy frame carrying only ``timestamp``,
-    ``symbol`` and the factor columns. Nothing is materialized until ``cal()``
+    ``symbol`` and the factor columns. Nothing is materialized until ``compute()``
     collects it and converts the result to an ``xarray.Dataset``. Factor
     names are not declared: they are read from the schema of the returned
     frame, so they are known at construction time (which reads a few rows
@@ -1709,33 +1392,6 @@ class FactorPolars(Factor):
             columns. Do not call ``collect`` here.
         """
         ...
-
-    def cal(self) -> Self:
-        """Collect the expression chain over the full dataset and hold the panel.
-
-        ``config.factor_names`` is refreshed from the collected schema.
-
-        Returns
-        -------
-        Self
-            ``self``, for chaining.
-
-        Examples
-        --------
-        >>> factor.cal().get_features().sizes
-        Frozen({'timestamp': 60, 'symbol': 8})
-        """
-        lf = self.config.dataset.read().get_lazyframe()
-        factor_lf = self._get_factor_lazyframe(lf)
-
-        self.config.factor_names = tuple(
-            name
-            for name in factor_lf.collect_schema().names()
-            if name not in self._INDEX_COLUMNS
-        )
-
-        self._hold_panel(self._collect(factor_lf))
-        return self
 
     def _compute_panel(self, inputs: xr.Dataset) -> xr.Dataset:
         """Collect the expression chain over ``inputs`` as a long ``LazyFrame``."""

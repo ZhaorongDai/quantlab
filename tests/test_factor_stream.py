@@ -25,6 +25,7 @@ from typing import Callable
 import numpy as np
 import xarray as xr
 
+from conftest import WHOLE_STORE
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.alpha158 import Alpha158SpotKline
@@ -54,7 +55,7 @@ def test_stream_fixture_provides_eight_symbols(
     largest rolling factor window).
     """
     dataset_config = spot_kline_zarr()
-    data = SpotKlineDataset(dataset_config).read().get_xarray_dataset()
+    data = SpotKlineDataset(dataset_config).panel(*WHOLE_STORE)
 
     assert data.sizes["symbol"] == 8
     assert data.sizes["timestamp"] >= 40
@@ -80,7 +81,7 @@ def _stream_factor(
 
     return Alpha158SpotKline(
         FactorConfig(
-            window=10,
+            warmup_bars=10,
             dataset=SpotKlineDataset(dataset_config),
             mode="stream",
             data_columns=_DATA_COLUMNS,
@@ -137,8 +138,9 @@ def test_cal_stream_replay_produces_incremental_factor_updates(
     """
     factor = _stream_factor(spot_kline_zarr, tmp_path, periods=60)
 
-    input_dict, symbols, timestamps = factor.config.dataset.to_kunquant(
-        tuple(_DATA_COLUMNS)
+    dataset = factor.config.dataset
+    input_dict, symbols, timestamps = dataset.to_kunquant(
+        tuple(_DATA_COLUMNS), panel=dataset.panel(*WHOLE_STORE)
     )
     symbol_list = list(symbols)
     num_steps = len(timestamps)

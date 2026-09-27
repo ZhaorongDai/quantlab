@@ -54,7 +54,7 @@ _COORD_HELPER = "symbol_coord"
 
 #: Names whose appearance means a test builds a panel or reaches a store.
 #: Deliberately broad -- it matches an ATTRIBUTE ACCESS, not only a call -- so
-#: that `inspect.signature(Factor.update)` counts as reaching the store layer
+#: that `inspect.signature(Factor.extend)` counts as reaching the store layer
 #: and the exemption below has to be stated explicitly rather than falling out
 #: of a detector that quietly missed it.
 _STORE_TOUCHING = frozenset(
@@ -65,8 +65,8 @@ _STORE_TOUCHING = frozenset(
         "_stored",
         "append",
         "update",
-        "cal",
-        "save",
+        "build",
+        "extend",
         "widen_and_append",
         "widen_symbol_axis",
         "widen_data_vars",
@@ -81,7 +81,7 @@ _STORE_TOUCHING = frozenset(
 #: -- cost without coverage. Decided in 260908-dvv Task 2 and recorded in that
 #: test's own docstring. Adding a name here is a decision about COVERAGE, not a
 #: way to make this guard quiet.
-_EXEMPT = frozenset({"test_update_declares_no_overwrite_parameter"})
+_EXEMPT = frozenset({"test_extend_declares_no_overwrite_parameter"})
 
 
 def _module(name: str) -> ast.Module:
@@ -151,8 +151,8 @@ def test_every_store_touching_test_in_the_owning_suites_requests_the_encoding_fi
         f"touch a store, add it to _EXEMPT with the reason in its docstring, "
         f"the way {sorted(_EXEMPT)[0]!r} does."
     )
-    # Non-vacuity: the guard must actually be looking at the family. 43 of the
-    # 45 tests across the three suites touch a store. Of the other two, ONE is
+    # Non-vacuity: the guard must actually be looking at the family. 41 of the
+    # 43 tests across the three suites touch a store. Of the other two, ONE is
     # in `_EXEMPT` (pure `inspect.signature` introspection) and the other,
     # `test_the_block_size_rule_floors_onto_the_chunk_grid`, is not counted at
     # all: it exercises `_widen_block_rows` as integer arithmetic, builds no
@@ -168,7 +168,10 @@ def test_every_store_touching_test_in_the_owning_suites_requests_the_encoding_fi
     # `symbol_encoding` -- they override the shared fixture with an explicit
     # `[int64]` parametrisation rather than declining the axis -- so they are
     # counted here exactly like their neighbours, which is the point.
-    assert checked == 43, checked
+    # Re-derived the same way 2026-09-26 (43 -> 41) when #26 moved
+    # `tests/test_factor_update.py` from `update()` onto `extend()` and
+    # dropped its two `save()`/overlap tests, which `extend()` cannot reach.
+    assert checked == 41, checked
 
 
 def test_no_owning_suite_builds_a_symbol_coordinate_from_a_bare_sequence() -> None:
@@ -183,7 +186,7 @@ def test_no_owning_suite_builds_a_symbol_coordinate_from_a_bare_sequence() -> No
 
     An `ast.Dict` is matched rather than a `coords=` keyword because the three
     suites spell it three ways: a keyword in two builders, and a dict built
-    inside `PanelFactor.cal()` in the third.
+    inside `PanelFactor.prepare()` in the third.
 
     RED under: writing `"symbol": ["A", "B"]` (or `"symbol": symbols`) anywhere
     in the three modules, which is precisely how a new test would reintroduce

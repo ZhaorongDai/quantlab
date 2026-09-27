@@ -60,7 +60,7 @@ Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 datase
 'quantlab.dataset.stock.StockDataset'
 ```
 
-给 dataset 赋值 config 时，会把 `name` 填成类的点分导入路径，保存下来的 config 就是靠它还原成对象的。缺少 `start_date` 或 `end_date` 时分别取 `1900-01-01` 和 `2100-01-01`，这样日期过滤总有两个端点。两个日期都必须是 ISO `YYYY-MM-DD` 字符串，因为流水线里所有日期比较都是字符串比较。
+给 dataset 赋值 config 时，会把 `name` 填成类的点分导入路径，保存下来的 config 就是靠它还原成对象的。缺少 `start_date` 或 `end_date` 时分别取 `1900-01-01` 和 `2100-01-01`，这样日期过滤总有两个端点。这两个日期和 `symbols` 只限定构建路径（`from_raw_data()`、`from_raw_data_chunked()`、`update()`）转换什么、`save()` 写入什么；读取时的区间则作为参数传入。两个日期都必须是 ISO `YYYY-MM-DD` 字符串，因为流水线里所有日期比较都是字符串比较。
 
 ```python
 >>> open_ended = dataclasses.replace(config, start_date=None, end_date=None)
@@ -76,9 +76,9 @@ Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 datase
 StockDataset: end_date must be an ISO YYYY-MM-DD date string, got '2024-2-29'. Dates are compared lexicographically throughout this pipeline, so a non-ISO value compares wrong rather than failing to match.
 ```
 
-### 转换、保存和读取
+### 转换、保存和请求面板
 
-存储生命周期由三个方法完成。`from_raw_data()` 读取配置范围内的原始文件，运行该 dataset 的清洗步骤，并把结果留在内存里。`save()` 把它写到 `zarr_file_path`。`read()` 之后再打开 Zarr store，并按配置的日期和标的收窄。每个方法都返回 dataset 本身，所以可以链式调用；`get_xarray_dataset()` 返回面板。
+存储生命周期由三个方法完成。`from_raw_data()` 读取配置范围内的原始文件，运行该 dataset 的清洗步骤，并把结果留在内存里，`get_xarray_dataset()` 返回这个面板。`save()` 把它收窄到配置范围后写到 `zarr_file_path`。之后 `panel(start, end)` 返回已存储面板在一个闭区间内的部分。
 
 ```python
 >>> ds = ds.from_raw_data()
@@ -96,7 +96,7 @@ Data variables:
     volume        (timestamp, symbol) float64 80B 1e+03 1e+03 ... 1e+03 1e+03
     anomaly_flag  (timestamp, symbol) bool 10B False False False ... False False
 >>> ds.save()
->>> panel = StockDataset(config).read().get_xarray_dataset()
+>>> panel = StockDataset(config).panel("2024-01-01", "2024-02-29")
 >>> panel["close"].to_pandas()
 symbol       AAPL   MSFT
 timestamp               
@@ -109,16 +109,16 @@ timestamp
 
 时间轴上只出现原始文件里确实存在的交易日；`2024-01-01` 到 `2024-02-29` 这个窗口不会为没有数据的日子造出行。
 
-### 查看已存储的面板
+### 查看构建出的面板
 
-读取过的 dataset 提供几个开销很小的属性。`time_interval` 是相邻时间戳之间最常见的间隔，所以周末或假期不会改变它。`get_lazyframe()` 以长格式 polars `LazyFrame` 返回同样的数据；`head(n)` 按路径打开 store，最多返回 `n` 行，不影响已加载的面板。
+持有构建路径所产出面板的 dataset 提供几个开销很小的属性。`time_interval` 是相邻时间戳之间最常见的间隔，所以周末或假期不会改变它。`get_lazyframe()` 以长格式 polars `LazyFrame` 返回同样的数据。`head(n)` 按路径打开 store，最多返回 `n` 行，不影响持有的面板，所以对什么都不持有的 dataset 也可用。
 
 ```python
->>> ds = StockDataset(config).read()
+>>> ds = StockDataset(config).from_raw_data()
 >>> ds.symbols, ds.num_symbols
 (['AAPL', 'MSFT'], 2)
 >>> ds.time_interval
-np.timedelta64(86400000000000,'ns')
+np.timedelta64(86400000000,'us')
 >>> ds.get_lazyframe().collect().shape
 (10, 8)
 >>> ds.head(2).collect().columns
@@ -127,20 +127,7 @@ np.timedelta64(86400000000000,'ns')
 
 ## 常见任务
 
-### 读取时限定日期或标的
-
-`read()` 会应用 `start_date`、`end_date`，以及设置了时的 `symbols`。同一个 store 配不同的 config，得到不同的视图。
-
-```python
->>> feb = dataclasses.replace(config, start_date="2024-02-01", symbols=("MSFT",))
->>> StockDataset(feb).read().get_xarray_dataset()["close"].to_pandas()
-symbol       MSFT
-timestamp        
-2024-02-01  301.0
-2024-02-02  302.0
-```
-
-### 不改 config，按日期区间请求面板
+### 按日期区间或标的请求面板
 
 `panel(start, end, symbols=None)` 返回已存储面板在一个闭区间内的部分。每次调用都惰性打开 store，变量在被用到之前不会载入内存；dataset 自身不保留任何数据，config 也不会被改动，所以同一个 dataset 对象可以应答任意多次请求。
 
@@ -158,14 +145,14 @@ timestamp
 2024-01-04  104.0  304.0
 ```
 
-`bar_before(date, n)` 在 store 自己的日历上从 `date` 往前数 `n` 根 bar，没有数据的日子会被跳过。`date` 之前不足 `n` 根 bar 时抛出异常。重采样后的 dataset 在重采样后的 bar 上应答这两个调用。
+`bar_before(date, n)` 在 store 自己的日历上从 `date` 往前数 `n` 根 bar，没有数据的日子会被跳过。`date` 之前不足 `n` 根 bar 时抛出 `InsufficientHistoryError`（一种 `ValueError`）。重采样后的 dataset 在重采样后的 bar 上应答这两个调用。
 
 ```python
 >>> ds.bar_before("2024-02-01", 2)
 Timestamp('2024-01-03 00:00:00')
 >>> ds.bar_before("2024-01-03", 2)
 Traceback (most recent call last):
-ValueError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
+quantlab.base.data.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
 ```
 
 ### 读取异常标记
@@ -206,10 +193,11 @@ ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 
 ### 导出 KunQuant 数组
 
-`MarketDataset.to_kunquant` 读取 store，返回由连续的 `[time, symbol]` float32 数组组成的字典，外加 symbol 轴和 timestamp 轴。因子层会调用它，也可以直接调用。
+`MarketDataset.to_kunquant(data_columns, panel)` 把该 dataset 的一个面板（例如 `panel(start, end)` 返回的面板）转成由连续的 `[time, symbol]` float32 数组组成的字典，外加 symbol 轴和 timestamp 轴。因子层会调用它，也可以直接调用。
 
 ```python
->>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+>>> inputs, symbols, timestamps = ds.to_kunquant(
+...     ("open", "close"), panel=ds.panel("2024-01-01", "2024-02-29"))
 >>> inputs["close"].shape, inputs["close"].dtype
 ((5, 2), dtype('float32'))
 >>> symbols.tolist()
@@ -230,11 +218,12 @@ ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 
 ### 重采样到更粗的 bar
 
-`resample(freq, how)` 返回 dataset 的一个副本，其面板被聚合到更粗的 bar 上，例如分钟 bar 变日 bar。`freq` 取 `1s`、`5s`、`10s`、`15s`、`30s`、`1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d` 之一，且必须比 store 自身的 bar 更粗。`how` 为每个变量指定一种方法，可选 `first`、`last`、`max`、`min`、`sum`、`mean`、`count`；也可以只给一个字符串，表示所有变量都用这种方法。NaN 单元格会被跳过。副本与源不共享任何内存，源本身不会被改变。
+`resample(freq, how)` 返回 dataset 的一个副本，其 `panel()` 和 `bar_before()` 在更粗的 bar 上应答，例如分钟 bar 变日 bar。`freq` 取 `1s`、`5s`、`10s`、`15s`、`30s`、`1m`、`5m`、`10m`、`15m`、`30m`、`1h`、`1d` 之一，且必须比 store 自身的 bar 更粗。`how` 为每个变量指定一种方法，可选 `first`、`last`、`max`、`min`、`sum`、`mean`、`count`；也可以只给一个字符串，表示所有变量都用这种方法。NaN 单元格会被跳过。未知的 token 由 `resample()` 本身拒绝；`how` 是否列出了每个变量、`freq` 是否更粗，在请求面板时检查，若源持有构建出的面板则立即检查。副本与源不共享任何内存，源本身不会被改变。
 
 下面的会话写入一个两天的分钟 store，并通过 `SpotKlineDataset` 读取。
 
 ```python
+>>> from quantlab.dataset.spot import SpotKlineDataset
 >>> minutes = pd.DatetimeIndex(np.concatenate([
 ...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
 ... ]))
@@ -247,25 +236,25 @@ ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 ... ).to_zarr("data/klines.zarr", mode="w")
 >>> config = DatasetConfig(raw_data_dir_path="downloads/spot", zarr_file_path="data/klines.zarr",
 ...                        market="crypto_spot", frequency="1m")
->>> minute = SpotKlineDataset(config).read()
+>>> minute = SpotKlineDataset(config)
 >>> daily = minute.resample("1d", {"Open": "first", "Close": "last", "Volume": "sum"})
->>> daily.get_xarray_dataset()["Close"].to_pandas()
+>>> daily.panel("2024-01-02", "2024-01-03")["Close"].to_pandas()
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02      4.0     40.0
 2024-01-03      8.0     80.0
->>> daily.get_xarray_dataset()["Volume"].to_pandas()
+>>> daily.panel("2024-01-02", "2024-01-03")["Volume"].to_pandas()
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02      4.0      4.0
 2024-01-03      4.0      4.0
->>> daily.time_interval, minute.time_interval
-(np.timedelta64(86400000000000,'ns'), np.timedelta64(60000000000,'ns'))
->>> minute.get_xarray_dataset().sizes["timestamp"], minute.config.resample_freq
+>>> daily.bar_before("2024-01-03", 1), minute.bar_before("2024-01-03", 1)
+(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-02 00:03:00'))
+>>> minute.panel("2024-01-02", "2024-01-03").sizes["timestamp"], minute.config.resample_freq
 (8, None)
 ```
 
-副本的 config 把这次请求记录在 `resample_freq` 和 `resample_how` 里，因此能经 `get_config()` 和 `load_dataset_from_config` 往返重建。带着这两个字段构造的 dataset 会在 `read()` 时重采样。`save()` 把重采样后的面板写到 `store_path`：与源 store 同目录、名字里带 `_resample_<freq>` 的一个 store；之后带同样字段的 `read()` 会直接打开这个 store，而不再重采样。
+副本的 config 把这次请求记录在 `resample_freq` 和 `resample_how` 里，因此能经 `get_config()` 和 `load_dataset_from_config` 往返重建。带着这两个字段构造的 dataset 在重采样后的 bar 上应答。`save()` 把重采样后的面板写到 `store_path`：与源 store 同目录、名字里带 `_resample_<freq>` 的一个 store；什么都不持有的重采样 dataset 会写入其整个源 store 的重采样结果，并收窄到自身 config 的范围。这个 store 存在之后，带同样字段的 `panel()` 和 `bar_before()` 会直接打开它，而不再对源 store 重采样。
 
 ```python
 >>> daily.config.resample_freq, daily.config.resample_how
@@ -277,7 +266,7 @@ timestamp
 ['klines.zarr', 'klines_resample_1d.zarr']
 >>> reader = SpotKlineDataset(dataclasses.replace(
 ...     config, resample_freq="1d", resample_how={"Open": "first", "Close": "last", "Volume": "sum"}))
->>> reader.read().get_xarray_dataset()["Close"].to_pandas()
+>>> reader.panel("2024-01-02", "2024-01-03")["Close"].to_pandas()
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02      4.0     40.0
@@ -344,8 +333,9 @@ class CsvDailyDataset(MarketDataset):
 ...     frequency="1d",
 ... )
 >>> CsvDailyDataset(csv_config).from_raw_data().save()
->>> ds = CsvDailyDataset(csv_config).read()
->>> ds.get_xarray_dataset()["close"].to_pandas()
+>>> ds = CsvDailyDataset(csv_config)
+>>> panel = ds.panel("2024-01-02", "2024-01-08")
+>>> panel["close"].to_pandas()
 symbol       AAA   BBB
 timestamp             
 2024-01-02  10.0   NaN
@@ -353,7 +343,7 @@ timestamp
 2024-01-04  12.0  21.0
 2024-01-05  13.0  22.0
 2024-01-08  14.0  23.0
->>> inputs, symbols, timestamps = ds.to_kunquant(("close",))
+>>> inputs, symbols, timestamps = ds.to_kunquant(("close",), panel=panel)
 >>> inputs["close"].shape, symbols.tolist()
 ((5, 2), ['AAA', 'BBB'])
 ```
@@ -392,7 +382,7 @@ TypeError: Can't instantiate abstract class Incomplete without an implementation
 ...
 >>> member_config = BaseDatasetConfig(zarr_file_path=str(root / "member.zarr"))
 >>> InIndexDataset(member_config).from_raw_data().save()
->>> InIndexDataset(member_config).read().get_xarray_dataset()["is_member"].to_pandas()
+>>> InIndexDataset(member_config).panel("2024-01-02", "2024-01-04")["is_member"].to_pandas()
 symbol       AAA   BBB
 timestamp             
 2024-01-02  True  False
@@ -402,28 +392,19 @@ timestamp
 
 ## 注意事项
 
-清洗属于 `from_raw_data()`。`read()` 只负责打开 store 并收窄，所以早先写入的 store 会按保存时的样子返回。
+清洗属于 `from_raw_data()`。`panel()` 只负责打开 store，所以早先写入的 store 会按保存时的样子返回。
 
 `save()` 会先把面板收窄到 config 窗口，再替换整个 store 目录。写入时 Zarr 可能打印关于 consolidated metadata 的 `ZarrUserWarning`，可以忽略。
 
-`read()` 就地收窄已加载的面板，并且当 dataset 已持有数据时什么也不做。把 `dataset.config` 改成更宽的窗口后再调用 `read()`，得到的仍是收窄后的面板。传入 `overwrite=True` 才会从磁盘重新加载 store。
-
-```python
->>> ds = StockDataset(dataclasses.replace(config, end_date="2024-01-03")).read()
->>> ds.config = dataclasses.replace(config, end_date="2024-02-29")
->>> ds.read().get_xarray_dataset().sizes["timestamp"]
-2
->>> ds.read(overwrite=True).get_xarray_dataset().sizes["timestamp"]
-5
-```
+`get_xarray_dataset()`、`get_lazyframe()`、`symbols`、`num_symbols` 和 `time_interval` 读取的是构建路径持有的面板。在从未构建过的 dataset 上，它们会抛出 `AttributeError: Please call 'read' or 'to_internal' first.`；请改用 `panel(start, end)` 请求面板。
 
 清洗从不填充或修复任何数值。分块转换按窗口逐个清洗，因此跨越窗口边界的价格跳变不会被标记。
 
-读取一个不存在的 store 会抛出 `FileNotFoundError: File .../missing.zarr does not exist.`
+向一个不存在的 store 请求面板会抛出 `FileNotFoundError: File .../missing.zarr does not exist.`
 
 `StockDataset` 只读取单个 vendor 的目录。原始数据根目录必须以 vendor 名结尾，并且必须设置 `DatasetConfig.vendor`，否则扫描会被拒绝，例如 `StockDataset: DatasetConfig.vendor is not set, so there is no way to check that ... holds exactly one vendor's data.` 或 `StockDataset: raw_data_dir_path '...' has basename 'tiingo' but the configured vendor is 'alpaca'.` 原始数据树为空或不存在时抛出 `StockDataset: no raw data for vendor 'tiingo' at frequency '1d' under '...'.` 当范围内没有任何月度文件时，`SpotKlineDataset` 抛出 `No CSV file matching the configured date range was found under ...`
 
-重采样后的 dataset 是其源 store 的一个视图。`from_raw_data()`、`from_raw_data_chunked()` 和 `update()` 会拒绝：`SpotKlineDataset.from_raw_data(): a resampled dataset (resample_freq='1d') is a view of its source store and cannot be built from raw files. Build or update the source dataset, then resample it.` `how` 字典必须列出每个变量：`SpotKlineDataset: resample_how does not name ['Open', 'Volume']; every variable of the panel needs a method (or pass one method as a str).` 目标频率不比 store 的 bar 更粗时拒绝：`SpotKlineDataset: resample_freq='1m' (60s) is not coarser than the panel's own bars (60s).` 保存下来的重采样 store 和因子 store 一样是缓存：重建源 store 不会刷新它。删掉它，或从新的重采样副本再 `save()` 一次。
+重采样后的 dataset 是其源 store 的一个视图。`from_raw_data()`、`from_raw_data_chunked()` 和 `update()` 会拒绝：`SpotKlineDataset.from_raw_data(): a resampled dataset (resample_freq='1d') is a view of its source store and cannot be built from raw files. Build or update the source dataset, then resample it.` `how` 字典必须列出每个变量，在请求面板时检查：`SpotKlineDataset: resample_how does not name ['Open', 'Volume']; every variable of the panel needs a method (or pass one method as a str).` 目标频率不比 store 的 bar 更粗时拒绝：`SpotKlineDataset: resample_freq='1m' (60s) is not coarser than the panel's own bars (60s).` 保存下来的重采样 store 和因子 store 一样是缓存：重建源 store 不会刷新它。删掉它，或从新的重采样副本再 `save()` 一次。
 
 盘中 dataset 用 `XnysSessionCalendar`（`quantlab.dataset._support.session_calendar`）把东部时间窗口转换成每个日期实际的交易所开收盘时间，半日市也考虑在内，结果是不带时区的 UTC 时间戳。
 

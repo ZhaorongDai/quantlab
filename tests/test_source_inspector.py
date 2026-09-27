@@ -1402,7 +1402,7 @@ def test_browse_raw_reads_no_store_at_construction(
         )
 
     monkeypatch.setattr(_RawTierReader, "from_raw_data", _fatal)
-    monkeypatch.setattr(_RawTierReader, "read", _fatal)
+    monkeypatch.setattr(_RawTierReader, "panel", _fatal)
 
     frame = (
         SourceInspector()

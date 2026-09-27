@@ -147,9 +147,12 @@ class BaseDataset(ABC):
     normalisation, Zarr storage through ``XrBackend``, the cleaning hook, and
     chunked ingestion with its resume ledger and its handling of *new
     listings* (symbols that appear in the raw tier but not yet in the store).
-    Datasets that are not price bars, such as a boolean index-membership
-    panel, derive from this class directly; market data derives from
-    ``MarketDataset``.
+    Reading is a query: ``panel(start, end, symbols)`` opens the store
+    lazily per request and holds nothing, so one dataset object serves any
+    number of requests and consumers. Only the build path (``from_raw_data``,
+    ``from_raw_data_chunked``, ``update``) holds a panel. Datasets that are
+    not price bars, such as a boolean index-membership panel, derive from
+    this class directly; market data derives from ``MarketDataset``.
 
     Parameters
     ----------
@@ -160,7 +163,7 @@ class BaseDataset(ABC):
     Attributes
     ----------
     data_backend : XrBackend
-        Holds the panel in memory and reads and writes the Zarr store.
+        Holds the panel the build path converted, and writes the Zarr store.
     last_chunk_result : ConversionResult or None
         Summary of the last ``from_raw_data_chunked`` or ``update`` run, or
         ``None`` if neither has completed on this object.
@@ -175,7 +178,7 @@ class BaseDataset(ABC):
 
         ds = MembershipDataset(config)
         ds.from_raw_data().save()
-        panel = MembershipDataset(config).read().get_xarray_dataset()
+        panel = MembershipDataset(config).panel("2020-01-01", "2020-12-31")
 
     The method examples below use ``DemoDataset``, a ``MarketDataset``
     subclass whose ``_raw_data_to_xr`` returns six business days of
@@ -188,14 +191,6 @@ class BaseDataset(ABC):
     #: Accepted values of ``on_new_listing``: stop (``"refuse"``), rewrite the
     #: whole store (``"rebuild"``), or add NaN columns (``"widen"``).
     NEW_LISTING_STRATEGIES: tuple[str, ...] = ("refuse", "rebuild", "widen")
-
-    #: ``{field name: reason}`` for factor-config fields that a factor built on
-    #: this dataset must not set. The factor base class reads this and raises,
-    #: quoting the reason, so it never needs to know concrete dataset classes.
-    #: Empty by default. A subclass may override it, for example to refuse
-    #: ``symbols`` on a panel whose symbol labels are not strings. Each reason
-    #: should say why and what to use instead.
-    REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {}
 
     #: Marker value that ``update()`` passes to ``from_raw_data_chunked()`` to
     #: have the new-listing strategy chosen from raw-tier evidence. It is an
@@ -215,7 +210,7 @@ class BaseDataset(ABC):
         ``AttributeError``.
         """
         # `from_raw_data_chunked()` stores its summary here; a dataset that was
-        # only read reports None.
+        # never built reports None.
         self.last_chunk_result: "ConversionResult | None" = None
 
         self.data_backend = XrBackend()
@@ -227,7 +222,7 @@ class BaseDataset(ABC):
 
     @property
     def num_symbols(self) -> int:
-        """Return the number of symbols in the loaded panel.
+        """Return the number of symbols in the built panel.
 
         Examples
         --------
@@ -284,7 +279,7 @@ class BaseDataset(ABC):
 
     @property
     def symbols(self) -> list[str]:
-        """Return the symbol labels of the loaded panel, in axis order.
+        """Return the symbol labels of the built panel, in axis order.
 
         Examples
         --------
@@ -304,7 +299,7 @@ class BaseDataset(ABC):
 
         Examples
         --------
-        >>> ds.time_interval  # daily bars read back from Zarr
+        >>> ds.time_interval  # daily bars built from raw files
         np.timedelta64(86400000000000,'ns')
         """
         timestamps = self.data_backend.get_xarray_dataset(["timestamp"])[
@@ -331,7 +326,7 @@ class BaseDataset(ABC):
         return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     def _filter(self):
-        """Narrow the backend to the config's date range and symbols in place."""
+        """Narrow the built panel to the config's date range and symbols."""
         self.data_backend.filter_by_date(
             "timestamp", self.config.start_date, self.config.end_date
         )
@@ -421,7 +416,7 @@ class BaseDataset(ABC):
             ) from exc
 
     def _get_symbols(self) -> list[str]:
-        """Return the symbol labels of the loaded panel."""
+        """Return the symbol labels of the built panel."""
         return self.data_backend.get_xarray_dataset(
             ["symbol", "timestamp"]
         ).symbol.values.tolist()
@@ -451,7 +446,7 @@ class BaseDataset(ABC):
 
         The config is deep-copied and re-assigned through the ``config``
         setter, so the copy shares no mutable state with this object. The
-        copy holds no panel until it is read or built.
+        copy holds no panel until it is built.
 
         Examples
         --------
@@ -471,11 +466,10 @@ class BaseDataset(ABC):
         """Return a copy of this dataset whose panel is resampled onto ``freq``.
 
         The copy's config carries ``resample_freq=freq`` and
-        ``resample_how=how``; ``read()`` and every data accessor on it give
-        the resampled panel. If this dataset already holds a panel, the copy
-        holds that panel resampled, in memory of its own; otherwise the copy
-        is empty and resamples on its first ``read()``. This dataset is not
-        changed.
+        ``resample_how=how``; ``panel()`` and ``bar_before()`` on it answer
+        on the resampled bars. If this dataset holds a panel it built, the
+        copy holds that panel resampled, in memory of its own; otherwise the
+        copy is empty. This dataset is not changed.
 
         A resampled dataset cannot be built from raw files: ``from_raw_data``,
         ``from_raw_data_chunked`` and ``update`` refuse. ``save()`` writes to
@@ -503,13 +497,13 @@ class BaseDataset(ABC):
 
         Examples
         --------
-        >>> minute = DemoDataset(minute_config).read()
+        >>> minute = DemoDataset(minute_config)
         >>> daily = minute.resample("1d", {"open": "first", "high": "max",
         ...                               "low": "min", "close": "last",
         ...                               "volume": "sum"})
-        >>> daily.get_xarray_dataset().sizes["timestamp"]
+        >>> daily.panel("2024-01-02", "2024-01-03").sizes["timestamp"]
         2
-        >>> minute.get_xarray_dataset().sizes["timestamp"]   # unchanged
+        >>> minute.panel("2024-01-02", "2024-01-03").sizes["timestamp"]
         780
         """
         other = self.copy()
@@ -751,57 +745,14 @@ class BaseDataset(ABC):
         labels = self._resample_labels(timestamps, self.config.resample_freq)
         return pd.DatetimeIndex(np.unique(labels))
 
-    def read(self, **kwargs):
-        """Open the Zarr store and narrow it to the config's window.
-
-        Nothing is cleaned or converted here; that is ``from_raw_data``'s job.
-
-        Parameters
-        ----------
-        **kwargs
-            Passed to ``XrBackend.read``.
-
-        Returns
-        -------
-        BaseDataset
-            ``self``, for chaining.
-
-        Examples
-        --------
-        >>> panel = DemoDataset(config).read().get_xarray_dataset()
-        >>> dict(panel.sizes)  # narrowed to the config's four days
-        {'timestamp': 4, 'symbol': 3}
-
-        A resampled dataset reads its own store when one has been saved,
-        and otherwise reads the source store and resamples it:
-
-        >>> daily = DemoDataset(minute_config).resample("1d", "last")
-        >>> daily.read().time_interval
-        np.timedelta64(86400000000000,'ns')
-        """
-        if self.config.resample_freq is None:
-            self.data_backend.read(self.config.zarr_file_path, **kwargs)
-            self._filter()
-            return self
-
-        if Path(self.store_path).exists():
-            self.data_backend.read(self.store_path, **kwargs)
-            self._filter()
-            return self
-
-        fresh = bool(kwargs.get("overwrite", False)) or not self._holds_data()
-        self.data_backend.read(self.config.zarr_file_path, **kwargs)
-        self._filter()
-        if fresh:
-            self._apply_resample()
-        return self
-
     def save(self, **kwargs):
-        """Narrow the loaded panel to the config's window and write it to Zarr.
+        """Narrow the built panel to the config's range and write it to Zarr.
 
         The write replaces the whole store directory at ``store_path``: the
         config's ``zarr_file_path``, or the resampled store beside it when
-        the dataset is resampled.
+        the dataset is resampled. A resampled dataset that holds no panel
+        writes the resample of its whole source store, narrowed to the
+        config's range.
 
         Parameters
         ----------
@@ -813,8 +764,17 @@ class BaseDataset(ABC):
         >>> DemoDataset(config).from_raw_data().save()
         >>> Path(config.zarr_file_path).is_dir()
         True
+        >>> DemoDataset(minute_config).resample("1d", "last").save()
+        >>> Path(minute_config.zarr_file_path.replace(".zarr", "_resample_1d.zarr")).is_dir()
+        True
         """
         with Timer(f"{self.__class__.__name__}: save"):
+            if self.config.resample_freq is not None and not self._holds_data():
+                self.data_backend.to_internal(
+                    self._resample_panel(
+                        self._open_store(self.config.zarr_file_path)
+                    )
+                )
             self._filter()
             self.data_backend.write(self.store_path, **kwargs)
 
@@ -829,7 +789,7 @@ class BaseDataset(ABC):
         return self.config.to_dict()  # type: ignore
 
     def get_lazyframe(self) -> pl.LazyFrame:
-        """Return the loaded panel as a long-format polars ``LazyFrame``.
+        """Return the built panel as a long-format polars ``LazyFrame``.
 
         Long format means one row per ``(timestamp, symbol)`` pair, with one
         column per variable.
@@ -861,7 +821,7 @@ class BaseDataset(ABC):
         return self.data_backend.head(self.store_path, n)
 
     def get_xarray_dataset(self) -> xr.Dataset:
-        """Return the loaded panel indexed by ``(timestamp, symbol)``.
+        """Return the built panel indexed by ``(timestamp, symbol)``.
 
         Examples
         --------
@@ -1716,9 +1676,11 @@ class MarketDataset(BaseDataset):
     --------
     Using the ``DemoDataset`` described on ``BaseDataset``:
 
-    >>> ds = DemoDataset(config).from_raw_data()
-    >>> ds.save()
-    >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+    >>> DemoDataset(config).from_raw_data().save()
+    >>> ds = DemoDataset(config)
+    >>> inputs, symbols, timestamps = ds.to_kunquant(
+    ...     ("open", "close"), panel=ds.panel("2024-01-02", "2024-01-05")
+    ... )
     >>> inputs["close"].shape
     (4, 3)
     """
@@ -1732,7 +1694,7 @@ class MarketDataset(BaseDataset):
     def to_kunquant(
         self,
         data_columns: tuple[str, ...],
-        panel: xr.Dataset | None = None,
+        panel: xr.Dataset,
     ) -> tuple[dict, np.ndarray, np.ndarray]:
         """Convert a panel of this dataset to KunQuant input arrays.
 
@@ -1741,10 +1703,9 @@ class MarketDataset(BaseDataset):
         data_columns : tuple[str, ...]
             Columns to export, named as KunQuant names them (``open``,
             ``high``, ``low``, ``close``, ``volume``, ``amount``).
-        panel : xr.Dataset, optional
+        panel : xr.Dataset
             A panel of this dataset, such as one ``panel(start, end)``
-            returned. ``None`` reads the store narrowed to the config's
-            window.
+            returned.
 
         Returns
         -------
@@ -1754,19 +1715,14 @@ class MarketDataset(BaseDataset):
 
         Examples
         --------
-        >>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+        >>> inputs, symbols, timestamps = ds.to_kunquant(
+        ...     ("open", "close"), panel=ds.panel("2024-01-03", "2024-01-04")
+        ... )
         >>> inputs["close"].shape, inputs["close"].dtype
-        ((4, 3), dtype('float32'))
+        ((2, 3), dtype('float32'))
         >>> symbols.tolist()
         ['AAA', 'BBB', 'CCC']
-        >>> inputs, _, _ = ds.to_kunquant(
-        ...     ("close",), panel=ds.panel("2024-01-03", "2024-01-04")
-        ... )
-        >>> inputs["close"].shape
-        (2, 3)
         """
-        if panel is None:
-            panel = self.read().get_xarray_dataset()
         return self._to_kunquant(panel, data_columns)
 
     @abstractmethod

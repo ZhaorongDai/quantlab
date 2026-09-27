@@ -49,7 +49,7 @@ class SpotKlineDataset(MarketDataset):
     ...     frequency="1d",
     ... )
     >>> SpotKlineDataset(config).from_raw_data().save()
-    >>> panel = SpotKlineDataset(config).read().get_xarray_dataset()
+    >>> panel = SpotKlineDataset(config).panel("2024-01-01", "2024-12-31")
     """
 
     # Binance columns are Title-Case, so the schema check cannot use the

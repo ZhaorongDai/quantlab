@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from conftest import WHOLE_STORE
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
 
@@ -46,9 +47,7 @@ def test_nasdaq100_panel_round_trips_through_zarr(mock_universe_fetchers, tmp_pa
     Nasdaq100ConstituentDataset(cfg).from_raw_data().save()
 
     reloaded = (
-        Nasdaq100ConstituentDataset(_make_config(tmp_path))
-        .read()
-        .get_xarray_dataset()
+        Nasdaq100ConstituentDataset(_make_config(tmp_path)).panel(*WHOLE_STORE)
     )
 
     assert isinstance(reloaded, xr.Dataset)

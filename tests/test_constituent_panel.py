@@ -16,6 +16,7 @@ import pytest
 import xarray as xr
 from loguru import logger
 
+from conftest import WHOLE_STORE
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
 from quantlab.base.data import BaseDataset
@@ -139,9 +140,7 @@ def test_sp500_panel_round_trips_through_zarr(mock_universe_fetchers, tmp_path):
     SP500ConstituentDataset(cfg).from_raw_data().save()
 
     reloaded = (
-        SP500ConstituentDataset(_make_config(tmp_path))
-        .read()
-        .get_xarray_dataset()
+        SP500ConstituentDataset(_make_config(tmp_path)).panel(*WHOLE_STORE)
     )
 
     assert isinstance(reloaded, xr.Dataset)

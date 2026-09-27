@@ -521,3 +521,31 @@ def test_a_permno_panel_against_a_ticker_universe_is_still_refused() -> None:
     """
     with pytest.raises(ValueError, match="overlap"):
         UniverseMask(_permno_market(), _membership()).apply()
+
+
+def test_from_datasets_masks_the_requested_range_of_two_stores(tmp_path) -> None:
+    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.stock import StockDataset
+
+    def stored(name: str, panel: xr.Dataset) -> StockDataset:
+        path = tmp_path / f"{name}.zarr"
+        panel.to_zarr(path)
+        return StockDataset(
+            DatasetConfig(
+                raw_data_dir_path=str(tmp_path / "raw"),
+                zarr_file_path=str(path),
+                market="us_equity",
+                frequency="1d",
+            )
+        )
+
+    mask = UniverseMask.from_datasets(
+        stored("market", _market()),
+        stored("members", _membership()),
+        "2024-01-02",
+        "2024-01-04",
+    )
+
+    assert list(mask.timestamps) == list(_MARKET_DAYS[1:4])
+    assert mask.symbols == ["AAA", "BBB"]
+    assert mask.missing_members == ["GONE"]

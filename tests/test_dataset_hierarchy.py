@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from conftest import WHOLE_STORE
 from quantlab.base.config import (
     BaseDatasetConfig,
     ConstituentDatasetConfig,
@@ -223,8 +224,8 @@ def test_non_market_dataset_round_trips_through_base_dataset(
     no KunQuant representation completes the entire storage lifecycle by
     implementing one abstract method.
 
-    `from_raw_data()` -> `save()` -> `read(overwrite=True)` ->
-    `get_xarray_dataset()` runs entirely on `BaseDataset`. The boolean
+    `from_raw_data()` -> `save()` -> `panel(start, end)` runs entirely on
+    `BaseDataset`. The boolean
     variable must survive the Zarr round trip as dtype `bool` (not as a
     float or an int8), and the membership pattern must come back
     byte-identical -- a silently-widened dtype or a transposed panel would
@@ -236,7 +237,7 @@ def test_non_market_dataset_round_trips_through_base_dataset(
     dataset = PanelDataset(config)
 
     dataset.from_raw_data().save()
-    result = PanelDataset(config).read(overwrite=True).get_xarray_dataset()
+    result = PanelDataset(config).panel(*WHOLE_STORE)
 
     assert isinstance(result, xr.Dataset)
     assert result["is_member"].dims == ("timestamp", "symbol")

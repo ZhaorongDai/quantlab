@@ -6,6 +6,7 @@ Fama-French CSV (the CRSP setup). The CSV path is proved against the panel
 path: the same series fed both ways give the same numbers.
 """
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +14,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 from loguru import logger
+
+from conftest import WHOLE_STORE, compute_all, features_of_all
 
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
@@ -101,10 +104,8 @@ def _daily_fixture(tmp_path: Path, *, periods: int = 120, symbols: int = 5):
 
 def _factor_config(dataset, tmp_path: Path, **overrides) -> FactorConfig:
     values = {
-        "window": 0,
+        "warmup_bars": 0,
         "dataset": dataset,
-        "start_date": dataset.config.start_date,
-        "end_date": dataset.config.end_date,
         "mode": "batch",
         "data_columns": ("stock_return", "risk_free", "mkt_rf", "smb", "hml"),
         "factor_names": ("resmom_raw", "resmom_rank"),
@@ -149,11 +150,12 @@ def test_residual_momentum_names_and_column_aliases(tmp_path: Path) -> None:
         },
     )
 
+    before = copy.deepcopy(dataset.config)
     factor = ResidualMomentumFF3(config)
 
     assert factor.get_factor_names() == ("resmom_raw", "resmom_rank")
-    # The warm-up follows the base rule (window calendar days), nothing else.
-    assert factor.config.dataset.config.start_date == "2000-01-31"
+    # The factor follows the base rule and leaves its dataset's config alone.
+    assert dataset.config == before
 
 
 def test_residual_momentum_rejects_mismatched_data_columns(tmp_path: Path) -> None:
@@ -282,7 +284,7 @@ def test_residual_momentum_batch_calculates_unaligned_symbol_count(
     dataset, timestamps = _monthly_dataset(tmp_path, symbols=7)
     factor = ResidualMomentumFF3(_factor_config(dataset, tmp_path))
 
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
 
     assert dict(result.sizes) == {"timestamp": len(timestamps), "symbol": 7}
     assert tuple(result.data_vars) == ("resmom_raw", "resmom_rank")
@@ -301,8 +303,8 @@ def test_regression_diagnostics_match_least_squares_by_hand(tmp_path: Path) -> N
         factor_names=("resmom_raw", "alpha", "beta_mkt", "beta_smb", "beta_hml",
                       "residual_sum", "residual_volatility"),
     ))
-    out = factor.cal().get_features()
-    panel = dataset.read().get_xarray_dataset()
+    out = factor.get_features(compute_all(factor))
+    panel = dataset.panel(*WHOLE_STORE)
 
     window, lookback, skip = 36, 12, 1
     for symbol in panel["symbol"].values:
@@ -335,16 +337,16 @@ def test_csv_path_reproduces_the_panel_path(tmp_path: Path) -> None:
     """Feeding the series from the CSV gives the numbers of feeding them as panel variables."""
     ret_only, full, csv = _daily_fixture(tmp_path)
 
-    from_csv = ResidualMomentumFF3(_factor_config(
+    from_csv = features_of_all(ResidualMomentumFF3(_factor_config(
         ret_only, tmp_path, data_columns=("ret",),
         file_path=str(tmp_path / "from_csv.zarr"),
         kwargs={"fama_french_csv": str(csv), **DAILY},
-    )).cal().get_features()
-    from_panel = ResidualMomentumFF3(_factor_config(
+    )))
+    from_panel = features_of_all(ResidualMomentumFF3(_factor_config(
         full, tmp_path, data_columns=("ret", "risk_free", "mkt_rf", "smb", "hml"),
         file_path=str(tmp_path / "from_panel.zarr"),
         kwargs={"return_column": "ret", **DAILY},
-    )).cal().get_features()
+    )))
 
     assert dict(from_csv.sizes) == {"timestamp": 120, "symbol": 5}
     for name in ("resmom_raw", "resmom_rank"):

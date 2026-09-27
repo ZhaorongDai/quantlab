@@ -138,7 +138,7 @@ checkpoint = model.train()
 `train()` fits the head on the training window, evaluates it and writes a
 checkpoint. It returns the checkpoint's absolute path. With early stopping on,
 `XGBoostRegressor` stops after 20 boosting rounds without improvement on the
-validation segment and keeps only the trees up to the best round. Here 131 of
+validation segment and keeps only the trees up to the best round. Here 20 of
 the 300 allowed trees were kept.
 
 ## Predict
@@ -312,16 +312,16 @@ stable across folds.
 
 ```text
 features: ['past_ret_1', 'ma_dev_5'] label: ['ret_1']
-checkpoint: models/XGBoostRegressor_trial_20260925_175317_715310/XGBoostRegressor_total/XGBoostRegressor_total.joblib
-trees kept by early stopping: 131
+checkpoint: models/XGBoostRegressor_trial_20260926_233650_835829/XGBoostRegressor_total/XGBoostRegressor_total.joblib
+trees kept by early stopping: 20
 prediction panel: {'timestamp': 80, 'symbol': 16} ['ret_1']
-test window            IC=+0.254  RankIC=+0.236  R2=+0.061
+test window            IC=+0.260  RankIC=+0.245  R2=+0.067
 trained_on symbols: 16 resolved eta: 0.05
 reloaded model predicts the same values: True
-fold 0: train 2022-01-03..2022-10-07  test 2022-10-12..2022-12-06  IC=+0.222  RankIC=+0.205
-fold 1: train 2022-02-28..2022-12-02  test 2022-12-07..2023-01-31  IC=+0.263  RankIC=+0.234
-fold 2: train 2022-04-25..2023-01-27  test 2023-02-01..2023-03-28  IC=+0.228  RankIC=+0.218
-mean test IC over folds: 0.238
+fold 0: train 2022-01-03..2022-10-07  test 2022-10-12..2022-12-06  IC=+0.238  RankIC=+0.208
+fold 1: train 2022-02-28..2022-12-02  test 2022-12-07..2023-01-31  IC=+0.276  RankIC=+0.260
+fold 2: train 2022-04-25..2023-01-27  test 2023-02-01..2023-03-28  IC=+0.259  RankIC=+0.236
+mean test IC over folds: 0.257
 cv_folds.json: format_version 1 with 3 folds
 keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse', 'test_start', 'train_end', 'train_start']
 ```

@@ -145,7 +145,7 @@ dataset_config = DatasetConfig(
 )
 conversion = convert(source, dataset_config, granularity="month")
 print("windows written:", conversion.windows_written)
-panel = StockDataset(dataset_config).read().get_xarray_dataset()
+panel = StockDataset(dataset_config).panel("2024-01-02", "2024-03-29")
 print(dict(panel.sizes), list(panel.data_vars))
 ```
 
@@ -198,9 +198,11 @@ A dataset converts a raw tier into a dense panel and stores it. For market
 bars, subclass `MarketDataset` (`quantlab.base.data`) and implement three
 hooks: `_raw_data_to_xr` returns the panel for the configured date range,
 `_raw_data_to_xr_window` returns one time window of it on a given symbol axis
-(used by chunked conversion), and `_to_kunquant` exports to the KunQuant
-factor engine. Everything else, including dates, storage, cleaning and
-resumable chunked conversion, is inherited.
+(used by chunked conversion), and `_to_kunquant` exports a panel to the
+KunQuant factor engine. Everything else, including storage, cleaning,
+resumable chunked conversion and date-range requests (`panel(start, end)`,
+`bar_before(date, n)`), is inherited. The config's dates and symbols bound
+only what the build path converts.
 
 This dataset reads daily bars from a single long-format CSV file:
 
@@ -256,7 +258,7 @@ config = DatasetConfig(
     start_date="2024-01-02", end_date="2024-03-29",
 )
 CsvBarDataset(config).from_raw_data().save()
-panel = CsvBarDataset(config).read().get_xarray_dataset()
+panel = CsvBarDataset(config).panel("2024-01-02", "2024-03-29")
 print(dict(panel.sizes), list(panel.data_vars))
 
 chunked = dataclasses.replace(config, zarr_file_path=str(root / "chunked.zarr"))
@@ -312,9 +314,7 @@ from quantlab.backend import XrBackend
 class NetcdfBackend(XrBackend):
     """Keep the panel in one NetCDF file instead of a Zarr directory."""
 
-    def read(self, path: str, overwrite: bool = False, **kwargs) -> Self:
-        if not overwrite and hasattr(self, "data"):
-            return self
+    def read(self, path: str, **kwargs) -> Self:
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
         with xr.open_dataset(path, engine="scipy", **kwargs) as opened:
@@ -341,8 +341,8 @@ class NetcdfBackend(XrBackend):
     widen_symbol_axis = append = widen_and_append
 ```
 
-Datasets create an `XrBackend` in their constructor, so plug the new backend
-in by replacing it after construction:
+Datasets create an `XrBackend` in their constructor and build and save
+through it, so plug the new backend in by replacing it after construction:
 
 ```python
 from quantlab.dataset.stock import StockDataset
@@ -360,19 +360,22 @@ the dataset round trip give:
 ```text
 [[2.0, 3.0], [4.0, 5.0]]          # filter_by_date(...).get_xarray_dataset(...)["close"]
 (2, 3)                            # head(path, 2).collect().shape
-{'timestamp': 3, 'symbol': 2}     # NetcdfStockDataset(cfg).read().get_xarray_dataset().sizes
+{'timestamp': 3, 'symbol': 2}     # NetcdfStockDataset(cfg).panel("2024-01-02", "2024-01-04").sizes
 ```
 
-Keep `read`'s `overwrite` keyword: the backtester calls
-`read(overwrite=True)` whenever it changes a dataset's dates, and without it
-the backend would return an earlier, narrower read. For a medium that does not
+`read` opens the store again on every call and replaces whatever `data`
+held; it caches nothing. The build path (`from_raw_data`, `save`) goes
+through `data_backend`. The read path does not: `panel(start, end)` and
+`bar_before(date, n)` open the store through a fresh `XrBackend`, that is
+`xarray.open_dataset(path)`, which reads the NetCDF file above because
+xarray detects its format. For a medium that does not
 hold an xarray object, implement all eight methods; `PlBackend` in
 `quantlab/backend.py` is the reference for a table-shaped medium, and its
 `get_xarray_dataset(indexes)` shows how to turn the named columns into the
-dataset's dimensions. Chunked conversion, `Dataset.update()` and
-`Factor.update()` also call `widen_and_append` (and, for a new listing,
-`widen_symbol_axis`), which exist only on `XrBackend`; a backend without them
-supports `from_raw_data().save()` and `read()` only.
+dataset's dimensions. Chunked conversion and `Dataset.update()` also call
+`widen_and_append` (and, for a new listing, `widen_symbol_axis`), which exist
+only on `XrBackend`; a backend without them supports `from_raw_data().save()`
+only.
 The executable version of the contract is in `tests/test_backend_head.py`,
 `tests/test_backend_indexes.py` and `tests/test_backend_overwrite.py`.
 
@@ -387,13 +390,11 @@ read from that frame's schema, so there is nothing to declare. Override
 `_get_features` to use the class as a feature, or `_get_labels` to use it as a
 label. In the snippets of this section and the next, `prices` is a
 `DatasetConfig` over a Zarr store holding `adjClose` and `adjVolume` for eight
-symbols over 60 business days, and each factor gets its own `StockDataset`
-over a copy of it (`dataclasses.replace(prices)`), because a factor moves its
-dataset's dates.
+symbols over 60 business days from 2 January 2024, and `dataset` is
+`StockDataset(prices)`. One dataset object can feed any number of factors: a
+factor asks it for a date range and changes nothing on it.
 
 ```python
-import dataclasses
-
 import polars as pl
 import xarray as xr
 
@@ -421,17 +422,18 @@ class RelativeVolume(FactorPolars):
         return data
 
 
+dataset = StockDataset(prices)
 factor = RelativeVolume(
     PolarsFactorConfig(
-        window=20,
-        dataset=StockDataset(dataclasses.replace(prices)),
+        warmup_bars=10,
+        dataset=dataset,
         kwargs={"n": 10},
-        start_date="2024-02-01",
         file_path=str(root / "factors" / "rel_volume.zarr"),
     )
 )
 print(factor.get_factor_names())
-features = factor.cal().save(mode="w").get_features()
+factor.build("2024-02-01", "2024-03-25")
+features = factor.get_features(factor.read("2024-02-01", "2024-03-25"))
 print(dict(features.sizes), float(features["rel_volume_10"].isnull().mean()))
 ```
 
@@ -440,14 +442,12 @@ print(dict(features.sizes), float(features["rel_volume_10"].isnull().mean()))
 {'timestamp': 38, 'symbol': 8} 0.0
 ```
 
-`window` is the factor's warm-up. `factor.compute(start, end)` reads
-`window` bars before `start`, counted on the dataset's own calendar, so a
-`window` equal to the longest look-back in bars is enough. `cal()` instead
-moves its dataset's start date back by `window` calendar days, and inside a
-backtest the backtester starts it `window` price bars early. Calendar days
-are fewer than bars, so for `cal()` pick a `window` comfortably larger than
-the longest look-back in bars: with `window=10` here, the first bar of
-February would still be NaN. Column names are the store's own (`adjVolume` in a Tiingo-shaped
+`warmup_bars` is the factor's warm-up. `compute(start, end)`, and so
+`build`, reads `warmup_bars` bars before `start`, counted on the dataset's
+own calendar, so `warmup_bars` equal to the longest look-back in bars is
+enough; a backtest warms each factor up by its own `warmup_bars` the same
+way. `build` writes the store and records its range; `read(start, end)`
+returns any range inside it without computing. Column names are the store's own (`adjVolume` in a Tiingo-shaped
 store), and parameters belong in `config.kwargs`, so one class serves many
 configs. `quantlab/factor/momentum.py` is the reference implementation.
 
@@ -489,17 +489,16 @@ class MaDeviation(FactorKunQuant):
 
 factor = MaDeviation(
     FactorConfig(
-        window=10,
-        dataset=StockDataset(dataclasses.replace(prices)),
+        warmup_bars=5,
+        dataset=dataset,
         mode="batch",
         data_columns=("adjClose",),
         kwargs={"n": 5},
-        start_date="2024-02-01",
         file_path=str(root / "factors" / "ma_dev.zarr"),
         njobs=2,
     )
 )
-panel = factor.cal().get_features()
+panel = factor.get_features(factor.compute("2024-02-01", "2024-03-25"))
 print(dict(panel.sizes), round(float(panel["ma_dev_5"].isel(timestamp=0, symbol=0)), 6))
 ```
 
@@ -515,8 +514,7 @@ A graph that needs inputs beyond `config.data_columns` of the dataset
 overrides `_kunquant_inputs(inputs)`: it receives the dataset panel, calls
 `super()._kunquant_inputs(inputs)` and adds `[time, symbol]` float32 arrays to
 the returned dict, as `quantlab/factor/residual_momentum.py` does with the
-Fama-French series. `cal()` and `compute()` both run the graph on what it
-returns.
+Fama-French series. `compute()` runs the graph on what it returns.
 KunQuant graphs can only look backwards in time; a forward-looking label is
 computed as a trailing value and shifted in `_get_labels`, as
 `quantlab/label/fret.py` does. Existing operator compositions to reuse are in

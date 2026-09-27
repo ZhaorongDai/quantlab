@@ -70,7 +70,7 @@ uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2
 >>> config.security_filter
 'equity_common'
 >>> CrspStockDataset(config).from_raw_data().save()
->>> panel = CrspStockDataset(config).read().get_xarray_dataset()
+>>> panel = CrspStockDataset(config).panel(config.start_date, config.end_date)
 >>> panel.symbol.values.tolist()
 [10107, 14593, 99002]
 >>> panel.sizes
@@ -147,7 +147,7 @@ timestamp
 ...     cfg = replace(config, zarr_file_path=store,
 ...                   security_filter=security_filter, permnos=permnos)
 ...     CrspStockDataset(cfg).from_raw_data().save()
-...     return CrspStockDataset(cfg).read().get_xarray_dataset().symbol.values.tolist()
+...     return CrspStockDataset(cfg).panel(cfg.start_date, cfg.end_date).symbol.values.tolist()
 >>> symbols_for("data/a.zarr")
 [10107, 14593, 99002]
 >>> symbols_for("data/b.zarr", security_filter="shrcd_10_11")
@@ -265,21 +265,21 @@ store 是由原始层和参考层派生出来的，所以转换代码或过滤�
 
 ### 在使用 Tiingo 的地方换用 CRSP 面板
 
-`CrspStockDataset` 继承自 `StockDataset`，带有 Tiingo 的全部十二个变量，所以读取 `adjClose` 或 `adjVolume` 的因子可以接受任一数据集。区别在于整数的 `symbol` 轴，以及对 ticker 侧选择字段（数据集 config 和因子 config 上的 `symbols`）的拒绝，它们会抛出 `ValueError`；应改用数据集上的 `permnos`。下面是在一个含八只合成证券的 CRSP store 上运行 Alpha101 因子：
+`CrspStockDataset` 继承自 `StockDataset`，带有 Tiingo 的全部十二个变量，所以读取 `adjClose` 或 `adjVolume` 的因子可以接受任一数据集。区别在于整数的 `symbol` 轴，以及对数据集 config 上 ticker 侧选择字段 `symbols` 的拒绝，它会抛出 `ValueError`；应改用 `permnos`。因子按数据集原样使用它，自身不选择标的。下面是在一个含八只合成证券的 CRSP store 上运行 Alpha101 因子：
 
 ```python
 >>> from quantlab.base.config import FactorConfig
 >>> from quantlab.factor.alpha101 import Alpha101Stock
->>> dataset = CrspStockDataset(config).read()
+>>> dataset = CrspStockDataset(config)
 >>> factor = Alpha101Stock(FactorConfig(
-...     window=20,
+...     warmup_bars=20,
 ...     dataset=dataset,
 ...     mode="batch",
 ...     data_columns=("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"),
 ...     factor_names=("alpha001",),
 ...     file_path="data/data/us_equity/1d/alpha101_crsp.zarr",
 ... ))
->>> features = factor.cal().get_features()
+>>> features = factor.get_features(factor.compute(config.start_date, config.end_date))
 >>> features["alpha001"].isel(timestamp=-1).values.round(3)
 array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
       dtype=float32)
@@ -296,7 +296,7 @@ array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
 ...     EXTRA_VARIABLES = ("ret", "market_cap")
 >>> slim = replace(config, zarr_file_path="data/data/us_equity/1d/slim.zarr")
 >>> SlimCrspDataset(slim).from_raw_data().save()
->>> sorted(SlimCrspDataset(slim).read().get_xarray_dataset().data_vars)
+>>> sorted(SlimCrspDataset(slim).panel(slim.start_date, slim.end_date).data_vars)
 ['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'divCash', 'high', 'low', 'market_cap', 'open', 'ret', 'splitFactor', 'volume']
 ```
 

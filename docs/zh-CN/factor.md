@@ -19,7 +19,7 @@ KunQuant 因子在运行时编译 C++，需要可用的 C++ 编译器；Polars �
 | 配置类 | `FactorConfig` | `PolarsFactorConfig` |
 | 输入列名 | 由数据集重命名（`close`、`amount`、`adjClose`） | 存储中的原始列名（`Close`） |
 | 输出 dtype | float32 | float64 |
-| 开销 | 每次 `cal()` 都要编译计算图 | 无 |
+| 开销 | 每次 `compute()` 都要编译计算图 | 无 |
 
 KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子它都有，并且只有它能在实盘数据上逐 bar 运行。`FactorPolars` 是新因子的补充路径，适合用 DataFrame 表达式更容易描述的因子，或者需要 KunQuant 没有的运算。需要同时支持流式运行的因子必须写成 KunQuant 因子。
 
@@ -29,19 +29,17 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 
 | 字段 | 含义 |
 |---|---|
-| `window` | 在第一根 bar 之前读取的回看长度，用来让滚动算子预热：对 `cal()` 是 `start_date` 之前的日历天数，对 `compute()` 是 `start` 之前的 bar 数 |
+| `warmup_bars` | 在请求的起点之前读取的历史 bar 数，用来让滚动算子预热；在数据集自己的日历上数 |
 | `dataset` | 因子读取的数据集 |
-| `file_path` | 因子保存和读取所用的 Zarr 存储 |
+| `file_path` | `build` 写入、`read` 读取的 Zarr 存储 |
 | `factor_names` | 输出列名；为 `None` 时由因子自己推出 |
-| `start_date`、`end_date` | 计算的起止日期（含） |
-| `symbols` | 限定的标的 |
 | `kwargs` | 因子类自行读取的自由选项 |
 
-输出的日期范围由因子自己的 `start_date` 和 `end_date` 决定。它们没设置时默认是无界范围，同时因子会把数据集的日期改成从 `start_date` 往前 `window` 天到 `end_date`。日期请设在因子配置上，而不是数据集配置上。
+配置只说明算什么，不说明算哪段时间。日期区间是 `compute(start, end)`、`build(start, end)` 和 `read(start, end)` 的参数，这些调用都不会改动因子自己或其数据集的配置。
 
-### 计算并保存一个因子
+### 计算一个因子
 
-下面的会话先写入一个小的合成现货存储，并定义一个基于它构造数据集的辅助函数。`Momentum` 是 Polars 后端的参考因子：`Close_t / Close_{t-n} - 1`，`n` 从 `kwargs` 读取。因子名在对象构造完成时就已确定，不需要先计算；数据集的起始日期已被提前 20 天，用来预热窗口。
+下面的会话先写入一个小的合成现货存储，并定义一个基于它构造数据集的辅助函数。`Momentum` 是 Polars 后端的参考因子：`Close_t / Close_{t-n} - 1`，`n` 从 `kwargs` 读取。因子名在对象构造完成时就已确定，不需要先计算。
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
@@ -67,58 +65,60 @@ XrBackend()
 ...
 ```
 
+`compute(start, end)` 从 `start` 之前 `warmup_bars` 根 bar 开始读取数据集（在数据集自己的日历上数，没有数据的日子会被跳过），计算后只返回 `start` 到 `end`。结果与对全部历史计算的值一致。`get_features(panel)` 把返回的面板转换成模型特征，即以 `(timestamp, symbol)` 为索引的 `xarray.Dataset`。
+
 ```python
->>> config = PolarsFactorConfig(
-...     window=20, dataset=make_dataset(), file_path="data/factors/momentum.zarr",
-...     kwargs={"n": 5}, start_date="2024-02-01", end_date="2024-02-29",
-... )
->>> factor = Momentum(config)
->>> factor.get_factor_names()
-('momentum_5',)
->>> factor.config.dataset.config.start_date
-'2024-01-12'
->>> panel = factor.cal().get_features()
+>>> factor = Momentum(PolarsFactorConfig(
+...     warmup_bars=20, dataset=make_dataset(), file_path="data/factors/momentum.zarr",
+...     kwargs={"n": 5},
+... ))
+>>> factor.get_factor_names(), factor.warmup_bars
+(('momentum_5',), 20)
+>>> panel = factor.get_features(factor.compute("2024-02-01", "2024-02-29"))
 >>> dict(panel.sizes), list(panel.data_vars)
 ({'timestamp': 29, 'symbol': 8}, ['momentum_5'])
 >>> panel["momentum_5"].isel(timestamp=0, symbol=slice(0, 3)).values.round(4)
 array([ 0.0161,  0.0079, -0.0007])
->>> factor.save(mode="w") is factor
-True
 ```
 
-`cal()` 计算面板并把它放在因子的存储后端里，`get_features()` 以 `(timestamp, symbol)` 为索引的 `xarray.Dataset` 返回。`save(mode="w")` 把它写到 `file_path` 的 Zarr 存储中，替换原有内容。
+当数据集在 `start` 之前不足 `warmup_bars` 根 bar 时，会发出一条 `UserWarning` 说明差多少根，计算从现有的第一根 bar 开始：
+
+```text
+UserWarning: Momentum.compute(): 20 warm-up bar(s) are needed before '2024-01-05' but SpotKlineDataset holds only 4; the first bars are short by 16 bar(s) of warm-up.
+```
+
+`compute` 之后因子不持有面板；每次调用都经 `dataset.panel` 重新读取数据集。
 
 ## 常见任务
 
-### 用更晚的日期扩充已保存的因子
+### 构建、读取和扩充因子存储
 
-`update()` 把当前持有的面板追加到已有存储：先加宽 timestamp、symbol 和变量三个轴，再追加。它调用 `XrBackend.widen_and_append`，因此后端指南中描述的追加检查同样适用。替换存储用 `save(mode="w")`，扩充存储用 `update()`。
+`build(start, end)` 把 `compute(start, end)` 写成 `store_path` 处的存储（替换原有内容），并把区间记录在它旁边的 `<store>.range.json` 中。`read(start, end)` 惰性地从存储返回一个区间；记录的区间不包含所请求的区间时拒绝。`extend(end)` 计算记录终点之后的 bar（从数据集取预热历史），追加到存储，并把记录的终点后移。它调用 `XrBackend.widen_and_append`，因此 timestamp、symbol 和变量三个轴会按需加宽，后端指南中描述的追加检查同样适用。
 
 ```python
->>> later = Momentum(PolarsFactorConfig(
-...     window=20, dataset=make_dataset(), file_path="data/factors/momentum.zarr",
-...     kwargs={"n": 5}, start_date="2024-03-01", end_date="2024-03-20",
-... ))
->>> later.cal().get_features().sizes["timestamp"]
-20
->>> later.update() is later
-True
+>>> factor.build("2024-01-21", "2024-02-29").store_range()
+('2024-01-21', '2024-02-29')
+>>> dict(factor.read("2024-02-10", "2024-02-15").sizes)
+{'timestamp': 6, 'symbol': 8}
+>>> factor.read("2024-02-10", "2024-03-10")
+Traceback (most recent call last):
+ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024-01-21 to 2024-02-29, which does not contain 2024-02-10 to 2024-03-10. Extend it with extend(end) or rebuild it with build(start, end).
+>>> factor.extend("2024-03-20").store_range()
+('2024-01-21', '2024-03-20')
+>>> factor.read("2024-01-21", "2024-03-20").sizes["timestamp"]
+60
 >>> stored = xr.open_zarr("data/factors/momentum.zarr")
 >>> stored.sizes["timestamp"], str(stored["timestamp"].values[-1])[:10]
-(49, '2024-03-20')
+(60, '2024-03-20')
 ```
 
-### 读回因子，并从配置重建
+不是由 `build` 写出的存储，`store_range()` 返回 `None`，`read` 和 `extend` 都会拒绝这样的存储。KunQuant 因子只在 batch 模式下应答这些调用。
 
-`read()` 打开存储并按配置的日期收窄。`get_config()` 返回描述因子及其数据集的 dict，`load_factor_from_config` 可以据此重建因子。
+### 从配置重建因子
+
+`get_config()` 返回描述因子及其数据集的 dict，`load_factor_from_config` 可以据此重建因子。
 
 ```python
->>> reader = Momentum(PolarsFactorConfig(
-...     window=20, dataset=make_dataset(), file_path="data/factors/momentum.zarr",
-...     kwargs={"n": 5}, start_date="2024-03-10", end_date="2024-03-15",
-... ))
->>> reader.read().get_features().sizes["timestamp"]
-6
 >>> cfg = factor.get_config()
 >>> cfg["name"], cfg["kwargs"], cfg["dataset"]["market"]
 ('quantlab.factor.momentum.Momentum', {'n': 5}, 'crypto_spot')
@@ -128,61 +128,18 @@ True
 ('Momentum', ('momentum_5',))
 ```
 
-### 按日期区间请求：compute、build、read、extend
-
-因子也能按日期区间应答请求，既不在自身保留面板，也不改动自己或其 dataset 的 config。`compute(start, end)` 从 `start` 之前 `warmup_bars` 根 bar 开始读取 dataset（在 dataset 自己的日历上数，没有数据的日子会被跳过），计算后只返回 `start` 到 `end`。`warmup_bars` 就是 config 的 `window`，按 bar 数解读。结果与对全部历史计算的值一致：下面第一根 bar 与上文 `cal()` 会话中的相同。
-
-```python
->>> factor = Momentum(PolarsFactorConfig(
-...     window=20, dataset=make_dataset(), file_path="data/factors/momentum_range.zarr",
-...     kwargs={"n": 5},
-... ))
->>> factor.warmup_bars
-20
->>> panel = factor.compute("2024-02-01", "2024-02-29")
->>> dict(panel.sizes), list(panel.data_vars)
-({'timestamp': 29, 'symbol': 8}, ['momentum_5'])
->>> panel["momentum_5"].isel(timestamp=0, symbol=slice(0, 3)).values.round(4)
-array([ 0.0161,  0.0079, -0.0007])
-```
-
-当 dataset 在 `start` 之前不足 `warmup_bars` 根 bar 时，会发出一条 `UserWarning` 说明差多少根，计算从现有的第一根 bar 开始：
-
-```text
-UserWarning: Momentum.compute(): 20 warm-up bar(s) are needed before '2024-01-05' but SpotKlineDataset holds only 4; the first bars are short by 16 bar(s) of warm-up.
-```
-
-`build(start, end)` 把 `compute(start, end)` 写成 store，并把区间记录在它旁边的 `<store>.range.json` 中。`read(start, end)` 惰性地从 store 返回一个区间；记录的区间不包含所请求的区间时拒绝。`extend(end)` 计算记录终点之后的 bar（从 dataset 取预热历史），追加到 store，并把记录的终点后移。
-
-```python
->>> factor.build("2024-01-21", "2024-02-29").store_range()
-('2024-01-21', '2024-02-29')
->>> dict(factor.read("2024-02-10", "2024-02-15").sizes)
-{'timestamp': 6, 'symbol': 8}
->>> factor.read("2024-02-10", "2024-03-10")
-Traceback (most recent call last):
-ValueError: Momentum.read(): the store at data/factors/momentum_range.zarr covers 2024-01-21 to 2024-02-29, which does not contain 2024-02-10 to 2024-03-10. Extend it with extend(end) or rebuild it with build(start, end).
->>> factor.extend("2024-03-20").store_range()
-('2024-01-21', '2024-03-20')
->>> factor.read("2024-01-21", "2024-03-20").sizes["timestamp"]
-60
-```
-
-`save()` 会删除已记录的区间，因为它写入的面板不是按日期区间请求得到的。重采样后的因子在重采样后的 bar 上应答同样的调用：`build` 在源 store 旁写自己的 store；没有这个 store 时，`read` 会对源因子的 store 做重采样。重采样后的因子拒绝 `extend`，与 `update` 一样。KunQuant 因子只在 batch 模式下应答这些调用。
-
 ### 把因子重采样到更粗的 bar
 
-`resample(freq, how)` 返回因子的一个副本，其计算出的面板被聚合到更粗的 bar 上。因子仍然在其 dataset 自身的 bar 上计算，只有输出被聚合，因此分钟 bar 上的动量会变成"每日最后一分钟的值"这一日频序列，而它衡量的东西没有变。`freq` 和 `how` 的取值与 `BaseDataset.resample` 相同（见 dataset 指南），`how` 也可以只给一个字符串，表示所有因子变量都用这种方法。bar 的切分方式沿用因子所用 dataset 的切分方式。
+`resample(freq, how)` 返回因子的一个副本，其 `compute`、`read` 和 `build` 在更粗的 bar 上应答。因子仍然在其 dataset 自身的 bar 上计算，只有输出被聚合，因此分钟 bar 上的动量会变成"每日最后一分钟的值"这一日频序列，而它衡量的东西没有变。`freq` 和 `how` 的取值与 `BaseDataset.resample` 相同（见 dataset 指南），`how` 也可以只给一个字符串，表示所有因子变量都用这种方法。bar 的切分方式沿用因子所用 dataset 的切分方式。
 
-下面的会话在 dataset 指南里构造的两天分钟 store 上运行 `Momentum`（`config` 就是那个 store 的 `DatasetConfig`）。
+下面的会话在 dataset 指南里构造的两天分钟 store 上运行 `Momentum`（`config` 就是那个 store 的 `DatasetConfig`）。该 store 从第一根请求的 bar 开始，所以 `compute` 还会警告缺少那一根预热 bar。
 
 ```python
 >>> factor = Momentum(PolarsFactorConfig(
-...     window=1, dataset=SpotKlineDataset(config),
+...     warmup_bars=1, dataset=SpotKlineDataset(config),
 ...     file_path="data/factors/momentum.zarr", kwargs={"n": 1},
 ... ))
->>> minute = factor.cal()
->>> minute.get_features()["momentum_1"].to_pandas().round(3)
+>>> factor.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
 symbol               AAAUSDT  BBBUSDT
 timestamp                            
 2024-01-02 00:00:00      NaN      NaN
@@ -193,8 +150,8 @@ timestamp
 2024-01-03 00:01:00    0.200    0.200
 2024-01-03 00:02:00    0.167    0.167
 2024-01-03 00:03:00    0.143    0.143
->>> daily = minute.resample("1d", "last")
->>> daily.get_features()["momentum_1"].to_pandas().round(3)
+>>> daily = factor.resample("1d", "last")
+>>> daily.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02    0.333    0.333
@@ -203,17 +160,19 @@ timestamp
 (None, '1d')
 ```
 
-副本有自己的 dataset 对象和空的编译状态，所以在它上面调用 `cal()` 会重新计算分钟面板再重采样。`save()` 写到 `store_path`，即源 store 旁边的那个 store；副本上的 `read()` 在该 store 存在时直接打开它，否则读源 store 再重采样。这次请求能经 `get_config()` 和 `load_factor_from_config` 往返重建。
+副本有自己的 dataset 对象和空的编译状态。`build()` 写到 `store_path`，即源 store 旁边的那个 store；副本上的 `read()` 在该 store 存在时直接打开它，否则对源因子的 store 做重采样。这次请求能经 `get_config()` 和 `load_factor_from_config` 往返重建。
 
 ```python
 >>> daily.store_path
 'data/factors/momentum_resample_1d.zarr'
->>> daily.cal().get_features().sizes
-Frozen({'symbol': 2, 'timestamp': 2})
+>>> daily.build("2024-01-02", "2024-01-03").store_range()
+('2024-01-02', '2024-01-03')
+>>> daily.read("2024-01-02", "2024-01-03").sizes
+Frozen({'timestamp': 2, 'symbol': 2})
 >>> cfg = daily.get_config()
 >>> cfg["resample_freq"], cfg["resample_how"], cfg["dataset"]["resample_freq"]
 ('1d', 'last', None)
->>> load_factor_from_config(cfg).cal().get_features().sizes
+>>> load_factor_from_config(cfg).compute("2024-01-02", "2024-01-03").sizes
 Frozen({'symbol': 2, 'timestamp': 2})
 ```
 
@@ -221,9 +180,10 @@ Frozen({'symbol': 2, 'timestamp': 2})
 
 ### 计算标签
 
-标签是 `get_labels()` 返回前瞻值的 KunQuant 因子。`quantlab.label.fret` 中的 `Return` 是从下一根 bar 的复权开盘价到其后 `n` 根 bar 的复权开盘价的收益，`BinaryReturn` 在该收益为正时取 1.0。计算图算出的是滞后收益（KunQuant 只能向后看），`get_labels()` 再把它向前平移 `n_forward_periods + 1` 根 bar，因此最后 `n_forward_periods + 1` 根 bar 是 NaN。标签读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。
+标签是 `get_labels()` 返回前瞻值的 KunQuant 因子。`quantlab.label.fret` 中的 `Return` 是从下一根 bar 的复权开盘价到其后 `n` 根 bar 的复权开盘价的收益，`BinaryReturn` 在该收益为正时取 1.0。计算图算出的是滞后收益（KunQuant 只能向后看），`get_labels()` 再把它向前平移 `n_forward_periods + 1` 根 bar，因此最后 `n_forward_periods + 1` 根 bar 是 NaN。标签读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；`ret_2` 只需要之前 2 根 bar，滞后收益的前 2 根 bar 在平移前是 NaN。
 
 ```python
+>>> from quantlab.base.config import FactorConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.label.fret import Return
 >>> px = 50 + np.cumsum(rng.normal(size=(30, 8)), axis=0)
@@ -234,7 +194,7 @@ Frozen({'symbol': 2, 'timestamp': 2})
 >>> XrBackend().to_internal(stock).write("data/stock.zarr")
 XrBackend()
 >>> label = Return(FactorConfig(
-...     window=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 2},
+...     warmup_bars=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 2},
 ...     dataset=StockDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/stock.zarr",
 ...         market="us_equity", frequency="1d",
@@ -243,7 +203,7 @@ XrBackend()
 ... ))
 >>> label.get_factor_names()
 ('ret_2',)
->>> ret = label.cal().get_labels()["ret_2"]
+>>> ret = label.get_labels(label.compute("2024-01-01", "2024-01-30"))["ret_2"]
 >>> dict(ret.sizes)
 {'timestamp': 30, 'symbol': 8}
 >>> ret.isel(symbol=0).values[:2].round(5)
@@ -254,11 +214,11 @@ array([-0.03945,  0.01532], dtype=float32)
 array([nan, nan, nan], dtype=float32)
 ```
 
-对标签调用 `get_features()` 得到的是未平移的滞后收益，不能拿来当预测目标。
+`get_labels(panel)` 在传入的面板内部平移，因此任何请求区间的最后 `n_forward_periods + 1` 根 bar 都是 NaN。对标签调用 `get_features(panel)` 得到的是未平移的滞后收益，不能拿来当预测目标。
 
 ### 分析一个因子
 
-`analyze()` 仿照 alphalens 库，报告因子按未来收益给标的排序的能力。把一个或多个前瞻收益标签传给 `frets`；每个因子变量（默认是 `get_factor_names()` 的全部，也可用 `factor_names` 指定）与每个标签变量两两配对。因子和标签都必须已经持有面板（先调用 `cal()` 或 `read()`）。两个面板最常见的 bar 间隔必须相同（与 `BaseDataset.time_interval` 的规则一致），否则 `analyze()` 抛出 `ValueError` 并写明两个间隔；之后两者按共同的时间戳和标的做内连接。
+`analyze(start, end, ...)` 仿照 alphalens 库，报告从 `start` 到 `end` 因子按未来收益给标的排序的能力。把一个或多个前瞻收益标签传给 `frets`；每个因子变量（默认是 `get_factor_names()` 的全部，也可用 `factor_names` 指定）与每个标签变量两两配对。因子和每个标签都按 `[start, end]` 请求面板：`data_strategy="cal"`（默认）时用 `compute(start, end)`，`data_strategy="read"` 时用 `read(start, end)`，此时所有存储都必须已在该区间上构建。`data_strategy` 取其他值时抛出 `ValueError`。两个面板最常见的 bar 间隔必须相同（与 `BaseDataset.time_interval` 的规则一致），否则 `analyze()` 抛出 `ValueError` 并写明两个间隔；之后两者按共同的时间戳和标的做内连接。
 
 每个配对得到：
 
@@ -280,17 +240,17 @@ array([nan, nan, nan], dtype=float32)
 >>> XrBackend().to_internal(opens).write("data/spot_open.zarr")
 XrBackend()
 >>> fwd = Return(FactorConfig(
-...     window=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 1},
+...     warmup_bars=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 1},
 ...     dataset=StockDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/spot_open.zarr",
 ...         market="us_equity", frequency="1d",
 ...     )),
-...     start_date="2024-02-01", end_date="2024-02-29",
 ...     file_path="data/labels/fwd_ret.zarr", njobs=2,
 ... ))
->>> fwd.cal() is fwd
-True
->>> result = factor.analyze(frets=[fwd], quantiles=4, output_dir="data/analysis/momentum")
+>>> result = factor.analyze(
+...     "2024-02-01", "2024-02-29", frets=[fwd], quantiles=4,
+...     output_dir="data/analysis/momentum",
+... )
 >>> list(result.pairs)
 ['momentum_5__ret_1']
 >>> pair = result.pairs["momentum_5__ret_1"]
@@ -307,11 +267,11 @@ True
 (['factor', 'frets'], 'Return')
 ```
 
-结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、其累计和 `cumulative_ic`、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图，只在不传 `output_dir` 时保留），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `load_factor_from_config` 重建；此时各图在所有 CPU 上并行绘制并直接写成 PNG，不保留在内存里，因为对整个因子库做报告时画图是主要开销。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。IC 面板的右轴画累计 IC；换手率和排名自相关两个面板不画逐期原始值，而是画半透明的滚动区间（`rolling_window` 期内的最小到最大值，默认 22 期）和滚动均值线。指标用 polars 计算：每一批因子变量（`chunk_size`，默认 32）在 `(timestamp, symbol)` 长表上构成一个惰性计划，只 collect 一次。实现位于 `quantlab.analysis.factor_report`。
+结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、其累计和 `cumulative_ic`、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图，只在不传 `output_dir` 时保留），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `load_factor_from_config` 重建；此时各图在所有 CPU 上并行绘制并直接写成 PNG，不保留在内存里，因为对整个因子库做报告时画图是主要开销。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。IC 面板的右轴画累计 IC；换手率和排名自相关两个面板不画逐期原始值，而是画半透明的滚动区间（`rolling_window` 期内的最小到最大值，默认 22 期）和滚动均值线。指标用 polars 计算：每一批因子变量（`chunk_size`，默认 32）在 `(timestamp, symbol)` 长表上构成一个惰性计划，只 collect 一次。实现位于 `quantlab.analysis.factor_report`，其中 `FactorAnalyzer.run(factor, frets, features=..., labels=[...], factor_names=None, output_dir=None)` 显式接收特征面板和标签面板。
 
 ### 沿时间或跨标的做标准化
 
-`quantlab.my_ops.preprocess` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。“扩展”一节中的 KunQuant 因子同时用了两个算子。
+`quantlab.my_ops.preprocess` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用窗口为 `warmup_bars` 根 bar 的 `WindowedZScore`；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。“扩展”一节中的 KunQuant 因子同时用了两个算子。
 
 该模块还有两个截面去极值算子。`CrossSectionalWinsorize(v, lower=0.01, upper=0.99)`（缩尾）在每个时间点把取值截到该时点所有标的的 `lower` 和 `upper` 分位数之间；`CrossSectionalTrim(v, lower=0.01, upper=0.99)`（截尾）把严格落在这两个分位数之外的值设为 NaN。分位数忽略 NaN，并按线性插值计算，与 `np.nanquantile` 一致。常见用法是 `CrossSectionalZScore(CrossSectionalWinsorize(v))`，避免少数极端标的主导均值和标准差。KunQuant 0.1.11 没有内置这两个算子：它的 `Clip` 按固定常数截断，`WindowedQuantile` 是沿时间方向的。
 
@@ -364,7 +324,7 @@ from quantlab.base.config import FactorConfig
 from quantlab.factor.literature_alpha import LiteratureAlpha
 
 factor = LiteratureAlpha(FactorConfig(
-    window=400,
+    warmup_bars=400,
     dataset=dataset,
     mode="batch",
     data_columns=(
@@ -376,14 +336,14 @@ factor = LiteratureAlpha(FactorConfig(
     factor_names=None,  # 全部 16 个 raw/rank 输出
     file_path="data/factors/literature_alpha.zarr",
 ))
-features = factor.cal().get_features()
+features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
 ```
 
 ## 扩展
 
 ### 一个 Polars 因子
 
-继承 `FactorPolars` 并实现 `_get_factor_lazyframe`。它接收 `polars.LazyFrame` 形式的数据集，返回只包含 `timestamp`、`symbol` 和因子列的惰性表。因子名从返回表的 schema 读出。还需要覆写 `_get_features` 并返回面板，否则 `get_features()` 会抛出 `NotImplementedError`。
+继承 `FactorPolars` 并实现 `_get_factor_lazyframe`。它接收 `polars.LazyFrame` 形式的数据集，返回只包含 `timestamp`、`symbol` 和因子列的惰性表。因子名从返回表的 schema 读出。还需要覆写 `_get_features` 并返回面板，否则 `get_features(panel)` 会抛出 `NotImplementedError`。
 
 ```python
 >>> import polars as pl
@@ -402,12 +362,11 @@ features = factor.cal().get_features()
 ...         return data
 ...
 >>> rv = RelativeVolume(PolarsFactorConfig(
-...     window=10, dataset=make_dataset(), file_path="data/factors/rel_volume.zarr",
-...     start_date="2024-02-01", end_date="2024-02-29",
+...     warmup_bars=10, dataset=make_dataset(), file_path="data/factors/rel_volume.zarr",
 ... ))
 >>> rv.get_factor_names()
 ('rel_volume_5',)
->>> out = rv.cal().get_features()
+>>> out = rv.get_features(rv.compute("2024-02-01", "2024-02-29"))
 >>> dict(out.sizes), str(out["rel_volume_5"].dtype)
 ({'timestamp': 29, 'symbol': 8}, 'float64')
 >>> int(out["rel_volume_5"].isnull().sum())
@@ -416,7 +375,7 @@ features = factor.cal().get_features()
 
 ### 一个 KunQuant 因子
 
-继承 `FactorKunQuant`，实现 `_get_factor_names`、`_get_factor_func`（KunQuant 计算图：`data_columns` 的每一项对应一个 `Input`，每个因子名对应一个 `Output`）和 `_get_features`。下面的计算图输出一个均线偏离度，分别给出原始值、沿时间的 z-score 和跨标的的 z-score。KunQuant 在第一次 `cal()` 时编译（这里约一秒）。
+继承 `FactorKunQuant`，实现 `_get_factor_names`、`_get_factor_func`（KunQuant 计算图：`data_columns` 的每一项对应一个 `Input`，每个因子名对应一个 `Output`）和 `_get_features`。下面的计算图输出一个均线偏离度，分别给出原始值、沿时间的 z-score 和跨标的的 z-score。KunQuant 在每次 `compute()` 时编译（这里约一秒）。
 
 ```python
 >>> import KunQuant.ops as op
@@ -444,11 +403,10 @@ features = factor.cal().get_features()
 
 ```python
 >>> kq = MaDeviation(FactorConfig(
-...     window=10, dataset=make_dataset(), mode="batch", data_columns=("close",),
-...     file_path="data/factors/ma_dev.zarr", start_date="2024-02-01",
-...     end_date="2024-02-29", njobs=2,
+...     warmup_bars=10, dataset=make_dataset(), mode="batch", data_columns=("close",),
+...     file_path="data/factors/ma_dev.zarr", njobs=2,
 ... ))
->>> out = kq.cal().get_features()
+>>> out = kq.get_features(kq.compute("2024-02-01", "2024-02-29"))
 >>> list(out.data_vars), dict(out.sizes)
 (['ma_dev_5', 'ma_dev_ts', 'ma_dev_cs'], {'timestamp': 29, 'symbol': 8})
 >>> float(abs(out["ma_dev_cs"].mean("symbol")).max()) < 1e-5
@@ -459,12 +417,12 @@ array([1., 1., 1.], dtype=float32)
 3
 ```
 
-跨标的输出在每个时间点上均值为 0、标准差为 1。时间序列输出在两层嵌套窗口填满之前是 NaN：5 根 bar 的均线加上 10 根 bar 的 z-score 一共需要 14 根 bar，而 `window=10` 在第一个请求日期之前提供了 10 根 bar，所以第一个有效值出现在下标 3。流式模式下，`cal_stream` 每次把编译好的计算图推进一根 bar，且需要在数据集配置上固定 `symbols`。流式结果与批量公式一致：
+跨标的输出在每个时间点上均值为 0、标准差为 1。时间序列输出在两层嵌套窗口填满之前是 NaN：5 根 bar 的均线加上 10 根 bar 的 z-score 一共需要 14 根 bar，而 `warmup_bars=10` 在第一个请求日期之前提供了 10 根 bar，所以第一个有效值出现在下标 3。流式模式下，`cal_stream` 每次把编译好的计算图推进一根 bar 并返回因子本身，且需要在数据集配置上固定 `symbols`。不传面板的 `get_features()` 返回最近一次 `cal_stream()` 算出的那根 bar。流式结果与批量公式一致：
 
 ```python
 >>> import numpy as np
 >>> stream = MaDeviation(FactorConfig(
-...     window=10, mode="stream", data_columns=("close",), njobs=2,
+...     warmup_bars=10, mode="stream", data_columns=("close",), njobs=2,
 ...     dataset=SpotKlineDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/klines.zarr",
 ...         market="crypto_spot", frequency="1d",
@@ -484,24 +442,26 @@ array([-0.00857,  0.01526,  0.00988])
 
 ## 注意事项
 
-在 macOS 上，批量模式要求标的数是 SIMD 块宽度的整数倍，`cal()` 会用全 NaN 的假标的把标的轴补到 8 的倍数、算完再裁掉，因此任何标的数都能运行；不补的话 5 个标的会报 `RuntimeError: Bad shape at close`，报错信息没有提到标的数。在 Linux x86（AVX2）上任何标的数都能运行，不做补齐。
+在 macOS 上，批量模式要求标的数是 SIMD 块宽度的整数倍，`compute()` 会用全 NaN 的假标的把标的轴补到 8 的倍数、算完再裁掉，因此任何标的数都能运行；不补的话 5 个标的会报 `RuntimeError: Bad shape at close`，报错信息没有提到标的数。在 Linux x86（AVX2）上任何标的数都能运行，不做补齐。
 
 流式模式下，`data_columns` 的每一项都必须被某个 `Output` 用到，因为 KunQuant 会剪掉没用到的输入。多给一列会在 `init_stream()` 中报 `RuntimeError: Cannot find the buffer name`。批量模式容忍多余的输入。
 
-因子类没有覆写 `_get_features` 时，`get_features()` 会抛出一个不带消息的 `NotImplementedError`。同样，在只产出特征的类上调用 `get_labels()` 会抛 `RuntimeError: Momentum does not support get_label()`。
+因子类没有覆写 `_get_features` 时，`get_features(panel)` 会抛出一个不带消息的 `NotImplementedError`。同样，在只产出特征的类上调用 `get_labels(panel)` 会抛 `RuntimeError: Momentum does not support get_label()`。
 
 Polars 因子引用了存储中不存在的列时，构造对象就会失败，因为因子名是通过在少量行上运行表达式推出来的：`polars.exceptions.ColumnNotFoundError: unable to find column "close"; valid columns: ["timestamp", "symbol", "Close", ...]`。要用存储自己的列名（`Close`），而不是 KunQuant 的列名（`close`）。
 
-`save()` 默认 `mode="a"`，在 Zarr 里它表示改写已有存储中的变量，不是沿时间追加。保存长度不同的面板会抛出 `ValueError: Momentum.save(mode="a"): cannot write this date range into the existing store at data/f/m.zarr. zarr's "a" means "overwrite variables in an existing store", NOT "append along time", ...`。替换存储用 `save(mode="w")`，扩充存储用 `update()`。
+`read(start, end)` 和 `extend(end)` 需要 `build` 记录的区间：用其他方式写出的存储会抛出 `ValueError: Momentum.read(): the store at data/factors/nob.zarr has no recorded range, so it cannot answer a date-range request; write it with build(start, end).` 给 `extend(end)` 传入记录区间已经覆盖到的 `end` 会抛出 `ValueError: Momentum.extend(): the store at data/factors/momentum.zarr already covers 2024-01-21 to 2024-03-20; extend() appends only bars after 2024-03-20, got end '2024-03-10'.`
 
-`window` 是数据集回看的日历天数，不是 bar 数。市场在某些日子休市时，同样的天数对应的 bar 更少；嵌套的滚动窗口需要两个窗口长度之和。
+`warmup_bars` 是数据集自己日历上的 bar 数，没有数据的日子会被跳过，不计入。嵌套的滚动窗口需要两个窗口长度之和。
 
-重采样后的因子是其源面板的一个视图：`update()`、`init_stream()` 和 `cal_stream()` 会拒绝：`Momentum.update(): a resampled factor (resample_freq='1d') is a view of its source panel and does not support update. Compute or update the source factor, then resample it.` 保存下来的重采样 store 是缓存：重新计算源因子不会刷新它。
+`FactorKunQuant.symbols` 和 `num_symbols` 只在流式模式下存在，取值是数据集配置上固定的标的。批量模式下计算覆盖所请求面板中的标的，访问它们会抛出 `ValueError: MaDeviation.symbols: only a stream-mode factor has a fixed symbol list; a batch computation runs over the symbols of the requested panel. config.mode is 'batch'.` 同样，在流式模式的因子上调用 `compute()` 会抛出 `ValueError: MaDeviation.compute(): a date-range computation runs the batch graph, but config.mode is 'stream'.`
 
-`FactorKunQuant.cal()` 每次调用都会重新编译计算图。把 `factor_names` 固定为需要的列可以让计算图保持较小。
+重采样后的因子是其源面板的一个视图：`extend()`、`init_stream()` 和 `cal_stream()` 会拒绝：`Momentum.extend(): a resampled factor (resample_freq='1d') is a view of its source panel and does not support extend. Compute or update the source factor, then resample it.` 构建出的重采样 store 是缓存：重新构建源因子不会刷新它。
 
-`CrossSectionalZScore` 在某个时间点有效值少于两个或没有离散度时输出 NaN。批量运行必须从第 0 根 bar 开始，`cal()` 总是这样做。`CrossSectionalWinsorize` 和 `CrossSectionalTrim` 同样要求从第 0 根 bar 开始。每组不同的 `(lower, upper)` 会编译出各自的 C++ 函数，所以构造得到的对象属于一个生成的子类，例如 `CrossSectionalWinsorize_0p01_0p99`；`isinstance(op, CrossSectionalWinsorize)` 仍然成立。
+`FactorKunQuant.compute()` 每次调用都会重新编译计算图。把 `factor_names` 固定为需要的列可以让计算图保持较小。
+
+`CrossSectionalZScore` 在某个时间点有效值少于两个或没有离散度时输出 NaN。批量运行必须从第 0 根 bar 开始，`compute()` 总是这样做。`CrossSectionalWinsorize` 和 `CrossSectionalTrim` 同样要求从第 0 根 bar 开始。每组不同的 `(lower, upper)` 会编译出各自的 C++ 函数，所以构造得到的对象属于一个生成的子类，例如 `CrossSectionalWinsorize_0p01_0p99`；`isinstance(op, CrossSectionalWinsorize)` 仍然成立。
 
 ## 另请参阅
 
-`backend.md` 介绍 `XrBackend` 以及 `update()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用 `get_features()` 和 `get_labels()`。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`）、`quantlab.factor`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。
+`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用 `get_features()` 和 `get_labels()`。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`）、`quantlab.factor`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。

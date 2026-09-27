@@ -13,7 +13,7 @@
 三个模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）和 `RealMLPRegressor`（pytabkit 调优默认参数的 MLP）。每个模型 pipeline 都跑同样的五步：
 
 1. **数据读取**：读取已转换的 CRSP 数据仓库及其成分股面板，写出两个派生仓库（`prices`、`members`）。
-2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，存为 Zarr。
+2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，用 `build(START, END)` 写成 Zarr 仓库。
 3. **标签**：`Return`，即 t+1 开盘到 t+1+`HORIZON` 开盘的收益，只在成分股行上计算。
 4. **模型训练**：在训练窗口上训练一次。
 5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500 和全市场）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
@@ -75,11 +75,11 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | 位置 | 内容 |
 | --- | --- |
 | `DATA_ROOT`、`STORES`、`RAW`、`REFERENCE`、`WORK` | 数据根目录（`get_data_root()`：`QUANTLAB_DATA_DIR` 或仓库旁的 `data/`）及其下的输入输出位置 |
-| `START`、`END` | 数据窗口；因子预热数据从 `START` 之前读取 |
+| `START`、`END` | 数据窗口；每个因子在 `START` 之前读取 `warmup_bars` 根 bar 作为预热 |
 | `TRAIN_START` ... `TEST_END` | 训练窗口与样本外测试窗口（模型 pipeline） |
 | `HORIZON` | 标签周期（bar 数） |
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
-| `factors_and_label()` | 两个因子库的 `FactorConfig`（`window=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
+| `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
 | `build_model()` | `MLConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |
 | `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10，全市场为 100）、`direction`、成本，以及 ETF `benchmark_dataset` |
 | `analyze()` | `Factor.analyze()` 的 `quantiles` 和 `factor_names`（因子分析 pipeline） |

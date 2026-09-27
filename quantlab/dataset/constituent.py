@@ -91,7 +91,7 @@ class SP500ConstituentDataset(IndexConstituentDataset):
     ...     as_of="2024-12-31",
     ... )
     >>> SP500ConstituentDataset(config).from_raw_data().save()
-    >>> panel = SP500ConstituentDataset(config).read().get_xarray_dataset()
+    >>> panel = SP500ConstituentDataset(config).panel("2015-01-01", "2024-12-31")
     """
 
     def __init__(self, dataset_config: ConstituentDatasetConfig):

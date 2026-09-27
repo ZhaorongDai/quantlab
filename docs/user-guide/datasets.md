@@ -46,13 +46,17 @@ Every dataset class shares the same lifecycle, defined on
 |---|---|
 | `from_raw_data()` | Convert the whole configured range from the raw tier into memory. Nothing is written. |
 | `save()` | Narrow the in-memory panel to the config's dates and symbols, then write it, replacing the store. |
-| `read()` | Open the Zarr store and narrow it to the config's dates and symbols. |
-| `get_xarray_dataset()` | Return the loaded panel with dimensions `(timestamp, symbol)`. |
+| `get_xarray_dataset()` | Return the in-memory panel built by `from_raw_data()`, with dimensions `(timestamp, symbol)`. |
 | `from_raw_data_chunked()` | Convert and append one time window at a time, resumably. |
 | `update()` | Bring an existing store up to date with the raw tier. |
+| `panel(start, end, symbols=None)` | Return the stored bars from `start` to `end`, both inclusive, opened lazily. |
+| `bar_before(date, n)` | Return the timestamp `n` bars before `date` on the store's own calendar. |
 
-`from_raw_data`, `read` and the chunked methods return the dataset itself, so
-calls chain.
+The first five methods are the build path; `from_raw_data` and the chunked
+methods return the dataset itself, so calls chain. `panel` and `bar_before`
+are queries: each call opens the store again, the dataset holds nothing
+afterwards and its config is not changed, so one dataset object can answer
+any number of requests from any number of consumers.
 
 ## Configuring a dataset
 
@@ -68,15 +72,18 @@ config = DatasetConfig(
     market="us_equity",       # or "crypto_spot"
     frequency="1d",           # "1d", "1m" or "tick"
     vendor="tiingo",          # "tiingo", "alpaca" or "wrds"
-    start_date="2024-01-01",  # optional, inclusive
-    end_date="2024-12-31",    # optional, inclusive
-    symbols=("AAPL", "MSFT"), # optional; None keeps every symbol
+    start_date="2024-01-01",  # optional, inclusive; bounds the conversion
+    end_date="2024-12-31",    # optional, inclusive; bounds the conversion
+    symbols=("AAPL", "MSFT"), # optional; None converts every symbol
 )
 dataset = StockDataset(config)
 ```
 
 `raw_data_dir_path` is the raw tier and `zarr_file_path` is the store.
-`kwargs` holds dataset-specific options, such as
+`start_date`, `end_date` and `symbols` bound what the build path
+(`from_raw_data`, `from_raw_data_chunked`, `update`) converts and `save()`
+writes; a request for a range of the store is `panel(start, end, symbols)`,
+which does not use them. `kwargs` holds dataset-specific options, such as
 `{"data_type": "quotes"}` for tick data.
 
 Assigning the config normalises it. `name` is set to the dataset class's
@@ -163,7 +170,8 @@ factors and backtests read it unchanged, plus CRSP extras such as `ret`,
 `market_cap`, `shrout` and `is_delisting`.
 
 Because the axis is integer PERMNOs, the ticker-side `symbols` field is
-refused on its config; restrict a conversion with `permnos` instead, and pick
+refused on its config; restrict a conversion with `permnos` instead (and a
+request with `panel(start, end, symbols=[...])` listing integer PERMNOs), and pick
 the security types to keep with `security_filter` (the default,
 `"equity_common"`, drops ADRs, funds, ETFs and units). Period-correct tickers
 are written to a sidecar file next to the store for display; see
@@ -184,7 +192,7 @@ spreads, liquidity or intraday microstructure. Convert it with
 `from_raw_data_chunked(granularity="day")`: a second-level panel over many
 symbols is large, and one window is held in memory at a time.
 
-## Build and read a panel
+## Build a panel
 
 With a raw tier on disk, converting and saving is two calls. The example
 writes January and February 2024 for four symbols, where `DDD` stops trading
@@ -207,28 +215,24 @@ print(dataset.symbols, pd.Timedelta(dataset.time_interval))
 ```
 
 `time_interval` is the most common gap between timestamps, so weekends do not
-distort it. `num_symbols` and `symbols` describe the loaded axis.
+distort it. `num_symbols` and `symbols` describe the built axis.
 
-Later sessions read the store rather than reconverting:
+## Request a date range and symbols
 
-```python
-panel = StockDataset(config).read().get_xarray_dataset()
-```
-
-## Filter by date and symbol
-
-The config's `start_date`, `end_date` and `symbols` narrow what `read()` and
-`save()` return. Both date bounds are inclusive.
+Later sessions request ranges of the store rather than reconverting.
+`panel(start, end, symbols=None)` returns the bars from `start` to `end`,
+both inclusive, and, when `symbols` is given, those symbols in the order
+listed:
 
 ```python
-narrow = StockDataset(
-    stock_config(start_date="2024-01-29", end_date="2024-02-02", symbols=("AAA", "DDD"))
-).read()
-print(narrow.get_xarray_dataset()["close"].to_pandas().round(2))
+narrow = StockDataset(stock_config()).panel(
+    "2024-01-29", "2024-02-02", symbols=["AAA", "DDD"]
+)
+print(narrow["close"].to_pandas().round(2))
 ```
 
 ```text
-3. narrowed panel: {'timestamp': 5, 'symbol': 2}
+3. requested panel: {'timestamp': 5, 'symbol': 2}
 symbol        AAA    DDD
 timestamp
 2024-01-29  48.16  25.48
@@ -241,13 +245,15 @@ timestamp
 `DDD` stays on the axis after it stops trading; its cells simply become NaN.
 Symbols never disappear from a panel because they have no data in a window.
 
-Three behaviours are worth knowing:
+Four behaviours are worth knowing:
 
-- Filtering happens in place on the loaded panel, and `read()` does not
-  reload a panel it already holds. Widening the dates of a dataset that has
-  already been read therefore has no effect until you call
-  `read(overwrite=True)`. Constructing a fresh dataset object is the simplest
-  habit.
+- The store is opened lazily: no variable is loaded until it is used. A
+  date-only `end` such as `"2024-02-02"` includes every bar of that day. A
+  symbol missing from the store raises `KeyError`.
+- `bar_before(date, n)` counts the store's own timestamps, so weekends and
+  holidays are skipped rather than counted. It raises
+  `InsufficientHistoryError`, a `ValueError`, when fewer than `n` bars exist
+  before `date`. Factors use it to count their warm-up.
 - `save()` narrows first and then replaces the whole store. Saving from a
   dataset configured for one month leaves a one-month store. To add data to
   an existing store, use the chunked path below.
@@ -255,7 +261,7 @@ Three behaviours are worth knowing:
   without loading or narrowing anything, which is handy for checking column
   names.
 
-`get_lazyframe()` returns the loaded panel in long format, one row per
+`get_lazyframe()` returns the built panel in long format, one row per
 `(timestamp, symbol)`, for code that prefers Polars.
 
 ## Storage backends
@@ -267,7 +273,8 @@ interface (`read`, `write`, `to_internal`, `filter_by_date`,
 `filter_by_symbol`, `get_xarray_dataset`, `get_lazyframe`, `head`).
 
 `XrBackend` holds an `xarray.Dataset` and stores it as Zarr. Every dataset,
-factor and model owns one as `data_backend`. Beyond `read` and `write` it
+factor and model owns one as `data_backend`. `read(path)` opens the store
+lazily again on every call and caches nothing. Beyond `read` and `write` it
 provides `append`, which extends a store along the time axis after checking
 that the new window cannot corrupt it (same symbol axis, same variables, no
 overlap with stored timestamps, no NaN written into an integer variable), and
@@ -419,9 +426,10 @@ NBBO bars.
 ## Export to KunQuant
 
 Besides the panel itself, market datasets have one exit.
-`to_kunquant(data_columns)` returns contiguous float32 `[time, symbol]`
-arrays, the input format of the KunQuant factor engine; the factor layer
-calls it for you (see [Factors](factors.md)).
+`to_kunquant(data_columns, panel)` returns contiguous float32
+`[time, symbol]` arrays of a panel returned by `panel(start, end)`, the
+input format of the KunQuant factor engine; the factor layer calls it for
+you (see [Factors](factors.md)).
 
 ## See also
 

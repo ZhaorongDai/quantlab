@@ -1583,7 +1583,7 @@ def test_the_chunk_grid_reaches_three_consumers_from_one_read(tmp_path: Path) ->
     behaviour, so it is pinned here.
 
     The signature must stay byte-identical to `f7c1109` for a separate reason:
-    `Factor.update()`'s only route runs through it and
+    `Factor.extend()`'s only route runs through it and
     `tests/test_factor_update.py` locks the router call it makes.
 
     An AST walk rather than a text grep, deliberately. The method's docstring

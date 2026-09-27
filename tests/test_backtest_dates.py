@@ -34,6 +34,7 @@ Everything is synthetic, CPU-only and offline. Configs are constructed
 directly, never through the factories in `quantlab/config/__init__.py` (D-32).
 """
 
+import copy
 from pathlib import Path
 
 import numpy as np
@@ -151,8 +152,15 @@ def _adj_close(dataset_config) -> xr.DataArray:
     )
 
 
-def _factor_dates(model) -> list[tuple]:
-    return [(f.config.start_date, f.config.end_date) for f in model.config.factors]
+def _factor_configs(model) -> list[tuple]:
+    """Each factor's config without its dataset object, and its dataset's config."""
+    return [
+        (
+            {k: v for k, v in f.config.to_dict().items() if k != "dataset"},
+            copy.deepcopy(f.config.dataset.config),
+        )
+        for f in model.config.factors
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -167,9 +175,9 @@ def test_warmup_counts_bars_on_the_price_calendar_not_calendar_days(tmp_path):
     assert pd.Timestamp(bars[start_bar]).day_name() == "Monday"
 
     model, checkpoint = _loaded_model(
-        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), n=5, window=5
+        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), n=5, warmup_bars=5
     )
-    factor_dates = _factor_dates(model)
+    factor_configs = _factor_configs(model)
     result = _backtester(
         tmp_path, dataset_config, model, bars,
         start_bar=start_bar, end_bar=50, checkpoint=checkpoint,
@@ -180,8 +188,8 @@ def test_warmup_counts_bars_on_the_price_calendar_not_calendar_days(tmp_path):
     # while 5 calendar days would reach only Wednesday 2024-02-07.
     first = result.predictions["fwd_ret_1"].isel(timestamp=0)
     assert np.isfinite(first.values).all(), first.values
-    # The factor config is not re-dated.
-    assert _factor_dates(model) == factor_dates
+    # Neither the factor config nor its dataset's config is touched.
+    assert _factor_configs(model) == factor_configs
 
 
 def test_warmup_warns_with_the_shortfall_in_bars_on_short_history(tmp_path):
@@ -189,7 +197,7 @@ def test_warmup_warns_with_the_shortfall_in_bars_on_short_history(tmp_path):
     bars = _bars(dataset_config)
 
     model, checkpoint = _loaded_model(
-        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), window=5
+        tmp_path, dataset_config, _model_dates(bars, 0, 24, 29), warmup_bars=5
     )
     backtester = _backtester(
         tmp_path, dataset_config, model, bars,
@@ -215,16 +223,16 @@ def _two_factor_model(root: Path, dataset_config, dates: dict) -> FirstFeatureHe
     factors = [
         PastReturnFactor(
             PolarsFactorConfig(
-                window=window,
+                warmup_bars=warmup_bars,
                 dataset=make_stock_dataset(dataset_config),
                 kwargs={"n": n},
             )
         )
-        for n, window in ((1, 3), (2, 7))
+        for n, warmup_bars in ((1, 3), (2, 7))
     ]
     label = ForwardReturnLabel(
         PolarsFactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=make_stock_dataset(dataset_config),
             kwargs={"n_forward_periods": 1},
         )
@@ -248,14 +256,14 @@ def test_predictions_cover_exactly_the_window_without_redating_factors(tmp_path)
     start_bar, end_bar = 30, 50
 
     model = _two_factor_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
-    factor_dates = _factor_dates(model)
+    factor_configs = _factor_configs(model)
     result = _backtester(
         tmp_path, dataset_config, model, bars,
         start_bar=start_bar, end_bar=end_bar, model_mode="train",
     ).run()
 
-    # Each factor warms itself up; no factor config is re-dated.
-    assert _factor_dates(model) == factor_dates
+    # Each factor warms itself up; no factor or dataset config is touched.
+    assert _factor_configs(model) == factor_configs
 
     np.testing.assert_array_equal(
         result.predictions.timestamp.values.astype("datetime64[ns]"),
@@ -274,7 +282,7 @@ def _strategy_model(tmp_path: Path, dataset_config, bars, strategy: str):
         file_path = str(tmp_path / "factors" / "past_ret.zarr")
         PastReturnFactor(
             PolarsFactorConfig(
-                window=5,
+                warmup_bars=5,
                 dataset=make_stock_dataset(dataset_config),
                 file_path=file_path,
                 kwargs={"n": 1},
@@ -283,7 +291,7 @@ def _strategy_model(tmp_path: Path, dataset_config, bars, strategy: str):
 
     factor = PastReturnFactor(
         PolarsFactorConfig(
-            window=5,
+            warmup_bars=5,
             dataset=make_stock_dataset(dataset_config),
             file_path=file_path,
             kwargs={"n": 1},
@@ -291,7 +299,7 @@ def _strategy_model(tmp_path: Path, dataset_config, bars, strategy: str):
     )
     label = ForwardReturnLabel(
         PolarsFactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=make_stock_dataset(dataset_config),
             kwargs={"n_forward_periods": 1},
         )
@@ -462,12 +470,12 @@ class TinyLinearDLHead(DLModel):
 def _dl_model(root: Path, dataset_config, dates: dict) -> TinyLinearDLHead:
     factor = PastReturnFactor(
         PolarsFactorConfig(
-            window=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 1}
+            warmup_bars=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 1}
         )
     )
     label = ForwardReturnLabel(
         PolarsFactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=make_stock_dataset(dataset_config),
             kwargs={"n_forward_periods": 1},
         )

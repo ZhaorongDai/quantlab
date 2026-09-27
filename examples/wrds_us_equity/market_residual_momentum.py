@@ -28,8 +28,6 @@ import sys
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
-from pathlib import Path
-
 from loguru import logger
 
 from quantlab.base.config import CrspDatasetConfig, FactorConfig
@@ -53,8 +51,8 @@ WORK = DATA_ROOT / "data" / "pipeline" / "wrds_market"
 
 #: Data window (the factor warm-up is read before START).
 START, END = "2012-01-01", "2024-12-31"
-#: Calendar days of warm-up read before START; 1200 covers the 756-bar regression.
-WARMUP_DAYS = 1200
+#: Bars of warm-up read before START; they cover the 756-bar regression.
+WARMUP_BARS = 800
 #: Regression, formation and skip windows in daily bars (3 years, 12 months, 1 month).
 REGRESSION_WINDOW, FORMATION_LOOKBACK, SKIP_RECENT = 756, 252, 21
 #: Label horizon in bars: open-to-open return from t+1 to t+1+HORIZON.
@@ -72,10 +70,10 @@ def market_dataset() -> CrspStockDataset:
 def factor_and_label() -> tuple[ResidualMomentumFF3, Return]:
     """``(factor, label)``; each call builds fresh objects."""
     factor = ResidualMomentumFF3(FactorConfig(
-        window=WARMUP_DAYS, dataset=market_dataset(), mode="batch",
+        warmup_bars=WARMUP_BARS, dataset=market_dataset(), mode="batch",
         data_columns=("ret",), factor_names=("resmom_raw", "resmom_rank"),
         file_path=str(WORK / "factor" / "residual_momentum.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
         kwargs={
             "fama_french_csv": str(FAMA_FRENCH_CSV),
             "regression_window": REGRESSION_WINDOW,
@@ -85,10 +83,10 @@ def factor_and_label() -> tuple[ResidualMomentumFF3, Return]:
         },
     ))
     label = Return(FactorConfig(
-        window=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
-        start_date=START, end_date=END, njobs=16,
+        njobs=16,
     ))
     return factor, label
 
@@ -100,13 +98,14 @@ def compute_factor_and_label() -> None:
         if not path.exists():
             raise FileNotFoundError(f"{path} not found; run {script} first (see README.md).")
     factor, label = factor_and_label()
-    factor.cal().save(mode="w")
+    factor.build(START, END)
     logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
-    # The label store is shared with market_factor_analysis.py; reuse it when present.
-    if Path(label.config.file_path).exists():
+    # The label store is shared with market_factor_analysis.py; reuse it when it
+    # covers the window.
+    if label.store_range() == (START, END):
         logger.info(f"{type(label).__name__}: reading {label.config.file_path}")
     else:
-        label.cal().save(mode="w")
+        label.build(START, END)
         logger.info(f"{type(label).__name__} -> {label.config.file_path}")
 
 
@@ -115,8 +114,9 @@ def analyze():
     """``Factor.analyze()`` of the score and its rank against the forward return."""
     factor, label = factor_and_label()
     out = WORK / "analysis" / "residual_momentum"
-    result = factor.read().analyze(
-        frets=[label.read()], factor_names=None, quantiles=5, output_dir=str(out)
+    result = factor.analyze(
+        START, END, frets=[label], factor_names=None, quantiles=5,
+        output_dir=str(out), data_strategy="read",
     )
     table = result.summary_table()
     logger.info(

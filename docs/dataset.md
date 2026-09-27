@@ -60,7 +60,7 @@ A dataset is built from a config dataclass. `BaseDatasetConfig` carries what eve
 'quantlab.dataset.stock.StockDataset'
 ```
 
-Assigning a config fills in `name` with the dotted import path of the class, which is how a saved config is turned back into an object. A missing `start_date` or `end_date` becomes `1900-01-01` or `2100-01-01`, so a date filter always has two ends. Both dates must be ISO `YYYY-MM-DD` strings, because every date comparison in the pipeline is a string comparison.
+Assigning a config fills in `name` with the dotted import path of the class, which is how a saved config is turned back into an object. A missing `start_date` or `end_date` becomes `1900-01-01` or `2100-01-01`, so a date filter always has two ends. The dates and `symbols` bound what the build path converts (`from_raw_data()`, `from_raw_data_chunked()`, `update()`) and what `save()` writes; reading takes its range as arguments instead. Both dates must be ISO `YYYY-MM-DD` strings, because every date comparison in the pipeline is a string comparison.
 
 ```python
 >>> open_ended = dataclasses.replace(config, start_date=None, end_date=None)
@@ -76,9 +76,9 @@ Assigning a config fills in `name` with the dotted import path of the class, whi
 StockDataset: end_date must be an ISO YYYY-MM-DD date string, got '2024-2-29'. Dates are compared lexicographically throughout this pipeline, so a non-ISO value compares wrong rather than failing to match.
 ```
 
-### Convert, save and read
+### Convert, save and request a panel
 
-Three methods cover the storage lifecycle. `from_raw_data()` reads the raw files for the configured range, runs the dataset's cleaning step and holds the result in memory. `save()` writes it to `zarr_file_path`. `read()` opens the Zarr store later and narrows it to the configured dates and symbols. Each returns the dataset, so the calls chain, and `get_xarray_dataset()` returns the panel.
+Three methods cover the storage lifecycle. `from_raw_data()` reads the raw files for the configured range, runs the dataset's cleaning step and holds the result in memory, and `get_xarray_dataset()` returns that panel. `save()` narrows it to the configured range and writes it to `zarr_file_path`. `panel(start, end)` later returns the stored panel for an inclusive date range.
 
 ```python
 >>> ds = ds.from_raw_data()
@@ -96,7 +96,7 @@ Data variables:
     volume        (timestamp, symbol) float64 80B 1e+03 1e+03 ... 1e+03 1e+03
     anomaly_flag  (timestamp, symbol) bool 10B False False False ... False False
 >>> ds.save()
->>> panel = StockDataset(config).read().get_xarray_dataset()
+>>> panel = StockDataset(config).panel("2024-01-01", "2024-02-29")
 >>> panel["close"].to_pandas()
 symbol       AAPL   MSFT
 timestamp               
@@ -109,16 +109,16 @@ timestamp
 
 Only weekdays that exist in the raw files appear on the time axis; the window `2024-01-01` to `2024-02-29` does not create rows for days without data.
 
-### Looking at a stored panel
+### Looking at a built panel
 
-A dataset that has been read exposes a few cheap properties. `time_interval` is the most common gap between timestamps, so a weekend or a holiday does not change it. `get_lazyframe()` returns the same data as a long-format polars `LazyFrame`, and `head(n)` opens the store by path and returns at most `n` rows without touching the loaded panel.
+A dataset that holds a panel from the build path exposes a few cheap properties. `time_interval` is the most common gap between timestamps, so a weekend or a holiday does not change it. `get_lazyframe()` returns the same data as a long-format polars `LazyFrame`. `head(n)` opens the store by path and returns at most `n` rows without touching the held panel, so it also works on a dataset that holds nothing.
 
 ```python
->>> ds = StockDataset(config).read()
+>>> ds = StockDataset(config).from_raw_data()
 >>> ds.symbols, ds.num_symbols
 (['AAPL', 'MSFT'], 2)
 >>> ds.time_interval
-np.timedelta64(86400000000000,'ns')
+np.timedelta64(86400000000,'us')
 >>> ds.get_lazyframe().collect().shape
 (10, 8)
 >>> ds.head(2).collect().columns
@@ -127,20 +127,7 @@ np.timedelta64(86400000000000,'ns')
 
 ## Common tasks
 
-### Restrict the dates or symbols on read
-
-`read()` applies `start_date`, `end_date` and, when it is set, `symbols`. A different config over the same store gives a different view.
-
-```python
->>> feb = dataclasses.replace(config, start_date="2024-02-01", symbols=("MSFT",))
->>> StockDataset(feb).read().get_xarray_dataset()["close"].to_pandas()
-symbol       MSFT
-timestamp        
-2024-02-01  301.0
-2024-02-02  302.0
-```
-
-### Request a date range without touching the config
+### Request a date range or symbols
 
 `panel(start, end, symbols=None)` returns the stored panel for an inclusive date range. It opens the store lazily on every call, loads no variable until it is used, keeps nothing on the dataset and leaves the config alone, so one dataset object answers any number of requests.
 
@@ -158,14 +145,14 @@ timestamp
 2024-01-04  104.0  304.0
 ```
 
-`bar_before(date, n)` counts `n` bars back from `date` on the store's own calendar, so days without data are skipped. It raises when fewer than `n` bars exist before `date`. A resampled dataset answers both calls on its resampled bars.
+`bar_before(date, n)` counts `n` bars back from `date` on the store's own calendar, so days without data are skipped. It raises `InsufficientHistoryError`, a `ValueError`, when fewer than `n` bars exist before `date`. A resampled dataset answers both calls on its resampled bars.
 
 ```python
 >>> ds.bar_before("2024-02-01", 2)
 Timestamp('2024-01-03 00:00:00')
 >>> ds.bar_before("2024-01-03", 2)
 Traceback (most recent call last):
-ValueError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
+quantlab.base.data.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
 ```
 
 ### Read the anomaly flags
@@ -206,10 +193,11 @@ Duplicate `(timestamp, symbol)` rows must be removed before a frame is converted
 
 ### Export arrays for KunQuant
 
-`MarketDataset.to_kunquant` reads the store and returns a dictionary of contiguous `[time, symbol]` float32 arrays, plus the symbol and timestamp axes. The factor layer calls it; it can also be called directly.
+`MarketDataset.to_kunquant(data_columns, panel)` turns a panel of the dataset, such as one `panel(start, end)` returned, into a dictionary of contiguous `[time, symbol]` float32 arrays, plus the symbol and timestamp axes. The factor layer calls it; it can also be called directly.
 
 ```python
->>> inputs, symbols, timestamps = ds.to_kunquant(("open", "close"))
+>>> inputs, symbols, timestamps = ds.to_kunquant(
+...     ("open", "close"), panel=ds.panel("2024-01-01", "2024-02-29"))
 >>> inputs["close"].shape, inputs["close"].dtype
 ((5, 2), dtype('float32'))
 >>> symbols.tolist()
@@ -230,11 +218,12 @@ For a long history, `from_raw_data_chunked()` converts a month, quarter or year 
 
 ### Resample onto coarser bars
 
-`resample(freq, how)` returns a copy of the dataset whose panel is aggregated onto coarser bars: minute bars into daily bars, for example. `freq` is one of `1s`, `5s`, `10s`, `15s`, `30s`, `1m`, `5m`, `10m`, `15m`, `30m`, `1h` and `1d`, and must be coarser than the store's own bars. `how` names one method per variable, from `first`, `last`, `max`, `min`, `sum`, `mean` and `count`, or one method as a string for every variable. NaN cells are skipped. The copy shares no memory with the source, and the source is not changed.
+`resample(freq, how)` returns a copy of the dataset whose `panel()` and `bar_before()` answer on coarser bars: minute bars into daily bars, for example. `freq` is one of `1s`, `5s`, `10s`, `15s`, `30s`, `1m`, `5m`, `10m`, `15m`, `30m`, `1h` and `1d`, and must be coarser than the store's own bars. `how` names one method per variable, from `first`, `last`, `max`, `min`, `sum`, `mean` and `count`, or one method as a string for every variable. NaN cells are skipped. Unknown tokens are refused by `resample()` itself; whether `how` names every variable and whether `freq` is coarser are checked when a panel is requested, or at once when the source holds a built panel. The copy shares no memory with the source, and the source is not changed.
 
 The session below writes a two-day minute store and reads it through `SpotKlineDataset`.
 
 ```python
+>>> from quantlab.dataset.spot import SpotKlineDataset
 >>> minutes = pd.DatetimeIndex(np.concatenate([
 ...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
 ... ]))
@@ -247,25 +236,25 @@ The session below writes a two-day minute store and reads it through `SpotKlineD
 ... ).to_zarr("data/klines.zarr", mode="w")
 >>> config = DatasetConfig(raw_data_dir_path="downloads/spot", zarr_file_path="data/klines.zarr",
 ...                        market="crypto_spot", frequency="1m")
->>> minute = SpotKlineDataset(config).read()
+>>> minute = SpotKlineDataset(config)
 >>> daily = minute.resample("1d", {"Open": "first", "Close": "last", "Volume": "sum"})
->>> daily.get_xarray_dataset()["Close"].to_pandas()
+>>> daily.panel("2024-01-02", "2024-01-03")["Close"].to_pandas()
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02      4.0     40.0
 2024-01-03      8.0     80.0
->>> daily.get_xarray_dataset()["Volume"].to_pandas()
+>>> daily.panel("2024-01-02", "2024-01-03")["Volume"].to_pandas()
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02      4.0      4.0
 2024-01-03      4.0      4.0
->>> daily.time_interval, minute.time_interval
-(np.timedelta64(86400000000000,'ns'), np.timedelta64(60000000000,'ns'))
->>> minute.get_xarray_dataset().sizes["timestamp"], minute.config.resample_freq
+>>> daily.bar_before("2024-01-03", 1), minute.bar_before("2024-01-03", 1)
+(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-02 00:03:00'))
+>>> minute.panel("2024-01-02", "2024-01-03").sizes["timestamp"], minute.config.resample_freq
 (8, None)
 ```
 
-The copy's config records the request in `resample_freq` and `resample_how`, so it round-trips through `get_config()` and `load_dataset_from_config`. A dataset built with those fields set resamples on `read()`. `save()` writes the resampled panel to `store_path`, a store beside the source with `_resample_<freq>` in its name, and a later `read()` with the same fields opens that store instead of resampling again.
+The copy's config records the request in `resample_freq` and `resample_how`, so it round-trips through `get_config()` and `load_dataset_from_config`. A dataset built with those fields set answers on the resampled bars. `save()` writes the resampled panel to `store_path`, a store beside the source with `_resample_<freq>` in its name; a resampled dataset that holds nothing writes the resample of its whole source store, narrowed to its config range. Once that store exists, `panel()` and `bar_before()` with the same fields open it instead of resampling the source again.
 
 ```python
 >>> daily.config.resample_freq, daily.config.resample_how
@@ -277,7 +266,7 @@ The copy's config records the request in `resample_freq` and `resample_how`, so 
 ['klines.zarr', 'klines_resample_1d.zarr']
 >>> reader = SpotKlineDataset(dataclasses.replace(
 ...     config, resample_freq="1d", resample_how={"Open": "first", "Close": "last", "Volume": "sum"}))
->>> reader.read().get_xarray_dataset()["Close"].to_pandas()
+>>> reader.panel("2024-01-02", "2024-01-03")["Close"].to_pandas()
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
 2024-01-02      4.0     40.0
@@ -344,8 +333,9 @@ class CsvDailyDataset(MarketDataset):
 ...     frequency="1d",
 ... )
 >>> CsvDailyDataset(csv_config).from_raw_data().save()
->>> ds = CsvDailyDataset(csv_config).read()
->>> ds.get_xarray_dataset()["close"].to_pandas()
+>>> ds = CsvDailyDataset(csv_config)
+>>> panel = ds.panel("2024-01-02", "2024-01-08")
+>>> panel["close"].to_pandas()
 symbol       AAA   BBB
 timestamp             
 2024-01-02  10.0   NaN
@@ -353,7 +343,7 @@ timestamp
 2024-01-04  12.0  21.0
 2024-01-05  13.0  22.0
 2024-01-08  14.0  23.0
->>> inputs, symbols, timestamps = ds.to_kunquant(("close",))
+>>> inputs, symbols, timestamps = ds.to_kunquant(("close",), panel=panel)
 >>> inputs["close"].shape, symbols.tolist()
 ((5, 2), ['AAA', 'BBB'])
 ```
@@ -392,7 +382,7 @@ A panel without price columns subclasses `BaseDataset` directly, uses `BaseDatas
 ...
 >>> member_config = BaseDatasetConfig(zarr_file_path=str(root / "member.zarr"))
 >>> InIndexDataset(member_config).from_raw_data().save()
->>> InIndexDataset(member_config).read().get_xarray_dataset()["is_member"].to_pandas()
+>>> InIndexDataset(member_config).panel("2024-01-02", "2024-01-04")["is_member"].to_pandas()
 symbol       AAA   BBB
 timestamp             
 2024-01-02  True  False
@@ -402,28 +392,19 @@ timestamp
 
 ## Notes
 
-Cleaning belongs to `from_raw_data()`. `read()` only opens the store and narrows it, so a store written earlier is returned as it was saved.
+Cleaning belongs to `from_raw_data()`. `panel()` only opens the store, so a store written earlier is returned as it was saved.
 
 `save()` narrows the panel to the config window and replaces the whole store directory. Zarr may print a `ZarrUserWarning` about consolidated metadata on write; it is harmless.
 
-`read()` narrows the loaded panel in place and does nothing if the dataset already holds data. Changing `dataset.config` to a wider window and calling `read()` again keeps the narrow panel. Pass `overwrite=True` to reload the store from disk.
-
-```python
->>> ds = StockDataset(dataclasses.replace(config, end_date="2024-01-03")).read()
->>> ds.config = dataclasses.replace(config, end_date="2024-02-29")
->>> ds.read().get_xarray_dataset().sizes["timestamp"]
-2
->>> ds.read(overwrite=True).get_xarray_dataset().sizes["timestamp"]
-5
-```
+`get_xarray_dataset()`, `get_lazyframe()`, `symbols`, `num_symbols` and `time_interval` read the panel the build path holds. On a dataset that was never built they raise `AttributeError: Please call 'read' or 'to_internal' first.`; request a panel with `panel(start, end)` instead.
 
 Cleaning never fills or repairs a value. Chunked conversion cleans one window at a time, so a price jump that straddles a window boundary is not flagged.
 
-Reading a store that does not exist raises `FileNotFoundError: File .../missing.zarr does not exist.`
+Requesting a panel from a store that does not exist raises `FileNotFoundError: File .../missing.zarr does not exist.`
 
 `StockDataset` reads one vendor's directory only. The raw root must end in the vendor name and `DatasetConfig.vendor` must be set; otherwise the scan refuses, for example with `StockDataset: DatasetConfig.vendor is not set, so there is no way to check that ... holds exactly one vendor's data.` or `StockDataset: raw_data_dir_path '...' has basename 'tiingo' but the configured vendor is 'alpaca'.` An empty or missing raw tree raises `StockDataset: no raw data for vendor 'tiingo' at frequency '1d' under '...'.` `SpotKlineDataset` raises `No CSV file matching the configured date range was found under ...` when no monthly file falls in the range.
 
-A resampled dataset is a view of its source store. `from_raw_data()`, `from_raw_data_chunked()` and `update()` refuse with `SpotKlineDataset.from_raw_data(): a resampled dataset (resample_freq='1d') is a view of its source store and cannot be built from raw files. Build or update the source dataset, then resample it.` A `how` dict must name every variable: `SpotKlineDataset: resample_how does not name ['Open', 'Volume']; every variable of the panel needs a method (or pass one method as a str).` A target no coarser than the store's bars is refused: `SpotKlineDataset: resample_freq='1m' (60s) is not coarser than the panel's own bars (60s).` The saved resampled store is a cache like a factor store: rebuilding the source does not refresh it. Delete it, or `save()` again from a freshly resampled copy.
+A resampled dataset is a view of its source store. `from_raw_data()`, `from_raw_data_chunked()` and `update()` refuse with `SpotKlineDataset.from_raw_data(): a resampled dataset (resample_freq='1d') is a view of its source store and cannot be built from raw files. Build or update the source dataset, then resample it.` A `how` dict must name every variable, checked when a panel is requested: `SpotKlineDataset: resample_how does not name ['Open', 'Volume']; every variable of the panel needs a method (or pass one method as a str).` A target no coarser than the store's bars is refused: `SpotKlineDataset: resample_freq='1m' (60s) is not coarser than the panel's own bars (60s).` The saved resampled store is a cache like a factor store: rebuilding the source does not refresh it. Delete it, or `save()` again from a freshly resampled copy.
 
 Intraday datasets use `XnysSessionCalendar` (`quantlab.dataset._support.session_calendar`) to turn an Eastern-time window into each date's real exchange open and close, half days included, as naive UTC timestamps.
 

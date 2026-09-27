@@ -213,7 +213,7 @@ index_config = ConstituentDatasetConfig(
     as_of="2024-03-29",
 )
 DemoIndex(index_config).from_raw_data().save()
-membership = DemoIndex(index_config).read().get_xarray_dataset()
+membership = DemoIndex(index_config).panel("2024-01-01", "2024-03-29")
 
 mask = UniverseMask(prices, membership)
 masked = mask.apply()
@@ -239,8 +239,9 @@ timestamp
 Treat a non-empty report as a finding to resolve (download the missing
 names, or switch to a PERMNO-keyed pair), not as noise. In a pipeline with
 both panels saved, `UniverseMask.from_datasets(price_dataset,
-constituent_dataset)` reads both stores and, for a CRSP store, spells the
-report with period-correct tickers.
+constituent_dataset, start, end)` requests `start` to `end` from both stores
+with `panel(start, end)` and, for a CRSP store, spells the report with
+period-correct tickers.
 
 ## Symbols leaving the universe in a backtest
 

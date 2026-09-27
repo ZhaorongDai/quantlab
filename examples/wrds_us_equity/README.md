@@ -13,7 +13,7 @@ One self-contained script per universe and model, plus one factor analysis per u
 The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost) and `RealMLPRegressor` (pytabkit tuned-default MLP). Every model pipeline runs the same five steps:
 
 1. **Data**: read the converted CRSP store and its membership panel, then write two derived stores (`prices`, `members`).
-2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, saved as Zarr.
+2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, written to Zarr stores with `build(START, END)`.
 3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on member rows only.
 4. **Model**: trained once on the training window.
 5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500 and market) or QQQ (Nasdaq-100), logged to Weights & Biases.
@@ -75,11 +75,11 @@ Everything lives at the top of each script, in this order:
 | Where | What |
 | --- | --- |
 | `DATA_ROOT`, `STORES`, `RAW`, `REFERENCE`, `WORK` | the data root (`get_data_root()`: `QUANTLAB_DATA_DIR` or `data/` beside the repository) and the input and output locations under it |
-| `START`, `END` | data window; the factor warm-up is read before `START` |
+| `START`, `END` | data window; each factor reads its `warmup_bars` bars of warm-up before `START` |
 | `TRAIN_START` ... `TEST_END` | training and out-of-sample test windows (model pipelines) |
 | `HORIZON` | label horizon in bars |
 | `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
-| `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`window=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
+| `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`warmup_bars=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
 | `build_model()` | the `MLConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, or the pytabkit constructor arguments) |
 | `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, `top_n` (50 for the S&P 500, 10 for the Nasdaq-100, 100 for the market), `direction`, costs, and the ETF `benchmark_dataset` |
 | `analyze()` | `quantiles` and `factor_names` of `Factor.analyze()` (factor-analysis pipelines) |

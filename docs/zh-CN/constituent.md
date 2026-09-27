@@ -69,11 +69,11 @@ timestamp
 2020-01-08    1    0    1
 ```
 
-`save()` 把面板写到 `zarr_file_path`，`read()` 原样读回。
+`save()` 把面板写到 `zarr_file_path`，`panel(start, end)` 从 store 原样返回它。
 
 ```python
 >>> dataset.save()
->>> reread = DemoPanel(config).read().get_xarray_dataset()
+>>> reread = DemoPanel(config).panel("2020-01-01", "2020-01-08")
 >>> bool((reread["is_member"] == panel["is_member"]).all())
 True
 ```
@@ -186,7 +186,7 @@ array([10])
 
 ### 把面板应用到价格面板上
 
-`quantlab.dataset._support.masking` 中的 `UniverseMask` 把行情面板和成分面板取交集，并把行情面板中所有非成分的格子置为 NaN。它接收两个 `xarray.Dataset`；`UniverseMask.from_datasets(market_dataset, constituent_dataset)` 可以从两个已存储的数据集构建。
+`quantlab.dataset._support.masking` 中的 `UniverseMask` 把行情面板和成分面板取交集，并把行情面板中所有非成分的格子置为 NaN。它接收两个 `xarray.Dataset`；`UniverseMask.from_datasets(market_dataset, constituent_dataset, start, end)` 可以从两个已存储的数据集构建，两者都用 `panel(start, end)` 请求。
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr

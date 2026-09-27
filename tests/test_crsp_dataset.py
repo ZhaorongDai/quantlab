@@ -32,6 +32,8 @@ from datetime import date
 
 import pytest
 
+from conftest import compute_all
+
 #: A real PERMNO (Microsoft) used for every SYNTHETIC scenario, so the digits
 #: in these tests are not a PERMNO that means something else.
 SYNTHETIC_PERMNO = "10107"
@@ -750,7 +752,7 @@ def _factor_config(dataset_config, *, factor_names, data_columns, tmp_path, **kw
     from quantlab.dataset.crsp import CrspStockDataset
 
     return FactorConfig(
-        window=kwargs.pop("window", 10),
+        warmup_bars=kwargs.pop("warmup_bars", 10),
         dataset=CrspStockDataset(dataset_config),
         mode="batch",
         data_columns=tuple(data_columns),
@@ -885,7 +887,7 @@ def test_alpha158_computes_over_a_crsp_panel_with_no_consumer_change(
         )
     )
 
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
 
     assert dict(result.sizes) == {"timestamp": SERIES_DAYS, "symbol": 8}
     assert sorted(result.data_vars) == ["KMID", "ROC5", "STD5"]
@@ -922,12 +924,12 @@ def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_p
             factor_names=["ret_1"],
             data_columns=["adjOpen"],
             tmp_path=tmp_path,
-            window=0,
+            warmup_bars=0,
             kwargs={"n_forward_periods": 1},
         )
     )
 
-    labels = label.cal().get_labels().load()
+    labels = label.get_labels(compute_all(label)).load()
     series = labels["ret_1"].sel(symbol=SYNTHETIC_AXIS).to_numpy()
 
     assert len(series) == SERIES_DAYS
@@ -980,12 +982,12 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
             factor_names=["ret_1"],
             data_columns=["adjOpen"],
             tmp_path=tmp_path,
-            window=0,
+            warmup_bars=0,
             kwargs={"n_forward_periods": 1},
         )
     )
 
-    labels = label.cal().get_labels().load()
+    labels = label.get_labels(compute_all(label)).load()
     value = float(
         labels["ret_1"].sel(timestamp="2008-09-16", symbol=LEHMAN_AXIS).values
     )

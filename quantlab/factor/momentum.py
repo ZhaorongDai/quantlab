@@ -28,7 +28,7 @@ class Momentum(FactorPolars):
     the classic "recent winners keep winning" signal. The class overrides
     only ``_get_factor_lazyframe``, which returns a lazy frame with just
     ``timestamp``, ``symbol`` and the factor column, and lets the inherited
-    ``cal()`` collect it into an ``xarray.Dataset``. The horizon ``n`` is
+    ``compute()`` collect it into an ``xarray.Dataset``. The horizon ``n`` is
     read from ``config.kwargs["n"]`` (default 20) and the output column is
     named ``momentum_{n}``, so different config files give different signals
     from one class.
@@ -46,12 +46,12 @@ class Momentum(FactorPolars):
     Examples
     --------
     >>> factor = Momentum(PolarsFactorConfig(
-    ...     window=20, dataset=dataset, kwargs={"n": 20},
+    ...     warmup_bars=20, dataset=dataset, kwargs={"n": 20},
     ...     file_path="momentum.zarr",
     ... ))
     >>> factor.get_factor_names()
     ('momentum_20',)
-    >>> panel = factor.cal().get_features()
+    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: PolarsFactorConfig):

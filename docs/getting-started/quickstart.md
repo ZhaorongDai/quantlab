@@ -77,8 +77,6 @@ A dataset object is how the rest of the pipeline reaches that store. It is built
 config dataclass, `DatasetConfig`, that says where the store lives and what it holds:
 
 ```python
-import dataclasses
-
 from quantlab.dataset.stock import StockDataset
 
 dataset_config = DatasetConfig(
@@ -88,8 +86,8 @@ dataset_config = DatasetConfig(
     frequency="1d",
     vendor="tiingo",
 )
-prices = StockDataset(dataclasses.replace(dataset_config)).read()
-panel = prices.get_xarray_dataset()
+prices = StockDataset(dataset_config)
+panel = prices.panel("2000-01-01", "2100-01-01")
 print("Price panel:", dict(panel.sizes), "variables:", list(panel.data_vars))
 ```
 
@@ -98,9 +96,10 @@ Price panel: {'timestamp': 400, 'symbol': 16} variables: ['adjClose', 'adjHigh',
 ```
 
 `raw_data_dir_path` points at a directory that does not exist: it is only used when
-converting raw downloads, and the Zarr store already exists. `dataclasses.replace` hands the dataset a copy of the config. That matters because
-objects in quantlab take ownership of their config and adjust it in place; the next step
-relies on each factor having its own dataset.
+converting raw downloads, and the Zarr store already exists. `panel(start, end)` returns the
+stored bars from `start` to `end`, both inclusive, opened lazily; the range here covers the
+whole store. The dataset holds nothing afterwards and its config is not changed, so one
+dataset object can answer any number of requests.
 
 ## Step 2: define factors and a label
 
@@ -118,13 +117,15 @@ bars earns. Both are computed by KunQuant, a library that compiles a declarative
 operators to native code.
 
 ```python
+import dataclasses
+
 from quantlab.base.config import FactorConfig
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
 
 factor = Alpha158Stock(
     FactorConfig(
-        window=90,
+        warmup_bars=60,
         dataset=StockDataset(dataclasses.replace(dataset_config)),
         mode="batch",
         data_columns=ADJUSTED,
@@ -134,7 +135,7 @@ factor = Alpha158Stock(
 )
 label = Return(
     FactorConfig(
-        window=0,
+        warmup_bars=0,
         dataset=StockDataset(dataclasses.replace(dataset_config)),
         mode="batch",
         data_columns=("adjOpen",),
@@ -145,11 +146,13 @@ label = Return(
 )
 ```
 
-`window` is a warm-up period in calendar days. A rolling feature such as a 60-bar moving
-average has no value until 60 bars of history exist, so the factor reads `window` days before
-its start date and trims them off afterwards. `mode="batch"` compiles the graph for a whole
-history at once; `"stream"` would compile it for bar-by-bar updates. `file_path` is where
-`save()` would write the factor values; this example computes them in memory and never saves.
+`warmup_bars` is a warm-up period in bars. A rolling feature such as a 60-bar moving
+average has no value until 60 bars of history exist, so asked for a date range with
+`compute(start, end)`, the factor reads `warmup_bars` bars before `start`, counted on the
+dataset's own calendar, and trims them off afterwards. The config holds no dates: the range
+is always an argument. `mode="batch"` compiles the graph for a whole date range at once;
+`"stream"` would compile it for bar-by-bar updates. `file_path` is where `build(start, end)`
+would write the factor values; this example computes them in memory and never builds a store.
 
 ## Step 3: train a model
 
@@ -191,8 +194,9 @@ print(f"{len(features)} features, e.g. {features[:4]}; labels: {model.get_label_
 169 features, e.g. ['KMID', 'KLEN', 'KMID2', 'KUP']; labels: ['ret_5']
 ```
 
-`factor_data_strategy="cal"` tells the model to compute the factors now; `"read"` would load
-them from the Zarr stores a previous `save()` wrote. `collect()` gathers every factor and
+`factor_data_strategy="cal"` tells the model to compute the factors over its
+`start_date`..`end_date` now; `"read"` would read that range from the Zarr stores a previous
+`build()` wrote. `collect()` gathers every factor and
 label into one panel, and `train()` fits the model and returns the path of the checkpoint it
 wrote:
 
@@ -206,7 +210,7 @@ print("Checkpoint:", checkpoint.relative_to(root))
 
 ```text
 Collected panel: {'timestamp': 300, 'symbol': 16} 170 variables
-Checkpoint: models/XGBoostRegressor_trial_20260925_174617_906613/XGBoostRegressor_total/XGBoostRegressor_total.joblib
+Checkpoint: models/XGBoostRegressor_trial_20260926_233448_225247/XGBoostRegressor_total/XGBoostRegressor_total.joblib
 ```
 
 Each call to `train()` creates a new timestamped trial directory, so earlier checkpoints are
@@ -247,7 +251,8 @@ result = backtester.run()
 
 With `model_mode="load"` the backtester builds the model from its config and restores the
 trained booster from `checkpoint`; `model_mode="train"` would train it first. It then
-recomputes the factors over the backtest window plus enough earlier bars to warm them up,
+computes the factors over the backtest window, each reading its own `warmup_bars` earlier
+bars to warm up,
 predicts, turns the predictions into target weights and simulates them. Fees and slippage
 default to 5 basis points each, and the portfolio starts with 1,000,000 in cash.
 
@@ -296,9 +301,9 @@ print("Out-of-sample ranges:", result.metrics["out_of_sample_ranges"])
 ```
 
 ```text
-  Total Return [%]   7.843
-  Sharpe Ratio       0.956
-  Max Drawdown [%]   10.509
+  Total Return [%]   1.402
+  Sharpe Ratio       0.234
+  Max Drawdown [%]   12.274
 Metric groups: ['in_sample', 'in_sample_range', 'notes', 'out_of_sample', 'out_of_sample_ranges', 'training_window', 'whole']
 In-sample range: None
 Out-of-sample ranges: [('2023-01-02', '2023-07-14')]

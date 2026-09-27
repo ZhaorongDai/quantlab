@@ -10,6 +10,7 @@ TiingoAcquisition -> StockDataset -> Zarr round trip end-to-end (Task 2).
 from pathlib import Path
 from typing import Callable
 
+from conftest import WHOLE_STORE
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
@@ -118,7 +119,7 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     tmp_path: Path,
 ) -> None:
     """Test 3: TiingoAcquisition.download() (mocked network) ->
-    StockDataset.from_raw_data().save() -> StockDataset(...).read() round
+    StockDataset.from_raw_data().save() -> StockDataset(...).panel() round
     trips a [timestamp, symbol] xr.Dataset through a real (tmp-path) Zarr
     store, proving DATA-01 end-to-end. Only the outermost HTTP call is
     mocked -- every other layer (TiingoAcquisition's raw-parquet write,
@@ -144,8 +145,7 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
     ds_config = _make_dataset_config(raw_data_dir_path, zarr_file_path)
     StockDataset(ds_config).from_raw_data().save()
 
-    read_back = StockDataset(ds_config).read()
-    xr_data = read_back.get_xarray_dataset()
+    xr_data = StockDataset(ds_config).panel(*WHOLE_STORE)
 
     assert set(["timestamp", "symbol"]).issubset(set(xr_data.dims))
     assert "adjClose" in xr_data.data_vars
@@ -177,8 +177,7 @@ def test_tiingo_acquisition_to_stock_dataset_zarr_round_trip(
         batch_key="msftbatch",
     )
     multi_symbol_dataset.from_raw_data().save()
-    read_back_multi = StockDataset(other_config).read()
-    xr_multi = read_back_multi.get_xarray_dataset()
+    xr_multi = StockDataset(other_config).panel(*WHOLE_STORE)
 
     import numpy as np
 

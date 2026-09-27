@@ -518,9 +518,9 @@ class ResidualMomentumFF3(FactorKunQuant):
     With the defaults on daily bars, the signal at bar ``d`` fits the
     regression on bars ``d-755`` to ``d`` and sums residuals over bars
     ``d-251`` to ``d-21``. It uses data up to bar ``d`` only, so it can be
-    traded from bar ``d+1``. ``config.window`` is the warm-up in calendar
-    days read before ``start_date``, like every KunQuant factor: 1200
-    covers 756 daily bars.
+    traded from bar ``d+1``. ``config.warmup_bars`` is the warm-up in bars
+    that ``compute`` reads before ``start``, like every factor: 756 covers
+    the regression window.
 
     Outputs are ``resmom_raw`` (the score) and ``resmom_rank`` (its
     cross-sectional rank in ``[0, 1]`` per bar), plus the diagnostics
@@ -547,10 +547,8 @@ class ResidualMomentumFF3(FactorKunQuant):
     ``ff3_daily.csv`` the file ``scripts/fama_french.py`` writes.
 
     >>> config = FactorConfig(
-    ...     window=1200,
+    ...     warmup_bars=756,
     ...     dataset=dataset,
-    ...     start_date="2012-01-01",
-    ...     end_date="2024-12-31",
     ...     mode="batch",
     ...     data_columns=("ret",),
     ...     factor_names=("resmom_raw", "resmom_rank"),
@@ -727,16 +725,14 @@ class ResidualMomentumFF3(FactorKunQuant):
 
         The panel columns come from the dataset; with ``fama_french_csv``
         set, the four factor series are added from the CSV, aligned to the
-        panel's bars. ``cal()`` and ``compute()`` both run the graph on
-        these arrays.
+        panel's bars. ``compute()`` runs the graph on these arrays.
 
         Examples
         --------
         On a 60-bar panel of 7 symbols, the last row of ``resmom_rank``
         is the cross-sectional rank of each symbol in ``[0, 1]``.
 
-        >>> factor.cal()  # doctest: +SKIP
-        >>> out = factor.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        >>> out = factor.compute("2024-01-02", "2024-03-27")  # doctest: +SKIP
         >>> list(out.data_vars), dict(out.sizes)  # doctest: +SKIP
         (['resmom_raw', 'resmom_rank'], {'timestamp': 60, 'symbol': 7})
         >>> out["resmom_rank"].isel(timestamp=-1).round(3).values  # doctest: +SKIP

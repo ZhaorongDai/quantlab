@@ -8,6 +8,8 @@ import pytest
 import xarray as xr
 from KunQuant.Op import Input
 
+from conftest import features_of_all
+
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.literature_alpha import (
@@ -105,10 +107,8 @@ def _config(dataset: StockDataset, tmp_path: Path, **overrides) -> FactorConfig:
         amihud_window=21,
     )
     values = {
-        "window": 0,
+        "warmup_bars": 0,
         "dataset": dataset,
-        "start_date": dataset.config.start_date,
-        "end_date": dataset.config.end_date,
         "mode": "batch",
         "data_columns": params.required_panel_columns(CORE_NAMES),
         "factor_names": CORE_NAMES,
@@ -140,7 +140,7 @@ def test_default_names_cover_eight_raw_and_rank_pairs(tmp_path: Path) -> None:
     )
     factor = LiteratureAlpha(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=dataset,
             mode="batch",
             data_columns=params.required_panel_columns(CORE_NAMES),
@@ -168,7 +168,7 @@ def test_selected_output_prunes_inputs_and_accepts_column_alias(
     dataset = _dataset(tmp_path, panel)
     factor = LiteratureAlpha(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=dataset,
             mode="batch",
             data_columns=("split_price",),
@@ -197,7 +197,7 @@ def test_unknown_output_kwargs_and_wrong_columns_fail_early(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="unknown config.kwargs"):
         LiteratureAlpha(
             FactorConfig(
-                window=0,
+                warmup_bars=0,
                 dataset=dataset,
                 mode="batch",
                 data_columns=("adjClose",),
@@ -208,7 +208,7 @@ def test_unknown_output_kwargs_and_wrong_columns_fail_early(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="unknown factor_names"):
         LiteratureAlpha(
             FactorConfig(
-                window=0,
+                warmup_bars=0,
                 dataset=dataset,
                 mode="batch",
                 data_columns=(),
@@ -218,7 +218,7 @@ def test_unknown_output_kwargs_and_wrong_columns_fail_early(tmp_path: Path) -> N
     with pytest.raises(ValueError, match="data_columns must exactly match"):
         LiteratureAlpha(
             FactorConfig(
-                window=0,
+                warmup_bars=0,
                 dataset=dataset,
                 mode="batch",
                 data_columns=("ret",),
@@ -232,7 +232,7 @@ def test_all_eight_factors_match_direct_formulas(tmp_path: Path) -> None:
 
     panel, factors, risk_free = _synthetic_panel()
     dataset = _dataset(tmp_path, panel)
-    output = LiteratureAlpha(_config(dataset, tmp_path)).cal().get_features()
+    output = features_of_all(LiteratureAlpha(_config(dataset, tmp_path)))
 
     assert tuple(output.data_vars) == CORE_NAMES
     assert dict(output.sizes) == {"timestamp": 90, "symbol": 8}
@@ -313,9 +313,9 @@ def test_fama_french_csv_reproduces_panel_ivol(tmp_path: Path) -> None:
         "low_idiosyncratic_volatility_raw",
         "low_idiosyncratic_volatility_rank",
     )
-    panel_factor = LiteratureAlpha(
+    panel_factor = features_of_all(LiteratureAlpha(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=full,
             mode="batch",
             data_columns=("ret", "risk_free", "mkt_rf", "smb", "hml"),
@@ -323,10 +323,10 @@ def test_fama_french_csv_reproduces_panel_ivol(tmp_path: Path) -> None:
             kwargs={"idio_vol_window": 21},
             njobs=2,
         )
-    ).cal().get_features()
-    csv_factor = LiteratureAlpha(
+    ))
+    csv_factor = features_of_all(LiteratureAlpha(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=ret_only,
             mode="batch",
             data_columns=("ret",),
@@ -334,7 +334,7 @@ def test_fama_french_csv_reproduces_panel_ivol(tmp_path: Path) -> None:
             kwargs={"idio_vol_window": 21, "fama_french_csv": str(csv)},
             njobs=2,
         )
-    ).cal().get_features()
+    ))
 
     for name in names:
         np.testing.assert_allclose(
@@ -360,7 +360,7 @@ def test_csv_mode_refuses_stream(tmp_path: Path) -> None:
     ).to_csv(csv)
     factor = LiteratureAlpha(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=dataset,
             mode="stream",
             data_columns=("ret",),

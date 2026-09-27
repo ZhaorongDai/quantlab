@@ -102,9 +102,9 @@ class MomentumHead(MLModel):
 
 def make_model(root, cfg, days, train_end=39):
     day = lambda i: str(days[i].date())
-    factor = PastReturn(PolarsFactorConfig(window=5, dataset=prices_of(cfg)))
+    factor = PastReturn(PolarsFactorConfig(warmup_bars=5, dataset=prices_of(cfg)))
     label = ForwardReturn(PolarsFactorConfig(
-        window=0, dataset=prices_of(cfg), kwargs={"n_forward_periods": 1}))
+        warmup_bars=0, dataset=prices_of(cfg), kwargs={"n_forward_periods": 1}))
     return MomentumHead(MLConfig(
         factors=[factor], labels=[label], model_save_dir=str(root / "models"),
         factor_data_strategy="cal", label_data_strategy="cal", val_size=0.0,

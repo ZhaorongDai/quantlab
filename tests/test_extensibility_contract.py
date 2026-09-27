@@ -25,6 +25,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from conftest import WHOLE_STORE
 from quantlab.base.config import DatasetConfig
 from quantlab.base.data import MarketDataset
 
@@ -194,8 +195,7 @@ def test_fake_dataset_lifecycle(tmp_path: Path) -> None:
 
     original.save()
 
-    reloaded = FakeDataset(config).read()
-    reloaded_data = reloaded.get_xarray_dataset()
+    reloaded_data = FakeDataset(config).panel(*WHOLE_STORE)
 
     # clean_market_data() (run inside from_raw_data()) may add an
     # `anomaly_flag` variable -- assert the original `close` values survive

@@ -473,19 +473,23 @@ class FactorAnalyzer:
         self,
         factor,
         frets: Sequence,
+        features: xr.Dataset,
+        labels: Sequence[xr.Dataset],
         factor_names: Sequence[str] | None = None,
         output_dir: str | Path | None = None,
     ) -> FactorAnalysis:
-        """Analyze ``factor`` against every fret; see ``Factor.analyze``.
+        """Analyze ``features`` against every fret's labels; see ``Factor.analyze``.
 
         Parameters
         ----------
         factor : Factor
-            A factor whose panel is computed or read; ``get_features()`` is
-            analyzed.
+            The analyzed factor; its names, class and config are recorded.
         frets : sequence of Factor
-            Forward-return labels whose panels are computed or read;
-            ``get_labels()`` of each is used.
+            Forward-return labels, in the order of ``labels``.
+        features : xr.Dataset
+            ``factor.get_features(panel)`` of a requested panel.
+        labels : sequence of xr.Dataset
+            ``fret.get_labels(panel)`` of each fret's requested panel.
         factor_names : sequence of str, optional
             Factor variables to analyze; all of ``get_factor_names()`` when
             None.
@@ -507,13 +511,21 @@ class FactorAnalyzer:
 
         Examples
         --------
-        >>> analysis = FactorAnalyzer(quantiles=4).run(factor, [fwd])
+        >>> window = ("2024-02-01", "2024-02-29")
+        >>> analysis = FactorAnalyzer(quantiles=4).run(
+        ...     factor, [fwd],
+        ...     features=factor.get_features(factor.compute(*window)),
+        ...     labels=[fwd.get_labels(fwd.compute(*window))],
+        ... )
         >>> list(analysis.pairs)
         ['momentum_5__ret_1']
         """
         if not frets:
             raise ValueError("analyze needs at least one forward-return label in `frets`")
-        features = factor.get_features()
+        if len(labels) != len(frets):
+            raise ValueError(
+                f"run() got {len(frets)} fret(s) but {len(labels)} label panel(s)"
+            )
         available = list(features.data_vars)
         names = list(factor.get_factor_names() if factor_names is None else factor_names)
         unknown = [name for name in names if name not in available]
@@ -524,13 +536,12 @@ class FactorAnalyzer:
             )
 
         pairs: dict[str, PairAnalysis] = {}
-        for fret in frets:
-            labels = fret.get_labels()
+        for fret, fret_labels in zip(frets, labels):
             self.check_frequency(
-                features, labels, factor.class_name, type(fret).__name__
+                features, fret_labels, factor.class_name, type(fret).__name__
             )
             aligned_features, aligned_labels = xr.align(
-                features[names], labels, join="inner"
+                features[names], fret_labels, join="inner"
             )
             if aligned_features.sizes.get("timestamp", 0) == 0 or aligned_features.sizes.get(
                 "symbol", 0

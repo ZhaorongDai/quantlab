@@ -93,7 +93,7 @@ A `TimeChunkPlanner` splits the timestamps that actually occur in the raw data i
 The store equals the one a single whole-range `from_raw_data()` would produce.
 
 ```python
->>> panel = StockDataset(config).read().get_xarray_dataset()
+>>> panel = StockDataset(config).panel(config.start_date, config.end_date)
 >>> whole = StockDataset(dataclasses.replace(config, zarr_file_path=str(root / "data/whole.zarr")))
 >>> bool(whole.from_raw_data().get_xarray_dataset().equals(panel.load()))
 True
@@ -139,12 +139,12 @@ If a run stops in the middle, the windows already appended stay in the store and
 ...     print(exc)
 ...
 connection lost
->>> StockDataset(resume).read().get_xarray_dataset().sizes["timestamp"]
+>>> StockDataset(resume).panel(resume.start_date, resume.end_date).sizes["timestamp"]
 130
 >>> result = StockDataset(resume).from_raw_data_chunked(granularity="quarter").last_chunk_result
 >>> result.windows_planned, result.windows_written, result.windows_skipped, result.resumed
 (4, 2, 2, True)
->>> StockDataset(resume).read().get_xarray_dataset().sizes["timestamp"]
+>>> StockDataset(resume).panel(resume.start_date, resume.end_date).sizes["timestamp"]
 260
 ```
 
@@ -202,7 +202,7 @@ ChunkLedger: refusing to resume <root>/data/us_all.zarr -- the pinned symbol axi
 >>> result = StockDataset(config).from_raw_data_chunked(granularity="quarter", on_new_listing="widen").last_chunk_result
 >>> result.windows_planned, result.windows_written, result.windows_skipped
 (5, 1, 4)
->>> panel = StockDataset(config).read().get_xarray_dataset()
+>>> panel = StockDataset(config).panel(config.start_date, config.end_date)
 >>> panel["close"].notnull().sum("timestamp").to_pandas()
 symbol
 AAA    324
@@ -218,7 +218,7 @@ A widen does not read the raw data again for old windows. If the vendor already 
 >>> result = StockDataset(config).update(granularity="quarter").last_chunk_result
 >>> result.windows_planned, result.windows_written, result.windows_skipped
 (5, 5, 0)
->>> panel = StockDataset(config).read().get_xarray_dataset()
+>>> panel = StockDataset(config).panel(config.start_date, config.end_date)
 >>> panel["close"].notnull().sum("timestamp").to_pandas()
 symbol
 AAA    324
@@ -264,7 +264,7 @@ A rebuild replaces the whole store. The original store and ledger are moved asid
 ...     def _convert(self):
 ...         return StockDataset(self.config).from_raw_data_chunked(granularity="quarter")
 ...     def _panel(self):
-...         return StockDataset(self.config).read().get_xarray_dataset()
+...         return StockDataset(self.config).panel(self.config.start_date, self.config.end_date)
 ...     def _measure(self):
 ...         return {"timestamps": int(self._panel().sizes["timestamp"])}
 ...     def _measure_dims(self):
@@ -350,7 +350,7 @@ class WindowedCsvDataset(BaseDataset):
 >>> result = ds.last_chunk_result
 >>> result.windows_planned, result.windows_written, result.rows_written, result.pinned_symbols
 (6, 6, 130, 2)
->>> panel = WindowedCsvDataset(csv_config).read().get_xarray_dataset()
+>>> panel = WindowedCsvDataset(csv_config).panel(csv_config.start_date, csv_config.end_date)
 >>> panel["close"].sel(timestamp=slice("2023-03-30", "2023-04-04")).to_pandas()
 symbol       AAA   BBB
 timestamp             

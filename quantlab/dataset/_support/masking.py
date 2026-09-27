@@ -25,6 +25,8 @@ from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 if TYPE_CHECKING:  # type hints only, so no import cycle at runtime
+    import datetime
+
     from quantlab.base.constituent import IndexConstituentDataset
     from quantlab.base.data import MarketDataset
 
@@ -74,7 +76,9 @@ class UniverseMask:
 
     Examples
     --------
-    >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
+    >>> mask = UniverseMask.from_datasets(
+    ...     market_dataset, constituent_dataset, "2024-01-01", "2024-01-06"
+    ... )
     >>> mask.report()["missing_count"]
     1
     >>> panel = mask.apply()  # non-member cells are NaN
@@ -114,8 +118,10 @@ class UniverseMask:
         cls,
         market_dataset: "MarketDataset",
         constituent_dataset: "IndexConstituentDataset",
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
     ) -> "UniverseMask":
-        """Build a mask from two persisted datasets, reading each from its store.
+        """Build a mask from two persisted datasets over ``start`` to ``end``.
 
         This is the only constructor that knows where the market store
         lives, so it attaches the ticker *sidecar* (a small file stored next
@@ -129,6 +135,9 @@ class UniverseMask:
             The market-data dataset to mask.
         constituent_dataset : IndexConstituentDataset
             The dataset providing ``is_member``.
+        start, end : str, datetime.date or pd.Timestamp
+            The range requested from both stores with ``panel(start, end)``,
+            both inclusive.
 
         Returns
         -------
@@ -137,15 +146,17 @@ class UniverseMask:
 
         Examples
         --------
-        >>> mask = UniverseMask.from_datasets(market_dataset, constituent_dataset)
+        >>> mask = UniverseMask.from_datasets(
+        ...     market_dataset, constituent_dataset, "2024-01-01", "2024-01-06"
+        ... )
         >>> mask
         UniverseMask(timestamps=4, symbols=2)
         >>> mask.missing_members
         ['DDD']
         """
         return cls(
-            market_dataset.read().get_xarray_dataset(),
-            constituent_dataset.read().get_xarray_dataset(),
+            market_dataset.panel(start, end),
+            constituent_dataset.panel(start, end),
             ticker_lookup=CrspTickerLookup.beside_store(
                 market_dataset.config.zarr_file_path
             ),

@@ -169,7 +169,7 @@ def test_label_horizon_is_the_max_n_forward_periods_across_labels(tmp_path):
     labels.append(
         ForwardReturnLabel(
             PolarsFactorConfig(
-                window=0,
+                warmup_bars=0,
                 dataset=labels[0].config.dataset,
                 kwargs={"n_forward_periods": 3},
             )

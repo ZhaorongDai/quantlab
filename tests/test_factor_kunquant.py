@@ -8,7 +8,7 @@ KunQuant 0.1.11 declares the contract as
 `CompositiveOp.decompose(self, options: dict)` (`KunQuant/Op.py:292`) and
 invokes it positionally (`KunQuant/passes/Decompose.py:15`). Because both
 `Alpha101SpotKline` and `Alpha158SpotKline` wrap every `Output(...)` in
-`WindowedZScore(...)`, every batch `.cal()` in the repository was dead. These
+`WindowedZScore(...)`, every batch computation in the repository was dead. These
 tests are the regression lock on that fix.
 
 Cost control: each test passes an explicit 1-3 element `factor_names` list so
@@ -23,6 +23,8 @@ from typing import Callable
 import numpy as np
 import xarray as xr
 from KunQuant.Op import Input
+
+from conftest import compute_all
 
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.base.data import MarketDataset
@@ -40,7 +42,7 @@ def _factor_config(
     factor_names: list[str],
     data_columns: list[str],
     tmp_path: Path,
-    window: int = 10,
+    warmup_bars: int = 10,
     dataset_cls: type[MarketDataset] = SpotKlineDataset,
 ) -> FactorConfig:
     """Build a `FactorConfig` over the given synthetic Zarr store.
@@ -56,7 +58,7 @@ def _factor_config(
     duplicating this helper.
     """
     return FactorConfig(
-        window=window,
+        warmup_bars=warmup_bars,
         dataset=dataset_cls(dataset_config),
         mode="batch",
         data_columns=data_columns,
@@ -66,7 +68,7 @@ def _factor_config(
     )
 
 
-def test_alpha158_spot_batch_cal_returns_xarray_dataset(
+def test_alpha158_spot_batch_compute_returns_xarray_dataset(
     spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
     """FACTOR-01 / ROADMAP Phase 3 Success Criterion 1: computing the Alpha158
@@ -83,7 +85,7 @@ def test_alpha158_spot_batch_cal_returns_xarray_dataset(
         )
     )
 
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
 
     assert isinstance(result, xr.Dataset)
     assert dict(result.sizes) == {"timestamp": 60, "symbol": 8}
@@ -91,7 +93,7 @@ def test_alpha158_spot_batch_cal_returns_xarray_dataset(
     assert np.isfinite(result["KMID"].to_numpy()).sum() > 0
 
 
-def test_alpha101_spot_batch_cal_returns_xarray_dataset(
+def test_alpha101_spot_batch_compute_returns_xarray_dataset(
     spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
     """FACTOR-01: the same batch path works for the Alpha101 family, proving
@@ -108,7 +110,7 @@ def test_alpha101_spot_batch_cal_returns_xarray_dataset(
         )
     )
 
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
 
     assert isinstance(result, xr.Dataset)
     assert "alpha001" in result.data_vars
@@ -141,7 +143,7 @@ _STOCK_SYMBOLS = [
 ]
 
 
-def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
+def test_alpha101_stock_bugfix_batch_compute_returns_xarray_dataset(
     stock_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
     """D-02 regression lock: before 03-03 this exact construction raised
@@ -167,7 +169,7 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
         )
     )
 
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
 
     assert isinstance(result, xr.Dataset)
     assert "alpha001" in result.data_vars
@@ -176,7 +178,7 @@ def test_alpha101_stock_bugfix_batch_cal_returns_xarray_dataset(
     assert np.isfinite(result["alpha041"].to_numpy()).sum() > 0
 
 
-def test_alpha158_stock_batch_cal_returns_xarray_dataset(
+def test_alpha158_stock_batch_compute_returns_xarray_dataset(
     stock_zarr: Callable[..., DatasetConfig], tmp_path: Path
 ) -> None:
     """D-01 / FACTOR-01 across both markets: the Alpha158 factor set computes
@@ -218,7 +220,7 @@ def test_alpha158_stock_batch_cal_returns_xarray_dataset(
         )
     )
 
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
 
     assert isinstance(result, xr.Dataset)
     assert dict(result.sizes) == {"timestamp": 60, "symbol": 8}
@@ -332,7 +334,7 @@ def test_normalization_matrix_matches_recorded_strategy_types() -> None:
 # -- SIMD padding of the symbol axis (macOS only) --------------------------------
 
 
-def test_batch_cal_pads_the_symbol_axis_on_macos(
+def test_batch_compute_pads_the_symbol_axis_on_macos(
     spot_kline_zarr: Callable[..., DatasetConfig], tmp_path: Path, monkeypatch
 ) -> None:
     """On macOS a symbol count that is not a SIMD block multiple still runs:
@@ -361,7 +363,7 @@ def test_batch_cal_pads_the_symbol_axis_on_macos(
             tmp_path=tmp_path,
         )
     )
-    result = factor.cal().get_features()
+    result = factor.get_features(compute_all(factor))
     assert dict(result.sizes) == {"timestamp": 40, "symbol": 5}
     assert list(result["symbol"].values) == [f"S{i}USDT" for i in range(5)]
     assert np.isfinite(result["KMID"].to_numpy()).sum() > 0

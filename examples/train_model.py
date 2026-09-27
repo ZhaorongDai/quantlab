@@ -141,11 +141,11 @@ class ReversalFeatures(FactorKunQuant):
 
 def build_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoostRegressor:
     """Build the features, the label and the model from plain config objects."""
-    # Every factor and label gets its own dataset object, because each one
-    # moves its dataset's start date back by `window` days for warm-up.
+    # `warmup_bars` is how many bars before the requested start the factor
+    # reads, so its rolling operators are warm on the first requested bar.
     features = ReversalFeatures(
         FactorConfig(
-            window=10,  # calendar days of warm-up history for the 5-day mean
+            warmup_bars=5,  # bars of history the 5-bar mean needs
             dataset=StockDataset(DatasetConfig(**vars(dataset_config))),
             mode="batch",
             data_columns=("adjClose",),
@@ -155,7 +155,7 @@ def build_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoo
     )
     label = Return(
         FactorConfig(
-            window=0,
+            warmup_bars=0,
             dataset=StockDataset(DatasetConfig(**vars(dataset_config))),
             mode="batch",
             data_columns=("adjOpen",),

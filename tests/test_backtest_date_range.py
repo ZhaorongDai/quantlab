@@ -93,7 +93,7 @@ def test_a_backtest_changes_no_config(tmp_path):
         tmp_path / "benchmark", symbols=["QQQ"], n_bars=N_BARS, seed=7
     )
     bars = _bars(dataset_config)
-    model = make_model(tmp_path, dataset_config, n=5, window=5, **_dates(bars))
+    model = make_model(tmp_path, dataset_config, n=5, warmup_bars=5, **_dates(bars))
     prices = make_stock_dataset(dataset_config)
     benchmark = make_stock_dataset(benchmark_config)
     watched = [
@@ -115,12 +115,12 @@ def test_the_price_dataset_may_be_a_factors_dataset(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
 
-    separate_model = make_model(tmp_path / "a", dataset_config, n=5, window=5, **_dates(bars))
+    separate_model = make_model(tmp_path / "a", dataset_config, n=5, warmup_bars=5, **_dates(bars))
     separate = _backtester(
         tmp_path / "a", make_stock_dataset(dataset_config), separate_model, bars
     ).run()
 
-    shared_model = make_model(tmp_path / "b", dataset_config, n=5, window=5, **_dates(bars))
+    shared_model = make_model(tmp_path / "b", dataset_config, n=5, warmup_bars=5, **_dates(bars))
     shared_dataset = shared_model.config.factors[0].config.dataset
     shared = _backtester(tmp_path / "b", shared_dataset, shared_model, bars).run()
 
@@ -135,9 +135,9 @@ def test_the_price_dataset_may_be_a_factors_dataset(tmp_path):
 def test_the_first_backtest_bar_matches_a_standalone_compute(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
-    model = make_model(tmp_path / "train", dataset_config, n=5, window=5, **_dates(bars))
+    model = make_model(tmp_path / "train", dataset_config, n=5, warmup_bars=5, **_dates(bars))
     checkpoint = train_checkpoint(model)
-    model = make_model(tmp_path / "backtest", dataset_config, n=5, window=5, **_dates(bars))
+    model = make_model(tmp_path / "backtest", dataset_config, n=5, warmup_bars=5, **_dates(bars))
 
     start, end = _day(bars[30]), _day(bars[50])
     result = _backtester(

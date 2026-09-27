@@ -1548,6 +1548,28 @@ SYMBOL_COORD_ENCODINGS = ("fixed_width", "variable_length", "int64")
 SYMBOL_COORD_STRING_ENCODINGS = ("fixed_width", "variable_length")
 
 
+#: A range wider than every synthetic store, for computing a factor over all of it.
+WHOLE_STORE = ("1900-01-01", "2100-12-31")
+
+
+def compute_all(factor) -> xr.Dataset:
+    """``factor.compute`` over every bar of its dataset's store.
+
+    Nothing precedes the store's first bar, so ``compute`` warns that the
+    warm-up is short; here that is expected and the warning is silenced.
+    """
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*warm-up bar\(s\) are needed", category=UserWarning)
+        return factor.compute(*WHOLE_STORE)
+
+
+def features_of_all(factor) -> xr.Dataset:
+    """``factor.get_features`` of ``compute_all(factor)``."""
+    return factor.get_features(compute_all(factor))
+
+
 def symbol_coord(symbols: Sequence[str], encoding: str) -> np.ndarray:
     """Build a `symbol` coordinate that survives a zarr round trip AS
     `encoding`.

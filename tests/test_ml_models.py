@@ -498,7 +498,7 @@ def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, rec
     dataset_config = spot_kline_zarr(periods=N_TIMES, seed=0)
     factor = Alpha158SpotKline(
         FactorConfig(
-            window=10,
+            warmup_bars=10,
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
             data_columns=["open", "close", "volume"],

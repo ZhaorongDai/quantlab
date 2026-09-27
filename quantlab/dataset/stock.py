@@ -70,7 +70,7 @@ class StockDataset(MarketDataset):
     ...     end_date="2024-12-31",
     ... )
     >>> StockDataset(config).from_raw_data_chunked(granularity="quarter")
-    >>> panel = StockDataset(config).read().get_xarray_dataset()
+    >>> panel = StockDataset(config).panel("2024-01-01", "2024-12-31")
     """
 
     #: Hive key dtypes per frequency, with the same keys as ``RAW_HIVE_KEYS``.

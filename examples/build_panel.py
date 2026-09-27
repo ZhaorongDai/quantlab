@@ -149,13 +149,13 @@ def main() -> None:
     print("   anomaly_flag cells:", flagged[flagged.any(axis=1)].stack().loc[lambda s: s].index.tolist())
 
     # ------------------------------------------------------------------
-    # 3. Read it back, narrowed to a date range and a symbol subset.
+    # 3. Request a date range and a symbol subset from the store.
     # ------------------------------------------------------------------
-    narrow = StockDataset(
-        stock_config(start_date="2024-01-29", end_date="2024-02-02", symbols=("AAA", "DDD"))
-    ).read()
-    print("\n3. narrowed panel:", dict(narrow.get_xarray_dataset().sizes))
-    print(narrow.get_xarray_dataset()["close"].to_pandas().round(2))
+    narrow = StockDataset(stock_config()).panel(
+        "2024-01-29", "2024-02-02", symbols=["AAA", "DDD"]
+    )
+    print("\n3. requested panel:", dict(narrow.sizes))
+    print(narrow["close"].to_pandas().round(2))
 
     # ------------------------------------------------------------------
     # 4. Storage backends and the get_xarray_dataset(indexes) contract.
@@ -212,7 +212,7 @@ def main() -> None:
     result = updated.last_chunk_result
     print("   update after March: written", result.windows_written,
           "skipped", result.windows_skipped)
-    store_panel = StockDataset(chunked_config).read().get_xarray_dataset()
+    store_panel = StockDataset(chunked_config).panel("2024-01-01", "2024-03-29")
     print("   store now:", dict(store_panel.sizes), "symbols", store_panel["symbol"].values.tolist())
     print("   EEE closes observed before March:",
           int(store_panel["close"].sel(symbol="EEE", timestamp=slice(None, "2024-02-29")).count()))
@@ -252,7 +252,7 @@ def main() -> None:
         as_of="2024-03-29",
     )
     DemoIndex(index_config).from_raw_data().save()
-    membership = DemoIndex(index_config).read().get_xarray_dataset()
+    membership = DemoIndex(index_config).panel("2024-01-01", "2024-03-29")
     print("\n6. membership panel:", dict(membership.sizes), "(calendar days)")
 
     mask = UniverseMask(store_panel, membership)

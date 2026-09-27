@@ -71,7 +71,7 @@ def _normalized(cfg: dict) -> dict:
 def _momentum(spot_config: DatasetConfig, tmp_path: Path) -> Momentum:
     return Momentum(
         PolarsFactorConfig(
-            window=5,
+            warmup_bars=5,
             dataset=SpotKlineDataset(spot_config),
             file_path=str(tmp_path / "factors" / "momentum.zarr"),
             kwargs={"n": 5},
@@ -82,7 +82,7 @@ def _momentum(spot_config: DatasetConfig, tmp_path: Path) -> Momentum:
 def _alpha101(stock_config: DatasetConfig, tmp_path: Path) -> Alpha101Stock:
     return Alpha101Stock(
         FactorConfig(
-            window=10,
+            warmup_bars=10,
             dataset=StockDataset(stock_config),
             file_path=str(tmp_path / "factors" / "alpha101.zarr"),
             mode="batch",
@@ -220,7 +220,7 @@ def test_a_class_without_config_cls_is_refused_by_name(
 
     # The nested dataset resolves to the real StockDataset, so the refusal
     # below comes from the factor loader's own check, not the dataset's.
-    bare_factor = {"name": bare_path, "window": 5, "dataset": dataset_saved}
+    bare_factor = {"name": bare_path, "warmup_bars": 5, "dataset": dataset_saved}
     with pytest.raises(TypeError, match="_ClassWithoutConfigCls"):
         module_utils.load_factor_from_config(bare_factor)
 

@@ -10,6 +10,7 @@ None of these calls changes the factor's config or its dataset's config.
 
 import copy
 import dataclasses
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +47,7 @@ class MaDeviation(FactorKunQuant):
 def _kunquant(dataset_config: DatasetConfig, tmp_path: Path) -> MaDeviation:
     return MaDeviation(
         FactorConfig(
-            window=5,
+            warmup_bars=5,
             dataset=SpotKlineDataset(dataset_config),
             mode="batch",
             data_columns=("close",),
@@ -57,10 +58,14 @@ def _kunquant(dataset_config: DatasetConfig, tmp_path: Path) -> MaDeviation:
 
 
 def _momentum(dataset_config: DatasetConfig, tmp_path: Path) -> Momentum:
+    return _momentum_on(SpotKlineDataset(dataset_config), tmp_path)
+
+
+def _momentum_on(dataset, tmp_path: Path, warmup_bars: int = 5) -> Momentum:
     return Momentum(
         PolarsFactorConfig(
-            window=5,
-            dataset=SpotKlineDataset(dataset_config),
+            warmup_bars=warmup_bars,
+            dataset=dataset,
             file_path=str(tmp_path / "factors" / "momentum.zarr"),
             kwargs={"n": 5},
         )
@@ -79,8 +84,10 @@ def _days(panel: xr.Dataset) -> list[str]:
 
 
 def _full_history(factor) -> xr.Dataset:
-    """The factor computed over every bar of its store, the old way."""
-    return factor.copy().cal().get_features().load()
+    """The factor computed from the first bar of its store, with no warm-up."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return factor.compute("2024-01-01", "2024-12-31").load()
 
 
 def _assert_same_values(actual: xr.Dataset, expected: xr.Dataset) -> None:
@@ -101,6 +108,41 @@ def _configs(factor) -> tuple[dict, object]:
     """The factor config without its dataset object, and the dataset config."""
     fields = {k: v for k, v in factor.config.to_dict().items() if k != "dataset"}
     return copy.deepcopy(fields), copy.deepcopy(factor.config.dataset.config)
+
+
+# -- config ------------------------------------------------------------------------
+
+
+def test_the_factor_config_describes_what_is_computed_not_when():
+    fields = {f.name for f in dataclasses.fields(PolarsFactorConfig)}
+
+    assert "warmup_bars" in fields
+    assert not fields & {"start_date", "end_date", "symbols", "window"}
+
+
+def test_constructing_a_factor_leaves_its_dataset_config_unchanged(
+    spot_kline_zarr, tmp_path
+):
+    dataset = SpotKlineDataset(spot_kline_zarr(periods=60))
+    before = copy.deepcopy(dataset.config)
+
+    _momentum_on(dataset, tmp_path)
+
+    assert dataset.config == before
+
+
+def test_one_dataset_object_feeds_two_factors_with_different_warm_ups(
+    spot_kline_zarr, tmp_path
+):
+    dataset = SpotKlineDataset(spot_kline_zarr(periods=60))
+    short = _momentum_on(dataset, tmp_path / "short", warmup_bars=5)
+    long = _momentum_on(dataset, tmp_path / "long", warmup_bars=20)
+
+    long_panel = long.compute("2024-02-01", "2024-02-10")
+    short_panel = short.compute("2024-02-01", "2024-02-10")
+
+    assert _days(long_panel) == _days(short_panel)
+    _assert_same_values(long_panel, short_panel)
 
 
 # -- compute -----------------------------------------------------------------------
@@ -194,7 +236,8 @@ def test_read_refuses_a_range_the_store_does_not_cover(factor):
 
 
 def test_read_refuses_a_store_without_a_recorded_range(factor):
-    factor.cal().save(mode="w")
+    # A store written some other way than build(), so no range is recorded.
+    factor.compute("2024-01-10", "2024-01-31").to_zarr(factor.store_path, mode="w")
 
     with pytest.raises(ValueError, match="no recorded range"):
         factor.read("2024-01-15", "2024-01-20")
@@ -215,14 +258,6 @@ def test_extend_refuses_an_end_the_store_already_covers(factor):
 
     with pytest.raises(ValueError, match="already covers"):
         factor.extend("2024-01-20")
-
-
-def test_a_plain_save_drops_the_recorded_range(factor):
-    factor.build("2024-01-10", "2024-01-31")
-
-    factor.cal().save(mode="w")
-
-    assert factor.store_range() is None
 
 
 def test_build_read_and_extend_leave_both_configs_unchanged(factor):
@@ -265,7 +300,7 @@ def minute_momentum(tmp_path: Path) -> Momentum:
     )
     return Momentum(
         PolarsFactorConfig(
-            window=2,
+            warmup_bars=2,
             dataset=dataset,
             file_path=str(tmp_path / "factors" / "momentum.zarr"),
             kwargs={"n": 2},
@@ -275,7 +310,7 @@ def minute_momentum(tmp_path: Path) -> Momentum:
 
 def test_resampled_compute_is_on_resampled_bars(minute_momentum):
     daily = minute_momentum.resample("1d", "last")
-    full = daily.copy().cal().get_features().load()
+    full = _full_history(daily)
 
     panel = daily.compute("2024-01-03", "2024-01-05")
 

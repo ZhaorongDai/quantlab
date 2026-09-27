@@ -47,11 +47,11 @@ class Return(FactorKunQuant):
     Examples
     --------
     >>> label = Return(FactorConfig(
-    ...     window=5, dataset=dataset, mode="batch",
+    ...     warmup_bars=5, dataset=dataset, mode="batch",
     ...     data_columns=["adjOpen"], kwargs={"n_forward_periods": 5},
     ...     file_path="ret.zarr",
     ... ))
-    >>> labels = label.cal().get_labels()  # forward 5-bar return at each t
+    >>> labels = label.get_labels(label.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -113,14 +113,14 @@ class BinaryReturn(FactorKunQuant):
     Examples
     --------
     >>> label = BinaryReturn(FactorConfig(
-    ...     window=5,
+    ...     warmup_bars=5,
     ...     dataset=dataset,
     ...     mode="batch",
     ...     data_columns=["adjOpen"],
     ...     kwargs={"n_forward_periods": 5},
     ...     file_path="ret_binary_open.zarr",
     ... ))
-    >>> labels = label.cal().get_labels()  # 1.0 where the 5-bar return > 0
+    >>> labels = label.get_labels(label.compute("2024-01-01", "2024-06-30"))
     """
 
     def __init__(self, factor_config: FactorConfig):

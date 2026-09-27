@@ -37,7 +37,7 @@ XrBackend()
 >>> XrBackend().data
 Traceback (most recent call last):
   ...
-AttributeError: Please cal 'read' or 'to_internal' first.
+AttributeError: Please call 'read' or 'to_internal' first.
 ```
 
 `filter_by_date` 和 `filter_by_symbol` 会就地收窄 `data`，所有共用这个后端对象的代码都会看到收窄后的数据。`get_xarray_dataset(indexes)` 返回恰好以所给维度为索引的数据，维度顺序与传入顺序一致；铺在其他维度上的变量会被丢弃，传 `None` 则原样返回后端持有的对象。`get_lazyframe()` 返回长表形式的 `polars.LazyFrame`。
@@ -79,7 +79,7 @@ Schema({'timestamp': Datetime(time_unit='ns', time_zone=None), 'symbol': String,
 >>> fresh.data
 Traceback (most recent call last):
   ...
-AttributeError: Please cal 'read' or 'to_internal' first.
+AttributeError: Please call 'read' or 'to_internal' first.
 >>> XrBackend().head("data/missing.zarr", 1)
 Traceback (most recent call last):
   ...
@@ -213,15 +213,15 @@ timestamp
 
 ### 重新加载已变化的存储
 
-`XrBackend.read` 在后端已持有数据时立即返回。传 `overwrite=True` 可以从磁盘重新加载。
+`XrBackend.read` 每次调用都重新打开存储，并替换 `data` 原先持有的内容；调用之间不做任何缓存。已增长的存储或被原地收窄的数据，都会被磁盘上存储的当前内容替换。
 
 ```python
 >>> shared = XrBackend().read("data/grow.zarr")
 >>> shared.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
 XrBackend()
->>> dict(shared.read("data/grow.zarr").data.sizes)
+>>> dict(shared.data.sizes)
 {'timestamp': 2, 'symbol': 3}
->>> dict(shared.read("data/grow.zarr", overwrite=True).data.sizes)
+>>> dict(shared.read("data/grow.zarr").data.sizes)
 {'timestamp': 5, 'symbol': 3}
 ```
 
@@ -338,7 +338,7 @@ TypeError: Can't instantiate abstract class Incomplete without an implementation
 
 `read` 和 `head` 遇到不存在的路径会立即抛出 `FileNotFoundError`。`head` 不读取也不修改 `data`；实现 `head` 时不要照搬 `filter_by_date` 的就地行为。
 
-尚未加载的后端会抛出 `AttributeError: Please cal 'read' or 'to_internal' first.`（其中 “cal” 的拼写来自库本身）。先调用 `read(path)` 或 `to_internal(obj)`。
+尚未加载的后端会抛出 `AttributeError: Please call 'read' or 'to_internal' first.`。先调用 `read(path)` 或 `to_internal(obj)`。
 
 写入 Zarr 存储时会打印一条关于 consolidated metadata 的 `ZarrUserWarning`，它来自 Zarr 库。
 

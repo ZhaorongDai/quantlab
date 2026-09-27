@@ -137,7 +137,7 @@ class NbboPanelDataset(StockDataset):
     ...     bar_interval="1m",
     ... )
     >>> NbboPanelDataset(config).from_raw_data_chunked(granularity="day")
-    >>> panel = NbboPanelDataset(config).read().get_xarray_dataset()
+    >>> panel = NbboPanelDataset(config).panel("2024-01-24", "2024-01-25")
     >>> panel["bid"].dims
     ('timestamp', 'symbol')
     >>> panel.symbol.values.tolist()
@@ -149,20 +149,6 @@ class NbboPanelDataset(StockDataset):
 
     #: The data type whose directory under the vendor root holds the raw files.
     DATA_TYPE = "nbbo"
-
-    #: Factor-config fields that are refused for this panel, read by the
-    #: factor base class. ``BaseFactorConfig.symbols`` selects by ticker and
-    #: would fail with a ``KeyError`` from ``.sel`` on the integer PERMNO axis
-    #: in the middle of a run.
-    REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {
-        "symbols": (
-            "This panel's symbol axis is the int64 PERMNO, while that field "
-            "is the base class's list of tickers. Restrict the conversion "
-            "with config.permnos on the dataset instead. The ticker a PERMNO "
-            "had on a date is read from the ticker sidecar; this panel does "
-            "not select by ticker."
-        )
-    }
 
     #: The merged filter-stats sidecar content after the last window this
     #: instance resampled; ``None`` until then. Windows skipped because the

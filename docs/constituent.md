@@ -69,11 +69,11 @@ timestamp
 2020-01-08    1    0    1
 ```
 
-`save()` writes the panel to `zarr_file_path` and `read()` loads it back unchanged.
+`save()` writes the panel to `zarr_file_path`, and `panel(start, end)` returns it from the store unchanged.
 
 ```python
 >>> dataset.save()
->>> reread = DemoPanel(config).read().get_xarray_dataset()
+>>> reread = DemoPanel(config).panel("2020-01-01", "2020-01-08")
 >>> bool((reread["is_member"] == panel["is_member"]).all())
 True
 ```
@@ -186,7 +186,7 @@ array([10])
 
 ### Apply a panel to a price panel
 
-`UniverseMask` in `quantlab.dataset._support.masking` intersects a market panel with a membership panel and sets every non-member cell of the market panel to NaN. It takes two `xarray.Dataset` objects; `UniverseMask.from_datasets(market_dataset, constituent_dataset)` builds one from two stored datasets.
+`UniverseMask` in `quantlab.dataset._support.masking` intersects a market panel with a membership panel and sets every non-member cell of the market panel to NaN. It takes two `xarray.Dataset` objects; `UniverseMask.from_datasets(market_dataset, constituent_dataset, start, end)` builds one from two stored datasets, requesting both with `panel(start, end)`.
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr

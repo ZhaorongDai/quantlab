@@ -56,18 +56,16 @@ class XrBackend(DataBackend):
         """Create an empty backend; call ``read`` or ``to_internal`` to fill it."""
         super().__init__()
 
-    def read(self, path: str, overwrite: bool = False, **kwargs) -> Self:
-        """Open the Zarr store at ``path`` into ``data``.
+    def read(self, path: str, **kwargs) -> Self:
+        """Open the Zarr store at ``path`` lazily into ``data``.
 
-        A backend that already holds data returns immediately unless
-        ``overwrite`` is true, so repeated reads do not reload the store.
+        Every call opens the store again and replaces whatever ``data``
+        held; nothing is cached across calls.
 
         Parameters
         ----------
         path : str
             Directory of the Zarr store.
-        overwrite : bool, default False
-            Reload even if ``data`` is already populated.
         **kwargs
             Passed through to ``xarray.open_dataset``.
 
@@ -81,12 +79,7 @@ class XrBackend(DataBackend):
         >>> backend = XrBackend().read("prices.zarr")
         >>> dict(backend.data.sizes)
         {'timestamp': 4, 'symbol': 2}
-        >>> backend.read("prices.zarr") is backend  # already loaded, no reload
-        True
         """
-        if not overwrite and hasattr(self, "data"):
-            return self
-
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
         self.data = xr.open_dataset(path, **kwargs)

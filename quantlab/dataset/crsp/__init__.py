@@ -311,7 +311,7 @@ class CrspStockDataset(StockDataset):
     ... )
     >>> ds = CrspStockDataset(config)
     >>> ds.from_raw_data().save()
-    >>> panel = CrspStockDataset(config).read().get_xarray_dataset()
+    >>> panel = CrspStockDataset(config).panel("2008-01-01", "2020-12-31")
     >>> panel.symbol.values.tolist()
     [14593, 80599]
     >>> panel["ret"].sel(symbol=80599).to_pandas().dropna().tail(2)
@@ -327,24 +327,6 @@ class CrspStockDataset(StockDataset):
     #: The data type whose directory under the vendor root holds the raw files;
     #: the same value the WRDS capability and the CRSP acquisition name.
     DATA_TYPE = "crsp_daily"
-
-    #: Factor-config fields that are refused for this panel, read by the
-    #: factor base class. ``BaseFactorConfig.symbols`` is a different field
-    #: from the dataset's ``symbols``, but it also selects by ticker and would
-    #: fail with a ``KeyError`` from ``.sel`` on the integer PERMNO axis in
-    #: the middle of a run. It is declared here so the factor layer never
-    #: needs to know this class by name.
-    REJECTED_FACTOR_CONFIG_FIELDS: dict[str, str] = {
-        "symbols": (
-            "This panel's symbol axis is the int64 PERMNO, while that field "
-            "is the base class's list of tickers. Restrict the conversion "
-            "with config.permnos on the dataset instead: it lists PERMNOs, "
-            "and it also acts as an explicit roster that overrides "
-            "config.security_filter. The ticker a PERMNO had on a date is "
-            "read from the ticker sidecar; this panel does not select by "
-            "ticker."
-        )
-    }
 
     #: The twelve variables of a Tiingo daily panel, in ``TiingoColumns.EOD``
     #: order. Taken from that constant, so this panel always matches Tiingo's

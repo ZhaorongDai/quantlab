@@ -3,7 +3,8 @@
 This page explains how quantlab turns a price panel into model inputs
 (factors) and prediction targets (labels). It covers the two computation
 backends, KunQuant and Polars, and when to use each; the built-in factor
-sets; computing, saving and reading factor values; writing your own factor;
+sets; computing factor values over a date range, building a store and
+reading it back; writing your own factor;
 the normalisation operators; the forward-return labels; and KunQuant's
 streaming mode. Read it after [Datasets](datasets.md) and before
 [Models](models.md).
@@ -29,16 +30,18 @@ Every factor is configured by a dataclass and built around a dataset object.
 The config fields shared by both backends live on
 `quantlab.base.config.BaseFactorConfig`:
 
-- `window`: warm-up in calendar days. The factor reads this many days of
-  history before `start_date` so that rolling computations already have a full
-  window on the first requested bar.
+- `warmup_bars`: bars of history, counted on the dataset's own calendar,
+  that `compute(start, end)` reads before `start` so that rolling
+  computations already have a full window on the first requested bar.
 - `dataset`: the dataset the factor reads prices from.
-- `file_path`: the Zarr store the factor values are saved to and read from.
+- `file_path`: the Zarr store `build` writes the factor values to and `read`
+  reads them back from.
 - `factor_names`: which outputs to produce. Left `None`, it is filled with
   every name the class can produce.
-- `start_date`, `end_date`, `symbols`: the window to compute. Left `None`,
-  they cover everything the dataset holds.
 - `kwargs`: free-form options a particular class reads, such as a horizon.
+
+The config says what is computed, not when. The date range is an argument
+of `compute`, `build` and `read`.
 
 ## Choosing a backend
 
@@ -49,7 +52,7 @@ model can take factors from both at once.
 |---|---|---|
 | Config class | `FactorConfig` | `PolarsFactorConfig` |
 | Factor logic | a graph of KunQuant operators, compiled to native code | a Polars lazy expression chain |
-| Modes | batch (`cal()`) and streaming (`cal_stream()`) | batch only |
+| Modes | batch (`compute()`) and streaming (`cal_stream()`) | batch only |
 | Built-in sets | Alpha101, Alpha158, residual momentum, labels | `Momentum` (a reference example) |
 | Input columns | named in `data_columns` | whatever columns the store holds |
 
@@ -77,7 +80,6 @@ split-adjusted versions `adjOpen` to `adjVolume`.
 import numpy as np
 import pandas as pd
 import xarray as xr
-from dataclasses import replace
 
 from quantlab.base.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
@@ -95,12 +97,12 @@ xr.Dataset({k: (("timestamp", "symbol"), v) for k, v in fields.items()},
 
 price_config = DatasetConfig(zarr_file_path="prices.zarr", raw_data_dir_path="raw",
                              market="us_equity", frequency="1d")
+dataset = StockDataset(price_config)
 ```
 
-Give every factor its own dataset object, for example
-`StockDataset(replace(price_config))`. A factor moves its dataset's start
-date back by `window` days for warm-up, so two factors sharing one dataset
-object would change each other's dates.
+The store ends on 14 June 2024. One dataset object can feed several
+factors: a factor asks it for a date range with `dataset.panel(start, end)`
+and changes neither its config nor its own.
 
 ## Compute a built-in factor set
 
@@ -119,40 +121,45 @@ Kakushadze (2016). Alpha158 is the feature library of Microsoft's Qlib
 project. It has candle-shape features (`KMID`, `KLEN`, ...), prices and
 volumes lagged 0 to 4 bars (`CLOSE1`, `VOLUME3`, ...) and rolling statistics
 over 5 to 60 bars (`ROC5`, `STD20`, `CORR60`, ...). The crypto variants
-z-score every output against its own trailing window, which suits strategies
-that follow one asset over time. The equity variants z-score every output
+z-score every output against its own trailing window of `warmup_bars`
+bars (`WindowedZScore`), which suits strategies that follow one asset over
+time. The equity variants z-score every output
 across the symbols of the same bar (see
 [Normalisation operators](#normalisation-operators)).
 
-Compute three Alpha158 features for February onwards:
+Compute three Alpha158 features from February to the end of the store:
 
 ```python
 from quantlab.base.config import FactorConfig
 from quantlab.factor.alpha158 import Alpha158Stock
 
 alpha = Alpha158Stock(FactorConfig(
-    window=30,
-    dataset=StockDataset(replace(price_config)),
+    warmup_bars=20,
+    dataset=dataset,
     mode="batch",
     data_columns=("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"),
     factor_names=("KMID", "ROC5", "STD20"),
-    start_date="2024-02-01",
     file_path="factors/alpha158.zarr",
     njobs=4,
 ))
-panel = alpha.cal().get_features()
+panel = alpha.get_features(alpha.compute("2024-02-01", "2024-06-14"))
 print(dict(panel.sizes), list(panel.data_vars))
-print(alpha.config.dataset.config.start_date)
+print(int(panel["STD20"].isel(timestamp=0).isnull().sum()))
+print(dataset.bar_before("2024-02-01", 20))
 ```
 
 ```text
 {'timestamp': 97, 'symbol': 8} ['KMID', 'ROC5', 'STD20']
-2024-01-02
+0
+2024-01-04 00:00:00
 ```
 
-The panel starts on the requested 1 February. The dataset itself was read
-from 2 January, 30 calendar days earlier, so that `STD20` already has twenty
-bars behind it on the first bar you asked for. `mode="batch"` compiles the
+The panel starts on the requested 1 February. The inputs were read from
+4 January, the bar twenty bars earlier on the dataset's calendar, so
+`STD20` already has twenty bars behind it on the first bar you asked for and
+none of its values there is NaN. When the dataset holds fewer bars before
+`start` than `warmup_bars`, `compute` warns with the shortfall in bars and
+starts from the first bar there is. `mode="batch"` compiles the
 graph for whole-history runs, and `njobs` sets the number of executor
 threads (the default is 128). Pinning `factor_names` keeps the compiled graph
 small, and the full Alpha158 set compiles noticeably more slowly. Without the
@@ -176,35 +183,47 @@ class docstring for the parameters it reads from `kwargs`, and
 `examples/wrds_us_equity/market_residual_momentum.py` for the factor on the
 whole CRSP market.
 
-## Save and read factor values
+## Build and read a factor store
 
-`save()` writes the held panel to `config.file_path` as a Zarr store with one
-array per factor. `read()` opens that store later and narrows it to the
-configured dates, without computing anything:
+`compute` holds nothing: every call reads the dataset and runs the factor
+again. `build(start, end)` computes the range once, writes it to
+`config.file_path` as a Zarr store with one array per factor, and records
+the range beside it in `<file_path>.range.json`. `read(start, end)` then
+opens the store lazily and returns any range inside the recorded one,
+without computing anything. `extend(end)` computes the bars after the
+recorded range, warmed from the dataset's history, and appends them; the
+store's time, symbol and variable axes widen as needed:
 
 ```python
-alpha.save(mode="w")
+alpha.build("2024-02-01", "2024-05-31")
+print(alpha.store_range())
+print(dict(alpha.read("2024-03-01", "2024-03-29").sizes))
 
-again = Alpha158Stock(replace(alpha.config, dataset=StockDataset(replace(price_config))))
-print(dict(again.read().get_features().sizes))
+try:
+    alpha.read("2024-05-01", "2024-06-14")
+except ValueError as e:
+    print(e)
+
+alpha.extend("2024-06-14")
+print(alpha.store_range())
+print(dict(alpha.read("2024-02-01", "2024-06-14").sizes))
 ```
 
 ```text
+('2024-02-01', '2024-05-31')
+{'timestamp': 21, 'symbol': 8}
+Alpha158Stock.read(): the store at factors/alpha158.zarr covers 2024-02-01 to 2024-05-31, which does not contain 2024-05-01 to 2024-06-14. Extend it with extend(end) or rebuild it with build(start, end).
+('2024-02-01', '2024-06-14')
 {'timestamp': 97, 'symbol': 8}
 ```
 
-`mode="w"` replaces the store. The default `mode="a"` rewrites variables of
-an existing store in place. It does not append along time, and it refuses a
-panel whose time or symbol axis differs from the stored one. To extend a store
-with a later date range, compute the new range and call `update()`, which
-widens the time, symbol and variable axes as needed and appends. If you change
-the dates of a factor that has already read its store, call
-`read(overwrite=True)` so the store is opened again rather than the cached,
-already narrowed panel being reused.
+`read` also refuses a store that has no recorded range, such as one not
+written by `build`. `build` replaces the whole store.
 
 A model decides between the two paths through `factor_data_strategy` and
-`label_data_strategy`. `"cal"` computes every factor when the model collects
-its data, and `"read"` loads the stores you saved earlier (see
+`label_data_strategy`. `"cal"` computes every factor over the model's date
+range when the model collects its data, and `"read"` reads that range from
+the stores you built earlier (see
 [Models](models.md)).
 
 ## Write a Polars factor
@@ -213,7 +232,7 @@ A Polars factor is a subclass of `quantlab.base.factor.FactorPolars` that
 overrides one method, `_get_factor_lazyframe`. It receives the dataset as a
 `polars.LazyFrame` with `timestamp` and `symbol` columns plus the store's own
 columns, and returns a lazy frame with exactly `timestamp`, `symbol` and the
-factor columns. `cal()` collects it and turns it into a panel. The factor
+factor columns. `compute()` collects it and turns it into a panel. The factor
 names are read from the schema of the returned frame, so you never declare
 them separately:
 
@@ -241,18 +260,18 @@ class VolumeSurprise(FactorPolars):
         return data
 
 surprise = VolumeSurprise(PolarsFactorConfig(
-    window=30,
-    dataset=StockDataset(replace(price_config)),
+    warmup_bars=10,
+    dataset=dataset,
     kwargs={"n": 10},
     file_path="factors/vol_surprise.zarr",
 ))
 print(surprise.get_factor_names())
-print(dict(surprise.cal().get_features().sizes))
+print(dict(surprise.get_features(surprise.compute("2024-02-01", "2024-06-14")).sizes))
 ```
 
 ```text
 ('vol_surprise_10',)
-{'timestamp': 120, 'symbol': 8}
+{'timestamp': 97, 'symbol': 8}
 ```
 
 Three details matter. Sort by symbol and time and use `.over("symbol")` so
@@ -323,10 +342,11 @@ class MaDeviation(FactorKunQuant):
     def _get_features(self, data):
         return data
 
-dev = MaDeviation(FactorConfig(
-    window=40, dataset=StockDataset(replace(price_config)), mode="batch",
+ma_dev = MaDeviation(FactorConfig(
+    warmup_bars=30, dataset=dataset, mode="batch",
     data_columns=("adjClose",), file_path="factors/ma_dev.zarr", njobs=4,
-)).cal().get_features()
+))
+dev = ma_dev.get_features(ma_dev.compute("2024-02-15", "2024-06-14"))
 day = dev.isel(timestamp=-1)
 print(round(day["ma_dev_10_cs"].mean().item(), 6), round(day["ma_dev_10_cs"].std(ddof=1).item(), 6))
 print(np.round(day["ma_dev_10_cs"].values, 2))
@@ -339,8 +359,8 @@ print(np.round(day["ma_dev_10_cs"].values, 2))
 
 On the last day the cross-sectional column has mean 0 and standard deviation
 1 across the eight symbols, as expected. `CrossSectionalZScore` has two
-restrictions of its own: a batch run must start at bar 0, which `cal()`
-always does, and it has no parameters, so a variant with different behaviour
+restrictions of its own: a batch run must start at bar 0, which `compute()`
+always does on the panel it reads, and it has no parameters, so a variant with different behaviour
 needs a class of its own.
 
 ## Forward-return labels
@@ -354,27 +374,28 @@ and take the horizon `n` from `kwargs["n_forward_periods"]`.
   that return is positive and 0.0 otherwise.
 
 The label at bar `t` starts at the next bar's open, because a signal formed
-at the close of bar `t` cannot trade before then. The last `n + 1` bars have
-no label and are NaN.
+at the close of bar `t` cannot trade before then. The last `n + 1` bars
+of the requested range have no label and are NaN.
 
 ```python
+from dataclasses import replace
 from quantlab.label.fret import BinaryReturn, Return
 
 ret = Return(FactorConfig(
-    window=0, dataset=StockDataset(replace(price_config)), mode="batch",
+    warmup_bars=0, dataset=dataset, mode="batch",
     data_columns=("adjOpen",), kwargs={"n_forward_periods": 5},
     file_path="labels/ret_5.zarr", njobs=4,
 ))
-labels = ret.cal().get_labels()
+labels = ret.get_labels(ret.compute("2024-01-01", "2024-06-14"))
 print(list(labels.data_vars), int(labels["ret_5"].isnull().all("symbol").sum()))
 
 o = xr.open_zarr("prices.zarr")["adjOpen"]
 t = 10
 print(float(labels["ret_5"][t, 0]), float(o[t + 6, 0] / o[t + 1, 0] - 1))
 
-up = BinaryReturn(replace(ret.config, dataset=StockDataset(replace(price_config)),
-                          file_path="labels/up_5.zarr", factor_names=None))
-print(up.get_factor_names(), np.unique(up.cal().get_labels()["ret_binary_5"].values[:-6]))
+up = BinaryReturn(replace(ret.config, file_path="labels/up_5.zarr", factor_names=None))
+print(up.get_factor_names(),
+      np.unique(up.get_labels(up.compute("2024-01-01", "2024-06-14"))["ret_binary_5"].values[:-6]))
 ```
 
 ```text
@@ -406,7 +427,7 @@ bar matches the batch result from the previous section:
 ```python
 stream_config = replace(price_config, symbols=tuple(symbols))
 live = MaDeviation(FactorConfig(
-    window=40, dataset=StockDataset(stream_config), mode="stream",
+    warmup_bars=30, dataset=StockDataset(stream_config), mode="stream",
     data_columns=("adjClose",), factor_names=("ma_dev_10", "ma_dev_10_ts"),
     njobs=4,
 ))
@@ -440,10 +461,12 @@ feature only; Polars factors have no streaming mode.
   KunQuant version the project locks (0.1.11), a six-symbol panel computed
   correctly in batch and streaming mode, including `CrossSectionalZScore`.
   Multiples of 8 remain the safe choice, and the examples use them.
-- `window` counts calendar days of warm-up, not bars. Twenty trading days
-  need about thirty calendar days.
-- Each `cal()` compiles the KunQuant graph again. Compute once, `save()`,
-  and let later runs `read()`.
+- `warmup_bars` counts bars on the dataset's own calendar, so weekends and
+  holidays are skipped, not counted. Set it to at least the longest
+  lookback in the graph; a normalisation over a trailing window adds that
+  window on top.
+- Each `compute()` compiles the KunQuant graph again. `build()` once and
+  let later runs `read()`.
 - A KunQuant graph's `Input` names must match `data_columns`, which name
   variables in the store. The graph for a US-equity store reads `adjClose`,
   not `close`.

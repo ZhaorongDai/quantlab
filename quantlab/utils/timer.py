@@ -21,7 +21,7 @@ class Timer:
     Examples
     --------
     >>> with Timer("compute factors") as timer:
-    ...     factors.cal()
+    ...     panel = factor.compute("2024-01-01", "2024-06-30")
     >>> elapsed_seconds = timer.timein
     """
 

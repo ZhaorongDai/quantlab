@@ -37,7 +37,7 @@ XrBackend()
 >>> XrBackend().data
 Traceback (most recent call last):
   ...
-AttributeError: Please cal 'read' or 'to_internal' first.
+AttributeError: Please call 'read' or 'to_internal' first.
 ```
 
 `filter_by_date` and `filter_by_symbol` narrow `data` in place. Every object that shares the backend sees the narrowed data. `get_xarray_dataset(indexes)` returns the data indexed by exactly the dimensions named, in that order; variables laid out on other dimensions are dropped, and `None` returns the held object unchanged. `get_lazyframe()` returns a long-format `polars.LazyFrame`.
@@ -79,7 +79,7 @@ Schema({'timestamp': Datetime(time_unit='ns', time_zone=None), 'symbol': String,
 >>> fresh.data
 Traceback (most recent call last):
   ...
-AttributeError: Please cal 'read' or 'to_internal' first.
+AttributeError: Please call 'read' or 'to_internal' first.
 >>> XrBackend().head("data/missing.zarr", 1)
 Traceback (most recent call last):
   ...
@@ -213,15 +213,15 @@ timestamp
 
 ### Reload a store that changed
 
-`XrBackend.read` returns immediately when the backend already holds data. Pass `overwrite=True` to reload from disk.
+`XrBackend.read` opens the store again on every call and replaces whatever `data` held; nothing is cached across calls. A store that grew, or data narrowed in place, is replaced by the store as it is on disk.
 
 ```python
 >>> shared = XrBackend().read("data/grow.zarr")
 >>> shared.filter_by_date("timestamp", "2024-01-02", "2024-01-03")
 XrBackend()
->>> dict(shared.read("data/grow.zarr").data.sizes)
+>>> dict(shared.data.sizes)
 {'timestamp': 2, 'symbol': 3}
->>> dict(shared.read("data/grow.zarr", overwrite=True).data.sizes)
+>>> dict(shared.read("data/grow.zarr").data.sizes)
 {'timestamp': 5, 'symbol': 3}
 ```
 
@@ -338,7 +338,7 @@ A dataset, factor or model picks its backend in `__init__` by assigning `self.da
 
 `read` and `head` raise `FileNotFoundError` immediately for a missing path. `head` does not read or modify `data`; a `head` implementation should not copy the in-place behavior of `filter_by_date`.
 
-A backend that has not been loaded raises `AttributeError: Please cal 'read' or 'to_internal' first.` (the spelling "cal" is the library's). Call `read(path)` or `to_internal(obj)` first.
+A backend that has not been loaded raises `AttributeError: Please call 'read' or 'to_internal' first.` Call `read(path)` or `to_internal(obj)` first.
 
 Zarr prints a `ZarrUserWarning` about consolidated metadata when a store is written. It comes from the Zarr library.
 

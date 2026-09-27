@@ -108,18 +108,16 @@ xr.Dataset(
     coords={"timestamp": timestamps, "symbol": symbols},
 ).to_zarr(root / "prices.zarr", mode="w")
 
-# Read it back through a dataset object, the entry point of the pipeline.
+# Request a date range through a dataset object, the entry point of the pipeline.
 dataset = StockDataset(
     DatasetConfig(
         zarr_file_path=str(root / "prices.zarr"),
         raw_data_dir_path=str(root / "raw"),
         market="us_equity",
         frequency="1d",
-        start_date="2024-01-01",
-        end_date="2024-01-31",
     )
 )
-print(dataset.read().get_xarray_dataset())
+print(dataset.panel("2024-01-01", "2024-01-31"))
 ```
 
 ```text

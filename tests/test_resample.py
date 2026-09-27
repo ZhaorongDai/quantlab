@@ -20,6 +20,7 @@ import polars as pl
 import pytest
 import xarray as xr
 
+from conftest import WHOLE_STORE, compute_all
 from quantlab.backend import PlBackend, XrBackend
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
@@ -31,6 +32,8 @@ from quantlab.utils.resample import session_labels
 SYMBOLS = ["AAAUSDT", "BBBUSDT"]
 BARS_PER_DAY = 6
 DAYS = 3
+#: The dates the synthetic minute store covers.
+STORE_RANGE = ("2024-01-01", "2024-01-03")
 
 
 def _minute_panel(symbols: list[str] = SYMBOLS) -> xr.Dataset:
@@ -167,7 +170,7 @@ def test_pl_backend_resample_matches_the_xarray_result():
 
 
 def test_resample_returns_an_independent_copy(minute_config: DatasetConfig):
-    minute = SpotKlineDataset(minute_config).read()
+    minute = SpotKlineDataset(minute_config)
 
     daily = minute.resample("1d", OHLCV_HOW)
 
@@ -177,39 +180,38 @@ def test_resample_returns_an_independent_copy(minute_config: DatasetConfig):
     assert daily.config.resample_freq == "1d"
     assert daily.config.resample_how == OHLCV_HOW
     assert minute.config.resample_freq is None
-    assert minute.get_xarray_dataset().sizes["timestamp"] == DAYS * BARS_PER_DAY
+    assert minute.panel(*WHOLE_STORE).sizes["timestamp"] == DAYS * BARS_PER_DAY
 
-    panel = daily.get_xarray_dataset()
-    assert panel.sizes == {"timestamp": DAYS, "symbol": 2}
+    panel = daily.panel(*WHOLE_STORE)
+    assert dict(panel.sizes) == {"timestamp": DAYS, "symbol": 2}
     assert panel["Close"].values[:, 0].tolist() == [6.0, 12.0, 18.0]
-    assert daily.time_interval == np.timedelta64(1, "D")
-    # No memory is shared with the source panel.
-    assert not np.shares_memory(
-        panel["Close"].values, minute.get_xarray_dataset()["Close"].values
-    )
-    # Nor is the config shared.
+    assert (np.diff(panel["timestamp"].values) == np.timedelta64(1, "D")).all()
+    # The config is not shared.
     daily.config.resample_how = "last"
     assert minute.config.resample_how is None
 
 
-def test_resample_on_an_empty_dataset_resamples_on_read(minute_config: DatasetConfig):
+def test_a_resampled_dataset_answers_requests_from_the_source_store(
+    minute_config: DatasetConfig,
+):
     daily = SpotKlineDataset(minute_config).resample("1d", "last")
+
+    panel = daily.panel(*WHOLE_STORE)
+
+    assert panel.sizes["timestamp"] == DAYS
+    assert panel["Close"].values[:, 1].tolist() == [60.0, 120.0, 180.0]
+    # A second request answers the same way; nothing is held in between.
+    assert daily.panel(*WHOLE_STORE).sizes["timestamp"] == DAYS
     with pytest.raises(AttributeError):
         daily.get_xarray_dataset()
 
-    panel = daily.read().get_xarray_dataset()
-    assert panel.sizes["timestamp"] == DAYS
-    assert panel["Close"].values[:, 1].tolist() == [60.0, 120.0, 180.0]
-    # A second read reuses the held panel instead of resampling twice.
-    assert daily.read().get_xarray_dataset().sizes["timestamp"] == DAYS
-    assert daily.read(overwrite=True).get_xarray_dataset().sizes["timestamp"] == DAYS
-    assert daily.get_lazyframe().collect().height == DAYS * 2
 
+def test_a_resampled_request_covers_only_the_requested_range(minute_config: DatasetConfig):
+    daily = SpotKlineDataset(minute_config).resample("1d", "last")
 
-def test_read_narrows_dates_before_resampling(minute_config: DatasetConfig):
-    config = dataclasses.replace(minute_config, start_date="2024-01-02")
-    daily = SpotKlineDataset(config).resample("1d", "last").read()
-    assert daily.get_xarray_dataset()["timestamp"].values.astype("datetime64[D]").tolist() == [
+    panel = daily.panel("2024-01-02", "2024-01-03")
+
+    assert panel["timestamp"].values.astype("datetime64[D]").tolist() == [
         pd.Timestamp("2024-01-02").date(),
         pd.Timestamp("2024-01-03").date(),
     ]
@@ -218,7 +220,7 @@ def test_read_narrows_dates_before_resampling(minute_config: DatasetConfig):
 def test_resampled_dataset_saves_beside_the_source_and_reads_it_back(
     minute_config: DatasetConfig,
 ):
-    daily = SpotKlineDataset(minute_config).read().resample("1d", OHLCV_HOW)
+    daily = SpotKlineDataset(minute_config).resample("1d", OHLCV_HOW)
     expected_path = str(Path(minute_config.zarr_file_path).with_name("klines_resample_1d.zarr"))
     assert daily.store_path == expected_path
     assert SpotKlineDataset(minute_config).store_path == minute_config.zarr_file_path
@@ -233,9 +235,18 @@ def test_resampled_dataset_saves_beside_the_source_and_reads_it_back(
 
     # A dataset built with the resample fields reads the saved store.
     config = dataclasses.replace(minute_config, resample_freq="1d", resample_how=OHLCV_HOW)
-    reader = SpotKlineDataset(config).read()
-    assert reader.get_xarray_dataset()["Close"].values[:, 0].tolist() == [6.0, 12.0, 18.0]
+    reader = SpotKlineDataset(config)
+    assert reader.panel(*WHOLE_STORE)["Close"].values[:, 0].tolist() == [6.0, 12.0, 18.0]
     assert reader.head(2).collect().height == 2
+
+
+def test_a_resampled_save_keeps_the_config_range(minute_config: DatasetConfig):
+    config = dataclasses.replace(minute_config, start_date="2024-01-02")
+
+    SpotKlineDataset(config).resample("1d", "last").save()
+
+    stored = xr.open_zarr(str(Path(config.zarr_file_path).with_name("klines_resample_1d.zarr")))
+    assert stored.sizes["timestamp"] == DAYS - 1
 
 
 def test_resampled_dataset_refuses_to_build_from_raw_files(minute_config: DatasetConfig):
@@ -247,17 +258,18 @@ def test_resampled_dataset_refuses_to_build_from_raw_files(minute_config: Datase
 
 
 def test_resample_validates_freq_how_and_coverage(minute_config: DatasetConfig):
-    minute = SpotKlineDataset(minute_config).read()
+    minute = SpotKlineDataset(minute_config)
     with pytest.raises(ValueError, match="resample_freq '2d' is not one of"):
         minute.resample("2d", "last")
     with pytest.raises(ValueError, match="unknown method"):
         minute.resample("1d", "median")
+    # Coverage of the panel's variables and bars is checked on a request.
     with pytest.raises(ValueError, match="does not name"):
-        minute.resample("1d", {"Close": "last"})
+        minute.resample("1d", {"Close": "last"}).panel(*WHOLE_STORE)
     with pytest.raises(ValueError, match="which the panel does not have"):
-        minute.resample("1d", {**OHLCV_HOW, "Adj": "last"})
+        minute.resample("1d", {**OHLCV_HOW, "Adj": "last"}).panel(*WHOLE_STORE)
     with pytest.raises(ValueError, match="is not coarser"):
-        minute.resample("1m", "last")
+        minute.resample("1m", "last").panel(*WHOLE_STORE)
     with pytest.raises(ValueError, match="needs resample_how"):
         SpotKlineDataset(dataclasses.replace(minute_config, resample_freq="1d"))
     with pytest.raises(ValueError, match="resample_freq is None"):
@@ -272,15 +284,15 @@ def test_resampled_dataset_config_round_trips(minute_config: DatasetConfig):
 
     rebuilt = load_dataset_from_config(saved)
     assert rebuilt.config.resample_freq == "1d"
-    assert rebuilt.read().get_xarray_dataset().sizes["timestamp"] == DAYS
+    assert rebuilt.panel(*WHOLE_STORE).sizes["timestamp"] == DAYS
 
 
 def test_resample_chains_onto_a_coarser_grid(minute_config: DatasetConfig):
-    minute = SpotKlineDataset(minute_config).read()
+    minute = SpotKlineDataset(minute_config)
     five = minute.resample("5m", OHLCV_HOW)
-    assert five.get_xarray_dataset().sizes["timestamp"] == 2 * DAYS
+    assert five.panel(*WHOLE_STORE).sizes["timestamp"] == 2 * DAYS
     daily = five.resample("1d", OHLCV_HOW)
-    assert daily.get_xarray_dataset()["Volume"].values[:, 0].tolist() == [6.0] * DAYS
+    assert daily.panel(*WHOLE_STORE)["Volume"].values[:, 0].tolist() == [6.0] * DAYS
 
 
 # -- factor ---------------------------------------------------------------------
@@ -289,7 +301,7 @@ def test_resample_chains_onto_a_coarser_grid(minute_config: DatasetConfig):
 def _momentum(minute_config: DatasetConfig, tmp_path: Path) -> Momentum:
     return Momentum(
         PolarsFactorConfig(
-            window=1,
+            warmup_bars=1,
             dataset=SpotKlineDataset(minute_config),
             file_path=str(tmp_path / "factors" / "momentum.zarr"),
             kwargs={"n": 1},
@@ -300,25 +312,25 @@ def _momentum(minute_config: DatasetConfig, tmp_path: Path) -> Momentum:
 def test_factor_resample_aggregates_the_computed_panel(
     minute_config: DatasetConfig, tmp_path: Path
 ):
-    minute = _momentum(minute_config, tmp_path).cal()
-    minute_panel = minute.get_features()
+    minute = _momentum(minute_config, tmp_path)
+    minute_panel = minute.get_features(compute_all(minute))
 
     daily = minute.resample("1d", "last")
 
     assert daily.config.dataset is not minute.config.dataset
     assert daily.config.dataset.config.resample_freq is None  # computed on minute bars
-    assert minute.get_features().sizes["timestamp"] == DAYS * BARS_PER_DAY
-    panel = daily.get_features()
-    assert panel.sizes == {"timestamp": DAYS, "symbol": 2}
+    assert minute.get_features(compute_all(minute)).sizes["timestamp"] == DAYS * BARS_PER_DAY
+    panel = daily.get_features(compute_all(daily))
+    assert dict(panel.sizes) == {"timestamp": DAYS, "symbol": 2}
     last_bar_of_each_day = minute_panel["momentum_1"].values[BARS_PER_DAY - 1 :: BARS_PER_DAY]
     np.testing.assert_allclose(panel["momentum_1"].values, last_bar_of_each_day)
 
 
-def test_factor_cal_on_a_resampled_copy_resamples_its_output(
+def test_factor_compute_on_a_resampled_copy_resamples_its_output(
     minute_config: DatasetConfig, tmp_path: Path
 ):
     daily = _momentum(minute_config, tmp_path).resample("1d", {"momentum_1": "mean"})
-    panel = daily.cal().get_features()
+    panel = daily.get_features(compute_all(daily))
     assert panel.sizes["timestamp"] == DAYS
     assert np.isfinite(panel["momentum_1"].values[1:]).all()
 
@@ -326,26 +338,26 @@ def test_factor_cal_on_a_resampled_copy_resamples_its_output(
 def test_factor_resample_saves_beside_the_source_and_reads_it_back(
     minute_config: DatasetConfig, tmp_path: Path
 ):
-    minute = _momentum(minute_config, tmp_path).cal().save(mode="w")
+    minute = _momentum(minute_config, tmp_path).build(*STORE_RANGE)
     daily = minute.resample("1d", "last")
     assert daily.store_path == str(tmp_path / "factors" / "momentum_resample_1d.zarr")
 
-    daily.save(mode="w")
+    daily.build(*STORE_RANGE)
     assert xr.open_zarr(daily.store_path).sizes["timestamp"] == DAYS
     assert xr.open_zarr(minute.store_path).sizes["timestamp"] == DAYS * BARS_PER_DAY
 
-    # Without a saved store the resampled copy reads the source and resamples.
+    # Without a built store the resampled copy reads the source and resamples.
     fresh = _momentum(minute_config, tmp_path).resample("1d", "last")
     Path(daily.store_path).rename(tmp_path / "aside.zarr")
-    assert fresh.read().get_features().sizes["timestamp"] == DAYS
-    # With one, it reads the saved store.
+    assert fresh.read(*STORE_RANGE).sizes["timestamp"] == DAYS
+    # With one, it reads the built store.
     (tmp_path / "aside.zarr").rename(daily.store_path)
-    assert _momentum(minute_config, tmp_path).resample("1d", "last").read().get_features().sizes[
-        "timestamp"
-    ] == DAYS
+    assert _momentum(minute_config, tmp_path).resample("1d", "last").read(
+        *STORE_RANGE
+    ).sizes["timestamp"] == DAYS
 
-    with pytest.raises(ValueError, match="update"):
-        daily.update()
+    with pytest.raises(ValueError, match="extend"):
+        daily.extend("2024-01-05")
 
 
 def test_factor_resample_config_round_trips(minute_config: DatasetConfig, tmp_path: Path):
@@ -356,7 +368,7 @@ def test_factor_resample_config_round_trips(minute_config: DatasetConfig, tmp_pa
 
     rebuilt = load_factor_from_config(saved)
     assert rebuilt.config.resample_freq == "1d"
-    assert rebuilt.cal().get_features().sizes["timestamp"] == DAYS
+    assert rebuilt.get_features(compute_all(rebuilt)).sizes["timestamp"] == DAYS
 
 
 def test_kunquant_factor_resample_and_stream_refusal(
@@ -364,7 +376,7 @@ def test_kunquant_factor_resample_and_stream_refusal(
 ):
     factor = Alpha158SpotKline(
         FactorConfig(
-            window=1,
+            warmup_bars=1,
             dataset=SpotKlineDataset(minute_config_8),
             mode="batch",
             data_columns=["open", "close", "volume"],
@@ -373,10 +385,10 @@ def test_kunquant_factor_resample_and_stream_refusal(
             njobs=2,
         )
     )
-    daily = factor.cal().resample("1d", {"KMID": "mean", "VOLUME0": "last"})
+    daily = factor.resample("1d", {"KMID": "mean", "VOLUME0": "last"})
     assert daily._lib is None
-    assert daily.get_features().sizes == {"timestamp": DAYS, "symbol": 8}
-    assert factor.get_features().sizes["timestamp"] == DAYS * BARS_PER_DAY
+    assert dict(daily.get_features(compute_all(daily)).sizes) == {"timestamp": DAYS, "symbol": 8}
+    assert factor.get_features(compute_all(factor)).sizes["timestamp"] == DAYS * BARS_PER_DAY
     with pytest.raises(ValueError, match="init_stream"):
         daily.init_stream()
 
