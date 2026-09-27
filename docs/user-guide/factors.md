@@ -33,7 +33,9 @@ The config fields shared by both backends live on
 - `warmup_bars`: bars of history, counted on the dataset's own calendar,
   that `compute(start, end)` reads before `start` so that rolling
   computations already have a full window on the first requested bar.
-- `dataset`: the dataset the factor reads prices from.
+- `dataset`: the dataset the factor reads prices from, or a list of datasets,
+  which the factor merges into one `MergedDataset` (see the factor reference,
+  `docs/factor.md`, "Merge several datasets into one input").
 - `file_path`: the Zarr store `build` writes the factor values to and `read`
   reads them back from.
 - `factor_names`: which outputs to produce. Left `None`, it is filled with
@@ -54,7 +56,7 @@ model can take factors from both at once.
 | Factor logic | a graph of KunQuant operators, compiled to native code | a Polars lazy expression chain |
 | Modes | batch (`compute()`) and streaming (`cal_stream()`) | batch only |
 | Built-in sets | Alpha101, Alpha158, residual momentum, labels | `Momentum` (a reference example) |
-| Input columns | named in `data_columns` | whatever columns the store holds |
+| Input columns | named in `data_columns`, under the shared names | whatever columns the store holds; the shared names over a merged input |
 
 KunQuant is the main backend. It runs the same compiled graph over a whole
 history in batch mode or one bar at a time in streaming mode. A factor you
@@ -278,7 +280,8 @@ Three details matter. Sort by symbol and time and use `.over("symbol")` so
 that shifts and rolling windows stay within one symbol. End with the
 `.select(...)`: any price column left in the frame would be stored as a
 factor. And spell columns exactly as the store does. No renaming happens on
-the Polars path, which is why the built-in `quantlab.factor.momentum.Momentum`
+the Polars path (except over a merged input, which carries the shared
+names), which is why the built-in `quantlab.factor.momentum.Momentum`
 reads `Close` and works only on the crypto kline store. Reading the names
 from the schema means the constructor reads a few rows of the store, so the
 store must exist before you build the factor.

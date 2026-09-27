@@ -202,7 +202,12 @@ hooks: `_raw_data_to_xr` returns the panel for the configured date range,
 KunQuant factor engine. Everything else, including storage, cleaning,
 resumable chunked conversion and date-range requests (`panel(start, end)`,
 `bar_before(date, n)`), is inherited. The config's dates and symbols bound
-only what the build path converts.
+only what the build path converts. When the store's variable names differ
+from the shared ones (`open`, `high`, `low`, `close`, `volume`, `amount`),
+set the class attribute `COLUMN_MAP` from store name to shared name:
+`to_shared_names` applies it, `_to_kunquant` can export through
+`self._kunquant_arrays(self.to_shared_names(data), data_columns)`, and a
+`MergedDataset` renames the dataset with it before merging.
 
 This dataset reads daily bars from a single long-format CSV file:
 

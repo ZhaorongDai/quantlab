@@ -9,16 +9,18 @@ below. The *raw tier* is the vendor's files as downloaded, before
 conversion.
 
 ``BaseDataset`` holds the lifecycle shared by every dataset: a config with
-normalised ISO dates, a Zarr storage backend, ``from_raw_data``, ``save`` and
-``read`` for converting the whole date range at once, and
+normalised ISO dates, a Zarr storage backend, ``from_raw_data`` and ``save``
+for converting the whole date range at once, and
 ``from_raw_data_chunked`` and ``update`` for converting one time window at a
 time so that an interrupted run can resume. ``MarketDataset`` adds the
 ``to_kunquant`` export for market data (arrays for the KunQuant factor
 engine).
 
 A concrete dataset lives under ``quantlab/dataset/`` and implements
-``_raw_data_to_xr``. The factor layer reads the panel through
-``get_xarray_dataset`` or ``get_lazyframe``.
+``_raw_data_to_xr``. The factor layer asks it for a date range with
+``panel(start, end)`` and counts warm-up with ``bar_before(date, n)``;
+``quantlab.dataset.merged.MergedDataset`` answers the same requests for
+several datasets merged into one panel.
 """
 
 import copy
@@ -1729,7 +1731,8 @@ class MarketDataset(BaseDataset):
     On top of ``BaseDataset`` this class adds ``to_kunquant``, which returns
     contiguous ``[time, symbol]`` float32 arrays for KunQuant (the compiled
     factor engine). A subclass implements ``_raw_data_to_xr``,
-    ``_raw_data_to_xr_window`` and ``_to_kunquant``.
+    ``_raw_data_to_xr_window`` and ``_to_kunquant``, and sets ``COLUMN_MAP``
+    when its variable names differ from the shared ones.
 
     Parameters
     ----------

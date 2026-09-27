@@ -132,16 +132,18 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 ### Merge several datasets into one input
 
-`dataset` also takes a list of datasets. The factor merges them into one `MergedDataset`: each input is renamed to the shared variable names with its own `COLUMN_MAP` (a spot store's `Close` becomes `close`; a stock store keeps its names), then the inputs are outer-joined on timestamp and symbol, NaN where an input has no value. This covers an index store plus an ETF store (same variables, different symbols) and prices plus quotes (same symbols, different variables), across dataset classes. Warm-up is counted on the union of the inputs' calendars.
+`dataset` also takes a list of datasets. The factor merges them into one `MergedDataset`: each input is renamed to the shared variable names with its own `COLUMN_MAP` (a spot store's `Close` becomes `close`; a stock store keeps its names), then the inputs are outer-joined on timestamp and symbol, NaN where an input has no value. This covers an index store plus an ETF store (same variables, different symbols) and prices plus quotes (same symbols, different variables), across dataset classes. Warm-up is counted on the union of the inputs' calendars. The example continues the session above: the spot store is split into four spot symbols and four symbols stored under the shared names, and a Polars factor reads the shared names from both.
 
 ```python
->>> from quantlab.base.config import FactorConfig
+>>> import polars as pl
+>>> from quantlab.base.factor import FactorPolars
 >>> from quantlab.dataset.merged import MergedDataset
 >>> from quantlab.dataset.stock import StockDataset
->>> shared = {"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume", "Quote asset volume": "amount"}
 >>> XrBackend().to_internal(raw.sel(symbol=symbols[:4])).write("data/spot_half.zarr")
 XrBackend()
->>> XrBackend().to_internal(raw.sel(symbol=symbols[4:]).rename(shared)).write("data/stock_half.zarr")
+>>> XrBackend().to_internal(
+...     raw.sel(symbol=symbols[4:]).rename(SpotKlineDataset.COLUMN_MAP)
+... ).write("data/stock_half.zarr")
 XrBackend()
 >>> spot_half = SpotKlineDataset(DatasetConfig(
 ...     raw_data_dir_path="data/raw", zarr_file_path="data/spot_half.zarr",
@@ -154,22 +156,29 @@ XrBackend()
 >>> panel = MergedDataset([spot_half, stock_half]).panel("2024-02-01", "2024-02-29")
 >>> dict(panel.sizes), sorted(panel.data_vars)
 ({'timestamp': 29, 'symbol': 8}, ['amount', 'close', 'high', 'low', 'open', 'volume'])
->>> ma_dev = MaDeviation(FactorConfig(          # the KunQuant factor under "Extending"
-...     warmup_bars=5, dataset=[spot_half, stock_half], mode="batch",
-...     data_columns=("close",), file_path="data/factors/ma_dev.zarr",
+>>> class Range(FactorPolars):
+...     def _get_factor_lazyframe(self, lf):
+...         return lf.with_columns(
+...             ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("range")
+...         ).select(["timestamp", "symbol", "range"])
+...     def _get_features(self, data):
+...         return data
+...
+>>> factor_range = Range(PolarsFactorConfig(
+...     warmup_bars=0, dataset=[spot_half, stock_half], file_path="data/factors/range.zarr",
 ... ))
->>> type(ma_dev.config.dataset).__name__
+>>> type(factor_range.config.dataset).__name__
 'MergedDataset'
->>> dict(ma_dev.compute("2024-02-01", "2024-02-29").sizes)
+>>> dict(factor_range.compute("2024-02-01", "2024-02-29").sizes)
 {'timestamp': 29, 'symbol': 8}
->>> cfg = ma_dev.get_config()
+>>> cfg = factor_range.get_config()
 >>> cfg["dataset"]["name"], [d["zarr_file_path"] for d in cfg["dataset"]["datasets"]]
 ('quantlab.dataset.merged.MergedDataset', ['data/spot_half.zarr', 'data/stock_half.zarr'])
->>> load_factor_from_config(cfg) == ma_dev
+>>> load_factor_from_config(cfg) == factor_range
 True
 ```
 
-A merge never picks a value by input order. A cell holding a value in two inputs raises `ValueError: MergedDataset: variable 'close' holds a value in both SpotKlineDataset(data/spot_half.zarr) and SpotKlineDataset(data/overlap.zarr), for example at symbol 'S3USDT' on 2024-02-01 00:00:00. ...`, and inputs on different bars raise `ValueError: MergedDataset: the inputs have different bar spacing (SpotKlineDataset(data/spot_half.zarr): 1 days 00:00:00, SpotKlineDataset(data/hourly.zarr): 0 days 01:00:00). ...`. A Polars factor over a merge receives the shared names (`close`, not `Close`). Stream mode refuses a merge: `ValueError: MaDeviation: stream mode takes one dataset, got a merge of 2. ...`. `MergedDataset` is itself a dataset, with `panel` and `bar_before`; it holds no store, so `save`, `resample` and the build path refuse.
+A merge never picks a value by input order. A cell holding a value in two inputs raises `ValueError: MergedDataset: variable 'close' holds a value in both SpotKlineDataset(data/spot_half.zarr) and SpotKlineDataset(data/overlap.zarr), for example at symbol 'S3USDT' on 2024-02-01 00:00:00. ...`, and inputs on different bars raise `ValueError: MergedDataset: the inputs have different bar spacing (SpotKlineDataset(data/spot_half.zarr): 1 days 00:00:00, SpotKlineDataset(data/hourly.zarr): 0 days 01:00:00). ...`. A KunQuant factor over a merge lists the shared names in `data_columns`, as a Polars factor spells them in its expressions (`close`, not `Close`). Stream mode refuses a merge when the factor is constructed: `ValueError: MaDeviation: stream mode takes one dataset, got a merge of 2. ...`. `MergedDataset` is itself a dataset, with `panel` and `bar_before`; it holds no store, so `store_path`, `save`, `resample` and the build path refuse. Resample the inputs before merging them; a factor over a merge can itself be resampled when every input cuts bars the same way. A merged dataset cannot yet be a backtest's `price_dataset` or `benchmark_dataset`, which need a store path.
 
 ### Resample a factor onto coarser bars
 
@@ -496,7 +505,7 @@ In stream mode every entry of `data_columns` must be consumed by an `Output`, be
 
 `get_features(panel)` raises a bare `NotImplementedError` when the factor class does not override `_get_features`. Likewise `get_labels(panel)` on a features-only class raises `RuntimeError: Momentum does not support get_label()`.
 
-A Polars factor that names a column its store does not have fails when the object is constructed, because the factor names are derived by running the expression on a few rows: `polars.exceptions.ColumnNotFoundError: unable to find column "close"; valid columns: ["timestamp", "symbol", "Close", ...]`. Use the store's own names (`Close`), not KunQuant's (`close`).
+A Polars factor that names a column its store does not have fails when the object is constructed, because the factor names are derived by running the expression on a few rows: `polars.exceptions.ColumnNotFoundError: unable to find column "close"; valid columns: ["timestamp", "symbol", "Close", ...]`. Use the store's own names (`Close`), not KunQuant's (`close`), except over a merged input, which carries the shared names (`close`).
 
 `read(start, end)` and `extend(end)` need the range `build` records: a store written some other way raises `ValueError: Momentum.read(): the store at data/factors/nob.zarr has no recorded range, so it cannot answer a date-range request; write it with build(start, end).` `extend(end)` with an `end` the recorded range already reaches raises `ValueError: Momentum.extend(): the store at data/factors/momentum.zarr already covers 2024-01-21 to 2024-03-20; extend() appends only bars after 2024-03-20, got end '2024-03-10'.`
 
