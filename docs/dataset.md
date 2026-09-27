@@ -281,7 +281,7 @@ Bars are cut on the UTC clock by default, labelled at their start, which suits b
 
 ### A new market source
 
-A new source needs one subclass of `MarketDataset` and a config. Three methods are required. `_raw_data_to_xr` returns the panel for the whole configured range, deduplicated and unique on `(timestamp, symbol)`. `_raw_data_to_xr_window` returns one date window, reindexed onto `symbols` when they are given; the simplest form slices the whole-range result. `_to_kunquant` maps the panel onto arrays. The example reads one CSV per symbol and is saved as `csv_daily.py`.
+A new source needs one subclass of `MarketDataset` and a config. Three methods are required. `_raw_data_to_xr` returns the panel for the whole configured range, deduplicated and unique on `(timestamp, symbol)`. `_raw_data_to_xr_window` returns one date window, reindexed onto `symbols` when they are given; the simplest form slices the whole-range result. `_to_kunquant` maps the panel onto arrays; a source whose variable names differ from the shared ones (`open`, `high`, `low`, `close`, `volume`, `amount`) also sets `COLUMN_MAP`, which `to_shared_names` and a merge apply. The example reads one CSV per symbol and is saved as `csv_daily.py`.
 
 ```python
 # csv_daily.py

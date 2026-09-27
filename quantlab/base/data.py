@@ -783,18 +783,20 @@ class BaseDataset(ABC):
         calendar = self._calendar()
         position = int(calendar.searchsorted(target, side="left"))
         if position < n:
-            store = (
-                self.config.zarr_file_path
-                if self._reads_source_store()
-                else self.store_path
-            )
             raise InsufficientHistoryError(
                 f"{self.class_name}.bar_before(): only {position} bar(s) "
-                f"exist before {date!r} in {store}, but {n} were requested.",
+                f"exist before {date!r} in {self._calendar_source()}, but {n} "
+                f"were requested.",
                 available=position,
                 requested=n,
             )
         return calendar[position - n]
+
+    def _calendar_source(self) -> str:
+        """Return the store ``_calendar`` reads, for error messages."""
+        if self._reads_source_store():
+            return self.config.zarr_file_path
+        return self.store_path
 
     def _calendar(self) -> pd.DatetimeIndex:
         """Return the sorted timestamps requests are answered on."""
@@ -1752,6 +1754,69 @@ class MarketDataset(BaseDataset):
 
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = DatasetConfig
+
+    #: The store's own variable names mapped onto the shared names every
+    #: factor programs against (``open``, ``high``, ``low``, ``close``,
+    #: ``volume``, ``amount``). A variable not named here keeps its name.
+    COLUMN_MAP: dict[str, str] = {}
+
+    def to_shared_names(self, panel: xr.Dataset) -> xr.Dataset:
+        """Return ``panel`` with its variables renamed by ``COLUMN_MAP``.
+
+        Names of ``COLUMN_MAP`` the panel does not hold are skipped. This is
+        the renaming ``to_kunquant`` applies, and the one a merge applies to
+        each of its inputs.
+
+        Parameters
+        ----------
+        panel : xr.Dataset
+            A panel of this dataset.
+
+        Returns
+        -------
+        xr.Dataset
+            The same panel under the shared names.
+
+        Examples
+        --------
+        >>> spot = SpotKlineDataset(spot_config)   # Binance's Title-Case names
+        >>> list(spot.to_shared_names(spot.panel("2024-01-02", "2024-01-05")).data_vars)
+        ['open', 'high', 'low', 'close', 'volume', 'amount']
+        """
+        return panel.rename(self.shared_name_map(panel.data_vars))
+
+    def shared_name_map(self, names) -> dict[str, str]:
+        """Return the part of ``COLUMN_MAP`` that applies to ``names``.
+
+        Parameters
+        ----------
+        names : iterable of str
+            Variable or column names, such as a panel's ``data_vars`` or a
+            ``LazyFrame``'s columns.
+
+        Examples
+        --------
+        >>> spot.shared_name_map(["timestamp", "Close", "Volume"])
+        {'Close': 'close', 'Volume': 'volume'}
+        """
+        names = set(names)
+        return {k: v for k, v in self.COLUMN_MAP.items() if k in names}
+
+    @staticmethod
+    def _kunquant_arrays(
+        data: xr.Dataset, data_columns: tuple[str, ...]
+    ) -> tuple[dict, np.ndarray, np.ndarray]:
+        """Export ``data_columns`` of ``data`` as contiguous float32 arrays.
+
+        The panel is sorted by timestamp and symbol first; every array is
+        laid out ``[time, symbol]``.
+        """
+        data = data.sortby(["timestamp", "symbol"])
+        inputs = {
+            col: np.ascontiguousarray(data[col].to_numpy().astype(np.float32))
+            for col in data_columns
+        }
+        return inputs, data["symbol"].values, data["timestamp"].values
 
     def to_kunquant(
         self,

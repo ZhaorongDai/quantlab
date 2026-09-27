@@ -67,6 +67,16 @@ if TYPE_CHECKING:
     from quantlab.analysis.factor_report import FactorAnalysis
 
 
+def _as_one_dataset(dataset):
+    """Return ``dataset``, or a ``MergedDataset`` of it when it is a list or tuple."""
+    if isinstance(dataset, (list, tuple)):
+        # Imported here so the base layer does not import the dataset layer.
+        from quantlab.dataset.merged import MergedDataset
+
+        return MergedDataset(dataset)
+    return dataset
+
+
 def _on_panel_axes(data: xr.Dataset) -> xr.Dataset:
     """Return ``data`` laid out on ``(timestamp, symbol)``."""
     return XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
@@ -95,7 +105,8 @@ class Factor(ABC):
     ----------
     config : BaseFactorConfig
         The factor config. Its ``dataset`` field is the dataset it
-        reads from.
+        reads from, or a list of datasets, which the factor merges into one
+        ``MergedDataset`` (see ``quantlab.dataset.merged``).
 
     Attributes
     ----------
@@ -160,9 +171,10 @@ class Factor(ABC):
     def config(self, config: BaseFactorConfig):
         """Install a normalised copy of ``config``.
 
-        ``name`` is set to this class's import path, the resample fields are
-        checked, ``factor_names`` are resolved if unset, and
-        ``_validate_config`` runs. The config passed in is never edited, and
+        ``name`` is set to this class's import path, a list or tuple in
+        ``dataset`` becomes a ``MergedDataset`` of it, the resample fields
+        are checked, ``_check_dataset`` runs, ``factor_names`` are resolved
+        if unset, and ``_validate_config`` runs. The config passed in is never edited, and
         nothing is written into the dataset's config. If any step raises, the
         factor keeps the config it had. Nothing here touches the storage
         backend, which does not exist yet when ``__init__`` assigns the
@@ -184,6 +196,9 @@ class Factor(ABC):
         (('momentum_5',), None)
         >>> factor.config.dataset.config is dataset.config   # left untouched
         True
+        >>> factor.config = dataclasses.replace(config, dataset=[index, etf])
+        >>> type(factor.config.dataset).__name__
+        'MergedDataset'
         """
         validate_resample_config(
             config.resample_freq, config.resample_how, self.class_name
@@ -192,8 +207,11 @@ class Factor(ABC):
         # label's horizon sits in its kwargs), so the candidate is installed
         # first and the previous config restored if either raises.
         previous = self.__dict__.get("_config")
-        self._config = dataclasses.replace(config, name=self.import_path)
+        self._config = dataclasses.replace(
+            config, name=self.import_path, dataset=_as_one_dataset(config.dataset)
+        )
         try:
+            self._check_dataset()
             if self._config.factor_names is None:
                 self._config = dataclasses.replace(
                     self._config, factor_names=tuple(self._get_factor_names())
@@ -205,6 +223,14 @@ class Factor(ABC):
             else:
                 self._config = previous
             raise
+
+    def _check_dataset(self) -> None:
+        """Refuse an installed ``config.dataset`` this backend cannot read.
+
+        Does nothing here; ``FactorKunQuant`` refuses a merged input in
+        stream mode. It runs before ``_validate_config``, and a raise leaves
+        the factor's previous config in place.
+        """
 
     def _validate_config(self) -> None:
         """Refuse an installed config this factor cannot compute from.
@@ -998,6 +1024,30 @@ class FactorKunQuant(Factor):
         other._buffer_name_to_id = dict()
         return other
 
+    def _check_dataset(self) -> None:
+        """Refuse a merged input in stream mode.
+
+        A stream is fed one bar at a time for a fixed symbol list, which a
+        merge of several stores does not have.
+
+        Raises
+        ------
+        ValueError
+            If ``config.mode`` is ``"stream"`` and ``config.dataset`` is a
+            ``MergedDataset``.
+        """
+        from quantlab.dataset.merged import MergedDataset
+
+        if self.config.mode == "stream" and isinstance(
+            self.config.dataset, MergedDataset
+        ):
+            raise ValueError(
+                f"{self.class_name}: stream mode takes one dataset, got a "
+                f"merge of {len(self.config.dataset.datasets)}. A stream is "
+                f"fed one bar at a time for a fixed symbol list; compute a "
+                f"merged input in batch mode."
+            )
+
     def compute(
         self,
         start: "str | datetime.date | pd.Timestamp",
@@ -1358,7 +1408,9 @@ class FactorPolars(Factor):
     from the store) and always match what the expression chain produces.
 
     Column names are whatever the underlying store holds; unlike the KunQuant
-    path, no per-market renaming is applied.
+    path, no per-market renaming is applied. A merged input is the exception:
+    a merge renames every input to the shared names (``close``, not
+    ``Close``) before the factor sees it.
 
     Parameters
     ----------

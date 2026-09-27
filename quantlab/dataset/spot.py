@@ -32,7 +32,8 @@ class SpotKlineDataset(MarketDataset):
     ``<SYMBOL>-...csv``. The column names come from
     ``BinanceCSVHeaders.SPOT`` and the symbol comes from the file name.
     Columns keep Binance's Title-Case spelling (``Open``, ``High``, ...);
-    ``_to_kunquant`` renames them to the lowercase names KunQuant expects.
+    ``COLUMN_MAP`` renames them to the shared lowercase names in
+    ``to_kunquant`` and in a merge.
 
     Parameters
     ----------
@@ -55,6 +56,17 @@ class SpotKlineDataset(MarketDataset):
     # Binance columns are Title-Case, so the schema check cannot use the
     # shared lowercase default names; ``_clean`` passes these instead.
     _RAW_REQUIRED_COLUMNS = ("Open", "High", "Low", "Close", "Volume")
+
+    #: ``Quote asset volume`` (traded value in the quote currency) becomes
+    #: ``amount`` and the OHLCV columns are lowercased.
+    COLUMN_MAP = {
+        "Open": "open",
+        "High": "high",
+        "Low": "low",
+        "Close": "close",
+        "Volume": "volume",
+        "Quote asset volume": "amount",
+    }
 
     def __init__(self, dataset_config: DatasetConfig):
         """Initialize the dataset; see the class docstring for parameters."""
@@ -214,10 +226,7 @@ class SpotKlineDataset(MarketDataset):
     def _to_kunquant(
         self, data: xr.Dataset, data_columns: tuple
     ) -> tuple[dict, np.ndarray, np.ndarray]:
-        """Rename Binance columns to KunQuant's names and export float32 arrays.
-
-        ``Quote asset volume`` (traded value in the quote currency) becomes
-        ``amount`` and the OHLCV columns are lowercased.
+        """Rename Binance columns by ``COLUMN_MAP`` and export float32 arrays.
 
         Parameters
         ----------
@@ -237,22 +246,4 @@ class SpotKlineDataset(MarketDataset):
             Timestamps of the first axis.
         """
         with Timer(f"{self.__class__.__name__}: to kunquant"):
-            data = data.rename(
-                {
-                    "Quote asset volume": "amount",
-                    "Open": "open",
-                    "High": "high",
-                    "Low": "low",
-                    "Close": "close",
-                    "Volume": "volume",
-                }
-            )
-            data = data.sortby(["timestamp", "symbol"])
-            timestamp = data["timestamp"].values
-            symbols = data["symbol"].values
-            input_dict = {}
-            for col in data_columns:
-                input_dict[col] = np.ascontiguousarray(
-                    data[col].to_numpy().astype(np.float32)
-                )  # [time, symbol]
-            return input_dict, symbols, timestamp
+            return self._kunquant_arrays(self.to_shared_names(data), data_columns)

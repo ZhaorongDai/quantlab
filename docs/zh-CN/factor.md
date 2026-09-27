@@ -17,7 +17,7 @@ KunQuant 因子在运行时编译 C++，需要可用的 C++ 编译器；Polars �
 | 逻辑写在 | `_get_factor_func` 中的 KunQuant 计算图 | `_get_factor_lazyframe` 中的 Polars 表达式链 |
 | 运行方式 | 批量和流式 | 仅批量 |
 | 配置类 | `FactorConfig` | `PolarsFactorConfig` |
-| 输入列名 | 由数据集重命名（`close`、`amount`、`adjClose`） | 存储中的原始列名（`Close`） |
+| 输入列名 | 共享列名：存储自己的列名，数据集定义了 `COLUMN_MAP` 时按它改名（现货存储的 `Close` 变成 `close`） | 存储中的原始列名（`Close`）；合并输入时为共享列名 |
 | 输出 dtype | float32 | float64 |
 | 开销 | 每次 `compute()` 都要编译计算图 | 无 |
 
@@ -30,7 +30,7 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 | 字段 | 含义 |
 |---|---|
 | `warmup_bars` | 在请求的起点之前读取的历史 bar 数，用来让滚动算子预热；在数据集自己的日历上数 |
-| `dataset` | 因子读取的数据集 |
+| `dataset` | 因子读取的数据集，或由它合并的数据集列表（见下文） |
 | `file_path` | `build` 写入、`read` 读取的 Zarr 存储 |
 | `factor_names` | 输出列名；为 `None` 时由因子自己推出 |
 | `kwargs` | 因子类自行读取的自由选项 |
@@ -129,6 +129,47 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
 ('Momentum', ('momentum_5',))
 ```
+
+### 把多个数据集合并成一个输入
+
+`dataset` 也接受一个数据集列表。因子把它们合并成一个 `MergedDataset`：每个输入先按自己的 `COLUMN_MAP` 改成共享变量名（现货存储的 `Close` 变成 `close`；股票存储保持原名），然后在 timestamp 和 symbol 上做外连接，某个输入没有值的格子为 NaN。这覆盖了指数存储加 ETF 存储（变量相同、标的不同）和价格加报价（标的相同、变量不同）两种情况，也可以跨数据集类合并。预热在各输入日历的并集上数。
+
+```python
+>>> from quantlab.base.config import FactorConfig
+>>> from quantlab.dataset.merged import MergedDataset
+>>> from quantlab.dataset.stock import StockDataset
+>>> shared = {"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume", "Quote asset volume": "amount"}
+>>> XrBackend().to_internal(raw.sel(symbol=symbols[:4])).write("data/spot_half.zarr")
+XrBackend()
+>>> XrBackend().to_internal(raw.sel(symbol=symbols[4:]).rename(shared)).write("data/stock_half.zarr")
+XrBackend()
+>>> spot_half = SpotKlineDataset(DatasetConfig(
+...     raw_data_dir_path="data/raw", zarr_file_path="data/spot_half.zarr",
+...     market="crypto_spot", frequency="1d",
+... ))
+>>> stock_half = StockDataset(DatasetConfig(
+...     raw_data_dir_path="data/raw", zarr_file_path="data/stock_half.zarr",
+...     market="us_equity", frequency="1d",
+... ))
+>>> panel = MergedDataset([spot_half, stock_half]).panel("2024-02-01", "2024-02-29")
+>>> dict(panel.sizes), sorted(panel.data_vars)
+({'timestamp': 29, 'symbol': 8}, ['amount', 'close', 'high', 'low', 'open', 'volume'])
+>>> ma_dev = MaDeviation(FactorConfig(          # “扩展”一节中的 KunQuant 因子
+...     warmup_bars=5, dataset=[spot_half, stock_half], mode="batch",
+...     data_columns=("close",), file_path="data/factors/ma_dev.zarr",
+... ))
+>>> type(ma_dev.config.dataset).__name__
+'MergedDataset'
+>>> dict(ma_dev.compute("2024-02-01", "2024-02-29").sizes)
+{'timestamp': 29, 'symbol': 8}
+>>> cfg = ma_dev.get_config()
+>>> cfg["dataset"]["name"], [d["zarr_file_path"] for d in cfg["dataset"]["datasets"]]
+('quantlab.dataset.merged.MergedDataset', ['data/spot_half.zarr', 'data/stock_half.zarr'])
+>>> load_factor_from_config(cfg) == ma_dev
+True
+```
+
+合并从不按输入顺序取值。同一个格子在两个输入里都有值时抛出 `ValueError: MergedDataset: variable 'close' holds a value in both SpotKlineDataset(data/spot_half.zarr) and SpotKlineDataset(data/overlap.zarr), for example at symbol 'S3USDT' on 2024-02-01 00:00:00. ...`；bar 间隔不同的输入抛出 `ValueError: MergedDataset: the inputs have different bar spacing (SpotKlineDataset(data/spot_half.zarr): 1 days 00:00:00, SpotKlineDataset(data/hourly.zarr): 0 days 01:00:00). ...`。合并输入上的 Polars 因子拿到的是共享列名（`close` 而不是 `Close`）。流式模式拒绝合并输入：`ValueError: MaDeviation: stream mode takes one dataset, got a merge of 2. ...`。`MergedDataset` 本身就是数据集，有 `panel` 和 `bar_before`；它没有自己的存储，所以 `save`、`resample` 和构建路径都会拒绝。
 
 ### 把因子重采样到更粗的 bar
 

@@ -104,6 +104,8 @@ def load_dataset_from_config(config: dict):
     # Configs saved before `catalog_path` was removed still carry the key.
     config.pop("catalog_path", None)
     cls = get_cls_from_path(config["name"])
+    if "datasets" in config:  # a merged dataset nests its inputs' configs
+        config["datasets"] = [load_dataset_from_config(d) for d in config["datasets"]]
     return cls(_config_cls_of(cls)(**config))
 
 

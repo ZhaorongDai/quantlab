@@ -1,0 +1,396 @@
+"""Several datasets merged into one panel.
+
+A *merge* combines panels with the same bar spacing into one: each input is
+renamed to the shared variable names with its own ``COLUMN_MAP``, then the
+inputs are outer-joined on ``timestamp`` and ``symbol``, NaN where an input
+has no value. It covers inputs with the same variables over different
+symbols (an index store and an ETF store) and inputs with the same symbols
+and different variables (prices and quotes), across dataset classes. A cell
+holding a value in more than one input is an error, never resolved by input
+order, and so are inputs with different bar spacing.
+
+``MergedDataset`` is itself a ``MarketDataset``, so any consumer of a dataset
+accepts it. A factor config given a list of datasets builds one.
+"""
+
+from itertools import combinations
+from typing import Self, Sequence
+
+import numpy as np
+import pandas as pd
+import polars as pl
+import xarray as xr
+
+from quantlab.backend import XrBackend
+from quantlab.base.config import MergedDatasetConfig
+from quantlab.base.data import BaseDataset, MarketDataset
+from quantlab.utils.date_range import check_range
+
+
+class MergedDataset(MarketDataset):
+    """A read-only view merging several datasets into one panel.
+
+    ``panel(start, end, symbols)`` asks every input for the same range,
+    renames each to the shared variable names, checks that no cell holds a
+    value in two inputs, and outer-joins them. ``bar_before`` counts bars on
+    the union of the inputs' calendars. The merged view holds no store and
+    no data: it cannot be built from raw files, saved or resampled; build,
+    save or resample its inputs instead.
+
+    Parameters
+    ----------
+    config : MergedDatasetConfig or sequence of BaseDataset
+        The datasets to merge, in order, or a config holding them.
+
+    Raises
+    ------
+    ValueError
+        If no dataset is given, or an input is not a dataset.
+
+    Examples
+    --------
+    ``index`` holds S&P 500 members, ``etf`` holds SPY, both daily:
+
+    >>> merged = MergedDataset([index, etf])
+    >>> panel = merged.panel("2024-01-02", "2024-01-31")
+    >>> panel.sizes["symbol"] == index.panel("2024-01-02", "2024-01-31").sizes["symbol"] + 1
+    True
+    """
+
+    # Narrower type annotation for readers and type checkers only.
+    config: MergedDatasetConfig
+
+    #: The config class used to rebuild this dataset from a saved config.
+    config_cls = MergedDatasetConfig
+
+    def __init__(self, config: "MergedDatasetConfig | Sequence[BaseDataset]"):
+        """Initialize the view; see the class docstring for parameters."""
+        if not isinstance(config, MergedDatasetConfig):
+            config = MergedDatasetConfig(datasets=tuple(config))
+        super().__init__(config)
+
+    @property
+    def datasets(self) -> tuple[BaseDataset, ...]:
+        """The merged datasets, in order.
+
+        Examples
+        --------
+        >>> MergedDataset([index, etf]).datasets == (index, etf)
+        True
+        """
+        return self.config.datasets
+
+    def _normalize_config(self, config: MergedDatasetConfig) -> MergedDatasetConfig:
+        """Return ``config`` with ``name`` set, refusing an empty or non-dataset input."""
+        if not config.datasets:
+            raise ValueError(f"{self.class_name}: at least one dataset is needed.")
+        for dataset in config.datasets:
+            if not isinstance(dataset, BaseDataset):
+                raise ValueError(
+                    f"{self.class_name}: every input must be a dataset, got "
+                    f"{type(dataset).__name__}."
+                )
+        return MergedDatasetConfig(
+            datasets=tuple(config.datasets), name=self.import_path
+        )
+
+    def panel(
+        self,
+        start,
+        end,
+        symbols: "Sequence | None" = None,
+    ) -> xr.Dataset:
+        """Return the merged panel from ``start`` to ``end``, both inclusive.
+
+        Every input is asked for the range (and for those of ``symbols`` it
+        holds), renamed to the shared names and outer-joined. The panel spans
+        the union of the inputs' timestamps and symbols, NaN where an input
+        has no value. Unlike a single dataset's panel it is loaded into
+        memory, because finding a cell held twice reads every value.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range to return. A date-only ``end`` includes every bar of
+            that day.
+        symbols : sequence, optional
+            Symbol labels to keep, in the order given. ``None`` keeps every
+            symbol of every input.
+
+        Returns
+        -------
+        xr.Dataset
+            The panel on ``(timestamp, symbol)``.
+
+        Raises
+        ------
+        ValueError
+            If ``start`` is after ``end``, the inputs have different bar
+            spacing, or a cell holds a value in more than one input; the
+            message names the variable and both inputs.
+        KeyError
+            If a requested symbol is in no input.
+
+        Examples
+        --------
+        >>> dict(MergedDataset([prices, quotes]).panel("2024-01-02", "2024-01-05").sizes)
+        {'timestamp': 4, 'symbol': 3}
+        >>> MergedDataset([index, index_copy]).panel("2024-01-02", "2024-01-05")
+        Traceback (most recent call last):
+        ValueError: MergedDataset: variable 'close' holds a value in both ...
+        """
+        check_range(start, end, f"{self.class_name}.panel()")
+        self._check_spacing()
+        panels = []
+        for dataset in self.datasets:
+            data = dataset.panel(start, end)
+            if symbols is not None:
+                held = set(data["symbol"].values.tolist())
+                data = data.sel(symbol=[s for s in symbols if s in held])
+            panels.append(_shared_names(dataset, data))
+        merged = self._merge(panels)
+        if symbols is not None:
+            merged = merged.sel(symbol=list(symbols))
+        return XrBackend().to_internal(merged).get_xarray_dataset(
+            ["timestamp", "symbol"]
+        )
+
+    def _merge(self, panels: list[xr.Dataset]) -> xr.Dataset:
+        """Outer-join ``panels``, raising on a cell held by two of them."""
+        aligned = xr.align(*panels, join="outer")
+        names = dict.fromkeys(name for p in aligned for name in p.data_vars)
+        for name in names:
+            holders = [
+                (dataset, panel[name].notnull())
+                for dataset, panel in zip(self.datasets, aligned)
+                if name in panel.data_vars
+            ]
+            for (first, a), (second, b) in combinations(holders, 2):
+                both = (a & b).transpose("timestamp", "symbol")
+                if bool(both.any()):
+                    t, s = np.argwhere(both.values)[0]
+                    raise ValueError(
+                        f"{self.class_name}: variable {name!r} holds a value "
+                        f"in both {_describe(first)} and {_describe(second)}, "
+                        f"for example at symbol "
+                        f"{both['symbol'].values[s].item()!r} on "
+                        f"{pd.Timestamp(both['timestamp'].values[t])}. A merge "
+                        f"never resolves a cell by input order; give the "
+                        f"inputs disjoint symbols or variables."
+                    )
+        merged = aligned[0]
+        for panel in aligned[1:]:
+            merged = merged.combine_first(panel)
+        return merged
+
+    def _check_spacing(self) -> None:
+        """Raise unless every input has the same most common bar spacing.
+
+        An input with fewer than two bars has no spacing and is skipped.
+        """
+        spacings = {}
+        for dataset in self.datasets:
+            calendar = dataset._calendar()
+            if len(calendar) > 1:
+                spacings[_describe(dataset)] = pd.Series(calendar).diff().mode()[0]
+        if len(set(spacings.values())) > 1:
+            listed = ", ".join(f"{k}: {v}" for k, v in spacings.items())
+            raise ValueError(
+                f"{self.class_name}: the inputs have different bar spacing "
+                f"({listed}). Only panels on the same bars are merged; "
+                f"resample the finer inputs first."
+            )
+
+    def _calendar(self) -> pd.DatetimeIndex:
+        """Return the union of the inputs' timestamps, sorted."""
+        self._check_spacing()
+        calendars = [dataset._calendar() for dataset in self.datasets]
+        return pd.DatetimeIndex(np.unique(np.concatenate([c.values for c in calendars])))
+
+    def _calendar_source(self) -> str:
+        """Return the inputs ``_calendar`` reads, for error messages."""
+        return " + ".join(_describe(dataset) for dataset in self.datasets)
+
+    def _resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
+        """Return the bar each timestamp belongs to, as every input cuts bars.
+
+        Raises
+        ------
+        ValueError
+            If two inputs cut the timestamps into different bars (a UTC
+            clock and trading sessions, say).
+        """
+        labels = [d._resample_labels(timestamps, freq) for d in self.datasets]
+        for dataset, other in zip(self.datasets[1:], labels[1:]):
+            if not np.array_equal(labels[0], other):
+                raise ValueError(
+                    f"{self.class_name}: {_describe(self.datasets[0])} and "
+                    f"{_describe(dataset)} cut {freq!r} bars differently, so "
+                    f"a factor over their merge cannot be resampled."
+                )
+        return labels[0]
+
+    def _to_kunquant(
+        self, data: xr.Dataset, data_columns: tuple[str, ...]
+    ) -> tuple[dict, np.ndarray, np.ndarray]:
+        """Export the columns as they are: the panel already holds the shared names."""
+        return self._kunquant_arrays(data, data_columns)
+
+    def head(self, n: int) -> pl.LazyFrame:
+        """Return up to ``n`` rows of every input, under the shared names.
+
+        The rows are stacked, not merged, so a ``(timestamp, symbol)`` pair
+        may repeat; the frame is meant for reading column names and dtypes.
+
+        Examples
+        --------
+        >>> sorted(MergedDataset([prices, quotes]).head(2).collect_schema().names())
+        ['amount', 'close', 'high', 'low', 'open', 'symbol', 'timestamp', 'volume']
+        """
+        frames = []
+        for dataset in self.datasets:
+            frame = dataset.head(n)
+            if isinstance(dataset, MarketDataset):
+                frame = frame.rename(
+                    dataset.shared_name_map(frame.collect_schema().names())
+                )
+            frames.append(frame)
+        return pl.concat(frames, how="diagonal_relaxed")
+
+    def copy(self) -> Self:
+        """Return a merged view over copies of the inputs.
+
+        Examples
+        --------
+        >>> other = merged.copy()
+        >>> other == merged, other.datasets[0] is merged.datasets[0]
+        (True, False)
+        """
+        return type(self)([dataset.copy() for dataset in self.datasets])
+
+    def _refuse(self, method: str):
+        """Raise: the merged view holds no store of its own."""
+        raise ValueError(
+            f"{self.class_name}.{method}(): a merged dataset is a view of its "
+            f"inputs and holds no store of its own. Call {method}() on each "
+            f"input instead."
+        )
+
+    @property
+    def store_path(self) -> str:
+        """Refuse: a merged view has no store; each input has its own.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> merged.store_path
+        Traceback (most recent call last):
+        ValueError: MergedDataset.store_path(): a merged dataset is a view of its inputs ...
+        """
+        self._refuse("store_path")
+
+    def resample(self, freq, how) -> Self:
+        """Refuse: resample the inputs, then merge them.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> MergedDataset([minute_index, minute_etf]).resample("1d", "last")
+        Traceback (most recent call last):
+        ValueError: MergedDataset.resample(): a merged dataset is a view of its inputs ...
+        >>> daily = MergedDataset([minute_index.resample("1d", "last"),
+        ...                        minute_etf.resample("1d", "last")])
+        """
+        self._refuse("resample")
+
+    def save(self, **kwargs):
+        """Refuse: save each input instead.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> merged.save()
+        Traceback (most recent call last):
+        ValueError: MergedDataset.save(): a merged dataset is a view of its inputs ...
+        """
+        self._refuse("save")
+
+    def from_raw_data(self) -> Self:
+        """Refuse: build each input instead.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> merged.from_raw_data()
+        Traceback (most recent call last):
+        ValueError: MergedDataset.from_raw_data(): a merged dataset is a view of its inputs ...
+        """
+        self._refuse("from_raw_data")
+
+    def from_raw_data_chunked(self, *args, **kwargs):
+        """Refuse: build each input instead.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> merged.from_raw_data_chunked()
+        Traceback (most recent call last):
+        ValueError: MergedDataset.from_raw_data_chunked(): a merged dataset is a view of its inputs ...
+        """
+        self._refuse("from_raw_data_chunked")
+
+    def update(self, *args, **kwargs):
+        """Refuse: update each input instead.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> merged.update()
+        Traceback (most recent call last):
+        ValueError: MergedDataset.update(): a merged dataset is a view of its inputs ...
+        """
+        self._refuse("update")
+
+    def _raw_data_to_xr(self) -> xr.Dataset:
+        """Refuse: a merged view has no raw files."""
+        self._refuse("_raw_data_to_xr")
+
+    def _raw_data_to_xr_window(self, start_date, end_date, symbols=None) -> xr.Dataset:
+        """Refuse: a merged view has no raw files."""
+        self._refuse("_raw_data_to_xr_window")
+
+
+def _shared_names(dataset: BaseDataset, panel: xr.Dataset) -> xr.Dataset:
+    """Return ``panel`` renamed by ``dataset``'s column mapping, if it has one."""
+    if isinstance(dataset, MarketDataset):
+        return dataset.to_shared_names(panel)
+    return panel
+
+
+def _describe(dataset: BaseDataset) -> str:
+    """Return ``ClassName(store)`` for an input, for error messages."""
+    return f"{dataset.class_name}({dataset._calendar_source()})"

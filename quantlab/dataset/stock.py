@@ -556,12 +556,4 @@ class StockDataset(MarketDataset):
             Timestamps of the first axis.
         """
         with Timer(f"{self.__class__.__name__}: to kunquant"):
-            data = data.sortby(["timestamp", "symbol"])
-            timestamp = data["timestamp"].values
-            symbols = data["symbol"].values
-            input_dict = {}
-            for col in data_columns:
-                input_dict[col] = np.ascontiguousarray(
-                    data[col].to_numpy().astype(np.float32)
-                )  # [time, symbol]
-            return input_dict, symbols, timestamp
+            return self._kunquant_arrays(self.to_shared_names(data), data_columns)

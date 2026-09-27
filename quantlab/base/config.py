@@ -453,6 +453,45 @@ class ConstituentDatasetConfig(BaseDatasetConfig):
     as_of: str | None = None
 
 
+@dataclass(kw_only=True, frozen=True)
+class MergedDatasetConfig(_FrozenConfig):
+    """Config of a merged dataset: the datasets it merges, in order.
+
+    A merged dataset holds no store of its own, so this config has no path,
+    dates or symbols; each input keeps its own config. ``to_dict()`` nests
+    each input's config dict under ``datasets``, and
+    ``quantlab.utils.module.load_dataset_from_config`` rebuilds them.
+
+    Examples
+    --------
+    With ``index`` and ``etf`` two datasets built earlier:
+
+    >>> cfg = MergedDatasetConfig(datasets=[index, etf])
+    >>> len(cfg.datasets)
+    2
+    >>> [d["zarr_file_path"] for d in cfg.to_dict()["datasets"]]
+    ['/data/us_equity/1d/sp500.zarr', '/data/us_equity/1d/spy.zarr']
+    """
+
+    #: The datasets merged, in order. A list is stored as a tuple.
+    datasets: tuple
+    #: Dotted import path of the dataset class; filled by the config setter.
+    name: str | None = None
+
+    def to_dict(self):
+        """Return the config as a plain dict, each input as its config dict.
+
+        Examples
+        --------
+        >>> sorted(cfg.to_dict())
+        ['datasets', 'name']
+        """
+        return {
+            "datasets": [dataset.get_config() for dataset in self.datasets],
+            "name": self.name,
+        }
+
+
 @dataclass
 class AcquisitionConfig:
     """Config of a raw-data download for one market, frequency and vendor.
@@ -573,8 +612,9 @@ class BaseFactorConfig(_FrozenConfig):
     #: Bars of history read before the requested start to warm up rolling
     #: computations, counted on the dataset's own calendar.
     warmup_bars: int
-    #: The market dataset the factor is computed from.
-    dataset: "MarketDataset"
+    #: The market dataset the factor is computed from, or a list of them,
+    #: which the factor merges into one ``MergedDataset``.
+    dataset: "MarketDataset | tuple"
     #: Path of the Zarr store ``build`` writes the factor values to and
     #: ``read`` reads them back from.
     file_path: str | None = None

@@ -17,7 +17,7 @@ KunQuant factors compile C++ at run time and need a working C++ compiler. Polars
 | Logic is written as | a KunQuant graph in `_get_factor_func` | a Polars expression chain in `_get_factor_lazyframe` |
 | Modes | batch and streaming | batch only |
 | Config class | `FactorConfig` | `PolarsFactorConfig` |
-| Input column names | renamed by the dataset (`close`, `amount`, `adjClose`) | the store's own names (`Close`) |
+| Input column names | the shared names: the store's own, renamed by the dataset's `COLUMN_MAP` where it has one (a spot store's `Close` becomes `close`) | the store's own names (`Close`); the shared names for a merged input |
 | Output dtype | float32 | float64 |
 | Cost | compiles the graph on every `compute()` | none |
 
@@ -30,7 +30,7 @@ Both backends take a config with the fields below. `FactorConfig` adds `mode` (`
 | Field | Meaning |
 |---|---|
 | `warmup_bars` | bars of history read before the requested start so rolling operators are warm, counted on the dataset's own calendar |
-| `dataset` | the dataset the factor reads |
+| `dataset` | the dataset the factor reads, or a list of datasets it merges (see below) |
 | `file_path` | Zarr store `build` writes and `read` reads |
 | `factor_names` | output column names; derived from the factor when left `None` |
 | `kwargs` | free-form options a factor class reads |
@@ -129,6 +129,47 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
 ('Momentum', ('momentum_5',))
 ```
+
+### Merge several datasets into one input
+
+`dataset` also takes a list of datasets. The factor merges them into one `MergedDataset`: each input is renamed to the shared variable names with its own `COLUMN_MAP` (a spot store's `Close` becomes `close`; a stock store keeps its names), then the inputs are outer-joined on timestamp and symbol, NaN where an input has no value. This covers an index store plus an ETF store (same variables, different symbols) and prices plus quotes (same symbols, different variables), across dataset classes. Warm-up is counted on the union of the inputs' calendars.
+
+```python
+>>> from quantlab.base.config import FactorConfig
+>>> from quantlab.dataset.merged import MergedDataset
+>>> from quantlab.dataset.stock import StockDataset
+>>> shared = {"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume", "Quote asset volume": "amount"}
+>>> XrBackend().to_internal(raw.sel(symbol=symbols[:4])).write("data/spot_half.zarr")
+XrBackend()
+>>> XrBackend().to_internal(raw.sel(symbol=symbols[4:]).rename(shared)).write("data/stock_half.zarr")
+XrBackend()
+>>> spot_half = SpotKlineDataset(DatasetConfig(
+...     raw_data_dir_path="data/raw", zarr_file_path="data/spot_half.zarr",
+...     market="crypto_spot", frequency="1d",
+... ))
+>>> stock_half = StockDataset(DatasetConfig(
+...     raw_data_dir_path="data/raw", zarr_file_path="data/stock_half.zarr",
+...     market="us_equity", frequency="1d",
+... ))
+>>> panel = MergedDataset([spot_half, stock_half]).panel("2024-02-01", "2024-02-29")
+>>> dict(panel.sizes), sorted(panel.data_vars)
+({'timestamp': 29, 'symbol': 8}, ['amount', 'close', 'high', 'low', 'open', 'volume'])
+>>> ma_dev = MaDeviation(FactorConfig(          # the KunQuant factor under "Extending"
+...     warmup_bars=5, dataset=[spot_half, stock_half], mode="batch",
+...     data_columns=("close",), file_path="data/factors/ma_dev.zarr",
+... ))
+>>> type(ma_dev.config.dataset).__name__
+'MergedDataset'
+>>> dict(ma_dev.compute("2024-02-01", "2024-02-29").sizes)
+{'timestamp': 29, 'symbol': 8}
+>>> cfg = ma_dev.get_config()
+>>> cfg["dataset"]["name"], [d["zarr_file_path"] for d in cfg["dataset"]["datasets"]]
+('quantlab.dataset.merged.MergedDataset', ['data/spot_half.zarr', 'data/stock_half.zarr'])
+>>> load_factor_from_config(cfg) == ma_dev
+True
+```
+
+A merge never picks a value by input order. A cell holding a value in two inputs raises `ValueError: MergedDataset: variable 'close' holds a value in both SpotKlineDataset(data/spot_half.zarr) and SpotKlineDataset(data/overlap.zarr), for example at symbol 'S3USDT' on 2024-02-01 00:00:00. ...`, and inputs on different bars raise `ValueError: MergedDataset: the inputs have different bar spacing (SpotKlineDataset(data/spot_half.zarr): 1 days 00:00:00, SpotKlineDataset(data/hourly.zarr): 0 days 01:00:00). ...`. A Polars factor over a merge receives the shared names (`close`, not `Close`). Stream mode refuses a merge: `ValueError: MaDeviation: stream mode takes one dataset, got a merge of 2. ...`. `MergedDataset` is itself a dataset, with `panel` and `bar_before`; it holds no store, so `save`, `resample` and the build path refuse.
 
 ### Resample a factor onto coarser bars
 

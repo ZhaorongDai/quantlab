@@ -281,7 +281,7 @@ timestamp
 
 ### 新增一个市场数据源
 
-新增一个数据源只需要一个 `MarketDataset` 子类和一个 config。必须实现三个方法。`_raw_data_to_xr` 返回整个配置范围的面板，已去重，`(timestamp, symbol)` 唯一。`_raw_data_to_xr_window` 返回一个日期窗口，给出 `symbols` 时要 reindex 到这些标的；最简单的写法是对整段结果做切片。`_to_kunquant` 把面板映射成数组。下面的例子每个标的读一个 CSV，保存为 `csv_daily.py`。
+新增一个数据源只需要一个 `MarketDataset` 子类和一个 config。必须实现三个方法。`_raw_data_to_xr` 返回整个配置范围的面板，已去重，`(timestamp, symbol)` 唯一。`_raw_data_to_xr_window` 返回一个日期窗口，给出 `symbols` 时要 reindex 到这些标的；最简单的写法是对整段结果做切片。`_to_kunquant` 把面板映射成数组；变量名与共享名（`open`、`high`、`low`、`close`、`volume`、`amount`）不同的数据源还要设置 `COLUMN_MAP`，`to_shared_names` 和合并都按它改名。下面的例子每个标的读一个 CSV，保存为 `csv_daily.py`。
 
 ```python
 # csv_daily.py
