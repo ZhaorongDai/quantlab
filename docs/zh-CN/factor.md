@@ -281,9 +281,61 @@ True
 | `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库 |
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
+| `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
 | `Return`、`BinaryReturn` | KunQuant | 前瞻收益标签 |
 
 每个类的 docstring 里都有配置示例。
+
+### 文献型股票 Alpha 因子包
+
+作者：[Jerry](https://github.com/j38903016-lgtm)
+
+`LiteratureAlpha` 是一个与 universe 解耦的通用 KunQuant 因子类。它计算
+8 个特征，每个特征同时输出原始值和截面排名。历史成分股筛选应在输入市场
+面板上单独完成；被掩码成 NaN 的股票会自动被 `Rank` 排除。
+
+| 输出名前缀 | 定义与方向 | 文献 |
+|---|---|---|
+| `high_52week_proximity` | `拆股调整价 / 252 日滚动最高价`；高值为正向 | [George 和 Hwang（2004）](https://doi.org/10.1111/j.1540-6261.2004.00695.x) |
+| `short_reversal` | 21 日复合收益的负值；高值表示前一个月表现更差 | [Jegadeesh（1990）](https://doi.org/10.1111/j.1540-6261.1990.tb05110.x) |
+| `low_max` | 21 日最大单日收益的负值；高值回避彩票型股票 | [Bali、Cakici 和 Whitelaw（2011）](https://www.nber.org/papers/w14804) |
+| `low_idiosyncratic_volatility` | 21 日 FF3 回归残差标准差的负值 | [Ang、Hodrick、Xing 和 Zhang（2006）](https://doi.org/10.1111/j.1540-6261.2006.00836.x) |
+| `amihud_illiquidity` | `abs(收益)/(未复权收盘价*成交股数)` 的均值取对数；越大越不流动 | [Amihud（2002）](https://doi.org/10.1016/S1386-4181(01)00024-6) |
+| `gross_profitability` | 最新已公开毛利润除以总资产；高值为正向 | [Novy-Marx（2013）](https://www.nber.org/papers/w15940) |
+| `conservative_asset_growth` | 年度总资产增长率的负值；高值代表更保守的投资 | [Cooper、Gulen 和 Schill（2008）](https://doi.org/10.1111/j.1540-6261.2008.01370.x) |
+| `standardized_unexpected_earnings` | `(实际 EPS - 公告前一致预期 EPS)/缩放价格`；高值为正向 | [Livnat 和 Mendenhall（2006）](https://doi.org/10.1111/j.1475-679X.2006.00196.x) |
+
+每个前缀都有 `<stem>_raw` 和 `<stem>_rank`。`factor_names` 可以选择任意
+子集；类会裁剪无关公式，并且只要求该子集真正依赖的面板字段。窗口和字段名
+均可在 `kwargs` 中修改。完整默认图读取 `ret`、`adjClose`、`close`、
+`volume`、4 个 FF3 输入、3 个财务字段和 3 个盈利事件字段。FF3 也可以通过
+`kwargs={"fama_french_csv": "..."}` 使用与 `ResidualMomentumFF3` 相同的 CSV。
+
+PIT 正确性由数据层负责。`gross_profit`、`total_assets` 和
+`prior_year_total_assets` 只能从财报公开后开始生效。三个盈利事件字段必须
+冻结实际 EPS、公告前已经存在的一致预期以及事件缩放价格；不能把当前修订后
+的预期连接到历史实际值。52 周高点应使用仅拆股调整的价格，Amihud 美元成交额
+则需要未复权成交价和原始成交股数。
+
+```python
+from quantlab.base.config import FactorConfig
+from quantlab.factor.literature_alpha import LiteratureAlpha
+
+factor = LiteratureAlpha(FactorConfig(
+    window=400,
+    dataset=dataset,
+    mode="batch",
+    data_columns=(
+        "adjClose", "ret", "risk_free", "mkt_rf", "smb", "hml",
+        "close", "volume", "gross_profit", "total_assets",
+        "prior_year_total_assets", "eps_actual_event",
+        "eps_consensus_event", "eps_scale_price_event",
+    ),
+    factor_names=None,  # 全部 16 个 raw/rank 输出
+    file_path="data/factors/literature_alpha.zarr",
+))
+features = factor.cal().get_features()
+```
 
 ## 扩展
 
