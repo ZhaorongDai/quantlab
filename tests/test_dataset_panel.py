@@ -167,6 +167,49 @@ def test_bar_before_refuses_a_negative_count(dataset):
         dataset.bar_before("2024-01-10", -1)
 
 
+def test_bar_after_counts_bars_on_the_dataset_calendar(dataset):
+    assert dataset.bar_after("2024-01-10", 1) == pd.Timestamp("2024-01-11")
+    assert dataset.bar_after("2024-01-10", 3) == pd.Timestamp("2024-01-13")
+
+
+def test_bar_after_zero_is_the_date_itself(dataset):
+    assert dataset.bar_after("2024-01-10", 0) == pd.Timestamp("2024-01-10")
+
+
+def test_bar_after_stops_at_the_last_bar(dataset):
+    # The store's last bar is 2024-02-29; five bars past the 27th do not exist.
+    assert dataset.bar_after("2024-02-27", 5) == pd.Timestamp("2024-02-29")
+
+
+def test_bar_after_the_last_bar_is_the_date_itself(dataset):
+    assert dataset.bar_after("2024-03-05", 2) == pd.Timestamp("2024-03-05")
+
+
+def test_bar_after_refuses_a_negative_count(dataset):
+    with pytest.raises(ValueError, match="non-negative"):
+        dataset.bar_after("2024-01-10", -1)
+
+
+def test_bar_after_skips_calendar_gaps(tmp_path):
+    days = pd.bdate_range("2024-01-01", periods=10)  # Mon 1st .. Fri 12th
+    store = tmp_path / "klines.zarr"
+    xr.Dataset(
+        {"Close": (["timestamp", "symbol"], np.ones((len(days), 1)))},
+        coords={"timestamp": days, "symbol": ["AUSDT"]},
+    ).to_zarr(store, mode="w")
+    ds = SpotKlineDataset(
+        DatasetConfig(
+            raw_data_dir_path=str(tmp_path / "raw"),
+            zarr_file_path=str(store),
+            market="crypto_spot",
+            frequency="1d",
+        )
+    )
+
+    # Friday 5th: one bar on is Monday 8th, not Saturday 6th.
+    assert ds.bar_after("2024-01-05", 1) == pd.Timestamp("2024-01-08")
+
+
 # -- resampled datasets -----------------------------------------------------------
 
 HOW = {
@@ -237,6 +280,13 @@ def test_resampled_bar_before_counts_resampled_bars(minute_dataset):
     assert daily.bar_before("2024-01-04", 2) == pd.Timestamp("2024-01-02")
     with pytest.raises(ValueError, match=r"only 3 bar"):
         daily.bar_before("2024-01-04", 4)
+
+
+def test_resampled_bar_after_counts_resampled_bars(minute_dataset):
+    daily = minute_dataset.resample("1d", HOW)
+
+    assert daily.bar_after("2024-01-02", 2) == pd.Timestamp("2024-01-04")
+    assert daily.bar_after("2024-01-04", 3) == pd.Timestamp("2024-01-05")
 
 
 def test_intraday_start_inside_a_date_only_end_day_is_accepted(minute_dataset):

@@ -110,23 +110,24 @@ def load_dataset_from_config(config: dict):
 
 
 def load_factor_from_config(config: dict):
-    """Rebuild a factor, and the dataset nested inside it, from a config dict.
+    """Rebuild a factor or label, and what is nested inside it, from a config dict.
 
-    The class named in ``config["name"]`` is resolved first, the nested
-    ``dataset`` dict is replaced by a rebuilt dataset, and the factor is
-    constructed with its declared config class. The caller's dict is never
-    modified.
+    The class named in ``config["name"]`` is resolved first. A factor's
+    nested ``dataset`` dict is replaced by a rebuilt dataset; a label's
+    (``quantlab.label.forward.Forward``) nested ``factor`` dict is replaced
+    by a rebuilt factor, recursively. The object is then constructed with
+    its declared config class. The caller's dict is never modified.
 
     Parameters
     ----------
     config : dict
-        The dict a factor's ``config.to_dict()`` produced, including a
-        nested ``dataset`` dict.
+        The dict a factor's or label's ``get_config()`` produced, including
+        a nested ``dataset`` or ``factor`` dict.
 
     Returns
     -------
-    Factor
-        A factor instance.
+    Factor or Forward
+        A factor or label instance.
 
     Examples
     --------
@@ -141,7 +142,10 @@ def load_factor_from_config(config: dict):
     """
     config = copy.deepcopy(config)
     cls = get_cls_from_path(config["name"])
-    config["dataset"] = load_dataset_from_config(config["dataset"])
+    if "factor" in config:  # a label nests the factor it shifts
+        config["factor"] = load_factor_from_config(config["factor"])
+    else:
+        config["dataset"] = load_dataset_from_config(config["dataset"])
     return cls(_config_cls_of(cls)(**config))
 
 

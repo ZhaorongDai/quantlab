@@ -193,6 +193,15 @@ def test_same_variables_over_disjoint_symbols_merge_into_one_symbol_axis(
     np.testing.assert_allclose(panel["close"].values, expected.values)
 
 
+def test_a_merged_dataset_counts_bars_after_a_date_on_the_union_calendar(
+    symbol_halves,
+):
+    merged = MergedDataset([*symbol_halves])
+
+    assert merged.bar_after("2024-01-10", 3) == pd.Timestamp("2024-01-13")
+    assert merged.bar_after("2024-02-27", 5) == pd.Timestamp("2024-02-29")
+
+
 def test_same_symbols_with_different_variables_merge_into_one_set_of_variables(
     source, tmp_path
 ):

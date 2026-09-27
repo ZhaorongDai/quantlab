@@ -693,6 +693,52 @@ class PolarsFactorConfig(BaseFactorConfig):
     """
 
 
+@dataclass(kw_only=True, frozen=True)
+class ForwardConfig(_FrozenConfig):
+    """Config of a ``Forward`` label: the factor it shifts and by how much.
+
+    The label at bar t is ``factor`` at bar t + ``delay`` + ``span``. A
+    ``Forward`` owns no store, so the config has no path or warm-up of its
+    own; the wrapped factor keeps its config. ``to_dict()`` nests the
+    factor's config dict under ``factor``, and
+    ``quantlab.utils.module.load_factor_from_config`` rebuilds it.
+
+    Examples
+    --------
+    With ``factor`` a factor built earlier:
+
+    >>> cfg = ForwardConfig(factor=factor, span=5)
+    >>> cfg.span, cfg.delay
+    (5, 1)
+    """
+
+    #: The factor shifted forward to make the label.
+    factor: "Factor"
+    #: Bars the label accumulates over, such as the n bars of an n-bar
+    #: forward return.
+    span: int
+    #: Bars between the bar a signal forms on and the first bar the label
+    #: counts; 1 because a signal at t fills at t+1's open.
+    delay: int = 1
+    #: Dotted import path of the label class; filled by the config setter.
+    name: str | None = None
+
+    def to_dict(self):
+        """Return the config as a plain dict, the factor as its config dict.
+
+        Examples
+        --------
+        >>> sorted(cfg.to_dict())
+        ['delay', 'factor', 'name', 'span']
+        """
+        return {
+            "factor": self.factor.get_config(),
+            "span": self.span,
+            "delay": self.delay,
+            "name": self.name,
+        }
+
+
 @dataclass(frozen=True)
 class DLConfig(_FrozenConfig):
     """Config of a torch model head trained through the epoch loop.

@@ -806,6 +806,55 @@ class BaseDataset(ABC):
             )
         return calendar[position - n]
 
+    def bar_after(
+        self, date: "str | datetime.date | pd.Timestamp", n: int
+    ) -> pd.Timestamp:
+        """Return the bar ``n`` bars after ``date``, or the last bar there is.
+
+        The forward counterpart of ``bar_before``, on the same calendar: the
+        bars after ``date`` are those stamped strictly later, and ``n=1`` is
+        the first of them. ``n=0`` returns ``date`` itself. When fewer than
+        ``n`` bars follow ``date`` the calendar's last bar is returned, and
+        ``date`` itself when none follow, so the result is never before
+        ``date``. A resampled dataset counts its resampled bars. Only the
+        timestamps are read.
+
+        Parameters
+        ----------
+        date : str, datetime.date or pd.Timestamp
+            The date to count forward from.
+        n : int
+            How many bars to count forward; non-negative.
+
+        Returns
+        -------
+        pd.Timestamp
+            The timestamp of that bar.
+
+        Raises
+        ------
+        ValueError
+            If ``n`` is negative.
+
+        Examples
+        --------
+        >>> ds.bar_after("2024-01-05", 1)  # Friday: the bar after is Monday
+        Timestamp('2024-01-08 00:00:00')
+        >>> ds.bar_after("2024-02-27", 5)  # the store ends on 2024-02-29
+        Timestamp('2024-02-29 00:00:00')
+        """
+        if n < 0:
+            raise ValueError(
+                f"{self.class_name}.bar_after(): n must be non-negative, "
+                f"got {n}."
+            )
+        target = pd.Timestamp(date)
+        calendar = self._calendar()
+        following = len(calendar) - int(calendar.searchsorted(target, side="right"))
+        if n == 0 or following == 0:
+            return target
+        return calendar[len(calendar) - following + min(n, following) - 1]
+
     def _calendar_source(self) -> str:
         """Return the store ``_calendar`` reads, for error messages."""
         if self._reads_source_store():
