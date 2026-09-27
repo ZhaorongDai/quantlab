@@ -107,7 +107,9 @@ class FactorCorrelation:
             ``|correlation|`` the clusters are cut at, in ``(0, 1]``.
         block_size : int, optional
             Timestamps processed at once. By default as many as keep the
-            work arrays near 256 MiB; the result does not depend on it.
+            work arrays near 256 MiB, counting both symbols and factors;
+            the result does not depend on it. The panel itself is never
+            copied whole: each block is stacked on its own.
 
         Returns
         -------
@@ -133,19 +135,25 @@ class FactorCorrelation:
             )
         if not 0.0 < threshold <= 1.0:
             raise ValueError(f"threshold must be in (0, 1], got {threshold}")
-        stacked = (
-            features.to_array("factor")
-            .transpose("timestamp", "symbol", "factor")
-        )
-        n_times, _, n_factors = stacked.shape
+        features = features[names].transpose("timestamp", "symbol")
+        n_times = features.sizes["timestamp"]
+        n_symbols, n_factors = features.sizes["symbol"], len(names)
         if block_size is None:
-            block_size = max(1, _BLOCK_BYTES // (8 * 8 * n_factors * n_factors))
+            # float64 work arrays per timestamp: about seven [symbol, factor]
+            # (the block, its ranks, the masked ranks and their temporaries)
+            # and ten [factor, factor] (the masked sums and the correlation).
+            per_time = 8 * (7 * n_symbols * n_factors + 10 * n_factors * n_factors)
+            block_size = max(1, _BLOCK_BYTES // per_time)
         total = np.zeros((n_factors, n_factors))
         total_sq = np.zeros((n_factors, n_factors))
         count = np.zeros((n_factors, n_factors))
         for start in range(0, n_times, block_size):
+            # Only this block is stacked into one array, never the whole panel.
             block = np.asarray(
-                stacked.isel(timestamp=slice(start, start + block_size)).values,
+                features.isel(timestamp=slice(start, start + block_size))
+                .to_array("factor")
+                .transpose("timestamp", "symbol", "factor")
+                .values,
                 dtype=np.float64,
             )
             corr = _block_correlations(block)
