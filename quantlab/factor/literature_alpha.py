@@ -28,8 +28,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import NoReturn, Self
 
-import KunQuant.runner.KunRunner as kr
 import numpy as np
+import xarray as xr
 from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Op import Builder, ConstantOp, Input, OpBase, Output, Rank
@@ -56,7 +56,6 @@ from quantlab.factor.residual_momentum import (
     compound_onto_bars,
     read_fama_french,
 )
-from quantlab.utils.timer import Timer
 
 
 _PAIR_FAMILIES = {
@@ -668,44 +667,24 @@ class LiteratureAlpha(FactorKunQuant):
             for name in FAMA_FRENCH_COLUMNS
         }
 
-    def cal(self) -> Self:
-        """Compute the selected factors in batch mode.
+    def _kunquant_inputs(
+        self, inputs: xr.Dataset
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+        """Export the panel columns, plus the Fama-French series if needed.
 
-        The base implementation is used unless an IVOL output requests the
-        optional Fama-French CSV.  In that case the four common series are
-        aligned to panel bars and added before running the same graph.
-
-        Returns
-        -------
-        Self
-            ``self``, holding the calculated factor panel.
+        The base export is used unless an IVOL output requests the optional
+        Fama-French CSV. In that case the four common series are aligned to
+        panel bars and added, and ``cal()`` and ``compute()`` run the same
+        graph on them.
         """
 
-        params = self._parameters()
+        input_dict, symbols, timestamps = super()._kunquant_inputs(inputs)
         needs_ff3 = "idiosyncratic_volatility" in _families_for_outputs(
             self.get_factor_names()
         )
-        if params.fama_french_csv is None or not needs_ff3:
-            return super().cal()
-
-        input_dict, symbols, timestamps = self.config.dataset.to_kunquant(
-            data_columns=self.config.data_columns
-        )
-        num_time = next(iter(input_dict.values())).shape[0]
-        num_symbols = len(symbols)
-        input_dict.update(self._fama_french_inputs(timestamps, num_symbols))
-        input_dict = self._pad_symbols(input_dict, num_symbols)
-        if self._lib is None:
-            self._lib = self._make()
-        module = self._lib.getModule(self.__class__.__name__)
-        executor = kr.createMultiThreadExecutor(self.config.njobs)
-        with Timer(f" {self.__class__.__name__}: cal"):
-            outputs = kr.runGraph(executor, module, input_dict, 0, num_time)
-        self._lib = None
-        self._to_xarray_dataset(
-            self._cut_symbols(outputs, num_symbols), timestamps, symbols
-        )
-        return self
+        if self._parameters().fama_french_csv is not None and needs_ff3:
+            input_dict.update(self._fama_french_inputs(timestamps, len(symbols)))
+        return input_dict, symbols, timestamps
 
     def cal_stream(
         self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]

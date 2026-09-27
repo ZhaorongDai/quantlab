@@ -15,13 +15,18 @@ expression chain. Concrete factor sets live under ``quantlab/factor`` and
 labels under ``quantlab/label``.
 
 Rolling operators need history before the first bar they report. That extra
-history is the *warm-up*; a factor asks its dataset for ``config.window``
-extra calendar days and trims them off again afterwards.
+history is the *warm-up*. ``compute(start, end)`` reads ``warmup_bars`` bars
+before ``start``, counted on the input dataset's own calendar, and trims them
+off again; ``cal()`` asks its dataset for ``config.window`` extra calendar
+days instead.
 """
 
 import copy
 import dataclasses
+import datetime
+import json
 import sys
+import warnings
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -42,7 +47,16 @@ from quantlab.base.config import (
     PolarsFactorConfig,
 )
 from quantlab.backend import XrBackend
+from quantlab.base.data import InsufficientHistoryError
 from quantlab.enums.constant import Date
+from quantlab.utils.atomic import write_json_atomically
+from quantlab.utils.date_range import (
+    as_label,
+    check_range,
+    last_moment,
+    range_text,
+    resample_padding,
+)
 from quantlab.utils.resample import (
     assert_coarser,
     resample_store_path,
@@ -55,13 +69,21 @@ if TYPE_CHECKING:
     from quantlab.analysis.factor_report import FactorAnalysis
 
 
+def _on_panel_axes(data: xr.Dataset) -> xr.Dataset:
+    """Return ``data`` laid out on ``(timestamp, symbol)``."""
+    return XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
+
+
 class Factor(ABC):
     """Backend-agnostic base class for factors and labels.
 
     A ``Factor`` holds a config whose ``dataset`` attribute is the dataset it
-    reads from. It computes its output with ``cal()``, persists it with
-    ``save()`` or ``update()``, reads it back with ``read()``, and hands the
-    model layer an ``xarray.Dataset`` through ``get_features()`` or
+    reads from. Asked for a date range, it answers ``compute(start, end)``
+    from its inputs or ``read(start, end)`` from its own store, which
+    ``build(start, end)`` writes and ``extend(end)`` lengthens; these hold
+    nothing and change no config. The ``cal()`` path computes with ``cal()``,
+    persists with ``save()`` or ``update()``, reads back with ``read()``, and
+    hands the model layer an ``xarray.Dataset`` through ``get_features()`` or
     ``get_labels()``. Subclasses implement ``cal`` and ``_get_factor_names``
     and override ``_get_features`` and/or ``_get_labels`` for the half they
     support.
@@ -87,8 +109,14 @@ class Factor(ABC):
     --------
     >>> factor = MyFactor(config)
     >>> factor.get_factor_names()          # known before cal()
-    >>> panel = factor.cal().save(mode="w").get_features()
+    >>> panel = factor.compute("2024-02-01", "2024-02-29")
+    >>> factor.build("2024-01-01", "2024-06-30")
+    >>> panel = factor.read("2024-02-01", "2024-02-29")
     """
+
+    #: Appended to ``store_path`` to name the JSON file recording the date
+    #: range ``build`` wrote and ``extend`` lengthened.
+    RANGE_SUFFIX = ".range.json"
 
     def __init__(self, config: BaseFactorConfig):
         """Initialize the factor; see the class docstring for parameters."""
@@ -276,11 +304,32 @@ class Factor(ABC):
         """
         return self.__class__.__name__
 
-    def read(self, overwrite: bool = False) -> Self:
-        """Open the factor store and narrow it to the configured window.
+    def read(
+        self,
+        start: "str | datetime.date | pd.Timestamp | None" = None,
+        end: "str | datetime.date | pd.Timestamp | None" = None,
+        *,
+        overwrite: bool = False,
+    ) -> "Self | xr.Dataset":
+        """Return a date range from the factor store, or load the store.
+
+        With ``start`` and ``end``, the stored panel from ``start`` to
+        ``end``, both inclusive, is returned, opened lazily; the factor holds
+        nothing afterwards. The range must lie inside the one recorded
+        beside the store by ``build`` and ``extend`` (see ``store_range``).
+        A resampled factor reads its own store when one has been built,
+        otherwise it resamples the part of the source factor's store the
+        range needs.
+
+        Without them, the store is opened into the factor's backend and
+        narrowed to the configured window, and the factor itself is
+        returned.
 
         Parameters
         ----------
+        start, end : str, datetime.date or pd.Timestamp, optional
+            The range to return. Give both or neither. A date-only ``end``
+            includes every bar of that day.
         overwrite : bool, default False
             Re-open the store even if the backend already holds data. By
             default the cached panel is reused and only narrowed. Pass
@@ -290,12 +339,30 @@ class Factor(ABC):
 
         Returns
         -------
-        Self
-            ``self``, for chaining.
+        xr.Dataset or Self
+            The panel on ``(timestamp, symbol)`` when a range is given,
+            otherwise ``self``, for chaining.
+
+        Raises
+        ------
+        ValueError
+            If only one of ``start`` and ``end`` is given, ``start`` is
+            after ``end``, the store has no recorded range, or the recorded
+            range does not contain the requested one.
 
         Examples
         --------
-        >>> # config dates 2024-02-01 to 2024-02-10, store holds 60 bars
+        >>> factor.build("2024-01-01", "2024-03-31").store_range()
+        ('2024-01-01', '2024-03-31')
+        >>> dict(factor.read("2024-02-01", "2024-02-10").sizes)
+        {'timestamp': 10, 'symbol': 8}
+        >>> factor.read("2024-03-20", "2024-04-10")
+        Traceback (most recent call last):
+        ValueError: Momentum.read(): the store at ... covers 2024-01-01 to 2024-03-31, ...
+
+        Without a range, with config dates 2024-02-01 to 2024-02-10 and a
+        store of 60 bars:
+
         >>> factor.read().get_features().sizes
         Frozen({'timestamp': 10, 'symbol': 8})
         >>> factor.config.end_date = "2024-02-20"
@@ -309,6 +376,14 @@ class Factor(ABC):
         >>> daily.read().get_features().sizes
         Frozen({'timestamp': 10, 'symbol': 8})
         """
+        if start is not None or end is not None:
+            if start is None or end is None:
+                raise ValueError(
+                    f"{self.class_name}.read(): give both start and end, or "
+                    f"neither; got start={start!r}, end={end!r}."
+                )
+            return self._read_range(start, end)
+
         if self.config.resample_freq is None:
             self.data_backend.read(self.config.file_path, overwrite=overwrite)
             self._auto_filter()
@@ -330,7 +405,8 @@ class Factor(ABC):
         """Write the held panel to ``store_path`` as a Zarr store.
 
         ``store_path`` is ``config.file_path``, or the resampled store beside
-        it when the factor is resampled.
+        it when the factor is resampled. A range recorded by ``build`` is
+        removed, since this panel was not requested by date range.
 
         Parameters
         ----------
@@ -362,6 +438,9 @@ class Factor(ABC):
         """
         with Timer(f"{self.__class__.__name__}: save"):
             self._auto_filter()
+            # The panel written here was not requested by date range, so no
+            # range recorded by an earlier build() describes it any more.
+            self._drop_range(self.store_path)
             try:
                 self.data_backend.write(
                     self.store_path,
@@ -425,6 +504,279 @@ class Factor(ABC):
                 **kwargs,
             )
             return self
+
+    @property
+    def warmup_bars(self) -> int:
+        """Bars of history ``compute`` reads before the requested start.
+
+        Counted on the input dataset's own calendar, so weekends and
+        holidays are skipped, not counted. It is ``config.window`` read as a
+        bar count; ``cal()`` reads the same field as calendar days.
+
+        Examples
+        --------
+        >>> factor.warmup_bars
+        20
+        """
+        return self.config.window
+
+    def compute(
+        self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+    ) -> xr.Dataset:
+        """Compute the factor from ``start`` to ``end``, both inclusive.
+
+        The inputs are requested from the dataset from ``warmup_bars`` bars
+        before ``start`` up to ``end``, so rolling operators are warm on the
+        first requested bar; the result holds only the requested range. A
+        resampled factor is computed on its dataset's own bars and returned
+        on its resampled bars. Neither this factor's config nor its
+        dataset's config changes, and the factor holds nothing afterwards.
+
+        If the dataset holds fewer than ``warmup_bars`` bars before
+        ``start``, a ``UserWarning`` states the shortfall in bars and the
+        computation starts from the first bar there is.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range to return. A date-only ``end`` includes every bar of
+            that day.
+
+        Returns
+        -------
+        xr.Dataset
+            The factor panel on ``(timestamp, symbol)``, in memory.
+
+        Raises
+        ------
+        ValueError
+            If ``start`` is after ``end``.
+
+        Examples
+        --------
+        >>> panel = factor.compute("2024-02-01", "2024-02-10")  # warmup_bars=20
+        >>> dict(panel.sizes)
+        {'timestamp': 10, 'symbol': 8}
+
+        With only two bars before ``start``, the call warns::
+
+            UserWarning: Momentum.compute(): 20 warm-up bar(s) are needed
+            before '2024-01-03' but the dataset holds only 2; the first
+            bars are short by 18 bar(s) of warm-up.
+        """
+        first, last = check_range(start, end, f"{self.class_name}.compute()")
+        source_start, source_end = self._warm_start(first, start), end
+        if self.config.resample_freq is not None:
+            pad = resample_padding(self.config.resample_freq)
+            source_start = min(source_start, first - pad)
+            source_end = last + pad
+        inputs = self.config.dataset.panel(source_start, source_end)
+        panel = self._compute_panel(inputs)
+        if self.config.resample_freq is not None:
+            panel = self._resample_panel(panel)
+        return _on_panel_axes(
+            panel.sel(timestamp=slice(as_label(start), as_label(end)))
+        )
+
+    def _warm_start(self, first: pd.Timestamp, start) -> pd.Timestamp:
+        """Return the bar ``warmup_bars`` bars before ``first``, or the earliest.
+
+        Warns with the shortfall in bars when the dataset holds fewer.
+        """
+        dataset = self.config.dataset
+        needed = self.warmup_bars
+        try:
+            return dataset.bar_before(first, needed)
+        except InsufficientHistoryError as exc:
+            warnings.warn(
+                f"{self.class_name}.compute(): {needed} warm-up bar(s) are "
+                f"needed before {start!r} but {dataset.class_name} holds only "
+                f"{exc.available}; the first bars are short by "
+                f"{needed - exc.available} bar(s) of warm-up.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return dataset.bar_before(first, exc.available)
+
+    def _compute_panel(self, inputs: xr.Dataset) -> xr.Dataset:
+        """Return the factor panel computed over the whole ``inputs`` panel.
+
+        ``inputs`` is a panel of the dataset, warm-up included; the result
+        covers the same bars. Each backend overrides this.
+
+        Raises
+        ------
+        NotImplementedError
+            Unless a subclass overrides it.
+        """
+        raise NotImplementedError(
+            f"{self.class_name} does not compute from a requested panel."
+        )
+
+    def build(
+        self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+    ) -> Self:
+        """Compute ``start`` to ``end`` and write it as the factor store.
+
+        The store at ``store_path`` is replaced by ``compute(start, end)``
+        and the range is recorded beside it, in
+        ``<store_path>.range.json``, for ``store_range``, ``read`` and
+        ``extend``. The factor holds nothing afterwards and no config
+        changes.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range the store covers.
+
+        Returns
+        -------
+        Self
+            ``self``, for chaining.
+
+        Examples
+        --------
+        >>> factor.build("2024-01-01", "2024-03-31").store_range()
+        ('2024-01-01', '2024-03-31')
+        """
+        panel = self.compute(start, end)
+        with Timer(f"{self.class_name}: build"):
+            self._drop_range(self.store_path)
+            XrBackend().to_internal(panel).write(self.store_path, mode="w")
+            self._record_range(self.store_path, start, end)
+        return self
+
+    def extend(self, end: "str | datetime.date | pd.Timestamp") -> Self:
+        """Append the bars after the recorded range, up to ``end``.
+
+        The bars are computed with ``compute``, so they are warmed from the
+        dataset's history, then appended to the store; its symbol and
+        variable axes widen if the new bars carry more (see ``update``).
+        The recorded range then ends at ``end``.
+
+        Parameters
+        ----------
+        end : str, datetime.date or pd.Timestamp
+            The new end of the store's range.
+
+        Returns
+        -------
+        Self
+            ``self``, for chaining.
+
+        Raises
+        ------
+        ValueError
+            If the factor is resampled, the store has no recorded range, or
+            the recorded range already reaches ``end``.
+
+        Examples
+        --------
+        >>> factor.build("2024-01-01", "2024-03-31").store_range()
+        ('2024-01-01', '2024-03-31')
+        >>> factor.extend("2024-04-30").store_range()
+        ('2024-01-01', '2024-04-30')
+        """
+        self._refuse_if_resampled("extend")
+        recorded = self._stored_range(self.store_path)
+        if recorded is None:
+            raise ValueError(
+                f"{self.class_name}.extend(): the store at {self.store_path} "
+                f"has no recorded range; write it with build(start, end) "
+                f"first."
+            )
+        recorded_start, recorded_end = recorded
+        if last_moment(end) <= last_moment(recorded_end):
+            raise ValueError(
+                f"{self.class_name}.extend(): the store at {self.store_path} "
+                f"already covers {recorded_start} to {recorded_end}; extend() "
+                f"appends only bars after {recorded_end}, got end {end!r}."
+            )
+        after = last_moment(recorded_end) + pd.Timedelta(1, "ns")
+        panel = self.compute(after, end)
+        with Timer(f"{self.class_name}: extend"):
+            if panel.sizes["timestamp"]:
+                XrBackend().to_internal(panel).widen_and_append(
+                    self.store_path, fill_values=self._widen_fill_values()
+                )
+            self._record_range(self.store_path, recorded_start, end)
+        return self
+
+    def store_range(self) -> tuple[str, str] | None:
+        """Return the ``(start, end)`` the store was built for, if recorded.
+
+        ``None`` when the store was not written by ``build``, or was since
+        overwritten by ``save``.
+
+        Examples
+        --------
+        >>> factor.build("2024-01-01", "2024-03-31").store_range()
+        ('2024-01-01', '2024-03-31')
+        """
+        return self._stored_range(self.store_path)
+
+    def _read_range(self, start, end) -> xr.Dataset:
+        """Return ``start`` to ``end`` from the store; see ``read``."""
+        first, last = check_range(start, end, f"{self.class_name}.read()")
+        window = slice(as_label(start), as_label(end))
+        if self.config.resample_freq is None or Path(self.store_path).exists():
+            self._check_covers(self.store_path, start, end)
+            data = XrBackend().read(self.store_path).data.sel(timestamp=window)
+        else:
+            self._check_covers(self.config.file_path, start, end)
+            pad = resample_padding(self.config.resample_freq)
+            source = XrBackend().read(self.config.file_path).data.sel(
+                timestamp=slice(first - pad, last + pad)
+            )
+            data = self._resample_panel(source).sel(timestamp=window)
+        return _on_panel_axes(data)
+
+    def _check_covers(self, path: str, start, end) -> None:
+        """Raise unless the range recorded for ``path`` contains the request."""
+        recorded = self._stored_range(path)
+        if recorded is None:
+            raise ValueError(
+                f"{self.class_name}.read(): the store at {path} has no "
+                f"recorded range, so it cannot answer a date-range request; "
+                f"write it with build(start, end)."
+            )
+        recorded_start, recorded_end = recorded
+        if pd.Timestamp(start) < pd.Timestamp(recorded_start) or last_moment(
+            end
+        ) > last_moment(recorded_end):
+            raise ValueError(
+                f"{self.class_name}.read(): the store at {path} covers "
+                f"{recorded_start} to {recorded_end}, which does not contain "
+                f"{start} to {end}. Extend it with extend(end) or rebuild it "
+                f"with build(start, end)."
+            )
+
+    def _range_path(self, store: str) -> Path:
+        """Return the file recording the range of the store at ``store``."""
+        return Path(f"{store}{self.RANGE_SUFFIX}")
+
+    def _stored_range(self, store: str | None) -> tuple[str, str] | None:
+        """Return the range recorded for ``store``, or ``None``."""
+        if store is None or not self._range_path(store).is_file():
+            return None
+        recorded = json.loads(self._range_path(store).read_text())
+        return recorded["start"], recorded["end"]
+
+    def _record_range(self, store: str, start, end) -> None:
+        """Record ``start`` and ``end`` as the range of the store at ``store``."""
+        write_json_atomically(
+            self._range_path(store),
+            {"start": range_text(start), "end": range_text(end)},
+        )
+
+    def _drop_range(self, store: str | None) -> None:
+        """Remove the range recorded for ``store``, if any."""
+        if store is not None:
+            self._range_path(store).unlink(missing_ok=True)
 
     @property
     def store_path(self) -> str | None:
@@ -557,10 +909,18 @@ class Factor(ABC):
 
     def _apply_resample(self) -> None:
         """Replace the held panel with its resample, per the config."""
-        freq = self.config.resample_freq
-        if freq is None:
+        if self.config.resample_freq is None:
             return
-        data = self.data_backend.get_xarray_dataset()
+        self.data_backend.to_internal(
+            self._resample_panel(self.data_backend.get_xarray_dataset())
+        )
+
+    def _resample_panel(self, data: xr.Dataset) -> xr.Dataset:
+        """Return ``data`` aggregated onto ``config.resample_freq`` bars.
+
+        ``data`` is not changed; the grouping runs in a backend of its own.
+        """
+        freq = self.config.resample_freq
         timestamps = data["timestamp"].values
         assert_coarser(timestamps, freq, self.class_name)
         how = resolve_resample_how(
@@ -568,7 +928,7 @@ class Factor(ABC):
         )
         labels = pd.Series(self._resample_labels(timestamps, freq), index=timestamps)
         with Timer(f"{self.__class__.__name__}: resample to {freq}"):
-            self.data_backend.resample(labels, how)
+            return XrBackend().to_internal(data).resample(labels, how).data
 
     def _hold_panel(self, data: xr.Dataset) -> None:
         """Hand a computed panel to the backend, narrow it and resample it."""
@@ -848,6 +1208,31 @@ class FactorKunQuant(Factor):
         other._buffer_name_to_id = dict()
         return other
 
+    def compute(
+        self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+    ) -> xr.Dataset:
+        """Compute ``start`` to ``end`` in batch mode; see ``Factor.compute``.
+
+        Raises
+        ------
+        ValueError
+            If ``config.mode`` is not ``"batch"``, or ``start`` is after
+            ``end``.
+
+        Examples
+        --------
+        >>> dict(factor.compute("2024-02-01", "2024-02-10").sizes)
+        {'timestamp': 10, 'symbol': 16}
+        """
+        if self.config.mode != "batch":
+            raise ValueError(
+                f"{self.class_name}.compute(): a date-range computation runs "
+                f"the batch graph, but config.mode is {self.config.mode!r}."
+            )
+        return super().compute(start, end)
+
     def _auto_filter(self):
         """Narrow the panel in batch mode; a stream holds one bar, so skip."""
         if self.config.mode == "batch":
@@ -965,15 +1350,23 @@ class FactorKunQuant(Factor):
         Factor
             ``self``, for chaining.
         """
-        ds = xr.Dataset(
+        self._hold_panel(self._output_panel(raw_factor, timestamps, symbols))
+        return self
+
+    @staticmethod
+    def _output_panel(
+        raw_factor: dict[str, np.ndarray],
+        timestamps: np.ndarray,
+        symbols: np.ndarray,
+    ) -> xr.Dataset:
+        """Wrap raw ``[time, symbol]`` arrays in an ``xarray.Dataset``."""
+        return xr.Dataset(
             {k: (["timestamp", "symbol"], v) for k, v in raw_factor.items()},
             coords={
                 "timestamp": timestamps,
                 "symbol": symbols,
             },
         )
-        self._hold_panel(ds)
-        return self
 
     @abstractmethod
     def _get_factor_func(self) -> Function:
@@ -1004,9 +1397,31 @@ class FactorKunQuant(Factor):
         >>> factor.cal().get_features().sizes   # 21 configured bars
         Frozen({'timestamp': 21, 'symbol': 16})
         """
-        input_dict, symbols, timestamp = self.config.dataset.to_kunquant(
-            data_columns=self.config.data_columns
+        inputs = self.config.dataset.read().get_xarray_dataset()
+        self._hold_panel(self._compute_panel(inputs))
+        return self
+
+    def _kunquant_inputs(
+        self, inputs: xr.Dataset
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+        """Return ``(arrays, symbols, timestamps)`` the graph runs on.
+
+        The default exports ``config.data_columns`` of ``inputs`` through
+        the dataset's ``to_kunquant``. A factor whose graph takes inputs
+        from elsewhere as well overrides this and adds them.
+        """
+        return self.config.dataset.to_kunquant(
+            data_columns=self.config.data_columns, panel=inputs
         )
+
+    def _compute_panel(self, inputs: xr.Dataset) -> xr.Dataset:
+        """Run the compiled graph over every bar of ``inputs``.
+
+        The graph is compiled if no library is cached, run from bar 0 on an
+        executor of ``config.njobs`` threads, and dropped afterwards, so each
+        call compiles again.
+        """
+        input_dict, symbols, timestamp = self._kunquant_inputs(inputs)
         # Every input is laid out [time, symbol]; any one gives the time count.
         num_time = next(iter(input_dict.values())).shape[0]
         input_dict = self._pad_symbols(input_dict, len(symbols))
@@ -1022,11 +1437,9 @@ class FactorKunQuant(Factor):
 
         self._lib = None
 
-        self._to_xarray_dataset(
+        return self._output_panel(
             self._cut_symbols(out_dict, len(symbols)), timestamp, symbols
         )
-
-        return self
 
     def cal_stream(
         self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]
@@ -1284,10 +1697,17 @@ class FactorPolars(Factor):
             if name not in self._INDEX_COLUMNS
         )
 
+        self._hold_panel(self._collect(factor_lf))
+        return self
+
+    def _compute_panel(self, inputs: xr.Dataset) -> xr.Dataset:
+        """Collect the expression chain over ``inputs`` as a long ``LazyFrame``."""
+        lf = XrBackend().to_internal(inputs).get_lazyframe()
+        return self._collect(self._get_factor_lazyframe(lf))
+
+    def _collect(self, factor_lf: pl.LazyFrame) -> xr.Dataset:
+        """Collect ``factor_lf`` into a ``(timestamp, symbol)`` panel."""
         with Timer(f"{self.__class__.__name__}: cal"):
             frame = factor_lf.collect().to_pandas()
             frame = frame.set_index(list(self._INDEX_COLUMNS))
-            data = xr.Dataset.from_dataframe(frame)
-
-        self._hold_panel(data)
-        return self
+            return xr.Dataset.from_dataframe(frame)

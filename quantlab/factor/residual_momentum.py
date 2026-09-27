@@ -31,7 +31,6 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import NoReturn, Self
 
-import KunQuant.runner.KunRunner as kr
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -53,7 +52,6 @@ from loguru import logger
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
-from quantlab.utils.timer import Timer
 
 #: Columns of a Fama-French CSV besides ``date``, as ``scripts/fama_french.py``
 #: writes them: the market excess return, the size and value factors and the
@@ -722,19 +720,15 @@ class ResidualMomentumFF3(FactorKunQuant):
             for column in FAMA_FRENCH_COLUMNS
         }
 
-    def cal(self) -> Self:
-        """Compute the factor in batch mode and store it on the data backend.
+    def _kunquant_inputs(
+        self, inputs: xr.Dataset
+    ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+        """Export the panel columns, plus the Fama-French series if configured.
 
         The panel columns come from the dataset; with ``fama_french_csv``
-        set, the four factor series are added from the CSV. On macOS the
-        symbol axis is padded with all-NaN dummy symbols to a multiple of
-        the SIMD block width and cut back afterwards, as every
-        ``FactorKunQuant`` batch run does (see ``_pad_symbols``).
-
-        Returns
-        -------
-        Self
-            ``self``, for chaining.
+        set, the four factor series are added from the CSV, aligned to the
+        panel's bars. ``cal()`` and ``compute()`` both run the graph on
+        these arrays.
 
         Examples
         --------
@@ -748,26 +742,10 @@ class ResidualMomentumFF3(FactorKunQuant):
         >>> out["resmom_rank"].isel(timestamp=-1).round(3).values  # doctest: +SKIP
         array([0.286, 0.143, 1.   , 0.429, 0.857, 0.571, 0.714])
         """
-        input_dict, symbols, timestamps = self.config.dataset.to_kunquant(
-            data_columns=self.config.data_columns
-        )
-        num_time = next(iter(input_dict.values())).shape[0]
-        num_symbols = len(symbols)
+        input_dict, symbols, timestamps = super()._kunquant_inputs(inputs)
         if self._parameters().fama_french_csv is not None:
-            input_dict.update(self._fama_french_inputs(timestamps, num_symbols))
-        input_dict = self._pad_symbols(input_dict, num_symbols)
-
-        if self._lib is None:
-            self._lib = self._make()
-        module = self._lib.getModule(self.__class__.__name__)
-        executor = kr.createMultiThreadExecutor(self.config.njobs)
-        with Timer(f" {self.__class__.__name__}: cal"):
-            outputs = kr.runGraph(executor, module, input_dict, 0, num_time)
-        self._lib = None
-        self._to_xarray_dataset(
-            self._cut_symbols(outputs, num_symbols), timestamps, symbols
-        )
-        return self
+            input_dict.update(self._fama_french_inputs(timestamps, len(symbols)))
+        return input_dict, symbols, timestamps
 
     def cal_stream(
         self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]

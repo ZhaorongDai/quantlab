@@ -41,10 +41,10 @@ from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data
 from quantlab.enums.constant import Date
+from quantlab.utils.date_range import as_label, check_range, resample_padding
 from quantlab.utils.resample import (
     assert_coarser,
     clock_labels,
-    resample_seconds,
     resample_store_path,
     resolve_resample_how,
     validate_resample_config,
@@ -53,23 +53,36 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
 
-def _as_label(value):
-    """Return ``value`` as a label ``xarray`` slices ``timestamp`` with.
+class InsufficientHistoryError(ValueError):
+    """Fewer bars exist before a date than were asked for.
 
-    Strings pass through, so a date-only end keeps covering its whole day;
-    anything else becomes a ``pd.Timestamp``.
+    Raised by ``BaseDataset.bar_before``. ``available`` and ``requested``
+    let a caller report the shortfall, ``requested - available``, in bars.
+
+    Examples
+    --------
+    >>> try:
+    ...     ds.bar_before("2024-01-03", 5)
+    ... except InsufficientHistoryError as exc:
+    ...     exc.requested - exc.available
+    3
     """
-    return value if isinstance(value, str) else pd.Timestamp(value)
 
+    def __init__(self, message: str, available: int, requested: int):
+        """Store the message and the two bar counts.
 
-def _last_moment(value) -> pd.Timestamp:
-    """Return the latest instant an inclusive ``end`` label covers.
-
-    A date-only ISO string covers its whole day, as ``xarray`` slices it.
-    """
-    if isinstance(value, str) and len(value) == len("YYYY-MM-DD"):
-        return pd.Timestamp(value) + pd.Timedelta(days=1) - pd.Timedelta(1, "ns")
-    return pd.Timestamp(value)
+        Parameters
+        ----------
+        message : str
+            The error message.
+        available : int
+            Bars that exist before the date.
+        requested : int
+            Bars that were asked for.
+        """
+        super().__init__(message)
+        self.available = available
+        self.requested = requested
 
 
 @dataclass(frozen=True)
@@ -646,19 +659,10 @@ class BaseDataset(ABC):
         >>> dict(ds.panel("2024-01-02", "2024-01-05").sizes)  # same object
         {'timestamp': 4, 'symbol': 3}
         """
-        first, last = pd.Timestamp(start), _last_moment(end)
-        if first > last:
-            raise ValueError(
-                f"{self.class_name}.panel(): start {start!r} is after end "
-                f"{end!r}."
-            )
-        window = slice(_as_label(start), _as_label(end))
+        first, last = check_range(start, end, f"{self.class_name}.panel()")
+        window = slice(as_label(start), as_label(end))
         if self._reads_source_store():
-            # A resampled bar inside the range draws on source bars up to
-            # one resample period (plus the rest of the end day) outside it.
-            pad = pd.Timedelta(
-                seconds=resample_seconds(self.config.resample_freq)
-            ) + pd.Timedelta(days=1)
+            pad = resample_padding(self.config.resample_freq)
             source = self._open_store(self.config.zarr_file_path).sel(
                 timestamp=slice(first - pad, last + pad)
             )
@@ -699,8 +703,10 @@ class BaseDataset(ABC):
         Raises
         ------
         ValueError
-            If ``n`` is negative, or fewer than ``n`` bars exist before
-            ``date``.
+            If ``n`` is negative.
+        InsufficientHistoryError
+            If fewer than ``n`` bars exist before ``date``; a subclass of
+            ``ValueError`` carrying ``available`` and ``requested``.
 
         Examples
         --------
@@ -726,9 +732,11 @@ class BaseDataset(ABC):
                 if self._reads_source_store()
                 else self.store_path
             )
-            raise ValueError(
+            raise InsufficientHistoryError(
                 f"{self.class_name}.bar_before(): only {position} bar(s) "
-                f"exist before {date!r} in {store}, but {n} were requested."
+                f"exist before {date!r} in {store}, but {n} were requested.",
+                available=position,
+                requested=n,
             )
         return calendar[position - n]
 
@@ -1722,15 +1730,21 @@ class MarketDataset(BaseDataset):
     config_cls = DatasetConfig
 
     def to_kunquant(
-        self, data_columns: tuple[str, ...]
+        self,
+        data_columns: tuple[str, ...],
+        panel: xr.Dataset | None = None,
     ) -> tuple[dict, np.ndarray, np.ndarray]:
-        """Read the store and convert it to KunQuant input arrays.
+        """Convert a panel of this dataset to KunQuant input arrays.
 
         Parameters
         ----------
         data_columns : tuple[str, ...]
             Columns to export, named as KunQuant names them (``open``,
             ``high``, ``low``, ``close``, ``volume``, ``amount``).
+        panel : xr.Dataset, optional
+            A panel of this dataset, such as one ``panel(start, end)``
+            returned. ``None`` reads the store narrowed to the config's
+            window.
 
         Returns
         -------
@@ -1745,9 +1759,15 @@ class MarketDataset(BaseDataset):
         ((4, 3), dtype('float32'))
         >>> symbols.tolist()
         ['AAA', 'BBB', 'CCC']
+        >>> inputs, _, _ = ds.to_kunquant(
+        ...     ("close",), panel=ds.panel("2024-01-03", "2024-01-04")
+        ... )
+        >>> inputs["close"].shape
+        (2, 3)
         """
-        data = self.read().get_xarray_dataset()
-        return self._to_kunquant(data, data_columns)
+        if panel is None:
+            panel = self.read().get_xarray_dataset()
+        return self._to_kunquant(panel, data_columns)
 
     @abstractmethod
     def _to_kunquant(

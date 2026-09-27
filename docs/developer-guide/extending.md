@@ -440,12 +440,14 @@ print(dict(features.sizes), float(features["rel_volume_10"].isnull().mean()))
 {'timestamp': 38, 'symbol': 8} 0.0
 ```
 
-`window` is the factor's warm-up. On its own, a factor moves its dataset's
-start date back by `window` calendar days before computing; inside a
-backtest, the backtester starts it `window` price bars early. Calendar days
-are fewer than bars, so pick a `window` comfortably larger than the longest
-look-back in bars: with `window=10` here, the first bar of February would
-still be NaN. Column names are the store's own (`adjVolume` in a Tiingo-shaped
+`window` is the factor's warm-up. `factor.compute(start, end)` reads
+`window` bars before `start`, counted on the dataset's own calendar, so a
+`window` equal to the longest look-back in bars is enough. `cal()` instead
+moves its dataset's start date back by `window` calendar days, and inside a
+backtest the backtester starts it `window` price bars early. Calendar days
+are fewer than bars, so for `cal()` pick a `window` comfortably larger than
+the longest look-back in bars: with `window=10` here, the first bar of
+February would still be NaN. Column names are the store's own (`adjVolume` in a Tiingo-shaped
 store), and parameters belong in `config.kwargs`, so one class serves many
 configs. `quantlab/factor/momentum.py` is the reference implementation.
 
@@ -509,6 +511,12 @@ The value matches the same formula computed with pandas on the first symbol.
 Compilation needs a working C++ compiler and takes a few seconds per call. In
 batch mode the number of symbols must be a multiple of the SIMD block width
 KunQuant uses (8 on most machines), which is why this panel has eight symbols.
+A graph that needs inputs beyond `config.data_columns` of the dataset
+overrides `_kunquant_inputs(inputs)`: it receives the dataset panel, calls
+`super()._kunquant_inputs(inputs)` and adds `[time, symbol]` float32 arrays to
+the returned dict, as `quantlab/factor/residual_momentum.py` does with the
+Fama-French series. `cal()` and `compute()` both run the graph on what it
+returns.
 KunQuant graphs can only look backwards in time; a forward-looking label is
 computed as a trailing value and shifted in `_get_labels`, as
 `quantlab/label/fret.py` does. Existing operator compositions to reuse are in

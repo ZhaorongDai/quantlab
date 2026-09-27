@@ -1,0 +1,318 @@
+"""Factors answer ``read(start, end)`` and ``compute(start, end)`` by date range.
+
+``compute`` reads the factor's inputs from ``warmup_bars`` bars before
+``start``, counted on the input's own calendar, and returns only the
+requested range. ``build(start, end)`` writes a store and records the range
+it covers beside it; ``extend(end)`` appends later bars and moves the
+recorded end; ``read(start, end)`` returns a covered range from the store.
+None of these calls changes the factor's config or its dataset's config.
+"""
+
+import copy
+import dataclasses
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+import KunQuant.ops as op
+from KunQuant.Op import Builder, Input, Output
+from KunQuant.Stage import Function
+
+from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.base.factor import FactorKunQuant
+from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.factor.momentum import Momentum
+
+
+class MaDeviation(FactorKunQuant):
+    """Close over its 5-bar average, minus one: warm after 4 earlier bars."""
+
+    def _get_factor_names(self):
+        return ("ma_dev_5",)
+
+    def _get_factor_func(self):
+        builder = Builder()
+        with builder:
+            close = Input("close")
+            Output(op.SubConst(op.Div(close, op.WindowedAvg(close, 5)), 1.0), "ma_dev_5")
+        return Function(builder.ops)
+
+    def _get_features(self, data):
+        return data
+
+
+def _kunquant(dataset_config: DatasetConfig, tmp_path: Path) -> MaDeviation:
+    return MaDeviation(
+        FactorConfig(
+            window=5,
+            dataset=SpotKlineDataset(dataset_config),
+            mode="batch",
+            data_columns=("close",),
+            file_path=str(tmp_path / "factors" / "ma_dev.zarr"),
+            njobs=2,
+        )
+    )
+
+
+def _momentum(dataset_config: DatasetConfig, tmp_path: Path) -> Momentum:
+    return Momentum(
+        PolarsFactorConfig(
+            window=5,
+            dataset=SpotKlineDataset(dataset_config),
+            file_path=str(tmp_path / "factors" / "momentum.zarr"),
+            kwargs={"n": 5},
+        )
+    )
+
+
+@pytest.fixture(params=["kunquant", "polars"])
+def factor(request, spot_kline_zarr, tmp_path):
+    """A 5-bar factor of either backend over 60 daily bars from 2024-01-01."""
+    build = _kunquant if request.param == "kunquant" else _momentum
+    return build(spot_kline_zarr(periods=60), tmp_path)
+
+
+def _days(panel: xr.Dataset) -> list[str]:
+    return [str(d) for d in panel["timestamp"].values.astype("datetime64[D]")]
+
+
+def _full_history(factor) -> xr.Dataset:
+    """The factor computed over every bar of its store, the old way."""
+    return factor.copy().cal().get_features().load()
+
+
+def _assert_same_values(actual: xr.Dataset, expected: xr.Dataset) -> None:
+    """Equal up to float32 rounding.
+
+    KunQuant keeps rolling sums in float32, so a window's sum carries the
+    rounding of the bars that left it and differs in the last digits with
+    where the run started.
+    """
+    assert list(actual.data_vars) == list(expected.data_vars)
+    for name in expected.data_vars:
+        np.testing.assert_allclose(
+            actual[name].values, expected[name].values, atol=1e-6, equal_nan=True
+        )
+
+
+def _configs(factor) -> tuple[dict, object]:
+    """The factor config without its dataset object, and the dataset config."""
+    fields = {k: v for k, v in factor.config.to_dict().items() if k != "dataset"}
+    return copy.deepcopy(fields), copy.deepcopy(factor.config.dataset.config)
+
+
+# -- compute -----------------------------------------------------------------------
+
+
+def test_compute_is_warm_on_the_first_requested_bar(factor):
+    full = _full_history(factor)
+
+    panel = factor.compute("2024-01-20", "2024-01-31")
+
+    first = panel.isel(timestamp=0)
+    assert not np.isnan(first[factor.get_factor_names()[0]].values).any()
+    _assert_same_values(panel, full.sel(timestamp=slice("2024-01-20", "2024-01-31")))
+
+
+def test_compute_returns_only_the_requested_range(factor):
+    panel = factor.compute("2024-01-20", "2024-01-31")
+
+    assert tuple(panel.dims) == ("timestamp", "symbol")
+    assert _days(panel) == [f"2024-01-{d}" for d in range(20, 32)]
+
+
+def test_warm_up_is_counted_in_bars_on_the_input_calendar(spot_kline_zarr, tmp_path):
+    """Five bars back from a Monday reach the previous Monday on weekdays only.
+
+    Five calendar days would reach Wednesday and leave the first bar cold.
+    """
+    config = spot_kline_zarr(periods=60)
+    source = xr.open_zarr(config.zarr_file_path).load()
+    weekdays = source.sel(timestamp=source["timestamp"].dt.dayofweek < 5)
+    store = tmp_path / "weekdays.zarr"
+    weekdays.to_zarr(store, mode="w")
+    factor = _kunquant(
+        dataclasses.replace(config, zarr_file_path=str(store)), tmp_path
+    )
+
+    panel = factor.compute("2024-01-15", "2024-01-19")  # Monday .. Friday
+
+    _assert_same_values(
+        panel, _full_history(factor).sel(timestamp=slice("2024-01-15", "2024-01-19"))
+    )
+    assert not np.isnan(panel["ma_dev_5"].values).any()
+
+
+def test_too_little_history_warns_with_the_shortfall_in_bars(factor):
+    with pytest.warns(UserWarning, match=r"short by 3 bar"):
+        panel = factor.compute("2024-01-03", "2024-01-10")
+
+    assert _days(panel)[0] == "2024-01-03"
+
+
+def test_compute_leaves_both_configs_unchanged(factor):
+    before = _configs(factor)
+
+    factor.compute("2024-01-20", "2024-01-31")
+
+    assert _configs(factor) == before
+
+
+def test_compute_refuses_a_start_after_the_end(factor):
+    with pytest.raises(ValueError, match="after end"):
+        factor.compute("2024-01-31", "2024-01-20")
+
+
+# -- build, read, extend ------------------------------------------------------------
+
+
+def test_build_records_the_range_beside_the_store(factor):
+    factor.build("2024-01-10", "2024-01-31")
+
+    assert factor.store_range() == ("2024-01-10", "2024-01-31")
+    assert Path(f"{factor.store_path}.range.json").is_file()
+
+
+def test_read_returns_a_covered_range_from_the_store(factor):
+    factor.build("2024-01-10", "2024-01-31")
+
+    panel = factor.read("2024-01-15", "2024-01-20")
+
+    assert _days(panel) == [f"2024-01-{d}" for d in range(15, 21)]
+    _assert_same_values(panel, factor.compute("2024-01-15", "2024-01-20"))
+
+
+def test_read_refuses_a_range_the_store_does_not_cover(factor):
+    factor.build("2024-01-10", "2024-01-31")
+
+    with pytest.raises(ValueError, match=r"covers 2024-01-10 to 2024-01-31"):
+        factor.read("2024-01-15", "2024-02-05")
+    with pytest.raises(ValueError, match=r"covers 2024-01-10 to 2024-01-31"):
+        factor.read("2024-01-05", "2024-01-20")
+
+
+def test_read_refuses_a_store_without_a_recorded_range(factor):
+    factor.cal().save(mode="w")
+
+    with pytest.raises(ValueError, match="no recorded range"):
+        factor.read("2024-01-15", "2024-01-20")
+
+
+def test_extend_appends_later_bars_and_moves_the_recorded_end(factor):
+    factor.build("2024-01-10", "2024-01-31")
+
+    factor.extend("2024-02-15")
+
+    assert factor.store_range() == ("2024-01-10", "2024-02-15")
+    panel = factor.read("2024-01-10", "2024-02-15")
+    _assert_same_values(panel, factor.compute("2024-01-10", "2024-02-15"))
+
+
+def test_extend_refuses_an_end_the_store_already_covers(factor):
+    factor.build("2024-01-10", "2024-01-31")
+
+    with pytest.raises(ValueError, match="already covers"):
+        factor.extend("2024-01-20")
+
+
+def test_a_plain_save_drops_the_recorded_range(factor):
+    factor.build("2024-01-10", "2024-01-31")
+
+    factor.cal().save(mode="w")
+
+    assert factor.store_range() is None
+
+
+def test_build_read_and_extend_leave_both_configs_unchanged(factor):
+    before = _configs(factor)
+
+    factor.build("2024-01-10", "2024-01-31")
+    factor.read("2024-01-15", "2024-01-20")
+    factor.extend("2024-02-15")
+
+    assert _configs(factor) == before
+
+
+# -- resampled factors -------------------------------------------------------------
+
+
+@pytest.fixture
+def minute_momentum(tmp_path: Path) -> Momentum:
+    """Momentum over six days of four minute bars; ``Close`` rises by one a bar."""
+    timestamps = pd.DatetimeIndex(
+        np.concatenate(
+            [
+                pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values
+                for d in range(1, 7)
+            ]
+        )
+    )
+    close = np.arange(1.0, len(timestamps) + 1.0)[:, None]
+    store = tmp_path / "klines.zarr"
+    xr.Dataset(
+        {"Close": (["timestamp", "symbol"], close)},
+        coords={"timestamp": timestamps, "symbol": ["AUSDT"]},
+    ).to_zarr(store, mode="w")
+    dataset = SpotKlineDataset(
+        DatasetConfig(
+            raw_data_dir_path=str(tmp_path / "raw"),
+            zarr_file_path=str(store),
+            market="crypto_spot",
+            frequency="1m",
+        )
+    )
+    return Momentum(
+        PolarsFactorConfig(
+            window=2,
+            dataset=dataset,
+            file_path=str(tmp_path / "factors" / "momentum.zarr"),
+            kwargs={"n": 2},
+        )
+    )
+
+
+def test_resampled_compute_is_on_resampled_bars(minute_momentum):
+    daily = minute_momentum.resample("1d", "last")
+    full = daily.copy().cal().get_features().load()
+
+    panel = daily.compute("2024-01-03", "2024-01-05")
+
+    assert _days(panel) == ["2024-01-03", "2024-01-04", "2024-01-05"]
+    # The last bar of each day, against the bar two minutes earlier.
+    assert panel["momentum_2"].values[:, 0].tolist() == pytest.approx(
+        [12 / 10 - 1, 16 / 14 - 1, 20 / 18 - 1]
+    )
+    _assert_same_values(panel, full.sel(timestamp=slice("2024-01-03", "2024-01-05")))
+
+
+def test_resampled_build_and_read_use_the_sibling_store(minute_momentum):
+    daily = minute_momentum.resample("1d", "last")
+
+    daily.build("2024-01-02", "2024-01-05")
+
+    assert Path(daily.store_path).is_dir()
+    assert not Path(minute_momentum.store_path).exists()
+    assert daily.store_range() == ("2024-01-02", "2024-01-05")
+    _assert_same_values(
+        daily.read("2024-01-03", "2024-01-04"), daily.compute("2024-01-03", "2024-01-04")
+    )
+
+
+def test_resampled_read_resamples_the_source_store_without_a_sibling(minute_momentum):
+    minute_momentum.build("2024-01-01", "2024-01-06")
+    daily = minute_momentum.resample("1d", "last")
+
+    panel = daily.read("2024-01-03", "2024-01-05")
+
+    assert _days(panel) == ["2024-01-03", "2024-01-04", "2024-01-05"]
+    _assert_same_values(panel, daily.compute("2024-01-03", "2024-01-05"))
+
+
+def test_resampled_extend_is_refused(minute_momentum):
+    daily = minute_momentum.resample("1d", "last")
+    daily.build("2024-01-02", "2024-01-04")
+
+    with pytest.raises(ValueError, match="resampled factor"):
+        daily.extend("2024-01-06")

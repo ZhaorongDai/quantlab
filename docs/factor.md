@@ -29,7 +29,7 @@ Both backends take a config with the fields below. `FactorConfig` adds `mode` (`
 
 | Field | Meaning |
 |---|---|
-| `window` | lookback in calendar days, read before `start_date` so rolling operators are warm |
+| `window` | lookback read before the first bar so rolling operators are warm: calendar days before `start_date` for `cal()`, bars before `start` for `compute()` |
 | `dataset` | the dataset the factor reads |
 | `file_path` | Zarr store the factor is saved to and read from |
 | `factor_names` | output column names; derived from the factor when left `None` |
@@ -127,6 +127,48 @@ True
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
 ('Momentum', ('momentum_5',))
 ```
+
+### Request a date range: compute, build, read, extend
+
+A factor also answers requests by date range, without holding a panel or changing its own config or its dataset's. `compute(start, end)` reads the dataset from `warmup_bars` bars before `start`, counted on the dataset's own calendar so days without data are skipped, computes, and returns only `start` to `end`. `warmup_bars` is the config's `window` read as a bar count. The values match a computation over the whole history: the first bar below is the same as in the `cal()` session above.
+
+```python
+>>> factor = Momentum(PolarsFactorConfig(
+...     window=20, dataset=make_dataset(), file_path="data/factors/momentum_range.zarr",
+...     kwargs={"n": 5},
+... ))
+>>> factor.warmup_bars
+20
+>>> panel = factor.compute("2024-02-01", "2024-02-29")
+>>> dict(panel.sizes), list(panel.data_vars)
+({'timestamp': 29, 'symbol': 8}, ['momentum_5'])
+>>> panel["momentum_5"].isel(timestamp=0, symbol=slice(0, 3)).values.round(4)
+array([ 0.0161,  0.0079, -0.0007])
+```
+
+When the dataset holds fewer than `warmup_bars` bars before `start`, a `UserWarning` states the shortfall and the computation starts from the first bar there is:
+
+```text
+UserWarning: Momentum.compute(): 20 warm-up bar(s) are needed before '2024-01-05' but SpotKlineDataset holds only 4; the first bars are short by 16 bar(s) of warm-up.
+```
+
+`build(start, end)` writes `compute(start, end)` as the store and records the range beside it, in `<store>.range.json`. `read(start, end)` returns a range from the store, opened lazily, and refuses one the recorded range does not contain. `extend(end)` computes the bars after the recorded end, warmed from the dataset, appends them and moves the recorded end.
+
+```python
+>>> factor.build("2024-01-21", "2024-02-29").store_range()
+('2024-01-21', '2024-02-29')
+>>> dict(factor.read("2024-02-10", "2024-02-15").sizes)
+{'timestamp': 6, 'symbol': 8}
+>>> factor.read("2024-02-10", "2024-03-10")
+Traceback (most recent call last):
+ValueError: Momentum.read(): the store at data/factors/momentum_range.zarr covers 2024-01-21 to 2024-02-29, which does not contain 2024-02-10 to 2024-03-10. Extend it with extend(end) or rebuild it with build(start, end).
+>>> factor.extend("2024-03-20").store_range()
+('2024-01-21', '2024-03-20')
+>>> factor.read("2024-01-21", "2024-03-20").sizes["timestamp"]
+60
+```
+
+`save()` removes a recorded range, since the panel it writes was not requested by date range. A resampled factor answers the same calls on its resampled bars: `build` writes its own store beside the source, and `read` without that store resamples the source factor's store. `extend` is refused on a resampled factor, as `update` is. A KunQuant factor answers these calls in batch mode only.
 
 ### Resample a factor onto coarser bars
 

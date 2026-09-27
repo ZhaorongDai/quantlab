@@ -29,7 +29,7 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 
 | 字段 | 含义 |
 |---|---|
-| `window` | 回看的日历天数，在 `start_date` 之前读取，用来让滚动算子预热 |
+| `window` | 在第一根 bar 之前读取的回看长度，用来让滚动算子预热：对 `cal()` 是 `start_date` 之前的日历天数，对 `compute()` 是 `start` 之前的 bar 数 |
 | `dataset` | 因子读取的数据集 |
 | `file_path` | 因子保存和读取所用的 Zarr 存储 |
 | `factor_names` | 输出列名；为 `None` 时由因子自己推出 |
@@ -127,6 +127,48 @@ True
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
 ('Momentum', ('momentum_5',))
 ```
+
+### 按日期区间请求：compute、build、read、extend
+
+因子也能按日期区间应答请求，既不在自身保留面板，也不改动自己或其 dataset 的 config。`compute(start, end)` 从 `start` 之前 `warmup_bars` 根 bar 开始读取 dataset（在 dataset 自己的日历上数，没有数据的日子会被跳过），计算后只返回 `start` 到 `end`。`warmup_bars` 就是 config 的 `window`，按 bar 数解读。结果与对全部历史计算的值一致：下面第一根 bar 与上文 `cal()` 会话中的相同。
+
+```python
+>>> factor = Momentum(PolarsFactorConfig(
+...     window=20, dataset=make_dataset(), file_path="data/factors/momentum_range.zarr",
+...     kwargs={"n": 5},
+... ))
+>>> factor.warmup_bars
+20
+>>> panel = factor.compute("2024-02-01", "2024-02-29")
+>>> dict(panel.sizes), list(panel.data_vars)
+({'timestamp': 29, 'symbol': 8}, ['momentum_5'])
+>>> panel["momentum_5"].isel(timestamp=0, symbol=slice(0, 3)).values.round(4)
+array([ 0.0161,  0.0079, -0.0007])
+```
+
+当 dataset 在 `start` 之前不足 `warmup_bars` 根 bar 时，会发出一条 `UserWarning` 说明差多少根，计算从现有的第一根 bar 开始：
+
+```text
+UserWarning: Momentum.compute(): 20 warm-up bar(s) are needed before '2024-01-05' but SpotKlineDataset holds only 4; the first bars are short by 16 bar(s) of warm-up.
+```
+
+`build(start, end)` 把 `compute(start, end)` 写成 store，并把区间记录在它旁边的 `<store>.range.json` 中。`read(start, end)` 惰性地从 store 返回一个区间；记录的区间不包含所请求的区间时拒绝。`extend(end)` 计算记录终点之后的 bar（从 dataset 取预热历史），追加到 store，并把记录的终点后移。
+
+```python
+>>> factor.build("2024-01-21", "2024-02-29").store_range()
+('2024-01-21', '2024-02-29')
+>>> dict(factor.read("2024-02-10", "2024-02-15").sizes)
+{'timestamp': 6, 'symbol': 8}
+>>> factor.read("2024-02-10", "2024-03-10")
+Traceback (most recent call last):
+ValueError: Momentum.read(): the store at data/factors/momentum_range.zarr covers 2024-01-21 to 2024-02-29, which does not contain 2024-02-10 to 2024-03-10. Extend it with extend(end) or rebuild it with build(start, end).
+>>> factor.extend("2024-03-20").store_range()
+('2024-01-21', '2024-03-20')
+>>> factor.read("2024-01-21", "2024-03-20").sizes["timestamp"]
+60
+```
+
+`save()` 会删除已记录的区间，因为它写入的面板不是按日期区间请求得到的。重采样后的因子在重采样后的 bar 上应答同样的调用：`build` 在源 store 旁写自己的 store；没有这个 store 时，`read` 会对源因子的 store 做重采样。重采样后的因子拒绝 `extend`，与 `update` 一样。KunQuant 因子只在 batch 模式下应答这些调用。
 
 ### 把因子重采样到更粗的 bar
 
