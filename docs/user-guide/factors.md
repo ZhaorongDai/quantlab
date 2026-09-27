@@ -123,9 +123,12 @@ Kakushadze (2016). Alpha158 is the feature library of Microsoft's Qlib
 project. It has candle-shape features (`KMID`, `KLEN`, ...), prices and
 volumes lagged 0 to 4 bars (`CLOSE1`, `VOLUME3`, ...) and rolling statistics
 over 5 to 60 bars (`ROC5`, `STD20`, `CORR60`, ...). The crypto variants
-z-score every output against its own trailing window of `warmup_bars`
-bars (`WindowedZScore`), which suits strategies that follow one asset over
-time. The equity variants z-score every output
+z-score every output against its own trailing window of
+`kwargs["zscore_window"]` bars (`WindowedZScore`, default 20), which suits
+strategies that follow one asset over time. The window is independent of
+`warmup_bars`, which has to cover the alpha's own lookback plus
+`zscore_window - 1` bars for the first requested bar to be fully
+normalized. The equity variants z-score every output
 across the symbols of the same bar (see
 [Normalisation operators](#normalisation-operators)).
 

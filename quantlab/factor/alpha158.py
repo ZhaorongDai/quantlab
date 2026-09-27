@@ -24,10 +24,11 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
+from quantlab.factor._support.zscore import TimeSeriesZScoredFactor
 from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
 
 
-class Alpha158SpotKline(FactorKunQuant):
+class Alpha158SpotKline(TimeSeriesZScoredFactor):
     """Alpha158 factors over crypto spot klines, z-scored along time.
 
     Builds the Alpha158 feature set from the lowercase ``open``, ``high``,
@@ -35,8 +36,9 @@ class Alpha158SpotKline(FactorKunQuant):
     k-bar shape features, price and volume ratios lagged 0 to 4 bars, and
     rolling features over 5, 10, 20, 30 and 60 bars. The rolling regression
     features ``BETA``, ``RSQR`` and ``RESI`` are left out. Every output is
-    wrapped in ``WindowedZScore`` over ``config.warmup_bars`` bars, which
-    standardizes each symbol against its own recent past. That suits the
+    wrapped in ``WindowedZScore`` over ``zscore_window`` bars
+    (``kwargs["zscore_window"]``, default 20), which standardizes each
+    symbol against its own recent past. That suits the
     time-series strategies spot data is traded with here; ``Alpha158Stock``
     z-scores across symbols for cross-sectional strategies instead.
 
@@ -46,7 +48,10 @@ class Alpha158SpotKline(FactorKunQuant):
     Parameters
     ----------
     factor_config : FactorConfig
-        The KunQuant factor config. ``warmup_bars`` also sets the z-score window,
+        The KunQuant factor config. ``kwargs["zscore_window"]`` sets the
+        z-score window. ``warmup_bars`` must cover the longest feature
+        window (60 bars for the full set) plus ``zscore_window - 1`` bars
+        for the first requested bar to be fully normalized.
         ``data_columns`` lists the six input columns above, and
         ``factor_names`` selects which features to compute (all when
         unset).
@@ -54,9 +59,10 @@ class Alpha158SpotKline(FactorKunQuant):
     Examples
     --------
     >>> factor = Alpha158SpotKline(FactorConfig(
-    ...     warmup_bars=10, dataset=dataset, mode="batch",
+    ...     warmup_bars=24, dataset=dataset, mode="batch",
     ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
-    ...     factor_names=["KMID", "STD5"], file_path="alpha158.zarr",
+    ...     factor_names=["KMID", "STD5"], kwargs={"zscore_window": 20},
+    ...     file_path="alpha158.zarr",
     ... ))
     >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
@@ -137,7 +143,7 @@ class Alpha158SpotKline(FactorKunQuant):
             alpha158, names = self._get_func_names()
             for v, k in zip(alpha158, names):
                 if k in factor_names:
-                    Output(WindowedZScore(v, self.config.warmup_bars), k)
+                    Output(WindowedZScore(v, self.zscore_window), k)
         return Function(builder.ops)
 
     def _get_factor_func(self):

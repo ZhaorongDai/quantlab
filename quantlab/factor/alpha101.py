@@ -23,17 +23,18 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
+from quantlab.factor._support.zscore import TimeSeriesZScoredFactor
 from quantlab.my_ops.preprocess import WindowedZScore, CrossSectionalZScore
 
 
-class Alpha101SpotKline(FactorKunQuant):
+class Alpha101SpotKline(TimeSeriesZScoredFactor):
     """Alpha101 factors over crypto spot klines, z-scored along time.
 
     Reads the lowercase ``open``, ``high``, ``low``, ``close``, ``volume``
     and ``amount`` (traded value in quote currency) columns of the spot kline
     dataset. Every output is wrapped in ``WindowedZScore`` over
-    ``config.warmup_bars`` bars, which standardizes each symbol against its own
-    trailing window. That time-series normalization suits the strategies
+    ``zscore_window`` bars (``kwargs["zscore_window"]``, default 20), which
+    standardizes each symbol against its own trailing window. That time-series normalization suits the strategies
     spot data is traded with here, which follow one asset over time. The
     US-equity sibling ``Alpha101Stock`` z-scores across symbols instead,
     because it serves cross-sectional strategies that compare symbols on the
@@ -42,17 +43,20 @@ class Alpha101SpotKline(FactorKunQuant):
     Parameters
     ----------
     factor_config : FactorConfig
-        The KunQuant factor config. ``warmup_bars`` also sets the z-score window,
-        ``data_columns`` lists the six input columns above, and
-        ``factor_names`` selects which alphas to compute (all 101 when
-        unset).
+        The KunQuant factor config. ``kwargs["zscore_window"]`` sets the
+        z-score window. ``warmup_bars`` must cover the longest alpha
+        lookback plus ``zscore_window - 1`` bars for the first requested bar
+        to be fully normalized. ``data_columns`` lists the six input
+        columns above, and ``factor_names`` selects which alphas to compute
+        (all 101 when unset).
 
     Examples
     --------
     >>> factor = Alpha101SpotKline(FactorConfig(
-    ...     warmup_bars=20, dataset=dataset, mode="batch",
+    ...     warmup_bars=60, dataset=dataset, mode="batch",
     ...     data_columns=["open", "high", "low", "close", "volume", "amount"],
-    ...     factor_names=["alpha001", "alpha002"], file_path="alpha101.zarr",
+    ...     factor_names=["alpha001", "alpha002"], kwargs={"zscore_window": 20},
+    ...     file_path="alpha101.zarr",
     ... ))
     >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
     """
@@ -83,7 +87,7 @@ class Alpha101SpotKline(FactorKunQuant):
             for alpha in Alpha101.all_alpha:
                 if alpha.__name__ in factor_names:
                     Output(
-                        WindowedZScore(alpha(all_data), self.config.warmup_bars),
+                        WindowedZScore(alpha(all_data), self.zscore_window),
                         alpha.__name__,
                     )
         return Function(builder.ops)

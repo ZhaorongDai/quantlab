@@ -323,7 +323,7 @@ XrBackend()
 
 ### 沿时间或跨标的做标准化
 
-`quantlab.my_ops.preprocess` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用窗口为 `warmup_bars` 根 bar 的 `WindowedZScore`；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。“扩展”一节中的 KunQuant 因子同时用了两个算子。
+`quantlab.my_ops.preprocess` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`，窗口是 `kwargs["zscore_window"]` 根 bar（默认 20），与 `warmup_bars` 相互独立；要让第一个请求的 bar 完全标准化，`warmup_bars` 必须覆盖 alpha 自身的回看长度再加 `zscore_window - 1` 根 bar（完整的 Alpha158 最多是 60 + 19）。`zscore_window` 不是正整数时，构造因子就会被拒绝；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。“扩展”一节中的 KunQuant 因子同时用了两个算子。
 
 该模块还有两个截面去极值算子。`CrossSectionalWinsorize(v, lower=0.01, upper=0.99)`（缩尾）在每个时间点把取值截到该时点所有标的的 `lower` 和 `upper` 分位数之间；`CrossSectionalTrim(v, lower=0.01, upper=0.99)`（截尾）把严格落在这两个分位数之外的值设为 NaN。分位数忽略 NaN，并按线性插值计算，与 `np.nanquantile` 一致。常见用法是 `CrossSectionalZScore(CrossSectionalWinsorize(v))`，避免少数极端标的主导均值和标准差。KunQuant 0.1.11 没有内置这两个算子：它的 `Clip` 按固定常数截断，`WindowedQuantile` 是沿时间方向的。
 
