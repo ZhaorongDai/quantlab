@@ -30,7 +30,6 @@ in the style of `tests/test_model_hierarchy.py` rather than imported from it.
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -105,25 +104,21 @@ class FakePanel:
             },
             coords={"timestamp": TIMES, "symbol": self.symbols},
         )
-        self.config = SimpleNamespace(start_date=None, end_date=None)
-
-    def _reset_dataset_config(self):
-        pass
 
     def _get_factor_names(self):
         return list(self.names)
 
-    def cal(self):
-        return self
+    def compute(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def read(self):
-        return self
+    def read(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self):
-        return self._ds
+    def get_features(self, panel=None):
+        return self._ds if panel is None else panel
 
-    def get_labels(self):
-        return self._ds
+    def get_labels(self, panel=None):
+        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}

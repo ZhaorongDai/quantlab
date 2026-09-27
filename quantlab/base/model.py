@@ -8,8 +8,8 @@ variable per feature or label.
 
 The module defines a three-level class hierarchy. ``BaseModel`` holds
 everything that does not depend on the training framework: config
-validation, pushing the model's dates down to its factors and labels,
-collecting their panels into one dataset, the public ``train`` /
+validation, requesting the factor and label panels over the model's date
+range and collecting them into one dataset, the public ``train`` /
 ``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, the
 checkpoint directory layout with its ``config.json`` sidecar file, and the
 fold boundaries of rolling cross-validation. ``DLModel`` is the PyTorch
@@ -189,13 +189,13 @@ class BaseModel(ABC):
 
     @config.setter
     def config(self, config: DLConfig | MLConfig):
-        """Install ``config`` and push its dates down to every factor and label.
+        """Install ``config`` after checking its class.
 
-        The type check runs before anything else so that a model handed the
-        wrong config class fails before any factor or label object has been
-        modified. Missing ``start_date`` / ``end_date`` fall back to the
-        project-wide defaults, and ``config.name`` is set to the model's import
-        path.
+        Missing ``start_date`` / ``end_date`` fall back to the project-wide
+        defaults, and ``config.name`` is set to the model's import path. The
+        factors and labels are left untouched: ``collect()`` passes the
+        model's date range to each of them per request, so one factor object
+        can serve several models with different ranges.
 
         Raises
         ------
@@ -207,9 +207,10 @@ class BaseModel(ABC):
         >>> model.config = MLConfig(factors=[factor], labels=[label],
         ...                         model_save_dir="checkpoints",
         ...                         factor_data_strategy="read",
-        ...                         label_data_strategy="read")
-        >>> factor.config.start_date == model.config.start_date
-        True
+        ...                         label_data_strategy="read",
+        ...                         start_date="2024-01-01")
+        >>> model.config.end_date
+        '2100-01-01'
         """
         if not isinstance(config, self.config_cls):
             raise TypeError(
@@ -223,9 +224,6 @@ class BaseModel(ABC):
             self._config.start_date = Date.START_DATE
         if self._config.end_date is None:
             self._config.end_date = Date.END_DATE
-
-        self._reset_factors_config()
-        self._reset_labels_config()
 
     @property
     def num_times(self) -> int:
@@ -328,81 +326,83 @@ class BaseModel(ABC):
         """
         return len(self.get_label_names())
 
-    def _reset_factors_config(self):
-        """Copy the model's dates onto every factor and re-derive their datasets."""
-        for factor in self._config.factors:
-            factor.config.start_date = self._config.start_date
-            factor.config.end_date = self._config.end_date
+    def _request_panel(self, obj, strategy: str, start, end) -> xr.Dataset:
+        """Return ``obj``'s panel from ``start`` to ``end`` by ``strategy``.
 
-            factor._reset_dataset_config()
+        ``"read"`` maps onto ``obj.read(start, end)`` and ``"cal"`` onto
+        ``obj.compute(start, end)``.
 
-    def _reset_labels_config(self):
-        """Copy the model's dates onto every label and re-derive their datasets."""
-        for label in self._config.labels:
-            label.config.start_date = self._config.start_date
-            label.config.end_date = self._config.end_date
+        Raises
+        ------
+        ValueError
+            If the strategy is neither ``"cal"`` nor ``"read"``.
+        """
+        match strategy:
+            case "cal":
+                return obj.compute(start, end)
+            case "read":
+                return obj.read(start, end)
+            case _:
+                raise ValueError(f"data strategy {strategy!r} is not supported")
 
-            label._reset_dataset_config()
+    def _collect_panels(self, objs, strategy: str, getter: str, start, end) -> xr.Dataset:
+        """Request each object's panel from ``start`` to ``end`` and merge them.
 
-    def _collect_all_labels(self) -> xr.Dataset:
+        ``start`` and ``end`` default to the model's ``start_date`` and
+        ``end_date``. Each panel comes from ``_request_panel`` and is passed
+        through the object's ``getter`` (``get_features`` or ``get_labels``).
+        """
+        start = self.config.start_date if start is None else start
+        end = self.config.end_date if end is None else end
+        panels = [
+            getattr(obj, getter)(self._request_panel(obj, strategy, start, end))
+            for obj in objs
+        ]
+        return xr.combine_by_coords(panels)  # type: ignore
+
+    def _collect_all_labels(self, start=None, end=None) -> xr.Dataset:
         """Gather every label in ``config.labels`` into one sorted panel.
 
-        Each label is computed (``cal``) or read from its store (``read``)
-        according to ``config.label_data_strategy``.
+        Each label's panel from ``start`` to ``end`` (by default the model's
+        ``start_date`` and ``end_date``) is read from its store or computed,
+        according to ``config.label_data_strategy``, then turned into labels.
 
         Raises
         ------
         ValueError
             If the strategy is neither ``"cal"`` nor ``"read"``.
         """
-        all_ds = []
-        for label in self.config.labels:
-            match self.config.label_data_strategy:
-                case "cal":
-                    ds = label.cal().get_labels()
-                case "read":
-                    ds = label.read().get_labels()
-                case _:
-                    raise ValueError(
-                        f"label_data_strategy {self.config.label_data_strategy} is not supported"
-                    )
-            all_ds.append(ds)
-        data: xr.Dataset = xr.combine_by_coords(all_ds)  # type: ignore
-        data = data.sortby(["timestamp", "symbol"])
-        return data
+        data = self._collect_panels(
+            self.config.labels, self.config.label_data_strategy, "get_labels", start, end
+        )
+        return data.sortby(["timestamp", "symbol"])
 
-    def _collect_all_features(self) -> xr.Dataset:
+    def _collect_all_features(self, start=None, end=None) -> xr.Dataset:
         """Gather every factor in ``config.factors`` into one panel.
 
-        Each factor is computed (``cal``) or read from its store (``read``)
-        according to ``config.factor_data_strategy``.
+        Each factor's panel from ``start`` to ``end`` (by default the model's
+        ``start_date`` and ``end_date``) is read from its store or computed,
+        according to ``config.factor_data_strategy``, then turned into
+        features.
 
         Raises
         ------
         ValueError
             If the strategy is neither ``"cal"`` nor ``"read"``.
         """
-        all_ds = []
-        for factor in self.config.factors:
-            match self.config.factor_data_strategy:
-                case "cal":
-                    ds = factor.cal().get_features()
-                case "read":
-                    ds = factor.read().get_features()
-                case _:
-                    raise ValueError(
-                        f"data_strategy {self.config.factor_data_strategy} not supported"
-                    )
-            all_ds.append(ds)
-        data: xr.Dataset = xr.combine_by_coords(all_ds)  # type: ignore
-        return data
+        return self._collect_panels(
+            self.config.factors, self.config.factor_data_strategy, "get_features", start, end
+        )
 
     def collect(
         self,
     ) -> Self:
         """Load features and labels into the model's data backend.
 
-        The factor and label panels are merged on their shared
+        Each factor and label is asked for its panel from ``start_date`` to
+        ``end_date``: ``read(start, end)`` from its store under the
+        ``"read"`` strategy, ``compute(start, end)`` from its inputs under
+        ``"cal"``. The factor and label panels are merged on their shared
         ``(timestamp, symbol)`` coordinates, sorted on both axes, and stored
         in ``self.data_backend``. Call this before ``train()`` or ``train_cv()``.
 

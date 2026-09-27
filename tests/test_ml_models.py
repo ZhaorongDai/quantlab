@@ -15,7 +15,6 @@ Everything is synthetic, CPU-only and offline.
 """
 
 from pathlib import Path
-from types import SimpleNamespace
 import warnings
 
 import joblib
@@ -77,25 +76,21 @@ class FakePanel:
             },
             coords={"timestamp": TIMES, "symbol": SYMBOLS},
         )
-        self.config = SimpleNamespace(start_date=None, end_date=None)
-
-    def _reset_dataset_config(self):
-        pass
 
     def _get_factor_names(self):
         return list(self.names)
 
-    def cal(self):
-        return self
+    def compute(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def read(self):
-        return self
+    def read(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self):
-        return self._ds
+    def get_features(self, panel=None):
+        return self._ds if panel is None else panel
 
-    def get_labels(self):
-        return self._ds
+    def get_labels(self, panel=None):
+        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
@@ -435,13 +430,13 @@ class PinnedPanel(FakePanel):
     def __init__(self, names, pinned, seed=0):
         super().__init__(pinned, seed=seed)
         self.all_names = list(names)
-        self.config.factor_names = tuple(pinned)
+        self.pinned = tuple(pinned)
 
     def _get_factor_names(self):
         return list(self.all_names)
 
     def get_factor_names(self):
-        return self.config.factor_names
+        return self.pinned
 
 
 class _Label:
@@ -454,22 +449,18 @@ class _Label:
             {"ret": (("timestamp", "symbol"), rng.standard_normal(shape))},
             coords=coords,
         )
-        self.config = SimpleNamespace(start_date=None, end_date=None)
-
-    def _reset_dataset_config(self):
-        pass
 
     def _get_factor_names(self):
         return ["ret"]
 
-    def cal(self):
-        return self
+    def compute(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def read(self):
-        return self
+    def read(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def get_labels(self):
-        return self._ds
+    def get_labels(self, panel=None):
+        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "Label", "factor_names": ["ret"]}

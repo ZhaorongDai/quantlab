@@ -27,7 +27,6 @@ Everything is synthetic, CPU-only and offline.
 import ast
 import inspect
 import textwrap
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -77,25 +76,21 @@ class FakePanel:
             },
             coords={"timestamp": TIMES, "symbol": SYMBOLS},
         )
-        self.config = SimpleNamespace(start_date=None, end_date=None)
-
-    def _reset_dataset_config(self):
-        pass
 
     def _get_factor_names(self):
         return list(self.names)
 
-    def cal(self):
-        return self
+    def compute(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def read(self):
-        return self
+    def read(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self):
-        return self._ds
+    def get_features(self, panel=None):
+        return self._ds if panel is None else panel
 
-    def get_labels(self):
-        return self._ds
+    def get_labels(self, panel=None):
+        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
@@ -207,21 +202,14 @@ def test_variants_declare_config_class_and_checkpoint_suffix():
 # --------------------------------------------------------------------------
 
 
-def test_dl_head_rejects_an_ml_config_before_touching_factors(tmp_path):
-    """The type check is the setter's FIRST statement: the rejected panel's
-    dates must still be unset. Turns red if the check moves below the date
-    injection or disappears."""
-    panel = FakePanel(["f_a"])
+def test_dl_head_rejects_an_ml_config(tmp_path):
     with pytest.raises(TypeError, match="MLPRegressor requires a DLConfig, got MLConfig"):
-        MLPRegressor(MLConfig(**_kwargs(tmp_path, factors=[panel])))
-    assert panel.config.start_date is None
+        MLPRegressor(MLConfig(**_kwargs(tmp_path)))
 
 
-def test_ml_head_rejects_a_dl_config_before_touching_factors(tmp_path):
-    panel = FakePanel(["f_a"])
+def test_ml_head_rejects_a_dl_config(tmp_path):
     with pytest.raises(TypeError, match="StubMLHead requires a MLConfig, got DLConfig"):
-        StubMLHead(DLConfig(**_kwargs(tmp_path, factors=[panel])))
-    assert panel.config.start_date is None
+        StubMLHead(DLConfig(**_kwargs(tmp_path)))
 
 
 # --------------------------------------------------------------------------

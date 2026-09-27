@@ -134,9 +134,10 @@ Two behaviours of configs are worth knowing. First, an object takes ownership of
 and completes it on assignment: it records its own class in the `name` field, fills in dates
 that were left out, resolves factor names and, for factors, moves the dataset's start date
 back by the warm-up `window`. So give each object its own config instance; the quickstart
-copies the dataset config with `dataclasses.replace` for each factor. Second, a model's dates
-are pushed down to its factors and labels, and a backtester re-dates the factors to cover its
-window plus the warm-up bars, so the dates you set on the outermost object win.
+copies the dataset config with `dataclasses.replace` for each factor. Second, a model passes
+its dates to its factors and labels per request (`read(start, end)` or `compute(start, end)`)
+and leaves their configs alone, while a backtester re-dates the factors to cover its window
+plus the warm-up bars, so the dates you set on the outermost object win.
 
 ## Rebuilding objects from config.json
 

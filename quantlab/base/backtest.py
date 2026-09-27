@@ -35,7 +35,7 @@ import wandb
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.data import MarketDataset
+from quantlab.base.data import InsufficientHistoryError, MarketDataset
 from quantlab.base.model import BaseModel, DLModel
 from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
@@ -1461,7 +1461,8 @@ class BaseBacktester(ABC):
             model.symbol_labeller = self.ticker_lookup.label
             self._redate_factors(start_date, end_date, calendar)
 
-            features = model._collect_all_features()
+            # Each factor warms itself up from the bars before start_date.
+            features = model._collect_all_features(start_date, end_date)
             return model.predict_panel(features).sel(
                 timestamp=slice(start_date, end_date)
             )
@@ -1590,14 +1591,16 @@ class BaseBacktester(ABC):
         return aligned
 
     @staticmethod
-    def _dataset_variables_fingerprint(factor) -> dict:
+    def _dataset_variables_fingerprint(factor, ds: xr.Dataset | None = None) -> dict:
         """Fingerprint the data a factor (or label) consumes from its dataset.
 
-        A KunQuant factor (``FactorConfig``) reads ``data_columns``; a
-        Polars factor consumes the whole frame, so every data variable is
-        covered.
+        ``ds`` is the dataset panel to fingerprint; by default the panel the
+        dataset holds. A KunQuant factor (``FactorConfig``) reads
+        ``data_columns``; a Polars factor consumes the whole frame, so every
+        data variable is covered.
         """
-        ds = factor.config.dataset.get_xarray_dataset()
+        if ds is None:
+            ds = factor.config.dataset.get_xarray_dataset()
         if isinstance(factor.config, FactorConfig):
             variables = list(factor.config.data_columns)
         else:
@@ -1636,14 +1639,17 @@ class BaseBacktester(ABC):
         Called after ``collect()`` and before ``train()``. The window
         fingerprints do not cover the training span, so without these a
         rebuilt run could train a different model unnoticed. One key per
-        factor and label over the range ``collect()`` just read:
+        factor and label over the model's ``start_date`` to ``end_date``,
+        the range ``collect()`` requested:
         ``train_factor[{i}]:{ClassName}`` / ``train_label[{i}]:{ClassName}``
-        over the consumed dataset columns under the ``"cal"`` strategy, or
+        over the consumed dataset columns, warm-up bars included, under the
+        ``"cal"`` strategy, or
         ``train_factor_store[{i}]:{ClassName}`` /
         ``train_label_store[{i}]:{ClassName}`` over the store panels under
         the ``"read"`` strategy, where the stores are the data actually used.
         """
         model_config = self.config.model.config
+        start, end = model_config.start_date, model_config.end_date
         for prefix, items, strategy, getter in (
             ("train_factor", model_config.factors, model_config.factor_data_strategy, "get_features"),
             ("train_label", model_config.labels, model_config.label_data_strategy, "get_labels"),
@@ -1651,13 +1657,30 @@ class BaseBacktester(ABC):
             for i, item in enumerate(items):
                 name = type(item).__name__
                 if strategy == "read":
+                    panel = getattr(item, getter)(item.read(start, end))
                     self._fingerprints[f"{prefix}_store[{i}]:{name}"] = (
-                        self._store_fingerprint(getattr(item, getter)())
+                        self._store_fingerprint(panel)
                     )
                 else:
                     self._fingerprints[f"{prefix}[{i}]:{name}"] = (
-                        self._dataset_variables_fingerprint(item)
+                        self._dataset_variables_fingerprint(
+                            item, self._compute_inputs(item, start, end)
+                        )
                     )
+
+    @staticmethod
+    def _compute_inputs(item, start, end) -> xr.Dataset:
+        """Return the dataset panel ``item.compute(start, end)`` reads.
+
+        That is ``start`` to ``end`` plus ``item.warmup_bars`` bars before
+        ``start``, or every bar before it when the dataset holds fewer.
+        """
+        dataset = item.config.dataset
+        try:
+            first = dataset.bar_before(start, item.warmup_bars)
+        except InsufficientHistoryError as exc:
+            first = dataset.bar_before(start, exc.available)
+        return dataset.panel(first, end)
 
     def _compare_fingerprints(self, *, partial: bool = False) -> None:
         """Compare this run's fingerprints against ``expected_fingerprint``.

@@ -17,13 +17,12 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 
 ### 输入与输出
 
-模型头用一个因子对象列表（特征）和一个标签对象列表（目标）来配置，二者都来自因子层（见 factor 指南）。`collect()` 读取或计算它们，按 `(timestamp, symbol)` 合并，并把面板保存在内存中。模型头内部处理形状为 `[num_times, num_symbols, num_features]` 的数组，最后一个轴的顺序与 `get_factor_names()` 完全一致，输出形状为 `[num_times, num_symbols, num_labels]` 的预测。
+模型头用一个因子对象列表（特征）和一个标签对象列表（目标）来配置，二者都来自因子层（见 factor 指南）。`collect()` 用 `read(start, end)` 或 `compute(start, end)` 向每个对象请求模型 `start_date` 到 `end_date` 的面板，按 `(timestamp, symbol)` 合并，并把面板保存在内存中。模型头内部处理形状为 `[num_times, num_symbols, num_features]` 的数组，最后一个轴的顺序与 `get_factor_names()` 完全一致，输出形状为 `[num_times, num_symbols, num_labels]` 的预测。
 
 下面的示例用一个内存中的小型替身来代替因子和标签对象，因此不需要任何数据存储。它只实现了模型层会调用的几个方法。标签是两个因子的带噪线性函数。
 
 ```python
 >>> import numpy as np, xarray as xr
->>> from types import SimpleNamespace
 >>> rng = np.random.default_rng(0)
 >>> coords = {"timestamp": np.datetime64("2024-01-01") + np.arange(200),
 ...           "symbol": [f"S{i:02d}" for i in range(20)]}
@@ -34,12 +33,10 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 ...     def __init__(self, **variables):
 ...         data = {k: (("timestamp", "symbol"), v) for k, v in variables.items()}
 ...         self.ds = xr.Dataset(data, coords=coords)
-...         self.config = SimpleNamespace(start_date=None, end_date=None)
-...     def _reset_dataset_config(self): pass
 ...     def _get_factor_names(self): return list(self.ds.data_vars)
-...     def read(self): return self
-...     def get_features(self): return self.ds
-...     def get_labels(self): return self.ds
+...     def read(self, start, end): return self.ds.sel(timestamp=slice(start, end))
+...     def get_features(self, panel): return panel
+...     def get_labels(self, panel): return panel
 ...     def get_config(self): return {"factor_names": self._get_factor_names()}
 >>> factor, label = Panel(f_a=f_a, f_b=f_b), Panel(ret=ret)
 >>> from loguru import logger
@@ -84,7 +81,7 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 `predict_panel` 接收特征面板，返回一个面板，每个标签名对应一个变量。所有特征都为 NaN 的位置，预测也是 NaN。`predict` 是数组层面的对应接口：对 `XGBoostRegressor` 而言，输入 `[T, S, F]`，输出 `[T, S, L]`。拿不准时用 `predict_panel`，因为 `predict` 的数组约定由各个模型头自己决定。
 
 ```python
->>> predictions = model.predict_panel(factor.get_features())
+>>> predictions = model.predict_panel(factor.ds)
 >>> predictions
 <xarray.Dataset> Size: 34kB
 Dimensions:    (timestamp: 200, symbol: 20)
@@ -101,7 +98,7 @@ Data variables:
 
 ```python
 >>> restored = XGBoostRegressor(config).load(checkpoint)
->>> bool((restored.predict_panel(factor.get_features())["ret"] == predictions["ret"]).all())
+>>> bool((restored.predict_panel(factor.ds)["ret"] == predictions["ret"]).all())
 True
 ```
 
@@ -195,8 +192,8 @@ True
 >>> mlp_checkpoint = mlp.train()
 >>> mlp_checkpoint.name
 'MLPRegressor_total.pth'
->>> one_more = factor.get_features().isel(symbol=[0]).assign_coords(symbol=["S99"])
->>> wider = xr.concat([factor.get_features(), one_more], dim="symbol")
+>>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
+>>> wider = xr.concat([factor.ds, one_more], dim="symbol")
 >>> mlp.predict_panel(wider).symbol.size
 20
 ```

@@ -45,7 +45,6 @@ Everything is synthetic, CPU-only and offline. Configs are constructed
 directly, never through the factories in `quantlab/config/__init__.py` (D-32).
 """
 
-import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -292,7 +291,7 @@ def _strategy_model(tmp_path: Path, dataset_config, bars, strategy: str):
                 file_path=file_path,
                 kwargs={"n": 1},
             )
-        ).cal().save(mode="w")
+        ).build(_day(bars[0]), _day(bars[-1]))
 
     factor = PastReturnFactor(
         PolarsFactorConfig(
@@ -369,9 +368,8 @@ def test_symbol_absent_from_predictions_gets_zero_weight_on_rebalance_rows(tmp_p
     dates = _model_dates(bars, 0, 24, 29)
 
     _, checkpoint = _loaded_model(tmp_path, dataset_config, dates)
-    model = make_model(tmp_path / "backtest", dataset_config, **dates)
-    narrowed = dataclasses.replace(dataset_config, symbols=tuple(SYMBOLS[:-1]))
-    model.config.factors[0].config.dataset = make_stock_dataset(narrowed)
+    narrowed = write_price_store(tmp_path / "narrowed", symbols=SYMBOLS[:-1], n_bars=N_BARS)
+    model = make_model(tmp_path / "backtest", narrowed, **dates)
 
     result = _backtester(
         tmp_path, dataset_config, model, bars,
@@ -594,7 +592,7 @@ def test_load_refuses_a_checkpoint_trained_on_other_variables(
     computed: list[int] = []
     collect = model._collect_all_features
     monkeypatch.setattr(
-        model, "_collect_all_features", lambda: computed.append(1) or collect()
+        model, "_collect_all_features", lambda *a: computed.append(1) or collect(*a)
     )
     backtester = _backtester(
         tmp_path, dataset_config, model, bars,
@@ -826,7 +824,7 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
         fresh, "_assert_trained_variables", lambda p: events.append("check") or check(p)
     )
     monkeypatch.setattr(
-        fresh, "_collect_all_features", lambda: events.append("collect") or collect()
+        fresh, "_collect_all_features", lambda *a: events.append("collect") or collect(*a)
     )
 
     _backtester(

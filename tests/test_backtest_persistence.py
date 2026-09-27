@@ -588,7 +588,7 @@ def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
             file_path=str(factor_store),
             kwargs={"n": 1},
         )
-    ).cal().save(mode="w")
+    ).build(_day(BARS[0]), _day(BARS[-1]))
 
     first = _read_strategy_backtester(
         tmp_path, dataset_config, checkpoint, factor_store, tag="a"

@@ -83,10 +83,12 @@ before anything else happens. Both share these fields:
 - `factors` and `labels`: lists of factor and label objects.
 - `model_save_dir`: the root directory checkpoints are written under.
 - `factor_data_strategy` and `label_data_strategy`: `"cal"` computes each
-  panel when you call `collect()`, `"read"` loads it from the factor's saved
-  Zarr store.
-- `start_date` and `end_date`: the range of data to collect. The model copies
-  these dates onto every factor and label.
+  panel with `compute(start, end)` when you call `collect()`, `"read"` loads
+  it from the factor's store with `read(start, end)`, so the store must have
+  been written by `build()` over a range that covers the model's.
+- `start_date` and `end_date`: the range of data to collect. It is passed to
+  every factor and label per request; their configs are left unchanged, so
+  one factor object can serve several models.
 - `train_start`, `train_end`, `test_start`, `test_end`: the training and
   test windows, both ends inclusive.
 - `val_size`: the share of the training window held out, at its end, for

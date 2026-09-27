@@ -17,13 +17,12 @@ export OMP_NUM_THREADS=1   # macOS only
 
 ### Inputs and outputs
 
-A head is configured with a list of factor objects (the features) and a list of label objects (the targets). Both come from the factor layer (see the factor guide). `collect()` reads or computes them, merges them on `(timestamp, symbol)` and keeps the panel in memory. Internally a head works on arrays of shape `[num_times, num_symbols, num_features]` whose last axis follows `get_factor_names()` exactly, and produces `[num_times, num_symbols, num_labels]` predictions.
+A head is configured with a list of factor objects (the features) and a list of label objects (the targets). Both come from the factor layer (see the factor guide). `collect()` asks each of them for its panel from the model's `start_date` to `end_date`, with `read(start, end)` or `compute(start, end)`, merges them on `(timestamp, symbol)` and keeps the panel in memory. Internally a head works on arrays of shape `[num_times, num_symbols, num_features]` whose last axis follows `get_factor_names()` exactly, and produces `[num_times, num_symbols, num_labels]` predictions.
 
 The sessions below use a small in-memory stand-in for the factor and label objects, so they need no data store. It implements the few methods the model layer calls. The label is a noisy linear function of two factors.
 
 ```python
 >>> import numpy as np, xarray as xr
->>> from types import SimpleNamespace
 >>> rng = np.random.default_rng(0)
 >>> coords = {"timestamp": np.datetime64("2024-01-01") + np.arange(200),
 ...           "symbol": [f"S{i:02d}" for i in range(20)]}
@@ -34,12 +33,10 @@ The sessions below use a small in-memory stand-in for the factor and label objec
 ...     def __init__(self, **variables):
 ...         data = {k: (("timestamp", "symbol"), v) for k, v in variables.items()}
 ...         self.ds = xr.Dataset(data, coords=coords)
-...         self.config = SimpleNamespace(start_date=None, end_date=None)
-...     def _reset_dataset_config(self): pass
 ...     def _get_factor_names(self): return list(self.ds.data_vars)
-...     def read(self): return self
-...     def get_features(self): return self.ds
-...     def get_labels(self): return self.ds
+...     def read(self, start, end): return self.ds.sel(timestamp=slice(start, end))
+...     def get_features(self, panel): return panel
+...     def get_labels(self, panel): return panel
 ...     def get_config(self): return {"factor_names": self._get_factor_names()}
 >>> factor, label = Panel(f_a=f_a, f_b=f_b), Panel(ret=ret)
 >>> from loguru import logger
@@ -84,7 +81,7 @@ The config carries the factor and label objects, where checkpoints go, and four 
 `predict_panel` takes a feature panel and returns a panel with one variable per label name. Positions where every feature is NaN get NaN predictions. `predict` is the array-level counterpart: `[T, S, F]` in, `[T, S, L]` out for `XGBoostRegressor`. Use `predict_panel` when in doubt, because the array contract of `predict` belongs to each head.
 
 ```python
->>> predictions = model.predict_panel(factor.get_features())
+>>> predictions = model.predict_panel(factor.ds)
 >>> predictions
 <xarray.Dataset> Size: 34kB
 Dimensions:    (timestamp: 200, symbol: 20)
@@ -101,7 +98,7 @@ Data variables:
 
 ```python
 >>> restored = XGBoostRegressor(config).load(checkpoint)
->>> bool((restored.predict_panel(factor.get_features())["ret"] == predictions["ret"]).all())
+>>> bool((restored.predict_panel(factor.ds)["ret"] == predictions["ret"]).all())
 True
 ```
 
@@ -195,8 +192,8 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 >>> mlp_checkpoint = mlp.train()
 >>> mlp_checkpoint.name
 'MLPRegressor_total.pth'
->>> one_more = factor.get_features().isel(symbol=[0]).assign_coords(symbol=["S99"])
->>> wider = xr.concat([factor.get_features(), one_more], dim="symbol")
+>>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
+>>> wider = xr.concat([factor.ds, one_more], dim="symbol")
 >>> mlp.predict_panel(wider).symbol.size
 20
 ```

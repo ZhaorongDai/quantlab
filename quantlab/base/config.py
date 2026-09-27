@@ -627,7 +627,7 @@ class DLConfig:
     ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
     training and test windows; rolling cross-validation overwrites them fold
     by fold. ``start_date`` and ``end_date`` bound all the data the model
-    collects and are pushed down to every factor and label.
+    collects; they are passed to every factor and label per request.
 
     Examples
     --------

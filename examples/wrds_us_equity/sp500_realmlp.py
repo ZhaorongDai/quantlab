@@ -136,7 +136,7 @@ def prepare_stores() -> None:
 def compute_factors() -> None:
     factors, labels = factors_and_label()
     for factor in factors + labels:
-        factor.cal().save(mode="w")
+        factor.build(START, END)
         logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
 
 

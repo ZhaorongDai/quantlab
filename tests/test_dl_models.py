@@ -40,7 +40,6 @@ import pandas as pd
 import pytest
 import torch
 import xarray as xr
-from types import SimpleNamespace
 
 from quantlab.base.config import DLConfig
 from quantlab.dl_model.mlp import MLPRegressor
@@ -110,7 +109,6 @@ class FakePanel:
                 },
                 coords={"timestamp": TIMES, "symbol": SYMBOLS},
             )
-        self.config = SimpleNamespace(start_date=None, end_date=None)
 
     def _panel_via_pandas(self, rng) -> xr.Dataset:
         frame = pd.DataFrame(
@@ -125,23 +123,20 @@ class FakePanel:
         )
         return frame.set_index(["timestamp", "symbol"]).to_xarray()
 
-    def _reset_dataset_config(self):
-        pass
-
     def _get_factor_names(self):
         return list(self.names)
 
-    def cal(self):
-        return self
+    def compute(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def read(self):
-        return self
+    def read(self, start, end):
+        return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self):
-        return self._ds
+    def get_features(self, panel=None):
+        return self._ds if panel is None else panel
 
-    def get_labels(self):
-        return self._ds
+    def get_labels(self, panel=None):
+        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}

@@ -1,0 +1,216 @@
+"""Models request factor and label panels by their own date range.
+
+A model collects each factor with ``read(start, end)`` or
+``compute(start, end)`` over ``config.start_date`` to ``config.end_date``,
+chosen by ``factor_data_strategy`` (labels by ``label_data_strategy``).
+Configuring a model never writes into a factor's or a label's config, so one
+factor object can feed several models with different date ranges.
+"""
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+import xarray as xr
+import KunQuant.ops as op
+from KunQuant.Op import Builder, Input, Output
+from KunQuant.Stage import Function
+
+from quantlab.base.config import DatasetConfig, FactorConfig, MLConfig
+from quantlab.base.factor import FactorKunQuant
+from quantlab.base.model import MLModel
+from quantlab.dataset.spot import SpotKlineDataset
+
+
+@pytest.fixture(autouse=True)
+def _offline_wandb(monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.setenv("WANDB_SILENT", "true")
+
+
+class MaDeviation(FactorKunQuant):
+    """Close over its 5-bar average, minus one: warm after 4 earlier bars."""
+
+    def _get_factor_names(self):
+        return ("ma_dev_5",)
+
+    def _get_factor_func(self):
+        builder = Builder()
+        with builder:
+            close = Input("close")
+            Output(op.SubConst(op.Div(close, op.WindowedAvg(close, 5)), 1.0), "ma_dev_5")
+        return Function(builder.ops)
+
+    def _get_features(self, data):
+        return data
+
+
+class NextReturn(FactorKunQuant):
+    """One-bar close return, shifted one bar earlier as a label."""
+
+    def _get_factor_names(self):
+        return ("ret_1",)
+
+    def _get_factor_func(self):
+        builder = Builder()
+        with builder:
+            close = Input("close")
+            Output(op.SubConst(op.Div(close, op.BackRef(close, 1)), 1.0), "ret_1")
+        return Function(builder.ops)
+
+    def _get_labels(self, data):
+        return data.shift(timestamp=-1)
+
+
+class LeastSquaresHead(MLModel):
+    """A linear head fitted by least squares, so its weights depend on the data."""
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return {"coef": np.zeros((num_features + 1, num_labels))}
+
+    def _preprocess(self, data):
+        return np.nan_to_num(np.asarray(data, dtype=np.float64))
+
+    def _fit_model(self, train_x, train_y, val_x, val_y):
+        x = train_x.reshape(-1, train_x.shape[-1])
+        x = np.concatenate([x, np.ones((len(x), 1))], axis=1)
+        y = train_y.reshape(-1, train_y.shape[-1])
+        self.model["coef"] = np.linalg.lstsq(x, y, rcond=None)[0]
+
+    def _forward(self, x):
+        ones = np.ones(x.shape[:-1] + (1,))
+        return np.concatenate([x, ones], axis=-1) @ self.model["coef"]
+
+
+def _factor(cls, dataset, tmp_path: Path, name: str):
+    return cls(
+        FactorConfig(
+            window=5,
+            dataset=dataset,
+            mode="batch",
+            data_columns=("close",),
+            file_path=str(tmp_path / "factors" / f"{name}.zarr"),
+            njobs=2,
+        )
+    )
+
+
+@pytest.fixture
+def parts(spot_kline_zarr, tmp_path):
+    """One dataset of 60 daily bars from 2024-01-01 feeding a factor and a label."""
+    dataset = SpotKlineDataset(spot_kline_zarr(periods=60))
+    factor = _factor(MaDeviation, dataset, tmp_path, "ma_dev")
+    label = _factor(NextReturn, dataset, tmp_path, "ret")
+    return factor, label
+
+
+def _model(parts, tmp_path, start, end, *, strategy="cal", train_end=None):
+    factor, label = parts
+    return LeastSquaresHead(
+        MLConfig(
+            factors=[factor],
+            labels=[label],
+            model_save_dir=str(tmp_path / "ckpt" / f"{start}_{end}"),
+            factor_data_strategy=strategy,
+            label_data_strategy=strategy,
+            start_date=start,
+            end_date=end,
+            train_start=start,
+            train_end=train_end or end,
+            test_start=start,
+            test_end=end,
+        )
+    )
+
+
+def _dates(panel: xr.Dataset) -> tuple[str, str]:
+    days = panel["timestamp"].values.astype("datetime64[D]")
+    return str(days[0]), str(days[-1])
+
+
+def _config_state(obj) -> tuple:
+    return (
+        obj.config.start_date,
+        obj.config.end_date,
+        obj.config.dataset.config.start_date,
+        obj.config.dataset.config.end_date,
+    )
+
+
+def test_configuring_a_model_leaves_factor_and_label_configs_unchanged(parts, tmp_path):
+    before = [_config_state(obj) for obj in parts]
+
+    model = _model(parts, tmp_path, "2024-01-20", "2024-02-10")
+    model.config = model.config
+
+    assert [_config_state(obj) for obj in parts] == before
+
+
+def test_cal_strategy_collects_compute_panels_on_the_model_range(parts, tmp_path):
+    factor, label = parts
+    model = _model(parts, tmp_path, "2024-01-20", "2024-02-10", strategy="cal")
+
+    collected = model.collect().data_backend.get_xarray_dataset()
+
+    assert _dates(collected) == ("2024-01-20", "2024-02-10")
+    expected_feature = factor.compute("2024-01-20", "2024-02-10")
+    expected_label = label.get_labels(label.compute("2024-01-20", "2024-02-10"))
+    xr.testing.assert_allclose(collected["ma_dev_5"], expected_feature["ma_dev_5"])
+    xr.testing.assert_allclose(collected["ret_1"], expected_label["ret_1"])
+    # Warm-up comes from the bars before the range: the first bar is finite.
+    assert np.isfinite(collected["ma_dev_5"].isel(timestamp=0)).all()
+
+
+def test_read_strategy_collects_read_panels_on_the_model_range(parts, tmp_path):
+    factor, label = parts
+    factor.build("2024-01-10", "2024-02-20")
+    label.build("2024-01-10", "2024-02-20")
+    model = _model(parts, tmp_path, "2024-01-20", "2024-02-10", strategy="read")
+
+    collected = model.collect().data_backend.get_xarray_dataset()
+
+    assert _dates(collected) == ("2024-01-20", "2024-02-10")
+    xr.testing.assert_allclose(
+        collected["ma_dev_5"],
+        factor.read("2024-01-20", "2024-02-10")["ma_dev_5"],
+    )
+    xr.testing.assert_allclose(
+        collected["ret_1"],
+        label.get_labels(label.read("2024-01-20", "2024-02-10"))["ret_1"],
+    )
+
+
+def test_read_strategy_refuses_a_model_range_the_stores_do_not_cover(parts, tmp_path):
+    factor, label = parts
+    factor.build("2024-01-10", "2024-02-20")
+    label.build("2024-01-10", "2024-02-20")
+    model = _model(parts, tmp_path, "2024-01-05", "2024-02-10", strategy="read")
+
+    with pytest.raises(ValueError, match="does not contain"):
+        model.collect()
+
+
+def test_two_models_sharing_one_factor_train_without_interfering(parts, tmp_path):
+    early = _model(parts, tmp_path, "2024-01-10", "2024-01-31", train_end="2024-01-25")
+    early.collect().train()
+    alone = early.predict_panel(early.data_backend.get_xarray_dataset())
+
+    late = _model(parts, tmp_path, "2024-02-01", "2024-02-28", train_end="2024-02-20")
+    late.collect().train()
+    early.collect()
+
+    assert _dates(early.data_backend.get_xarray_dataset()) == ("2024-01-10", "2024-01-31")
+    assert _dates(late.data_backend.get_xarray_dataset()) == ("2024-02-01", "2024-02-28")
+    again = early.predict_panel(early.data_backend.get_xarray_dataset())
+    xr.testing.assert_allclose(again, alone)
+
+    # The late model equals one trained on fresh objects, with no early model.
+    fresh_parts = tuple(_factor(type(obj), obj.config.dataset, tmp_path, name)
+                        for obj, name in zip(parts, ("ma_dev", "ret")))
+    fresh = _model(fresh_parts, tmp_path / "fresh", "2024-02-01", "2024-02-28",
+                   train_end="2024-02-20")
+    fresh.collect().train()
+    xr.testing.assert_allclose(
+        late.predict_panel(late.data_backend.get_xarray_dataset()),
+        fresh.predict_panel(fresh.data_backend.get_xarray_dataset()),
+    )

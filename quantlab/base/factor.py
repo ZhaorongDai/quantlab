@@ -963,16 +963,27 @@ class Factor(ABC):
         """
         raise NotImplementedError
 
-    def get_features(self) -> xr.Dataset:
-        """Return the computed panel as model features.
+    def get_features(self, panel: xr.Dataset | None = None) -> xr.Dataset:
+        """Return ``panel``, or the held panel, as model features.
+
+        Parameters
+        ----------
+        panel : xr.Dataset, optional
+            A panel returned by ``read(start, end)`` or
+            ``compute(start, end)``. When omitted, the panel held by the
+            last ``cal()`` or ``read()`` is used.
 
         Examples
         --------
-        >>> panel = factor.cal().get_features()
+        >>> panel = factor.get_features(factor.compute("2024-02-01", "2024-02-10"))
         >>> list(panel.data_vars), dict(panel.sizes)
-        (['momentum_20'], {'timestamp': 60, 'symbol': 8})
+        (['momentum_20'], {'timestamp': 10, 'symbol': 8})
+        >>> dict(factor.cal().get_features().sizes)
+        {'timestamp': 60, 'symbol': 8}
         """
-        return self._get_features(self._get_xarray_dataset())
+        if panel is None:
+            panel = self._get_xarray_dataset()
+        return self._get_features(panel)
 
     def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
         """Turn the held panel into labels; label classes override this.
@@ -984,16 +995,25 @@ class Factor(ABC):
         """
         raise NotImplementedError
 
-    def get_labels(self) -> xr.Dataset:
-        """Return the computed panel as model labels.
+    def get_labels(self, panel: xr.Dataset | None = None) -> xr.Dataset:
+        """Return ``panel``, or the held panel, as model labels.
+
+        Parameters
+        ----------
+        panel : xr.Dataset, optional
+            A panel returned by ``read(start, end)`` or
+            ``compute(start, end)``. When omitted, the panel held by the
+            last ``cal()`` or ``read()`` is used.
 
         Examples
         --------
-        >>> panel = label.cal().get_labels()     # a label class
-        >>> list(panel.data_vars), panel.sizes
-        (['ret_1'], Frozen({'timestamp': 21, 'symbol': 16}))
+        >>> panel = label.get_labels(label.compute("2024-01-01", "2024-01-21"))
+        >>> list(panel.data_vars), dict(panel.sizes)     # a label class
+        (['ret_1'], {'timestamp': 21, 'symbol': 16})
         """
-        return self._get_labels(self._get_xarray_dataset())
+        if panel is None:
+            panel = self._get_xarray_dataset()
+        return self._get_labels(panel)
 
     def get_factor_names(self) -> tuple[str, ...]:
         """Return the names of the columns this factor produces.
