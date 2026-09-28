@@ -38,7 +38,7 @@ TIMES = np.datetime64("2024-01-01") + np.arange(N_TIMES).astype("timedelta64[D]"
 START = np.datetime_as_string(TIMES[0], unit="D")
 END = np.datetime_as_string(TIMES[-1], unit="D")
 
-METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic")
+METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
 SPLITS = ("train", "val", "test")
 
 
@@ -117,7 +117,7 @@ class StubLibraryHead(LibraryModel):
 
 
 class NaNMetricLibraryHead(StubLibraryHead):
-    def _compute_metrics(self, y, pred):
+    def _compute_metrics(self, y, pred, split, timestamps):
         return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
 
 

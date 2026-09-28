@@ -24,6 +24,7 @@ its ``hyperparameters`` are listed in ``RESERVED_HYPERPARAMETERS``. Concrete hea
 import copy
 import dataclasses
 import json
+import os
 import random
 import warnings
 from abc import ABC, abstractmethod
@@ -152,6 +153,9 @@ class BaseModel(ABC):
 
         self.data_backend = XrBackend()
         self._wandb_recorder: wandb.sdk.wandb_run.Run = None  # type: ignore
+        # Per-split (timestamps, ic, rank_ic) series of the current fit, filled
+        # by `_compute_metrics` and written by `_write_evaluation_files`.
+        self._ic_series: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 
     #: The config class every model accepts; the config loader reads it from
     #: the class to rebuild a model from ``config.json``.
@@ -1061,6 +1065,9 @@ class BaseModel(ABC):
         checkpoint. The metrics ``_fit`` returns are written to
         ``metrics.json`` beside the checkpoint's ``config.json``, with NaN and
         inf as null; a variant that returns no metrics writes no file.
+        Beside it go the per-bar IC series (``ic_series.csv``) and the
+        test-segment predictions (``test_predictions.zarr``), see
+        ``_write_evaluation_files``.
         Returning the path lets a caller record exactly which model was
         trained and reload it later instead of retraining.
 
@@ -1075,8 +1082,10 @@ class BaseModel(ABC):
         >>> checkpoint = model.train()
         >>> checkpoint.name, checkpoint.parent.name
         ('MyHead_total.joblib', 'MyHead_total')
-        >>> sorted(json.loads((checkpoint.parent / "metrics.json").read_text()))[:3]
-        ['test_ic', 'test_loss', 'test_mae']
+        >>> sorted(json.loads((checkpoint.parent / "metrics.json").read_text()))[:4]
+        ['test_ic', 'test_icir', 'test_loss', 'test_mae']
+        >>> sorted(p.name for p in checkpoint.parent.iterdir())
+        ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
         """
         self._check_hyperparameters()
         project_name = self._new_project_name()
@@ -1086,6 +1095,7 @@ class BaseModel(ABC):
             project_name=project_name,
             experiment_name=experiment_name,
         )
+        self._ic_series = {}
         metrics = self._fit(
             project_name=project_name,
             experiment_name=experiment_name,
@@ -1100,7 +1110,75 @@ class BaseModel(ABC):
                 to_jsonable(metrics),
                 indent=2,
             )
+            self._write_evaluation_files(checkpoint.parent)
         return checkpoint
+
+    #: Name of the per-bar IC series file written beside ``metrics.json``.
+    IC_SERIES_FILENAME = "ic_series.csv"
+    #: Name of the zarr store holding the test-segment prediction panel.
+    TEST_PREDICTIONS_FILENAME = "test_predictions.zarr"
+
+    def _write_evaluation_files(self, run_dir: Path) -> None:
+        """Write the per-bar IC series and the test-segment predictions of a fit.
+
+        Called by ``train`` and by every ``train_cv`` fold right after
+        ``_fit`` returned metrics, with the run's checkpoint directory.
+
+        ``ic_series.csv`` has the columns ``split, timestamp, ic, rank_ic``:
+        one row per bar of each evaluated split (``train``, ``val``,
+        ``test``, in that order, each in time order), holding the per-bar IC
+        and rank IC of the first label on raw values that ``_compute_metrics``
+        averaged into ``{split}_ic`` / ``{split}_rank_ic`` and turned into
+        ``{split}_icir`` / ``{split}_rank_icir``. A bar the IC skips (fewer
+        than two symbols with both a finite prediction and a finite label, or
+        a constant cross-section) has no row; a cell is empty only when one
+        of the two values is defined and the other is not.
+
+        ``test_predictions.zarr`` is ``predict_panel`` on the test segment:
+        one variable per label on ``(timestamp, symbol)``, over the test bars
+        and every collected symbol. The panel is predicted from the
+        collected features with ``warmup_bars`` bars before the first test
+        bar. No store is written when the test segment has no bars.
+        """
+        rows = []
+        for split in ("train", "val", "test"):
+            if split not in self._ic_series:
+                continue
+            stamps, ic, rank_ic = self._ic_series[split]
+            keep = np.isfinite(ic) | np.isfinite(rank_ic)
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "split": split,
+                        "timestamp": stamps[keep],
+                        "ic": ic[keep],
+                        "rank_ic": rank_ic[keep],
+                    }
+                )
+            )
+        frame = (
+            pd.concat(rows, ignore_index=True)
+            if rows
+            else pd.DataFrame(columns=["split", "timestamp", "ic", "rank_ic"])
+        )
+        path = run_dir / self.IC_SERIES_FILENAME
+        staging = path.with_name(path.name + ".tmp")
+        frame.to_csv(staging, index=False)
+        os.replace(staging, path)
+
+        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
+            ["timestamp", "symbol"]
+        )
+        test_stamps = self._fit_segments(data)[2].timestamp.values
+        if len(test_stamps) == 0:
+            return
+        stamps = data.timestamp.values
+        first, last = np.searchsorted(stamps, [test_stamps[0], test_stamps[-1]])
+        features = data.isel(
+            timestamp=slice(max(0, int(first) - self.warmup_bars), int(last) + 1)
+        )
+        predictions = self.predict_panel(features).sel(timestamp=test_stamps)
+        predictions.to_zarr(run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w")
 
     def _check_hyperparameters(self) -> None:
         """Validate the reserved hyperparameters this variant reads.
@@ -1264,7 +1342,9 @@ class BaseModel(ABC):
         is ``record`` plus ``experiment_name``, ``checkpoint`` (the absolute
         path of the fold's checkpoint, since the manifest may be read from
         another working directory) and whatever ``train_*`` / ``val_*`` /
-        ``test_*`` metrics ``_fit`` returned.
+        ``test_*`` metrics ``_fit`` returned. When there are metrics, the
+        fold's checkpoint directory also gets ``ic_series.csv`` and
+        ``test_predictions.zarr`` (see ``_write_evaluation_files``).
         """
         self.config = dataclasses.replace(
             self.config,
@@ -1281,22 +1361,21 @@ class BaseModel(ABC):
             project_name=project_name,
             experiment_name=experiment_name,
         )
+        self._ic_series = {}
         metrics = self._fit(
             project_name=project_name,
             experiment_name=experiment_name,
             model_name=model_name,
         )
+        checkpoint = (
+            Path(self.config.model_save_dir) / project_name / experiment_name / model_name
+        ).absolute()
+        if metrics is not None:
+            self._write_evaluation_files(checkpoint.parent)
         return {
             **record,
             "experiment_name": experiment_name,
-            "checkpoint": str(
-                (
-                    Path(self.config.model_save_dir)
-                    / project_name
-                    / experiment_name
-                    / model_name
-                ).absolute()
-            ),
+            "checkpoint": str(checkpoint),
             **(metrics or {}),
         }
 
@@ -1548,12 +1627,26 @@ class BaseModel(ABC):
         or None when the variant produces no metrics.
         """
 
-    def _compute_metrics(self, y: np.ndarray, pred: np.ndarray) -> dict:
+    def _compute_metrics(
+        self, y: np.ndarray, pred: np.ndarray, split: str, timestamps
+    ) -> dict:
         """Return ``regression_panel_metrics`` for the first label on raw values.
 
         ``y`` and ``pred`` are ``[T, S, L]``; only label index 0 is scored.
+        ``timestamps`` are the ``T`` bars of ``y`` in order. The per-bar IC
+        and rank IC series behind ``ic`` / ``icir`` and ``rank_ic`` /
+        ``rank_icir`` are kept under ``split`` for ``_write_evaluation_files``,
+        so the file and ``metrics.json`` come from the same predictions.
         """
-        return regression_panel_metrics(pred[..., 0], y[..., 0])
+        metrics, series = regression_panel_metrics(
+            pred[..., 0], y[..., 0], return_series=True
+        )
+        self._ic_series[split] = (
+            np.asarray(timestamps),
+            series["ic"],
+            series["rank_ic"],
+        )
+        return metrics
 
     @abstractmethod
     def _predict(self, data: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
@@ -1964,7 +2057,9 @@ class TorchModel(BaseModel):
         """
         pred = self._predict_bars(windows, bars)
         metrics = {f"{split}_loss": self._val_loss(epoch, windows, y, coords, bars)}
-        for key, value in self._compute_metrics(y[bars], pred).items():
+        for key, value in self._compute_metrics(
+            y[bars], pred, split, coords[0][bars]
+        ).items():
             metrics[f"{split}_{key}"] = value
         if self._wandb_recorder is not None:
             self._wandb_recorder.summary.update(metrics)
@@ -2268,17 +2363,19 @@ class LibraryModel(BaseModel):
         return float(np.sum(diff * diff) / diff.size)
 
     def _evaluate(
-        self, split: str, x: np.ndarray, y: np.ndarray
+        self, split: str, x: np.ndarray, y: np.ndarray, timestamps
     ) -> dict[str, float]:
         """Evaluate one split and write the prefixed metrics to the wandb summary.
 
-        Keys are ``{split}_loss`` and ``{split}_{mse,rmse,mae,r2,ic,rank_ic}``.
+        Keys are ``{split}_loss`` and the ``_compute_metrics`` keys
+        ``{split}_{mse,rmse,mae,r2,ic,rank_ic,icir,rank_icir}``; ``timestamps``
+        are the sorted bars of ``x`` and ``y``.
         They go to the run summary (final values, no step), so they do not
         interfere with per-round ``log(step=...)`` curves.
         """
         pred = self._forward(x)
         metrics = {f"{split}_loss": self._loss(y, pred)}
-        for key, value in self._compute_metrics(y, pred).items():
+        for key, value in self._compute_metrics(y, pred, split, timestamps).items():
             metrics[f"{split}_{key}"] = value
         if self._wandb_recorder is not None:
             self._wandb_recorder.summary.update(metrics)
@@ -2362,11 +2459,12 @@ class LibraryModel(BaseModel):
             self._fit_model(train_x, train_y, val_x, val_y)
 
         with Timer(f"{self.class_name}: evaluate"):
-            metrics = self._evaluate("train", train_x, train_y)
+            stamps = [np.sort(d.timestamp.values) for d in (train_data, val_data, test_data)]
+            metrics = self._evaluate("train", train_x, train_y, stamps[0])
             if val_x is not None:
-                metrics.update(self._evaluate("val", val_x, val_y))
+                metrics.update(self._evaluate("val", val_x, val_y, stamps[1]))
             if test_x.shape[0] > 0:
-                metrics.update(self._evaluate("test", test_x, test_y))
+                metrics.update(self._evaluate("test", test_x, test_y, stamps[2]))
 
         self._save_model(
             Path(self.config.model_save_dir)

@@ -29,7 +29,10 @@ from scipy.stats import pearsonr, spearmanr
 from quantlab.utils import metrics
 from quantlab.utils.metrics import (
     cross_sectional_ic,
+    cross_sectional_ic_series,
     cross_sectional_rank_ic,
+    cross_sectional_rank_ic_series,
+    information_ratio,
     mae,
     mse,
     r2,
@@ -183,6 +186,67 @@ def test_rank_ic_masks_before_ranking():
 
 
 # --------------------------------------------------------------------------
+# Per-bar IC series and ICIR (issue #49)
+# --------------------------------------------------------------------------
+
+#: Row 0 orders perfectly (IC 1). Row 1: pred deviations [-1, 0, 1], target
+#: deviations [-1, 1, 0] -> cov 1, variances 2 and 2 -> IC 0.5, and the same on
+#: ranks. Row 2 has one jointly valid symbol and is left out. Row 3: pred
+#: deviations [-4/3, -1/3, 5/3], target [-1, 0, 1] -> cov 3, var_p 42/9,
+#: var_t 2 -> IC 9 / sqrt(84); its ranks match exactly -> rank IC 1.
+ICIR_PRED = np.array(
+    [[1.0, 2.0, 3.0], [1.0, 2.0, 3.0], [1.0, NAN, 3.0], [1.0, 2.0, 4.0]]
+)
+ICIR_TARGET = np.array(
+    [[1.0, 2.0, 3.0], [1.0, 3.0, 2.0], [2.0, 5.0, NAN], [1.0, 2.0, 3.0]]
+)
+IC_SERIES = [1.0, 0.5, NAN, 9.0 / np.sqrt(84.0)]
+RANK_IC_SERIES = [1.0, 0.5, NAN, 1.0]
+
+
+def test_ic_series_holds_one_value_per_row_and_nan_for_skipped_rows():
+    np.testing.assert_allclose(
+        cross_sectional_ic_series(ICIR_PRED, ICIR_TARGET), IC_SERIES, equal_nan=True
+    )
+    np.testing.assert_allclose(
+        cross_sectional_rank_ic_series(ICIR_PRED, ICIR_TARGET),
+        RANK_IC_SERIES,
+        equal_nan=True,
+    )
+
+
+def test_ic_is_the_mean_of_its_series():
+    assert cross_sectional_ic(ICIR_PRED, ICIR_TARGET) == pytest.approx(
+        np.nanmean(IC_SERIES)
+    )
+    assert cross_sectional_rank_ic(ICIR_PRED, ICIR_TARGET) == pytest.approx(5.0 / 6.0)
+
+
+def test_icir_is_mean_over_sample_std_of_the_valid_bars():
+    """The skipped row counts neither as 0 nor in the bar count. Rank series
+    [1, 0.5, 1]: mean 5/6, sample std 1/sqrt(12) -> 5/6 * sqrt(12)."""
+    ic = np.array([v for v in IC_SERIES if np.isfinite(v)])
+    out = regression_panel_metrics(ICIR_PRED, ICIR_TARGET)
+    assert out["icir"] == pytest.approx(ic.mean() / ic.std(ddof=1))
+    assert out["rank_icir"] == pytest.approx(5.0 / 6.0 * np.sqrt(12.0))
+
+
+def test_information_ratio_is_nan_below_two_valid_bars_or_without_spread():
+    assert np.isnan(information_ratio([0.3, NAN, NAN]))
+    assert np.isnan(information_ratio([]))
+    assert np.isnan(information_ratio([0.2, 0.2, 0.2]))
+    assert information_ratio([0.1, 0.3]) == pytest.approx(0.2 / np.sqrt(0.02))
+
+
+def test_icir_is_nan_when_fewer_than_two_bars_are_valid():
+    pred = np.array([[1.0, 2.0, 3.0], [1.0, NAN, 3.0]])
+    target = np.array([[1.0, 2.0, 3.0], [1.0, 2.0, NAN]])
+    out = regression_panel_metrics(pred, target)
+    assert out["ic"] == pytest.approx(1.0)
+    assert np.isnan(out["icir"]) and np.isnan(out["rank_icir"])
+
+
+# --------------------------------------------------------------------------
 # Agreement with a row-by-row scipy reference
 # --------------------------------------------------------------------------
 
@@ -231,10 +295,14 @@ def test_regression_panel_metrics_keys_and_values():
     pred = rng.standard_normal((20, 6))
     target = pred + 0.1 * rng.standard_normal((20, 6))
     out = regression_panel_metrics(pred, target)
-    assert list(out) == ["mse", "rmse", "mae", "r2", "ic", "rank_ic"]
+    assert list(out) == ["mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir"]
     assert out["mse"] == mse(pred, target)
     assert out["ic"] == cross_sectional_ic(pred, target)
     assert out["rank_ic"] == cross_sectional_rank_ic(pred, target)
+    assert out["icir"] == information_ratio(cross_sectional_ic_series(pred, target))
+    assert out["rank_icir"] == information_ratio(
+        cross_sectional_rank_ic_series(pred, target)
+    )
     assert all(isinstance(v, float) for v in out.values())
 
 
@@ -243,7 +311,16 @@ def test_regression_panel_metrics_keys_and_values():
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("fn", [cross_sectional_ic, cross_sectional_rank_ic])
+@pytest.mark.parametrize(
+    "fn",
+    [
+        cross_sectional_ic,
+        cross_sectional_rank_ic,
+        cross_sectional_ic_series,
+        cross_sectional_rank_ic_series,
+        information_ratio,
+    ],
+)
 def test_ic_functions_have_no_python_loops(fn):
     """A Python row loop over a 10k-timestamp panel is orders of magnitude
     slower and is exactly what a "readable" rewrite reintroduces. Turns red

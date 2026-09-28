@@ -115,7 +115,7 @@ class NaNMetricLibraryHead(StubLibraryHead):
     """Every fold reports one non-finite metric, as a numpy scalar, beside a
     finite one -- the shape vectorbt-style and panel metrics really take."""
 
-    def _compute_metrics(self, y, pred):
+    def _compute_metrics(self, y, pred, split, timestamps):
         return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
 
 

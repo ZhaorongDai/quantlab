@@ -68,11 +68,11 @@ The config carries the factor and label objects, where checkpoints go, and four 
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/XGBoostRegressor_total/`, holding the checkpoint, a `config.json` sidecar and `metrics.json`. The sidecar stores the full config plus a `trained_on` record: the feature names, label names and symbols the model saw. `metrics.json` holds the scores of the run (see Metrics below).
+`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/XGBoostRegressor_total/`, holding the checkpoint, a `config.json` sidecar, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. The sidecar stores the full config plus a `trained_on` record: the feature names, label names and symbols the model saw. `metrics.json` holds the scores of the run (see Metrics below), and the other two files hold the per-bar IC series and the test-segment predictions (see IC series and saved predictions below).
 
 ```python
 >>> sorted(p.name for p in checkpoint.parent.iterdir())
-['XGBoostRegressor_total.joblib', 'config.json', 'metrics.json']
+['XGBoostRegressor_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> import json
 >>> record = json.loads((checkpoint.parent / "config.json").read_text())
 >>> record["trained_on"]["factor_names"], record["trained_on"]["label_names"], len(record["trained_on"]["symbols"])
@@ -124,14 +124,16 @@ True
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. Every head computes all six, plus the fitting `loss`, on the raw values of the primary label (the first one) for the train, validation and test segments. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). Torch heads report the same keys; their `loss` is the mean of the head's `_val_one_batch` over the segment, by default its `_loss` on the transformed target (see Train a torch model).
+`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight, plus the fitting `loss`, on the raw values of the primary label (the first one) for the train, validation and test segments. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). Torch heads report the same keys; their `loss` is the mean of the head's `_val_one_batch` over the segment, by default its `_loss` on the transformed target (see Train a torch model).
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
->>> sorted(metrics)[:7]
-['test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse']
+>>> sorted(metrics)[:9]
+['test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse']
 >>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.707, 'val_rank_ic': 0.687, 'test_rank_ic': 0.679}
+>>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("icir")}
+{'train_icir': 6.897, 'train_rank_icir': 6.202, 'val_icir': 6.144, 'val_rank_icir': 5.323, 'test_icir': 5.524, 'test_rank_icir': 4.813}
 ```
 
 `regression_panel_metrics` computes the same scores for any panel:
@@ -144,7 +146,36 @@ True
 ...     label.ds["ret"].sel(timestamp=test).values,
 ... )
 >>> {name: round(value, 3) for name, value in scores.items()}
-{'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679}
+{'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679, 'icir': 5.524, 'rank_icir': 4.813}
+```
+
+The per-timestamp values behind IC and RankIC are `cross_sectional_ic_series` and `cross_sectional_rank_ic_series` (NaN on a skipped timestamp), and `information_ratio` turns such a series into an ICIR. `regression_panel_metrics(pred, target, return_series=True)` returns both series with the metrics.
+
+### IC series and saved predictions
+
+Every run also writes two files beside `metrics.json`, so a new metric or an ensemble can be computed from disk without predicting again:
+
+- `ic_series.csv` has the columns `split`, `timestamp`, `ic` and `rank_ic`: one row per bar of each evaluated segment (`train`, `val`, `test`, each in time order), holding the IC and RankIC of that bar on the raw primary label. They come from the same predictions as `metrics.json`: the mean of a segment's `ic` column is its `<split>_ic`, and its ICIR is `<split>_icir`. A bar without an IC (fewer than two valid symbols, or a constant cross-section) has no row. A cell is empty only when one of the two values exists and the other does not.
+- `test_predictions.zarr` is the prediction panel of the test segment: `predict_panel` on the collected features, over the test bars and every collected symbol, with one variable per label. There is no store when the test segment has no bars.
+
+```python
+>>> import pandas as pd
+>>> series = pd.read_csv(checkpoint.parent / "ic_series.csv", parse_dates=["timestamp"])
+>>> series.head(3)
+   split  timestamp        ic   rank_ic
+0  train 2024-01-01  0.662219  0.690226
+1  train 2024-01-02  0.798276  0.780451
+2  train 2024-01-03  0.811311  0.826627
+>>> series.groupby("split", sort=False).size().to_dict()
+{'train': 119, 'val': 29, 'test': 48}
+>>> test_ic = series[series["split"] == "test"]["ic"]
+>>> round(test_ic.mean() / test_ic.std(), 3), round(metrics["test_icir"], 3)
+(5.524, 5.524)
+>>> saved = xr.open_zarr(checkpoint.parent / "test_predictions.zarr").load()
+>>> dict(saved.sizes), list(saved.data_vars)
+({'timestamp': 48, 'symbol': 20}, ['ret'])
+>>> bool((saved["ret"] == predictions["ret"].sel(timestamp=saved.timestamp)).all())
+True
 ```
 
 ### The class hierarchy
@@ -194,7 +225,7 @@ With `"early_stopping": True` in `hyperparameters`, training stops when the vali
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and the return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -204,12 +235,16 @@ With `"early_stopping": True` in `hyperparameters`, training stops when the vali
 [('2024-01-01', '2024-04-07', '2024-04-10', '2024-04-29'), ('2024-01-21', '2024-04-27', '2024-04-30', '2024-05-19'), ('2024-02-10', '2024-05-17', '2024-05-20', '2024-06-08'), ('2024-03-01', '2024-06-06', '2024-06-09', '2024-06-28'), ('2024-03-21', '2024-06-26', '2024-06-29', '2024-07-18')]
 >>> [round(r["test_rank_ic"], 3) for r in results]
 [0.691, 0.649, 0.695, 0.656, 0.697]
+>>> [round(r["test_icir"], 3) for r in results]
+[6.943, 5.013, 7.982, 5.508, 5.464]
+>>> from pathlib import Path
+>>> sorted(p.name for p in Path(results[0]["checkpoint"]).parent.iterdir())
+['XGBoostRegressor_cv_fold_0.joblib', 'config.json', 'ic_series.csv', 'test_predictions.zarr']
 ```
 
 All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` (2), the fold list as returned, purged `train_end` included, and a `cv_mean` block: the mean over folds of every `train_*`, `val_*` and `test_*` metric as `cv_mean_<metric>`, plus `cv_n_folds`. Non-finite fold values are left out of a mean, and NaN and infinity are written as null. A backtester replays a cross-validation run from this file; it refuses a version 1 manifest, written before the `cv_mean` block, so rerun `train_cv` for an old project. Each fold's `config.json` records the dates the fold was configured with, before the purge, so its `train_end` lies L bars after the manifest's.
 
 ```python
->>> from pathlib import Path
 >>> trial = Path(results[0]["checkpoint"]).parent.parent
 >>> sorted(p.name for p in trial.iterdir())
 ['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']

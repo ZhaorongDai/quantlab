@@ -14,6 +14,13 @@ each row first (average ranks on ties) and then computes IC on the ranks, so
 it is a per-timestamp Spearman correlation and is not dominated by
 outliers. Both are fully vectorised, with no per-row Python loop, since a
 panel can hold tens of thousands of timestamps.
+
+The per-timestamp values behind both means are available as series
+(``cross_sectional_ic_series``, ``cross_sectional_rank_ic_series``), NaN on a
+skipped row. The ICIR (information ratio of the IC) divides the mean of the
+valid values of such a series by their sample standard deviation
+(``information_ratio``), so it measures how stable a signal is, not only how
+strong.
 """
 
 import numpy as np
@@ -143,14 +150,14 @@ def r2(pred, target) -> float:
     return 1.0 - ss_res / ss_tot
 
 
-def cross_sectional_ic(pred, target) -> float:
-    """Return the mean over time of the per-row Pearson correlation.
+def cross_sectional_ic_series(pred, target) -> np.ndarray:
+    """Return the per-row Pearson correlation of a panel, NaN on a skipped row.
 
     A row (timestamp) is skipped when it has fewer than two usable symbols or
     when either the prediction or the target is constant over its usable
     symbols. Constancy is tested exactly (masked max equals masked min) rather
     than with a variance threshold, so genuinely small cross-sectional spreads
-    are not misread as constant. NaN is returned when every row is skipped.
+    are not misread as constant.
 
     Parameters
     ----------
@@ -159,6 +166,11 @@ def cross_sectional_ic(pred, target) -> float:
     target : array_like
         A 2-D ``[T, S]`` panel of realised values.
 
+    Returns
+    -------
+    np.ndarray
+        A float64 array of length ``T``.
+
     Raises
     ------
     ValueError
@@ -166,14 +178,16 @@ def cross_sectional_ic(pred, target) -> float:
 
     Examples
     --------
-    >>> pred = np.array([[3.0, 1.0, 2.0], [1.0, 3.0, 2.0]])
-    >>> target = np.array([[9.0, 1.0, 4.0], [1.0, 9.0, 4.0]])
-    >>> cross_sectional_ic(pred, target)
-    0.989743318610787
+    >>> pred = np.array([[1.0, 2.0, 3.0], [1.0, np.nan, 3.0], [1.0, 2.0, 3.0]])
+    >>> target = np.array([[1.0, 2.0, 3.0], [2.0, 5.0, 4.0], [1.0, 3.0, 2.0]])
+    >>> cross_sectional_ic_series(pred, target)
+    array([1. , 1. , 0.5])
     """
     p, t, mask = _joint(pred, target)
     if p.ndim != 2:
-        raise ValueError(f"cross_sectional_ic expects a 2-D [T, S] panel, got shape {p.shape}")
+        raise ValueError(
+            f"cross_sectional_ic expects a 2-D [T, S] panel, got shape {p.shape}"
+        )
 
     with np.errstate(invalid="ignore", divide="ignore", over="ignore"):
         n = mask.sum(axis=1)
@@ -194,20 +208,121 @@ def cross_sectional_ic(pred, target) -> float:
         )
         valid = (n >= 2) & p_varies & t_varies & (var_p > 0) & (var_t > 0)
 
-        n_valid = int(valid.sum())
-        if n_valid == 0:
-            return float("nan")
-        per_row = cov[valid] / np.sqrt(var_p[valid] * var_t[valid])
-        return float(per_row.sum() / n_valid)
+        series = np.full(p.shape[0], np.nan)
+        series[valid] = cov[valid] / np.sqrt(var_p[valid] * var_t[valid])
+        return series
 
 
-def cross_sectional_rank_ic(pred, target) -> float:
-    """Return the cross-sectional IC computed on per-row ranks.
+def cross_sectional_ic(pred, target) -> float:
+    """Return the mean over time of the per-row Pearson correlation.
+
+    The mean runs over the rows ``cross_sectional_ic_series`` does not skip
+    (see there for when a row is skipped). NaN is returned when every row is
+    skipped.
+
+    Parameters
+    ----------
+    pred : array_like
+        A 2-D ``[T, S]`` panel of predictions.
+    target : array_like
+        A 2-D ``[T, S]`` panel of realised values.
+
+    Raises
+    ------
+    ValueError
+        If the inputs are not 2-D or differ in shape.
+
+    Examples
+    --------
+    >>> pred = np.array([[3.0, 1.0, 2.0], [1.0, 3.0, 2.0]])
+    >>> target = np.array([[9.0, 1.0, 4.0], [1.0, 9.0, 4.0]])
+    >>> cross_sectional_ic(pred, target)
+    0.989743318610787
+    """
+    return _finite_mean(cross_sectional_ic_series(pred, target))
+
+
+def _finite_mean(series: np.ndarray) -> float:
+    """Return the mean of the finite values of ``series``, NaN when there are none."""
+    finite = series[np.isfinite(series)]
+    if finite.size == 0:
+        return float("nan")
+    return float(finite.sum() / finite.size)
+
+
+def information_ratio(series) -> float:
+    """Return the mean of the finite values of ``series`` over their sample std.
+
+    This is the ICIR when ``series`` is a per-bar IC series. NaN values (the
+    skipped bars of an IC series) are left out rather than counted as 0. The
+    standard deviation uses ``ddof=1``, so fewer than two finite values give
+    NaN, and so do finite values that are all equal (tested exactly, as for
+    the IC's constancy test), since the ratio is then undefined.
+
+    Parameters
+    ----------
+    series : array_like
+        A 1-D sequence of per-bar values.
+
+    Examples
+    --------
+    >>> information_ratio([0.1, np.nan, 0.3])
+    1.4142135623730951
+    >>> information_ratio([0.1, np.nan])
+    nan
+    """
+    values = np.asarray(series, dtype=np.float64).ravel()
+    finite = values[np.isfinite(values)]
+    if finite.size < 2 or finite.max() == finite.min():
+        return float("nan")
+    return float(finite.mean() / finite.std(ddof=1))
+
+
+def cross_sectional_rank_ic_series(pred, target) -> np.ndarray:
+    """Return the per-row IC computed on per-row ranks, NaN on a skipped row.
 
     Cells outside the joint mask are set to NaN on both panels before ranking.
     The order matters: a symbol missing only on the target side would
     otherwise still occupy a rank on the prediction side and shift every other
     rank in that row. Ties receive their average rank.
+
+    Parameters
+    ----------
+    pred : array_like
+        A 2-D ``[T, S]`` panel of predictions.
+    target : array_like
+        A 2-D ``[T, S]`` panel of realised values.
+
+    Returns
+    -------
+    np.ndarray
+        A float64 array of length ``T``.
+
+    Raises
+    ------
+    ValueError
+        If the inputs are not 2-D or differ in shape.
+
+    Examples
+    --------
+    >>> cross_sectional_rank_ic_series([[1.0, 10.0, 100.0]], [[1.0, 3.0, 2.0]])
+    array([0.5])
+    """
+    p, t, mask = _joint(pred, target)
+    if p.ndim != 2:
+        raise ValueError(
+            f"cross_sectional_rank_ic expects a 2-D [T, S] panel, got shape {p.shape}"
+        )
+    p_ranks = rankdata(np.where(mask, p, np.nan), axis=1, nan_policy="omit")
+    t_ranks = rankdata(np.where(mask, t, np.nan), axis=1, nan_policy="omit")
+    return cross_sectional_ic_series(p_ranks, t_ranks)
+
+
+def cross_sectional_rank_ic(pred, target) -> float:
+    """Return the cross-sectional IC computed on per-row ranks.
+
+    The mean of ``cross_sectional_rank_ic_series`` over the rows it does not
+    skip, or NaN when every row is skipped.
 
     Parameters
     ----------
@@ -229,18 +344,17 @@ def cross_sectional_rank_ic(pred, target) -> float:
     >>> cross_sectional_rank_ic(pred, target)
     1.0
     """
-    p, t, mask = _joint(pred, target)
-    if p.ndim != 2:
-        raise ValueError(
-            f"cross_sectional_rank_ic expects a 2-D [T, S] panel, got shape {p.shape}"
-        )
-    p_ranks = rankdata(np.where(mask, p, np.nan), axis=1, nan_policy="omit")
-    t_ranks = rankdata(np.where(mask, t, np.nan), axis=1, nan_policy="omit")
-    return cross_sectional_ic(p_ranks, t_ranks)
+    return _finite_mean(cross_sectional_rank_ic_series(pred, target))
 
 
-def regression_panel_metrics(pred, target) -> dict[str, float]:
-    """Return all six panel metrics keyed ``mse, rmse, mae, r2, ic, rank_ic``.
+def regression_panel_metrics(
+    pred, target, *, return_series: bool = False
+) -> dict[str, float] | tuple[dict[str, float], dict[str, np.ndarray]]:
+    """Return the eight panel metrics keyed ``mse, rmse, mae, r2, ic, rank_ic, icir, rank_icir``.
+
+    ``ic`` and ``icir`` are the mean and the ``information_ratio`` of one
+    ``cross_sectional_ic_series``, and ``rank_ic`` and ``rank_icir`` of one
+    ``cross_sectional_rank_ic_series``, so each series is computed once.
 
     Parameters
     ----------
@@ -248,20 +362,39 @@ def regression_panel_metrics(pred, target) -> dict[str, float]:
         A 2-D ``[T, S]`` panel of predictions.
     target : array_like
         A 2-D ``[T, S]`` panel of realised values.
+    return_series : bool, default False
+        Also return the two per-row series the IC metrics were computed
+        from, as ``{"ic": ..., "rank_ic": ...}`` (length ``T``, NaN on a
+        skipped row).
+
+    Returns
+    -------
+    dict or tuple
+        The metrics, or ``(metrics, series)`` when ``return_series`` is True.
 
     Examples
     --------
     >>> metrics = regression_panel_metrics(pred, target)
     >>> sorted(metrics)
-    ['ic', 'mae', 'mse', 'r2', 'rank_ic', 'rmse']
+    ['ic', 'icir', 'mae', 'mse', 'r2', 'rank_ic', 'rank_icir', 'rmse']
     >>> metrics["rank_ic"]
     1.0
+    >>> metrics, series = regression_panel_metrics(pred, target, return_series=True)
+    >>> series["rank_ic"]
+    array([1., 1.])
     """
-    return {
+    ic = cross_sectional_ic_series(pred, target)
+    rank_ic = cross_sectional_rank_ic_series(pred, target)
+    metrics = {
         "mse": mse(pred, target),
         "rmse": rmse(pred, target),
         "mae": mae(pred, target),
         "r2": r2(pred, target),
-        "ic": cross_sectional_ic(pred, target),
-        "rank_ic": cross_sectional_rank_ic(pred, target),
+        "ic": _finite_mean(ic),
+        "rank_ic": _finite_mean(rank_ic),
+        "icir": information_ratio(ic),
+        "rank_icir": information_ratio(rank_ic),
     }
+    if return_series:
+        return metrics, {"ic": ic, "rank_ic": rank_ic}
+    return metrics
