@@ -115,8 +115,11 @@ def load_factor_from_config(config: dict):
     The class named in ``config["name"]`` is resolved first. A factor's
     nested ``dataset`` dict is replaced by a rebuilt dataset; a label's
     (``quantlab.label.forward.Forward``) nested ``factor`` dict is replaced
-    by a rebuilt factor, recursively. The object is then constructed with
-    its declared config class. The caller's dict is never modified.
+    by a rebuilt factor, recursively. A market-feature factor's
+    (``quantlab.factor.market.MarketFeatures``) ``series`` dict of dataset
+    config dicts is rebuilt into datasets as well. The object is then
+    constructed with its declared config class. The caller's dict is never
+    modified.
 
     Parameters
     ----------
@@ -146,6 +149,11 @@ def load_factor_from_config(config: dict):
         config["factor"] = load_factor_from_config(config["factor"])
     else:
         config["dataset"] = load_dataset_from_config(config["dataset"])
+    if "series" in config:  # a market-feature factor nests its index datasets
+        config["series"] = {
+            name: load_dataset_from_config(dataset)
+            for name, dataset in config["series"].items()
+        }
     return cls(_config_cls_of(cls)(**config))
 
 

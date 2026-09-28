@@ -178,6 +178,90 @@ True
 
 合并从不按输入顺序取值。同一个格子在两个输入里都有值时抛出 `ValueError: MergedDataset: variable 'close' holds a value in both SpotKlineDataset(data/spot_half.zarr) and SpotKlineDataset(data/overlap.zarr), for example at symbol 'S3USDT' on 2024-02-01 00:00:00. ...`；bar 间隔不同的输入抛出 `ValueError: MergedDataset: the inputs have different bar spacing (SpotKlineDataset(data/spot_half.zarr): 1 days 00:00:00, SpotKlineDataset(data/hourly.zarr): 0 days 01:00:00). ...`。合并输入上的 KunQuant 因子在 `data_columns` 里写共享列名，Polars 因子在表达式里也用共享列名（`close` 而不是 `Close`）。流式模式在构造因子时就拒绝合并输入：`ValueError: MaDeviation: stream mode takes one dataset, got a merge of 2. ...`。`MergedDataset` 本身就是数据集，有 `panel` 和 `bar_before`；它没有自己的存储，所以 `store_path`、`save`、`resample` 和构建路径都会拒绝。要先对各输入重采样再合并；合并输入上的因子本身可以重采样，前提是各输入切 bar 的方式相同。合并数据集目前还不能作为回测的 `price_dataset` 或 `benchmark_dataset`，它们需要存储路径。
 
+### 把指数或 ETF 特征广播到每个标的
+
+`MarketFeatures`（`quantlab.factor.market`）从一个或多个指数或 ETF 序列计算全市场特征，并让目标面板的每个标的取相同的值。这就是 MASTER 的市场输入（`../research/qlib-gats-master.md` 第 2.1 节）。它的配置类是 `MarketFeatureConfig`。`dataset` 是目标：它的标的接收这些特征，`warmup_bars` 也按它的日历计数。`series` 把名字映射到只含一个标的的数据集。对每个序列，因子在该序列自己的 bar 上计算 21 个特征：`<name>_ret`，即 bar 收益 `close / close[t-1] - 1`；以及对 d 取 5、10、20、30、60 个 bar，`<name>_ret_mean_<d>` 和 `<name>_ret_std_<d>`（收益在 d 个 bar 上的均值和标准差），`<name>_amount_mean_<d>` 和 `<name>_amount_std_<d>`（成交额的均值和标准差，再除以当根 bar 自己的成交额）。成交额是成交量乘收盘价，除非 `kwargs["amount_column"]` 指定了存放成交额的列。`warmup_bars` 默认为 60，即最长的窗口。下面的会话写出三个小存储：六只股票（`FFF` 于 4 月 1 日上市）和两只 ETF，并计算 3 月和 4 月的特征。
+
+```python
+>>> import json
+>>> import numpy as np, pandas as pd, xarray as xr
+>>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
+>>> from quantlab.dataset.stock import StockDataset
+>>> from quantlab.factor.market import MarketFeatures
+>>> from quantlab.utils.module import load_factor_from_config
+>>> days = pd.bdate_range("2024-01-01", periods=120)
+>>> rng = np.random.default_rng(1)
+>>> def write_store(path, symbols):
+...     close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, (120, len(symbols))), axis=0))
+...     volume = rng.uniform(1e6, 5e6, (120, len(symbols)))
+...     if "FFF" in symbols:  # FFF lists on 1 April
+...         close[days < "2024-04-01", symbols.index("FFF")] = np.nan
+...     _ = xr.Dataset(
+...         {"close": (["timestamp", "symbol"], close),
+...          "adjClose": (["timestamp", "symbol"], close),
+...          "adjVolume": (["timestamp", "symbol"], volume)},
+...         coords={"timestamp": days, "symbol": symbols},
+...     ).to_zarr(path, mode="w")
+...     return StockDataset(DatasetConfig(
+...         raw_data_dir_path="data/raw", zarr_file_path=path,
+...         market="us_equity", frequency="1d",
+...     ))
+...
+>>> stocks = write_store("data/stocks.zarr", ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+>>> spy = write_store("data/spy.zarr", ["84398"])
+>>> qqq = write_store("data/qqq.zarr", ["86755"])
+>>> factor = MarketFeatures(MarketFeatureConfig(
+...     dataset=stocks, series={"spy": spy, "qqq": qqq},
+...     file_path="data/factors/market.zarr",
+... ))
+>>> factor.warmup_bars, factor.num_factors
+(60, 42)
+>>> factor.get_factor_names()[:5]
+('spy_ret', 'spy_ret_mean_5', 'spy_ret_std_5', 'spy_amount_mean_5', 'spy_amount_std_5')
+>>> panel = factor.compute("2024-03-01", "2024-04-30")
+>>> dict(panel.sizes)
+{'timestamp': 43, 'symbol': 6}
+>>> panel["spy_ret_mean_20"].sel(timestamp="2024-03-01").values.round(5)
+array([0.00035, 0.00035, 0.00035, 0.00035, 0.00035,     nan],
+      dtype=float32)
+>>> panel["spy_ret_mean_20"].sel(timestamp="2024-04-01").values.round(5)
+array([-0.00302, -0.00302, -0.00302, -0.00302, -0.00302, -0.00302],
+      dtype=float32)
+>>> factor.options
+{'close_column': 'adjClose', 'volume_column': 'adjVolume', 'amount_column': None, 'presence_column': 'close'}
+>>> cfg = json.loads(json.dumps(factor.get_config()))
+>>> list(cfg["series"]), cfg["series"]["spy"]["zarr_file_path"]
+(['spy', 'qqq'], 'data/spy.zarr')
+>>> load_factor_from_config(cfg) == factor
+True
+>>> factor.build("2024-03-01", "2024-04-30").store_range()
+('2024-03-01', '2024-04-30')
+```
+
+每根 bar 上，这些值会给到目标中在该 bar 有数据的每个标的，即 `kwargs["presence_column"]`（默认 `close`）不缺失的标的。所以 `FFF` 在上市前是 NaN，模型不会在一个标的没有数据的 bar 上看到市场特征。滚动窗口在各序列自己的 bar 上计算，序列缺少的目标 bar 为 NaN。只有窗口内所有 bar 都有值时，窗口才有值。标准差和 pandas、Qlib 一样使用 `ddof=1`；成交额为 0 时得到 NaN 而不是无穷大的比值；面板为 float32。序列读取的列是 `kwargs["close_column"]`（默认 `adjClose`）和 `kwargs["volume_column"]`（默认 `adjVolume`），按数据集 `COLUMN_MAP` 改名后的名字查找，所以加密货币现货序列读的是 `close`、`volume` 和 `amount`。`get_config()` 把每个序列数据集的配置嵌套在 `series` 下，`load_factor_from_config` 会把它们重建出来。预热不足时，前几根 bar 上的长窗口保持 NaN，`compute` 会警告：`UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` 序列存储含有多于一个标的时，计算面板时会被拒绝：`ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
+
+对来自 WRDS 的美股，像回测基准那样给每只 ETF 单独一个 CRSP 存储。`CrspDatasetConfig.etf_benchmark` 会保留 ETF，而默认的证券过滤器会把它当作基金剔除：
+
+```python
+from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig
+from quantlab.dataset.crsp import CrspStockDataset
+from quantlab.factor.market import MarketFeatures
+
+def etf(permno, path):
+    return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
+        permno=permno, zarr_file_path=path,
+        raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
+        reference_dir="/data/reference/crsp",
+    ))
+
+market = MarketFeatures(MarketFeatureConfig(
+    dataset=stocks,  # the CRSP panel the model trains on
+    series={"spy": etf(SPY_PERMNO, "/data/zarrs/spy.zarr"),
+            "qqq": etf(QQQ_PERMNO, "/data/zarrs/qqq.zarr")},
+    file_path="/data/factors/market.zarr",
+))
+```
+
 ### 把因子重采样到更粗的 bar
 
 `resample(freq, how)` 返回因子的一个副本，其 `compute`、`read` 和 `build` 在更粗的 bar 上应答。因子仍然在其 dataset 自身的 bar 上计算，只有输出被聚合，因此分钟 bar 上的动量会变成"每日最后一分钟的值"这一日频序列，而它衡量的东西没有变。`freq` 和 `how` 的取值与 `BaseDataset.resample` 相同（见 dataset 指南），`how` 也可以只给一个字符串，表示所有因子变量都用这种方法。bar 的切分方式沿用因子所用 dataset 的切分方式。
@@ -391,6 +475,7 @@ XrBackend()
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
+| `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
 | `Forward` | 任意 | 把一个因子向前平移成标签 |
 | `Return`、`BinaryReturn` | KunQuant | 前瞻收益标签，`Forward` 的子类 |
 
@@ -568,4 +653,4 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 
 ## 另请参阅
 
-`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。
+`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。

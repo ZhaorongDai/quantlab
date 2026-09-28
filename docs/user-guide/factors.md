@@ -113,6 +113,7 @@ The built-in sets are thin wrappers around KunQuant's predefined libraries:
 | `Alpha158SpotKline` | `quantlab.factor.alpha158` | crypto klines, as above | 169 Alpha158 features, z-scored along time |
 | `Alpha158Stock` | `quantlab.factor.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, z-scored across symbols |
 | `ResidualMomentumFF3` | `quantlab.factor.residual_momentum` | US equities: `ret`, plus a Fama-French CSV | residual momentum and regression diagnostics |
+| `MarketFeatures` | `quantlab.factor.market` | single-symbol index or ETF stores: `adjClose`, `adjVolume` | 21 return and amount features per series, the same for every symbol with a bar |
 
 Alpha101 is the public list of 101 formulaic trading signals from
 Kakushadze (2016). Alpha158 is the feature library of Microsoft's Qlib
@@ -190,6 +191,18 @@ twelve months and one skipped month of daily bars (756, 252, 21). See its
 class docstring for the parameters it reads from `kwargs`, and
 `examples/wrds_us_equity/market_residual_momentum.py` for the factor on the
 whole CRSP market.
+
+`MarketFeatures` gives every stock the same market-wide inputs, the ones
+the MASTER model uses. Its config, `MarketFeatureConfig`, takes the stock
+dataset as `dataset` and a `series` dict of single-symbol index or ETF
+datasets, such as `{"spy": spy, "qqq": qqq}`. For each series it computes
+the bar return and, over 5, 10, 20, 30 and 60 bars, the mean and standard
+deviation of the return and of the traded amount (volume times close,
+divided by the bar's own amount): 21 features named like
+`spy_ret_mean_20`. The values go to every symbol that has a bar on that
+date, and a symbol not yet listed or already delisted stays NaN.
+`warmup_bars` defaults to 60, the longest window. See
+[the factor guide](../factor.md) for a worked example.
 
 ## Build and read a factor store
 
