@@ -53,7 +53,7 @@ A model learns to predict the labels from the factors. At every split boundary i
 last lookahead bars of the earlier segment, so no label it fits on reads a bar of the later
 one. Its prediction panel has one variable per label on the same `(timestamp, symbol)` grid
 as its inputs. Model heads come in two
-families: torch networks trained epoch by epoch (`DLModel`) and tree or tabular models fitted
+families: torch networks trained one cross-section of symbols per step (`DLModel`) and tree or tabular models fitted
 in one call with the library's own early stopping (`MLModel`). See [models](models.md).
 
 Selection turns predictions into target weights: for every symbol, the fraction of the
@@ -245,6 +245,7 @@ quantlab/
         constituent.py   IndexConstituentDataset: index-membership panels
         factor.py        Factor, FactorKunQuant, FactorPolars
         model.py         BaseModel, DLModel, MLModel
+        stopping.py      StoppingRule, EpochMonitor: when a torch head stops
         backtest.py      BaseBacktester and its result types
         backend.py       DataBackend, ModelBackend: storage interfaces
         ...              chunked conversion, download ledgers, progress reporting
@@ -253,7 +254,7 @@ quantlab/
     factor/          Alpha101, Alpha158, momentum, residual momentum
     label/           Forward (forward.py) and the forward-return labels (fret.py)
     ml_model/        XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
-    dl_model/        torch heads: MLP, GRU/LSTM regressor and classifier
+    dl_model/        torch training rules: windows, target transforms, stopping
     backtest/        vectorbt engine, top-N selector, the US-equity backtester
     my_ops/          custom KunQuant operators
     utils/           config loaders (module.py), metrics, report, fingerprints, CLI helpers

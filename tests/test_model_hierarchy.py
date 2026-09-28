@@ -4,7 +4,7 @@
 
 - `BaseModel` -- framework-agnostic lifecycle; the ONLY home of the public
   `train` / `train_cv` / `load` / `predict`;
-- `DLModel` -- the torch variant, five tensor hooks;
+- `DLModel` -- the torch variant, step hooks plus three declarations;
 - `MLModel` -- the numpy variant, four hooks, native early stopping.
 
 What is locked here, and what turns it red:
@@ -37,10 +37,8 @@ import xarray as xr
 import quantlab.utils.module as module_utils
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import BaseModel, DLModel, MLModel
-from quantlab.dl_model.mlp import MLPRegressor
-from quantlab.dl_model.rnn import RNNRegressor
-from quantlab.dl_model.rnn_classification import RNNClassifier
 from quantlab.ml_model.xgb import XGBoostRegressor
+from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -107,28 +105,6 @@ class StubMLHead(MLModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-class LinearDLHead(DLModel):
-    """The smallest concrete `DLModel`: one `nn.Linear` on the last axis."""
-
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
-
-    def _init_optim(self, model):
-        return torch.optim.SGD(model.parameters(), lr=1e-3)
-
-    def _preprocess(self, data):
-        return torch.nan_to_num(data, nan=0.0)
-
-    def _train_one_batch(self, epoch, x, y):
-        return torch.tensor(0.0)
-
-    def _val_one_batch(self, epoch, x, y):
-        return torch.tensor(0.0)
-
-    def _test_one_batch(self, epoch, x, y):
-        return torch.tensor(0.0)
-
-
 def _kwargs(tmp_path, factors=None, labels=None):
     return dict(
         factors=factors if factors is not None else [FakePanel(["f_a", "f_b"], seed=1)],
@@ -154,9 +130,10 @@ def test_base_model_abstract_methods_are_exactly_the_variant_seams():
     )
 
 
-def test_dl_model_abstract_methods_are_the_five_tensor_hooks():
+def test_dl_model_abstract_methods_are_the_step_hooks_and_three_declarations():
     assert DLModel.__abstractmethods__ == frozenset(
-        {"_init_model", "_train_one_batch", "_val_one_batch", "_test_one_batch", "_preprocess"}
+        {"_init_model", "_train_one_batch", "_val_one_batch", "_test_one_batch",
+         "window_bars", "target_transform", "stopping"}
     )
 
 
@@ -172,7 +149,7 @@ def test_public_methods_live_on_base_model():
 
 @pytest.mark.parametrize(
     "cls",
-    [DLModel, MLModel, MLPRegressor, RNNRegressor, RNNClassifier, XGBoostRegressor, StubMLHead],
+    [DLModel, MLModel, OneBarHead, XGBoostRegressor, StubMLHead],
     ids=lambda c: c.__name__,
 )
 def test_no_class_above_base_model_redefines_a_public_method(cls):
@@ -200,8 +177,8 @@ def test_variants_declare_config_class_and_checkpoint_suffix():
 
 
 def test_dl_head_rejects_an_ml_config(tmp_path):
-    with pytest.raises(TypeError, match="MLPRegressor requires a DLConfig, got MLConfig"):
-        MLPRegressor(MLConfig(**_kwargs(tmp_path)))
+    with pytest.raises(TypeError, match="OneBarHead requires a DLConfig, got MLConfig"):
+        OneBarHead(MLConfig(**_kwargs(tmp_path)))
 
 
 def test_ml_head_rejects_a_dl_config(tmp_path):
@@ -222,6 +199,20 @@ def test_retired_names_stay_retired():
     assert not hasattr(DLModel, "_predict_nn")
     assert not hasattr(MLModel, "_snapshot_model")
     assert not hasattr(MLModel, "_train_one_epoch")
+
+
+def test_the_fixed_symbol_dl_machinery_and_config_fields_are_deleted():
+    """Issue #39: the step hooks stay, but each step is one bar's
+    cross-section; the refit optimizer, the training-symbol alignment and
+    the batch/early-stopping config fields went with the fixed-symbol heads."""
+    for name in (
+        "_preprocess_stream", "_get_refit_optim", "to_tensor",
+        "_align_prediction_symbols",
+    ):
+        assert not hasattr(DLModel, name), name
+    for field in ("batch_size", "num_workers", "early_stopping",
+                  "early_stopping_patience", "lr_refit"):
+        assert field not in DLConfig.__dataclass_fields__, field
 
 
 def test_stale_backtest_hooks_are_deleted():
@@ -293,12 +284,12 @@ def test_loader_builds_a_dl_config_for_a_dl_head(tmp_path, monkeypatch):
     """Real dotted path, real class lookup; only factor reconstruction is
     faked."""
     _patch_factor_loader(monkeypatch)
-    saved = MLPRegressor(DLConfig(**_kwargs(tmp_path))).get_config()
-    assert saved["name"] == "quantlab.dl_model.mlp.MLPRegressor"
+    saved = OneBarHead(DLConfig(**_kwargs(tmp_path))).get_config()
+    assert saved["name"] == "tests.dl_heads.OneBarHead"
 
     model = module_utils.load_model_from_config(saved)
 
-    assert isinstance(model, MLPRegressor)
+    assert isinstance(model, OneBarHead)
     assert type(model.config) is DLConfig
 
 
@@ -362,10 +353,8 @@ def test_dl_config_json_has_no_resolved_hyperparameters_key(tmp_path):
         test_start=np.datetime_as_string(TIMES[30], unit="D"),
         test_end=END,
         epochs=1,
-        batch_size=16,
-        num_workers=0,
     )
-    model = LinearDLHead(cfg)
+    model = OneBarHead(cfg)
     model.collect()
     model.train()
 
@@ -382,24 +371,25 @@ def test_dl_config_json_has_no_resolved_hyperparameters_key(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_dl_predict_accepts_a_float64_ndarray(tmp_path):
-    """An ndarray goes through the same dtype normalisation as `to_tensor`, so
-    it predicts exactly what the equal-valued float32 tensor predicts."""
-    model = LinearDLHead(DLConfig(**_kwargs(tmp_path)))
-    model.collect()
-    model._init_model_and_optim()
+def _untrained(tmp_path):
+    model = OneBarHead(DLConfig(**_kwargs(tmp_path)))
+    model.model = model._init_model(num_features=2, num_labels=1, hyperparameters={})
+    return model
+
+
+def test_dl_predict_accepts_an_ndarray_or_a_tensor(tmp_path):
+    """Both go through the same windows, so equal values predict equally."""
+    model = _untrained(tmp_path)
     x64 = np.random.default_rng(0).standard_normal((5, N_SYMBOLS, 2))
 
     from_array = model.predict(x64)
     from_tensor = model.predict(torch.from_numpy(x64.astype(np.float32)))
 
-    assert from_array.dtype == torch.get_default_dtype()
+    assert tuple(from_array.shape) == (5, N_SYMBOLS, 1)
     assert torch.equal(from_array, from_tensor)
 
 
 def test_dl_predict_rejects_other_types(tmp_path):
-    model = LinearDLHead(DLConfig(**_kwargs(tmp_path)))
-    model.collect()
-    model._init_model_and_optim()
+    model = _untrained(tmp_path)
     with pytest.raises(TypeError):
         model.predict([[1.0]])

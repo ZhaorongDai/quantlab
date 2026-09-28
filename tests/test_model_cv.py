@@ -46,12 +46,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
-import torch.nn as nn
 import xarray as xr
 
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import BaseModel, DLModel, MLModel
+from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 # --------------------------------------------------------------------------
@@ -125,38 +124,18 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class GoldenDLHead(DLModel):
-    """A tiny torch head: one `nn.Linear` on the last axis, one epoch.
+class GoldenDLHead(OneBarHead):
+    """A tiny one-bar torch head, one epoch.
 
-    `_init_optim` is where the dates are recorded: the training loop calls it
-    once per fit, on the instance that is actually training (the deep copy,
-    in the parallel branch), after the fold's dates were written to its
-    config.
+    `_init_model` is where the dates are recorded: `_fit` calls it once per
+    fit, on the instance that is actually training (the deep copy, in the
+    parallel branch), after the fold's dates were written to its config.
     """
 
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
-
-    def _init_optim(self, model):
+    def _init_model(self, num_features, num_labels, hyperparameters):
         c = self.config
         DL_FOLD_DATES.append((c.train_start, c.train_end, c.test_start, c.test_end))
-        return torch.optim.SGD(model.parameters(), lr=self.config.lr)
-
-    def _preprocess(self, data):
-        return torch.nan_to_num(data, nan=0.0)
-
-    def _train_one_batch(self, epoch, x, y):
-        self.optim.zero_grad()
-        loss = nn.functional.mse_loss(self.model(x), y)
-        loss.backward()
-        self.optim.step()
-        return loss
-
-    def _val_one_batch(self, epoch, x, y):
-        return nn.functional.mse_loss(self.model(x), y)
-
-    def _test_one_batch(self, epoch, x, y):
-        return nn.functional.mse_loss(self.model(x), y)
+        return super()._init_model(num_features, num_labels, hyperparameters)
 
 
 def _dl_config(tmp_path: Path, save_dir: str) -> DLConfig:
@@ -169,10 +148,7 @@ def _dl_config(tmp_path: Path, save_dir: str) -> DLConfig:
         start_date=START,
         end_date=END,
         epochs=1,
-        batch_size=64,
-        num_workers=0,
         lr=1e-3,
-        early_stopping=False,
         hyperparameters={},
     )
 
@@ -513,10 +489,10 @@ def test_ml_train_cv_parallel_matches_sequential(tmp_path, recorders):
     )
 
 
-def test_dl_train_cv_results_carry_dates_only_and_open_no_summary_run(tmp_path, recorders):
-    """`DLModel._fit` returns no metrics, so a DL fold result is the fold's
-    dates plus its run name and checkpoint, and no summary run is created --
-    DL CV behaviour stays what the goldens pinned."""
+def test_dl_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, recorders):
+    """`DLModel._fit` returns the shared metrics, so a DL fold result is the
+    fold's dates, its run name and checkpoint and every split's metrics, and
+    the fold means go to a `{cls}_cv_summary` run, as for an ML head."""
     model = GoldenDLHead(_dl_config(tmp_path, "ckpt"))
     model.collect()
 
@@ -524,7 +500,8 @@ def test_dl_train_cv_results_carry_dates_only_and_open_no_summary_run(tmp_path, 
 
     assert len(results) == GOLDEN_N_FOLDS
     for r in results:
-        assert set(r) == FOLD_KEYS | {"experiment_name", "checkpoint"}
+        assert FOLD_KEYS | {"experiment_name", "checkpoint"} <= set(r)
+        assert {"train_mse", "val_mse", "test_mse", "test_ic"} <= set(r)
         assert Path(r["checkpoint"]).suffix == ".pth" and Path(r["checkpoint"]).is_file()
-    assert len(recorders) == GOLDEN_N_FOLDS
-    assert all(not r.name.endswith("_cv_summary") for r in recorders)
+    assert len(recorders) == GOLDEN_N_FOLDS + 1
+    assert recorders[-1].name == "GoldenDLHead_cv_summary"

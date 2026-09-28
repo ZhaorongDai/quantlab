@@ -92,7 +92,7 @@ QUANTLAB_DATA_ROOT=/path/to/checkout uv run pytest tests/test_crsp_rebuild_measu
 
 ## GPU support
 
-The deep-learning model heads in `quantlab.dl_model` (an MLP and GRU/LSTM networks) run on a
+Deep-learning model heads (subclasses of `quantlab.base.model.DLModel`) run on a
 CUDA GPU when PyTorch can see one and fall back to the CPU otherwise. The choice is made by the
 `device` property of `quantlab.base.model.DLModel`, and nothing needs to be configured. You can
 check what PyTorch sees with:

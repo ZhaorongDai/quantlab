@@ -32,13 +32,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
-import torch.nn as nn
 import xarray as xr
 
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import BaseModel, DLModel, MLModel
 from quantlab.utils.jsonable import to_jsonable
+from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -120,32 +119,6 @@ class NaNMetricMLHead(StubMLHead):
         return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
 
 
-class TinyDLHead(DLModel):
-    """The smallest trainable torch head: one `nn.Linear` on the last axis."""
-
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
-
-    def _init_optim(self, model):
-        return torch.optim.SGD(model.parameters(), lr=1e-3)
-
-    def _preprocess(self, data):
-        return torch.nan_to_num(data, nan=0.0)
-
-    def _train_one_batch(self, epoch, x, y):
-        self.optim.zero_grad()
-        loss = nn.functional.mse_loss(self.model(x), y)
-        loss.backward()
-        self.optim.step()
-        return loss
-
-    def _val_one_batch(self, epoch, x, y):
-        return nn.functional.mse_loss(self.model(x), y)
-
-    def _test_one_batch(self, epoch, x, y):
-        return nn.functional.mse_loss(self.model(x), y)
-
-
 def _common(tmp_path: Path, save_dir: str) -> dict:
     return dict(
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
@@ -165,14 +138,7 @@ def _ml(tmp_path: Path, save_dir: str, cls=StubMLHead) -> MLModel:
 
 
 def _dl(tmp_path: Path, save_dir: str) -> DLModel:
-    model = TinyDLHead(
-        DLConfig(
-            **_common(tmp_path, save_dir),
-            epochs=1,
-            batch_size=64,
-            num_workers=0,
-        )
-    )
+    model = OneBarHead(DLConfig(**_common(tmp_path, save_dir), epochs=1))
     model.collect()
     return model
 
@@ -223,8 +189,8 @@ def test_parallel_ml_manifest_equals_returned_folds(tmp_path):
 
 
 def test_dl_manifest_equals_returned_folds(tmp_path):
-    """A DL head's `_fit` returns no metrics, so each manifest entry carries
-    only the fold's dates, its run name and its checkpoint."""
+    """A DL fold entry carries the fold's dates, its run name, its
+    checkpoint and every split's metrics, like an ML fold."""
     model = _dl(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
@@ -234,8 +200,10 @@ def test_dl_manifest_equals_returned_folds(tmp_path):
     assert manifest["folds"] == to_jsonable(results)
     assert len(manifest["folds"]) == N_FOLDS
     for entry in manifest["folds"]:
-        assert set(entry) == D30_KEYS
+        assert D30_KEYS <= set(entry)
+        assert {"train_mse", "val_mse", "test_mse", "test_rank_ic"} <= set(entry)
         assert entry["checkpoint"].endswith(".pth")
+    assert manifest["cv_mean"]["cv_n_folds"] == N_FOLDS
 
 
 def test_manifest_fold_entries_carry_the_d30_keys_and_real_checkpoints(tmp_path):

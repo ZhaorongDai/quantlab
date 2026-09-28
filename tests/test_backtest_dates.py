@@ -23,9 +23,9 @@ This module locks D-06, D-13, D-14 and D-15.
   symbol label.
 - **D-13, model preparation.** "train" trains on the model's own
   train/test dates and never rewrites them. "load" refuses a missing file
-  before any feature work. A DL head gets its feature panel collected before
-  `load()`, because `DLModel._read_checkpoint` sizes the network from
-  `num_symbols` on the model's data backend (RESEARCH Pitfall 11).
+  before any feature work. A DL head loads without any collected panel (its
+  network depends only on the feature and label counts), and its window
+  warm-up gives the window's first bar a full history.
 - **Fold-style dates.** `'2026-08-07T00:00:00.000000000'`, numpy datetimes
   and timestamps with a time all normalize to an ISO date through one helper
   (RESEARCH Pitfall 10).
@@ -41,10 +41,8 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
-import torch.nn.functional as F
 import xarray as xr
 from loguru import logger
-from torch import nn
 
 from quantlab.base.backtest import BaseBacktester
 from quantlab.base.config import (
@@ -53,8 +51,8 @@ from quantlab.base.config import (
     MLConfig,
     PolarsFactorConfig,
 )
-from quantlab.base.model import DLModel
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from tests.dl_heads import MeanContextHead
 from tests.backtest_fixtures import (
     SYMBOLS,
     FirstFeatureHead,
@@ -441,30 +439,8 @@ def test_iso_date_normalizes_fold_style_strings():
 # --------------------------------------------------------------------------
 
 
-class TinyLinearDLHead(DLModel):
-    """The smallest trainable `DLModel`: one `nn.Linear` on the last axis."""
-
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
-
-    def _init_optim(self, model):
-        return torch.optim.SGD(model.parameters(), lr=1e-2)
-
-    def _preprocess(self, data):
-        return torch.nan_to_num(data, nan=0.0)
-
-    def _train_one_batch(self, epoch, x, y):
-        self.optim.zero_grad()
-        loss = F.mse_loss(self.model(x), y)
-        loss.backward()
-        self.optim.step()
-        return loss.detach()
-
-    def _val_one_batch(self, epoch, x, y):
-        return F.mse_loss(self.model(x), y)
-
-    def _test_one_batch(self, epoch, x, y):
-        return F.mse_loss(self.model(x), y)
+class TinyLinearDLHead(MeanContextHead):
+    """A tiny cross-section head on a three-bar window (two bars of warm-up)."""
 
 
 def _dl_model(root: Path, dataset_config, dates: dict) -> TinyLinearDLHead:
@@ -488,8 +464,6 @@ def _dl_model(root: Path, dataset_config, dates: dict) -> TinyLinearDLHead:
             factor_data_strategy="cal",
             label_data_strategy="cal",
             epochs=1,
-            batch_size=16,
-            num_workers=0,
             val_size=0.0,
             **dates,
         )
@@ -518,8 +492,7 @@ def test_train_mode_uses_the_models_own_dates_and_leaves_them_unchanged(tmp_path
 def test_load_mode_with_missing_checkpoint_file_fails_before_predicting(
     tmp_path, monkeypatch
 ):
-    """A DL head is used because it is the variant that does feature work
-    before `load()`: the existence check must come first."""
+    """The existence check comes before any feature work, for a DL head too."""
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
     model = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
@@ -528,9 +501,9 @@ def test_load_mode_with_missing_checkpoint_file_fails_before_predicting(
     calls = {"collect": 0, "predict_panel": 0}
     collect, predict_panel = model._collect_all_features, model.predict_panel
 
-    def spy_collect():
+    def spy_collect(*args):
         calls["collect"] += 1
-        return collect()
+        return collect(*args)
 
     def spy_predict_panel(features):
         calls["predict_panel"] += 1
@@ -764,7 +737,7 @@ def test_same_training_bars_resolves_endpoints_on_the_calendar():
     assert not same(daily, plain, (None, "2024-02-09"))
 
 
-def test_dl_head_loads_after_its_feature_panel_is_collected(tmp_path):
+def test_dl_head_loads_without_a_collected_panel_and_predicts_the_first_bar(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
     trainer = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
@@ -803,8 +776,7 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
     that field was ordered differently from the derived names, and accepted
     permuted inputs when the derived names had drifted. It must be gone, and
     `_load_model_checkpoint` must call `model._assert_trained_variables` before
-    the DL-only feature collection, so a refusal still precedes any feature
-    work. The old code has both attributes and never calls the model check
+    any feature collection, so a refusal still precedes any feature work. The old code has both attributes and never calls the model check
     before collection, so this goes red.
     """
     assert not hasattr(BaseBacktester, "_assert_checkpoint_variables")

@@ -37,7 +37,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.data import MarketDataset
-from quantlab.base.model import BaseModel, DLModel
+from quantlab.base.model import BaseModel
 from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
 # converter and polars), which adds about a second of import time.
@@ -1406,10 +1406,7 @@ class BaseBacktester(ABC):
         Shared by ``run()`` and each fold of ``run_cv()``. The file's
         existence and the factor/label variable check
         (``model._assert_trained_variables``) both run before any feature is
-        computed, so a wrong path or a mismatched model fails cheaply. For a
-        ``DLModel`` the feature panel is placed in the model's data backend
-        first, because rebuilding the network reads ``num_symbols`` from it;
-        an ``MLModel`` checkpoint is the whole model and skips this.
+        computed, so a wrong path or a mismatched model fails cheaply.
 
         Returns
         -------
@@ -1430,8 +1427,6 @@ class BaseBacktester(ABC):
             )
         saved = self._read_checkpoint_config(path)
         model._assert_trained_variables(path)
-        if isinstance(model, DLModel):
-            model.data_backend.to_internal(model._collect_all_features())
         model.load(path)
         return saved
 
@@ -1481,15 +1476,11 @@ class BaseBacktester(ABC):
         """
         with Timer(f"{self.class_name}: predict_window"):
             model = self.config.model
-            # The model's missing/extra symbol lists are bare identifiers.
-            # It cannot reach the price store, so the labelling callable is
-            # handed over here; the model knows no vendor, only a
-            # `(symbols, day) -> list[str]` callable.
-            model.symbol_labeller = self.ticker_lookup.label
             self._record_factor_fingerprints(start_date, end_date)
 
             # Each factor warms itself up by its own warmup_bars, counted on
-            # its dataset's calendar, from the bars before start_date.
+            # its dataset's calendar, from the bars before start_date; the
+            # model adds its own warm-up (a DL head's window) on top.
             features = model._collect_all_features(start_date, end_date)
             return model.predict_panel(features).sel(
                 timestamp=slice(start_date, end_date)
@@ -1644,19 +1635,23 @@ class BaseBacktester(ABC):
         reads, its warm-up bars included. Under the ``"read"`` strategy a
         second key ``factor_store[{i}]:{ClassName}`` covers the features of
         ``factor.read(start, end)``, because that store, not the dataset,
-        is what the predictions are built from.
+        is what the predictions are built from. ``start`` is first moved
+        back by the model's own warm-up (``model.warmup_bars``), the range
+        the model actually requests.
         """
-        strategy = self.config.model.config.factor_data_strategy
-        for i, factor in enumerate(self.config.model.config.factors):
+        model = self.config.model
+        strategy = model.config.factor_data_strategy
+        for i, factor in enumerate(model.config.factors):
             name = type(factor).__name__
+            first = model._feature_start(factor, strategy, start, warn=False)
             self._fingerprints[f"factor[{i}]:{name}"] = (
                 self._dataset_variables_fingerprint(
-                    factor, self._compute_inputs(factor, start, end)
+                    factor, self._compute_inputs(factor, first, end)
                 )
             )
             if strategy == "read":
                 self._fingerprints[f"factor_store[{i}]:{name}"] = (
-                    self._store_fingerprint(factor.read(start, end))
+                    self._store_fingerprint(factor.read(first, end))
                 )
 
     def _record_training_fingerprints(self) -> None:
@@ -1673,15 +1668,21 @@ class BaseBacktester(ABC):
         ``train_factor_store[{i}]:{ClassName}`` /
         ``train_label_store[{i}]:{ClassName}`` over the store panels under
         the ``"read"`` strategy, where the stores are the data actually used.
+        A factor's range starts the model's warm-up earlier, as ``collect()``
+        requests it.
         """
-        model_config = self.config.model.config
-        start, end = model_config.start_date, model_config.end_date
+        model = self.config.model
+        model_config = model.config
+        end = model_config.end_date
         for prefix, items, strategy in (
             ("train_factor", model_config.factors, model_config.factor_data_strategy),
             ("train_label", model_config.labels, model_config.label_data_strategy),
         ):
             for i, item in enumerate(items):
                 name = type(item).__name__
+                start = model_config.start_date
+                if prefix == "train_factor":
+                    start = model._feature_start(item, strategy, start, warn=False)
                 if strategy == "read":
                     self._fingerprints[f"{prefix}_store[{i}]:{name}"] = (
                         self._store_fingerprint(item.read(start, end))

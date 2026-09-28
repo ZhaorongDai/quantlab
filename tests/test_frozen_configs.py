@@ -38,9 +38,6 @@ from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.nbbo import NbboPanelDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.dl_model.mlp import MLPRegressor
-from quantlab.dl_model.rnn import RNNRegressor
-from quantlab.dl_model.rnn_classification import RNNClassifier
 from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 from quantlab.factor.momentum import Momentum
@@ -49,6 +46,7 @@ from quantlab.label.fret import BinaryReturn, Return
 from quantlab.ml_model.realmlp import RealMLPRegressor
 from quantlab.ml_model.xgb import XGBoostRegressor
 from quantlab.ml_model.xgb_td import XGBTDRegressor
+from tests.dl_heads import MeanContextHead
 
 _OHLCV = ("open", "high", "low", "close", "volume", "amount")
 _ADJUSTED = ("adjHigh", "adjLow", "adjClose", "adjOpen", "adjVolume")
@@ -380,9 +378,7 @@ _MODEL_CASES = [
     (XGBoostRegressor, MLConfig),
     (RealMLPRegressor, MLConfig),
     (XGBTDRegressor, MLConfig),
-    (MLPRegressor, DLConfig),
-    (RNNRegressor, DLConfig),
-    (RNNClassifier, DLConfig),
+    (MeanContextHead, DLConfig),
 ]
 
 

@@ -38,14 +38,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
-import torch.nn as nn
 import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import DLModel
 from quantlab.ml_model.xgb import XGBoostRegressor
+from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -122,28 +120,6 @@ class NamedPanel:
         return {"name": "NamedPanel", "factor_names": list(self._config_names)}
 
 
-class LinearDLHead(DLModel):
-    """The smallest concrete `DLModel`: one `nn.Linear` on the last axis."""
-
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
-
-    def _init_optim(self, model):
-        return torch.optim.SGD(model.parameters(), lr=1e-3)
-
-    def _preprocess(self, data):
-        return torch.nan_to_num(data, nan=0.0)
-
-    def _train_one_batch(self, epoch, x, y):
-        return torch.tensor(0.0)
-
-    def _val_one_batch(self, epoch, x, y):
-        return torch.tensor(0.0)
-
-    def _test_one_batch(self, epoch, x, y):
-        return torch.tensor(0.0)
-
-
 def _common_kwargs(root: Path, factors: NamedPanel, labels: NamedPanel) -> dict:
     return dict(
         factors=[factors],
@@ -172,13 +148,11 @@ def _ml_model(root: Path, factor_names=FACTORS, label_names=LABELS, **panel_kwar
     )
 
 
-def _dl_model(root: Path, factor_names=FACTORS, label_names=LABELS) -> LinearDLHead:
-    return LinearDLHead(
+def _dl_model(root: Path, factor_names=FACTORS, label_names=LABELS) -> OneBarHead:
+    return OneBarHead(
         DLConfig(
             **_common_kwargs(root, NamedPanel(factor_names), NamedPanel(label_names)),
             epochs=1,
-            batch_size=16,
-            num_workers=0,
         )
     )
 

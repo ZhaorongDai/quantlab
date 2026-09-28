@@ -25,9 +25,10 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import MLConfig
+from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import BaseModel, MLModel
 from quantlab.utils.jsonable import to_jsonable
+from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 60
@@ -120,7 +121,7 @@ class NaNMetricMLHead(StubMLHead):
         return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
 
 
-def _model(tmp_path: Path, cls=StubMLHead, **overrides) -> MLModel:
+def _model(tmp_path: Path, cls=StubMLHead, **overrides):
     kwargs = dict(
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(FakePanel(["ret"], seed=2))],
@@ -135,7 +136,8 @@ def _model(tmp_path: Path, cls=StubMLHead, **overrides) -> MLModel:
         test_end=END,
     )
     kwargs.update(overrides)
-    model = cls(MLConfig(**kwargs))
+    config_cls = DLConfig if cls is OneBarHead else MLConfig
+    model = cls(config_cls(**kwargs))
     model.collect()
     return model
 
@@ -147,8 +149,9 @@ def _strict_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject)
 
 
-def test_train_writes_metrics_json_equal_to_the_wandb_summary(tmp_path, recorders):
-    checkpoint = _model(tmp_path).train()
+@pytest.mark.parametrize("cls", [StubMLHead, OneBarHead], ids=["ml", "dl"])
+def test_train_writes_metrics_json_equal_to_the_wandb_summary(tmp_path, recorders, cls):
+    checkpoint = _model(tmp_path, cls=cls).train()
 
     path = checkpoint.parent / "metrics.json"
     assert (checkpoint.parent / "config.json").is_file()
@@ -158,8 +161,11 @@ def test_train_writes_metrics_json_equal_to_the_wandb_summary(tmp_path, recorder
     assert metrics == to_jsonable(run.summary)
 
 
-def test_metrics_json_has_no_val_keys_without_a_validation_segment(tmp_path, recorders):
-    checkpoint = _model(tmp_path, val_size=0.0).train()
+@pytest.mark.parametrize("cls", [StubMLHead, OneBarHead], ids=["ml", "dl"])
+def test_metrics_json_has_no_val_keys_without_a_validation_segment(
+    tmp_path, recorders, cls
+):
+    checkpoint = _model(tmp_path, cls=cls, val_size=0.0).train()
 
     metrics = _strict_json(checkpoint.parent / "metrics.json")
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "test") for k in METRIC_KEYS}

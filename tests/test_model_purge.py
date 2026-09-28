@@ -13,11 +13,12 @@ import json
 import numpy as np
 import pytest
 import torch
-import torch.nn as nn
 import xarray as xr
 
 from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import DLModel, MLModel
+from quantlab.base.model import MLModel
+from quantlab.dl_model.training import TargetTransform
+from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 20
@@ -125,46 +126,40 @@ def test_zero_lookahead_fits_on_every_training_bar(tmp_path):
     assert RecordingMLHead.fitted == {"train": list(range(0, 9)), "val": [9, 10, 11]}
 
 
-class RecordingDLHead(DLModel):
-    """Records the bars its training and validation batches come from."""
+class RecordingDLHead(OneBarHead):
+    """Records the bars its training and validation steps receive.
 
+    Features are the bar index, fed unclipped, so the last row of a window
+    names its bar; ranking the target gives every bar a finite target.
+    """
+
+    clip_features = False
+    target_transform = TargetTransform("rank")
     seen: dict = {}
-
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
 
     def _init_optim(self, model):
         RecordingDLHead.seen = {"train": set(), "val": set()}
-        return torch.optim.SGD(model.parameters(), lr=1e-3)
-
-    def _preprocess(self, data):
-        return data
+        return super()._init_optim(model)
 
     def _train_one_batch(self, epoch, x, y):
-        RecordingDLHead.seen["train"].update(bars(y.cpu()))
-        self.optim.zero_grad()
-        loss = nn.functional.mse_loss(self.model(x), y)
-        loss.backward()
-        self.optim.step()
-        return loss
+        RecordingDLHead.seen["train"].add(int(x[0, -1, 0]))
+        return super()._train_one_batch(epoch, x, y)
 
     def _val_one_batch(self, epoch, x, y):
-        RecordingDLHead.seen["val"].update(bars(y.cpu()))
-        return nn.functional.mse_loss(self.model(x), y)
+        # The epoch's validation pass comes before its test pass; the later
+        # calls score each split for the metrics.
+        if not RecordingDLHead.seen.get("tested"):
+            RecordingDLHead.seen["val"].add(int(x[0, -1, 0]))
+        return super()._val_one_batch(epoch, x, y)
 
     def _test_one_batch(self, epoch, x, y):
-        return nn.functional.mse_loss(self.model(x), y)
+        RecordingDLHead.seen["tested"] = True
+        return super()._test_one_batch(epoch, x, y)
 
 
 def test_dl_val_split_drops_the_last_lookahead_bars_before_validation_and_test(tmp_path):
     model = RecordingDLHead(
-        DLConfig(
-            **common(tmp_path, 1, **FIXED),
-            val_size=0.25,
-            epochs=1,
-            batch_size=4,
-            num_workers=0,
-        )
+        DLConfig(**common(tmp_path, 1, **FIXED), val_size=0.25, epochs=1)
     )
     model.collect()
     model.train()

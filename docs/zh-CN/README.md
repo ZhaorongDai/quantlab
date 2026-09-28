@@ -48,7 +48,7 @@ quantlab/
   dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
   factor/       因子集合：Alpha101、Alpha158、动量、股票池过滤
   label/        未来收益标签
-  dl_model/     PyTorch 模型头：MLP、GRU、LSTM
+  dl_model/     PyTorch 模型的训练规则：窗口、目标变换、停止规则
   ml_model/     XGBoost 模型头，以及非 torch 模型的检查点存储
   backtest/     vectorbt 引擎、TopN 选股、美股回测器
   backend.py    Zarr 与 Parquet 存储后端

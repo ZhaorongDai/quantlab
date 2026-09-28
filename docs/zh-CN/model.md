@@ -124,7 +124,7 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。树模型在主标签（第一个标签）的原始值上计算全部六个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头暂时不写 `metrics.json`。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。每个模型头都在主标签（第一个标签）的原始值上计算全部六个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头报告同样的键；其中的 `loss` 是模型头的 `_val_one_batch` 在该段上的均值，基于变换后的目标（见“训练 torch 模型”）。
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -153,16 +153,16 @@ True
 
 | 类 | 框架 | 配置 | 检查点 | 模型头需要实现的方法 |
 |---|---|---|---|---|
-| `DLModel` | torch，按 `DataLoader` 批次做 epoch 循环 | `DLConfig` | `.pth` | `_init_model`、`_init_optim`、`_preprocess`、`_train_one_batch`、`_val_one_batch`、`_test_one_batch` |
+| `DLModel` | torch，每一步一个标的截面 | `DLConfig` | `.pth` | `_init_model`、`_init_optim`、`_train_one_batch`、`_val_one_batch`、`_test_one_batch`，外加三项声明 `window_bars`、`target_transform`、`stopping` |
 | `MLModel` | numpy，使用库自带的提前停止 | `MLConfig` | `.joblib` | `_init_model`、`_preprocess`、`_fit_model`、`_forward` |
 
-自带的模型头有：`XGBoostRegressor`（`MLModel`）、`MLPRegressor`（作用在展平后的截面上的两隐层感知机）、`RNNRegressor`（每个标签一个 GRU 或 LSTM 塔，至少需要两个标签）和 `RNNClassifier`（预测收益的正负，并把上涨概率作为排序分数返回）。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
+自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `MLModel`；目前还没有自带的 torch 模型头。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
 
 ## 常见任务
 
 ### 提前停止
 
-设置 `early_stopping=True` 后，当验证损失连续 `early_stopping_patience` 轮没有改善时停止训练（`MLModel` 的单位是 boosting 轮数，`DLModel` 的单位是 epoch），并保留最优模型。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/ml_model/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
+设置 `early_stopping=True` 后，当验证损失连续 `early_stopping_patience` 个 boosting 轮没有改善时停止训练，并保留最优模型。这两个是 `MLConfig` 的字段；torch 模型头改为声明自己的停止规则（见“训练 torch 模型”）。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/ml_model/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
 
 ```python
 >>> from dataclasses import replace
@@ -209,33 +209,66 @@ True
 
 ### 训练 torch 模型
 
-`DLConfig` 增加了 `epochs`、`batch_size`、`lr` 和 `num_workers`（`DataLoader` 的工作进程数，默认 4；数据小且在内存中时用 0）。网络一次看到一个 bar 上的所有标的，因此会编码标的的位置。`predict_panel` 会先把输入对齐到训练时的标的：缺少其中任何一个，输入会被拒绝；多出来的标的会被丢弃并给出警告，也不会得到预测。
+torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*，即在该 bar 上至少有一个有限特征值的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络把 `[S_t, N, F]` 映射到 `[S_t, L]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测。标签缺失的标的仍留在截面里作为输入，但不计入损失。特征会被截断到 ±3，NaN 变为 0（模型头可以设 `clip_features = False`）；标的第一个 bar 之前的窗口行全为 0。
+
+模型头实现的仍是截面设计之前的那组钩子，只是现在每次喂一个 bar。`_init_model(num_features, num_labels, hyperparameters)` 构建网络。`_init_optim(model)` 返回优化器，保存在 `self.optim` 上（`config.lr` 就是给它读的）。`_train_one_batch(epoch, x, y)` 执行一步优化并返回损失；`_val_one_batch` 返回一个 bar 的验证损失；`_test_one_batch` 在每个 epoch 之后对每个测试 bar 调用一次。`x` 是 `[S_t, N, F]`；`y` 是 `[S_t, L]`，即该 bar 的标签经过模型头的 `target_transform` 之后的值，标签缺失处为 NaN，所以损失必须排除这些位置（`quantlab.dl_model.training` 里的 `masked_mse` 就是这样做的）。损失、优化器、梯度截断以及一步训练里的其他一切都由模型头决定。模型头还要声明三样东西。`window_bars` 就是 N。`target_transform` 是 `TargetTransform("rank")`（Qlib 的 `CSRankNorm`）或 `TargetTransform("zscore")`，可以再加 `drop_extreme`，即从该 bar 的训练截面里去掉的每侧尾部比例；指标仍然用原始的第一个标签计算。`stopping` 是 `ValLossPatience(patience)`（验证损失连续 `patience` 个 epoch 没有下降就停止，保留最优 epoch 的权重）或 `TrainLossThreshold(threshold, max_epochs)`（某个 epoch 的训练损失达到阈值即停止，保留最后的权重）；两者读的都是各个钩子返回的损失的均值。`DLConfig` 增加了 `epochs`（两种规则共同的上限）和 `lr`。没有 batch size：各个 bar 按打乱后的顺序逐一训练，一步一个 bar。可选的 `_preprocess(x)` 在训练和预测时对每个窗口做同样的变换。
+
+`window_bars` 为 N 的模型在预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多个 bar，按因子自己的数据集日历计数，数据不够早时给出警告。这里的替身面板没有数据集，所以这个模型头用一个 bar 的窗口。
 
 ```python
+>>> import torch.nn as nn
 >>> from quantlab.base.config import DLConfig
->>> from quantlab.dl_model.mlp import MLPRegressor
+>>> from quantlab.base.model import DLModel
+>>> import torch
+>>> from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
+>>> class LastBar(nn.Module):
+...     """对每个标的最新一个 bar 做线性映射。"""
+...     def __init__(self, num_features, num_labels):
+...         super().__init__()
+...         self.linear = nn.Linear(num_features, num_labels)
+...     def forward(self, x):              # x: [S_t, N, F]
+...         return self.linear(x[:, -1])   # [S_t, L]
+>>> class LinearHead(DLModel):
+...     window_bars = 1
+...     target_transform = TargetTransform("zscore")
+...     stopping = ValLossPatience(patience=5)
+...     def _init_model(self, num_features, num_labels, hyperparameters):
+...         return LastBar(num_features, num_labels)
+...     def _init_optim(self, model):
+...         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
+...     def _train_one_batch(self, epoch, x, y):
+...         self.optim.zero_grad()
+...         loss = masked_mse(self.model(x), y)
+...         loss.backward()
+...         self.optim.step()
+...         return loss.detach()
+...     def _val_one_batch(self, epoch, x, y):
+...         return masked_mse(self.model(x), y)
+...     def _test_one_batch(self, epoch, x, y):
+...         return masked_mse(self.model(x), y)
 >>> dl_config = DLConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
 ...     train_start="2024-01-01", train_end="2024-05-31",
 ...     test_start="2024-06-01", test_end="2024-07-18",
-...     epochs=30, batch_size=32, num_workers=0,
-...     early_stopping=True, early_stopping_patience=5,
-...     hyperparameters={"hidden_size1": 16, "hidden_size2": 8},
+...     epochs=50, lr=1e-2,
 ... )
->>> mlp = MLPRegressor(dl_config).collect()
->>> mlp_checkpoint = mlp.train()
->>> mlp_checkpoint.name
-'MLPRegressor_total.pth'
+>>> linear = LinearHead(dl_config).collect()
+>>> linear_checkpoint = linear.train()
+>>> linear_checkpoint.name
+'LinearHead_total.pth'
+>>> dl_metrics = json.loads((linear_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in dl_metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.699, 'val_rank_ic': 0.691, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
 >>> wider = xr.concat([factor.ds, one_more], dim="symbol")
->>> mlp.predict_panel(wider).symbol.size
-20
+>>> linear.predict_panel(wider).symbol.size
+21
 ```
 
 ### 记录到 Weights & Biases
 
-每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.ml_model.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，其摘要就是清单里的 `cv_mean` 块。torch 模型头每个 epoch 记录指标。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
+每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.ml_model.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，其摘要就是清单里的 `cv_mean` 块。torch 模型头每个 epoch 记录 `train_loss` 和 `val_loss`，并把最终指标写入运行摘要。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
 
 ## 扩展
 
@@ -272,36 +305,7 @@ True
 [0.05, -0.02, -0.001]
 ```
 
-`DLModel` 的模型头在 `_init_model` 里根据面板形状构建 `nn.Module`，基类负责把它放到对应设备上、运行 epoch 循环，并在开启提前停止时恢复最优 epoch 的权重。`_train_one_batch` 在一个 `[batch, num_symbols, num_features]` 的批次上执行一步优化。`_val_one_batch` 必须以标量形式返回验证损失，因为基类会把它平均成驱动提前停止的 epoch 损失。`_test_one_batch` 每个 epoch 在测试段上调用一次，模型头通常在这里记录指标。`_preprocess` 由训练和推理共用。
-
-```python
->>> import torch, torch.nn as nn
->>> from quantlab.base.model import DLModel
->>> class LinearHead(DLModel):
-...     """对一个 bar 上的每个标的应用同一个 nn.Linear。"""
-...     def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-...         return nn.Linear(num_features, num_labels)
-...     def _init_optim(self, model):
-...         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
-...     def _preprocess(self, data):
-...         return torch.nan_to_num(data, nan=0.0)
-...     def _train_one_batch(self, epoch, x, y):
-...         self.optim.zero_grad()
-...         loss = nn.functional.mse_loss(self.model(x), y)
-...         loss.backward()
-...         self.optim.step()
-...         return loss.detach()
-...     def _val_one_batch(self, epoch, x, y):
-...         return nn.functional.mse_loss(self.model(x), y)
-...     def _test_one_batch(self, epoch, x, y):
-...         return nn.functional.mse_loss(self.model(x), y)
->>> linear = LinearHead(replace(dl_config, epochs=300, lr=0.05, early_stopping_patience=20, hyperparameters={})).collect()
->>> linear_checkpoint = linear.train()
->>> [round(w, 3) for w in linear.model.weight[0].tolist()]
-[0.051, -0.02]
->>> LinearHead.checkpoint_suffix, linear_checkpoint.suffix
-('.pth', '.pth')
-```
+`DLModel` 的模型头由网络、优化器、三个逐步钩子和三项声明组成；“训练 torch 模型”里的 `LinearHead` 就是一个完整的例子。一步训练做什么由模型头决定：损失、优化器、梯度截断、辅助输出。窗口、bar 的顺序、目标变换、停止规则、指标和检查点由基类负责。
 
 ## 注意事项
 
@@ -334,11 +338,11 @@ ValueError: Unsupported file type: '.pth'; XGBoostRegressor checkpoints use '.jo
 ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its config.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
 ```
 
-`predict_panel` 需要全部因子变量，torch 模型头还需要全部训练时的标的。
+`predict_panel` 需要全部因子变量；torch 网络必须为截面里的每个标的返回一行、为每个标签返回一列。
 
 ```text
 ValueError: XGBoostRegressor.predict_panel: features are missing factor variable(s) ['f_b']
-ValueError: MLPRegressor.predict_panel: the feature panel lacks 5 of the 20 symbols this model was trained on: ['S15', 'S16', 'S17', 'S18', 'S19']. A DL head encodes symbol position, so it cannot predict without them (...)
+ValueError: LinearHead: the network must map [S_t, N, F] to a [S_t, L] = [20, 1] tensor, got <class 'tuple'>
 ```
 
 `train` 需要四个窗口日期齐全。在配置里设置它们，或者用 `train_cv`，它会为每一折设置日期。
@@ -366,7 +370,7 @@ ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 trainin
 
 检查点是 pickle 文件（`MLModel` 用 `joblib`，`DLModel` 用 `torch.load`）。只加载自己生成或可信的文件。
 
-进度信息通过 `loguru` 和 `tqdm` 输出到 stderr。`logger.remove()` 可以关掉日志行。在没有 CUDA 的机器上，`DataLoader` 可能打印一条 `pin_memory` 警告，可以忽略。
+进度信息通过 `loguru` 和 `tqdm` 输出到 stderr。`logger.remove()` 可以关掉日志行。
 
 在 macOS 上，`xgboost` 的 wheel 链接的是 Homebrew 的 OpenMP 运行时，而 `torch` 自带另一份。同一个进程里同时使用两者可能崩溃或卡死。在第一次导入其中任何一个库之前设置 `OMP_NUM_THREADS=1` 可以避免，代价是树模型和 torch 代码变成单线程。Linux 不受影响。
 

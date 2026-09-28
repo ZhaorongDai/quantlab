@@ -660,12 +660,23 @@ before `_init_model` (to log the run config), so either compute it from
 `XGBoostRegressor` does. The checkpoint
 is a joblib pickle of `self.model`; only load files you trust.
 
-`DLModel` is for PyTorch networks trained in an epoch loop with early
-stopping and rollback to the best epoch. Its hooks are `_init_model` (return
-an `nn.Module` for the panel shape), `_init_optim`, `_preprocess` (applied to
-tensors at training and prediction time alike), and `_train_one_batch`,
-`_val_one_batch` and `_test_one_batch`. Batches are
-`[batch, symbol, feature]` tensors already on the model's device:
+`DLModel` is for PyTorch networks trained on one cross-section per step: the
+symbols with a finite feature at a bar, each with its own window of the last
+`window_bars` bars. A head implements `_init_model(num_features, num_labels,
+hyperparameters)`, returning an `nn.Module` that maps `[S_t, N, F]` to
+`[S_t, L]` for any number of symbols S_t, `_init_optim(model)`, and the step
+hooks `_train_one_batch`, `_val_one_batch` and `_test_one_batch`, each
+called with one bar's `x` (`[S_t, N, F]`) and `y` (`[S_t, L]`, the
+transformed target, NaN where a label is missing). The loss, the optimizer
+and anything else about a step are the head's. It declares `window_bars`,
+`target_transform` (`TargetTransform("rank")` or `TargetTransform("zscore")`,
+optionally with `drop_extreme`) and `stopping` (`ValLossPatience` or
+`TrainLossThreshold`), all from `quantlab.dl_model.training`. The base class
+builds the windows (clipped to ±3, NaN as 0), shuffles the bars, applies the
+target transform, runs the stopping rule on the losses the hooks return, and
+writes the same `metrics.json` as `MLModel`. The model
+requests `window_bars - 1` extra bars of each factor before its start date.
+A GRU per symbol followed by attention across the bar's symbols:
 
 ```python
 import torch
@@ -673,57 +684,74 @@ from torch import nn
 
 from quantlab.base.config import DLConfig
 from quantlab.base.model import DLModel
+from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
 
 
-class LinearHead(DLModel):
-    """One linear layer applied to every symbol's features."""
+class CrossSectionAttention(nn.Module):
+    """Each symbol's GRU state plus an attention-weighted mix of the others'."""
 
-    def _init_model(self, num_symbols, num_features, num_labels, hyperparameters):
-        return nn.Linear(num_features, num_labels)
+    def __init__(self, num_features, num_labels, hidden):
+        super().__init__()
+        self.gru = nn.GRU(num_features, hidden, batch_first=True)
+        self.out = nn.Linear(2 * hidden, num_labels)
+
+    def forward(self, x):                          # x: [S_t, N, F]
+        _, h = self.gru(x)                         # h: [1, S_t, H]
+        h = h[0]
+        weights = torch.softmax(h @ h.T, dim=1)    # symbol-to-symbol attention
+        return self.out(torch.cat([h, weights @ h], dim=1))  # [S_t, L]
+
+
+class AttentionHead(DLModel):
+    window_bars = 10
+    target_transform = TargetTransform("rank")
+    stopping = ValLossPatience(patience=3)
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return CrossSectionAttention(
+            num_features, num_labels, hyperparameters.get("hidden", 8)
+        )
 
     def _init_optim(self, model):
         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
 
-    def _preprocess(self, data):
-        return torch.nan_to_num(data, nan=0.0)
-
     def _train_one_batch(self, epoch, x, y):
         self.optim.zero_grad()
-        loss = self._masked_mse(x, y)
+        loss = masked_mse(self.model(x), y)
         loss.backward()
         self.optim.step()
         return loss.detach()
 
     def _val_one_batch(self, epoch, x, y):
-        return self._masked_mse(x, y)
+        return masked_mse(self.model(x), y)
 
     def _test_one_batch(self, epoch, x, y):
-        return self._masked_mse(x, y)
-
-    def _masked_mse(self, x, y):
-        mask = torch.isfinite(y)  # labels are NaN where the dataset has no later bars
-        return nn.functional.mse_loss(self.model(x)[mask], y[mask])
+        return masked_mse(self.model(x), y)
 
 
-linear = LinearHead(DLConfig(
+head = AttentionHead(DLConfig(
     factors=factors, labels=labels, model_save_dir=str(root / "models"),
     factor_data_strategy="cal", label_data_strategy="cal",
-    epochs=3, batch_size=16, num_workers=0, lr=1e-2,
-    train_start="2024-01-02", train_end="2024-04-30",
+    start_date="2024-01-16", end_date="2024-06-14",
+    train_start="2024-01-16", train_end="2024-04-30",
     test_start="2024-05-01", test_end="2024-06-14",
+    epochs=20, lr=1e-2, hyperparameters={"hidden": 8},
 ))
-print(linear.collect().train().name)
+print(head.collect().train().name)
 ```
 
 ```text
-LinearHead_total.pth
+AttentionHead_total.pth
 ```
+
+The features are requested from 2024-01-03, nine bars before `start_date`,
+so the first training bar has a full ten-bar window.
 
 Every training run opens a Weights & Biases run; set `WANDB_MODE=disabled` in
 the environment to keep it offline. On macOS, set `OMP_NUM_THREADS=1` before
 importing anything when one process uses both torch and xgboost. The
-reference heads are `quantlab/ml_model/xgb.py` and the modules in
-`quantlab/dl_model/`.
+reference heads are `quantlab/ml_model/xgb.py` and
+`quantlab/ml_model/realmlp.py`.
 
 ## A backtest market or selection rule
 

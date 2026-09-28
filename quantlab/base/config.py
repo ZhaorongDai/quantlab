@@ -741,9 +741,11 @@ class ForwardConfig(_FrozenConfig):
 
 @dataclass(frozen=True)
 class DLConfig(_FrozenConfig):
-    """Config of a torch model head trained through the epoch loop.
+    """Config of a torch model head, trained one cross-section per step.
 
-    ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
+    A step is one bar, so there is no batch size. When training stops is the
+    head's declared stopping rule (``DLModel.stopping``), capped by
+    ``epochs``. ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
     training and test windows; rolling cross-validation overwrites them fold
     by fold. ``start_date`` and ``end_date`` bound all the data the model
     collects; they are passed to every factor and label per request.
@@ -755,7 +757,7 @@ class DLConfig(_FrozenConfig):
     >>> cfg = DLConfig(
     ...     factors=factors,
     ...     labels=labels,
-    ...     model_save_dir="/data/models/mlp",
+    ...     model_save_dir="/data/models/gats",
     ...     factor_data_strategy="read",
     ...     label_data_strategy="read",
     ...     train_start="2018-01-01",
@@ -765,8 +767,8 @@ class DLConfig(_FrozenConfig):
     ...     hyperparameters={"hidden_size": 64, "dropout": 0.1},
     ...     epochs=50,
     ... )
-    >>> cfg.batch_size, cfg.val_size
-    (1024, 0.2)
+    >>> cfg.lr, cfg.val_size
+    (0.001, 0.2)
     """
 
     #: The factors whose values form the model's input features.
@@ -786,25 +788,14 @@ class DLConfig(_FrozenConfig):
     start_date: str | None = None
     #: Last date of data to collect, inclusive. ``None`` means no upper bound.
     end_date: str | None = None
-    #: Worker processes for the torch ``DataLoader``.
-    num_workers: int = 4
 
     #: Architecture-specific hyperparameters passed to the model head.
     hyperparameters: dict = field(default_factory=dict)
-    #: Learning rate of the main training run.
+    #: Learning rate, read by the head's ``_init_optim``.
     lr: float = 1e-3
-    #: Learning rate for online refitting during prediction; ``0.0`` disables
-    #: refitting.
-    lr_refit: float = 0.0
-    #: Maximum number of training epochs.
+    #: Maximum number of training epochs; the head's stopping rule may end
+    #: training earlier.
     epochs: int = 100
-    #: Stop when the validation loss has not improved for
-    #: ``early_stopping_patience`` epochs and roll back to the best epoch.
-    early_stopping: bool = False
-    #: Epochs without improvement tolerated before early stopping triggers.
-    early_stopping_patience: int = 5
-    #: Batch size of the ``DataLoader``.
-    batch_size: int = 1024
     #: Fraction of the training window held out, at its end, for validation.
     val_size: float = 0.2
     #: Seed applied to Python, numpy and torch before training.

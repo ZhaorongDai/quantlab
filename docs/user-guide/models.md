@@ -43,11 +43,11 @@ the public entry points once for all heads: `collect`, `train`, `train_cv`,
 the cross-validation folds. Below it sit two variants, one per kind of
 training library:
 
-- `DLModel` is the PyTorch variant. It runs an epoch loop over `DataLoader`
-  batches with optional early stopping, rolls back to the best epoch's weights
-  and saves `.pth` checkpoints. A head receives whole bars, every symbol at
-  once, so it may use a symbol's position. For that reason prediction is
-  aligned to the symbols the model was trained on.
+- `DLModel` is the PyTorch variant. Each training step is one bar's
+  cross-section: the symbols with a finite feature at that bar, each with
+  its own window of past bars. The network must not depend on the order or
+  number of symbols, so any symbol present at a bar is predicted, including
+  one the model never saw. It saves `.pth` checkpoints.
 - `MLModel` is the NumPy variant for tree models and other libraries that
   run their own training loop. It calls the library once, lets the library do
   its own early stopping, computes metrics on the train, validation and test
@@ -61,19 +61,13 @@ The head classes, the concrete models you instantiate, are:
 | `XGBoostRegressor` | `quantlab.ml_model.xgb` | `MLModel` | xgboost | returns |
 | `XGBTDRegressor` | `quantlab.ml_model.xgb_td` | `MLModel` | pytabkit (XGBoost with tuned defaults) | returns |
 | `RealMLPRegressor` | `quantlab.ml_model.realmlp` | `MLModel` | pytabkit (RealMLP network) | returns |
-| `MLPRegressor` | `quantlab.dl_model.mlp` | `DLModel` | torch | returns |
-| `RNNRegressor` | `quantlab.dl_model.rnn` | `DLModel` | torch (GRU or LSTM) | returns |
-| `RNNClassifier` | `quantlab.dl_model.rnn_classification` | `DLModel` | torch (GRU or LSTM) | probability of an up move |
 
 `XGBoostRegressor` is the usual starting point. It is fast on the CPU,
 handles missing feature values natively and records feature importance.
 `XGBTDRegressor` and `RealMLPRegressor` use the tuned default settings from
 Holzmüller et al., "Better by Default" (NeurIPS 2024), through the pytabkit
-package. They replace missing feature values with 0. The torch heads flatten
-or scan the symbol axis of each bar. `RNNRegressor` and `RNNClassifier` need
-at least two labels: the first is the primary target and the others are
-auxiliary horizons that help train it. `RNNClassifier` turns each return
-label into up (1) or down (0) itself, so give it ordinary return labels.
+package. They replace missing feature values with 0. No torch head ships
+yet; [Train a torch head](#train-a-torch-head) shows how to write one.
 
 Every head reads its architecture and library settings from
 `config.hyperparameters`. The class docstrings list the keys and their
@@ -100,12 +94,13 @@ before anything else happens. Both share these fields:
   test windows, both ends inclusive.
 - `val_size`: the share of the training window held out, at its end, for
   validation and early stopping. The default is 0.2.
-- `early_stopping` and `early_stopping_patience`: stop when the validation
-  loss has not improved for that many rounds (ML) or epochs (DL).
+- `early_stopping` and `early_stopping_patience` (`MLConfig` only): stop
+  when the validation loss has not improved for that many boosting rounds.
+  A torch head declares its own stopping rule instead.
 - `hyperparameters` and `random_seed`.
 
-`DLConfig` adds the torch training settings `epochs`, `lr`, `batch_size` and
-`num_workers`. `MLConfig` has no epochs, because the library decides how long
+`DLConfig` adds the torch training settings `epochs` (the cap on training)
+and `lr` (read by the head's optimizer). `MLConfig` has no epochs, because the library decides how long
 to train. See the docstrings of both classes for every field.
 
 The validation segment is always the last part of the training window in time,
@@ -179,7 +174,8 @@ Beside the checkpoint, `train()` writes `config.json` and `metrics.json`.
 segment: `train_*`, `val_*` and `test_*`, each of `loss`, `mse`, `rmse`,
 `mae`, `r2`, `ic` and `rank_ic`. These are the values the W&B run summary
 receives, with NaN and infinity written as null. A run with `val_size=0` has
-no `val_*` keys. Torch heads do not write the file yet.
+no `val_*` keys. Torch heads write the same keys; their `loss` is the
+training objective on the transformed target.
 
 ```python
 import json
@@ -207,13 +203,14 @@ pred = model.predict_panel(test[model.get_factor_names()])
 
 Where every feature of a cell is missing, for example before a stock is
 listed, the prediction is NaN rather than whatever the head would produce
-from filled-in zeros. For torch heads `predict_panel` also aligns the symbol
-axis to the training symbols. It raises `ValueError` when some are missing
-and drops, with a warning, symbols the model never saw.
+from filled-in zeros. A torch head predicts bar t from the bars before it in
+the panel you pass, so give it `window_bars - 1` bars more at the start and
+drop them from the result.
 
 `predict` is the lower-level call on raw arrays. An `MLModel` takes a
-`[T, S, F]` NumPy array and returns `[T, S, L]`. The torch heads take and
-return tensors in their own layouts, described in each class docstring.
+`[T, S, F]` NumPy array and returns `[T, S, L]`; a torch head takes an array
+or a tensor of the same shape and returns a `[T, S, L]` tensor, NaN outside
+each bar's cross-section.
 Either call raises `ValueError` if the model has been neither trained nor
 loaded.
 
@@ -390,36 +387,82 @@ mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
 
 ## Train a torch head
 
-Torch heads are configured the same way with a `DLConfig`. This snippet
-trains `MLPRegressor` on the same factor and label objects as above. It runs
-on the CPU in a few seconds and uses the GPU automatically when CUDA is
-available:
+A torch head builds an `nn.Module` and an optimizer and writes its own
+training step. The module maps one bar's windows, `[S_t, N, F]` (symbols,
+bars, features), to `[S_t, L]`. `_train_one_batch(epoch, x, y)` takes one
+optimisation step on one bar, and `_val_one_batch` and `_test_one_batch`
+evaluate one bar; `y` is the bar's target with NaN where a label is missing,
+so the loss must mask it, as `masked_mse` does. The loss, the optimizer and
+any clipping are the head's choice. The head also declares three things.
+`window_bars` is N. `target_transform` turns each bar's labels into the
+training target, a per-bar rank (`"rank"`, Qlib's `CSRankNorm`) or z-score
+(`"zscore"`). `stopping` is `ValLossPatience(patience)`, which keeps the
+epoch with the lowest validation loss, or `TrainLossThreshold(threshold,
+max_epochs)`. This head is a small MLP on each symbol's flattened five-bar
+window:
 
 ```python
+import torch.nn as nn
 from quantlab.base.config import DLConfig
-from quantlab.dl_model.mlp import MLPRegressor
+from quantlab.base.model import DLModel
+import torch
+from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
 
-mlp = MLPRegressor(DLConfig(
+class WindowMLP(nn.Module):
+    """A small MLP on each symbol's flattened window."""
+    def __init__(self, num_features, num_labels, window_bars):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Flatten(), nn.Linear(window_bars * num_features, 16),
+            nn.ReLU(), nn.Linear(16, num_labels),
+        )
+    def forward(self, x):          # [S_t, N, F] -> [S_t, L]
+        return self.net(x)
+
+class WindowMLPHead(DLModel):
+    window_bars = 5
+    target_transform = TargetTransform("rank")
+    stopping = ValLossPatience(patience=5)
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return WindowMLP(num_features, num_labels, self.window_bars)
+    def _init_optim(self, model):
+        return torch.optim.Adam(model.parameters(), lr=self.config.lr)
+    def _train_one_batch(self, epoch, x, y):
+        self.optim.zero_grad()
+        loss = masked_mse(self.model(x), y)   # y is NaN where a label is missing
+        loss.backward()
+        self.optim.step()
+        return loss.detach()
+    def _val_one_batch(self, epoch, x, y):
+        return masked_mse(self.model(x), y)
+    def _test_one_batch(self, epoch, x, y):
+        return masked_mse(self.model(x), y)
+
+head = WindowMLPHead(DLConfig(
     factors=[features], labels=[label],
     model_save_dir=str(root / "models"),
     factor_data_strategy="cal", label_data_strategy="cal",
-    start_date="2022-01-03", end_date="2023-05-19",
-    train_start="2022-01-03", train_end="2023-01-27",
+    start_date="2022-01-10", end_date="2023-05-19",
+    train_start="2022-01-10", train_end="2023-01-27",
     test_start="2023-01-30", test_end="2023-05-19",
-    hyperparameters={"hidden_size1": 32, "hidden_size2": 16},
-    epochs=20, batch_size=32, num_workers=0, lr=1e-3,
-    early_stopping=True, early_stopping_patience=5,
+    epochs=30, lr=1e-3,
 ))
-print(mlp.collect().train().name)
+checkpoint = head.collect().train()
+scores = json.loads((checkpoint.parent / "metrics.json").read_text())
+print(checkpoint.name, round(scores["val_ic"], 3), round(scores["test_ic"], 3))
 ```
 
 ```text
-MLPRegressor_total.pth
+WindowMLPHead_total.pth 0.278 0.261
 ```
 
-A batch here is a set of bars, each with all its symbols. `num_workers=0`
-loads batches in the main process, which is the simplest choice on small
-data.
+A five-bar window needs four bars of history before the first bar, so
+`collect()` asks the factor for features from 2022-01-04, four bars before
+`start_date` on the dataset's calendar; the labels still start on
+2022-01-10. A backtest's feature request does the same. The head's loss here
+is the MSE on the ranked target over the symbols with a label; a symbol without a label
+still feeds the other symbols' predictions when the network looks across
+symbols. Features are clipped to ±3 and missing values become 0.
 
 ## Things to watch
 
