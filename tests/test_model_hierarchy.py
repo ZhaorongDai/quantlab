@@ -4,8 +4,8 @@
 
 - `BaseModel` -- framework-agnostic lifecycle; the ONLY home of the public
   `train` / `train_cv` / `load` / `predict`;
-- `DLModel` -- the torch variant: a window, a network and a loss, the rest optional hooks;
-- `MLModel` -- the numpy variant, four hooks, native early stopping.
+- `TorchModel` -- the torch variant: a window, a network and a loss, the rest optional hooks;
+- `LibraryModel` -- the numpy variant, four hooks, native early stopping.
 
 What is locked here, and what turns it red:
 
@@ -13,13 +13,17 @@ What is locked here, and what turns it red:
   gaining a default (or a new abstract hook appearing) is caught;
 - no class between a shipped head and `BaseModel` redefines a public method --
   one implementation of the public interface, not one per variant;
-- each variant declares its config class and checkpoint suffix, and a
-  mismatched config raises `TypeError` before any factor is touched;
+- every model takes the one `ModelConfig`, and anything else raises
+  `TypeError` before any factor is touched; each variant declares its
+  checkpoint suffix;
+- training settings live in the flat `hyperparameters` dict: `epochs` and `lr`
+  are read by `TorchModel`, the early-stopping keys by the library heads, and
+  `epochs` that is not a positive integer fails when training starts;
 - the retired names stay retired (`hasattr`, not "no longer raises": a bypassed
-  guard still answers `hasattr`), and `MLModel` references no `deepcopy`;
-- `load_model_from_config` builds the config class the model class declares,
-  so an `MLConfig` dict can no longer become a `DLConfig`;
-- `DLModel.predict` accepts a float64 ndarray.
+  guard still answers `hasattr`), and `LibraryModel` references no `deepcopy`;
+- `load_model_from_config` rebuilds a trained model of either variant from
+  its `config.json` alone;
+- `TorchModel.predict` accepts a float64 ndarray.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -35,10 +39,17 @@ import torch.nn as nn
 import xarray as xr
 
 import quantlab.utils.module as module_utils
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import BaseModel, DLModel, MLModel
-from quantlab.ml_model.xgb import XGBoostRegressor
-from tests.dl_heads import OneBarHead
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import (
+    LIBRARY_RESERVED_HYPERPARAMETERS,
+    RESERVED_HYPERPARAMETERS,
+    TORCH_RESERVED_HYPERPARAMETERS,
+    BaseModel,
+    LibraryModel,
+    TorchModel,
+)
+from quantlab.library_model.xgb import XGBoostRegressor
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -89,8 +100,8 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class StubMLHead(MLModel):
-    """The smallest concrete `MLModel`."""
+class StubLibraryHead(LibraryModel):
+    """The smallest concrete `LibraryModel`."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"num_labels": num_labels}
@@ -126,21 +137,21 @@ def _kwargs(tmp_path, factors=None, labels=None):
 
 def test_base_model_abstract_methods_are_exactly_the_variant_seams():
     assert BaseModel.__abstractmethods__ == frozenset(
-        {"config_cls", "checkpoint_suffix", "_fit", "_predict", "_write_checkpoint", "_read_checkpoint"}
+        {"checkpoint_suffix", "_fit", "_predict", "_write_checkpoint", "_read_checkpoint"}
     )
 
 
-def test_dl_model_abstract_methods_are_the_window_the_network_and_the_loss():
+def test_torch_model_abstract_methods_are_the_window_the_network_and_the_loss():
     """Everything else a head may change (feature and target transforms,
     optimizer, the three step hooks, the forward mapping, stopping) is an
     optional hook with a working default."""
-    assert DLModel.__abstractmethods__ == frozenset(
+    assert TorchModel.__abstractmethods__ == frozenset(
         {"window_bars", "_init_model", "_loss"}
     )
 
 
-def test_ml_model_abstract_methods_are_the_four_numpy_hooks():
-    assert MLModel.__abstractmethods__ == frozenset(
+def test_library_model_abstract_methods_are_the_four_numpy_hooks():
+    assert LibraryModel.__abstractmethods__ == frozenset(
         {"_init_model", "_preprocess", "_fit_model", "_forward"}
     )
 
@@ -151,7 +162,7 @@ def test_public_methods_live_on_base_model():
 
 @pytest.mark.parametrize(
     "cls",
-    [DLModel, MLModel, OneBarHead, XGBoostRegressor, StubMLHead],
+    [TorchModel, LibraryModel, OneBarHead, XGBoostRegressor, StubLibraryHead],
     ids=lambda c: c.__name__,
 )
 def test_no_class_above_base_model_redefines_a_public_method(cls):
@@ -167,10 +178,10 @@ def test_no_class_above_base_model_redefines_a_public_method(cls):
 
 
 def test_variants_declare_config_class_and_checkpoint_suffix():
-    assert DLModel.config_cls is DLConfig
-    assert DLModel.checkpoint_suffix == ".pth"
-    assert MLModel.config_cls is MLConfig
-    assert MLModel.checkpoint_suffix == ".joblib"
+    assert TorchModel.config_cls is ModelConfig
+    assert TorchModel.checkpoint_suffix == ".pth"
+    assert LibraryModel.config_cls is ModelConfig
+    assert LibraryModel.checkpoint_suffix == ".joblib"
 
 
 # --------------------------------------------------------------------------
@@ -178,14 +189,16 @@ def test_variants_declare_config_class_and_checkpoint_suffix():
 # --------------------------------------------------------------------------
 
 
-def test_dl_head_rejects_an_ml_config(tmp_path):
-    with pytest.raises(TypeError, match="OneBarHead requires a DLConfig, got MLConfig"):
-        OneBarHead(MLConfig(**_kwargs(tmp_path)))
+@pytest.mark.parametrize("cls", [OneBarHead, StubLibraryHead], ids=lambda c: c.__name__)
+def test_both_variants_take_the_one_model_config(tmp_path, cls):
+    assert cls.config_cls is ModelConfig
+    assert type(cls(ModelConfig(**_kwargs(tmp_path))).config) is ModelConfig
 
 
-def test_ml_head_rejects_a_dl_config(tmp_path):
-    with pytest.raises(TypeError, match="StubMLHead requires a MLConfig, got DLConfig"):
-        StubMLHead(DLConfig(**_kwargs(tmp_path)))
+@pytest.mark.parametrize("cls", [OneBarHead, StubLibraryHead], ids=lambda c: c.__name__)
+def test_a_head_rejects_anything_but_a_model_config(tmp_path, cls):
+    with pytest.raises(TypeError, match=f"{cls.__name__} requires a ModelConfig, got dict"):
+        cls(_kwargs(tmp_path))
 
 
 # --------------------------------------------------------------------------
@@ -197,13 +210,13 @@ def test_retired_names_stay_retired():
     """Renamed without aliases: two live names for one method is the
     ambiguity a later reader resolves wrongly."""
     assert not hasattr(BaseModel, "_auto_train")
-    assert not hasattr(DLModel, "_train_dl")
-    assert not hasattr(DLModel, "_predict_nn")
-    assert not hasattr(MLModel, "_snapshot_model")
-    assert not hasattr(MLModel, "_train_one_epoch")
+    assert not hasattr(TorchModel, "_train_dl")
+    assert not hasattr(TorchModel, "_predict_nn")
+    assert not hasattr(LibraryModel, "_snapshot_model")
+    assert not hasattr(LibraryModel, "_train_one_epoch")
 
 
-def test_the_fixed_symbol_dl_machinery_and_config_fields_are_deleted():
+def test_the_fixed_symbol_torch_machinery_and_config_fields_are_deleted():
     """Issue #39: the step hooks stay, but each step is one bar's
     cross-section; the refit optimizer, the training-symbol alignment and
     the batch/early-stopping config fields went with the fixed-symbol heads."""
@@ -212,10 +225,9 @@ def test_the_fixed_symbol_dl_machinery_and_config_fields_are_deleted():
         "_align_prediction_symbols", "stopping", "target_transform", "_preprocess",
         "clip_features",
     ):
-        assert not hasattr(DLModel, name), name
-    for field in ("batch_size", "num_workers", "early_stopping",
-                  "early_stopping_patience", "lr_refit"):
-        assert field not in DLConfig.__dataclass_fields__, field
+        assert not hasattr(TorchModel, name), name
+    for field in ("batch_size", "num_workers", "lr_refit"):
+        assert field not in ModelConfig.__dataclass_fields__, field
 
 
 def test_stale_backtest_hooks_are_deleted():
@@ -223,40 +235,108 @@ def test_stale_backtest_hooks_are_deleted():
     backtesting now lives only in `quantlab/backtest/`.
 
     Four things were removed and must stay gone: the config setter's reset
-    method for a backtest dataset, `DLModel._fit`'s `backtest` parameter with
+    method for a backtest dataset, `TorchModel._fit`'s `backtest` parameter with
     its NotImplementedError branch, and the backtest data slot on both config
     classes. Locked with `hasattr` / `inspect.signature`, not "no longer
     raises": a bypassed guard still answers `hasattr`. Turns red if any of
-    them returns, or if `DLModel._fit` grows any parameter beyond the abstract
+    them returns, or if `TorchModel._fit` grows any parameter beyond the abstract
     `_fit(self, project_name, experiment_name, model_name)`.
     """
     assert not hasattr(BaseModel, "_reset_backtest_dataset_config")
 
-    fit_params = list(inspect.signature(DLModel._fit).parameters)
+    fit_params = list(inspect.signature(TorchModel._fit).parameters)
     assert "backtest" not in fit_params
     assert fit_params == ["self", "project_name", "experiment_name", "model_name"]
 
-    for config_cls in (DLConfig, MLConfig):
-        assert not hasattr(config_cls, "backtest_data"), config_cls.__name__
-        assert "backtest_data" not in config_cls.__dataclass_fields__, config_cls.__name__
+    assert not hasattr(ModelConfig, "backtest_data")
+    assert "backtest_data" not in ModelConfig.__dataclass_fields__
 
 
-def test_ml_config_has_no_epochs_and_tree_friendly_early_stopping_defaults():
-    """ML heads count patience in boosting rounds; an `epochs` field would
-    invite an outer loop around the library's own training."""
-    assert "epochs" not in MLConfig.__dataclass_fields__
-    cfg = MLConfig(
-        factors=[], labels=[], model_save_dir="x", factor_data_strategy="cal", label_data_strategy="cal"
+# --------------------------------------------------------------------------
+# ModelConfig and the reserved hyperparameters
+# --------------------------------------------------------------------------
+
+
+def test_model_config_holds_only_the_shared_fields():
+    """Training settings one variant reads live in `hyperparameters`, so the
+    config has no field only one variant means something for."""
+    assert set(ModelConfig.__dataclass_fields__) == {
+        "factors", "labels", "model_save_dir", "factor_data_strategy",
+        "label_data_strategy", "start_date", "end_date", "hyperparameters",
+        "val_size", "random_seed", "train_start", "train_end", "test_start",
+        "test_end", "name",
+    }
+
+
+def test_the_reserved_hyperparameter_names():
+    assert TORCH_RESERVED_HYPERPARAMETERS == {
+        "epochs", "lr", "batch_size", "num_workers", "panel_device", "panel_dtype",
+    }
+    assert LIBRARY_RESERVED_HYPERPARAMETERS == {"early_stopping", "early_stopping_patience"}
+    assert RESERVED_HYPERPARAMETERS == (
+        TORCH_RESERVED_HYPERPARAMETERS | LIBRARY_RESERVED_HYPERPARAMETERS
     )
-    assert cfg.early_stopping is False
-    assert cfg.early_stopping_patience == 5
 
 
-def test_ml_model_never_references_deepcopy():
+def test_head_hyperparameters_drops_only_the_variants_own_reserved_keys(tmp_path):
+    """A library keeps `lr` (pytabkit takes it); a torch head keeps the
+    early-stopping keys, which it never reads. The dict is not modified."""
+    hyper = {"epochs": 3, "lr": 0.1, "early_stopping": True, "max_depth": 4}
+    torch_head = OneBarHead(ModelConfig(**_kwargs(tmp_path)))
+    library_head = StubLibraryHead(ModelConfig(**_kwargs(tmp_path)))
+    assert torch_head.head_hyperparameters(hyper) == {"early_stopping": True, "max_depth": 4}
+    assert library_head.head_hyperparameters(hyper) == {"epochs": 3, "lr": 0.1, "max_depth": 4}
+    assert hyper == {"epochs": 3, "lr": 0.1, "early_stopping": True, "max_depth": 4}
+
+
+def test_torch_reserved_keys_default_to_100_epochs_and_adam_at_1e_3(tmp_path):
+    model = _untrained(tmp_path)
+    assert model.epochs == 100
+    optim = model._init_optim(model.model)
+    assert isinstance(optim, torch.optim.Adam)
+    assert optim.param_groups[0]["lr"] == 1e-3
+
+
+def test_torch_reads_epochs_and_lr_from_the_hyperparameters(tmp_path):
+    model = OneBarHead(ModelConfig(**_kwargs(tmp_path), hyperparameters={"epochs": 7, "lr": 0.25}))
+    model.model = model._init_model(num_features=2, num_labels=1, hyperparameters={})
+    assert model.epochs == 7
+    assert model._init_optim(model.model).param_groups[0]["lr"] == 0.25
+
+
+@pytest.mark.parametrize("entry", ["train", "train_cv"])
+@pytest.mark.parametrize("epochs", [0, -1, 2.5, "3", True, None])
+def test_epochs_that_is_not_a_positive_integer_fails_when_training_starts(
+    tmp_path, monkeypatch, epochs, entry
+):
+    """Before any W&B run or checkpoint directory is opened."""
+    model = OneBarHead(ModelConfig(**_fit_kwargs(tmp_path), hyperparameters={"epochs": epochs}))
+    model.collect()
+    opened = []
+    monkeypatch.setattr(model, "_init_wandb", lambda *a, **k: opened.append(a))
+    with pytest.raises(ValueError, match="epochs.*positive integer"):
+        model.train() if entry == "train" else model.train_cv(train_periods=10)
+    assert opened == []
+    assert not (tmp_path / "ckpt").exists()
+
+
+def test_library_early_stopping_defaults_off_with_patience_5(tmp_path):
+    model = StubLibraryHead(ModelConfig(**_kwargs(tmp_path)))
+    assert model.early_stopping is False
+    assert model.early_stopping_patience == 5
+    model = StubLibraryHead(ModelConfig(
+        **_kwargs(tmp_path),
+        hyperparameters={"early_stopping": True, "early_stopping_patience": 9},
+    ))
+    assert model.early_stopping is True
+    assert model.early_stopping_patience == 9
+
+
+def test_library_model_never_references_deepcopy():
     """Rollback to the best round is the library's job (slicing trees), never
     a deep copy of the model. Turns red on any `deepcopy` name or attribute in
     the class body; docstrings may still explain why."""
-    tree = ast.parse(textwrap.dedent(inspect.getsource(MLModel)))
+    tree = ast.parse(textwrap.dedent(inspect.getsource(LibraryModel)))
     hits = [
         node
         for node in ast.walk(tree)
@@ -283,79 +363,120 @@ def _patch_factor_loader(monkeypatch):
     monkeypatch.setattr(module_utils, "load_factor_from_config", load)
 
 
-def test_loader_builds_a_dl_config_for_a_dl_head(tmp_path, monkeypatch):
+def _fit_kwargs(tmp_path):
+    return dict(
+        **_kwargs(tmp_path),
+        train_start=START,
+        train_end=np.datetime_as_string(TIMES[29], unit="D"),
+        test_start=np.datetime_as_string(TIMES[30], unit="D"),
+        test_end=END,
+    )
+
+
+@pytest.mark.parametrize(
+    "cls, hyper",
+    [
+        (OneBarHead, {"epochs": 2, "lr": 0.05}),
+        (XGBoostRegressor, {"num_boost_round": 5, "early_stopping": True,
+                            "early_stopping_patience": 2}),
+    ],
+    ids=["torch", "library"],
+)
+def test_a_trained_model_is_rebuilt_and_loaded_from_config_json_alone(
+    tmp_path, monkeypatch, cls, hyper
+):
+    """Train, then rebuild from the written `config.json` with nothing else
+    and load the checkpoint beside it: the same predictions come back."""
+    import json
+
+    _patch_factor_loader(monkeypatch)
+    model = cls(ModelConfig(**_fit_kwargs(tmp_path), hyperparameters=dict(hyper)))
+    checkpoint = model.collect().train()
+    saved = json.loads((checkpoint.parent / "config.json").read_text())
+    assert saved["hyperparameters"] == hyper
+
+    rebuilt = module_utils.load_model_from_config(saved).load(checkpoint)
+
+    assert type(rebuilt) is cls
+    assert rebuilt.config.hyperparameters == hyper
+    x = np.random.default_rng(3).standard_normal((4, N_SYMBOLS, 2)).astype("float32")
+    np.testing.assert_allclose(
+        np.asarray(rebuilt.predict(x)), np.asarray(model.predict(x)), rtol=1e-6
+    )
+
+
+def test_loader_rebuilds_a_torch_head(tmp_path, monkeypatch):
     """Real dotted path, real class lookup; only factor reconstruction is
     faked."""
     _patch_factor_loader(monkeypatch)
-    saved = OneBarHead(DLConfig(**_kwargs(tmp_path))).get_config()
-    assert saved["name"] == "tests.dl_heads.OneBarHead"
+    saved = OneBarHead(ModelConfig(**_kwargs(tmp_path))).get_config()
+    assert saved["name"] == "tests.torch_heads.OneBarHead"
 
     model = module_utils.load_model_from_config(saved)
 
     assert isinstance(model, OneBarHead)
-    assert type(model.config) is DLConfig
+    assert type(model.config) is ModelConfig
 
 
-def test_loader_builds_an_ml_config_for_an_ml_head(tmp_path, monkeypatch):
-    """Before 260914-lno the loader hardcoded `DLConfig(**config)`, so an ML
-    checkpoint's config silently came back as a DLConfig."""
+def test_loader_rebuilds_a_library_head(tmp_path, monkeypatch):
+    """The loader reads `config_cls` from the class, never a hardcoded config."""
     _patch_factor_loader(monkeypatch)
-    saved = StubMLHead(MLConfig(**_kwargs(tmp_path))).get_config()
-    monkeypatch.setattr(module_utils, "get_cls_from_path", lambda path: StubMLHead)
+    saved = StubLibraryHead(ModelConfig(**_kwargs(tmp_path))).get_config()
+    monkeypatch.setattr(module_utils, "get_cls_from_path", lambda path: StubLibraryHead)
 
     model = module_utils.load_model_from_config(saved)
 
-    assert isinstance(model, StubMLHead)
-    assert type(model.config) is MLConfig
+    assert isinstance(model, StubLibraryHead)
+    assert type(model.config) is ModelConfig
 
 
-def test_loader_builds_an_ml_config_for_the_shipped_xgboost_head(tmp_path, monkeypatch):
-    """Same as above through the REAL dotted path of the shipped ML head, so
+def test_loader_rebuilds_the_shipped_xgboost_head(tmp_path, monkeypatch):
+    """Same as above through the REAL dotted path of the shipped library head, so
     the class lookup itself is not faked."""
     _patch_factor_loader(monkeypatch)
-    saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
-    assert saved["name"] == "quantlab.ml_model.xgb.XGBoostRegressor"
+    saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
+    assert saved["name"] == "quantlab.library_model.xgb.XGBoostRegressor"
 
     model = module_utils.load_model_from_config(saved)
 
     assert isinstance(model, XGBoostRegressor)
-    assert type(model.config) is MLConfig
+    assert type(model.config) is ModelConfig
 
 
 def test_loader_drops_the_resolved_hyperparameters_record(tmp_path, monkeypatch):
-    """`MLModel.get_config` may add a top-level `resolved_hyperparameters`
-    record; it is not an `MLConfig` field, so the loader must drop it before
+    """`LibraryModel.get_config` may add a top-level `resolved_hyperparameters`
+    record; it is not an `ModelConfig` field, so the loader must drop it before
     `cls.config_cls(**config)` or every such checkpoint fails to reload."""
     _patch_factor_loader(monkeypatch)
-    saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
+    saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     saved["resolved_hyperparameters"] = {"eta": 0.3, "num_boost_round": 4}
 
     model = module_utils.load_model_from_config(saved)
 
-    assert type(model.config) is MLConfig
+    assert type(model.config) is ModelConfig
     assert model.config.hyperparameters == {}
 
 
 def test_loader_still_rejects_other_unknown_keys(tmp_path, monkeypatch):
     """Only that one record key is dropped; anything else unknown stays loud."""
     _patch_factor_loader(monkeypatch)
-    saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
+    saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     saved["not_a_config_field"] = 1
 
     with pytest.raises(TypeError, match="not_a_config_field"):
         module_utils.load_model_from_config(saved)
 
 
-def test_dl_config_json_has_no_resolved_hyperparameters_key(tmp_path):
-    """The record is an MLModel feature; DL checkpoints' config.json is
+def test_torch_config_json_has_no_resolved_hyperparameters_key(tmp_path):
+    """The record is a LibraryModel feature; torch checkpoints' config.json is
     unchanged."""
-    cfg = DLConfig(
+    cfg = ModelConfig(
         **_kwargs(tmp_path),
         train_start=START,
         train_end=np.datetime_as_string(TIMES[29], unit="D"),
         test_start=np.datetime_as_string(TIMES[30], unit="D"),
         test_end=END,
-        epochs=1,
+        hyperparameters={"epochs": 1},
     )
     model = OneBarHead(cfg)
     model.collect()
@@ -370,17 +491,17 @@ def test_dl_config_json_has_no_resolved_hyperparameters_key(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# DLModel inference input types
+# TorchModel inference input types
 # --------------------------------------------------------------------------
 
 
 def _untrained(tmp_path):
-    model = OneBarHead(DLConfig(**_kwargs(tmp_path)))
+    model = OneBarHead(ModelConfig(**_kwargs(tmp_path)))
     model.model = model._init_model(num_features=2, num_labels=1, hyperparameters={})
     return model
 
 
-def test_dl_predict_accepts_an_ndarray_or_a_tensor(tmp_path):
+def test_torch_predict_accepts_an_ndarray_or_a_tensor(tmp_path):
     """Both go through the same windows, so equal values predict equally."""
     model = _untrained(tmp_path)
     x64 = np.random.default_rng(0).standard_normal((5, N_SYMBOLS, 2))
@@ -392,7 +513,7 @@ def test_dl_predict_accepts_an_ndarray_or_a_tensor(tmp_path):
     assert torch.equal(from_array, from_tensor)
 
 
-def test_dl_predict_rejects_other_types(tmp_path):
+def test_torch_predict_rejects_other_types(tmp_path):
     model = _untrained(tmp_path)
     with pytest.raises(TypeError):
         model.predict([[1.0]])

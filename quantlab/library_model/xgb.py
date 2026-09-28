@@ -1,6 +1,6 @@
 """XGBoost regression head for the tree-model layer.
 
-``XGBoostRegressor`` is an ``MLModel`` (the numpy-based model base class in
+``XGBoostRegressor`` is a ``LibraryModel`` (the numpy-based model base class in
 ``quantlab.base.model``). It trains an XGBoost ``Booster`` with ``xgb.train``
 on the flattened ``(num_times * num_symbols, num_features)`` rows of the
 factor panel and predicts future returns as ``[num_times, num_symbols,
@@ -21,8 +21,8 @@ import wandb
 import xgboost as xgb
 from loguru import logger
 
-from quantlab.base.config import MLConfig
-from quantlab.base.model import MLModel
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import LibraryModel
 
 #: scikit-learn style aliases mapped to the native ``xgb.train`` parameter
 #: names. Aliases are rewritten on the user's dict before it is merged with
@@ -249,7 +249,7 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
     Keys use xgboost's hyphenated form
     (``train-rmse``, ``val-ccc_loss``) with ``step`` equal to the round
     index, which distinguishes these curves from the underscored final
-    values ``MLModel._evaluate`` writes to the summary. The last logged round
+    values ``LibraryModel._evaluate`` writes to the summary. The last logged round
     is stored on the head as ``_last_log_step`` so the feature-importance
     charts can be logged on the same step.
 
@@ -467,7 +467,7 @@ def record_feature_importance(
             )
 
 
-class XGBoostRegressor(MLModel):
+class XGBoostRegressor(LibraryModel):
     """Predict future returns with an XGBoost Booster.
 
     Training flattens the ``[T, S, F]`` features and ``[T, S, L]`` labels to
@@ -485,8 +485,9 @@ class XGBoostRegressor(MLModel):
     Setting ``objective`` in the hyperparameters switches back to that
     built-in xgboost objective.
 
-    Hyperparameters come from ``config.hyperparameters``. ``num_boost_round``
-    (default 1000) is taken out separately; every other key overrides the
+    Hyperparameters come from ``config.hyperparameters``, without the
+    early-stopping keys the base class reads (``head_hyperparameters``).
+    ``num_boost_round`` (default 1000) is taken out separately; every other key overrides the
     matching entry of ``DEFAULT_PARAMS``, and ``seed`` defaults to
     ``config.random_seed``. scikit-learn style aliases such as
     ``learning_rate`` or ``n_estimators`` are rewritten to the native names
@@ -495,8 +496,8 @@ class XGBoostRegressor(MLModel):
     recorded under ``resolved_hyperparameters`` in the checkpoint's
     ``config.json`` and in the run config.
 
-    With ``config.early_stopping`` set and a validation segment that has at
-    least one finite-label row, ``xgb.callback.EarlyStopping`` watches the
+    With ``hyperparameters["early_stopping"]`` set and a validation segment
+    that has at least one finite-label row, ``xgb.callback.EarlyStopping`` watches the
     validation ``rmse``; ``rmse`` is appended to a user ``eval_metric`` that
     lacks it. Every other metric, and the ``ccc_loss`` curve of the training
     objective, is logged only. Patience counts boosting rounds.
@@ -522,13 +523,13 @@ class XGBoostRegressor(MLModel):
 
     Parameters
     ----------
-    config : MLConfig
+    config : ModelConfig
         Factors, labels, date ranges, early-stopping settings and
-        hyperparameters. See ``MLConfig``.
+        hyperparameters. See ``ModelConfig``.
 
     Examples
     --------
-    >>> config = MLConfig(
+    >>> config = ModelConfig(
     ...     factors=[alpha],            # factor objects
     ...     labels=[fwd_return],        # label objects
     ...     model_save_dir="checkpoints",
@@ -536,8 +537,10 @@ class XGBoostRegressor(MLModel):
     ...     label_data_strategy="read",
     ...     train_start="2024-01-01", train_end="2024-02-09",
     ...     test_start="2024-02-10", test_end="2024-02-29",
-    ...     early_stopping=True, early_stopping_patience=5,
-    ...     hyperparameters={"num_boost_round": 20, "max_depth": 3},
+    ...     hyperparameters={
+    ...         "early_stopping": True, "early_stopping_patience": 5,
+    ...         "num_boost_round": 20, "max_depth": 3,
+    ...     },
     ... )
     >>> model = XGBoostRegressor(config)
     >>> checkpoint = model.collect().train()
@@ -561,7 +564,7 @@ class XGBoostRegressor(MLModel):
     #: Metric watched by early stopping on the validation segment.
     EARLY_STOPPING_METRIC = "rmse"
 
-    def __init__(self, config: MLConfig):
+    def __init__(self, config: ModelConfig):
         """Initialize the head; see the class docstring for parameters.
 
         Training parameters are resolved later, by ``_init_model``.
@@ -600,7 +603,8 @@ class XGBoostRegressor(MLModel):
         """Resolve the training parameters and return ``None``.
 
         The Booster itself is built by ``xgb.train`` inside ``_fit_model``.
-        Aliases are normalised first, then ``num_boost_round`` is split off,
+        The early-stopping keys (``reserved_hyperparameters``) are dropped and
+        aliases normalised first, then ``num_boost_round`` is split off,
         then the remaining keys override ``DEFAULT_PARAMS`` and the seed.
         With early stopping on, ``rmse`` is appended to an ``eval_metric``
         that lacks it.
@@ -610,7 +614,7 @@ class XGBoostRegressor(MLModel):
         ValueError
             If ``num_boost_round`` is below 1.
         """
-        user = self._normalize_aliases(hyperparameters)
+        user = self._normalize_aliases(self.head_hyperparameters(hyperparameters))
         num_boost_round = int(
             user.pop("num_boost_round", self.DEFAULT_NUM_BOOST_ROUND)
         )
@@ -624,7 +628,7 @@ class XGBoostRegressor(MLModel):
             "seed": self.config.random_seed,
             **user,
         }
-        if self.config.early_stopping:
+        if self.early_stopping:
             metrics = self._params["eval_metric"]
             metrics = [metrics] if isinstance(metrics, str) else list(metrics)
             if self.EARLY_STOPPING_METRIC not in metrics:
@@ -728,17 +732,17 @@ class XGBoostRegressor(MLModel):
         callbacks: list[xgb.callback.TrainingCallback] = [
             _WandbEvalCallback(self)
         ]
-        use_early_stopping = bool(self.config.early_stopping) and dval is not None
+        use_early_stopping = self.early_stopping and dval is not None
         if use_early_stopping:
             callbacks.append(
                 xgb.callback.EarlyStopping(
-                    rounds=self.config.early_stopping_patience,
+                    rounds=self.early_stopping_patience,
                     data_name="val",
                     metric_name=self.EARLY_STOPPING_METRIC,
                     save_best=True,
                 )
             )
-        elif self.config.early_stopping:
+        elif self.early_stopping:
             logger.warning(
                 f"{self.class_name}: early_stopping=True but there is no usable "
                 f"validation segment; early stopping skipped, training all "

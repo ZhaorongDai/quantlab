@@ -1,6 +1,6 @@
-"""Orchestration tests for `quantlab/base/model.py:MLModel` (quick task 260914-lno).
+"""Orchestration tests for `quantlab/base/model.py:LibraryModel` (quick task 260914-lno).
 
-`MLModel` is the non-torch variant of the model layer: no epoch loop, one
+`LibraryModel` is the non-torch variant of the model layer: no epoch loop, one
 `_fit_model` call per fit, native early stopping left to the library. These
 tests drive it through a purely numpy stub head so they lock the ORCHESTRATION
 -- what `_fit` hands the hooks, what it writes to W&B and to disk, how `load`
@@ -26,8 +26,8 @@ import pytest
 import torch
 import xarray as xr
 
-from quantlab.base.config import FactorConfig, MLConfig
-from quantlab.base.model import BaseModel, MLModel
+from quantlab.base.config import FactorConfig, ModelConfig
+from quantlab.base.model import BaseModel, LibraryModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.alpha158 import Alpha158SpotKline
 from tests.label_stubs import StubLabel
@@ -122,7 +122,7 @@ def recorders(monkeypatch) -> list[FakeRecorder]:
     return created
 
 
-class StubMLHead(MLModel):
+class StubLibraryHead(LibraryModel):
     """A numpy head that records what `_fit` hands it.
 
     `_init_model` stores `num_labels` in the model dict, so `_forward` works on
@@ -161,7 +161,7 @@ class StubMLHead(MLModel):
 
 
 def _config(tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt"):
-    return MLConfig(
+    return ModelConfig(
         factors=factors if factors is not None else [FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(label) for label in labels]
         if labels is not None
@@ -179,8 +179,8 @@ def _config(tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt
     )
 
 
-def _trained(tmp_path, **kwargs) -> StubMLHead:
-    model = StubMLHead(_config(tmp_path, **kwargs))
+def _trained(tmp_path, **kwargs) -> StubLibraryHead:
+    model = StubLibraryHead(_config(tmp_path, **kwargs))
     model.collect()
     model.train()
     return model
@@ -227,7 +227,7 @@ def test_zero_val_size_passes_none_for_both_validation_arrays(tmp_path, recorder
 def test_full_val_size_raises_before_fit_model(tmp_path, recorders):
     """`val_size=1.0` leaves nothing to fit on; it must raise before the
     library is ever called rather than hand it an empty array."""
-    model = StubMLHead(_config(tmp_path, val_size=1.0))
+    model = StubLibraryHead(_config(tmp_path, val_size=1.0))
     model.collect()
     with pytest.raises(ValueError, match="Empty training segment"):
         model.train()
@@ -257,7 +257,7 @@ def test_train_writes_the_metrics_of_every_split(tmp_path, recorders):
     """Issue #38: `train()` writes the prefixed train/val/test metrics to
     `metrics.json` beside the checkpoint -- the same dict `train_cv` merges
     into each fold's result."""
-    model = StubMLHead(_config(tmp_path))
+    model = StubLibraryHead(_config(tmp_path))
     model.collect()
     checkpoint = model.train()
     out = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -295,12 +295,12 @@ def test_no_val_metrics_without_a_validation_segment(tmp_path, recorders):
 
 
 def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
-    """The ML path persists through `MlBackend` as `.joblib`; a `.pth` here
+    """The library path persists through `MlBackend` as `.joblib`; a `.pth` here
     would mean the torch persistence path ran. `metrics.json` sits beside
     `config.json` (issue #38)."""
     model = _trained(tmp_path)
     files = {p.name for p in (tmp_path / "ckpt").rglob("*") if p.is_file()}
-    assert files == {"StubMLHead_total.joblib", "config.json", "metrics.json"}
+    assert files == {"StubLibraryHead_total.joblib", "config.json", "metrics.json"}
     assert joblib.load(_checkpoint(tmp_path)) == model.model
 
 
@@ -330,7 +330,7 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
             return frozen
 
     monkeypatch.setattr(model_module, "datetime", _FrozenDatetime)
-    model = StubMLHead(_config(tmp_path))
+    model = StubLibraryHead(_config(tmp_path))
     model.collect()
 
     first = model.train()
@@ -348,10 +348,10 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
 
 
 def test_fresh_instance_loads_without_init_model_and_predicts_identically(tmp_path, recorders):
-    """`MLModel.load` must not rebuild the model: the file IS the model, and a
+    """`LibraryModel.load` must not rebuild the model: the file IS the model, and a
     loaded-but-never-collected instance cannot know its feature count."""
     trained = _trained(tmp_path)
-    fresh = StubMLHead(_config(tmp_path))
+    fresh = StubLibraryHead(_config(tmp_path))
 
     fresh.load(_checkpoint(tmp_path))
 
@@ -361,7 +361,7 @@ def test_fresh_instance_loads_without_init_model_and_predicts_identically(tmp_pa
 
 
 def test_load_rejects_a_pth_file_before_building_anything(tmp_path):
-    model = StubMLHead(_config(tmp_path))
+    model = StubLibraryHead(_config(tmp_path))
     wrong = tmp_path / "x.pth"
     wrong.write_bytes(b"not a checkpoint")
     with pytest.raises(ValueError, match=r"\.joblib"):
@@ -386,7 +386,7 @@ def test_predict_rejects_other_types(tmp_path, recorders):
 
 
 def test_predict_before_train_or_load_raises(tmp_path):
-    model = StubMLHead(_config(tmp_path))
+    model = StubLibraryHead(_config(tmp_path))
     with pytest.raises(ValueError, match="Model not initialized"):
         model.predict(np.zeros((1, N_SYMBOLS, 2)))
 
@@ -399,7 +399,7 @@ def test_predict_before_train_or_load_raises(tmp_path):
 def test_default_loss_excludes_rows_with_a_nan_label(tmp_path):
     """`(t, s)` rows where ANY label is missing are dropped entirely; the MSE
     is over every label of the remaining rows."""
-    model = StubMLHead(_config(tmp_path))
+    model = StubLibraryHead(_config(tmp_path))
     y = np.array([[[1.0, 2.0], [3.0, np.nan]], [[0.0, 0.0], [1.0, 1.0]]])
     pred = np.array([[[2.0, 2.0], [100.0, 100.0]], [[1.0, 1.0], [1.0, 3.0]]])
     # kept rows: (0,0) diffs 1,0; (1,0) diffs 1,1; (1,1) diffs 0,2 -> (1+0+1+1+0+4)/6
@@ -407,7 +407,7 @@ def test_default_loss_excludes_rows_with_a_nan_label(tmp_path):
 
 
 def test_default_loss_is_nan_without_valid_rows_and_does_not_warn(tmp_path):
-    model = StubMLHead(_config(tmp_path))
+    model = StubLibraryHead(_config(tmp_path))
     y = np.full((2, 2, 1), np.nan)
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
@@ -466,7 +466,7 @@ class _Label:
 
 def _pinned_config(tmp_path, factors, labels, times):
     day = lambda i: pd.Timestamp(times[i]).strftime("%Y-%m-%d")
-    return MLConfig(
+    return ModelConfig(
         factors=factors,
         labels=[StubLabel(label) for label in labels],
         model_save_dir=str(tmp_path / "ckpt"),
@@ -485,7 +485,7 @@ def test_pinned_factor_names_win_over_every_producible_name(tmp_path, recorders)
     factor = PinnedPanel(["f_a", "f_b", "f_c"], pinned=["f_c", "f_a"], seed=1)
     label = FakePanel(["ret_a"], seed=2)
 
-    model = StubMLHead(_pinned_config(tmp_path, [factor], [label], TIMES)).collect()
+    model = StubLibraryHead(_pinned_config(tmp_path, [factor], [label], TIMES)).collect()
 
     assert model.get_factor_names() == ["f_c", "f_a"]
     model.train()
@@ -511,7 +511,7 @@ def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, rec
         {"timestamp": times, "symbol": [f"S{i}USDT" for i in range(8)]}, seed=3
     )
 
-    model = StubMLHead(_pinned_config(tmp_path, [factor], [label], times)).collect()
+    model = StubLibraryHead(_pinned_config(tmp_path, [factor], [label], times)).collect()
     assert model.get_factor_names() == PINNED
     model.train()
     assert model.fit_calls[0]["train_x"][-1] == len(PINNED)

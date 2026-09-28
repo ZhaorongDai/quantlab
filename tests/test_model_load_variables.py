@@ -12,9 +12,9 @@ labelled its outputs with the wrong variables.
 
 What is locked here, and what turns it red:
 
-- a fresh XGBoostRegressor or DL head whose factor list or label list is
+- a fresh XGBoostRegressor or torch head whose factor list or label list is
   reordered refuses the checkpoint with a ValueError naming both lists and the
-  path; for DL the refusal comes before `_read_checkpoint`, so a different
+  path; for torch the refusal comes before `_read_checkpoint`, so a different
   factor COUNT gets the named error instead of torch's "size mismatch";
 - an identical fresh model loads and predicts exactly like the trained one;
 - the check is keyed on `trained_on`, never on the factor config field
@@ -41,9 +41,9 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.ml_model.xgb import XGBoostRegressor
-from tests.dl_heads import OneBarHead
+from quantlab.base.config import ModelConfig
+from quantlab.library_model.xgb import XGBoostRegressor
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -69,7 +69,7 @@ ARRAYS = {name: _rng.standard_normal(_SHAPE) for name in FACTORS}
 ARRAYS["ret_a"] = 0.1 * ARRAYS["f_signal"] + 0.05 * _rng.standard_normal(_SHAPE)
 ARRAYS["ret_b"] = -0.1 * ARRAYS["f_second"] + 0.05 * _rng.standard_normal(_SHAPE)
 
-ML_HYPER = {"num_boost_round": 5, "nthread": 1}
+LIBRARY_HYPER = {"num_boost_round": 5, "nthread": 1}
 MODEL_WARNING_TAG = "this model's declared"
 
 
@@ -136,23 +136,22 @@ def _common_kwargs(root: Path, factors: NamedPanel, labels: NamedPanel) -> dict:
     )
 
 
-def _ml_model(root: Path, factor_names=FACTORS, label_names=LABELS, **panel_kwargs):
+def _library_model(root: Path, factor_names=FACTORS, label_names=LABELS, **panel_kwargs):
     return XGBoostRegressor(
-        MLConfig(
+        ModelConfig(
             **_common_kwargs(
                 root, NamedPanel(factor_names, **panel_kwargs), NamedPanel(label_names)
             ),
-            early_stopping=False,
-            hyperparameters=dict(ML_HYPER),
+            hyperparameters=dict(LIBRARY_HYPER),
         )
     )
 
 
-def _dl_model(root: Path, factor_names=FACTORS, label_names=LABELS) -> OneBarHead:
+def _torch_model(root: Path, factor_names=FACTORS, label_names=LABELS) -> OneBarHead:
     return OneBarHead(
-        DLConfig(
+        ModelConfig(
             **_common_kwargs(root, NamedPanel(factor_names), NamedPanel(label_names)),
-            epochs=1,
+            hyperparameters={"epochs": 1},
         )
     )
 
@@ -185,13 +184,13 @@ REORDER_CASES = [
 
 
 @pytest.mark.parametrize(("fresh_kwargs", "kind"), REORDER_CASES)
-def test_ml_load_refuses_reordered_factors_and_labels(tmp_path, fresh_kwargs, kind):
+def test_library_load_refuses_reordered_factors_and_labels(tmp_path, fresh_kwargs, kind):
     """An XGBoostRegressor checkpoint trained on [f_signal, f_second, f_noise]
     -> [ret_a, ret_b] refuses a fresh model that lists the same factors (or
     labels) in another order. Before G-03.7-9 `load()` never read the names and
     this loaded silently, so both ids go red on "DID NOT RAISE"."""
-    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
-    fresh = _ml_model(tmp_path / "fresh", **fresh_kwargs)
+    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
+    fresh = _library_model(tmp_path / "fresh", **fresh_kwargs)
 
     with pytest.raises(ValueError, match="was trained on") as excinfo:
         fresh.load(checkpoint)
@@ -212,17 +211,17 @@ def test_ml_load_refuses_reordered_factors_and_labels(tmp_path, fresh_kwargs, ki
         pytest.param(dict(factor_names=["f_signal", "f_second"]), "factor", id="fewer-factors"),
     ],
 )
-def test_dl_load_refuses_reordered_variables_before_reading_the_checkpoint(
+def test_torch_load_refuses_reordered_variables_before_reading_the_checkpoint(
     tmp_path, monkeypatch, fresh_kwargs, kind
 ):
-    """A DL head's refusal comes before `_read_checkpoint` builds the network.
+    """A torch head's refusal comes before `_read_checkpoint` builds the network.
 
     Reordered variables keep every weight shape, so before G-03.7-9 they
     loaded silently. A different factor COUNT failed inside torch with an
     unnamed "size mismatch" RuntimeError, which `pytest.raises(ValueError)`
     does not catch. All three ids go red."""
-    checkpoint = _train(_dl_model(tmp_path / "train"), ".pth")
-    fresh = _dl_model(tmp_path / "fresh", **fresh_kwargs)
+    checkpoint = _train(_torch_model(tmp_path / "train"), ".pth")
+    fresh = _torch_model(tmp_path / "fresh", **fresh_kwargs)
     reads: list[Path] = []
     read_checkpoint = fresh._read_checkpoint
     monkeypatch.setattr(
@@ -238,9 +237,9 @@ def test_dl_load_refuses_reordered_variables_before_reading_the_checkpoint(
 
 
 def test_identical_model_loads_and_predicts_identically(tmp_path, warning_messages):
-    trained = _ml_model(tmp_path / "train")
+    trained = _library_model(tmp_path / "train")
     checkpoint = _train(trained, ".joblib")
-    fresh = _ml_model(tmp_path / "fresh")
+    fresh = _library_model(tmp_path / "fresh")
 
     fresh.load(checkpoint)
 
@@ -260,12 +259,12 @@ def test_trained_on_is_authoritative_over_the_factor_config_field(tmp_path, warn
     config field and refused this model's own checkpoint (a measured false
     positive). The model-level check must load it without error or warning."""
     config_names = ["f_noise", "f_signal", "f_second"]
-    checkpoint = _train(_ml_model(tmp_path / "train", config_names=config_names), ".joblib")
+    checkpoint = _train(_library_model(tmp_path / "train", config_names=config_names), ".joblib")
     saved = json.loads(_sidecar(checkpoint).read_text())
     assert saved["factors"][0]["factor_names"] == config_names
     assert saved["trained_on"]["factor_names"] == FACTORS
 
-    fresh = _ml_model(tmp_path / "fresh", config_names=config_names)
+    fresh = _library_model(tmp_path / "fresh", config_names=config_names)
     fresh.load(checkpoint)
 
     assert fresh.model is not None
@@ -308,9 +307,9 @@ def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, f
     model declaring DIFFERENT variables is still refused. The legacy field
     cannot certify order (REVIEW WR-01), so it is compared as a set; order-only
     differences are covered by the two tests below."""
-    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
     _strip_trained_on(checkpoint)
-    fresh = _ml_model(tmp_path / "fresh", **fresh_kwargs)
+    fresh = _library_model(tmp_path / "fresh", **fresh_kwargs)
 
     if fresh_kwargs:
         with pytest.raises(ValueError, match="was trained on") as excinfo:
@@ -343,11 +342,11 @@ def test_legacy_record_with_a_permuted_config_field_loads_with_an_order_warning(
     and emit one order warning naming both lists and the path. Red on the
     pre-fix code ("was trained on" ValueError)."""
     config_names = ["f_noise", "f_signal", "f_second"]
-    trained = _ml_model(tmp_path / "train", config_names=config_names)
+    trained = _library_model(tmp_path / "train", config_names=config_names)
     checkpoint = _train(trained, ".joblib")
     _strip_trained_on(checkpoint)
     assert json.loads(_sidecar(checkpoint).read_text())["factors"][0]["factor_names"] == config_names
-    fresh = _ml_model(tmp_path / "fresh", config_names=config_names)
+    fresh = _library_model(tmp_path / "fresh", config_names=config_names)
 
     fresh.load(checkpoint)
 
@@ -368,10 +367,10 @@ def test_legacy_record_cannot_certify_order_so_a_reordered_model_only_warns(tmp_
     the permuted-config case above. The load is allowed, with the order
     warning; checkpoints that carry `trained_on` still refuse this (see
     `test_ml_load_refuses_reordered_factors_and_labels`)."""
-    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
     _strip_trained_on(checkpoint)
     reordered = ["f_noise", "f_second", "f_signal"]
-    fresh = _ml_model(tmp_path / "fresh", factor_names=reordered)
+    fresh = _library_model(tmp_path / "fresh", factor_names=reordered)
 
     fresh.load(checkpoint)
 
@@ -388,13 +387,13 @@ def test_no_record_warns_once_and_loads(tmp_path, warning_messages, case):
     cannot be checked, so exactly one model-level warning says so and the model
     loads and predicts. The wording must not contain the backtester's own
     "has no config.json" phrase, which `tests/test_backtest_dates.py` counts."""
-    trained = _ml_model(tmp_path / "train")
+    trained = _library_model(tmp_path / "train")
     checkpoint = _train(trained, ".joblib")
     if case == "no-sidecar":
         _sidecar(checkpoint).unlink()
     else:
         _strip_trained_on(checkpoint, drop_config_names=True)
-    fresh = _ml_model(tmp_path / "fresh")
+    fresh = _library_model(tmp_path / "fresh")
 
     fresh.load(checkpoint)
 
@@ -411,16 +410,16 @@ def test_check_then_load_warns_once(tmp_path, warning_messages):
     """The backtester runs the check before feature collection, then `load()`
     runs it again. Each model-level warning is emitted once per model instance
     and message; a different checkpoint still warns."""
-    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
     _sidecar(checkpoint).unlink()
-    fresh = _ml_model(tmp_path / "fresh")
+    fresh = _library_model(tmp_path / "fresh")
 
     fresh._assert_trained_variables(checkpoint)
     fresh.load(checkpoint)
 
     assert len(_model_warnings(warning_messages)) == 1, warning_messages
 
-    other = _train(_ml_model(tmp_path / "train_other"), ".joblib")
+    other = _train(_library_model(tmp_path / "train_other"), ".joblib")
     _sidecar(other).unlink()
     fresh.load(other)
 
@@ -432,9 +431,9 @@ def test_check_then_load_warns_once(tmp_path, warning_messages):
 def test_a_sidecar_that_is_not_an_object_raises(tmp_path):
     """Corruption is not absence: valid JSON that is not an object must not be
     read as "no record" and silently skip the check."""
-    checkpoint = _train(_ml_model(tmp_path / "train"), ".joblib")
+    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
     _sidecar(checkpoint).write_text(json.dumps(["not", "a", "config"]))
-    fresh = _ml_model(tmp_path / "fresh")
+    fresh = _library_model(tmp_path / "fresh")
 
     with pytest.raises(ValueError, match="is not a model config object") as excinfo:
         fresh.load(checkpoint)

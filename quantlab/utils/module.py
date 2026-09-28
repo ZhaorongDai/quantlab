@@ -152,8 +152,8 @@ def load_factor_from_config(config: dict):
 def load_model_from_config(config: dict):
     """Rebuild a model, with its factors and labels, from a config dict.
 
-    ``cls.config_cls`` selects the right config class for the model variant
-    (``DLConfig`` for torch heads, ``MLConfig`` for tree heads). Two keys a
+    ``cls.config_cls`` is the config class the model is rebuilt with
+    (``ModelConfig``, the one config of every model head). Two keys a
     checkpoint's ``config.json`` carries as training records rather than
     config fields, ``resolved_hyperparameters`` and ``trained_on``, are dropped
     before construction; any other unknown key still raises ``TypeError``

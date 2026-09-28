@@ -1480,7 +1480,7 @@ class BaseBacktester(ABC):
 
             # Each factor warms itself up by its own warmup_bars, counted on
             # its dataset's calendar, from the bars before start_date; the
-            # model adds its own warm-up (a DL head's window) on top.
+            # model adds its own warm-up (a torch head's window) on top.
             features = model._collect_all_features(start_date, end_date)
             return model.predict_panel(features).sel(
                 timestamp=slice(start_date, end_date)

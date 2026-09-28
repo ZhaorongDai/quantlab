@@ -23,7 +23,7 @@ This module locks D-06, D-13, D-14 and D-15.
   symbol label.
 - **D-13, model preparation.** "train" trains on the model's own
   train/test dates and never rewrites them. "load" refuses a missing file
-  before any feature work. A DL head loads without any collected panel (its
+  before any feature work. A torch head loads without any collected panel (its
   network depends only on the feature and label counts), and its window
   warm-up gives the window's first bar a full history.
 - **Fold-style dates.** `'2026-08-07T00:00:00.000000000'`, numpy datetimes
@@ -47,12 +47,12 @@ from loguru import logger
 from quantlab.base.backtest import BaseBacktester
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
-    DLConfig,
-    MLConfig,
+    ModelConfig,
+    ModelConfig,
     PolarsFactorConfig,
 )
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
-from tests.dl_heads import MeanContextHead
+from tests.torch_heads import MeanContextHead
 from tests.backtest_fixtures import (
     SYMBOLS,
     FirstFeatureHead,
@@ -236,7 +236,7 @@ def _two_factor_model(root: Path, dataset_config, dates: dict) -> FirstFeatureHe
         )
     )
     return FirstFeatureHead(
-        MLConfig(
+        ModelConfig(
             factors=factors,
             labels=[label],
             model_save_dir=str(root / "models"),
@@ -303,7 +303,7 @@ def _strategy_model(tmp_path: Path, dataset_config, bars, strategy: str):
         )
     )
     return FirstFeatureHead(
-        MLConfig(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(tmp_path / "models"),
@@ -439,11 +439,11 @@ def test_iso_date_normalizes_fold_style_strings():
 # --------------------------------------------------------------------------
 
 
-class TinyLinearDLHead(MeanContextHead):
+class TinyLinearTorchHead(MeanContextHead):
     """A tiny cross-section head on a three-bar window (two bars of warm-up)."""
 
 
-def _dl_model(root: Path, dataset_config, dates: dict) -> TinyLinearDLHead:
+def _torch_model(root: Path, dataset_config, dates: dict) -> TinyLinearTorchHead:
     factor = PastReturnFactor(
         PolarsFactorConfig(
             warmup_bars=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 1}
@@ -456,14 +456,14 @@ def _dl_model(root: Path, dataset_config, dates: dict) -> TinyLinearDLHead:
             kwargs={"n_forward_periods": 1},
         )
     )
-    return TinyLinearDLHead(
-        DLConfig(
+    return TinyLinearTorchHead(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(root / "models"),
             factor_data_strategy="cal",
             label_data_strategy="cal",
-            epochs=1,
+            hyperparameters={"epochs": 1},
             val_size=0.0,
             **dates,
         )
@@ -492,11 +492,11 @@ def test_train_mode_uses_the_models_own_dates_and_leaves_them_unchanged(tmp_path
 def test_load_mode_with_missing_checkpoint_file_fails_before_predicting(
     tmp_path, monkeypatch
 ):
-    """The existence check comes before any feature work, for a DL head too."""
+    """The existence check comes before any feature work, for a torch head too."""
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
-    model = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
-    missing = tmp_path / "never_trained" / "TinyLinearDLHead_total.pth"
+    model = _torch_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    missing = tmp_path / "never_trained" / "TinyLinearTorchHead_total.pth"
 
     calls = {"collect": 0, "predict_panel": 0}
     collect, predict_panel = model._collect_all_features, model.predict_panel
@@ -737,16 +737,16 @@ def test_same_training_bars_resolves_endpoints_on_the_calendar():
     assert not same(daily, plain, (None, "2024-02-09"))
 
 
-def test_dl_head_loads_without_a_collected_panel_and_predicts_the_first_bar(tmp_path):
+def test_torch_head_loads_without_a_collected_panel_and_predicts_the_first_bar(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
-    trainer = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+    trainer = _torch_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
     trainer.collect()
     trainer.train()
     checkpoints = sorted(Path(trainer.config.model_save_dir).rglob("*.pth"))
     assert len(checkpoints) == 1, checkpoints
 
-    fresh = TinyLinearDLHead(trainer.config)
+    fresh = TinyLinearTorchHead(trainer.config)
     assert fresh.model is None
     result = _backtester(
         tmp_path, dataset_config, fresh, bars,
@@ -759,8 +759,8 @@ def test_dl_head_loads_without_a_collected_panel_and_predicts_the_first_bar(tmp_
     assert np.isfinite(first.values).all(), first.values
 
 
-def _trained_dl_checkpoint(tmp_path: Path, dataset_config, bars) -> tuple[TinyLinearDLHead, Path]:
-    trainer = _dl_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
+def _trained_torch_checkpoint(tmp_path: Path, dataset_config, bars) -> tuple[TinyLinearTorchHead, Path]:
+    trainer = _torch_model(tmp_path, dataset_config, _model_dates(bars, 0, 24, 29))
     trainer.collect()
     trainer.train()
     checkpoints = sorted(Path(trainer.config.model_save_dir).rglob("*.pth"))
@@ -784,8 +784,8 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
 
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
-    trainer, checkpoint = _trained_dl_checkpoint(tmp_path, dataset_config, bars)
-    fresh = TinyLinearDLHead(trainer.config)
+    trainer, checkpoint = _trained_torch_checkpoint(tmp_path, dataset_config, bars)
+    fresh = TinyLinearTorchHead(trainer.config)
     events: list[str] = []
     check, collect = fresh._assert_trained_variables, fresh._collect_all_features
     monkeypatch.setattr(
@@ -804,17 +804,17 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
     assert events.index("check") < events.index("collect"), events
 
 
-def test_dl_load_without_config_json_warns_once_per_concern(tmp_path, warning_messages):
-    """A DL checkpoint with no config.json beside it: the backtester says once
+def test_torch_load_without_config_json_warns_once_per_concern(tmp_path, warning_messages):
+    """A torch checkpoint with no config.json beside it: the backtester says once
     that the training dates cannot be checked ("has no config.json"), and the
     model says once that the variables cannot be checked (G-03.7-9), even
     though the model check runs both before collection and again inside
     `load()`. The run completes."""
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
-    trainer, checkpoint = _trained_dl_checkpoint(tmp_path, dataset_config, bars)
+    trainer, checkpoint = _trained_torch_checkpoint(tmp_path, dataset_config, bars)
     (checkpoint.parent / "config.json").unlink()
-    fresh = TinyLinearDLHead(trainer.config)
+    fresh = TinyLinearTorchHead(trainer.config)
 
     result = _backtester(
         tmp_path, dataset_config, fresh, bars,

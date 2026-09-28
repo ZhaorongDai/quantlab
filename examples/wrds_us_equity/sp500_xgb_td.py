@@ -33,7 +33,7 @@ from quantlab.base.config import (
     CrspDatasetConfig,
     DatasetConfig,
     FactorConfig,
-    MLConfig,
+    ModelConfig,
 )
 from quantlab.config import get_data_root
 from quantlab.dataset.constituent import CrspSP500ConstituentDataset
@@ -43,7 +43,7 @@ from quantlab.enums.constant import Date
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
-from quantlab.ml_model.xgb_td import XGBTDRegressor
+from quantlab.library_model.xgb_td import XGBTDRegressor
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
@@ -149,18 +149,21 @@ def compute_factors() -> None:
 def build_model() -> XGBTDRegressor:
     """A fresh head reading the stored factors and label."""
     factors, labels = factors_and_label()
-    return XGBTDRegressor(MLConfig(
+    return XGBTDRegressor(ModelConfig(
         factors=factors, labels=labels,
         model_save_dir=str(WORK / "models" / "xgb_td"),
         factor_data_strategy="read", label_data_strategy="read",
         start_date=START, end_date=END,
         train_start=TRAIN_START, train_end=TRAIN_END,
         test_start=TEST_START, test_end=TEST_END,
-        # Early stopping on the trailing val_size of the training window;
-        # patience counts boosting rounds.
-        early_stopping=True, early_stopping_patience=50, val_size=0.2,
-        # pytabkit XGB_TD_Regressor constructor arguments.
-        hyperparameters={"n_estimators": 1000, "n_threads": 8},
+        val_size=0.2,
+        hyperparameters={
+            # Early stopping on the trailing val_size of the training window;
+            # patience counts boosting rounds. The head reads these two keys itself.
+            "early_stopping": True, "early_stopping_patience": 50,
+            # pytabkit XGB_TD_Regressor constructor arguments.
+            "n_estimators": 1000, "n_threads": 8,
+        },
     ))
 
 

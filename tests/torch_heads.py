@@ -1,15 +1,15 @@
 """Tiny cross-section torch heads shared by the model tests.
 
-Plain helpers, not fixtures, imported as ``from tests.dl_heads import
-MeanContextHead``. Each is a small ``DLModel``: the network maps
+Plain helpers, not fixtures, imported as ``from tests.torch_heads import
+MeanContextHead``. Each is a small ``TorchModel``: the network maps
 ``[S_t, N, F]`` to ``[S_t, L]``, and the loss is ``masked_mse``.
 """
 
 import torch
 from torch import nn
 
-from quantlab.base.model import DLModel
-from quantlab.dl_model.training import (
+from quantlab.base.model import TorchModel
+from quantlab.torch_model.training import (
     TrainLossThreshold,
     cs_rank_norm,
     cs_zscore,
@@ -32,7 +32,7 @@ class MeanContextNet(nn.Module):
         return self.own(flat) + self.context(flat).mean(dim=0, keepdim=True)
 
 
-class MeanContextHead(DLModel):
+class MeanContextHead(TorchModel):
     """``MeanContextNet`` with its choices read from ``hyperparameters``.
 
     ``window_bars`` (default 3); ``transform``: ``"zscore"`` (default),

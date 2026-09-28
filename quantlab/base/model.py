@@ -12,12 +12,13 @@ validation, requesting the factor and label panels over the model's date
 range and collecting them into one dataset, the public ``train`` /
 ``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, the
 checkpoint directory layout with its ``config.json`` sidecar file, and the
-fold boundaries of rolling cross-validation. ``DLModel`` is the PyTorch
+fold boundaries of rolling cross-validation. ``TorchModel`` is the PyTorch
 variant: one cross-section of symbols per training step, each with its own
-window of past bars, and ``.pth`` checkpoints. ``MLModel`` is the numpy variant for tree models and
-other libraries that do their own early stopping, with ``.joblib``
-checkpoints. Concrete heads live in ``quantlab/dl_model`` and
-``quantlab/ml_model``.
+window of past bars, and ``.pth`` checkpoints. ``LibraryModel`` is the numpy
+variant for tree models and other libraries that train themselves, with
+``.joblib`` checkpoints. Both take one ``ModelConfig``; the reserved keys of
+its ``hyperparameters`` are listed in ``RESERVED_HYPERPARAMETERS``. Concrete heads live in ``quantlab/torch_model`` and
+``quantlab/library_model``.
 """
 
 import copy
@@ -43,9 +44,9 @@ from tqdm import tqdm
 
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.dl_model.training import CrossSectionBatch, CrossSectionWindows
 from quantlab.enums.constant import Date
-from quantlab.ml_model.backend import MlBackend
+from quantlab.library_model.backend import MlBackend
+from quantlab.torch_model.training import CrossSectionBatch, CrossSectionWindows
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
@@ -53,7 +54,30 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
 
-from .config import DLConfig, MLConfig
+from .config import ModelConfig
+
+#: Keys of ``ModelConfig.hyperparameters`` a ``TorchModel`` reads itself:
+#: ``epochs`` (the epoch cap, default 100), ``lr`` (learning rate of the
+#: default ``_init_optim``, default ``1e-3``), and ``batch_size``,
+#: ``num_workers``, ``panel_device`` and ``panel_dtype`` (reserved for the
+#: torch data loader and training panel).
+TORCH_RESERVED_HYPERPARAMETERS: frozenset[str] = frozenset(
+    {"epochs", "lr", "batch_size", "num_workers", "panel_device", "panel_dtype"}
+)
+
+#: Keys of ``ModelConfig.hyperparameters`` a ``LibraryModel`` reads itself:
+#: ``early_stopping`` (default False) and ``early_stopping_patience``
+#: (default 5), the shipped library heads' native early stopping.
+LIBRARY_RESERVED_HYPERPARAMETERS: frozenset[str] = frozenset(
+    {"early_stopping", "early_stopping_patience"}
+)
+
+#: Every reserved key. ``_init_model`` receives them along with the head's
+#: own keys, so a head never splats the whole dict into a network or a
+#: library constructor; see ``BaseModel.head_hyperparameters``.
+RESERVED_HYPERPARAMETERS: frozenset[str] = (
+    TORCH_RESERVED_HYPERPARAMETERS | LIBRARY_RESERVED_HYPERPARAMETERS
+)
 
 
 class BaseModel(ABC):
@@ -66,14 +90,12 @@ class BaseModel(ABC):
     one; ``predict()`` and ``predict_panel()`` run inference. Those public entry
     points are implemented once, here, and are not overridden by any head.
 
-    The training framework is the job of the two variants. ``DLModel`` is the
-    torch variant and ``MLModel`` the numpy variant; each declares two plain
-    class attributes that satisfy the abstract properties below:
-
-    ``config_cls`` is the config class the variant accepts. The ``config``
-    setter checks it first, and the config loader reads it from the class
-    before creating an instance, so it must be a class attribute.
-    ``checkpoint_suffix`` is the checkpoint file suffix. ``train`` and
+    The training framework is the job of the two variants. ``TorchModel`` is the
+    torch variant and ``LibraryModel`` the numpy variant. Both accept the one
+    ``ModelConfig``, named by the class attribute ``config_cls``: the
+    ``config`` setter checks it first, and the config loader reads it from
+    the class before creating an instance. Each variant declares
+    ``checkpoint_suffix``, the checkpoint file suffix. ``train`` and
     ``train_cv`` use it to name files, and ``load()`` uses it to reject a
     file of the wrong kind before building any model.
 
@@ -84,9 +106,8 @@ class BaseModel(ABC):
 
     Parameters
     ----------
-    config : DLConfig or MLConfig
-        The model configuration. It must be an instance of the variant's
-        ``config_cls``.
+    config : ModelConfig
+        The model configuration.
 
     Attributes
     ----------
@@ -103,11 +124,11 @@ class BaseModel(ABC):
 
     Examples
     --------
-    Given a head ``MyHead`` (a subclass of ``MLModel`` or ``DLModel``), a
+    Given a head ``MyHead`` (a subclass of ``LibraryModel`` or ``TorchModel``), a
     factor object exposing variables ``f_a`` and ``f_b``, and a label
     object exposing ``ret``::
 
-        >>> model = MyHead(MLConfig(
+        >>> model = MyHead(ModelConfig(
         ...     factors=[factor], labels=[label],
         ...     model_save_dir="checkpoints",
         ...     factor_data_strategy="read", label_data_strategy="read",
@@ -119,7 +140,7 @@ class BaseModel(ABC):
         'MyHead_total.joblib'
     """
 
-    def __init__(self, config: DLConfig | MLConfig):
+    def __init__(self, config: ModelConfig):
         """Initialize the model; see the class docstring for parameters."""
         self.config = config
         self._set_random_seed(self.config.random_seed)
@@ -132,18 +153,35 @@ class BaseModel(ABC):
         self.data_backend = XrBackend()
         self._wandb_recorder: wandb.sdk.wandb_run.Run = None  # type: ignore
 
-    @property
-    @abstractmethod
-    def config_cls(self) -> type:
-        """The config class this variant accepts.
+    #: The config class every model accepts; the config loader reads it from
+    #: the class to rebuild a model from ``config.json``.
+    config_cls = ModelConfig
 
-        Concrete variants satisfy it with a plain class attribute.
+    #: The ``hyperparameters`` keys this variant reads itself, which
+    #: ``head_hyperparameters`` leaves out.
+    reserved_hyperparameters: frozenset[str] = frozenset()
+
+    def head_hyperparameters(self, hyperparameters: dict) -> dict:
+        """Return ``hyperparameters`` without the keys this variant reads itself.
+
+        A head that forwards its hyperparameters to a network or a library
+        constructor passes them through this first. Only the variant's own
+        ``reserved_hyperparameters`` are dropped: a library head keeps
+        ``lr``, which a torch head reserves, because the library may take it.
+        The dict given is not modified.
 
         Examples
         --------
-        >>> DLModel.config_cls
-        <class 'quantlab.base.config.DLConfig'>
+        >>> xgb_head.head_hyperparameters({"early_stopping": True, "lr": 0.1})
+        {'lr': 0.1}
+        >>> torch_head.head_hyperparameters({"epochs": 5, "hidden": 8})
+        {'hidden': 8}
         """
+        return {
+            key: value
+            for key, value in hyperparameters.items()
+            if key not in self.reserved_hyperparameters
+        }
 
     @property
     @abstractmethod
@@ -154,7 +192,7 @@ class BaseModel(ABC):
 
         Examples
         --------
-        >>> MLModel.checkpoint_suffix
+        >>> LibraryModel.checkpoint_suffix
         '.joblib'
         """
 
@@ -162,7 +200,7 @@ class BaseModel(ABC):
     def _set_random_seed(seed: int):
         """Seed the framework-agnostic generators: ``random`` and numpy.
 
-        ``DLModel._set_random_seed`` adds the torch seeds on top of this.
+        ``TorchModel._set_random_seed`` adds the torch seeds on top of this.
         """
         random.seed(seed)
         np.random.seed(seed)
@@ -172,7 +210,7 @@ class BaseModel(ABC):
         return f"{self.__class__.__name__}(config={self.config})"
 
     @property
-    def config(self) -> DLConfig | MLConfig:
+    def config(self) -> ModelConfig:
         """The model's configuration object.
 
         Examples
@@ -183,7 +221,7 @@ class BaseModel(ABC):
         return self._config
 
     @config.setter
-    def config(self, config: DLConfig | MLConfig):
+    def config(self, config: ModelConfig):
         """Install a normalised copy of ``config`` after checking its class.
 
         Missing ``start_date`` / ``end_date`` fall back to the project-wide
@@ -200,7 +238,7 @@ class BaseModel(ABC):
 
         Examples
         --------
-        >>> model.config = MLConfig(factors=[factor], labels=[label],
+        >>> model.config = ModelConfig(factors=[factor], labels=[label],
         ...                         model_save_dir="checkpoints",
         ...                         factor_data_strategy="read",
         ...                         label_data_strategy="read",
@@ -210,7 +248,7 @@ class BaseModel(ABC):
         """
         self._config = self._normalize_config(config)
 
-    def _normalize_config(self, config: DLConfig | MLConfig) -> DLConfig | MLConfig:
+    def _normalize_config(self, config: ModelConfig) -> ModelConfig:
         """Return ``config`` checked against ``config_cls`` with its defaults filled in.
 
         A model variant that validates or completes its config overrides
@@ -220,12 +258,12 @@ class BaseModel(ABC):
 
         Parameters
         ----------
-        config : DLConfig or MLConfig
+        config : ModelConfig
             The config to normalise. It is not modified.
 
         Returns
         -------
-        DLConfig or MLConfig
+        ModelConfig
             A new config with ``name``, ``start_date`` and ``end_date`` set.
 
         Raises
@@ -237,7 +275,7 @@ class BaseModel(ABC):
         Examples
         --------
         >>> model._normalize_config(config).name
-        'quantlab.ml_model.xgb.XGBoostRegressor'
+        'quantlab.library_model.xgb.XGBoostRegressor'
         """
         if not isinstance(config, self.config_cls):
             raise TypeError(
@@ -254,7 +292,7 @@ class BaseModel(ABC):
             end_date=Date.END_DATE if config.end_date is None else config.end_date,
         )
 
-    def _check_roles(self, config: DLConfig | MLConfig) -> None:
+    def _check_roles(self, config: ModelConfig) -> None:
         """Refuse a label among the factors or a factor among the labels.
 
         A label is anything with ``lookahead_bars()``, such as
@@ -435,7 +473,7 @@ class BaseModel(ABC):
         """Bars of features the model needs before the first bar it predicts.
 
         0 here: a row model predicts each bar from that bar alone.
-        ``DLModel`` returns ``window_bars - 1``.
+        ``TorchModel`` returns ``window_bars - 1``.
 
         Examples
         --------
@@ -609,7 +647,7 @@ class BaseModel(ABC):
         --------
         >>> cfg = model.get_config()
         >>> sorted(cfg)[:3]
-        ['early_stopping', 'early_stopping_patience', 'end_date']
+        ['end_date', 'factor_data_strategy', 'factors']
         """
         cfg = self.config.to_dict()
         cfg["factors"] = [factor.get_config() for factor in self.config.factors]  # type: ignore
@@ -1040,6 +1078,7 @@ class BaseModel(ABC):
         >>> sorted(json.loads((checkpoint.parent / "metrics.json").read_text()))[:3]
         ['test_ic', 'test_loss', 'test_mae']
         """
+        self._check_hyperparameters()
         project_name = self._new_project_name()
         experiment_name = f"{self.class_name}_total"
         model_name = f"{experiment_name}{self.checkpoint_suffix}"
@@ -1062,6 +1101,18 @@ class BaseModel(ABC):
                 indent=2,
             )
         return checkpoint
+
+    def _check_hyperparameters(self) -> None:
+        """Validate the reserved hyperparameters this variant reads.
+
+        Called first by ``train`` and ``train_cv``, before any W&B run or
+        checkpoint directory is opened. The default checks nothing.
+
+        Raises
+        ------
+        ValueError
+            If a reserved hyperparameter is invalid.
+        """
 
     def _purge_bars(self) -> int:
         """L, the largest ``lookahead_bars()`` among the model's labels."""
@@ -1366,7 +1417,8 @@ class BaseModel(ABC):
         ValueError
             If ``train_periods`` is below 5 (the test segment would be
             empty), no timestamps fall inside the config's date range, or
-            the purge leaves a fold no training bar.
+            the purge leaves a fold no training bar, or a reserved
+            hyperparameter is invalid (see ``_check_hyperparameters``).
 
         Examples
         --------
@@ -1376,6 +1428,7 @@ class BaseModel(ABC):
         >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
         (0, True)
         """
+        self._check_hyperparameters()
         if train_periods < 5:
             raise ValueError(
                 f"{self.class_name}: train_cv(train_periods={train_periods}) needs "
@@ -1515,7 +1568,7 @@ class BaseModel(ABC):
         """Restore ``self.model`` from ``path``; the suffix is already checked."""
 
 
-class DLModel(BaseModel):
+class TorchModel(BaseModel):
     """Torch variant: one cross-section per step, every learning choice a hook.
 
     A step is one bar (ADR 0006): the symbols with at least one finite
@@ -1547,7 +1600,8 @@ class DLModel(BaseModel):
         (or None) drops symbols from that step's cross-section. Default:
         ``(y, None)``.
     ``_init_optim(model)``
-        Default: Adam at ``config.lr``, kept on ``self.optim``.
+        Default: Adam at ``hyperparameters["lr"]`` (``1e-3``), kept on
+        ``self.optim``.
     ``_train_one_batch(epoch, batch)``
         One optimisation step; returns the loss. Default: forward,
         ``_loss``, backward, gradient values clipped to ``grad_clip_value``
@@ -1561,8 +1615,12 @@ class DLModel(BaseModel):
         metrics and ``predict_panel``. Default: ``self.model(x)``; override
         it when the network returns more than the prediction.
     ``_on_fit_start()``, ``_should_stop(epoch, train_loss, val_loss)``, ``_on_fit_end()``
-        When to stop and which weights to keep. Default: run
-        ``config.epochs`` epochs, keep the last weights.
+        When to stop and which weights to keep. Default: run ``epochs``
+        epochs, keep the last weights.
+
+    ``epochs``, the epoch cap, is read from the hyperparameters (default
+    100) and must be a positive integer; see ``RESERVED_HYPERPARAMETERS``
+    for the other keys the base reads.
 
     The model's warm-up is N - 1 bars: every feature request, in training
     and in a backtest, starts that many bars earlier on each factor's
@@ -1572,16 +1630,16 @@ class DLModel(BaseModel):
     --------
     A minimal head: a linear map of each symbol's latest bar::
 
-        >>> class LastBarHead(DLModel):
+        >>> class LastBarHead(TorchModel):
         ...     window_bars = 5
         ...     def _init_model(self, num_features, num_labels, hyperparameters):
         ...         return LastBarLinear(num_features, num_labels)
         ...     def _loss(self, output, batch):
         ...         return masked_mse(output, batch.y, batch.mask)
-        >>> head = LastBarHead(DLConfig(
+        >>> head = LastBarHead(ModelConfig(
         ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
         ...     factor_data_strategy="read", label_data_strategy="read",
-        ...     epochs=2,
+        ...     hyperparameters={"epochs": 2},
         ...     train_start="2024-01-01", train_end="2024-01-30",
         ...     test_start="2024-01-31", test_end="2024-02-09",
         ... ))
@@ -1592,8 +1650,8 @@ class DLModel(BaseModel):
     applied to ``x[:, -1]``.
     """
 
-    config_cls = DLConfig
     checkpoint_suffix = ".pth"
+    reserved_hyperparameters = TORCH_RESERVED_HYPERPARAMETERS
 
     #: Gradient value clip of the default ``_train_one_batch``; None disables.
     grad_clip_value: float | None = 3.0
@@ -1615,8 +1673,11 @@ class DLModel(BaseModel):
     ) -> torch.nn.Module:
         """Build the network for ``[S_t, N, F]`` windows and ``num_labels`` labels.
 
-        The base class moves it to ``device``. ``hyperparameters`` is
-        ``config.hyperparameters``, a free-form dict.
+        The base class moves it to ``device``. ``hyperparameters`` is the
+        whole ``config.hyperparameters``, reserved keys such as ``epochs``
+        and ``lr`` included: read the keys the network needs by name, or
+        pass it through ``self.head_hyperparameters``, never splat it into the
+        network as is.
         """
 
     @abstractmethod
@@ -1650,8 +1711,12 @@ class DLModel(BaseModel):
         return y, None
 
     def _init_optim(self, model: torch.nn.Module):
-        """Return the optimizer, kept on ``self.optim``; default Adam at ``config.lr``."""
-        return torch.optim.Adam(model.parameters(), lr=self.config.lr)  # type: ignore[union-attr]
+        """Return the optimizer, kept on ``self.optim``.
+
+        The default is Adam at ``hyperparameters["lr"]``, ``1e-3`` when unset.
+        """
+        lr = self.config.hyperparameters.get("lr", 1e-3)
+        return torch.optim.Adam(model.parameters(), lr=lr)
 
     def _train_one_batch(self, epoch: int, batch: CrossSectionBatch) -> torch.Tensor:
         """Run one optimisation step on one bar and return its loss.
@@ -1700,12 +1765,38 @@ class DLModel(BaseModel):
         """Return True to stop after this epoch; the default never stops early.
 
         ``val_loss`` is None without a validation segment. Training never
-        runs past ``config.epochs``.
+        runs past ``epochs``.
         """
         return False
 
     def _on_fit_end(self) -> None:
         """Choose the weights to keep, after the last epoch; the default keeps the last."""
+
+    def _check_hyperparameters(self) -> None:
+        """Refuse an ``epochs`` hyperparameter that is not a positive integer."""
+        self.epochs
+
+    @property
+    def epochs(self) -> int:
+        """The epoch cap, ``hyperparameters["epochs"]``, 100 when unset.
+
+        Raises
+        ------
+        ValueError
+            If the value is not a positive integer (a bool is refused too).
+
+        Examples
+        --------
+        >>> head.epochs
+        100
+        """
+        epochs = self.config.hyperparameters.get("epochs", 100)
+        if isinstance(epochs, bool) or not isinstance(epochs, (int, np.integer)) or epochs < 1:
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['epochs'] must be a positive "
+                f"integer, got {epochs!r}"
+            )
+        return int(epochs)
 
     @property
     def warmup_bars(self) -> int:
@@ -1893,7 +1984,7 @@ class DLModel(BaseModel):
         per-epoch ``train_loss`` / ``val_loss`` are logged to wandb and passed
         to ``_should_stop``; ``_on_fit_start`` runs before the first epoch and
         ``_on_fit_end`` after the last, and the loop never runs past
-        ``config.epochs``. Torch is reseeded with ``config.random_seed``
+        ``epochs``. Torch is reseeded with ``config.random_seed``
         first, so a fit is reproducible on CPU.
 
         Returns
@@ -1907,9 +1998,11 @@ class DLModel(BaseModel):
         ------
         ValueError
             If any of the four ``train_*`` / ``test_*`` dates is unset, or
-            ``val_size`` or the purge leaves no timestamps to fit on.
+            ``val_size`` or the purge leaves no timestamps to fit on, or
+            ``epochs`` is not a positive integer.
         """
-        config: DLConfig = self.config  # type: ignore[assignment]
+        config = self.config
+        epochs = self.epochs
         if not all(
             (config.train_start, config.train_end, config.test_start, config.test_end)
         ):
@@ -1944,7 +2037,7 @@ class DLModel(BaseModel):
         rng = np.random.default_rng(config.random_seed)
 
         epoch = 0
-        for epoch in tqdm(range(config.epochs), desc=f"{self.class_name}_train"):
+        for epoch in tqdm(range(epochs), desc=f"{self.class_name}_train"):
             train_loss = self._train_epoch(epoch, windows, y, coords, train_bars, rng)
             val_loss = (
                 self._val_loss(epoch, windows, y, coords, val_bars)
@@ -2021,7 +2114,7 @@ class DLModel(BaseModel):
         )
 
 
-class MLModel(BaseModel):
+class LibraryModel(BaseModel):
     """Numpy variant for tree models and other non-torch libraries.
 
     There is no epoch loop and no copy-based rollback. Training, early
@@ -2042,7 +2135,7 @@ class MLModel(BaseModel):
     --------
     A minimal head that predicts the first feature for every label::
 
-        >>> class FirstFeatureHead(MLModel):
+        >>> class FirstFeatureHead(LibraryModel):
         ...     def _init_model(self, num_features, num_labels, hyperparameters):
         ...         return {"num_labels": num_labels}
         ...     def _preprocess(self, data):
@@ -2051,7 +2144,7 @@ class MLModel(BaseModel):
         ...         pass
         ...     def _forward(self, x):
         ...         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
-        >>> head = FirstFeatureHead(MLConfig(
+        >>> head = FirstFeatureHead(ModelConfig(
         ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
         ...     factor_data_strategy="read", label_data_strategy="read",
         ...     train_start="2024-01-01", train_end="2024-01-30",
@@ -2061,8 +2154,35 @@ class MLModel(BaseModel):
         '.joblib'
     """
 
-    config_cls = MLConfig
     checkpoint_suffix = ".joblib"
+    reserved_hyperparameters = LIBRARY_RESERVED_HYPERPARAMETERS
+
+    @property
+    def early_stopping(self) -> bool:
+        """``hyperparameters["early_stopping"]``, False when unset.
+
+        Whether the head turns on its library's native early stopping.
+
+        Examples
+        --------
+        >>> head.early_stopping
+        False
+        """
+        return bool(self.config.hyperparameters.get("early_stopping", False))
+
+    @property
+    def early_stopping_patience(self) -> int:
+        """``hyperparameters["early_stopping_patience"]``, 5 when unset.
+
+        Rounds (or the library's own unit) without improvement before the
+        library's early stopping triggers.
+
+        Examples
+        --------
+        >>> head.early_stopping_patience
+        5
+        """
+        return int(self.config.hyperparameters.get("early_stopping_patience", 5))
 
     @abstractmethod
     def _init_model(
@@ -2073,7 +2193,8 @@ class MLModel(BaseModel):
         Tree libraries often build the real model only inside ``_fit_model``,
         in which case this may just resolve the hyperparameters and return
         None. ``load()`` does not call it: the checkpoint holds the whole
-        model.
+        model. ``hyperparameters`` holds the reserved keys too; pass it
+        through ``self.head_hyperparameters`` before handing it to a library.
         """
 
     @abstractmethod
@@ -2097,7 +2218,7 @@ class MLModel(BaseModel):
         ``val_x`` and ``val_y`` are None when the validation segment is empty
         (``val_size == 0``). Early stopping and rollback to the best model are
         the hook's job, using the library's native mechanism and honouring
-        ``config.early_stopping`` and ``config.early_stopping_patience``. On
+        ``early_stopping`` and ``early_stopping_patience``. On
         return ``self.model`` must be the model to save.
         """
 

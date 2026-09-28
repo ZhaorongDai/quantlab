@@ -17,9 +17,9 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, MLConfig
+from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, ModelConfig
 from quantlab.base.factor import FactorKunQuant
-from quantlab.base.model import MLModel
+from quantlab.base.model import LibraryModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.label.forward import Forward
 
@@ -58,7 +58,7 @@ class OneBarReturn(FactorKunQuant):
         return Function(builder.ops)
 
 
-class LeastSquaresHead(MLModel):
+class LeastSquaresHead(LibraryModel):
     """A linear head fitted by least squares, so its weights depend on the data."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -109,7 +109,7 @@ def parts(spot_kline_zarr, tmp_path):
 def _model(parts, tmp_path, start, end, *, strategy="cal", train_end=None):
     factor, label = parts
     return LeastSquaresHead(
-        MLConfig(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(tmp_path / "ckpt" / f"{start}_{end}"),

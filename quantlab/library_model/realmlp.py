@@ -22,14 +22,14 @@ from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
-from quantlab.ml_model.tabkit import TabkitRegressor, active_callbacks
+from quantlab.library_model.tabkit import TabkitRegressor, active_callbacks
 
 
 class _WandbEpochCallback(Callback):
     """Log every epoch's training loss and validation error to a W&B run.
 
     A Lightning callback that pytabkit's ``TabNNModule`` receives through
-    ``quantlab.ml_model.tabkit.active_callbacks``. The training loss is the
+    ``quantlab.library_model.tabkit.active_callbacks``. The training loss is the
     mean of the per-batch losses ``training_step`` returns. The validation
     error is recomputed from the module's own validation predictions the
     way its ``on_validation_epoch_end`` computes it, for every name in
@@ -148,10 +148,10 @@ class RealMLPRegressor(TabkitRegressor):
     ``RealMLP_TD_Regressor`` (``n_epochs``, ``hidden_sizes``, ``lr``,
     ``device``, ``n_threads``, ...).
 
-    With ``config.early_stopping`` set and a validation segment that has at
-    least one finite-label row, pytabkit's early stopping watches the
+    With ``hyperparameters["early_stopping"]`` set and a validation segment
+    that has at least one finite-label row, pytabkit's early stopping watches the
     validation loss with ``early_stopping_additive_patience =
-    config.early_stopping_patience`` and a multiplicative patience of
+    hyperparameters["early_stopping_patience"]`` and a multiplicative patience of
     ``1.0``, so patience counts epochs without improvement. The fitted model
     is already rolled back to the best epoch, so the ``.joblib`` checkpoint
     is the best model. The stopping epoch is written to the run summary as
@@ -161,7 +161,7 @@ class RealMLPRegressor(TabkitRegressor):
     error pytabkit stops on (``val-rmse``), at ``step=epoch``, plus
     ``best_val_rmse`` and ``epochs_trained`` in the summary, through a
     Lightning callback injected into pytabkit's trainer (see
-    ``quantlab.ml_model.tabkit.active_callbacks``).
+    ``quantlab.library_model.tabkit.active_callbacks``).
 
     ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
     fold does its own early stopping and writes its own ``.joblib``. With
@@ -171,13 +171,13 @@ class RealMLPRegressor(TabkitRegressor):
 
     Parameters
     ----------
-    config : MLConfig
+    config : ModelConfig
         Factors, labels, date ranges, early-stopping settings and
-        hyperparameters. See ``MLConfig``.
+        hyperparameters. See ``ModelConfig``.
 
     Examples
     --------
-    >>> config = MLConfig(
+    >>> config = ModelConfig(
     ...     factors=[alpha],            # factor objects
     ...     labels=[fwd_return],        # label objects
     ...     model_save_dir="checkpoints",
@@ -185,8 +185,10 @@ class RealMLPRegressor(TabkitRegressor):
     ...     label_data_strategy="read",
     ...     train_start="2024-01-01", train_end="2024-02-09",
     ...     test_start="2024-02-10", test_end="2024-02-29",
-    ...     early_stopping=True, early_stopping_patience=5,
-    ...     hyperparameters={"n_epochs": 50, "n_threads": 4},
+    ...     hyperparameters={
+    ...         "early_stopping": True, "early_stopping_patience": 5,
+    ...         "n_epochs": 50, "n_threads": 4,
+    ...     },
     ... )
     >>> model = RealMLPRegressor(config)
     >>> checkpoint = model.collect().train()
@@ -205,12 +207,12 @@ class RealMLPRegressor(TabkitRegressor):
 
     def _early_stopping_params(self) -> dict:
         """Return the pytabkit early-stopping keys implied by the config."""
-        if not self.config.early_stopping:
+        if not self.early_stopping:
             return {}
         return {
             "use_early_stopping": True,
             "early_stopping_additive_patience": int(
-                self.config.early_stopping_patience
+                self.early_stopping_patience
             ),
             "early_stopping_multiplicative_patience": 1.0,
         }

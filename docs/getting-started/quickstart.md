@@ -159,7 +159,7 @@ would write the factor values; this example computes them in memory and never bu
 ## Step 3: train a model
 
 A model takes a list of factors and a list of labels. `XGBoostRegressor` is a
-gradient-boosted tree model configured with `MLConfig`. The dates split the model's data in
+gradient-boosted tree model configured with `ModelConfig`. The dates split the model's data in
 time: it trains on bars 0 to 249, holding the last 20 % of that span (`val_size=0.2`) out for
 early stopping, and is evaluated on bars 250 to 299. Keeping the test period strictly after
 the training period is what makes the evaluation honest; a random split would let the model
@@ -168,19 +168,20 @@ lookahead) of the earlier segment, so no label it fits on reads a bar of the lat
 the last label it trains on reads bar 249.
 
 ```python
-from quantlab.base.config import MLConfig
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.base.config import ModelConfig
+from quantlab.library_model.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(
-    MLConfig(
+    ModelConfig(
         factors=[factor],
         labels=[label],
         model_save_dir=str(root / "models"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
-        hyperparameters={"num_boost_round": 50, "max_depth": 3, "eta": 0.1},
-        early_stopping=True,
-        early_stopping_patience=10,
+        hyperparameters={
+            "num_boost_round": 50, "max_depth": 3, "eta": 0.1,
+            "early_stopping": True, "early_stopping_patience": 10,
+        },
         val_size=0.2,
         start_date="2022-01-03",  # bar 0
         end_date="2023-02-24",    # bar 299

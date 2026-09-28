@@ -740,12 +740,30 @@ class ForwardConfig(_FrozenConfig):
 
 
 @dataclass(frozen=True)
-class DLConfig(_FrozenConfig):
-    """Config of a torch model head, trained one cross-section per step.
+class ModelConfig(_FrozenConfig):
+    """Config of every model head, torch or library.
 
-    A step is one bar, so there is no batch size. When training stops is the
-    head's ``_should_stop`` hook (see ``DLModel``), capped by
-    ``epochs``. ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
+    It holds only what both variants read. Everything a variant or a head
+    reads for training goes in ``hyperparameters``, one flat dict. The base
+    classes and the shipped heads read these reserved keys from it:
+
+    ``epochs``
+        Epoch cap of a ``TorchModel``; default 100, a positive integer.
+    ``lr``
+        Learning rate of the default ``TorchModel._init_optim``; default
+        ``1e-3``.
+    ``early_stopping``, ``early_stopping_patience``
+        The library's native early stopping in the shipped library heads;
+        default off and 5 rounds (or the library's own unit).
+    ``batch_size``, ``num_workers``, ``panel_device``, ``panel_dtype``
+        Reserved for the torch data loader and training panel.
+
+    ``_init_model`` receives the whole dict, reserved keys included, so a
+    head never splats it into a network or a library constructor; it reads
+    its own keys by name, or drops the reserved ones with
+    ``BaseModel.head_hyperparameters``.
+
+    ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
     training and test windows; rolling cross-validation overwrites them fold
     by fold. ``start_date`` and ``end_date`` bound all the data the model
     collects; they are passed to every factor and label per request.
@@ -754,88 +772,7 @@ class DLConfig(_FrozenConfig):
     --------
     With ``factors`` and ``labels`` lists of factor objects built earlier:
 
-    >>> cfg = DLConfig(
-    ...     factors=factors,
-    ...     labels=labels,
-    ...     model_save_dir="/data/models/gats",
-    ...     factor_data_strategy="read",
-    ...     label_data_strategy="read",
-    ...     train_start="2018-01-01",
-    ...     train_end="2022-12-31",
-    ...     test_start="2023-01-01",
-    ...     test_end="2023-12-31",
-    ...     hyperparameters={"hidden_size": 64, "dropout": 0.1},
-    ...     epochs=50,
-    ... )
-    >>> cfg.lr, cfg.val_size
-    (0.001, 0.2)
-    """
-
-    #: The factors whose values form the model's input features.
-    factors: list["Factor"]
-    #: The factors (labels) whose values form the prediction targets.
-    labels: list["Factor"]
-    #: Root directory checkpoints and their ``config.json`` are written under.
-    model_save_dir: str
-    #: ``"read"`` loads factor values from their stores; ``"cal"`` computes
-    #: them first.
-    factor_data_strategy: Literal["read", "cal"]
-    #: ``"read"`` loads label values from their stores; ``"cal"`` computes
-    #: them first.
-    label_data_strategy: Literal["read", "cal"]
-    #: First date of data to collect, inclusive. ``None`` means no lower
-    #: bound.
-    start_date: str | None = None
-    #: Last date of data to collect, inclusive. ``None`` means no upper bound.
-    end_date: str | None = None
-
-    #: Architecture-specific hyperparameters passed to the model head.
-    hyperparameters: dict = field(default_factory=dict)
-    #: Learning rate, read by the head's ``_init_optim``.
-    lr: float = 1e-3
-    #: Maximum number of training epochs; the head's ``_should_stop`` may end
-    #: training earlier.
-    epochs: int = 100
-    #: Fraction of the training window held out, at its end, for validation.
-    val_size: float = 0.2
-    #: Seed applied to Python, numpy and torch before training.
-    random_seed: int = 42
-    #: First date of the training window, inclusive.
-    train_start: str | None = None
-    #: Last date of the training window, inclusive.
-    train_end: str | None = None
-    #: First date of the test window, inclusive.
-    test_start: str | None = None
-    #: Last date of the test window, inclusive.
-    test_end: str | None = None
-
-    #: Dotted import path of the model class; filled by the config setter.
-    name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict via ``dataclasses.asdict``.
-
-        Examples
-        --------
-        >>> cfg.to_dict()["epochs"]
-        50
-        """
-        return asdict(self)
-
-
-@dataclass(frozen=True)
-class MLConfig(_FrozenConfig):
-    """Config of a tree or other non-torch model head.
-
-    There is no ``epochs`` field: an ML head has no outer epoch loop, and
-    ``early_stopping_patience`` counts boosting rounds (or the library's own
-    unit) through the library's native early stopping. See ``docs/model.md``.
-
-    Examples
-    --------
-    With ``factors`` and ``labels`` lists of factor objects built earlier:
-
-    >>> cfg = MLConfig(
+    >>> cfg = ModelConfig(
     ...     factors=factors,
     ...     labels=labels,
     ...     model_save_dir="/data/models/xgb",
@@ -845,12 +782,10 @@ class MLConfig(_FrozenConfig):
     ...     train_end="2022-12-31",
     ...     test_start="2023-01-01",
     ...     test_end="2023-12-31",
-    ...     hyperparameters={"max_depth": 6, "learning_rate": 0.05},
-    ...     early_stopping=True,
-    ...     early_stopping_patience=20,
+    ...     hyperparameters={"max_depth": 6, "early_stopping": True},
     ... )
-    >>> hasattr(cfg, "epochs")
-    False
+    >>> cfg.val_size, cfg.hyperparameters["early_stopping"]
+    (0.2, True)
     """
 
     #: The factors whose values form the model's input features.
@@ -871,15 +806,13 @@ class MLConfig(_FrozenConfig):
     #: Last date of data to collect, inclusive. ``None`` means no upper bound.
     end_date: str | None = None
 
-    #: Library hyperparameters passed to the model head.
+    #: Training and architecture settings, one flat dict; see the reserved
+    #: keys above.
     hyperparameters: dict = field(default_factory=dict)
-    #: Enable the library's native early stopping on the validation split.
-    early_stopping: bool = False
-    #: Rounds without improvement tolerated before early stopping triggers.
-    early_stopping_patience: int = 5
     #: Fraction of the training window held out, at its end, for validation.
     val_size: float = 0.2
-    #: Seed applied before training.
+    #: Seed applied to Python, numpy and, for torch heads, torch before
+    #: training.
     random_seed: int = 42
     #: First date of the training window, inclusive.
     train_start: str | None = None
@@ -899,7 +832,7 @@ class MLConfig(_FrozenConfig):
         Examples
         --------
         >>> cfg.to_dict()["hyperparameters"]
-        {'max_depth': 6, 'learning_rate': 0.05}
+        {'max_depth': 6, 'early_stopping': True}
         """
         return asdict(self)
 

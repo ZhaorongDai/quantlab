@@ -21,9 +21,9 @@ from quantlab.base.config import (
     ConstituentDatasetConfig,
     CrspDatasetConfig,
     DatasetConfig,
-    DLConfig,
+    ModelConfig,
     FactorConfig,
-    MLConfig,
+    ModelConfig,
     NbboDatasetConfig,
     PolarsFactorConfig,
 )
@@ -43,10 +43,10 @@ from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 from quantlab.factor.momentum import Momentum
 from quantlab.label.forward import Forward
 from quantlab.label.fret import BinaryReturn, Return
-from quantlab.ml_model.realmlp import RealMLPRegressor
-from quantlab.ml_model.xgb import XGBoostRegressor
-from quantlab.ml_model.xgb_td import XGBTDRegressor
-from tests.dl_heads import MeanContextHead
+from quantlab.library_model.realmlp import RealMLPRegressor
+from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.library_model.xgb_td import XGBTDRegressor
+from tests.torch_heads import MeanContextHead
 
 _OHLCV = ("open", "high", "low", "close", "volume", "amount")
 _ADJUSTED = ("adjHigh", "adjLow", "adjClose", "adjOpen", "adjVolume")
@@ -375,10 +375,10 @@ def _model_config(config_cls, factor_cases, tmp_path: Path):
 
 
 _MODEL_CASES = [
-    (XGBoostRegressor, MLConfig),
-    (RealMLPRegressor, MLConfig),
-    (XGBTDRegressor, MLConfig),
-    (MeanContextHead, DLConfig),
+    (XGBoostRegressor, ModelConfig),
+    (RealMLPRegressor, ModelConfig),
+    (XGBTDRegressor, ModelConfig),
+    (MeanContextHead, ModelConfig),
 ]
 
 
@@ -422,8 +422,9 @@ def test_a_model_rebuilds_from_config_json_into_an_equal_config(
 
 
 def test_a_model_rejects_the_wrong_config_class(factor_cases, tmp_path: Path) -> None:
-    with pytest.raises(TypeError, match="requires a MLConfig"):
-        XGBoostRegressor(_model_config(DLConfig, factor_cases, tmp_path))
+    config = _model_config(ModelConfig, factor_cases, tmp_path)
+    with pytest.raises(TypeError, match="requires a ModelConfig, got dict"):
+        XGBoostRegressor(dataclasses.asdict(config))
 
 
 # --------------------------------------------------------------------------

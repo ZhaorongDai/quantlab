@@ -18,7 +18,7 @@
 4. **模型训练**：在训练窗口上训练一次。
 5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500 和全市场）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
 
-全市场脚本没有第 1 步：全市场 store 在转换时已按天筛成普通股，所以每一步都通过 `CrspStockDataset` 直接读它，不写派生仓库。因子分析 pipeline 跑数据、因子、标签几步，然后对两个因子库的每一列调用 `Factor.analyze()`，不训练模型。不使用命令行参数，也没有设置对象：每个文件顶部只有几个常量（`DATA_ROOT`、日期、`HORIZON`、`WANDB_MODE`），quantlab 的各个 config 都在用到的地方直接构造（`DatasetConfig`、`FactorConfig`、`MLConfig`、`CrossSectionBacktestConfig`），每一步做什么就是它拿到的 config。
+全市场脚本没有第 1 步：全市场 store 在转换时已按天筛成普通股，所以每一步都通过 `CrspStockDataset` 直接读它，不写派生仓库。因子分析 pipeline 跑数据、因子、标签几步，然后对两个因子库的每一列调用 `Factor.analyze()`，不训练模型。不使用命令行参数，也没有设置对象：每个文件顶部只有几个常量（`DATA_ROOT`、日期、`HORIZON`、`WANDB_MODE`），quantlab 的各个 config 都在用到的地方直接构造（`DatasetConfig`、`FactorConfig`、`ModelConfig`、`CrossSectionBacktestConfig`），每一步做什么就是它拿到的 config。
 
 ## 前置条件
 
@@ -80,7 +80,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `HORIZON` | 标签跨度（bar 数）；标签向前读 `HORIZON + 1` 根 bar（delay 为 1） |
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
-| `build_model()` | `MLConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |
+| `build_model()` | `ModelConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |
 | `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10，全市场为 100）、`direction`、成本，以及 ETF `benchmark_dataset` |
 | `analyze()` | `Factor.analyze()` 的 `quantiles` 和 `factor_names`（因子分析 pipeline） |
 

@@ -25,9 +25,9 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, ForwardConfig, MLConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
-from quantlab.base.model import MLModel
+from quantlab.base.model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 
@@ -79,7 +79,7 @@ class OpenReturn(FactorPolars):
                 .select(["timestamp", "symbol", "open_ret_1"]))
 
 
-class MomentumHead(MLModel):
+class MomentumHead(LibraryModel):
     """Predicts its first feature, so the score is the past return."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -104,7 +104,7 @@ def make_label(cfg, delay=1):
 def make_model(root, cfg, days, train_end=39, delay=1):
     day = lambda i: str(days[i].date())
     factor = PastReturn(PolarsFactorConfig(warmup_bars=5, dataset=prices_of(cfg)))
-    return MomentumHead(MLConfig(
+    return MomentumHead(ModelConfig(
         factors=[factor], labels=[make_label(cfg, delay)], model_save_dir=str(root / "models"),
         factor_data_strategy="cal", label_data_strategy="cal", val_size=0.0,
         start_date=day(0), end_date=day(len(days) - 1),

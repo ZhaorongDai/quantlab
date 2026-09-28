@@ -40,7 +40,7 @@ from loguru import logger
 
 import quantlab.utils.module as module_utils
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, MLConfig
+from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig
 from quantlab.utils.jsonable import to_jsonable
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -233,7 +233,7 @@ def test_rebuilt_backtester_has_the_same_class_config_class_and_config(tmp_path)
 
     assert type(rebuilt) is USEquityCrossectionSelectStockVectorBt
     assert type(rebuilt.config) is CrossSectionBacktestConfig
-    assert type(rebuilt.config.model.config) is MLConfig
+    assert type(rebuilt.config.model.config) is ModelConfig
     assert rebuilt.expected_fingerprint is None
     assert _json(rebuilt.get_config()) == saved
 

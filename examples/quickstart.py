@@ -45,12 +45,12 @@ from quantlab.base.config import (
     CrossSectionBacktestConfig,
     DatasetConfig,
     FactorConfig,
-    MLConfig,
+    ModelConfig,
 )
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.library_model.xgb import XGBoostRegressor
 from quantlab.utils.module import load_backtester_from_config
 
 # Zarr 3 warns that consolidated metadata is not part of its spec; harmless.
@@ -132,7 +132,7 @@ def make_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoos
         )
     )
     return XGBoostRegressor(
-        MLConfig(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(root / "models"),
@@ -140,9 +140,12 @@ def make_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoos
             # them from their Zarr stores.
             factor_data_strategy="cal",
             label_data_strategy="cal",
-            hyperparameters={"num_boost_round": 50, "max_depth": 3, "eta": 0.1},
-            early_stopping=True,
-            early_stopping_patience=10,
+            # early_stopping* are keys the library heads read; the rest go
+            # to xgb.train.
+            hyperparameters={
+                "num_boost_round": 50, "max_depth": 3, "eta": 0.1,
+                "early_stopping": True, "early_stopping_patience": 10,
+            },
             val_size=0.2,
             **dates,
         )

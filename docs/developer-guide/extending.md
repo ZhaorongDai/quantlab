@@ -24,7 +24,7 @@ The abstract base class of each layer lives in `quantlab/base/` and names the
 hooks a subclass fills in. The concrete class lives with the code that uses
 it: datasets in `quantlab/dataset/`, vendor clients in `quantlab/acquisition/`,
 factors in `quantlab/factor/`, labels in `quantlab/label/`, model heads in
-`quantlab/dl_model/` or `quantlab/ml_model/`, backtesters in
+`quantlab/torch_model/` or `quantlab/library_model/`, backtesters in
 `quantlab/backtest/`. Support code that is not itself a dataset or an
 acquisition goes in that layer's private `_support/` package.
 
@@ -592,7 +592,7 @@ collecting features and labels, the train/validation/test split and
 walk-forward cross-validation (both purged by the labels' lookahead), checkpoints with a `config.json` beside them, and
 `predict_panel`. Two variants add the framework-specific loop.
 
-`MLModel` is for numpy-based libraries such as tree models. Its four hooks
+`LibraryModel` is for numpy-based libraries such as tree models. Its four hooks
 are `_init_model`, `_preprocess`, `_fit_model` (fit once, with the library's
 own early stopping if it has one, and leave the fitted model in `self.model`)
 and `_forward`. Arrays are `[time, symbol, feature]` in and
@@ -605,11 +605,11 @@ eight symbols. A ridge regression:
 ```python
 import numpy as np
 
-from quantlab.base.config import MLConfig
-from quantlab.base.model import MLModel
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import LibraryModel
 
 
-class RidgeHead(MLModel):
+class RidgeHead(LibraryModel):
     """Ridge regression on every symbol-bar with finite features and labels."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -634,7 +634,7 @@ class RidgeHead(MLModel):
         return {"alpha": float(self.config.hyperparameters.get("alpha", 1.0))}
 
 
-ridge = RidgeHead(MLConfig(
+ridge = RidgeHead(ModelConfig(
     factors=factors, labels=labels, model_save_dir=str(root / "models"),
     factor_data_strategy="cal", label_data_strategy="cal",
     hyperparameters={"alpha": 0.1}, val_size=0.2,
@@ -660,7 +660,7 @@ before `_init_model` (to log the run config), so either compute it from
 `XGBoostRegressor` does. The checkpoint
 is a joblib pickle of `self.model`; only load files you trust.
 
-`DLModel` is for PyTorch networks trained on one cross-section per step: the
+`TorchModel` is for PyTorch networks trained on one cross-section per step: the
 symbols with a finite feature at a bar, each with its own window of the last
 `window_bars` bars. A head writes `window_bars`, `_init_model(num_features,
 num_labels, hyperparameters)`, returning an `nn.Module` that maps
@@ -669,13 +669,17 @@ num_labels, hyperparameters)`, returning an `nn.Module` that maps
 `mask`, `y_raw`, `symbols`, `timestamp`) with missing labels already masked.
 Every other choice is an optional hook with a default: `_transform_feature`
 (clip to ±3, NaN to 0), `_transform_target` (none), `_init_optim` (Adam at
-`config.lr`), `_train_one_batch` / `_val_one_batch` / `_test_one_batch`,
+the `lr` hyperparameter), `_train_one_batch` / `_val_one_batch` / `_test_one_batch`,
 `_forward` (the network's output is the prediction) and the stop hooks
-`_on_fit_start` / `_should_stop` / `_on_fit_end` (run `config.epochs`
-epochs). `quantlab.dl_model.training` has helpers for them: `masked_mse`,
+`_on_fit_start` / `_should_stop` / `_on_fit_end` (run the `epochs`
+hyperparameter's count of epochs). `_init_model` receives the whole
+`hyperparameters` dict, whose reserved keys (`epochs`, `lr`, `batch_size`,
+`num_workers`, `panel_device`, `panel_dtype`, `early_stopping`,
+`early_stopping_patience`) the base classes read, so read the head's own keys
+by name rather than splatting the dict into the network. `quantlab.torch_model.training` has helpers for them: `masked_mse`,
 `cs_rank_norm`, `cs_zscore`, `drop_extreme` and `TrainLossThreshold`. The
 base class builds the windows, shuffles the bars, masks the targets, runs
-the epoch loop, and writes the same `metrics.json` as `MLModel`. The model
+the epoch loop, and writes the same `metrics.json` as `LibraryModel`. The model
 requests `window_bars - 1` extra bars of each factor before its start date.
 A GRU per symbol followed by attention across the bar's symbols:
 
@@ -683,9 +687,9 @@ A GRU per symbol followed by attention across the bar's symbols:
 import torch
 from torch import nn
 
-from quantlab.base.config import DLConfig
-from quantlab.base.model import DLModel
-from quantlab.dl_model.training import cs_rank_norm, masked_mse
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import TorchModel
+from quantlab.torch_model.training import cs_rank_norm, masked_mse
 
 
 class CrossSectionAttention(nn.Module):
@@ -703,7 +707,7 @@ class CrossSectionAttention(nn.Module):
         return self.out(torch.cat([h, weights @ h], dim=1))  # [S_t, L]
 
 
-class AttentionHead(DLModel):
+class AttentionHead(TorchModel):
     window_bars = 10
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -718,13 +722,13 @@ class AttentionHead(DLModel):
         return cs_rank_norm(y), None
 
 
-head = AttentionHead(DLConfig(
+head = AttentionHead(ModelConfig(
     factors=factors, labels=labels, model_save_dir=str(root / "models"),
     factor_data_strategy="cal", label_data_strategy="cal",
     start_date="2024-01-16", end_date="2024-06-14",
     train_start="2024-01-16", train_end="2024-04-30",
     test_start="2024-05-01", test_end="2024-06-14",
-    epochs=20, lr=1e-2, hyperparameters={"hidden": 8},
+    hyperparameters={"epochs": 20, "lr": 1e-2, "hidden": 8},
 ))
 print(head.collect().train().name)
 ```
@@ -739,8 +743,8 @@ so the first training bar has a full ten-bar window.
 Every training run opens a Weights & Biases run; set `WANDB_MODE=disabled` in
 the environment to keep it offline. On macOS, set `OMP_NUM_THREADS=1` before
 importing anything when one process uses both torch and xgboost. The
-reference heads are `quantlab/ml_model/xgb.py` and
-`quantlab/ml_model/realmlp.py`.
+reference heads are `quantlab/library_model/xgb.py` and
+`quantlab/library_model/realmlp.py`.
 
 ## A backtest market or selection rule
 

@@ -1,4 +1,4 @@
-"""`DLModel` trains on one cross-section per step (issue #39, ADR 0006).
+"""`TorchModel` trains on one cross-section per step (issue #39, ADR 0006).
 
 A deep head maps `[S_t, N, F]` to `[S_t, L]`: the symbols with a finite
 feature at a bar, each with its last N bars. The base class builds the
@@ -18,7 +18,7 @@ What turns this file red:
 - the stop hooks are not called per fit and per epoch, or the threshold
   helper stops at the wrong epoch;
 - a hook default is missing, or a hook the head overrides is not the one used;
-- a DL `train()` writes no `metrics.json`.
+- a torch `train()` writes no `metrics.json`.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -35,12 +35,12 @@ import xarray as xr
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DLConfig, FactorConfig, ForwardConfig
+from quantlab.base.config import ModelConfig, FactorConfig, ForwardConfig
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.factor import FactorKunQuant
-from quantlab.base.model import BaseModel, DLModel
+from quantlab.base.model import BaseModel, TorchModel
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.dl_model.training import (
+from quantlab.torch_model.training import (
     CrossSectionBatch,
     TrainLossThreshold,
     cs_rank_norm,
@@ -50,7 +50,7 @@ from quantlab.dl_model.training import (
 )
 from quantlab.label.forward import Forward
 from quantlab.utils.metrics import regression_panel_metrics
-from tests.dl_heads import MeanContextHead, RecordingHead
+from tests.torch_heads import MeanContextHead, RecordingHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -144,7 +144,10 @@ def _label_of(features: dict[str, np.ndarray], seed=1) -> np.ndarray:
 
 def _model(tmp_path: Path, features, label, *, cls=MeanContextHead, symbols=SYMBOLS,
            name="ckpt", **overrides):
-    hp = overrides.pop("hyperparameters", {})
+    hp = {"epochs": 3, "lr": 1e-2, **overrides.pop("hyperparameters", {})}
+    for key in ("epochs", "lr"):
+        if key in overrides:
+            hp[key] = overrides.pop(key)
     kwargs = dict(
         factors=[Panel(features, symbols)],
         labels=[StubLabel(Panel({"ret": label}, symbols))],
@@ -157,12 +160,10 @@ def _model(tmp_path: Path, features, label, *, cls=MeanContextHead, symbols=SYMB
         train_end=_day(29),
         test_start=_day(30),
         test_end=_day(N_TIMES - 1),
-        epochs=3,
-        lr=1e-2,
         hyperparameters=hp,
     )
     kwargs.update(overrides)
-    return cls(DLConfig(**kwargs)).collect()
+    return cls(ModelConfig(**kwargs)).collect()
 
 
 def _weights(model) -> dict[str, torch.Tensor]:
@@ -319,13 +320,13 @@ def warm_model(spot_kline_zarr, tmp_path, recorders):
                                   span=1, delay=0))
 
     def build(start="2024-01-20", strategy="cal"):
-        return MeanContextHead(DLConfig(
+        return MeanContextHead(ModelConfig(
             factors=[factor], labels=[label], model_save_dir=str(tmp_path / "ckpt"),
             factor_data_strategy=strategy, label_data_strategy=strategy,
             start_date=start, end_date="2024-02-25",
             train_start=start, train_end="2024-02-10",
             test_start="2024-02-11", test_end="2024-02-25",
-            epochs=2, hyperparameters={"window_bars": 5},
+            hyperparameters={"window_bars": 5, "epochs": 2},
         ))
 
     build.factor, build.label = factor, label
@@ -481,7 +482,7 @@ def test_train_loss_threshold_stops_at_the_threshold_or_the_cap():
     [
         (("threshold", float("inf"), 40), 1),
         (("threshold", -1.0, 3), 3),
-        (("threshold", -1.0, 40), 5),  # config.epochs caps
+        (("threshold", -1.0, 40), 5),  # the epochs hyperparameter caps
     ],
 )
 def test_a_fit_runs_the_epochs_the_heads_stop_hook_and_config_allow(
@@ -496,7 +497,7 @@ def test_a_fit_runs_the_epochs_the_heads_stop_hook_and_config_allow(
 
 
 class DefaultStoppingHead(MeanContextHead):
-    """Uses DLModel's own stop hooks, recording when each is called."""
+    """Uses TorchModel's own stop hooks, recording when each is called."""
 
     def _on_fit_start(self):
         self.calls = ["start"]
@@ -636,7 +637,7 @@ def test_test_hook_runs_on_every_test_bar_after_each_epoch(tmp_path, recorders):
 # ---------------------------------------------------------------------------
 
 
-class MinimalHead(DLModel):
+class MinimalHead(TorchModel):
     """Only what a head must write: a window, a network and a loss."""
 
     window_bars = 2

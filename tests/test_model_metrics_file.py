@@ -25,10 +25,10 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import BaseModel, MLModel
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import BaseModel, LibraryModel
 from quantlab.utils.jsonable import to_jsonable
-from tests.dl_heads import OneBarHead
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 60
@@ -100,7 +100,7 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class StubMLHead(MLModel):
+class StubLibraryHead(LibraryModel):
     """A numpy head: predicts the first factor for every label."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -116,12 +116,12 @@ class StubMLHead(MLModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-class NaNMetricMLHead(StubMLHead):
+class NaNMetricLibraryHead(StubLibraryHead):
     def _compute_metrics(self, y, pred):
         return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
 
 
-def _model(tmp_path: Path, cls=StubMLHead, **overrides):
+def _model(tmp_path: Path, cls=StubLibraryHead, **overrides):
     kwargs = dict(
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(FakePanel(["ret"], seed=2))],
@@ -136,7 +136,7 @@ def _model(tmp_path: Path, cls=StubMLHead, **overrides):
         test_end=END,
     )
     kwargs.update(overrides)
-    config_cls = DLConfig if cls is OneBarHead else MLConfig
+    config_cls = ModelConfig if cls is OneBarHead else ModelConfig
     model = cls(config_cls(**kwargs))
     model.collect()
     return model
@@ -149,7 +149,7 @@ def _strict_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject)
 
 
-@pytest.mark.parametrize("cls", [StubMLHead, OneBarHead], ids=["ml", "dl"])
+@pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
 def test_train_writes_metrics_json_equal_to_the_wandb_summary(tmp_path, recorders, cls):
     checkpoint = _model(tmp_path, cls=cls).train()
 
@@ -161,7 +161,7 @@ def test_train_writes_metrics_json_equal_to_the_wandb_summary(tmp_path, recorder
     assert metrics == to_jsonable(run.summary)
 
 
-@pytest.mark.parametrize("cls", [StubMLHead, OneBarHead], ids=["ml", "dl"])
+@pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
 def test_metrics_json_has_no_val_keys_without_a_validation_segment(
     tmp_path, recorders, cls
 ):
@@ -172,7 +172,7 @@ def test_metrics_json_has_no_val_keys_without_a_validation_segment(
 
 
 def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path, recorders):
-    checkpoint = _model(tmp_path, cls=NaNMetricMLHead).train()
+    checkpoint = _model(tmp_path, cls=NaNMetricLibraryHead).train()
 
     metrics = _strict_json(checkpoint.parent / "metrics.json")
     for split in SPLITS:
@@ -203,5 +203,5 @@ def test_cv_manifest_v2_holds_every_split_and_the_cv_mean_block(tmp_path, record
             assert cv_mean[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
 
     summary_run = recorders[-1]
-    assert summary_run.name == "StubMLHead_cv_summary"
+    assert summary_run.name == "StubLibraryHead_cv_summary"
     assert cv_mean == to_jsonable(summary_run.summary)

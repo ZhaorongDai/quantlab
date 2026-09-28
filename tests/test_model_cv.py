@@ -4,7 +4,7 @@ Before this file the repository had ZERO `train_cv` tests.
 
 The first two tests are GOLDENS captured against the pre-refactor
 `quantlab/base/model.py`, before `BaseModel` was split into
-`BaseModel` / `DLModel` / `MLModel` and before the fold-boundary arithmetic
+`BaseModel` / `TorchModel` / `LibraryModel` and before the fold-boundary arithmetic
 was pulled out of `train_cv`'s two copy-pasted branches into one generator.
 They were run green on the untouched code and committed on their own, ahead of
 any production change. Their assertions must not be edited afterwards: a
@@ -48,9 +48,9 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import BaseModel, DLModel, MLModel
-from tests.dl_heads import OneBarHead
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import BaseModel, TorchModel, LibraryModel
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 # --------------------------------------------------------------------------
@@ -124,7 +124,7 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class GoldenDLHead(OneBarHead):
+class GoldenTorchHead(OneBarHead):
     """A tiny one-bar torch head, one epoch.
 
     `_init_model` is where the dates are recorded: `_fit` calls it once per
@@ -138,8 +138,8 @@ class GoldenDLHead(OneBarHead):
         return super()._init_model(num_features, num_labels, hyperparameters)
 
 
-def _dl_config(tmp_path: Path, save_dir: str) -> DLConfig:
-    return DLConfig(
+def _torch_config(tmp_path: Path, save_dir: str) -> ModelConfig:
+    return ModelConfig(
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(FakePanel(["ret"], seed=2))],
         model_save_dir=str(tmp_path / save_dir),
@@ -147,9 +147,7 @@ def _dl_config(tmp_path: Path, save_dir: str) -> DLConfig:
         label_data_strategy="cal",
         start_date=START,
         end_date=END,
-        epochs=1,
-        lr=1e-3,
-        hyperparameters={},
+        hyperparameters={"epochs": 1, "lr": 1e-3},
     )
 
 
@@ -187,7 +185,7 @@ def _assert_golden_fold_dirs(root: Path, cls_name: str, suffix: str) -> None:
         assert contents == {f"{name}{suffix}", "config.json"}, contents
 
 
-def test_dl_train_cv_fold_geometry_golden_sequential(tmp_path):
+def test_torch_train_cv_fold_geometry_golden_sequential(tmp_path):
     """Golden: the sequential branch's folds, checkpoints and trained dates.
 
     Turns red if the fold-boundary arithmetic changes in any way (test size,
@@ -195,16 +193,16 @@ def test_dl_train_cv_fold_geometry_golden_sequential(tmp_path):
     rule), if a fold trains on dates other than the ones it computed, or if
     the checkpoint layout changes.
     """
-    model = GoldenDLHead(_dl_config(tmp_path, "ckpt_seq"))
+    model = GoldenTorchHead(_torch_config(tmp_path, "ckpt_seq"))
     model.collect()
 
     model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
 
     assert DL_FOLD_DATES == _golden_fold_dates(model)
-    _assert_golden_fold_dirs(tmp_path / "ckpt_seq", "GoldenDLHead", ".pth")
+    _assert_golden_fold_dirs(tmp_path / "ckpt_seq", "GoldenTorchHead", ".pth")
 
 
-def test_dl_train_cv_fold_geometry_golden_parallel(tmp_path):
+def test_torch_train_cv_fold_geometry_golden_parallel(tmp_path):
     """Golden: `parallel=True` trains the same folds on the same dates.
 
     Order is not asserted -- threads finish in any order -- but the SET of
@@ -213,7 +211,7 @@ def test_dl_train_cv_fold_geometry_golden_parallel(tmp_path):
     from the sequential one, or if a fold's deep copy trains on the original
     instance's dates.
     """
-    model = GoldenDLHead(_dl_config(tmp_path, "ckpt_par"))
+    model = GoldenTorchHead(_torch_config(tmp_path, "ckpt_par"))
     model.collect()
 
     model.train_cv(
@@ -224,7 +222,7 @@ def test_dl_train_cv_fold_geometry_golden_parallel(tmp_path):
 
     assert sorted(DL_FOLD_DATES) == sorted(_golden_fold_dates(model))
     assert len(DL_FOLD_DATES) == GOLDEN_N_FOLDS
-    _assert_golden_fold_dirs(tmp_path / "ckpt_par", "GoldenDLHead", ".pth")
+    _assert_golden_fold_dirs(tmp_path / "ckpt_par", "GoldenTorchHead", ".pth")
 
 
 # ==========================================================================
@@ -283,7 +281,7 @@ def recorders(monkeypatch) -> list[FakeRecorder]:
     return created
 
 
-class StubMLHead(MLModel):
+class StubLibraryHead(LibraryModel):
     """A numpy head: predicts the first factor, records each fold's dates."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -301,8 +299,8 @@ class StubMLHead(MLModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-def _ml_config(tmp_path: Path, save_dir: str) -> MLConfig:
-    return MLConfig(
+def _library_config(tmp_path: Path, save_dir: str) -> ModelConfig:
+    return ModelConfig(
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(FakePanel(["ret"], seed=2))],
         model_save_dir=str(tmp_path / save_dir),
@@ -338,9 +336,9 @@ def _relative_checkpoints(results: list[dict], save_root: Path) -> set[str]:
 def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path, recorders):
     """55 timestamps cannot hold train 50 + test 10, so no fold trains."""
     config = dataclasses.replace(
-        _ml_config(tmp_path, "ckpt"), end_date=np.datetime_as_string(TIMES[54], unit="D")
+        _library_config(tmp_path, "ckpt"), end_date=np.datetime_as_string(TIMES[54], unit="D")
     )
-    model = StubMLHead(config)
+    model = StubLibraryHead(config)
     model.collect()
 
     assert model.train_cv(train_periods=50) == []
@@ -352,7 +350,7 @@ def test_train_cv_refuses_a_training_segment_too_short_for_a_test_segment(
     tmp_path, recorders, train_periods
 ):
     """The test segment is train_periods // 5 bars, so it needs at least 5."""
-    model = StubMLHead(_ml_config(tmp_path, "ckpt"))
+    model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
 
     with pytest.raises(ValueError, match=f"train_periods={train_periods}.*at least 5"):
@@ -395,7 +393,7 @@ def test_both_train_cv_branches_train_exactly_what_cv_folds_yields(tmp_path, mon
         staticmethod(lambda timestamps, train_periods: [dict(f) for f in HANDMADE_FOLDS]),
     )
     save_dir = "ckpt_par" if parallel else "ckpt_seq"
-    model = StubMLHead(_ml_config(tmp_path, save_dir))
+    model = StubLibraryHead(_library_config(tmp_path, save_dir))
     model.collect()
 
     results = model.train_cv(train_periods=50, parallel=parallel, njobs=2)
@@ -407,20 +405,20 @@ def test_both_train_cv_branches_train_exactly_what_cv_folds_yields(tmp_path, mon
     assert (projects[0] / BaseModel.CV_FOLDS_FILENAME).is_file()
     assert sorted(
         p.name for p in projects[0].iterdir() if p.name != BaseModel.CV_FOLDS_FILENAME
-    ) == ["StubMLHead_cv_fold_3", "StubMLHead_cv_fold_5"]
+    ) == ["StubLibraryHead_cv_fold_3", "StubLibraryHead_cv_fold_5"]
 
 
 # --------------------------------------------------------------------------
-# CV results and the summary run (ML)
+# CV results and the summary run (library)
 # --------------------------------------------------------------------------
 
 
-def test_ml_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path, recorders):
+def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path, recorders):
     """`train_periods=50`, no gap, 130 timestamps -> 8 folds. Each result
     carries the fold's dates, its run name, an existing `.joblib` and the
     seven prefixed test metrics; every checkpoint loads into a fresh,
     never-collected instance that predicts `[T, S, L]`."""
-    model = StubMLHead(_ml_config(tmp_path, "ckpt"))
+    model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
     expected = BaseModel._cv_folds(
         model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values, 50
@@ -434,27 +432,27 @@ def test_ml_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path,
         assert set(r) == FOLD_KEYS | {"experiment_name", "checkpoint"} | {
             f"{split}_{k}" for split in SPLITS for k in METRIC_KEYS
         }
-        assert r["experiment_name"] == f"StubMLHead_cv_fold_{r['fold']}"
+        assert r["experiment_name"] == f"StubLibraryHead_cv_fold_{r['fold']}"
         ckpt = Path(r["checkpoint"])
         assert ckpt.suffix == ".joblib" and ckpt.is_file()
-        fresh = StubMLHead(_ml_config(tmp_path, "unused")).load(ckpt)
+        fresh = StubLibraryHead(_library_config(tmp_path, "unused")).load(ckpt)
         assert fresh.predict(np.zeros((4, N_SYMBOLS, 2))).shape == (4, N_SYMBOLS, 1)
 
 
-def test_ml_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, recorders):
+def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, recorders):
     """8 fold runs plus ONE `{cls}_cv_summary` run, created last, whose
     summary holds `cv_mean_{train,val,test}_*` (finite-value means of the folds) and
     `cv_n_folds`, and which is finished exactly once. A separate run because
     each fold's `_fit` has already finished its own run by the time the means
     exist."""
-    model = StubMLHead(_ml_config(tmp_path, "ckpt"))
+    model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
 
     results = model.train_cv(train_periods=50)
 
     names = [r.name for r in recorders]
-    assert names[:-1] == [f"StubMLHead_cv_fold_{i}" for i in range(8)]
-    assert names[-1] == "StubMLHead_cv_summary"
+    assert names[:-1] == [f"StubLibraryHead_cv_fold_{i}" for i in range(8)]
+    assert names[-1] == "StubLibraryHead_cv_summary"
     summary_run = recorders[-1]
     assert summary_run.finished == 1
     assert summary_run.summary["cv_n_folds"] == 8
@@ -469,16 +467,16 @@ def test_ml_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, recor
             assert summary_run.summary[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
 
 
-def test_ml_train_cv_parallel_matches_sequential(tmp_path, recorders):
+def test_library_train_cv_parallel_matches_sequential(tmp_path, recorders):
     """Same folds, same checkpoint layout, same trained dates. Separate save
     dirs: the project name is only second-resolution."""
-    seq = StubMLHead(_ml_config(tmp_path, "ckpt_seq"))
+    seq = StubLibraryHead(_library_config(tmp_path, "ckpt_seq"))
     seq.collect()
     seq_results = seq.train_cv(train_periods=50)
     seq_dates = sorted(ML_FOLD_DATES)
     ML_FOLD_DATES.clear()
 
-    par = StubMLHead(_ml_config(tmp_path, "ckpt_par"))
+    par = StubLibraryHead(_library_config(tmp_path, "ckpt_par"))
     par.collect()
     par_results = par.train_cv(train_periods=50, parallel=True, njobs=2)
 
@@ -489,11 +487,11 @@ def test_ml_train_cv_parallel_matches_sequential(tmp_path, recorders):
     )
 
 
-def test_dl_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, recorders):
-    """`DLModel._fit` returns the shared metrics, so a DL fold result is the
+def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, recorders):
+    """`TorchModel._fit` returns the shared metrics, so a torch fold result is the
     fold's dates, its run name and checkpoint and every split's metrics, and
-    the fold means go to a `{cls}_cv_summary` run, as for an ML head."""
-    model = GoldenDLHead(_dl_config(tmp_path, "ckpt"))
+    the fold means go to a `{cls}_cv_summary` run, as for a library head."""
+    model = GoldenTorchHead(_torch_config(tmp_path, "ckpt"))
     model.collect()
 
     results = model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
@@ -504,4 +502,4 @@ def test_dl_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, reco
         assert {"train_mse", "val_mse", "test_mse", "test_ic"} <= set(r)
         assert Path(r["checkpoint"]).suffix == ".pth" and Path(r["checkpoint"]).is_file()
     assert len(recorders) == GOLDEN_N_FOLDS + 1
-    assert recorders[-1].name == "GoldenDLHead_cv_summary"
+    assert recorders[-1].name == "GoldenTorchHead_cv_summary"

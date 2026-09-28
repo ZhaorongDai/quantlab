@@ -47,7 +47,7 @@ from quantlab.base.config import (
     ConstituentDatasetConfig,
     DatasetConfig,
     FactorConfig,
-    MLConfig,
+    ModelConfig,
     PolarsFactorConfig,
 )
 from quantlab.base.constituent import IndexConstituentDataset
@@ -58,7 +58,7 @@ from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.momentum import Momentum
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.library_model.xgb import XGBoostRegressor
 from tests.label_stubs import StubLabel
 from tests.test_model_hierarchy import FakePanel, _kwargs
 
@@ -191,7 +191,7 @@ def test_loaders_do_not_mutate_their_input(
         if cfg["factor_names"] == ["ret"]
         else FakePanel(cfg["factor_names"]),
     )
-    model_saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
+    model_saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     model_saved["resolved_hyperparameters"] = {"eta": 0.3}
     before = copy.deepcopy(model_saved)
     module_utils.load_model_from_config(model_saved)

@@ -1,4 +1,4 @@
-"""Tests for `quantlab/ml_model/xgb.py:XGBoostRegressor` (quick task 260914-lno).
+"""Tests for `quantlab/library_model/xgb.py:XGBoostRegressor` (quick task 260914-lno).
 
 What is locked, and what turns it red:
 
@@ -34,9 +34,9 @@ import xarray as xr
 import xgboost as xgb
 from loguru import logger
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import BaseModel, MLModel
-from quantlab.ml_model.xgb import (
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import BaseModel, LibraryModel
+from quantlab.library_model.xgb import (
     XGBoostRegressor,
     ccc_loss_metric,
     ccc_objective,
@@ -120,8 +120,11 @@ def _config(
     patience: int = 5,
     hyperparameters: dict | None = None,
     val_size: float = 0.2,
-) -> MLConfig:
-    return MLConfig(
+) -> ModelConfig:
+    hyper = hyperparameters if hyperparameters is not None else {"num_boost_round": 20}
+    if early_stopping:
+        hyper = {**hyper, "early_stopping": True, "early_stopping_patience": patience}
+    return ModelConfig(
         factors=[factors],
         labels=[StubLabel(labels)],
         model_save_dir=str(tmp_path / save_dir),
@@ -133,9 +136,7 @@ def _config(
         train_end=TRAIN_END,
         test_start=TEST_START,
         test_end=TEST_END,
-        early_stopping=early_stopping,
-        early_stopping_patience=patience,
-        hyperparameters=hyperparameters if hyperparameters is not None else {"num_boost_round": 20},
+        hyperparameters=hyper,
         val_size=val_size,
     )
 
@@ -163,7 +164,7 @@ class FakeRecorder:
         self.finished += 1
 
 
-#: Mirrors `quantlab.ml_model.xgb._IMPORTANCE_CHART_PREFIX`. Every feature
+#: Mirrors `quantlab.library_model.xgb._IMPORTANCE_CHART_PREFIX`. Every feature
 #: importance Charts object is logged under a key starting with this, which is
 #: what tells a chart row apart from a per-round curve row.
 CHART_PREFIX = "feature_importance"
@@ -484,22 +485,10 @@ def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):
     assert np.array_equal(fresh.predict(test_x), trained.predict(test_x))
 
 
-def test_rejects_a_dl_config(tmp_path):
-    factors, labels = _panels(seed=23)
-    kwargs = dict(
-        factors=[factors],
-        labels=[StubLabel(labels)],
-        model_save_dir=str(tmp_path),
-        factor_data_strategy="cal",
-        label_data_strategy="cal",
-    )
-    with pytest.raises(TypeError, match="XGBoostRegressor requires a MLConfig"):
-        XGBoostRegressor(DLConfig(**kwargs))
-
 
 def test_contract():
     assert XGBoostRegressor.__abstractmethods__ == frozenset()
-    assert issubclass(XGBoostRegressor, MLModel)
+    assert issubclass(XGBoostRegressor, LibraryModel)
 
 
 # --------------------------------------------------------------------------
@@ -1384,7 +1373,7 @@ def test_early_stopping_adds_rmse_to_a_user_eval_metric(tmp_path, recorders):
     )
 
     assert model._params["eval_metric"] == ["mae", "rmse"]
-    assert model.config.hyperparameters == hyper
+    assert model.config.hyperparameters == {**hyper, "early_stopping": True, "early_stopping_patience": 3}
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     rmse_curve = [row["val-rmse"] for row, _ in _curve_rows(recorders[0])]
     assert booster.best_iteration == int(np.argmin(rmse_curve))

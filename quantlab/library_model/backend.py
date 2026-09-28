@@ -1,6 +1,6 @@
 """joblib-backed checkpoint storage for non-torch model heads.
 
-``MlBackend`` implements the ``ModelBackend`` contract and is how ``MLModel``
+``MlBackend`` implements the ``ModelBackend`` contract and is how ``LibraryModel``
 (the base class for tree and tabular models such as XGBoost) writes and reads
 its ``.joblib`` checkpoints. It holds one model object and knows only how to
 dump it to a path and load it back. It has no notion of panels, dimensions or

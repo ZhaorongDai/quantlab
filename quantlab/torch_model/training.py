@@ -1,6 +1,6 @@
 """Training pieces of a deep head, and the per-bar windows it is fed.
 
-A ``DLModel`` trains on one *cross-section* per step: the symbols with at
+A ``TorchModel`` trains on one *cross-section* per step: the symbols with at
 least one finite feature at a bar, each carrying its last N bars of features
 (ADR 0006). This module holds the pieces of that loop:
 
@@ -276,7 +276,7 @@ class TrainLossThreshold:
     threshold : float
         Training loss to reach.
     max_epochs : int
-        Epoch cap; at least 1. Training never runs past ``config.epochs``
+        Epoch cap; at least 1. Training never runs past the ``epochs`` hyperparameter
         anyway.
 
     Raises

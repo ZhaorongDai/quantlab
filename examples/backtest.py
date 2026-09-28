@@ -44,11 +44,11 @@ from quantlab.base.config import (
     CrossSectionBacktestConfig,
     DatasetConfig,
     ForwardConfig,
-    MLConfig,
+    ModelConfig,
     PolarsFactorConfig,
 )
 from quantlab.base.factor import FactorPolars
-from quantlab.base.model import MLModel
+from quantlab.base.model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 from quantlab.utils.module import load_backtester_from_config
@@ -163,7 +163,7 @@ class OpenReturn(FactorPolars):
         )
 
 
-class LeastSquaresHead(MLModel):
+class LeastSquaresHead(LibraryModel):
     """Linear regression of every label on the features, fitted with numpy."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -210,7 +210,7 @@ def make_model(root: Path, prices: DatasetConfig, **dates) -> LeastSquaresHead:
         )
     )
     return LeastSquaresHead(
-        MLConfig(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(root / "models"),

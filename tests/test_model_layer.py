@@ -4,7 +4,7 @@ Quick task 260907-fl6 wrote the first tests for `base/model.py`, each RED
 against a defect of the old epoch/batch loop. Issue #39 replaced that loop
 (one cross-section per step, ADR 0006); the defects that were about batches,
 the epoch-level early-stopping counter and the old validation slice are gone
-with it, and the stop hooks are locked in `tests/test_dl_model.py`. What
+with it, and the stop hooks are locked in `tests/test_torch_model.py`. What
 remains here:
 
 - C  the variable axis must follow the DECLARED order, never alphabetical
@@ -27,8 +27,8 @@ import torch
 import torch.nn as nn
 import xarray as xr
 
-from quantlab.base.config import DLConfig
-from tests.dl_heads import OneBarHead, RecordingHead
+from quantlab.base.config import ModelConfig
+from tests.torch_heads import OneBarHead, RecordingHead
 from tests.label_stubs import StubLabel
 
 # --------------------------------------------------------------------------
@@ -52,7 +52,7 @@ N_TRAIN_TIMES = 100
 
 @pytest.fixture(autouse=True)
 def _offline_wandb(monkeypatch):
-    """`_init_wandb` calls `wandb.init` unconditionally and `DLConfig` has no
+    """`_init_wandb` calls `wandb.init` unconditionally and `ModelConfig` has no
     opt-out flag, so the only bypass is the environment variable documented in
     `example/model.md`."""
     monkeypatch.setenv("WANDB_MODE", "disabled")
@@ -128,8 +128,8 @@ def _make_config(
     hyperparameters: dict | None = None,
     factors: list | None = None,
     labels: list | None = None,
-) -> DLConfig:
-    return DLConfig(
+) -> ModelConfig:
+    return ModelConfig(
         factors=factors if factors is not None else [FakePanel(factor_values)],
         labels=labels if labels is not None else [StubLabel(FakePanel(label_values))],
         model_save_dir=str(tmp_path / "ckpt"),
@@ -141,9 +141,7 @@ def _make_config(
         train_end=TRAIN_END,
         test_start=TEST_START,
         test_end=TEST_END,
-        epochs=epochs,
-        lr=1e-2,
-        hyperparameters=hyperparameters or {},
+        hyperparameters={"epochs": epochs, "lr": 1e-2, **(hyperparameters or {})},
     )
 
 

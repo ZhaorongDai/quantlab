@@ -12,9 +12,9 @@ and what turns it red:
   panel is given with both axes reversed);
 - a row whose features are ALL NaN predicts NaN in every label; a partially-NaN
   row is NOT masked (03.7-RESEARCH.md Pitfall 7);
-- a missing factor variable, an uninitialized model and a DL network that
+- a missing factor variable, an uninitialized model and a torch network that
   does not return `[S_t, L]` each fail with an error that names the problem;
-- the DL path and XGBoostRegressor return exactly what their own inference
+- the torch path and XGBoostRegressor return exactly what their own inference
   path returns;
 - the checkpoint's `trained_on.symbols` record is sorted in the axis's own
   kind (JSON integers on a PERMNO axis), whatever order the backend held.
@@ -33,10 +33,10 @@ import torch.nn as nn
 import xarray as xr
 
 import quantlab.utils.module as module_utils
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import MLModel
-from quantlab.ml_model.xgb import XGBoostRegressor
-from tests.dl_heads import OneBarHead
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import LibraryModel
+from quantlab.library_model.xgb import XGBoostRegressor
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 30
@@ -111,8 +111,8 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class ChannelMLHead(MLModel):
-    """An `MLModel` whose label channels are distinguishable by construction.
+class ChannelLibraryHead(LibraryModel):
+    """An `LibraryModel` whose label channels are distinguishable by construction.
 
     Channel i is `(i + 1) * f_a + 10 * i`, so channel 0 is exactly the first
     feature and channel 1 is `2 * f_a + 10`. `_preprocess` zero-fills NaN like
@@ -147,7 +147,7 @@ class _TupleNet(nn.Module):
 
 
 class TupleHead(OneBarHead):
-    """A DL head whose network returns a tuple instead of `[S_t, L]`."""
+    """A torch head whose network returns a tuple instead of `[S_t, L]`."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return _TupleNet(num_features, num_labels)
@@ -165,8 +165,8 @@ def _config_kwargs(tmp_path, *, labels=LABELS, seed=1, symbols=SYMBOLS):
     )
 
 
-def _ml_stub(tmp_path) -> ChannelMLHead:
-    model = ChannelMLHead(MLConfig(**_config_kwargs(tmp_path)))
+def _library_stub(tmp_path) -> ChannelLibraryHead:
+    model = ChannelLibraryHead(ModelConfig(**_config_kwargs(tmp_path)))
     model.model = model._init_model(
         num_features=len(FACTORS), num_labels=len(LABELS), hyperparameters={}
     )
@@ -187,18 +187,18 @@ def _stack(features: xr.Dataset, names) -> np.ndarray:
 
 
 # --------------------------------------------------------------------------
-# Generic contract (ML stub)
+# Generic contract (library stub)
 # --------------------------------------------------------------------------
 
 
-def test_ml_head_returns_one_variable_per_label_in_declared_order(tmp_path):
+def test_library_head_returns_one_variable_per_label_in_declared_order(tmp_path):
     """Locks declared label order (T-03.7-15).
 
     Labels are declared `["ret_60", "ret_30"]`. Goes red if the variable axis
     is sorted by name anywhere between `to_array` and the output Dataset:
     `ret_60` would then carry channel 1 (`2 * f_a + 10`) instead of channel 0.
     """
-    model = _ml_stub(tmp_path)
+    model = _library_stub(tmp_path)
     features = _features(model)
 
     pred = model.predict_panel(features)
@@ -219,7 +219,7 @@ def test_output_coords_follow_the_sorted_feature_panel(tmp_path):
     input while values come from the sorted array (values would land on the
     mirrored symbol).
     """
-    model = _ml_stub(tmp_path)
+    model = _library_stub(tmp_path)
     reversed_features = _features(model).isel(
         timestamp=slice(None, None, -1), symbol=slice(None, None, -1)
     )
@@ -245,7 +245,7 @@ def test_all_nan_feature_rows_predict_nan_and_partial_rows_do_not(tmp_path):
     becomes finite) or widened to "any feature NaN" (the partial row becomes
     NaN, which would empty the universe for wide factor sets).
     """
-    model = _ml_stub(tmp_path)
+    model = _library_stub(tmp_path)
     features = _features(model).copy(deep=True)
     features["f_a"].loc[dict(timestamp=TIMES[3], symbol="S1")] = np.nan
     features["f_b"].loc[dict(timestamp=TIMES[3], symbol="S1")] = np.nan
@@ -268,7 +268,7 @@ def test_missing_factor_variable_raises_naming_it(tmp_path):
     Goes red if a dropped factor surfaces as a bare `KeyError` from xarray, or
     as a silently shorter feature axis, instead of a `ValueError` naming it.
     """
-    model = _ml_stub(tmp_path)
+    model = _library_stub(tmp_path)
     features = _features(model).drop_vars("f_b")
 
     with pytest.raises(ValueError, match="f_b"):
@@ -282,7 +282,7 @@ def test_predict_panel_before_train_or_load_raises(tmp_path):
     reaches a `None` model (an `AttributeError`/`TypeError` from inside the
     head instead of the documented message).
     """
-    model = ChannelMLHead(MLConfig(**_config_kwargs(tmp_path)))
+    model = ChannelLibraryHead(ModelConfig(**_config_kwargs(tmp_path)))
     assert model.model is None
 
     with pytest.raises(ValueError, match="Model not initialized"):
@@ -290,7 +290,7 @@ def test_predict_panel_before_train_or_load_raises(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# DL heads
+# torch heads
 # --------------------------------------------------------------------------
 
 
@@ -301,27 +301,27 @@ def _dl_train_kwargs(tmp_path, *, symbols=SYMBOLS) -> dict:
         train_end=TRAIN_END,
         test_start=TEST_START,
         test_end=END,
-        epochs=1,
+        hyperparameters={"epochs": 1},
     )
 
 
-def _untrained_dl(tmp_path) -> OneBarHead:
-    model = OneBarHead(DLConfig(**_config_kwargs(tmp_path)))
+def _untrained_torch(tmp_path) -> OneBarHead:
+    model = OneBarHead(ModelConfig(**_config_kwargs(tmp_path)))
     model.model = model._init_model(
         num_features=len(FACTORS), num_labels=len(LABELS), hyperparameters={}
     )
     return model
 
 
-def test_dl_predict_panel_is_the_networks_output_as_float64(tmp_path):
-    """The DL default: each bar's network output lands on its own coords.
+def test_torch_predict_panel_is_the_networks_output_as_float64(tmp_path):
+    """The torch default: each bar's network output lands on its own coords.
 
     The expected values are the module's own output on the zero-filled,
     clipped input, computed here without `to_array`. Goes red if the tensor
     is not moved to numpy, if the dtype is not float64, or if the channel or
     symbol layout is changed.
     """
-    model = _untrained_dl(tmp_path)
+    model = _untrained_torch(tmp_path)
     features = _features(model)
 
     pred = model.predict_panel(features)
@@ -340,7 +340,7 @@ def test_dl_predict_panel_is_the_networks_output_as_float64(tmp_path):
 def test_a_network_that_does_not_return_s_by_l_raises_naming_the_head(tmp_path):
     """A network returning a tuple (or any other shape) fails with an error
     naming the head, never by silently picking one element."""
-    model = TupleHead(DLConfig(**_config_kwargs(tmp_path)))
+    model = TupleHead(ModelConfig(**_config_kwargs(tmp_path)))
     model.model = model._init_model(len(FACTORS), len(LABELS), {})
 
     with pytest.raises(ValueError, match="TupleHead.*\\[S_t, L\\]"):
@@ -351,7 +351,7 @@ def test_int64_checkpoint_records_json_integers(tmp_path):
     """`trained_on.symbols` is a JSON INTEGER array on an int64 panel, sorted
     numerically. Asserted on the JSON TEXT as well as on the parsed value,
     because `json.loads` would happily give `['7000']` back."""
-    model = OneBarHead(DLConfig(**_dl_train_kwargs(tmp_path, symbols=PERMNOS)))
+    model = OneBarHead(ModelConfig(**_dl_train_kwargs(tmp_path, symbols=PERMNOS)))
     checkpoint = model.collect().train()
     raw = (checkpoint.parent / "config.json").read_text()
     recorded = json.loads(raw)["trained_on"]["symbols"]
@@ -362,12 +362,12 @@ def test_int64_checkpoint_records_json_integers(tmp_path):
 
 
 def _dl_on_a_backend_filled_without_collect(tmp_path, symbols) -> OneBarHead:
-    """A DL head whose data backend holds the panel in `symbols` order.
+    """A torch head whose data backend holds the panel in `symbols` order.
 
     `collect()` sorts the symbol axis. This fills the backend directly, as a
     caller that calls `data_backend.to_internal` and then `train()` would.
     """
-    model = OneBarHead(DLConfig(**_dl_train_kwargs(tmp_path)))
+    model = OneBarHead(ModelConfig(**_dl_train_kwargs(tmp_path)))
     panel = xr.merge([model.config.factors[0]._ds, model.config.labels[0]._ds])
     model.data_backend.to_internal(panel.sel(symbol=list(symbols)))
     assert model.symbols == list(symbols)

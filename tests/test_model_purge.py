@@ -15,10 +15,10 @@ import pytest
 import torch
 import xarray as xr
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import MLModel
-from quantlab.dl_model.training import cs_rank_norm
-from tests.dl_heads import OneBarHead
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import LibraryModel
+from quantlab.torch_model.training import cs_rank_norm
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 20
@@ -64,7 +64,7 @@ def bars(rows) -> list[int]:
     return sorted({int(v) for v in np.asarray(rows)[..., 0].ravel()})
 
 
-class RecordingMLHead(MLModel):
+class RecordingLibraryHead(LibraryModel):
     """Records the bars ``_fit_model`` is handed."""
 
     fitted: dict = {}
@@ -76,7 +76,7 @@ class RecordingMLHead(MLModel):
         return np.array(data, dtype=np.float64, copy=True)
 
     def _fit_model(self, train_x, train_y, val_x, val_y):
-        RecordingMLHead.fitted = {
+        RecordingLibraryHead.fitted = {
             "train": bars(train_y),
             "val": None if val_y is None else bars(val_y),
         }
@@ -103,30 +103,30 @@ FIXED = dict(
 )
 
 
-def test_ml_fixed_split_drops_the_last_lookahead_training_bars(tmp_path):
-    model = RecordingMLHead(MLConfig(**common(tmp_path, 3, **FIXED), val_size=0.0))
+def test_library_fixed_split_drops_the_last_lookahead_training_bars(tmp_path):
+    model = RecordingLibraryHead(ModelConfig(**common(tmp_path, 3, **FIXED), val_size=0.0))
     model.collect()
     model.train()
-    assert RecordingMLHead.fitted == {"train": list(range(0, 9)), "val": None}
+    assert RecordingLibraryHead.fitted == {"train": list(range(0, 9)), "val": None}
 
 
-def test_ml_val_split_drops_the_last_lookahead_bars_before_validation_and_test(tmp_path):
+def test_library_val_split_drops_the_last_lookahead_bars_before_validation_and_test(tmp_path):
     # Training window 0..11, val_size 0.25: train 0..8, validation 9..11.
     # L = 1 drops bar 8 (before validation) and bar 11 (before test).
-    model = RecordingMLHead(MLConfig(**common(tmp_path, 1, **FIXED), val_size=0.25))
+    model = RecordingLibraryHead(ModelConfig(**common(tmp_path, 1, **FIXED), val_size=0.25))
     model.collect()
     model.train()
-    assert RecordingMLHead.fitted == {"train": list(range(0, 8)), "val": [9, 10]}
+    assert RecordingLibraryHead.fitted == {"train": list(range(0, 8)), "val": [9, 10]}
 
 
 def test_zero_lookahead_fits_on_every_training_bar(tmp_path):
-    model = RecordingMLHead(MLConfig(**common(tmp_path, 0, **FIXED), val_size=0.25))
+    model = RecordingLibraryHead(ModelConfig(**common(tmp_path, 0, **FIXED), val_size=0.25))
     model.collect()
     model.train()
-    assert RecordingMLHead.fitted == {"train": list(range(0, 9)), "val": [9, 10, 11]}
+    assert RecordingLibraryHead.fitted == {"train": list(range(0, 9)), "val": [9, 10, 11]}
 
 
-class RecordingDLHead(OneBarHead):
+class RecordingTorchHead(OneBarHead):
     """Records the bars its training and validation steps receive.
 
     Features are the bar index, fed unclipped, so the last row of a window
@@ -142,41 +142,42 @@ class RecordingDLHead(OneBarHead):
         return cs_rank_norm(y), None
 
     def _init_optim(self, model):
-        RecordingDLHead.seen = {"train": set(), "val": set()}
+        RecordingTorchHead.seen = {"train": set(), "val": set()}
         return super()._init_optim(model)
 
     def _train_one_batch(self, epoch, batch):
-        RecordingDLHead.seen["train"].add(int(batch.x[0, -1, 0]))
+        RecordingTorchHead.seen["train"].add(int(batch.x[0, -1, 0]))
         return super()._train_one_batch(epoch, batch)
 
     def _val_one_batch(self, epoch, batch):
         # The epoch's validation pass comes before its test pass; the later
         # calls score each split for the metrics.
-        if not RecordingDLHead.seen.get("tested"):
-            RecordingDLHead.seen["val"].add(int(batch.x[0, -1, 0]))
+        if not RecordingTorchHead.seen.get("tested"):
+            RecordingTorchHead.seen["val"].add(int(batch.x[0, -1, 0]))
         return super()._val_one_batch(epoch, batch)
 
     def _test_one_batch(self, epoch, batch):
-        RecordingDLHead.seen["tested"] = True
+        RecordingTorchHead.seen["tested"] = True
 
 
-def test_dl_val_split_drops_the_last_lookahead_bars_before_validation_and_test(tmp_path):
-    model = RecordingDLHead(
-        DLConfig(**common(tmp_path, 1, **FIXED), val_size=0.25, epochs=1)
+def test_torch_val_split_drops_the_last_lookahead_bars_before_validation_and_test(tmp_path):
+    model = RecordingTorchHead(
+        ModelConfig(**common(tmp_path, 1, **FIXED), val_size=0.25,
+                    hyperparameters={"epochs": 1})
     )
     model.collect()
     model.train()
-    assert sorted(RecordingDLHead.seen["train"]) == list(range(0, 8))
-    assert sorted(RecordingDLHead.seen["val"]) == [9, 10]
+    assert sorted(RecordingTorchHead.seen["train"]) == list(range(0, 8))
+    assert sorted(RecordingTorchHead.seen["val"]) == [9, 10]
 
 
-class FoldRecordingMLHead(RecordingMLHead):
+class FoldRecordingLibraryHead(RecordingLibraryHead):
     """Keeps every fold's fitted bars, in fold order."""
 
     folds: list = []
 
     def _fit_model(self, train_x, train_y, val_x, val_y):
-        FoldRecordingMLHead.folds.append(bars(train_y))
+        FoldRecordingLibraryHead.folds.append(bars(train_y))
 
 
 def cv_manifest(tmp_path) -> dict:
@@ -187,12 +188,12 @@ def cv_manifest(tmp_path) -> dict:
 def test_walk_forward_folds_purge_and_record_the_purged_training_end(tmp_path):
     # 20 bars, train_periods 10: test 2 bars, 5 folds. Fold i trains on
     # 2i..2i+9 and tests on 2i+10..2i+11; L = 2 leaves 2i..2i+7 to fit.
-    FoldRecordingMLHead.folds = []
-    model = FoldRecordingMLHead(MLConfig(**common(tmp_path, 2), val_size=0.0))
+    FoldRecordingLibraryHead.folds = []
+    model = FoldRecordingLibraryHead(ModelConfig(**common(tmp_path, 2), val_size=0.0))
     model.collect()
     model.train_cv(train_periods=10)
 
-    assert FoldRecordingMLHead.folds == [
+    assert FoldRecordingLibraryHead.folds == [
         list(range(2 * i, 2 * i + 8)) for i in range(5)
     ]
     folds = cv_manifest(tmp_path)["folds"]
@@ -205,7 +206,7 @@ def test_walk_forward_folds_purge_and_record_the_purged_training_end(tmp_path):
 
 
 def test_train_cv_takes_no_gap(tmp_path):
-    model = FoldRecordingMLHead(MLConfig(**common(tmp_path, 2), val_size=0.0))
+    model = FoldRecordingLibraryHead(ModelConfig(**common(tmp_path, 2), val_size=0.0))
     model.collect()
     with pytest.raises(TypeError, match="gap_periods"):
         model.train_cv(train_periods=10, gap_periods=2)

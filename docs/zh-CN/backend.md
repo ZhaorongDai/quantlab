@@ -373,4 +373,4 @@ ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store 
 
 ## 另请参阅
 
-`dataset.md` 介绍数据集如何通过 `XrBackend` 持久化面板；`chunking.md` 介绍用 `append` 按窗口构建存储；`factor.md` 介绍 Polars 因子如何使用 `get_lazyframe`。相关模块：`quantlab.base.backend`（`DataBackend`、`ModelBackend`）、`quantlab.backend`（`XrBackend`、`PlBackend`）和 `quantlab.ml_model.backend`（模型侧的 `MlBackend`）。
+`dataset.md` 介绍数据集如何通过 `XrBackend` 持久化面板；`chunking.md` 介绍用 `append` 按窗口构建存储；`factor.md` 介绍 Polars 因子如何使用 `get_lazyframe`。相关模块：`quantlab.base.backend`（`DataBackend`、`ModelBackend`）、`quantlab.backend`（`XrBackend`、`PlBackend`）和 `quantlab.library_model.backend`（模型侧的 `MlBackend`）。

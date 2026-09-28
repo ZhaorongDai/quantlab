@@ -38,14 +38,14 @@ from quantlab.base.config import (
     CrossSectionBacktestConfig,
     CrspDatasetConfig,
     FactorConfig,
-    MLConfig,
+    ModelConfig,
 )
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
-from quantlab.ml_model.realmlp import RealMLPRegressor
+from quantlab.library_model.realmlp import RealMLPRegressor
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
@@ -120,18 +120,21 @@ def compute_factors() -> None:
 def build_model() -> RealMLPRegressor:
     """A fresh head reading the stored factors and label."""
     factors, labels = factors_and_label()
-    return RealMLPRegressor(MLConfig(
+    return RealMLPRegressor(ModelConfig(
         factors=factors, labels=labels,
         model_save_dir=str(WORK / "models" / "realmlp"),
         factor_data_strategy="read", label_data_strategy="read",
         start_date=START, end_date=END,
         train_start=TRAIN_START, train_end=TRAIN_END,
         test_start=TEST_START, test_end=TEST_END,
-        # Early stopping on the trailing val_size of the training window;
-        # patience counts epochs.
-        early_stopping=True, early_stopping_patience=50, val_size=0.2,
-        # pytabkit RealMLP_TD_Regressor constructor arguments.
-        hyperparameters={"n_epochs": 256, "device": "cpu", "n_threads": 8},
+        val_size=0.2,
+        hyperparameters={
+            # Early stopping on the trailing val_size of the training window;
+            # patience counts epochs. The head reads these two keys itself.
+            "early_stopping": True, "early_stopping_patience": 50,
+            # pytabkit RealMLP_TD_Regressor constructor arguments.
+            "n_epochs": 256, "device": "cpu", "n_threads": 8,
+        },
     ))
 
 

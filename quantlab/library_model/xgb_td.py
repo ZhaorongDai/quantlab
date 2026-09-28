@@ -19,8 +19,8 @@ import numpy as np
 from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
-from quantlab.ml_model.tabkit import TabkitRegressor, active_callbacks
-from quantlab.ml_model.xgb import _WandbEvalCallback, record_feature_importance
+from quantlab.library_model.tabkit import TabkitRegressor, active_callbacks
+from quantlab.library_model.xgb import _WandbEvalCallback, record_feature_importance
 
 
 class _XGBTDEstimator(XGB_TD_Regressor):
@@ -75,8 +75,8 @@ class XGBTDRegressor(TabkitRegressor):
     the ``.joblib`` checkpoint predicts with the best round, and that round
     count is written to the run summary as ``best_n_estimators`` (primary
     label) and ``best_n_estimators/{label}`` (every label). With
-    ``config.early_stopping`` set, training additionally halts after
-    ``config.early_stopping_patience`` rounds without improvement; the value
+    ``hyperparameters["early_stopping"]`` set, training additionally halts after
+    ``hyperparameters["early_stopping_patience"]`` rounds without improvement; the value
     is recorded as ``early_stopping_rounds`` in
     ``resolved_hyperparameters`` (``None`` when off). Without a usable
     validation segment a warning is logged, all rounds are trained and the
@@ -95,17 +95,17 @@ class XGBTDRegressor(TabkitRegressor):
     trained (``num_boosted_rounds``) and the per-factor importance with its
     charts, exactly as ``XGBoostRegressor`` records them. The callback is
     injected into pytabkit's inner ``xgboost.train`` call (see
-    ``quantlab.ml_model.tabkit.active_callbacks``).
+    ``quantlab.library_model.tabkit.active_callbacks``).
 
     Parameters
     ----------
-    config : MLConfig
+    config : ModelConfig
         Factors, labels, date ranges, early-stopping settings and
-        hyperparameters. See ``MLConfig``.
+        hyperparameters. See ``ModelConfig``.
 
     Examples
     --------
-    >>> config = MLConfig(
+    >>> config = ModelConfig(
     ...     factors=[alpha],            # factor objects
     ...     labels=[fwd_return],        # label objects
     ...     model_save_dir="checkpoints",
@@ -113,8 +113,10 @@ class XGBTDRegressor(TabkitRegressor):
     ...     label_data_strategy="read",
     ...     train_start="2024-01-01", train_end="2024-02-09",
     ...     test_start="2024-02-10", test_end="2024-02-29",
-    ...     early_stopping=True, early_stopping_patience=50,
-    ...     hyperparameters={"n_estimators": 500, "n_threads": 4},
+    ...     hyperparameters={
+    ...         "early_stopping": True, "early_stopping_patience": 50,
+    ...         "n_estimators": 500, "n_threads": 4,
+    ...     },
     ... )
     >>> model = XGBTDRegressor(config)
     >>> checkpoint = model.collect().train()
@@ -132,9 +134,9 @@ class XGBTDRegressor(TabkitRegressor):
 
     def _early_stopping_rounds(self) -> int | None:
         """Return the patience to inject, or None when early stopping is off."""
-        if not self.config.early_stopping:
+        if not self.early_stopping:
             return None
-        return int(self.config.early_stopping_patience)
+        return self.early_stopping_patience
 
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict

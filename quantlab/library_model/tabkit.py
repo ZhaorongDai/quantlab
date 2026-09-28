@@ -21,27 +21,28 @@ from contextlib import contextmanager
 import numpy as np
 from loguru import logger
 
-from quantlab.base.config import MLConfig
-from quantlab.base.model import MLModel
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import LibraryModel
 
 
-class TabkitRegressor(MLModel):
-    """``MLModel`` base for pytabkit regression heads.
+class TabkitRegressor(LibraryModel):
+    """``LibraryModel`` base for pytabkit regression heads.
 
     Training flattens the ``[T, S, F]`` features and ``[T, S, L]`` labels to
     rows and drops every row with a non-finite label. Non-finite feature
     values are imputed with ``0.0`` (see ``_impute_features``), because
     pytabkit refuses NaN in numerical columns; factors are normally z-scored
     before they reach a model, which makes ``0.0`` the column mean. Label
-    NaN is kept by ``_preprocess`` so the row drop and ``MLModel._loss``
+    NaN is kept by ``_preprocess`` so the row drop and ``LibraryModel._loss``
     still see it.
 
     Hyperparameters come from ``config.hyperparameters`` and are the
     constructor arguments of the pytabkit estimator. The merge order is the
     head's ``DEFAULT_PARAMS``, then ``random_state`` from
     ``config.random_seed``, then the keys ``_early_stopping_params`` derives
-    from ``config.early_stopping``, then the user's dict, which wins and is
-    never modified. An unknown key raises ``TypeError`` from pytabkit at
+    from ``hyperparameters["early_stopping"]``, then the user's dict without
+    the early-stopping keys the base class reads (``head_hyperparameters``),
+    which wins and is never modified. An unknown key raises ``TypeError`` from pytabkit at
     ``_init_model``. The merged dict is recorded under
     ``resolved_hyperparameters`` in the checkpoint's ``config.json`` and in
     the run config.
@@ -59,13 +60,13 @@ class TabkitRegressor(MLModel):
 
     Parameters
     ----------
-    config : MLConfig
+    config : ModelConfig
         Factors, labels, date ranges, early-stopping settings and
-        hyperparameters. See ``MLConfig``.
+        hyperparameters. See ``ModelConfig``.
 
     Examples
     --------
-    A head is used like any other ``MLModel``; see ``RealMLPRegressor``
+    A head is used like any other ``LibraryModel``; see ``RealMLPRegressor``
     and ``XGBTDRegressor`` for the estimator-specific parts.
 
     >>> issubclass(RealMLPRegressor, TabkitRegressor)
@@ -78,7 +79,7 @@ class TabkitRegressor(MLModel):
     #: early-stopping keys and the user's hyperparameters.
     DEFAULT_PARAMS: dict = {}
 
-    def __init__(self, config: MLConfig):
+    def __init__(self, config: ModelConfig):
         """Initialize the head; see the class docstring for parameters.
 
         Estimator parameters are resolved later, by ``_init_model``.
@@ -87,7 +88,7 @@ class TabkitRegressor(MLModel):
         self._params: dict | None = None
 
     def _early_stopping_params(self) -> dict:
-        """Return estimator constructor keys implied by ``config.early_stopping``.
+        """Return estimator constructor keys implied by ``hyperparameters["early_stopping"]``.
 
         The default returns ``{}``. A head whose estimator takes early
         stopping as constructor arguments overrides this.
@@ -97,14 +98,15 @@ class TabkitRegressor(MLModel):
     def _resolve_params(self, hyperparameters: dict) -> dict:
         """Merge defaults, seed, early-stopping keys and user overrides.
 
-        The result is stored on ``self._params`` and returned; the user's
-        dict is copied, never modified.
+        The early-stopping keys (``reserved_hyperparameters``) are left out
+        of the user's dict. The result is stored on ``self._params`` and returned;
+        the user's dict is copied, never modified.
         """
         self._params = {
             **self.DEFAULT_PARAMS,
             "random_state": self.config.random_seed,
             **self._early_stopping_params(),
-            **dict(hyperparameters),
+            **self.head_hyperparameters(hyperparameters),
         }
         return dict(self._params)
 
@@ -171,7 +173,7 @@ class TabkitRegressor(MLModel):
         """Return the validation rows, or None when there is no usable segment.
 
         A validation segment without a finite-label row counts as absent.
-        Both absent cases log a warning when ``config.early_stopping`` is
+        Both absent cases log a warning when ``hyperparameters["early_stopping"]`` is
         set, because early stopping is then skipped and every iteration is
         trained, as in ``XGBoostRegressor``.
         """
@@ -185,7 +187,7 @@ class TabkitRegressor(MLModel):
                     f"{self.class_name}: the validation segment has no rows "
                     "with finite labels; training without a validation set."
                 )
-        if rows is None and self.config.early_stopping:
+        if rows is None and self.early_stopping:
             logger.warning(
                 f"{self.class_name}: early_stopping=True but there is no usable "
                 f"validation segment; early stopping skipped, training all "

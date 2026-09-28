@@ -14,9 +14,9 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, ForwardConfig, MLConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
-from quantlab.base.model import MLModel
+from quantlab.base.model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 
@@ -157,8 +157,8 @@ class ForwardReturnLabel(Forward):
         return {**self.config.factor.get_config(), "name": self.import_path}
 
 
-class FirstFeatureHead(MLModel):
-    """Deterministic ML head: every label's prediction is feature 0."""
+class FirstFeatureHead(LibraryModel):
+    """Deterministic library head: every label's prediction is feature 0."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"num_labels": num_labels}
@@ -209,7 +209,7 @@ def make_model(
         )
     )
     return FirstFeatureHead(
-        MLConfig(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(Path(root) / "models"),
@@ -226,7 +226,7 @@ def make_model(
     )
 
 
-def train_checkpoint(model: MLModel) -> Path:
+def train_checkpoint(model: LibraryModel) -> Path:
     """`collect()` + `train()`, then return the single `*.joblib` written."""
     model.collect()
     model.train()

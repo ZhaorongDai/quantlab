@@ -51,9 +51,9 @@ The sessions below use a small in-memory stand-in for the factor and label objec
 The config carries the factor and label objects, where checkpoints go, and four dates: the training window and the test window (all inclusive). The last `val_size` share of the training window (0.2 by default) is held out as a validation segment. `factor_data_strategy` and `label_data_strategy` say whether to read stored values (`"read"`) or compute them first (`"cal"`). `XGBoostRegressor` is a tree-model head; `hyperparameters` is passed to it.
 
 ```python
->>> from quantlab.base.config import MLConfig
->>> from quantlab.ml_model.xgb import XGBoostRegressor
->>> config = MLConfig(
+>>> from quantlab.base.config import ModelConfig
+>>> from quantlab.library_model.xgb import XGBoostRegressor
+>>> config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
 ...     train_start="2024-01-01", train_end="2024-05-31",
@@ -151,23 +151,41 @@ True
 
 Every head derives from `BaseModel` through one of two variants. The variants differ in the training framework and in what a subclass must implement; `train`, `train_cv`, `load`, `predict` and `predict_panel` are written once in `BaseModel` and not overridden.
 
-| Class | Framework | Config | Checkpoint | Methods a head implements |
-|---|---|---|---|---|
-| `DLModel` | torch, one cross-section of symbols per step | `DLConfig` | `.pth` | `window_bars`, `_init_model`, `_loss`; optional hooks with defaults (see Train a torch model) |
-| `MLModel` | numpy, the library's own early stopping | `MLConfig` | `.joblib` | `_init_model`, `_preprocess`, `_fit_model`, `_forward` |
+| Class | Framework | Checkpoint | Methods a head implements |
+|---|---|---|---|
+| `TorchModel` | torch, one cross-section of symbols per step | `.pth` | `window_bars`, `_init_model`, `_loss`; optional hooks with defaults (see Train a torch model) |
+| `LibraryModel` | numpy, the library's own early stopping | `.joblib` | `_init_model`, `_preprocess`, `_fit_model`, `_forward` |
 
-Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `MLModel` heads; no torch head ships yet. See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
+Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads; no torch head ships yet. Torch heads live in `quantlab/torch_model/` and library heads in `quantlab/library_model/`. See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
+
+### Configuration and reserved hyperparameters
+
+Every head takes one `ModelConfig`. It holds only what both variants read: the factors and labels, the save directory, the data strategies, the dates, `val_size`, `random_seed` and `hyperparameters`. Every training setting goes in `hyperparameters`, one flat dict that is recorded in `config.json`, so `config.json` alone rebuilds the model.
+
+The base classes and the shipped heads read these keys from it themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`, the union of `TORCH_RESERVED_HYPERPARAMETERS` and `LIBRARY_RESERVED_HYPERPARAMETERS`):
+
+| Key | Read by | Default |
+|---|---|---|
+| `epochs` | `TorchModel`: the cap on training epochs; a value that is not a positive integer raises `ValueError` when training starts | 100 |
+| `lr` | `TorchModel`: the learning rate of the default `_init_optim` | `1e-3` |
+| `early_stopping` | the shipped library heads: turn on the library's native early stopping | `False` |
+| `early_stopping_patience` | the shipped library heads: rounds (or the library's own unit) without improvement | 5 |
+| `batch_size`, `num_workers`, `panel_device`, `panel_dtype` | reserved for the torch data loader and training panel | |
+
+Every other key is the head's own. `_init_model(num_features, num_labels, hyperparameters)` receives the whole dict, reserved keys included. Do not splat it into a network or a library constructor (`nn.GRU(**hyperparameters)`, `Regressor(**hyperparameters)`): read the keys the head needs by name, or pass the dict through the head's `head_hyperparameters` method first, which drops the keys its own variant reserves. The shipped library heads do the latter: they drop the early-stopping keys and keep `lr`, which pytabkit takes as its own learning rate.
 
 ## Common tasks
 
 ### Stop training early
 
-With `early_stopping=True`, training stops when the validation loss has not improved for `early_stopping_patience` boosting rounds and the best model is kept. These are `MLConfig` fields; a torch head stops through its own `_should_stop` hook instead (see Train a torch model). For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/ml_model/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
+With `"early_stopping": True` in `hyperparameters`, training stops when the validation loss has not improved for `early_stopping_patience` boosting rounds and the best model is kept. These are reserved keys the library heads read and never pass to the library; a torch head stops through its own `_should_stop` hook instead (see Train a torch model). For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/library_model/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
 
 ```python
 >>> from dataclasses import replace
->>> stopping = replace(config, early_stopping=True, early_stopping_patience=5,
-...                    hyperparameters={"num_boost_round": 500, "max_depth": 3})
+>>> stopping = replace(config, hyperparameters={
+...     "num_boost_round": 500, "max_depth": 3,
+...     "early_stopping": True, "early_stopping_patience": 5,
+... })
 >>> stopped = XGBoostRegressor(stopping).collect()
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
@@ -209,30 +227,30 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 
 ### Train a torch model
 
-A torch head (`DLModel`) trains on one bar per step: the *cross-section* of that bar, meaning the symbols with at least one finite feature there, each carrying its own last `window_bars` bars of features. The network sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
+A torch head (`TorchModel`) trains on one bar per step: the *cross-section* of that bar, meaning the symbols with at least one finite feature there, each carrying its own last `window_bars` bars of features. The network sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
 
-A head writes three things: `window_bars` (N), `_init_model(num_features, num_labels, hyperparameters)` (the network) and `_loss(output, batch)`, the loss of one bar. `output` is whatever the network returned and `batch` is a `CrossSectionBatch`: `x` (`[S_t, N, F]`), `y` (the target, `[S_t, L]`), `mask` (True where `y` is a valid target), `y_raw` (the raw labels), `symbols` and `timestamp`. Missing labels are already masked and set to 0 in `y`, so a loss only has to count the `mask` entries, as `masked_mse` in `quantlab.dl_model.training` does. Every other choice is an optional hook with a working default:
+A head writes three things: `window_bars` (N), `_init_model(num_features, num_labels, hyperparameters)` (the network) and `_loss(output, batch)`, the loss of one bar. `output` is whatever the network returned and `batch` is a `CrossSectionBatch`: `x` (`[S_t, N, F]`), `y` (the target, `[S_t, L]`), `mask` (True where `y` is a valid target), `y_raw` (the raw labels), `symbols` and `timestamp`. Missing labels are already masked and set to 0 in `y`, so a loss only has to count the `mask` entries, as `masked_mse` in `quantlab.torch_model.training` does. Every other choice is an optional hook with a working default:
 
 | Hook | Default |
 |---|---|
 | `_transform_feature(x)`: raw windows, NaN where missing, to the network input | clip to ±3, NaN to 0 |
 | `_transform_target(y, training)`: one bar's raw labels to `(target, keep)`; `keep` drops symbols from that step | `(y, None)`; helpers `cs_rank_norm` (Qlib `CSRankNorm`), `cs_zscore`, `drop_extreme` |
-| `_init_optim(model)` | Adam at `config.lr` |
+| `_init_optim(model)` | Adam at `hyperparameters["lr"]` (`1e-3`) |
 | `_train_one_batch(epoch, batch)`: one optimisation step, returns the loss | forward, `_loss`, backward, gradient values clipped to `grad_clip_value` (3.0), step |
 | `_val_one_batch(epoch, batch)`: validation loss of one bar | `_loss` |
 | `_test_one_batch(epoch, batch)`: called on every test bar after each epoch | nothing |
 | `_forward(x)`: the `[S_t, L]` prediction, for metrics and `predict_panel` | `self.model(x)` |
-| `_on_fit_start()`, `_should_stop(epoch, train_loss, val_loss)`, `_on_fit_end()` | run `config.epochs` epochs, keep the last weights |
+| `_on_fit_start()`, `_should_stop(epoch, train_loss, val_loss)`, `_on_fit_end()` | run `hyperparameters["epochs"]` (100) epochs, keep the last weights |
 
-`train_loss` and `val_loss` are the means of what the step hooks return; `val_loss` is None without a validation segment. `DLConfig` adds `epochs`, the cap on training, and `lr`. There is no batch size: bars are visited in shuffled order, one per step. Metrics are always computed on the raw first label.
+`train_loss` and `val_loss` are the means of what the step hooks return; `val_loss` is None without a validation segment. The cap on training is the `epochs` hyperparameter and the default optimizer reads `lr` (see Configuration and reserved hyperparameters). There is no batch size: bars are visited in shuffled order, one per step. Metrics are always computed on the raw first label.
 
 A model with `window_bars` N needs N - 1 bars of history before the first bar it predicts. `collect()`, and a backtest's feature request, ask each factor for that many extra bars, counted on the factor's own dataset calendar, and warn when the data does not reach that far back. The stand-in panels here have no dataset, so this head uses a one-bar window; it z-scores the target per bar and stops after five epochs without a lower validation loss.
 
 ```python
 >>> import torch.nn as nn
->>> from quantlab.base.config import DLConfig
->>> from quantlab.base.model import DLModel
->>> from quantlab.dl_model.training import cs_zscore, masked_mse
+>>> from quantlab.base.config import ModelConfig
+>>> from quantlab.base.model import TorchModel
+>>> from quantlab.torch_model.training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
 ...     """A linear map of each symbol's latest bar."""
 ...     def __init__(self, num_features, num_labels):
@@ -240,7 +258,7 @@ A model with `window_bars` N needs N - 1 bars of history before the first bar it
 ...         self.linear = nn.Linear(num_features, num_labels)
 ...     def forward(self, x):              # x: [S_t, N, F]
 ...         return self.linear(x[:, -1])   # [S_t, L]
->>> class LinearHead(DLModel):
+>>> class LinearHead(TorchModel):
 ...     window_bars = 1
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         return LastBar(num_features, num_labels)
@@ -256,19 +274,19 @@ A model with `window_bars` N needs N - 1 bars of history before the first bar it
 ...         else:
 ...             self.bad += 1
 ...         return self.bad >= 5
->>> dl_config = DLConfig(
+>>> torch_config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
 ...     train_start="2024-01-01", train_end="2024-05-31",
 ...     test_start="2024-06-01", test_end="2024-07-18",
-...     epochs=50, lr=1e-2,
+...     hyperparameters={"epochs": 50, "lr": 1e-2},
 ... )
->>> linear = LinearHead(dl_config).collect()
+>>> linear = LinearHead(torch_config).collect()
 >>> linear_checkpoint = linear.train()
 >>> linear_checkpoint.name
 'LinearHead_total.pth'
->>> dl_metrics = json.loads((linear_checkpoint.parent / "metrics.json").read_text())
->>> {k: round(v, 3) for k, v in dl_metrics.items() if k.endswith("rank_ic")}
+>>> torch_metrics = json.loads((linear_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in torch_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.698, 'val_rank_ic': 0.69, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
 >>> wider = xr.concat([factor.ds, one_more], dim="symbol")
@@ -278,17 +296,17 @@ A model with `window_bars` N needs N - 1 bars of history before the first bar it
 
 ### Log to Weights & Biases
 
-Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.ml_model.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run whose summary is the manifest's `cv_mean` block. Torch heads log `train_loss` and `val_loss` every epoch and write the final metrics to the run summary. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
+Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.library_model.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run whose summary is the manifest's `cv_mean` block. Torch heads log `train_loss` and `val_loss` every epoch and write the final metrics to the run summary. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
 
 ## Extending
 
-A new head subclasses `MLModel` or `DLModel` and implements the methods listed in the table above; nothing else needs to change. The head is then usable with `train`, `train_cv`, `load`, `predict_panel` and the backtesters.
+A new head subclasses `LibraryModel` or `TorchModel` and implements the methods listed in the table above; nothing else needs to change. The head is then usable with `train`, `train_cv`, `load`, `predict_panel` and the backtesters.
 
-An `MLModel` head gets `[T, S, F]` features and `[T, S, L]` labels as arrays. `_fit_model` must leave the fitted object in `self.model`, and that object is what the checkpoint stores (via joblib). `_preprocess` runs on every array, labels included, and must return a copy. `_init_model` may return `None` when the real model is created during fitting.
+An `LibraryModel` head gets `[T, S, F]` features and `[T, S, L]` labels as arrays. `_fit_model` must leave the fitted object in `self.model`, and that object is what the checkpoint stores (via joblib). `_preprocess` runs on every array, labels included, and must return a copy. `_init_model` may return `None` when the real model is created during fitting.
 
 ```python
->>> from quantlab.base.model import MLModel
->>> class RidgeHead(MLModel):
+>>> from quantlab.base.model import LibraryModel
+>>> class RidgeHead(LibraryModel):
 ...     """Closed-form ridge regression shared by every symbol."""
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         self.alpha = hyperparameters.get("alpha", 1.0)
@@ -315,16 +333,22 @@ An `MLModel` head gets `[T, S, F]` features and `[T, S, L]` labels as arrays. `_
 [0.05, -0.02, -0.001]
 ```
 
-A `DLModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `LinearHead` under Train a torch model is a complete one. The base class owns the windows, the warm-up, the target mask, the bar order, the epoch loop, the metrics and the checkpoints.
+A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `LinearHead` under Train a torch model is a complete one. The base class owns the windows, the warm-up, the target mask, the bar order, the epoch loop, the metrics and the checkpoints.
 
 ## Notes
 
 Errors below are quoted as raised, with paths shortened to `...`.
 
-A head rejects the wrong config class as the first step of construction.
+A head rejects anything but a `ModelConfig` as the first step of construction.
 
 ```text
-TypeError: XGBoostRegressor requires a MLConfig, got DLConfig
+TypeError: XGBoostRegressor requires a ModelConfig, got dict
+```
+
+A torch head whose `epochs` hyperparameter is not a positive integer fails when training starts.
+
+```text
+ValueError: LinearHead: hyperparameters['epochs'] must be a positive integer, got 0
 ```
 
 It also refuses a label among the factors and a factor among the labels. Wrap a factor in `Forward` to predict it.
@@ -376,9 +400,9 @@ ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 trainin
 
 `train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising. Torch heads return no metrics from `train_cv`, so their fold dicts hold only dates and paths, `cv_mean` is empty and no summary run is opened.
 
-`train()` returns only the checkpoint path; the metrics of the run are in `metrics.json` beside it. `train_cv` returns them directly for `MLModel` heads.
+`train()` returns only the checkpoint path; the metrics of the run are in `metrics.json` beside it. `train_cv` returns them directly for `LibraryModel` heads.
 
-Checkpoints are pickles (`joblib` for `MLModel` heads, `torch.load` for `DLModel` heads). Load only files you produced or trust.
+Checkpoints are pickles (`joblib` for `LibraryModel` heads, `torch.load` for `TorchModel` heads). Load only files you produced or trust.
 
 Progress goes to stderr through `loguru` and `tqdm`. `logger.remove()` silences the log lines.
 
@@ -386,4 +410,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`DLConfig`, `MLConfig`), `quantlab/dl_model/`, `quantlab/ml_model/xgb.py`, `quantlab/ml_model/backend.py` and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`, `ModelConfig`), `quantlab/torch_model/`, `quantlab/library_model/xgb.py`, `quantlab/library_model/backend.py` and `quantlab/utils/metrics.py`.

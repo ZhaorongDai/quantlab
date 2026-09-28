@@ -512,7 +512,7 @@ def test_changed_store_logs_a_fingerprint_warning_and_completes(tmp_path, warnin
 
 def _read_strategy_backtester(root, dataset_config, checkpoint, factor_store, *, tag):
     """Load mode whose model reads its features from a saved factor STORE."""
-    from quantlab.base.config import MLConfig, PolarsFactorConfig
+    from quantlab.base.config import ModelConfig, PolarsFactorConfig
     from tests.backtest_fixtures import (
         FirstFeatureHead,
         ForwardReturnLabel,
@@ -535,7 +535,7 @@ def _read_strategy_backtester(root, dataset_config, checkpoint, factor_store, *,
         )
     )
     model = FirstFeatureHead(
-        MLConfig(
+        ModelConfig(
             factors=[factor],
             labels=[label],
             model_save_dir=str(root / f"backtest_{tag}" / "models"),

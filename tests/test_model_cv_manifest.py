@@ -14,7 +14,7 @@ shape is a persisted format; `format_version` is the migration seam and
 What turns this file red:
 
 - the manifest is missing, or its `folds` differ from the returned list, on the
-  sequential branch, the parallel branch, or a DL head;
+  sequential branch, the parallel branch, or a torch head;
 - a fold entry loses one of D-30's keys, or points at a checkpoint that is not
   on disk;
 - manifest keys leak into the returned fold dicts (the return value is D-30's
@@ -34,10 +34,10 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import BaseModel, DLModel, MLModel
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import BaseModel, TorchModel, LibraryModel
 from quantlab.utils.jsonable import to_jsonable
-from tests.dl_heads import OneBarHead
+from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
 N_TIMES = 40
@@ -95,7 +95,7 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class StubMLHead(MLModel):
+class StubLibraryHead(LibraryModel):
     """A numpy head: predicts the first factor for every label."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -111,7 +111,7 @@ class StubMLHead(MLModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-class NaNMetricMLHead(StubMLHead):
+class NaNMetricLibraryHead(StubLibraryHead):
     """Every fold reports one non-finite metric, as a numpy scalar, beside a
     finite one -- the shape vectorbt-style and panel metrics really take."""
 
@@ -131,14 +131,14 @@ def _common(tmp_path: Path, save_dir: str) -> dict:
     )
 
 
-def _ml(tmp_path: Path, save_dir: str, cls=StubMLHead) -> MLModel:
-    model = cls(MLConfig(**_common(tmp_path, save_dir)))
+def _library(tmp_path: Path, save_dir: str, cls=StubLibraryHead) -> LibraryModel:
+    model = cls(ModelConfig(**_common(tmp_path, save_dir)))
     model.collect()
     return model
 
 
-def _dl(tmp_path: Path, save_dir: str) -> DLModel:
-    model = OneBarHead(DLConfig(**_common(tmp_path, save_dir), epochs=1))
+def _torch(tmp_path: Path, save_dir: str) -> TorchModel:
+    model = OneBarHead(ModelConfig(**_common(tmp_path, save_dir), hyperparameters={"epochs": 1}))
     model.collect()
     return model
 
@@ -164,7 +164,7 @@ def _read_manifest(save_root: Path) -> dict:
 def test_sequential_ml_manifest_equals_returned_folds(tmp_path):
     """The sequential branch: `folds` is the JSON form of the returned list,
     and the wrapper carries `format_version` 2, the folds and `cv_mean`."""
-    model = _ml(tmp_path, "ckpt")
+    model = _library(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 
@@ -178,7 +178,7 @@ def test_sequential_ml_manifest_equals_returned_folds(tmp_path):
 def test_parallel_ml_manifest_equals_returned_folds(tmp_path):
     """The parallel branch writes the same manifest contract: the write must
     sit after BOTH branches, not inside one of them."""
-    model = _ml(tmp_path, "ckpt")
+    model = _library(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS, parallel=True, njobs=2)
 
@@ -188,10 +188,10 @@ def test_parallel_ml_manifest_equals_returned_folds(tmp_path):
     assert len(results) == N_FOLDS
 
 
-def test_dl_manifest_equals_returned_folds(tmp_path):
-    """A DL fold entry carries the fold's dates, its run name, its
-    checkpoint and every split's metrics, like an ML fold."""
-    model = _dl(tmp_path, "ckpt")
+def test_torch_manifest_equals_returned_folds(tmp_path):
+    """A torch fold entry carries the fold's dates, its run name, its
+    checkpoint and every split's metrics, like a library fold."""
+    model = _torch(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 
@@ -208,9 +208,9 @@ def test_dl_manifest_equals_returned_folds(tmp_path):
 
 def test_manifest_fold_entries_carry_the_d30_keys_and_real_checkpoints(tmp_path):
     """D-30's per-fold entry: fold, the four dates, experiment_name and
-    checkpoint, plus the test metrics an ML head produces. Every checkpoint
+    checkpoint, plus the test metrics a library head produces. Every checkpoint
     named must exist, because run_cv deserializes exactly that path."""
-    model = _ml(tmp_path, "ckpt")
+    model = _library(tmp_path, "ckpt")
 
     model.train_cv(train_periods=TRAIN_PERIODS)
 
@@ -219,7 +219,7 @@ def test_manifest_fold_entries_carry_the_d30_keys_and_real_checkpoints(tmp_path)
     for entry in manifest["folds"]:
         assert D30_KEYS <= set(entry), sorted(entry)
         assert any(key.startswith("test_") and key not in FOLD_KEYS for key in entry)
-        assert entry["experiment_name"] == f"StubMLHead_cv_fold_{entry['fold']}"
+        assert entry["experiment_name"] == f"StubLibraryHead_cv_fold_{entry['fold']}"
         assert Path(entry["checkpoint"]).is_file(), entry["checkpoint"]
 
 
@@ -236,7 +236,7 @@ def test_manifest_checkpoints_are_absolute_with_a_relative_save_dir(tmp_path, mo
     monkeypatch.chdir(tmp_path)
     kwargs = _common(tmp_path, "unused")
     kwargs["model_save_dir"] = "ckpt"
-    model = StubMLHead(MLConfig(**kwargs))
+    model = StubLibraryHead(ModelConfig(**kwargs))
     model.collect()
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
@@ -256,7 +256,7 @@ def test_return_value_carries_no_manifest_keys(tmp_path):
     """D-30: the returned value is unchanged by the manifest write. No fold
     dict gains the wrapper's keys, and the manifest holds exactly as many
     folds as were returned."""
-    model = _ml(tmp_path, "ckpt")
+    model = _library(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 
@@ -276,7 +276,7 @@ def test_empty_fold_list_still_writes_a_manifest(tmp_path, monkeypatch):
         "_cv_folds",
         staticmethod(lambda timestamps, train_periods: []),
     )
-    model = _ml(tmp_path, "ckpt")
+    model = _library(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 
@@ -289,7 +289,7 @@ def test_manifest_is_strict_json_with_null_for_non_finite_metrics(tmp_path):
     """A NaN numpy metric must reach the file as `null`: `json.dump`'s
     default writes a bare `NaN` token, which strict parsers reject. The
     returned list still carries the NaN -- only the file is converted."""
-    model = _ml(tmp_path, "ckpt", cls=NaNMetricMLHead)
+    model = _library(tmp_path, "ckpt", cls=NaNMetricLibraryHead)
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 

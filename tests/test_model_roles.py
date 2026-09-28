@@ -9,13 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, MLConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.momentum import Momentum
 from quantlab.label.forward import Forward
 from quantlab.label.fret import Return
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.library_model.xgb import XGBoostRegressor
 
 
 def _momentum(dataset_config: DatasetConfig) -> Momentum:
@@ -42,7 +42,7 @@ def _return(dataset_config: DatasetConfig, tmp_path: Path) -> Return:
 
 def _model(tmp_path: Path, factors, labels) -> XGBoostRegressor:
     return XGBoostRegressor(
-        MLConfig(
+        ModelConfig(
             factors=factors,
             labels=labels,
             model_save_dir=str(tmp_path / "models"),

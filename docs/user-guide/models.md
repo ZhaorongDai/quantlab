@@ -1,8 +1,8 @@
 # Models
 
 This page explains how quantlab trains return models on factor panels. It
-covers the model hierarchy and the available heads, the `MLConfig` and
-`DLConfig` configuration objects, training, prediction, evaluation with IC,
+covers the model hierarchy and the available heads, the `ModelConfig`
+configuration object and its reserved hyperparameters, training, prediction, evaluation with IC,
 RankIC and R2, checkpoints, the purge of label lookahead at every split,
 walk-forward cross-validation, and Weights & Biases logging. Read it after
 [Factors and labels](factors.md). The backtester that consumes a model's
@@ -43,12 +43,12 @@ the public entry points once for all heads: `collect`, `train`, `train_cv`,
 the cross-validation folds. Below it sit two variants, one per kind of
 training library:
 
-- `DLModel` is the PyTorch variant. Each training step is one bar's
+- `TorchModel` is the PyTorch variant. Each training step is one bar's
   cross-section: the symbols with a finite feature at that bar, each with
   its own window of past bars. The network must not depend on the order or
   number of symbols, so any symbol present at a bar is predicted, including
   one the model never saw. It saves `.pth` checkpoints.
-- `MLModel` is the NumPy variant for tree models and other libraries that
+- `LibraryModel` is the NumPy variant for tree models and other libraries that
   run their own training loop. It calls the library once, lets the library do
   its own early stopping, computes metrics on the train, validation and test
   segments, and saves `.joblib` checkpoints. Each `(timestamp, symbol)` cell
@@ -58,9 +58,9 @@ The head classes, the concrete models you instantiate, are:
 
 | Class | Module | Variant | Library | Predicts |
 |---|---|---|---|---|
-| `XGBoostRegressor` | `quantlab.ml_model.xgb` | `MLModel` | xgboost | returns |
-| `XGBTDRegressor` | `quantlab.ml_model.xgb_td` | `MLModel` | pytabkit (XGBoost with tuned defaults) | returns |
-| `RealMLPRegressor` | `quantlab.ml_model.realmlp` | `MLModel` | pytabkit (RealMLP network) | returns |
+| `XGBoostRegressor` | `quantlab.library_model.xgb` | `LibraryModel` | xgboost | returns |
+| `XGBTDRegressor` | `quantlab.library_model.xgb_td` | `LibraryModel` | pytabkit (XGBoost with tuned defaults) | returns |
+| `RealMLPRegressor` | `quantlab.library_model.realmlp` | `LibraryModel` | pytabkit (RealMLP network) | returns |
 
 `XGBoostRegressor` is the usual starting point. It is fast on the CPU,
 handles missing feature values natively and records feature importance.
@@ -77,9 +77,9 @@ defaults. `XGBoostRegressor`, for example, merges your keys over
 
 ## Configure a model
 
-Heads of the `MLModel` variant take a `quantlab.base.config.MLConfig`, and
-torch heads take a `DLConfig`. Passing the wrong one raises `TypeError`
-before anything else happens. Both share these fields:
+Every head, torch or library, takes one `quantlab.base.config.ModelConfig`.
+Passing anything else raises `TypeError` before anything else happens. Its
+fields are:
 
 - `factors` and `labels`: lists of factor objects and of `Forward` labels.
 - `model_save_dir`: the root directory checkpoints are written under.
@@ -94,14 +94,29 @@ before anything else happens. Both share these fields:
   test windows, both ends inclusive.
 - `val_size`: the share of the training window held out, at its end, for
   validation and early stopping. The default is 0.2.
-- `early_stopping` and `early_stopping_patience` (`MLConfig` only): stop
-  when the validation loss has not improved for that many boosting rounds.
-  A torch head decides when to stop in its own `_should_stop` hook instead.
-- `hyperparameters` and `random_seed`.
+- `hyperparameters`: every training and architecture setting, one flat dict.
+- `random_seed`.
 
-`DLConfig` adds the torch training settings `epochs` (the cap on training)
-and `lr` (read by the head's optimizer). `MLConfig` has no epochs, because the library decides how long
-to train. See the docstrings of both classes for every field.
+Some `hyperparameters` keys are reserved: the base classes and the shipped
+heads read them themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`).
+
+- `epochs` (default 100): the cap on a torch head's training epochs. A value
+  that is not a positive integer raises `ValueError` when training starts.
+- `lr` (default `1e-3`): the learning rate of a torch head's default
+  optimizer.
+- `early_stopping` (default `False`) and `early_stopping_patience` (default
+  5): the shipped library heads stop when the validation loss has not
+  improved for that many boosting rounds. A torch head decides when to stop
+  in its own `_should_stop` hook instead.
+- `batch_size`, `num_workers`, `panel_device` and `panel_dtype`: reserved for
+  the torch data loader and training panel.
+
+`_init_model` receives the whole dict, reserved keys included, so never
+splat it into a network or a library constructor. Read the keys a head needs
+by name, or drop the ones the head's own variant reserves with its
+`head_hyperparameters` method. A library head keeps `lr`, which pytabkit
+takes as its learning rate. See the `ModelConfig` docstring
+for every field.
 
 The validation segment is always the last part of the training window in time,
 never a random sample. With daily returns, a random split would put days
@@ -142,18 +157,19 @@ label (see [Factors and labels](factors.md)), then configures
 testing:
 
 ```python
-from quantlab.base.config import MLConfig
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.base.config import ModelConfig
+from quantlab.library_model.xgb import XGBoostRegressor
 
-model = XGBoostRegressor(MLConfig(
+model = XGBoostRegressor(ModelConfig(
     factors=[features],
     labels=[label],
     model_save_dir=str(root / "models"),
     factor_data_strategy="cal",
     label_data_strategy="cal",
-    hyperparameters={"num_boost_round": 300, "max_depth": 3, "eta": 0.05, "nthread": 1},
-    early_stopping=True,
-    early_stopping_patience=20,
+    hyperparameters={
+        "num_boost_round": 300, "max_depth": 3, "eta": 0.05, "nthread": 1,
+        "early_stopping": True, "early_stopping_patience": 20,
+    },
     val_size=0.2,
     start_date="2022-01-03", end_date="2023-05-19",
     train_start="2022-01-03", train_end="2023-01-27",
@@ -207,7 +223,7 @@ from filled-in zeros. A torch head predicts bar t from the bars before it in
 the panel you pass, so give it `window_bars - 1` bars more at the start and
 drop them from the result.
 
-`predict` is the lower-level call on raw arrays. An `MLModel` takes a
+`predict` is the lower-level call on raw arrays. An `LibraryModel` takes a
 `[T, S, F]` NumPy array and returns `[T, S, L]`; a torch head takes an array
 or a tensor of the same shape and returns a `[T, S, L]` tensor, NaN outside
 each bar's cross-section.
@@ -240,7 +256,7 @@ from quantlab.utils.metrics import regression_panel_metrics
 m = regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values)
 ```
 
-`MLModel` heads compute the same metrics themselves during `train()` for the
+`LibraryModel` heads compute the same metrics themselves during `train()` for the
 `train`, `val` and `test` segments, under keys such as `test_ic` and
 `val_rank_ic`. They are written to the Weights & Biases run summary and
 returned per fold by `train_cv`. Torch heads log their own per-epoch metrics
@@ -306,7 +322,7 @@ folds = model.train_cv(train_periods=200)
 Each fold trains a fresh model with its own early stopping and writes its own
 checkpoint directory, `XGBoostRegressor_cv_fold_{i}/`, inside one trial
 directory. `train_cv` returns one dict per fold with the fold's dates,
-experiment name, checkpoint path and, for `MLModel` heads, the `train_*`,
+experiment name, checkpoint path and, for `LibraryModel` heads, the `train_*`,
 `val_*` and `test_*` metrics. The fold's `train_end` is the last bar fitted,
 after the purge. The same list is written as `cv_folds.json` in the trial
 directory, together with `"format_version": 2` and a `cv_mean` block: the
@@ -395,17 +411,17 @@ the symbols and the timestamp; missing labels are already masked, so the
 loss only counts `batch.mask`, as `masked_mse` does. Everything else is an
 optional hook with a default: the feature transform (clip to ±3, NaN to 0),
 the target transform (none; `cs_rank_norm`, `cs_zscore` and `drop_extreme`
-are ready to use), the optimizer (Adam at `config.lr`), the training,
+are ready to use), the optimizer (Adam at the `lr` hyperparameter), the training,
 validation and test steps, the mapping to the prediction, and when to stop
-(by default after `config.epochs` epochs). This head is a small MLP on each
+(by default after the `epochs` hyperparameter's count of epochs). This head is a small MLP on each
 symbol's flattened five-bar window; it ranks the target per bar and keeps
 the epoch with the lowest validation loss:
 
 ```python
 import torch.nn as nn
-from quantlab.base.config import DLConfig
-from quantlab.base.model import DLModel
-from quantlab.dl_model.training import cs_rank_norm, masked_mse
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import TorchModel
+from quantlab.torch_model.training import cs_rank_norm, masked_mse
 
 class WindowMLP(nn.Module):
     """A small MLP on each symbol's flattened window."""
@@ -418,7 +434,7 @@ class WindowMLP(nn.Module):
     def forward(self, x):          # [S_t, N, F] -> [S_t, L]
         return self.net(x)
 
-class WindowMLPHead(DLModel):
+class WindowMLPHead(TorchModel):
     window_bars = 5
     def _init_model(self, num_features, num_labels, hyperparameters):
         return WindowMLP(num_features, num_labels, self.window_bars)
@@ -438,14 +454,14 @@ class WindowMLPHead(DLModel):
     def _on_fit_end(self):
         self.model.load_state_dict(self.best_state)
 
-head = WindowMLPHead(DLConfig(
+head = WindowMLPHead(ModelConfig(
     factors=[features], labels=[label],
     model_save_dir=str(root / "models"),
     factor_data_strategy="cal", label_data_strategy="cal",
     start_date="2022-01-10", end_date="2023-05-19",
     train_start="2022-01-10", train_end="2023-01-27",
     test_start="2023-01-30", test_end="2023-05-19",
-    epochs=30, lr=1e-3,
+    hyperparameters={"epochs": 30, "lr": 1e-3},
 ))
 checkpoint = head.collect().train()
 scores = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -472,7 +488,7 @@ symbols. Features are clipped to ±3 and missing values become 0.
   name its class can produce (`_get_factor_names()`).
 - On macOS, the xgboost and torch wheels ship different OpenMP runtimes that
   clash in one process. Because `quantlab.base.model` imports torch, any
-  script that trains an `MLModel` head is affected. Set `OMP_NUM_THREADS=1`
+  script that trains an `LibraryModel` head is affected. Set `OMP_NUM_THREADS=1`
   before anything imports torch or xgboost, as the example scripts do. Linux
   is not affected.
 - XGBoost and pytabkit use every core by default. On a small panel or a busy
@@ -486,7 +502,7 @@ symbols. Features are clipped to ±3 and missing values become 0.
 - [Factors and labels](factors.md) for building the inputs.
 - [Backtesting](backtesting.md) for turning predictions into target weights
   and replaying a CV run.
-- The docstrings of `quantlab.base.model.BaseModel`, `DLModel` and `MLModel`
+- The docstrings of `quantlab.base.model.BaseModel`, `TorchModel` and `LibraryModel`
   for every method, and of each head class for its hyperparameters.
 - [Extending quantlab](../developer-guide/extending.md) for writing a new
   model head.

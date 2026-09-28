@@ -1,4 +1,4 @@
-"""Tests for `quantlab/ml_model/xgb_td.py:XGBTDRegressor`.
+"""Tests for `quantlab/library_model/xgb_td.py:XGBTDRegressor`.
 
 What is locked, and what turns it red:
 
@@ -20,7 +20,7 @@ What is locked, and what turns it red:
 - `val_fraction` defaults to 0 so pytabkit never splits the training rows a
   second time;
 - NaN labels, ±inf features (imputed to 0, since pytabkit refuses NaN),
-  persistence through a fresh instance, the `MLModel` contract and
+  persistence through a fresh instance, the `LibraryModel` contract and
   sequential `train_cv`.
 
 Everything is synthetic, CPU-only and offline.
@@ -36,10 +36,10 @@ import xarray as xr
 from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
-from quantlab.base.config import DLConfig, MLConfig
-from quantlab.base.model import BaseModel, MLModel
-from quantlab.ml_model.tabkit import TabkitRegressor
-from quantlab.ml_model.xgb_td import XGBTDRegressor, _XGBTDEstimator
+from quantlab.base.config import ModelConfig
+from quantlab.base.model import BaseModel, LibraryModel
+from quantlab.library_model.tabkit import TabkitRegressor
+from quantlab.library_model.xgb_td import XGBTDRegressor, _XGBTDEstimator
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.label_stubs import StubLabel
 
@@ -118,8 +118,11 @@ def _config(
     patience: int = 5,
     hyperparameters: dict | None = None,
     val_size: float = 0.2,
-) -> MLConfig:
-    return MLConfig(
+) -> ModelConfig:
+    hyper = hyperparameters if hyperparameters is not None else dict(FAST)
+    if early_stopping:
+        hyper = {**hyper, "early_stopping": True, "early_stopping_patience": patience}
+    return ModelConfig(
         factors=[factors],
         labels=[StubLabel(labels)],
         model_save_dir=str(tmp_path / save_dir),
@@ -131,9 +134,7 @@ def _config(
         train_end=TRAIN_END,
         test_start=TEST_START,
         test_end=TEST_END,
-        early_stopping=early_stopping,
-        early_stopping_patience=patience,
-        hyperparameters=hyperparameters if hyperparameters is not None else dict(FAST),
+        hyperparameters=hyper,
         val_size=val_size,
     )
 
@@ -372,7 +373,7 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
         "early_stopping_rounds": 4,
     }
     assert saved["resolved_hyperparameters"] == expected
-    assert saved["hyperparameters"] == hyper
+    assert saved["hyperparameters"] == {**hyper, "early_stopping": True, "early_stopping_patience": 4}
 
     rec = recorders[0]
     assert rec.config["resolved_hyperparameters"] == expected
@@ -461,25 +462,13 @@ def test_same_seed_trains_the_same_model(tmp_path, recorders):
 # --------------------------------------------------------------------------
 
 
-def test_rejects_a_dl_config(tmp_path):
-    factors, labels = _panels(seed=25)
-    kwargs = dict(
-        factors=[factors],
-        labels=[StubLabel(labels)],
-        model_save_dir=str(tmp_path),
-        factor_data_strategy="cal",
-        label_data_strategy="cal",
-    )
-    with pytest.raises(TypeError, match="XGBTDRegressor requires a MLConfig"):
-        XGBTDRegressor(DLConfig(**kwargs))
-
 
 def test_contract():
     assert XGBTDRegressor.__abstractmethods__ == frozenset()
     assert TabkitRegressor.__abstractmethods__ == {"_init_model", "_fit_model", "_forward"}
     assert issubclass(XGBTDRegressor, TabkitRegressor)
-    assert issubclass(XGBTDRegressor, MLModel)
-    assert XGBTDRegressor.config_cls is MLConfig
+    assert issubclass(XGBTDRegressor, LibraryModel)
+    assert XGBTDRegressor.config_cls is ModelConfig
     assert XGBTDRegressor.checkpoint_suffix == ".joblib"
 
 

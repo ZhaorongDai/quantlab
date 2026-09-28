@@ -51,11 +51,11 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DatasetConfig, FactorConfig, MLConfig
+from quantlab.base.config import DatasetConfig, FactorConfig, ModelConfig
 from quantlab.base.factor import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.fret import Return
-from quantlab.ml_model.xgb import XGBoostRegressor
+from quantlab.library_model.xgb import XGBoostRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.module import load_model_from_config
 
@@ -162,7 +162,7 @@ def build_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoo
         )
     )
     return XGBoostRegressor(
-        MLConfig(
+        ModelConfig(
             factors=[features],
             labels=[label],
             model_save_dir=str(root / "models"),
@@ -170,9 +170,10 @@ def build_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoo
             label_data_strategy="cal",
             # One xgboost thread is plenty for this tiny panel and keeps the
             # run fast on a busy machine.
-            hyperparameters={"num_boost_round": 300, "max_depth": 3, "eta": 0.05, "nthread": 1},
-            early_stopping=True,
-            early_stopping_patience=20,
+            hyperparameters={
+                "num_boost_round": 300, "max_depth": 3, "eta": 0.05, "nthread": 1,
+                "early_stopping": True, "early_stopping_patience": 20,
+            },
             val_size=0.2,
             **dates,
         )

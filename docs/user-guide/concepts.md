@@ -53,8 +53,8 @@ A model learns to predict the labels from the factors. At every split boundary i
 last lookahead bars of the earlier segment, so no label it fits on reads a bar of the later
 one. Its prediction panel has one variable per label on the same `(timestamp, symbol)` grid
 as its inputs. Model heads come in two
-families: torch networks trained one cross-section of symbols per step (`DLModel`) and tree or tabular models fitted
-in one call with the library's own early stopping (`MLModel`). See [models](models.md).
+families: torch networks trained one cross-section of symbols per step (`TorchModel`) and tree or tabular models fitted
+in one call with the library's own early stopping (`LibraryModel`). See [models](models.md).
 
 Selection turns predictions into target weights: for every symbol, the fraction of the
 portfolio it should hold. The cross-sectional selector ranks the symbols on each rebalance bar
@@ -117,7 +117,7 @@ Every object in quantlab is built from one config dataclass, defined in
 | `ConstituentDatasetConfig` | an index-membership dataset |
 | `UniverseConfig` | the point-in-time universe catalog |
 | `FactorConfig`, `PolarsFactorConfig` | a KunQuant or Polars factor or label |
-| `DLConfig`, `MLConfig` | a torch model head, a tree or tabular model head |
+| `ModelConfig` | a model head, torch or tree/tabular |
 | `BacktestConfig`, `CrossSectionBacktestConfig` | a backtester |
 
 Configs nest the way the objects do. A factor config holds the dataset object it reads from;
@@ -232,7 +232,7 @@ folds and adds a `folds/` directory with each fold's own weights and equity. See
 
 The code follows one rule: abstract base classes live in `quantlab/base/`, and the concrete
 implementations live next to the code that uses them. To add a new model you subclass
-`quantlab.base.model.MLModel` and put the result in `quantlab/ml_model/`; to add a data
+`quantlab.base.model.LibraryModel` and put the result in `quantlab/library_model/`; to add a data
 source you subclass `quantlab.base.acquisition.Acquisition` and register it. The
 [extending guide](../developer-guide/extending.md) walks through each case.
 
@@ -244,7 +244,7 @@ quantlab/
         data.py          BaseDataset, MarketDataset: raw tier to Zarr panel
         constituent.py   IndexConstituentDataset: index-membership panels
         factor.py        Factor, FactorKunQuant, FactorPolars
-        model.py         BaseModel, DLModel, MLModel
+        model.py         BaseModel, TorchModel, LibraryModel
         backtest.py      BaseBacktester and its result types
         backend.py       DataBackend, ModelBackend: storage interfaces
         ...              chunked conversion, download ledgers, progress reporting
@@ -252,8 +252,8 @@ quantlab/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
     factor/          Alpha101, Alpha158, momentum, residual momentum
     label/           Forward (forward.py) and the forward-return labels (fret.py)
-    ml_model/        XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
-    dl_model/        torch training rules: windows, target transforms, stopping
+    library_model/        XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
+    torch_model/        torch training rules: windows, target transforms, stopping
     backtest/        vectorbt engine, top-N selector, the US-equity backtester
     my_ops/          custom KunQuant operators
     utils/           config loaders (module.py), metrics, report, fingerprints, CLI helpers

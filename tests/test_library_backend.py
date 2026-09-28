@@ -3,13 +3,13 @@
 Quick task 260907-fl6, batch 2. `base/backend.py:ModelBackend` declares
 `read`/`write`/`to_internal` as `-> Self`, mirroring `DataBackend`, whose two
 implementations (`XrBackend`, `PlBackend`) all return `self` and are used in
-chains throughout the codebase. `ml_model/backend.py:MlBackend`'s three
+chains throughout the codebase. `library_model/backend.py:MlBackend`'s three
 implementations returned `None` implicitly, so any chained call died with
 `AttributeError: 'NoneType' object has no attribute ...` -- evidence the class
 had never actually been run.
 
 `MlBackend` is now the checkpoint persistence backend of
-`quantlab/base/model.py:MLModel` (quick task 260914-lno): `_write_checkpoint`
+`quantlab/base/model.py:LibraryModel` (quick task 260914-lno): `_write_checkpoint`
 and `_read_checkpoint` go through it, so `XGBoostRegressor`'s `.joblib` files
 are written and read here. It was fixed before that first caller arrived,
 which is what this file locks.
@@ -21,7 +21,7 @@ import joblib
 import pytest
 
 from quantlab.base.backend import ModelBackend
-from quantlab.ml_model.backend import MlBackend
+from quantlab.library_model.backend import MlBackend
 
 
 class _Model:
