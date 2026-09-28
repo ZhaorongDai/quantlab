@@ -16,6 +16,7 @@ Two datasets ship:
   default collation to ``[B, N, F]``.
 """
 
+import dataclasses
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -37,7 +38,9 @@ class TrainingPanel:
     Attributes
     ----------
     x : torch.Tensor
-        Features, ``[T, S, F]``, NaN where missing.
+        Features, ``[T, S, F]``, NaN where missing; float32, or float16 when
+        the head stores the panel with ``panel_dtype="float16"`` (each
+        batch is cast back to float32 before ``_transform_feature``).
     target : torch.Tensor
         Training target, ``[T, S, L]``, 0 wherever ``mask`` is False.
     mask : torch.Tensor
@@ -122,6 +125,43 @@ class TrainingPanel:
             present=torch.isfinite(features).any(dim=-1),
             timestamps=np.asarray(timestamps),
             symbols=np.asarray(symbols),
+        )
+
+    def to(self, device, x_dtype: torch.dtype | None = None) -> "TrainingPanel":
+        """Return the panel with every tensor on ``device``, features cast to ``x_dtype``.
+
+        Only the features change precision; the target, the raw labels and
+        the masks keep theirs. ``present`` was computed from the features
+        before any cast.
+
+        Raises
+        ------
+        ValueError
+            If the cast turns a finite feature into an infinity, as a value
+            beyond ±65504 does in float16.
+
+        Examples
+        --------
+        >>> panel.to("cpu", torch.float16).x.dtype
+        torch.float16
+        """
+        x = self.x
+        if x_dtype is not None and x_dtype != x.dtype:
+            cast = x.to(x_dtype)
+            overflow = int((torch.isfinite(x) & ~torch.isfinite(cast)).sum())
+            if overflow:
+                raise ValueError(
+                    f"{overflow} feature value(s) are finite but too large for "
+                    f"{x_dtype}; store the panel in a wider dtype or rescale the factor"
+                )
+            x = cast
+        return dataclasses.replace(
+            self,
+            x=x.to(device),
+            target=self.target.to(device),
+            mask=self.mask.to(device),
+            y_raw=self.y_raw.to(device),
+            present=self.present.to(device),
         )
 
     def window(self, t: int, symbols: torch.Tensor, window_bars: int) -> torch.Tensor:

@@ -1848,6 +1848,17 @@ class TorchModel(BaseModel):
     checkpoint_suffix = ".pth"
     reserved_hyperparameters = TORCH_RESERVED_HYPERPARAMETERS
 
+    #: Accepted ``hyperparameters["panel_device"]`` values.
+    PANEL_DEVICES: tuple[str, ...] = ("auto", "cuda", "cpu")
+    #: Accepted ``hyperparameters["panel_dtype"]`` values and the feature dtype each stores.
+    PANEL_DTYPES: dict[str, torch.dtype] = {"float32": torch.float32, "float16": torch.float16}
+    #: Largest share of free GPU memory ``panel_device="auto"`` gives the panel.
+    PANEL_GPU_BUDGET: float = 0.5
+
+    #: Device the current training or prediction panel was placed on, set by
+    #: ``_place_panel``; None before the first placement.
+    _panel_device: str | None = None
+
     #: Gradient value clip of the default ``_train_one_batch``; None disables.
     grad_clip_value: float | None = 3.0
 
@@ -1907,7 +1918,9 @@ class TorchModel(BaseModel):
         step, as the cross-section dataset needs) and ``num_workers``
         (default 0) from the hyperparameters, shuffles only when training
         with a generator seeded from ``config.random_seed``, and never drops
-        the last batch.
+        the last batch. Memory is pinned only when the panel sits in CPU
+        memory, workers load it and the model runs on CUDA: pinning without
+        workers made loading about 4 times slower in a measurement.
 
         Examples
         --------
@@ -1919,13 +1932,15 @@ class TorchModel(BaseModel):
         # A random sampler refuses an empty dataset; a fit without a single
         # valid target trains on nothing.
         empty = hasattr(dataset, "__len__") and len(dataset) == 0  # type: ignore[arg-type]
+        workers = self._num_workers
         return DataLoader(
             dataset,
             batch_size=hyperparameters.get("batch_size"),
             shuffle=training and not empty,
-            num_workers=hyperparameters.get("num_workers", 0),
+            num_workers=workers,
             generator=torch.Generator().manual_seed(self.config.random_seed),
             drop_last=False,
+            pin_memory=bool(workers) and self._panel_device == "cpu" and self.device == "cuda",
         )
 
     def _transform_feature(self, x: torch.Tensor) -> torch.Tensor:
@@ -2007,8 +2022,121 @@ class TorchModel(BaseModel):
         """Choose the weights to keep, after the last epoch; the default keeps the last."""
 
     def _check_hyperparameters(self) -> None:
-        """Refuse an ``epochs`` hyperparameter that is not a positive integer."""
+        """Refuse an invalid ``epochs``, ``panel_device`` or ``panel_dtype``."""
         self.epochs
+        self._panel_settings()
+
+    @property
+    def _num_workers(self) -> int:
+        """``hyperparameters["num_workers"]``, 0 when unset."""
+        return int(self.config.hyperparameters.get("num_workers", 0) or 0)
+
+    def _panel_settings(self) -> tuple[str, torch.dtype]:
+        """Return the validated ``(panel_device, feature dtype)`` of the hyperparameters.
+
+        Raises
+        ------
+        ValueError
+            If ``panel_device`` or ``panel_dtype`` is not an accepted value,
+            or ``panel_device="cuda"`` is asked for with ``num_workers > 0``
+            (a worker process cannot index a CUDA tensor) or without a CUDA
+            device.
+        """
+        hyperparameters = self.config.hyperparameters
+        device = hyperparameters.get("panel_device", "auto")
+        dtype = hyperparameters.get("panel_dtype", "float32")
+        if not isinstance(device, str) or device not in self.PANEL_DEVICES:
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['panel_device'] must be one of "
+                f"{list(self.PANEL_DEVICES)}, got {device!r}"
+            )
+        if not isinstance(dtype, str) or dtype not in self.PANEL_DTYPES:
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['panel_dtype'] must be one of "
+                f"{list(self.PANEL_DTYPES)}, got {dtype!r}"
+            )
+        if device == "cuda" and self._num_workers:
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['panel_device']='cuda' cannot be "
+                f"combined with num_workers={self._num_workers}, because a loader "
+                f"worker process cannot index a CUDA tensor; use num_workers=0, or "
+                f"panel_device='cpu' or 'auto'"
+            )
+        if device == "cuda" and not torch.cuda.is_available():
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['panel_device']='cuda' but no "
+                f"CUDA device is available"
+            )
+        return device, self.PANEL_DTYPES[dtype]
+
+    def _panel_bytes(self, panel: TrainingPanel) -> int:
+        """Bytes ``panel`` takes once its features are stored at ``panel_dtype``."""
+        _, dtype = self._panel_settings()
+        feature_bytes = panel.x.numel() * torch.empty((), dtype=dtype).element_size()
+        return feature_bytes + sum(
+            tensor.numel() * tensor.element_size()
+            for tensor in (panel.target, panel.y_raw, panel.mask, panel.present)
+        )
+
+    def _resolve_panel_device(self, nbytes: int) -> str:
+        """Return the device, ``"cuda"`` or ``"cpu"``, for a panel of ``nbytes`` bytes.
+
+        ``panel_device="cpu"`` and ``"cuda"`` are obeyed. ``"auto"`` picks
+        the GPU when CUDA is available, no loader workers are asked for, and
+        the panel takes at most ``PANEL_GPU_BUDGET`` of the free GPU
+        memory; it logs the choice.
+
+        Raises
+        ------
+        ValueError
+            As ``_panel_settings``.
+
+        Examples
+        --------
+        >>> head._resolve_panel_device(10_000)
+        'cpu'
+        """
+        setting, _ = self._panel_settings()
+        if setting != "auto":
+            return setting
+        if not torch.cuda.is_available():
+            return "cpu"
+        if self._num_workers:
+            logger.info(
+                f"{self.class_name}: training panel in CPU memory, because "
+                f"num_workers={self._num_workers} loader workers read it"
+            )
+            return "cpu"
+        free, _ = torch.cuda.mem_get_info()
+        choice = "cuda" if nbytes <= self.PANEL_GPU_BUDGET * free else "cpu"
+        logger.info(
+            f"{self.class_name}: training panel of {nbytes / 2**30:.2f} GiB "
+            f"{'on the GPU' if choice == 'cuda' else 'in CPU memory'} "
+            f"({free / 2**30:.2f} GiB of GPU memory free, budget "
+            f"{self.PANEL_GPU_BUDGET:.0%})"
+        )
+        return choice
+
+    def _place_panel(self, panel: TrainingPanel) -> TrainingPanel:
+        """Return ``panel`` on the resolved device with features at ``panel_dtype``.
+
+        Records the device on ``_panel_device``. Called after the training
+        target is filled, and on every prediction panel.
+
+        Raises
+        ------
+        ValueError
+            As ``_panel_settings``, or if a feature is too large for
+            ``panel_dtype`` (see ``TrainingPanel.to``).
+        """
+        _, dtype = self._panel_settings()
+        device = self._resolve_panel_device(self._panel_bytes(panel))
+        try:
+            placed = panel.to(device, dtype)
+        except ValueError as exc:
+            raise ValueError(f"{self.class_name}: {exc}") from None
+        self._panel_device = device
+        return placed
 
     @property
     def epochs(self) -> int:
@@ -2297,6 +2425,7 @@ class TorchModel(BaseModel):
         self._fill_target(panel, train_bars, training=True)
         self._fill_target(panel, val_bars, training=False)
         self._fill_target(panel, test_bars, training=False)
+        panel = self._place_panel(panel)
 
         self.model = self._init_model(
             num_features=self.num_factors,
@@ -2367,7 +2496,9 @@ class TorchModel(BaseModel):
         self, x: np.ndarray, timestamps: np.ndarray, symbols: np.ndarray
     ) -> np.ndarray:
         """Return ``[T, S, L]`` predictions of every bar of ``x`` on its coordinates."""
-        panel = TrainingPanel.from_arrays(x, timestamps=timestamps, symbols=symbols)
+        panel = self._place_panel(
+            TrainingPanel.from_arrays(x, timestamps=timestamps, symbols=symbols)
+        )
         return self._predict_panel_bars(panel, np.arange(x.shape[0]))
 
     def _predict_panel_array(
