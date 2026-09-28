@@ -194,7 +194,7 @@ def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
     )
     trainer = make_model(tmp_path / "train", dataset_config, **model_dates)
     trainer.collect()
-    trainer.train_cv(train_periods=CV_TRAIN_PERIODS, gap_periods=0)
+    trainer.train_cv(train_periods=CV_TRAIN_PERIODS)
     manifests = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
     assert len(manifests) == 1, manifests
 

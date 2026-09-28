@@ -46,6 +46,7 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import DASH, write_backtest_report
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
@@ -726,9 +727,13 @@ class BaseBacktester(ABC):
         then backtested on its own test segment with its own checkpoint, and
         its in-sample split uses that fold's training dates. A label looks a
         few bars ahead (its *label horizon*), so the training labels of a fold
-        already saw the first few bars after ``train_end``. With no gap
-        between a fold's training and test segments, those first bars of
-        every test segment therefore count as in-sample.
+        already saw the bars after ``train_end``. ``train_cv`` purges those
+        bars from every training window and records the purged ``train_end``,
+        so a test bar counts as in-sample only if a label reads further than
+        the purge removed.
+        The checkpoint's own recorded training window is the one before the
+        purge; it is purged the same way before it is compared with the
+        manifest.
 
         The per-fold weights are concatenated and simulated once over the
         prices from the first ``test_start`` to the last ``test_end``, with
@@ -771,8 +776,8 @@ class BaseBacktester(ABC):
         >>> cv = backtester.run_cv()
         >>> len(cv.folds), cv.weights.sizes
         (8, Frozen({'timestamp': 48, 'symbol': 6}))
-        >>> cv.metrics["stitched"]["in_sample_ranges"][:2]
-        [('2024-02-12', '2024-02-13'), ('2024-02-20', '2024-02-21')]
+        >>> cv.metrics["stitched"]["in_sample_ranges"]
+        []
         """
         if self.config.cv_project_dir is None:
             raise ValueError(
@@ -802,8 +807,10 @@ class BaseBacktester(ABC):
             saved = self._load_model_checkpoint(fold["checkpoint"])
             # The manifest's dates are authoritative. The checkpoint's own
             # recorded dates are only cross-checked against them, by the bars
-            # they select on the calendar rather than by text.
-            recorded = self._recorded_train_bounds(saved)
+            # they select on the calendar rather than by text. The checkpoint
+            # records the training window before the purge, the manifest the
+            # purged one, so the recorded window is purged first.
+            recorded = self._purged_train_bounds(calendar, saved)
             manifest_bounds = fold["_train_bounds"]
             if recorded is not None and not self._same_training_bars(
                 calendar, recorded, manifest_bounds
@@ -1269,6 +1276,32 @@ class BaseBacktester(ABC):
         if saved.get("train_start") is None or saved.get("train_end") is None:
             return None
         return saved["train_start"], saved["train_end"]
+
+    def _purged_train_bounds(self, calendar, saved: dict | None) -> tuple | None:
+        """Return a checkpoint's recorded training window as the model fitted it.
+
+        ``train_cv`` writes each fold checkpoint's config with the training
+        window before the purge, and the manifest with the purged one. The
+        recorded window goes through ``purge_segments`` against the recorded
+        test window with the labels' largest ``lookahead_bars()``, so the two
+        can be compared. Falls back to the recorded window when a date is
+        missing or the purge would leave no bar.
+        """
+        recorded = self._recorded_train_bounds(saved)
+        if recorded is None or None in (saved.get("test_start"), saved.get("test_end")):
+            return recorded
+        lookahead = max(
+            (label.lookahead_bars() for label in self.config.model.config.labels),
+            default=0,
+        )
+        usable, _ = purge_segments(
+            np.sort(np.asarray(calendar).astype("datetime64[ns]")),
+            [recorded, (saved["test_start"], saved["test_end"])],
+            lookahead,
+        )
+        if len(usable) == 0:
+            return recorded
+        return recorded[0], np.datetime_as_string(usable[-1])
 
     @classmethod
     def _same_training_bars(cls, calendar, a: tuple, b: tuple) -> bool:

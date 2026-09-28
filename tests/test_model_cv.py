@@ -12,13 +12,19 @@ baseline taken AFTER an extraction can only detect later drift, never drift
 the extraction itself introduced.
 
 What the goldens pin, for a 130-timestamp panel and
-`train_cv(train_periods=50, gap_periods=3)`:
+`train_cv(train_periods=50)`:
 
-- exactly 7 fold directories `{cls}_cv_fold_{i}` (i = 0..6), each holding
+- exactly 8 fold directories `{cls}_cv_fold_{i}` (i = 0..7), each holding
   exactly `{cls}_cv_fold_{i}.pth` and `config.json`;
 - the dates each fold ACTUALLY trained on: training indices `i*10 .. i*10+49`,
-  test indices `i*10+53 .. i*10+62`, rendered with `np.datetime_as_string`
+  test indices `i*10+50 .. i*10+59`, rendered with `np.datetime_as_string`
   from the collected panel's own timestamp coordinate.
+
+2026-09-27, issue #34: `gap_periods` is gone, and the purge by the labels'
+lookahead replaced it. The goldens were re-captured without a gap (8 folds,
+test right after train), which is the one deliberate edit to them. Their
+label reads no future bar, so no fold here is purged; the purge itself is
+tested in `tests/test_model_purge.py`.
 
 The dates are observed from inside training -- the stub head records
 `self.config`'s four dates in `_init_optim` -- so a fold that computed the
@@ -35,6 +41,7 @@ per-fold directory contents are asserted exactly as captured, and the fold
 geometry goldens still hold as captured before the refactor.
 """
 
+import dataclasses
 from pathlib import Path
 
 import numpy as np
@@ -60,10 +67,9 @@ TIMES = np.datetime64("2024-01-01") + np.arange(N_TIMES).astype(
 START = np.datetime_as_string(TIMES[0], unit="D")
 END = np.datetime_as_string(TIMES[N_TIMES - 1], unit="D")
 
-#: The golden geometry: 130 timestamps, train 50, gap 3 -> test 10, 7 folds.
+#: The golden geometry: 130 timestamps, train 50 -> test 10, 8 folds.
 GOLDEN_TRAIN_PERIODS = 50
-GOLDEN_GAP_PERIODS = 3
-GOLDEN_N_FOLDS = 7
+GOLDEN_N_FOLDS = 8
 
 #: `(train_start, train_end, test_start, test_end)` for every fold that
 #: reached `_init_optim`, in the order the folds trained. A list append is
@@ -181,8 +187,8 @@ def _golden_fold_dates(model) -> list[tuple[str, str, str, str]]:
         (
             fmt(ts[i * 10]),
             fmt(ts[i * 10 + 49]),
-            fmt(ts[i * 10 + 53]),
-            fmt(ts[i * 10 + 62]),
+            fmt(ts[i * 10 + 50]),
+            fmt(ts[i * 10 + 59]),
         )
         for i in range(GOLDEN_N_FOLDS)
     ]
@@ -209,16 +215,14 @@ def test_dl_train_cv_fold_geometry_golden_sequential(tmp_path):
     """Golden: the sequential branch's folds, checkpoints and trained dates.
 
     Turns red if the fold-boundary arithmetic changes in any way (test size,
-    fold count, gap placement, off-by-one on an end index, skipped-fold
+    fold count, test placement, off-by-one on an end index, skipped-fold
     rule), if a fold trains on dates other than the ones it computed, or if
     the checkpoint layout changes.
     """
     model = GoldenDLHead(_dl_config(tmp_path, "ckpt_seq"))
     model.collect()
 
-    model.train_cv(
-        train_periods=GOLDEN_TRAIN_PERIODS, gap_periods=GOLDEN_GAP_PERIODS
-    )
+    model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
 
     assert DL_FOLD_DATES == _golden_fold_dates(model)
     _assert_golden_fold_dirs(tmp_path / "ckpt_seq", "GoldenDLHead", ".pth")
@@ -238,7 +242,6 @@ def test_dl_train_cv_fold_geometry_golden_parallel(tmp_path):
 
     model.train_cv(
         train_periods=GOLDEN_TRAIN_PERIODS,
-        gap_periods=GOLDEN_GAP_PERIODS,
         parallel=True,
         njobs=2,
     )
@@ -351,40 +354,20 @@ def _relative_checkpoints(results: list[dict], save_root: Path) -> set[str]:
 
 
 # --------------------------------------------------------------------------
-# _cv_folds geometry
+# Too little data
 # --------------------------------------------------------------------------
 
 
-def _day_index(date: str) -> int:
-    return int(
-        (np.datetime64(date, "D") - TIMES[0]) / np.timedelta64(1, "D")
+def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path, recorders):
+    """55 timestamps cannot hold train 50 + test 10, so no fold trains."""
+    config = dataclasses.replace(
+        _ml_config(tmp_path, "ckpt"), end_date=np.datetime_as_string(TIMES[54], unit="D")
     )
+    model = StubMLHead(config)
+    model.collect()
 
-
-def test_cv_folds_geometry():
-    """The generator alone: 7 folds, exact keys, a 3-timestamp gap inside
-    each fold, disjoint train/test, and back-to-back test windows. Turns red
-    on any change to the extracted arithmetic, independently of the goldens'
-    trained-date observation."""
-    folds = BaseModel._cv_folds(TIMES, train_periods=50, gap_periods=3)
-
-    assert len(folds) == GOLDEN_N_FOLDS
-    assert [f["fold"] for f in folds] == list(range(GOLDEN_N_FOLDS))
-    for f in folds:
-        assert set(f) == FOLD_KEYS
-        train_start, train_end = _day_index(f["train_start"]), _day_index(f["train_end"])
-        test_start, test_end = _day_index(f["test_start"]), _day_index(f["test_end"])
-        assert train_end - train_start + 1 == 50
-        assert test_end - test_start + 1 == 10
-        assert test_start - train_end - 1 == 3, "gap between train_end and test_start"
-        assert train_end < test_start
-    for prev, nxt in zip(folds, folds[1:]):
-        assert _day_index(nxt["test_start"]) == _day_index(prev["test_end"]) + 1
-
-
-def test_cv_folds_returns_empty_when_data_is_too_short():
-    """60 timestamps cannot hold train 50 + gap 3 + test 10."""
-    assert BaseModel._cv_folds(TIMES[:60], train_periods=50, gap_periods=3) == []
+    assert model.train_cv(train_periods=50) == []
+    assert ML_FOLD_DATES == []
 
 
 # --------------------------------------------------------------------------
@@ -419,13 +402,13 @@ def test_both_train_cv_branches_train_exactly_what_cv_folds_yields(tmp_path, mon
     monkeypatch.setattr(
         BaseModel,
         "_cv_folds",
-        staticmethod(lambda timestamps, train_periods, gap_periods: [dict(f) for f in HANDMADE_FOLDS]),
+        staticmethod(lambda timestamps, train_periods: [dict(f) for f in HANDMADE_FOLDS]),
     )
     save_dir = "ckpt_par" if parallel else "ckpt_seq"
     model = StubMLHead(_ml_config(tmp_path, save_dir))
     model.collect()
 
-    results = model.train_cv(train_periods=50, gap_periods=3, parallel=parallel, njobs=2)
+    results = model.train_cv(train_periods=50, parallel=parallel, njobs=2)
 
     assert sorted(ML_FOLD_DATES) == sorted(_as_tuples(HANDMADE_FOLDS))
     assert sorted(r["fold"] for r in results) == [3, 5]
@@ -450,7 +433,7 @@ def test_ml_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path,
     model = StubMLHead(_ml_config(tmp_path, "ckpt"))
     model.collect()
     expected = BaseModel._cv_folds(
-        model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values, 50, 0
+        model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values, 50
     )
 
     results = model.train_cv(train_periods=50)
@@ -517,7 +500,7 @@ def test_dl_train_cv_results_carry_dates_only_and_open_no_summary_run(tmp_path, 
     model = GoldenDLHead(_dl_config(tmp_path, "ckpt"))
     model.collect()
 
-    results = model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS, gap_periods=GOLDEN_GAP_PERIODS)
+    results = model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
 
     assert len(results) == GOLDEN_N_FOLDS
     for r in results:

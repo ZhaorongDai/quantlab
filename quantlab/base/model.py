@@ -48,6 +48,7 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.symbol_axis import sort_symbol_axis
+from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
 
 from .config import DLConfig, MLConfig
@@ -1020,19 +1021,78 @@ class BaseModel(ABC):
             Path(self.config.model_save_dir) / project_name / experiment_name / model_name
         ).absolute()
 
+    def _purge_bars(self) -> int:
+        """L, the largest ``lookahead_bars()`` among the model's labels."""
+        return max(
+            (label.lookahead_bars() for label in self.config.labels), default=0
+        )
+
+    def _fit_segments(
+        self, data: xr.Dataset
+    ) -> tuple[xr.Dataset, xr.Dataset, xr.Dataset]:
+        """Split the collected panel into purged train, validation and test panels.
+
+        The training window ``[train_start, train_end]`` is cut by position:
+        its first ``1 - val_size`` share of bars trains, the rest validates.
+        The train, validation and test segments then go through
+        ``purge_segments`` with L = ``_purge_bars()``, so each segment
+        followed by another loses its last L bars and no fitted label reads
+        a bar of the next segment.
+
+        Returns
+        -------
+        tuple of xr.Dataset
+            The train, validation and test panels. The validation panel has
+            no timestamps when ``val_size`` is 0 or the purge empties it.
+
+        Raises
+        ------
+        ValueError
+            If no training bar is left, by ``val_size`` or by the purge.
+        """
+        config = self.config
+        timestamps = np.sort(data.timestamp.values)
+        (window,) = purge_segments(
+            timestamps, [(config.train_start, config.train_end)], 0
+        )
+        split = int(len(window) * (1 - config.val_size))
+        if split == 0:
+            raise ValueError(
+                f"Empty training segment: val_size={config.val_size} "
+                f"leaves 0 of {len(window)} training timestamps for fitting."
+            )
+        segments = [(window[0], window[split - 1])]
+        if split < len(window):
+            segments.append((window[split], window[-1]))
+        segments.append((config.test_start, config.test_end))
+
+        lookahead = self._purge_bars()
+        parts = purge_segments(timestamps, segments, lookahead)
+        if len(parts[0]) == 0:
+            raise ValueError(
+                f"Empty training segment: purging the last {lookahead} bars "
+                f"leaves 0 of {split} training timestamps for fitting."
+            )
+        train, test = parts[0], parts[-1]
+        val = parts[1] if len(parts) == 3 else timestamps[:0]
+        return (
+            data.sel(timestamp=train),
+            data.sel(timestamp=val),
+            data.sel(timestamp=test),
+        )
+
     @staticmethod
-    def _cv_folds(
-        timestamps, train_periods: int, gap_periods: int
-    ) -> list[dict]:
+    def _cv_folds(timestamps, train_periods: int) -> list[dict]:
         """Compute the fold boundaries of a rolling walk-forward cross-validation.
 
         This is the only implementation of the fold arithmetic; both the
         sequential and the parallel branch of ``train_cv`` use it. With
-        ``test_periods = train_periods // 5``, fold ``i`` trains on positions
-        ``[i * test_periods, i * test_periods + train_periods)``, skips
-        ``gap_periods`` positions, then tests on the next ``test_periods``
-        positions. The number of folds is
-        ``max(1, (len(timestamps) - train_periods - gap_periods) // test_periods)``;
+        ``test_periods = train_periods // 5``, fold ``i`` has the training
+        window ``[i * test_periods, i * test_periods + train_periods)`` and
+        tests on the next ``test_periods`` positions. These are the windows
+        before the purge: ``_fit`` drops the last L bars of the training
+        window. The number of folds is
+        ``max(1, (len(timestamps) - train_periods) // test_periods)``;
         a fold whose test segment runs past the end is logged and skipped, so
         the result can be empty.
 
@@ -1045,15 +1105,13 @@ class BaseModel(ABC):
         """
         total_periods = len(timestamps)
         test_periods = train_periods // 5  # Test set is 20% of training set
-        n_splits = max(
-            1, (total_periods - train_periods - gap_periods) // test_periods
-        )
+        n_splits = max(1, (total_periods - train_periods) // test_periods)
 
         folds: list[dict] = []
         for i in range(n_splits):
             train_start_idx = i * test_periods
             train_end_idx = train_start_idx + train_periods
-            test_start_idx = train_end_idx + gap_periods
+            test_start_idx = train_end_idx
             test_end_idx = test_start_idx + test_periods
 
             if test_end_idx > total_periods:
@@ -1081,13 +1139,39 @@ class BaseModel(ABC):
             )
         return folds
 
-    def _train_one_fold(self, fold: dict, project_name: str) -> dict:
+    @staticmethod
+    def _purged_fold(timestamps, fold: dict, lookahead: int) -> dict:
+        """The fold as fitted: its ``train_end`` moved to the last bar the purge keeps.
+
+        Raises
+        ------
+        ValueError
+            If the purge leaves the fold no training bar.
+        """
+        usable, _ = purge_segments(
+            timestamps,
+            [
+                (fold["train_start"], fold["train_end"]),
+                (fold["test_start"], fold["test_end"]),
+            ],
+            lookahead,
+        )
+        if len(usable) == 0:
+            raise ValueError(
+                f"Fold {fold['fold']}: purging the last {lookahead} bars "
+                f"leaves no training bar; raise train_periods."
+            )
+        return {**fold, "train_end": np.datetime_as_string(usable[-1])}
+
+    def _train_one_fold(self, fold: dict, record: dict, project_name: str) -> dict:
         """Train one fold on this instance and return its result dict.
 
-        The result is the fold dict plus ``experiment_name``, ``checkpoint``
-        (the absolute path of the fold's checkpoint, since the manifest may be
-        read from another working directory) and whatever ``test_*`` metrics
-        ``_fit`` returned.
+        ``fold`` holds the dates before the purge, which ``_fit`` purges
+        itself; ``record`` holds the purged dates actually fitted. The result
+        is ``record`` plus ``experiment_name``, ``checkpoint`` (the absolute
+        path of the fold's checkpoint, since the manifest may be read from
+        another working directory) and whatever ``test_*`` metrics ``_fit``
+        returned.
         """
         self.config = dataclasses.replace(
             self.config,
@@ -1110,7 +1194,7 @@ class BaseModel(ABC):
             model_name=model_name,
         )
         return {
-            **fold,
+            **record,
             "experiment_name": experiment_name,
             "checkpoint": str(
                 (
@@ -1123,13 +1207,15 @@ class BaseModel(ABC):
             **(metrics or {}),
         }
 
-    def _train_fold_with_config(self, fold: dict, project_name: str) -> dict:
+    def _train_fold_with_config(
+        self, fold: dict, record: dict, project_name: str
+    ) -> dict:
         """Train one fold on a deep copy of this instance (parallel branch).
 
         Each fold gets its own copy so folds share no config dates, model or
         wandb run; the price is one copy of the panel per job.
         """
-        return copy.deepcopy(self)._train_one_fold(fold, project_name)
+        return copy.deepcopy(self)._train_one_fold(fold, record, project_name)
 
     #: Name of the fold manifest ``train_cv`` writes into the trial directory.
     CV_FOLDS_FILENAME = "cv_folds.json"
@@ -1182,7 +1268,6 @@ class BaseModel(ABC):
     def train_cv(
         self,
         train_periods: int,
-        gap_periods: int = 0,
         parallel: bool = False,
         njobs: int = -1,
     ) -> list[dict]:
@@ -1190,8 +1275,11 @@ class BaseModel(ABC):
 
         Walk-forward cross-validation trains on a window of past data and
         tests on the period right after it, then slides both forward, so a
-        test period never precedes its training data. Folds are laid out by ``_cv_folds`` over the timestamps between
-        ``config.start_date`` and ``config.end_date``. Every fold trains on
+        test period never precedes its training data. Folds are laid out by
+        ``_cv_folds`` over the timestamps between ``config.start_date`` and
+        ``config.end_date``. Each fold's training window loses its last L
+        bars, L being the largest ``lookahead_bars()`` among the labels, so
+        no fitted label reads a test-period bar. Every fold trains on
         its own dates, gets its own wandb run and its own checkpoint directory
         ``{class}_cv_fold_{i}/`` inside one trial directory. The mean of the
         folds' ``test_*`` metrics is written to the summary of a separate
@@ -1200,17 +1288,14 @@ class BaseModel(ABC):
         Before returning, the manifest ``cv_folds.json`` is written atomically
         into the trial directory as ``{"format_version": 1, "folds": [...]}``,
         where ``folds`` is the JSON form of the returned list (NaN and inf
-        become null). Backtesters replay a CV run from that file.
+        become null). Its ``train_end`` is the last bar the purge keeps.
+        Backtesters replay a CV run from that file.
 
         Parameters
         ----------
         train_periods : int
             Number of timestamps in each training segment. The test
             segment is one fifth of it.
-        gap_periods : int, default 0
-            Number of timestamps left out between a training segment and
-            its test segment, so labels that look ahead cannot leak into
-            the test.
         parallel : bool, default False
             Train the folds concurrently, each on a deep copy of this
             model, using a thread pool.
@@ -1221,17 +1306,18 @@ class BaseModel(ABC):
         Returns
         -------
         list[dict]
-            One dict per fold: the fold boundaries, ``experiment_name``, the
+            One dict per fold: the purged fold boundaries, ``experiment_name``, the
             absolute ``checkpoint`` path and the fold's ``test_*`` metrics.
 
         Raises
         ------
         ValueError
-            If no timestamps fall inside the config's date range.
+            If no timestamps fall inside the config's date range, or the
+            purge leaves a fold no training bar.
 
         Examples
         --------
-        >>> results = model.train_cv(train_periods=20, gap_periods=2)
+        >>> results = model.train_cv(train_periods=20)
         >>> len(results)
         4
         >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
@@ -1252,13 +1338,17 @@ class BaseModel(ABC):
             )
 
         logger.info(
-            f"Starting CV from {start_date} to {end_date} with {train_periods} training periods and {gap_periods} periods gap"
+            f"Starting CV from {start_date} to {end_date} with {train_periods} training periods"
         )
 
-        folds = self._cv_folds(timestamps, train_periods, gap_periods)
+        folds = self._cv_folds(timestamps, train_periods)
+        lookahead = self._purge_bars()
+        records = [
+            self._purged_fold(timestamps, fold, lookahead) for fold in folds
+        ]
 
         logger.info(f"Total {len(folds)} folds will be created")
-        for fold in folds:
+        for fold in records:
             logger.info(
                 f"Fold {fold['fold']}: Train [{fold['train_start']} to {fold['train_end']}], Test [{fold['test_start']} to {fold['test_end']}]"
             )
@@ -1267,13 +1357,16 @@ class BaseModel(ABC):
             logger.info(f"Starting parallel training of {len(folds)} folds")
             results = list(
                 Parallel(n_jobs=njobs, backend="threading")(
-                    delayed(self._train_fold_with_config)(fold, project_name)
-                    for fold in folds
+                    delayed(self._train_fold_with_config)(
+                        fold, record, project_name
+                    )
+                    for fold, record in zip(folds, records)
                 )
             )
         else:
             results = [
-                self._train_one_fold(fold, project_name) for fold in folds
+                self._train_one_fold(fold, record, project_name)
+                for fold, record in zip(folds, records)
             ]
 
         means = self._cv_mean_metrics(results)
@@ -1532,8 +1625,10 @@ class DLModel(BaseModel):
     ):
         """Train with the epoch loop, save the checkpoint and finish the wandb run.
 
-        The training window is split by time: the first ``1 - val_size``
-        share of its timestamps trains, the rest validates. Each epoch trains
+        The panel is split by ``_fit_segments``: the first ``1 - val_size``
+        share of the training window's timestamps trains, the rest
+        validates, and every segment followed by another loses its last L
+        bars, L being the labels' largest lookahead. Each epoch trains
         over shuffled batches, then evaluates the validation and test loaders
         without gradients. With ``config.early_stopping`` on, the
         sample-weighted mean of ``_val_one_batch`` is the epoch's validation
@@ -1561,39 +1656,26 @@ class DLModel(BaseModel):
         self._init_model_and_optim()
 
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-        train_data = data.sel(timestamp=slice(train_start, train_end))
-        test_data = data.sel(timestamp=slice(test_start, test_end))
+        train_data, val_data, test_data = self._fit_segments(data)
         factors = self.get_factor_names()
         labels = self.get_label_names()
-        train_x = train_data[factors]
-        train_y = train_data[labels]
-        test_x = test_data[factors]
-        test_y = test_data[labels]
 
         datas = [
-            self.to_tensor(d, names)
+            self._preprocess(self.to_tensor(d, names))
             for d, names in [
-                (train_x, factors),
-                (train_y, labels),
-                (test_x, factors),
-                (test_y, labels),
+                (train_data, factors),
+                (train_data, labels),
+                (val_data, factors),
+                (val_data, labels),
+                (test_data, factors),
+                (test_data, labels),
             ]
         ]
-        datas = [self._preprocess(d) for d in datas]
-
-        train_x_t_all, train_y_t_all, test_x_t, test_y_t = datas
-        for d in [train_x_t_all, test_x_t]:
+        train_x_t, train_y_t, val_x_t, val_y_t, test_x_t, test_y_t = datas
+        for d in [train_x_t, val_x_t, test_x_t]:
             self._assert_shape_match_x(d)
-        for d in [train_y_t_all, test_y_t]:
+        for d in [train_y_t, val_y_t, test_y_t]:
             self._assert_shape_match_y(d)
-
-        train_split = int(train_x_t_all.shape[0] * (1 - self.config.val_size))
-        train_x_t = train_x_t_all[:train_split]
-        train_y_t = train_y_t_all[:train_split]
-        # `train_split:` rather than `train_split + 1:`, so that no row falls
-        # between the two splits.
-        val_x_t = train_x_t_all[train_split:]
-        val_y_t = train_y_t_all[train_split:]
 
         train_loader = DataLoader(
             TensorDataset(train_x_t, train_y_t),
@@ -2085,7 +2167,9 @@ class MLModel(BaseModel):
         """Split, fit once with ``_fit_model``, evaluate, save and finish the run.
 
         The validation segment is the trailing ``val_size`` share of the
-        training window, as in the torch variant. Empty splits skip
+        training window, and the purge of ``_fit_segments`` drops the last L
+        bars before validation and before test, as in the torch variant.
+        Empty splits skip
         evaluation: no validation segment means no ``val_*`` metrics, and an
         empty test segment returns ``{}``.
 
@@ -2098,7 +2182,8 @@ class MLModel(BaseModel):
         ------
         ValueError
             If any of the four ``train_*`` / ``test_*`` dates is
-            unset, or ``val_size`` leaves no timestamps to fit on.
+            unset, or ``val_size`` or the purge leaves no timestamps to fit
+            on.
         """
         train_start, train_end, test_start, test_end = (
             self.config.train_start,
@@ -2126,39 +2211,27 @@ class MLModel(BaseModel):
             )
 
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-        train_data = data.sel(timestamp=slice(train_start, train_end))
-        test_data = data.sel(timestamp=slice(test_start, test_end))
+        train_data, val_data, test_data = self._fit_segments(data)
         factors = self.get_factor_names()
         labels = self.get_label_names()
 
         with Timer(f"{self.class_name}: to_array"):
-            train_x_all, train_y_all, test_x, test_y = [
+            train_x, train_y, val_x, val_y, test_x, test_y = [
                 self._preprocess(self.to_array(d, names))
                 for d, names in [
                     (train_data, factors),
                     (train_data, labels),
+                    (val_data, factors),
+                    (val_data, labels),
                     (test_data, factors),
                     (test_data, labels),
                 ]
             ]
-        for d in [train_x_all, test_x]:
+        for d in [train_x, val_x, test_x]:
             self._assert_shape_match_x(d)
-        for d in [train_y_all, test_y]:
+        for d in [train_y, val_y, test_y]:
             self._assert_shape_match_y(d)
-
-        n_train_times = train_x_all.shape[0]
-        train_split = int(n_train_times * (1 - self.config.val_size))
-        if train_split == 0:
-            raise ValueError(
-                f"Empty training segment: val_size={self.config.val_size} "
-                f"leaves 0 of {n_train_times} training timestamps for fitting."
-            )
-        train_x = train_x_all[:train_split]
-        train_y = train_y_all[:train_split]
-        if train_split < n_train_times:
-            val_x = train_x_all[train_split:]
-            val_y = train_y_all[train_split:]
-        else:
+        if val_x.shape[0] == 0:
             val_x = val_y = None
 
         with Timer(f"{self.class_name}: fit_model"):

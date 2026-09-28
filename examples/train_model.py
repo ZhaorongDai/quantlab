@@ -228,10 +228,11 @@ def main() -> None:
               bool(np.allclose(again["ret_1"].values, pred["ret_1"].values, equal_nan=True)))
 
         # 4. Walk-forward cross-validation ---------------------------------
-        # Each fold trains on 200 bars, skips 2 bars (the label looks two
-        # bars ahead, so this keeps test information out of training) and
-        # tests on the next 200 // 5 = 40 bars. The window then slides by 40.
-        folds = model.train_cv(train_periods=200, gap_periods=2)
+        # Each fold's training window is 200 bars and it tests on the next
+        # 200 // 5 = 40 bars. The window then slides by 40. The last bars of
+        # each training window, as many as the label looks ahead, are purged
+        # so no fitted label reads a test-period price.
+        folds = model.train_cv(train_periods=200)
         for fold in folds:
             print(f"fold {fold['fold']}: train {fold['train_start'][:10]}..{fold['train_end'][:10]}"
                   f"  test {fold['test_start'][:10]}..{fold['test_end'][:10]}"

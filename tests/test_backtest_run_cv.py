@@ -16,9 +16,11 @@ What is locked here, and what turns it red:
   exactly its own test bars. A fold that trades bars outside its test segment
   trades data its model was trained on.
 - **D-17 per fold.** In/out-of-sample is decided with THAT fold's train dates.
-  With no gap and a 2-bar label horizon, the first two test bars of every fold
-  are in-sample (the label on `train_end` reads them), and each fold logs its
-  own overlap warning.
+  `train_cv` purges the last 2 bars of every training window for the 2-bar
+  label (issue #34), so the last fitted label reads up to the bar before the
+  test segment: every test bar is out-of-sample and no fold warns about an
+  overlap. Before the purge the first two test bars of every fold were
+  in-sample.
 - **D-35, contiguity before stitching.** The selected folds' test segments must
   follow each other bar for bar on the price calendar. A gap or an overlap is
   refused before any checkpoint is loaded or any simulation runs. Stitching
@@ -124,7 +126,7 @@ def cv_project(tmp_path_factory):
             **_model_dates(bars),
         )
         model.collect()
-        model.train_cv(train_periods=TRAIN_PERIODS, gap_periods=0)
+        model.train_cv(train_periods=TRAIN_PERIODS)
 
     manifests = sorted((root / "train" / "models").rglob("cv_folds.json"))
     assert len(manifests) == 1, manifests
@@ -392,14 +394,18 @@ def test_per_fold_split_uses_the_folds_own_train_dates(
     for record in result.folds:
         bars = _test_bars(cv_project, record["fold"])
         metrics = record["metrics"]
-        assert tuple(metrics["in_sample_range"]) == (_day(bars[0]), _day(bars[1]))
+        assert metrics["in_sample_range"] is None
         assert [tuple(r) for r in metrics["out_of_sample_ranges"]] == [
-            (_day(bars[2]), _day(bars[-1]))
+            (_day(bars[0]), _day(bars[-1]))
         ]
-        assert tuple(metrics["training_window"])[1] == _day(bars[1])
+        # The purged training end plus the 2-bar label reaches the bar just
+        # before the fold's first test bar.
+        assert tuple(metrics["training_window"])[1] == _day(
+            cv_project.bars[np.flatnonzero(cv_project.bars == bars[0])[0] - 1]
+        )
 
     overlaps = [m for m in warning_messages if OVERLAP_WARNING in m]
-    assert len(overlaps) == N_FOLDS, overlaps
+    assert overlaps == []
 
 
 CHECKPOINT_DATES_WARNING = "using the checkpoint's dates"
@@ -663,12 +669,9 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         assert entry["test_start"] == _day(bars[0])
         assert entry["test_end"] == _day(bars[-1])
         assert entry["checkpoint"] == folds[entry["fold"]]["checkpoint"]
-        assert entry["metrics"]["in_sample_range"] == [_day(bars[0]), _day(bars[1])]
+        assert entry["metrics"]["in_sample_range"] is None
         assert "Total Return [%]" in entry["metrics"]["whole"]
-    assert metrics["stitched"]["in_sample_ranges"] == [
-        [_day(bars[0]), _day(bars[1])]
-        for bars in (_test_bars(cv_project, fold) for fold in range(N_FOLDS))
-    ]
+    assert metrics["stitched"]["in_sample_ranges"] == []
 
     # --- liquidations.json ---------------------------------------------------
     liquidations = _strict_json(run_dir / "liquidations.json")

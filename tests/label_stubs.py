@@ -9,25 +9,26 @@ a label.
 
 
 class StubLabel:
-    """Wrap a stand-in panel as a label that reads no bars after t.
+    """Wrap a stand-in panel as a label that reads ``lookahead`` bars after t.
 
     Every attribute but the two label methods is the wrapped panel's.
-    ``lookahead_bars()`` is 0, so no split purges a bar for it, and
+    ``lookahead_bars()`` defaults to 0, so no split purges a bar for it, and
     ``span_bars()`` is 0, so it adds nothing to a backtest's in-sample window.
     """
 
-    def __init__(self, panel):
+    def __init__(self, panel, lookahead: int = 0):
         self._panel = panel
+        self._lookahead = lookahead
 
     def __getattr__(self, name):
         # ``copy.deepcopy`` (``dataclasses.asdict`` of a config) builds the
         # copy without calling ``__init__``, so ``_panel`` is not set yet.
-        if name == "_panel":
+        if name in ("_panel", "_lookahead"):
             raise AttributeError(name)
         return getattr(self._panel, name)
 
     def lookahead_bars(self) -> int:
-        return 0
+        return self._lookahead
 
     def span_bars(self) -> int:
         return 0

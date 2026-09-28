@@ -306,7 +306,7 @@ def test_empty_fold_list_still_writes_a_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(
         BaseModel,
         "_cv_folds",
-        staticmethod(lambda timestamps, train_periods, gap_periods: []),
+        staticmethod(lambda timestamps, train_periods: []),
     )
     model = _ml(tmp_path, "ckpt")
 

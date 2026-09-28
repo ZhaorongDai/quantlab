@@ -538,10 +538,10 @@ def test_train_cv_sequential(tmp_path, recorders):
     model = _cv_model(tmp_path, "ckpt_seq")
     timestamps = model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values
 
-    results = model.train_cv(train_periods=60, gap_periods=2)
+    results = model.train_cv(train_periods=60)
 
     assert len(results) == 8
-    expected = XGBoostRegressor._cv_folds(timestamps, 60, 2)
+    expected = XGBoostRegressor._cv_folds(timestamps, 60)
     assert [
         {k: r[k] for k in ("fold", "train_start", "train_end", "test_start", "test_end")} for r in results
     ] == expected
@@ -568,9 +568,9 @@ def test_train_cv_parallel_matches_sequential(tmp_path, recorders):
     predictions that agree fold by fold, and `nthread` still exactly 1 --
     the class never rewrites it."""
     seq = _cv_model(tmp_path, "ckpt_seq")
-    seq_results = seq.train_cv(train_periods=60, gap_periods=2)
+    seq_results = seq.train_cv(train_periods=60)
     par = _cv_model(tmp_path, "ckpt_par")
-    par_results = par.train_cv(train_periods=60, gap_periods=2, parallel=True, njobs=2)
+    par_results = par.train_cv(train_periods=60, parallel=True, njobs=2)
 
     def relative(results, root):
         return {str(Path(*Path(r["checkpoint"]).relative_to(root).parts[1:])) for r in results}

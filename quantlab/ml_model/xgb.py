@@ -545,7 +545,7 @@ class XGBoostRegressor(MLModel):
     'XGBoostRegressor_total.joblib'
     >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
     (5, 2, 1)
-    >>> model.train_cv(train_periods=500, gap_periods=5, parallel=True, njobs=4)
+    >>> model.train_cv(train_periods=500, parallel=True, njobs=4)
     """
 
     DEFAULT_PARAMS: dict = {
