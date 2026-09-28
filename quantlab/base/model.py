@@ -1778,7 +1778,8 @@ class TorchModel(BaseModel):
 
     ``_dataset(panel, bars, training)``
         The PyTorch ``Dataset`` over ``bars``. Default:
-        ``CrossSectionDataset``, one item per bar.
+        ``CrossSectionDataset``, one item per bar; ``SymbolSequenceDataset``
+        gives Qlib-style ``(bar, symbol)`` samples batched to ``[B, N, F]``.
     ``_dataloader(dataset, training)``
         The ``DataLoader``. Default: ``batch_size`` and ``num_workers`` from
         the hyperparameters (``None`` and 0, one item per step), shuffled
