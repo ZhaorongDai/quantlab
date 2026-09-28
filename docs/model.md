@@ -19,7 +19,9 @@ export OMP_NUM_THREADS=1   # macOS only
 
 A head is configured with a list of factor objects (the features) and a list of label objects (the targets). Both come from the factor layer (see the factor guide). `collect()` asks each of them for its panel from the model's `start_date` to `end_date`, with `read(start, end)` or `compute(start, end)`, merges them on `(timestamp, symbol)` and keeps the panel in memory. Internally a head works on arrays of shape `[num_times, num_symbols, num_features]` whose last axis follows `get_factor_names()` exactly, and produces `[num_times, num_symbols, num_labels]` predictions.
 
-The sessions below use a small in-memory stand-in for the factor and label objects, so they need no data store. It implements the few methods the model layer calls. The label is a noisy linear function of two factors.
+A label reads bars after t, so it must never be a feature. The model tells the two roles apart by `lookahead_bars()`: every label has it and no factor does, and construction refuses a label among the factors or a factor among the labels (see Notes). A real label is a `quantlab.label.forward.Forward`, a factor shifted forward by `delay + span` bars; `lookahead_bars()` returns that sum (see the factor guide).
+
+The sessions below use a small in-memory stand-in for the factor and label objects, so they need no data store. It implements the few methods the model layer calls. The label is a noisy linear function of two factors, and its stand-in reports a lookahead of 2 bars, as a one-bar forward return with the default delay of 1 does.
 
 ```python
 >>> import numpy as np, xarray as xr
@@ -29,16 +31,17 @@ The sessions below use a small in-memory stand-in for the factor and label objec
 >>> f_a, f_b = rng.standard_normal((2, 200, 20))
 >>> ret = 0.05 * f_a - 0.02 * f_b + 0.05 * rng.standard_normal((200, 20))
 >>> class Panel:
-...     """Minimal stand-in for a factor or label object."""
+...     """Minimal stand-in for a factor object."""
 ...     def __init__(self, **variables):
 ...         data = {k: (("timestamp", "symbol"), v) for k, v in variables.items()}
 ...         self.ds = xr.Dataset(data, coords=coords)
 ...     def _get_factor_names(self): return list(self.ds.data_vars)
 ...     def read(self, start, end): return self.ds.sel(timestamp=slice(start, end))
-...     def get_features(self, panel): return panel
-...     def get_labels(self, panel): return panel
 ...     def get_config(self): return {"factor_names": self._get_factor_names()}
->>> factor, label = Panel(f_a=f_a, f_b=f_b), Panel(ret=ret)
+>>> class LabelPanel(Panel):
+...     """Minimal stand-in for a label whose value at t reads bars t+1 and t+2."""
+...     def lookahead_bars(self): return 2
+>>> factor, label = Panel(f_a=f_a, f_b=f_b), LabelPanel(ret=ret)
 >>> from loguru import logger
 >>> logger.remove()  # quantlab logs progress to stderr; silence it here
 ```
@@ -76,6 +79,23 @@ The config carries the factor and label objects, where checkpoints go, and four 
 (['f_a', 'f_b'], ['ret'], 20)
 ```
 
+### Purging the label lookahead
+
+The label at bar t reads bars up to t + L, where L is the largest `lookahead_bars()` among the model's labels. Every split boundary therefore drops the last L bars of the earlier segment, so no label used for fitting reads a bar of the later segment. `train()` cuts the training window into train and validation by position, then purges the train/validation and validation/test boundaries; the test segment keeps all its bars. With `val_size=0` the train segment is purged against test directly. Fitting thus loses L bars at each boundary. L is never a parameter: it follows from the labels.
+
+In the session above L is 2. The training window 2024-01-01 to 2024-05-31 has 152 bars; the first 121 (to 2024-04-30) train and the other 31 validate. After the purge the train segment ends on 2024-04-28 and the validation segment on 2024-05-29. The splitting is done by `quantlab.utils.split.purge_segments`, which walk-forward folds (below) share.
+
+```python
+>>> from quantlab.utils.split import purge_segments
+>>> train_bars, val_bars, test_bars = purge_segments(
+...     coords["timestamp"],
+...     [("2024-01-01", "2024-04-30"), ("2024-05-01", "2024-05-31"), ("2024-06-01", "2024-07-18")],
+...     label.lookahead_bars(),
+... )
+>>> len(train_bars), str(train_bars[-1]), len(val_bars), str(val_bars[-1]), len(test_bars)
+(119, '2024-04-28', 29, '2024-05-29', 48)
+```
+
 ### Predicting and loading
 
 `predict_panel` takes a feature panel and returns a panel with one variable per label name. Positions where every feature is NaN get NaN predictions. `predict` is the array-level counterpart: `[T, S, F]` in, `[T, S, L]` out for `XGBoostRegressor`. Use `predict_panel` when in doubt, because the array contract of `predict` belongs to each head.
@@ -89,7 +109,7 @@ Coordinates:
   * timestamp  (timestamp) datetime64[s] 2kB 2024-01-01 ... 2024-07-18
   * symbol     (symbol) <U3 240B 'S00' 'S01' 'S02' 'S03' ... 'S17' 'S18' 'S19'
 Data variables:
-    ret        (timestamp, symbol) float64 32kB -0.002638 -0.01672 ... -0.04101
+    ret        (timestamp, symbol) float64 32kB 0.002621 -0.01783 ... -0.04321
 >>> model.predict(np.zeros((5, 20, 2))).shape
 (5, 20, 1)
 ```
@@ -114,7 +134,7 @@ True
 ...     label.ds["ret"].sel(timestamp=test).values,
 ... )
 >>> {name: round(value, 3) for name, value in scores.items()}
-{'mse': 0.003, 'rmse': 0.05, 'mae': 0.04, 'r2': 0.501, 'ic': 0.706, 'rank_ic': 0.686}
+{'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679}
 ```
 
 ### The class hierarchy
@@ -141,33 +161,36 @@ With `early_stopping=True`, training stops when the validation loss has not impr
 >>> stopped = XGBoostRegressor(stopping).collect()
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
-(66, 65)
+(52, 51)
 ```
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, gap_periods)` slides a training window over the timestamps between `start_date` and `end_date`. The test segment is `train_periods // 5` timestamps long and starts `gap_periods` timestamps after the training segment ends; each fold moves forward by one test length. Every fold gets its own checkpoint and its own W&B run, and the return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `test_*` metrics.
+`train_cv(train_periods, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and the return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
->>> results = model.train_cv(train_periods=100, gap_periods=2)
+>>> results = model.train_cv(train_periods=100)
 >>> len(results)
-4
->>> [(str(r["train_start"])[:10], str(r["test_start"])[:10], str(r["test_end"])[:10]) for r in results]
-[('2024-01-01', '2024-04-12', '2024-05-01'), ('2024-01-21', '2024-05-02', '2024-05-21'), ('2024-02-10', '2024-05-22', '2024-06-10'), ('2024-03-01', '2024-06-11', '2024-06-30')]
+5
+>>> [(r["train_start"][:10], r["train_end"][:10], r["test_start"][:10], r["test_end"][:10]) for r in results]
+[('2024-01-01', '2024-04-07', '2024-04-10', '2024-04-29'), ('2024-01-21', '2024-04-27', '2024-04-30', '2024-05-19'), ('2024-02-10', '2024-05-17', '2024-05-20', '2024-06-08'), ('2024-03-01', '2024-06-06', '2024-06-09', '2024-06-28'), ('2024-03-21', '2024-06-26', '2024-06-29', '2024-07-18')]
 >>> [round(r["test_rank_ic"], 3) for r in results]
-[0.674, 0.689, 0.696, 0.669]
+[0.691, 0.649, 0.695, 0.656, 0.697]
 ```
 
-All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` and the fold list. A backtester replays a cross-validation run from this file.
+All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` and the fold list as returned, purged `train_end` included. A backtester replays a cross-validation run from this file. Each fold's `config.json` records the dates the fold was configured with, before the purge, so its `train_end` lies L bars after the manifest's.
 
 ```python
 >>> from pathlib import Path
 >>> trial = Path(results[0]["checkpoint"]).parent.parent
 >>> sorted(p.name for p in trial.iterdir())
-['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'cv_folds.json']
+['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']
 >>> manifest = json.loads((trial / "cv_folds.json").read_text())
 >>> manifest["format_version"], len(manifest["folds"])
-(1, 4)
+(1, 5)
+>>> fold_0 = json.loads((Path(results[0]["checkpoint"]).parent / "config.json").read_text())
+>>> fold_0["train_end"], manifest["folds"][0]["train_end"]
+('2024-04-09T00:00:00', '2024-04-07T00:00:00')
 ```
 
 `parallel=True` trains the folds concurrently on threads (`njobs` sets the pool size). Each fold works on a deep copy of the model, so memory grows with the number of jobs. Tree libraries already use every core, so set `nthread` in `hyperparameters` to roughly `os.cpu_count() // njobs`.
@@ -230,11 +253,11 @@ An `MLModel` head gets `[T, S, F]` features and `[T, S, L]` labels as arrays. `_
 ...         out = np.c_[rows, np.ones(len(rows))] @ self.model
 ...         return out.reshape(x.shape[0], x.shape[1], -1)
 >>> ridge = RidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
->>> ridge_results = ridge.train_cv(train_periods=100, gap_periods=2)
+>>> ridge_results = ridge.train_cv(train_periods=100)
 >>> [round(r["test_rank_ic"], 3) for r in ridge_results]
-[0.678, 0.691, 0.697, 0.677]
+[0.685, 0.667, 0.707, 0.672, 0.716]
 >>> ridge.model.round(3).ravel().tolist()
-[0.05, -0.019, 0.001]
+[0.05, -0.02, -0.001]
 ```
 
 A `DLModel` head builds an `nn.Module` in `_init_model` from the panel shape, and the base class moves it to the device, runs the epoch loop and restores the best epoch when early stopping is on. `_train_one_batch` performs one optimizer step on a `[batch, num_symbols, num_features]` batch. `_val_one_batch` must return the validation loss as a scalar, because the base class averages it into the epoch loss that drives early stopping. `_test_one_batch` is called for the test segment each epoch, where a head usually logs metrics. `_preprocess` is shared by training and inference.
@@ -263,7 +286,7 @@ A `DLModel` head builds an `nn.Module` in `_init_model` from the panel shape, an
 >>> linear = LinearHead(replace(dl_config, epochs=300, lr=0.05, early_stopping_patience=20, hyperparameters={})).collect()
 >>> linear_checkpoint = linear.train()
 >>> [round(w, 3) for w in linear.model.weight[0].tolist()]
-[0.05, -0.019]
+[0.051, -0.02]
 >>> LinearHead.checkpoint_suffix, linear_checkpoint.suffix
 ('.pth', '.pth')
 ```
@@ -276,6 +299,13 @@ A head rejects the wrong config class as the first step of construction.
 
 ```text
 TypeError: XGBoostRegressor requires a MLConfig, got DLConfig
+```
+
+It also refuses a label among the factors and a factor among the labels. Wrap a factor in `Forward` to predict it.
+
+```text
+TypeError: XGBoostRegressor: factors[0] is the label LabelPanel, which reads bars after t; pass it in labels, not factors.
+TypeError: XGBoostRegressor: labels[0] is Panel, which is not a label; wrap it in quantlab.label.forward.Forward to predict it.
 ```
 
 `predict` and `predict_panel` need a trained or loaded model.
@@ -303,6 +333,13 @@ ValueError: MLPRegressor.predict_panel: the feature panel lacks 5 of the 20 symb
 
 ```text
 ValueError: Training and testing start and end dates must be specified.
+```
+
+The purge must leave training bars. `train` raises when the train segment has no more than L bars before the purge (here 2 of them, with L = 2), and `train_cv` when `train_periods` is not above L (here a label with a lookahead of 10).
+
+```text
+ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 training timestamps for fitting.
+ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
 `train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising. Torch heads return no `test_*` metrics from `train_cv`, so their fold dicts hold only dates and paths and no summary run is opened.

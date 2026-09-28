@@ -2,7 +2,7 @@
 
 [English](../factor.md) | 简体中文
 
-因子把数据集持有的 `(timestamp, symbol)` 面板转换成同样形状的特征面板；标签（label）则是输出为预测目标的因子。quantlab 有两个因子后端：`FactorKunQuant` 把 KunQuant 算子图编译成本地代码，支持批量和流式两种运行方式；`FactorPolars` 的逻辑是一条 Polars 表达式链，只支持批量。两者共用基类 `Factor`，所以模型层对它们一视同仁。
+因子把数据集持有的 `(timestamp, symbol)` 面板转换成同样形状的特征面板；标签（label）是在时间上向前平移的因子，即模型学习预测的值。quantlab 有两个因子后端：`FactorKunQuant` 把 KunQuant 算子图编译成本地代码，支持批量和流式两种运行方式；`FactorPolars` 的逻辑是一条 Polars 表达式链，只支持批量。两者共用基类 `Factor`，所以模型层对它们一视同仁。
 
 ## 前置条件
 
@@ -67,7 +67,7 @@ XrBackend()
 ...
 ```
 
-`compute(start, end)` 从 `start` 之前 `warmup_bars` 根 bar 开始读取数据集（在数据集自己的日历上数，没有数据的日子会被跳过），计算后只返回 `start` 到 `end`。结果与对全部历史计算的值一致。`get_features(panel)` 把返回的面板转换成模型特征，即以 `(timestamp, symbol)` 为索引的 `xarray.Dataset`。
+`compute(start, end)` 从 `start` 之前 `warmup_bars` 根 bar 开始读取数据集（在数据集自己的日历上数，没有数据的日子会被跳过），计算后只返回 `start` 到 `end`，结果是以 `(timestamp, symbol)` 为索引的 `xarray.Dataset`，每个因子名对应一个变量。结果与对全部历史计算的值一致。
 
 ```python
 >>> factor = Momentum(PolarsFactorConfig(
@@ -76,7 +76,7 @@ XrBackend()
 ... ))
 >>> factor.get_factor_names(), factor.warmup_bars
 (('momentum_5',), 20)
->>> panel = factor.get_features(factor.compute("2024-02-01", "2024-02-29"))
+>>> panel = factor.compute("2024-02-01", "2024-02-29")
 >>> dict(panel.sizes), list(panel.data_vars)
 ({'timestamp': 29, 'symbol': 8}, ['momentum_5'])
 >>> panel["momentum_5"].isel(timestamp=0, symbol=slice(0, 3)).values.round(4)
@@ -161,8 +161,6 @@ XrBackend()
 ...         return lf.with_columns(
 ...             ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("range")
 ...         ).select(["timestamp", "symbol", "range"])
-...     def _get_features(self, data):
-...         return data
 ...
 >>> factor_range = Range(PolarsFactorConfig(
 ...     warmup_bars=0, dataset=[spot_half, stock_half], file_path="data/factors/range.zarr",
@@ -232,7 +230,46 @@ Frozen({'symbol': 2, 'timestamp': 2})
 
 ### 计算标签
 
-标签是 `get_labels()` 返回前瞻值的 KunQuant 因子。`quantlab.label.fret` 中的 `Return` 是从下一根 bar 的复权开盘价到其后 `n` 根 bar 的复权开盘价的收益，`BinaryReturn` 在该收益为正时取 1.0。计算图算出的是滞后收益（KunQuant 只能向后看），`get_labels()` 再把它向前平移 `n_forward_periods + 1` 根 bar，因此最后 `n_forward_periods + 1` 根 bar 是 NaN。标签读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；`ret_2` 只需要之前 2 根 bar，滞后收益的前 2 根 bar 在平移前是 NaN。
+标签是在时间上向前平移的因子。`quantlab.label.forward` 中的 `Forward(ForwardConfig(factor, span, delay=1))` 把被包装因子在第 t + delay + span 根 bar 上的值放到第 t 根 bar 上。`span` 是标签累积的 bar 数，例如 n 期收益的 n 根 bar。`delay` 是信号形成的 bar 与标签计入的第一根 bar 之间相隔的 bar 数，默认为 1，因为第 t 根 bar 上的信号在第 t+1 根 bar 的开盘成交。`lookahead_bars()` 返回 `delay + span`，即第 t 根 bar 的标签向后读取的 bar 数；`span_bars()` 返回 `span`。被包装的因子在第 t 根 bar 上的值只能用到第 t 根 bar 为止的数据；`Forward` 依赖这一点，但无法检查它。
+
+任何因子都可以这样变成标签。用 `span=5` 包装第一节中 5 期 `Momentum` 的 `factor`，得到从第 t+1 根到第 t+6 根 bar 的收盘价收益。标签沿用因子的变量名，也能像因子一样从配置重建。
+
+```python
+>>> from quantlab.base.config import ForwardConfig
+>>> from quantlab.label.forward import Forward
+>>> label = Forward(ForwardConfig(factor=factor, span=5))
+>>> label.lookahead_bars(), label.span_bars(), label.get_factor_names()
+(6, 5, ('momentum_5',))
+>>> fwd_mom = label.compute("2024-02-01", "2024-02-29")["momentum_5"]
+>>> round(float(fwd_mom.isel(timestamp=0, symbol=0)), 6)
+-0.012116
+>>> round(float(close[37, 0] / close[32, 0] - 1), 6)
+-0.012116
+>>> load_factor_from_config(label.get_config()) == label
+True
+```
+
+`compute(start, end)` 和 `read(start, end)` 向被包装的因子请求到 `end` 之后 `lookahead_bars()` 根 bar 为止的数据（在数据集日历上数，截止到日历的最后一根 bar），平移后再裁回请求的区间。因此，区间末尾的标签只在未来的 bar 尚不存在时才是 NaN。现货存储结束于 2024-03-30，所以二月一直填到最后一天，只有三月的最后 6 根 bar 没有标签：
+
+```python
+>>> int(fwd_mom.isnull().sum())
+0
+>>> tail = label.compute("2024-03-20", "2024-03-30")["momentum_5"]
+>>> int(tail.isnull().any("symbol").sum())
+6
+```
+
+`Forward` 不持有存储：`read` 读取被包装因子的存储；只要数据集有 `end` 之后的 `lookahead_bars()` 根 bar，这个存储就必须覆盖到那里。`build(start, end)` 和 `extend(end)` 把因子的存储构建或扩充到这么远。于是同一个因子存储既可以作特征，包装后也可以作标签。上面构建的 momentum 存储结束于 2024-03-20：
+
+```python
+>>> dict(label.read("2024-02-01", "2024-02-29").sizes)
+{'timestamp': 29, 'symbol': 8}
+>>> label.read("2024-02-01", "2024-03-20")
+Traceback (most recent call last):
+ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024-01-21 to 2024-03-20, which does not contain 2024-02-01 to 2024-03-26 00:00:00. Extend it with extend(end) or rebuild it with build(start, end).
+```
+
+`quantlab.label.fret` 中的 `Return` 和 `BinaryReturn` 是包装了一个私有滞后收益 KunQuant 因子的 `Forward` 标签，只能用作标签。`Return` 在第 t 根 bar 上的值是 `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`，即在下一根 bar 的复权开盘价建仓、持有 n 根 bar 的收益，n 从 `kwargs["n_forward_periods"]` 读取；`BinaryReturn` 在该收益为正时取 1.0，否则取 0.0。两者都是 `span = n`、`delay = 1`，所以前瞻为 n + 1。它们读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；存储结束于 2024-01-30，所以最后 3 根 bar 没有标签。
 
 ```python
 >>> from quantlab.base.config import FactorConfig
@@ -245,7 +282,7 @@ Frozen({'symbol': 2, 'timestamp': 2})
 ... )
 >>> XrBackend().to_internal(stock).write("data/stock.zarr")
 XrBackend()
->>> label = Return(FactorConfig(
+>>> ret_label = Return(FactorConfig(
 ...     warmup_bars=5, mode="batch", data_columns=["adjOpen"], kwargs={"n_forward_periods": 2},
 ...     dataset=StockDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path="data/stock.zarr",
@@ -253,24 +290,24 @@ XrBackend()
 ...     )),
 ...     file_path="data/labels/ret.zarr", njobs=2,
 ... ))
->>> label.get_factor_names()
-('ret_2',)
->>> ret = label.get_labels(label.compute("2024-01-01", "2024-01-30"))["ret_2"]
+>>> ret_label.get_factor_names(), ret_label.lookahead_bars(), ret_label.span_bars()
+(('ret_2',), 3, 2)
+>>> ret = ret_label.compute("2024-01-01", "2024-01-30")["ret_2"]
 >>> dict(ret.sizes)
 {'timestamp': 30, 'symbol': 8}
 >>> ret.isel(symbol=0).values[:2].round(5)
 array([-0.03945,  0.01532], dtype=float32)
 >>> round(float(px[3, 0] / px[1, 0] - 1), 5)
 -0.03945
->>> ret.isel(symbol=0).values[-3:]
-array([nan, nan, nan], dtype=float32)
+>>> ret.isel(symbol=0).values[-4:].round(5)
+array([0.00357,     nan,     nan,     nan], dtype=float32)
 ```
 
-`get_labels(panel)` 在传入的面板内部平移，因此任何请求区间的最后 `n_forward_periods + 1` 根 bar 都是 NaN。对标签调用 `get_features(panel)` 得到的是未平移的滞后收益，不能拿来当预测目标。
+模型只在 `labels` 中接受标签，即带有 `lookahead_bars()` 的对象（如 `Forward`），并拒绝把它们放进 `factors`。在每个切分边界上，模型丢弃前一段的最后 L 根 bar，L 是其所有标签中最大的前瞻（见 `model.md`）。标签的 `delay` 与回测引擎的成交延迟不一致时，回测拒绝运行（见 `backtest.md`）。
 
 ### 分析一个因子
 
-`analyze(start, end, ...)` 仿照 alphalens 库，报告从 `start` 到 `end` 因子按未来收益给标的排序的能力。把一个或多个前瞻收益标签传给 `frets`；每个因子变量（默认是 `get_factor_names()` 的全部，也可用 `factor_names` 指定）与每个标签变量两两配对。因子和每个标签都按 `[start, end]` 请求面板：`data_strategy="cal"`（默认）时用 `compute(start, end)`，`data_strategy="read"` 时用 `read(start, end)`，此时所有存储都必须已在该区间上构建。`data_strategy` 取其他值时抛出 `ValueError`。两个面板最常见的 bar 间隔必须相同（与 `BaseDataset.time_interval` 的规则一致），否则 `analyze()` 抛出 `ValueError` 并写明两个间隔；之后两者按共同的时间戳和标的做内连接。
+`analyze(start, end, ...)` 仿照 alphalens 库，报告从 `start` 到 `end` 因子按未来收益给标的排序的能力。把一个或多个前瞻收益标签（`Return` 等 `Forward` 对象）传给 `frets`；每个因子变量（默认是 `get_factor_names()` 的全部，也可用 `factor_names` 指定）与每个标签变量两两配对。因子和每个标签都按 `[start, end]` 请求面板：`data_strategy="cal"`（默认）时用 `compute(start, end)`，`data_strategy="read"` 时用 `read(start, end)`，此时所有存储都必须已在该区间上构建。`data_strategy` 取其他值时抛出 `ValueError`。两个面板最常见的 bar 间隔必须相同（与 `BaseDataset.time_interval` 的规则一致），否则 `analyze()` 抛出 `ValueError` 并写明两个间隔；之后两者按共同的时间戳和标的做内连接。
 
 每个配对得到：
 
@@ -280,7 +317,7 @@ array([nan, nan, nan], dtype=float32)
 | 收益 | 每个因子分位组的平均未来收益（第 1 组是因子值最低的一组）、每期最高组减最低组的价差、各分位组和多空组合的累计收益 |
 | 换手 | 每个分位组中上一期不在该组的标的占比，以及因子滞后一期的秩自相关 |
 
-`quantiles`（默认 5）决定等数量分组的组数。标签跨 `n` 根 bar（`kwargs["n_forward_periods"]`）时，累计收益按每根 bar 的收益率 `(1 + r) ** (1 / n) - 1` 复利。下面的例子在与第一节 `factor` 相同的八个标的上构造一个单 bar 的 `Return` 标签，再用它分析 `momentum_5`。数据是随机游走，所以 IC 接近零，这符合预期。
+`quantiles`（默认 5）决定等数量分组的组数。标签跨 `n` 根 bar（即其 `span_bars()`）时，累计收益按每根 bar 的收益率 `(1 + r) ** (1 / n) - 1` 复利。下面的例子在与第一节 `factor` 相同的八个标的上构造一个单 bar 的 `Return` 标签，再用它分析 `momentum_5`。数据是随机游走，所以 IC 接近零，这符合预期。
 
 ```python
 >>> import os
@@ -307,9 +344,9 @@ XrBackend()
 ['momentum_5__ret_1']
 >>> pair = result.pairs["momentum_5__ret_1"]
 >>> round(pair.summary["ic_mean"], 4), round(pair.summary["ir"], 4), pair.summary["n_periods"]
-(-0.0494, -0.1475, 29)
+(-0.0279, -0.0799, 29)
 >>> pair.mean_quantile_returns.round(4).tolist()
-[0.001, -0.0025, 0.0004, -0.001]
+[0.0008, -0.0027, 0.0003, -0.0006]
 >>> sorted(os.listdir("data/analysis/momentum"))
 ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
 >>> import json
@@ -340,7 +377,8 @@ XrBackend()
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
-| `Return`、`BinaryReturn` | KunQuant | 前瞻收益标签 |
+| `Forward` | 任意 | 把一个因子向前平移成标签 |
+| `Return`、`BinaryReturn` | KunQuant | 前瞻收益标签，`Forward` 的子类 |
 
 每个类的 docstring 里都有配置示例。
 
@@ -392,14 +430,14 @@ factor = LiteratureAlpha(FactorConfig(
     factor_names=None,  # 全部 16 个 raw/rank 输出
     file_path="data/factors/literature_alpha.zarr",
 ))
-features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
+features = factor.compute("2020-01-01", "2024-12-31")
 ```
 
 ## 扩展
 
 ### 一个 Polars 因子
 
-继承 `FactorPolars` 并实现 `_get_factor_lazyframe`。它接收 `polars.LazyFrame` 形式的数据集，返回只包含 `timestamp`、`symbol` 和因子列的惰性表。因子名从返回表的 schema 读出。还需要覆写 `_get_features` 并返回面板，否则 `get_features(panel)` 会抛出 `NotImplementedError`。
+继承 `FactorPolars` 并实现 `_get_factor_lazyframe`。它接收 `polars.LazyFrame` 形式的数据集，返回只包含 `timestamp`、`symbol` 和因子列的惰性表。因子名从返回表的 schema 读出。
 
 ```python
 >>> import polars as pl
@@ -414,15 +452,13 @@ features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
 ...             )
 ...             .select(["timestamp", "symbol", "rel_volume_5"])
 ...         )
-...     def _get_features(self, data):
-...         return data
 ...
 >>> rv = RelativeVolume(PolarsFactorConfig(
 ...     warmup_bars=10, dataset=make_dataset(), file_path="data/factors/rel_volume.zarr",
 ... ))
 >>> rv.get_factor_names()
 ('rel_volume_5',)
->>> out = rv.get_features(rv.compute("2024-02-01", "2024-02-29"))
+>>> out = rv.compute("2024-02-01", "2024-02-29")
 >>> dict(out.sizes), str(out["rel_volume_5"].dtype)
 ({'timestamp': 29, 'symbol': 8}, 'float64')
 >>> int(out["rel_volume_5"].isnull().sum())
@@ -431,7 +467,7 @@ features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
 
 ### 一个 KunQuant 因子
 
-继承 `FactorKunQuant`，实现 `_get_factor_names`、`_get_factor_func`（KunQuant 计算图：`data_columns` 的每一项对应一个 `Input`，每个因子名对应一个 `Output`）和 `_get_features`。下面的计算图输出一个均线偏离度，分别给出原始值、沿时间的 z-score 和跨标的的 z-score。KunQuant 在每次 `compute()` 时编译（这里约一秒）。字段之间互相约束的因子（例如 `data_columns` 要和参数对应）重写 `_validate_config`，读取 `self.config`，不合格时抛 `ValueError`；它在每次给 config 赋值时运行，包括 `copy()` 和 `resample()` 所做的赋值，被拒绝的 config 不会生效，因子保留原来的 config。`LiteratureAlpha` 和 `ResidualMomentumFF3` 就是这样检查 `data_columns` 的。
+继承 `FactorKunQuant`，实现 `_get_factor_names` 和 `_get_factor_func`（KunQuant 计算图：`data_columns` 的每一项对应一个 `Input`，每个因子名对应一个 `Output`）。下面的计算图输出一个均线偏离度，分别给出原始值、沿时间的 z-score 和跨标的的 z-score。KunQuant 在每次 `compute()` 时编译（这里约一秒）。字段之间互相约束的因子（例如 `data_columns` 要和参数对应）重写 `_validate_config`，读取 `self.config`，不合格时抛 `ValueError`；它在每次给 config 赋值时运行，包括 `copy()` 和 `resample()` 所做的赋值，被拒绝的 config 不会生效，因子保留原来的 config。`LiteratureAlpha` 和 `ResidualMomentumFF3` 就是这样检查 `data_columns` 的。
 
 ```python
 >>> import KunQuant.ops as op
@@ -443,8 +479,6 @@ features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
 >>> class MaDeviation(FactorKunQuant):
 ...     def _get_factor_names(self):
 ...         return ("ma_dev_5", "ma_dev_ts", "ma_dev_cs")
-...     def _get_features(self, data):
-...         return data
 ...     def _get_factor_func(self):
 ...         builder = Builder()
 ...         with builder:
@@ -462,7 +496,7 @@ features = factor.get_features(factor.compute("2020-01-01", "2024-12-31"))
 ...     warmup_bars=10, dataset=make_dataset(), mode="batch", data_columns=("close",),
 ...     file_path="data/factors/ma_dev.zarr", njobs=2,
 ... ))
->>> out = kq.get_features(kq.compute("2024-02-01", "2024-02-29"))
+>>> out = kq.compute("2024-02-01", "2024-02-29")
 >>> list(out.data_vars), dict(out.sizes)
 (['ma_dev_5', 'ma_dev_ts', 'ma_dev_cs'], {'timestamp': 29, 'symbol': 8})
 >>> float(abs(out["ma_dev_cs"].mean("symbol")).max()) < 1e-5
@@ -473,7 +507,7 @@ array([1., 1., 1.], dtype=float32)
 3
 ```
 
-跨标的输出在每个时间点上均值为 0、标准差为 1。时间序列输出在两层嵌套窗口填满之前是 NaN：5 根 bar 的均线加上 10 根 bar 的 z-score 一共需要 14 根 bar，而 `warmup_bars=10` 在第一个请求日期之前提供了 10 根 bar，所以第一个有效值出现在下标 3。流式模式下，`cal_stream` 每次把编译好的计算图推进一根 bar 并返回因子本身，且需要在数据集配置上固定 `symbols`。不传面板的 `get_features()` 返回最近一次 `cal_stream()` 算出的那根 bar。流式结果与批量公式一致：
+跨标的输出在每个时间点上均值为 0、标准差为 1。时间序列输出在两层嵌套窗口填满之前是 NaN：5 根 bar 的均线加上 10 根 bar 的 z-score 一共需要 14 根 bar，而 `warmup_bars=10` 在第一个请求日期之前提供了 10 根 bar，所以第一个有效值出现在下标 3。流式模式下，`cal_stream` 把编译好的计算图推进一根 bar 并返回这根 bar 的面板，且需要在数据集配置上固定 `symbols`。流式结果与批量公式一致：
 
 ```python
 >>> import numpy as np
@@ -486,7 +520,7 @@ array([1., 1., 1.], dtype=float32)
 ...     )),
 ... ))
 >>> for step in range(6):
-...     row = stream.cal_stream({"close": close[step].astype("float32")}, step, symbols).get_features()
+...     row = stream.cal_stream({"close": close[step].astype("float32")}, step, symbols)
 ...
 >>> dict(row.sizes)
 {'timestamp': 1, 'symbol': 8}
@@ -502,11 +536,11 @@ array([-0.00857,  0.01526,  0.00988])
 
 流式模式下，`data_columns` 的每一项都必须被某个 `Output` 用到，因为 KunQuant 会剪掉没用到的输入。多给一列会在 `init_stream()` 中报 `RuntimeError: Cannot find the buffer name`。批量模式容忍多余的输入。
 
-因子类没有覆写 `_get_features` 时，`get_features(panel)` 会抛出一个不带消息的 `NotImplementedError`。同样，在只产出特征的类上调用 `get_labels(panel)` 会抛 `RuntimeError: Momentum does not support get_label()`。
-
 Polars 因子引用了存储中不存在的列时，构造对象就会失败，因为因子名是通过在少量行上运行表达式推出来的：`polars.exceptions.ColumnNotFoundError: unable to find column "close"; valid columns: ["timestamp", "symbol", "Close", ...]`。要用存储自己的列名（`Close`），而不是 KunQuant 的列名（`close`）；合并输入例外，它带的是共享列名（`close`）。
 
 `read(start, end)` 和 `extend(end)` 需要 `build` 记录的区间：用其他方式写出的存储会抛出 `ValueError: Momentum.read(): the store at data/factors/nob.zarr has no recorded range, so it cannot answer a date-range request; write it with build(start, end).` 给 `extend(end)` 传入记录区间已经覆盖到的 `end` 会抛出 `ValueError: Momentum.extend(): the store at data/factors/momentum.zarr already covers 2024-01-21 to 2024-03-20; extend() appends only bars after 2024-03-20, got end '2024-03-10'.`
+
+`Forward` 拒绝小于 1 的 `span`（`ValueError: Forward: span must be at least 1, got 0.`）、负的 `delay`，以及它无法平移的因子：流式模式的因子（`ValueError: Return: _TrailingOpenReturn is in 'stream' mode; a label reads bars after t, which a stream never has.`）或重采样过的因子（`ValueError: Forward: Momentum is resampled to '1d'; a label counts its lookahead on the dataset's own bars, so wrap an unresampled factor.`）。
 
 `warmup_bars` 是数据集自己日历上的 bar 数，没有数据的日子会被跳过，不计入。嵌套的滚动窗口需要两个窗口长度之和。
 
@@ -520,4 +554,4 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 
 ## 另请参阅
 
-`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用 `get_features()` 和 `get_labels()`。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`）、`quantlab.factor`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。
+`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。

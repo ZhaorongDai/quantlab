@@ -77,7 +77,7 @@ Everything lives at the top of each script, in this order:
 | `DATA_ROOT`, `STORES`, `RAW`, `REFERENCE`, `WORK` | the data root (`get_data_root()`: `QUANTLAB_DATA_DIR` or `data/` beside the repository) and the input and output locations under it |
 | `START`, `END` | data window; each factor reads its `warmup_bars` bars of warm-up before `START` |
 | `TRAIN_START` ... `TEST_END` | training and out-of-sample test windows (model pipelines) |
-| `HORIZON` | label horizon in bars |
+| `HORIZON` | label span in bars; the label reads `HORIZON + 1` bars ahead (delay 1) |
 | `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
 | `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`warmup_bars=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
 | `build_model()` | the `MLConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, or the pytabkit constructor arguments) |

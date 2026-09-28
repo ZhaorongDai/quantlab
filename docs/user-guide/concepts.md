@@ -43,13 +43,16 @@ boolean panel, used to restrict research to the stocks that were actually in an 
 date; see [universes](universes.md).
 
 A factor computes a feature from a dataset, for example a momentum or volatility measure. A
-label is computed the same way but looks forward in time: it is the quantity to be predicted,
-typically the return over the next few bars. Both produce a panel. Factors are written either
+label is a factor shifted forward in time by `Forward`: it is the quantity to be predicted,
+typically the return over the next few bars, and its value at bar t reads a fixed number of
+bars after t (its lookahead). Both produce a panel. Factors are written either
 as KunQuant operator graphs, compiled to native code and able to run bar by bar on live data,
 or as Polars expressions, which are batch only. See [factors](factors.md).
 
-A model learns to predict the labels from the factors. Its prediction panel has one variable
-per label on the same `(timestamp, symbol)` grid as its inputs. Model heads come in two
+A model learns to predict the labels from the factors. At every split boundary it drops the
+last lookahead bars of the earlier segment, so no label it fits on reads a bar of the later
+one. Its prediction panel has one variable per label on the same `(timestamp, symbol)` grid
+as its inputs. Model heads come in two
 families: torch networks trained epoch by epoch (`DLModel`) and tree or tabular models fitted
 in one call with the library's own early stopping (`MLModel`). See [models](models.md).
 
@@ -248,7 +251,7 @@ quantlab/
     acquisition/     one module per vendor: tiingo.py, alpaca.py, wrds/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
     factor/          Alpha101, Alpha158, momentum, residual momentum
-    label/           forward-return labels (fret.py)
+    label/           Forward (forward.py) and the forward-return labels (fret.py)
     ml_model/        XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
     dl_model/        torch heads: MLP, GRU/LSTM regressor and classifier
     backtest/        vectorbt engine, top-N selector, the US-equity backtester

@@ -35,8 +35,10 @@ best ones. It is configured with a `CrossSectionBacktestConfig`
 
 A call to `run()` performs these steps in order:
 
-1. Prepare the model. In `model_mode="train"` the model is trained on the
-   dates in its own config; in `model_mode="load"` a checkpoint is restored.
+1. Check that every label's `delay` equals the engine's fill delay (see
+   [Execution timing](#execution-timing)), then prepare the model. In
+   `model_mode="train"` the model is trained on the dates in its own config;
+   in `model_mode="load"` a checkpoint is restored.
 2. Ask every factor for the backtest window by date range (each computed
    factor reads its own warm-up bars before the window), and let the model
    predict a *panel* (an `xarray.Dataset` indexed by `timestamp` and
@@ -87,16 +89,16 @@ content as the run's `metrics.json`:
 
 ```text
 == long-only top 3, train mode
-run directory: USEquityCrossectionSelectStockVectorBt_20260925_175054_760512
+run directory: USEquityCrossectionSelectStockVectorBt_20260927_211527_526449
   Total Return [%]      9.170
   Sharpe Ratio          1.888
   Max Drawdown [%]      6.116
   Total Orders            126
   turnover/rebal. [%]    139.9
-  training window     ('2023-01-02', '2023-09-15')
-  in-sample range     ('2023-09-04', '2023-09-15')
-  out-of-sample       [('2023-09-18', '2024-02-23')]
-  out-of-sample Sharpe 1.713
+  training window     ('2023-01-02', '2023-09-08')
+  in-sample range     ('2023-09-04', '2023-09-08')
+  out-of-sample       [('2023-09-11', '2024-02-23')]
+  out-of-sample Sharpe 1.855
 files: ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
 first rebalance: {'S08': 0.3333, 'S10': 0.3333, 'S11': 0.3333}
 forced liquidation: S08 signal 2023-12-18 fill 2023-12-19 at 72.50
@@ -180,11 +182,25 @@ the next bar's open is the earliest honest price.
 
 Two consequences follow. First, the label your model learns should describe
 the return that the backtest actually earns, which starts at the open of
-*t + 1*. The `Return` label in `quantlab.label.fret` is defined that way
-(`adjOpen[t + n + 1] / adjOpen[t + 1] - 1`), and so is the label in the
-example script. Second, a target percentage is measured against the
+*t + 1*. A label is a factor wrapped in `Forward` (`quantlab.label.forward`):
+its value at bar *t* is the wrapped factor at bar *t + delay + span*, where
+`span` is the number of bars it accumulates over and `delay` the number of
+bars before the first of them. The `Return` label in `quantlab.label.fret`
+has `delay=1` (`adjOpen[t + n + 1] / adjOpen[t + 1] - 1`), and so does the
+label in the example script, a `Forward` over a trailing 5-bar open-to-open
+return with `span=5`. Second, a target percentage is measured against the
 portfolio's value at the fill price of the bar it executes on, which is
 vectorbt's default.
+
+The engine declares its delay as the class attribute `fill_delay_bars`:
+`VectorBtBacktester.fill_delay_bars` is 1. `run()` and `run_cv()` compare it
+with the `delay` of every label before training, loading or simulating
+anything, and raise `ValueError` when they differ. With the example's label
+built with `delay=0`, `run()` raises before the model is trained:
+
+```text
+ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret_5',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
+```
 
 ## Rebalancing and top-N selection
 
@@ -208,7 +224,7 @@ The example prints the exposures of the first long/short rebalance row:
 
 ```text
 == long/short top 3 / bottom 3, load mode
-run directory: USEquityCrossectionSelectStockVectorBt_20260925_175055_950306
+run directory: USEquityCrossectionSelectStockVectorBt_20260927_211527_838321
   Total Return [%]      3.257
   Sharpe Ratio          1.382
   Max Drawdown [%]      2.315
@@ -309,24 +325,31 @@ there says little about the future. *Out-of-sample* bars are bars it never
 saw, and they are the honest test. The backtester reports the two separately
 whenever the backtest window overlaps the model's training data.
 
-The model's *effective training window* runs from its `train_start` to its
-`train_end` plus the label horizon. The horizon is the largest
-`n_forward_periods` among the model's labels, read from their
-`config.kwargs`: the label on the `train_end` bar is computed from the next
-`n` bars of prices, so those bars also influenced training. The horizon is
-counted in bars. In load mode the dates recorded in the `config.json` next to
-the checkpoint are used, since those are the dates the checkpoint was really
-trained on; a warning is logged if `config.model` says otherwise.
+A label's *lookahead* is `delay + span`, the number of bars past *t* that
+its value at *t* reads (`Forward.lookahead_bars()`). Let L be the largest
+lookahead among the model's labels. When the model is trained, the *purge*
+drops the last L bars of the training segment, so no fitted label reads a
+bar of the test segment. The label on the last fitted bar still reads the L
+bars after it, so those bars influenced training as well. The model's
+*effective training window* therefore runs from `train_start` to the last
+fitted bar plus L bars, counted on the price calendar
+(`quantlab.utils.split.in_sample_window`). When the test segment follows the
+training segment, the purge and the lookahead cancel and the window ends on
+the configured `train_end`. In load mode the dates recorded in the
+`config.json` next to the checkpoint are used, since those are the dates the
+checkpoint was really trained on; a warning is logged if `config.model` says
+otherwise.
 
-In the example the model's `train_end` is 2023-09-08 and its label looks 5
-bars ahead, so the effective training window ends 5 price bars later, on
-2023-09-15. The backtest window deliberately starts at 2023-09-04, so the bars
-from 2023-09-04 to 2023-09-15 are in-sample and a warning is logged:
+In the example the model's `train_end` is 2023-09-08 and its label has a
+lookahead of 6 bars (`delay=1`, `span=5`). The purge ends the fitted bars on
+2023-08-31, and 6 bars later is 2023-09-08, so the effective training window
+ends on `train_end`. The backtest window deliberately starts at 2023-09-04, so
+the bars from 2023-09-04 to 2023-09-08 are in-sample and a warning is logged:
 
 ```text
-  training window     ('2023-01-02', '2023-09-15')
-  in-sample range     ('2023-09-04', '2023-09-15')
-  out-of-sample       [('2023-09-18', '2024-02-23')]
+  training window     ('2023-01-02', '2023-09-08')
+  in-sample range     ('2023-09-04', '2023-09-08')
+  out-of-sample       [('2023-09-11', '2024-02-23')]
 ```
 
 All three blocks come from one continuous simulation; the sub-periods are
@@ -393,7 +416,7 @@ an overlap would have two models trading the same bars, so both raise
 
 ```text
 == run_cv over 10 folds (stitched)
-run directory: USEquityCrossectionSelectStockVectorBt_20260925_175118_514435
+run directory: USEquityCrossectionSelectStockVectorBt_20260927_211531_146492
   Total Return [%]     15.392
   Sharpe Ratio          1.837
   Max Drawdown [%]      6.116
@@ -405,9 +428,12 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260925_175118_514435
 files: ['config.json', 'equity.zarr', 'fingerprint.json', 'folds', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
 ```
 
-The stitched curve is out-of-sample except for the first label-horizon bars
-of each fold, which overlap that fold's effective training window when there
-is no gap between training and test segments. `metrics.json` holds a
+`train_cv` purges the last L bars of every fold's training segment and
+records the purged `train_end` in `cv_folds.json`. A fold's effective training
+window ends L bars after that date, on the bar before its test segment, so
+the stitched curve is out-of-sample throughout; in the example run
+`in_sample_ranges` is `[]` and `out_of_sample_ranges` is
+`[('2023-05-22', '2024-02-23')]`. `metrics.json` holds a
 `stitched` block (with `in_sample_ranges` and `out_of_sample_ranges` as lists)
 and a `folds` list with every fold's own metrics from its independent
 simulation. Each fold's weights and equity are also written under

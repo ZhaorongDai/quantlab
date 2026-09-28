@@ -5,8 +5,7 @@ This page explains how quantlab turns a price panel into model inputs
 backends, KunQuant and Polars, and when to use each; the built-in factor
 sets; computing factor values over a date range, building a store and
 reading it back; writing your own factor;
-the normalisation operators; the forward-return labels; and KunQuant's
-streaming mode. Read it after [Datasets](datasets.md) and before
+the normalisation operators; labels; and KunQuant's streaming mode. Read it after [Datasets](datasets.md) and before
 [Models](models.md).
 
 ## Factors, labels and panels
@@ -19,12 +18,9 @@ engineered feature, such as a five-day return or a volatility estimate.
 
 A label has the same shape. It holds the value a model should learn to
 predict at each `(timestamp, symbol)`, usually the return of the next few
-bars. quantlab builds labels with the same classes as factors. The only
-difference is which method you call. `get_features()` returns a factor's
-values as model inputs and `get_labels()` returns a label's values as
-targets. The built-in factor classes raise `RuntimeError` from
-`get_labels()`, and the label classes return something other than the label
-from `get_features()` (see [Forward-return labels](#forward-return-labels)).
+bars. A label is a factor shifted forward in time: any factor wrapped in
+`quantlab.label.forward.Forward` is one (see [Labels](#labels)). `read` and
+`compute` return the final panel for both.
 
 Every factor is configured by a dataclass and built around a dataset object.
 The config fields shared by both backends live on
@@ -55,7 +51,7 @@ model can take factors from both at once.
 | Config class | `FactorConfig` | `PolarsFactorConfig` |
 | Factor logic | a graph of KunQuant operators, compiled to native code | a Polars lazy expression chain |
 | Modes | batch (`compute()`) and streaming (`cal_stream()`) | batch only |
-| Built-in sets | Alpha101, Alpha158, residual momentum, labels | `Momentum` (a reference example) |
+| Built-in sets | Alpha101, Alpha158, residual momentum | `Momentum` (a reference example) |
 | Input columns | named in `data_columns`, under the shared names | whatever columns the store holds; the shared names over a merged input |
 
 KunQuant is the main backend. It runs the same compiled graph over a whole
@@ -147,7 +143,7 @@ alpha = Alpha158Stock(FactorConfig(
     file_path="factors/alpha158.zarr",
     njobs=4,
 ))
-panel = alpha.get_features(alpha.compute("2024-02-01", "2024-06-14"))
+panel = alpha.compute("2024-02-01", "2024-06-14")
 print(dict(panel.sizes), list(panel.data_vars))
 print(int(panel["STD20"].isel(timestamp=0).isnull().sum()))
 print(dataset.bar_before("2024-02-01", 20))
@@ -261,9 +257,6 @@ class VolumeSurprise(FactorPolars):
             .select(["timestamp", "symbol", f"vol_surprise_{n}"])
         )
 
-    def _get_features(self, data):
-        return data
-
 surprise = VolumeSurprise(PolarsFactorConfig(
     warmup_bars=10,
     dataset=dataset,
@@ -271,7 +264,7 @@ surprise = VolumeSurprise(PolarsFactorConfig(
     file_path="factors/vol_surprise.zarr",
 ))
 print(surprise.get_factor_names())
-print(dict(surprise.get_features(surprise.compute("2024-02-01", "2024-06-14")).sizes))
+print(dict(surprise.compute("2024-02-01", "2024-06-14").sizes))
 ```
 
 ```text
@@ -295,8 +288,8 @@ A KunQuant factor subclasses `quantlab.base.factor.FactorKunQuant` and
 implements `_get_factor_names` and `_get_factor_func`. The second one builds
 an operator graph. It has an `Input` for each column in `data_columns`,
 KunQuant operators such as `WindowedAvg` or `BackRef` (the value `n` bars
-earlier), and one `Output` per factor name. Override `_get_features` to return
-the panel unchanged. The next section's example builds such a factor.
+earlier), and one `Output` per factor name. The next section's example
+builds such a factor.
 
 KunQuant operators look only backwards in time, so a factor graph cannot
 peek at the future by accident. The operator catalogue lives in
@@ -345,14 +338,11 @@ class MaDeviation(FactorKunQuant):
             Output(CrossSectionalZScore(dev), "ma_dev_10_cs")    # across symbols
         return Function(builder.ops)
 
-    def _get_features(self, data):
-        return data
-
 ma_dev = MaDeviation(FactorConfig(
     warmup_bars=30, dataset=dataset, mode="batch",
     data_columns=("adjClose",), file_path="factors/ma_dev.zarr", njobs=4,
 ))
-dev = ma_dev.get_features(ma_dev.compute("2024-02-15", "2024-06-14"))
+dev = ma_dev.compute("2024-02-15", "2024-06-14")
 day = dev.isel(timestamp=-1)
 print(round(day["ma_dev_10_cs"].mean().item(), 6), round(day["ma_dev_10_cs"].std(ddof=1).item(), 6))
 print(np.round(day["ma_dev_10_cs"].values, 2))
@@ -369,57 +359,133 @@ restrictions of its own: a batch run must start at bar 0, which `compute()`
 always does on the panel it reads, and it has no parameters, so a variant with different behaviour
 needs a class of its own.
 
-## Forward-return labels
+## Labels
 
-`quantlab.label.fret` provides the two standard labels. Both read `adjOpen`
-and take the horizon `n` from `kwargs["n_forward_periods"]`.
+A label is a factor shifted forward in time. `quantlab.label.forward.Forward`
+wraps any factor and places the factor's value at bar `t + delay + span` at
+bar `t`. It is configured by `quantlab.base.config.ForwardConfig`:
+
+- `factor`: the factor to shift. Its value at bar `t` must use only bars up
+  to `t`. `Forward` relies on this and cannot check it.
+- `span`: how many bars the label accumulates over, such as the `n` bars of
+  an `n`-bar return.
+- `delay`: the bars between the bar a signal forms on and the first bar the
+  label counts, 1 by default, because a signal formed at the close of bar
+  `t` fills at the open of bar `t + 1`.
+
+`delay + span` is the label's lookahead, returned by `lookahead_bars()`: the
+label at `t` is known only once bar `t + lookahead` has closed. `read(start,
+end)` and `compute(start, end)` ask the wrapped factor for `lookahead` bars
+past `end`, counted on the dataset's calendar, then shift and trim the panel
+back to the request. A label is therefore NaN only where the later bars do
+not exist, at the end of the dataset. A `Forward` owns no store: `build`,
+`extend` and `read` act on the wrapped factor's store, which then serves as
+a feature and, wrapped, as a label.
+
+### Forward-return labels
+
+`quantlab.label.fret` provides the two standard labels, both `Forward`
+subclasses with `span = n` and `delay = 1`. They read `adjOpen` and take `n`
+from `kwargs["n_forward_periods"]` of the `FactorConfig` they are built from.
 
 - `Return` is the regression target `ret_{n}`, the return from the open of
   bar `t + 1` to the open of bar `t + n + 1`.
 - `BinaryReturn` is the classification target `ret_binary_{n}`: 1.0 when
   that return is positive and 0.0 otherwise.
 
-The label at bar `t` starts at the next bar's open, because a signal formed
-at the close of bar `t` cannot trade before then. The last `n + 1` bars
-of the requested range have no label and are NaN.
-
 ```python
-from dataclasses import replace
 from quantlab.label.fret import BinaryReturn, Return
 
 ret = Return(FactorConfig(
-    warmup_bars=0, dataset=dataset, mode="batch",
+    warmup_bars=5, dataset=dataset, mode="batch",
     data_columns=("adjOpen",), kwargs={"n_forward_periods": 5},
     file_path="labels/ret_5.zarr", njobs=4,
 ))
-labels = ret.get_labels(ret.compute("2024-01-01", "2024-06-14"))
-print(list(labels.data_vars), int(labels["ret_5"].isnull().all("symbol").sum()))
+print(ret.get_factor_names(), ret.span_bars(), ret.lookahead_bars())
+
+labels = ret.compute("2024-02-01", "2024-05-31")
+print(dict(labels.sizes), int(labels["ret_5"].isnull().sum()))
 
 o = xr.open_zarr("prices.zarr")["adjOpen"]
-t = 10
-print(float(labels["ret_5"][t, 0]), float(o[t + 6, 0] / o[t + 1, 0] - 1))
+t = o.get_index("timestamp").get_loc(pd.Timestamp("2024-05-31"))
+print(float(labels["ret_5"].sel(timestamp="2024-05-31")[0]),
+      float(o[t + 6, 0] / o[t + 1, 0] - 1))
 
-up = BinaryReturn(replace(ret.config, file_path="labels/up_5.zarr", factor_names=None))
-print(up.get_factor_names(),
-      np.unique(up.get_labels(up.compute("2024-01-01", "2024-06-14"))["ret_binary_5"].values[:-6]))
+tail = ret.compute("2024-06-01", "2024-06-14")
+print(tail["ret_5"].isnull().all("symbol").values)
+
+up = BinaryReturn(FactorConfig(
+    warmup_bars=5, dataset=dataset, mode="batch",
+    data_columns=("adjOpen",), kwargs={"n_forward_periods": 5},
+    file_path="labels/up_5.zarr", njobs=4,
+))
+print(up.get_factor_names(), np.unique(up.compute("2024-02-01", "2024-05-31")["ret_binary_5"].values))
 ```
 
 ```text
-['ret_5'] 6
-0.023827195167541504 0.0238272174419778
+('ret_5',) 5 6
+{'timestamp': 87, 'symbol': 8} 0
+0.04027259349822998 0.04027256300341486
+[False False False False  True  True  True  True  True  True]
 ('ret_binary_5',) [0. 1.]
 ```
 
-The check on bar 10 matches the hand computation up to float32 rounding.
-KunQuant can only look backwards, so the label graph computes the trailing
-return and `get_labels()` shifts it `n + 1` bars earlier. `get_features()` on
-a label returns the unshifted trailing return, which is not a label. Always
-put label objects in a model's `labels` list, where the model calls
-`get_labels()`.
+The range ending on 31 May has no NaN: its last labels read the June bars,
+and the value on 31 May matches the hand computation up to float32 rounding.
+In the range ending on 14 June, the store's last bar, the last six bars have
+no six later bars and are NaN. `warmup_bars` belongs to the wrapped trailing
+return, which needs `n` bars behind its first value.
 
-`factor_names=None` in the `BinaryReturn` call matters. `replace` copies the
-`Return` config, and that config's `factor_names` was already filled in with
-`("ret_5",)`. Resetting it lets the new class fill in its own name.
+### Wrap any factor
+
+Any factor that uses only bars up to `t` becomes a label by wrapping it.
+Here a five-bar realised volatility, written as a Polars factor, becomes the
+volatility of the five returns after the fill bar:
+
+```python
+from quantlab.base.config import ForwardConfig
+from quantlab.label.forward import Forward
+
+class RealisedVol(FactorPolars):
+    """Standard deviation of the last n close-to-close returns, per symbol."""
+
+    def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        n = self.config.kwargs["n"]
+        return (
+            lf.sort(["symbol", "timestamp"])
+            .with_columns(pl.col("adjClose").pct_change().over("symbol").alias("r"))
+            .with_columns(pl.col("r").rolling_std(n).over("symbol").alias(f"vol_{n}"))
+            .select(["timestamp", "symbol", f"vol_{n}"])
+        )
+
+vol = RealisedVol(PolarsFactorConfig(
+    warmup_bars=5, dataset=dataset, kwargs={"n": 5}, file_path="factors/vol_5.zarr",
+))
+future_vol = Forward(ForwardConfig(factor=vol, span=5))
+print(future_vol.get_factor_names(), future_vol.lookahead_bars())
+
+now = vol.compute("2024-02-01", "2024-06-14")["vol_5"]
+later = future_vol.compute("2024-02-01", "2024-05-31")["vol_5"]
+print(float(later.sel(timestamp="2024-03-01")[0]),
+      float(now.sel(timestamp=dataset.bar_after("2024-03-01", 6))[0]))
+```
+
+```text
+('vol_5',) 6
+0.01416518834147982 0.01416518834147982
+```
+
+The label keeps the factor's variable names, and its value on 1 March is the
+factor's value six bars later. The same `vol` object can be a feature of one
+model while `future_vol` is the label of another.
+
+A model takes only `Forward` objects (anything with `lookahead_bars()`) in
+its `labels` list and refuses them in its `factors` list, both with a
+`TypeError`. It purges the last `L` bars of the earlier segment at every
+split boundary, `L` being the largest lookahead among its labels, so that no
+label used for fitting reads a bar of the later segment. A backtest refuses a
+label whose `delay` differs from its engine's `fill_delay_bars` (1 for the
+vectorbt engine). See [Models](models.md) and [Backtesting](backtesting.md).
 
 ## Streaming mode
 
@@ -428,9 +494,11 @@ keeps its rolling state between calls. This is how a factor runs on live
 data. Build the factor with `mode="stream"`, pin the symbol list on the
 dataset config, and feed one `float32` array per input column on each call
 to `cal_stream`. Here the whole history is replayed, and the last streamed
-bar matches the batch result from the previous section:
+bar matches the batch result of `MaDeviation` above:
 
 ```python
+from dataclasses import replace
+
 stream_config = replace(price_config, symbols=tuple(symbols))
 live = MaDeviation(FactorConfig(
     warmup_bars=30, dataset=StockDataset(stream_config), mode="stream",
@@ -439,9 +507,8 @@ live = MaDeviation(FactorConfig(
 ))
 history = xr.open_zarr("prices.zarr")["adjClose"].values.astype("float32")
 for step, row in enumerate(history):
-    live.cal_stream({"adjClose": np.ascontiguousarray(row)}, step, symbols)
+    latest = live.cal_stream({"adjClose": np.ascontiguousarray(row)}, step, symbols)
 
-latest = live.get_features()
 print(dict(latest.sizes))
 print(np.round(latest["ma_dev_10"].values[0], 4))
 print(np.round(dev["ma_dev_10"].values[-1], 4))
@@ -453,8 +520,7 @@ print(np.round(dev["ma_dev_10"].values[-1], 4))
 [-0.0137 -0.0654 -0.049   0.0099 -0.0472  0.0142 -0.0145 -0.0122]
 ```
 
-`get_features()` in streaming mode holds only the most recent bar. The
-stream is compiled on the first call, or explicitly with `init_stream()`.
+`cal_stream` returns the panel of the bar it was fed. The stream is compiled on the first call, or explicitly with `init_stream()`.
 Every column in `data_columns` must be used by one of the requested outputs,
 because KunQuant drops unused inputs from the compiled stream and the lookup
 of a dropped input fails. Streaming is a KunQuant

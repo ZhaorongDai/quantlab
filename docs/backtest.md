@@ -10,7 +10,7 @@ The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorb
 
 Run the examples from the repository root with `uv run python`. On macOS, set `OMP_NUM_THREADS=1` before torch or xgboost is imported in the same process, and `WANDB_MODE=disabled` to keep experiment tracking off.
 
-A backtest needs a price dataset whose store has the columns `adjOpen` and `adjClose`, and a model with a checkpoint written by `train()` or `train_cv()`. The sessions below use a synthetic setup: six symbols, one factor, one label and a model head with nothing to fit whose score is the past one-bar return. The last symbol, `FFF`, stops trading at bar 36. Save this as `demo_parts.py`.
+A backtest needs a price dataset whose store has the columns `adjOpen` and `adjClose`, and a model with a checkpoint written by `train()` or `train_cv()`. The sessions below use a synthetic setup: six symbols, one factor, one label and a model head with nothing to fit whose score is the past one-bar return. The label is the factor `open_ret_1` wrapped in `Forward` with `span=1` and the default `delay=1`: its value at bar t is the open-to-open return from t+1 to t+2, so its lookahead is 2 bars. The last symbol, `FFF`, stops trading at bar 36. Save this as `demo_parts.py`.
 
 <details>
 <summary>demo_parts.py</summary>
@@ -25,10 +25,11 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, MLConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, ForwardConfig, MLConfig, PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
 from quantlab.base.model import MLModel
 from quantlab.dataset.stock import StockDataset
+from quantlab.label.forward import Forward
 
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
 
@@ -59,7 +60,7 @@ def prices_of(cfg):
 
 
 class PastReturn(FactorPolars):
-    """Feature past_ret_1: the one-bar return."""
+    """Feature past_ret_1: the one-bar close-to-close return."""
 
     def _get_factor_lazyframe(self, lf):
         c = pl.col("adjClose")
@@ -67,21 +68,15 @@ class PastReturn(FactorPolars):
                 .with_columns((c / c.shift(1).over("symbol") - 1).alias("past_ret_1"))
                 .select(["timestamp", "symbol", "past_ret_1"]))
 
-    def _get_features(self, data):
-        return data
 
-
-class ForwardReturn(FactorPolars):
-    """Label fwd_ret_1: the next-bar return."""
+class OpenReturn(FactorPolars):
+    """open_ret_1: the one-bar open-to-open return, using bars up to t only."""
 
     def _get_factor_lazyframe(self, lf):
-        c = pl.col("adjClose")
+        o = pl.col("adjOpen")
         return (lf.sort(["symbol", "timestamp"])
-                .with_columns((c.shift(-1).over("symbol") / c - 1).alias("fwd_ret_1"))
-                .select(["timestamp", "symbol", "fwd_ret_1"]))
-
-    def _get_labels(self, data):
-        return data
+                .with_columns((o / o.shift(1).over("symbol") - 1).alias("open_ret_1"))
+                .select(["timestamp", "symbol", "open_ret_1"]))
 
 
 class MomentumHead(MLModel):
@@ -100,13 +95,17 @@ class MomentumHead(MLModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-def make_model(root, cfg, days, train_end=39):
+def make_label(cfg, delay=1):
+    """Label open_ret_1 at t: the open-to-open return from t+delay to t+delay+1."""
+    factor = OpenReturn(PolarsFactorConfig(warmup_bars=1, dataset=prices_of(cfg)))
+    return Forward(ForwardConfig(factor=factor, span=1, delay=delay))
+
+
+def make_model(root, cfg, days, train_end=39, delay=1):
     day = lambda i: str(days[i].date())
     factor = PastReturn(PolarsFactorConfig(warmup_bars=5, dataset=prices_of(cfg)))
-    label = ForwardReturn(PolarsFactorConfig(
-        warmup_bars=0, dataset=prices_of(cfg), kwargs={"n_forward_periods": 1}))
     return MomentumHead(MLConfig(
-        factors=[factor], labels=[label], model_save_dir=str(root / "models"),
+        factors=[factor], labels=[make_label(cfg, delay)], model_save_dir=str(root / "models"),
         factor_data_strategy="cal", label_data_strategy="cal", val_size=0.0,
         start_date=day(0), end_date=day(len(days) - 1),
         train_start=day(0), train_end=day(train_end),
@@ -121,7 +120,7 @@ def train_checkpoint(model):
 
 def train_cv_project(model, train_periods):
     model.collect()
-    model.train_cv(train_periods=train_periods, gap_periods=0)
+    model.train_cv(train_periods=train_periods)
     return next(Path(model.config.model_save_dir).rglob("cv_folds.json")).parent
 ```
 
@@ -131,7 +130,7 @@ def train_cv_project(model, train_periods):
 
 ### What a run does
 
-`BaseBacktester.run()` backtests one model over the window `start_date` to `end_date`. It loads the checkpoint (or trains the model first), computes the features on the window, predicts a score per symbol and bar, asks the concrete class for target weights, simulates them, computes metrics and writes the run directory. `run_cv()` does the same for every fold of a `train_cv` run and stitches the folds into one curve.
+`BaseBacktester.run()` backtests one model over the window `start_date` to `end_date`. It checks every label's delay against the engine's fill delay, loads the checkpoint (or trains the model first), computes the features on the window, predicts a score per symbol and bar, asks the concrete class for target weights, simulates them, computes metrics and writes the run directory. `run_cv()` does the same for every fold of a `train_cv` run and stitches the folds into one curve.
 
 The first session trains a checkpoint and backtests a rule that holds the two highest-scoring symbols and rebalances every five bars. Log lines go to stderr and are not shown.
 
@@ -203,6 +202,23 @@ order
 
 Fees and slippage (`fees` and `slippage`, both 0.0005 by default) are proportional to each trade. A target percentage is measured against the portfolio value at the fill price of the bar it executes on.
 
+### Label delay and fill delay
+
+The engine declares `fill_delay_bars`, the number of bars between the bar a weight forms on and the bar it fills on; `VectorBtBacktester` sets it to 1. A label's `delay` is the number of bars between the bar a signal forms on and the first bar the label counts. `run()` and `run_cv()` compare every label's `delay` with `fill_delay_bars` before training, loading or simulating, and raise `ValueError` naming the label, its delay and the fill delay when they differ.
+
+```python
+>>> USEquityCrossectionSelectStockVectorBt.fill_delay_bars
+1
+>>> label = make_label(cfg)
+>>> label.config.delay, label.span_bars(), label.lookahead_bars()
+(1, 1, 2)
+>>> same_bar = dataclasses.replace(backtester.config, model=make_model(root / "same_bar", cfg, days, delay=0))
+>>> USEquityCrossectionSelectStockVectorBt(same_bar).run()
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret_1',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
+```
+
 ### Delisted holdings
 
 Both price columns are forward-filled before the simulation. A symbol that is held after a rebalance and has no raw fill price on the next bar is sold on that bar at its last known price, while the other symbols rebalance normally, and the sale is recorded as a forced liquidation. `FFF` has no price from 2024-02-20 and is in the first portfolio. The selector never picks a symbol that has no price on the next bar, so `FFF` is absent from the second portfolio above.
@@ -220,12 +236,12 @@ The model's factors need history before `start_date`. The backtester asks each f
 
 ### In-sample and out-of-sample
 
-The model was trained on the bars `train_start` to `train_end`. Its labels look `n_forward_periods` bars ahead, so the effective training window extends that many bars past `train_end`. Window bars inside it are in-sample and the rest are out-of-sample. In load mode the training dates come from the `config.json` stored beside the checkpoint. When the window overlaps the training window the run logs a warning and continues.
+Let L be the largest `lookahead_bars()` among the model's labels. The model fits on the bars `train_start` to `train_end` less the purge, which drops the last L bars before the test segment. The label on the last fitted bar reads L bars further, so the effective training window runs from `train_start` to the last fitted bar plus L bars on the price calendar (`quantlab.utils.split.in_sample_window`). For a test segment that follows the training segment, this window ends on the configured `train_end`. Window bars inside it are in-sample and the rest are out-of-sample. In load mode the training dates come from the `config.json` stored beside the checkpoint. When the window overlaps the training window the run logs a warning and continues.
 
 ```python
 >>> m = result.metrics
 >>> m["training_window"], m["in_sample_range"], m["out_of_sample_ranges"]
-(('2024-01-01', '2024-02-26'), ('2024-02-12', '2024-02-26'), [('2024-02-27', '2024-03-22')])
+(('2024-01-01', '2024-02-23'), ('2024-02-12', '2024-02-23'), [('2024-02-26', '2024-03-22')])
 ```
 
 All parts come from one continuous simulation, so capital and positions carry across the boundary. `whole` holds the engine statistics of the full window. `in_sample` and `out_of_sample` hold return-based statistics over their own bars, plus fill counts and turnover.
@@ -234,8 +250,8 @@ All parts come from one continuous simulation, so capital and positions carry ac
 >>> for part in ("whole", "in_sample", "out_of_sample"):
 ...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["Total Orders"])
 whole -5.85 -2.32 19
-in_sample -1.09 -0.79 6
-out_of_sample -4.82 -3.76 13
+in_sample -0.25 -0.1 6
+out_of_sample -5.61 -4.27 13
 >>> list(m["whole"])[:6]
 ['Start', 'End', 'Period', 'Start Value', 'End Value', 'Total Return [%]']
 >>> round(m["whole"]["Turnover per Rebalance [%]"])
@@ -309,12 +325,12 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ['fold_0', 'fold_1']
 ```
 
-The top-level files of the run directory describe the stitched curve, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. The label here looks one bar ahead, so the first bar of every fold is in-sample for that fold's model.
+The top-level files of the run directory describe the stitched curve, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the purged `train_end` in the manifest. A fold's in-sample window ends L bars after that `train_end`, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
 
 ```python
 >>> stitched = cv.metrics["stitched"]
 >>> stitched["in_sample_ranges"][:2], stitched["out_of_sample_ranges"][:2]
-([('2024-02-12', '2024-02-12'), ('2024-02-20', '2024-02-20')], [('2024-02-13', '2024-02-19'), ('2024-02-21', '2024-02-27')])
+([], [('2024-02-12', '2024-04-17')])
 >>> round(stitched["whole"]["Total Return [%]"], 2), round(cv.folds[0]["metrics"]["whole"]["Total Return [%]"], 2)
 (-3.11, -1.62)
 ```
@@ -427,7 +443,7 @@ To keep the top-N rule with another score, `CrossSectionTopNSelector(direction, 
 
 No borrow or short-financing cost is modelled, so short-side returns are optimistic; the metrics `notes` say so. Trade statistics use the position view: one trade is one symbol's round trip from entry to flat, and trimming a holding back to its target weight is not a closed trade. `Total Orders` is the number of fills.
 
-`benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected.
+`benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. Every label's `delay` must equal the engine's `fill_delay_bars` (see [Label delay and fill delay](#label-delay-and-fill-delay)). On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected.
 
 A backtester built with the wrong config class:
 
@@ -444,7 +460,7 @@ A score label the model does not declare:
 >>> USEquityCrossectionSelectStockVectorBt(dataclasses.replace(backtester.config, score_label="fwd_ret_5"))
 Traceback (most recent call last):
   ...
-ValueError: score_label 'fwd_ret_5' is not one of the model's labels ['fwd_ret_1']
+ValueError: score_label 'fwd_ret_5' is not one of the model's labels ['open_ret_1']
 ```
 
 `run_cv()` without `cv_project_dir`:
@@ -463,7 +479,7 @@ A stored config with a missing field is refused instead of being filled from cur
 >>> load_backtester_from_config(config)
 Traceback (most recent call last):
   ...
-ValueError: quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with (...)
+ValueError: quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
 If a fold is missing from the middle of `cv_folds.json`, `run_cv()` refuses to stitch across the gap with `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`. Restore the manifest, or narrow `start_date` and `end_date` to a contiguous range of folds.

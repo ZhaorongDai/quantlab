@@ -77,7 +77,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `DATA_ROOT`、`STORES`、`RAW`、`REFERENCE`、`WORK` | 数据根目录（`get_data_root()`：`QUANTLAB_DATA_DIR` 或仓库旁的 `data/`）及其下的输入输出位置 |
 | `START`、`END` | 数据窗口；每个因子在 `START` 之前读取 `warmup_bars` 根 bar 作为预热 |
 | `TRAIN_START` ... `TEST_END` | 训练窗口与样本外测试窗口（模型 pipeline） |
-| `HORIZON` | 标签周期（bar 数） |
+| `HORIZON` | 标签跨度（bar 数）；标签向前读 `HORIZON + 1` 根 bar（delay 为 1） |
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
 | `build_model()` | `MLConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |

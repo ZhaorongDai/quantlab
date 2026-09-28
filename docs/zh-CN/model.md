@@ -19,7 +19,9 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 
 模型头用一个因子对象列表（特征）和一个标签对象列表（目标）来配置，二者都来自因子层（见 factor 指南）。`collect()` 用 `read(start, end)` 或 `compute(start, end)` 向每个对象请求模型 `start_date` 到 `end_date` 的面板，按 `(timestamp, symbol)` 合并，并把面板保存在内存中。模型头内部处理形状为 `[num_times, num_symbols, num_features]` 的数组，最后一个轴的顺序与 `get_factor_names()` 完全一致，输出形状为 `[num_times, num_symbols, num_labels]` 的预测。
 
-下面的示例用一个内存中的小型替身来代替因子和标签对象，因此不需要任何数据存储。它只实现了模型层会调用的几个方法。标签是两个因子的带噪线性函数。
+标签会读取 t 之后的 bar，因此绝不能用作特征。模型靠 `lookahead_bars()` 区分这两种角色：每个标签都有这个方法，因子都没有；构造时，因子列表里出现标签、或标签列表里出现因子，都会被拒绝（见注意事项）。真实的标签是 `quantlab.label.forward.Forward`，即向前平移 `delay + span` 个 bar 的因子，`lookahead_bars()` 返回这个和（见 factor 指南）。
+
+下面的示例用一个内存中的小型替身来代替因子和标签对象，因此不需要任何数据存储。它只实现了模型层会调用的几个方法。标签是两个因子的带噪线性函数，它的替身报告 2 个 bar 的前瞻（lookahead），与默认 delay 为 1 的一期未来收益相同。
 
 ```python
 >>> import numpy as np, xarray as xr
@@ -29,16 +31,17 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 >>> f_a, f_b = rng.standard_normal((2, 200, 20))
 >>> ret = 0.05 * f_a - 0.02 * f_b + 0.05 * rng.standard_normal((200, 20))
 >>> class Panel:
-...     """因子或标签对象的最小替身。"""
+...     """因子对象的最小替身。"""
 ...     def __init__(self, **variables):
 ...         data = {k: (("timestamp", "symbol"), v) for k, v in variables.items()}
 ...         self.ds = xr.Dataset(data, coords=coords)
 ...     def _get_factor_names(self): return list(self.ds.data_vars)
 ...     def read(self, start, end): return self.ds.sel(timestamp=slice(start, end))
-...     def get_features(self, panel): return panel
-...     def get_labels(self, panel): return panel
 ...     def get_config(self): return {"factor_names": self._get_factor_names()}
->>> factor, label = Panel(f_a=f_a, f_b=f_b), Panel(ret=ret)
+>>> class LabelPanel(Panel):
+...     """标签的最小替身，它在 t 的值读取 t+1 和 t+2 两个 bar。"""
+...     def lookahead_bars(self): return 2
+>>> factor, label = Panel(f_a=f_a, f_b=f_b), LabelPanel(ret=ret)
 >>> from loguru import logger
 >>> logger.remove()  # quantlab 把进度日志写到 stderr，这里关掉
 ```
@@ -76,6 +79,23 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 (['f_a', 'f_b'], ['ret'], 20)
 ```
 
+### 清除标签前瞻
+
+bar t 上的标签会读到 t + L 为止的 bar，L 是模型所有标签中最大的 `lookahead_bars()`。因此每个切分边界都会丢掉前一段的最后 L 个 bar（purge），使参与拟合的标签不会读到后一段的任何 bar。`train()` 先按位置把训练窗口切成训练段和验证段，再对训练/验证、验证/测试两个边界做清除；测试段保留全部 bar。`val_size=0` 时，训练段直接相对测试段清除。所以每个边界都会让拟合少用 L 个 bar。L 不是参数，而是由标签决定。
+
+上面的示例中 L 为 2。训练窗口 2024-01-01 到 2024-05-31 共 152 个 bar；前 121 个（到 2024-04-30）用于训练，其余 31 个用于验证。清除之后，训练段止于 2024-04-28，验证段止于 2024-05-29。切分由 `quantlab.utils.split.purge_segments` 完成，下文的 walk-forward 各折也用它。
+
+```python
+>>> from quantlab.utils.split import purge_segments
+>>> train_bars, val_bars, test_bars = purge_segments(
+...     coords["timestamp"],
+...     [("2024-01-01", "2024-04-30"), ("2024-05-01", "2024-05-31"), ("2024-06-01", "2024-07-18")],
+...     label.lookahead_bars(),
+... )
+>>> len(train_bars), str(train_bars[-1]), len(val_bars), str(val_bars[-1]), len(test_bars)
+(119, '2024-04-28', 29, '2024-05-29', 48)
+```
+
 ### 预测与加载
 
 `predict_panel` 接收特征面板，返回一个面板，每个标签名对应一个变量。所有特征都为 NaN 的位置，预测也是 NaN。`predict` 是数组层面的对应接口：对 `XGBoostRegressor` 而言，输入 `[T, S, F]`，输出 `[T, S, L]`。拿不准时用 `predict_panel`，因为 `predict` 的数组约定由各个模型头自己决定。
@@ -89,7 +109,7 @@ Coordinates:
   * timestamp  (timestamp) datetime64[s] 2kB 2024-01-01 ... 2024-07-18
   * symbol     (symbol) <U3 240B 'S00' 'S01' 'S02' 'S03' ... 'S17' 'S18' 'S19'
 Data variables:
-    ret        (timestamp, symbol) float64 32kB -0.002638 -0.01672 ... -0.04101
+    ret        (timestamp, symbol) float64 32kB 0.002621 -0.01783 ... -0.04321
 >>> model.predict(np.zeros((5, 20, 2))).shape
 (5, 20, 1)
 ```
@@ -114,7 +134,7 @@ True
 ...     label.ds["ret"].sel(timestamp=test).values,
 ... )
 >>> {name: round(value, 3) for name, value in scores.items()}
-{'mse': 0.003, 'rmse': 0.05, 'mae': 0.04, 'r2': 0.501, 'ic': 0.706, 'rank_ic': 0.686}
+{'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679}
 ```
 
 ### 类层次
@@ -141,33 +161,36 @@ True
 >>> stopped = XGBoostRegressor(stopping).collect()
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
-(66, 65)
+(52, 51)
 ```
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, gap_periods)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。测试段长 `train_periods // 5` 个时间戳，起点在训练段结束后再间隔 `gap_periods` 个时间戳；每一折向前平移一个测试段的长度。每一折都有自己的检查点和自己的 W&B 运行，返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径和 `test_*` 指标。
+`train_cv(train_periods, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
->>> results = model.train_cv(train_periods=100, gap_periods=2)
+>>> results = model.train_cv(train_periods=100)
 >>> len(results)
-4
->>> [(str(r["train_start"])[:10], str(r["test_start"])[:10], str(r["test_end"])[:10]) for r in results]
-[('2024-01-01', '2024-04-12', '2024-05-01'), ('2024-01-21', '2024-05-02', '2024-05-21'), ('2024-02-10', '2024-05-22', '2024-06-10'), ('2024-03-01', '2024-06-11', '2024-06-30')]
+5
+>>> [(r["train_start"][:10], r["train_end"][:10], r["test_start"][:10], r["test_end"][:10]) for r in results]
+[('2024-01-01', '2024-04-07', '2024-04-10', '2024-04-29'), ('2024-01-21', '2024-04-27', '2024-04-30', '2024-05-19'), ('2024-02-10', '2024-05-17', '2024-05-20', '2024-06-08'), ('2024-03-01', '2024-06-06', '2024-06-09', '2024-06-28'), ('2024-03-21', '2024-06-26', '2024-06-29', '2024-07-18')]
 >>> [round(r["test_rank_ic"], 3) for r in results]
-[0.674, 0.689, 0.696, 0.669]
+[0.691, 0.649, 0.695, 0.656, 0.697]
 ```
 
-所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即包含 `format_version` 和折列表的清单文件。回测器根据这个文件回放一次交叉验证。
+所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即包含 `format_version` 和折列表的清单文件，折列表与返回值相同，含清除后的 `train_end`。回测器根据这个文件回放一次交叉验证。每折的 `config.json` 记录的是该折配置时的日期，即清除之前的日期，所以它的 `train_end` 比清单里的晚 L 个 bar。
 
 ```python
 >>> from pathlib import Path
 >>> trial = Path(results[0]["checkpoint"]).parent.parent
 >>> sorted(p.name for p in trial.iterdir())
-['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'cv_folds.json']
+['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']
 >>> manifest = json.loads((trial / "cv_folds.json").read_text())
 >>> manifest["format_version"], len(manifest["folds"])
-(1, 4)
+(1, 5)
+>>> fold_0 = json.loads((Path(results[0]["checkpoint"]).parent / "config.json").read_text())
+>>> fold_0["train_end"], manifest["folds"][0]["train_end"]
+('2024-04-09T00:00:00', '2024-04-07T00:00:00')
 ```
 
 `parallel=True` 用线程并发训练各折（`njobs` 指定线程池大小）。每一折操作的是模型的深拷贝，因此内存占用随任务数增长。树模型库本身已经占满所有核心，建议把 `hyperparameters` 里的 `nthread` 设为大约 `os.cpu_count() // njobs`。
@@ -230,11 +253,11 @@ True
 ...         out = np.c_[rows, np.ones(len(rows))] @ self.model
 ...         return out.reshape(x.shape[0], x.shape[1], -1)
 >>> ridge = RidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
->>> ridge_results = ridge.train_cv(train_periods=100, gap_periods=2)
+>>> ridge_results = ridge.train_cv(train_periods=100)
 >>> [round(r["test_rank_ic"], 3) for r in ridge_results]
-[0.678, 0.691, 0.697, 0.677]
+[0.685, 0.667, 0.707, 0.672, 0.716]
 >>> ridge.model.round(3).ravel().tolist()
-[0.05, -0.019, 0.001]
+[0.05, -0.02, -0.001]
 ```
 
 `DLModel` 的模型头在 `_init_model` 里根据面板形状构建 `nn.Module`，基类负责把它放到对应设备上、运行 epoch 循环，并在开启提前停止时恢复最优 epoch 的权重。`_train_one_batch` 在一个 `[batch, num_symbols, num_features]` 的批次上执行一步优化。`_val_one_batch` 必须以标量形式返回验证损失，因为基类会把它平均成驱动提前停止的 epoch 损失。`_test_one_batch` 每个 epoch 在测试段上调用一次，模型头通常在这里记录指标。`_preprocess` 由训练和推理共用。
@@ -263,7 +286,7 @@ True
 >>> linear = LinearHead(replace(dl_config, epochs=300, lr=0.05, early_stopping_patience=20, hyperparameters={})).collect()
 >>> linear_checkpoint = linear.train()
 >>> [round(w, 3) for w in linear.model.weight[0].tolist()]
-[0.05, -0.019]
+[0.051, -0.02]
 >>> LinearHead.checkpoint_suffix, linear_checkpoint.suffix
 ('.pth', '.pth')
 ```
@@ -276,6 +299,13 @@ True
 
 ```text
 TypeError: XGBoostRegressor requires a MLConfig, got DLConfig
+```
+
+它还会拒绝因子列表里的标签和标签列表里的因子。要预测一个因子，用 `Forward` 包装它。
+
+```text
+TypeError: XGBoostRegressor: factors[0] is the label LabelPanel, which reads bars after t; pass it in labels, not factors.
+TypeError: XGBoostRegressor: labels[0] is Panel, which is not a label; wrap it in quantlab.label.forward.Forward to predict it.
 ```
 
 `predict` 和 `predict_panel` 需要已训练或已加载的模型。
@@ -303,6 +333,13 @@ ValueError: MLPRegressor.predict_panel: the feature panel lacks 5 of the 20 symb
 
 ```text
 ValueError: Training and testing start and end dates must be specified.
+```
+
+清除之后必须还剩训练 bar。清除前训练段不超过 L 个 bar 时（这里 L = 2，训练段 2 个 bar），`train` 抛出异常；`train_periods` 不大于 L 时（这里用前瞻为 10 的标签），`train_cv` 抛出异常。
+
+```text
+ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 training timestamps for fitting.
+ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
 `train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。torch 模型头的 `train_cv` 不返回 `test_*` 指标，因此每折的字典里只有日期和路径，也不会打开汇总运行。

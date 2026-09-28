@@ -3,10 +3,10 @@
 This page explains how quantlab trains return models on factor panels. It
 covers the model hierarchy and the available heads, the `MLConfig` and
 `DLConfig` configuration objects, training, prediction, evaluation with IC,
-RankIC and R2, checkpoints, walk-forward cross-validation, and Weights &
-Biases logging. Read it after [Factors and labels](factors.md). The
-backtester that consumes a model's predictions is described in
-[Backtesting](backtesting.md).
+RankIC and R2, checkpoints, the purge of label lookahead at every split,
+walk-forward cross-validation, and Weights & Biases logging. Read it after
+[Factors and labels](factors.md). The backtester that consumes a model's
+predictions is described in [Backtesting](backtesting.md).
 
 The runnable script `examples/train_model.py` goes through every step on
 this page with synthetic data, offline and on the CPU:
@@ -27,6 +27,13 @@ them. Prediction goes the other way: a feature panel goes in and a panel with
 one variable per label comes out. That output is the model's forecast of
 future returns, or of the probability of an up move, for every symbol and
 bar. The backtester ranks symbols by it.
+
+A label is a `quantlab.label.forward.Forward`: a factor shifted forward so
+that its value at bar t describes bars after t. `Return` and `BinaryReturn`
+in `quantlab.label.fret` are `Forward` labels. Because a label reads the
+future, the model checks the roles when it is built: every object in
+`labels` must be a label and none in `factors` may be one. Either mistake
+raises `TypeError`, naming the misplaced object.
 
 ## The model hierarchy
 
@@ -80,7 +87,7 @@ Heads of the `MLModel` variant take a `quantlab.base.config.MLConfig`, and
 torch heads take a `DLConfig`. Passing the wrong one raises `TypeError`
 before anything else happens. Both share these fields:
 
-- `factors` and `labels`: lists of factor and label objects.
+- `factors` and `labels`: lists of factor objects and of `Forward` labels.
 - `model_save_dir`: the root directory checkpoints are written under.
 - `factor_data_strategy` and `label_data_strategy`: `"cal"` computes each
   panel with `compute(start, end)` when you call `collect()`, `"read"` loads
@@ -105,6 +112,32 @@ The validation segment is always the last part of the training window in time,
 never a random sample. With daily returns, a random split would put days
 next to each other into training and validation and overstate how well the
 model generalises.
+
+## Purging the label lookahead
+
+A label's *lookahead* is how many bars past t its value at t reads:
+`lookahead_bars()`, which is `delay + span` for a `Forward` label. The
+one-day `Return` (`span=1`, `delay=1`) reads the opens of bars t+1 and t+2,
+so its lookahead is 2. The label at t is known only once bar t + 2 has
+closed, so a label fitted on the last bars of one segment would read bars
+of the next.
+
+The model therefore purges every split boundary. With L the largest
+`lookahead_bars()` among its labels, each segment followed by another loses
+its last L bars:
+
+- `train()` cuts the training window into train and validation by position
+  (`val_size`), then drops the last L bars of the train segment and the
+  last L bars of the validation segment. The test segment keeps all its
+  bars. With `val_size=0`, the train segment is purged against the test
+  segment directly.
+- `train_cv()` fits each fold the same way, so each fold's training window
+  loses its last L bars before its test segment.
+
+Fitting thus loses L bars at every boundary. L follows from the labels and
+is not a parameter. The splitting is done by
+`quantlab.utils.split.purge_segments`. When the purge leaves no training
+bar, `train()` and `train_cv()` raise `ValueError`.
 
 ## Train a model
 
@@ -140,6 +173,11 @@ checkpoint. It returns the checkpoint's absolute path. With early stopping on,
 `XGBoostRegressor` stops after 20 boosting rounds without improvement on the
 validation segment and keeps only the trees up to the best round. Here 20 of
 the 300 allowed trees were kept.
+
+The label's lookahead is 2, so of the 280 training bars the first 224 form
+the train segment and the last 56 the validation segment; after the purge
+bars 0 to 221 (to 2022-11-08) are fitted, bars 224 to 277 (to 2023-01-25)
+validate, and all 80 test bars are scored.
 
 ## Predict
 
@@ -243,27 +281,28 @@ tests on the bars that follow, slides both forward and repeats. Every test
 bar lies after every bar the model trained on, as it would in live trading.
 Across folds you see how stable the model's quality is over time.
 
-`train_cv(train_periods, gap_periods=0)` lays the folds out over the bars
-between `config.start_date` and `config.end_date`. Each fold trains on
-`train_periods` bars and tests on the next `train_periods // 5` bars, and the
-next fold starts that many bars later. `gap_periods` bars are left out
-between training and test. Set it at least as large as the number of bars the
-label looks ahead. Otherwise the last training labels overlap the first test
-bars and information from the test period leaks into training. The `Return`
-label with `n_forward_periods=1` looks two bars ahead (next open to the open
-after), so the example uses a gap of 2:
+`train_cv(train_periods, parallel=False, njobs=-1)` lays the folds out over
+the bars between `config.start_date` and `config.end_date`. Each fold's
+training window is `train_periods` bars and its test segment the next
+`train_periods // 5` bars, and the next fold starts that many bars later.
+Each window is split into train and validation and purged as described
+above, so the last bar fitted in each 200-bar window is its 198th:
 
 ```python
-folds = model.train_cv(train_periods=200, gap_periods=2)
+folds = model.train_cv(train_periods=200)
 ```
 
 Each fold trains a fresh model with its own early stopping and writes its own
 checkpoint directory, `XGBoostRegressor_cv_fold_{i}/`, inside one trial
 directory. `train_cv` returns one dict per fold with the fold's dates,
 experiment name, checkpoint path and, for `MLModel` heads, the `test_*`
-metrics. The same list is written as `cv_folds.json` in the trial directory,
-together with a `format_version`. `BaseBacktester.run_cv()` reads that file
-to backtest each fold with its own checkpoint on its own test period (see
+metrics. The fold's `train_end` is the last bar fitted, after the purge.
+The same list is written as `cv_folds.json` in the trial directory,
+together with a `format_version`. Each fold's `config.json` holds the dates
+the fold was configured with, before the purge, so its `train_end` lies L
+bars later: 2022-10-07 against the manifest's 2022-10-05 for fold 0 of the
+example. `BaseBacktester.run_cv()` reads `cv_folds.json` to backtest each
+fold with its own checkpoint on its own test period (see
 [Backtesting](backtesting.md)). A fold whose test period would run past the
 end of the data is skipped with a warning.
 
@@ -308,21 +347,23 @@ os.environ.setdefault("WANDB_SILENT", "true")
 This is the output of `uv run python examples/train_model.py` (a Zarr
 warning printed on standard error is left out). The panel has a planted
 one-day reversal, which the model finds, so the test IC is about 0.25 and
-stable across folds.
+stable across folds. Between each fold's `train_end` and `test_start` lie
+the two purged bars.
 
 ```text
 features: ['past_ret_1', 'ma_dev_5'] label: ['ret_1']
-checkpoint: models/XGBoostRegressor_trial_20260926_233650_835829/XGBoostRegressor_total/XGBoostRegressor_total.joblib
+checkpoint: models/XGBoostRegressor_trial_20260927_211535_767054/XGBoostRegressor_total/XGBoostRegressor_total.joblib
 trees kept by early stopping: 20
 prediction panel: {'timestamp': 80, 'symbol': 16} ['ret_1']
-test window            IC=+0.260  RankIC=+0.245  R2=+0.067
+test window            IC=+0.263  RankIC=+0.248  R2=+0.068
 trained_on symbols: 16 resolved eta: 0.05
 reloaded model predicts the same values: True
-fold 0: train 2022-01-03..2022-10-07  test 2022-10-12..2022-12-06  IC=+0.238  RankIC=+0.208
-fold 1: train 2022-02-28..2022-12-02  test 2022-12-07..2023-01-31  IC=+0.276  RankIC=+0.260
-fold 2: train 2022-04-25..2023-01-27  test 2023-02-01..2023-03-28  IC=+0.259  RankIC=+0.236
-mean test IC over folds: 0.257
-cv_folds.json: format_version 1 with 3 folds
+fold 0: train 2022-01-03..2022-10-05  test 2022-10-10..2022-12-02  IC=+0.242  RankIC=+0.226
+fold 1: train 2022-02-28..2022-11-30  test 2022-12-05..2023-01-27  IC=+0.277  RankIC=+0.262
+fold 2: train 2022-04-25..2023-01-25  test 2023-01-30..2023-03-24  IC=+0.254  RankIC=+0.223
+fold 3: train 2022-06-20..2023-03-22  test 2023-03-27..2023-05-19  IC=+0.264  RankIC=+0.237
+mean test IC over folds: 0.259
+cv_folds.json: format_version 1 with 4 folds
 keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse', 'test_start', 'train_end', 'train_start']
 ```
 
@@ -374,7 +415,7 @@ data.
   machine that can make training much slower than with a single thread. Set
   `nthread` (xgboost) or `n_threads` (pytabkit) in `hyperparameters`.
 - Each `train()` needs all four `train_*` and `test_*` dates. A `val_size`
-  that leaves no training bars raises `ValueError`.
+  or a purge that leaves no training bars raises `ValueError`.
 
 ## See also
 

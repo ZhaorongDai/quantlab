@@ -135,9 +135,13 @@ def prepare_stores() -> None:
 # %% 2. Factors and 3. label
 def compute_factors() -> None:
     factors, labels = factors_and_label()
-    for factor in factors + labels:
+    for factor in factors:
         factor.build(START, END)
         logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
+    for label in labels:
+        # A label is stored as the factor it shifts forward.
+        label.build(START, END)
+        logger.info(f"{type(label).__name__} -> {label.config.factor.config.file_path}")
 
 
 # %% 4. Model

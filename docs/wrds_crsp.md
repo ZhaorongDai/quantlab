@@ -281,7 +281,7 @@ A store is derived from the raw and reference tiers, so changed conversion code 
 ...     factor_names=("alpha001",),
 ...     file_path="data/data/us_equity/1d/alpha101_crsp.zarr",
 ... ))
->>> features = factor.get_features(factor.compute(config.start_date, config.end_date))
+>>> features = factor.compute(config.start_date, config.end_date)
 >>> features["alpha001"].isel(timestamp=-1).values.round(3)
 array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
       dtype=float32)

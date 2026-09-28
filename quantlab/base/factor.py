@@ -3,8 +3,9 @@
 A *factor* turns market data into engineered features, for example a
 20-day momentum or a moving-average deviation. It reads a *panel* of
 a dataset (an ``xarray.Dataset`` indexed by ``timestamp`` and ``symbol``)
-and produces a panel of the same shape. Label classes use the same machinery
-to produce prediction targets, such as forward returns.
+and produces a panel of the same shape. A label is a factor wrapped in
+``quantlab.label.forward.Forward``, which shifts it forward to make a
+prediction target such as a forward return.
 
 ``Factor`` is the backend-agnostic contract the model layer programs
 against. ``FactorKunQuant`` describes a factor as a KunQuant operator graph;
@@ -203,7 +204,7 @@ class Factor(ABC):
             config.resample_freq, config.resample_how, self.class_name
         )
         # `_get_factor_names` and `_validate_config` read `self.config` (a
-        # label's horizon sits in its kwargs), so the candidate is installed
+        # factor's window length sits in its kwargs), so the candidate is installed
         # first and the previous config restored if either raises.
         previous = self.__dict__.get("_config")
         self._config = dataclasses.replace(
@@ -854,7 +855,8 @@ class Factor(ABC):
         --------
         ``factor`` is a ``Momentum`` (``momentum_5``) over eight symbols, and
         ``fwd`` a ``quantlab.label.fret.Return`` with ``n_forward_periods=1``
-        on the same dataset:
+        over the same symbols and dates, its ``adjOpen`` 0.99 times the
+        momentum's ``Close``:
 
         >>> result = factor.analyze(
         ...     "2024-02-01", "2024-02-29", frets=[fwd], quantiles=4,
@@ -865,7 +867,7 @@ class Factor(ABC):
         >>> cols = ["factor", "fret", "ic_mean", "ic_t_stat", "mean_spread"]
         >>> result.summary_table()[cols].round(4)
                factor   fret  ic_mean  ic_t_stat  mean_spread
-        0  momentum_5  ret_1  -0.0494    -0.7667       -0.002
+        0  momentum_5  ret_1  -0.0279    -0.4301      -0.0014
         >>> sorted(os.listdir("data/analysis/momentum"))
         ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
         """

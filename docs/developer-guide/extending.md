@@ -393,17 +393,16 @@ A factor turns a dataset's panel into feature columns. The Polars backend,
 `_get_factor_lazyframe`, which receives the dataset as a long-format
 `polars.LazyFrame` (one row per timestamp and symbol) and returns a lazy frame
 holding exactly `timestamp`, `symbol` and the factor columns. Factor names are
-read from that frame's schema, so there is nothing to declare. Override
-`_get_features` to use the class as a feature, or `_get_labels` to use it as a
-label. In the snippets of this section and the next, `prices` is a
-`DatasetConfig` over a Zarr store holding `adjClose` and `adjVolume` for eight
-symbols over 60 business days from 2 January 2024, and `dataset` is
+read from that frame's schema, so there is nothing to declare. `read` and
+`compute` return the factor's panel. In the snippets of this section and the
+next two, `prices` is a `DatasetConfig` over a Zarr store holding `adjOpen`,
+`adjClose` and `adjVolume` for eight symbols over 60 business days from
+2 January 2024, and `dataset` is
 `StockDataset(prices)`. One dataset object can feed any number of factors: a
 factor asks it for a date range and changes nothing on it.
 
 ```python
 import polars as pl
-import xarray as xr
 
 from quantlab.base.config import PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
@@ -425,9 +424,6 @@ class RelativeVolume(FactorPolars):
             .select(["timestamp", "symbol", f"rel_volume_{n}"])
         )
 
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        return data
-
 
 dataset = StockDataset(prices)
 factor = RelativeVolume(
@@ -440,7 +436,7 @@ factor = RelativeVolume(
 )
 print(factor.get_factor_names())
 factor.build("2024-02-01", "2024-03-25")
-features = factor.get_features(factor.read("2024-02-01", "2024-03-25"))
+features = factor.read("2024-02-01", "2024-03-25")
 print(dict(features.sizes), float(features["rel_volume_10"].isnull().mean()))
 ```
 
@@ -490,9 +486,6 @@ class MaDeviation(FactorKunQuant):
             Output(op.SubConst(deviation, 1.0), self._get_factor_names()[0])
         return Function(builder.ops)
 
-    def _get_features(self, data):
-        return data
-
 
 factor = MaDeviation(
     FactorConfig(
@@ -505,12 +498,12 @@ factor = MaDeviation(
         njobs=2,
     )
 )
-panel = factor.get_features(factor.compute("2024-02-01", "2024-03-25"))
+panel = factor.compute("2024-02-01", "2024-03-25")
 print(dict(panel.sizes), round(float(panel["ma_dev_5"].isel(timestamp=0, symbol=0)), 6))
 ```
 
 ```text
-{'timestamp': 38, 'symbol': 8} -0.001579
+{'timestamp': 38, 'symbol': 8} -0.012304
 ```
 
 The value matches the same formula computed with pandas on the first symbol.
@@ -522,18 +515,81 @@ overrides `_kunquant_inputs(inputs)`: it receives the dataset panel, calls
 `super()._kunquant_inputs(inputs)` and adds `[time, symbol]` float32 arrays to
 the returned dict, as `quantlab/factor/residual_momentum.py` does with the
 Fama-French series. `compute()` runs the graph on what it returns.
-KunQuant graphs can only look backwards in time; a forward-looking label is
-computed as a trailing value and shifted in `_get_labels`, as
-`quantlab/label/fret.py` does. Existing operator compositions to reuse are in
+Existing operator compositions to reuse are in
 `quantlab/factor/alpha101.py`, `quantlab/factor/alpha158.py` and
 `quantlab/my_ops/preprocess.py`.
+
+## A label
+
+A label is a trailing factor wrapped in `Forward` (`quantlab.label.forward`).
+Write the factor so that its value at bar `t` uses only bars up to `t`, as
+every KunQuant graph does, then wrap it: the label at `t` is the factor at
+`t + delay + span`. `span` is how many bars the factor accumulates over and
+`delay` the bars before the first of them, 1 by default. This label is the
+close-to-close return over the five bars after the fill bar:
+
+```python
+from quantlab.base.config import ForwardConfig
+from quantlab.label.forward import Forward
+
+
+class CloseReturn(FactorKunQuant):
+    """Close over the close n bars earlier, minus 1: uses bars up to t only."""
+
+    def _get_factor_names(self):
+        return (f"close_ret_{self.config.kwargs['n']}",)
+
+    def _get_factor_func(self):
+        builder = Builder()
+        with builder:
+            close = Input("adjClose")
+            back = op.BackRef(close, self.config.kwargs["n"])
+            Output(op.SubConst(op.Div(close, back), 1.0), self._get_factor_names()[0])
+        return Function(builder.ops)
+
+
+trailing = CloseReturn(
+    FactorConfig(
+        warmup_bars=5,
+        dataset=dataset,
+        mode="batch",
+        data_columns=("adjClose",),
+        kwargs={"n": 5},
+        file_path=str(root / "factors" / "close_ret_5.zarr"),
+        njobs=2,
+    )
+)
+label = Forward(ForwardConfig(factor=trailing, span=5))  # delay=1
+print(label.get_factor_names(), label.span_bars(), label.lookahead_bars())
+panel = label.compute("2024-02-01", "2024-03-25")
+print(int(panel["close_ret_5"].isnull().any("symbol").sum()))
+```
+
+```text
+('close_ret_5',) 5 6
+6
+```
+
+The value on the first bar equals `adjClose[t + 6] / adjClose[t + 1] - 1`
+computed with pandas. The request ends on the store's last bar, so its last
+six bars, `lookahead_bars()`, have no later bars and are NaN; a request
+ending earlier is filled from the bars after it. `build`, `extend` and `read`
+act on the wrapped factor's store.
+
+Three rules tie a label to the rest of the pipeline. A model takes only
+objects with `lookahead_bars()` in `labels` and refuses them in `factors`.
+At every split boundary the model drops the last `lookahead_bars()` bars
+(the largest among its labels) of the earlier segment. A backtest refuses a label whose
+`delay` differs from its engine's `fill_delay_bars`. To give a label a class
+of its own, subclass `Forward` and build the trailing factor in `__init__`,
+as `Return` and `BinaryReturn` in `quantlab/label/fret.py` do.
 
 ## A model head
 
 A model head is the part of a return model that is specific to one learning
 algorithm. `BaseModel` (`quantlab.base.model`) owns everything shared:
-collecting features and labels, the train/validation/test split, walk-forward
-cross-validation, checkpoints with a `config.json` beside them, and
+collecting features and labels, the train/validation/test split and
+walk-forward cross-validation (both purged by the labels' lookahead), checkpoints with a `config.json` beside them, and
 `predict_panel`. Two variants add the framework-specific loop.
 
 `MLModel` is for numpy-based libraries such as tree models. Its four hooks
@@ -541,8 +597,9 @@ are `_init_model`, `_preprocess`, `_fit_model` (fit once, with the library's
 own early stopping if it has one, and leave the fitted model in `self.model`)
 and `_forward`. Arrays are `[time, symbol, feature]` in and
 `[time, symbol, label]` out. In the snippets below, `factors` is a list of
-two past-return factors (1 and 5 bars) and `labels` a 5-bar forward-return
-label, built like the ones in `examples/backtest.py` over 120 business days of
+two past-return factors (1 and 5 bars) and `labels` a 5-bar forward
+open-to-open return label (`Forward` over a trailing open return, `span=5`),
+built like the ones in `examples/backtest.py` over 120 business days of
 eight symbols. A ridge regression:
 
 ```python
@@ -644,7 +701,7 @@ class LinearHead(DLModel):
         return self._masked_mse(x, y)
 
     def _masked_mse(self, x, y):
-        mask = torch.isfinite(y)  # labels are NaN at the end of the panel
+        mask = torch.isfinite(y)  # labels are NaN where the dataset has no later bars
         return nn.functional.mse_loss(self.model(x)[mask], y[mask])
 
 
@@ -738,7 +795,7 @@ rebalance_periods=5, ...)`), the first five rebalance rows hold this many
 symbols, and the market's year length is used for annualizing:
 
 ```text
-[10, 12, 8, 10, 9]                   # symbols held per rebalance row
+[10, 12, 6, 9, 9]                    # symbols held per rebalance row
 365 days 00:00:00 8760.0             # year_freq("1D"), bars per year at "1h"
 ```
 
@@ -758,6 +815,9 @@ and `load_backtester_from_config` can rebuild the run. Construction-time checks
 go in `_validate_config`, which runs at the end of the config setter.
 
 A different simulation engine is a sibling of `VectorBtBacktester`: subclass
-`BaseBacktester` and implement `_simulate`, `_simulate_benchmark`,
-`_engine_stats` and `_period_returns_stats`, returning the engine-neutral
-`SimulationResult` described in the docstring of `quantlab.base.backtest`.
+`BaseBacktester`, set `fill_delay_bars` (the bars between the bar a weight
+forms on and the bar it fills on, 1 for vectorbt) and implement `_simulate`,
+`_simulate_benchmark`, `_engine_stats` and `_period_returns_stats`, returning
+the engine-neutral `SimulationResult` described in the docstring of
+`quantlab.base.backtest`. `run()` and `run_cv()` refuse a model whose label
+`delay` differs from `fill_delay_bars`.

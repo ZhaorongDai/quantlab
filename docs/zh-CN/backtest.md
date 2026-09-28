@@ -10,7 +10,7 @@
 
 在仓库根目录用 `uv run python` 运行示例。在 macOS 上，同一进程导入 torch 或 xgboost 之前要设置 `OMP_NUM_THREADS=1`，并设置 `WANDB_MODE=disabled` 关闭实验跟踪。
 
-回测需要一份价格数据集，其存储里有 `adjOpen` 和 `adjClose` 两列；还需要一个模型，checkpoint 由 `train()` 或 `train_cv()` 写出。下面的会话使用一套合成数据：六个标的、一个因子、一个标签，以及一个无需拟合的模型，它的分数就是过去一根 bar 的收益率。最后一个标的 `FFF` 从第 36 根 bar 起不再有价格。把下面的代码保存为 `demo_parts.py`。
+回测需要一份价格数据集，其存储里有 `adjOpen` 和 `adjClose` 两列；还需要一个模型，checkpoint 由 `train()` 或 `train_cv()` 写出。下面的会话使用一套合成数据：六个标的、一个因子、一个标签，以及一个无需拟合的模型，它的分数就是过去一根 bar 的收益率。标签是用 `Forward` 包装的因子 `open_ret_1`，`span=1`，`delay` 取默认值 1：它在 bar t 的值是从 t+1 到 t+2 的开盘价收益率，所以前视（lookahead）为 2 根 bar。最后一个标的 `FFF` 从第 36 根 bar 起不再有价格。把下面的代码保存为 `demo_parts.py`。
 
 <details>
 <summary>demo_parts.py</summary>
@@ -25,10 +25,11 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, MLConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, ForwardConfig, MLConfig, PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
 from quantlab.base.model import MLModel
 from quantlab.dataset.stock import StockDataset
+from quantlab.label.forward import Forward
 
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
 
@@ -59,7 +60,7 @@ def prices_of(cfg):
 
 
 class PastReturn(FactorPolars):
-    """特征 past_ret_1：单 bar 收益率。"""
+    """特征 past_ret_1：单 bar 收盘价收益率。"""
 
     def _get_factor_lazyframe(self, lf):
         c = pl.col("adjClose")
@@ -67,21 +68,15 @@ class PastReturn(FactorPolars):
                 .with_columns((c / c.shift(1).over("symbol") - 1).alias("past_ret_1"))
                 .select(["timestamp", "symbol", "past_ret_1"]))
 
-    def _get_features(self, data):
-        return data
 
-
-class ForwardReturn(FactorPolars):
-    """标签 fwd_ret_1：下一根 bar 的收益率。"""
+class OpenReturn(FactorPolars):
+    """open_ret_1：单 bar 开盘价收益率，只用到 t 及之前的 bar。"""
 
     def _get_factor_lazyframe(self, lf):
-        c = pl.col("adjClose")
+        o = pl.col("adjOpen")
         return (lf.sort(["symbol", "timestamp"])
-                .with_columns((c.shift(-1).over("symbol") / c - 1).alias("fwd_ret_1"))
-                .select(["timestamp", "symbol", "fwd_ret_1"]))
-
-    def _get_labels(self, data):
-        return data
+                .with_columns((o / o.shift(1).over("symbol") - 1).alias("open_ret_1"))
+                .select(["timestamp", "symbol", "open_ret_1"]))
 
 
 class MomentumHead(MLModel):
@@ -100,13 +95,17 @@ class MomentumHead(MLModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-def make_model(root, cfg, days, train_end=39):
+def make_label(cfg, delay=1):
+    """标签 open_ret_1 在 t 的值：从 t+delay 到 t+delay+1 的开盘价收益率。"""
+    factor = OpenReturn(PolarsFactorConfig(warmup_bars=1, dataset=prices_of(cfg)))
+    return Forward(ForwardConfig(factor=factor, span=1, delay=delay))
+
+
+def make_model(root, cfg, days, train_end=39, delay=1):
     day = lambda i: str(days[i].date())
     factor = PastReturn(PolarsFactorConfig(warmup_bars=5, dataset=prices_of(cfg)))
-    label = ForwardReturn(PolarsFactorConfig(
-        warmup_bars=0, dataset=prices_of(cfg), kwargs={"n_forward_periods": 1}))
     return MomentumHead(MLConfig(
-        factors=[factor], labels=[label], model_save_dir=str(root / "models"),
+        factors=[factor], labels=[make_label(cfg, delay)], model_save_dir=str(root / "models"),
         factor_data_strategy="cal", label_data_strategy="cal", val_size=0.0,
         start_date=day(0), end_date=day(len(days) - 1),
         train_start=day(0), train_end=day(train_end),
@@ -121,7 +120,7 @@ def train_checkpoint(model):
 
 def train_cv_project(model, train_periods):
     model.collect()
-    model.train_cv(train_periods=train_periods, gap_periods=0)
+    model.train_cv(train_periods=train_periods)
     return next(Path(model.config.model_save_dir).rglob("cv_folds.json")).parent
 ```
 
@@ -131,7 +130,7 @@ def train_cv_project(model, train_periods):
 
 ### 一次运行做了什么
 
-`BaseBacktester.run()` 在 `start_date` 到 `end_date` 的窗口上回测一个模型。它加载 checkpoint（或先训练模型），在窗口上计算特征，为每个标的、每根 bar 预测分数，向具体的回测器类要目标权重，模拟成交，计算指标，最后写出运行目录。`run_cv()` 对一次 `train_cv` 的每一折做同样的事，并把各折拼接成一条曲线。
+`BaseBacktester.run()` 在 `start_date` 到 `end_date` 的窗口上回测一个模型。它先检查每个标签的延迟是否等于引擎的成交延迟，然后加载 checkpoint（或先训练模型），在窗口上计算特征，为每个标的、每根 bar 预测分数，向具体的回测器类要目标权重，模拟成交，计算指标，最后写出运行目录。`run_cv()` 对一次 `train_cv` 的每一折做同样的事，并把各折拼接成一条曲线。
 
 第一个会话先训练一个 checkpoint，然后回测一条规则：持有分数最高的两个标的，每五根 bar 调仓一次。日志输出到 stderr，这里没有显示。
 
@@ -203,6 +202,23 @@ order
 
 手续费和滑点（`fees` 与 `slippage`，默认都是 0.0005）按每笔成交额的比例收取。目标百分比以其执行那根 bar 的成交价所对应的组合价值为基数。
 
+### 标签延迟与成交延迟
+
+引擎声明 `fill_delay_bars`，即权重形成的 bar 与成交的 bar 之间相隔的 bar 数；`VectorBtBacktester` 把它设为 1。标签的 `delay` 是信号形成的 bar 与标签开始计算的第一根 bar 之间相隔的 bar 数。`run()` 和 `run_cv()` 在训练、加载或模拟之前，逐个比较标签的 `delay` 与 `fill_delay_bars`，不相等时抛出 `ValueError`，报错信息给出该标签、它的延迟和成交延迟。
+
+```python
+>>> USEquityCrossectionSelectStockVectorBt.fill_delay_bars
+1
+>>> label = make_label(cfg)
+>>> label.config.delay, label.span_bars(), label.lookahead_bars()
+(1, 1, 2)
+>>> same_bar = dataclasses.replace(backtester.config, model=make_model(root / "same_bar", cfg, days, delay=0))
+>>> USEquityCrossectionSelectStockVectorBt(same_bar).run()
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret_1',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
+```
+
 ### 退市的持仓
 
 模拟之前，两列价格都会做前向填充。某标的在一次调仓后被持有，而下一根 bar 上没有原始成交价，就会在那根 bar 上按最后已知价格卖出，其余标的照常调仓，这次卖出会记为一条强制平仓记录。`FFF` 从 2024-02-20 起没有价格，并且在第一个组合里，所以出现了这条记录。选股规则从不选择下一根 bar 没有价格的标的，所以上面第二个组合里没有 `FFF`。
@@ -220,12 +236,12 @@ order
 
 ### 样本内与样本外
 
-模型在 `train_start` 到 `train_end` 的 bar 上训练。它的标签向前看 `n_forward_periods` 根 bar，所以有效训练窗口比 `train_end` 多延伸这么多根 bar。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，训练日期取自 checkpoint 旁边的 `config.json`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
+记 L 为模型各标签 `lookahead_bars()` 的最大值。模型在 `train_start` 到 `train_end` 的 bar 上拟合，但要扣掉清洗（purge）部分，即测试段之前的最后 L 根 bar。最后一根参与拟合的 bar 上的标签还要再往后读 L 根 bar，所以有效训练窗口从 `train_start` 开始，到最后一根拟合 bar 之后第 L 根 bar 为止，按价格日历计数（`quantlab.utils.split.in_sample_window`）。测试段紧接训练段时，这个窗口恰好结束于配置的 `train_end`。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，训练日期取自 checkpoint 旁边的 `config.json`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
 
 ```python
 >>> m = result.metrics
 >>> m["training_window"], m["in_sample_range"], m["out_of_sample_ranges"]
-(('2024-01-01', '2024-02-26'), ('2024-02-12', '2024-02-26'), [('2024-02-27', '2024-03-22')])
+(('2024-01-01', '2024-02-23'), ('2024-02-12', '2024-02-23'), [('2024-02-26', '2024-03-22')])
 ```
 
 各部分来自同一次连续的模拟，所以资金和持仓会跨过边界延续。`whole` 是整个窗口的引擎统计；`in_sample` 和 `out_of_sample` 是各自 bar 上基于收益序列的统计，外加成交笔数和换手。
@@ -234,8 +250,8 @@ order
 >>> for part in ("whole", "in_sample", "out_of_sample"):
 ...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["Total Orders"])
 whole -5.85 -2.32 19
-in_sample -1.09 -0.79 6
-out_of_sample -4.82 -3.76 13
+in_sample -0.25 -0.1 6
+out_of_sample -5.61 -4.27 13
 >>> list(m["whole"])[:6]
 ['Start', 'End', 'Period', 'Start Value', 'End Value', 'Total Return [%]']
 >>> round(m["whole"]["Turnover per Rebalance [%]"])
@@ -309,12 +325,12 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ['fold_0', 'fold_1']
 ```
 
-运行目录顶层的文件描述的是拼接后的曲线，`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。这里的标签向前看一根 bar，所以每一折的第一根 bar 对该折的模型来说是样本内。
+运行目录顶层的文件描述的是拼接后的曲线，`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗后的 `train_end` 记入清单。一折的样本内窗口结束于该 `train_end` 之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
 
 ```python
 >>> stitched = cv.metrics["stitched"]
 >>> stitched["in_sample_ranges"][:2], stitched["out_of_sample_ranges"][:2]
-([('2024-02-12', '2024-02-12'), ('2024-02-20', '2024-02-20')], [('2024-02-13', '2024-02-19'), ('2024-02-21', '2024-02-27')])
+([], [('2024-02-12', '2024-04-17')])
 >>> round(stitched["whole"]["Total Return [%]"], 2), round(cv.folds[0]["metrics"]["whole"]["Total Return [%]"], 2)
 (-3.11, -1.62)
 ```
@@ -427,7 +443,7 @@ timestamp
 
 回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`Total Orders` 是成交笔数。
 
-`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
+`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。每个标签的 `delay` 必须等于引擎的 `fill_delay_bars`（见[标签延迟与成交延迟](#标签延迟与成交延迟)）。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
 
 配置类用错时：
 
@@ -444,7 +460,7 @@ TypeError: USEquityCrossectionSelectStockVectorBt requires a CrossSectionBacktes
 >>> USEquityCrossectionSelectStockVectorBt(dataclasses.replace(backtester.config, score_label="fwd_ret_5"))
 Traceback (most recent call last):
   ...
-ValueError: score_label 'fwd_ret_5' is not one of the model's labels ['fwd_ret_1']
+ValueError: score_label 'fwd_ret_5' is not one of the model's labels ['open_ret_1']
 ```
 
 没有 `cv_project_dir` 就调用 `run_cv()`：
@@ -463,7 +479,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 >>> load_backtester_from_config(config)
 Traceback (most recent call last):
   ...
-ValueError: quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with (...)
+ValueError: quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
 如果 `cv_folds.json` 中间缺了一折，`run_cv()` 拒绝跨缺口拼接，报错信息包含 `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`。恢复清单，或者把 `start_date` 与 `end_date` 收窄到一段连续的折。

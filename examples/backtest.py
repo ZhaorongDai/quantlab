@@ -197,8 +197,11 @@ def make_model(root: Path, prices: DatasetConfig, **dates) -> LeastSquaresHead:
         PolarsFactorConfig(warmup_bars=5, dataset=fresh_dataset(prices), kwargs={"n": 5})
     )
     label = Forward(
-        # The label's span tells the backtester how far it looks ahead,
-        # which extends the in-sample window past train_end.
+        # The label at bar t reads delay + span = 6 bars ahead (its lookahead).
+        # Training drops the last 6 training bars so no label reads a test
+        # bar, and the backtest counts bars up to the one the last fitted
+        # label reads as in-sample. The delay (1) must equal the engine's
+        # fill delay: a weight formed at bar t fills at bar t + 1's open.
         ForwardConfig(
             factor=OpenReturn(
                 PolarsFactorConfig(warmup_bars=0, dataset=fresh_dataset(prices), kwargs={"n": 5})

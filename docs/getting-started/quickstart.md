@@ -105,16 +105,18 @@ dataset object can answer any number of requests.
 
 A factor is a number computed for every `(timestamp, symbol)` cell from data available at
 that time, for example a 20-day return or a volatility. A label is the quantity a model learns
-to predict, here the return over the next five bars. In quantlab both are subclasses of
-`quantlab.base.factor.Factor`, and both produce a panel.
+to predict, here the return over the next five bars. A factor is a subclass of
+`quantlab.base.factor.Factor`; a label is a factor shifted forward in time by
+`quantlab.label.forward.Forward`. Both produce a panel.
 
 We use two ready-made classes. `Alpha158Stock` computes the Alpha158 feature library (169
 columns in this build: candlestick shapes, lagged prices, rolling returns, volatilities and
-volume statistics) from adjusted prices. `Return` computes the
-forward open-to-open return: the value at bar t is `adjOpen[t + 6] / adjOpen[t + 1] - 1` for
-`n_forward_periods=5`, which is what a position entered at the next bar's open and held five
-bars earns. Both are computed by KunQuant, a library that compiles a declarative graph of
-operators to native code.
+volume statistics) from adjusted prices. `Return` is the forward open-to-open return: the
+value at bar t is `adjOpen[t + 6] / adjOpen[t + 1] - 1` for `n_forward_periods=5`, which is
+what a position entered at the next bar's open and held five bars earns. It is a `Forward`
+label with `span=5` (the bars it accumulates over) and `delay=1` (a signal at bar t fills at
+bar t + 1), so its value at t reads `lookahead_bars()` = 6 bars ahead. Both are computed by
+KunQuant, a library that compiles a declarative graph of operators to native code.
 
 ```python
 import dataclasses
@@ -161,7 +163,9 @@ gradient-boosted tree model configured with `MLConfig`. The dates split the mode
 time: it trains on bars 0 to 249, holding the last 20 % of that span (`val_size=0.2`) out for
 early stopping, and is evaluated on bars 250 to 299. Keeping the test period strictly after
 the training period is what makes the evaluation honest; a random split would let the model
-see the future.
+see the future. At every split boundary the model also drops the last six bars (the label's
+lookahead) of the earlier segment, so no label it fits on reads a bar of the later segment:
+the last label it trains on reads bar 249.
 
 ```python
 from quantlab.base.config import MLConfig
@@ -210,7 +214,7 @@ print("Checkpoint:", checkpoint.relative_to(root))
 
 ```text
 Collected panel: {'timestamp': 300, 'symbol': 16} 170 variables
-Checkpoint: models/XGBoostRegressor_trial_20260926_233448_225247/XGBoostRegressor_total/XGBoostRegressor_total.joblib
+Checkpoint: models/XGBoostRegressor_trial_20260927_212057_563434/XGBoostRegressor_total/XGBoostRegressor_total.joblib
 ```
 
 Each call to `train()` creates a new timestamped trial directory, so earlier checkpoints are
@@ -256,11 +260,11 @@ bars to warm up,
 predicts, turns the predictions into target weights and simulates them. Fees and slippage
 default to 5 basis points each, and the portfolio starts with 1,000,000 in cash.
 
-The window starts at bar 260 rather than right after `train_end`. The label at bar 249 is
-computed from prices several bars later, so the data the model learned from reaches past
-`train_end`. The backtester extends the training window by the label horizon and reports any overlap with the effective training window separately as in-sample
-results (results on data the model was fitted to, which are optimistic by construction). This
-window has none.
+The backtester counts the bars from `train_start` up to the bar the last fitted label reads
+as in-sample and reports them separately (results on data the model was fitted to are
+optimistic by construction). Here that is bar 249, so this window, from bar 260, has none. The
+backtest also checks that the label's `delay` equals the engine's fill delay, one bar for
+vectorbt, so the model learns the return the backtest trades.
 
 ## Step 5: look at the results
 
@@ -279,7 +283,7 @@ print("First rebalance:", dict(zip(held.symbol.values.tolist(), held.values.toli
 ```text
 Run directory: ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
 Predictions: ['ret_5'] {'timestamp': 140, 'symbol': 16}
-First rebalance: {'S00': 0.25, 'S01': 0.25, 'S03': 0.25, 'S07': 0.25}
+First rebalance: {'S03': 0.25, 'S07': 0.25, 'S08': 0.25, 'S09': 0.25}
 ```
 
 The predictions are themselves a panel, one variable per label. The weights panel holds the
@@ -301,9 +305,9 @@ print("Out-of-sample ranges:", result.metrics["out_of_sample_ranges"])
 ```
 
 ```text
-  Total Return [%]   1.402
-  Sharpe Ratio       0.234
-  Max Drawdown [%]   12.274
+  Total Return [%]   10.984
+  Sharpe Ratio       1.410
+  Max Drawdown [%]   8.645
 Metric groups: ['in_sample', 'in_sample_range', 'notes', 'out_of_sample', 'out_of_sample_ranges', 'training_window', 'whole']
 In-sample range: None
 Out-of-sample ranges: [('2023-01-02', '2023-07-14')]

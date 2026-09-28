@@ -100,13 +100,10 @@ def compute_factor_and_label() -> None:
     factor, label = factor_and_label()
     factor.build(START, END)
     logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
-    # The label store is shared with market_factor_analysis.py; reuse it when it
-    # covers the window.
-    if label.store_range() == (START, END):
-        logger.info(f"{type(label).__name__}: reading {label.config.file_path}")
-    else:
-        label.build(START, END)
-        logger.info(f"{type(label).__name__} -> {label.config.file_path}")
+    # A label is stored as the factor it shifts forward; the store is shared
+    # with market_factor_analysis.py.
+    label.build(START, END)
+    logger.info(f"{type(label).__name__} -> {label.config.factor.config.file_path}")
 
 
 # %% 3. Analyze
