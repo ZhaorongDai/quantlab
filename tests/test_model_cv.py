@@ -128,8 +128,7 @@ class GoldenTorchHead(OneBarHead):
     """A tiny one-bar torch head, one epoch.
 
     `_init_model` is where the dates are recorded: `_fit` calls it once per
-    fit, on the instance that is actually training (the deep copy, in the
-    parallel branch), after the fold's dates were written to its config.
+    fit, after the fold's dates were written to its config.
     """
 
     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -204,36 +203,13 @@ def test_torch_train_cv_fold_geometry_golden_sequential(tmp_path):
     _assert_golden_fold_dirs(tmp_path / "ckpt_seq", "GoldenTorchHead", ".pth")
 
 
-def test_torch_train_cv_fold_geometry_golden_parallel(tmp_path):
-    """Golden: `parallel=True` trains the same folds on the same dates.
-
-    Order is not asserted -- threads finish in any order -- but the SET of
-    trained date tuples and the checkpoint layout must equal the sequential
-    golden. Turns red if the parallel branch's copy of the arithmetic drifts
-    from the sequential one, or if a fold's deep copy trains on the original
-    instance's dates.
-    """
-    model = GoldenTorchHead(_torch_config(tmp_path, "ckpt_par"))
-    model.collect()
-
-    model.train_cv(
-        train_periods=GOLDEN_TRAIN_PERIODS,
-        parallel=True,
-        njobs=2,
-    )
-
-    assert sorted(DL_FOLD_DATES) == sorted(_golden_fold_dates(model))
-    assert len(DL_FOLD_DATES) == GOLDEN_N_FOLDS
-    _assert_golden_fold_dirs(tmp_path / "ckpt_par", "GoldenTorchHead", ".pth")
-
-
 # ==========================================================================
 # Post-extraction tests (added after the goldens above were committed)
 # ==========================================================================
 #
 # Everything below exercises the extracted pieces directly: the single fold
-# generator `BaseModel._cv_folds`, the claim that BOTH `train_cv` branches
-# consume it, the per-fold results `train_cv` now returns, and the
+# generator `BaseModel._cv_folds`, the claim that `train_cv`
+# consumes it, the per-fold results `train_cv` now returns, and the
 # `{cls}_cv_summary` W&B run holding the fold means.
 
 
@@ -269,9 +245,7 @@ class FakeRecorder:
 
 @pytest.fixture
 def recorders(monkeypatch) -> list[FakeRecorder]:
-    """Patched on the CLASS: the parallel branch deep-copies the instance, and
-    an instance-level patch would bind recorders to the original, not to the
-    fold copy that trains."""
+    """Patched on the CLASS, so every instance records."""
     created: list[FakeRecorder] = []
 
     def fake_init_wandb(self, project_name, experiment_name):
@@ -315,16 +289,6 @@ def _as_tuples(folds: list[dict]) -> list[tuple[str, str, str, str]]:
         (f["train_start"], f["train_end"], f["test_start"], f["test_end"])
         for f in folds
     ]
-
-
-def _relative_checkpoints(results: list[dict], save_root: Path) -> set[str]:
-    """Checkpoint paths relative to the project dir (the project name carries
-    a timestamp, so two runs never share it)."""
-    out = set()
-    for r in results:
-        rel = Path(r["checkpoint"]).relative_to(save_root)
-        out.add(str(Path(*rel.parts[1:])))
-    return out
 
 
 # --------------------------------------------------------------------------
@@ -380,22 +344,21 @@ HANDMADE_FOLDS = [
 ]
 
 
-@pytest.mark.parametrize("parallel", [False, True], ids=["sequential", "parallel"])
-def test_both_train_cv_branches_train_exactly_what_cv_folds_yields(tmp_path, monkeypatch, recorders, parallel):
+def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch, recorders):
     """Replace the generator with two handmade folds (numbered 3 and 5, with
-    geometry the real formula never produces): each branch must train exactly
-    those two, on exactly those dates. Turns red if either branch grows its
-    own copy of the fold arithmetic again."""
+    geometry the real formula never produces): train_cv must train exactly
+    those two, on exactly those dates. Turns red if train_cv grows its own
+    copy of the fold arithmetic again."""
     monkeypatch.setattr(
         BaseModel,
         "_cv_folds",
-        staticmethod(lambda timestamps, train_periods: [dict(f) for f in HANDMADE_FOLDS]),
+        staticmethod(lambda timestamps, train_periods, expanding: [dict(f) for f in HANDMADE_FOLDS]),
     )
-    save_dir = "ckpt_par" if parallel else "ckpt_seq"
+    save_dir = "ckpt_seq"
     model = StubLibraryHead(_library_config(tmp_path, save_dir))
     model.collect()
 
-    results = model.train_cv(train_periods=50, parallel=parallel, njobs=2)
+    results = model.train_cv(train_periods=50)
 
     assert sorted(ML_FOLD_DATES) == sorted(_as_tuples(HANDMADE_FOLDS))
     assert sorted(r["fold"] for r in results) == [3, 5]
@@ -405,6 +368,16 @@ def test_both_train_cv_branches_train_exactly_what_cv_folds_yields(tmp_path, mon
     assert sorted(
         p.name for p in projects[0].iterdir() if p.name != BaseModel.CV_FOLDS_FILENAME
     ) == ["StubLibraryHead_cv_fold_3", "StubLibraryHead_cv_fold_5"]
+
+
+@pytest.mark.parametrize("argument", [{"parallel": True}, {"njobs": 2}])
+def test_train_cv_trains_folds_sequentially_only(tmp_path, recorders, argument):
+    model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
+    model.collect()
+
+    with pytest.raises(TypeError, match=next(iter(argument))):
+        model.train_cv(train_periods=50, **argument)
+    assert ML_FOLD_DATES == []
 
 
 # --------------------------------------------------------------------------
@@ -464,26 +437,6 @@ def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, 
             values = [r[key] for r in results if np.isfinite(r[key])]
             assert values, key
             assert summary_run.summary[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
-
-
-def test_library_train_cv_parallel_matches_sequential(tmp_path, recorders):
-    """Same folds, same checkpoint layout, same trained dates. Separate save
-    dirs: the project name is only second-resolution."""
-    seq = StubLibraryHead(_library_config(tmp_path, "ckpt_seq"))
-    seq.collect()
-    seq_results = seq.train_cv(train_periods=50)
-    seq_dates = sorted(ML_FOLD_DATES)
-    ML_FOLD_DATES.clear()
-
-    par = StubLibraryHead(_library_config(tmp_path, "ckpt_par"))
-    par.collect()
-    par_results = par.train_cv(train_periods=50, parallel=True, njobs=2)
-
-    assert sorted(ML_FOLD_DATES) == seq_dates
-    assert sorted(_as_tuples(par_results)) == sorted(_as_tuples(seq_results))
-    assert _relative_checkpoints(par_results, tmp_path / "ckpt_par") == _relative_checkpoints(
-        seq_results, tmp_path / "ckpt_seq"
-    )
 
 
 def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, recorders):

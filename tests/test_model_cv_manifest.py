@@ -13,8 +13,8 @@ shape is a persisted format; `format_version` is the migration seam and
 
 What turns this file red:
 
-- the manifest is missing, or its `folds` differ from the returned list, on the
-  sequential branch, the parallel branch, or a torch head;
+- the manifest is missing, or its `folds` differ from the returned list, for
+  a library or a torch head;
 - a fold entry loses one of D-30's keys, or points at a checkpoint that is not
   on disk;
 - manifest keys leak into the returned fold dicts (the return value is D-30's
@@ -172,19 +172,6 @@ def test_sequential_ml_manifest_equals_returned_folds(tmp_path):
     assert len(results) == N_FOLDS
 
 
-def test_parallel_ml_manifest_equals_returned_folds(tmp_path):
-    """The parallel branch writes the same manifest contract: the write must
-    sit after BOTH branches, not inside one of them."""
-    model = _library(tmp_path, "ckpt")
-
-    results = model.train_cv(train_periods=TRAIN_PERIODS, parallel=True, njobs=2)
-
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert manifest["format_version"] == 2
-    assert manifest["folds"] == to_jsonable(results)
-    assert len(results) == N_FOLDS
-
-
 def test_torch_manifest_equals_returned_folds(tmp_path):
     """A torch fold entry carries the fold's dates, its run name, its
     checkpoint and every split's metrics, like a library fold."""
@@ -271,7 +258,7 @@ def test_empty_fold_list_still_writes_a_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(
         BaseModel,
         "_cv_folds",
-        staticmethod(lambda timestamps, train_periods: []),
+        staticmethod(lambda timestamps, train_periods, expanding: []),
     )
     model = _library(tmp_path, "ckpt")
 

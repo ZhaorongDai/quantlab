@@ -21,7 +21,6 @@ its ``hyperparameters`` are listed in ``RESERVED_HYPERPARAMETERS``. Concrete hea
 ``quantlab/library_model``.
 """
 
-import copy
 import dataclasses
 import json
 import os
@@ -39,7 +38,6 @@ import torch
 import wandb
 import wandb.sdk
 import xarray as xr
-from joblib import Parallel, delayed
 from loguru import logger
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
@@ -1525,16 +1523,20 @@ class BaseModel(ABC):
         )
 
     @staticmethod
-    def _cv_folds(timestamps, train_periods: int) -> list[dict]:
-        """Compute the fold boundaries of a rolling walk-forward cross-validation.
+    def _cv_folds(
+        timestamps, train_periods: int, expanding: bool = False
+    ) -> list[dict]:
+        """Compute the fold boundaries of a walk-forward cross-validation.
 
-        This is the only implementation of the fold arithmetic; both the
-        sequential and the parallel branch of ``train_cv`` use it. With
-        ``test_periods = train_periods // 5``, fold ``i`` has the training
-        window ``[i * test_periods, i * test_periods + train_periods)`` and
-        tests on the next ``test_periods`` positions. These are the windows
-        before the purge: ``_fit`` drops the last L bars of the training
-        window. The number of folds is
+        This is the only implementation of the fold arithmetic;
+        ``train_cv`` trains exactly the folds it returns. With
+        ``test_periods = train_periods // 5``, fold ``i`` tests on the
+        ``test_periods`` positions from ``i * test_periods + train_periods``
+        on, and its training window ends right before them. The window
+        starts at position ``i * test_periods`` (sliding) or at 0 when
+        ``expanding`` is True, so both modes test on the same positions.
+        These are the windows before the purge: ``_fit`` drops the last L
+        bars of the training window. The number of folds is
         ``max(1, (len(timestamps) - train_periods) // test_periods)``;
         a fold whose test segment runs past the end is logged and skipped, so
         the result can be empty.
@@ -1552,8 +1554,8 @@ class BaseModel(ABC):
 
         folds: list[dict] = []
         for i in range(n_splits):
-            train_start_idx = i * test_periods
-            train_end_idx = train_start_idx + train_periods
+            train_end_idx = i * test_periods + train_periods
+            train_start_idx = 0 if expanding else i * test_periods
             test_start_idx = train_end_idx
             test_end_idx = test_start_idx + test_periods
 
@@ -1640,16 +1642,6 @@ class BaseModel(ABC):
             **(metrics or {}),
         }
 
-    def _train_fold_with_config(
-        self, fold: dict, record: dict, project_name: str
-    ) -> dict:
-        """Train one fold on a deep copy of this instance (parallel branch).
-
-        Each fold gets its own copy so folds share no config dates, model or
-        wandb run; the price is one copy of the panel per job.
-        """
-        return copy.deepcopy(self)._train_one_fold(fold, record, project_name)
-
     #: Name of the metrics file ``train`` writes beside the checkpoint.
     METRICS_FILENAME = "metrics.json"
     #: Name of the fold manifest ``train_cv`` writes into the trial directory.
@@ -1707,18 +1699,22 @@ class BaseModel(ABC):
     def train_cv(
         self,
         train_periods: int,
-        parallel: bool = False,
-        njobs: int = -1,
+        expanding: bool = False,
     ) -> list[dict]:
-        """Run a rolling walk-forward cross-validation and return per-fold results.
+        """Run a walk-forward cross-validation and return per-fold results.
 
         Walk-forward cross-validation trains on a window of past data and
-        tests on the period right after it, then slides both forward, so a
-        test period never precedes its training data. Folds are laid out by
-        ``_cv_folds`` over the timestamps between ``config.start_date`` and
-        ``config.end_date``. Each fold's training window loses its last L
-        bars, L being the largest ``lookahead_bars()`` among the labels, so
-        no fitted label reads a test-period bar. Every fold trains on
+        tests on the period right after it, then moves the test period
+        forward, so a test period never precedes its training data. The
+        training window either slides with it at a fixed length (the
+        default) or, with ``expanding=True``, keeps the first fold's start
+        and grows to all history before the test period. Both modes test on
+        the same periods, so their results compare bar for bar. Folds are
+        laid out by ``_cv_folds`` over the timestamps between
+        ``config.start_date`` and ``config.end_date``. Each fold's training
+        window loses its last L bars, L being the largest
+        ``lookahead_bars()`` among the labels, so no fitted label reads a
+        test-period bar. Every fold trains on
         its own dates, gets its own wandb run and its own checkpoint directory
         ``{class}_cv_fold_{i}/`` inside one trial directory. The fold means of
         every ``train_*`` / ``val_*`` / ``test_*`` metric, keyed
@@ -1736,14 +1732,15 @@ class BaseModel(ABC):
         Parameters
         ----------
         train_periods : int
-            Number of timestamps in each training segment. The test
-            segment is one fifth of it.
-        parallel : bool, default False
-            Train the folds concurrently, each on a deep copy of this
-            model, using a thread pool.
-        njobs : int, default -1
-            Number of threads for the parallel branch; ``-1`` uses all
-            cores.
+            Number of timestamps in the first fold's training segment, and
+            in every fold's when sliding. The test segment is one fifth of
+            it.
+        expanding : bool, default False
+            Train every fold from the first fold's start instead of sliding
+            a fixed-length window. Test segments, fold count and the purge
+            are those of the sliding mode; the validation segment stays the
+            last ``val_size`` share of each growing window. The mode is not
+            recorded in ``cv_folds.json``: the fold dates carry it.
 
         Returns
         -------
@@ -1767,6 +1764,15 @@ class BaseModel(ABC):
         4
         >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
         (0, True)
+
+        An expanding run tests on the same bars, and every fold trains from
+        the first fold's start:
+
+        >>> expanding = model.train_cv(train_periods=20, expanding=True)
+        >>> {r["train_start"] for r in expanding} == {expanding[0]["train_start"]}
+        True
+        >>> [r["test_start"] for r in expanding] == [r["test_start"] for r in results]
+        True
         """
         self._check_hyperparameters()
         if train_periods < 5:
@@ -1793,7 +1799,7 @@ class BaseModel(ABC):
             f"Starting CV from {start_date} to {end_date} with {train_periods} training periods"
         )
 
-        folds = self._cv_folds(timestamps, train_periods)
+        folds = self._cv_folds(timestamps, train_periods, expanding=expanding)
         lookahead = self._purge_bars()
         records = [
             self._purged_fold(timestamps, fold, lookahead) for fold in folds
@@ -1805,21 +1811,10 @@ class BaseModel(ABC):
                 f"Fold {fold['fold']}: Train [{fold['train_start']} to {fold['train_end']}], Test [{fold['test_start']} to {fold['test_end']}]"
             )
 
-        if parallel:
-            logger.info(f"Starting parallel training of {len(folds)} folds")
-            results = list(
-                Parallel(n_jobs=njobs, backend="threading")(
-                    delayed(self._train_fold_with_config)(
-                        fold, record, project_name
-                    )
-                    for fold, record in zip(folds, records)
-                )
-            )
-        else:
-            results = [
-                self._train_one_fold(fold, record, project_name)
-                for fold, record in zip(folds, records)
-            ]
+        results = [
+            self._train_one_fold(fold, record, project_name)
+            for fold, record in zip(folds, records)
+        ]
 
         means = self._cv_mean_metrics(results)
         if means:

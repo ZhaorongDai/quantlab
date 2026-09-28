@@ -238,7 +238,7 @@ With `"early_stopping": True` in `hyperparameters`, training stops when the vali
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, expanding=False)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -271,7 +271,19 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 ('2024-04-09T00:00:00', '2024-04-07T00:00:00')
 ```
 
-`parallel=True` trains the folds concurrently on threads (`njobs` sets the pool size). Each fold works on a deep copy of the model, so memory grows with the number of jobs. Tree libraries already use every core, so set `nthread` in `hyperparameters` to roughly `os.cpu_count() // njobs`.
+With `expanding=True` every fold trains from the first fold's start instead: fold i's training window runs from the first bar to where the sliding fold's window ends, so `train_periods` is the first fold's training length and later folds train on all the history before their test segment. The test segments, the fold count and the purge are the sliding ones, so the two modes compare on the same test bars. The validation segment stays the last `val_size` share of each window and grows with it. `cv_folds.json` has the same format and does not record the mode; the fold dates carry it, and `run_cv` replays it like a sliding run.
+
+```python
+>>> grown = XGBoostRegressor(config).collect().train_cv(train_periods=100, expanding=True)
+>>> [(r["train_start"][:10], r["train_end"][:10]) for r in grown]
+[('2024-01-01', '2024-04-07'), ('2024-01-01', '2024-04-27'), ('2024-01-01', '2024-05-17'), ('2024-01-01', '2024-06-06'), ('2024-01-01', '2024-06-26')]
+>>> [r["test_start"] for r in grown] == [r["test_start"] for r in results]
+True
+>>> [round(r["test_rank_ic"], 3) for r in grown]
+[0.691, 0.658, 0.704, 0.655, 0.695]
+```
+
+The folds train one after another, on the one collected panel.
 
 ### Train a torch model
 

@@ -8,8 +8,7 @@ and `predict` behave -- independently of any real library. The xgboost head is
 covered in `tests/test_xgb_model.py`.
 
 W&B assertions patch `_init_wandb` on the CLASS and collect every recorder the
-model creates, because `train_cv(parallel=True)` deep-copies the instance and
-an instance-level patch would attach recorders to the original, not the copy.
+model creates.
 
 Everything is synthetic, CPU-only and offline.
 """

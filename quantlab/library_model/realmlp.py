@@ -165,10 +165,8 @@ class RealMLPRegressor(TabkitRegressor):
     ``quantlab.library_model.tabkit.active_callbacks``).
 
     ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
-    fold does its own early stopping and writes its own ``.joblib``. With
-    ``parallel=True`` the folds run on threads while pytabkit uses every
-    physical core by default, so set ``n_threads`` in the hyperparameters to
-    roughly ``os.cpu_count() // njobs`` to avoid oversubscribing the CPU.
+    fold does its own early stopping and writes its own ``.joblib``. The folds
+    train one after another.
 
     Parameters
     ----------
@@ -197,7 +195,7 @@ class RealMLPRegressor(TabkitRegressor):
     'RealMLPRegressor_total.joblib'
     >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
     (5, 2, 1)
-    >>> model.train_cv(train_periods=500, parallel=True, njobs=4)
+    >>> model.train_cv(train_periods=500)
     """
 
     DEFAULT_PARAMS: dict = {

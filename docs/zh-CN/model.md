@@ -238,7 +238,7 @@ True
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, expanding=False)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -271,7 +271,19 @@ True
 ('2024-04-09T00:00:00', '2024-04-07T00:00:00')
 ```
 
-`parallel=True` 用线程并发训练各折（`njobs` 指定线程池大小）。每一折操作的是模型的深拷贝，因此内存占用随任务数增长。树模型库本身已经占满所有核心，建议把 `hyperparameters` 里的 `nthread` 设为大约 `os.cpu_count() // njobs`。
+`expanding=True` 时，每一折都从第一折的起点开始训练：第 i 折的训练窗口从第一个 bar 一直延伸到滑动模式下该折训练窗口的终点，因此 `train_periods` 是第一折的训练长度，之后各折在测试段之前的全部历史上训练。测试段、折数和清除都与滑动模式相同，两种模式在同样的测试 bar 上比较。验证段仍是每个窗口最后 `val_size` 的比例，随窗口一起变长。`cv_folds.json` 格式不变，也不记录模式；模式由各折的日期体现，`run_cv` 像回放滑动模式一样回放它。
+
+```python
+>>> grown = XGBoostRegressor(config).collect().train_cv(train_periods=100, expanding=True)
+>>> [(r["train_start"][:10], r["train_end"][:10]) for r in grown]
+[('2024-01-01', '2024-04-07'), ('2024-01-01', '2024-04-27'), ('2024-01-01', '2024-05-17'), ('2024-01-01', '2024-06-06'), ('2024-01-01', '2024-06-26')]
+>>> [r["test_start"] for r in grown] == [r["test_start"] for r in results]
+True
+>>> [round(r["test_rank_ic"], 3) for r in grown]
+[0.691, 0.658, 0.704, 0.655, 0.695]
+```
+
+各折依次训练，共用同一份已收集的面板。
 
 ### 训练 torch 模型
 

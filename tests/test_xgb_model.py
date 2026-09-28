@@ -16,9 +16,8 @@ What is locked, and what turns it red:
 - hyperparameters pass straight through (`nthread` included), except
   `num_boost_round`, and the config's dict is never mutated;
 - multi-label output, NaN labels, ±inf features, persistence;
-- sequential and parallel `train_cv`: same folds, native early stopping inside
-  every fold, a correct `cv_mean_test_ic`, matching predictions, and `nthread`
-  left exactly as the user set it.
+- `train_cv`: native early stopping inside every fold and a correct
+  `cv_mean_test_ic`.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -567,10 +566,6 @@ def _cv_model(tmp_path, save_dir) -> XGBoostRegressor:
     return model
 
 
-def _fold_key(result: dict) -> str:
-    return result["experiment_name"]
-
-
 def test_train_cv_sequential(tmp_path, recorders):
     """160 timestamps, train 60 / gap 2 -> 8 folds. Every fold runs native
     early stopping (its Booster holds `best_iteration + 1` trees), carries a
@@ -604,34 +599,6 @@ def test_train_cv_sequential(tmp_path, recorders):
     assert summary_run.summary["cv_n_folds"] == 8
     assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r["test_ic"] for r in results])))
     assert summary_run.summary["cv_mean_test_ic"] > 0.3
-
-
-def test_train_cv_parallel_matches_sequential(tmp_path, recorders):
-    """`parallel=True, njobs=2` with `nthread=1`: the same fold checkpoints,
-    predictions that agree fold by fold, and `nthread` still exactly 1 --
-    the class never rewrites it."""
-    seq = _cv_model(tmp_path, "ckpt_seq")
-    seq_results = seq.train_cv(train_periods=60)
-    par = _cv_model(tmp_path, "ckpt_par")
-    par_results = par.train_cv(train_periods=60, parallel=True, njobs=2)
-
-    def relative(results, root):
-        return {str(Path(*Path(r["checkpoint"]).relative_to(root).parts[1:])) for r in results}
-
-    assert relative(par_results, tmp_path / "ckpt_par") == relative(seq_results, tmp_path / "ckpt_seq")
-
-    probe = np.random.default_rng(0).standard_normal((5, N_SYMBOLS, 3)).astype(np.float32)
-    par_by_fold = {_fold_key(r): r for r in par_results}
-
-    def loaded(checkpoint):
-        fresh_factors, fresh_labels = _panels(seed=31)
-        return XGBoostRegressor(_config(tmp_path, fresh_factors, fresh_labels, save_dir="unused")).load(checkpoint)
-
-    for r in seq_results:
-        seq_pred = loaded(r["checkpoint"]).predict(probe)
-        par_pred = loaded(par_by_fold[_fold_key(r)]["checkpoint"]).predict(probe)
-        assert np.allclose(seq_pred, par_pred, atol=1e-6)
-    assert par.config.hyperparameters["nthread"] == 1
 
 
 # --------------------------------------------------------------------------

@@ -239,17 +239,6 @@ def test_every_cv_fold_writes_the_ic_series_and_the_test_predictions(tmp_path, c
         _assert_run_files(model, run_dir, fold, _test_timestamps(model, fold))
 
 
-def test_parallel_cv_folds_write_their_own_series(tmp_path):
-    model = _model(tmp_path, FirstFactorHead)
-
-    results = model.train_cv(train_periods=TRAIN_PERIODS, parallel=True, njobs=2)
-
-    for fold in results:
-        _assert_run_files(
-            model, Path(fold["checkpoint"]).parent, fold, _test_timestamps(model, fold)
-        )
-
-
 def test_a_bar_with_fewer_than_two_valid_symbols_is_left_out(tmp_path):
     """Bars 5 and 33 keep one finite label: they vanish from the series
     instead of entering it as 0, and every other bar stays."""

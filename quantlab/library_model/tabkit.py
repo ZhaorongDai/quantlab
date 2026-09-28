@@ -162,7 +162,7 @@ class TabkitRegressor(LibraryModel):
 # the other wraps ``TabNNModule.create_callbacks`` to append the active
 # Lightning callbacks. Outside an active fit both patches are pass-throughs,
 # so the plain ``XGBoostRegressor`` is unaffected, and the slot being
-# thread-local keeps parallel ``train_cv`` folds (joblib threads) apart.
+# thread-local keeps fits running on different threads apart.
 
 _active = threading.local()
 _installed: set[str] = set()
