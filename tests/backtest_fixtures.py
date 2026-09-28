@@ -234,3 +234,68 @@ def train_checkpoint(model: LibraryModel) -> Path:
             f"found {found}"
         )
     return found[0]
+
+
+class DelegatingPredictor:
+    """A `Predictor` by delegation: it wraps a real model and never inherits `BaseModel`.
+
+    Every protocol member forwards to the wrapped model, so a backtest of the
+    wrapper must equal a backtest of the model itself. `get_config` nests the
+    model's config under `inner`, which only this class's `from_config` can
+    rebuild, so a config rebuild that bypasses `from_config` fails.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+
+    @property
+    def labels(self):
+        return self.inner.labels
+
+    @property
+    def train_bounds(self):
+        return self.inner.train_bounds
+
+    @property
+    def test_bounds(self):
+        return self.inner.test_bounds
+
+    @property
+    def label_delays(self):
+        return self.inner.label_delays
+
+    def predict_window(self, start, end):
+        return self.inner.predict_window(start, end)
+
+    def fingerprint_inputs(self, start, end):
+        return self.inner.fingerprint_inputs(start, end)
+
+    def training_fingerprint_inputs(self):
+        return self.inner.training_fingerprint_inputs()
+
+    def collect(self):
+        self.inner.collect()
+        return self
+
+    def train(self):
+        return self.inner.train()
+
+    def load(self, path):
+        self.inner.load(path)
+        return self
+
+    def check_checkpoint(self, path):
+        self.inner.check_checkpoint(path)
+
+    def get_config(self):
+        return {
+            "name": f"{type(self).__module__}.{type(self).__qualname__}",
+            "inner": self.inner.get_config(),
+        }
+
+    @classmethod
+    def from_config(cls, config):
+        from quantlab.utils.module import get_cls_from_path
+
+        inner = config["inner"]
+        return cls(get_cls_from_path(inner["name"]).from_config(inner))

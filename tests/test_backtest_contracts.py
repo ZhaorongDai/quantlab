@@ -159,7 +159,7 @@ def test_backtest_configs_are_constructed_with_their_own_classes():
 
     Both object fields are bare `object()`s. Reading any dataset or model
     attribute would raise `AttributeError`, and the model type check would raise
-    a `TypeError` that names `BaseModel`. Only the class check that runs first
+    a `TypeError` that names `Predictor`. Only the class check that runs first
     names `CrossSectionBacktestConfig`.
     """
     config = BacktestConfig(

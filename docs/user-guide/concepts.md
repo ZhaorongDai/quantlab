@@ -179,7 +179,9 @@ StockDataset Frozen({'timestamp': 25, 'symbol': 3})
 ```
 
 There is one loader per layer: `load_dataset_from_config`, `load_factor_from_config`,
-`load_model_from_config` and `load_backtester_from_config`. The backtester loader is the one
+`load_model_from_config` and `load_backtester_from_config`. A model is rebuilt by the
+`from_config` class method of the class its config names, so the backtester loader rebuilds any
+predictor the same way. The backtester loader is the one
 you will use most, on the `config.json` of a run directory, as the last step of the quickstart
 shows. It insists that every config field is present in the file instead of filling gaps from
 current defaults, because a default that changed since the run would silently produce a

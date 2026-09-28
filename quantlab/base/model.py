@@ -666,6 +666,199 @@ class BaseModel(ABC):
         cfg.update(extra_kv)
         return cfg
 
+    @classmethod
+    def from_config(cls, config: dict) -> Self:
+        """Rebuild a model, with its factors and labels, from a ``get_config()`` dict.
+
+        The factors and labels are rebuilt from their own config dicts and
+        the model is constructed with ``cls.config_cls``. Two keys a
+        checkpoint's ``config.json`` carries as training records rather than
+        config fields, ``resolved_hyperparameters`` and ``trained_on``, are
+        dropped first; any other unknown key raises ``TypeError`` from the
+        config class. The caller's dict is never modified.
+
+        Parameters
+        ----------
+        config : dict
+            The dict ``get_config()`` returned, or the ``config.json`` written
+            beside a checkpoint.
+
+        Returns
+        -------
+        Self
+            An untrained model; call ``load`` to restore a checkpoint.
+
+        Examples
+        --------
+        >>> rebuilt = FirstFeatureHead.from_config(model.get_config())
+        >>> rebuilt.get_config() == model.get_config()
+        True
+        """
+        # Imported here: the loaders import model classes by dotted path.
+        from quantlab.utils.module import load_factor_from_config
+
+        config = copy.deepcopy(config)
+        # `resolved_hyperparameters` (what the library actually trained with)
+        # and `trained_on` (factor/label names and training symbols) are
+        # records, not config fields. Drop only those so any other unknown key
+        # still fails.
+        config.pop("resolved_hyperparameters", None)
+        config.pop(cls.TRAINED_ON_KEY, None)
+        config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
+        config["labels"] = [load_factor_from_config(f) for f in config["labels"]]
+        return cls(cls.config_cls(**config))
+
+    @property
+    def labels(self) -> list:
+        """The label objects the model is trained on, in config order.
+
+        Examples
+        --------
+        >>> [label.get_factor_names() for label in model.labels]
+        [('fwd_ret_1',)]
+        """
+        return list(self.config.labels)
+
+    @property
+    def train_bounds(self) -> tuple:
+        """The configured training window, ``(train_start, train_end)``, before the purge.
+
+        Examples
+        --------
+        >>> model.train_bounds
+        ('2024-01-01', '2024-02-02')
+        """
+        return self.config.train_start, self.config.train_end
+
+    @property
+    def test_bounds(self) -> tuple:
+        """The configured test window, ``(test_start, test_end)``.
+
+        Examples
+        --------
+        >>> model.test_bounds
+        ('2024-02-05', '2024-02-09')
+        """
+        return self.config.test_start, self.config.test_end
+
+    @property
+    def label_delays(self) -> tuple[int, ...]:
+        """Each label's ``delay`` in bars, in the order of ``labels``.
+
+        Examples
+        --------
+        >>> model.label_delays
+        (1,)
+        """
+        return tuple(label.config.delay for label in self.config.labels)
+
+    def predict_window(self, start, end) -> xr.Dataset:
+        """Predict every bar from ``start`` to ``end`` from freshly requested features.
+
+        Each factor is asked for its panel from ``warmup_bars`` bars before
+        ``start`` (counted on its own dataset calendar) to ``end``, by
+        ``config.factor_data_strategy``; the panel goes through
+        ``predict_panel`` and the result is cut to ``start``..``end``. No
+        config is changed. The model must be trained or loaded.
+
+        Parameters
+        ----------
+        start, end : str
+            First and last bar to predict, inclusive.
+
+        Returns
+        -------
+        xr.Dataset
+            One variable per label name on ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        >>> out = model.predict_window("2024-02-12", "2024-03-11")
+        >>> list(out.data_vars), out.sizes["timestamp"]
+        (['fwd_ret_1'], 21)
+        """
+        features = self._collect_all_features(start, end)
+        return self.predict_panel(features).sel(timestamp=slice(start, end))
+
+    def fingerprint_inputs(self, start, end) -> list[tuple]:
+        """Return the data ``predict_window(start, end)`` reads, for fingerprinting.
+
+        One entry ``(key, factor, strategy, first, last)`` per factor,
+        ``strategy`` ``"cal"``, under the key ``factor[{i}]:{ClassName}``:
+        the dataset inputs ``factor.compute(first, last)`` reads. Under the
+        ``"read"`` factor strategy a second entry
+        ``factor_store[{i}]:{ClassName}``, strategy ``"read"``, covers the
+        store panel ``factor.read(first, last)``, which is what the
+        predictions are built from. ``first`` is ``start`` moved back by the
+        model's warm-up, the range ``predict_window`` requests.
+
+        Parameters
+        ----------
+        start, end : str
+            The window passed to ``predict_window``.
+
+        Returns
+        -------
+        list[tuple]
+            ``(key, factor, strategy, first, last)`` entries in factor order.
+
+        Examples
+        --------
+        >>> [(key, strategy, first, last)
+        ...  for key, _, strategy, first, last
+        ...  in model.fingerprint_inputs("2024-02-12", "2024-03-11")]
+        [('factor[0]:PastReturnFactor', 'cal', '2024-02-12', '2024-03-11')]
+        """
+        strategy = self.config.factor_data_strategy
+        entries: list[tuple] = []
+        for i, factor in enumerate(self.config.factors):
+            name = type(factor).__name__
+            first = self._feature_start(factor, strategy, start, warn=False)
+            entries.append((f"factor[{i}]:{name}", factor, "cal", first, end))
+            if strategy == "read":
+                entries.append((f"factor_store[{i}]:{name}", factor, "read", first, end))
+        return entries
+
+    def training_fingerprint_inputs(self) -> list[tuple]:
+        """Return the data ``collect()`` reads, for fingerprinting.
+
+        One entry ``(key, item, strategy, first, last)`` per factor and per
+        label over ``start_date`` to ``end_date``, a factor's ``first``
+        moved back by the model's warm-up as ``collect()`` requests it. Under
+        the ``"cal"`` strategy the keys are ``train_factor[{i}]:{ClassName}``
+        and ``train_label[{i}]:{ClassName}`` (the dataset inputs ``compute``
+        reads); under ``"read"`` they are ``train_factor_store[{i}]:...`` and
+        ``train_label_store[{i}]:...`` (the store panels ``read`` returns).
+
+        Returns
+        -------
+        list[tuple]
+            ``(key, item, strategy, first, last)`` entries, factors first.
+
+        Examples
+        --------
+        >>> entries = model.training_fingerprint_inputs()
+        >>> [key for key, *_ in entries]
+        ['train_factor[0]:PastReturnFactor', 'train_label[0]:ForwardReturnLabel']
+        >>> entries[1][2:]
+        ('cal', '2024-01-01', '2024-02-09')
+        """
+        config = self.config
+        end = config.end_date
+        entries: list[tuple] = []
+        for prefix, items, strategy in (
+            ("train_factor", config.factors, config.factor_data_strategy),
+            ("train_label", config.labels, config.label_data_strategy),
+        ):
+            for i, item in enumerate(items):
+                name = type(item).__name__
+                start = config.start_date
+                if prefix == "train_factor":
+                    start = self._feature_start(item, strategy, start, warn=False)
+                kind = f"{prefix}_store" if strategy == "read" else prefix
+                entries.append((f"{kind}[{i}]:{name}", item, strategy, start, end))
+        return entries
+
     def to_array(self, data: xr.Dataset, variables: list[str]) -> np.ndarray:
         """Convert a panel to a ``[num_times, num_symbols, len(variables)]`` array.
 
@@ -801,7 +994,7 @@ class BaseModel(ABC):
                 f"checkpoints use {self.checkpoint_suffix!r} ({p})"
             )
 
-        self._assert_trained_variables(p)
+        self.check_checkpoint(p)
         self._read_checkpoint(p)
         return self
 
@@ -825,8 +1018,8 @@ class BaseModel(ABC):
             )
         return saved
 
-    def _assert_trained_variables(self, p: Path) -> None:
-        """Check the checkpoint's recorded variables against the model's own.
+    def check_checkpoint(self, p: Path | str) -> None:
+        """Check a checkpoint's recorded variables against the model's own.
 
         The feature and label names (and their order) the checkpoint was
         trained on are taken from ``trained_on`` in its ``config.json``. If
@@ -837,14 +1030,31 @@ class BaseModel(ABC):
         is loaded as given, with a warning.
 
         Only ``config.json`` is read, so the check can run before any data is
-        collected. Each distinct warning is logged once per model instance.
+        collected; ``load`` runs it too. Each distinct warning is logged once
+        per model instance.
+
+        Parameters
+        ----------
+        p : Path | str
+            Path to a checkpoint file; its ``config.json`` sidecar is read.
 
         Raises
         ------
         ValueError
             If the recorded and declared variables differ, naming
             the checkpoint and both variable lists.
+
+        Examples
+        --------
+        >>> model.check_checkpoint(checkpoint)  # trained on the same variables
+        >>> other.check_checkpoint(checkpoint)
+        Traceback (most recent call last):
+        ValueError: FirstFeatureHead: checkpoint .../FirstFeatureHead_total.joblib
+        was trained on factor variables ['past_ret_1'] (trained_on in its
+        config.json), but this model declares ['past_ret_2']; loading it would
+        feed the model different or permuted inputs
         """
+        p = Path(p)
         saved = self._read_checkpoint_sidecar(p)
         record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
         legacy: list[tuple[str, list[str]]] = []

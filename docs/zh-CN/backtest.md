@@ -396,7 +396,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
     MARKET = US_EQUITY_MARKET
 
     def _generate_signals(self, predictions, prices):
-        label = self.config.model.get_label_names()[0]
+        label = list(predictions.data_vars)[0]  # 模型的第一个标签
         scores = predictions[label].transpose("timestamp", "symbol")
         # 下一根 bar 没有价格的标的无法成交，不参与选择。
         next_fill = prices[self.MARKET.fill_price_column].shift(timestamp=-1)
@@ -435,6 +435,29 @@ timestamp
 ```
 
 如果想沿用 top-N 规则、只换分数，`CrossSectionTopNSelector(direction, top_n).select(scores, next_fill_price, rebalance)` 接受任意分数面板并返回同样的 `weight` 数据集。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
+
+### 回测任意预测器
+
+`config.model` 不必是 `BaseModel`。回测器只依赖 `quantlab.base.backtest` 中的 `Predictor` 协议，`BaseModel` 不继承它也满足它。由多个模型组合成的集成、或包装一个模型的对象，只要具备全部成员，回测器无需任何改动即可回测：
+
+| 成员 | 回测器的用途 |
+|---|---|
+| `labels`、`label_delays` | 标签延迟检查、清除（purge）与样本内划分（`lookahead_bars()`）、预测变量名 |
+| `train_bounds`、`test_bounds` | 配置中的训练窗口和测试窗口 |
+| `predict_window(start, end)` | 一个窗口的预测面板；预测器自己请求特征和预热 |
+| `fingerprint_inputs(start, end)`、`training_fingerprint_inputs()` | `(key, 因子或标签, 策略, first, last)` 条目，回测器把它们哈希进 `data_fingerprint` |
+| `collect()`、`train()` | 训练模式；`train` 返回检查点，其旁边的 `config.json` 记录训练日期 |
+| `check_checkpoint(path)`、`load(path)` | 加载模式；检查在计算任何特征之前运行 |
+| `get_config()`、`from_config(config)` | `config.json`，以及 `load_backtester_from_config` 通过 `"name"` 指明的类进行重建 |
+
+回测器不读取模型配置，也不调用模型的其他方法。`model` 缺少成员的配置在构造时被拒绝，抛出 `TypeError` 并列出缺少的成员。
+
+```python
+>>> from typing import get_protocol_members
+>>> from quantlab.base.backtest import Predictor
+>>> sorted(get_protocol_members(Predictor))
+['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config', 'get_config', 'label_delays', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
+```
 
 ## 注意事项
 

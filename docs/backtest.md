@@ -396,7 +396,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
     MARKET = US_EQUITY_MARKET
 
     def _generate_signals(self, predictions, prices):
-        label = self.config.model.get_label_names()[0]
+        label = list(predictions.data_vars)[0]  # the model's first label
         scores = predictions[label].transpose("timestamp", "symbol")
         # A symbol without a price on the next bar cannot be filled: not eligible.
         next_fill = prices[self.MARKET.fill_price_column].shift(timestamp=-1)
@@ -435,6 +435,29 @@ timestamp
 ```
 
 To keep the top-N rule with another score, `CrossSectionTopNSelector(direction, top_n).select(scores, next_fill_price, rebalance)` accepts any score panel and returns the same `weight` dataset. Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
+
+### Backtest any predictor
+
+`config.model` does not have to be a `BaseModel`. The backtester depends only on the `Predictor` protocol in `quantlab.base.backtest`, which `BaseModel` satisfies without inheriting it. An ensemble that composes several models, or a wrapper around a model, is backtested unchanged as long as it has every member:
+
+| Member | What the backtester uses it for |
+|---|---|
+| `labels`, `label_delays` | the label-delay check, the purge and the in-sample split (`lookahead_bars()`), the prediction variable names |
+| `train_bounds`, `test_bounds` | the configured training and test windows |
+| `predict_window(start, end)` | the prediction panel of a window; the predictor requests its own features and warm-up |
+| `fingerprint_inputs(start, end)`, `training_fingerprint_inputs()` | `(key, factor or label, strategy, first, last)` entries that the backtester hashes into `data_fingerprint` |
+| `collect()`, `train()` | train mode; `train` returns the checkpoint, whose `config.json` holds the training dates |
+| `check_checkpoint(path)`, `load(path)` | load mode; the check runs before any feature is computed |
+| `get_config()`, `from_config(config)` | `config.json`, and the rebuild in `load_backtester_from_config` through the class named in `"name"` |
+
+The backtester reads no model config and calls no other model method. A config whose `model` lacks a member is refused at construction with a `TypeError` naming the missing members.
+
+```python
+>>> from typing import get_protocol_members
+>>> from quantlab.base.backtest import Predictor
+>>> sorted(get_protocol_members(Predictor))
+['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config', 'get_config', 'label_delays', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
+```
 
 ## Notes
 

@@ -821,7 +821,7 @@ class PositiveScoreEqualWeight(VectorBtBacktester):
     MARKET = ROUND_THE_CLOCK
 
     def _generate_signals(self, predictions, prices):
-        label = self.config.model.get_label_names()[0]
+        label = list(predictions.data_vars)[0]  # the model's first label
         scores = predictions[label].transpose("timestamp", "symbol").values
         next_fill = (
             prices[self.MARKET.fill_price_column]
@@ -858,6 +858,19 @@ Requiring a finite next-bar fill price keeps a symbol that is about to lose
 its prices from being bought. Everything after `_generate_signals` is
 inherited: execution at the next bar's open, forced liquidation of delisted
 holdings, metrics and the run directory.
+
+A backtester reaches the model only through the `Predictor` protocol
+(`quantlab.base.backtest.Predictor`): `labels`, `label_delays`,
+`train_bounds`, `test_bounds`, `predict_window`, `fingerprint_inputs`,
+`training_fingerprint_inputs`, `collect`, `train`, `load`,
+`check_checkpoint`, `get_config` and the class method `from_config`. It never
+reads `config.model.config` and never calls a `_`-prefixed model method, and
+`tests/test_backtest_predictor_protocol.py` scans the backtest layer for both.
+A new selection rule follows the same rule: take label names from
+`predictions.data_vars` or `config.model.labels`. A new kind of predictor,
+such as an ensemble of models, implements the protocol by composition and
+needs no change to any backtester; `BaseModel` satisfies it structurally. The
+decision is recorded in ADR 0008.
 
 Two smaller variations need even less code. To reuse top-N selection on a
 different market, subclass `USEquityCrossectionSelectStockVectorBt` and set

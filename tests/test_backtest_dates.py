@@ -775,7 +775,7 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
     field `factors[].factor_names`. It refused a model's own checkpoint when
     that field was ordered differently from the derived names, and accepted
     permuted inputs when the derived names had drifted. It must be gone, and
-    `_load_model_checkpoint` must call `model._assert_trained_variables` before
+    `_load_model_checkpoint` must call `model.check_checkpoint` before
     any feature collection, so a refusal still precedes any feature work. The old code has both attributes and never calls the model check
     before collection, so this goes red.
     """
@@ -787,9 +787,9 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
     trainer, checkpoint = _trained_torch_checkpoint(tmp_path, dataset_config, bars)
     fresh = TinyLinearTorchHead(trainer.config)
     events: list[str] = []
-    check, collect = fresh._assert_trained_variables, fresh._collect_all_features
+    check, collect = fresh.check_checkpoint, fresh._collect_all_features
     monkeypatch.setattr(
-        fresh, "_assert_trained_variables", lambda p: events.append("check") or check(p)
+        fresh, "check_checkpoint", lambda p: events.append("check") or check(p)
     )
     monkeypatch.setattr(
         fresh, "_collect_all_features", lambda *a: events.append("collect") or collect(*a)

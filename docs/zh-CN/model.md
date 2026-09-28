@@ -122,6 +122,17 @@ Data variables:
 True
 ```
 
+`check_checkpoint(path)` 只做同样的变量检查，不加载任何东西；它返回 `None` 或抛出 `ValueError`。`predict_window(start, end)` 自己请求特征（在 `start` 之前带上模型头的预热），返回截到 `start`..`end` 的预测。回测器通过 `Predictor` 协议使用这两个方法，以及 `train_bounds`、`test_bounds`、`labels`、`label_delays` 和指纹条目（见回测指南），并用类方法 `from_config` 从配置重建模型。
+
+```python
+>>> XGBoostRegressor(config).check_checkpoint(checkpoint)
+>>> window = restored.predict_window("2024-06-01", "2024-07-18")
+>>> window.sizes["timestamp"], list(window.data_vars)
+(48, ['ret'])
+>>> restored.train_bounds, restored.test_bounds
+(('2024-01-01', '2024-05-31'), ('2024-06-01', '2024-07-18'))
+```
+
 ### 评估指标
 
 `quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标，覆盖训练、验证和测试三段；另有 `loss`：模型头在训练目标（经模型头逐 bar 的 `_transform_target` 变换后的标签，见“扩展”）上的损失，逐 bar 计算再对 bar 取平均，因此每个 bar 的权重相同，与它有多少个标的无关。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。对库模型头，这个损失是 `_loss`（默认 MSE）；对 torch 模型头，它是 `_val_one_batch`，默认就是它的 `_loss`（见“训练 torch 模型”）。

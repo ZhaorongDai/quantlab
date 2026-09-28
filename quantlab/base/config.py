@@ -912,7 +912,10 @@ class BacktestConfig:
 
     #: The dataset whose prices the simulation trades on.
     price_dataset: "MarketDataset"
-    #: The model that produces the scores the target weights are built from.
+    #: The model that produces the scores the target weights are built from:
+    #: any object with the members of ``quantlab.base.backtest.Predictor``,
+    #: such as a ``BaseModel`` (the annotation names the usual case, because
+    #: this module does not import the backtest layer).
     model: "BaseModel"
     #: ``"train"`` trains ``model`` on its own dates first; ``"load"`` restores
     #: a checkpoint (``checkpoint`` for ``run()``, ``cv_project_dir`` for

@@ -122,6 +122,17 @@ Data variables:
 True
 ```
 
+`check_checkpoint(path)` runs the same variable check without loading anything; it returns `None` or raises `ValueError`. `predict_window(start, end)` requests the features itself, with the head's warm-up before `start`, and returns the predictions cut to `start`..`end`. The backtester uses these two, together with `train_bounds`, `test_bounds`, `labels`, `label_delays` and the fingerprint entries, through the `Predictor` protocol (see the backtest guide), and rebuilds a model from its config with the class method `from_config`.
+
+```python
+>>> XGBoostRegressor(config).check_checkpoint(checkpoint)
+>>> window = restored.predict_window("2024-06-01", "2024-07-18")
+>>> window.sizes["timestamp"], list(window.data_vars)
+(48, ['ret'])
+>>> restored.train_bounds, restored.test_bounds
+(('2024-01-01', '2024-05-31'), ('2024-06-01', '2024-07-18'))
+```
+
 ### Metrics
 
 `quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
