@@ -343,7 +343,7 @@ tests on the bars that follow, slides both forward and repeats. Every test
 bar lies after every bar the model trained on, as it would in live trading.
 Across folds you see how stable the model's quality is over time.
 
-`train_cv(train_periods, parallel=False, njobs=-1)` lays the folds out over
+`train_cv(train_periods, expanding=False, parallel=False, njobs=-1)` lays the folds out over
 the bars between `config.start_date` and `config.end_date`. Each fold's
 training window is `train_periods` bars and its test segment the next
 `train_periods // 5` bars, and the next fold starts that many bars later.
@@ -372,6 +372,18 @@ fold with its own checkpoint on its own test period (see
 end of the data is skipped with a warning. `run_cv` refuses a manifest of
 format version 1, written before the `cv_mean` block existed; rerun
 `train_cv` to replace it.
+
+`expanding=True` keeps every fold's training window starting at the first
+fold's first bar, so each fold trains on all the history before its test
+segment and `train_periods` is the length of the first fold's window. The
+test segments, the fold count and the purge are those of the sliding mode,
+so the two modes compare on the same test bars. The validation segment
+stays the last `val_size` share of each growing window. `cv_folds.json` has
+the same format in both modes and `run_cv` replays either:
+
+```python
+folds = model.train_cv(train_periods=200, expanding=True)
+```
 
 `train_cv` sets the model's `train_*` and `test_*` dates to each fold in
 turn, so afterwards they hold the last fold's dates. `parallel=True` trains
