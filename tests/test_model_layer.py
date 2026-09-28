@@ -57,6 +57,7 @@ import xarray as xr
 
 from quantlab.base.config import DLConfig
 from quantlab.base.model import DLModel
+from tests.label_stubs import StubLabel
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry
@@ -90,8 +91,8 @@ class FakePanel:
     """A stand-in for a factor/label object.
 
     Implements only what the model layer actually calls: the `config`
-    attribute, `_reset_dataset_config`, `_get_factor_names`, `cal`,
-    `get_features` / `get_labels` and `get_config`.
+    attribute, `_reset_dataset_config`, `_get_factor_names`, `compute`,
+    `read` and `get_config`.
 
     `values` maps a variable name to the CONSTANT that variable is filled
     with. A constant panel is what makes the defect-C assertion possible: the
@@ -120,12 +121,6 @@ class FakePanel:
 
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
-
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.values)}
@@ -234,7 +229,7 @@ def _make_config(
 ) -> DLConfig:
     return DLConfig(
         factors=factors if factors is not None else [FakePanel(factor_values)],
-        labels=labels if labels is not None else [FakePanel(label_values)],
+        labels=labels if labels is not None else [StubLabel(FakePanel(label_values))],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -490,7 +485,7 @@ def test_num_null_counts_missing_cells_and_returns_an_int(tmp_path):
         factor_values={},
         label_values={},
         factors=[HolePanel({"f0": 1.0, "f1": 2.0}, n_holes=factor_holes)],
-        labels=[HolePanel({"y0": 0.5}, n_holes=label_holes)],
+        labels=[StubLabel(HolePanel({"y0": 0.5}, n_holes=label_holes))],
     )
     model = RecordingRegressor(cfg)
     model.collect()

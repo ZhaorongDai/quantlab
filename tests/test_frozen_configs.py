@@ -44,6 +44,7 @@ from quantlab.dl_model.rnn_classification import RNNClassifier
 from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 from quantlab.factor.momentum import Momentum
+from quantlab.label.forward import Forward
 from quantlab.label.fret import BinaryReturn, Return
 from quantlab.ml_model.realmlp import RealMLPRegressor
 from quantlab.ml_model.xgb import XGBoostRegressor
@@ -325,8 +326,11 @@ def test_constructing_a_factor_leaves_the_passed_config_unchanged(
     assert config.factor_names is None
     assert config.dataset.config is dataset_config
     assert factor.config.name == f"{cls.__module__}.{cls.__qualname__}"
-    assert factor.config.factor_names == tuple(factor.get_factor_names())
-    assert len(factor.config.factor_names) > 0
+    # A `Forward` label (Return/BinaryReturn) holds a ForwardConfig; the
+    # factor names live on the factor it wraps.
+    named = factor.config.factor if isinstance(factor, Forward) else factor
+    assert named.config.factor_names == tuple(factor.get_factor_names())
+    assert len(named.config.factor_names) > 0
 
 
 @pytest.mark.parametrize("case", _FACTOR_CASES)

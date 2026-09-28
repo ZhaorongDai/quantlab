@@ -90,11 +90,10 @@ class Factor(ABC):
     from its inputs or ``read(start, end)`` from its own store, which
     ``build(start, end)`` writes and ``extend(end)`` lengthens. None of these
     holds a panel or changes a config, the factor's or its dataset's, so one
-    dataset object can feed several factors. ``get_features(panel)`` and
-    ``get_labels(panel)`` turn a returned panel into what the model layer
-    consumes. Subclasses implement ``_get_factor_names`` and
-    ``_compute_panel`` (both backends here do) and override
-    ``_get_features`` and/or ``_get_labels`` for the half they support.
+    dataset object can feed several factors. The returned panel is what the
+    model layer consumes as features; to use a factor as a label, wrap it in
+    ``quantlab.label.forward.Forward``. Subclasses implement
+    ``_get_factor_names`` and ``_compute_panel`` (both backends here do).
 
     Assigning ``config`` runs the property setter, which sets ``name`` and
     resolves ``factor_names`` when they are not pinned, so factor names are
@@ -741,66 +740,6 @@ class Factor(ABC):
         """Return the last streamed bar as an ``xarray.Dataset``."""
         return self.data_backend.get_xarray_dataset()  # type: ignore
 
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Turn a factor panel into features; factor classes override this.
-
-        Raises
-        ------
-        NotImplementedError
-            Unless a subclass overrides it.
-        """
-        raise NotImplementedError
-
-    def get_features(self, panel: xr.Dataset | None = None) -> xr.Dataset:
-        """Return ``panel`` as model features.
-
-        Parameters
-        ----------
-        panel : xr.Dataset, optional
-            A panel returned by ``read(start, end)`` or
-            ``compute(start, end)``. Omit it only in stream mode, where the
-            bar the last ``cal_stream()`` computed is used.
-
-        Examples
-        --------
-        >>> panel = factor.get_features(factor.compute("2024-02-01", "2024-02-10"))
-        >>> list(panel.data_vars), dict(panel.sizes)
-        (['momentum_20'], {'timestamp': 10, 'symbol': 8})
-        """
-        if panel is None:
-            panel = self._get_xarray_dataset()
-        return self._get_features(panel)
-
-    def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
-        """Turn a factor panel into labels; label classes override this.
-
-        Raises
-        ------
-        NotImplementedError
-            Unless a subclass overrides it.
-        """
-        raise NotImplementedError
-
-    def get_labels(self, panel: xr.Dataset | None = None) -> xr.Dataset:
-        """Return ``panel`` as model labels.
-
-        Parameters
-        ----------
-        panel : xr.Dataset, optional
-            A panel returned by ``read(start, end)`` or
-            ``compute(start, end)``. Omit it only in stream mode, where the
-            bar the last ``cal_stream()`` computed is used.
-
-        Examples
-        --------
-        >>> panel = label.get_labels(label.compute("2024-01-01", "2024-01-21"))
-        >>> list(panel.data_vars), dict(panel.sizes)     # a label class
-        (['ret_1'], {'timestamp': 21, 'symbol': 16})
-        """
-        if panel is None:
-            panel = self._get_xarray_dataset()
-        return self._get_labels(panel)
-
     def get_factor_names(self) -> tuple[str, ...]:
         """Return the names of the columns this factor produces.
 
@@ -871,9 +810,11 @@ class Factor(ABC):
         factor_names : list of str, optional
             Variables of this factor to analyze. All of
             ``get_factor_names()`` when None.
-        frets : list of Factor
-            Forward-return labels, for example ``quantlab.label.fret.Return``;
-            ``get_labels()`` of each gives the forward returns. Required.
+        frets : list of Forward
+            Forward-return labels, for example ``quantlab.label.fret.Return``
+            or any factor wrapped in ``quantlab.label.forward.Forward``; each
+            one's panel gives the forward returns and its ``span_bars()`` the
+            horizon. Required.
         output_dir : str, optional
             When given, the directory is created and ``summary.json``,
             ``summary.csv``, ``ic.csv``, ``monthly_ic.csv``,
@@ -943,7 +884,7 @@ class Factor(ABC):
                 "analyze needs at least one forward-return label in `frets`"
             )
 
-        def request(obj: "Factor") -> xr.Dataset:
+        def request(obj) -> xr.Dataset:
             if data_strategy == "read":
                 return obj.read(start, end)
             return obj.compute(start, end)
@@ -951,8 +892,8 @@ class Factor(ABC):
         return FactorAnalyzer(quantiles=quantiles).run(
             self,
             frets,
-            features=self.get_features(request(self)),
-            labels=[fret.get_labels(request(fret)) for fret in frets],
+            features=request(self),
+            labels=[request(fret) for fret in frets],
             factor_names=factor_names,
             output_dir=output_dir,
         )
@@ -1256,8 +1197,8 @@ class FactorKunQuant(Factor):
 
     def cal_stream(
         self, data: dict[str, np.ndarray], timestamp: int, symbols: list[str]
-    ) -> Self:
-        """Advance the streaming graph by one bar and hold that bar's outputs.
+    ) -> xr.Dataset:
+        """Advance the streaming graph by one bar and return that bar's outputs.
 
         The stream is initialized on first use.
 
@@ -1275,14 +1216,14 @@ class FactorKunQuant(Factor):
 
         Returns
         -------
-        Self
-            ``self``, holding a ``(1, num_symbols)`` panel for this bar.
+        xr.Dataset
+            The ``(1, num_symbols)`` panel of this bar.
 
         Examples
         --------
         >>> for step in range(3):                  # replay three bars
         ...     bar = {"adjClose": adj_close[step]}  # float32, per symbol
-        ...     row = factor.cal_stream(bar, step, symbols).get_features()
+        ...     row = factor.cal_stream(bar, step, symbols)
         >>> row.sizes
         Frozen({'timestamp': 1, 'symbol': 16})
         >>> list(row.data_vars)
@@ -1310,7 +1251,7 @@ class FactorKunQuant(Factor):
             out_dict, np.array([timestamp]), np.array(symbols)
         )
 
-        return self
+        return self._get_xarray_dataset()
 
     #: Symbol count a batch run is padded to a multiple of on macOS. KunQuant's
     #: compiled loops process symbols in fixed-size SIMD blocks and cannot

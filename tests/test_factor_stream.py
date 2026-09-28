@@ -135,9 +135,9 @@ def test_cal_stream_replay_produces_incremental_factor_updates(
     rename, and from the SAME `Dataset` instance the factor holds, so the
     symbol ordering matches the stream context's.
 
-    `get_features()` reflects only the MOST RECENT bar -- each `cal_stream()`
-    call replaces the backend's data -- so the two `KMID` snapshots the
-    incremental-update assertion compares are captured inside the loop.
+    Each `cal_stream()` call returns the panel of the MOST RECENT bar only, so
+    the two `KMID` snapshots the incremental-update assertion compares are
+    captured inside the loop.
     """
     factor = _stream_factor(spot_kline_zarr, tmp_path, periods=60)
 
@@ -151,6 +151,7 @@ def test_cal_stream_replay_produces_incremental_factor_updates(
 
     previous_kmid = None
     last_kmid = None
+    result = None
 
     for step in range(num_steps):
         bar = {
@@ -160,13 +161,11 @@ def test_cal_stream_replay_produces_incremental_factor_updates(
             for column in _DATA_COLUMNS
         }
         # Nothing may raise at any step -- an exception here IS the failure.
-        factor.cal_stream(bar, int(step), symbol_list)
+        result = factor.cal_stream(bar, int(step), symbol_list)
 
         if step >= num_steps - 2:
             previous_kmid = last_kmid
-            last_kmid = factor.get_features()["KMID"].values.copy()
-
-    result = factor.get_features()
+            last_kmid = result["KMID"].values.copy()
 
     assert isinstance(result, xr.Dataset)
     assert dict(result.sizes) == {"timestamp": 1, "symbol": 8}

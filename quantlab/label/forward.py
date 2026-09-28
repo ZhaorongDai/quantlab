@@ -13,6 +13,7 @@ relies on that and cannot check it.
 
 import dataclasses
 import datetime
+from typing import Self
 
 import pandas as pd
 import xarray as xr
@@ -251,12 +252,84 @@ class Forward:
         """
         return self._shifted(self.config.factor.compute, start, end, "compute")
 
+    def build(
+        self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+    ) -> Self:
+        """Build the factor store the label needs to ``read`` ``start`` to ``end``.
+
+        The wrapped factor's store is built from ``start`` to
+        ``lookahead_bars()`` bars after ``end``, or to the dataset's last
+        bar when fewer follow; ``store_range`` then reports that later end.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range the label will be read over.
+
+        Returns
+        -------
+        Forward
+            ``self``, for chaining.
+
+        Examples
+        --------
+        >>> label.build("2024-01-01", "2024-01-20").store_range()
+        ('2024-01-01', '2024-01-26T00:00:00')
+        """
+        check_range(start, end, f"{self.class_name}.build()")
+        self.config.factor.build(start, self._later_end(end))
+        return self
+
+    def extend(self, end: "str | datetime.date | pd.Timestamp") -> Self:
+        """Extend the factor store so the label can be read up to ``end``.
+
+        The wrapped factor's store is extended to ``lookahead_bars()`` bars
+        after ``end``, or to the dataset's last bar when fewer follow.
+
+        Parameters
+        ----------
+        end : str, datetime.date or pd.Timestamp
+            The new last date the label will be read up to.
+
+        Returns
+        -------
+        Forward
+            ``self``, for chaining.
+
+        Examples
+        --------
+        >>> label.extend("2024-02-10").store_range()
+        ('2024-01-01', '2024-02-16T00:00:00')
+        """
+        self.config.factor.extend(self._later_end(end))
+        return self
+
+    def store_range(self) -> tuple[str, str] | None:
+        """Return the ``(start, end)`` the wrapped factor's store was built for.
+
+        The end is ``lookahead_bars()`` bars past the last date the label can
+        be read up to. ``None`` when the store was not written by ``build``.
+
+        Examples
+        --------
+        >>> label.build("2024-01-01", "2024-01-20").store_range()
+        ('2024-01-01', '2024-01-26T00:00:00')
+        """
+        return self.config.factor.store_range()
+
+    def _later_end(self, end):
+        """Return the bar ``lookahead_bars()`` after ``end``, or ``end`` when none follow."""
+        dataset = self.config.factor.config.dataset
+        last = last_moment(end)
+        later = dataset.bar_after(last, self.lookahead_bars())
+        return end if later == last else later
+
     def _shifted(self, request, start, end, method: str) -> xr.Dataset:
         """Request the factor ``lookahead`` bars past ``end``, shift and trim."""
         check_range(start, end, f"{self.class_name}.{method}()")
-        lookahead = self.lookahead_bars()
-        dataset = self.config.factor.config.dataset
-        panel = request(start, dataset.bar_after(last_moment(end), lookahead))
-        return panel.shift(timestamp=-lookahead).sel(
+        panel = request(start, self._later_end(end))
+        return panel.shift(timestamp=-self.lookahead_bars()).sel(
             timestamp=slice(as_label(start), as_label(end))
         )

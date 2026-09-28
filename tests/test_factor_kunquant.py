@@ -85,7 +85,7 @@ def test_alpha158_spot_batch_compute_returns_xarray_dataset(
         )
     )
 
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
 
     assert isinstance(result, xr.Dataset)
     assert dict(result.sizes) == {"timestamp": 60, "symbol": 8}
@@ -110,7 +110,7 @@ def test_alpha101_spot_batch_compute_returns_xarray_dataset(
         )
     )
 
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
 
     assert isinstance(result, xr.Dataset)
     assert "alpha001" in result.data_vars
@@ -169,7 +169,7 @@ def test_alpha101_stock_bugfix_batch_compute_returns_xarray_dataset(
         )
     )
 
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
 
     assert isinstance(result, xr.Dataset)
     assert "alpha001" in result.data_vars
@@ -220,7 +220,7 @@ def test_alpha158_stock_batch_compute_returns_xarray_dataset(
         )
     )
 
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
 
     assert isinstance(result, xr.Dataset)
     assert dict(result.sizes) == {"timestamp": 60, "symbol": 8}
@@ -363,7 +363,7 @@ def test_batch_compute_pads_the_symbol_axis_on_macos(
             tmp_path=tmp_path,
         )
     )
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
     assert dict(result.sizes) == {"timestamp": 40, "symbol": 5}
     assert list(result["symbol"].values) == [f"S{i}USDT" for i in range(5)]
     assert np.isfinite(result["KMID"].to_numpy()).sum() > 0

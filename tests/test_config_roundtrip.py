@@ -59,6 +59,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.momentum import Momentum
 from quantlab.ml_model.xgb import XGBoostRegressor
+from tests.label_stubs import StubLabel
 from tests.test_model_hierarchy import FakePanel, _kwargs
 
 _ADJUSTED_COLUMNS = ("adjHigh", "adjLow", "adjClose", "adjOpen", "adjVolume")
@@ -181,11 +182,14 @@ def test_loaders_do_not_mutate_their_input(
     assert factor_saved == before
 
     # Same stand-in factor loader as tests/test_model_hierarchy.py: only the
-    # factor rebuild is faked, the model class lookup is real.
+    # factor rebuild is faked, the model class lookup is real. The `_kwargs`
+    # label (the only panel named `ret`) comes back wrapped as a label.
     monkeypatch.setattr(
         module_utils,
         "load_factor_from_config",
-        lambda cfg: FakePanel(cfg["factor_names"]),
+        lambda cfg: StubLabel(FakePanel(cfg["factor_names"]))
+        if cfg["factor_names"] == ["ret"]
+        else FakePanel(cfg["factor_names"]),
     )
     model_saved = XGBoostRegressor(MLConfig(**_kwargs(tmp_path))).get_config()
     model_saved["resolved_hyperparameters"] = {"eta": 0.3}

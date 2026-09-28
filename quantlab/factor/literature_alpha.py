@@ -26,7 +26,7 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import NoReturn, Self
+from typing import Self
 
 import numpy as np
 import xarray as xr
@@ -424,7 +424,7 @@ class LiteratureAlpha(FactorKunQuant):
             ),
             file_path="data/factors/literature_alpha.zarr",
         ))
-        features = factor.get_features(factor.compute("2015-01-01", "2024-12-31"))
+        features = factor.compute("2015-01-01", "2024-12-31")
     """
 
     _CORE_FACTOR_NAMES = tuple(
@@ -696,16 +696,6 @@ class LiteratureAlpha(FactorKunQuant):
                 "stream panel and unset fama_french_csv"
             )
         return super().cal_stream(data, timestamp, symbols)
-
-    def _get_features(self, data):
-        """Return the computed factor panel unchanged."""
-
-        return data
-
-    def _get_labels(self, data) -> NoReturn:
-        """Raise because the literature bundle is a feature, not a label."""
-
-        raise RuntimeError(f"{self.__class__.__name__} does not support get_labels()")
 
 
 __all__ = ["LiteratureAlpha", "LiteratureAlphaParameters"]

@@ -28,6 +28,7 @@ from quantlab.base.config import FactorConfig, MLConfig
 from quantlab.base.model import BaseModel, MLModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.alpha158 import Alpha158SpotKline
+from tests.label_stubs import StubLabel
 
 N_TIMES = 130
 N_SYMBOLS = 4
@@ -85,12 +86,6 @@ class FakePanel:
 
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
-
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
@@ -166,7 +161,9 @@ class StubMLHead(MLModel):
 def _config(tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt"):
     return MLConfig(
         factors=factors if factors is not None else [FakePanel(["f_a", "f_b"], seed=1)],
-        labels=labels if labels is not None else [FakePanel(["ret_a"], seed=2)],
+        labels=[StubLabel(label) for label in labels]
+        if labels is not None
+        else [StubLabel(FakePanel(["ret_a"], seed=2))],
         model_save_dir=str(tmp_path / save_dir),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -459,9 +456,6 @@ class _Label:
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
 
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
-
     def get_config(self):
         return {"name": "Label", "factor_names": ["ret"]}
 
@@ -470,7 +464,7 @@ def _pinned_config(tmp_path, factors, labels, times):
     day = lambda i: pd.Timestamp(times[i]).strftime("%Y-%m-%d")
     return MLConfig(
         factors=factors,
-        labels=labels,
+        labels=[StubLabel(label) for label in labels],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",

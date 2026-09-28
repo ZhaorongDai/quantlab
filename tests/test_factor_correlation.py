@@ -199,6 +199,12 @@ class _Stub:
     def get_config(self):
         return {"name": "stub", "factor_names": list(self.names)}
 
+    def span_bars(self):
+        return 1
+
+    def lookahead_bars(self):
+        return 1
+
 
 def test_the_cluster_summary_lists_clusters_of_two_or_more_largest_first(features):
     summary = FactorCorrelation.compute(features, threshold=0.7).cluster_summary()

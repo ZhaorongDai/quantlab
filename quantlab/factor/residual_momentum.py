@@ -29,7 +29,7 @@ from __future__ import annotations
 import platform
 from dataclasses import dataclass, fields
 from pathlib import Path
-from typing import NoReturn, Self
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -783,14 +783,6 @@ class ResidualMomentumFF3(FactorKunQuant):
             module_name,
             cfake.CppCompilerConfig(),
         )
-
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged; no post-processing is needed."""
-        return data
-
-    def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise ``RuntimeError``: residual momentum is a feature, not a label."""
-        raise RuntimeError(f"{self.__class__.__name__} does not support get_labels()")
 
 
 __all__ = [

@@ -39,6 +39,7 @@ import xarray as xr
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import BaseModel, DLModel, MLModel
 from quantlab.utils.jsonable import to_jsonable
+from tests.label_stubs import StubLabel
 
 N_TIMES = 40
 N_SYMBOLS = 3
@@ -90,12 +91,6 @@ class FakePanel:
 
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
-
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
@@ -154,7 +149,7 @@ class TinyDLHead(DLModel):
 def _common(tmp_path: Path, save_dir: str) -> dict:
     return dict(
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
-        labels=[FakePanel(["ret"], seed=2)],
+        labels=[StubLabel(FakePanel(["ret"], seed=2))],
         model_save_dir=str(tmp_path / save_dir),
         factor_data_strategy="cal",
         label_data_strategy="cal",

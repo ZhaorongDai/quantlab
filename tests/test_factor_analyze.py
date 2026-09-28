@@ -2,7 +2,8 @@
 
 The panels are synthetic: the ``spot_kline_zarr`` store from ``conftest.py``
 feeds ``Momentum`` and two test-local Polars factors. ``_ForwardReturn`` is a
-label (its labels are the next bar's close-to-close return) and
+``Forward`` label (span 1, delay 0) over the trailing close-to-close return,
+so its value at t is the next bar's close-to-close return, and
 ``_Oracle`` is a factor that is a strictly increasing function of that same
 forward return, so it orders symbols exactly as the label does. Every
 analysis covers ``ALL``, the whole synthetic store; the factors take no
@@ -24,10 +25,16 @@ import xarray as xr
 
 from quantlab.analysis.factor_report import FactorAnalyzer
 from quantlab.backend import XrBackend
-from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.base.config import (
+    DatasetConfig,
+    FactorConfig,
+    ForwardConfig,
+    PolarsFactorConfig,
+)
 from quantlab.base.factor import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.momentum import Momentum
+from quantlab.label.forward import Forward
 from quantlab.utils.module import load_factor_from_config
 
 #: Every bar of the synthetic stores, which start on 2024-01-01.
@@ -50,18 +57,25 @@ def _forward_return() -> pl.Expr:
     return close.shift(-1).over("symbol") / close - 1.0
 
 
-class _ForwardReturn(FactorPolars):
-    """One-bar forward return label, ``fwd_1``."""
+class _TrailingReturn(FactorPolars):
+    """Trailing one-bar close-to-close return, named ``fwd_1`` for the label."""
 
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
+        close = pl.col("Close")
         return (
             lf.sort(["symbol", "timestamp"])
-            .with_columns(_forward_return().alias("fwd_1"))
+            .with_columns((close / close.shift(1).over("symbol") - 1.0).alias("fwd_1"))
             .select(["timestamp", "symbol", "fwd_1"])
         )
 
-    def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
-        return data
+
+class _ForwardReturn(Forward):
+    """One-bar forward return label, ``fwd_1``: the trailing return one bar later."""
+
+    def __init__(self, factor_config: PolarsFactorConfig):
+        super().__init__(
+            ForwardConfig(factor=_TrailingReturn(factor_config), span=1, delay=0)
+        )
 
 
 class _Oracle(FactorPolars):
@@ -73,9 +87,6 @@ class _Oracle(FactorPolars):
             .with_columns((_forward_return() ** 3).alias("oracle"))
             .select(["timestamp", "symbol", "oracle"])
         )
-
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        return data
 
 
 class _TwoOracles(_Oracle):
@@ -95,8 +106,11 @@ class _StaticLabel:
     def compute(self, start, end) -> xr.Dataset:
         return self.panel
 
-    def get_labels(self, panel: xr.Dataset) -> xr.Dataset:
-        return panel
+    def span_bars(self) -> int:
+        return 1
+
+    def lookahead_bars(self) -> int:
+        return 1
 
     def get_config(self) -> dict:
         return {"name": "static"}
@@ -151,7 +165,7 @@ def test_a_perfect_predictor_has_ic_one_and_monotone_quantile_returns(oracle_and
 
 def test_frequency_mismatch_raises(spot_kline_zarr, tmp_path):
     factor = Momentum(_polars_config(spot_kline_zarr(), tmp_path, "mom", kwargs={"n": 5}))
-    daily = factor.get_features(factor.compute(*ALL))["momentum_5"]
+    daily = factor.compute(*ALL)["momentum_5"]
     weekly = daily.isel(timestamp=slice(None, None, 7)).rename("ret").to_dataset()
 
     with pytest.raises(ValueError, match=r"1 days.*7 days"):
@@ -160,7 +174,7 @@ def test_frequency_mismatch_raises(spot_kline_zarr, tmp_path):
 
 def test_panels_are_inner_joined_before_computing(oracle_and_label):
     factor, label = oracle_and_label
-    labels = label.get_labels(label.compute(*ALL))
+    labels = label.compute(*ALL)
     narrowed = labels.isel(timestamp=slice(10, 40), symbol=slice(0, 12))
 
     pair = factor.analyze(*ALL, frets=[_StaticLabel(narrowed)]).pairs["oracle__fwd_1"]

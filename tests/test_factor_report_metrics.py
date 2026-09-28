@@ -11,7 +11,6 @@
 """
 
 import json
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -183,7 +182,13 @@ class _Fret:
 
     def __init__(self, name: str, horizon: int):
         self.name = name
-        self.config = SimpleNamespace(kwargs={"n_forward_periods": horizon})
+        self.horizon = horizon
+
+    def span_bars(self) -> int:
+        return self.horizon
+
+    def lookahead_bars(self) -> int:
+        return self.horizon + 1
 
     def get_config(self):
         return {"name": self.name}

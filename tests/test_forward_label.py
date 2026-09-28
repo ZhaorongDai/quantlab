@@ -199,3 +199,23 @@ def test_a_label_keeps_the_factor_variable_names(factor):
     assert list(label.compute("2024-01-10", "2024-01-20").data_vars) == list(
         factor.get_factor_names()
     )
+
+
+def test_build_covers_the_lookahead_past_end_so_read_answers_up_to_end(factor):
+    label = Forward(ForwardConfig(factor=factor, span=3, delay=1))
+
+    assert label.build("2024-01-01", "2024-01-20") is label
+    assert label.store_range() == ("2024-01-01", "2024-01-24T00:00:00")
+    name = factor.get_factor_names()[0]
+    _assert_same(
+        _values(label.read("2024-01-10", "2024-01-20"), name),
+        _values(label.compute("2024-01-10", "2024-01-20"), name),
+    )
+
+
+def test_extend_moves_the_store_end_by_the_lookahead(factor):
+    label = Forward(ForwardConfig(factor=factor, span=3, delay=1))
+    label.build("2024-01-01", "2024-01-20")
+
+    assert label.extend("2024-02-10") is label
+    assert label.store_range() == ("2024-01-01", "2024-02-14T00:00:00")

@@ -30,7 +30,7 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from conftest import compute_all, features_of_all
+from conftest import compute_all
 from quantlab.base.config import DatasetConfig, PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
@@ -106,7 +106,7 @@ def test_momentum_compute_returns_xarray_dataset_with_only_factor_columns(
     """
     config = _momentum_config(spot_kline_zarr(), tmp_path, n=5)
 
-    result = features_of_all(Momentum(config))
+    result = compute_all(Momentum(config))
 
     assert isinstance(result, xr.Dataset)
     assert sorted(result.data_vars) == ["momentum_5"]
@@ -274,7 +274,7 @@ def test_a_dated_dataset_config_does_not_narrow_what_compute_reads(
     )
     factor = Momentum(_momentum_config(dataset_config, tmp_path, n=5, warmup_bars=20))
 
-    momentum = factor.get_features(factor.compute("2024-02-01", "2024-02-29"))[
+    momentum = factor.compute("2024-02-01", "2024-02-29")[
         "momentum_5"
     ]
 

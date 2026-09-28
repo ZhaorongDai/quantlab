@@ -742,12 +742,13 @@ class FactorAnalyzer:
         ----------
         factor : Factor
             The analyzed factor; its names, class and config are recorded.
-        frets : sequence of Factor
-            Forward-return labels, in the order of ``labels``.
+        frets : sequence of Forward
+            Forward-return labels, in the order of ``labels``; each one's
+            ``span_bars()`` is its horizon.
         features : xr.Dataset
-            ``factor.get_features(panel)`` of a requested panel.
+            The factor's panel from ``compute`` or ``read``.
         labels : sequence of xr.Dataset
-            ``fret.get_labels(panel)`` of each fret's requested panel.
+            Each fret's panel from ``compute`` or ``read``.
         factor_names : sequence of str, optional
             Factor variables to analyze; all of ``get_factor_names()`` when
             None.
@@ -772,8 +773,8 @@ class FactorAnalyzer:
         >>> window = ("2024-02-01", "2024-02-29")
         >>> analysis = FactorAnalyzer(quantiles=4).run(
         ...     factor, [fwd],
-        ...     features=factor.get_features(factor.compute(*window)),
-        ...     labels=[fwd.get_labels(fwd.compute(*window))],
+        ...     features=factor.compute(*window),
+        ...     labels=[fwd.compute(*window)],
         ... )
         >>> list(analysis.pairs)
         ['momentum_5__ret_1']
@@ -1108,10 +1109,8 @@ class FactorAnalyzer:
 
     @staticmethod
     def _horizon_of(fret) -> int:
-        """Read the label horizon from ``config.kwargs["n_forward_periods"]``, else 1."""
-        kwargs = getattr(getattr(fret, "config", None), "kwargs", None) or {}
-        horizon = kwargs.get("n_forward_periods", 1)
-        return max(int(horizon), 1)
+        """Return the bars the fret's return accumulates over: its ``span_bars()``."""
+        return int(fret.span_bars())
 
     def _summary(self, pair: PairAnalysis, n_symbols: int) -> dict[str, Any]:
         """Collect the scalar metrics of ``pair`` into a flat dict."""

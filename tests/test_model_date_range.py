@@ -17,10 +17,11 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DatasetConfig, FactorConfig, MLConfig
+from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, MLConfig
 from quantlab.base.factor import FactorKunQuant
 from quantlab.base.model import MLModel
 from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.label.forward import Forward
 
 
 @pytest.fixture(autouse=True)
@@ -42,12 +43,9 @@ class MaDeviation(FactorKunQuant):
             Output(op.SubConst(op.Div(close, op.WindowedAvg(close, 5)), 1.0), "ma_dev_5")
         return Function(builder.ops)
 
-    def _get_features(self, data):
-        return data
 
-
-class NextReturn(FactorKunQuant):
-    """One-bar close return, shifted one bar earlier as a label."""
+class OneBarReturn(FactorKunQuant):
+    """Trailing one-bar close return; wrapped in `Forward` it is the label."""
 
     def _get_factor_names(self):
         return ("ret_1",)
@@ -58,9 +56,6 @@ class NextReturn(FactorKunQuant):
             close = Input("close")
             Output(op.SubConst(op.Div(close, op.BackRef(close, 1)), 1.0), "ret_1")
         return Function(builder.ops)
-
-    def _get_labels(self, data):
-        return data.shift(timestamp=-1)
 
 
 class LeastSquaresHead(MLModel):
@@ -96,12 +91,18 @@ def _factor(cls, dataset, tmp_path: Path, name: str):
     )
 
 
+def _label(dataset, tmp_path: Path):
+    """The next bar's one-bar return: `OneBarReturn` read one bar ahead."""
+    factor = _factor(OneBarReturn, dataset, tmp_path, "ret")
+    return Forward(ForwardConfig(factor=factor, span=1, delay=0))
+
+
 @pytest.fixture
 def parts(spot_kline_zarr, tmp_path):
     """One dataset of 60 daily bars from 2024-01-01 feeding a factor and a label."""
     dataset = SpotKlineDataset(spot_kline_zarr(periods=60))
     factor = _factor(MaDeviation, dataset, tmp_path, "ma_dev")
-    label = _factor(NextReturn, dataset, tmp_path, "ret")
+    label = _label(dataset, tmp_path)
     return factor, label
 
 
@@ -130,7 +131,12 @@ def _dates(panel: xr.Dataset) -> tuple[str, str]:
 
 
 def _config_state(obj) -> tuple:
-    """The config without its dataset object, and the dataset's config."""
+    """The config without its dataset object, and the dataset's config.
+
+    For a `Forward` label, its own config dict and its factor's state.
+    """
+    if isinstance(obj, Forward):
+        return (copy.deepcopy(obj.config.to_dict()), _config_state(obj.config.factor))
     return (
         copy.deepcopy({k: v for k, v in obj.config.to_dict().items() if k != "dataset"}),
         copy.deepcopy(obj.config.dataset.config),
@@ -154,7 +160,7 @@ def test_cal_strategy_collects_compute_panels_on_the_model_range(parts, tmp_path
 
     assert _dates(collected) == ("2024-01-20", "2024-02-10")
     expected_feature = factor.compute("2024-01-20", "2024-02-10")
-    expected_label = label.get_labels(label.compute("2024-01-20", "2024-02-10"))
+    expected_label = label.compute("2024-01-20", "2024-02-10")
     xr.testing.assert_allclose(collected["ma_dev_5"], expected_feature["ma_dev_5"])
     xr.testing.assert_allclose(collected["ret_1"], expected_label["ret_1"])
     # Warm-up comes from the bars before the range: the first bar is finite.
@@ -176,7 +182,7 @@ def test_read_strategy_collects_read_panels_on_the_model_range(parts, tmp_path):
     )
     xr.testing.assert_allclose(
         collected["ret_1"],
-        label.get_labels(label.read("2024-01-20", "2024-02-10"))["ret_1"],
+        label.read("2024-01-20", "2024-02-10")["ret_1"],
     )
 
 
@@ -205,8 +211,9 @@ def test_two_models_sharing_one_factor_train_without_interfering(parts, tmp_path
     xr.testing.assert_allclose(again, alone)
 
     # The late model equals one trained on fresh objects, with no early model.
-    fresh_parts = tuple(_factor(type(obj), obj.config.dataset, tmp_path, name)
-                        for obj, name in zip(parts, ("ma_dev", "ret")))
+    dataset = parts[0].config.dataset
+    fresh_parts = (_factor(MaDeviation, dataset, tmp_path, "ma_dev"),
+                   _label(dataset, tmp_path))
     fresh = _model(fresh_parts, tmp_path / "fresh", "2024-02-01", "2024-02-28",
                    train_end="2024-02-20")
     fresh.collect().train()

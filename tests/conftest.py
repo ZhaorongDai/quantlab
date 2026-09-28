@@ -1565,11 +1565,6 @@ def compute_all(factor) -> xr.Dataset:
         return factor.compute(*WHOLE_STORE)
 
 
-def features_of_all(factor) -> xr.Dataset:
-    """``factor.get_features`` of ``compute_all(factor)``."""
-    return factor.get_features(compute_all(factor))
-
-
 def symbol_coord(symbols: Sequence[str], encoding: str) -> np.ndarray:
     """Build a `symbol` coordinate that survives a zarr round trip AS
     `encoding`.

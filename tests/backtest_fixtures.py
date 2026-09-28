@@ -8,17 +8,17 @@ Configs are constructed directly, never through the factories in
 
 import dataclasses
 from pathlib import Path
-from typing import NoReturn
 
 import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, MLConfig, PolarsFactorConfig
+from quantlab.base.config import DatasetConfig, ForwardConfig, MLConfig, PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
 from quantlab.base.model import MLModel
 from quantlab.dataset.stock import StockDataset
+from quantlab.label.forward import Forward
 
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
 
@@ -115,15 +115,10 @@ class PastReturnFactor(FactorPolars):
             .select(["timestamp", "symbol", name])
         )
 
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        return data
-
-    def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        raise RuntimeError(f"{type(self).__name__} is a feature, not a label")
 
 
-class ForwardReturnLabel(FactorPolars):
-    """`fwd_ret_{n}` = adjClose n bars later (per symbol) / adjClose - 1."""
+class _TrailingCloseReturn(FactorPolars):
+    """`fwd_ret_{n}` before the shift: adjClose / adjClose n bars earlier - 1."""
 
     @property
     def n(self) -> int:
@@ -134,15 +129,30 @@ class ForwardReturnLabel(FactorPolars):
         close = pl.col("adjClose")
         return (
             lf.sort(["symbol", "timestamp"])
-            .with_columns((close.shift(-self.n).over("symbol") / close - 1.0).alias(name))
+            .with_columns((close / close.shift(self.n).over("symbol") - 1.0).alias(name))
             .select(["timestamp", "symbol", name])
         )
 
-    def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
-        return data
 
-    def _get_features(self, data: xr.Dataset) -> NoReturn:
-        raise RuntimeError(f"{type(self).__name__} is a label, not a feature")
+class ForwardReturnLabel(Forward):
+    """`fwd_ret_{n}` = adjClose n bars later (per symbol) / adjClose - 1.
+
+    A `Forward` label (span n, delay 0) over the trailing close-to-close
+    return, built and rebuilt from a `PolarsFactorConfig` like `Return`.
+    """
+
+    config_cls = PolarsFactorConfig
+
+    def __init__(self, factor_config: PolarsFactorConfig):
+        factor = _TrailingCloseReturn(factor_config)
+        super().__init__(ForwardConfig(factor=factor, span=factor.n, delay=0))
+
+    @property
+    def n(self) -> int:
+        return self.config.span
+
+    def get_config(self) -> dict:
+        return {**self.config.factor.get_config(), "name": self.import_path}
 
 
 class FirstFeatureHead(MLModel):

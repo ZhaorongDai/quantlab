@@ -41,6 +41,7 @@ from quantlab.dl_model.mlp import MLPRegressor
 from quantlab.dl_model.rnn import RNNRegressor
 from quantlab.dl_model.rnn_classification import RNNClassifier
 from quantlab.ml_model.xgb import XGBoostRegressor
+from tests.label_stubs import StubLabel
 
 N_TIMES = 40
 N_SYMBOLS = 3
@@ -85,12 +86,6 @@ class FakePanel:
 
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
-
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
@@ -137,7 +132,9 @@ class LinearDLHead(DLModel):
 def _kwargs(tmp_path, factors=None, labels=None):
     return dict(
         factors=factors if factors is not None else [FakePanel(["f_a", "f_b"], seed=1)],
-        labels=labels if labels is not None else [FakePanel(["ret"], seed=2)],
+        labels=[StubLabel(label) for label in labels]
+        if labels is not None
+        else [StubLabel(FakePanel(["ret"], seed=2))],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -281,11 +278,15 @@ def test_ml_model_never_references_deepcopy():
 
 
 def _patch_factor_loader(monkeypatch):
-    monkeypatch.setattr(
-        module_utils,
-        "load_factor_from_config",
-        lambda cfg: FakePanel(cfg["factor_names"]),
-    )
+    """Rebuild each saved panel as a `FakePanel`; the `_kwargs` label (the
+    only panel named `ret`) comes back wrapped as a label, since a model
+    rejects a label without `lookahead_bars()`."""
+
+    def load(cfg):
+        panel = FakePanel(cfg["factor_names"])
+        return StubLabel(panel) if cfg["factor_names"] == ["ret"] else panel
+
+    monkeypatch.setattr(module_utils, "load_factor_from_config", load)
 
 
 def test_loader_builds_a_dl_config_for_a_dl_head(tmp_path, monkeypatch):

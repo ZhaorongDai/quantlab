@@ -8,7 +8,7 @@ import pytest
 import xarray as xr
 from KunQuant.Op import Input
 
-from conftest import features_of_all
+from conftest import compute_all
 
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
@@ -232,7 +232,7 @@ def test_all_eight_factors_match_direct_formulas(tmp_path: Path) -> None:
 
     panel, factors, risk_free = _synthetic_panel()
     dataset = _dataset(tmp_path, panel)
-    output = features_of_all(LiteratureAlpha(_config(dataset, tmp_path)))
+    output = compute_all(LiteratureAlpha(_config(dataset, tmp_path)))
 
     assert tuple(output.data_vars) == CORE_NAMES
     assert dict(output.sizes) == {"timestamp": 90, "symbol": 8}
@@ -313,7 +313,7 @@ def test_fama_french_csv_reproduces_panel_ivol(tmp_path: Path) -> None:
         "low_idiosyncratic_volatility_raw",
         "low_idiosyncratic_volatility_rank",
     )
-    panel_factor = features_of_all(LiteratureAlpha(
+    panel_factor = compute_all(LiteratureAlpha(
         FactorConfig(
             warmup_bars=0,
             dataset=full,
@@ -324,7 +324,7 @@ def test_fama_french_csv_reproduces_panel_ivol(tmp_path: Path) -> None:
             njobs=2,
         )
     ))
-    csv_factor = features_of_all(LiteratureAlpha(
+    csv_factor = compute_all(LiteratureAlpha(
         FactorConfig(
             warmup_bars=0,
             dataset=ret_only,

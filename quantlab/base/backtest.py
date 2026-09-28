@@ -48,7 +48,7 @@ from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.timer import Timer
 
-from .config import BacktestConfig, FactorConfig
+from .config import BacktestConfig, FactorConfig, ForwardConfig
 
 #: Fields of a data fingerprint that are compared against the expected run;
 #: any difference logs a warning.
@@ -1536,6 +1536,8 @@ class BaseBacktester(ABC):
         (``FactorConfig``) reads ``data_columns``; a Polars factor consumes
         the whole frame, so every data variable is covered.
         """
+        if isinstance(factor.config, ForwardConfig):
+            return BaseBacktester._dataset_variables_fingerprint(factor.config.factor, ds)
         if isinstance(factor.config, FactorConfig):
             variables = list(factor.config.data_columns)
         else:
@@ -1568,9 +1570,7 @@ class BaseBacktester(ABC):
             )
             if strategy == "read":
                 self._fingerprints[f"factor_store[{i}]:{name}"] = (
-                    self._store_fingerprint(
-                        factor.get_features(factor.read(start, end))
-                    )
+                    self._store_fingerprint(factor.read(start, end))
                 )
 
     def _record_training_fingerprints(self) -> None:
@@ -1590,16 +1590,15 @@ class BaseBacktester(ABC):
         """
         model_config = self.config.model.config
         start, end = model_config.start_date, model_config.end_date
-        for prefix, items, strategy, getter in (
-            ("train_factor", model_config.factors, model_config.factor_data_strategy, "get_features"),
-            ("train_label", model_config.labels, model_config.label_data_strategy, "get_labels"),
+        for prefix, items, strategy in (
+            ("train_factor", model_config.factors, model_config.factor_data_strategy),
+            ("train_label", model_config.labels, model_config.label_data_strategy),
         ):
             for i, item in enumerate(items):
                 name = type(item).__name__
                 if strategy == "read":
-                    panel = getattr(item, getter)(item.read(start, end))
                     self._fingerprints[f"{prefix}_store[{i}]:{name}"] = (
-                        self._store_fingerprint(panel)
+                        self._store_fingerprint(item.read(start, end))
                     )
                 else:
                     self._fingerprints[f"{prefix}[{i}]:{name}"] = (
@@ -1608,13 +1607,18 @@ class BaseBacktester(ABC):
                         )
                     )
 
-    @staticmethod
-    def _compute_inputs(item, start, end) -> xr.Dataset:
+    @classmethod
+    def _compute_inputs(cls, item, start, end) -> xr.Dataset:
         """Return the dataset panel ``item.compute(start, end)`` reads.
 
         The range comes from the factor itself, so the fingerprint covers
-        exactly the warm-up and resample padding ``compute`` reads.
+        exactly the warm-up and resample padding ``compute`` reads. A label
+        (``Forward``) computes its factor up to ``lookahead_bars()`` bars
+        after ``end``, so its factor's inputs are fingerprinted over that
+        later range.
         """
+        if isinstance(item.config, ForwardConfig):
+            return cls._compute_inputs(item.config.factor, start, item._later_end(end))
         return item.config.dataset.panel(*item._input_range(start, end, warn=False))
 
     def _compare_fingerprints(self, *, partial: bool = False) -> None:
@@ -1807,25 +1811,15 @@ class BaseBacktester(ABC):
         """
 
     def _label_horizon_bars(self) -> int:
-        """Return the largest ``n_forward_periods`` of the model's labels, in bars.
+        """Return the largest ``span_bars()`` of the model's labels.
 
-        The label of the ``train_end`` bar reads the next n bars of prices,
-        so those bars are in-sample too. A label with no
-        ``n_forward_periods`` in ``config.kwargs`` contributes 0 and logs a
-        warning naming its class rather than guessing a value.
+        The label of the ``train_end`` bar reads the following bars of
+        prices, so those bars are in-sample too.
         """
-        horizon = 0
-        for label in self.config.model.config.labels:
-            kwargs = label.config.kwargs
-            if kwargs is None or "n_forward_periods" not in kwargs:
-                logger.warning(
-                    f"{self.class_name}: label {type(label).__name__} has no "
-                    f"n_forward_periods in config.kwargs; it contributes a "
-                    f"0-bar horizon to the effective training window"
-                )
-                continue
-            horizon = max(horizon, int(kwargs["n_forward_periods"]))
-        return horizon
+        return max(
+            (label.span_bars() for label in self.config.model.config.labels),
+            default=0,
+        )
 
     def _training_window(
         self, calendar: np.ndarray, train_start, train_end

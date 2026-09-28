@@ -47,6 +47,7 @@ from quantlab.base.config import DLConfig
 from quantlab.dl_model.mlp import MLPRegressor
 from quantlab.dl_model.rnn import RNNRegressor
 from quantlab.dl_model.rnn_classification import RNNClassifier
+from tests.label_stubs import StubLabel
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry -- deliberately tiny so a real training run is fast
@@ -78,8 +79,8 @@ class FakePanel:
     """A stand-in for a factor/label object.
 
     Implements only what `BaseModel.collect()` actually calls: `config`,
-    `_reset_dataset_config`, `_get_factor_names`, `cal`/`read`,
-    `get_features` / `get_labels` and `get_config`.
+    `_reset_dataset_config`, `_get_factor_names`, `compute`/`read`
+    and `get_config`.
 
     Values are pseudo-random rather than constant on purpose: `MLPRegressor`
     logs `r2_score`, which is degenerate (and warns) on a constant target.
@@ -134,12 +135,6 @@ class FakePanel:
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
-
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
@@ -152,7 +147,9 @@ def _make_config(
             FakePanel(["f_a", "f_b", "f_c"], seed=1, via_pandas=via_pandas)
         ],
         labels=[
-            FakePanel(["ret_30", "ret_60"], seed=2, via_pandas=via_pandas)
+            StubLabel(
+                FakePanel(["ret_30", "ret_60"], seed=2, via_pandas=via_pandas)
+            )
         ],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
@@ -561,7 +558,7 @@ def test_the_real_pipeline_panel_is_float64_not_float32():
     ingest produces; without it the two training tests below would be green
     for the wrong reason.
     """
-    panel = FakePanel(["f_a"], seed=1, via_pandas=True).get_features()
+    panel = FakePanel(["f_a"], seed=1, via_pandas=True)._ds
     assert panel["f_a"].dtype == np.float64
 
 
@@ -612,7 +609,7 @@ def test_to_tensor_downcasts_a_float64_panel(tmp_path):
     model = RNNRegressor(
         _make_config(tmp_path, via_pandas=True, **_hp_for(RNNRegressor))
     )
-    panel = FakePanel(["f_a", "f_b"], seed=1, via_pandas=True).get_features()
+    panel = FakePanel(["f_a", "f_b"], seed=1, via_pandas=True)._ds
     assert panel["f_a"].dtype == np.float64
 
     tensor = model.to_tensor(panel, ["f_a", "f_b"])
@@ -634,7 +631,7 @@ def test_to_tensor_follows_torchs_default_dtype_not_a_hardcoded_float32(
     panel below stays float32 and this goes red.
     """
     model = RNNRegressor(_make_config(tmp_path, **_hp_for(RNNRegressor)))
-    panel = FakePanel(["f_a"], seed=1).get_features()  # float32
+    panel = FakePanel(["f_a"], seed=1)._ds  # float32
     assert panel["f_a"].dtype == np.float32
 
     original = torch.get_default_dtype()

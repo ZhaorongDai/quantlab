@@ -15,9 +15,6 @@ along time, while ``Alpha158Stock`` works on adjusted US-equity bars and
 z-scores every output across symbols.
 """
 
-from typing import NoReturn
-
-import xarray as xr
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.predefined import Alpha158
 from KunQuant.Stage import Function
@@ -64,7 +61,7 @@ class Alpha158SpotKline(TimeSeriesZScoredFactor):
     ...     factor_names=["KMID", "STD5"], kwargs={"zscore_window": 20},
     ...     file_path="alpha158.zarr",
     ... ))
-    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
+    >>> panel = factor.compute("2024-01-01", "2024-06-30")
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -150,15 +147,6 @@ class Alpha158SpotKline(TimeSeriesZScoredFactor):
         """Return the KunQuant graph built by ``_get_func_stream``."""
         return self._get_func_stream()
 
-    def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise ``RuntimeError``: this factor set produces features, not labels."""
-        raise RuntimeError(f"{__class__.__name__} does not support get_label()")
-
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged; no post-processing is needed."""
-        return data
-
-
 class Alpha158Stock(FactorKunQuant):
     """Alpha158 factors over adjusted US-equity bars, z-scored across symbols.
 
@@ -187,7 +175,7 @@ class Alpha158Stock(FactorKunQuant):
     ...                   "adjVolume"],
     ...     factor_names=["KMID", "STD5"], file_path="alpha158_stock.zarr",
     ... ))
-    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
+    >>> panel = factor.compute("2024-01-01", "2024-06-30")
     """
 
     def __init__(self, factor_config: FactorConfig):
@@ -272,11 +260,3 @@ class Alpha158Stock(FactorKunQuant):
     def _get_factor_func(self):
         """Return the KunQuant graph built by ``_get_func_stream``."""
         return self._get_func_stream()
-
-    def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise ``RuntimeError``: this factor set produces features, not labels."""
-        raise RuntimeError(f"{__class__.__name__} does not support get_label()")
-
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged; no post-processing is needed."""
-        return data

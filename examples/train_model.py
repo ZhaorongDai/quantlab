@@ -134,10 +134,6 @@ class ReversalFeatures(FactorKunQuant):
             Output(op.SubConst(op.Div(close, op.WindowedAvg(close, 5)), 1.0), "ma_dev_5")
         return Function(builder.ops)
 
-    def _get_features(self, data):
-        """Return the factor values unchanged; no post-processing is needed."""
-        return data
-
 
 def build_model(root: Path, dataset_config: DatasetConfig, dates: dict) -> XGBoostRegressor:
     """Build the features, the label and the model from plain config objects."""

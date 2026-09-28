@@ -46,6 +46,7 @@ from loguru import logger
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import DLModel
 from quantlab.ml_model.xgb import XGBoostRegressor
+from tests.label_stubs import StubLabel
 
 N_TIMES = 40
 SYMBOLS = ["S0", "S1", "S2", "S3"]
@@ -117,12 +118,6 @@ class NamedPanel:
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
-
     def get_config(self):
         return {"name": "NamedPanel", "factor_names": list(self._config_names)}
 
@@ -152,7 +147,7 @@ class LinearDLHead(DLModel):
 def _common_kwargs(root: Path, factors: NamedPanel, labels: NamedPanel) -> dict:
     return dict(
         factors=[factors],
-        labels=[labels],
+        labels=[StubLabel(labels)],
         model_save_dir=str(root),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -275,7 +270,7 @@ def test_identical_model_loads_and_predicts_identically(tmp_path, warning_messag
 
     fresh.load(checkpoint)
 
-    features = fresh.config.factors[0].get_features()
+    features = fresh.config.factors[0]._ds
     expected = trained.predict_panel(features)
     actual = fresh.predict_panel(features)
     assert list(actual.data_vars) == LABELS
@@ -388,7 +383,7 @@ def test_legacy_record_with_a_permuted_config_field_loads_with_an_order_warning(
     assert str(config_names) in order[0] and str(FACTORS) in order[0], order[0]
     assert "factor variables" in order[0], order[0]
     assert any("weaker" in m for m in _model_warnings(warning_messages)), warning_messages
-    features = fresh.config.factors[0].get_features()
+    features = fresh.config.factors[0]._ds
     xr.testing.assert_allclose(fresh.predict_panel(features), trained.predict_panel(features))
 
 
@@ -434,7 +429,7 @@ def test_no_record_warns_once_and_loads(tmp_path, warning_messages, case):
     assert str(checkpoint) in unchecked[0]
     assert "cannot be checked" in unchecked[0], unchecked[0]
     assert not any("has no config.json" in m for m in warning_messages), warning_messages
-    features = fresh.config.factors[0].get_features()
+    features = fresh.config.factors[0]._ds
     xr.testing.assert_allclose(fresh.predict_panel(features), trained.predict_panel(features))
 
 

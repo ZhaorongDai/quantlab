@@ -43,12 +43,14 @@ from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
     DatasetConfig,
+    ForwardConfig,
     MLConfig,
     PolarsFactorConfig,
 )
 from quantlab.base.factor import FactorPolars
 from quantlab.base.model import MLModel
 from quantlab.dataset.stock import StockDataset
+from quantlab.label.forward import Forward
 from quantlab.utils.module import load_backtester_from_config
 
 # zarr warns on every write that consolidated metadata is not part of the
@@ -139,34 +141,26 @@ class PastReturn(FactorPolars):
             .select(["timestamp", "symbol", f"past_ret_{n}"])
         )
 
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the factor values unchanged; no post-processing is needed."""
-        return data
 
 
-class ForwardReturn(FactorPolars):
-    """``fwd_ret_{n}``: the return from the next bar's open to the open n bars later.
+class OpenReturn(FactorPolars):
+    """``open_ret_{n}``: the adjusted open over the open ``n`` bars earlier, minus 1.
 
-    This matches how the backtester trades: a signal formed at bar t fills at
-    the open of bar t + 1, so that is where the return the model learns to
-    predict starts.
+    Wrapped in ``Forward`` below, it becomes the label: a signal formed at
+    bar t fills at the open of bar t + 1 (``delay=1``), and the return is
+    held ``n`` bars (``span=n``), so the label at t is this factor at
+    t + 1 + n.
     """
 
     def _get_factor_lazyframe(self, lf: pl.LazyFrame) -> pl.LazyFrame:
-        """Compute the open-to-open forward return that starts at the next bar."""
-        n = self.config.kwargs["n_forward_periods"]
+        """Compute the trailing ``n``-bar return of ``adjOpen`` for every symbol."""
+        n = self.config.kwargs["n"]
         open_ = pl.col("adjOpen")
-        entry = open_.shift(-1).over("symbol")
-        exit_ = open_.shift(-(n + 1)).over("symbol")
         return (
             lf.sort(["symbol", "timestamp"])
-            .with_columns((exit_ / entry - 1.0).alias(f"fwd_ret_{n}"))
-            .select(["timestamp", "symbol", f"fwd_ret_{n}"])
+            .with_columns((open_ / open_.shift(n).over("symbol") - 1.0).alias(f"open_ret_{n}"))
+            .select(["timestamp", "symbol", f"open_ret_{n}"])
         )
-
-    def _get_labels(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the label values unchanged; the frame already looks forward."""
-        return data
 
 
 class LeastSquaresHead(MLModel):
@@ -202,11 +196,14 @@ def make_model(root: Path, prices: DatasetConfig, **dates) -> LeastSquaresHead:
         # many bars before the requested start (the warm-up).
         PolarsFactorConfig(warmup_bars=5, dataset=fresh_dataset(prices), kwargs={"n": 5})
     )
-    label = ForwardReturn(
-        # `n_forward_periods` tells the backtester how far each label looks
-        # ahead, which extends the in-sample window past train_end.
-        PolarsFactorConfig(
-            warmup_bars=0, dataset=fresh_dataset(prices), kwargs={"n_forward_periods": 5}
+    label = Forward(
+        # The label's span tells the backtester how far it looks ahead,
+        # which extends the in-sample window past train_end.
+        ForwardConfig(
+            factor=OpenReturn(
+                PolarsFactorConfig(warmup_bars=0, dataset=fresh_dataset(prices), kwargs={"n": 5})
+            ),
+            span=5,
         )
     )
     return LeastSquaresHead(

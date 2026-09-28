@@ -10,10 +10,7 @@ the whole ``FactorPolars`` contract in one class: a single
 config. Copy it as a starting point for a new Polars factor.
 """
 
-from typing import NoReturn
-
 import polars as pl
-import xarray as xr
 
 from quantlab.base.config import PolarsFactorConfig
 from quantlab.base.factor import FactorPolars
@@ -51,7 +48,7 @@ class Momentum(FactorPolars):
     ... ))
     >>> factor.get_factor_names()
     ('momentum_20',)
-    >>> panel = factor.get_features(factor.compute("2024-01-01", "2024-06-30"))
+    >>> panel = factor.compute("2024-01-01", "2024-06-30")
     """
 
     def __init__(self, factor_config: PolarsFactorConfig):
@@ -91,11 +88,3 @@ class Momentum(FactorPolars):
             # Any other column left here would be stored as a factor.
             .select(["timestamp", "symbol", factor_name])
         )
-
-    def _get_labels(self, data: xr.Dataset) -> NoReturn:
-        """Raise ``RuntimeError``: this factor produces features, not labels."""
-        raise RuntimeError(f"{__class__.__name__} does not support get_label()")
-
-    def _get_features(self, data: xr.Dataset) -> xr.Dataset:
-        """Return the computed panel unchanged; no post-processing is needed."""
-        return data

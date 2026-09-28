@@ -51,9 +51,6 @@ class MaDeviation(FactorKunQuant):
             Output(op.SubConst(op.Div(close, op.WindowedAvg(close, 5)), 1.0), "ma_dev_5")
         return Function(builder.ops)
 
-    def _get_features(self, data):
-        return data
-
 
 class Spread(FactorPolars):
     """High minus low over close, on the shared lowercase names."""
@@ -62,9 +59,6 @@ class Spread(FactorPolars):
         return lf.with_columns(
             ((pl.col("high") - pl.col("low")) / pl.col("close")).alias("spread")
         ).select(["timestamp", "symbol", "spread"])
-
-    def _get_features(self, data):
-        return data
 
 
 def _write(panel: xr.Dataset, path: Path) -> str:

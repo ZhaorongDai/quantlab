@@ -151,8 +151,7 @@ def test_the_first_backtest_bar_matches_a_standalone_compute(tmp_path):
     # Same warm-up as a standalone compute over the window, and both equal a
     # computation over the whole history, so neither is under-warmed.
     for panel in (factor.compute(start, end), factor.compute(_day(bars[0]), end)):
-        features = factor.get_features(panel)
-        expected = features[list(features.data_vars)[0]].sel(timestamp=bars[30])
+        expected = panel[list(panel.data_vars)[0]].sel(timestamp=bars[30])
         np.testing.assert_array_equal(
             first.sel(symbol=expected.symbol.values).values, expected.values
         )

@@ -45,6 +45,7 @@ from quantlab.dl_model.mlp import MLPRegressor
 from quantlab.dl_model.rnn import RNNRegressor
 from quantlab.dl_model.rnn_classification import RNNClassifier
 from quantlab.ml_model.xgb import XGBoostRegressor
+from tests.label_stubs import StubLabel
 
 N_TIMES = 30
 SYMBOLS = ["S0", "S1", "S2"]
@@ -113,12 +114,6 @@ class FakePanel:
 
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
-
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
 
     def get_config(self):
         return {"name": "FakePanel", "factor_names": list(self.names)}
@@ -191,7 +186,7 @@ class TupleHeadWithoutAdapter(LinearDLHead):
 def _config_kwargs(tmp_path, *, labels=LABELS, seed=1, symbols=SYMBOLS):
     return dict(
         factors=[FakePanel(FACTORS, seed=seed, symbols=symbols)],
-        labels=[FakePanel(labels, seed=seed + 1, symbols=symbols)],
+        labels=[StubLabel(FakePanel(labels, seed=seed + 1, symbols=symbols))],
         model_save_dir=str(tmp_path / "ckpt"),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -209,7 +204,7 @@ def _ml_stub(tmp_path) -> ChannelMLHead:
 
 
 def _features(model) -> xr.Dataset:
-    return model.config.factors[0].get_features()
+    return model.config.factors[0]._ds
 
 
 def _stack(features: xr.Dataset, names) -> np.ndarray:
@@ -947,7 +942,7 @@ def _mlp_on_a_backend_filled_without_collect(tmp_path, symbols) -> MLPRegressor:
     """
     model = MLPRegressor(_mlp_config(tmp_path))
     panel = xr.merge(
-        [model.config.factors[0].get_features(), model.config.labels[0].get_labels()]
+        [model.config.factors[0]._ds, model.config.labels[0]._ds]
     )
     model.data_backend.to_internal(panel.sel(symbol=list(symbols)))
     assert model.symbols == list(symbols)

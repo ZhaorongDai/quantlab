@@ -15,7 +15,7 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from conftest import WHOLE_STORE, compute_all, features_of_all
+from conftest import WHOLE_STORE, compute_all
 
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
@@ -284,7 +284,7 @@ def test_residual_momentum_batch_calculates_unaligned_symbol_count(
     dataset, timestamps = _monthly_dataset(tmp_path, symbols=7)
     factor = ResidualMomentumFF3(_factor_config(dataset, tmp_path))
 
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
 
     assert dict(result.sizes) == {"timestamp": len(timestamps), "symbol": 7}
     assert tuple(result.data_vars) == ("resmom_raw", "resmom_rank")
@@ -303,7 +303,7 @@ def test_regression_diagnostics_match_least_squares_by_hand(tmp_path: Path) -> N
         factor_names=("resmom_raw", "alpha", "beta_mkt", "beta_smb", "beta_hml",
                       "residual_sum", "residual_volatility"),
     ))
-    out = factor.get_features(compute_all(factor))
+    out = compute_all(factor)
     panel = dataset.panel(*WHOLE_STORE)
 
     window, lookback, skip = 36, 12, 1
@@ -337,12 +337,12 @@ def test_csv_path_reproduces_the_panel_path(tmp_path: Path) -> None:
     """Feeding the series from the CSV gives the numbers of feeding them as panel variables."""
     ret_only, full, csv = _daily_fixture(tmp_path)
 
-    from_csv = features_of_all(ResidualMomentumFF3(_factor_config(
+    from_csv = compute_all(ResidualMomentumFF3(_factor_config(
         ret_only, tmp_path, data_columns=("ret",),
         file_path=str(tmp_path / "from_csv.zarr"),
         kwargs={"fama_french_csv": str(csv), **DAILY},
     )))
-    from_panel = features_of_all(ResidualMomentumFF3(_factor_config(
+    from_panel = compute_all(ResidualMomentumFF3(_factor_config(
         full, tmp_path, data_columns=("ret", "risk_free", "mkt_rf", "smb", "hml"),
         file_path=str(tmp_path / "from_panel.zarr"),
         kwargs={"return_column": "ret", **DAILY},

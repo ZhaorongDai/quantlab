@@ -887,7 +887,7 @@ def test_alpha158_computes_over_a_crsp_panel_with_no_consumer_change(
         )
     )
 
-    result = factor.get_features(compute_all(factor))
+    result = compute_all(factor)
 
     assert dict(result.sizes) == {"timestamp": SERIES_DAYS, "symbol": 8}
     assert sorted(result.data_vars) == ["KMID", "ROC5", "STD5"]
@@ -929,7 +929,7 @@ def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_p
         )
     )
 
-    labels = label.get_labels(compute_all(label)).load()
+    labels = compute_all(label).load()
     series = labels["ret_1"].sel(symbol=SYNTHETIC_AXIS).to_numpy()
 
     assert len(series) == SERIES_DAYS
@@ -987,7 +987,7 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
         )
     )
 
-    labels = label.get_labels(compute_all(label)).load()
+    labels = compute_all(label).load()
     value = float(
         labels["ret_1"].sel(timestamp="2008-09-16", symbol=LEHMAN_AXIS).values
     )

@@ -40,9 +40,6 @@ class MaDeviation(FactorKunQuant):
             Output(op.SubConst(op.Div(close, op.WindowedAvg(close, 5)), 1.0), "ma_dev_5")
         return Function(builder.ops)
 
-    def _get_features(self, data):
-        return data
-
 
 def _kunquant(dataset_config: DatasetConfig, tmp_path: Path) -> MaDeviation:
     return MaDeviation(

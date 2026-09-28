@@ -43,6 +43,7 @@ from quantlab.ml_model.xgb import (
     pooled_ccc_loss,
 )
 from quantlab.utils.metrics import regression_panel_metrics
+from tests.label_stubs import StubLabel
 
 N_TIMES = 160
 N_SYMBOLS = 30
@@ -88,12 +89,6 @@ class ArrayPanel:
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
 
-    def get_features(self, panel=None):
-        return self._ds if panel is None else panel
-
-    def get_labels(self, panel=None):
-        return self._ds if panel is None else panel
-
     def get_config(self):
         return {"name": "ArrayPanel", "factor_names": list(self.names)}
 
@@ -128,7 +123,7 @@ def _config(
 ) -> MLConfig:
     return MLConfig(
         factors=[factors],
-        labels=[labels],
+        labels=[StubLabel(labels)],
         model_save_dir=str(tmp_path / save_dir),
         factor_data_strategy="cal",
         label_data_strategy="cal",
@@ -493,7 +488,7 @@ def test_rejects_a_dl_config(tmp_path):
     factors, labels = _panels(seed=23)
     kwargs = dict(
         factors=[factors],
-        labels=[labels],
+        labels=[StubLabel(labels)],
         model_save_dir=str(tmp_path),
         factor_data_strategy="cal",
         label_data_strategy="cal",

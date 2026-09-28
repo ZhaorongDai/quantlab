@@ -237,7 +237,8 @@ class BaseModel(ABC):
         Raises
         ------
         TypeError
-            If ``config`` is not an instance of ``config_cls``.
+            If ``config`` is not an instance of ``config_cls``, a factor is
+            a label, or a label is not one (see ``_check_roles``).
 
         Examples
         --------
@@ -249,6 +250,7 @@ class BaseModel(ABC):
                 f"{self.class_name} requires a {self.config_cls.__name__}, "
                 f"got {type(config).__name__}"
             )
+        self._check_roles(config)
         return dataclasses.replace(
             config,
             name=self.import_path,
@@ -257,6 +259,34 @@ class BaseModel(ABC):
             ),
             end_date=Date.END_DATE if config.end_date is None else config.end_date,
         )
+
+    def _check_roles(self, config: DLConfig | MLConfig) -> None:
+        """Refuse a label among the factors or a factor among the labels.
+
+        A label is anything with ``lookahead_bars()``, such as
+        ``quantlab.label.forward.Forward``: it reads bars after t, so it must
+        never be a feature, and a factor without it would be an unshifted
+        target.
+
+        Raises
+        ------
+        TypeError
+            Naming the misplaced object and its position.
+        """
+        for i, factor in enumerate(config.factors):
+            if callable(getattr(factor, "lookahead_bars", None)):
+                raise TypeError(
+                    f"{self.class_name}: factors[{i}] is the label "
+                    f"{type(factor).__name__}, which reads bars after t; "
+                    f"pass it in labels, not factors."
+                )
+        for i, label in enumerate(config.labels):
+            if not callable(getattr(label, "lookahead_bars", None)):
+                raise TypeError(
+                    f"{self.class_name}: labels[{i}] is {type(label).__name__}, "
+                    f"which is not a label; wrap it in "
+                    f"quantlab.label.forward.Forward to predict it."
+                )
 
     @property
     def num_times(self) -> int:
@@ -378,19 +408,15 @@ class BaseModel(ABC):
             case _:
                 raise ValueError(f"data strategy {strategy!r} is not supported")
 
-    def _collect_panels(self, objs, strategy: str, getter: str, start, end) -> xr.Dataset:
+    def _collect_panels(self, objs, strategy: str, start, end) -> xr.Dataset:
         """Request each object's panel from ``start`` to ``end`` and merge them.
 
         ``start`` and ``end`` default to the model's ``start_date`` and
-        ``end_date``. Each panel comes from ``_request_panel`` and is passed
-        through the object's ``getter`` (``get_features`` or ``get_labels``).
+        ``end_date``. Each panel comes from ``_request_panel``.
         """
         start = self.config.start_date if start is None else start
         end = self.config.end_date if end is None else end
-        panels = [
-            getattr(obj, getter)(self._request_panel(obj, strategy, start, end))
-            for obj in objs
-        ]
+        panels = [self._request_panel(obj, strategy, start, end) for obj in objs]
         return xr.combine_by_coords(panels)  # type: ignore
 
     def _collect_all_labels(self, start=None, end=None) -> xr.Dataset:
@@ -398,7 +424,7 @@ class BaseModel(ABC):
 
         Each label's panel from ``start`` to ``end`` (by default the model's
         ``start_date`` and ``end_date``) is read from its store or computed,
-        according to ``config.label_data_strategy``, then turned into labels.
+        according to ``config.label_data_strategy``.
 
         Raises
         ------
@@ -406,7 +432,7 @@ class BaseModel(ABC):
             If the strategy is neither ``"cal"`` nor ``"read"``.
         """
         data = self._collect_panels(
-            self.config.labels, self.config.label_data_strategy, "get_labels", start, end
+            self.config.labels, self.config.label_data_strategy, start, end
         )
         return data.sortby(["timestamp", "symbol"])
 
@@ -415,8 +441,7 @@ class BaseModel(ABC):
 
         Each factor's panel from ``start`` to ``end`` (by default the model's
         ``start_date`` and ``end_date``) is read from its store or computed,
-        according to ``config.factor_data_strategy``, then turned into
-        features.
+        according to ``config.factor_data_strategy``.
 
         Raises
         ------
@@ -424,7 +449,7 @@ class BaseModel(ABC):
             If the strategy is neither ``"cal"`` nor ``"read"``.
         """
         return self._collect_panels(
-            self.config.factors, self.config.factor_data_strategy, "get_features", start, end
+            self.config.factors, self.config.factor_data_strategy, start, end
         )
 
     def collect(

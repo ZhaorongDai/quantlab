@@ -312,14 +312,14 @@ def test_factor_resample_aggregates_the_computed_panel(
     minute_config: DatasetConfig, tmp_path: Path
 ):
     minute = _momentum(minute_config, tmp_path)
-    minute_panel = minute.get_features(compute_all(minute))
+    minute_panel = compute_all(minute)
 
     daily = minute.resample("1d", "last")
 
     assert daily.config.dataset is not minute.config.dataset
     assert daily.config.dataset.config.resample_freq is None  # computed on minute bars
-    assert minute.get_features(compute_all(minute)).sizes["timestamp"] == DAYS * BARS_PER_DAY
-    panel = daily.get_features(compute_all(daily))
+    assert compute_all(minute).sizes["timestamp"] == DAYS * BARS_PER_DAY
+    panel = compute_all(daily)
     assert dict(panel.sizes) == {"timestamp": DAYS, "symbol": 2}
     last_bar_of_each_day = minute_panel["momentum_1"].values[BARS_PER_DAY - 1 :: BARS_PER_DAY]
     np.testing.assert_allclose(panel["momentum_1"].values, last_bar_of_each_day)
@@ -329,7 +329,7 @@ def test_factor_compute_on_a_resampled_copy_resamples_its_output(
     minute_config: DatasetConfig, tmp_path: Path
 ):
     daily = _momentum(minute_config, tmp_path).resample("1d", {"momentum_1": "mean"})
-    panel = daily.get_features(compute_all(daily))
+    panel = compute_all(daily)
     assert panel.sizes["timestamp"] == DAYS
     assert np.isfinite(panel["momentum_1"].values[1:]).all()
 
@@ -367,7 +367,7 @@ def test_factor_resample_config_round_trips(minute_config: DatasetConfig, tmp_pa
 
     rebuilt = load_factor_from_config(saved)
     assert rebuilt.config.resample_freq == "1d"
-    assert rebuilt.get_features(compute_all(rebuilt)).sizes["timestamp"] == DAYS
+    assert compute_all(rebuilt).sizes["timestamp"] == DAYS
 
 
 def test_kunquant_factor_resample_and_stream_refusal(
@@ -386,8 +386,8 @@ def test_kunquant_factor_resample_and_stream_refusal(
     )
     daily = factor.resample("1d", {"KMID": "mean", "VOLUME0": "last"})
     assert daily._lib is None
-    assert dict(daily.get_features(compute_all(daily)).sizes) == {"timestamp": DAYS, "symbol": 8}
-    assert factor.get_features(compute_all(factor)).sizes["timestamp"] == DAYS * BARS_PER_DAY
+    assert dict(compute_all(daily).sizes) == {"timestamp": DAYS, "symbol": 8}
+    assert compute_all(factor).sizes["timestamp"] == DAYS * BARS_PER_DAY
     with pytest.raises(ValueError, match="init_stream"):
         daily.init_stream()
 

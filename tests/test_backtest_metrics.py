@@ -3,7 +3,7 @@
 What this file locks, and what turns each lock red:
 
 - **D-17, the effective training window.** It is `[train_start, train_end +
-  label horizon]`, with the horizon the maximum `n_forward_periods` across the
+  label horizon]`, with the horizon the maximum `span_bars()` across the
   model's labels, counted in BARS on the price calendar: the label on
   `train_end` reads the next n bars of prices, so those bars are in-sample too.
   Dropping the horizon, taking the minimum instead of the maximum, or adding
@@ -12,9 +12,9 @@ What this file locks, and what turns each lock red:
 - **D-17, overlap handling.** A backtest window that overlaps the training
   window logs one warning naming both ranges, still completes `run()`, and
   records the overlap as `in_sample_range`. A disjoint window records no
-  in-sample range and does not warn. A label without `n_forward_periods` and a
-  model without train dates each warn and produce an explicit value (horizon 0,
-  `training_window: null`), never a silent guess.
+  in-sample range and does not warn. A label that spans no bars adds a horizon
+  of 0, and a model without train dates warns and records
+  `training_window: null`, never a silent guess.
 - **D-34, the single-simulation rule.** vectorbt's `Portfolio` cannot be
   time-sliced (RESEARCH Pitfall 5), and re-simulating a slice would reset the
   capital and change the path. `Portfolio.from_orders` is therefore spied and
@@ -51,6 +51,7 @@ import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.backtest import SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig, PolarsFactorConfig
+from tests.label_stubs import StubLabel
 from tests.backtest_fixtures import (
     ForwardReturnLabel,
     make_model,
@@ -164,19 +165,19 @@ def _run_backtester(
 # --------------------------------------------------------------------------
 
 
-def test_label_horizon_is_the_max_n_forward_periods_across_labels(tmp_path):
+def test_label_horizon_is_the_max_span_bars_across_labels(tmp_path):
     backtester = _unit_backtester(tmp_path, n_forward_periods=1)
     labels = backtester.config.model.config.labels
     labels.append(
         ForwardReturnLabel(
             PolarsFactorConfig(
                 warmup_bars=0,
-                dataset=labels[0].config.dataset,
+                dataset=labels[0].config.factor.config.dataset,
                 kwargs={"n_forward_periods": 3},
             )
         )
     )
-    assert [int(label.config.kwargs["n_forward_periods"]) for label in labels] == [1, 3]
+    assert [label.span_bars() for label in labels] == [1, 3]
 
     assert backtester._label_horizon_bars() == 3
 
@@ -202,15 +203,13 @@ def test_training_window_end_adds_the_horizon_in_bars_across_a_weekend(tmp_path)
     assert tuple(window) == ("2024-01-01", "2024-01-09")
 
 
-def test_label_without_n_forward_periods_warns_and_uses_zero(tmp_path, warnings_sink):
+def test_label_that_spans_no_bars_adds_a_zero_horizon(tmp_path):
     backtester = _unit_backtester(tmp_path)
-    label = backtester.config.model.config.labels[0]
-    label.config = dataclasses.replace(label.config, kwargs={})
+    labels = backtester.config.model.config.labels
+    labels[0] = StubLabel(labels[0])
+    assert labels[0].span_bars() == 0
 
     assert backtester._label_horizon_bars() == 0
-    assert any("ForwardReturnLabel" in message for message in warnings_sink), (
-        warnings_sink
-    )
 
 
 # --------------------------------------------------------------------------
