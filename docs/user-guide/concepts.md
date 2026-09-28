@@ -54,7 +54,10 @@ last lookahead bars of the earlier segment, so no label it fits on reads a bar o
 one. Its prediction panel has one variable per label on the same `(timestamp, symbol)` grid
 as its inputs. Model heads come in two
 families: torch networks trained one cross-section of symbols per step (`TorchModel`) and tree or tabular models fitted
-in one call with the library's own early stopping (`LibraryModel`). See [models](models.md).
+in one call with the library's own early stopping (`LibraryModel`). The torch family ships
+`GATsRegressor` (Qlib's GATs) and `MASTERRegressor` (MASTER, gated by market-wide features
+such as those of the `MarketFeatures` factor); the library family ships `XGBoostRegressor`,
+`XGBTDRegressor` and `RealMLPRegressor`. See [models](models.md).
 
 Selection turns predictions into target weights: for every symbol, the fraction of the
 portfolio it should hold. The cross-sectional selector ranks the symbols on each rebalance bar
@@ -232,7 +235,8 @@ folds and adds a `folds/` directory with each fold's own weights and equity. See
 
 The code follows one rule: abstract base classes live in `quantlab/base/`, and the concrete
 implementations live next to the code that uses them. To add a new model you subclass
-`quantlab.base.model.LibraryModel` and put the result in `quantlab/library_model/`; to add a data
+`quantlab.base.model.TorchModel` or `quantlab.base.model.LibraryModel` and put the result in
+`quantlab/torch_model/` or `quantlab/library_model/`; to add a data
 source you subclass `quantlab.base.acquisition.Acquisition` and register it. The
 [extending guide](../developer-guide/extending.md) walks through each case.
 
@@ -250,10 +254,10 @@ quantlab/
         ...              chunked conversion, download ledgers, progress reporting
     acquisition/     one module per vendor: tiingo.py, alpaca.py, wrds/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
-    factor/          Alpha101, Alpha158, momentum, residual momentum
+    factor/          Alpha101, Alpha158, momentum, residual momentum, market features
     label/           Forward (forward.py) and the forward-return labels (fret.py)
-    library_model/        XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
-    torch_model/        torch training rules: windows, target transforms, stopping
+    library_model/   XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
+    torch_model/     GATs and MASTER heads; training panel, datasets, target transforms, stopping
     backtest/        vectorbt engine, top-N selector, the US-equity backtester
     my_ops/          custom KunQuant operators
     utils/           config loaders (module.py), metrics, report, fingerprints, CLI helpers

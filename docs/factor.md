@@ -240,10 +240,12 @@ True
 
 On each bar the values go to every target symbol that has a bar there, that is, whose `kwargs["presence_column"]` (default `close`) is not missing. `FFF` is therefore NaN before it lists, and a model does not see market features on a bar where a symbol had no data. The rolling windows run over each series' own bars, and a target bar that a series lacks is NaN. A window is defined only when all of its bars are. The standard deviations use `ddof=1`, as pandas and Qlib do, an amount of 0 gives NaN rather than an infinite ratio, and the panel is float32. The series columns are `kwargs["close_column"]` (default `adjClose`) and `kwargs["volume_column"]` (default `adjVolume`), looked up after the dataset's `COLUMN_MAP` renaming, so a crypto spot series is read as `close`, `volume` and `amount`. `get_config()` nests each series dataset's config under `series`, and `load_factor_from_config` rebuilds them. If the warm-up is short, the long windows stay NaN on the first bars and `compute` warns: `UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` A series store holding more than one symbol is refused when a panel is computed: `ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
 
-For US equities from WRDS, give each ETF its own CRSP store, as for a backtest benchmark. `CrspDatasetConfig.etf_benchmark` keeps the ETF, which the default security filter drops as a fund:
+For US equities from WRDS, give each ETF its own CRSP store, as for a backtest benchmark. `scripts/wrds/etf.py --etf spy,qqq,iwm` downloads SPY, QQQ and IWM (the S&P 500, the Nasdaq-100 and the Russell 2000) into one store each, and `CrspDatasetConfig.etf_benchmark` keeps the ETF, which the default security filter drops as a fund:
 
 ```python
-from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig
+from quantlab.base.config import (
+    IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig,
+)
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.market import MarketFeatures
 
@@ -256,11 +258,14 @@ def etf(permno, path):
 
 market = MarketFeatures(MarketFeatureConfig(
     dataset=stocks,  # the CRSP panel the model trains on
-    series={"spy": etf(SPY_PERMNO, "/data/zarrs/spy.zarr"),
-            "qqq": etf(QQQ_PERMNO, "/data/zarrs/qqq.zarr")},
+    series={"spy": etf(SPY_PERMNO, "/data/zarrs/wrds_crsp_spy_1d.zarr"),
+            "qqq": etf(QQQ_PERMNO, "/data/zarrs/wrds_crsp_qqq_1d.zarr"),
+            "iwm": etf(IWM_PERMNO, "/data/zarrs/wrds_crsp_iwm_1d.zarr")},
     file_path="/data/factors/market.zarr",
 ))
 ```
+
+The factor goes into a model like any other. `MASTERRegressor` takes its variable names, `list(market.get_factor_names())`, as the `gate_features` hyperparameter (see Train MASTER with market features in the model guide).
 
 ### Resample a factor onto coarser bars
 

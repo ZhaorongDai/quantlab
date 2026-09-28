@@ -240,10 +240,12 @@ True
 
 每根 bar 上，这些值会给到目标中在该 bar 有数据的每个标的，即 `kwargs["presence_column"]`（默认 `close`）不缺失的标的。所以 `FFF` 在上市前是 NaN，模型不会在一个标的没有数据的 bar 上看到市场特征。滚动窗口在各序列自己的 bar 上计算，序列缺少的目标 bar 为 NaN。只有窗口内所有 bar 都有值时，窗口才有值。标准差和 pandas、Qlib 一样使用 `ddof=1`；成交额为 0 时得到 NaN 而不是无穷大的比值；面板为 float32。序列读取的列是 `kwargs["close_column"]`（默认 `adjClose`）和 `kwargs["volume_column"]`（默认 `adjVolume`），按数据集 `COLUMN_MAP` 改名后的名字查找，所以加密货币现货序列读的是 `close`、`volume` 和 `amount`。`get_config()` 把每个序列数据集的配置嵌套在 `series` 下，`load_factor_from_config` 会把它们重建出来。预热不足时，前几根 bar 上的长窗口保持 NaN，`compute` 会警告：`UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` 序列存储含有多于一个标的时，计算面板时会被拒绝：`ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
 
-对来自 WRDS 的美股，像回测基准那样给每只 ETF 单独一个 CRSP 存储。`CrspDatasetConfig.etf_benchmark` 会保留 ETF，而默认的证券过滤器会把它当作基金剔除：
+对来自 WRDS 的美股，像回测基准那样给每只 ETF 单独一个 CRSP 存储。`scripts/wrds/etf.py --etf spy,qqq,iwm` 把 SPY、QQQ 和 IWM（标普 500、纳斯达克 100 和罗素 2000）各下载到一个存储里，`CrspDatasetConfig.etf_benchmark` 会保留 ETF，而默认的证券过滤器会把它当作基金剔除：
 
 ```python
-from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig
+from quantlab.base.config import (
+    IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig,
+)
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.market import MarketFeatures
 
@@ -256,11 +258,14 @@ def etf(permno, path):
 
 market = MarketFeatures(MarketFeatureConfig(
     dataset=stocks,  # the CRSP panel the model trains on
-    series={"spy": etf(SPY_PERMNO, "/data/zarrs/spy.zarr"),
-            "qqq": etf(QQQ_PERMNO, "/data/zarrs/qqq.zarr")},
+    series={"spy": etf(SPY_PERMNO, "/data/zarrs/wrds_crsp_spy_1d.zarr"),
+            "qqq": etf(QQQ_PERMNO, "/data/zarrs/wrds_crsp_qqq_1d.zarr"),
+            "iwm": etf(IWM_PERMNO, "/data/zarrs/wrds_crsp_iwm_1d.zarr")},
     file_path="/data/factors/market.zarr",
 ))
 ```
+
+这个因子和其他因子一样放进模型。`MASTERRegressor` 把它的变量名 `list(market.get_factor_names())` 作为超参数 `gate_features`（见 model 指南中的“用市场特征训练 MASTER”）。
 
 ### 把因子重采样到更粗的 bar
 

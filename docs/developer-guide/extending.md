@@ -748,11 +748,37 @@ AttentionHead_total.pth
 The features are requested from 2024-01-03, nine bars before `start_date`,
 so the first training bar has a full ten-bar window.
 
+`quantlab/torch_model/gats.py` (`GATsRegressor`) and
+`quantlab/torch_model/master.py` (`MASTERRegressor`) are complete
+cross-section heads that reproduce published models, and the patterns to
+copy for a new one:
+
+- Hyperparameters with reference defaults: a `DEFAULTS` class dict, read
+  key by key, never splatted into the network. A head whose reference runs
+  a different number of epochs overrides the `epochs` property so that its
+  own default applies when the key is unset (200 for GATs, 40 for MASTER).
+- A target transform: GATs returns `cs_rank_norm(y), None`; MASTER, in
+  training only, returns the z-score of the symbols `drop_extreme` keeps
+  together with that `keep` mask, so the dropped symbols leave the loss and
+  stay in the cross-section.
+- A stopping rule in the stop hooks. GATs resets its best validation loss
+  in `_on_fit_start`, copies the weights of every strictly better epoch and
+  counts misses in `_should_stop` (stopping after `early_stop` of them), and
+  restores the best weights in `_on_fit_end`. MASTER builds a
+  `TrainLossThreshold` in `_on_fit_start` and returns its `update(train_loss)`
+  from `_should_stop`, keeping the last weights.
+- A hyperparameter checked against the factors at construction: MASTER's
+  `gate_features` are looked up in `get_factor_names()` in `__init__`, so a
+  wrong name fails before any data is collected, and `_init_model` passes
+  the positions to the network.
+
 Every training run opens a Weights & Biases run; set `WANDB_MODE=disabled` in
 the environment to keep it offline. On macOS, set `OMP_NUM_THREADS=1` before
 importing anything when one process uses both torch and xgboost. The
 reference heads are `quantlab/library_model/xgb.py` and
-`quantlab/library_model/realmlp.py`.
+`quantlab/library_model/realmlp.py` for `LibraryModel`, and
+`quantlab/torch_model/gats.py` and `quantlab/torch_model/master.py` for
+`TorchModel`.
 
 ## A backtest market or selection rule
 
