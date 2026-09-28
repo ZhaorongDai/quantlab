@@ -182,7 +182,9 @@ def _assert_golden_fold_dirs(root: Path, cls_name: str, suffix: str) -> None:
     )
     for name in fold_dirs:
         contents = {p.name for p in (projects[0] / name).iterdir()}
-        assert contents == {f"{name}{suffix}", "config.json"}, contents
+        assert contents == {
+            f"{name}{suffix}", "config.json", "ic_series.csv", "test_predictions.zarr"
+        }, contents
 
 
 def test_torch_train_cv_fold_geometry_golden_sequential(tmp_path):
@@ -237,7 +239,7 @@ def test_torch_train_cv_fold_geometry_golden_parallel(tmp_path):
 
 ML_FOLD_DATES: list[tuple[str, str, str, str]] = []
 
-METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic")
+METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
 SPLITS = ("train", "val", "test")
 FOLD_KEYS = {"fold", "train_start", "train_end", "test_start", "test_end"}
 

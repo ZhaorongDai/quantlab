@@ -45,7 +45,7 @@ TEST_END = np.datetime_as_string(TIMES[N_TIMES - 1], unit="D")
 N_TRAIN_TIMES = 100
 N_TEST_TIMES = 30
 
-METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic")
+METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
 
 
 @pytest.fixture(autouse=True)
@@ -297,10 +297,18 @@ def test_no_val_metrics_without_a_validation_segment(tmp_path, recorders):
 def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
     """The library path persists through `MlBackend` as `.joblib`; a `.pth` here
     would mean the torch persistence path ran. `metrics.json` sits beside
-    `config.json` (issue #38)."""
+    `config.json` (issue #38), with the IC series and the test predictions
+    (issue #49)."""
     model = _trained(tmp_path)
-    files = {p.name for p in (tmp_path / "ckpt").rglob("*") if p.is_file()}
-    assert files == {"StubLibraryHead_total.joblib", "config.json", "metrics.json"}
+    files = {p.name for p in _checkpoint(tmp_path).parent.iterdir()}
+    assert files == {
+        "StubLibraryHead_total.joblib",
+        "config.json",
+        "metrics.json",
+        "ic_series.csv",
+        "test_predictions.zarr",
+    }
+    assert not list((tmp_path / "ckpt").rglob("*.pth"))
     assert joblib.load(_checkpoint(tmp_path)) == model.model
 
 

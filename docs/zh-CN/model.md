@@ -68,11 +68,11 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/XGBoostRegressor_total/`，里面有检查点文件、旁边的 `config.json` 和 `metrics.json`。`config.json` 保存完整配置，以及一份 `trained_on` 记录：模型训练时见过的特征名、标签名和标的。`metrics.json` 保存这次运行的评分（见下文“评估指标”）。
+`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/XGBoostRegressor_total/`，里面有检查点文件、旁边的 `config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。`config.json` 保存完整配置，以及一份 `trained_on` 记录：模型训练时见过的特征名、标签名和标的。`metrics.json` 保存这次运行的评分（见下文“评估指标”），另外两个文件保存逐 bar 的 IC 序列和测试段的预测（见下文“IC 序列与保存的预测”）。
 
 ```python
 >>> sorted(p.name for p in checkpoint.parent.iterdir())
-['XGBoostRegressor_total.joblib', 'config.json', 'metrics.json']
+['XGBoostRegressor_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> import json
 >>> record = json.loads((checkpoint.parent / "config.json").read_text())
 >>> record["trained_on"]["factor_names"], record["trained_on"]["label_names"], len(record["trained_on"]["symbols"])
@@ -124,14 +124,16 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。每个模型头都在主标签（第一个标签）的原始值上计算全部六个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头报告同样的键；其中的 `loss` 是模型头的 `_val_one_batch` 在该段上的均值，默认就是变换后目标上的 `_loss`（见“训练 torch 模型”）。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头报告同样的键；其中的 `loss` 是模型头的 `_val_one_batch` 在该段上的均值，默认就是变换后目标上的 `_loss`（见“训练 torch 模型”）。
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
->>> sorted(metrics)[:7]
-['test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse']
+>>> sorted(metrics)[:9]
+['test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse']
 >>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.707, 'val_rank_ic': 0.687, 'test_rank_ic': 0.679}
+>>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("icir")}
+{'train_icir': 6.897, 'train_rank_icir': 6.202, 'val_icir': 6.144, 'val_rank_icir': 5.323, 'test_icir': 5.524, 'test_rank_icir': 4.813}
 ```
 
 `regression_panel_metrics` 可以对任意面板计算同样的评分：
@@ -144,7 +146,36 @@ True
 ...     label.ds["ret"].sel(timestamp=test).values,
 ... )
 >>> {name: round(value, 3) for name, value in scores.items()}
-{'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679}
+{'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679, 'icir': 5.524, 'rank_icir': 4.813}
+```
+
+IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cross_sectional_rank_ic_series` 给出（被跳过的时间点为 NaN），`information_ratio` 把这样的序列变成 ICIR。`regression_panel_metrics(pred, target, return_series=True)` 会把两条序列和指标一起返回。
+
+### IC 序列与保存的预测
+
+每次运行还会在 `metrics.json` 旁边写两个文件，之后要算新指标或做集成时可以直接从磁盘读取，不必重新预测：
+
+- `ic_series.csv` 有 `split`、`timestamp`、`ic` 和 `rank_ic` 四列：每个参与评估的段（`train`、`val`、`test`，各段内按时间排序）的每个 bar 一行，记录该 bar 在主标签原始值上的 IC 和 RankIC。它们和 `metrics.json` 来自同一份预测：某段 `ic` 列的均值就是 `<split>_ic`，其 ICIR 就是 `<split>_icir`。没有 IC 的 bar（有效标的少于两个，或截面为常数）不写行。只有当两个值一个存在、另一个不存在时，才会出现空单元格。
+- `test_predictions.zarr` 是测试段的预测面板：在收集到的特征上调用 `predict_panel`，覆盖测试段的所有 bar 和收集到的所有标的，每个标签一个变量。测试段没有 bar 时不写这个存储。
+
+```python
+>>> import pandas as pd
+>>> series = pd.read_csv(checkpoint.parent / "ic_series.csv", parse_dates=["timestamp"])
+>>> series.head(3)
+   split  timestamp        ic   rank_ic
+0  train 2024-01-01  0.662219  0.690226
+1  train 2024-01-02  0.798276  0.780451
+2  train 2024-01-03  0.811311  0.826627
+>>> series.groupby("split", sort=False).size().to_dict()
+{'train': 119, 'val': 29, 'test': 48}
+>>> test_ic = series[series["split"] == "test"]["ic"]
+>>> round(float(test_ic.mean() / test_ic.std()), 3), round(metrics["test_icir"], 3)
+(5.524, 5.524)
+>>> saved = xr.open_zarr(checkpoint.parent / "test_predictions.zarr").load()
+>>> dict(saved.sizes), list(saved.data_vars)
+({'timestamp': 48, 'symbol': 20}, ['ret'])
+>>> bool((saved["ret"] == predictions["ret"].sel(timestamp=saved.timestamp)).all())
+True
 ```
 
 ### 类层次
@@ -194,7 +225,7 @@ True
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -204,12 +235,16 @@ True
 [('2024-01-01', '2024-04-07', '2024-04-10', '2024-04-29'), ('2024-01-21', '2024-04-27', '2024-04-30', '2024-05-19'), ('2024-02-10', '2024-05-17', '2024-05-20', '2024-06-08'), ('2024-03-01', '2024-06-06', '2024-06-09', '2024-06-28'), ('2024-03-21', '2024-06-26', '2024-06-29', '2024-07-18')]
 >>> [round(r["test_rank_ic"], 3) for r in results]
 [0.691, 0.649, 0.695, 0.656, 0.697]
+>>> [round(r["test_icir"], 3) for r in results]
+[6.943, 5.013, 7.982, 5.508, 5.464]
+>>> from pathlib import Path
+>>> sorted(p.name for p in Path(results[0]["checkpoint"]).parent.iterdir())
+['XGBoostRegressor_cv_fold_0.joblib', 'config.json', 'ic_series.csv', 'test_predictions.zarr']
 ```
 
 所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即清单文件，包含 `format_version`（2）、与返回值相同的折列表（含清除后的 `train_end`），以及 `cv_mean` 块：每个 `train_*`、`val_*`、`test_*` 指标在各折上的均值，记为 `cv_mean_<指标>`，另有 `cv_n_folds`。非有限的折值不参与平均，NaN 和无穷大写成 null。回测器根据这个文件回放一次交叉验证；它拒绝读取第 1 版清单（出现 `cv_mean` 块之前写的），旧项目请重新运行 `train_cv`。每折的 `config.json` 记录的是该折配置时的日期，即清除之前的日期，所以它的 `train_end` 比清单里的晚 L 个 bar。
 
 ```python
->>> from pathlib import Path
 >>> trial = Path(results[0]["checkpoint"]).parent.parent
 >>> sorted(p.name for p in trial.iterdir())
 ['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']

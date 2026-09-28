@@ -559,7 +559,7 @@ def test_a_dl_train_writes_metrics_json_and_reloads_to_the_same_predictions(
     checkpoint = model.train()
 
     metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
-    keys = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic")
+    keys = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "val", "test") for k in keys}
     assert metrics == recorders[0].summary
 

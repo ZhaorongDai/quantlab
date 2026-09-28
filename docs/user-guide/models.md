@@ -188,10 +188,23 @@ the 300 allowed trees were kept.
 Beside the checkpoint, `train()` writes `config.json` and `metrics.json`.
 `metrics.json` holds the scores of the first label on its raw values for each
 segment: `train_*`, `val_*` and `test_*`, each of `loss`, `mse`, `rmse`,
-`mae`, `r2`, `ic` and `rank_ic`. These are the values the W&B run summary
-receives, with NaN and infinity written as null. A run with `val_size=0` has
-no `val_*` keys. Torch heads write the same keys; their `loss` is the
-training objective on the transformed target.
+`mae`, `r2`, `ic`, `rank_ic`, `icir` and `rank_icir`. These are the values
+the W&B run summary receives, with NaN and infinity written as null. A run
+with `val_size=0` has no `val_*` keys. Torch heads write the same keys; their
+`loss` is the training objective on the transformed target.
+
+Two more files sit beside them, so that a new metric or an ensemble can be
+computed later without predicting again:
+
+- `ic_series.csv`, with the columns `split`, `timestamp`, `ic` and `rank_ic`:
+  the IC and RankIC of every bar of every segment, the series that `ic`,
+  `rank_ic`, `icir` and `rank_icir` summarise. A bar without an IC (fewer
+  than two valid symbols) has no row.
+- `test_predictions.zarr`, the test segment's prediction panel as
+  `predict_panel` returns it, one variable per label.
+
+Every fold of `train_cv` writes the same two files into its own checkpoint
+directory.
 
 ```python
 import json
@@ -242,13 +255,19 @@ realised label panel. Only cells where both are finite count.
   useful on real daily data.
 - The RankIC is the same correlation computed on ranks, a per-bar Spearman
   correlation. One extreme return cannot dominate it.
+- The ICIR is the mean of the per-bar IC divided by its standard deviation
+  (RankICIR the same for RankIC). It tells a steady signal from one that
+  is strong on a few bars only. A bar without an IC is left out, and fewer
+  than two such bars give NaN.
 - R2 is the pooled coefficient of determination over all cells,
   `1 - SS_res / SS_tot`. It measures how close the predicted magnitudes are.
   Return forecasts usually have an R2 close to zero even when their IC is
   good, so judge a return model mainly by IC and RankIC.
 
 `regression_panel_metrics(pred, target)` returns all of them (`mse`, `rmse`,
-`mae`, `r2`, `ic`, `rank_ic`) in one dict:
+`mae`, `r2`, `ic`, `rank_ic`, `icir`, `rank_icir`) in one dict, and
+`cross_sectional_ic_series` / `cross_sectional_rank_ic_series` return the
+per-bar values:
 
 ```python
 from quantlab.utils.metrics import regression_panel_metrics
@@ -256,11 +275,11 @@ from quantlab.utils.metrics import regression_panel_metrics
 m = regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values)
 ```
 
-`LibraryModel` heads compute the same metrics themselves during `train()` for the
-`train`, `val` and `test` segments, under keys such as `test_ic` and
-`val_rank_ic`. They are written to the Weights & Biases run summary and
-returned per fold by `train_cv`. Torch heads log their own per-epoch metrics
-and return none.
+Every head, torch or library, computes the same metrics itself during
+`train()` for the `train`, `val` and `test` segments, under keys such as
+`test_ic` and `val_rank_ic`. They are written to `metrics.json`, to the
+Weights & Biases run summary, and per fold to `train_cv`'s results. Torch
+heads also log `train_loss` and `val_loss` every epoch.
 
 ## Checkpoints and config.json
 
@@ -271,6 +290,9 @@ models/
   XGBoostRegressor_trial_20260925_175317_715310/
     XGBoostRegressor_total/
       config.json
+      ic_series.csv
+      metrics.json
+      test_predictions.zarr/
       XGBoostRegressor_total.joblib
 ```
 
@@ -397,7 +419,7 @@ fold 1: train 2022-02-28..2022-11-30  test 2022-12-05..2023-01-27  IC=+0.277  Ra
 fold 2: train 2022-04-25..2023-01-25  test 2023-01-30..2023-03-24  IC=+0.254  RankIC=+0.223
 fold 3: train 2022-06-20..2023-03-22  test 2023-03-27..2023-05-19  IC=+0.264  RankIC=+0.237
 cv_folds.json: format_version 2 with 4 folds
-keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse', 'test_start', 'train_end', 'train_ic', 'train_loss', 'train_mae', 'train_mse', 'train_r2', 'train_rank_ic', 'train_rmse', 'train_start', 'val_ic', 'val_loss', 'val_mae', 'val_mse', 'val_r2', 'val_rank_ic', 'val_rmse']
+keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_loss', 'train_mae', 'train_mse', 'train_r2', 'train_rank_ic', 'train_rank_icir', 'train_rmse', 'train_start', 'val_ic', 'val_icir', 'val_loss', 'val_mae', 'val_mse', 'val_r2', 'val_rank_ic', 'val_rank_icir', 'val_rmse']
 mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
 ```
 

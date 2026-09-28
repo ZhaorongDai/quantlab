@@ -536,7 +536,9 @@ def test_train_cv_sequential(tmp_path, recorders):
     ] == expected
     for r in results:
         ckpt = Path(r["checkpoint"])
-        assert {p.name for p in ckpt.parent.iterdir()} == {ckpt.name, "config.json"}
+        assert {p.name for p in ckpt.parent.iterdir()} == {
+            ckpt.name, "config.json", "ic_series.csv", "test_predictions.zarr"
+        }
         booster = joblib.load(ckpt)
         assert booster.num_boosted_rounds() <= 60
         assert booster.num_boosted_rounds() == booster.best_iteration + 1

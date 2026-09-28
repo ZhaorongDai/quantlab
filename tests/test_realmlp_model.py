@@ -461,7 +461,9 @@ def test_train_cv_sequential(tmp_path, recorders):
     for r in results:
         ckpt = Path(r["checkpoint"])
         assert ckpt.suffix == ".joblib"
-        assert {p.name for p in ckpt.parent.iterdir()} == {ckpt.name, "config.json"}
+        assert {p.name for p in ckpt.parent.iterdir()} == {
+            ckpt.name, "config.json", "ic_series.csv", "test_predictions.zarr"
+        }
         assert isinstance(joblib.load(ckpt), RealMLP_TD_Regressor)
         assert np.isfinite(r["test_ic"])
         fresh = RealMLPRegressor(_config(tmp_path, *_panels(seed=31), save_dir="unused")).load(ckpt)

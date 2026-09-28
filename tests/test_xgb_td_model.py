@@ -499,7 +499,9 @@ def test_train_cv_sequential(tmp_path, recorders):
     for r in results:
         ckpt = Path(r["checkpoint"])
         assert ckpt.suffix == ".joblib"
-        assert {p.name for p in ckpt.parent.iterdir()} == {ckpt.name, "config.json"}
+        assert {p.name for p in ckpt.parent.iterdir()} == {
+            ckpt.name, "config.json", "ic_series.csv", "test_predictions.zarr"
+        }
         loaded = joblib.load(ckpt)
         assert isinstance(loaded, list) and len(loaded) == 1
         assert np.isfinite(r["test_ic"])
