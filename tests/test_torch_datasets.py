@@ -104,6 +104,9 @@ def test_changing_features_after_a_bar_never_changes_its_sample(dataset_cls):
         assert len(old) == len(new)
         for a, b in zip(old, new):
             torch.testing.assert_close(a.x, b.x, equal_nan=True)
+            torch.testing.assert_close(a.y, b.y, equal_nan=True)
+            torch.testing.assert_close(a.y_raw, b.y_raw, equal_nan=True)
+            assert torch.equal(a.mask, b.mask)
             assert torch.equal(a.where[0], b.where[0])
             assert torch.equal(a.where[1], b.where[1])
 

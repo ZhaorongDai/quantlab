@@ -2604,7 +2604,7 @@ class LibraryModel(BaseModel):
         ``log(step=...)`` curves.
         """
         num_times, num_symbols = panel.present.shape
-        pred = np.full((num_times, num_symbols, self.num_labels), np.nan, dtype=np.float32)
+        pred = np.full((num_times, num_symbols, self.num_labels), np.nan, dtype=np.float64)
         cells = panel.present & self._bar_mask(panel, bars)[:, None]
         t, s = torch.nonzero(cells, as_tuple=True)
         pred[t.numpy(), s.numpy()] = self._forward_rows(panel.x[t, s].numpy())
@@ -2722,20 +2722,24 @@ class LibraryModel(BaseModel):
         """Return ``[T, S, L]`` predictions for a ``[T, S, F]`` input.
 
         Every cell with a finite feature is a row for ``_forward``; the
-        others are NaN. Tensors are converted to numpy.
+        others are NaN. Tensors are converted to numpy. A floating input
+        keeps its dtype, and the predictions are float64.
 
         Raises
         ------
         TypeError
             If ``data`` is neither a tensor nor an array.
+        ValueError
+            If ``_transform_feature`` changes the shape of the rows or
+            ``_forward`` does not return ``[n, L]``.
         """
         if isinstance(data, torch.Tensor):
             data = data.detach().cpu().numpy()
         if not isinstance(data, np.ndarray):
             raise TypeError(f"Unsupported data type: {type(data)}")
-        x = np.asarray(data, dtype=np.float32)
+        x = data if np.issubdtype(data.dtype, np.floating) else data.astype(np.float64)
         present = np.isfinite(x).any(axis=-1)
-        out = np.full(x.shape[:-1] + (self.num_labels,), np.nan, dtype=np.float32)
+        out = np.full(x.shape[:-1] + (self.num_labels,), np.nan, dtype=np.float64)
         out[present] = self._forward_rows(x[present])
         return out
 
