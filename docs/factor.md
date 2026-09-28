@@ -378,7 +378,7 @@ When two or more factor variables are analyzed, the result carries `correlation`
 
 ### Normalize over time or across symbols
 
-`quantlab.my_ops.preprocess` has four KunQuant operators. `WindowedZScore` standardizes each symbol against its own trailing window, a time-series normalization. `CrossSectionalZScore` standardizes each timestamp across all symbols. Which one is right depends on the strategy consuming the factor. `Alpha101SpotKline` and `Alpha158SpotKline` apply `WindowedZScore` to every output over `kwargs["zscore_window"]` bars (default 20), independent of `warmup_bars`; for the first requested bar to be fully normalized, `warmup_bars` must cover the alpha's own lookback plus `zscore_window - 1` bars (up to 60 + 19 for the full Alpha158 set). A `zscore_window` that is not a positive integer is refused when the factor is constructed; `Alpha101Stock` and `Alpha158Stock` apply `CrossSectionalZScore` to every output. The KunQuant factor under Extending applies both operators.
+`quantlab.my_ops.preprocess` has four KunQuant operators. `WindowedZScore` standardizes each symbol against its own trailing window, a time-series normalization. `CrossSectionalZScore` standardizes each timestamp across all symbols. Which one is right depends on the strategy consuming the factor. `Alpha101SpotKline` and `Alpha158SpotKline` apply `WindowedZScore` to every output over `kwargs["zscore_window"]` bars (default 20), independent of `warmup_bars`; for the first requested bar to be fully normalized, `warmup_bars` must cover the alpha's own lookback plus `zscore_window - 1` bars (up to 60 + 19 for the full Alpha158 set). A `zscore_window` that is not a positive integer is refused when the factor is constructed; `Alpha101Stock` and `Alpha158Stock` apply `CrossSectionalZScore` to every output. A symbol with no bar that day (not yet listed, delisted, or an all-NaN column) is NaN in every output of these two classes, so it enters neither their ranks nor the z-score; on a bar with data their values are KunQuant's, including the 0 its formulas give a value undefined on real data, such as a correlation over a window of constant values. The KunQuant factor under Extending applies both operators.
 
 The module also has two cross-sectional outlier operators. `CrossSectionalWinsorize(v, lower=0.01, upper=0.99)` (winsorizing) clips each timestamp's values to that bar's `lower` and `upper` quantiles across symbols, and `CrossSectionalTrim(v, lower=0.01, upper=0.99)` (trimming) sets values strictly outside those quantiles to NaN. Quantiles ignore NaN and interpolate linearly, like `np.nanquantile`. A common chain is `CrossSectionalZScore(CrossSectionalWinsorize(v))`, so a few extreme symbols do not dominate the mean and standard deviation. KunQuant 0.1.11 has no built-in operator for either: its `Clip` bounds by a fixed constant and `WindowedQuantile` works along time.
 
@@ -387,8 +387,8 @@ The module also has two cross-sectional outlier operators. `CrossSectionalWinsor
 | Class | Backend | Notes |
 |---|---|---|
 | `Momentum` | Polars | reference Polars factor, reads `Close` |
-| `Alpha101SpotKline`, `Alpha101Stock` | KunQuant | KunQuant's Alpha101 library |
-| `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features; pin `factor_names` while experimenting |
+| `Alpha101SpotKline`, `Alpha101Stock` | KunQuant | KunQuant's Alpha101 library; the `Stock` class builds it from a copy in `quantlab.factor._support.kunquant_alpha101` that is NaN on a bar with no data |
+| `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features, the `Stock` class from the copy in `quantlab.factor._support.kunquant_alpha158`; pin `factor_names` while experimenting |
 | `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum; the factor series come from a Fama-French CSV or from the panel |
 | `LiteratureAlpha` | KunQuant | Eight raw/ranked equity characteristics spanning price, risk, liquidity, fundamentals and earnings events |
 | `Forward` | any | shifts a factor forward into a label |
@@ -551,7 +551,7 @@ array([-0.00857,  0.01526,  0.00988])
 
 ## Notes
 
-On macOS, batch mode needs the number of symbols to be a multiple of the SIMD block width, and `compute()` pads the symbol axis with all-NaN dummy symbols to a multiple of 8 and cuts them back, so any count runs; 5 symbols without that padding fail with `RuntimeError: Bad shape at close`, a message that does not mention symbols. On Linux x86 (AVX2) any count runs and nothing is padded.
+On macOS, batch mode needs the number of symbols to be a multiple of the SIMD block width, and `compute()` pads the symbol axis with all-NaN dummy symbols to a multiple of 8 and cuts them back, so any count runs; 5 symbols without that padding fail with `RuntimeError: Bad shape at close`, a message that does not mention symbols. The padded symbols are NaN in every output of `Alpha101Stock` and `Alpha158Stock`, so the padding does not change their values. On Linux x86 (AVX2) any count runs and nothing is padded.
 
 In stream mode every entry of `data_columns` must be consumed by an `Output`, because KunQuant prunes unused inputs. An extra column fails in `init_stream()` with `RuntimeError: Cannot find the buffer name`. Batch mode tolerates extra inputs.
 

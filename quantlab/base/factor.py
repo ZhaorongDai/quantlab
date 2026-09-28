@@ -1285,8 +1285,12 @@ class FactorKunQuant(Factor):
     ) -> dict[str, np.ndarray]:
         """Append ``_symbol_padding`` all-NaN columns to every ``[time, symbol]`` input.
 
-        NaN symbols never enter a cross-sectional statistic, and
-        ``_cut_symbols`` removes their outputs again.
+        ``_cut_symbols`` removes their outputs again. ``Alpha101Stock`` and
+        ``Alpha158Stock`` are NaN on these columns in every operator, so
+        the padding enters none of their ranks or z-scores; a graph whose
+        operators turn NaN into a number (KunQuant's ``SetInfOrNanToValue``,
+        ``Clip``, a ``Select`` between constants) gives the padding a value
+        that its cross-sectional operators then count.
         """
         padding = cls._symbol_padding(num_symbols)
         if not padding:

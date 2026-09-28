@@ -170,6 +170,13 @@ The US-equity stores carry no dollar-volume (`amount`) column, so
 `Alpha101Stock` and `Alpha158Stock` both use the adjusted typical price
 `(adjHigh + adjLow + adjClose) / 3` as VWAP.
 
+Both z-score across symbols, so a symbol with no bar that day (not yet
+listed or already delisted) must not count. They build their graphs from a
+copy of KunQuant 0.1.11's Alpha101 and Alpha158 in `quantlab.factor._support`
+that is NaN in every output on such a bar, where KunQuant's own graphs give
+0 or a clipping bound. On a bar with data the values are KunQuant's.
+The crypto classes use KunQuant's graphs unchanged.
+
 `ResidualMomentumFF3` reads each stock's return from the panel (`ret` on a
 CRSP panel) and the Fama-French market, size and value factors and the
 risk-free rate from a CSV named in `kwargs["fama_french_csv"]`, the file

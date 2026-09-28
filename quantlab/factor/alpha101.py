@@ -20,6 +20,8 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
+from quantlab.factor._support import kunquant_alpha101
+from quantlab.factor._support.nan_preserving_ops import missing_bars_only
 from quantlab.factor._support.zscore import TimeSeriesZScoredFactor
 from quantlab.my_ops.preprocess import WindowedZScore, CrossSectionalZScore
 
@@ -101,7 +103,12 @@ class Alpha101Stock(FactorKunQuant):
     ``adjVolume``, the split- and dividend-adjusted series. Every output is
     wrapped in ``CrossSectionalZScore``: US equities are traded here with
     cross-sectional strategies, so each alpha is standardized across the
-    symbols of the same bar, never along a symbol's own history.
+    symbols of the same bar, never along a symbol's own history. The graphs
+    come from ``quantlab.factor._support.kunquant_alpha101`` and are built
+    inside ``missing_bars_only``: a symbol with no bar that day is NaN in
+    every operator, so it stays out of the ranks and the z-score, and every
+    other value is KunQuant's, including the 0 its formulas give a value
+    that is undefined on real data.
 
     Parameters
     ----------
@@ -148,7 +155,7 @@ class Alpha101Stock(FactorKunQuant):
             # stock stores carry no dollar volume; the adjusted typical price
             # keeps vwap on the adjusted scale, as in `Alpha158Stock`.
             vwap = (high + low + close) / 3.0
-            all_data = Alpha101.AllData(
+            all_data = kunquant_alpha101.AllData(
                 low=low,
                 high=high,
                 close=close,
@@ -156,15 +163,18 @@ class Alpha101Stock(FactorKunQuant):
                 volume=vol,
                 vwap=vwap,
             )
-            for alpha in Alpha101.all_alpha:
-                if alpha.__name__ in factor_names:
-                    Output(
-                        CrossSectionalZScore(alpha(all_data)),
-                        alpha.__name__,
-                    )
+            # A bar with no data is NaN in every operator, so it stays out of
+            # the ranks and the z-score; elsewhere KunQuant's values are kept.
+            with missing_bars_only([vopen, high, low, close, vol]):
+                for alpha in kunquant_alpha101.all_alpha:
+                    if alpha.__name__ in factor_names:
+                        Output(
+                            CrossSectionalZScore(alpha(all_data)),
+                            alpha.__name__,
+                        )
         return Function(builder.ops)
 
     def _get_factor_names(self) -> tuple[str, ...]:
         """Return the names of every alpha in KunQuant's ``Alpha101`` library."""
-        factors = [alpha.__name__ for alpha in Alpha101.all_alpha]
+        factors = [alpha.__name__ for alpha in kunquant_alpha101.all_alpha]
         return tuple(factors)

@@ -21,6 +21,8 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import FactorKunQuant
+from quantlab.factor._support import kunquant_alpha158
+from quantlab.factor._support.nan_preserving_ops import missing_bars_only
 from quantlab.factor._support.zscore import TimeSeriesZScoredFactor
 from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
 
@@ -158,7 +160,11 @@ class Alpha158Stock(FactorKunQuant):
     dividing a raw amount by a split-adjusted volume would jump at every
     split. Every output is wrapped in ``CrossSectionalZScore``, as in
     ``Alpha101Stock``: these features feed cross-sectional strategies, so
-    each one is standardized across the symbols of the same bar.
+    each one is standardized across the symbols of the same bar. The graphs
+    come from ``quantlab.factor._support.kunquant_alpha158`` and are built
+    inside ``missing_bars_only``: a symbol with no bar that day is NaN in
+    every operator, so it stays out of the z-score, and every other value is
+    KunQuant's.
 
     Parameters
     ----------
@@ -206,7 +212,7 @@ class Alpha158Stock(FactorKunQuant):
         # dollar-volume column, and raw amount over adjusted volume would jump
         # at every split.
         vwap = (high + low + close) / 3.0
-        all_data = Alpha158.AllData(
+        all_data = kunquant_alpha158.AllData(
             low=low,
             high=high,
             close=close,
@@ -217,29 +223,32 @@ class Alpha158Stock(FactorKunQuant):
         # KunQuant's `Alpha158.AllData.__init__` stores `vwap` only when it
         # computes it itself, and ignores a `vwap=` argument, so set it here.
         all_data.vwap = vwap
-        alpha158, names = all_data.build(
-            {
-                "kbar": {},  # candlestick shape features
-                "price": {
-                    "windows": [0, 1, 2, 3, 4],
-                    "feature": [
-                        ("OPEN", all_data.open),
-                        ("HIGH", all_data.high),
-                        ("LOW", all_data.low),
-                        ("CLOSE", all_data.close),
-                        ("VWAP", all_data.vwap),
-                    ],
-                },
-                "volume": {
-                    "windows": [0, 1, 2, 3, 4],
-                },
-                "rolling": {
-                    "windows": [5, 10, 20, 30, 60],  # window lengths in bars
-                    # Rolling-regression features, left out of this set.
-                    "exclude": ["BETA", "RSQR", "RESI"],
-                },
-            }
-        )
+        # A bar with no data is NaN in every operator, so it stays out of the
+        # z-score; elsewhere KunQuant's values are kept.
+        with missing_bars_only([vopen, high, low, close, vol]):
+            alpha158, names = all_data.build(
+                {
+                    "kbar": {},  # candlestick shape features
+                    "price": {
+                        "windows": [0, 1, 2, 3, 4],
+                        "feature": [
+                            ("OPEN", all_data.open),
+                            ("HIGH", all_data.high),
+                            ("LOW", all_data.low),
+                            ("CLOSE", all_data.close),
+                            ("VWAP", all_data.vwap),
+                        ],
+                    },
+                    "volume": {
+                        "windows": [0, 1, 2, 3, 4],
+                    },
+                    "rolling": {
+                        "windows": [5, 10, 20, 30, 60],  # window lengths in bars
+                        # Rolling-regression features, left out of this set.
+                        "exclude": ["BETA", "RSQR", "RESI"],
+                    },
+                }
+            )
         return alpha158, names
 
     def _factor_names_stream(self):
