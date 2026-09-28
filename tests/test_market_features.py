@@ -230,6 +230,24 @@ def test_a_series_missing_a_bar_rolls_over_its_own_bars(stores, tmp_path):
     )
 
 
+def test_a_series_missing_a_warm_up_bar_still_fills_the_longest_window(stores, tmp_path):
+    """The target has bar 30, the series does not: the 60-bar window at the
+    first requested bar reaches one bar further back on the series' own
+    calendar instead of starting short."""
+    config, values = _write_series(
+        tmp_path / "gap.zarr", "GAP", seed=5, drop_bars=(30,)
+    )
+    factor = _factor(stores, series={"gap": StockDataset(config)})
+    panel = factor.compute(DAYS[65], DAYS[-1])
+    expected = _expected(values["adjClose"], values["adjClose"] * values["adjVolume"])
+    own_bars = pd.DatetimeIndex(np.delete(DAYS.values, 30))
+
+    got = panel["gap_ret_mean_60"].sel(symbol="AAA", timestamp=DAYS[65]).item()
+    want = pd.Series(expected["ret_mean_60"], index=own_bars).loc[DAYS[65]]
+    assert np.isfinite(want)
+    np.testing.assert_allclose(got, want, rtol=1e-5)
+
+
 # -- broadcast ----------------------------------------------------------------------
 
 

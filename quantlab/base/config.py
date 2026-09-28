@@ -725,8 +725,8 @@ class MarketFeatureConfig(BaseFactorConfig):
 
         Examples
         --------
-        >>> cfg.to_dict()["series"]["spy"]["zarr_file_path"]
-        'data/spy.zarr'
+        >>> cfg.to_dict()["series"]["spy"] == spy.config.to_dict()
+        True
         """
         cfg = asdict(replace(self, series={}))
         cfg["series"] = {

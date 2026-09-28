@@ -24,7 +24,7 @@ import numpy as np
 import xarray as xr
 
 from quantlab.base.config import MarketFeatureConfig
-from quantlab.base.data import BaseDataset, MarketDataset
+from quantlab.base.data import BaseDataset, InsufficientHistoryError, MarketDataset
 from quantlab.base.factor import Factor
 
 #: Rolling windows, in bars of the series, of the mean and standard deviation
@@ -244,13 +244,21 @@ class MarketFeatures(Factor):
     ) -> xr.Dataset:
         """Return the close and amount of one series over ``timestamps``' span.
 
+        The series is read from ``max(WINDOWS)`` of its own bars before the
+        first timestamp, or from its first bar when it has fewer, so every
+        window is counted on the series' calendar whatever the target's.
+
         Raises
         ------
         ValueError
             If the series panel does not hold exactly one symbol, or lacks a
             configured column.
         """
-        data = dataset.panel(timestamps[0], timestamps[-1])
+        try:
+            start = dataset.bar_before(timestamps[0], WINDOWS[-1])
+        except InsufficientHistoryError as short:
+            start = dataset.bar_before(timestamps[0], short.available)
+        data = dataset.panel(start, timestamps[-1])
         if data.sizes["symbol"] != 1:
             raise ValueError(
                 f"{self.class_name}: series {name!r} must hold one symbol, "

@@ -189,52 +189,52 @@ True
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.factor.market import MarketFeatures
 >>> from quantlab.utils.module import load_factor_from_config
->>> days = pd.bdate_range("2024-01-01", periods=120)
->>> rng = np.random.default_rng(1)
->>> def write_store(path, symbols):
-...     close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, (120, len(symbols))), axis=0))
-...     volume = rng.uniform(1e6, 5e6, (120, len(symbols)))
+>>> market_days = pd.bdate_range("2024-01-01", periods=120)
+>>> market_rng = np.random.default_rng(1)
+>>> def market_write_store(path, symbols):
+...     close = 100 * np.exp(np.cumsum(market_rng.normal(0, 0.01, (120, len(symbols))), axis=0))
+...     volume = market_rng.uniform(1e6, 5e6, (120, len(symbols)))
 ...     if "FFF" in symbols:  # FFF lists on 1 April
-...         close[days < "2024-04-01", symbols.index("FFF")] = np.nan
+...         close[market_days < "2024-04-01", symbols.index("FFF")] = np.nan
 ...     _ = xr.Dataset(
 ...         {"close": (["timestamp", "symbol"], close),
 ...          "adjClose": (["timestamp", "symbol"], close),
 ...          "adjVolume": (["timestamp", "symbol"], volume)},
-...         coords={"timestamp": days, "symbol": symbols},
+...         coords={"timestamp": market_days, "symbol": symbols},
 ...     ).to_zarr(path, mode="w")
 ...     return StockDataset(DatasetConfig(
 ...         raw_data_dir_path="data/raw", zarr_file_path=path,
 ...         market="us_equity", frequency="1d",
 ...     ))
 ...
->>> stocks = write_store("data/stocks.zarr", ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
->>> spy = write_store("data/spy.zarr", ["84398"])
->>> qqq = write_store("data/qqq.zarr", ["86755"])
->>> factor = MarketFeatures(MarketFeatureConfig(
-...     dataset=stocks, series={"spy": spy, "qqq": qqq},
+>>> stocks_ds = market_write_store("data/stocks.zarr", ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+>>> spy_ds = market_write_store("data/spy.zarr", ["84398"])
+>>> qqq_ds = market_write_store("data/qqq.zarr", ["86755"])
+>>> market_factor = MarketFeatures(MarketFeatureConfig(
+...     dataset=stocks_ds, series={"spy": spy_ds, "qqq": qqq_ds},
 ...     file_path="data/factors/market.zarr",
 ... ))
->>> factor.warmup_bars, factor.num_factors
+>>> market_factor.warmup_bars, market_factor.num_factors
 (60, 42)
->>> factor.get_factor_names()[:5]
+>>> market_factor.get_factor_names()[:5]
 ('spy_ret', 'spy_ret_mean_5', 'spy_ret_std_5', 'spy_amount_mean_5', 'spy_amount_std_5')
->>> panel = factor.compute("2024-03-01", "2024-04-30")
->>> dict(panel.sizes)
+>>> market_panel = market_factor.compute("2024-03-01", "2024-04-30")
+>>> dict(market_panel.sizes)
 {'timestamp': 43, 'symbol': 6}
->>> panel["spy_ret_mean_20"].sel(timestamp="2024-03-01").values.round(5)
+>>> market_panel["spy_ret_mean_20"].sel(timestamp="2024-03-01").values.round(5)
 array([0.00035, 0.00035, 0.00035, 0.00035, 0.00035,     nan],
       dtype=float32)
->>> panel["spy_ret_mean_20"].sel(timestamp="2024-04-01").values.round(5)
+>>> market_panel["spy_ret_mean_20"].sel(timestamp="2024-04-01").values.round(5)
 array([-0.00302, -0.00302, -0.00302, -0.00302, -0.00302, -0.00302],
       dtype=float32)
->>> factor.options
+>>> market_factor.options
 {'close_column': 'adjClose', 'volume_column': 'adjVolume', 'amount_column': None, 'presence_column': 'close'}
->>> cfg = json.loads(json.dumps(factor.get_config()))
->>> list(cfg["series"]), cfg["series"]["spy"]["zarr_file_path"]
+>>> market_cfg = json.loads(json.dumps(market_factor.get_config()))
+>>> list(market_cfg["series"]), market_cfg["series"]["spy"]["zarr_file_path"]
 (['spy', 'qqq'], 'data/spy.zarr')
->>> load_factor_from_config(cfg) == factor
+>>> load_factor_from_config(market_cfg) == market_factor
 True
->>> factor.build("2024-03-01", "2024-04-30").store_range()
+>>> market_factor.build("2024-03-01", "2024-04-30").store_range()
 ('2024-03-01', '2024-04-30')
 ```
 

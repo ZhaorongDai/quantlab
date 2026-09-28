@@ -43,7 +43,13 @@ class PositionalEncoding(nn.Module):
         self.register_buffer("pe", pe)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Return ``x`` (``[S_t, N, D]``) plus the encoding of its N steps."""
+        """Return ``x`` (``[S_t, N, D]``) plus the encoding of its N steps.
+
+        Examples
+        --------
+        >>> PositionalEncoding(d_model=4).forward(torch.zeros(1, 2, 4))[0, 0]
+        tensor([0., 1., 0., 1.])
+        """
         return x + self.pe[: x.shape[1], :]
 
 
@@ -85,14 +91,20 @@ class AttentionBlock(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Attend over steps or over symbols; ``[S_t, N, D]`` in and out."""
+        """Attend over steps or over symbols; ``[S_t, N, D]`` in and out.
+
+        Examples
+        --------
+        >>> block.forward(torch.randn(2, 4, 8)).shape
+        torch.Size([2, 4, 8])
+        """
         x = self.norm1(x)
         q, k, v = self.qtrans(x), self.ktrans(x), self.vtrans(x)
         if self.across_symbols:
             q, k, v = (t.transpose(0, 1) for t in (q, k, v))  # [N, S_t, D]
         batch, length, _ = q.shape
-        split = lambda t: t.reshape(batch, length, self.nhead, -1).transpose(1, 2)
-        q, k, v = split(q), split(k), split(v)  # [B, heads, length, D / heads]
+        # [B, heads, length, D / heads]
+        q, k, v = (t.reshape(batch, length, self.nhead, -1).transpose(1, 2) for t in (q, k, v))
         weights = torch.softmax(q @ k.transpose(-1, -2) / self.temperature, dim=-1)
         out = (self.attn_dropout(weights) @ v).transpose(1, 2).reshape(batch, length, -1)
         if self.across_symbols:
@@ -118,7 +130,13 @@ class Gate(nn.Module):
         self.beta = beta
 
     def forward(self, market: torch.Tensor) -> torch.Tensor:
-        """Map ``[S_t, G]`` market features to ``[S_t, F]`` feature weights."""
+        """Map ``[S_t, G]`` market features to ``[S_t, F]`` feature weights.
+
+        Examples
+        --------
+        >>> Gate(2, 5, beta=5.0).forward(torch.zeros(1, 2)).shape
+        torch.Size([1, 5])
+        """
         return self.d_output * torch.softmax(self.trans(market) / self.beta, dim=-1)
 
 
@@ -136,7 +154,13 @@ class TemporalAttention(nn.Module):
         self.trans = nn.Linear(d_model, d_model, bias=False)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        """Map ``[S_t, N, D]`` to ``[S_t, D]``."""
+        """Map ``[S_t, N, D]`` to ``[S_t, D]``.
+
+        Examples
+        --------
+        >>> TemporalAttention(8).forward(torch.randn(3, 4, 8)).shape
+        torch.Size([3, 8])
+        """
         h = self.trans(z)
         weights = torch.softmax(h @ h[:, -1, :].unsqueeze(-1), dim=1)  # [S_t, N, 1]
         return (weights * z).sum(dim=1)
@@ -236,7 +260,13 @@ class MASTERNet(nn.Module):
         return self.feature_gate(market)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Map one bar's ``[S_t, N, F]`` windows to ``[S_t, L]`` outputs."""
+        """Map one bar's ``[S_t, N, F]`` windows to ``[S_t, L]`` outputs.
+
+        Examples
+        --------
+        >>> net.forward(torch.randn(2, 3, 5)).shape
+        torch.Size([2, 2])
+        """
         stock = x[..., self.stock_index]
         market = x[:, -1, self.gate_index]
         return self.layers(stock * self.gate(market).unsqueeze(1))

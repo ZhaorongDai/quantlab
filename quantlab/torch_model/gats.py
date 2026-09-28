@@ -105,7 +105,13 @@ class GATsNet(nn.Module):
         return torch.softmax(self.leaky_relu(scores), dim=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Map one bar's ``[S_t, N, F]`` windows to ``[S_t, L]`` outputs."""
+        """Map one bar's ``[S_t, N, F]`` windows to ``[S_t, L]`` outputs.
+
+        Examples
+        --------
+        >>> net.forward(torch.randn(3, 6, 4)).shape
+        torch.Size([3, 2])
+        """
         out, _ = self.rnn(x)
         hidden = out[:, -1, :]
         hidden = self.attention(hidden) @ hidden + hidden
@@ -139,6 +145,9 @@ class GATsRegressor(TorchModel):
       where Qlib forward- and back-fills gaps inside a window;
     - the bars of an epoch are shuffled, as in Qlib's Alpha360 variant; the
       Alpha158 variant visits them in time order;
+    - a symbol whose label is missing stays in the bar's cross-section as
+      context and only leaves the loss; Qlib drops it from that day's
+      training and validation input;
     - the output has one column per label instead of one;
     - the last training batch is kept, where Qlib drops it.
 
