@@ -189,7 +189,11 @@ differently.
 The backtester records one fingerprint for the two price columns it trades
 on, one per factor over the dataset columns that factor consumes (and over the
 factor store itself when features are read from a store), and in train mode
-one per factor and label over the training data. They are written to
+one per factor and label over the training data. The model says what it reads:
+`fingerprint_inputs(start, end)` and `training_fingerprint_inputs()` return
+`(key, factor or label, strategy, first, last)` entries, warm-up included,
+and the backtester only hashes them, so a predictor that composes several
+models reports the union of its members' inputs. They are written to
 `fingerprint.json` and into `config.json` as `data_fingerprint`. A backtester
 rebuilt by `load_backtester_from_config` compares its own fingerprints with
 the stored ones and logs a warning for every key that differs or is missing.

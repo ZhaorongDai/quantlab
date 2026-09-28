@@ -414,7 +414,7 @@ def test_check_then_load_warns_once(tmp_path, warning_messages):
     _sidecar(checkpoint).unlink()
     fresh = _library_model(tmp_path / "fresh")
 
-    fresh._assert_trained_variables(checkpoint)
+    fresh.check_checkpoint(checkpoint)
     fresh.load(checkpoint)
 
     assert len(_model_warnings(warning_messages)) == 1, warning_messages

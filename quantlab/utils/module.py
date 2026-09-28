@@ -160,12 +160,13 @@ def load_factor_from_config(config: dict):
 def load_model_from_config(config: dict):
     """Rebuild a model, with its factors and labels, from a config dict.
 
-    ``cls.config_cls`` is the config class the model is rebuilt with
-    (``ModelConfig``, the one config of every model head). Two keys a
-    checkpoint's ``config.json`` carries as training records rather than
-    config fields, ``resolved_hyperparameters`` and ``trained_on``, are dropped
-    before construction; any other unknown key still raises ``TypeError``
-    from the config class. The caller's dict is never modified.
+    The class named by ``config["name"]`` is imported and its own
+    ``from_config`` rebuilds the model, so a model class decides how its
+    config is read back. ``BaseModel.from_config`` rebuilds the factors and
+    labels and drops the two training records a checkpoint's
+    ``config.json`` carries, ``resolved_hyperparameters`` and ``trained_on``;
+    any other unknown key still raises ``TypeError`` from the config class.
+    The caller's dict is never modified.
 
     Parameters
     ----------
@@ -188,24 +189,15 @@ def load_model_from_config(config: dict):
     >>> model = load_model_from_config(config)
     >>> model = model.load("/data/models/xgb/best.joblib")
     """
-    config = copy.deepcopy(config)
-    # `resolved_hyperparameters` (what the library actually trained with) and
-    # `trained_on` (factor/label names and training symbols) are records, not
-    # config fields. Drop only those so any other unknown key still fails.
-    config.pop("resolved_hyperparameters", None)
-    config.pop("trained_on", None)
-    config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
-    config["labels"] = [load_factor_from_config(l) for l in config["labels"]]
-    cls = get_cls_from_path(config["name"])
-    return cls(cls.config_cls(**config))
+    return get_cls_from_path(config["name"]).from_config(config)
 
 
 def load_backtester_from_config(config: dict):
     """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
-    The price dataset, the model (with its factors, labels and checkpoint
-    reference), an optional benchmark dataset and every scalar parameter are
-    rebuilt, and the backtester is constructed with its declared config class.
+    The price dataset, the model (through ``from_config`` of the class its
+    config names, so any ``Predictor`` rebuilds itself), an optional
+    benchmark dataset and every scalar parameter are rebuilt, and the backtester is constructed with its declared config class.
     Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
     backtest.
 
@@ -279,7 +271,11 @@ def load_backtester_from_config(config: dict):
         )
 
     config["price_dataset"] = load_dataset_from_config(config["price_dataset"])
-    config["model"] = load_model_from_config(config["model"])
+    # The model is rebuilt by its own class, so any predictor (a model, or an
+    # ensemble of models) round-trips without a special case here.
+    config["model"] = get_cls_from_path(config["model"]["name"]).from_config(
+        config["model"]
+    )
     benchmark = config.get("benchmark_dataset")
     config["benchmark_dataset"] = (
         None if benchmark is None else load_dataset_from_config(benchmark)

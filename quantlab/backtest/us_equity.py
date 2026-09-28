@@ -85,9 +85,10 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         read or any model trained.
         """
         config = self.config
-        self._score_label = resolve_score_label(
-            config.score_label, list(config.model.get_label_names())
-        )
+        label_names = [
+            str(name) for label in config.model.labels for name in label.get_factor_names()
+        ]
+        self._score_label = resolve_score_label(config.score_label, label_names)
         self._selector = CrossSectionTopNSelector(
             direction=config.direction, top_n=config.top_n
         )

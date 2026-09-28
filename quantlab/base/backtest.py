@@ -28,7 +28,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Protocol, Self, get_protocol_members
 
 import numpy as np
 import pandas as pd
@@ -70,6 +70,92 @@ FINGERPRINT_PARTIAL_NOTE = (
 #: calendar time (weekly, monthly), so ``MarketSpec.year_freq`` annualizes
 #: them against this number.
 CALENDAR_DAYS_PER_YEAR = 365.25
+
+
+class Predictor(Protocol):
+    """What the backtester needs from a model: the whole contract between the two.
+
+    ``BacktestConfig.model`` is any object with these members; ``BaseModel``
+    has them without inheriting this class, and so can an ensemble that
+    composes several models. The backtester reads no model config and calls
+    no other model method, so a predictor built from models with different
+    configs is backtested unchanged. A config whose ``model`` lacks a member
+    is refused at construction.
+
+    Attributes
+    ----------
+    labels : list
+        The label objects, whose ``lookahead_bars()`` sets the purge and the
+        in-sample split and whose variable names are the prediction
+        variables.
+    train_bounds, test_bounds : tuple
+        The configured ``(start, end)`` training and test windows.
+    label_delays : tuple[int, ...]
+        Each label's ``delay`` in bars, in the order of ``labels``; each must
+        equal the engine's ``fill_delay_bars``.
+
+    Methods
+    -------
+    predict_window(start, end)
+        The predictions for every bar from ``start`` to ``end``, one variable
+        per label on ``(timestamp, symbol)``; the predictor requests its own
+        features, warm-up included.
+    fingerprint_inputs(start, end), training_fingerprint_inputs()
+        The data ``predict_window`` and ``collect`` read, as
+        ``(key, factor or label, strategy, first, last)`` entries. The
+        backtester hashes ``factor.read(first, last)`` for strategy
+        ``"read"`` and the dataset inputs of ``factor.compute(first, last)``
+        otherwise, and records the result under ``key``.
+    collect(), train()
+        Train-mode preparation; ``train`` returns the checkpoint it wrote,
+        whose ``config.json`` sidecar holds the training dates.
+    load(path), check_checkpoint(path)
+        Load-mode preparation; ``check_checkpoint`` validates a checkpoint
+        without loading it and runs first.
+    get_config(), from_config(config)
+        A JSON-ready dict naming the class in ``"name"``, and the class
+        method that rebuilds the predictor from it.
+
+    Examples
+    --------
+    >>> from typing import get_protocol_members
+    >>> sorted(get_protocol_members(Predictor))[:4]
+    ['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config']
+    >>> from quantlab.base.model import BaseModel
+    >>> all(hasattr(BaseModel, name) for name in get_protocol_members(Predictor))
+    True
+    """
+
+    @property
+    def labels(self) -> list: ...
+
+    @property
+    def train_bounds(self) -> tuple: ...
+
+    @property
+    def test_bounds(self) -> tuple: ...
+
+    @property
+    def label_delays(self) -> tuple[int, ...]: ...
+
+    def predict_window(self, start, end) -> xr.Dataset: ...
+
+    def fingerprint_inputs(self, start, end) -> list[tuple]: ...
+
+    def training_fingerprint_inputs(self) -> list[tuple]: ...
+
+    def collect(self): ...
+
+    def train(self) -> Path: ...
+
+    def load(self, path): ...
+
+    def check_checkpoint(self, path) -> None: ...
+
+    def get_config(self) -> dict: ...
+
+    @classmethod
+    def from_config(cls, config: dict) -> Self: ...
 
 
 @dataclass(frozen=True)
@@ -417,7 +503,7 @@ class BaseBacktester(ABC):
         ------
         TypeError
             If ``config`` is not a ``config_cls``, ``MARKET`` is
-            unset, ``config.model`` is not a ``BaseModel``, or
+            unset, ``config.model`` lacks a ``Predictor`` member, or
             ``config.benchmark_dataset`` is neither ``None`` nor a
             ``MarketDataset``.
         ValueError
@@ -445,10 +531,17 @@ class BaseBacktester(ABC):
                 f"{self.class_name} declares no MARKET spec; a concrete "
                 f"backtester must set the MARKET class attribute"
             )
-        if not isinstance(config.model, BaseModel):
+        # Checked on the class first, so a property is not evaluated here.
+        missing = sorted(
+            name
+            for name in get_protocol_members(Predictor)
+            if not (hasattr(type(config.model), name) or hasattr(config.model, name))
+        )
+        if missing:
             raise TypeError(
-                f"{self.class_name}: config.model must be a BaseModel, got "
-                f"{type(config.model).__name__}"
+                f"{self.class_name}: config.model must implement the Predictor "
+                f"protocol (quantlab.base.backtest.Predictor), but "
+                f"{type(config.model).__name__} lacks {missing}"
             )
 
         if config.model_mode not in ("train", "load"):
@@ -873,7 +966,9 @@ class BaseBacktester(ABC):
         # then compare.
         self._fingerprints = {}
         try:
-            self._record_factor_fingerprints(first_start, last_end)
+            self._record_fingerprint_entries(
+                self.config.model.fingerprint_inputs(first_start, last_end)
+            )
             stitched_prices = self._load_prices(first_start, last_end)
             stitched_benchmark_prices = self._load_benchmark_prices(
                 first_start, last_end, stitched_prices.timestamp.values
@@ -1243,10 +1338,7 @@ class BaseBacktester(ABC):
         ``config.model``'s dates are returned.
         """
         model = self.config.model
-        configured = (
-            (model.config.train_start, model.config.train_end),
-            (model.config.test_start, model.config.test_end),
-        )
+        configured = (model.train_bounds, model.test_bounds)
         if self.config.model_mode == "load":
             saved = self._load_model_checkpoint(self.config.checkpoint)
             recorded = self._recorded_train_bounds(saved)
@@ -1256,7 +1348,7 @@ class BaseBacktester(ABC):
         model.collect()
         # Fingerprint the training data right after collect() and before
         # train().
-        self._record_training_fingerprints()
+        self._record_fingerprint_entries(model.training_fingerprint_inputs())
         # The checkpoint train() wrote is recorded in config.json and metrics.
         self._trained_checkpoint = str(model.train())
         return configured
@@ -1271,8 +1363,7 @@ class BaseBacktester(ABC):
         select the same bars on ``calendar``, so a different spelling of the
         same window does not warn.
         """
-        model = self.config.model
-        configured = (model.config.train_start, model.config.train_end)
+        configured = self.config.model.train_bounds
         if self._same_training_bars(calendar, train_bounds, configured):
             return
         logger.warning(
@@ -1339,11 +1430,12 @@ class BaseBacktester(ABC):
         ValueError
             Naming the first such label, its delay and the fill delay.
         """
-        for i, label in enumerate(self.config.model.config.labels):
-            if label.config.delay != self.fill_delay_bars:
+        model = self.config.model
+        for i, (label, delay) in enumerate(zip(model.labels, model.label_delays)):
+            if delay != self.fill_delay_bars:
                 raise ValueError(
                     f"{self.class_name}: labels[{i}] {label.class_name} "
-                    f"{label.get_factor_names()} has delay={label.config.delay}, "
+                    f"{label.get_factor_names()} has delay={delay}, "
                     f"but the engine fills a weight fill_delay_bars="
                     f"{self.fill_delay_bars} bar(s) after the bar it forms on; "
                     f"the model would learn a return the backtest never trades"
@@ -1352,7 +1444,7 @@ class BaseBacktester(ABC):
     def _lookahead_bars(self) -> int:
         """Return L, the largest ``lookahead_bars()`` of the model's labels."""
         return max(
-            (label.lookahead_bars() for label in self.config.model.config.labels),
+            (label.lookahead_bars() for label in self.config.model.labels),
             default=0,
         )
 
@@ -1405,7 +1497,7 @@ class BaseBacktester(ABC):
 
         Shared by ``run()`` and each fold of ``run_cv()``. The file's
         existence and the factor/label variable check
-        (``model._assert_trained_variables``) both run before any feature is
+        (``model.check_checkpoint``) both run before any feature is
         computed, so a wrong path or a mismatched model fails cheaply.
 
         Returns
@@ -1426,7 +1518,7 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: checkpoint {path} does not exist"
             )
         saved = self._read_checkpoint_config(path)
-        model._assert_trained_variables(path)
+        model.check_checkpoint(path)
         model.load(path)
         return saved
 
@@ -1469,22 +1561,18 @@ class BaseBacktester(ABC):
         return np.sort(panel.timestamp.values)
 
     def _predict_window(self, start_date: str, end_date: str) -> xr.Dataset:
-        """Fingerprint the factor inputs, predict, and cut to the window.
+        """Fingerprint the model's inputs, then predict the window.
 
-        Each factor is asked for ``start_date`` to ``end_date`` by the
-        model's factor strategy; no config is changed.
+        The model requests its own features for ``start_date`` to
+        ``end_date`` (``Predictor.predict_window``), warm-up included; no
+        config is changed.
         """
         with Timer(f"{self.class_name}: predict_window"):
             model = self.config.model
-            self._record_factor_fingerprints(start_date, end_date)
-
-            # Each factor warms itself up by its own warmup_bars, counted on
-            # its dataset's calendar, from the bars before start_date; the
-            # model adds its own warm-up (a torch head's window) on top.
-            features = model._collect_all_features(start_date, end_date)
-            return model.predict_panel(features).sel(
-                timestamp=slice(start_date, end_date)
+            self._record_fingerprint_entries(
+                model.fingerprint_inputs(start_date, end_date)
             )
+            return model.predict_window(start_date, end_date)
 
     def _load_prices(self, start_date: str, end_date: str) -> xr.Dataset:
         """Return the fill and valuation price columns over the window.
@@ -1626,73 +1714,26 @@ class BaseBacktester(ABC):
         """Fingerprint a panel read from a factor or label store, all variables."""
         return dataset_fingerprint(ds, list(ds.data_vars))
 
-    def _record_factor_fingerprints(self, start: str, end: str) -> None:
-        """Record one fingerprint per factor of the model over ``start`` to ``end``.
+    def _record_fingerprint_entries(self, entries) -> None:
+        """Hash the data a model reports it reads and record it by key.
 
-        Used for the ``run()`` window, each ``run_cv()`` fold and the
-        stitched window. Keys are ``factor[{i}]:{ClassName}`` over the
-        variables the factor consumes from the panel ``compute(start, end)``
-        reads, its warm-up bars included. Under the ``"read"`` strategy a
-        second key ``factor_store[{i}]:{ClassName}`` covers the features of
-        ``factor.read(start, end)``, because that store, not the dataset,
-        is what the predictions are built from. ``start`` is first moved
-        back by the model's own warm-up (``model.warmup_bars``), the range
-        the model actually requests.
+        ``entries`` come from ``Predictor.fingerprint_inputs`` (the ``run()``
+        window, each ``run_cv()`` fold and the stitched window) or
+        ``Predictor.training_fingerprint_inputs`` (train mode, after
+        ``collect()`` and before ``train()``, since the window fingerprints
+        do not cover the training span). Each is
+        ``(key, item, strategy, first, last)``: under ``"read"`` the panel
+        ``item.read(first, last)`` is fingerprinted over all its variables,
+        otherwise the variables ``item`` consumes from the dataset panel
+        ``item.compute(first, last)`` reads, its warm-up bars included.
         """
-        model = self.config.model
-        strategy = model.config.factor_data_strategy
-        for i, factor in enumerate(model.config.factors):
-            name = type(factor).__name__
-            first = model._feature_start(factor, strategy, start, warn=False)
-            self._fingerprints[f"factor[{i}]:{name}"] = (
-                self._dataset_variables_fingerprint(
-                    factor, self._compute_inputs(factor, first, end)
-                )
-            )
+        for key, item, strategy, first, last in entries:
             if strategy == "read":
-                self._fingerprints[f"factor_store[{i}]:{name}"] = (
-                    self._store_fingerprint(factor.read(first, end))
+                self._fingerprints[key] = self._store_fingerprint(item.read(first, last))
+            else:
+                self._fingerprints[key] = self._dataset_variables_fingerprint(
+                    item, self._compute_inputs(item, first, last)
                 )
-
-    def _record_training_fingerprints(self) -> None:
-        """Record the fingerprints of the data a train-mode run trains on.
-
-        Called after ``collect()`` and before ``train()``. The window
-        fingerprints do not cover the training span, so without these a
-        rebuilt run could train a different model unnoticed. One key per
-        factor and label over the model's ``start_date`` to ``end_date``,
-        the range ``collect()`` requested:
-        ``train_factor[{i}]:{ClassName}`` / ``train_label[{i}]:{ClassName}``
-        over the consumed dataset columns, warm-up bars included, under the
-        ``"cal"`` strategy, or
-        ``train_factor_store[{i}]:{ClassName}`` /
-        ``train_label_store[{i}]:{ClassName}`` over the store panels under
-        the ``"read"`` strategy, where the stores are the data actually used.
-        A factor's range starts the model's warm-up earlier, as ``collect()``
-        requests it.
-        """
-        model = self.config.model
-        model_config = model.config
-        end = model_config.end_date
-        for prefix, items, strategy in (
-            ("train_factor", model_config.factors, model_config.factor_data_strategy),
-            ("train_label", model_config.labels, model_config.label_data_strategy),
-        ):
-            for i, item in enumerate(items):
-                name = type(item).__name__
-                start = model_config.start_date
-                if prefix == "train_factor":
-                    start = model._feature_start(item, strategy, start, warn=False)
-                if strategy == "read":
-                    self._fingerprints[f"{prefix}_store[{i}]:{name}"] = (
-                        self._store_fingerprint(item.read(start, end))
-                    )
-                else:
-                    self._fingerprints[f"{prefix}[{i}]:{name}"] = (
-                        self._dataset_variables_fingerprint(
-                            item, self._compute_inputs(item, start, end)
-                        )
-                    )
 
     @classmethod
     def _compute_inputs(cls, item, start, end) -> xr.Dataset:
