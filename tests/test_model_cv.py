@@ -291,10 +291,7 @@ class StubLibraryHead(LibraryModel):
         ML_FOLD_DATES.append((c.train_start, c.train_end, c.test_start, c.test_end))
         return {"num_labels": num_labels}
 
-    def _preprocess(self, data):
-        return np.array(data, dtype=np.float64, copy=True)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
+    def _fit_model(self, train_rows, val_rows):
         pass
 
     def _forward(self, x):

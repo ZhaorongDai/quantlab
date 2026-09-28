@@ -237,7 +237,8 @@ the panel you pass, so give it `window_bars - 1` bars more at the start and
 drop them from the result.
 
 `predict` is the lower-level call on raw arrays. An `LibraryModel` takes a
-`[T, S, F]` NumPy array and returns `[T, S, L]`; a torch head takes an array
+`[T, S, F]` NumPy array and returns `[T, S, L]`, NaN where a cell has no
+finite feature; a torch head takes an array
 or a tensor of the same shape and returns a `[T, S, L]` tensor, NaN outside
 each bar's cross-section.
 Either call raises `ValueError` if the model has been neither trained nor

@@ -29,6 +29,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pytest
+import torch
 import wandb
 import xarray as xr
 import xgboost as xgb
@@ -367,7 +368,7 @@ def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, r
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     assert booster.num_boosted_rounds() == 15
-    assert any("no rows with finite labels" in m for m in warnings_log)
+    assert any("no cell with a valid training target" in m for m in warnings_log)
 
 
 # --------------------------------------------------------------------------
@@ -441,7 +442,7 @@ def test_multi_label_predicts_every_label(tmp_path, recorders):
     assert regression_panel_metrics(pred[..., 1], test_y[..., 1])["ic"] > 0.5
 
 
-def test_nan_labels_and_infinite_features(tmp_path, recorders):
+def test_nan_labels_and_infinite_features(tmp_path, recorders, monkeypatch):
     """10% NaN label cells and a sprinkling of ±inf feature cells: training
     survives (xgboost itself raises on inf), NaN-label rows are dropped, and
     test predictions are all finite."""
@@ -454,23 +455,74 @@ def test_nan_labels_and_infinite_features(tmp_path, recorders):
     feature_values.reshape(-1)[idx[:20]] = np.inf
     feature_values.reshape(-1)[idx[20:]] = -np.inf
 
+    seen = []
+    fit_model = XGBoostRegressor._fit_model
+
+    def spy(self, train_rows, val_rows):
+        seen.append(train_rows)
+        return fit_model(self, train_rows, val_rows)
+
+    monkeypatch.setattr(XGBoostRegressor, "_fit_model", spy)
     model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 20})
     test_x, _ = _test_arrays(model)
 
     assert np.isfinite(model.predict(test_x)).all()
 
+    rows = seen[0]
     data = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-    x = model.to_array(data, model.get_factor_names())
     y = model.to_array(data, model.get_label_names())
-    x_before = x.copy()
-    x_pre = model._preprocess(x)
-    assert np.array_equal(x, x_before, equal_nan=True), "_preprocess mutated its input"
-    assert not np.isinf(x_pre).any()
-    assert int(np.isnan(x_pre).sum()) - int(np.isnan(x).sum()) == int(np.isinf(x).sum()) == 40
+    train_bars = rows.where[0].max() + 1
+    assert len(rows.x) == int(np.isfinite(y[:train_bars]).all(axis=-1).sum())
+    assert np.isfinite(rows.y).all()
+    assert not np.isinf(rows.x).any()
+    assert np.isnan(rows.x).any(), "NaN features must reach xgboost as missing values"
 
-    x_rows, y_rows = XGBoostRegressor._to_rows(x_pre, model._preprocess(y))
-    assert x_rows.shape[0] == y_rows.shape[0] == int(np.isfinite(y).all(axis=-1).sum())
-    assert np.isfinite(y_rows).all()
+
+class RankTargetXGB(XGBoostRegressor):
+    """Trains on each bar's cross-sectional rank of the label, scaled to [0, 1]."""
+
+    def _transform_target(self, y, training):
+        ranks = torch.argsort(torch.argsort(y[:, 0])).float()
+        return (ranks / (len(y) - 1))[:, None], None
+
+
+def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
+    tmp_path, recorders, monkeypatch
+):
+    """The Booster fits per-bar ranks (in [0, 1], unlike the raw label), still
+    learns the signal, and `test_mse` / `test_ic` score its prediction
+    against the raw label: a rank-scale prediction is far from a return-scale
+    label in MSE while ranking it well."""
+    seen = []
+    fit_model = XGBoostRegressor._fit_model
+
+    def spy(self, train_rows, val_rows):
+        seen.append(train_rows)
+        return fit_model(self, train_rows, val_rows)
+
+    monkeypatch.setattr(XGBoostRegressor, "_fit_model", spy)
+    factors, labels = _panels(seed=23)
+    model = RankTargetXGB(
+        _config(tmp_path, factors, labels, hyperparameters={
+            "num_boost_round": 60, "max_depth": 3, "objective": "reg:squarederror",
+        })
+    )
+    model.collect()
+    checkpoint = model.train()
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+
+    rows = seen[0]
+    at = rows.where[0] == 7
+    expected = np.argsort(np.argsort(rows.y_raw[at, 0])) / (at.sum() - 1)
+    assert np.allclose(rows.y[at, 0], expected)
+
+    test_x, test_y = _test_arrays(model)
+    pred = model.predict(test_x)
+    raw = regression_panel_metrics(pred[..., 0], test_y[..., 0])
+    assert metrics["test_mse"] == pytest.approx(raw["mse"], rel=1e-5)
+    assert metrics["test_ic"] == pytest.approx(raw["ic"], rel=1e-5)
+    assert metrics["test_ic"] > 0.5
+    assert metrics["test_mse"] > 0.1
 
 
 def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):

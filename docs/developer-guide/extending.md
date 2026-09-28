@@ -592,11 +592,16 @@ collecting features and labels, the train/validation/test split and
 walk-forward cross-validation (both purged by the labels' lookahead), checkpoints with a `config.json` beside them, and
 `predict_panel`. Two variants add the framework-specific loop.
 
-`LibraryModel` is for numpy-based libraries such as tree models. Its four hooks
-are `_init_model`, `_preprocess`, `_fit_model` (fit once, with the library's
+`LibraryModel` is for numpy-based libraries such as tree models. Its three hooks
+are `_init_model`, `_fit_model` (fit once, with the library's
 own early stopping if it has one, and leave the fitted model in `self.model`)
-and `_forward`. Arrays are `[time, symbol, feature]` in and
-`[time, symbol, label]` out. In the snippets below, `factors` is a list of
+and `_forward`. The base builds the rows: `_fit_model(train_rows, val_rows)`
+gets `quantlab.library_model.data.Rows` with `x [n, F]`, `y [n, L]` (the
+training target), `y_raw` and `where`, one row per cell with a valid
+training target and NaN features kept, and `_forward` maps `[n, F]` rows to
+`[n, L]`. `_transform_feature` (inf to NaN), `_transform_target` (the same
+per-bar hook as a torch head's) and `_loss` (MSE, averaged per bar into
+`{split}_loss`) are optional. In the snippets below, `factors` is a list of
 two past-return factors (1 and 5 bars) and `labels` a 5-bar forward
 open-to-open return label (`Forward` over a trailing open return, `span=5`),
 built like the ones in `examples/backtest.py` over 120 business days of
@@ -610,19 +615,14 @@ from quantlab.base.model import LibraryModel
 
 
 class RidgeHead(LibraryModel):
-    """Ridge regression on every symbol-bar with finite features and labels."""
+    """Ridge regression on every row with finite features."""
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return None  # the coefficients are created in _fit_model
 
-    def _preprocess(self, data):
-        return np.array(data, dtype=np.float64, copy=True)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
-        x = train_x.reshape(-1, train_x.shape[-1])
-        y = train_y.reshape(-1, train_y.shape[-1])
-        keep = np.isfinite(x).all(axis=1) & np.isfinite(y).all(axis=1)
-        x, y = x[keep], y[keep]
+    def _fit_model(self, train_rows, val_rows):
+        keep = np.isfinite(train_rows.x).all(axis=1)
+        x, y = train_rows.x[keep], train_rows.y[keep]
         alpha = self._resolved_hyperparameters()["alpha"]
         gram = x.T @ x + alpha * np.eye(x.shape[1])
         self.model = {"coef": np.linalg.solve(gram, x.T @ y)}

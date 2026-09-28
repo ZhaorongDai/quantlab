@@ -106,10 +106,7 @@ class StubLibraryHead(LibraryModel):
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"num_labels": num_labels}
 
-    def _preprocess(self, data):
-        return np.array(data, dtype=np.float64, copy=True)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
+    def _fit_model(self, train_rows, val_rows):
         pass
 
     def _forward(self, x):
@@ -150,10 +147,25 @@ def test_torch_model_abstract_methods_are_the_window_the_network_and_the_loss():
     )
 
 
-def test_library_model_abstract_methods_are_the_four_numpy_hooks():
+def test_library_model_abstract_methods_are_the_three_numpy_hooks():
     assert LibraryModel.__abstractmethods__ == frozenset(
-        {"_init_model", "_preprocess", "_fit_model", "_forward"}
+        {"_init_model", "_fit_model", "_forward"}
     )
+
+
+def test_the_row_building_is_the_base_classes_alone():
+    """Issue #51: the base builds the rows, so the ML preprocess hook and the
+    per-head row helpers are gone from every library head."""
+    from quantlab.library_model.realmlp import RealMLPRegressor
+    from quantlab.library_model.tabkit import TabkitRegressor
+    from quantlab.library_model.xgb import XGBoostRegressor
+    from quantlab.library_model.xgb_td import XGBTDRegressor
+
+    for cls in (LibraryModel, TabkitRegressor, XGBoostRegressor, XGBTDRegressor, RealMLPRegressor):
+        for name in (
+            "_preprocess", "_to_rows", "_training_rows", "_validation_rows", "_impute_features",
+        ):
+            assert not hasattr(cls, name), (cls.__name__, name)
 
 
 def test_public_methods_live_on_base_model():

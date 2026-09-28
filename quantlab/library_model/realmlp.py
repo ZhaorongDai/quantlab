@@ -22,6 +22,7 @@ from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
+from quantlab.library_model.data import Rows
 from quantlab.library_model.tabkit import TabkitRegressor, active_callbacks
 
 
@@ -141,15 +142,15 @@ class RealMLPRegressor(TabkitRegressor):
 
     One ``RealMLP_TD_Regressor`` is fitted on the flattened rows. Each label
     is one output of a multi-output regression, and headline metrics are
-    computed on the primary label, index 0. Row conversion, NaN handling and
+    computed on the primary label, index 0. NaN imputation and
     the hyperparameter record are inherited from ``TabkitRegressor``.
 
     Hyperparameters are the constructor arguments of
     ``RealMLP_TD_Regressor`` (``n_epochs``, ``hidden_sizes``, ``lr``,
     ``device``, ``n_threads``, ...).
 
-    With ``hyperparameters["early_stopping"]`` set and a validation segment
-    that has at least one finite-label row, pytabkit's early stopping watches the
+    With ``hyperparameters["early_stopping"]`` set and validation rows,
+    pytabkit's early stopping watches the
     validation loss with ``early_stopping_additive_patience =
     hyperparameters["early_stopping_patience"]`` and a multiplicative patience of
     ``1.0``, so patience counts epochs without improvement. The fitted model
@@ -233,32 +234,20 @@ class RealMLPRegressor(TabkitRegressor):
         """
         return RealMLP_TD_Regressor(**self._resolve_params(hyperparameters))
 
-    def _fit_model(
-        self,
-        train_x: np.ndarray,
-        train_y: np.ndarray,
-        val_x: np.ndarray | None,
-        val_y: np.ndarray | None,
-    ) -> None:
+    def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Fit the estimator and record the stopping epoch in the run summary.
 
-        The validation rows are passed to pytabkit only when the segment has
-        at least one row with finite labels.
-
-        Raises
-        ------
-        ValueError
-            If the training segment has no row with finite labels.
+        The validation rows are passed to pytabkit when there are any.
         """
-        x_rows, y_rows = self._training_rows(train_x, train_y)
-        val_rows = self._validation_rows(val_x, val_y)
-
+        self._warn_without_validation(val_rows)
         callbacks = [] if self._wandb_recorder is None else [_WandbEpochCallback(self)]
         with active_callbacks(lightning_callbacks=callbacks):
             if val_rows is None:
-                self.model.fit(x_rows, y_rows)
+                self.model.fit(train_rows.x, train_rows.y)
             else:
-                self.model.fit(x_rows, y_rows, X_val=val_rows[0], y_val=val_rows[1])
+                self.model.fit(
+                    train_rows.x, train_rows.y, X_val=val_rows.x, y_val=val_rows.y
+                )
 
         if self._wandb_recorder is not None and val_rows is not None:
             stop_epoch = self._stop_epoch()
@@ -278,12 +267,6 @@ class RealMLPRegressor(TabkitRegressor):
         return None if stop is None else int(stop)
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.
-
-        ``T`` is bars, ``S`` symbols, ``F`` features and ``L`` labels. Missing
-        feature values are imputed with ``0.0`` first, as in training.
-        """
-        n_times, n_symbols, n_features = x.shape
-        rows = self._impute_features(x.reshape(n_times * n_symbols, n_features))
-        pred = self.model.predict(rows)
-        return np.asarray(pred, dtype=np.float32).reshape(n_times, n_symbols, -1)
+        """Predict ``[n, L]`` from imputed ``[n, F]`` feature rows."""
+        pred = self.model.predict(x)
+        return np.asarray(pred, dtype=np.float32).reshape(len(x), -1)

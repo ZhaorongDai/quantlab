@@ -48,6 +48,7 @@ from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.enums.constant import Date
 from quantlab.library_model.backend import MlBackend
+from quantlab.library_model.data import Rows
 from quantlab.torch_model.data import Batch, CrossSectionDataset, TrainingPanel
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
@@ -1659,6 +1660,79 @@ class BaseModel(ABC):
         )
         return metrics
 
+    def _transform_target(self, y: torch.Tensor, training: bool):
+        """Turn one bar's raw ``[S_t, L]`` labels into ``(target, keep)``.
+
+        Shared by both variants: ``y`` is a float32 CPU tensor for a torch
+        head and a library head alike, so one transform (a rank, a z-score,
+        dropping the extremes) serves both.
+
+        Called once per bar per fit, before training: ``training`` is True on
+        the training bars and False on the validation and test bars. ``y``
+        holds the labels of the bar's present symbols, NaN where missing.
+        ``keep`` is None or ``[S_t]`` booleans; a symbol it drops leaves the
+        loss but stays in the input as context. ``target`` has one row per
+        symbol, or one per kept symbol. A symbol whose target is not finite
+        in every label is masked out. The default returns ``(y, None)``.
+        """
+        return y, None
+
+    def _training_panel(self, data: xr.Dataset) -> TrainingPanel:
+        """Return the collected panel as a ``TrainingPanel`` with no target yet."""
+        with Timer(f"{self.class_name}: to_array"):
+            return TrainingPanel.from_arrays(
+                self.to_array(data, self.get_factor_names()),
+                timestamps=data.timestamp.values,
+                symbols=data.symbol.values,
+                y_raw=self.to_array(data, self.get_label_names()),
+            )
+
+    def _fill_target(self, panel: TrainingPanel, bars, training: bool) -> None:
+        """Compute the training target of ``bars`` once, through ``_transform_target``.
+
+        Each bar's raw labels of its present symbols go through the hook
+        once; the result and its validity are written into ``panel.target``
+        and ``panel.mask``. ``keep`` only clears ``mask``: a dropped symbol
+        stays in the feature panel as context.
+
+        Raises
+        ------
+        ValueError
+            If the hook returns a ``keep`` or a target of the wrong shape.
+        """
+        num_labels = panel.y_raw.shape[-1]
+        for t in bars:
+            symbols = torch.nonzero(panel.present[t]).flatten()
+            n = len(symbols)
+            if not n:
+                continue
+            target, keep = self._transform_target(panel.y_raw[t, symbols], training)
+            target = torch.as_tensor(target, dtype=torch.float32).cpu()
+            if keep is None:
+                keep = torch.ones(n, dtype=torch.bool)
+            else:
+                keep = torch.as_tensor(keep, dtype=torch.bool).cpu()
+                if tuple(keep.shape) != (n,):
+                    raise ValueError(
+                        f"{self.class_name}._transform_target: keep must have {n} "
+                        f"entries at bar {panel.timestamps[t]}, got {tuple(keep.shape)}"
+                    )
+                if target.shape[0] == int(keep.sum()) != n:
+                    full = torch.full((n, num_labels), float("nan"))
+                    full[keep] = target
+                    target = full
+            if tuple(target.shape) != (n, num_labels):
+                raise ValueError(
+                    f"{self.class_name}._transform_target: expected a target of shape "
+                    f"{(n, num_labels)} at bar {panel.timestamps[t]}, "
+                    f"got {tuple(target.shape)}"
+                )
+            valid = keep & torch.isfinite(target).all(dim=-1)
+            panel.target[t, symbols] = torch.where(
+                valid[:, None], target, torch.zeros_like(target)
+            )
+            panel.mask[t, symbols] = valid
+
     @abstractmethod
     def _predict(self, data: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
         """Variant implementation of ``predict``; ``self.model`` is guaranteed set."""
@@ -1863,19 +1937,6 @@ class TorchModel(BaseModel):
         """
         return torch.nan_to_num(x.clamp(-3.0, 3.0), nan=0.0)
 
-    def _transform_target(self, y: torch.Tensor, training: bool):
-        """Turn one bar's raw ``[S_t, L]`` labels into ``(target, keep)``.
-
-        Called once per bar per fit, before training: ``training`` is True on
-        the training bars and False on the validation and test bars. ``y``
-        holds the labels of the bar's present symbols, NaN where missing.
-        ``keep`` is None or ``[S_t]`` booleans; a symbol it drops leaves the
-        loss but stays in the input as context. ``target`` has one row per
-        symbol, or one per kept symbol. A symbol whose target is not finite
-        in every label is masked out. The default returns ``(y, None)``.
-        """
-        return y, None
-
     def _init_optim(self, model: torch.nn.Module):
         """Return the optimizer, kept on ``self.optim``.
 
@@ -2000,62 +2061,6 @@ class TorchModel(BaseModel):
         'cpu'
         """
         return "cuda" if torch.cuda.is_available() else "cpu"
-
-    def _training_panel(self, data: xr.Dataset) -> TrainingPanel:
-        """Return the collected panel as a ``TrainingPanel`` with no target yet."""
-        with Timer(f"{self.class_name}: to_array"):
-            return TrainingPanel.from_arrays(
-                self.to_array(data, self.get_factor_names()),
-                timestamps=data.timestamp.values,
-                symbols=data.symbol.values,
-                y_raw=self.to_array(data, self.get_label_names()),
-            )
-
-    def _fill_target(self, panel: TrainingPanel, bars, training: bool) -> None:
-        """Compute the training target of ``bars`` once, through ``_transform_target``.
-
-        Each bar's raw labels of its present symbols go through the hook
-        once; the result and its validity are written into ``panel.target``
-        and ``panel.mask``. ``keep`` only clears ``mask``: a dropped symbol
-        stays in the feature panel as context.
-
-        Raises
-        ------
-        ValueError
-            If the hook returns a ``keep`` or a target of the wrong shape.
-        """
-        num_labels = panel.y_raw.shape[-1]
-        for t in bars:
-            symbols = torch.nonzero(panel.present[t]).flatten()
-            n = len(symbols)
-            if not n:
-                continue
-            target, keep = self._transform_target(panel.y_raw[t, symbols], training)
-            target = torch.as_tensor(target, dtype=torch.float32).cpu()
-            if keep is None:
-                keep = torch.ones(n, dtype=torch.bool)
-            else:
-                keep = torch.as_tensor(keep, dtype=torch.bool).cpu()
-                if tuple(keep.shape) != (n,):
-                    raise ValueError(
-                        f"{self.class_name}._transform_target: keep must have {n} "
-                        f"entries at bar {panel.timestamps[t]}, got {tuple(keep.shape)}"
-                    )
-                if target.shape[0] == int(keep.sum()) != n:
-                    full = torch.full((n, num_labels), float("nan"))
-                    full[keep] = target
-                    target = full
-            if tuple(target.shape) != (n, num_labels):
-                raise ValueError(
-                    f"{self.class_name}._transform_target: expected a target of shape "
-                    f"{(n, num_labels)} at bar {panel.timestamps[t]}, "
-                    f"got {tuple(target.shape)}"
-                )
-            valid = keep & torch.isfinite(target).all(dim=-1)
-            panel.target[t, symbols] = torch.where(
-                valid[:, None], target, torch.zeros_like(target)
-            )
-            panel.mask[t, symbols] = valid
 
     def _prepare(self, batch: Batch) -> Batch:
         """Move ``batch`` to ``device`` and run ``_transform_feature`` on its ``x``.
@@ -2400,12 +2405,21 @@ class LibraryModel(BaseModel):
     round is a matter of keeping the first ``k`` trees, both of which an
     outer epoch loop would only make coarser and slower.
 
-    A head implements four hooks: ``_init_model``, ``_preprocess``,
-    ``_fit_model`` and ``_forward``. ``_loss``, ``_evaluate``,
-    ``_resolved_hyperparameters`` and the inherited ``_compute_metrics`` have
-    default implementations that may be overridden. Checkpoints are ``.joblib`` files
-    written through ``MlBackend``; they are pickles, so only load files you
-    trust.
+    The base builds the rows. The training target is computed once per fit,
+    one bar at a time, by ``_transform_target`` (``training=True`` on the
+    training bars only), exactly as for a torch head. Only cells with a valid
+    training target become rows; NaN features are kept, so the library's own
+    missing-value handling decides what they mean. Each row carries its cell
+    in ``where`` (see ``Rows``).
+
+    A head implements three hooks: ``_init_model``, ``_fit_model`` and
+    ``_forward``. ``_transform_feature`` (inf to NaN), ``_transform_target``
+    (the raw label), ``_loss`` (MSE), ``_resolved_hyperparameters`` and the
+    inherited ``_compute_metrics`` have defaults that may be overridden.
+    ``{split}_loss`` is ``_loss`` on the training target per bar, averaged
+    over bars; the other metrics score the raw first label. Checkpoints are
+    ``.joblib`` files written through ``MlBackend``; they are pickles, so only
+    load files you trust.
 
     Examples
     --------
@@ -2414,12 +2428,10 @@ class LibraryModel(BaseModel):
         >>> class FirstFeatureHead(LibraryModel):
         ...     def _init_model(self, num_features, num_labels, hyperparameters):
         ...         return {"num_labels": num_labels}
-        ...     def _preprocess(self, data):
-        ...         return np.array(data, dtype=np.float64, copy=True)
-        ...     def _fit_model(self, train_x, train_y, val_x, val_y):
+        ...     def _fit_model(self, train_rows, val_rows):
         ...         pass
         ...     def _forward(self, x):
-        ...         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
+        ...         return np.repeat(x[:, :1], self.model["num_labels"], axis=-1)
         >>> head = FirstFeatureHead(ModelConfig(
         ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
         ...     factor_data_strategy="read", label_data_strategy="read",
@@ -2474,33 +2486,31 @@ class LibraryModel(BaseModel):
         """
 
     @abstractmethod
-    def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """Preprocess a ``[T, S, *]`` array and return a new one; never modify in place.
+    def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
+        """Fit the model on the training rows.
 
-        Called once per training array (train and test, x and y) and once on
-        the input at inference.
-        """
-
-    @abstractmethod
-    def _fit_model(
-        self,
-        train_x: np.ndarray,
-        train_y: np.ndarray,
-        val_x: np.ndarray | None,
-        val_y: np.ndarray | None,
-    ) -> None:
-        """Fit the model on ``[T, S, F]`` features and ``[T, S, L]`` labels.
-
-        ``val_x`` and ``val_y`` are None when the validation segment is empty
-        (``val_size == 0``). Early stopping and rollback to the best model are
-        the hook's job, using the library's native mechanism and honouring
-        ``early_stopping`` and ``early_stopping_patience``. On
-        return ``self.model`` must be the model to save.
+        ``val_rows`` is None when there is no validation segment
+        (``val_size == 0``) or it has no cell with a valid training target.
+        Early stopping and rollback to the best model are the hook's job,
+        using the library's native mechanism and honouring
+        ``early_stopping`` and ``early_stopping_patience``. On return
+        ``self.model`` must be the model to save.
         """
 
     @abstractmethod
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Return ``[T, S, L]`` predictions for a preprocessed ``[T, S, F]`` input."""
+        """Return ``[n, L]`` predictions for ``[n, F]`` rows from ``_transform_feature``."""
+
+    def _transform_feature(self, x: np.ndarray) -> np.ndarray:
+        """Turn raw ``[n, F]`` float32 feature rows into the library's input.
+
+        The result must keep the shape. The default returns a copy with
+        infinities replaced by NaN, which tree libraries read as missing; a
+        library that refuses NaN overrides this to impute. Applied to the
+        training and validation rows and at prediction alike; never modify
+        ``x`` in place.
+        """
+        return np.where(np.isinf(x), np.float32(np.nan), x)
 
     def _resolved_hyperparameters(self) -> dict | None:
         """Return the hyperparameters actually in effect, or None to record nothing.
@@ -2529,34 +2539,87 @@ class LibraryModel(BaseModel):
             cfg["resolved_hyperparameters"] = dict(resolved)
         return cfg
 
-    def _loss(self, y: np.ndarray, pred: np.ndarray) -> float:
-        """Return the MSE over all labels at positions where every label is finite.
+    def _loss(self, target: np.ndarray, pred: np.ndarray) -> float:
+        """Return the MSE over every label of one bar's ``[n, L]`` rows.
 
-        Returns NaN when no position qualifies.
+        ``target`` is the bar's training target, finite everywhere. Returns
+        NaN when there are no rows.
         """
-        y = np.asarray(y, dtype=np.float64)
+        target = np.asarray(target, dtype=np.float64)
         pred = np.asarray(pred, dtype=np.float64)
-        rows = np.isfinite(y).all(axis=-1)
-        n = int(rows.sum())
-        if n == 0:
+        if target.size == 0:
             return float("nan")
-        diff = pred[rows] - y[rows]
+        diff = pred - target
         return float(np.sum(diff * diff) / diff.size)
 
-    def _evaluate(
-        self, split: str, x: np.ndarray, y: np.ndarray, timestamps
-    ) -> dict[str, float]:
+    def _features(self, x: np.ndarray) -> np.ndarray:
+        """Return ``_transform_feature(x)`` after checking it kept the shape."""
+        out = np.asarray(self._transform_feature(x))
+        if out.shape != x.shape:
+            raise ValueError(
+                f"{self.class_name}._transform_feature must keep the shape "
+                f"{x.shape}, got {out.shape}"
+            )
+        return out
+
+    def _forward_rows(self, x: np.ndarray) -> np.ndarray:
+        """Run ``_forward`` on raw ``[n, F]`` rows and check it returns ``[n, L]``."""
+        if len(x) == 0:
+            return np.empty((0, self.num_labels), dtype=np.float32)
+        pred = np.asarray(self._forward(self._features(x)))
+        if pred.shape != (len(x), self.num_labels):
+            raise ValueError(
+                f"{self.class_name}._forward must return [n, L] = "
+                f"{[len(x), self.num_labels]} predictions, got {list(pred.shape)}"
+            )
+        return pred
+
+    def _rows(self, panel: TrainingPanel, bars) -> Rows:
+        """Return the rows of ``bars``: every cell with a valid training target."""
+        cells = panel.mask & self._bar_mask(panel, bars)[:, None]
+        t, s = torch.nonzero(cells, as_tuple=True)
+        return Rows(
+            x=self._features(panel.x[t, s].numpy()),
+            y=panel.target[t, s].numpy(),
+            y_raw=panel.y_raw[t, s].numpy(),
+            where=(t.numpy(), s.numpy()),
+        )
+
+    @staticmethod
+    def _bar_mask(panel: TrainingPanel, bars) -> torch.Tensor:
+        """Return ``[T]`` booleans, True on ``bars``."""
+        chosen = torch.zeros(panel.present.shape[0], dtype=torch.bool)
+        chosen[torch.as_tensor(np.asarray(bars, dtype=np.int64))] = True
+        return chosen
+
+    def _evaluate(self, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
         """Evaluate one split and write the prefixed metrics to the wandb summary.
 
-        Keys are ``{split}_loss`` and the ``_compute_metrics`` keys
-        ``{split}_{mse,rmse,mae,r2,ic,rank_ic,icir,rank_icir}``; ``timestamps``
-        are the sorted bars of ``x`` and ``y``.
-        They go to the run summary (final values, no step), so they do not
-        interfere with per-round ``log(step=...)`` curves.
+        Every present cell of ``bars`` is predicted. ``{split}_loss`` is
+        ``_loss`` on each bar's training target, averaged over the bars
+        that have one, so every bar weighs the same; the other keys are
+        ``_compute_metrics`` on the raw labels. They go to the run summary
+        (final values, no step), so they do not interfere with per-round
+        ``log(step=...)`` curves.
         """
-        pred = self._forward(x)
-        metrics = {f"{split}_loss": self._loss(y, pred)}
-        for key, value in self._compute_metrics(y, pred, split, timestamps).items():
+        num_times, num_symbols = panel.present.shape
+        pred = np.full((num_times, num_symbols, self.num_labels), np.nan, dtype=np.float32)
+        cells = panel.present & self._bar_mask(panel, bars)[:, None]
+        t, s = torch.nonzero(cells, as_tuple=True)
+        pred[t.numpy(), s.numpy()] = self._forward_rows(panel.x[t, s].numpy())
+
+        target = panel.target.numpy()
+        mask = panel.mask.numpy()
+        losses = [
+            self._loss(target[bar, mask[bar]], pred[bar, mask[bar]])
+            for bar in bars
+            if mask[bar].any()
+        ]
+        metrics = {f"{split}_loss": float(np.mean(losses)) if losses else float("nan")}
+        y_raw = panel.y_raw.numpy()
+        for key, value in self._compute_metrics(
+            y_raw[bars], pred[bars], split, panel.timestamps[bars]
+        ).items():
             metrics[f"{split}_{key}"] = value
         if self._wandb_recorder is not None:
             self._wandb_recorder.summary.update(metrics)
@@ -2565,12 +2628,14 @@ class LibraryModel(BaseModel):
     def _fit(
         self, project_name: str, experiment_name: str, model_name: str
     ) -> dict:
-        """Split, fit once with ``_fit_model``, evaluate, save and finish the run.
+        """Build the rows, fit once with ``_fit_model``, evaluate, save and finish the run.
 
         The validation segment is the trailing ``val_size`` share of the
         training window, and the purge of ``_fit_segments`` drops the last L
         bars before validation and before test, as in the torch variant.
-        Empty splits skip
+        The training target is computed once, before the fit:
+        ``_transform_target`` sees ``training=True`` on the training bars and
+        ``training=False`` on the validation and test bars. Empty splits skip
         evaluation: no validation segment means no ``val_*`` metrics, and an
         empty test segment no ``test_*`` metrics.
 
@@ -2584,24 +2649,48 @@ class LibraryModel(BaseModel):
         ------
         ValueError
             If any of the four ``train_*`` / ``test_*`` dates is
-            unset, or ``val_size`` or the purge leaves no timestamps to fit
-            on.
+            unset, ``val_size`` or the purge leaves no timestamps to fit
+            on, or no training cell has a valid training target.
         """
-        train_start, train_end, test_start, test_end = (
-            self.config.train_start,
-            self.config.train_end,
-            self.config.test_start,
-            self.config.test_end,
-        )
-        if not train_start or not train_end or not test_start or not test_end:
+        config = self.config
+        if not all(
+            (config.train_start, config.train_end, config.test_start, config.test_end)
+        ):
             raise ValueError(
                 "Training and testing start and end dates must be specified."
             )
 
+        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
+            ["timestamp", "symbol"]
+        )
+        segments = self._fit_segments(data)
+        stamps = data.timestamp.values
+        train_bars, val_bars, test_bars = [
+            np.searchsorted(stamps, part.timestamp.values) for part in segments
+        ]
+        panel = self._training_panel(data)
+        self._fill_target(panel, train_bars, training=True)
+        self._fill_target(panel, val_bars, training=False)
+        self._fill_target(panel, test_bars, training=False)
+
+        train_rows = self._rows(panel, train_bars)
+        if len(train_rows.x) == 0:
+            raise ValueError(
+                f"{self.class_name}: the training segment has no cell with a "
+                f"valid training target."
+            )
+        val_rows = self._rows(panel, val_bars) if len(val_bars) else None
+        if val_rows is not None and len(val_rows.x) == 0:
+            logger.warning(
+                f"{self.class_name}: the validation segment has no cell with a "
+                f"valid training target; training without a validation set."
+            )
+            val_rows = None
+
         self.model = self._init_model(
             num_features=self.num_factors,
             num_labels=self.num_labels,
-            hyperparameters=self.config.hyperparameters,
+            hyperparameters=config.hyperparameters,
         )
         resolved = self._resolved_hyperparameters()
         if resolved is not None and self._wandb_recorder is not None:
@@ -2612,55 +2701,27 @@ class LibraryModel(BaseModel):
                 allow_val_change=True,
             )
 
-        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-        train_data, val_data, test_data = self._fit_segments(data)
-        factors = self.get_factor_names()
-        labels = self.get_label_names()
-
-        with Timer(f"{self.class_name}: to_array"):
-            train_x, train_y, val_x, val_y, test_x, test_y = [
-                self._preprocess(self.to_array(d, names))
-                for d, names in [
-                    (train_data, factors),
-                    (train_data, labels),
-                    (val_data, factors),
-                    (val_data, labels),
-                    (test_data, factors),
-                    (test_data, labels),
-                ]
-            ]
-        for d in [train_x, val_x, test_x]:
-            self._assert_shape_match_x(d)
-        for d in [train_y, val_y, test_y]:
-            self._assert_shape_match_y(d)
-        if val_x.shape[0] == 0:
-            val_x = val_y = None
-
         with Timer(f"{self.class_name}: fit_model"):
-            self._fit_model(train_x, train_y, val_x, val_y)
+            self._fit_model(train_rows, val_rows)
 
         with Timer(f"{self.class_name}: evaluate"):
-            stamps = [np.sort(d.timestamp.values) for d in (train_data, val_data, test_data)]
-            metrics = self._evaluate("train", train_x, train_y, stamps[0])
-            if val_x is not None:
-                metrics.update(self._evaluate("val", val_x, val_y, stamps[1]))
-            if test_x.shape[0] > 0:
-                metrics.update(self._evaluate("test", test_x, test_y, stamps[2]))
+            metrics = self._evaluate("train", panel, train_bars)
+            for split, bars in (("val", val_bars), ("test", test_bars)):
+                if len(bars):
+                    metrics.update(self._evaluate(split, panel, bars))
 
         self._save_model(
-            Path(self.config.model_save_dir)
-            / project_name
-            / experiment_name
-            / model_name,
+            Path(config.model_save_dir) / project_name / experiment_name / model_name
         )
-
         if self._wandb_recorder is not None:
             self._wandb_recorder.finish()
-
         return metrics
 
     def _predict(self, data: torch.Tensor | np.ndarray) -> np.ndarray:
-        """Preprocess ``data`` (tensors are converted to numpy) and run ``_forward``.
+        """Return ``[T, S, L]`` predictions for a ``[T, S, F]`` input.
+
+        Every cell with a finite feature is a row for ``_forward``; the
+        others are NaN. Tensors are converted to numpy.
 
         Raises
         ------
@@ -2671,12 +2732,16 @@ class LibraryModel(BaseModel):
             data = data.detach().cpu().numpy()
         if not isinstance(data, np.ndarray):
             raise TypeError(f"Unsupported data type: {type(data)}")
-        return self._forward(self._preprocess(data))
+        x = np.asarray(data, dtype=np.float32)
+        present = np.isfinite(x).any(axis=-1)
+        out = np.full(x.shape[:-1] + (self.num_labels,), np.nan, dtype=np.float32)
+        out[present] = self._forward_rows(x[present])
+        return out
 
     def _predict_panel_array(
         self, x: np.ndarray, timestamps: np.ndarray, symbols: np.ndarray
     ) -> np.ndarray:
-        """Return ``predict(x)`` as an array; ``_forward`` yields ``[T, S, L]``."""
+        """Return ``predict(x)`` as an array."""
         return np.asarray(self.predict(x))
 
     def _write_checkpoint(self, path: Path) -> None:

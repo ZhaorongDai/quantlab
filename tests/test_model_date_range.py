@@ -64,13 +64,12 @@ class LeastSquaresHead(LibraryModel):
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"coef": np.zeros((num_features + 1, num_labels))}
 
-    def _preprocess(self, data):
-        return np.nan_to_num(np.asarray(data, dtype=np.float64))
+    def _transform_feature(self, x):
+        return np.nan_to_num(x)
 
-    def _fit_model(self, train_x, train_y, val_x, val_y):
-        x = train_x.reshape(-1, train_x.shape[-1])
-        x = np.concatenate([x, np.ones((len(x), 1))], axis=1)
-        y = train_y.reshape(-1, train_y.shape[-1])
+    def _fit_model(self, train_rows, val_rows):
+        x = np.concatenate([train_rows.x, np.ones((len(train_rows.x), 1))], axis=1)
+        y = train_rows.y
         self.model["coef"] = np.linalg.lstsq(x, y, rcond=None)[0]
 
     def _forward(self, x):

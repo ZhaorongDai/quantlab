@@ -115,18 +115,17 @@ class ChannelLibraryHead(LibraryModel):
     """An `LibraryModel` whose label channels are distinguishable by construction.
 
     Channel i is `(i + 1) * f_a + 10 * i`, so channel 0 is exactly the first
-    feature and channel 1 is `2 * f_a + 10`. `_preprocess` zero-fills NaN like
-    the real heads do, which is what makes an all-NaN row predict a FINITE
-    value unless `predict_panel` masks it.
+    feature and channel 1 is `2 * f_a + 10`. `_transform_feature` zero-fills NaN like
+    the pytabkit heads do.
     """
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"num_labels": num_labels}
 
-    def _preprocess(self, data):
-        return np.nan_to_num(np.array(data, dtype=np.float64, copy=True))
+    def _transform_feature(self, x):
+        return np.nan_to_num(x)
 
-    def _fit_model(self, train_x, train_y, val_x, val_y):
+    def _fit_model(self, train_rows, val_rows):
         pass
 
     def _forward(self, x):

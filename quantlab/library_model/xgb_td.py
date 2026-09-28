@@ -19,6 +19,7 @@ import numpy as np
 from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
+from quantlab.library_model.data import Rows
 from quantlab.library_model.tabkit import TabkitRegressor, active_callbacks
 from quantlab.library_model.xgb import _WandbEvalCallback, record_feature_importance
 
@@ -60,9 +61,9 @@ class XGBTDRegressor(TabkitRegressor):
     ``self.model`` is a list with one fitted estimator per label, in
     ``get_label_names()`` order, because pytabkit's XGBoost estimator does
     not support multi-output regression. Every estimator is trained on the
-    same rows (rows with any non-finite label are dropped for all labels).
-    Headline metrics are computed on the primary label, index 0. Row
-    conversion, NaN handling and the hyperparameter record are inherited
+    same rows: the cells whose training target is valid in every label.
+    Headline metrics are computed on the primary label, index 0. NaN
+    imputation and the hyperparameter record are inherited
     from ``TabkitRegressor``.
 
     Hyperparameters are the constructor arguments of ``XGB_TD_Regressor``
@@ -70,7 +71,7 @@ class XGBTDRegressor(TabkitRegressor):
     ...). pytabkit's tuned defaults fill in whatever is not given:
     1000 rounds, depth 9, learning rate 0.05, subsample 0.7.
 
-    With a validation segment that has at least one finite-label row,
+    With validation rows,
     pytabkit always selects the round with the lowest validation error, so
     the ``.joblib`` checkpoint predicts with the best round, and that round
     count is written to the run summary as ``best_n_estimators`` (primary
@@ -168,26 +169,14 @@ class XGBTDRegressor(TabkitRegressor):
             return None
         return {**resolved, "early_stopping_rounds": self._early_stopping_rounds()}
 
-    def _fit_model(
-        self,
-        train_x: np.ndarray,
-        train_y: np.ndarray,
-        val_x: np.ndarray | None,
-        val_y: np.ndarray | None,
-    ) -> None:
+    def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Fit one estimator per label and record the best rounds in the summary.
 
-        Label ``i`` is fitted on column ``i`` of the label rows. Without a
-        usable validation segment each estimator is pinned to predict with
-        all of its rounds.
-
-        Raises
-        ------
-        ValueError
-            If the training segment has no row with finite labels.
+        Label ``i`` is fitted on column ``i`` of the training target. Without
+        validation rows each estimator is pinned to predict with all of its
+        rounds.
         """
-        x_rows, y_rows = self._training_rows(train_x, train_y)
-        val_rows = self._validation_rows(val_x, val_y)
+        self._warn_without_validation(val_rows)
         names = list(self.get_label_names())
 
         for i, estimator in enumerate(self.model):
@@ -195,11 +184,12 @@ class XGBTDRegressor(TabkitRegressor):
             self._last_log_step = None
             with active_callbacks(xgb_callbacks=self._round_callbacks(suffix)):
                 if val_rows is None:
-                    estimator.fit(x_rows, y_rows[:, i])
+                    estimator.fit(train_rows.x, train_rows.y[:, i])
                     self._pin_all_rounds(estimator)
                 else:
                     estimator.fit(
-                        x_rows, y_rows[:, i], X_val=val_rows[0], y_val=val_rows[1][:, i]
+                        train_rows.x, train_rows.y[:, i],
+                        X_val=val_rows.x, y_val=val_rows.y[:, i],
                     )
             if self._wandb_recorder is not None:
                 self._record_booster(estimator, names[i], suffix)
@@ -287,15 +277,9 @@ class XGBTDRegressor(TabkitRegressor):
         return out
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.
-
-        Missing feature values are imputed with ``0.0`` first, as in
-        training, and each estimator fills one label column.
-        """
-        n_times, n_symbols, n_features = x.shape
-        rows = self._impute_features(x.reshape(n_times * n_symbols, n_features))
+        """Predict ``[n, L]`` from imputed ``[n, F]`` rows, one estimator per label."""
         columns = [
-            np.asarray(estimator.predict(rows), dtype=np.float32).reshape(-1)
+            np.asarray(estimator.predict(x), dtype=np.float32).reshape(-1)
             for estimator in self.model
         ]
-        return np.stack(columns, axis=-1).reshape(n_times, n_symbols, -1)
+        return np.stack(columns, axis=-1)

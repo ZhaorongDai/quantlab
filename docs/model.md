@@ -124,7 +124,7 @@ True
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight, plus the fitting `loss`, on the raw values of the primary label (the first one) for the train, validation and test segments. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). Torch heads report the same keys; their `loss` is the mean of the head's `_val_one_batch` over the segment, by default its `_loss` on the transformed target (see Train a torch model).
+`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -185,7 +185,7 @@ Every head derives from `BaseModel` through one of two variants. The variants di
 | Class | Framework | Checkpoint | Methods a head implements |
 |---|---|---|---|
 | `TorchModel` | torch, one cross-section of symbols per step | `.pth` | `window_bars`, `_init_model`, `_loss`; optional hooks with defaults (see Train a torch model) |
-| `LibraryModel` | numpy, the library's own early stopping | `.joblib` | `_init_model`, `_preprocess`, `_fit_model`, `_forward` |
+| `LibraryModel` | numpy rows, the library's own early stopping | `.joblib` | `_init_model`, `_fit_model`, `_forward`; optional `_transform_feature`, `_transform_target`, `_loss` (see Extending) |
 
 Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads; no torch head ships yet. Torch heads live in `quantlab/torch_model/` and library heads in `quantlab/library_model/`. See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
 
@@ -370,7 +370,13 @@ Each `train()` and each fold of `train_cv()` opens a W&B run named after the exp
 
 A new head subclasses `LibraryModel` or `TorchModel` and implements the methods listed in the table above; nothing else needs to change. The head is then usable with `train`, `train_cv`, `load`, `predict_panel` and the backtesters.
 
-An `LibraryModel` head gets `[T, S, F]` features and `[T, S, L]` labels as arrays. `_fit_model` must leave the fitted object in `self.model`, and that object is what the checkpoint stores (via joblib). `_preprocess` runs on every array, labels included, and must return a copy. `_init_model` may return `None` when the real model is created during fitting.
+A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows, val_rows)` receives two `quantlab.library_model.data.Rows`, the second None when there is no validation segment or it has no usable row. Each carries `x [n, F]`, `y [n, L]` (the training target), `y_raw [n, L]` (the raw label) and `where`, the timestamp and symbol index of every row. Only cells with a valid training target become rows; NaN features stay, for the library's own missing-value handling. `_forward` maps `[n, F]` rows to `[n, L]` predictions, and at prediction time it sees every cell with a finite feature. `_fit_model` must leave the fitted object in `self.model`, and that object is what the checkpoint stores (via joblib). `_init_model` may return `None` when the real model is created during fitting. Three hooks are optional:
+
+| Hook | Default |
+|---|---|
+| `_transform_feature(x)`: raw `[n, F]` rows to the library's input, same shape, never in place | infinities to NaN |
+| `_transform_target(y, training)`: one bar's raw `[S_t, L]` labels (a float32 tensor, NaN where missing) to `(target, keep)`, computed once per bar before the fit, `training=True` on the training bars only; the same hook as a torch head's | the raw label |
+| `_loss(target, pred)`: one bar's `[n, L]` rows to a number; its per-bar mean is `{split}_loss` | MSE |
 
 ```python
 >>> from quantlab.base.model import LibraryModel
@@ -379,26 +385,35 @@ An `LibraryModel` head gets `[T, S, F]` features and `[T, S, L]` labels as array
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         self.alpha = hyperparameters.get("alpha", 1.0)
 ...         return None  # the real model is built in _fit_model
-...     def _preprocess(self, data):
-...         return np.array(data, dtype=np.float64, copy=True)  # a copy, never in place
-...     def _fit_model(self, train_x, train_y, val_x, val_y):
-...         x = np.nan_to_num(train_x.reshape(-1, train_x.shape[-1]))
-...         y = train_y.reshape(-1, train_y.shape[-1])
-...         keep = np.isfinite(y).all(axis=1)  # drop rows without a label
-...         x1 = np.c_[x[keep], np.ones(keep.sum())]  # add an intercept column
+...     def _fit_model(self, train_rows, val_rows):
+...         x = np.nan_to_num(train_rows.x)  # rows keep NaN features; ridge needs numbers
+...         x1 = np.c_[x, np.ones(len(x))]  # add an intercept column
 ...         penalty = self.alpha * np.eye(x1.shape[1])
 ...         penalty[-1, -1] = 0.0  # do not shrink the intercept
-...         self.model = np.linalg.solve(x1.T @ x1 + penalty, x1.T @ y[keep])
+...         self.model = np.linalg.solve(x1.T @ x1 + penalty, x1.T @ train_rows.y)
 ...     def _forward(self, x):
-...         rows = np.nan_to_num(x.reshape(-1, x.shape[-1]))
-...         out = np.c_[rows, np.ones(len(rows))] @ self.model
-...         return out.reshape(x.shape[0], x.shape[1], -1)
+...         return np.c_[np.nan_to_num(x), np.ones(len(x))] @ self.model
 >>> ridge = RidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
 >>> ridge_results = ridge.train_cv(train_periods=100)
 >>> [round(r["test_rank_ic"], 3) for r in ridge_results]
 [0.685, 0.667, 0.707, 0.672, 0.716]
 >>> ridge.model.round(3).ravel().tolist()
 [0.05, -0.02, -0.001]
+```
+
+Overriding `_transform_target` changes what the library fits and nothing else. Below, the ridge fits each bar's cross-sectional rank of the label, scaled to [-0.5, 0.5]. The metrics still score the raw label: the rank IC stays close, while the MSE against the raw return grows tenfold, because the predictions are now on the rank scale.
+
+```python
+>>> import torch
+>>> class RankRidgeHead(RidgeHead):
+...     def _transform_target(self, y, training):
+...         ranks = torch.argsort(torch.argsort(y[:, 0])).float()  # this label has no NaN
+...         return (ranks / (len(y) - 1) - 0.5)[:, None], None
+>>> ranked = RankRidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
+>>> ranked_metrics = json.loads((ranked.train().parent / "metrics.json").read_text())
+>>> plain_metrics = json.loads((ridge.train().parent / "metrics.json").read_text())
+>>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
+[(0.716, 0.003), (0.69, 0.027)]
 ```
 
 A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.

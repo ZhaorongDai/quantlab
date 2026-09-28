@@ -283,7 +283,7 @@ def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, r
     labels._ds["ret_a"].values[96:120] = np.nan
     _train(tmp_path, factors, labels, early_stopping=True)
 
-    assert any("no rows with finite labels" in m for m in warnings_log)
+    assert any("no cell with a valid training target" in m for m in warnings_log)
     assert any("early stopping skipped" in m for m in warnings_log)
     assert "stop_epoch" not in recorders[0].summary
 
@@ -367,7 +367,7 @@ def test_multi_label_predicts_every_label(tmp_path, recorders):
     assert regression_panel_metrics(pred[..., 1], test_y[..., 1])["ic"] > 0.5
 
 
-def test_nan_labels_and_infinite_features(tmp_path, recorders):
+def test_nan_labels_and_infinite_features(tmp_path, recorders, monkeypatch):
     """10% NaN label cells and a sprinkling of ±inf feature cells: NaN-label
     rows are dropped, non-finite features are imputed to 0 (pytabkit refuses
     NaN), and test predictions are all finite."""
@@ -380,25 +380,25 @@ def test_nan_labels_and_infinite_features(tmp_path, recorders):
     feature_values.reshape(-1)[idx[:20]] = np.inf
     feature_values.reshape(-1)[idx[20:]] = -np.inf
 
+    seen = []
+    fit_model = RealMLPRegressor._fit_model
+
+    def spy(self, train_rows, val_rows):
+        seen.append(train_rows)
+        return fit_model(self, train_rows, val_rows)
+
+    monkeypatch.setattr(RealMLPRegressor, "_fit_model", spy)
     model = _train(tmp_path, factors, labels)
     test_x, _ = _test_arrays(model)
     assert np.isfinite(model.predict(test_x)).all()
 
+    rows = seen[0]
     data = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-    x = model.to_array(data, model.get_factor_names())
     y = model.to_array(data, model.get_label_names())
-    x_before = x.copy()
-    x_pre = model._preprocess(x)
-    assert np.array_equal(x, x_before, equal_nan=True), "_preprocess mutated its input"
-    assert not np.isinf(x_pre).any()
-    assert int(np.isnan(x_pre).sum()) - int(np.isnan(x).sum()) == int(np.isinf(x).sum()) == 40
-
-    y_pre = model._preprocess(y)
-    assert np.array_equal(np.isnan(y_pre), np.isnan(y)), "label NaN must survive _preprocess"
-    x_rows, y_rows = RealMLPRegressor._to_rows(x_pre, y_pre)
-    assert x_rows.shape[0] == y_rows.shape[0] == int(np.isfinite(y).all(axis=-1).sum())
-    assert np.isfinite(x_rows).all()
-    assert np.isfinite(y_rows).all()
+    train_bars = rows.where[0].max() + 1
+    assert len(rows.x) == int(np.isfinite(y[:train_bars]).all(axis=-1).sum())
+    assert np.isfinite(rows.y).all()
+    assert np.isfinite(rows.x).all(), "pytabkit refuses NaN, so features are imputed"
 
 
 def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):

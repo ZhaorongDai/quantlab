@@ -2,12 +2,10 @@
 
 pytabkit is a library of tabular-data models with tuned default settings.
 ``TabkitRegressor`` holds what every pytabkit head needs and pytabkit does
-not do itself. It converts ``[T, S, *]`` arrays (bars by symbols by
-features or labels, cut from a panel indexed by ``timestamp`` and
-``symbol``) to flat rows. It handles NaN, which pytabkit refuses in
-numerical columns at fit and at predict. It decides which validation rows to
-use and warns when there are none. It merges hyperparameters and records the
-result as ``resolved_hyperparameters``. Concrete heads (``realmlp.py``,
+not do itself. It imputes NaN features, which pytabkit refuses in numerical
+columns at fit and at predict. It warns when early stopping is asked for
+without validation rows. It merges hyperparameters and records the result as
+``resolved_hyperparameters``. Concrete heads (``realmlp.py``,
 ``xgb_td.py``) build the estimator or estimators, fit them and predict.
 
 The module is named ``tabkit.py`` rather than ``pytabkit.py`` so it does
@@ -23,18 +21,17 @@ from loguru import logger
 
 from quantlab.base.config import ModelConfig
 from quantlab.base.model import LibraryModel
+from quantlab.library_model.data import Rows
 
 
 class TabkitRegressor(LibraryModel):
     """``LibraryModel`` base for pytabkit regression heads.
 
-    Training flattens the ``[T, S, F]`` features and ``[T, S, L]`` labels to
-    rows and drops every row with a non-finite label. Non-finite feature
-    values are imputed with ``0.0`` (see ``_impute_features``), because
-    pytabkit refuses NaN in numerical columns; factors are normally z-scored
-    before they reach a model, which makes ``0.0`` the column mean. Label
-    NaN is kept by ``_preprocess`` so the row drop and ``LibraryModel._loss``
-    still see it.
+    Training uses the rows ``LibraryModel`` builds, one per cell with a valid
+    training target. Non-finite feature values are imputed with ``0.0`` by
+    ``_transform_feature``, at fit and at predict, because pytabkit refuses
+    NaN in numerical columns; factors are normally z-scored before they reach
+    a model, which makes ``0.0`` the column mean.
 
     Hyperparameters come from ``config.hyperparameters`` and are the
     constructor arguments of the pytabkit estimator. The merge order is the
@@ -50,7 +47,7 @@ class TabkitRegressor(LibraryModel):
     Every head pins ``val_fraction=0.0`` in its ``DEFAULT_PARAMS``.
     Otherwise pytabkit would carve a second validation set out of the
     training rows, and the pipeline's trailing ``val_size`` split is meant to
-    be the only one. When that split has finite-label rows it is passed to
+    be the only one. When that split has rows they are passed to
     ``fit`` as ``X_val``/``y_val`` and pytabkit selects the best iteration on
     it. Whether training also halts early depends on the head's
     ``_early_stopping_params``.
@@ -119,81 +116,25 @@ class TabkitRegressor(LibraryModel):
             return None
         return dict(self._params)
 
-    def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """Return a float32 copy with infinities replaced by NaN.
-
-        NaN is kept here, not imputed, so that rows with a missing label can
-        still be recognised and dropped later.
-        """
-        out = np.array(data, dtype=np.float32, copy=True)
-        out[np.isinf(out)] = np.nan
-        return out
-
-    @staticmethod
-    def _impute_features(x: np.ndarray) -> np.ndarray:
-        """Return ``x`` with every non-finite value replaced by ``0.0``.
+    def _transform_feature(self, x: np.ndarray) -> np.ndarray:
+        """Return a copy of ``x`` with every non-finite value replaced by ``0.0``.
 
         Factors are normally z-scored, so ``0.0`` is the column mean.
         """
         return np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
 
-    @classmethod
-    def _to_rows(cls, x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Flatten ``[T, S, F]`` and ``[T, S, L]`` to rows with finite labels.
+    def _warn_without_validation(self, val_rows: Rows | None) -> None:
+        """Warn when early stopping is on but there are no validation rows.
 
-        Rows whose label has any non-finite value are dropped; the surviving
-        feature rows are then imputed, because pytabkit refuses NaN.
+        Early stopping is then skipped and every iteration is trained, as in
+        ``XGBoostRegressor``.
         """
-        n_times, n_symbols, n_features = x.shape
-        x_rows = x.reshape(n_times * n_symbols, n_features)
-        y_rows = y.reshape(n_times * n_symbols, y.shape[-1])
-        keep = np.isfinite(y_rows).all(axis=1)
-        return cls._impute_features(x_rows[keep]), y_rows[keep]
-
-    def _training_rows(
-        self, train_x: np.ndarray, train_y: np.ndarray
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Return the training rows as ``(features, labels)``.
-
-        Raises
-        ------
-        ValueError
-            If the training segment has no row with finite labels.
-        """
-        x_rows, y_rows = self._to_rows(train_x, train_y)
-        if x_rows.shape[0] == 0:
-            raise ValueError(
-                "The training segment has no rows with finite labels."
-            )
-        return x_rows, y_rows
-
-    def _validation_rows(
-        self, val_x: np.ndarray | None, val_y: np.ndarray | None
-    ) -> tuple[np.ndarray, np.ndarray] | None:
-        """Return the validation rows, or None when there is no usable segment.
-
-        A validation segment without a finite-label row counts as absent.
-        Both absent cases log a warning when ``hyperparameters["early_stopping"]`` is
-        set, because early stopping is then skipped and every iteration is
-        trained, as in ``XGBoostRegressor``.
-        """
-        rows = None
-        if val_x is not None:
-            val_x_rows, val_y_rows = self._to_rows(val_x, val_y)
-            if val_x_rows.shape[0] > 0:
-                rows = (val_x_rows, val_y_rows)
-            else:
-                logger.warning(
-                    f"{self.class_name}: the validation segment has no rows "
-                    "with finite labels; training without a validation set."
-                )
-        if rows is None and self.early_stopping:
+        if val_rows is None and self.early_stopping:
             logger.warning(
                 f"{self.class_name}: early_stopping=True but there is no usable "
                 f"validation segment; early stopping skipped, training all "
                 f"iterations."
             )
-        return rows
 
     @abstractmethod
     def _init_model(
@@ -202,18 +143,12 @@ class TabkitRegressor(LibraryModel):
         """Resolve the parameters and return the unfitted estimator(s)."""
 
     @abstractmethod
-    def _fit_model(
-        self,
-        train_x: np.ndarray,
-        train_y: np.ndarray,
-        val_x: np.ndarray | None,
-        val_y: np.ndarray | None,
-    ) -> None:
+    def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Fit ``self.model`` on the rows and record the run's summary."""
 
     @abstractmethod
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Return ``[T, S, L]`` predictions for a preprocessed ``[T, S, F]`` input."""
+        """Return ``[n, L]`` predictions for imputed ``[n, F]`` feature rows."""
 
 
 # -- Per-step logging hooks ------------------------------------------------------

@@ -127,8 +127,8 @@ class StubLibraryHead(LibraryModel):
 
     `_init_model` stores `num_labels` in the model dict, so `_forward` works on
     an instance that was loaded but never collected. `_forward` returns the
-    first factor repeated over the label axis, which keeps IC finite on a
-    random panel.
+    first factor (NaN read as 0) repeated over the label axis, which keeps IC
+    finite on a random panel.
     """
 
     def __init__(self, config):
@@ -140,24 +140,13 @@ class StubLibraryHead(LibraryModel):
         self.init_model_calls += 1
         return {"num_labels": num_labels}
 
-    def _preprocess(self, data):
-        return np.nan_to_num(np.array(data, dtype=np.float64, copy=True), nan=0.0)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
-        self.fit_calls.append(
-            {
-                "train_x": train_x.shape,
-                "train_y": train_y.shape,
-                "val_x": None if val_x is None else val_x.shape,
-                "val_y": None if val_y is None else val_y.shape,
-                "train_x_first": train_x[0, 0].tolist(),
-                "train_y_first": train_y[0, 0].tolist(),
-            }
-        )
+    def _fit_model(self, train_rows, val_rows):
+        self.fit_calls.append({"train": train_rows, "val": val_rows})
         self.model = {**self.model, "offset": 0.25}
 
     def _forward(self, x):
-        return np.repeat(x[..., :1], self.model["num_labels"], axis=-1) + self.model["offset"]
+        first = np.nan_to_num(np.asarray(x[:, :1], dtype=np.float64), nan=0.0)
+        return np.repeat(first, self.model["num_labels"], axis=-1) + self.model["offset"]
 
 
 def _config(tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt"):
@@ -209,24 +198,25 @@ def test_tail_validation_split_keeps_every_training_timestamp(tmp_path, recorder
     last 20 validate, and none is dropped. Turns red on a `train_split + 1`
     style off-by-one or a head/tail swap."""
     call = _trained(tmp_path).fit_calls[0]
-    assert call["train_x"] == (80, N_SYMBOLS, 2)
-    assert call["train_y"] == (80, N_SYMBOLS, 1)
-    assert call["val_x"] == (20, N_SYMBOLS, 2)
-    assert call["val_y"] == (20, N_SYMBOLS, 1)
-    assert call["train_x"][0] + call["val_x"][0] == N_TRAIN_TIMES
+    train, val = call["train"], call["val"]
+    assert train.x.shape == (80 * N_SYMBOLS, 2)
+    assert train.y.shape == train.y_raw.shape == (80 * N_SYMBOLS, 1)
+    assert val.x.shape == (20 * N_SYMBOLS, 2)
+    assert sorted(set(train.where[0].tolist())) == list(range(80))
+    assert sorted(set(val.where[0].tolist())) == list(range(80, 100))
 
 
-def test_zero_val_size_passes_none_for_both_validation_arrays(tmp_path, recorders):
-    """An empty validation segment is signalled with None, never with a
-    zero-length array a library would choke on."""
+def test_zero_val_size_passes_none_for_the_validation_rows(tmp_path, recorders):
+    """An empty validation segment is signalled with None, never with
+    zero-length rows a library would choke on."""
     call = _trained(tmp_path, val_size=0.0).fit_calls[0]
-    assert call["val_x"] is None and call["val_y"] is None
-    assert call["train_x"][0] == N_TRAIN_TIMES
+    assert call["val"] is None
+    assert set(call["train"].where[0].tolist()) == set(range(N_TRAIN_TIMES))
 
 
 def test_full_val_size_raises_before_fit_model(tmp_path, recorders):
     """`val_size=1.0` leaves nothing to fit on; it must raise before the
-    library is ever called rather than hand it an empty array."""
+    library is ever called rather than hand it empty rows."""
     model = StubLibraryHead(_config(tmp_path, val_size=1.0))
     model.collect()
     with pytest.raises(ValueError, match="Empty training segment"):
@@ -248,9 +238,195 @@ def test_declared_factor_and_label_order_reaches_fit_model(tmp_path, recorders):
             )
         ],
     )
-    call = model.fit_calls[0]
-    assert call["train_x_first"] == [1.0, 2.0, 3.0]
-    assert call["train_y_first"] == [30.0, 60.0, 120.0]
+    train = model.fit_calls[0]["train"]
+    assert train.x[0].tolist() == [1.0, 2.0, 3.0]
+    assert train.y[0].tolist() == [30.0, 60.0, 120.0]
+
+
+# --------------------------------------------------------------------------
+# Rows and the training target (issue #51)
+# --------------------------------------------------------------------------
+
+
+def _holey_factor():
+    """Two factors; symbol S0 has no f_b ever, S3 has no feature at bars 10-19."""
+    factor = FakePanel(["f_a", "f_b"], seed=1)
+    factor._ds["f_b"][:, 0] = np.nan
+    factor._ds["f_a"][10:20, 3] = np.nan
+    factor._ds["f_b"][10:20, 3] = np.nan
+    return factor
+
+
+def _holey_label():
+    """S1's label is missing on even bars; S2's at bars 30-39."""
+    label = FakePanel(["ret_a"], seed=2)
+    label._ds["ret_a"][::2, 1] = np.nan
+    label._ds["ret_a"][30:40, 2] = np.nan
+    return label
+
+
+def _present_and_labelled(bars):
+    """The `(t, s)` cells of `bars` with a feature and a label, in row order."""
+    factor, label = _holey_factor(), _holey_label()
+    x = np.stack([factor._ds[n].values for n in ("f_a", "f_b")], axis=-1)
+    y = label._ds["ret_a"].values
+    ok = np.isfinite(x).any(-1) & np.isfinite(y)
+    return [(t, s) for t in bars for s in range(N_SYMBOLS) if ok[t, s]]
+
+
+def test_rows_hold_only_valid_target_cells_and_keep_nan_features(tmp_path, recorders):
+    """Only cells with a valid training target become rows, in time then
+    symbol order, and a NaN feature reaches the library as NaN: the library's
+    own missing-value handling decides what it means."""
+    model = _trained(tmp_path, factors=[_holey_factor()], labels=[_holey_label()])
+    train = model.fit_calls[0]["train"]
+    cells = list(zip(train.where[0].tolist(), train.where[1].tolist()))
+    assert cells == _present_and_labelled(range(80))
+    assert np.isnan(train.x[train.where[1] == 0, 1]).all()
+    assert np.isfinite(train.y).all()
+    assert np.array_equal(train.y, train.y_raw)
+
+
+def test_rows_turn_infinite_features_into_nan(tmp_path, recorders):
+    """The default `_transform_feature` turns inf into NaN, never into a
+    number a tree would split on."""
+    factor = FakePanel(["f_a", "f_b"], seed=1)
+    factor._ds["f_a"][5, 2] = np.inf
+    model = _trained(tmp_path, factors=[factor])
+    train = model.fit_calls[0]["train"]
+    row = np.flatnonzero((train.where[0] == 5) & (train.where[1] == 2))[0]
+    assert np.isnan(train.x[row, 0]) and np.isfinite(train.x[row, 1])
+
+
+class RankTargetHead(StubLibraryHead):
+    """Trains on the per-bar cross-sectional rank of the label, scaled to [0, 1]."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.target_calls: list[tuple[int, bool]] = []
+
+    def _transform_target(self, y, training):
+        self.target_calls.append((len(y), training))
+        ranks = torch.argsort(torch.argsort(y[:, 0])).float()
+        return (ranks / max(len(y) - 1, 1))[:, None], None
+
+
+def test_a_rank_training_target_reaches_the_rows_and_metrics_stay_raw(tmp_path, recorders):
+    """The rows carry the rank target in `y` and the raw label in `y_raw`,
+    and the reported metrics score the prediction against the raw label."""
+    model = RankTargetHead(_config(tmp_path))
+    model.collect()
+    checkpoint = model.train()
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    train = model.fit_calls[0]["train"]
+    for t in (0, 41, 79):
+        at = train.where[0] == t
+        expected = np.argsort(np.argsort(train.y_raw[at, 0])) / (at.sum() - 1)
+        assert np.allclose(train.y[at, 0], expected)
+
+    data = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+    x = model.to_array(data, model.get_factor_names())[:80]
+    y = model.to_array(data, model.get_label_names())[:80]
+    pred = model.predict(x)
+    assert metrics["train_mse"] == pytest.approx(float(np.mean((pred - y) ** 2)), rel=1e-5)
+
+
+def test_the_target_hook_sees_training_only_on_train_bars_once_per_fit(tmp_path, recorders):
+    """80 train bars, 20 validation bars and 30 test bars: one call per bar,
+    `training=True` exactly on the 80."""
+    model = RankTargetHead(_config(tmp_path))
+    model.collect()
+    model.train()
+    flags = [training for _, training in model.target_calls]
+    assert flags == [True] * 80 + [False] * 50
+
+
+class DropFirstHead(StubLibraryHead):
+    """Keeps every symbol but the bar's first present one."""
+
+    def _transform_target(self, y, training):
+        keep = torch.ones(len(y), dtype=torch.bool)
+        keep[0] = False
+        return y, keep
+
+
+def test_keep_removes_a_symbol_from_the_rows(tmp_path, recorders):
+    model = DropFirstHead(_config(tmp_path))
+    model.collect()
+    model.train()
+    train = model.fit_calls[0]["train"]
+    assert 0 not in set(train.where[1].tolist())
+    assert len(train.x) == 80 * (N_SYMBOLS - 1)
+
+
+class DemeanHead(StubLibraryHead):
+    """Trains on the label minus its cross-sectional mean."""
+
+    def _transform_target(self, y, training):
+        return y - y.nanmean(dim=0, keepdim=True), None
+
+
+def test_split_loss_is_the_per_bar_mean_of_the_head_loss_on_the_training_target(
+    tmp_path, recorders
+):
+    """Bars hold 2, 3 or 4 labelled symbols; every bar weighs the same in
+    `{split}_loss`, and the loss is on the demeaned target, not the raw label."""
+    model = DemeanHead(_config(tmp_path, factors=[_holey_factor()], labels=[_holey_label()]))
+    model.collect()
+    checkpoint = model.train()
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+
+    data = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+    x = model.to_array(data, model.get_factor_names())
+    y = model.to_array(data, model.get_label_names())
+    pred = model.predict(x)
+    for split, bars in (("train", range(80)), ("val", range(80, 100)), ("test", range(100, 130))):
+        per_bar = []
+        for t in bars:
+            cells = [s for (tt, s) in _present_and_labelled([t])]
+            target = y[t, cells] - y[t, cells].mean(axis=0, keepdims=True)
+            per_bar.append(np.mean((pred[t, cells] - target) ** 2))
+        assert metrics[f"{split}_loss"] == pytest.approx(np.mean(per_bar), rel=1e-5), split
+
+
+def test_a_training_segment_without_valid_targets_raises_before_fit_model(tmp_path, recorders):
+    label = FakePanel(["ret_a"], seed=2)
+    label._ds["ret_a"][:80] = np.nan
+    model = StubLibraryHead(_config(tmp_path, labels=[label]))
+    model.collect()
+    with pytest.raises(ValueError, match="valid training target"):
+        model.train()
+    assert model.fit_calls == []
+
+
+def test_a_validation_segment_without_valid_targets_passes_none(tmp_path, recorders):
+    label = FakePanel(["ret_a"], seed=2)
+    label._ds["ret_a"][80:100] = np.nan
+    model = _trained(tmp_path, labels=[label])
+    assert model.fit_calls[0]["val"] is None
+
+
+def test_predict_scores_every_present_cell_and_leaves_absent_ones_nan(tmp_path, recorders):
+    model = _trained(tmp_path)
+    x = np.random.default_rng(6).standard_normal((3, N_SYMBOLS, 2))
+    x[0, 1] = np.nan
+    x[1, 2, 0] = np.nan
+    pred = model.predict(x)
+    expected = np.ones((3, N_SYMBOLS), dtype=bool)
+    expected[0, 1] = False
+    assert np.array_equal(np.isfinite(pred[..., 0]), expected)
+
+
+class WrongShapeHead(StubLibraryHead):
+    def _forward(self, x):
+        return np.zeros((len(x), 3))
+
+
+def test_a_forward_of_the_wrong_shape_raises(tmp_path, recorders):
+    model = WrongShapeHead(_config(tmp_path))
+    model.collect()
+    with pytest.raises(ValueError, match="_forward"):
+        model.train()
 
 
 def test_train_writes_the_metrics_of_every_split(tmp_path, recorders):
@@ -404,22 +580,18 @@ def test_predict_before_train_or_load_raises(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_default_loss_excludes_rows_with_a_nan_label(tmp_path):
-    """`(t, s)` rows where ANY label is missing are dropped entirely; the MSE
-    is over every label of the remaining rows."""
+def test_default_loss_is_the_mse_over_every_label_of_the_rows(tmp_path):
     model = StubLibraryHead(_config(tmp_path))
-    y = np.array([[[1.0, 2.0], [3.0, np.nan]], [[0.0, 0.0], [1.0, 1.0]]])
-    pred = np.array([[[2.0, 2.0], [100.0, 100.0]], [[1.0, 1.0], [1.0, 3.0]]])
-    # kept rows: (0,0) diffs 1,0; (1,0) diffs 1,1; (1,1) diffs 0,2 -> (1+0+1+1+0+4)/6
-    assert model._loss(y, pred) == pytest.approx(7 / 6)
+    target = np.array([[1.0, 2.0], [0.0, 0.0], [1.0, 1.0]])
+    pred = np.array([[2.0, 2.0], [1.0, 1.0], [1.0, 3.0]])
+    assert model._loss(target, pred) == pytest.approx(7 / 6)
 
 
-def test_default_loss_is_nan_without_valid_rows_and_does_not_warn(tmp_path):
+def test_default_loss_is_nan_without_rows_and_does_not_warn(tmp_path):
     model = StubLibraryHead(_config(tmp_path))
-    y = np.full((2, 2, 1), np.nan)
     with warnings.catch_warnings():
         warnings.simplefilter("error", RuntimeWarning)
-        assert np.isnan(model._loss(y, np.zeros_like(y)))
+        assert np.isnan(model._loss(np.zeros((0, 1)), np.zeros((0, 1))))
 
 
 # --------------------------------------------------------------------------
@@ -497,7 +669,7 @@ def test_pinned_factor_names_win_over_every_producible_name(tmp_path, recorders)
 
     assert model.get_factor_names() == ["f_c", "f_a"]
     model.train()
-    assert model.fit_calls[0]["train_x"][-1] == 2
+    assert model.fit_calls[0]["train"].x.shape[-1] == 2
 
 
 def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, recorders):
@@ -522,4 +694,4 @@ def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, rec
     model = StubLibraryHead(_pinned_config(tmp_path, [factor], [label], times)).collect()
     assert model.get_factor_names() == PINNED
     model.train()
-    assert model.fit_calls[0]["train_x"][-1] == len(PINNED)
+    assert model.fit_calls[0]["train"].x.shape[-1] == len(PINNED)

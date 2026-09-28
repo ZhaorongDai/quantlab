@@ -124,7 +124,7 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头报告同样的键；其中的 `loss` 是模型头的 `_val_one_batch` 在该段上的均值，默认就是变换后目标上的 `_loss`（见“训练 torch 模型”）。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标，覆盖训练、验证和测试三段；另有 `loss`：模型头在训练目标（经模型头逐 bar 的 `_transform_target` 变换后的标签，见“扩展”）上的损失，逐 bar 计算再对 bar 取平均，因此每个 bar 的权重相同，与它有多少个标的无关。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。对库模型头，这个损失是 `_loss`（默认 MSE）；对 torch 模型头，它是 `_val_one_batch`，默认就是它的 `_loss`（见“训练 torch 模型”）。
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -185,7 +185,7 @@ True
 | 类 | 框架 | 检查点 | 模型头需要实现的方法 |
 |---|---|---|---|
 | `TorchModel` | torch，每一步一个标的截面 | `.pth` | `window_bars`、`_init_model`、`_loss`；其余是带默认实现的可选钩子（见“训练 torch 模型”） |
-| `LibraryModel` | numpy，使用库自带的提前停止 | `.joblib` | `_init_model`、`_preprocess`、`_fit_model`、`_forward` |
+| `LibraryModel` | numpy 行，使用库自带的提前停止 | `.joblib` | `_init_model`、`_fit_model`、`_forward`；可选 `_transform_feature`、`_transform_target`、`_loss`（见“扩展”） |
 
 自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；目前还没有自带的 torch 模型头。torch 模型头放在 `quantlab/torch_model/`，库模型头放在 `quantlab/library_model/`。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
 
@@ -370,7 +370,13 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 
 新的模型头继承 `LibraryModel` 或 `TorchModel`，实现上表列出的方法即可，其余都不用改。之后它就能使用 `train`、`train_cv`、`load`、`predict_panel` 和各个回测器。
 
-`LibraryModel` 的模型头拿到的是数组形式的 `[T, S, F]` 特征和 `[T, S, L]` 标签。`_fit_model` 必须把拟合好的对象放到 `self.model` 里，检查点保存的就是这个对象（通过 joblib）。`_preprocess` 会作用在每一个数组上，包括标签，必须返回拷贝。真正的模型在拟合过程中才创建时，`_init_model` 可以返回 `None`。
+`LibraryModel` 的模型头拿到的是行，由基类构建。`_fit_model(train_rows, val_rows)` 收到两个 `quantlab.library_model.data.Rows`；没有验证段、或验证段里没有可用的行时，第二个是 None。每个 `Rows` 带有 `x [n, F]`、`y [n, L]`（训练目标）、`y_raw [n, L]`（原始标签）和 `where`（每一行的时间下标和标的下标）。只有训练目标有效的单元格才成为行；NaN 特征保留下来，交给库自己的缺失值处理。`_forward` 把 `[n, F]` 的行映射成 `[n, L]` 的预测，预测时它会看到每一个至少有一个有限特征的单元格。`_fit_model` 必须把拟合好的对象放到 `self.model` 里，检查点保存的就是这个对象（通过 joblib）。真正的模型在拟合过程中才创建时，`_init_model` 可以返回 `None`。另有三个可选钩子：
+
+| 钩子 | 默认 |
+|---|---|
+| `_transform_feature(x)`：把原始的 `[n, F]` 行变成库的输入，形状不变，不能原地修改 | 把无穷大换成 NaN |
+| `_transform_target(y, training)`：把一个 bar 的原始 `[S_t, L]` 标签（float32 张量，缺失处为 NaN）变成 `(target, keep)`，在拟合前对每个 bar 算一次，只有训练段的 bar 上 `training=True`；与 torch 模型头的是同一个钩子 | 原始标签 |
+| `_loss(target, pred)`：把一个 bar 的 `[n, L]` 行变成一个数；它在各 bar 上的均值就是 `{split}_loss` | MSE |
 
 ```python
 >>> from quantlab.base.model import LibraryModel
@@ -379,26 +385,35 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         self.alpha = hyperparameters.get("alpha", 1.0)
 ...         return None  # 真正的模型在 _fit_model 里构建
-...     def _preprocess(self, data):
-...         return np.array(data, dtype=np.float64, copy=True)  # 返回拷贝，不原地修改
-...     def _fit_model(self, train_x, train_y, val_x, val_y):
-...         x = np.nan_to_num(train_x.reshape(-1, train_x.shape[-1]))
-...         y = train_y.reshape(-1, train_y.shape[-1])
-...         keep = np.isfinite(y).all(axis=1)  # 丢弃没有标签的行
-...         x1 = np.c_[x[keep], np.ones(keep.sum())]  # 加一列截距
+...     def _fit_model(self, train_rows, val_rows):
+...         x = np.nan_to_num(train_rows.x)  # 行里保留了 NaN 特征，岭回归需要数值
+...         x1 = np.c_[x, np.ones(len(x))]  # 加一列截距
 ...         penalty = self.alpha * np.eye(x1.shape[1])
 ...         penalty[-1, -1] = 0.0  # 截距不做收缩
-...         self.model = np.linalg.solve(x1.T @ x1 + penalty, x1.T @ y[keep])
+...         self.model = np.linalg.solve(x1.T @ x1 + penalty, x1.T @ train_rows.y)
 ...     def _forward(self, x):
-...         rows = np.nan_to_num(x.reshape(-1, x.shape[-1]))
-...         out = np.c_[rows, np.ones(len(rows))] @ self.model
-...         return out.reshape(x.shape[0], x.shape[1], -1)
+...         return np.c_[np.nan_to_num(x), np.ones(len(x))] @ self.model
 >>> ridge = RidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
 >>> ridge_results = ridge.train_cv(train_periods=100)
 >>> [round(r["test_rank_ic"], 3) for r in ridge_results]
 [0.685, 0.667, 0.707, 0.672, 0.716]
 >>> ridge.model.round(3).ravel().tolist()
 [0.05, -0.02, -0.001]
+```
+
+覆写 `_transform_target` 只改变库拟合的对象，别的都不变。下面的岭回归拟合的是每个 bar 上标签的截面排名，缩放到 [-0.5, 0.5]。指标仍然在原始标签上计算：rank IC 相差不大，而相对原始收益的 MSE 涨了十倍，因为预测现在处在排名的量纲上。
+
+```python
+>>> import torch
+>>> class RankRidgeHead(RidgeHead):
+...     def _transform_target(self, y, training):
+...         ranks = torch.argsort(torch.argsort(y[:, 0])).float()  # 这个标签没有 NaN
+...         return (ranks / (len(y) - 1) - 0.5)[:, None], None
+>>> ranked = RankRidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
+>>> ranked_metrics = json.loads((ranked.train().parent / "metrics.json").read_text())
+>>> plain_metrics = json.loads((ridge.train().parent / "metrics.json").read_text())
+>>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
+[(0.716, 0.003), (0.69, 0.027)]
 ```
 
 `TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。

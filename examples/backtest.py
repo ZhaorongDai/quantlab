@@ -170,17 +170,11 @@ class LeastSquaresHead(LibraryModel):
         """Return no model object; the coefficients are created when fitting."""
         return None  # the coefficients are created in _fit_model
 
-    def _preprocess(self, data):
-        """Convert the input array to a float64 copy."""
-        return np.array(data, dtype=np.float64, copy=True)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
-        """Fit an ordinary least-squares regression on the rows with no missing values."""
-        x = train_x.reshape(-1, train_x.shape[-1])
-        y = train_y.reshape(-1, train_y.shape[-1])
-        rows = np.isfinite(x).all(axis=1) & np.isfinite(y).all(axis=1)
-        design = np.column_stack([np.ones(rows.sum()), x[rows]])
-        coef, *_ = np.linalg.lstsq(design, y[rows], rcond=None)
+    def _fit_model(self, train_rows, val_rows):
+        """Fit an ordinary least-squares regression on the rows with every feature."""
+        rows = np.isfinite(train_rows.x).all(axis=1)
+        design = np.column_stack([np.ones(rows.sum()), train_rows.x[rows]])
+        coef, *_ = np.linalg.lstsq(design, train_rows.y[rows], rcond=None)
         self.model = {"coef": coef}
 
     def _forward(self, x):

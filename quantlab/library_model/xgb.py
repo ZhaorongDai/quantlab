@@ -2,9 +2,8 @@
 
 ``XGBoostRegressor`` is a ``LibraryModel`` (the numpy-based model base class in
 ``quantlab.base.model``). It trains an XGBoost ``Booster`` with ``xgb.train``
-on the flattened ``(num_times * num_symbols, num_features)`` rows of the
-factor panel and predicts future returns as ``[num_times, num_symbols,
-num_labels]``. The Booster is fit on a pooled concordance-correlation loss
+on the rows the base builds from the factor panel (one per cell with a
+valid training target) and predicts future returns row by row. The Booster is fit on a pooled concordance-correlation loss
 (``pooled_ccc_loss``) through the custom objective ``ccc_objective``, early
 stopping uses xgboost's native callback on the validation RMSE, and
 per-factor feature importance is recorded to Weights and Biases after
@@ -23,6 +22,7 @@ from loguru import logger
 
 from quantlab.base.config import ModelConfig
 from quantlab.base.model import LibraryModel
+from quantlab.library_model.data import Rows
 
 #: scikit-learn style aliases mapped to the native ``xgb.train`` parameter
 #: names. Aliases are rewritten on the user's dict before it is merged with
@@ -470,16 +470,18 @@ def record_feature_importance(
 class XGBoostRegressor(LibraryModel):
     """Predict future returns with an XGBoost Booster.
 
-    Training flattens the ``[T, S, F]`` features and ``[T, S, L]`` labels to
-    rows, drops every row with a non-finite label, converts infinite feature
-    values to NaN (which xgboost treats as missing) and calls ``xgb.train``.
-    Each label is one output of a multi-output regression; headline metrics
-    are computed on the primary label, index 0.
+    Training calls ``xgb.train`` on the rows ``LibraryModel`` builds: one
+    per cell with a valid training target, NaN features kept (xgboost treats
+    them as missing; the default ``_transform_feature`` turns infinities into
+    NaN). The label a tree fits is the training target, so overriding
+    ``_transform_target`` trains on a per-bar rank or z-score while the
+    headline metrics still score the raw primary label, index 0. Each label
+    is one output of a multi-output regression.
 
     The training objective is the pooled CCC loss ``1 - ccc`` (see
     ``ccc_objective``), applied to every label column on its own. Unless
     ``base_score`` is given, the Booster starts from the mean of the
-    finite training labels (written to the run summary as ``base_score``)
+    training target (written to the run summary as ``base_score``)
     instead of xgboost's ``0.5``, because the CCC
     gradient barely corrects a constant offset while ``ccc`` is near zero.
     Setting ``objective`` in the hyperparameters switches back to that
@@ -496,8 +498,7 @@ class XGBoostRegressor(LibraryModel):
     recorded under ``resolved_hyperparameters`` in the checkpoint's
     ``config.json`` and in the run config.
 
-    With ``hyperparameters["early_stopping"]`` set and a validation segment
-    that has at least one finite-label row, ``xgb.callback.EarlyStopping`` watches the
+    With ``hyperparameters["early_stopping"]`` set and validation rows, ``xgb.callback.EarlyStopping`` watches the
     validation ``rmse``; ``rmse`` is appended to a user ``eval_metric`` that
     lacks it. Every other metric, and the ``ccc_loss`` curve of the training
     objective, is logged only. Patience counts boosting rounds.
@@ -655,76 +656,30 @@ class XGBoostRegressor(LibraryModel):
             resolved["objective"] = "ccc_objective"
         return resolved
 
-    def _preprocess(self, data: np.ndarray) -> np.ndarray:
-        """Return a float32 copy with infinities replaced by NaN.
-
-        xgboost treats NaN as a missing value, so no imputation is needed.
-        """
-        out = np.array(data, dtype=np.float32, copy=True)
-        out[np.isinf(out)] = np.nan
-        return out
-
-    @staticmethod
-    def _to_rows(x: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Flatten ``[T, S, F]`` and ``[T, S, L]`` to rows with finite labels.
-
-        ``T`` is bars, ``S`` symbols, ``F`` features and ``L`` labels. Rows
-        whose label has any non-finite value are dropped; NaN features stay.
-        """
-        n_times, n_symbols, n_features = x.shape
-        x_rows = x.reshape(n_times * n_symbols, n_features)
-        y_rows = y.reshape(n_times * n_symbols, y.shape[-1])
-        keep = np.isfinite(y_rows).all(axis=1)
-        return x_rows[keep], y_rows[keep]
-
-    def _fit_model(
-        self,
-        train_x: np.ndarray,
-        train_y: np.ndarray,
-        val_x: np.ndarray | None,
-        val_y: np.ndarray | None,
-    ) -> None:
+    def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Train the Booster with ``xgb.train`` and record the run's summary.
 
-        The validation rows are used only when the segment has at least one
-        row with finite labels. With early stopping, the best iteration and
-        its score are written to the W&B summary, followed by the feature
-        importance.
-
-        Raises
-        ------
-        ValueError
-            If the training segment has no row with finite labels.
+        NaN features are xgboost's missing values. With early stopping, the
+        best iteration and its score are written to the W&B summary,
+        followed by the feature importance.
         """
         # A deep-copied cross-validation fold would otherwise inherit the
         # last step of a previously trained head.
         self._last_log_step = None
-        x_rows, y_rows = self._to_rows(train_x, train_y)
-        if x_rows.shape[0] == 0:
-            raise ValueError(
-                "The training segment has no rows with finite labels."
-            )
         params = dict(self._params)
         if self._uses_ccc_objective and "base_score" not in params:
-            params["base_score"] = float(np.mean(y_rows, dtype=np.float64))
+            params["base_score"] = float(np.mean(train_rows.y, dtype=np.float64))
             if self._wandb_recorder is not None:
                 self._wandb_recorder.summary.update(
                     {"base_score": params["base_score"]}
                 )
-        dtrain = xgb.DMatrix(x_rows, label=y_rows)
+        dtrain = xgb.DMatrix(train_rows.x, label=train_rows.y)
         evals = [(dtrain, "train")]
 
         dval = None
-        if val_x is not None:
-            val_x_rows, val_y_rows = self._to_rows(val_x, val_y)
-            if val_x_rows.shape[0] > 0:
-                dval = xgb.DMatrix(val_x_rows, label=val_y_rows)
-                evals.append((dval, "val"))
-            else:
-                logger.warning(
-                    f"{self.class_name}: the validation segment has no rows "
-                    "with finite labels; training without a validation set."
-                )
+        if val_rows is not None:
+            dval = xgb.DMatrix(val_rows.x, label=val_rows.y)
+            evals.append((dval, "val"))
 
         # The logging callback must precede EarlyStopping: xgboost short-
         # circuits its callback list, so a callback placed after EarlyStopping
@@ -787,19 +742,17 @@ class XGBoostRegressor(LibraryModel):
         )
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
-        """Predict ``[T, S, L]`` from a preprocessed ``[T, S, F]`` array.
+        """Predict ``[n, L]`` from ``[n, F]`` feature rows.
 
         ``inplace_predict``, which skips building a ``DMatrix``, is tried
         first. Boosters that do not support it
         (``gblinear``) fall back to ``predict`` on a ``DMatrix``. NaN is
         treated as missing on both paths.
         """
-        n_times, n_symbols, n_features = x.shape
-        rows = x.reshape(n_times * n_symbols, n_features)
         try:
-            pred = self.model.inplace_predict(rows)  # type: ignore[union-attr]
+            pred = self.model.inplace_predict(x)  # type: ignore[union-attr]
         except xgb.core.XGBoostError as exc:
             if "Inplace predict is not supported" not in str(exc):
                 raise
-            pred = self.model.predict(xgb.DMatrix(rows))  # type: ignore[union-attr]
-        return np.asarray(pred).reshape(n_times, n_symbols, -1)
+            pred = self.model.predict(xgb.DMatrix(x))  # type: ignore[union-attr]
+        return np.asarray(pred).reshape(len(x), -1)

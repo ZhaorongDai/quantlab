@@ -163,10 +163,7 @@ class FirstFeatureHead(LibraryModel):
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"num_labels": num_labels}
 
-    def _preprocess(self, data):
-        return np.array(data, dtype=np.float64, copy=True)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
+    def _fit_model(self, train_rows, val_rows):
         pass
 
     def _forward(self, x):

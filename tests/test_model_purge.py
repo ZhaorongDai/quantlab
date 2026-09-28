@@ -72,13 +72,10 @@ class RecordingLibraryHead(LibraryModel):
     def _init_model(self, num_features, num_labels, hyperparameters):
         return {"num_labels": num_labels}
 
-    def _preprocess(self, data):
-        return np.array(data, dtype=np.float64, copy=True)
-
-    def _fit_model(self, train_x, train_y, val_x, val_y):
+    def _fit_model(self, train_rows, val_rows):
         RecordingLibraryHead.fitted = {
-            "train": bars(train_y),
-            "val": None if val_y is None else bars(val_y),
+            "train": bars(train_rows.y),
+            "val": None if val_rows is None else bars(val_rows.y),
         }
 
     def _forward(self, x):
@@ -176,8 +173,8 @@ class FoldRecordingLibraryHead(RecordingLibraryHead):
 
     folds: list = []
 
-    def _fit_model(self, train_x, train_y, val_x, val_y):
-        FoldRecordingLibraryHead.folds.append(bars(train_y))
+    def _fit_model(self, train_rows, val_rows):
+        FoldRecordingLibraryHead.folds.append(bars(train_rows.y))
 
 
 def cv_manifest(tmp_path) -> dict:
