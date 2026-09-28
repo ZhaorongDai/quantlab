@@ -662,22 +662,20 @@ is a joblib pickle of `self.model`; only load files you trust.
 
 `DLModel` is for PyTorch networks trained on one cross-section per step: the
 symbols with a finite feature at a bar, each with its own window of the last
-`window_bars` bars. A head implements `_init_model(num_features, num_labels,
-hyperparameters)`, returning an `nn.Module` that maps `[S_t, N, F]` to
-`[S_t, L]` for any number of symbols S_t, `_init_optim(model)`, and the step
-hooks `_train_one_batch`, `_val_one_batch` and `_test_one_batch`, each
-called with one bar's `x` (`[S_t, N, F]`) and `y` (`[S_t, L]`, the
-transformed target, NaN where a label is missing). The loss, the optimizer
-and anything else about a step are the head's, and so is when to stop:
-`_should_stop(epoch, train_loss, val_loss)` runs after every epoch, between
-`_on_fit_start()` and `_on_fit_end()` (defaults: run every epoch, keep the
-last weights). It declares `window_bars` and `target_transform`
-(`TargetTransform("rank")` or `TargetTransform("zscore")`, optionally with
-`drop_extreme`); `ValLossPatience`, `TrainLossThreshold` and `masked_mse` are
-helpers for the hooks, all from `quantlab.dl_model.training`. The base class
-builds the windows (clipped to ±3, NaN as 0), shuffles the bars, applies the
-target transform, runs the epoch loop, and writes the same `metrics.json` as
-`MLModel`. The model
+`window_bars` bars. A head writes `window_bars`, `_init_model(num_features,
+num_labels, hyperparameters)`, returning an `nn.Module` that maps
+`[S_t, N, F]` to `[S_t, L]` for any number of symbols S_t, and
+`_loss(output, batch)`, where `batch` is a `CrossSectionBatch` (`x`, `y`,
+`mask`, `y_raw`, `symbols`, `timestamp`) with missing labels already masked.
+Every other choice is an optional hook with a default: `_transform_feature`
+(clip to ±3, NaN to 0), `_transform_target` (none), `_init_optim` (Adam at
+`config.lr`), `_train_one_batch` / `_val_one_batch` / `_test_one_batch`,
+`_forward` (the network's output is the prediction) and the stop hooks
+`_on_fit_start` / `_should_stop` / `_on_fit_end` (run `config.epochs`
+epochs). `quantlab.dl_model.training` has helpers for them: `masked_mse`,
+`cs_rank_norm`, `cs_zscore`, `drop_extreme` and `TrainLossThreshold`. The
+base class builds the windows, shuffles the bars, masks the targets, runs
+the epoch loop, and writes the same `metrics.json` as `MLModel`. The model
 requests `window_bars - 1` extra bars of each factor before its start date.
 A GRU per symbol followed by attention across the bar's symbols:
 
@@ -687,7 +685,7 @@ from torch import nn
 
 from quantlab.base.config import DLConfig
 from quantlab.base.model import DLModel
-from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
+from quantlab.dl_model.training import cs_rank_norm, masked_mse
 
 
 class CrossSectionAttention(nn.Module):
@@ -707,37 +705,17 @@ class CrossSectionAttention(nn.Module):
 
 class AttentionHead(DLModel):
     window_bars = 10
-    target_transform = TargetTransform("rank")
-
-    def _on_fit_start(self):
-        self.patience = ValLossPatience(3)
-
-    def _should_stop(self, epoch, train_loss, val_loss):
-        return self.patience.update(val_loss, self.model)
-
-    def _on_fit_end(self):
-        self.patience.restore(self.model)
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return CrossSectionAttention(
             num_features, num_labels, hyperparameters.get("hidden", 8)
         )
 
-    def _init_optim(self, model):
-        return torch.optim.Adam(model.parameters(), lr=self.config.lr)
+    def _loss(self, output, batch):
+        return masked_mse(output, batch.y, batch.mask)
 
-    def _train_one_batch(self, epoch, x, y):
-        self.optim.zero_grad()
-        loss = masked_mse(self.model(x), y)
-        loss.backward()
-        self.optim.step()
-        return loss.detach()
-
-    def _val_one_batch(self, epoch, x, y):
-        return masked_mse(self.model(x), y)
-
-    def _test_one_batch(self, epoch, x, y):
-        return masked_mse(self.model(x), y)
+    def _transform_target(self, y, training):
+        return cs_rank_norm(y), None
 
 
 head = AttentionHead(DLConfig(

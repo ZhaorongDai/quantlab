@@ -1,8 +1,8 @@
 """Tiny cross-section torch heads shared by the model tests.
 
 Plain helpers, not fixtures, imported as ``from tests.dl_heads import
-MeanContextHead``. Each is the smallest ``DLModel`` that exercises one part
-of the base class: the network maps ``[S_t, N, F]`` to ``[S_t, L]``.
+MeanContextHead``. Each is a small ``DLModel``: the network maps
+``[S_t, N, F]`` to ``[S_t, L]``, and the loss is ``masked_mse``.
 """
 
 import torch
@@ -10,9 +10,10 @@ from torch import nn
 
 from quantlab.base.model import DLModel
 from quantlab.dl_model.training import (
-    TargetTransform,
     TrainLossThreshold,
-    ValLossPatience,
+    cs_rank_norm,
+    cs_zscore,
+    drop_extreme,
     masked_mse,
 )
 
@@ -32,59 +33,61 @@ class MeanContextNet(nn.Module):
 
 
 class MeanContextHead(DLModel):
-    """``MeanContextNet`` with its declarations read from ``hyperparameters``.
+    """``MeanContextNet`` with its choices read from ``hyperparameters``.
 
-    ``window_bars`` (default 3), ``transform`` (a ``TargetTransform``,
-    default z-score), ``stopping`` (``("patience", n)`` or
-    ``("threshold", threshold, max_epochs)``, default ``("patience", 2)``) and
-    ``clip`` (default True) may be overridden per test.
+    ``window_bars`` (default 3); ``transform``: ``"zscore"`` (default),
+    ``"rank"``, or ``(kind, drop_fraction)``; ``stopping``: ``("patience", n)``
+    (default ``("patience", 2)``) or ``("threshold", threshold, max_epochs)``;
+    ``clip`` (default True) keeps the default feature transform, False only
+    fills NaN.
     """
 
     @property
     def window_bars(self) -> int:
         return self.config.hyperparameters.get("window_bars", 3)
 
-    @property
-    def target_transform(self) -> TargetTransform:
-        return self.config.hyperparameters.get("transform", TargetTransform("zscore"))
-
-
-    @property
-    def clip_features(self) -> bool:
-        return self.config.hyperparameters.get("clip", True)
-
     def _init_model(self, num_features, num_labels, hyperparameters):
         return MeanContextNet(num_features, num_labels, self.window_bars)
 
-    def _init_optim(self, model):
-        return torch.optim.Adam(model.parameters(), lr=self.config.lr)
+    def _loss(self, output, batch):
+        return masked_mse(output, batch.y, batch.mask)
 
-    def _train_one_batch(self, epoch, x, y):
-        self.optim.zero_grad()
-        loss = masked_mse(self.model(x), y)
-        loss.backward()
-        torch.nn.utils.clip_grad_value_(self.model.parameters(), 3.0)
-        self.optim.step()
-        return loss.detach()
+    def _transform_feature(self, x):
+        if self.config.hyperparameters.get("clip", True):
+            return super()._transform_feature(x)
+        return torch.nan_to_num(x, nan=0.0)
 
-    def _val_one_batch(self, epoch, x, y):
-        return masked_mse(self.model(x), y)
-
-    def _test_one_batch(self, epoch, x, y):
-        return masked_mse(self.model(x), y)
+    def _transform_target(self, y, training):
+        spec = self.config.hyperparameters.get("transform", "zscore")
+        kind, fraction = (spec, 0.0) if isinstance(spec, str) else spec
+        keep = drop_extreme(y, fraction) if training and fraction else None
+        if keep is not None:
+            y = y[keep]
+        return (cs_rank_norm(y) if kind == "rank" else cs_zscore(y)), keep
 
     def _on_fit_start(self):
         kind, *args = self.config.hyperparameters.get("stopping", ("patience", 2))
-        self.rule = ValLossPatience(*args) if kind == "patience" else TrainLossThreshold(*args)
+        self.threshold = TrainLossThreshold(*args) if kind == "threshold" else None
+        self.patience = args[0] if kind == "patience" else None
+        self.best, self.bad, self.best_state = float("inf"), 0, None
 
     def _should_stop(self, epoch, train_loss, val_loss):
-        if isinstance(self.rule, ValLossPatience):
-            return self.rule.update(val_loss, self.model)
-        return self.rule.update(train_loss)
+        if self.threshold is not None:
+            return self.threshold.update(train_loss)
+        if val_loss is None:
+            return False
+        if val_loss < self.best:
+            self.best, self.bad = val_loss, 0
+            self.best_state = {
+                k: v.detach().clone() for k, v in self.model.state_dict().items()
+            }
+            return False
+        self.bad += 1
+        return self.bad >= self.patience
 
     def _on_fit_end(self):
-        if isinstance(self.rule, ValLossPatience):
-            self.rule.restore(self.model)
+        if self.best_state is not None:
+            self.model.load_state_dict(self.best_state)
 
 
 class RecordingNet(MeanContextNet):

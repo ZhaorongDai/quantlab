@@ -15,8 +15,9 @@ What turns this file red:
 - a window row before a symbol's history is not zero, or clipping is ignored;
 - the model's warm-up does not make a short request predict like a long one;
 - a target transform is not per bar, or metrics see the transformed target;
-- the stop hooks are not called per fit and per epoch, or a stopping
-  helper keeps the wrong weights or stops at the wrong epoch;
+- the stop hooks are not called per fit and per epoch, or the threshold
+  helper stops at the wrong epoch;
+- a hook default is missing, or a hook the head overrides is not the one used;
 - a DL `train()` writes no `metrics.json`.
 
 Everything is synthetic, CPU-only and offline.
@@ -37,12 +38,15 @@ from KunQuant.Stage import Function
 from quantlab.base.config import DLConfig, FactorConfig, ForwardConfig
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.factor import FactorKunQuant
-from quantlab.base.model import BaseModel
+from quantlab.base.model import BaseModel, DLModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dl_model.training import (
-    TargetTransform,
+    CrossSectionBatch,
     TrainLossThreshold,
-    ValLossPatience,
+    cs_rank_norm,
+    cs_zscore,
+    drop_extreme,
+    masked_mse,
 )
 from quantlab.label.forward import Forward
 from quantlab.utils.metrics import regression_panel_metrics
@@ -391,19 +395,20 @@ def test_a_read_store_shorter_than_the_warm_up_warns_and_starts_at_the_store(war
 def test_rank_is_qlib_csranknorm_and_zscore_is_the_sample_zscore():
     y = np.array([[0.4, 1.0], [np.nan, 2.0], [0.1, 2.0], [0.4, np.nan], [0.9, 7.0]])
     pct = pd.DataFrame(y).rank(pct=True).to_numpy()
-    np.testing.assert_allclose(TargetTransform("rank").apply(y), (pct - 0.5) * 3.46)
+    np.testing.assert_allclose(cs_rank_norm(torch.tensor(y)).numpy(), (pct - 0.5) * 3.46)
 
     frame = pd.DataFrame(y)
     np.testing.assert_allclose(
-        TargetTransform("zscore").apply(y), ((frame - frame.mean()) / frame.std()).to_numpy()
+        cs_zscore(torch.tensor(y)).numpy(), ((frame - frame.mean()) / frame.std()).to_numpy()
     )
 
 
 def test_drop_extreme_keeps_nan_labels_and_drops_both_tails():
-    y = np.array([[3.0], [np.nan], [1.0], [9.0], [5.0], [7.0], [np.nan], [2.0], [8.0], [4.0], [6.0]])
-    keep = TargetTransform("zscore", drop_extreme=0.1).kept(y)  # 9 finite -> 0 each tail
-    assert keep.all()
-    keep = TargetTransform("zscore", drop_extreme=0.25).kept(y)  # 2 each tail
+    y = torch.tensor(
+        [[3.0], [np.nan], [1.0], [9.0], [5.0], [7.0], [np.nan], [2.0], [8.0], [4.0], [6.0]]
+    )
+    assert drop_extreme(y, 0.1).all()  # 9 finite -> 0 each tail
+    keep = drop_extreme(y, 0.25)  # 2 each tail
     assert not keep[[2, 7, 3, 8]].any()
     assert keep[[0, 1, 4, 5, 6, 9, 10]].all()
 
@@ -417,7 +422,7 @@ def test_transforms_are_per_bar_so_a_per_bar_rescale_trains_the_same_model(
     rng = np.random.default_rng(3)
     scale = rng.uniform(0.5, 50.0, size=(N_TIMES, 1))
     shift = rng.uniform(-5.0, 5.0, size=(N_TIMES, 1))
-    hp = {"transform": TargetTransform(kind)}
+    hp = {"transform": kind}
 
     plain = _model(tmp_path, features, label, name="plain", hyperparameters=hp)
     plain.train()
@@ -437,7 +442,7 @@ def test_drop_extreme_removes_symbols_from_the_training_cross_section_only(
     symbols = [f"S{i}" for i in range(10)]
     model = _model(tmp_path, features, label, cls=RecordingHead, symbols=symbols,
                    epochs=1, val_size=0.0,
-                   hyperparameters={"transform": TargetTransform("zscore", 0.1)})
+                   hyperparameters={"transform": ("zscore", 0.1)})
     model.train()
 
     sizes = [x.shape[0] for x in model.model.inputs]
@@ -461,31 +466,6 @@ def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path, recorder
 # ---------------------------------------------------------------------------
 # Stopping rules
 # ---------------------------------------------------------------------------
-
-
-def test_val_loss_patience_restores_the_best_epochs_weights():
-    net = torch.nn.Linear(1, 1)
-    rule = ValLossPatience(patience=2)
-    snapshots = []
-    stops = []
-    for loss in (3.0, 1.0, 2.0, 4.0):
-        with torch.no_grad():
-            net.weight.add_(1.0)
-        snapshots.append(net.weight.detach().clone())
-        stops.append(rule.update(loss, net))
-    rule.restore(net)
-
-    assert stops == [False, False, False, True]
-    torch.testing.assert_close(net.weight, snapshots[1])
-
-
-def test_val_loss_patience_never_stops_without_a_validation_loss():
-    net = torch.nn.Linear(1, 1)
-    rule = ValLossPatience(patience=1)
-    assert [rule.update(None, net) for _ in range(5)] == [False] * 5
-    before = net.weight.detach().clone()
-    rule.restore(net)  # nothing was snapshotted: the weights stay
-    torch.testing.assert_close(net.weight, before)
 
 
 def test_train_loss_threshold_stops_at_the_threshold_or_the_cap():
@@ -609,10 +589,10 @@ class ConstantStepHead(MeanContextHead):
     """Steps that never update and report a loss of 1.0: the head, not the
     base class, decides what one step does and what loss it reports."""
 
-    def _train_one_batch(self, epoch, x, y):
+    def _train_one_batch(self, epoch, batch):
         return torch.tensor(1.0)
 
-    def _val_one_batch(self, epoch, x, y):
+    def _val_one_batch(self, epoch, batch):
         return torch.tensor(1.0)
 
 
@@ -637,9 +617,8 @@ class HookRecordingHead(MeanContextHead):
         self.test_calls = []
         return super()._init_model(num_features, num_labels, hyperparameters)
 
-    def _test_one_batch(self, epoch, x, y):
-        self.test_calls.append((epoch, x.shape[0], y.shape[0]))
-        return super()._test_one_batch(epoch, x, y)
+    def _test_one_batch(self, epoch, batch):
+        self.test_calls.append((epoch, batch.x.shape[0], batch.y.shape[0]))
 
 
 def test_test_hook_runs_on_every_test_bar_after_each_epoch(tmp_path, recorders):
@@ -650,3 +629,122 @@ def test_test_hook_runs_on_every_test_bar_after_each_epoch(tmp_path, recorders):
 
     assert [epoch for epoch, _, _ in model.test_calls] == [0] * 10 + [1] * 10
     assert all(rows == len(SYMBOLS) and labels == rows for _, rows, labels in model.test_calls)
+
+
+# ---------------------------------------------------------------------------
+# The smallest head, and the optional hooks
+# ---------------------------------------------------------------------------
+
+
+class MinimalHead(DLModel):
+    """Only what a head must write: a window, a network and a loss."""
+
+    window_bars = 2
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return torch.nn.Sequential(torch.nn.Flatten(), torch.nn.Linear(2 * num_features, num_labels))
+
+    def _loss(self, output, batch):
+        return masked_mse(output, batch.y, batch.mask)
+
+
+def test_a_head_with_only_a_window_a_network_and_a_loss_trains_and_predicts(
+    tmp_path, recorders
+):
+    features = _features()
+    label = _label_of(features)
+    model = _model(tmp_path, features, label, cls=MinimalHead, epochs=3)
+    checkpoint = model.train()
+
+    (run,) = recorders
+    assert len(run.logged) == 3  # no early stop by default
+    assert run.logged[-1]["train_loss"] < run.logged[0]["train_loss"]
+    out = model.predict_panel(_feature_panel(features))
+    assert np.isfinite(out["ret"].values).all()
+    assert (checkpoint.parent / "metrics.json").is_file()
+
+
+def test_the_loss_hook_sees_a_masked_zero_filled_target_and_the_bar(tmp_path, recorders):
+    features = _features()
+    label = _label_of(features)
+    label[:, 2] = np.nan
+    seen: list[CrossSectionBatch] = []
+
+    class Spy(MinimalHead):
+        def _loss(self, output, batch):
+            seen.append(batch)
+            return super()._loss(output, batch)
+
+    _model(tmp_path, features, label, cls=Spy, epochs=1, val_size=0.0).train()
+
+    batch = seen[0]
+    row = list(batch.symbols).index("S2")
+    assert not batch.mask[row].any() and batch.y[row].eq(0).all()
+    assert torch.isnan(batch.y_raw[row]).all()
+    assert torch.isfinite(batch.y).all()
+    assert list(batch.symbols) == SYMBOLS
+    assert batch.timestamp in TIMES[:30]
+    assert batch.x.shape == (len(SYMBOLS), 2, 2)
+
+
+class TupleNet(torch.nn.Module):
+    def __init__(self, num_features, num_labels):
+        super().__init__()
+        self.pred = torch.nn.Linear(num_features, num_labels)
+        self.aux = torch.nn.Linear(num_features, 1)
+
+    def forward(self, x):
+        return self.pred(x[:, -1]), self.aux(x[:, -1])
+
+
+class AuxOutputHead(MinimalHead):
+    """A network with an auxiliary output: the loss uses both, prediction one."""
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return TupleNet(num_features, num_labels)
+
+    def _loss(self, output, batch):
+        pred, aux = output
+        return masked_mse(pred, batch.y, batch.mask) + 0.1 * aux.pow(2).mean()
+
+    def _forward(self, x):
+        return self.model(x)[0]
+
+
+def test_forward_maps_a_multi_output_network_to_the_prediction(tmp_path, recorders):
+    features = _features()
+    model = _model(tmp_path, features, _label_of(features), cls=AuxOutputHead, epochs=2)
+    model.train()
+
+    out = model.predict_panel(_feature_panel(features))
+    assert np.isfinite(out["ret"].values).all()
+
+
+class ScaledFeatureHead(RecordingHead):
+    def _transform_feature(self, x):
+        return torch.nan_to_num(x, nan=-1.0) * 2.0
+
+
+def test_transform_feature_replaces_the_default_in_training_and_prediction(
+    tmp_path, recorders
+):
+    features = {"f_a": np.ones((N_TIMES, 2)), "f_b": np.full((N_TIMES, 2), 10.0)}
+    label = np.random.default_rng(0).standard_normal((N_TIMES, 2))
+    model = _model(tmp_path, features, label, cls=ScaledFeatureHead, symbols=["S0", "S1"],
+                   epochs=1, hyperparameters={"window_bars": 2})
+    model.train()
+
+    first = model.model.inputs[0]
+    assert set(first[:, -1].reshape(-1).tolist()) == {2.0, 20.0}  # no clip to 3
+    model.model.inputs.clear()
+    model.predict_panel(_feature_panel(features, ["S0", "S1"]))
+    np.testing.assert_array_equal(model.model.inputs[0][:, 0].numpy(), -2.0)  # before history
+
+
+def test_a_transform_feature_that_leaves_nan_is_refused_naming_the_head(tmp_path, recorders):
+    class LeavesNaN(MinimalHead):
+        def _transform_feature(self, x):
+            return x
+
+    with pytest.raises(ValueError, match="LeavesNaN._transform_feature"):
+        _model(tmp_path, _features(), _label_of(_features()), cls=LeavesNaN, epochs=1).train()

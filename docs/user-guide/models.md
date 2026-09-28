@@ -387,29 +387,25 @@ mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
 
 ## Train a torch head
 
-A torch head builds an `nn.Module` and an optimizer and writes its own
-training step. The module maps one bar's windows, `[S_t, N, F]` (symbols,
-bars, features), to `[S_t, L]`. `_train_one_batch(epoch, x, y)` takes one
-optimisation step on one bar, and `_val_one_batch` and `_test_one_batch`
-evaluate one bar; `y` is the bar's target with NaN where a label is missing,
-so the loss must mask it, as `masked_mse` does. The loss, the optimizer and
-any clipping are the head's choice, and so is when to stop: `_should_stop`
-runs after every epoch with its mean training and validation losses, and
-`_on_fit_start` / `_on_fit_end` run around the loop. By default every epoch
-runs and the last weights are kept; `ValLossPatience(patience)`, which
-restores the epoch with the lowest validation loss, and
-`TrainLossThreshold(threshold, max_epochs)` are ready-made helpers for those
-hooks. The head also declares two things. `window_bars` is N.
-`target_transform` turns each bar's labels into the training target, a
-per-bar rank (`"rank"`, Qlib's `CSRankNorm`) or z-score (`"zscore"`). This
-head is a small MLP on each symbol's flattened five-bar window:
+A torch head writes three things: `window_bars` (N, the bars in each
+symbol's window), `_init_model` (an `nn.Module` mapping one bar's windows,
+`[S_t, N, F]`, to `[S_t, L]`) and `_loss(output, batch)`. `batch` carries the
+bar's inputs `x`, targets `y`, a `mask` of the valid targets, the raw labels,
+the symbols and the timestamp; missing labels are already masked, so the
+loss only counts `batch.mask`, as `masked_mse` does. Everything else is an
+optional hook with a default: the feature transform (clip to ±3, NaN to 0),
+the target transform (none; `cs_rank_norm`, `cs_zscore` and `drop_extreme`
+are ready to use), the optimizer (Adam at `config.lr`), the training,
+validation and test steps, the mapping to the prediction, and when to stop
+(by default after `config.epochs` epochs). This head is a small MLP on each
+symbol's flattened five-bar window; it ranks the target per bar and keeps
+the epoch with the lowest validation loss:
 
 ```python
 import torch.nn as nn
 from quantlab.base.config import DLConfig
 from quantlab.base.model import DLModel
-import torch
-from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
+from quantlab.dl_model.training import cs_rank_norm, masked_mse
 
 class WindowMLP(nn.Module):
     """A small MLP on each symbol's flattened window."""
@@ -424,27 +420,23 @@ class WindowMLP(nn.Module):
 
 class WindowMLPHead(DLModel):
     window_bars = 5
-    target_transform = TargetTransform("rank")
     def _init_model(self, num_features, num_labels, hyperparameters):
         return WindowMLP(num_features, num_labels, self.window_bars)
+    def _loss(self, output, batch):
+        return masked_mse(output, batch.y, batch.mask)
+    def _transform_target(self, y, training):
+        return cs_rank_norm(y), None
     def _on_fit_start(self):
-        self.patience = ValLossPatience(5)
+        self.best, self.best_state, self.bad = float("inf"), None, 0
     def _should_stop(self, epoch, train_loss, val_loss):
-        return self.patience.update(val_loss, self.model)
+        if val_loss < self.best:
+            self.best, self.bad = val_loss, 0
+            self.best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+        else:
+            self.bad += 1
+        return self.bad >= 5
     def _on_fit_end(self):
-        self.patience.restore(self.model)
-    def _init_optim(self, model):
-        return torch.optim.Adam(model.parameters(), lr=self.config.lr)
-    def _train_one_batch(self, epoch, x, y):
-        self.optim.zero_grad()
-        loss = masked_mse(self.model(x), y)   # y is NaN where a label is missing
-        loss.backward()
-        self.optim.step()
-        return loss.detach()
-    def _val_one_batch(self, epoch, x, y):
-        return masked_mse(self.model(x), y)
-    def _test_one_batch(self, epoch, x, y):
-        return masked_mse(self.model(x), y)
+        self.model.load_state_dict(self.best_state)
 
 head = WindowMLPHead(DLConfig(
     factors=[features], labels=[label],

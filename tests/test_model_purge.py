@@ -17,7 +17,7 @@ import xarray as xr
 
 from quantlab.base.config import DLConfig, MLConfig
 from quantlab.base.model import MLModel
-from quantlab.dl_model.training import TargetTransform
+from quantlab.dl_model.training import cs_rank_norm
 from tests.dl_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
@@ -133,28 +133,31 @@ class RecordingDLHead(OneBarHead):
     names its bar; ranking the target gives every bar a finite target.
     """
 
-    clip_features = False
-    target_transform = TargetTransform("rank")
     seen: dict = {}
+
+    def _transform_feature(self, x):
+        return torch.nan_to_num(x, nan=0.0)
+
+    def _transform_target(self, y, training):
+        return cs_rank_norm(y), None
 
     def _init_optim(self, model):
         RecordingDLHead.seen = {"train": set(), "val": set()}
         return super()._init_optim(model)
 
-    def _train_one_batch(self, epoch, x, y):
-        RecordingDLHead.seen["train"].add(int(x[0, -1, 0]))
-        return super()._train_one_batch(epoch, x, y)
+    def _train_one_batch(self, epoch, batch):
+        RecordingDLHead.seen["train"].add(int(batch.x[0, -1, 0]))
+        return super()._train_one_batch(epoch, batch)
 
-    def _val_one_batch(self, epoch, x, y):
+    def _val_one_batch(self, epoch, batch):
         # The epoch's validation pass comes before its test pass; the later
         # calls score each split for the metrics.
         if not RecordingDLHead.seen.get("tested"):
-            RecordingDLHead.seen["val"].add(int(x[0, -1, 0]))
-        return super()._val_one_batch(epoch, x, y)
+            RecordingDLHead.seen["val"].add(int(batch.x[0, -1, 0]))
+        return super()._val_one_batch(epoch, batch)
 
-    def _test_one_batch(self, epoch, x, y):
+    def _test_one_batch(self, epoch, batch):
         RecordingDLHead.seen["tested"] = True
-        return super()._test_one_batch(epoch, x, y)
 
 
 def test_dl_val_split_drops_the_last_lookahead_bars_before_validation_and_test(tmp_path):

@@ -124,7 +124,7 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。每个模型头都在主标签（第一个标签）的原始值上计算全部六个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头报告同样的键；其中的 `loss` 是模型头的 `_val_one_batch` 在该段上的均值，基于变换后的目标（见“训练 torch 模型”）。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。每个模型头都在主标签（第一个标签）的原始值上计算全部六个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头报告同样的键；其中的 `loss` 是模型头的 `_val_one_batch` 在该段上的均值，默认就是变换后目标上的 `_loss`（见“训练 torch 模型”）。
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -153,7 +153,7 @@ True
 
 | 类 | 框架 | 配置 | 检查点 | 模型头需要实现的方法 |
 |---|---|---|---|---|
-| `DLModel` | torch，每一步一个标的截面 | `DLConfig` | `.pth` | `_init_model`、`_init_optim`、`_train_one_batch`、`_val_one_batch`、`_test_one_batch`，外加两项声明 `window_bars`、`target_transform`；可选 `_should_stop`、`_on_fit_start`、`_on_fit_end`、`_preprocess` |
+| `DLModel` | torch，每一步一个标的截面 | `DLConfig` | `.pth` | `window_bars`、`_init_model`、`_loss`；其余是带默认实现的可选钩子（见“训练 torch 模型”） |
 | `MLModel` | numpy，使用库自带的提前停止 | `MLConfig` | `.joblib` | `_init_model`、`_preprocess`、`_fit_model`、`_forward` |
 
 自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `MLModel`；目前还没有自带的 torch 模型头。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
@@ -209,18 +209,30 @@ True
 
 ### 训练 torch 模型
 
-torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*，即在该 bar 上至少有一个有限特征值的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络把 `[S_t, N, F]` 映射到 `[S_t, L]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测。标签缺失的标的仍留在截面里作为输入，但不计入损失。特征会被截断到 ±3，NaN 变为 0（模型头可以设 `clip_features = False`）；标的第一个 bar 之前的窗口行全为 0。
+torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*，即在该 bar 上至少有一个有限特征值的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
 
-模型头实现一组钩子，每次喂一个 bar。`_init_model(num_features, num_labels, hyperparameters)` 构建网络。`_init_optim(model)` 返回优化器，保存在 `self.optim` 上（`config.lr` 就是给它读的）。`_train_one_batch(epoch, x, y)` 执行一步优化并返回损失；`_val_one_batch` 返回一个 bar 的验证损失；`_test_one_batch` 在每个 epoch 之后对每个测试 bar 调用一次。`x` 是 `[S_t, N, F]`；`y` 是 `[S_t, L]`，即该 bar 的标签经过模型头的 `target_transform` 之后的值，标签缺失处为 NaN，所以损失必须排除这些位置（`quantlab.dl_model.training` 里的 `masked_mse` 就是这样做的）。损失、优化器、梯度截断以及一步训练里的其他一切都由模型头决定。模型头还要声明两样东西。`window_bars` 就是 N。`target_transform` 是 `TargetTransform("rank")`（Qlib 的 `CSRankNorm`）或 `TargetTransform("zscore")`，可以再加 `drop_extreme`，即从该 bar 的训练截面里去掉的每侧尾部比例；指标仍然用原始的第一个标签计算。何时停止也由模型头决定：`_should_stop(epoch, train_loss, val_loss)` 在每个 epoch 之后调用，拿到的是各个钩子返回的损失的均值（没有验证段时 `val_loss` 为 None），返回 True 就停止训练；`_on_fit_start()` 在第一个 epoch 之前调用，`_on_fit_end()` 在最后一个 epoch 之后调用，模型头可以在这里恢复想保留的权重。默认跑满所有 epoch 并保留最后的权重。`ValLossPatience(patience)`（验证损失连续 `patience` 个 epoch 没有下降就停止，用 `restore` 恢复最优 epoch 的权重）和 `TrainLossThreshold(threshold, max_epochs)`（训练损失达到阈值即停止）是现成的工具，在 `_on_fit_start` 里创建，在另外两个钩子里调用。`DLConfig` 增加了 `epochs`（训练的上限）和 `lr`。没有 batch size：各个 bar 按打乱后的顺序逐一训练，一步一个 bar。可选的 `_preprocess(x)` 在训练和预测时对每个窗口做同样的变换。
+模型头需要写三样东西：`window_bars`（N）、`_init_model(num_features, num_labels, hyperparameters)`（网络）和 `_loss(output, batch)`（一个 bar 的损失）。`output` 是网络的原始输出，`batch` 是一个 `CrossSectionBatch`：`x`（`[S_t, N, F]`）、`y`（目标，`[S_t, L]`）、`mask`（`y` 有效的位置为 True）、`y_raw`（原始标签）、`symbols` 和 `timestamp`。缺失的标签已经被掩码并在 `y` 里置 0，所以损失只需统计 `mask` 为 True 的位置，`quantlab.dl_model.training` 里的 `masked_mse` 就是这样做的。其他所有选择都是带默认实现的可选钩子：
 
-`window_bars` 为 N 的模型在预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多个 bar，按因子自己的数据集日历计数，数据不够早时给出警告。这里的替身面板没有数据集，所以这个模型头用一个 bar 的窗口。
+| 钩子 | 默认 |
+|---|---|
+| `_transform_feature(x)`：原始窗口（缺失处为 NaN）到网络输入 | 截断到 ±3，NaN 变 0 |
+| `_transform_target(y, training)`：一个 bar 的原始标签到 `(target, keep)`；`keep` 把标的从这一步里去掉 | `(y, None)`；工具函数 `cs_rank_norm`（Qlib `CSRankNorm`）、`cs_zscore`、`drop_extreme` |
+| `_init_optim(model)` | Adam，学习率 `config.lr` |
+| `_train_one_batch(epoch, batch)`：一步优化，返回损失 | 前向、`_loss`、反向传播、按 `grad_clip_value`（3.0）截断梯度值、step |
+| `_val_one_batch(epoch, batch)`：一个 bar 的验证损失 | `_loss` |
+| `_test_one_batch(epoch, batch)`：每个 epoch 之后对每个测试 bar 调用 | 什么都不做 |
+| `_forward(x)`：`[S_t, L]` 的预测，用于指标和 `predict_panel` | `self.model(x)` |
+| `_on_fit_start()`、`_should_stop(epoch, train_loss, val_loss)`、`_on_fit_end()` | 跑满 `config.epochs`，保留最后的权重 |
+
+`train_loss` 和 `val_loss` 是各个逐步钩子返回值的均值；没有验证段时 `val_loss` 为 None。`DLConfig` 增加了 `epochs`（训练的上限）和 `lr`。没有 batch size：各个 bar 按打乱后的顺序逐一训练，一步一个 bar。指标始终用原始的第一个标签计算。
+
+`window_bars` 为 N 的模型在预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多个 bar，按因子自己的数据集日历计数，数据不够早时给出警告。这里的替身面板没有数据集，所以这个模型头用一个 bar 的窗口；它按 bar 对目标做 z-score，验证损失连续五个 epoch 没有下降就停止。
 
 ```python
 >>> import torch.nn as nn
 >>> from quantlab.base.config import DLConfig
 >>> from quantlab.base.model import DLModel
->>> import torch
->>> from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
+>>> from quantlab.dl_model.training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
 ...     """对每个标的最新一个 bar 做线性映射。"""
 ...     def __init__(self, num_features, num_labels):
@@ -230,27 +242,20 @@ torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*
 ...         return self.linear(x[:, -1])   # [S_t, L]
 >>> class LinearHead(DLModel):
 ...     window_bars = 1
-...     target_transform = TargetTransform("zscore")
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         return LastBar(num_features, num_labels)
+...     def _loss(self, output, batch):
+...         return masked_mse(output, batch.y, batch.mask)
+...     def _transform_target(self, y, training):
+...         return cs_zscore(y), None
 ...     def _on_fit_start(self):
-...         self.patience = ValLossPatience(5)
+...         self.best, self.bad = float("inf"), 0
 ...     def _should_stop(self, epoch, train_loss, val_loss):
-...         return self.patience.update(val_loss, self.model)
-...     def _on_fit_end(self):
-...         self.patience.restore(self.model)
-...     def _init_optim(self, model):
-...         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
-...     def _train_one_batch(self, epoch, x, y):
-...         self.optim.zero_grad()
-...         loss = masked_mse(self.model(x), y)
-...         loss.backward()
-...         self.optim.step()
-...         return loss.detach()
-...     def _val_one_batch(self, epoch, x, y):
-...         return masked_mse(self.model(x), y)
-...     def _test_one_batch(self, epoch, x, y):
-...         return masked_mse(self.model(x), y)
+...         if val_loss < self.best:
+...             self.best, self.bad = val_loss, 0
+...         else:
+...             self.bad += 1
+...         return self.bad >= 5
 >>> dl_config = DLConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
@@ -264,7 +269,7 @@ torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*
 'LinearHead_total.pth'
 >>> dl_metrics = json.loads((linear_checkpoint.parent / "metrics.json").read_text())
 >>> {k: round(v, 3) for k, v in dl_metrics.items() if k.endswith("rank_ic")}
-{'train_rank_ic': 0.699, 'val_rank_ic': 0.691, 'test_rank_ic': 0.69}
+{'train_rank_ic': 0.698, 'val_rank_ic': 0.69, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
 >>> wider = xr.concat([factor.ds, one_more], dim="symbol")
 >>> linear.predict_panel(wider).symbol.size
@@ -310,7 +315,7 @@ torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*
 [0.05, -0.02, -0.001]
 ```
 
-`DLModel` 的模型头由网络、优化器、三个逐步钩子、两项声明以及可选的停止钩子组成；“训练 torch 模型”里的 `LinearHead` 就是一个完整的例子。一步训练做什么（损失、优化器、梯度截断、辅助输出）以及何时停止都由模型头决定。窗口、bar 的顺序、目标变换、epoch 循环、指标和检查点由基类负责。
+`DLModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `LinearHead` 就是一个完整的例子。窗口、warm-up、目标掩码、bar 的顺序、epoch 循环、指标和检查点由基类负责。
 
 ## 注意事项
 

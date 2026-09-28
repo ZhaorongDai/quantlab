@@ -43,7 +43,7 @@ from tqdm import tqdm
 
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.dl_model.training import CrossSectionWindows, TargetTransform
+from quantlab.dl_model.training import CrossSectionBatch, CrossSectionWindows
 from quantlab.enums.constant import Date
 from quantlab.ml_model.backend import MlBackend
 from quantlab.utils.atomic import write_json_atomically
@@ -1516,7 +1516,7 @@ class BaseModel(ABC):
 
 
 class DLModel(BaseModel):
-    """Torch variant: one cross-section per step, trained through per-step hooks.
+    """Torch variant: one cross-section per step, every learning choice a hook.
 
     A step is one bar (ADR 0006): the symbols with at least one finite
     feature there, each carrying its last ``window_bars`` bars of features.
@@ -1524,44 +1524,45 @@ class DLModel(BaseModel):
     not depend on the order or the number of symbols, and a symbol the model
     never saw in training still gets a prediction.
 
-    The base class owns the data side: the windows (see
-    ``CrossSectionWindows``: optional clip to ±3, NaN -> 0, zero rows before
-    a symbol's history), the shuffled bar order, the head's target
-    transform, the epoch loop, the ``train_*`` / ``val_*`` / ``test_*``
-    metrics on the raw first label, ``.pth`` checkpoints and prediction.
-    The head owns the learning side, through these hooks:
+    The base class owns everything outside the model: the windows, the
+    warm-up, the shuffled bar order, the target mask, the epoch loop, the
+    ``train_*`` / ``val_*`` / ``test_*`` metrics on the raw first label,
+    ``.pth`` checkpoints and prediction. A head writes three things:
 
+    ``window_bars``
+        N, the bars in each symbol's window.
     ``_init_model(num_features, num_labels, hyperparameters)``
-        Build the ``nn.Module``; its ``forward`` maps ``[S_t, N, F]`` to
-        ``[S_t, L]`` (prediction relies on that shape).
-    ``_init_optim(model)``
-        Return the optimizer, kept on ``self.optim``; or None when the head
-        updates its parameters by itself.
-    ``_train_one_batch(epoch, x, y)``
-        One optimisation step on one bar: zero_grad, forward, loss,
-        backward, any clipping, step. Returns the loss.
-    ``_val_one_batch(epoch, x, y)``
-        The validation loss of one bar, under ``no_grad`` in eval mode.
-    ``_test_one_batch(epoch, x, y)``
-        Called on every test bar after each epoch; heads typically log here.
-    ``_preprocess(x)``
-        Optional; applied to every window tensor in training and prediction
-        alike. The default returns it unchanged.
-    ``_on_fit_start()``, ``_should_stop(epoch, train_loss, val_loss)``, ``_on_fit_end()``
-        Optional stop hooks. The first runs once the network and optimizer
-        exist, the second after each epoch (True stops training), the third
-        after the last epoch, for example to restore the best weights. By
-        default training runs ``config.epochs`` epochs and keeps the last
-        weights; ``ValLossPatience`` and ``TrainLossThreshold`` in
-        ``quantlab.dl_model.training`` are ready-made helpers for them.
+        The ``nn.Module``.
+    ``_loss(output, batch)``
+        The loss of one bar, from the network's raw output and a
+        ``CrossSectionBatch``; count only ``batch.mask`` entries.
 
-    ``x`` is ``[S_t, N, F]`` on ``device``; ``y`` is ``[S_t, L]``, the
-    head's ``target_transform`` of the bar's labels, with NaN where a label
-    is missing. Symbols with a missing label stay in ``x`` as context, so the
-    loss must leave the NaN entries out (``masked_mse`` in
-    ``quantlab.dl_model.training`` does). A head also declares
-    ``window_bars`` (N) and ``target_transform`` (a ``TargetTransform``);
-    it may set ``clip_features = False``.
+    and may override any of these, each of which has a working default:
+
+    ``_transform_feature(x)``
+        The raw ``[S_t, N, F]`` windows, NaN where a value or a bar is
+        missing, to the network's input. Default: clip to ±3, NaN to 0.
+    ``_transform_target(y, training)``
+        One bar's raw ``[S_t, L]`` labels to ``(target, keep)``; ``keep``
+        (or None) drops symbols from that step's cross-section. Default:
+        ``(y, None)``.
+    ``_init_optim(model)``
+        Default: Adam at ``config.lr``, kept on ``self.optim``.
+    ``_train_one_batch(epoch, batch)``
+        One optimisation step; returns the loss. Default: forward,
+        ``_loss``, backward, gradient values clipped to ``grad_clip_value``
+        (3.0; None disables), step.
+    ``_val_one_batch(epoch, batch)``
+        The validation loss of one bar. Default: ``_loss``.
+    ``_test_one_batch(epoch, batch)``
+        Called on every test bar after each epoch. Default: nothing.
+    ``_forward(x)``
+        The ``[S_t, L]`` prediction from transformed windows, used for
+        metrics and ``predict_panel``. Default: ``self.model(x)``; override
+        it when the network returns more than the prediction.
+    ``_on_fit_start()``, ``_should_stop(epoch, train_loss, val_loss)``, ``_on_fit_end()``
+        When to stop and which weights to keep. Default: run
+        ``config.epochs`` epochs, keep the last weights.
 
     The model's warm-up is N - 1 bars: every feature request, in training
     and in a backtest, starts that many bars earlier on each factor's
@@ -1573,21 +1574,10 @@ class DLModel(BaseModel):
 
         >>> class LastBarHead(DLModel):
         ...     window_bars = 5
-        ...     target_transform = TargetTransform("zscore")
         ...     def _init_model(self, num_features, num_labels, hyperparameters):
         ...         return LastBarLinear(num_features, num_labels)
-        ...     def _init_optim(self, model):
-        ...         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
-        ...     def _train_one_batch(self, epoch, x, y):
-        ...         self.optim.zero_grad()
-        ...         loss = masked_mse(self.model(x), y)
-        ...         loss.backward()
-        ...         self.optim.step()
-        ...         return loss.detach()
-        ...     def _val_one_batch(self, epoch, x, y):
-        ...         return masked_mse(self.model(x), y)
-        ...     def _test_one_batch(self, epoch, x, y):
-        ...         return masked_mse(self.model(x), y)
+        ...     def _loss(self, output, batch):
+        ...         return masked_mse(output, batch.y, batch.mask)
         >>> head = LastBarHead(DLConfig(
         ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
         ...     factor_data_strategy="read", label_data_strategy="read",
@@ -1605,11 +1595,8 @@ class DLModel(BaseModel):
     config_cls = DLConfig
     checkpoint_suffix = ".pth"
 
-    #: Clip features to ±``FEATURE_CLIP`` before NaN becomes 0. A head may
-    #: set it to False.
-    clip_features: bool = True
-    #: Clip bound of ``clip_features``, matching Qlib's ``RobustZScoreNorm``.
-    FEATURE_CLIP = 3.0
+    #: Gradient value clip of the default ``_train_one_batch``; None disables.
+    grad_clip_value: float | None = 3.0
 
     @property
     @abstractmethod
@@ -1622,77 +1609,88 @@ class DLModel(BaseModel):
         5
         """
 
-    @property
-    @abstractmethod
-    def target_transform(self) -> TargetTransform:
-        """How a bar's raw labels become the ``y`` the step hooks receive.
-
-        Examples
-        --------
-        >>> head.target_transform
-        TargetTransform(kind='zscore', drop_extreme=0.0)
-        """
-
     @abstractmethod
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict
     ) -> torch.nn.Module:
-        """Build the network; ``forward`` maps ``[S_t, N, F]`` to ``[S_t, L]``.
+        """Build the network for ``[S_t, N, F]`` windows and ``num_labels`` labels.
 
         The base class moves it to ``device``. ``hyperparameters`` is
         ``config.hyperparameters``, a free-form dict.
         """
 
-    def _init_optim(self, model: torch.nn.Module):
-        """Return the optimizer for ``model``, or None if the head updates itself.
-
-        The base class keeps it on ``self.optim`` for the step hooks. The
-        default raises ``NotImplementedError``, so every head that trains
-        overrides it.
-        """
-        raise NotImplementedError(f"{self.class_name} does not implement _init_optim")
-
     @abstractmethod
-    def _train_one_batch(
-        self, epoch: int, x: torch.Tensor, y: torch.Tensor
-    ) -> torch.Tensor:
+    def _loss(self, output, batch: CrossSectionBatch) -> torch.Tensor:
+        """Return the scalar loss of one bar.
+
+        ``output`` is whatever the network returned for ``batch.x``; entries
+        of ``batch.y`` where ``batch.mask`` is False must not count.
+        """
+
+    def _transform_feature(self, x: torch.Tensor) -> torch.Tensor:
+        """Turn raw ``[S_t, N, F]`` windows into the network's input.
+
+        ``x`` holds NaN where a value is missing and on the rows before a
+        symbol's first bar. The result must have the same shape and be
+        finite. The default clips to ±3 and replaces NaN with 0. Applied in
+        training and prediction alike.
+        """
+        return torch.nan_to_num(x.clamp(-3.0, 3.0), nan=0.0)
+
+    def _transform_target(self, y: torch.Tensor, training: bool):
+        """Turn one bar's raw ``[S_t, L]`` labels into ``(target, keep)``.
+
+        ``y`` is NaN where a label is missing. ``training`` is True for a
+        training step and False for validation and test. ``keep`` is None or
+        ``[S_t]`` booleans; symbols it drops leave that step's cross-section,
+        input included. ``target`` has one row per input row, or one per kept
+        row. Entries that are not finite are masked out. The default returns
+        ``(y, None)``.
+        """
+        return y, None
+
+    def _init_optim(self, model: torch.nn.Module):
+        """Return the optimizer, kept on ``self.optim``; default Adam at ``config.lr``."""
+        return torch.optim.Adam(model.parameters(), lr=self.config.lr)  # type: ignore[union-attr]
+
+    def _train_one_batch(self, epoch: int, batch: CrossSectionBatch) -> torch.Tensor:
         """Run one optimisation step on one bar and return its loss.
 
-        The base class has already called ``model.train()``; the hook
-        performs ``zero_grad``, forward, loss, ``backward``, any clipping and
-        ``step``. ``x`` is ``[S_t, N, F]`` and ``y`` is ``[S_t, L]`` with NaN
-        where a label is missing. The mean of the returned losses over the
-        epoch's bars is the epoch's training loss, so it must convert with
-        ``float()``.
+        The base class has already called ``model.train()``. The mean of the
+        returned losses is the epoch's ``train_loss``. The default runs the
+        network, ``_loss``, ``backward``, clips gradient values to
+        ``grad_clip_value`` and steps ``self.optim``.
         """
+        self.optim.zero_grad()  # type: ignore[union-attr]
+        loss = self._loss(self.model(batch.x), batch)  # type: ignore[misc]
+        loss.backward()
+        if self.grad_clip_value is not None:
+            torch.nn.utils.clip_grad_value_(
+                self.model.parameters(), self.grad_clip_value  # type: ignore[union-attr]
+            )
+        self.optim.step()  # type: ignore[union-attr]
+        return loss.detach()
 
-    @abstractmethod
-    def _val_one_batch(
-        self, epoch: int, x: torch.Tensor, y: torch.Tensor
-    ) -> torch.Tensor:
-        """Return the validation loss of one bar.
+    def _val_one_batch(self, epoch: int, batch: CrossSectionBatch) -> torch.Tensor:
+        """Return the validation loss of one bar; default ``_loss``.
 
         Called in eval mode under ``no_grad``. The mean over the validation
-        bars is the epoch's validation loss, which ``_should_stop`` receives,
-        and the mean over each split's bars is its ``{split}_loss`` metric,
-        so the result must convert with ``float()``.
+        bars is the epoch's ``val_loss``; the mean over each split's bars is
+        its ``{split}_loss`` metric.
         """
+        return self._loss(self.model(batch.x), batch)  # type: ignore[misc]
 
-    @abstractmethod
-    def _test_one_batch(
-        self, epoch: int, x: torch.Tensor, y: torch.Tensor
-    ) -> torch.Tensor | None:
-        """Evaluate one test bar; called after each epoch in eval mode without gradients.
+    def _test_one_batch(self, epoch: int, batch: CrossSectionBatch) -> None:
+        """Evaluate one test bar after each epoch; the default does nothing."""
 
-        The return value is not used by the base class; heads typically log
-        metrics here.
-        """
+    def _forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return the ``[S_t, L]`` prediction for transformed windows; default ``model(x)``."""
+        return self.model(x)  # type: ignore[misc]
 
     def _on_fit_start(self) -> None:
-        """Prepare per-fit stopping state; called once the network and optimizer exist.
+        """Prepare per-fit state; called once the network and optimizer exist.
 
-        The default does nothing. A head that stops early builds its helper
-        here, for example ``self.rule = ValLossPatience(10)``, so every fit
+        The default does nothing. Stopping state belongs here, so every fit
         and every cross-validation fold starts fresh.
         """
 
@@ -1701,27 +1699,13 @@ class DLModel(BaseModel):
     ) -> bool:
         """Return True to stop after this epoch; the default never stops early.
 
-        ``train_loss`` is the mean of the epoch's ``_train_one_batch``
-        losses, ``val_loss`` the mean of its ``_val_one_batch`` losses, or
-        None without a validation segment. Training never runs past
-        ``config.epochs``.
+        ``val_loss`` is None without a validation segment. Training never
+        runs past ``config.epochs``.
         """
         return False
 
     def _on_fit_end(self) -> None:
-        """Choose the weights to keep; called after the last epoch.
-
-        The default keeps the last epoch's weights. A head using
-        ``ValLossPatience`` restores the best ones here.
-        """
-
-    def _preprocess(self, x: torch.Tensor) -> torch.Tensor:
-        """Transform a ``[S_t, N, F]`` window tensor; shared by training and prediction.
-
-        The windows are already clipped and free of NaN. The default returns
-        ``x`` unchanged.
-        """
-        return x
+        """Choose the weights to keep, after the last epoch; the default keeps the last."""
 
     @property
     def warmup_bars(self) -> int:
@@ -1754,59 +1738,74 @@ class DLModel(BaseModel):
         """
         return "cuda" if torch.cuda.is_available() else "cpu"
 
-    def _windows(self, x: np.ndarray) -> CrossSectionWindows:
-        """Return the cross-section windows over a ``[T, S, F]`` array."""
-        return CrossSectionWindows(
-            x,
-            self.window_bars,
-            self.FEATURE_CLIP if self.clip_features else None,
-        )
-
     def _x(self, windows: CrossSectionWindows, t: int, symbols) -> torch.Tensor:
-        """Bar ``t``'s preprocessed ``[S_t, N, F]`` windows of ``symbols``, on device."""
-        return self._preprocess(
-            torch.from_numpy(windows.window(t, symbols)).to(self.device)
-        )
+        """Bar ``t``'s windows of ``symbols`` through ``_transform_feature``.
 
-    def _steps(
-        self, windows: CrossSectionWindows, y: np.ndarray, bars, *, drop: bool
-    ):
-        """Yield ``(t, x, y)`` for each bar with at least one finite target.
-
-        ``y`` is the transformed target; with ``drop`` the symbols
-        ``target_transform.kept`` removes leave the cross-section first.
+        Raises
+        ------
+        ValueError
+            If the transform changes the shape or leaves a non-finite value.
         """
-        transform = self.target_transform
-        for t in bars:
-            symbols = windows.symbols(t)
-            if drop:
-                symbols = symbols[transform.kept(y[t, symbols])]
-            target = transform.apply(y[t, symbols])
-            if not np.isfinite(target).any():
-                continue
-            yield (
-                t,
-                self._x(windows, t, symbols),
-                torch.from_numpy(target.astype(np.float32)).to(self.device),
+        raw = torch.from_numpy(windows.window(t, symbols)).to(self.device)
+        x = self._transform_feature(raw)
+        if tuple(x.shape) != tuple(raw.shape) or not bool(torch.isfinite(x).all()):
+            raise ValueError(
+                f"{self.class_name}._transform_feature must return a finite "
+                f"tensor of shape {tuple(raw.shape)}"
             )
+        return x
 
-    def _train_epoch(
+    def _batches(
         self,
-        epoch: int,
         windows: CrossSectionWindows,
         y: np.ndarray,
-        bars: np.ndarray,
-        rng: np.random.Generator,
-    ) -> float:
-        """Call ``_train_one_batch`` on each training bar in shuffled order.
+        coords: tuple[np.ndarray, np.ndarray],
+        bars,
+        *,
+        training: bool,
+    ):
+        """Yield a ``CrossSectionBatch`` for each bar with at least one valid target.
 
-        Returns the mean loss, NaN when no bar has a finite target.
+        ``coords`` is ``(timestamps, symbols)`` of the collected panel.
+
+        Raises
+        ------
+        ValueError
+            If ``_transform_target`` returns a target or ``keep`` of the wrong
+            length.
         """
-        self.model.train()  # type: ignore[union-attr]
-        return self._mean_loss(
-            self._train_one_batch(epoch, x, target)
-            for _, x, target in self._steps(windows, y, rng.permutation(bars), drop=True)
-        )
+        stamps, labels = coords
+        for t in bars:
+            symbols = windows.symbols(t)
+            y_raw = torch.from_numpy(y[t, symbols].astype(np.float32)).to(self.device)
+            target, keep = self._transform_target(y_raw, training)
+            if keep is not None:
+                keep = torch.as_tensor(keep, dtype=torch.bool, device=self.device)
+                if keep.shape != (len(symbols),):
+                    raise ValueError(
+                        f"{self.class_name}._transform_target: keep must have "
+                        f"{len(symbols)} entries, got {tuple(keep.shape)}"
+                    )
+                if target.shape[0] == len(symbols):
+                    target = target[keep]
+                symbols = symbols[keep.cpu().numpy()]
+                y_raw = y_raw[keep]
+            if tuple(target.shape) != tuple(y_raw.shape):
+                raise ValueError(
+                    f"{self.class_name}._transform_target: expected a target of "
+                    f"shape {tuple(y_raw.shape)}, got {tuple(target.shape)}"
+                )
+            mask = torch.isfinite(target)
+            if not bool(mask.any()):
+                continue
+            yield CrossSectionBatch(
+                x=self._x(windows, t, symbols),
+                y=torch.where(mask, target, torch.zeros_like(target)),
+                mask=mask,
+                y_raw=y_raw,
+                symbols=labels[symbols],
+                timestamp=stamps[t],  # type: ignore[arg-type]
+            )
 
     @staticmethod
     def _mean_loss(losses) -> float:
@@ -1814,29 +1813,31 @@ class DLModel(BaseModel):
         values = [float(loss) for loss in losses]
         return float(np.mean(values)) if values else float("nan")
 
-    def _val_loss(
-        self, epoch: int, windows: CrossSectionWindows, y: np.ndarray, bars
-    ) -> float:
-        """Mean ``_val_one_batch`` over ``bars``, in eval mode without gradients.
+    def _train_epoch(self, epoch, windows, y, coords, bars, rng) -> float:
+        """Call ``_train_one_batch`` on each training bar in shuffled order; mean loss."""
+        self.model.train()  # type: ignore[union-attr]
+        return self._mean_loss(
+            self._train_one_batch(epoch, batch)
+            for batch in self._batches(
+                windows, y, coords, rng.permutation(bars), training=True
+            )
+        )
 
-        Every symbol of the cross-section is kept. NaN when no bar has a
-        finite target.
-        """
+    def _val_loss(self, epoch, windows, y, coords, bars) -> float:
+        """Mean ``_val_one_batch`` over ``bars``, in eval mode without gradients."""
         self.model.eval()  # type: ignore[union-attr]
         with torch.no_grad():
             return self._mean_loss(
-                self._val_one_batch(epoch, x, target)
-                for _, x, target in self._steps(windows, y, bars, drop=False)
+                self._val_one_batch(epoch, batch)
+                for batch in self._batches(windows, y, coords, bars, training=False)
             )
 
-    def _test_epoch(
-        self, epoch: int, windows: CrossSectionWindows, y: np.ndarray, bars
-    ) -> None:
+    def _test_epoch(self, epoch, windows, y, coords, bars) -> None:
         """Call ``_test_one_batch`` on every test bar, in eval mode without gradients."""
         self.model.eval()  # type: ignore[union-attr]
         with torch.no_grad():
-            for _, x, target in self._steps(windows, y, bars, drop=False):
-                self._test_one_batch(epoch, x, target)
+            for batch in self._batches(windows, y, coords, bars, training=False):
+                self._test_one_batch(epoch, batch)
 
     def _predict_bars(self, windows: CrossSectionWindows, bars) -> np.ndarray:
         """Return ``[len(bars), S, L]`` predictions, NaN outside each cross-section.
@@ -1844,47 +1845,34 @@ class DLModel(BaseModel):
         Raises
         ------
         ValueError
-            If the network does not return a ``[S_t, num_labels]`` tensor.
+            If ``_forward`` does not return a ``[S_t, num_labels]`` tensor.
         """
-        out = np.full(
-            (len(bars), windows.present.shape[1], self.num_labels), np.nan
-        )
-        expected = self.num_labels
+        out = np.full((len(bars), windows.present.shape[1], self.num_labels), np.nan)
         self.model.eval()  # type: ignore[union-attr]
         with torch.no_grad():
             for i, t in enumerate(bars):
                 symbols = windows.symbols(t)
                 if not len(symbols):
                     continue
-                pred = self.model(self._x(windows, t, symbols))  # type: ignore[misc]
-                if not isinstance(pred, torch.Tensor) or tuple(pred.shape) != (
-                    len(symbols),
-                    expected,
-                ):
+                pred = self._forward(self._x(windows, t, symbols))
+                expected = (len(symbols), self.num_labels)
+                if not isinstance(pred, torch.Tensor) or tuple(pred.shape) != expected:
                     got = tuple(pred.shape) if isinstance(pred, torch.Tensor) else type(pred)
                     raise ValueError(
-                        f"{self.class_name}: the network must map [S_t, N, F] to "
-                        f"a [S_t, L] = {[len(symbols), expected]} tensor, got {got}"
+                        f"{self.class_name}._forward must return a [S_t, L] = "
+                        f"{list(expected)} tensor, got {got}"
                     )
                 out[i, symbols] = pred.detach().cpu().numpy()
         return out
 
-    def _evaluate(
-        self,
-        epoch: int,
-        split: str,
-        windows: CrossSectionWindows,
-        y: np.ndarray,
-        bars: np.ndarray,
-    ) -> dict[str, float]:
+    def _evaluate(self, epoch, split, windows, y, coords, bars) -> dict[str, float]:
         """Return one split's metrics and write them to the wandb summary.
 
         ``{split}_loss`` is the mean ``_val_one_batch`` over the split's bars;
-        the other keys are ``_compute_metrics`` on the raw labels, as for
-        every model.
+        the other keys are ``_compute_metrics`` on the raw labels.
         """
         pred = self._predict_bars(windows, bars)
-        metrics = {f"{split}_loss": self._val_loss(epoch, windows, y, bars)}
+        metrics = {f"{split}_loss": self._val_loss(epoch, windows, y, coords, bars)}
         for key, value in self._compute_metrics(y[bars], pred).items():
             metrics[f"{split}_{key}"] = value
         if self._wandb_recorder is not None:
@@ -1935,12 +1923,15 @@ class DLModel(BaseModel):
         )
         segments = self._fit_segments(data)
         stamps = data.timestamp.values
+        coords = (stamps, data.symbol.values)
         train_bars, val_bars, test_bars = [
             np.searchsorted(stamps, part.timestamp.values) for part in segments
         ]
 
         with Timer(f"{self.class_name}: to_array"):
-            windows = self._windows(self.to_array(data, self.get_factor_names()))
+            windows = CrossSectionWindows(
+                self.to_array(data, self.get_factor_names()), self.window_bars
+            )
             y = self.to_array(data, self.get_label_names())
 
         self.model = self._init_model(
@@ -1948,20 +1939,20 @@ class DLModel(BaseModel):
             num_labels=self.num_labels,
             hyperparameters=config.hyperparameters,
         ).to(self.device)
-        optim = self._init_optim(self.model)  # type: ignore[arg-type]
-        if optim is not None:
-            self.optim = optim
+        self.optim = self._init_optim(self.model)  # type: ignore[arg-type]
         self._on_fit_start()
         rng = np.random.default_rng(config.random_seed)
 
         epoch = 0
         for epoch in tqdm(range(config.epochs), desc=f"{self.class_name}_train"):
-            train_loss = self._train_epoch(epoch, windows, y, train_bars, rng)
+            train_loss = self._train_epoch(epoch, windows, y, coords, train_bars, rng)
             val_loss = (
-                self._val_loss(epoch, windows, y, val_bars) if len(val_bars) else None
+                self._val_loss(epoch, windows, y, coords, val_bars)
+                if len(val_bars)
+                else None
             )
             if len(test_bars):
-                self._test_epoch(epoch, windows, y, test_bars)
+                self._test_epoch(epoch, windows, y, coords, test_bars)
             if self._wandb_recorder is not None:
                 logged = {"train_loss": train_loss}
                 if val_loss is not None:
@@ -1973,11 +1964,10 @@ class DLModel(BaseModel):
         self._on_fit_end()
 
         with Timer(f"{self.class_name}: evaluate"):
-            metrics = self._evaluate(epoch, "train", windows, y, train_bars)
-            if len(val_bars):
-                metrics.update(self._evaluate(epoch, "val", windows, y, val_bars))
-            if len(test_bars):
-                metrics.update(self._evaluate(epoch, "test", windows, y, test_bars))
+            metrics = self._evaluate(epoch, "train", windows, y, coords, train_bars)
+            for split, bars in (("val", val_bars), ("test", test_bars)):
+                if len(bars):
+                    metrics.update(self._evaluate(epoch, split, windows, y, coords, bars))
 
         self._save_model(
             Path(config.model_save_dir) / project_name / experiment_name / model_name
@@ -1991,8 +1981,9 @@ class DLModel(BaseModel):
         """Return ``[T, S, L]`` predictions for a ``[T, S, F]`` input.
 
         Bar ``t`` is predicted from the windows ending at ``t`` inside
-        ``data`` itself, so the first N - 1 bars have zero rows for the
-        missing history. A cell outside its bar's cross-section is NaN.
+        ``data`` itself, so the first N - 1 bars have NaN rows for the
+        missing history, which ``_transform_feature`` handles. A cell outside
+        its bar's cross-section is NaN.
 
         Raises
         ------
@@ -2003,7 +1994,7 @@ class DLModel(BaseModel):
             data = data.detach().cpu().numpy()
         elif not isinstance(data, np.ndarray):
             raise TypeError(f"Unsupported data type: {type(data)}")
-        windows = self._windows(data)
+        windows = CrossSectionWindows(data, self.window_bars)
         return torch.from_numpy(self._predict_bars(windows, range(windows.num_times)))
 
     def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
