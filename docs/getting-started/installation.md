@@ -102,9 +102,16 @@ uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available
 ```
 
 On Linux, the PyTorch wheel that uv installs from PyPI already bundles the CUDA runtime, so an
-NVIDIA driver is all a GPU machine needs. The tree-model heads (XGBoost and the pytabkit
-heads) and the backtester run on the CPU. Everything in the documentation examples runs on the
-CPU.
+NVIDIA driver is all a GPU machine needs. The shipped torch heads, `GATsRegressor` and
+`MASTERRegressor`, run on either device. The tree-model heads (XGBoost and the pytabkit heads)
+and the backtester run on the CPU. Everything in the documentation examples runs on the CPU.
+
+A torch head also keeps its whole feature panel as tensors on one device. The reserved
+hyperparameter `panel_device` chooses it: `"auto"` (the default) puts the panel on the GPU when
+it takes at most half of the free GPU memory and in CPU memory otherwise, and `"cuda"` or
+`"cpu"` force one. `panel_dtype="float16"` stores the features in half precision so that a
+market-wide panel fits on the GPU. See "Keep the training panel on the GPU" in the model guide
+(`docs/model.md`).
 
 ## macOS: PyTorch and XGBoost in one process
 

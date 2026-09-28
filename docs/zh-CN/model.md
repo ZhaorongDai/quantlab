@@ -197,8 +197,8 @@ True
 
 | 键 | 读取方 | 默认值 |
 |---|---|---|
-| `epochs` | `TorchModel`：训练 epoch 数的上限；不是正整数时，训练开始时抛出 `ValueError` | 100 |
-| `lr` | `TorchModel`：默认 `_init_optim` 的学习率 | `1e-3` |
+| `epochs` | `TorchModel`：训练 epoch 数的上限；不是正整数时，训练开始时抛出 `ValueError` | 100（`GATsRegressor` 200，`MASTERRegressor` 40） |
+| `lr` | `TorchModel`：默认 `_init_optim` 的学习率 | `1e-3`（`GATsRegressor` `1e-4`，`MASTERRegressor` `1e-5`） |
 | `early_stopping` | 自带的库模型头：开启库自带的提前停止 | `False` |
 | `early_stopping_patience` | 自带的库模型头：容忍多少轮（或库自己的单位）没有改善 | 5 |
 | `batch_size`、`num_workers` | `TorchModel`：默认的 `_dataloader` | `None`（每步一项）、0 |
@@ -287,7 +287,9 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 
 基类把每个 batch 移到设备上并调用 `_transform_feature`，检查形状不变且所有值都有限。训练在 `train()` 模式下进行；验证、测试钩子和预测都在 `no_grad` 下以 `eval()` 模式运行。`train_loss` 和 `val_loss` 是各个逐步钩子返回值的均值；没有验证段时 `val_loss` 为 None。`{split}_loss` 是该数据段各 batch 上 `_val_one_batch` 的均值，因此使用默认数据集时，每个 bar 的权重相同，与它有多少个标的无关。训练的上限是超参数 `epochs`，默认优化器读取 `lr`（见“配置与保留超参数”）。指标始终用原始的第一个标签计算。
 
-`window_bars` 为 N 的模型在它预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多 bar（按因子自己的数据集日历计数），数据不够早时会给出警告。每个切分点前的清除只覆盖标签的前瞻，从不覆盖窗口。这里的替身面板没有数据集，所以下面的模型头都用一个 bar 的窗口。
+停止钩子决定模型头训练多久、保留哪一组权重。`_on_fit_start()` 在第一个 epoch 之前运行，`_should_stop(epoch, train_loss, val_loss)` 在每个 epoch 之后运行（epoch 从 0 开始计数），`_on_fit_end()` 在最后一个 epoch 之后运行；`_should_stop` 返回 True 即结束训练，而训练本来也不会超过 `epochs`。要保留较早权重的模型头在 `_should_stop` 里保存它们，在 `_on_fit_end` 里恢复。自带的两个 torch 模型头采用两种常见规则：`GATsRegressor` 保留验证损失最低的 epoch，连续 `early_stop` 个 epoch 没有更好的验证损失就停止（见“在截面上训练 GATs”）；`MASTERRegressor` 在训练损失达到 `train_loss_threshold` 时停止，并保留最后的权重（见“用市场特征训练 MASTER”）。
+
+`window_bars` 为 N 的模型在它预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多 bar（按因子自己的数据集日历计数），数据不够早时会给出警告。标签不会向前延伸。每个窗口读取的是整个收集到的面板，所以验证段和测试段的第一个 bar 会回看到前一段，这是合法的，因为那些 bar 都在过去；历史较短的标的得到 NaN 行，默认的 `_transform_feature` 会把它们变成 0。每个切分点前的清除只覆盖标签的前瞻，从不覆盖窗口。这里的替身面板没有数据集，所以下面的模型头都用一个 bar 的窗口。
 
 最小的模型头就是窗口、网络和损失：
 
@@ -416,6 +418,116 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 
 需要其他样本形状的模型头覆写 `_dataset`（多 bar 的 batch 还要用自己的 sampler 或 collate 函数覆写 `_dataloader`）；可以照着 `CrossSectionDataset` 和 `SymbolSequenceDataset` 写。
 
+### 在截面上训练 GATs
+
+`GATsRegressor`（`quantlab.torch_model.gats`）复现 Qlib 的 GATs，即 `qlib/contrib/model/pytorch_gats_ts.py` 中的 `GATModel`。每个标的的窗口先经过一个 LSTM，保留其最后一个 bar 的隐状态。随后用一个注意力头给该 bar 上每一对标的打分（包括标的自身），打分式是 Qlib 的 `LeakyReLU(a[:H]·Wh_j + a[H:]·Wh_i)`，并在整个 bar 上做 softmax。每个标的的隐状态加上所有隐状态按注意力加权的组合，再依次经过 `Linear(H, H)`、LeakyReLU 和 `Linear(H, L)`。注意力覆盖整个截面，所以网络不需要标的列表，也不需要图数据。`GATsNet` 沿用 Qlib 的参数名，测试套件中有一个测试检查它在相同权重和输入下与 Qlib 的 `GATModel` 输出一致。
+
+这个模型头用默认的 `CrossSectionDataset` 训练，每步一个 bar，每个 epoch 内的 bar 顺序打乱。训练目标是标签的 Qlib `CSRankNorm`（`cs_rank_norm`），用于训练损失和验证损失；损失是有标签的标的上的 MSE。优化器是 Adam，梯度值截断到 3。未设置的超参数取 `GATsRegressor.DEFAULTS` 里 Qlib Alpha158 基准的值：`window_bars` 20、`hidden_size` 64、`num_layers` 2、`dropout` 0.7、`base_model` `"LSTM"`（或 `"GRU"`）、`lr` 1e-4、`epochs` 200、`early_stop` 10。
+
+它的停止方式与 Qlib 相同。每个 epoch 之后，如果验证损失严格更低，就保存当时的权重；连续 `early_stop` 个 epoch 没有更低的验证损失就停止，并在最后恢复最优权重。没有验证段（`val_size=0`）时，它跑满所有 epoch，保留最后的权重。
+
+下面的会话在带日历的替身因子 `seq_factor` 上训练一个小的 GATs。模型从 2024-01-20 开始，所以 `collect()` 向因子多要它之前的 4 个 warm-up bar（`window_bars - 1`），第一个 bar 就有完整的窗口。一个 loguru sink 记下模型头停止时输出的那一行日志：
+
+```python
+>>> from quantlab.torch_model.gats import GATsRegressor
+>>> gats = GATsRegressor(replace(
+...     torch_config, factors=[seq_factor],
+...     start_date="2024-01-20", train_start="2024-01-20",
+...     hyperparameters={"window_bars": 5, "hidden_size": 16, "dropout": 0.0,
+...                      "lr": 1e-2, "epochs": 50, "early_stop": 3},
+... )).collect()
+>>> gats.window_bars, gats.warmup_bars, gats.epochs, gats.early_stop
+(5, 4, 50, 3)
+>>> str(gats.data_backend.get_xarray_dataset().timestamp.values[0])[:10]
+'2024-01-16'
+>>> stops = []
+>>> sink = logger.add(stops.append, format="{message}", filter=lambda r: "stopping" in r["message"])
+>>> gats_checkpoint = gats.train()
+>>> logger.remove(sink)
+>>> stops[0].strip()
+'GATsRegressor: stopping after epoch 9'
+>>> gats_metrics = json.loads((gats_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in gats_metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.707, 'val_rank_ic': 0.696, 'test_rank_ic': 0.693}
+```
+
+与 Qlib 实现的已知差异：
+
+- 没有预训练的 LSTM：Qlib 从它的 LSTM 基准检查点复制编码器和 `fc_out`，这里所有权重都随机初始化；
+- 特征是模型自己的因子，而不是 Qlib 选出的 20 个 Alpha158 列（其中 RESI5/10 和 RSQR5/10/20/60 这六个 `Alpha158Stock` 不计算），也不在训练区间上拟合 `RobustZScoreNorm`：默认的 `_transform_feature` 截断到 ±3 并把 NaN 填成 0，而 Qlib 对窗口内的缺口先前向填充、再后向填充；
+- 每个 epoch 内的 bar 顺序打乱，与 Qlib 的 Alpha360 变体相同；它的 Alpha158 变体按时间顺序遍历；
+- 标签缺失的标的仍作为上下文留在该 bar 的截面里，只是不计入损失；Qlib 把它从当天的训练和验证输入里去掉；
+- 输出每个标签一列，而不是只有一列；
+- 保留最后一个训练 batch，而 Qlib 会丢弃它。
+
+### 用市场特征训练 MASTER
+
+`MASTERRegressor`（`quantlab.torch_model.master`）复现 MASTER（Li et al., "MASTER: Market-Guided Stock Transformer for Stock Price Forecasting", AAAI 2024），依据的是作者仓库 `SJTU-DMTai/MASTER`；它不在 Qlib 里。它的网络把 F 个特征分成两部分。其中 G 个是*门控特征*，即全市场的输入，在同一个 bar 上所有标的取值相同；其余 F - G 个是个股特征。门控把门控特征在窗口最后一个 bar 上的取值 m 映射为 `(F - G) · softmax(Linear(m) / beta)`：每个个股特征一个权重，权重之和为 F - G，用来在窗口的每个 bar 上缩放个股特征。缩放后的个股特征依次经过带正弦位置编码的 `Linear(F - G, D)`、每个标的内部跨 N 个 bar 的注意力、每个 bar 上跨标的的注意力，以及以最后一个 bar 为查询的时间注意力，最后由 `Linear(D, L)` 给出预测。
+
+`hyperparameters["gate_features"]` 在模型的因子变量中指明哪些是门控特征，其余因子变量都是个股特征。这个键是必需的；构造时会拒绝模型没有的名字，也拒绝覆盖全部因子的列表。门控特征通常来自一个基于指数或 ETF 序列的 `MarketFeatures` 因子（见 factor 指南），把它作为模型的因子之一传入，并把 `gate_features` 设为它的变量名。下面的 `stocks` 是股票数据集，`spy`、`qqq` 和 `iwm` 是各含一只 ETF 的数据集（factor 指南介绍了如何从 CRSP 构建），`alpha158` 是一个个股因子，`config` 是带有标签和日期的 `ModelConfig`：
+
+```python
+from dataclasses import replace
+
+from quantlab.base.config import MarketFeatureConfig
+from quantlab.factor.market import MarketFeatures
+from quantlab.torch_model.master import MASTERRegressor
+
+market = MarketFeatures(MarketFeatureConfig(
+    dataset=stocks, series={"spy": spy, "qqq": qqq, "iwm": iwm},
+    file_path="data/factors/market.zarr",
+))
+master = MASTERRegressor(replace(
+    config, factors=[alpha158, market],
+    hyperparameters={"gate_features": list(market.get_factor_names())},
+))
+```
+
+训练时，模型头把每个 bar 上第一个标签最高和最低各 `drop_extreme` 比例的标的从损失中去掉（这些标的仍留在截面里），再对其余标的逐 bar 做 z-score（`drop_extreme` 和 `cs_zscore`）；验证和测试目标只做 z-score。损失是有目标的标的上的 MSE，优化器是 Adam，梯度值截断到 3。未设置的超参数取 `MASTERRegressor.DEFAULTS` 里的官方值：`window_bars` 8、`d_model` 256、`t_nhead` 4、`s_nhead` 2、`dropout` 0.5、`beta` 5.0（论文在 CSI800 上用 2）、`lr` 1e-5、`epochs` 40、`train_loss_threshold` 0.95、`drop_extreme` 0.025。
+
+MASTER 与官方代码一样按训练损失停止：第一个训练损失不超过 `train_loss_threshold` 的 epoch 结束后停止训练，否则跑满 `epochs`，两种情况都保留最后的权重。验证损失照常计算和记录，但不决定何时停止。这条规则就是 `quantlab.torch_model.training` 中的 `TrainLossThreshold`。
+
+下面的会话加入一个市场因子的替身，即两条在同一 bar 的所有标的上取值相同的序列，并训练一个由它们门控的小 MASTER。`master.model.gate` 把两个市场取值映射为两个个股特征 `f_a` 和 `f_b` 的权重：
+
+```python
+>>> market_rng = np.random.default_rng(1)
+>>> spy_ret = market_rng.normal(0, 0.01, 200)
+>>> spy_ret_mean_5 = pd.Series(spy_ret).rolling(5, min_periods=1).mean().to_numpy()
+>>> market_stand_in = Panel(spy_ret=np.repeat(spy_ret[:, None], 20, axis=1),
+...                         spy_ret_mean_5=np.repeat(spy_ret_mean_5[:, None], 20, axis=1))
+>>> market_stand_in.config, market_stand_in.store_range = seq_factor.config, seq_factor.store_range
+>>> from quantlab.torch_model.master import MASTERRegressor
+>>> master = MASTERRegressor(replace(
+...     torch_config, factors=[seq_factor, market_stand_in],
+...     start_date="2024-01-20", train_start="2024-01-20",
+...     hyperparameters={"gate_features": ["spy_ret", "spy_ret_mean_5"], "window_bars": 5,
+...                      "d_model": 16, "lr": 1e-3, "epochs": 30,
+...                      "train_loss_threshold": 0.5},
+... )).collect()
+>>> master.get_factor_names(), master.gate_columns
+(['f_a', 'f_b', 'spy_ret', 'spy_ret_mean_5'], [2, 3])
+>>> stops = []
+>>> sink = logger.add(stops.append, format="{message}", filter=lambda r: "stopping" in r["message"])
+>>> master_checkpoint = master.train()
+>>> logger.remove(sink)
+>>> stops[0].strip()
+'MASTERRegressor: stopping after epoch 5'
+>>> master_metrics = json.loads((master_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in master_metrics.items() if k in ("val_loss", "test_rank_ic")}
+{'val_loss': 0.466, 'test_rank_ic': 0.687}
+>>> weights = master.model.gate(torch.zeros(1, 2))
+>>> weights.shape, round(float(weights.sum()), 4)
+(torch.Size([1, 2]), 2.0)
+```
+
+与官方实现的已知差异：
+
+- 市场特征就是 `gate_features` 指定的那些；对美股来说是 `MarketFeatures` 的 SPY、QQQ 和 IWM 特征，而不是 CSI300、CSI500 和 CSI800 指数；
+- 被 `drop_extreme` 去掉的标的只是不计入损失，仍作为上下文留在该 bar 的截面里；官方代码把它从当天的输入里也去掉；
+- 不在训练区间上拟合 `RobustZScoreNorm`：默认的 `_transform_feature` 截断到 ±3 并把 NaN 填成 0，而官方数据对窗口内的缺口先前向填充、再后向填充；
+- 输出每个标签一列，而不是只有一列；
+- 始终达不到阈值时，训练在 `epochs` 处停止并保留最后的权重；官方代码在这种情况下没有可保存的权重。
+
 ### 把训练面板放在 GPU 上
 
 torch 模型头把收集到的整个面板（特征、训练目标、掩码和原始标签）作为张量放在同一个设备上，数据集从中切出 batch。在 GPU 上，从已经在显存里的面板切一个 bar，只要从内存复制过去的一小部分时间，所以面板放在哪里往往决定了一个 epoch 跑多快。`panel_device` 在训练开始时以及每次预测时决定位置：
@@ -504,7 +616,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 [(0.716, 0.003), (0.69, 0.027)]
 ```
 
-`TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
+`TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/torch_model/gats.py` 和 `quantlab/torch_model/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
 ## 注意事项
 
@@ -514,6 +626,20 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 
 ```text
 TypeError: XGBoostRegressor requires a ModelConfig, got dict
+```
+
+`MASTERRegressor` 在构造时检查 `gate_features`：这个键是必需的，每个名字都必须是模型的因子变量，而且至少要留下一个因子作为个股特征。
+
+```text
+ValueError: MASTERRegressor: hyperparameters['gate_features'] must name the market factors that gate the others
+ValueError: MASTERRegressor: gate_features ['spy'] are not among the model's factors
+ValueError: MASTERRegressor: gate_features names every factor; at least one stock feature must remain to be gated
+```
+
+`GATsRegressor` 只接受 LSTM 或 GRU 编码器，在构建网络时报错。
+
+```text
+ValueError: base_model must be one of ['LSTM', 'GRU'], got 'RNN'
 ```
 
 torch 模型头的超参数 `epochs` 不是正整数时，训练一开始就会失败。
@@ -575,9 +701,9 @@ ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train
 ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
 ```
 
-`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。torch 模型头的 `train_cv` 不返回指标，因此每折的字典里只有日期和路径，`cv_mean` 为空，也不会打开汇总运行。
+`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。
 
-`train()` 只返回检查点路径，这次运行的指标在旁边的 `metrics.json` 里。对 `LibraryModel` 的模型头，`train_cv` 会直接返回这些指标。
+`train()` 只返回检查点路径，这次运行的指标在旁边的 `metrics.json` 里。`train_cv` 则直接返回这些指标，torch 模型头和库模型头都一样。
 
 检查点是 pickle 文件（`LibraryModel` 用 `joblib`，`TorchModel` 用 `torch.load`）。只加载自己生成或可信的文件。
 
@@ -587,4 +713,4 @@ ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`、`ModelConfig`）、`quantlab/torch_model/`、`quantlab/library_model/xgb.py`、`quantlab/library_model/backend.py` 和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/torch_model/`（`gats.py`、`master.py`、`data.py`、`training.py`）、`quantlab/factor/market.py`、`quantlab/library_model/xgb.py`、`quantlab/library_model/backend.py` 和 `quantlab/utils/metrics.py` 的 docstring。

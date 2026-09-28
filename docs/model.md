@@ -197,8 +197,8 @@ The base classes and the shipped heads read these keys from it themselves (`quan
 
 | Key | Read by | Default |
 |---|---|---|
-| `epochs` | `TorchModel`: the cap on training epochs; a value that is not a positive integer raises `ValueError` when training starts | 100 |
-| `lr` | `TorchModel`: the learning rate of the default `_init_optim` | `1e-3` |
+| `epochs` | `TorchModel`: the cap on training epochs; a value that is not a positive integer raises `ValueError` when training starts | 100 (`GATsRegressor` 200, `MASTERRegressor` 40) |
+| `lr` | `TorchModel`: the learning rate of the default `_init_optim` | `1e-3` (`GATsRegressor` `1e-4`, `MASTERRegressor` `1e-5`) |
 | `early_stopping` | the shipped library heads: turn on the library's native early stopping | `False` |
 | `early_stopping_patience` | the shipped library heads: rounds (or the library's own unit) without improvement | 5 |
 | `batch_size`, `num_workers` | `TorchModel`: the default `_dataloader` | `None` (one item per step), 0 |
@@ -287,7 +287,9 @@ A head writes three things: `window_bars` (N), `_init_model(num_features, num_la
 
 The base moves each batch to the device and applies `_transform_feature`, checking that the shape is kept and every value is finite. Training runs in `train()` mode; validation, the test hook and prediction run under `no_grad` in `eval()` mode. `train_loss` and `val_loss` are the means of what the step hooks return; `val_loss` is None without a validation segment. `{split}_loss` is the mean of `_val_one_batch` over the split's batches, so with the default dataset every bar weighs the same whatever its number of symbols. The cap on training is the `epochs` hyperparameter and the default optimizer reads `lr` (see Configuration and reserved hyperparameters). Metrics are always computed on the raw first label.
 
-A model with `window_bars` N needs N - 1 bars of history before the first bar it predicts. `collect()`, and a backtest's feature request, ask each factor for that many extra bars, counted on the factor's own dataset calendar, and warn when the data does not reach that far back. The purge before each split covers only the label lookahead, never the window. The stand-in panels here have no dataset, so these heads use a one-bar window.
+The stop hooks decide how long a head trains and which weights it keeps. `_on_fit_start()` runs before the first epoch, `_should_stop(epoch, train_loss, val_loss)` after every epoch (epochs count from 0), and `_on_fit_end()` after the last one; returning True from `_should_stop` ends training, which never runs past `epochs` anyway. A head that keeps earlier weights stores them in `_should_stop` and restores them in `_on_fit_end`. The two shipped torch heads use the two usual rules: `GATsRegressor` keeps the epoch with the lowest validation loss and stops after `early_stop` epochs without a better one (see Train GATs on the cross-section), and `MASTERRegressor` stops once the training loss reaches `train_loss_threshold` and keeps the last weights (see Train MASTER with market features).
+
+A model with `window_bars` N needs N - 1 bars of history before the first bar it predicts. `collect()`, and a backtest's feature request, ask each factor for that many extra bars, counted on the factor's own dataset calendar, and warn when the data does not reach that far back. Labels are not extended. Every window reads the whole collected panel, so the first validation and test bars look back into the previous segment, which is legal because those bars are in the past; a symbol with a shorter history gets NaN rows, which the default `_transform_feature` turns into 0. The purge before each split covers only the label lookahead, never the window. The stand-in panels here have no dataset, so these heads use a one-bar window.
 
 The smallest head is a window, a network and a loss:
 
@@ -416,6 +418,116 @@ The head below is Qlib's GRU on this dataset: `_dataset` returns the sequence da
 
 A head with yet another sample shape overrides `_dataset` (and, for multi-bar batches, `_dataloader` with its own sampler or collate function); `CrossSectionDataset` and `SymbolSequenceDataset` are the models to follow.
 
+### Train GATs on the cross-section
+
+`GATsRegressor` (`quantlab.torch_model.gats`) reproduces Qlib's GATs, the `GATModel` of `qlib/contrib/model/pytorch_gats_ts.py`. Each symbol's window goes through an LSTM, and the hidden state of its last bar is kept. One attention head then scores every pair of symbols of the bar, self included, with Qlib's `LeakyReLU(a[:H]·Wh_j + a[H:]·Wh_i)` and a softmax over the bar. Each symbol's state plus the attention-weighted mix of all states goes through `Linear(H, H)`, LeakyReLU and `Linear(H, L)`. The attention runs over the whole cross-section, so the network needs no symbol list and no graph data. `GATsNet` holds Qlib's parameter names, and a test in the suite checks that it gives the same output as Qlib's `GATModel` for the same weights and input.
+
+The head trains on the default `CrossSectionDataset`, one bar per step with the bars of an epoch shuffled. Its training target is Qlib's `CSRankNorm` of the label (`cs_rank_norm`), used for the training and validation loss; the loss is the MSE over the symbols with a label. The optimizer is Adam, with gradient values clipped at 3. Every unset hyperparameter takes Qlib's Alpha158 benchmark value from `GATsRegressor.DEFAULTS`: `window_bars` 20, `hidden_size` 64, `num_layers` 2, `dropout` 0.7, `base_model` `"LSTM"` (or `"GRU"`), `lr` 1e-4, `epochs` 200 and `early_stop` 10.
+
+It stops like Qlib. After each epoch it keeps the weights of a strictly lower validation loss, stops after `early_stop` epochs without one, and restores the best weights at the end. Without a validation segment (`val_size=0`) it runs every epoch and keeps the last weights.
+
+The session below trains a small GATs on the stand-in factor with a calendar, `seq_factor`. The model starts on 2024-01-20, so `collect()` asks the factor for the 4 warm-up bars before it (`window_bars - 1`) and the first bar has a full window. A loguru sink records the line the head logs when it stops:
+
+```python
+>>> from quantlab.torch_model.gats import GATsRegressor
+>>> gats = GATsRegressor(replace(
+...     torch_config, factors=[seq_factor],
+...     start_date="2024-01-20", train_start="2024-01-20",
+...     hyperparameters={"window_bars": 5, "hidden_size": 16, "dropout": 0.0,
+...                      "lr": 1e-2, "epochs": 50, "early_stop": 3},
+... )).collect()
+>>> gats.window_bars, gats.warmup_bars, gats.epochs, gats.early_stop
+(5, 4, 50, 3)
+>>> str(gats.data_backend.get_xarray_dataset().timestamp.values[0])[:10]
+'2024-01-16'
+>>> stops = []
+>>> sink = logger.add(stops.append, format="{message}", filter=lambda r: "stopping" in r["message"])
+>>> gats_checkpoint = gats.train()
+>>> logger.remove(sink)
+>>> stops[0].strip()
+'GATsRegressor: stopping after epoch 9'
+>>> gats_metrics = json.loads((gats_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in gats_metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.707, 'val_rank_ic': 0.696, 'test_rank_ic': 0.693}
+```
+
+Known differences from Qlib's implementation:
+
+- no pretrained LSTM: Qlib copies the encoder and `fc_out` from its LSTM benchmark's checkpoint, here every weight starts random;
+- the features are the model's factors, not Qlib's 20 selected Alpha158 columns (six of which, RESI5/10 and RSQR5/10/20/60, `Alpha158Stock` does not compute), and no `RobustZScoreNorm` is fitted on the training span: the default `_transform_feature` clips to ±3 and fills NaN with 0, where Qlib forward- and back-fills gaps inside a window;
+- the bars of an epoch are shuffled, as in Qlib's Alpha360 variant; its Alpha158 variant visits them in time order;
+- a symbol whose label is missing stays in the bar's cross-section as context and only leaves the loss; Qlib drops it from that day's training and validation input;
+- the output has one column per label instead of one;
+- the last training batch is kept, where Qlib drops it.
+
+### Train MASTER with market features
+
+`MASTERRegressor` (`quantlab.torch_model.master`) reproduces MASTER (Li et al., "MASTER: Market-Guided Stock Transformer for Stock Price Forecasting", AAAI 2024) from the authors' repository `SJTU-DMTai/MASTER`; it is not part of Qlib. Its network splits the F features in two. G of them are *gate features*, market-wide inputs that are the same for every symbol on a bar, and the other F - G are stock features. The gate maps the gate features' values at the last bar of the window, m, to `(F - G) · softmax(Linear(m) / beta)`: one weight per stock feature, the weights summing to F - G, which rescale the stock features at every bar of the window. The rescaled stock features then pass `Linear(F - G, D)` with a sinusoidal position encoding, attention over the N bars within each symbol, attention across the symbols at every bar, and a temporal attention queried by the last bar, and `Linear(D, L)` gives the prediction.
+
+`hyperparameters["gate_features"]` names the gate features among the model's factor variables; every other factor variable is a stock feature. It is required, and construction refuses a name the model does not have and a list that covers every factor. The gate features usually come from a `MarketFeatures` factor over index or ETF series (see the factor guide), passed as one of the model's factors, with `gate_features` set to its variable names. Below, `stocks` is the stock dataset, `spy`, `qqq` and `iwm` are single-ETF datasets (the factor guide shows how to build them from CRSP), `alpha158` is a stock factor and `config` a `ModelConfig` with the label and the dates:
+
+```python
+from dataclasses import replace
+
+from quantlab.base.config import MarketFeatureConfig
+from quantlab.factor.market import MarketFeatures
+from quantlab.torch_model.master import MASTERRegressor
+
+market = MarketFeatures(MarketFeatureConfig(
+    dataset=stocks, series={"spy": spy, "qqq": qqq, "iwm": iwm},
+    file_path="data/factors/market.zarr",
+))
+master = MASTERRegressor(replace(
+    config, factors=[alpha158, market],
+    hyperparameters={"gate_features": list(market.get_factor_names())},
+))
+```
+
+In training the head drops each bar's top and bottom `drop_extreme` share of the first label from the loss (the symbols stay in the cross-section) and z-scores the rest per bar (`drop_extreme` and `cs_zscore`); the validation and test targets are z-scored only. The loss is the MSE over the symbols with a target, the optimizer Adam with gradient values clipped at 3. Every unset hyperparameter takes the official value from `MASTERRegressor.DEFAULTS`: `window_bars` 8, `d_model` 256, `t_nhead` 4, `s_nhead` 2, `dropout` 0.5, `beta` 5.0 (the paper uses 2 for CSI800), `lr` 1e-5, `epochs` 40, `train_loss_threshold` 0.95 and `drop_extreme` 0.025.
+
+MASTER stops on the training loss, as the official code does: training ends after the first epoch whose training loss is at or below `train_loss_threshold`, or after `epochs`, and keeps the last weights either way. The validation loss is computed and logged but does not stop training. The rule is `TrainLossThreshold` in `quantlab.torch_model.training`.
+
+The session below adds a stand-in for the market factor, two series that are equal across the symbols of a bar, and trains a small MASTER gated by them. `master.model.gate` maps the two market values to the weights of the two stock features, `f_a` and `f_b`:
+
+```python
+>>> market_rng = np.random.default_rng(1)
+>>> spy_ret = market_rng.normal(0, 0.01, 200)
+>>> spy_ret_mean_5 = pd.Series(spy_ret).rolling(5, min_periods=1).mean().to_numpy()
+>>> market_stand_in = Panel(spy_ret=np.repeat(spy_ret[:, None], 20, axis=1),
+...                         spy_ret_mean_5=np.repeat(spy_ret_mean_5[:, None], 20, axis=1))
+>>> market_stand_in.config, market_stand_in.store_range = seq_factor.config, seq_factor.store_range
+>>> from quantlab.torch_model.master import MASTERRegressor
+>>> master = MASTERRegressor(replace(
+...     torch_config, factors=[seq_factor, market_stand_in],
+...     start_date="2024-01-20", train_start="2024-01-20",
+...     hyperparameters={"gate_features": ["spy_ret", "spy_ret_mean_5"], "window_bars": 5,
+...                      "d_model": 16, "lr": 1e-3, "epochs": 30,
+...                      "train_loss_threshold": 0.5},
+... )).collect()
+>>> master.get_factor_names(), master.gate_columns
+(['f_a', 'f_b', 'spy_ret', 'spy_ret_mean_5'], [2, 3])
+>>> stops = []
+>>> sink = logger.add(stops.append, format="{message}", filter=lambda r: "stopping" in r["message"])
+>>> master_checkpoint = master.train()
+>>> logger.remove(sink)
+>>> stops[0].strip()
+'MASTERRegressor: stopping after epoch 5'
+>>> master_metrics = json.loads((master_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in master_metrics.items() if k in ("val_loss", "test_rank_ic")}
+{'val_loss': 0.466, 'test_rank_ic': 0.687}
+>>> weights = master.model.gate(torch.zeros(1, 2))
+>>> weights.shape, round(float(weights.sum()), 4)
+(torch.Size([1, 2]), 2.0)
+```
+
+Known differences from the official implementation:
+
+- the market features are whatever `gate_features` names; for US equities they are the SPY, QQQ and IWM features of `MarketFeatures` rather than the CSI300, CSI500 and CSI800 indices;
+- a symbol dropped by `drop_extreme` leaves the loss but stays in the bar's cross-section as context; the official code removes it from that day's input too;
+- no `RobustZScoreNorm` is fitted on the training span: the default `_transform_feature` clips to ±3 and fills NaN with 0, where the official data forward- and back-fills gaps inside a window;
+- the output has one column per label instead of one;
+- when the threshold is never reached, training stops at `epochs` with the last weights; the official code has no weights to save in that case.
+
 ### Keep the training panel on the GPU
 
 A torch head holds the whole collected panel (features, training target, masks and raw labels) as tensors on one device, and its datasets slice batches from it. On a GPU, slicing a bar from a panel already there takes a fraction of the time of copying it from CPU memory, so where the panel lives often decides how fast an epoch runs. `panel_device` chooses it when training starts and for every prediction:
@@ -504,7 +616,7 @@ Overriding `_transform_target` changes what the library fits and nothing else. B
 [(0.716, 0.003), (0.69, 0.027)]
 ```
 
-A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
+A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/torch_model/gats.py` and `quantlab/torch_model/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
 
 ## Notes
 
@@ -514,6 +626,20 @@ A head rejects anything but a `ModelConfig` as the first step of construction.
 
 ```text
 TypeError: XGBoostRegressor requires a ModelConfig, got dict
+```
+
+`MASTERRegressor` checks `gate_features` when it is built: the key is required, every name must be one of the model's factor variables, and at least one factor must remain a stock feature.
+
+```text
+ValueError: MASTERRegressor: hyperparameters['gate_features'] must name the market factors that gate the others
+ValueError: MASTERRegressor: gate_features ['spy'] are not among the model's factors
+ValueError: MASTERRegressor: gate_features names every factor; at least one stock feature must remain to be gated
+```
+
+`GATsRegressor` accepts only an LSTM or a GRU encoder, and raises when the network is built.
+
+```text
+ValueError: base_model must be one of ['LSTM', 'GRU'], got 'RNN'
 ```
 
 A torch head whose `epochs` hyperparameter is not a positive integer fails when training starts.
@@ -575,9 +701,9 @@ Each fold tests on `train_periods // 5` bars, so `train_cv` refuses a `train_per
 ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
 ```
 
-`train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising. Torch heads return no metrics from `train_cv`, so their fold dicts hold only dates and paths, `cv_mean` is empty and no summary run is opened.
+`train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising.
 
-`train()` returns only the checkpoint path; the metrics of the run are in `metrics.json` beside it. `train_cv` returns them directly for `LibraryModel` heads.
+`train()` returns only the checkpoint path; the metrics of the run are in `metrics.json` beside it. `train_cv` returns them directly, for torch and library heads alike.
 
 Checkpoints are pickles (`joblib` for `LibraryModel` heads, `torch.load` for `TorchModel` heads). Load only files you produced or trust.
 
@@ -587,4 +713,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`, `ModelConfig`), `quantlab/torch_model/`, `quantlab/library_model/xgb.py`, `quantlab/library_model/backend.py` and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/torch_model/` (`gats.py`, `master.py`, `data.py`, `training.py`), `quantlab/factor/market.py`, `quantlab/library_model/xgb.py`, `quantlab/library_model/backend.py` and `quantlab/utils/metrics.py`.

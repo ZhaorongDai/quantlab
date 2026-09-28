@@ -68,8 +68,11 @@ The head classes, the concrete models you instantiate, are:
 handles missing feature values natively and records feature importance.
 `XGBTDRegressor` and `RealMLPRegressor` use the tuned default settings from
 Holzmüller et al., "Better by Default" (NeurIPS 2024), through the pytabkit
-package. They replace missing feature values with 0. No torch head ships
-yet; [Train a torch head](#train-a-torch-head) shows how to write one.
+package. They replace missing feature values with 0. `GATsRegressor` and
+`MASTERRegressor` are torch heads that reproduce two published
+cross-sectional models, GATs from Qlib and MASTER (Li et al., AAAI 2024);
+[Use the shipped torch heads](#use-the-shipped-torch-heads) describes them
+and [Train a torch head](#train-a-torch-head) shows how to write a new one.
 
 Every head reads its architecture and library settings from
 `config.hyperparameters`. The class docstrings list the keys and their
@@ -354,8 +357,8 @@ folds = model.train_cv(train_periods=200)
 Each fold trains a fresh model with its own early stopping and writes its own
 checkpoint directory, `XGBoostRegressor_cv_fold_{i}/`, inside one trial
 directory. `train_cv` returns one dict per fold with the fold's dates,
-experiment name, checkpoint path and, for `LibraryModel` heads, the `train_*`,
-`val_*` and `test_*` metrics. The fold's `train_end` is the last bar fitted,
+experiment name, checkpoint path and the `train_*`, `val_*` and `test_*`
+metrics. The fold's `train_end` is the last bar fitted,
 after the purge. The same list is written as `cv_folds.json` in the trial
 directory, together with `"format_version": 2` and a `cv_mean` block: the
 mean over folds of every metric, keyed `cv_mean_train_ic`,
@@ -432,6 +435,74 @@ cv_folds.json: format_version 2 with 4 folds
 keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_loss', 'train_mae', 'train_mse', 'train_r2', 'train_rank_ic', 'train_rank_icir', 'train_rmse', 'train_start', 'val_ic', 'val_icir', 'val_loss', 'val_mae', 'val_mse', 'val_r2', 'val_rank_ic', 'val_rank_icir', 'val_rmse']
 mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
 ```
+
+## Use the shipped torch heads
+
+Both torch heads see one bar's cross-section per training step: every symbol
+with a finite feature at that bar, each with its last `window_bars` bars of
+features. They predict any symbol present at a bar, including one that
+joined the universe after training, and a symbol whose label is missing
+stays in the input as context but adds nothing to the loss. Each head
+declares its own training target and stopping rule, following its
+reference implementation, and fills every hyperparameter you leave out
+from its `DEFAULTS` class attribute. The metrics in `metrics.json` are
+always computed on the raw label, whatever the training target.
+
+`GATsRegressor` (`quantlab.torch_model.gats`) is Qlib's GATs: an LSTM
+encodes each symbol's window, one attention head mixes the encodings of
+all the symbols of the bar, and two linear layers give the prediction. It
+trains on each bar's cross-sectional rank of the label (Qlib's
+`CSRankNorm`), keeps the epoch with the lowest validation loss and stops
+after `early_stop` epochs without a better one. Its defaults are Qlib's
+Alpha158 benchmark settings: a 20-bar window, hidden size 64, two LSTM
+layers, dropout 0.7, learning rate 1e-4, at most 200 epochs, and
+`early_stop` 10. It needs no data beyond the factors.
+
+`MASTERRegressor` (`quantlab.torch_model.master`) is MASTER, a
+transformer that attends over each stock's own history and across the
+stocks of every bar. A gate driven by market-wide features decides how
+much each stock feature counts. The gate's inputs are named by the
+required hyperparameter `gate_features`; they are usually the variables of
+a `MarketFeatures` factor over the SPY, QQQ and IWM ETFs (see
+[Factors and labels](factors.md)), passed as one more factor of the model.
+MASTER trains on each bar's z-scored label with the top and bottom 2.5%
+left out of the loss, and stops at the first epoch whose training loss is
+at or below `train_loss_threshold` (0.95), or after 40 epochs, keeping the
+last weights. Its other defaults are the paper's: an 8-bar window, model
+width 256 and learning rate 1e-5.
+
+```python
+from quantlab.base.config import ModelConfig
+from quantlab.torch_model.gats import GATsRegressor
+from quantlab.torch_model.master import MASTERRegressor
+
+gats = GATsRegressor(ModelConfig(
+    factors=[alpha158], labels=[label], model_save_dir="models",
+    factor_data_strategy="read", label_data_strategy="read",
+    start_date="2015-01-02", end_date="2024-12-31",
+    train_start="2015-01-02", train_end="2021-12-31",
+    test_start="2022-01-03", test_end="2024-12-31",
+))
+master = MASTERRegressor(ModelConfig(
+    factors=[alpha158, market], labels=[label], model_save_dir="models",
+    factor_data_strategy="read", label_data_strategy="read",
+    start_date="2015-01-02", end_date="2024-12-31",
+    train_start="2015-01-02", train_end="2021-12-31",
+    test_start="2022-01-03", test_end="2024-12-31",
+    hyperparameters={"gate_features": list(market.get_factor_names())},
+))
+```
+
+Here `alpha158` is a stock factor, `market` a `MarketFeatures` factor and
+`label` a forward-return label. A torch head asks every factor for
+`window_bars - 1` bars before `start_date`, so the factor stores must
+reach that far back; with the 20-bar GATs window, that is 19 bars.
+Training runs on a CUDA GPU when PyTorch sees one. The reserved
+`panel_device` and `panel_dtype` hyperparameters decide whether the whole
+feature panel is copied to the GPU and in what precision, which matters for
+a market-wide universe (see [Installation](../getting-started/installation.md#gpu-support)).
+The known differences between each head and its reference are listed in
+its class docstring and in the model guide (`docs/model.md`).
 
 ## Train a torch head
 
