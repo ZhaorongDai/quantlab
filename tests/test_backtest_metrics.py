@@ -2,18 +2,17 @@
 
 What this file locks, and what turns each lock red:
 
-- **D-17, the effective training window.** It is `[train_start, train_end +
-  label horizon]`, with the horizon the maximum `span_bars()` across the
-  model's labels, counted in BARS on the price calendar: the label on
-  `train_end` reads the next n bars of prices, so those bars are in-sample too.
-  Dropping the horizon, taking the minimum instead of the maximum, or adding
-  calendar days instead of bars moves the window end, and the weekend test
-  (a Friday `train_end` plus two bars is the following Tuesday) goes red.
+- **D-17, the effective training window.** It is the fitted training window
+  (after the model's purge) plus the labels' lookahead L, counted in bars by
+  `quantlab.utils.split.in_sample_window` (tested in
+  `tests/test_split_in_sample.py`): the last fitted label reads L bars
+  further, so those bars are in-sample too. Through `run()`, the bar the last
+  fitted label reads is in-sample and the next one is not, in load and train
+  mode alike.
 - **D-17, overlap handling.** A backtest window that overlaps the training
   window logs one warning naming both ranges, still completes `run()`, and
   records the overlap as `in_sample_range`. A disjoint window records no
-  in-sample range and does not warn. A label that spans no bars adds a horizon
-  of 0, and a model without train dates warns and records
+  in-sample range and does not warn, and a model without train dates warns and records
   `training_window: null`, never a silent guess.
 - **D-34, the single-simulation rule.** vectorbt's `Portfolio` cannot be
   time-sliced (RESEARCH Pitfall 5), and re-simulating a slice would reset the
@@ -50,10 +49,8 @@ from loguru import logger
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.backtest import SimulationResult
-from quantlab.base.config import CrossSectionBacktestConfig, PolarsFactorConfig
-from tests.label_stubs import StubLabel
+from quantlab.base.config import CrossSectionBacktestConfig
 from tests.backtest_fixtures import (
-    ForwardReturnLabel,
     make_model,
     make_stock_dataset,
     train_checkpoint,
@@ -139,7 +136,7 @@ def _unit_backtester(
 def _run_backtester(
     tmp_path, *, window_start_bar: int, window_end_bar: int, **overrides
 ) -> USEquityCrossectionSelectStockVectorBt:
-    """Load mode over a checkpoint trained on bars 0..TRAIN_END_BAR (horizon 1 bar)."""
+    """Load mode over a checkpoint trained on bars 0..TRAIN_END_BAR (lookahead 2 bars)."""
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
     checkpoint = train_checkpoint(
         make_model(tmp_path / "train", dataset_config, **_model_dates())
@@ -158,134 +155,6 @@ def _run_backtester(
     )
     kwargs.update(overrides)
     return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))
-
-
-# --------------------------------------------------------------------------
-# D-17: the effective training window
-# --------------------------------------------------------------------------
-
-
-def test_label_horizon_is_the_max_span_bars_across_labels(tmp_path):
-    backtester = _unit_backtester(tmp_path, n_forward_periods=1)
-    labels = backtester.config.model.config.labels
-    labels.append(
-        ForwardReturnLabel(
-            PolarsFactorConfig(
-                warmup_bars=0,
-                dataset=labels[0].config.factor.config.dataset,
-                kwargs={"n_forward_periods": 3},
-            )
-        )
-    )
-    assert [label.span_bars() for label in labels] == [1, 3]
-
-    assert backtester._label_horizon_bars() == 3
-
-
-def test_training_window_end_adds_the_horizon_in_bars_across_a_weekend(tmp_path):
-    friday = "2024-01-05"
-    assert pd.Timestamp(friday).day_name() == "Friday"
-    backtester = _unit_backtester(
-        tmp_path,
-        n_forward_periods=2,
-        start_date="2024-01-01",
-        end_date="2024-01-26",
-        train_start="2024-01-01",
-        train_end=friday,
-        test_start="2024-01-08",
-        test_end="2024-01-26",
-    )
-    calendar = pd.bdate_range("2024-01-01", periods=20).values
-
-    window = backtester._training_window(calendar, "2024-01-01", friday)
-
-    # Friday + 2 bars = Monday, Tuesday. Two calendar days would give Sunday.
-    assert tuple(window) == ("2024-01-01", "2024-01-09")
-
-
-def test_label_that_spans_no_bars_adds_a_zero_horizon(tmp_path):
-    backtester = _unit_backtester(tmp_path)
-    labels = backtester.config.model.config.labels
-    labels[0] = StubLabel(labels[0])
-    assert labels[0].span_bars() == 0
-
-    assert backtester._label_horizon_bars() == 0
-
-
-# --------------------------------------------------------------------------
-# D-17 on intraday bars (code review CR-01)
-# --------------------------------------------------------------------------
-
-#: Three 7-bar hourly sessions (10:00..16:00); no bar sits at midnight.
-SESSION_DAYS = ("2024-01-01", "2024-01-02", "2024-01-03")
-SESSION_HOURS = tuple(range(10, 17))
-
-
-def _sessions(days, hours=SESSION_HOURS) -> np.ndarray:
-    return pd.DatetimeIndex(
-        [pd.Timestamp(f"{day} {hour:02d}:00") for day in days for hour in hours]
-    ).values
-
-
-def test_intraday_training_window_ends_horizon_bars_into_the_next_session(tmp_path):
-    """CR-01: on intraday bars the label-horizon bars after `train_end` are in-sample.
-
-    The model layer trains on `sel(timestamp=slice(train_start, train_end))`,
-    and a date-only `train_end` selects that whole session (positive control
-    below), so the last training label sits at 16:00 and reads the next two
-    bars: 10:00 and 11:00 of the FOLLOWING session. Those two bars must be
-    in-sample. The old code truncated `train_end` to midnight, landed on the
-    previous session's last bar, added the horizon and then compared by day:
-    the whole `train_end` session was in-sample and the two leaked bars on the
-    next session were labelled out-of-sample. This test goes red on that.
-    """
-    backtester = _unit_backtester(tmp_path, n_forward_periods=2)
-    calendar = _sessions(SESSION_DAYS)
-    model_layer_slice = xr.DataArray(
-        np.arange(calendar.size), dims="timestamp", coords={"timestamp": calendar}
-    ).sel(timestamp=slice("2024-01-01", "2024-01-02"))
-    assert pd.Timestamp(model_layer_slice.timestamp.values[-1]) == pd.Timestamp(
-        "2024-01-02 16:00"
-    )
-
-    window = backtester._training_window(calendar, "2024-01-01", "2024-01-02")
-
-    assert tuple(window) == ("2024-01-01T10:00:00", "2024-01-03T11:00:00")
-    split = backtester._split_window(_sessions(SESSION_DAYS[2:]), window)
-    assert tuple(split["in_sample_range"]) == (
-        "2024-01-03T10:00:00",
-        "2024-01-03T11:00:00",
-    )
-    assert [tuple(r) for r in split["out_of_sample_ranges"]] == [
-        ("2024-01-03T12:00:00", "2024-01-03T16:00:00")
-    ]
-
-
-@pytest.mark.parametrize(
-    "train_end",
-    [
-        "2024-01-02T13:00:00",
-        "2024-01-02T13:00:00.000000000",
-        pd.Timestamp("2024-01-02 13:00"),
-        np.datetime64("2024-01-02T13:00"),
-    ],
-    ids=["iso", "fold-style-ns", "timestamp", "datetime64"],
-)
-def test_training_window_honours_a_time_of_day_train_end(tmp_path, train_end):
-    """CR-01: a `train_end` carrying a time of day is not truncated to its date.
-
-    `cv_folds.json` stores fold dates as nanosecond strings, which the model
-    layer slices exactly. Training ends at 13:00, so with a 2-bar horizon the
-    window ends at 15:00 on the same session. The old `_iso_date` truncation
-    turned every spelling into the bare date and went red here.
-    """
-    backtester = _unit_backtester(tmp_path, n_forward_periods=2)
-
-    window = backtester._training_window(
-        _sessions(SESSION_DAYS), "2024-01-01", train_end
-    )
-
-    assert tuple(window) == ("2024-01-01T10:00:00", "2024-01-02T15:00:00")
 
 
 def test_slice_statistics_compare_exact_bar_timestamps_not_days(tmp_path):
@@ -401,18 +270,47 @@ def test_whole_order_count_is_zero_for_an_order_less_simulation(tmp_path, monkey
 # --------------------------------------------------------------------------
 
 
+#: The fixture label is a 1-bar forward return with delay 1, as an n-bar
+#: `Return` with n = 1: lookahead L = n + 1 = 2. The model's fixed split purges
+#: the training segment against the test segment, so the last fitted bar is
+#: TRAIN_END_BAR - L and its label reads bar TRAIN_END_BAR.
+LOOKAHEAD = 2
+FITTED_END_BAR = TRAIN_END_BAR - LOOKAHEAD
+
+
+@pytest.mark.parametrize("model_mode", ["load", "train"])
+def test_the_bar_the_last_fitted_label_reads_is_in_sample(tmp_path, model_mode):
+    """#35: for an n-bar return, bar fitted_end + n + 1 is in-sample, the next is not.
+
+    The old window ended at train_end + span, one bar short of what the last
+    training label reads before the model purged its splits, and n bars too
+    long once it did.
+    """
+    overrides = {} if model_mode == "load" else dict(model_mode="train", checkpoint=None)
+    result = _run_backtester(
+        tmp_path, window_start_bar=20, window_end_bar=45, **overrides
+    ).run()
+
+    last_read = FITTED_END_BAR + 1 + 1
+    assert tuple(result.metrics["in_sample_range"]) == (
+        _day(BARS[20]),
+        _day(BARS[last_read]),
+    )
+    assert result.metrics["out_of_sample_ranges"][0][0] == _day(BARS[last_read + 1])
+
+
 def test_overlapping_window_warns_naming_both_ranges_and_continues(
     tmp_path, warnings_sink
 ):
-    # Training window: bar 0 .. bar 24 + 1-bar horizon = bar 25.
-    # The window starts ON bar 25, so exactly one bar is in-sample; a one-bar
+    # Effective training window: bar 0 .. fitted end bar 22 + lookahead 2 = bar 24.
+    # The window starts ON bar 24, so exactly one bar is in-sample; a one-bar
     # returns slice has NaN volatility, which strict JSON must still survive.
-    window_start, window_end = TRAIN_END_BAR + 1, 45
+    window_start, window_end = TRAIN_END_BAR, 45
     result = _run_backtester(
         tmp_path, window_start_bar=window_start, window_end_bar=window_end
     ).run()
 
-    training = (_day(BARS[0]), _day(BARS[TRAIN_END_BAR + 1]))
+    training = (_day(BARS[0]), _day(BARS[TRAIN_END_BAR]))
     backtest = (_day(BARS[window_start]), _day(BARS[window_end]))
     overlap_warnings = [
         message
@@ -442,7 +340,7 @@ def test_disjoint_window_does_not_warn_and_has_no_in_sample_range(
     metrics = result.metrics
     assert tuple(metrics["training_window"]) == (
         _day(BARS[0]),
-        _day(BARS[TRAIN_END_BAR + 1]),
+        _day(BARS[TRAIN_END_BAR]),
     )
     assert metrics["in_sample_range"] is None
     assert [tuple(r) for r in metrics["out_of_sample_ranges"]] == [window]
@@ -475,8 +373,8 @@ def test_model_without_train_dates_warns_and_records_null(tmp_path, warnings_sin
 # D-17 / D-34: one continuous simulation, sliced afterwards
 # --------------------------------------------------------------------------
 
-#: Training window bar 0 .. bar 25 (train_end bar 24 + 1-bar horizon); this
-#: window puts bars 20..25 in-sample and 26..45 out-of-sample, each slice
+#: Effective training window bar 0 .. bar 24 (fitted end bar 22 + lookahead 2);
+#: this window puts bars 20..24 in-sample and 25..45 out-of-sample, each slice
 #: holding at least one fill bar (fills land on window bars 1, 6, 11, ...).
 OVERLAP_START, OVERLAP_END = 20, 45
 
@@ -523,7 +421,7 @@ def test_slice_total_return_is_compounded_from_the_single_simulations_returns(
     returns = result.simulation.returns
 
     in_sample = _slice_returns(returns, metrics["in_sample_range"])
-    assert in_sample.size == TRAIN_END_BAR + 1 - OVERLAP_START + 1
+    assert in_sample.size == TRAIN_END_BAR - OVERLAP_START + 1
     assert metrics["in_sample"]["Total Return [%]"] == pytest.approx(
         100.0 * (np.prod(1.0 + in_sample) - 1.0), abs=1e-9
     )
@@ -554,7 +452,7 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
     # The whole-window counterpart (phase 03.8, CONTEXT item 3): the block that
     # gave up the lot-level trade set must still answer "how many fills
     # happened over the whole window". Both identities hold by construction,
-    # because `_split_window` tiles the window into one in-sample range plus
+    # because `split_ranges` tiles the window into one in-sample range plus
     # 0-2 disjoint out-of-sample ranges covering every remaining bar. They are
     # asserted anyway: that construction is exactly what a future refactor of
     # the split could break silently.
@@ -650,10 +548,10 @@ def test_turnover_is_one_for_a_full_entry_and_two_for_a_full_swap(tmp_path):
 
 
 def test_metrics_blocks_have_the_d22_d34_keys(tmp_path):
-    # One in-sample bar (bar 25): its returns slice genuinely has a NaN
+    # One in-sample bar (bar 24): its returns slice genuinely has a NaN
     # volatility, so metrics.json must convert it to null to parse strictly.
     result = _run_backtester(
-        tmp_path, window_start_bar=TRAIN_END_BAR + 1, window_end_bar=OVERLAP_END
+        tmp_path, window_start_bar=TRAIN_END_BAR, window_end_bar=OVERLAP_END
     ).run()
     metrics = result.metrics
     turnover_keys = (

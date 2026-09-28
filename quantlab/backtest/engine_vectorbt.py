@@ -93,6 +93,9 @@ class VectorBtBacktester(BaseBacktester):
         result.simulation.orders  # one record per fill
     """
 
+    #: A weight formed at bar t fills at bar t + 1; labels must use this delay.
+    fill_delay_bars = 1
+
     #: The ``Portfolio.stats`` metric names reported for the whole window.
     #: ``benchmark_return`` is left out: vectorbt would compare against the
     #: equal-weighted traded universe, not the configured benchmark, which the

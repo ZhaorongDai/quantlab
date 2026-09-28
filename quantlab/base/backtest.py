@@ -28,6 +28,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import ClassVar
 
 import numpy as np
 import pandas as pd
@@ -46,7 +47,7 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import DASH, write_backtest_report
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
-from quantlab.utils.split import purge_segments
+from quantlab.utils.split import in_sample_window, purge_segments, split_ranges
 from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
@@ -278,7 +279,7 @@ class BaseBacktester(ABC):
     composition. The hierarchy is ``BaseBacktester`` (this class), then an
     engine layer such as ``VectorBtBacktester`` that implements
     ``_simulate``, ``_simulate_benchmark``, ``_engine_stats`` and
-    ``_period_returns_stats``, then a named concrete class that composes a
+    ``_period_returns_stats`` and sets ``fill_delay_bars``, then a named concrete class that composes a
     ``MarketSpec`` (the ``MARKET`` class attribute) and a signal generator
     (``_generate_signals``) onto that engine. Concrete classes also set
     ``config_cls``, the config class the ``config`` setter accepts.
@@ -300,6 +301,11 @@ class BaseBacktester(ABC):
     MARKET : MarketSpec or None
         The market conventions. ``None`` on abstract classes; a concrete
         class must set it.
+    fill_delay_bars : int
+        Bars between the bar a weight forms on and the bar it fills on, set
+        by the engine layer. ``run()`` and ``run_cv()`` refuse a model whose
+        label ``delay`` differs from it, since the label would then measure
+        a return the engine never trades.
     expected_fingerprint : dict or None
         Fingerprints of a previous run of the same config. When set, each
         run compares the data it reads against them and warns on a
@@ -322,6 +328,7 @@ class BaseBacktester(ABC):
     """
 
     MARKET: MarketSpec | None = None
+    fill_delay_bars: ClassVar[int]
 
     def __init__(self, config: BacktestConfig):
         """Initialize the backtester; see the class docstring for parameters."""
@@ -602,7 +609,7 @@ class BaseBacktester(ABC):
         resolution: ``"2024-05-17"`` includes the whole day while
         ``"2024-05-17T13:00"`` stops at 13:00. Strings are therefore passed
         through unchanged (as plain ``str``) and other values become
-        ``pd.Timestamp``, so ``_training_window`` selects the same bars the
+        ``pd.Timestamp``, so ``_window_split`` selects the same bars the
         model trained on.
         """
         if isinstance(value, str):
@@ -634,8 +641,9 @@ class BaseBacktester(ABC):
         Raises
         ------
         ValueError
-            If ``model_mode="load"`` without ``config.checkpoint``,
-            or the window has no price bars.
+            If ``model_mode="load"`` without ``config.checkpoint``, a label's
+            ``delay`` differs from ``fill_delay_bars``, or the window has no
+            price bars.
 
         Examples
         --------
@@ -662,6 +670,7 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: run() with model_mode='load' requires "
                 f"config.checkpoint; cv_project_dir is read only by run_cv()"
             )
+        self._check_label_delays()
         start_date = self._iso_date(self.config.start_date)
         end_date = self._iso_date(self.config.end_date)
         # Per-run state: a second run() on the same object starts clean.
@@ -676,14 +685,17 @@ class BaseBacktester(ABC):
         try:
             # In load mode the training dates come from the checkpoint's own
             # config.json.
-            train_bounds = self._prepare_model()
+            train_bounds, test_bounds = self._prepare_model()
             calendar = self._price_calendar(end_date)
             # The comparison with config.model's dates is bar-based, so it
             # needs the calendar.
             if self.config.model_mode == "load":
                 self._warn_if_config_model_dates_differ(calendar, train_bounds)
             window = self._backtest_window(
-                start_date, end_date, calendar, *train_bounds
+                start_date,
+                end_date,
+                calendar,
+                *self._fitted_train_bounds(calendar, train_bounds, test_bounds),
             )
         except Exception:
             self._compare_fingerprints_on_failure()
@@ -726,7 +738,7 @@ class BaseBacktester(ABC):
         gap or an overlap corresponds to no real trading path). Each fold is
         then backtested on its own test segment with its own checkpoint, and
         its in-sample split uses that fold's training dates. A label looks a
-        few bars ahead (its *label horizon*), so the training labels of a fold
+        few bars ahead (its *lookahead*), so the training labels of a fold
         already saw the bars after ``train_end``. ``train_cv`` purges those
         bars from every training window and records the purged ``train_end``,
         so a test bar counts as in-sample only if a label reads further than
@@ -753,7 +765,8 @@ class BaseBacktester(ABC):
         ------
         ValueError
             If ``config.cv_project_dir`` is unset, ``model_mode``
-            is not ``"load"``, the manifest is malformed, no fold falls
+            is not ``"load"``, a label's ``delay`` differs from
+            ``fill_delay_bars``, the manifest is malformed, no fold falls
             inside the window, or the fold test segments are not
             contiguous.
         FileNotFoundError
@@ -791,6 +804,7 @@ class BaseBacktester(ABC):
                 f"existing train_cv run and requires model_mode='load', got "
                 f"{self.config.model_mode!r}"
             )
+        self._check_label_delays()
         self._fingerprints = {}
         # run_cv only loads; never carry a checkpoint trained by an earlier run().
         self._trained_checkpoint = None
@@ -894,7 +908,7 @@ class BaseBacktester(ABC):
             f"run_cv: the stitched curve is one continuous simulation over folds "
             f"{[fold['fold'] for fold in folds]} ({first_start}..{last_end}), "
             f"capital carried across fold boundaries; per-fold metrics come from "
-            f"separate per-fold simulations. Each fold's first label-horizon "
+            f"separate per-fold simulations. Each fold's first label-lookahead "
             f"bars are in-sample (metrics stitched.in_sample_ranges) and are not "
             f"shaded in this report."
         ]
@@ -948,7 +962,7 @@ class BaseBacktester(ABC):
         carry every ``_CV_RECORD_KEYS`` field and a test segment that does
         not end before it starts. The four dates are normalized with
         ``_iso_date`` on a copy of each entry, and the raw training endpoints
-        are kept under ``_train_bounds`` for ``_training_window``, which
+        are kept under ``_train_bounds`` for ``_window_split``, which
         slices the model layer's way and needs them at full resolution.
 
         Returns
@@ -1012,7 +1026,7 @@ class BaseBacktester(ABC):
                 )
             fold = dict(entry)
             # Keep the training endpoints as written (nanosecond strings) for
-            # `_training_window`: truncating them to dates would make the
+            # `_window_split`: truncating them to dates would make the
             # whole train_end day count as training on intraday data.
             fold["_train_bounds"] = (entry["train_start"], entry["train_end"])
             for key in ("train_start", "train_end", "test_start", "test_end"):
@@ -1161,8 +1175,9 @@ class BaseBacktester(ABC):
         Shared by ``run()`` and by each fold of ``run_cv()``: request the
         factor panels for the window and predict, load the prices, reindex
         the predictions onto the price axes (symbols without a prediction
-        become NaN and are never selected), split the window against ``[train_start, train_end +
-        label horizon]``, generate and check the weights, simulate, simulate
+        become NaN and are never selected), split the window against the
+        fitted training window ``[train_start, train_end]`` plus the labels'
+        lookahead, generate and check the weights, simulate, simulate
         the benchmark (when one is configured, on the same bars) and compute
         the metrics. The model must already be prepared.
 
@@ -1189,9 +1204,8 @@ class BaseBacktester(ABC):
             timestamp=prices.timestamp.values, symbol=prices.symbol.values
         )
 
-        split = self._split_window(
-            prices.timestamp.values,
-            self._training_window(calendar, train_start, train_end),
+        split = self._window_split(
+            prices.timestamp.values, calendar, train_start, train_end
         )
 
         weights = self._generate_signals(predictions, prices)
@@ -1215,31 +1229,36 @@ class BaseBacktester(ABC):
             benchmark=benchmark,
         )
 
-    def _prepare_model(self) -> tuple:
-        """Train or load the model and return its ``(train_start, train_end)``.
+    def _prepare_model(self) -> tuple[tuple, tuple]:
+        """Train or load the model and return its training and test windows.
 
-        In train mode the model is collected and trained on the dates in its
-        own config; the backtest window never overwrites them, because it
-        only decides the prediction span and the in-sample split. In load
-        mode the checkpoint is restored and the dates recorded in the
-        ``config.json`` beside it are returned when present, since those are
-        the dates the checkpoint was really trained on; otherwise
+        Both windows are ``(start, end)`` pairs as configured, before the
+        model's purge. In train mode the model is collected and trained on
+        the dates in its own config; the backtest window never overwrites
+        them, because it only decides the prediction span and the in-sample
+        split. In load mode the checkpoint is restored and the dates recorded
+        in the ``config.json`` beside it are returned when present, since
+        those are the dates the checkpoint was really trained on; otherwise
         ``config.model``'s dates are returned.
         """
         model = self.config.model
+        configured = (
+            (model.config.train_start, model.config.train_end),
+            (model.config.test_start, model.config.test_end),
+        )
         if self.config.model_mode == "load":
             saved = self._load_model_checkpoint(self.config.checkpoint)
             recorded = self._recorded_train_bounds(saved)
             if recorded is not None:
-                return recorded
-            return model.config.train_start, model.config.train_end
+                return recorded, (saved.get("test_start"), saved.get("test_end"))
+            return configured
         model.collect()
         # Fingerprint the training data right after collect() and before
         # train().
         self._record_training_fingerprints()
         # The checkpoint train() wrote is recorded in config.json and metrics.
         self._trained_checkpoint = str(model.train())
-        return model.config.train_start, model.config.train_end
+        return configured
 
     def _warn_if_config_model_dates_differ(self, calendar, train_bounds: tuple) -> None:
         """Warn when the checkpoint's training dates and ``config.model``'s disagree.
@@ -1281,27 +1300,60 @@ class BaseBacktester(ABC):
         """Return a checkpoint's recorded training window as the model fitted it.
 
         ``train_cv`` writes each fold checkpoint's config with the training
-        window before the purge, and the manifest with the purged one. The
-        recorded window goes through ``purge_segments`` against the recorded
-        test window with the labels' largest ``lookahead_bars()``, so the two
-        can be compared. Falls back to the recorded window when a date is
-        missing or the purge would leave no bar.
+        window before the purge, and the manifest with the purged one, so the
+        recorded window goes through ``_fitted_train_bounds`` before the two
+        are compared.
         """
         recorded = self._recorded_train_bounds(saved)
-        if recorded is None or None in (saved.get("test_start"), saved.get("test_end")):
-            return recorded
-        lookahead = max(
+        if recorded is None:
+            return None
+        return self._fitted_train_bounds(
+            calendar, recorded, (saved.get("test_start"), saved.get("test_end"))
+        )
+
+    def _fitted_train_bounds(self, calendar, train_bounds: tuple, test_bounds: tuple) -> tuple:
+        """Return a configured training window as the model fitted it.
+
+        The window goes through ``purge_segments`` against the test window
+        with the labels' largest ``lookahead_bars()``, so its end becomes the
+        last bar the purge keeps. Falls back to ``train_bounds`` when a date
+        is missing or the purge would leave no bar.
+        """
+        if None in (*train_bounds, *test_bounds):
+            return train_bounds
+        usable, _ = purge_segments(
+            np.sort(np.asarray(calendar).astype("datetime64[ns]")),
+            [train_bounds, test_bounds],
+            self._lookahead_bars(),
+        )
+        if len(usable) == 0:
+            return train_bounds
+        return train_bounds[0], np.datetime_as_string(usable[-1])
+
+    def _check_label_delays(self) -> None:
+        """Refuse a label whose ``delay`` differs from the engine's ``fill_delay_bars``.
+
+        Raises
+        ------
+        ValueError
+            Naming the first such label, its delay and the fill delay.
+        """
+        for i, label in enumerate(self.config.model.config.labels):
+            if label.config.delay != self.fill_delay_bars:
+                raise ValueError(
+                    f"{self.class_name}: labels[{i}] {label.class_name} "
+                    f"{label.get_factor_names()} has delay={label.config.delay}, "
+                    f"but the engine fills a weight fill_delay_bars="
+                    f"{self.fill_delay_bars} bar(s) after the bar it forms on; "
+                    f"the model would learn a return the backtest never trades"
+                )
+
+    def _lookahead_bars(self) -> int:
+        """Return L, the largest ``lookahead_bars()`` of the model's labels."""
+        return max(
             (label.lookahead_bars() for label in self.config.model.config.labels),
             default=0,
         )
-        usable, _ = purge_segments(
-            np.sort(np.asarray(calendar).astype("datetime64[ns]")),
-            [recorded, (saved["test_start"], saved["test_end"])],
-            lookahead,
-        )
-        if len(usable) == 0:
-            return recorded
-        return recorded[0], np.datetime_as_string(usable[-1])
 
     @classmethod
     def _same_training_bars(cls, calendar, a: tuple, b: tuple) -> bool:
@@ -1314,7 +1366,7 @@ class BaseBacktester(ABC):
         slices string endpoints at their own resolution (on intraday data
         ``"2024-02-09"`` includes the whole day while a midnight nanosecond
         string stops at the previous bar). The pairs are therefore run
-        through the same pandas ``slice_indexer`` as ``_training_window``.
+        through the same pandas ``slice_indexer`` as ``_window_split``.
 
         Identical pairs are equal; a ``None`` endpoint in a non-identical
         pair makes them different; on an empty calendar the endpoints are
@@ -1843,37 +1895,24 @@ class BaseBacktester(ABC):
         concatenated in time order when there are several.
         """
 
-    def _label_horizon_bars(self) -> int:
-        """Return the largest ``span_bars()`` of the model's labels.
+    def _window_split(
+        self, window_timestamps: np.ndarray, calendar: np.ndarray, train_start, train_end
+    ) -> dict:
+        """Split the window bars into in-sample and out-of-sample ranges.
 
-        The label of the ``train_end`` bar reads the following bars of
-        prices, so those bars are in-sample too.
-        """
-        return max(
-            (label.span_bars() for label in self.config.model.config.labels),
-            default=0,
-        )
-
-    def _training_window(
-        self, calendar: np.ndarray, train_start, train_end
-    ) -> tuple[str, str] | None:
-        """Return the effective training window as a pair of bar labels.
-
-        The *effective training window* is every bar the trained model has
-        seen: its training bars plus the label horizon after ``train_end``.
-
-        The window is ``[train_start, train_end + label horizon]`` counted
-        in calendar bars, not calendar days (a Friday ``train_end`` plus two
-        bars is the next Tuesday). The trained bars are the ones the model
-        layer's ``data.sel(timestamp=slice(train_start, train_end))``
-        selects, found with the same pandas ``slice_indexer`` on the
-        unchanged endpoints; the end is then advanced by the horizon and
-        clamped to the last calendar bar. Both labels come from
-        ``_bar_label``: dates for daily bars, full timestamps intraday.
-
-        Returns ``None``, with a warning, when either date is ``None``; the
-        metrics then record a null training window and every bar counts as
-        out-of-sample.
+        ``train_start`` / ``train_end`` are the fitted training window, after
+        the model's purge. The *effective training window* is every bar the
+        model has seen, ``quantlab.utils.split.in_sample_window`` of the
+        fitted window and the labels' lookahead L, counted in calendar bars.
+        Returns three keys that are merged into the top level of the metrics,
+        all as ``_bar_label`` endpoints: ``training_window`` (the effective
+        training window or ``None``), ``in_sample_range`` (first and last
+        window bar inside it, or ``None``) and ``out_of_sample_ranges`` (the
+        0, 1 or 2 runs of window bars outside it, from
+        ``quantlab.utils.split.split_ranges``). A non-empty overlap logs a
+        warning naming both windows, and the backtest goes on with the two
+        parts reported separately. A ``None`` training date logs a warning
+        and every bar counts as out-of-sample.
         """
         if train_start is None or train_end is None:
             logger.warning(
@@ -1882,88 +1921,39 @@ class BaseBacktester(ABC):
                 f"unknown, so metrics record training_window as null and every "
                 f"backtest bar as out-of-sample"
             )
-            return None
-
-        calendar = np.sort(np.asarray(calendar).astype("datetime64[ns]"))
-        last = calendar.size - 1
-        trained = pd.DatetimeIndex(calendar).slice_indexer(
-            self._slice_bound(train_start), self._slice_bound(train_end)
-        )
-        start_idx = int(trained.start)
-        end_idx = int(trained.stop) - 1 + self._label_horizon_bars()
-        window_start = (
-            self._bar_label(calendar[start_idx])
-            if start_idx <= last
-            else self._bar_label(train_start)
-        )
-        window_end = (
-            self._bar_label(calendar[min(end_idx, last)])
-            if end_idx >= 0
-            else self._bar_label(train_end)
-        )
-        return window_start, window_end
-
-    def _split_window(
-        self, window_timestamps: np.ndarray, training_window: tuple[str, str] | None
-    ) -> dict:
-        """Split the window bars into in-sample and out-of-sample ranges.
-
-        Returns three keys that are merged into the top level of the
-        metrics: ``training_window`` (the input pair or ``None``),
-        ``in_sample_range`` (first and last bar of the overlap between the
-        window and the training window, or ``None``) and
-        ``out_of_sample_ranges`` (the 0, 1 or 2 contiguous runs of bars
-        outside the overlap). Bars are compared as exact timestamps. Both
-        windows are intervals, so the overlap is one contiguous run; when it
-        is non-empty a warning names both windows and the backtest goes on
-        with the two parts reported separately.
-        """
+            training_window = None
+        else:
+            training_window = in_sample_window(
+                np.sort(np.asarray(calendar).astype("datetime64[ns]")),
+                self._slice_bound(train_start),
+                self._slice_bound(train_end),
+                self._lookahead_bars(),
+            )
         timestamps = np.asarray(window_timestamps).astype("datetime64[ns]")
+        in_sample, out_of_sample = split_ranges(timestamps, [training_window])
         split = {
-            "training_window": training_window,
-            "in_sample_range": None,
-            "out_of_sample_ranges": [],
+            "training_window": self._label_pair(training_window),
+            "in_sample_range": self._label_pair(in_sample[0]) if in_sample else None,
+            "out_of_sample_ranges": [self._label_pair(r) for r in out_of_sample],
         }
-        if timestamps.size == 0:
-            return split
-
-        if training_window is None:
-            in_sample = np.zeros(timestamps.size, dtype=bool)
-        else:
-            first = self._label_ns(training_window[0])
-            last = self._label_ns(training_window[1])
-            in_sample = (timestamps >= first) & (timestamps <= last)
-
-        pieces = []
-        if in_sample.any():
-            idx = np.flatnonzero(in_sample)
-            lo, hi = int(idx[0]), int(idx[-1])
-            split["in_sample_range"] = (
-                self._bar_label(timestamps[lo]),
-                self._bar_label(timestamps[hi]),
-            )
-            if lo > 0:
-                pieces.append((0, lo - 1))
-            if hi < timestamps.size - 1:
-                pieces.append((hi + 1, timestamps.size - 1))
-            window = (self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))
+        if in_sample:
             logger.warning(
-                f"{self.class_name}: backtest window {window[0]}..{window[1]} "
-                f"overlaps the model's effective training window "
-                f"{training_window[0]}..{training_window[1]} (train_start.."  # type: ignore[index]
-                f"train_end + label horizon); bars "
-                f"{split['in_sample_range'][0]}..{split['in_sample_range'][1]} "
-                f"are in-sample. Continuing: in-sample and out-of-sample results "
-                f"are reported separately"
+                f"{self.class_name}: backtest window {self._bar_label(timestamps[0])}.."
+                f"{self._bar_label(timestamps[-1])} overlaps the model's effective "
+                f"training window {split['training_window'][0]}.."
+                f"{split['training_window'][1]} (train_start..train_end + label "
+                f"lookahead); bars {split['in_sample_range'][0]}.."
+                f"{split['in_sample_range'][1]} are in-sample. Continuing: in-sample "
+                f"and out-of-sample results are reported separately"
             )
-        else:
-            pieces.append((0, timestamps.size - 1))
-
-        split["out_of_sample_ranges"] = [
-            (self._bar_label(timestamps[a]), self._bar_label(timestamps[b]))
-            for a, b in pieces
-        ]
         return split
+
+    @classmethod
+    def _label_pair(cls, pair: tuple | None) -> tuple[str, str] | None:
+        """Return a ``(first, last)`` pair of bars as ``_bar_label`` endpoints."""
+        if pair is None:
+            return None
+        return cls._bar_label(pair[0]), cls._bar_label(pair[1])
 
     @classmethod
     def _in_ranges(cls, timestamps: np.ndarray, ranges: list[tuple[str, str]]) -> np.ndarray:
@@ -2674,11 +2664,12 @@ class BaseBacktester(ABC):
         The stitched curve is out-of-sample by construction, since each fold
         trades only its own test segment, except for the first bars of each
         fold that overlap that fold's effective training window (the label
-        horizon). The in-sample part is therefore a list: ``training_windows``
+        lookahead). The in-sample part is therefore a list: ``training_windows``
         holds every fold's effective training window in fold order,
         ``in_sample_ranges`` every fold's non-empty ``in_sample_range`` in
         fold order, and ``out_of_sample_ranges`` the contiguous runs of
-        ``timestamps`` outside all of them. No singular ``in_sample_range``
+        ``timestamps`` outside all of them, from
+        ``quantlab.utils.split.split_ranges``. No singular ``in_sample_range``
         is produced, because several ranges do not fit one pair.
         """
         in_sample_ranges = [
@@ -2686,18 +2677,8 @@ class BaseBacktester(ABC):
             for record in records
             if record["metrics"]["in_sample_range"] is not None
         ]
-        ts = np.asarray(timestamps).astype("datetime64[ns]")
-        out_mask = ~self._in_ranges(ts, in_sample_ranges)
-        pieces = []
-        idx = np.flatnonzero(out_mask)
-        if idx.size:
-            breaks = np.flatnonzero(np.diff(idx) > 1)
-            starts = np.concatenate(([idx[0]], idx[breaks + 1]))
-            ends = np.concatenate((idx[breaks], [idx[-1]]))
-            pieces = [
-                (self._bar_label(ts[a]), self._bar_label(ts[b]))
-                for a, b in zip(starts, ends)
-            ]
+        _, out_of_sample = split_ranges(timestamps, in_sample_ranges)
+        pieces = [self._label_pair(r) for r in out_of_sample]
         return {
             "training_windows": [
                 record["metrics"]["training_window"] for record in records

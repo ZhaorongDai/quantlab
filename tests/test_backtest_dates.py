@@ -610,11 +610,11 @@ def test_load_uses_the_checkpoints_train_dates_over_stale_config_dates(
 ):
     """Code review WR-01: D-17 classifies bars with the dates the checkpoint trained on.
 
-    The checkpoint trained through bar 24 (1-bar horizon, so bar 25 is still
-    in-sample). The backtest model carries a stale `train_end` of bar 10.
-    Trusting config.model, the old code put the training window end at bar 11
-    and reported bars 12..25, which the model had trained on, as
-    out-of-sample. It goes red here on the window, the in-sample range and the
+    The checkpoint trained through bar 24 (fitted through bar 22 after the
+    purge; its 2-bar label lookahead reads up to bar 24). The backtest model
+    carries a stale `train_end` of bar 10. Trusting config.model, the old code
+    put the training window end near bar 10 and reported the bars after it,
+    which the model had trained on, as out-of-sample. It goes red here on the window, the in-sample range and the
     missing warning that names both date pairs.
     """
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
@@ -631,8 +631,8 @@ def test_load_uses_the_checkpoints_train_dates_over_stale_config_dates(
         start_bar=20, end_bar=45, checkpoint=checkpoint,
     ).run()
 
-    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[25]))
-    assert tuple(result.metrics["in_sample_range"]) == (_day(bars[20]), _day(bars[25]))
+    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[24]))
+    assert tuple(result.metrics["in_sample_range"]) == (_day(bars[20]), _day(bars[24]))
     stale_warnings = [
         m
         for m in warning_messages
@@ -661,7 +661,7 @@ def test_load_without_a_checkpoint_config_json_warns_and_trusts_config_model(
         start_bar=30, end_bar=50, checkpoint=checkpoint,
     ).run()
 
-    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[25]))
+    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[24]))
     unchecked = [m for m in warning_messages if "has no config.json" in m]
     assert len(unchecked) == 1, warning_messages
     assert str(checkpoint) in unchecked[0]
@@ -722,7 +722,7 @@ def test_load_mode_same_train_dates_in_another_text_format_log_no_date_warning(
 
     stale = [m for m in warning_messages if "using the checkpoint's dates" in m]
     assert stale == [], stale
-    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[25]))
+    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[24]))
 
 
 def test_same_training_bars_resolves_endpoints_on_the_calendar():

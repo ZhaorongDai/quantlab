@@ -135,17 +135,19 @@ class _TrailingCloseReturn(FactorPolars):
 
 
 class ForwardReturnLabel(Forward):
-    """`fwd_ret_{n}` = adjClose n bars later (per symbol) / adjClose - 1.
+    """`fwd_ret_{n}` at t = adjClose[t + n + 1] / adjClose[t + 1] - 1 (per symbol).
 
-    A `Forward` label (span n, delay 0) over the trailing close-to-close
-    return, built and rebuilt from a `PolarsFactorConfig` like `Return`.
+    A `Forward` label (span n, delay 1, so lookahead n + 1 like an n-bar
+    `Return`) over the trailing close-to-close return, built and rebuilt from a
+    `PolarsFactorConfig` like `Return`. Delay 1 matches the vectorbt engine's
+    fill delay, which a backtest checks.
     """
 
     config_cls = PolarsFactorConfig
 
     def __init__(self, factor_config: PolarsFactorConfig):
         factor = _TrailingCloseReturn(factor_config)
-        super().__init__(ForwardConfig(factor=factor, span=factor.n, delay=0))
+        super().__init__(ForwardConfig(factor=factor, span=factor.n, delay=1))
 
     @property
     def n(self) -> int:

@@ -12,8 +12,8 @@ class StubLabel:
     """Wrap a stand-in panel as a label that reads ``lookahead`` bars after t.
 
     Every attribute but the two label methods is the wrapped panel's.
-    ``lookahead_bars()`` defaults to 0, so no split purges a bar for it, and
-    ``span_bars()`` is 0, so it adds nothing to a backtest's in-sample window.
+    ``lookahead_bars()`` defaults to 0, so no split purges a bar for it and
+    it adds nothing to a backtest's in-sample window; ``span_bars()`` is 0.
     """
 
     def __init__(self, panel, lookahead: int = 0):

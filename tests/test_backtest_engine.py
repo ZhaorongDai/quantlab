@@ -44,6 +44,7 @@ column names, so D-04's single source of truth is kept even in tests.
 Everything is synthetic, CPU-only and offline.
 """
 
+import dataclasses
 import types
 from pathlib import Path
 
@@ -62,6 +63,7 @@ from quantlab.backtest.us_equity import (
 )
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.label.forward import Forward
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -1207,3 +1209,52 @@ def test_int64_column_index_round_trips_through_vectorbt(tmp_path):
     # `astype(str)` for every PERMNO, so no identity is lost on the way into
     # the order record. Plan 09's ticker sidecar is what reads it back.
     assert sorted({int(value) for value in observed}) == sorted(permnos), observed
+
+
+# --------------------------------------------------------------------------
+# #35: the engine's fill delay against the labels' delay
+# --------------------------------------------------------------------------
+
+
+def test_vectorbt_engine_declares_a_one_bar_fill_delay():
+    """The bar-t weight fills at bar t+1 (test_bar_t_weight_fills_at_bar_t_plus_1_open)."""
+    assert VectorBtBacktester.fill_delay_bars == 1
+
+
+def _with_delay_zero_label(backtester):
+    """Replace the model's only label by the same forward return with delay 0."""
+    labels = backtester.config.model.config.labels
+    labels[0] = Forward(dataclasses.replace(labels[0].config, delay=0))
+    return backtester
+
+
+def _refuse_simulation(monkeypatch, backtester):
+    def _simulate(self, weights, prices):
+        raise AssertionError("simulated despite a label/engine delay mismatch")
+
+    monkeypatch.setattr(type(backtester), "_simulate", _simulate)
+
+
+DELAY_MISMATCH = r"labels\[0\] Forward \('fwd_ret_1',\) has delay=0.*fill_delay_bars=1"
+
+
+def test_run_refuses_a_label_whose_delay_differs_from_the_fill_delay(
+    tmp_path, monkeypatch
+):
+    backtester = _with_delay_zero_label(_backtester(tmp_path))
+    _refuse_simulation(monkeypatch, backtester)
+
+    with pytest.raises(ValueError, match=DELAY_MISMATCH):
+        backtester.run()
+
+
+def test_run_cv_refuses_a_label_whose_delay_differs_from_the_fill_delay(
+    tmp_path, monkeypatch
+):
+    backtester = _with_delay_zero_label(
+        _backtester(tmp_path, checkpoint=None, cv_project_dir=str(tmp_path / "cv"))
+    )
+    _refuse_simulation(monkeypatch, backtester)
+
+    with pytest.raises(ValueError, match=DELAY_MISMATCH):
+        backtester.run_cv()

@@ -87,7 +87,7 @@ TRAIN_END_BAR = 24
 MARKET = USEquityCrossectionSelectStockVectorBt.MARKET
 
 # The shared overlapping run: window bars 20..40 overlap the training window
-# (bars 0..24 plus a 1-bar label horizon), and the symbol picked at the first
+# (bars 0..22 fitted after the purge, plus a 2-bar label lookahead), and the symbol picked at the first
 # rebalance delists at bar 23, so the run carries a real forced liquidation.
 OVERLAP_START_BAR = 20
 OVERLAP_END_BAR = 40
