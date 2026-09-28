@@ -69,7 +69,6 @@ def bars(rows) -> list[int]:
 
 
 #: ``(fold train_start, train bars, validation bars)`` per fit, in fit order.
-#: A list append is atomic under the GIL, so the threading branch can share it.
 FITTED: list[tuple[str, list[int], list[int] | None]] = []
 
 
@@ -188,23 +187,6 @@ def test_the_validation_segment_grows_with_the_expanding_window(tmp_path):
         assert train == list(range(0, split))
         assert val == list(range(split, window))
     assert [len(val) for _, _, val in FITTED] == [2, 3, 3, 4, 4]
-
-
-def test_the_parallel_branch_trains_the_same_expanding_folds(tmp_path):
-    seq = _model(tmp_path, "seq")
-    seq.collect()
-    seq_results = seq.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
-    seq_fitted = sorted(FITTED)
-    FITTED.clear()
-
-    par = _model(tmp_path, "par")
-    par.collect()
-    par_results = par.train_cv(
-        train_periods=TRAIN_PERIODS, expanding=True, parallel=True, njobs=2
-    )
-
-    assert sorted(FITTED) == seq_fitted
-    assert sorted(_days(r) for r in par_results) == sorted(_days(r) for r in seq_results)
 
 
 # --------------------------------------------------------------------------

@@ -227,7 +227,7 @@ With `"early_stopping": True` in `hyperparameters`, training stops when the vali
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, expanding=False, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, expanding=False)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -272,7 +272,7 @@ True
 [0.691, 0.658, 0.704, 0.655, 0.695]
 ```
 
-`parallel=True` trains the folds concurrently on threads (`njobs` sets the pool size). Each fold works on a deep copy of the model, so memory grows with the number of jobs. Tree libraries already use every core, so set `nthread` in `hyperparameters` to roughly `os.cpu_count() // njobs`.
+The folds train one after another, on the one collected panel.
 
 ### Train a torch model
 

@@ -21,7 +21,6 @@ its ``hyperparameters`` are listed in ``RESERVED_HYPERPARAMETERS``. Concrete hea
 ``quantlab/library_model``.
 """
 
-import copy
 import dataclasses
 import json
 import os
@@ -39,7 +38,6 @@ import torch
 import wandb
 import wandb.sdk
 import xarray as xr
-from joblib import Parallel, delayed
 from loguru import logger
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
@@ -1270,8 +1268,8 @@ class BaseModel(ABC):
     ) -> list[dict]:
         """Compute the fold boundaries of a walk-forward cross-validation.
 
-        This is the only implementation of the fold arithmetic; both the
-        sequential and the parallel branch of ``train_cv`` use it. With
+        This is the only implementation of the fold arithmetic;
+        ``train_cv`` trains exactly the folds it returns. With
         ``test_periods = train_periods // 5``, fold ``i`` tests on the
         ``test_periods`` positions from ``i * test_periods + train_periods``
         on, and its training window ends right before them. The window
@@ -1395,16 +1393,6 @@ class BaseModel(ABC):
             **(metrics or {}),
         }
 
-    def _train_fold_with_config(
-        self, fold: dict, record: dict, project_name: str
-    ) -> dict:
-        """Train one fold on a deep copy of this instance (parallel branch).
-
-        Each fold gets its own copy so folds share no config dates, model or
-        wandb run; the price is one copy of the panel per job.
-        """
-        return copy.deepcopy(self)._train_one_fold(fold, record, project_name)
-
     #: Name of the metrics file ``train`` writes beside the checkpoint.
     METRICS_FILENAME = "metrics.json"
     #: Name of the fold manifest ``train_cv`` writes into the trial directory.
@@ -1463,8 +1451,6 @@ class BaseModel(ABC):
         self,
         train_periods: int,
         expanding: bool = False,
-        parallel: bool = False,
-        njobs: int = -1,
     ) -> list[dict]:
         """Run a walk-forward cross-validation and return per-fold results.
 
@@ -1506,12 +1492,6 @@ class BaseModel(ABC):
             are those of the sliding mode; the validation segment stays the
             last ``val_size`` share of each growing window. The mode is not
             recorded in ``cv_folds.json``: the fold dates carry it.
-        parallel : bool, default False
-            Train the folds concurrently, each on a deep copy of this
-            model, using a thread pool.
-        njobs : int, default -1
-            Number of threads for the parallel branch; ``-1`` uses all
-            cores.
 
         Returns
         -------
@@ -1582,21 +1562,10 @@ class BaseModel(ABC):
                 f"Fold {fold['fold']}: Train [{fold['train_start']} to {fold['train_end']}], Test [{fold['test_start']} to {fold['test_end']}]"
             )
 
-        if parallel:
-            logger.info(f"Starting parallel training of {len(folds)} folds")
-            results = list(
-                Parallel(n_jobs=njobs, backend="threading")(
-                    delayed(self._train_fold_with_config)(
-                        fold, record, project_name
-                    )
-                    for fold, record in zip(folds, records)
-                )
-            )
-        else:
-            results = [
-                self._train_one_fold(fold, record, project_name)
-                for fold, record in zip(folds, records)
-            ]
+        results = [
+            self._train_one_fold(fold, record, project_name)
+            for fold, record in zip(folds, records)
+        ]
 
         means = self._cv_mean_metrics(results)
         if means:

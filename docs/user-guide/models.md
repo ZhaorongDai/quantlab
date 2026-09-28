@@ -343,7 +343,7 @@ tests on the bars that follow, slides both forward and repeats. Every test
 bar lies after every bar the model trained on, as it would in live trading.
 Across folds you see how stable the model's quality is over time.
 
-`train_cv(train_periods, expanding=False, parallel=False, njobs=-1)` lays the folds out over
+`train_cv(train_periods, expanding=False)` lays the folds out over
 the bars between `config.start_date` and `config.end_date`. Each fold's
 training window is `train_periods` bars and its test segment the next
 `train_periods // 5` bars, and the next fold starts that many bars later.
@@ -386,11 +386,8 @@ folds = model.train_cv(train_periods=200, expanding=True)
 ```
 
 `train_cv` sets the model's `train_*` and `test_*` dates to each fold in
-turn, so afterwards they hold the last fold's dates. `parallel=True` trains
-the folds concurrently on copies of the model, using `njobs` threads. The
-library also uses several threads per fold, so limit it (`nthread` for
-`XGBoostRegressor`, `n_threads` for the pytabkit heads) to roughly the core
-count divided by `njobs`.
+turn, so afterwards they hold the last fold's dates. The folds train one
+after another.
 
 ## Weights & Biases logging
 

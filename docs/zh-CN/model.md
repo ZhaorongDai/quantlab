@@ -227,7 +227,7 @@ True
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, expanding=False, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, expanding=False)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -272,7 +272,7 @@ True
 [0.691, 0.658, 0.704, 0.655, 0.695]
 ```
 
-`parallel=True` 用线程并发训练各折（`njobs` 指定线程池大小）。每一折操作的是模型的深拷贝，因此内存占用随任务数增长。树模型库本身已经占满所有核心，建议把 `hyperparameters` 里的 `nthread` 设为大约 `os.cpu_count() // njobs`。
+各折依次训练，共用同一份已收集的面板。
 
 ### 训练 torch 模型
 

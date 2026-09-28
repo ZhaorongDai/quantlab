@@ -85,10 +85,8 @@ class XGBTDRegressor(TabkitRegressor):
     ``_pin_all_rounds``). No per-round curve is logged.
 
     ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
-    fold selects its own best round and writes its own ``.joblib``. With
-    ``parallel=True`` the folds run on threads while pytabkit uses every
-    physical core by default, so set ``n_threads`` in the hyperparameters to
-    roughly ``os.cpu_count() // njobs`` to avoid oversubscribing the CPU.
+    fold selects its own best round and writes its own ``.joblib``. The folds
+    train one after another.
 
     Every W&B run gets, per label, the validation curve of each boosting
     round (``val-rmse``, or ``val-rmse/<label>`` with several labels, at
@@ -125,7 +123,7 @@ class XGBTDRegressor(TabkitRegressor):
     'XGBTDRegressor_total.joblib'
     >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
     (5, 2, 1)
-    >>> model.train_cv(train_periods=500, parallel=True, njobs=4)
+    >>> model.train_cv(train_periods=500)
     """
 
     DEFAULT_PARAMS: dict = {

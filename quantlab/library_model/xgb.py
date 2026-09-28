@@ -517,10 +517,7 @@ class XGBoostRegressor(LibraryModel):
 
     ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
     fold does its own native early stopping and writes its own ``.joblib``.
-    With ``parallel=True`` the folds run on threads while xgboost itself uses
-    every core, so set ``nthread`` in the hyperparameters to roughly
-    ``os.cpu_count() // njobs`` to avoid oversubscribing the CPU. The value
-    is passed through unchanged.
+    The folds train one after another.
 
     Parameters
     ----------
@@ -549,7 +546,7 @@ class XGBoostRegressor(LibraryModel):
     'XGBoostRegressor_total.joblib'
     >>> model.predict(np.zeros((5, 2, 3), dtype="float32")).shape
     (5, 2, 1)
-    >>> model.train_cv(train_periods=500, parallel=True, njobs=4)
+    >>> model.train_cv(train_periods=500)
     """
 
     DEFAULT_PARAMS: dict = {
