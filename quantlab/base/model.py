@@ -1312,8 +1312,9 @@ class BaseModel(ABC):
         Raises
         ------
         ValueError
-            If no timestamps fall inside the config's date range, or the
-            purge leaves a fold no training bar.
+            If ``train_periods`` is below 5 (the test segment would be
+            empty), no timestamps fall inside the config's date range, or
+            the purge leaves a fold no training bar.
 
         Examples
         --------
@@ -1323,6 +1324,12 @@ class BaseModel(ABC):
         >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
         (0, True)
         """
+        if train_periods < 5:
+            raise ValueError(
+                f"{self.class_name}: train_cv(train_periods={train_periods}) needs "
+                f"at least 5 training bars, since each fold tests on "
+                f"train_periods // 5 bars."
+            )
         start_date = self.config.start_date
         end_date = self.config.end_date
 

@@ -230,7 +230,7 @@ ValueError: validate_schema: required column(s) missing from dataset: ['volume']
 ...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
 ... ]))
 >>> close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
->>> xr.Dataset(
+>>> _ = xr.Dataset(
 ...     {"Open": (["timestamp", "symbol"], close - 0.5),
 ...      "Close": (["timestamp", "symbol"], close),
 ...      "Volume": (["timestamp", "symbol"], np.ones((8, 2)))},

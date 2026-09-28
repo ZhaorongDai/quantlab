@@ -370,6 +370,19 @@ def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path, recorders):
     assert ML_FOLD_DATES == []
 
 
+@pytest.mark.parametrize("train_periods", [0, 4])
+def test_train_cv_refuses_a_training_segment_too_short_for_a_test_segment(
+    tmp_path, recorders, train_periods
+):
+    """The test segment is train_periods // 5 bars, so it needs at least 5."""
+    model = StubMLHead(_ml_config(tmp_path, "ckpt"))
+    model.collect()
+
+    with pytest.raises(ValueError, match=f"train_periods={train_periods}.*at least 5"):
+        model.train_cv(train_periods=train_periods)
+    assert ML_FOLD_DATES == []
+
+
 # --------------------------------------------------------------------------
 # Both branches consume the one generator
 # --------------------------------------------------------------------------

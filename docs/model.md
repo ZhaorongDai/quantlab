@@ -342,6 +342,12 @@ ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 traini
 ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
+Each fold tests on `train_periods // 5` bars, so `train_cv` refuses a `train_periods` below 5 before it trains anything.
+
+```text
+ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
+```
+
 `train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising. Torch heads return no `test_*` metrics from `train_cv`, so their fold dicts hold only dates and paths and no summary run is opened.
 
 `train()` returns only the checkpoint path. The test metrics of a single run are recorded in the W&B summary; `train_cv` returns them directly for `MLModel` heads.

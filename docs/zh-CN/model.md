@@ -342,6 +342,12 @@ ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 traini
 ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
+每一折在 `train_periods // 5` 个 bar 上测试，因此 `train_periods` 小于 5 时，`train_cv` 在训练任何一折之前就会拒绝。
+
+```text
+ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
+```
+
 `train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。torch 模型头的 `train_cv` 不返回 `test_*` 指标，因此每折的字典里只有日期和路径，也不会打开汇总运行。
 
 `train()` 只返回检查点路径。单次运行的测试指标记录在 W&B 摘要里；对 `MLModel` 的模型头，`train_cv` 会直接返回这些指标。

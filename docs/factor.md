@@ -182,14 +182,28 @@ A merge never picks a value by input order. A cell holding a value in two inputs
 
 `resample(freq, how)` returns a copy of the factor whose `compute`, `read` and `build` answer on coarser bars. The factor is still computed on its dataset's own bars; only the output is aggregated, so a minute-bar momentum becomes a daily series of the last minute's value without changing what it measures. `freq` and `how` take the same values as `BaseDataset.resample` (see the dataset guide), and `how` may be one method as a string for every factor variable. Bars are cut the way the factor's dataset cuts them.
 
-The session below runs `Momentum` over the two-day minute store built in the dataset guide (`config` is that store's `DatasetConfig`). The store starts on the first requested bar, so `compute` also warns that the one warm-up bar is missing.
+The session below writes a two-day minute store, the one of the dataset guide's resample section, and runs `Momentum` over it. The store starts on the first requested bar, so `compute` also warns that the one warm-up bar is missing.
 
 ```python
->>> factor = Momentum(PolarsFactorConfig(
-...     warmup_bars=1, dataset=SpotKlineDataset(config),
-...     file_path="data/factors/momentum.zarr", kwargs={"n": 1},
+>>> from quantlab.dataset.spot import SpotKlineDataset
+>>> minutes = pd.DatetimeIndex(np.concatenate([
+...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
+... ]))
+>>> minute_close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
+>>> _ = xr.Dataset(
+...     {"Open": (["timestamp", "symbol"], minute_close - 0.5),
+...      "Close": (["timestamp", "symbol"], minute_close),
+...      "Volume": (["timestamp", "symbol"], np.ones((8, 2)))},
+...     coords={"timestamp": minutes, "symbol": ["AAAUSDT", "BBBUSDT"]},
+... ).to_zarr("data/minute_klines.zarr", mode="w")
+>>> minute_config = DatasetConfig(raw_data_dir_path="downloads/spot",
+...                               zarr_file_path="data/minute_klines.zarr",
+...                               market="crypto_spot", frequency="1m")
+>>> minute = Momentum(PolarsFactorConfig(
+...     warmup_bars=1, dataset=SpotKlineDataset(minute_config),
+...     file_path="data/factors/minute_momentum.zarr", kwargs={"n": 1},
 ... ))
->>> factor.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
+>>> minute.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
 symbol               AAAUSDT  BBBUSDT
 timestamp                            
 2024-01-02 00:00:00      NaN      NaN
@@ -200,7 +214,7 @@ timestamp
 2024-01-03 00:01:00    0.200    0.200
 2024-01-03 00:02:00    0.167    0.167
 2024-01-03 00:03:00    0.143    0.143
->>> daily = factor.resample("1d", "last")
+>>> daily = minute.resample("1d", "last")
 >>> daily.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
@@ -214,7 +228,7 @@ The copy has its own dataset object and an empty compiled state. `build()` write
 
 ```python
 >>> daily.store_path
-'data/factors/momentum_resample_1d.zarr'
+'data/factors/minute_momentum_resample_1d.zarr'
 >>> daily.build("2024-01-02", "2024-01-03").store_range()
 ('2024-01-02', '2024-01-03')
 >>> daily.read("2024-01-02", "2024-01-03").sizes

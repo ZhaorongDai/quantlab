@@ -182,14 +182,28 @@ True
 
 `resample(freq, how)` 返回因子的一个副本，其 `compute`、`read` 和 `build` 在更粗的 bar 上应答。因子仍然在其 dataset 自身的 bar 上计算，只有输出被聚合，因此分钟 bar 上的动量会变成"每日最后一分钟的值"这一日频序列，而它衡量的东西没有变。`freq` 和 `how` 的取值与 `BaseDataset.resample` 相同（见 dataset 指南），`how` 也可以只给一个字符串，表示所有因子变量都用这种方法。bar 的切分方式沿用因子所用 dataset 的切分方式。
 
-下面的会话在 dataset 指南里构造的两天分钟 store 上运行 `Momentum`（`config` 就是那个 store 的 `DatasetConfig`）。该 store 从第一根请求的 bar 开始，所以 `compute` 还会警告缺少那一根预热 bar。
+下面的会话写入一个两天的分钟 store（与 dataset 指南重采样一节中的相同），并在其上运行 `Momentum`。该 store 从第一根请求的 bar 开始，所以 `compute` 还会警告缺少那一根预热 bar。
 
 ```python
->>> factor = Momentum(PolarsFactorConfig(
-...     warmup_bars=1, dataset=SpotKlineDataset(config),
-...     file_path="data/factors/momentum.zarr", kwargs={"n": 1},
+>>> from quantlab.dataset.spot import SpotKlineDataset
+>>> minutes = pd.DatetimeIndex(np.concatenate([
+...     pd.date_range(f"2024-01-0{d} 00:00", periods=4, freq="min").values for d in (2, 3)
+... ]))
+>>> minute_close = np.arange(1.0, 9.0)[:, None] * np.array([[1.0, 10.0]])
+>>> _ = xr.Dataset(
+...     {"Open": (["timestamp", "symbol"], minute_close - 0.5),
+...      "Close": (["timestamp", "symbol"], minute_close),
+...      "Volume": (["timestamp", "symbol"], np.ones((8, 2)))},
+...     coords={"timestamp": minutes, "symbol": ["AAAUSDT", "BBBUSDT"]},
+... ).to_zarr("data/minute_klines.zarr", mode="w")
+>>> minute_config = DatasetConfig(raw_data_dir_path="downloads/spot",
+...                               zarr_file_path="data/minute_klines.zarr",
+...                               market="crypto_spot", frequency="1m")
+>>> minute = Momentum(PolarsFactorConfig(
+...     warmup_bars=1, dataset=SpotKlineDataset(minute_config),
+...     file_path="data/factors/minute_momentum.zarr", kwargs={"n": 1},
 ... ))
->>> factor.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
+>>> minute.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
 symbol               AAAUSDT  BBBUSDT
 timestamp                            
 2024-01-02 00:00:00      NaN      NaN
@@ -200,7 +214,7 @@ timestamp
 2024-01-03 00:01:00    0.200    0.200
 2024-01-03 00:02:00    0.167    0.167
 2024-01-03 00:03:00    0.143    0.143
->>> daily = factor.resample("1d", "last")
+>>> daily = minute.resample("1d", "last")
 >>> daily.compute("2024-01-02", "2024-01-03")["momentum_1"].to_pandas().round(3)
 symbol      AAAUSDT  BBBUSDT
 timestamp                   
@@ -214,7 +228,7 @@ timestamp
 
 ```python
 >>> daily.store_path
-'data/factors/momentum_resample_1d.zarr'
+'data/factors/minute_momentum_resample_1d.zarr'
 >>> daily.build("2024-01-02", "2024-01-03").store_range()
 ('2024-01-02', '2024-01-03')
 >>> daily.read("2024-01-02", "2024-01-03").sizes
