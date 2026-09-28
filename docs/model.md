@@ -187,7 +187,7 @@ Every head derives from `BaseModel` through one of two variants. The variants di
 | `TorchModel` | torch, one cross-section of symbols per step | `.pth` | `window_bars`, `_init_model`, `_loss`; optional hooks with defaults (see Train a torch model) |
 | `LibraryModel` | numpy rows, the library's own early stopping | `.joblib` | `_init_model`, `_fit_model`, `_forward`; optional `_transform_feature`, `_transform_target`, `_loss` (see Extending) |
 
-Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads; no torch head ships yet. Torch heads live in `quantlab/torch_model/` and library heads in `quantlab/library_model/`. See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
+Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads, and `GATsRegressor` (`quantlab.torch_model.gats`, Qlib's GATs on the cross-section), a `TorchModel` head. Torch heads live in `quantlab/torch_model/` and library heads in `quantlab/library_model/`. See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
 
 ### Configuration and reserved hyperparameters
 

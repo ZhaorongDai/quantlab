@@ -61,6 +61,7 @@ The head classes, the concrete models you instantiate, are:
 | `XGBoostRegressor` | `quantlab.library_model.xgb` | `LibraryModel` | xgboost | returns |
 | `XGBTDRegressor` | `quantlab.library_model.xgb_td` | `LibraryModel` | pytabkit (XGBoost with tuned defaults) | returns |
 | `RealMLPRegressor` | `quantlab.library_model.realmlp` | `LibraryModel` | pytabkit (RealMLP network) | returns |
+| `GATsRegressor` | `quantlab.torch_model.gats` | `TorchModel` | torch (Qlib's GATs: LSTM encoder, attention over the bar's cross-section) | returns |
 
 `XGBoostRegressor` is the usual starting point. It is fast on the CPU,
 handles missing feature values natively and records feature importance.

@@ -187,7 +187,7 @@ True
 | `TorchModel` | torch，每一步一个标的截面 | `.pth` | `window_bars`、`_init_model`、`_loss`；其余是带默认实现的可选钩子（见“训练 torch 模型”） |
 | `LibraryModel` | numpy 行，使用库自带的提前停止 | `.joblib` | `_init_model`、`_fit_model`、`_forward`；可选 `_transform_feature`、`_transform_target`、`_loss`（见“扩展”） |
 
-自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；目前还没有自带的 torch 模型头。torch 模型头放在 `quantlab/torch_model/`，库模型头放在 `quantlab/library_model/`。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
+自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；以及 `TorchModel` 模型头 `GATsRegressor`（`quantlab.torch_model.gats`，截面上的 Qlib GATs）。torch 模型头放在 `quantlab/torch_model/`，库模型头放在 `quantlab/library_model/`。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
 
 ### 配置与保留超参数
 
