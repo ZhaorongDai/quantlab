@@ -292,7 +292,7 @@ class CrossSectionDataset(Dataset):
         self.training = bool(training)
         bars = torch.as_tensor(np.asarray(bars, dtype=np.int64))
         usable = panel.mask if self.training else panel.present
-        self.bars = bars[usable[bars].any(dim=1)].tolist()
+        self.bars = bars[usable[bars].any(dim=1).cpu()].tolist()
 
     def __len__(self) -> int:
         """Number of bars in the dataset."""

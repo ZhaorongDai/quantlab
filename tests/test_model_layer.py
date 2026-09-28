@@ -205,7 +205,7 @@ def test_predict_runs_in_eval_mode_without_grad(tmp_path):
         label_values={"y0": 0.5},
     )
     model = DropoutHead(cfg)
-    model.model = model._init_model(3, 1, {})
+    model.model = model._init_model(3, 1, {}).to(model.device)
     model.model.train()  # a freshly built module is in training mode
 
     x = torch.randn(4, N_SYMBOLS, 3)

@@ -98,7 +98,7 @@ class RecordingNet(MeanContextNet):
         self.inputs: list[torch.Tensor] = []
 
     def forward(self, x):
-        self.inputs.append(x.detach().clone())
+        self.inputs.append(x.detach().cpu().clone())
         return super().forward(x)
 
 

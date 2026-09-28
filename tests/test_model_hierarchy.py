@@ -509,7 +509,7 @@ def test_torch_config_json_has_no_resolved_hyperparameters_key(tmp_path):
 
 def _untrained(tmp_path):
     model = OneBarHead(ModelConfig(**_kwargs(tmp_path)))
-    model.model = model._init_model(num_features=2, num_labels=1, hyperparameters={})
+    model.model = model._init_model(num_features=2, num_labels=1, hyperparameters={}).to(model.device)
     return model
 
 

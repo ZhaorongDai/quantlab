@@ -169,11 +169,11 @@ def _model(tmp_path: Path, features, label, *, cls=MeanContextHead, symbols=SYMB
 
 
 def _weights(model) -> dict[str, torch.Tensor]:
-    return {k: v.detach().clone() for k, v in model.model.state_dict().items()}
+    return {k: v.detach().cpu().clone() for k, v in model.model.state_dict().items()}
 
 
 def _same_weights(a, b) -> bool:
-    return all(torch.equal(a[k], b[k]) for k in a)
+    return all(torch.equal(a[k].cpu(), b[k].cpu()) for k in a)
 
 
 def _feature_panel(features, symbols=SYMBOLS) -> xr.Dataset:
@@ -513,7 +513,7 @@ class DefaultStoppingHead(MeanContextHead):
 
     def _on_fit_start(self):
         self.calls = ["start"]
-        self.initial = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+        self.initial = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
 
     def _should_stop(self, epoch, train_loss, val_loss):
         self.calls.append(("epoch", epoch, val_loss is not None))
@@ -582,7 +582,7 @@ class FrozenOptimizerHead(MeanContextHead):
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         net = super()._init_model(num_features, num_labels, hyperparameters)
-        self.initial = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        self.initial = {k: v.detach().cpu().clone() for k, v in net.state_dict().items()}
         return net
 
     def _init_optim(self, model):
@@ -1195,7 +1195,7 @@ def test_a_mixed_bar_sequence_batch_sees_each_bars_cross_sectional_target(
         assert batch.x.shape == (len(batch.mask), 4, 2) and batch.mask.all()
         for (t, s), y in zip(zip(*(i.tolist() for i in batch.where)), batch.y):
             per_bar = cs_zscore(torch.tensor(label[t], dtype=torch.float32)[:, None])
-            torch.testing.assert_close(y, per_bar[s])
+            torch.testing.assert_close(y.cpu(), per_bar[s])
             samples += 1
     # train bars 0..23 (val_size 0.2, no lookahead to purge), every cell but (5, S0)
     assert samples == 24 * len(SYMBOLS) - 1

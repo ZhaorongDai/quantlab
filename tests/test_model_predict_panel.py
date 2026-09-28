@@ -308,7 +308,7 @@ def _untrained_torch(tmp_path) -> OneBarHead:
     model = OneBarHead(ModelConfig(**_config_kwargs(tmp_path)))
     model.model = model._init_model(
         num_features=len(FACTORS), num_labels=len(LABELS), hyperparameters={}
-    )
+    ).to(model.device)
     return model
 
 
@@ -328,7 +328,7 @@ def test_torch_predict_panel_is_the_networks_output_as_float64(tmp_path):
     x = np.clip(np.nan_to_num(_stack(features, FACTORS)), -3.0, 3.0)
     with torch.no_grad():
         expected = np.stack([
-            model.model(torch.from_numpy(bar[:, None, :]).float()).numpy()
+            model.model(torch.from_numpy(bar[:, None, :]).float().to(model.device)).cpu().numpy()
             for bar in x
         ])
     got = pred.to_dataarray().transpose("timestamp", "symbol", "variable")
@@ -340,7 +340,7 @@ def test_a_network_that_does_not_return_s_by_l_raises_naming_the_head(tmp_path):
     """A network returning a tuple (or any other shape) fails with an error
     naming the head, never by silently picking one element."""
     model = TupleHead(ModelConfig(**_config_kwargs(tmp_path)))
-    model.model = model._init_model(len(FACTORS), len(LABELS), {})
+    model.model = model._init_model(len(FACTORS), len(LABELS), {}).to(model.device)
 
     with pytest.raises(ValueError, match=r"TupleHead._forward must return a tensor shaped like the batch.s mask plus the labels"):
         model.predict_panel(_features(model))
