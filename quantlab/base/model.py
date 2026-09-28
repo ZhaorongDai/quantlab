@@ -40,13 +40,14 @@ import wandb.sdk
 import xarray as xr
 from joblib import Parallel, delayed
 from loguru import logger
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.enums.constant import Date
 from quantlab.library_model.backend import MlBackend
-from quantlab.torch_model.training import CrossSectionBatch, CrossSectionWindows
+from quantlab.torch_model.data import Batch, CrossSectionDataset, TrainingPanel
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
@@ -1004,9 +1005,16 @@ class BaseModel(ABC):
                 f"variable(s) {missing}"
             )
 
+        if self.model is None:
+            raise ValueError(
+                "Model not initialized, please call load() or train() first"
+            )
         feats = features[factors].sortby(["timestamp", "symbol"])
         x = self.to_array(feats, factors)
-        y = np.asarray(self._predict_panel_array(x), dtype=np.float64)
+        y = np.asarray(
+            self._predict_panel_array(x, feats.timestamp.values, feats.symbol.values),
+            dtype=np.float64,
+        )
         expected = (x.shape[0], x.shape[1], len(labels))
         if y.shape != expected:
             raise ValueError(
@@ -1027,10 +1035,13 @@ class BaseModel(ABC):
             },
         )
 
-    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+    def _predict_panel_array(
+        self, x: np.ndarray, timestamps: np.ndarray, symbols: np.ndarray
+    ) -> np.ndarray:
         """Variant hook of ``predict_panel``: ``[T, S, F]`` array in, ``[T, S, L]`` out.
 
-        A plain method rather than an abstract one, so that the set of
+        ``timestamps`` and ``symbols`` are the coordinates of ``x``, for
+        error messages. A plain method rather than an abstract one, so that the set of
         abstract methods of each variant stays unchanged.
         """
         raise NotImplementedError(
@@ -1569,51 +1580,67 @@ class BaseModel(ABC):
 
 
 class TorchModel(BaseModel):
-    """Torch variant: one cross-section per step, every learning choice a hook.
+    """Torch variant: standard PyTorch datasets and loaders, every learning choice a hook.
 
-    A step is one bar (ADR 0006): the symbols with at least one finite
-    feature there, each carrying its last ``window_bars`` bars of features.
-    The network sees ``[S_t, N, F]``; S_t changes from bar to bar, so it must
-    not depend on the order or the number of symbols, and a symbol the model
-    never saw in training still gets a prediction.
+    The base class assembles the collected panel as a ``TrainingPanel`` of
+    torch tensors and computes the training target once per fit. The head's
+    ``_dataset`` hook turns it into a PyTorch ``Dataset`` and ``_dataloader``
+    batches it. The default is one cross-section per step (ADR 0006): one
+    bar's present symbols, each with its last ``window_bars`` bars, so the
+    network sees ``[S_t, N, F]``; S_t changes from bar to bar, so it must not
+    depend on the order or the number of symbols, and a symbol the model
+    never saw in training still gets a prediction. Every sample carries its
+    ``where`` (timestamp and symbol index), through which the base puts
+    predictions back into the panel for any sample shape.
 
-    The base class owns everything outside the model: the windows, the
-    warm-up, the shuffled bar order, the target mask, the epoch loop, the
-    ``train_*`` / ``val_*`` / ``test_*`` metrics on the raw first label,
-    ``.pth`` checkpoints and prediction. A head writes three things:
+    The base class owns every data contract: the warm-up, the training
+    target and its mask, moving batches to the device, the epoch loop,
+    evaluation under ``no_grad`` in eval mode, the ``train_*`` / ``val_*`` /
+    ``test_*`` metrics on the raw first label, ``.pth`` checkpoints and
+    prediction. A head writes three things:
 
     ``window_bars``
         N, the bars in each symbol's window.
     ``_init_model(num_features, num_labels, hyperparameters)``
-        The ``nn.Module``.
+        The ``nn.Module``; several networks go in an ``nn.ModuleDict``.
     ``_loss(output, batch)``
-        The loss of one bar, from the network's raw output and a
-        ``CrossSectionBatch``; count only ``batch.mask`` entries.
+        The loss of one ``Batch`` from the network's raw output; count only
+        ``batch.mask`` samples.
 
     and may override any of these, each of which has a working default:
 
+    ``_dataset(panel, bars, training)``
+        The PyTorch ``Dataset`` over ``bars``. Default:
+        ``CrossSectionDataset``, one item per bar.
+    ``_dataloader(dataset, training)``
+        The ``DataLoader``. Default: ``batch_size`` and ``num_workers`` from
+        the hyperparameters (``None`` and 0, one item per step), shuffled
+        only in training with a generator seeded from ``random_seed``, the
+        last batch never dropped.
     ``_transform_feature(x)``
-        The raw ``[S_t, N, F]`` windows, NaN where a value or a bar is
-        missing, to the network's input. Default: clip to ±3, NaN to 0.
+        A batch's raw ``x``, NaN where a value or a bar is missing, to the
+        network's input. Default: clip to ±3, NaN to 0.
     ``_transform_target(y, training)``
-        One bar's raw ``[S_t, L]`` labels to ``(target, keep)``; ``keep``
-        (or None) drops symbols from that step's cross-section. Default:
-        ``(y, None)``.
+        One bar's raw ``[S_t, L]`` labels to ``(target, keep)``, computed
+        once per fit; ``keep`` (or None) removes symbols from the loss only.
+        Default: ``(y, None)``.
     ``_init_optim(model)``
         Default: Adam at ``hyperparameters["lr"]`` (``1e-3``), kept on
-        ``self.optim``.
+        ``self.optim``; a head may return anything its own
+        ``_train_one_batch`` understands, such as a dict of optimizers.
     ``_train_one_batch(epoch, batch)``
         One optimisation step; returns the loss. Default: forward,
         ``_loss``, backward, gradient values clipped to ``grad_clip_value``
         (3.0; None disables), step.
     ``_val_one_batch(epoch, batch)``
-        The validation loss of one bar. Default: ``_loss``.
+        The evaluation loss of one batch. Default: ``_loss``.
     ``_test_one_batch(epoch, batch)``
-        Called on every test bar after each epoch. Default: nothing.
+        Called on every test batch after each epoch. Default: nothing.
     ``_forward(x)``
-        The ``[S_t, L]`` prediction from transformed windows, used for
-        metrics and ``predict_panel``. Default: ``self.model(x)``; override
-        it when the network returns more than the prediction.
+        The prediction, ``batch.mask.shape + (L,)``, from a transformed
+        ``x``, used for metrics and ``predict_panel``. Default:
+        ``self.model(x)``; override it when the network returns more than the
+        prediction.
     ``_on_fit_start()``, ``_should_stop(epoch, train_loss, val_loss)``, ``_on_fit_end()``
         When to stop and which weights to keep. Default: run ``epochs``
         epochs, keep the last weights.
@@ -1681,32 +1708,78 @@ class TorchModel(BaseModel):
         """
 
     @abstractmethod
-    def _loss(self, output, batch: CrossSectionBatch) -> torch.Tensor:
-        """Return the scalar loss of one bar.
+    def _loss(self, output, batch: Batch) -> torch.Tensor:
+        """Return the scalar loss of one batch.
 
-        ``output`` is whatever the network returned for ``batch.x``; entries
-        of ``batch.y`` where ``batch.mask`` is False must not count.
+        ``output`` is whatever the network returned for ``batch.x``; samples
+        where ``batch.mask`` is False must not count.
         """
 
-    def _transform_feature(self, x: torch.Tensor) -> torch.Tensor:
-        """Turn raw ``[S_t, N, F]`` windows into the network's input.
+    def _dataset(self, panel: TrainingPanel, bars, training: bool) -> Dataset:
+        """Return the PyTorch ``Dataset`` of ``bars``; default ``CrossSectionDataset``.
 
-        ``x`` holds NaN where a value is missing and on the rows before a
-        symbol's first bar. The result must have the same shape and be
-        finite. The default clips to ±3 and replaces NaN with 0. Applied in
-        training and prediction alike.
+        ``panel`` is the whole collected panel, so windows may reach before
+        the first of ``bars``. With ``training=True`` the dataset feeds the
+        training steps and may keep only samples with a valid target; with
+        ``training=False`` it feeds evaluation and prediction and must cover
+        every present cell of ``bars`` exactly once. Every item is a
+        ``Batch`` whose ``where`` places its samples in the panel.
+
+        Examples
+        --------
+        >>> type(head._dataset(panel, bars=[3, 4], training=False)).__name__
+        'CrossSectionDataset'
+        """
+        return CrossSectionDataset(panel, bars, self.window_bars, training)
+
+    def _dataloader(self, dataset: Dataset, training: bool) -> DataLoader:
+        """Return the ``DataLoader`` over ``dataset``.
+
+        The default reads ``batch_size`` (default None: each item is one
+        step, as the cross-section dataset needs) and ``num_workers``
+        (default 0) from the hyperparameters, shuffles only when training
+        with a generator seeded from ``config.random_seed``, and never drops
+        the last batch.
+
+        Examples
+        --------
+        >>> loader = head._dataloader(dataset, training=False)
+        >>> loader.batch_size is None, loader.drop_last
+        (True, False)
+        """
+        hyperparameters = self.config.hyperparameters
+        # A random sampler refuses an empty dataset; a fit without a single
+        # valid target trains on nothing.
+        empty = hasattr(dataset, "__len__") and len(dataset) == 0  # type: ignore[arg-type]
+        return DataLoader(
+            dataset,
+            batch_size=hyperparameters.get("batch_size"),
+            shuffle=training and not empty,
+            num_workers=hyperparameters.get("num_workers", 0),
+            generator=torch.Generator().manual_seed(self.config.random_seed),
+            drop_last=False,
+        )
+
+    def _transform_feature(self, x: torch.Tensor) -> torch.Tensor:
+        """Turn a batch's raw ``x`` into the network's input.
+
+        ``x`` is float32 and holds NaN where a value is missing and on the
+        window rows before a symbol's first bar. The result must have the
+        same shape and be finite. The default clips to ±3 and replaces NaN
+        with 0. Applied in training and prediction alike.
         """
         return torch.nan_to_num(x.clamp(-3.0, 3.0), nan=0.0)
 
     def _transform_target(self, y: torch.Tensor, training: bool):
         """Turn one bar's raw ``[S_t, L]`` labels into ``(target, keep)``.
 
-        ``y`` is NaN where a label is missing. ``training`` is True for a
-        training step and False for validation and test. ``keep`` is None or
-        ``[S_t]`` booleans; symbols it drops leave that step's cross-section,
-        input included. ``target`` has one row per input row, or one per kept
-        row. Entries that are not finite are masked out. The default returns
-        ``(y, None)``.
+        Called once per bar per fit, before training: ``training`` is True on
+        the training bars and False on the validation and test bars. ``y``
+        holds the labels of the bar's present symbols, NaN where missing.
+        ``keep`` is None or ``[S_t]`` booleans; a symbol it drops leaves the
+        loss but stays in the input as context. ``target`` has one row per
+        symbol, or one per kept symbol. A symbol whose target is not finite
+        in every label is masked out. The default returns ``(y, None)``.
         """
         return y, None
 
@@ -1718,8 +1791,8 @@ class TorchModel(BaseModel):
         lr = self.config.hyperparameters.get("lr", 1e-3)
         return torch.optim.Adam(model.parameters(), lr=lr)
 
-    def _train_one_batch(self, epoch: int, batch: CrossSectionBatch) -> torch.Tensor:
-        """Run one optimisation step on one bar and return its loss.
+    def _train_one_batch(self, epoch: int, batch: Batch) -> torch.Tensor:
+        """Run one optimisation step on one batch and return its loss.
 
         The base class has already called ``model.train()``. The mean of the
         returned losses is the epoch's ``train_loss``. The default runs the
@@ -1736,20 +1809,26 @@ class TorchModel(BaseModel):
         self.optim.step()  # type: ignore[union-attr]
         return loss.detach()
 
-    def _val_one_batch(self, epoch: int, batch: CrossSectionBatch) -> torch.Tensor:
-        """Return the validation loss of one bar; default ``_loss``.
+    def _val_one_batch(self, epoch: int, batch: Batch) -> torch.Tensor:
+        """Return the evaluation loss of one batch; default ``_loss``.
 
-        Called in eval mode under ``no_grad``. The mean over the validation
-        bars is the epoch's ``val_loss``; the mean over each split's bars is
-        its ``{split}_loss`` metric.
+        Called in eval mode under ``no_grad``, on the batches with at least
+        one valid target. The mean over the validation batches is the
+        epoch's ``val_loss``; the mean over each split's batches is its
+        ``{split}_loss`` metric. With the default dataset a batch is one bar,
+        so every bar weighs the same.
         """
         return self._loss(self.model(batch.x), batch)  # type: ignore[misc]
 
-    def _test_one_batch(self, epoch: int, batch: CrossSectionBatch) -> None:
-        """Evaluate one test bar after each epoch; the default does nothing."""
+    def _test_one_batch(self, epoch: int, batch: Batch) -> None:
+        """Evaluate one test batch after each epoch; the default does nothing."""
 
     def _forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Return the ``[S_t, L]`` prediction for transformed windows; default ``model(x)``."""
+        """Return the prediction for a transformed ``x``; default ``model(x)``.
+
+        Its shape is the batch's ``mask`` shape plus ``L``: ``[S_t, L]`` for
+        one cross-section.
+        """
         return self.model(x)  # type: ignore[misc]
 
     def _on_fit_start(self) -> None:
@@ -1829,74 +1908,83 @@ class TorchModel(BaseModel):
         """
         return "cuda" if torch.cuda.is_available() else "cpu"
 
-    def _x(self, windows: CrossSectionWindows, t: int, symbols) -> torch.Tensor:
-        """Bar ``t``'s windows of ``symbols`` through ``_transform_feature``.
+    def _training_panel(self, data: xr.Dataset) -> TrainingPanel:
+        """Return the collected panel as a ``TrainingPanel`` with no target yet."""
+        with Timer(f"{self.class_name}: to_array"):
+            return TrainingPanel.from_arrays(
+                self.to_array(data, self.get_factor_names()),
+                timestamps=data.timestamp.values,
+                symbols=data.symbol.values,
+                y_raw=self.to_array(data, self.get_label_names()),
+            )
+
+    def _fill_target(self, panel: TrainingPanel, bars, training: bool) -> None:
+        """Compute the training target of ``bars`` once, through ``_transform_target``.
+
+        Each bar's raw labels of its present symbols go through the hook
+        once; the result and its validity are written into ``panel.target``
+        and ``panel.mask``. ``keep`` only clears ``mask``: a dropped symbol
+        stays in the feature panel as context.
+
+        Raises
+        ------
+        ValueError
+            If the hook returns a ``keep`` or a target of the wrong shape.
+        """
+        num_labels = panel.y_raw.shape[-1]
+        for t in bars:
+            symbols = torch.nonzero(panel.present[t]).flatten()
+            n = len(symbols)
+            if not n:
+                continue
+            target, keep = self._transform_target(panel.y_raw[t, symbols], training)
+            target = torch.as_tensor(target, dtype=torch.float32).cpu()
+            if keep is None:
+                keep = torch.ones(n, dtype=torch.bool)
+            else:
+                keep = torch.as_tensor(keep, dtype=torch.bool).cpu()
+                if tuple(keep.shape) != (n,):
+                    raise ValueError(
+                        f"{self.class_name}._transform_target: keep must have {n} "
+                        f"entries at bar {panel.timestamps[t]}, got {tuple(keep.shape)}"
+                    )
+                if target.shape[0] == int(keep.sum()) != n:
+                    full = torch.full((n, num_labels), float("nan"))
+                    full[keep] = target
+                    target = full
+            if tuple(target.shape) != (n, num_labels):
+                raise ValueError(
+                    f"{self.class_name}._transform_target: expected a target of shape "
+                    f"{(n, num_labels)} at bar {panel.timestamps[t]}, "
+                    f"got {tuple(target.shape)}"
+                )
+            valid = keep & torch.isfinite(target).all(dim=-1)
+            panel.target[t, symbols] = torch.where(
+                valid[:, None], target, torch.zeros_like(target)
+            )
+            panel.mask[t, symbols] = valid
+
+    def _prepare(self, batch: Batch) -> Batch:
+        """Move ``batch`` to ``device`` and run ``_transform_feature`` on its ``x``.
 
         Raises
         ------
         ValueError
             If the transform changes the shape or leaves a non-finite value.
         """
-        raw = torch.from_numpy(windows.window(t, symbols)).to(self.device)
+        batch = Batch(*batch).to(self.device)
+        raw = batch.x.float()
         x = self._transform_feature(raw)
         if tuple(x.shape) != tuple(raw.shape) or not bool(torch.isfinite(x).all()):
             raise ValueError(
                 f"{self.class_name}._transform_feature must return a finite "
                 f"tensor of shape {tuple(raw.shape)}"
             )
-        return x
+        return batch._replace(x=x)
 
-    def _batches(
-        self,
-        windows: CrossSectionWindows,
-        y: np.ndarray,
-        coords: tuple[np.ndarray, np.ndarray],
-        bars,
-        *,
-        training: bool,
-    ):
-        """Yield a ``CrossSectionBatch`` for each bar with at least one valid target.
-
-        ``coords`` is ``(timestamps, symbols)`` of the collected panel.
-
-        Raises
-        ------
-        ValueError
-            If ``_transform_target`` returns a target or ``keep`` of the wrong
-            length.
-        """
-        stamps, labels = coords
-        for t in bars:
-            symbols = windows.symbols(t)
-            y_raw = torch.from_numpy(y[t, symbols].astype(np.float32)).to(self.device)
-            target, keep = self._transform_target(y_raw, training)
-            if keep is not None:
-                keep = torch.as_tensor(keep, dtype=torch.bool, device=self.device)
-                if keep.shape != (len(symbols),):
-                    raise ValueError(
-                        f"{self.class_name}._transform_target: keep must have "
-                        f"{len(symbols)} entries, got {tuple(keep.shape)}"
-                    )
-                if target.shape[0] == len(symbols):
-                    target = target[keep]
-                symbols = symbols[keep.cpu().numpy()]
-                y_raw = y_raw[keep]
-            if tuple(target.shape) != tuple(y_raw.shape):
-                raise ValueError(
-                    f"{self.class_name}._transform_target: expected a target of "
-                    f"shape {tuple(y_raw.shape)}, got {tuple(target.shape)}"
-                )
-            mask = torch.isfinite(target)
-            if not bool(mask.any()):
-                continue
-            yield CrossSectionBatch(
-                x=self._x(windows, t, symbols),
-                y=torch.where(mask, target, torch.zeros_like(target)),
-                mask=mask,
-                y_raw=y_raw,
-                symbols=labels[symbols],
-                timestamp=stamps[t],  # type: ignore[arg-type]
-            )
+    def _loader(self, panel: TrainingPanel, bars, training: bool) -> DataLoader:
+        """Return the head's loader over the head's dataset of ``bars``."""
+        return self._dataloader(self._dataset(panel, bars, training), training)
 
     @staticmethod
     def _mean_loss(losses) -> float:
@@ -1904,67 +1992,148 @@ class TorchModel(BaseModel):
         values = [float(loss) for loss in losses]
         return float(np.mean(values)) if values else float("nan")
 
-    def _train_epoch(self, epoch, windows, y, coords, bars, rng) -> float:
-        """Call ``_train_one_batch`` on each training bar in shuffled order; mean loss."""
+    def _train_epoch(self, epoch: int, loader: DataLoader) -> float:
+        """Call ``_train_one_batch`` on every training batch; their mean loss."""
         self.model.train()  # type: ignore[union-attr]
         return self._mean_loss(
-            self._train_one_batch(epoch, batch)
-            for batch in self._batches(
-                windows, y, coords, rng.permutation(bars), training=True
-            )
+            self._train_one_batch(epoch, self._prepare(batch)) for batch in loader
         )
 
-    def _val_loss(self, epoch, windows, y, coords, bars) -> float:
-        """Mean ``_val_one_batch`` over ``bars``, in eval mode without gradients."""
-        self.model.eval()  # type: ignore[union-attr]
-        with torch.no_grad():
-            return self._mean_loss(
-                self._val_one_batch(epoch, batch)
-                for batch in self._batches(windows, y, coords, bars, training=False)
-            )
+    def _eval_loss(self, epoch: int, loader: DataLoader) -> float:
+        """Per-bar ``_val_one_batch`` averaged over bars; NaN without a valid target.
 
-    def _test_epoch(self, epoch, windows, y, coords, bars) -> None:
-        """Call ``_test_one_batch`` on every test bar, in eval mode without gradients."""
-        self.model.eval()  # type: ignore[union-attr]
-        with torch.no_grad():
-            for batch in self._batches(windows, y, coords, bars, training=False):
-                self._test_one_batch(epoch, batch)
-
-    def _predict_bars(self, windows: CrossSectionWindows, bars) -> np.ndarray:
-        """Return ``[len(bars), S, L]`` predictions, NaN outside each cross-section.
+        Runs in eval mode without gradients. A batch holding several bars is
+        split by bar along its first dimension, and a bar spread over several
+        batches averages its pieces weighted by their valid samples, so every
+        bar weighs the same whatever its number of symbols or batches.
 
         Raises
         ------
         ValueError
-            If ``_forward`` does not return a ``[S_t, num_labels]`` tensor.
+            If a batch mixes bars but cannot be split along its first
+            dimension (see ``_split_by_bar``).
         """
-        out = np.full((len(bars), windows.present.shape[1], self.num_labels), np.nan)
+        pieces: dict[int, list[tuple[float, int]]] = {}
         self.model.eval()  # type: ignore[union-attr]
         with torch.no_grad():
-            for i, t in enumerate(bars):
-                symbols = windows.symbols(t)
-                if not len(symbols):
-                    continue
-                pred = self._forward(self._x(windows, t, symbols))
-                expected = (len(symbols), self.num_labels)
+            for raw in loader:
+                for bar, piece in self._split_by_bar(self._prepare(raw)):
+                    valid = int(piece.mask.sum())
+                    loss = float(self._val_one_batch(epoch, piece))
+                    pieces.setdefault(bar, []).append((loss, valid))
+        return self._mean_loss(
+            sum(loss * n for loss, n in parts) / sum(n for _, n in parts)
+            for parts in pieces.values()
+        )
+
+    def _split_by_bar(self, batch: Batch) -> list[tuple[int, Batch]]:
+        """Return ``(bar, piece)`` for each bar with a valid sample in ``batch``.
+
+        A batch of one bar, such as a cross-section, is returned whole.
+
+        Raises
+        ------
+        ValueError
+            If the batch mixes bars but its ``mask`` is not one-dimensional or
+            its ``x`` does not start with the sample dimension.
+        """
+        times = batch.where[0]
+        bars = torch.unique(times[batch.mask]).tolist()
+        if len(bars) <= 1:
+            return [(int(bar), batch) for bar in bars]
+        if batch.mask.ndim != 1 or batch.x.shape[0] != batch.mask.shape[0]:
+            raise ValueError(
+                f"{self.class_name}: a batch mixing bars needs a one-dimensional "
+                f"mask and an x starting with the sample dimension to be scored "
+                f"per bar; got mask {tuple(batch.mask.shape)} and x "
+                f"{tuple(batch.x.shape)}"
+            )
+        split = []
+        for bar in bars:
+            rows = times == bar
+            split.append((int(bar), Batch(
+                x=batch.x[rows], y=batch.y[rows], mask=batch.mask[rows],
+                y_raw=batch.y_raw[rows], where=(times[rows], batch.where[1][rows]),
+            )))
+        return split
+
+    def _test_epoch(self, epoch: int, loader: DataLoader) -> None:
+        """Call ``_test_one_batch`` on every test batch, in eval mode without gradients."""
+        self.model.eval()  # type: ignore[union-attr]
+        with torch.no_grad():
+            for batch in loader:
+                self._test_one_batch(epoch, self._prepare(batch))
+
+    def _predict_panel_bars(self, panel: TrainingPanel, bars) -> np.ndarray:
+        """Return ``[T, S, L]`` predictions for ``bars``, NaN everywhere else.
+
+        The ``training=False`` dataset and loader are run under ``no_grad``
+        in eval mode, and each ``_forward`` output is scattered into the
+        panel through the batch's ``where``.
+
+        Raises
+        ------
+        ValueError
+            If ``_forward`` returns something other than a tensor of shape
+            ``mask.shape + (L,)``, or a present cell of ``bars`` is left
+            unpredicted or predicted twice, or a cell outside them is
+            predicted; the error names the bar.
+        """
+        num_times, num_symbols = panel.present.shape
+        out = torch.full((num_times, num_symbols, self.num_labels), float("nan"))
+        count = torch.zeros((num_times, num_symbols), dtype=torch.int64)
+        loader = self._loader(panel, bars, training=False)
+        self.model.eval()  # type: ignore[union-attr]
+        with torch.no_grad():
+            for raw in loader:
+                batch = self._prepare(raw)
+                pred = self._forward(batch.x)
+                expected = tuple(batch.mask.shape) + (self.num_labels,)
                 if not isinstance(pred, torch.Tensor) or tuple(pred.shape) != expected:
                     got = tuple(pred.shape) if isinstance(pred, torch.Tensor) else type(pred)
                     raise ValueError(
-                        f"{self.class_name}._forward must return a [S_t, L] = "
-                        f"{list(expected)} tensor, got {got}"
+                        f"{self.class_name}._forward must return a tensor shaped like "
+                        f"the batch's mask plus the labels, {list(expected)}, got {got}"
                     )
-                out[i, symbols] = pred.detach().cpu().numpy()
-        return out
+                t_idx, s_idx = (index.cpu() for index in batch.where)
+                out[t_idx, s_idx] = pred.detach().float().cpu()
+                count.index_put_((t_idx, s_idx), torch.ones_like(t_idx), accumulate=True)
+        requested = torch.zeros(num_times, dtype=torch.bool)
+        requested[torch.as_tensor(np.asarray(bars, dtype=np.int64))] = True
+        expected_cells = panel.present.cpu() & requested[:, None]
+        problems = (
+            (count > 1, "predicted twice"),
+            (expected_cells & (count == 0), "left unpredicted"),
+            (~expected_cells & (count > 0),
+             "predicted outside the present cells of the bars asked for"),
+        )
+        for problem, what in problems:
+            if bool(problem.any()):
+                t, s = (int(i) for i in torch.nonzero(problem)[0])
+                stamp = panel.timestamps[t]
+                if isinstance(stamp, np.datetime64):
+                    stamp = pd.Timestamp(stamp).isoformat()
+                raise ValueError(
+                    f"{self.class_name}: symbol {str(panel.symbols[s])!r} at bar "
+                    f"{stamp} was {what} by the dataset "
+                    f"{type(loader.dataset).__name__}; every "
+                    f"present cell must be predicted exactly once."
+                )
+        return out.numpy()
 
-    def _evaluate(self, epoch, split, windows, y, coords, bars) -> dict[str, float]:
+    def _evaluate(self, epoch: int, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
         """Return one split's metrics and write them to the wandb summary.
 
-        ``{split}_loss`` is the mean ``_val_one_batch`` over the split's bars;
-        the other keys are ``_compute_metrics`` on the raw labels.
+        ``{split}_loss`` is the mean ``_val_one_batch`` over the split's
+        batches, one per bar with the default dataset; the other keys are
+        ``_compute_metrics`` on the raw labels.
         """
-        pred = self._predict_bars(windows, bars)
-        metrics = {f"{split}_loss": self._val_loss(epoch, windows, y, coords, bars)}
-        for key, value in self._compute_metrics(y[bars], pred).items():
+        pred = self._predict_panel_bars(panel, bars)
+        metrics = {
+            f"{split}_loss": self._eval_loss(epoch, self._loader(panel, bars, training=False))
+        }
+        y_raw = panel.y_raw.cpu().numpy()
+        for key, value in self._compute_metrics(y_raw[bars], pred[bars]).items():
             metrics[f"{split}_{key}"] = value
         if self._wandb_recorder is not None:
             self._wandb_recorder.summary.update(metrics)
@@ -1973,19 +2142,22 @@ class TorchModel(BaseModel):
     def _fit(
         self, project_name: str, experiment_name: str, model_name: str
     ) -> dict:
-        """Train bar by bar until ``_should_stop`` says so, then evaluate and save.
+        """Build the training panel and target, train until ``_should_stop``, evaluate, save.
 
         The panel is split by ``_fit_segments``, but every window reads the
         whole collected panel, so the first validation and test bars (and
-        the first training bar, through the warm-up) have full windows.
-        Each epoch calls ``_train_one_batch`` on the training bars in
-        shuffled order, then ``_val_one_batch`` on the validation bars when
-        there are any, then ``_test_one_batch`` on the test bars. The
-        per-epoch ``train_loss`` / ``val_loss`` are logged to wandb and passed
-        to ``_should_stop``; ``_on_fit_start`` runs before the first epoch and
-        ``_on_fit_end`` after the last, and the loop never runs past
-        ``epochs``. Torch is reseeded with ``config.random_seed``
-        first, so a fit is reproducible on CPU.
+        the first training bar, through the warm-up) have full windows. The
+        training target is computed once, before the first epoch:
+        ``_transform_target`` sees ``training=True`` on the training bars
+        and ``training=False`` on the validation and test bars. Each epoch
+        runs ``_train_one_batch`` on the shuffled training loader, then
+        ``_val_one_batch`` on the validation loader when there is a
+        validation segment, then ``_test_one_batch`` on the test loader.
+        The per-epoch ``train_loss`` / ``val_loss`` are logged to wandb and
+        passed to ``_should_stop``; ``_on_fit_start`` runs before the first
+        epoch and ``_on_fit_end`` after the last, and the loop never runs
+        past ``epochs``. Torch is reseeded with ``config.random_seed`` first,
+        so a fit is reproducible on CPU.
 
         Returns
         -------
@@ -2016,16 +2188,14 @@ class TorchModel(BaseModel):
         )
         segments = self._fit_segments(data)
         stamps = data.timestamp.values
-        coords = (stamps, data.symbol.values)
         train_bars, val_bars, test_bars = [
             np.searchsorted(stamps, part.timestamp.values) for part in segments
         ]
 
-        with Timer(f"{self.class_name}: to_array"):
-            windows = CrossSectionWindows(
-                self.to_array(data, self.get_factor_names()), self.window_bars
-            )
-            y = self.to_array(data, self.get_label_names())
+        panel = self._training_panel(data)
+        self._fill_target(panel, train_bars, training=True)
+        self._fill_target(panel, val_bars, training=False)
+        self._fill_target(panel, test_bars, training=False)
 
         self.model = self._init_model(
             num_features=self.num_factors,
@@ -2034,18 +2204,16 @@ class TorchModel(BaseModel):
         ).to(self.device)
         self.optim = self._init_optim(self.model)  # type: ignore[arg-type]
         self._on_fit_start()
-        rng = np.random.default_rng(config.random_seed)
+        train_loader = self._loader(panel, train_bars, training=True)
+        val_loader = self._loader(panel, val_bars, training=False) if len(val_bars) else None
+        test_loader = self._loader(panel, test_bars, training=False) if len(test_bars) else None
 
         epoch = 0
         for epoch in tqdm(range(epochs), desc=f"{self.class_name}_train"):
-            train_loss = self._train_epoch(epoch, windows, y, coords, train_bars, rng)
-            val_loss = (
-                self._val_loss(epoch, windows, y, coords, val_bars)
-                if len(val_bars)
-                else None
-            )
-            if len(test_bars):
-                self._test_epoch(epoch, windows, y, coords, test_bars)
+            train_loss = self._train_epoch(epoch, train_loader)
+            val_loss = self._eval_loss(epoch, val_loader) if val_loader is not None else None
+            if test_loader is not None:
+                self._test_epoch(epoch, test_loader)
             if self._wandb_recorder is not None:
                 logged = {"train_loss": train_loss}
                 if val_loss is not None:
@@ -2057,10 +2225,10 @@ class TorchModel(BaseModel):
         self._on_fit_end()
 
         with Timer(f"{self.class_name}: evaluate"):
-            metrics = self._evaluate(epoch, "train", windows, y, coords, train_bars)
+            metrics = self._evaluate(epoch, "train", panel, train_bars)
             for split, bars in (("val", val_bars), ("test", test_bars)):
                 if len(bars):
-                    metrics.update(self._evaluate(epoch, split, windows, y, coords, bars))
+                    metrics.update(self._evaluate(epoch, split, panel, bars))
 
         self._save_model(
             Path(config.model_save_dir) / project_name / experiment_name / model_name
@@ -2075,8 +2243,10 @@ class TorchModel(BaseModel):
 
         Bar ``t`` is predicted from the windows ending at ``t`` inside
         ``data`` itself, so the first N - 1 bars have NaN rows for the
-        missing history, which ``_transform_feature`` handles. A cell outside
-        its bar's cross-section is NaN.
+        missing history, which ``_transform_feature`` handles. The input
+        becomes a ``TrainingPanel`` without labels, fed through the head's
+        ``training=False`` dataset and loader. A cell outside its bar's
+        cross-section is NaN.
 
         Raises
         ------
@@ -2087,12 +2257,23 @@ class TorchModel(BaseModel):
             data = data.detach().cpu().numpy()
         elif not isinstance(data, np.ndarray):
             raise TypeError(f"Unsupported data type: {type(data)}")
-        windows = CrossSectionWindows(data, self.window_bars)
-        return torch.from_numpy(self._predict_bars(windows, range(windows.num_times)))
+        num_times, num_symbols = data.shape[:2]
+        return torch.from_numpy(
+            self._predict_array(data, np.arange(num_times), np.arange(num_symbols))
+        )
 
-    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
-        """Return ``predict(x)`` as a numpy ``[T, S, L]`` array."""
-        return self.predict(x).numpy()  # type: ignore[union-attr]
+    def _predict_array(
+        self, x: np.ndarray, timestamps: np.ndarray, symbols: np.ndarray
+    ) -> np.ndarray:
+        """Return ``[T, S, L]`` predictions of every bar of ``x`` on its coordinates."""
+        panel = TrainingPanel.from_arrays(x, timestamps=timestamps, symbols=symbols)
+        return self._predict_panel_bars(panel, np.arange(x.shape[0]))
+
+    def _predict_panel_array(
+        self, x: np.ndarray, timestamps: np.ndarray, symbols: np.ndarray
+    ) -> np.ndarray:
+        """Return the ``[T, S, L]`` predictions of ``x`` on its own coordinates."""
+        return self._predict_array(x, timestamps, symbols)
 
     def _write_checkpoint(self, path: Path) -> None:
         """Save the network's ``state_dict`` to ``path`` with ``torch.save``."""
@@ -2394,7 +2575,9 @@ class LibraryModel(BaseModel):
             raise TypeError(f"Unsupported data type: {type(data)}")
         return self._forward(self._preprocess(data))
 
-    def _predict_panel_array(self, x: np.ndarray) -> np.ndarray:
+    def _predict_panel_array(
+        self, x: np.ndarray, timestamps: np.ndarray, symbols: np.ndarray
+    ) -> np.ndarray:
         """Return ``predict(x)`` as an array; ``_forward`` yields ``[T, S, L]``."""
         return np.asarray(self.predict(x))
 

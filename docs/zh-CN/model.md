@@ -227,26 +227,35 @@ True
 
 ### 训练 torch 模型
 
-torch 模型头（`TorchModel`）每一步训练一个 bar：这个 bar 的*截面*，即在该 bar 上至少有一个有限特征值的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
+torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基类把收集到的数据组装成一个由 torch 张量构成的*训练面板*：特征 `x`（`[T, S, F]`）、训练目标（`[T, S, L]`）及其 `mask`（`[T, S]`）、原始标签 `y_raw`，以及 `present`（`[T, S]`，至少有一个有限特征值的格子），外加时间戳和标的。模型头的 `_dataset(panel, bars, training)` 返回覆盖若干 bar 的 `torch.utils.data.Dataset`，`_dataloader(dataset, training)` 负责分批。默认数据集是 `quantlab.torch_model.data` 中的 `CrossSectionDataset`，每个 bar 一个样本项：这个 bar 的*截面*，即在该 bar 上出现的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
 
-模型头需要写三样东西：`window_bars`（N）、`_init_model(num_features, num_labels, hyperparameters)`（网络）和 `_loss(output, batch)`（一个 bar 的损失）。`output` 是网络的原始输出，`batch` 是一个 `CrossSectionBatch`：`x`（`[S_t, N, F]`）、`y`（目标，`[S_t, L]`）、`mask`（`y` 有效的位置为 True）、`y_raw`（原始标签）、`symbols` 和 `timestamp`。缺失的标签已经被掩码并在 `y` 里置 0，所以损失只需统计 `mask` 为 True 的位置，`quantlab.torch_model.training` 里的 `masked_mse` 就是这样做的。其他所有选择都是带默认实现的可选钩子：
+每个样本项都是一个 `Batch`：`x`、`y`（训练目标，无效处为 0）、`mask`（样本在每个标签上都有有效训练目标时为 True）、`y_raw`（原始标签）和 `where`（每个样本的时间下标和标的下标，形状与 `mask` 相同）。对一个截面来说，`mask` 是 `[S_t]`，`y` 是 `[S_t, L]`。各数据段的预测以及 `predict_panel` 都来自 `training=False` 的数据集，并按 `where` 放回 `[T, S, L]`；如果数据集漏掉了某个出现的格子，或者把它预测了两次，就会抛出 `ValueError`，并指明是哪个 bar。
 
-| 钩子 | 默认 |
+训练目标在每次拟合时、第一个 epoch 之前只计算一次：`_transform_target(y, training)` 拿到每个 bar 的原始标签，只有训练段的 bar 上 `training=True`。它返回的 `keep` 只把标的从损失里去掉。每个 epoch 都要变化的目标（例如给标签加噪声）应该写在模型头自己的 `_train_one_batch` 里。
+
+模型头需要写三样东西：`window_bars`（N）、`_init_model(num_features, num_labels, hyperparameters)`（网络，多个网络时放进 `nn.ModuleDict`）和 `_loss(output, batch)`（一个 batch 的损失）。`output` 是网络的原始输出。缺失的标签已经被遮蔽并在 `y` 中置 0，因此损失只需计入 `mask` 为 True 的样本，`quantlab.torch_model.training` 里的 `masked_mse` 就是这样做的。其余的选择都是带默认实现的可选钩子：
+
+| 钩子 | 默认行为 |
 |---|---|
-| `_transform_feature(x)`：原始窗口（缺失处为 NaN）到网络输入 | 截断到 ±3，NaN 变 0 |
-| `_transform_target(y, training)`：一个 bar 的原始标签到 `(target, keep)`；`keep` 把标的从这一步里去掉 | `(y, None)`；工具函数 `cs_rank_norm`（Qlib `CSRankNorm`）、`cs_zscore`、`drop_extreme` |
-| `_init_optim(model)` | Adam，学习率 `hyperparameters["lr"]`（`1e-3`） |
+| `_dataset(panel, bars, training)`：覆盖 `bars` 的 PyTorch `Dataset` | `CrossSectionDataset`，每个 bar 一项 |
+| `_dataloader(dataset, training)`：`DataLoader` | 从超参数读取 `batch_size` 和 `num_workers`（默认 `None`，即每步一项，以及 0）；只在训练时打乱，生成器用 `random_seed` 播种；从不丢弃最后一批 |
+| `_transform_feature(x)`：一个 batch 的原始 `x`（缺失处为 NaN）到网络输入 | 截断到 ±3，NaN 变 0 |
+| `_transform_target(y, training)`：一个 bar 的原始标签到 `(target, keep)`；`keep` 把标的从损失里去掉 | `(y, None)`；工具函数 `cs_rank_norm`（Qlib `CSRankNorm`）、`cs_zscore`、`drop_extreme` |
+| `_init_optim(model)`：训练步能理解的任何对象，例如优化器字典 | Adam，学习率 `hyperparameters["lr"]`（`1e-3`） |
 | `_train_one_batch(epoch, batch)`：一步优化，返回损失 | 前向、`_loss`、反向传播、按 `grad_clip_value`（3.0）截断梯度值、step |
-| `_val_one_batch(epoch, batch)`：一个 bar 的验证损失 | `_loss` |
-| `_test_one_batch(epoch, batch)`：每个 epoch 之后对每个测试 bar 调用 | 什么都不做 |
-| `_forward(x)`：`[S_t, L]` 的预测，用于指标和 `predict_panel` | `self.model(x)` |
+| `_val_one_batch(epoch, batch)`：一个 batch 的评估损失 | `_loss` |
+| `_test_one_batch(epoch, batch)`：每个 epoch 之后对每个测试 batch 调用 | 什么都不做 |
+| `_forward(x)`：形状为 `mask.shape + (L,)` 的预测，用于指标和 `predict_panel` | `self.model(x)` |
 | `_on_fit_start()`、`_should_stop(epoch, train_loss, val_loss)`、`_on_fit_end()` | 跑满 `hyperparameters["epochs"]`（100）个 epoch，保留最后的权重 |
 
-`train_loss` 和 `val_loss` 是各个逐步钩子返回值的均值；没有验证段时 `val_loss` 为 None。训练的上限是超参数 `epochs`，默认优化器读取 `lr`（见“配置与保留超参数”）。没有 batch size：各个 bar 按打乱后的顺序逐一训练，一步一个 bar。指标始终用原始的第一个标签计算。
+基类把每个 batch 移到设备上并调用 `_transform_feature`，检查形状不变且所有值都有限。训练在 `train()` 模式下进行；验证、测试钩子和预测都在 `no_grad` 下以 `eval()` 模式运行。`train_loss` 和 `val_loss` 是各个逐步钩子返回值的均值；没有验证段时 `val_loss` 为 None。`{split}_loss` 是该数据段各 batch 上 `_val_one_batch` 的均值，因此使用默认数据集时，每个 bar 的权重相同，与它有多少个标的无关。训练的上限是超参数 `epochs`，默认优化器读取 `lr`（见“配置与保留超参数”）。指标始终用原始的第一个标签计算。
 
-`window_bars` 为 N 的模型在预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多个 bar，按因子自己的数据集日历计数，数据不够早时给出警告。这里的替身面板没有数据集，所以这个模型头用一个 bar 的窗口；它按 bar 对目标做 z-score，验证损失连续五个 epoch 没有下降就停止。
+`window_bars` 为 N 的模型在它预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多 bar（按因子自己的数据集日历计数），数据不够早时会给出警告。每个切分点前的清除只覆盖标签的前瞻，从不覆盖窗口。这里的替身面板没有数据集，所以下面的模型头都用一个 bar 的窗口。
+
+最小的模型头就是窗口、网络和损失：
 
 ```python
+>>> import torch
 >>> import torch.nn as nn
 >>> from quantlab.base.config import ModelConfig
 >>> from quantlab.base.model import TorchModel
@@ -258,41 +267,65 @@ torch 模型头（`TorchModel`）每一步训练一个 bar：这个 bar 的*截�
 ...         self.linear = nn.Linear(num_features, num_labels)
 ...     def forward(self, x):              # x: [S_t, N, F]
 ...         return self.linear(x[:, -1])   # [S_t, L]
->>> class LinearHead(TorchModel):
+>>> class MinimalHead(TorchModel):
 ...     window_bars = 1
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         return LastBar(num_features, num_labels)
 ...     def _loss(self, output, batch):
 ...         return masked_mse(output, batch.y, batch.mask)
-...     def _transform_target(self, y, training):
-...         return cs_zscore(y), None
-...     def _on_fit_start(self):
-...         self.best, self.bad = float("inf"), 0
-...     def _should_stop(self, epoch, train_loss, val_loss):
-...         if val_loss < self.best:
-...             self.best, self.bad = val_loss, 0
-...         else:
-...             self.bad += 1
-...         return self.bad >= 5
 >>> torch_config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
 ...     train_start="2024-01-01", train_end="2024-05-31",
 ...     test_start="2024-06-01", test_end="2024-07-18",
-...     hyperparameters={"epochs": 50, "lr": 1e-2},
+...     hyperparameters={"epochs": 20, "lr": 1e-2},
 ... )
->>> linear = LinearHead(torch_config).collect()
->>> linear_checkpoint = linear.train()
->>> linear_checkpoint.name
-'LinearHead_total.pth'
->>> torch_metrics = json.loads((linear_checkpoint.parent / "metrics.json").read_text())
+>>> minimal = MinimalHead(torch_config).collect()
+>>> minimal_checkpoint = minimal.train()
+>>> minimal_checkpoint.name
+'MinimalHead_total.pth'
+>>> torch_metrics = json.loads((minimal_checkpoint.parent / "metrics.json").read_text())
 >>> {k: round(v, 3) for k, v in torch_metrics.items() if k.endswith("rank_ic")}
-{'train_rank_ic': 0.698, 'val_rank_ic': 0.69, 'test_rank_ic': 0.69}
+{'train_rank_ic': 0.697, 'val_rank_ic': 0.693, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
 >>> wider = xr.concat([factor.ds, one_more], dim="symbol")
->>> linear.predict_panel(wider).symbol.size
+>>> minimal.predict_panel(wider).symbol.size
 21
 ```
+
+下面这个模型头自己选择优化器、损失和停止规则：按 bar 对目标做 z-score，用带动量的 SGD 以预测与目标之间 Pearson 相关系数的相反数为损失训练，保留验证损失最好的那个 epoch 的权重，连续五个 epoch 没有改善就停止：
+
+```python
+>>> def masked_neg_corr(pred, y, mask):
+...     """有效样本上第一个标签的相关系数取负。"""
+...     p, t = pred[mask, 0], y[mask, 0]
+...     p, t = p - p.mean(), t - t.mean()
+...     return -(p * t).sum() / (p.norm() * t.norm() + 1e-8)
+>>> class CorrHead(MinimalHead):
+...     def _transform_target(self, y, training):
+...         return cs_zscore(y), None
+...     def _init_optim(self, model):
+...         return torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9)
+...     def _loss(self, output, batch):
+...         return masked_neg_corr(output, batch.y, batch.mask)
+...     def _on_fit_start(self):
+...         self.best, self.bad, self.best_state = float("inf"), 0, None
+...     def _should_stop(self, epoch, train_loss, val_loss):
+...         if val_loss < self.best:
+...             self.best, self.bad = val_loss, 0
+...             self.best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+...         else:
+...             self.bad += 1
+...         return self.bad >= 5
+...     def _on_fit_end(self):
+...         self.model.load_state_dict(self.best_state)
+>>> corr = CorrHead(replace(torch_config, hyperparameters={"epochs": 50})).collect()
+>>> corr_metrics = json.loads((corr.train().parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in corr_metrics.items() if k in ("val_loss", "test_rank_ic")}
+{'val_loss': -0.721, 'test_rank_ic': 0.691}
+```
+
+需要其他样本形状的模型头覆写 `_dataset`（多 bar 的 batch 还要用自己的 sampler 或 collate 函数覆写 `_dataloader`）；可以照着 `CrossSectionDataset` 写。
 
 ### 记录到 Weights & Biases
 
@@ -333,7 +366,7 @@ torch 模型头（`TorchModel`）每一步训练一个 bar：这个 bar 的*截�
 [0.05, -0.02, -0.001]
 ```
 
-`TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `LinearHead` 就是一个完整的例子。窗口、warm-up、目标掩码、bar 的顺序、epoch 循环、指标和检查点由基类负责。
+`TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
 ## 注意事项
 
@@ -348,7 +381,7 @@ TypeError: XGBoostRegressor requires a ModelConfig, got dict
 torch 模型头的超参数 `epochs` 不是正整数时，训练一开始就会失败。
 
 ```text
-ValueError: LinearHead: hyperparameters['epochs'] must be a positive integer, got 0
+ValueError: MinimalHead: hyperparameters['epochs'] must be a positive integer, got 0
 ```
 
 它还会拒绝因子列表里的标签和标签列表里的因子。要预测一个因子，用 `Forward` 包装它。
@@ -372,11 +405,17 @@ ValueError: Unsupported file type: '.pth'; XGBoostRegressor checkpoints use '.jo
 ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its config.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
 ```
 
-`predict_panel` 需要全部因子变量；torch 网络必须为截面里的每个标的返回一行、为每个标签返回一列。
+`predict_panel` 需要全部因子变量；torch 模型头的 `_forward` 必须为 batch 里的每个样本（截面里的每个标的）返回一行、为每个标签返回一列。
 
 ```text
 ValueError: XGBoostRegressor.predict_panel: features are missing factor variable(s) ['f_b']
-ValueError: LinearHead: the network must map [S_t, N, F] to a [S_t, L] = [20, 1] tensor, got <class 'tuple'>
+ValueError: TupleHead._forward must return a tensor shaped like the batch's mask plus the labels, [20, 1], got <class 'tuple'>
+```
+
+torch 模型头的评估数据集必须把所请求 bar 上每个出现的格子恰好预测一次；下面是一个自定义数据集漏掉一个标的的情况。
+
+```text
+ValueError: SkipHead: symbol 'S1' at bar 2024-02-05T00:00:00 was left unpredicted by the dataset CellDataset; every present cell must be predicted exactly once.
 ```
 
 `train` 需要四个窗口日期齐全。在配置里设置它们，或者用 `train_cv`，它会为每一折设置日期。

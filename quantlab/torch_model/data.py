@@ -1,0 +1,266 @@
+"""The data a ``TorchModel`` head is fed: the training panel, batches and datasets.
+
+The base class builds one ``TrainingPanel`` per fit, or per prediction, and
+hands it to the head's ``_dataset`` hook, which returns a PyTorch
+``Dataset``. The head's ``_dataloader`` hook batches it with a standard
+``DataLoader``. Every item is a ``Batch`` whose ``where`` holds the
+timestamp and symbol index of each sample, so the base puts predictions
+back into the ``[T, S, L]`` panel the same way for any sample shape.
+
+``CrossSectionDataset`` is the default dataset: one item per bar, holding
+every symbol present at that bar with its last ``window_bars`` bars.
+"""
+
+from dataclasses import dataclass
+from typing import NamedTuple
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+
+
+@dataclass
+class TrainingPanel:
+    """The collected panel as torch tensors, shared by every dataset of a fit.
+
+    All tensors live on the same device and are indexed ``[T, S, ...]`` on
+    the collected timestamps and symbols. A cell is *present* when it has at
+    least one finite feature; the cross-section of a bar is its present
+    symbols. The training target is computed once per fit, before any
+    epoch, by the head's ``_transform_target``.
+
+    Attributes
+    ----------
+    x : torch.Tensor
+        Features, ``[T, S, F]``, NaN where missing.
+    target : torch.Tensor
+        Training target, ``[T, S, L]``, 0 wherever ``mask`` is False.
+    mask : torch.Tensor
+        ``[T, S]`` booleans, True where the cell has a valid training target:
+        present, kept by ``_transform_target``, and every one of its L
+        targets finite; a cell with one label missing is masked out for all
+        labels.
+    y_raw : torch.Tensor
+        Raw labels, ``[T, S, L]``, NaN where missing.
+    present : torch.Tensor
+        ``[T, S]`` booleans, True where the cell has a finite feature.
+    timestamps : np.ndarray
+        The T bars.
+    symbols : np.ndarray
+        The S symbols.
+
+    Examples
+    --------
+    >>> panel = TrainingPanel.from_arrays(
+    ...     np.ones((3, 2, 1)), timestamps=np.arange(3), symbols=np.array(["A", "B"]),
+    ... )
+    >>> panel.present.all().item(), panel.mask.any().item(), tuple(panel.target.shape)
+    (True, False, (3, 2, 0))
+    """
+
+    x: torch.Tensor
+    target: torch.Tensor
+    mask: torch.Tensor
+    y_raw: torch.Tensor
+    present: torch.Tensor
+    timestamps: np.ndarray
+    symbols: np.ndarray
+
+    @classmethod
+    def from_arrays(
+        cls,
+        x: np.ndarray,
+        *,
+        timestamps: np.ndarray,
+        symbols: np.ndarray,
+        y_raw: np.ndarray | None = None,
+    ) -> "TrainingPanel":
+        """Build a panel with no training target yet (``mask`` all False).
+
+        Parameters
+        ----------
+        x : np.ndarray
+            Features, ``[T, S, F]``.
+        timestamps, symbols : np.ndarray
+            The panel's coordinates.
+        y_raw : np.ndarray, optional
+            Raw labels, ``[T, S, L]``; ``[T, S, 0]`` when omitted, as at
+            prediction time.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not three-dimensional or ``y_raw`` does not match it.
+
+        Examples
+        --------
+        >>> TrainingPanel.from_arrays(
+        ...     np.zeros((2, 3, 4)), timestamps=np.arange(2), symbols=np.arange(3),
+        ... ).x.shape
+        torch.Size([2, 3, 4])
+        """
+        if x.ndim != 3:
+            raise ValueError(f"expected a [T, S, F] feature array, got shape {x.shape}")
+        if y_raw is None:
+            y_raw = np.empty(x.shape[:2] + (0,), dtype=np.float32)
+        if y_raw.shape[:2] != x.shape[:2]:
+            raise ValueError(
+                f"labels of shape {y_raw.shape} do not match features of shape {x.shape}"
+            )
+        features = torch.from_numpy(np.asarray(x, dtype=np.float32))
+        labels = torch.from_numpy(np.asarray(y_raw, dtype=np.float32))
+        return cls(
+            x=features,
+            target=torch.zeros_like(labels),
+            mask=torch.zeros(x.shape[:2], dtype=torch.bool),
+            y_raw=labels,
+            present=torch.isfinite(features).any(dim=-1),
+            timestamps=np.asarray(timestamps),
+            symbols=np.asarray(symbols),
+        )
+
+    def window(self, t: int, symbols: torch.Tensor, window_bars: int) -> torch.Tensor:
+        """Return the ``[len(symbols), N, F]`` windows ending at bar ``t``.
+
+        Rows are bars ``t - N + 1`` to ``t``, oldest first; rows before the
+        first bar of the panel are NaN. Windows may reach back across a
+        segment boundary, which is legal: every bar there is in the past.
+
+        Examples
+        --------
+        >>> panel.window(0, torch.tensor([1]), 2)[:, :, 0]
+        tensor([[nan, 1.]])
+        """
+        start = t - window_bars + 1
+        block = self.x[max(start, 0) : t + 1, symbols]
+        if start < 0:
+            pad = torch.full(
+                (-start,) + tuple(block.shape[1:]), float("nan"),
+                dtype=block.dtype, device=block.device,
+            )
+            block = torch.cat([pad, block], dim=0)
+        return block.transpose(0, 1)
+
+
+class Batch(NamedTuple):
+    """What every step hook, ``_loss`` and ``_forward`` receive.
+
+    ``where`` and ``mask`` share the batch's sample dimensions: ``[S_t]`` for
+    one cross-section, ``[B]`` for a batch of samples. The base moves a batch
+    to the model's device and replaces ``x`` by the head's
+    ``_transform_feature`` output before a hook sees it. A NamedTuple, so
+    PyTorch's default collation and pinning work on it as is.
+
+    Attributes
+    ----------
+    x : torch.Tensor
+        Features shaped by the dataset, ``[S_t, N, F]`` for a cross-section.
+    y : torch.Tensor
+        Training target, ``mask.shape + (L,)``, 0 where ``mask`` is False.
+    mask : torch.Tensor
+        True where the sample has a valid training target; a loss counts
+        only these.
+    y_raw : torch.Tensor
+        Raw labels, ``mask.shape + (L,)``, NaN where missing.
+    where : tuple[torch.Tensor, torch.Tensor]
+        The timestamp index and symbol index of every sample in the panel,
+        each shaped like ``mask``.
+
+    Examples
+    --------
+    >>> batch = Batch(
+    ...     x=torch.zeros(2, 1, 1), y=torch.tensor([[1.0], [0.0]]),
+    ...     mask=torch.tensor([True, False]),
+    ...     y_raw=torch.tensor([[1.0], [float("nan")]]),
+    ...     where=(torch.tensor([4, 4]), torch.tensor([0, 3])),
+    ... )
+    >>> int(batch.mask.sum()), batch.where[1].tolist()
+    (1, [0, 3])
+    """
+
+    x: torch.Tensor
+    y: torch.Tensor
+    mask: torch.Tensor
+    y_raw: torch.Tensor
+    where: tuple[torch.Tensor, torch.Tensor]
+
+    def to(self, device) -> "Batch":
+        """Return the batch with every tensor on ``device``.
+
+        Examples
+        --------
+        >>> batch.to("cpu").x.device.type
+        'cpu'
+        """
+        return Batch(
+            x=self.x.to(device),
+            y=self.y.to(device),
+            mask=self.mask.to(device),
+            y_raw=self.y_raw.to(device),
+            where=(self.where[0].to(device), self.where[1].to(device)),
+        )
+
+
+class CrossSectionDataset(Dataset):
+    """One item per bar: the bar's whole cross-section with its windows.
+
+    Item ``i`` is a ``Batch`` for one bar ``t``: every symbol present at
+    ``t``, each with its last ``window_bars`` bars, so ``x`` is
+    ``[S_t, N, F]``. Symbols without a valid training target stay in ``x``
+    as context and are only masked out of the loss. In training the dataset
+    holds the given bars with at least one valid target; in evaluation it
+    holds every given bar with at least one present symbol, so prediction
+    covers every present cell.
+
+    Items vary in size, so batch them with ``batch_size=None`` (the
+    ``TorchModel`` default): one bar per step.
+
+    Parameters
+    ----------
+    panel : TrainingPanel
+        The panel to read.
+    bars : array-like of int
+        Positions of the bars on the panel's time axis.
+    window_bars : int
+        N, bars per window; at least 1.
+    training : bool
+        Whether the dataset feeds training steps.
+
+    Raises
+    ------
+    ValueError
+        If ``window_bars`` is below 1.
+
+    Examples
+    --------
+    >>> dataset = CrossSectionDataset(panel, bars=[1, 2], window_bars=2, training=False)
+    >>> len(dataset), dataset[0].x.shape, dataset[0].where[0].tolist()
+    (2, torch.Size([2, 2, 1]), [1, 1])
+    """
+
+    def __init__(self, panel: TrainingPanel, bars, window_bars: int, training: bool):
+        """Build the dataset; see the class docstring for parameters."""
+        if window_bars < 1:
+            raise ValueError(f"window_bars must be at least 1, got {window_bars}")
+        self.panel = panel
+        self.window_bars = int(window_bars)
+        self.training = bool(training)
+        bars = torch.as_tensor(np.asarray(bars, dtype=np.int64))
+        usable = panel.mask if self.training else panel.present
+        self.bars = bars[usable[bars].any(dim=1)].tolist()
+
+    def __len__(self) -> int:
+        """Number of bars in the dataset."""
+        return len(self.bars)
+
+    def __getitem__(self, i: int) -> Batch:
+        """Return bar ``self.bars[i]`` as a ``Batch``."""
+        panel, t = self.panel, self.bars[i]
+        symbols = torch.nonzero(panel.present[t]).flatten()
+        return Batch(
+            x=panel.window(t, symbols, self.window_bars),
+            y=panel.target[t, symbols],
+            mask=panel.mask[t, symbols],
+            y_raw=panel.y_raw[t, symbols],
+            where=(torch.full_like(symbols, t), symbols),
+        )

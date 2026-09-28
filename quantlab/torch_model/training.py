@@ -1,13 +1,9 @@
-"""Training pieces of a deep head, and the per-bar windows it is fed.
+"""Training pieces a ``TorchModel`` head may pick for its hooks.
 
-A ``TorchModel`` trains on one *cross-section* per step: the symbols with at
-least one finite feature at a bar, each carrying its last N bars of features
-(ADR 0006). This module holds the pieces of that loop:
+The data a head is fed (the training panel, ``Batch`` and the datasets)
+lives in ``quantlab.torch_model.data``. This module holds the pieces of a
+head's learning strategy:
 
-- ``CrossSectionWindows`` builds those windows lazily from a ``[T, S, F]``
-  array, one bar at a time; the base class uses it.
-- ``CrossSectionBatch`` is what every step hook receives: one bar's inputs,
-  targets and target mask.
 - ``cs_rank_norm``, ``cs_zscore`` and ``drop_extreme`` are target transforms
   for a head's ``_transform_target``.
 - ``masked_mse`` is a loss for a head's ``_loss``.
@@ -18,132 +14,9 @@ Everything a head picks is optional to use: the hooks may be written from
 scratch.
 """
 
-from dataclasses import dataclass
-
 import numpy as np
 import torch
 from scipy.stats import rankdata
-
-
-class CrossSectionWindows:
-    """Per-bar windows over a ``[T, S, F]`` feature array.
-
-    The cross-section of bar ``t`` is the symbols with at least one finite
-    feature there. Each window holds bars ``t - N + 1`` to ``t``, oldest
-    first, so its last row is bar ``t``. Values are returned as they are,
-    NaN included; rows before the first bar of the array are NaN too. Only a
-    float32 copy of the array is kept, never the ``[T, S, N, F]`` stack of
-    every window.
-
-    Parameters
-    ----------
-    x : np.ndarray
-        Features, ``[T, S, F]``.
-    window_bars : int
-        N, the number of bars per window; at least 1.
-
-    Raises
-    ------
-    ValueError
-        If ``x`` is not three-dimensional or ``window_bars`` is below 1.
-
-    Examples
-    --------
-    >>> x = np.arange(6, dtype=float).reshape(3, 2, 1)   # 3 bars, 2 symbols
-    >>> x[0, 1, 0] = np.nan                              # S1 absent at bar 0
-    >>> windows = CrossSectionWindows(x, window_bars=2)
-    >>> windows.symbols(0)
-    array([0])
-    >>> windows.window(1, windows.symbols(1))[:, :, 0]
-    array([[ 0.,  2.],
-           [nan,  3.]], dtype=float32)
-    """
-
-    def __init__(self, x: np.ndarray, window_bars: int):
-        """Build the windows; see the class docstring for parameters."""
-        if x.ndim != 3:
-            raise ValueError(f"expected a [T, S, F] array, got shape {x.shape}")
-        if window_bars < 1:
-            raise ValueError(f"window_bars must be at least 1, got {window_bars}")
-        self.window_bars = int(window_bars)
-        self.present = np.isfinite(x).any(axis=-1)
-        values = np.asarray(x, dtype=np.float32)
-        pad = np.full((self.window_bars - 1,) + values.shape[1:], np.nan, dtype=np.float32)
-        self._padded = np.concatenate([pad, values], axis=0)
-
-    @property
-    def num_times(self) -> int:
-        """Number of bars T.
-
-        Examples
-        --------
-        >>> CrossSectionWindows(np.zeros((4, 2, 1)), 2).num_times
-        4
-        """
-        return self.present.shape[0]
-
-    def symbols(self, t: int) -> np.ndarray:
-        """Return the symbol positions in the cross-section of bar ``t``.
-
-        Examples
-        --------
-        >>> CrossSectionWindows(np.zeros((1, 3, 1)), 1).symbols(0)
-        array([0, 1, 2])
-        """
-        return np.flatnonzero(self.present[t])
-
-    def window(self, t: int, symbols: np.ndarray) -> np.ndarray:
-        """Return the ``[len(symbols), N, F]`` windows ending at bar ``t``.
-
-        Examples
-        --------
-        >>> windows = CrossSectionWindows(np.ones((2, 3, 4)), 5)
-        >>> windows.window(1, np.array([0, 2])).shape
-        (2, 5, 4)
-        """
-        block = self._padded[t : t + self.window_bars, symbols]
-        return np.ascontiguousarray(block.transpose(1, 0, 2))
-
-
-@dataclass
-class CrossSectionBatch:
-    """One bar's cross-section, as every step hook and ``_loss`` receive it.
-
-    Attributes
-    ----------
-    x : torch.Tensor
-        ``[S_t, N, F]`` windows after the head's ``_transform_feature``.
-    y : torch.Tensor
-        ``[S_t, L]`` targets after the head's ``_transform_target``, with
-        every invalid entry set to 0.
-    mask : torch.Tensor
-        ``[S_t, L]`` booleans, True where ``y`` is a valid target: the label
-        exists and its transform is finite. A loss should count only these.
-    y_raw : torch.Tensor
-        ``[S_t, L]`` raw labels of the same symbols, NaN where missing.
-    symbols : np.ndarray
-        The symbol labels of the ``S_t`` rows, in row order.
-    timestamp : np.datetime64
-        The bar.
-
-    Examples
-    --------
-    >>> batch = CrossSectionBatch(
-    ...     x=torch.zeros(2, 1, 1), y=torch.tensor([[1.0], [0.0]]),
-    ...     mask=torch.tensor([[True], [False]]),
-    ...     y_raw=torch.tensor([[1.0], [float("nan")]]),
-    ...     symbols=np.array(["A", "B"]), timestamp=np.datetime64("2024-01-02"),
-    ... )
-    >>> int(batch.mask.sum())
-    1
-    """
-
-    x: torch.Tensor
-    y: torch.Tensor
-    mask: torch.Tensor
-    y_raw: torch.Tensor
-    symbols: np.ndarray
-    timestamp: np.datetime64
 
 
 #: Qlib's ``CSRankNorm`` scale, which gives a uniform rank roughly unit std.
@@ -317,11 +190,12 @@ def masked_mse(pred: torch.Tensor, y: torch.Tensor, mask: torch.Tensor) -> torch
     Parameters
     ----------
     pred : torch.Tensor
-        Predictions, ``[S_t, L]``.
+        Predictions, ``mask.shape + (L,)``, for example ``[S_t, L]``.
     y : torch.Tensor
         Targets of the same shape.
     mask : torch.Tensor
-        Booleans of the same shape; typically ``batch.mask``.
+        Booleans over the sample dimensions (typically ``batch.mask``), or
+        of the same shape as ``pred`` to mask single labels.
 
     Returns
     -------
@@ -331,7 +205,7 @@ def masked_mse(pred: torch.Tensor, y: torch.Tensor, mask: torch.Tensor) -> torch
     Examples
     --------
     >>> masked_mse(torch.tensor([[1.0], [5.0]]), torch.tensor([[0.0], [0.0]]),
-    ...            torch.tensor([[True], [False]]))
+    ...            torch.tensor([True, False]))
     tensor(1.)
     """
     return ((pred[mask] - y[mask]) ** 2).mean()

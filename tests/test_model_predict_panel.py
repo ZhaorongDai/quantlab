@@ -343,7 +343,7 @@ def test_a_network_that_does_not_return_s_by_l_raises_naming_the_head(tmp_path):
     model = TupleHead(ModelConfig(**_config_kwargs(tmp_path)))
     model.model = model._init_model(len(FACTORS), len(LABELS), {})
 
-    with pytest.raises(ValueError, match="TupleHead.*\\[S_t, L\\]"):
+    with pytest.raises(ValueError, match=r"TupleHead._forward must return a tensor shaped like the batch.s mask plus the labels"):
         model.predict_panel(_features(model))
 
 

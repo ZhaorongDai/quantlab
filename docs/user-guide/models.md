@@ -403,17 +403,25 @@ mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
 
 ## Train a torch head
 
-A torch head writes three things: `window_bars` (N, the bars in each
-symbol's window), `_init_model` (an `nn.Module` mapping one bar's windows,
-`[S_t, N, F]`, to `[S_t, L]`) and `_loss(output, batch)`. `batch` carries the
-bar's inputs `x`, targets `y`, a `mask` of the valid targets, the raw labels,
-the symbols and the timestamp; missing labels are already masked, so the
-loss only counts `batch.mask`, as `masked_mse` does. Everything else is an
-optional hook with a default: the feature transform (clip to ±3, NaN to 0),
-the target transform (none; `cs_rank_norm`, `cs_zscore` and `drop_extreme`
-are ready to use), the optimizer (Adam at the `lr` hyperparameter), the training,
-validation and test steps, the mapping to the prediction, and when to stop
-(by default after the `epochs` hyperparameter's count of epochs). This head is a small MLP on each
+A torch head is fed through a standard PyTorch `Dataset` and `DataLoader`.
+By default each item is one bar's cross-section: the symbols present at the
+bar, each with its last `window_bars` bars. The head writes three things:
+`window_bars` (N), `_init_model` (an `nn.Module` mapping one bar's windows,
+`[S_t, N, F]`, to `[S_t, L]`) and `_loss(output, batch)`. `batch` is a
+`Batch` holding the inputs `x`, the training target `y`, a `mask` of the
+samples with a valid target, the raw labels `y_raw`, and `where`, the
+timestamp and symbol index of each sample; missing labels are already
+masked, so the loss only counts `batch.mask`, as `masked_mse` does. The
+training target is computed once per fit by the target transform, before
+the first epoch. Everything else is an optional hook with a default: the
+dataset (`_dataset`, one item per bar) and its loader (`_dataloader`), the
+feature transform (clip to ±3, NaN to 0), the target transform (none;
+`cs_rank_norm`, `cs_zscore` and `drop_extreme` are ready to use), the
+optimizer (Adam at the `lr` hyperparameter), the training, validation and
+test steps, the mapping to the prediction, and when to stop (by default
+after the `epochs` hyperparameter's count of epochs). Evaluation runs under
+`no_grad` in eval mode, and predictions are put back into the panel through
+`where`. This head is a small MLP on each
 symbol's flattened five-bar window; it ranks the target per bar and keeps
 the epoch with the lowest validation loss:
 
@@ -469,7 +477,7 @@ print(checkpoint.name, round(scores["val_ic"], 3), round(scores["test_ic"], 3))
 ```
 
 ```text
-WindowMLPHead_total.pth 0.278 0.261
+WindowMLPHead_total.pth 0.277 0.261
 ```
 
 A five-bar window needs four bars of history before the first bar, so

@@ -40,8 +40,8 @@ from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.factor import FactorKunQuant
 from quantlab.base.model import BaseModel, TorchModel
 from quantlab.dataset.spot import SpotKlineDataset
+from quantlab.torch_model.data import Batch
 from quantlab.torch_model.training import (
-    CrossSectionBatch,
     TrainLossThreshold,
     cs_rank_norm,
     cs_zscore,
@@ -435,20 +435,30 @@ def test_transforms_are_per_bar_so_a_per_bar_rescale_trains_the_same_model(
         torch.testing.assert_close(value, _weights(rescaled)[key], rtol=1e-4, atol=1e-5)
 
 
-def test_drop_extreme_removes_symbols_from_the_training_cross_section_only(
-    tmp_path, recorders
-):
+def test_drop_extreme_removes_symbols_from_the_training_loss_only(tmp_path, recorders):
+    """`keep` folds into the mask: a dropped symbol stays in the input."""
     features = _features(n_symbols=10)
     label = _label_of(features)
     symbols = [f"S{i}" for i in range(10)]
-    model = _model(tmp_path, features, label, cls=RecordingHead, symbols=symbols,
+    counted: list[tuple[int, int, bool]] = []
+
+    class Spy(RecordingHead):
+        def _loss(self, output, batch):
+            counted.append((batch.x.shape[0], int(batch.mask.sum()), self.model.training))
+            return super()._loss(output, batch)
+
+    model = _model(tmp_path, features, label, cls=Spy, symbols=symbols,
                    epochs=1, val_size=0.0,
                    hyperparameters={"transform": ("zscore", 0.1)})
     model.train()
 
-    sizes = [x.shape[0] for x in model.model.inputs]
-    assert sizes[:30] == [8] * 30  # 30 training bars, one extreme dropped per tail
-    assert set(sizes[30:]) == {10}  # evaluation keeps the whole cross-section
+    assert {x.shape[0] for x in model.model.inputs} == {10}
+    training = [(rows, valid) for rows, valid, train in counted if train]
+    assert training == [(10, 8)] * 30  # one extreme dropped per tail, from the loss
+    # Evaluation: the train split's loss is on its training target, the test
+    # split's on the whole cross-section (training=False drops nothing).
+    evaluated = [(rows, valid) for rows, valid, train in counted if not train]
+    assert evaluated == [(10, 8)] * 30 + [(10, 10)] * 10
 
 
 def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path, recorders):
@@ -669,7 +679,7 @@ def test_the_loss_hook_sees_a_masked_zero_filled_target_and_the_bar(tmp_path, re
     features = _features()
     label = _label_of(features)
     label[:, 2] = np.nan
-    seen: list[CrossSectionBatch] = []
+    seen: list[Batch] = []
 
     class Spy(MinimalHead):
         def _loss(self, output, batch):
@@ -679,12 +689,14 @@ def test_the_loss_hook_sees_a_masked_zero_filled_target_and_the_bar(tmp_path, re
     _model(tmp_path, features, label, cls=Spy, epochs=1, val_size=0.0).train()
 
     batch = seen[0]
-    row = list(batch.symbols).index("S2")
-    assert not batch.mask[row].any() and batch.y[row].eq(0).all()
+    t_idx, s_idx = batch.where
+    assert s_idx.tolist() == list(range(len(SYMBOLS)))  # every symbol, S2 as context
+    assert len(set(t_idx.tolist())) == 1 and int(t_idx[0]) < 30  # one training bar
+    row = s_idx.tolist().index(2)
+    assert not batch.mask[row] and batch.y[row].eq(0).all()
     assert torch.isnan(batch.y_raw[row]).all()
     assert torch.isfinite(batch.y).all()
-    assert list(batch.symbols) == SYMBOLS
-    assert batch.timestamp in TIMES[:30]
+    assert batch.mask.shape == (len(SYMBOLS),)
     assert batch.x.shape == (len(SYMBOLS), 2, 2)
 
 
@@ -749,3 +761,350 @@ def test_a_transform_feature_that_leaves_nan_is_refused_naming_the_head(tmp_path
 
     with pytest.raises(ValueError, match="LeavesNaN._transform_feature"):
         _model(tmp_path, _features(), _label_of(_features()), cls=LeavesNaN, epochs=1).train()
+
+
+# ---------------------------------------------------------------------------
+# Datasets, loaders and the where-scatter (issue #50)
+# ---------------------------------------------------------------------------
+
+
+class CellDataset(torch.utils.data.Dataset):
+    """One item per present `(bar, symbol)` cell, `x` shaped `[1, N, F]`.
+
+    In training only cells with a valid target; in evaluation every present
+    cell, or the cells `edit` leaves (to break the coverage contract)."""
+
+    def __init__(self, panel, bars, window_bars, training, edit=None):
+        self.panel, self.window_bars = panel, window_bars
+        usable = panel.mask if training else panel.present
+        cells = [(int(t), int(s)) for t in bars for s in torch.nonzero(usable[t]).flatten()]
+        self.cells = edit(cells) if edit is not None else cells
+
+    def __len__(self):
+        return len(self.cells)
+
+    def __getitem__(self, i):
+        t, s = self.cells[i]
+        symbols = torch.tensor([s])
+        p = self.panel
+        return Batch(
+            x=p.window(t, symbols, self.window_bars), y=p.target[t, symbols],
+            mask=p.mask[t, symbols], y_raw=p.y_raw[t, symbols],
+            where=(torch.tensor([t]), symbols),
+        )
+
+
+class CellHead(MinimalHead):
+    """`MinimalHead` (no cross-sectional context) trained one cell per step."""
+
+    edit = None
+
+    def _dataset(self, panel, bars, training):
+        return CellDataset(panel, bars, self.window_bars, training,
+                           None if training else self.edit)
+
+
+def test_a_custom_dataset_trains_and_its_predictions_land_in_their_cells(
+    tmp_path, recorders
+):
+    features = _features()
+    features["f_a"][:10, 3] = np.nan
+    features["f_b"][:10, 3] = np.nan  # S3 absent on bars 0..9
+    label = _label_of(features)
+    model = _model(tmp_path, features, label, cls=CellHead, epochs=2)
+    checkpoint = model.train()
+
+    out = model.predict_panel(_feature_panel(features))["ret"].values
+    # The same weights through the default cross-section dataset predict the
+    # same cells, so `where` put every cell-sample back where it belongs.
+    reference = MinimalHead(model.config).load(checkpoint)
+    expected = reference.predict_panel(_feature_panel(features))["ret"].values
+    np.testing.assert_allclose(out, expected, rtol=1e-5, atol=1e-6)
+    assert np.isnan(out[:10, 3]).all() and np.isfinite(out[10:, 3]).all()
+
+
+@pytest.mark.parametrize(
+    "edit, what",
+    [
+        (lambda cells: [c for c in cells if c != (35, 1)], "left unpredicted"),
+        (lambda cells: cells + [(35, 1)], "predicted twice"),
+    ],
+    ids=["skip", "repeat"],
+)
+def test_a_dataset_that_skips_or_repeats_a_present_symbol_raises_naming_the_bar(
+    tmp_path, recorders, edit, what
+):
+    features = _features()
+    model = _model(tmp_path, features, _label_of(features), cls=CellHead, epochs=1)
+    model.train()
+    model.edit = staticmethod(edit)
+
+    with pytest.raises(ValueError, match=rf"'S1' at bar 2024-02-05.*{what}"):
+        model.predict_panel(_feature_panel(features))
+
+
+class TargetCallsHead(MinimalHead):
+    """Records every `_transform_target` call; the label encodes its bar."""
+
+    def _transform_target(self, y, training):
+        self.calls.append((int(y[0, 0]), training))
+        return y, None
+
+
+def test_transform_target_runs_once_per_bar_per_fit_and_trains_only_on_train_bars(
+    tmp_path, recorders
+):
+    features = _features()
+    label = np.repeat(np.arange(N_TIMES, dtype=float)[:, None], len(SYMBOLS), axis=1)
+    TargetCallsHead.calls = []
+    model = _model(tmp_path, features, label, cls=TargetCallsHead, epochs=3,
+                   labels=[StubLabel(Panel({"ret": label}), lookahead=1)])
+    model.train()
+
+    calls = TargetCallsHead.calls
+    assert len(calls) == len({bar for bar, _ in calls})  # once per bar, not per epoch
+    # train_end = bar 29 and val_size 0.2: train 0..22, val 24..28, test 30..39
+    # (the purge drops bar 23 and bar 29).
+    assert sorted(bar for bar, training in calls if training) == list(range(0, 23))
+    assert sorted(bar for bar, training in calls if not training) == (
+        list(range(24, 29)) + list(range(30, 40))
+    )
+
+
+class SymbolCountLossHead(MinimalHead):
+    """Evaluation loss of a batch = its number of symbols."""
+
+    def _val_one_batch(self, epoch, batch):
+        return torch.tensor(float(batch.x.shape[0]))
+
+
+def test_split_loss_weights_every_bar_equally_whatever_its_symbol_count(
+    tmp_path, recorders
+):
+    symbols = [f"S{i}" for i in range(20)]
+    features = _features(n_symbols=20)
+    for values in features.values():
+        values[::2, 2:] = np.nan  # even bars hold 2 symbols, odd bars 20
+    label = _label_of(features)
+    model = _model(tmp_path, features, label, cls=SymbolCountLossHead, symbols=symbols,
+                   epochs=1)
+    checkpoint = model.train()
+
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    assert metrics["test_loss"] == pytest.approx(11.0)  # (2 + 20) / 2, not 20*20+2*2 / 22
+
+
+def test_the_default_loaders_keep_the_last_batch_and_shuffle_only_in_training(tmp_path):
+    features = _features()
+    model = _model(tmp_path, features, _label_of(features), cls=MinimalHead,
+                   hyperparameters={"batch_size": 3})
+    items = torch.utils.data.TensorDataset(torch.arange(10))
+    for training in (True, False):
+        loader = model._dataloader(items, training=training)
+        assert not loader.drop_last and len(loader) == 4
+        values = sorted(v for (batch,) in loader for v in batch.tolist())
+        assert values == list(range(10))
+    evaluated = [v for (batch,) in model._dataloader(items, training=False) for v in batch.tolist()]
+    assert evaluated == list(range(10))
+
+
+class ModeRecordingHead(MinimalHead):
+    """Records grad mode and module mode wherever the base evaluates."""
+
+    def _val_one_batch(self, epoch, batch):
+        self.modes.append(("val", torch.is_grad_enabled(), self.model.training))
+        return super()._val_one_batch(epoch, batch)
+
+    def _test_one_batch(self, epoch, batch):
+        self.modes.append(("test", torch.is_grad_enabled(), self.model.training))
+
+    def _forward(self, x):
+        self.modes.append(("forward", torch.is_grad_enabled(), self.model.training))
+        return super()._forward(x)
+
+    def _train_one_batch(self, epoch, batch):
+        self.modes.append(("train", torch.is_grad_enabled(), self.model.training))
+        return super()._train_one_batch(epoch, batch)
+
+
+def test_evaluation_runs_without_gradients_in_eval_mode(tmp_path, recorders):
+    features = _features()
+    ModeRecordingHead.modes = []
+    model = _model(tmp_path, features, _label_of(features), cls=ModeRecordingHead, epochs=2)
+    model.train()
+    model.predict_panel(_feature_panel(features))
+
+    kinds = {kind for kind, _, _ in model.modes}
+    assert kinds == {"train", "val", "test", "forward"}
+    assert all(grad and training for kind, grad, training in model.modes if kind == "train")
+    assert not any(grad or training for kind, grad, training in model.modes if kind != "train")
+
+
+def test_a_one_symbol_cross_section_trains_and_predicts(tmp_path, recorders):
+    features = _features()
+    for values in features.values():
+        values[::3, 1:] = np.nan  # every third bar holds S0 alone
+    label = _label_of(features)
+    model = _model(tmp_path, features, label, hyperparameters={"transform": "rank"})
+    model.train()
+
+    out = model.predict_panel(_feature_panel(features))["ret"].values
+    assert np.isfinite(out[::3, 0]).all() and np.isnan(out[::3, 1:]).all()
+
+
+class OrderRecordingHead(MinimalHead):
+    def _train_one_batch(self, epoch, batch):
+        self.order.append((epoch, int(batch.where[0][0])))
+        return super()._train_one_batch(epoch, batch)
+
+
+def test_training_visits_bars_in_a_seeded_shuffled_order(tmp_path, recorders):
+    features = _features()
+    orders = []
+    for name in ("a", "b"):
+        OrderRecordingHead.order = []
+        _model(tmp_path, features, _label_of(features), cls=OrderRecordingHead,
+               name=name, epochs=2).train()
+        orders.append(list(OrderRecordingHead.order))
+
+    first = [bar for epoch, bar in orders[0] if epoch == 0]
+    second = [bar for epoch, bar in orders[0] if epoch == 1]
+    assert sorted(first) == sorted(second) and first != sorted(first)
+    assert first != second  # a fresh order every epoch
+    assert orders[0] == orders[1]  # reproducible from random_seed
+
+
+class WindowedOrderHead(OrderRecordingHead):
+    window_bars = 5
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return torch.nn.Sequential(
+            torch.nn.Flatten(), torch.nn.Linear(5 * num_features, num_labels)
+        )
+
+
+def test_the_purge_covers_the_label_lookahead_and_never_the_window(tmp_path, recorders):
+    features = _features()
+    label = _label_of(features)
+    WindowedOrderHead.order = []
+    model = _model(tmp_path, features, label, cls=WindowedOrderHead, epochs=1, val_size=0.0,
+                   labels=[StubLabel(Panel({"ret": label}), lookahead=1)])
+    with pytest.warns(UserWarning, match="warm-up"):
+        model.collect()
+    model.train()
+
+    # Training window 0..29, L = 1: bar 29 is purged, and nothing else; a
+    # five-bar window costs no training bar.
+    assert sorted(bar for _, bar in WindowedOrderHead.order) == list(range(0, 29))
+
+
+class TwoNetworkHead(TorchModel):
+    """Two networks in an `nn.ModuleDict`, each with its own optimizer and loss."""
+
+    window_bars = 1
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return torch.nn.ModuleDict({
+            "fast": torch.nn.Linear(num_features, num_labels),
+            "slow": torch.nn.Linear(num_features, num_labels),
+        })
+
+    def _init_optim(self, model):
+        return {
+            "fast": torch.optim.SGD(model["fast"].parameters(), lr=0.1),
+            "slow": torch.optim.SGD(model["slow"].parameters(), lr=0.01),
+        }
+
+    def _forward(self, x):
+        last = x[:, -1]
+        return (self.model["fast"](last) + self.model["slow"](last)) / 2
+
+    def _loss(self, output, batch):
+        return masked_mse(output, batch.y, batch.mask)
+
+    def _train_one_batch(self, epoch, batch):
+        last = batch.x[:, -1]
+        total = 0.0
+        for name, optim in self.optim.items():
+            optim.zero_grad()
+            loss = masked_mse(self.model[name](last), batch.y, batch.mask)
+            loss.backward()
+            optim.step()
+            total += float(loss)
+        return torch.tensor(total / 2)
+
+    def _val_one_batch(self, epoch, batch):
+        return self._loss(self._forward(batch.x), batch)
+
+
+def test_a_module_dict_head_with_two_optimizers_trains_checkpoints_and_reloads(
+    tmp_path, recorders
+):
+    features = _features()
+    label = _label_of(features)
+    model = _model(tmp_path, features, label, cls=TwoNetworkHead, epochs=3)
+
+    checkpoint = model.train()
+
+    (run,) = recorders
+    assert run.logged[-1]["train_loss"] < run.logged[0]["train_loss"]
+    state = torch.load(checkpoint)
+    assert {k.split(".")[0] for k in state} == {"fast", "slow"}
+    fresh = TwoNetworkHead(model.config).load(checkpoint)
+    xr.testing.assert_allclose(
+        fresh.predict_panel(_feature_panel(features)),
+        model.predict_panel(_feature_panel(features)),
+    )
+
+
+class SymbolIndexLossCellHead(CellHead):
+    """One cell per batch; its evaluation loss is the cell's symbol index."""
+
+    def _val_one_batch(self, epoch, batch):
+        return batch.where[1].float().mean()
+
+
+def test_split_loss_is_per_bar_when_a_bar_spans_many_batches(tmp_path, recorders):
+    symbols = [f"S{i}" for i in range(20)]
+    features = _features(n_symbols=20)
+    for values in features.values():
+        values[::2, 2:] = np.nan  # even bars: S0, S1; odd bars: S0..S19
+    model = _model(tmp_path, features, _label_of(features), cls=SymbolIndexLossCellHead,
+                   symbols=symbols, epochs=1)
+    checkpoint = model.train()
+
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    # Per bar: mean index 0.5 on even bars, 9.5 on odd bars; the test split
+    # (bars 30..39) has five of each, so 5.0. A per-cell mean would give
+    # (5 * 1 + 5 * 190) / 110.
+    assert metrics["test_loss"] == pytest.approx(5.0)
+
+
+class WrongShapeHead(MinimalHead):
+    def _forward(self, x):
+        return super()._forward(x)[:, :1].repeat(1, 2)  # L = 1, returns 2 columns
+
+
+class DroppedRowHead(MinimalHead):
+    def _forward(self, x):
+        return super()._forward(x)[1:]  # one row fewer than the mask
+
+
+@pytest.mark.parametrize("cls", [WrongShapeHead, DroppedRowHead], ids=["labels", "rows"])
+def test_a_forward_tensor_of_the_wrong_shape_raises_naming_the_head(tmp_path, recorders, cls):
+    features = _features()
+    with pytest.raises(ValueError, match=rf"{cls.__name__}._forward must return a tensor "
+                                         rf"shaped like the batch's mask plus the labels, \[6, 1\]"):
+        _model(tmp_path, features, _label_of(features), cls=cls, epochs=1).train()
+
+
+def test_a_dataset_predicting_outside_the_present_cells_raises(tmp_path, recorders):
+    features = _features()
+    for values in features.values():
+        values[35, 4] = np.nan  # S4 absent at bar 35
+    model = _model(tmp_path, features, _label_of(features), cls=CellHead, epochs=1)
+    model.train()
+    model.edit = staticmethod(lambda cells: cells + [(35, 4)])
+
+    with pytest.raises(ValueError, match=r"'S4' at bar 2024-02-05.*predicted outside"):
+        model.predict_panel(_feature_panel(features))

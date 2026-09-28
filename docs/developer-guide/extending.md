@@ -660,14 +660,19 @@ before `_init_model` (to log the run config), so either compute it from
 `XGBoostRegressor` does. The checkpoint
 is a joblib pickle of `self.model`; only load files you trust.
 
-`TorchModel` is for PyTorch networks trained on one cross-section per step: the
-symbols with a finite feature at a bar, each with its own window of the last
-`window_bars` bars. A head writes `window_bars`, `_init_model(num_features,
-num_labels, hyperparameters)`, returning an `nn.Module` that maps
-`[S_t, N, F]` to `[S_t, L]` for any number of symbols S_t, and
-`_loss(output, batch)`, where `batch` is a `CrossSectionBatch` (`x`, `y`,
-`mask`, `y_raw`, `symbols`, `timestamp`) with missing labels already masked.
-Every other choice is an optional hook with a default: `_transform_feature`
+`TorchModel` is for PyTorch networks fed through a standard `Dataset` and
+`DataLoader`. By default a step is one cross-section: the symbols with a
+finite feature at a bar, each with its own window of the last `window_bars`
+bars. A head writes `window_bars`, `_init_model(num_features, num_labels,
+hyperparameters)`, returning an `nn.Module` that maps `[S_t, N, F]` to
+`[S_t, L]` for any number of symbols S_t, and `_loss(output, batch)`, where
+`batch` is a `quantlab.torch_model.data.Batch` (`x`, `y`, `mask`, `y_raw`,
+`where`) with missing labels already masked. Every other choice is an
+optional hook with a default: `_dataset` (`CrossSectionDataset`, one item per
+bar; return your own `Dataset` for another sample shape, with every item's
+`where` placing its samples in the panel), `_dataloader` (`batch_size` and
+`num_workers` from the hyperparameters, shuffled only in training, seeded,
+never dropping the last batch), `_transform_feature`
 (clip to ±3, NaN to 0), `_transform_target` (none), `_init_optim` (Adam at
 the `lr` hyperparameter), `_train_one_batch` / `_val_one_batch` / `_test_one_batch`,
 `_forward` (the network's output is the prediction) and the stop hooks
@@ -678,8 +683,11 @@ hyperparameter's count of epochs). `_init_model` receives the whole
 `early_stopping_patience`) the base classes read, so read the head's own keys
 by name rather than splatting the dict into the network. `quantlab.torch_model.training` has helpers for them: `masked_mse`,
 `cs_rank_norm`, `cs_zscore`, `drop_extreme` and `TrainLossThreshold`. The
-base class builds the windows, shuffles the bars, masks the targets, runs
-the epoch loop, and writes the same `metrics.json` as `LibraryModel`. The model
+base class builds the training panel, computes the training target once per
+fit, moves batches to the device, runs the epoch loop, evaluates under
+`no_grad` in eval mode, scatters predictions back through `where` (refusing a
+dataset that misses or repeats a present cell), and writes the same
+`metrics.json` as `LibraryModel`. The model
 requests `window_bars - 1` extra bars of each factor before its start date.
 A GRU per symbol followed by attention across the bar's symbols:
 

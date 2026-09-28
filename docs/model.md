@@ -227,26 +227,35 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 
 ### Train a torch model
 
-A torch head (`TorchModel`) trains on one bar per step: the *cross-section* of that bar, meaning the symbols with at least one finite feature there, each carrying its own last `window_bars` bars of features. The network sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
+A torch head (`TorchModel`) is fed through standard PyTorch components. The base class builds a *training panel* of torch tensors from the collected data: features `x` (`[T, S, F]`), the training target (`[T, S, L]`), its `mask` (`[T, S]`), the raw labels `y_raw` and `present` (`[T, S]`, a cell with at least one finite feature), with the timestamps and symbols. The head's `_dataset(panel, bars, training)` returns a `torch.utils.data.Dataset` over some bars and `_dataloader(dataset, training)` batches it. The default dataset, `CrossSectionDataset` in `quantlab.torch_model.data`, gives one item per bar: the bar's *cross-section*, meaning its present symbols, each carrying its own last `window_bars` bars of features. The network then sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
 
-A head writes three things: `window_bars` (N), `_init_model(num_features, num_labels, hyperparameters)` (the network) and `_loss(output, batch)`, the loss of one bar. `output` is whatever the network returned and `batch` is a `CrossSectionBatch`: `x` (`[S_t, N, F]`), `y` (the target, `[S_t, L]`), `mask` (True where `y` is a valid target), `y_raw` (the raw labels), `symbols` and `timestamp`. Missing labels are already masked and set to 0 in `y`, so a loss only has to count the `mask` entries, as `masked_mse` in `quantlab.torch_model.training` does. Every other choice is an optional hook with a working default:
+Every item is a `Batch`: `x`, `y` (the training target, 0 where invalid), `mask` (True where the sample has a valid training target in every label), `y_raw` (the raw labels) and `where`, the timestamp index and symbol index of every sample, shaped like `mask`. For one cross-section `mask` is `[S_t]` and `y` is `[S_t, L]`. Predictions for every split and for `predict_panel` come from the `training=False` dataset and are put back into `[T, S, L]` through `where`; a dataset that leaves a present cell unpredicted, or predicts it twice, raises `ValueError` naming the bar.
+
+The training target is computed once per fit, before the first epoch: `_transform_target(y, training)` receives each bar's raw labels, with `training=True` on the training bars only. The `keep` it returns only removes symbols from the loss. A target that should change every epoch, such as label noise, belongs in the head's own `_train_one_batch`.
+
+A head writes three things: `window_bars` (N), `_init_model(num_features, num_labels, hyperparameters)` (the network, or several in an `nn.ModuleDict`) and `_loss(output, batch)`, the loss of one batch. `output` is whatever the network returned. Missing labels are already masked and set to 0 in `y`, so a loss only has to count the `mask` samples, as `masked_mse` in `quantlab.torch_model.training` does. Every other choice is an optional hook with a working default:
 
 | Hook | Default |
 |---|---|
-| `_transform_feature(x)`: raw windows, NaN where missing, to the network input | clip to ±3, NaN to 0 |
-| `_transform_target(y, training)`: one bar's raw labels to `(target, keep)`; `keep` drops symbols from that step | `(y, None)`; helpers `cs_rank_norm` (Qlib `CSRankNorm`), `cs_zscore`, `drop_extreme` |
-| `_init_optim(model)` | Adam at `hyperparameters["lr"]` (`1e-3`) |
+| `_dataset(panel, bars, training)`: the PyTorch `Dataset` over `bars` | `CrossSectionDataset`, one item per bar |
+| `_dataloader(dataset, training)`: the `DataLoader` | `batch_size` and `num_workers` from the hyperparameters (`None`, one item per step, and 0); shuffled only in training, with a generator seeded from `random_seed`; the last batch never dropped |
+| `_transform_feature(x)`: a batch's raw `x`, NaN where missing, to the network input | clip to ±3, NaN to 0 |
+| `_transform_target(y, training)`: one bar's raw labels to `(target, keep)`; `keep` drops symbols from the loss | `(y, None)`; helpers `cs_rank_norm` (Qlib `CSRankNorm`), `cs_zscore`, `drop_extreme` |
+| `_init_optim(model)`: anything the training step understands, such as a dict of optimizers | Adam at `hyperparameters["lr"]` (`1e-3`) |
 | `_train_one_batch(epoch, batch)`: one optimisation step, returns the loss | forward, `_loss`, backward, gradient values clipped to `grad_clip_value` (3.0), step |
-| `_val_one_batch(epoch, batch)`: validation loss of one bar | `_loss` |
-| `_test_one_batch(epoch, batch)`: called on every test bar after each epoch | nothing |
-| `_forward(x)`: the `[S_t, L]` prediction, for metrics and `predict_panel` | `self.model(x)` |
+| `_val_one_batch(epoch, batch)`: evaluation loss of one batch | `_loss` |
+| `_test_one_batch(epoch, batch)`: called on every test batch after each epoch | nothing |
+| `_forward(x)`: the prediction, `mask.shape + (L,)`, for metrics and `predict_panel` | `self.model(x)` |
 | `_on_fit_start()`, `_should_stop(epoch, train_loss, val_loss)`, `_on_fit_end()` | run `hyperparameters["epochs"]` (100) epochs, keep the last weights |
 
-`train_loss` and `val_loss` are the means of what the step hooks return; `val_loss` is None without a validation segment. The cap on training is the `epochs` hyperparameter and the default optimizer reads `lr` (see Configuration and reserved hyperparameters). There is no batch size: bars are visited in shuffled order, one per step. Metrics are always computed on the raw first label.
+The base moves each batch to the device and applies `_transform_feature`, checking that the shape is kept and every value is finite. Training runs in `train()` mode; validation, the test hook and prediction run under `no_grad` in `eval()` mode. `train_loss` and `val_loss` are the means of what the step hooks return; `val_loss` is None without a validation segment. `{split}_loss` is the mean of `_val_one_batch` over the split's batches, so with the default dataset every bar weighs the same whatever its number of symbols. The cap on training is the `epochs` hyperparameter and the default optimizer reads `lr` (see Configuration and reserved hyperparameters). Metrics are always computed on the raw first label.
 
-A model with `window_bars` N needs N - 1 bars of history before the first bar it predicts. `collect()`, and a backtest's feature request, ask each factor for that many extra bars, counted on the factor's own dataset calendar, and warn when the data does not reach that far back. The stand-in panels here have no dataset, so this head uses a one-bar window; it z-scores the target per bar and stops after five epochs without a lower validation loss.
+A model with `window_bars` N needs N - 1 bars of history before the first bar it predicts. `collect()`, and a backtest's feature request, ask each factor for that many extra bars, counted on the factor's own dataset calendar, and warn when the data does not reach that far back. The purge before each split covers only the label lookahead, never the window. The stand-in panels here have no dataset, so these heads use a one-bar window.
+
+The smallest head is a window, a network and a loss:
 
 ```python
+>>> import torch
 >>> import torch.nn as nn
 >>> from quantlab.base.config import ModelConfig
 >>> from quantlab.base.model import TorchModel
@@ -258,41 +267,65 @@ A model with `window_bars` N needs N - 1 bars of history before the first bar it
 ...         self.linear = nn.Linear(num_features, num_labels)
 ...     def forward(self, x):              # x: [S_t, N, F]
 ...         return self.linear(x[:, -1])   # [S_t, L]
->>> class LinearHead(TorchModel):
+>>> class MinimalHead(TorchModel):
 ...     window_bars = 1
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         return LastBar(num_features, num_labels)
 ...     def _loss(self, output, batch):
 ...         return masked_mse(output, batch.y, batch.mask)
-...     def _transform_target(self, y, training):
-...         return cs_zscore(y), None
-...     def _on_fit_start(self):
-...         self.best, self.bad = float("inf"), 0
-...     def _should_stop(self, epoch, train_loss, val_loss):
-...         if val_loss < self.best:
-...             self.best, self.bad = val_loss, 0
-...         else:
-...             self.bad += 1
-...         return self.bad >= 5
 >>> torch_config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
 ...     train_start="2024-01-01", train_end="2024-05-31",
 ...     test_start="2024-06-01", test_end="2024-07-18",
-...     hyperparameters={"epochs": 50, "lr": 1e-2},
+...     hyperparameters={"epochs": 20, "lr": 1e-2},
 ... )
->>> linear = LinearHead(torch_config).collect()
->>> linear_checkpoint = linear.train()
->>> linear_checkpoint.name
-'LinearHead_total.pth'
->>> torch_metrics = json.loads((linear_checkpoint.parent / "metrics.json").read_text())
+>>> minimal = MinimalHead(torch_config).collect()
+>>> minimal_checkpoint = minimal.train()
+>>> minimal_checkpoint.name
+'MinimalHead_total.pth'
+>>> torch_metrics = json.loads((minimal_checkpoint.parent / "metrics.json").read_text())
 >>> {k: round(v, 3) for k, v in torch_metrics.items() if k.endswith("rank_ic")}
-{'train_rank_ic': 0.698, 'val_rank_ic': 0.69, 'test_rank_ic': 0.69}
+{'train_rank_ic': 0.697, 'val_rank_ic': 0.693, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
 >>> wider = xr.concat([factor.ds, one_more], dim="symbol")
->>> linear.predict_panel(wider).symbol.size
+>>> minimal.predict_panel(wider).symbol.size
 21
 ```
+
+This head chooses its own optimizer, loss and stopping rule. It z-scores the target per bar, trains with SGD and momentum on the negative Pearson correlation between prediction and target, and keeps the weights of its best validation epoch, stopping after five epochs without improvement:
+
+```python
+>>> def masked_neg_corr(pred, y, mask):
+...     """Minus the correlation of the first label over the valid samples."""
+...     p, t = pred[mask, 0], y[mask, 0]
+...     p, t = p - p.mean(), t - t.mean()
+...     return -(p * t).sum() / (p.norm() * t.norm() + 1e-8)
+>>> class CorrHead(MinimalHead):
+...     def _transform_target(self, y, training):
+...         return cs_zscore(y), None
+...     def _init_optim(self, model):
+...         return torch.optim.SGD(model.parameters(), lr=0.05, momentum=0.9)
+...     def _loss(self, output, batch):
+...         return masked_neg_corr(output, batch.y, batch.mask)
+...     def _on_fit_start(self):
+...         self.best, self.bad, self.best_state = float("inf"), 0, None
+...     def _should_stop(self, epoch, train_loss, val_loss):
+...         if val_loss < self.best:
+...             self.best, self.bad = val_loss, 0
+...             self.best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+...         else:
+...             self.bad += 1
+...         return self.bad >= 5
+...     def _on_fit_end(self):
+...         self.model.load_state_dict(self.best_state)
+>>> corr = CorrHead(replace(torch_config, hyperparameters={"epochs": 50})).collect()
+>>> corr_metrics = json.loads((corr.train().parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in corr_metrics.items() if k in ("val_loss", "test_rank_ic")}
+{'val_loss': -0.721, 'test_rank_ic': 0.691}
+```
+
+A head with another sample shape overrides `_dataset` (and, for multi-bar batches, `_dataloader` with its own sampler or collate function); `CrossSectionDataset` is the model to follow.
 
 ### Log to Weights & Biases
 
@@ -333,7 +366,7 @@ An `LibraryModel` head gets `[T, S, F]` features and `[T, S, L]` labels as array
 [0.05, -0.02, -0.001]
 ```
 
-A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `LinearHead` under Train a torch model is a complete one. The base class owns the windows, the warm-up, the target mask, the bar order, the epoch loop, the metrics and the checkpoints.
+A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
 
 ## Notes
 
@@ -348,7 +381,7 @@ TypeError: XGBoostRegressor requires a ModelConfig, got dict
 A torch head whose `epochs` hyperparameter is not a positive integer fails when training starts.
 
 ```text
-ValueError: LinearHead: hyperparameters['epochs'] must be a positive integer, got 0
+ValueError: MinimalHead: hyperparameters['epochs'] must be a positive integer, got 0
 ```
 
 It also refuses a label among the factors and a factor among the labels. Wrap a factor in `Forward` to predict it.
@@ -372,11 +405,17 @@ ValueError: Unsupported file type: '.pth'; XGBoostRegressor checkpoints use '.jo
 ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its config.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
 ```
 
-`predict_panel` needs every factor variable, and a torch network must return one row per symbol of the cross-section and one column per label.
+`predict_panel` needs every factor variable, and a torch head's `_forward` must return one row per sample of the batch (per symbol of the cross-section) and one column per label.
 
 ```text
 ValueError: XGBoostRegressor.predict_panel: features are missing factor variable(s) ['f_b']
-ValueError: LinearHead: the network must map [S_t, N, F] to a [S_t, L] = [20, 1] tensor, got <class 'tuple'>
+ValueError: TupleHead._forward must return a tensor shaped like the batch's mask plus the labels, [20, 1], got <class 'tuple'>
+```
+
+A torch head's evaluation dataset must predict every present cell of the bars asked for exactly once; here a custom dataset skips one symbol.
+
+```text
+ValueError: SkipHead: symbol 'S1' at bar 2024-02-05T00:00:00 was left unpredicted by the dataset CellDataset; every present cell must be predicted exactly once.
 ```
 
 `train` needs all four window dates. Set them on the config, or through `train_cv`, which sets them per fold.
