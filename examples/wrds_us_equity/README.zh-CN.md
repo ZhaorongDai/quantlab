@@ -6,14 +6,14 @@
 
 | 股票池 | 模型 pipeline | 因子分析 |
 | --- | --- | --- |
-| S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py` | `sp500_factor_analysis.py` |
-| Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py` | `nasdaq100_factor_analysis.py` |
-| CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py` | `market_factor_analysis.py`、`market_residual_momentum.py` |
+| S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py`、`sp500_gats.py`、`sp500_master.py` | `sp500_factor_analysis.py` |
+| Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py`、`nasdaq100_gats.py`、`nasdaq100_master.py` | `nasdaq100_factor_analysis.py` |
+| CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py`、`market_gats.py`、`market_master.py` | `market_factor_analysis.py`、`market_residual_momentum.py` |
 
-三个模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）和 `RealMLPRegressor`（pytabkit 调优默认参数的 MLP）。每个模型 pipeline 都跑同样的五步：
+模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）、`RealMLPRegressor`（pytabkit 调优默认参数的 MLP），以及两个在每个 bar 的股票截面上学习的 torch 模型：`GATsRegressor`（Qlib 的 GATs：先用 LSTM 读每只股票最近 20 根 bar，再在当根 bar 的股票之间做注意力）和 `MASTERRegressor`（MASTER：SPY、QQQ、IWM 的市场特征对股票特征做门控，再在每只股票最近 8 根 bar 之内和当根 bar 的股票之间做注意力）；[docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“在截面上训练 GATs”和“用市场特征训练 MASTER”两节分别介绍了它们。每个模型 pipeline 都跑同样的五步：
 
 1. **数据读取**：读取已转换的 CRSP 数据仓库及其成分股面板，写出两个派生仓库（`prices`、`members`）。
-2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，用 `build(START, END)` 写成 Zarr 仓库。
+2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，用 `build(START, END)` 写成 Zarr 仓库。torch pipeline 从 `START` 之前 `WINDOW_BARS - 1` 根 bar 开始构建，让第一根训练 bar 就有完整的窗口；MASTER pipeline 还会加上 `MarketFeatures`：SPY、QQQ、IWM 各 21 个特征，当天有数据的每只股票取值相同。
 3. **标签**：`Return`，即 t+1 开盘到 t+1+`HORIZON` 开盘的收益，只在成分股行上计算。
 4. **模型训练**：在训练窗口上训练一次。
 5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500 和全市场）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
@@ -36,8 +36,9 @@ uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2
 # CRSP 全市场（所有上市普通股；`--security-filter` 选证券类型）
 uv run python scripts/wrds/market.py --start 2010-01-01 --end 2024-12-31 \
     --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
-# 基准 ETF，按 CRSP PERMNO 下载（SPY 84398、QQQ 86755），每个 ETF 一个仓库
-uv run python scripts/wrds/etf.py --etf spy,qqq --start 2010-01-01 --end 2024-12-31 \
+# ETF，按 CRSP PERMNO 下载（SPY 84398、QQQ 86755、IWM 88222），每个 ETF 一个仓库：
+# 既是回测基准，也是 MASTER pipeline 的市场特征
+uv run python scripts/wrds/etf.py --etf spy,qqq,iwm --start 2010-01-01 --end 2024-12-31 \
     --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
 ```
 
@@ -51,9 +52,9 @@ uv run python scripts/fama_french.py --download-dir data/downloads
 
 会写出 `data/downloads/fama_french/ff3_daily.csv`，也就是脚本顶部 `FAMA_FRENCH_CSV` 指向的位置。
 
-每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr`（全市场脚本直接读它）和 `wrds_crsp_market_membership.zarr`（上市面板，全市场脚本用不到）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr` 和 `wrds_crsp_qqq_1d.zarr`。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
+每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr`（全市场脚本直接读它）和 `wrds_crsp_market_membership.zarr`（上市面板，全市场脚本用不到）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr`、`wrds_crsp_qqq_1d.zarr` 和 `wrds_crsp_iwm_1d.zarr`；缺少其中任何一个时，MASTER pipeline 会停下并提示需要运行的命令。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
 
-KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。
+KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。有 CUDA GPU 时 torch pipeline 会在 GPU 上训练；训练面板不超过 GPU 空闲显存的一半时也放在 GPU 上（超参数里的 `panel_device`、`panel_dtype`，见 [docs/zh-CN/model.md](../../docs/zh-CN/model.md)）。
 
 Weights & Biases 记录默认开启（`wandb_mode="online"`）：先运行一次 `wandb login`；或者把 `wandb_mode` 设为 `"offline"`（写到本地 `wandb/`，之后用 `wandb sync` 上传）或 `"disabled"`。
 
@@ -77,10 +78,12 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `DATA_ROOT`、`STORES`、`RAW`、`REFERENCE`、`WORK` | 数据根目录（`get_data_root()`：`QUANTLAB_DATA_DIR` 或仓库旁的 `data/`）及其下的输入输出位置 |
 | `START`、`END` | 数据窗口；每个因子在 `START` 之前读取 `warmup_bars` 根 bar 作为预热 |
 | `TRAIN_START` ... `TEST_END` | 训练窗口与样本外测试窗口（模型 pipeline） |
+| `WINDOW_BARS` | 每只股票窗口的 bar 数（torch pipeline：GATs 为 20，MASTER 为 8） |
+| `ETFS` | 用市场特征给股票特征做门控的 ETF（MASTER pipeline） |
 | `HORIZON` | 标签跨度（bar 数）；标签向前读 `HORIZON + 1` 根 bar（delay 为 1） |
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
-| `build_model()` | `ModelConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数，或 pytabkit 构造参数） |
+| `build_model()` | `ModelConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数、pytabkit 构造参数，或 torch 模型的设置，默认取参考实现的值：GATs 最多 200 个 epoch、耐心 10；MASTER 最多 40 个 epoch，训练损失降到 0.95 即停） |
 | `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10，全市场为 100）、`direction`、成本，以及 ETF `benchmark_dataset` |
 | `analyze()` | `Factor.analyze()` 的 `quantiles` 和 `factor_names`（因子分析 pipeline） |
 
@@ -91,6 +94,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 ```text
 prices.zarr, members.zarr     派生价格仓库（第 1 步；仅指数脚本）
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
+factor/market_features.zarr   SPY/QQQ/IWM 市场特征（MASTER pipeline）
 models/<model>/...            checkpoint、config.json
 backtests/<model>/...         权重、净值、metrics.json、report.html
 analysis/alpha101/, analysis/alpha158/, analysis/residual_momentum/
@@ -102,7 +106,7 @@ factor/residual_momentum.zarr 残差动量得分及其排名（market_residual_m
 
 ## Weights & Biases 记录的内容
 
-- **训练**：每次 `train()` 一个 run，项目名取自 trial 目录。内容包括完整配置和最终生效的超参数，train/val/test 指标（MSE、RMSE、MAE、R²、IC、RankIC），以及各模型特有的内容：`xgb` 的逐轮 `train-`/`val-` 曲线和特征重要性，`xgb_td` 的逐轮 `val-rmse` 曲线、最优轮数与实际轮数和特征重要性，`realmlp` 的逐 epoch `train-loss`/`val-rmse` 曲线、最优验证误差和停止 epoch。
+- **训练**：每次 `train()` 一个 run，项目名取自 trial 目录。内容包括完整配置和最终生效的超参数，train/val/test 指标（MSE、RMSE、MAE、R²、IC、RankIC），以及各模型特有的内容：`xgb` 的逐轮 `train-`/`val-` 曲线和特征重要性，`xgb_td` 的逐轮 `val-rmse` 曲线、最优轮数与实际轮数和特征重要性，`realmlp` 的逐 epoch `train-loss`/`val-rmse` 曲线、最优验证误差和停止 epoch，`gats`、`master` 的逐 epoch `train_loss`/`val_loss` 曲线。
 - **回测**：在 `USEquityCrossectionSelectStockVectorBt_backtest` 项目下一个 run，以运行目录命名：带数据指纹的回测配置、全区间/样本内/样本外指标（写入 summary；有基准时还有 `benchmark/...` 和 `relative/...`），以及 HTML 报告。
 
 ## 基准对比
@@ -125,6 +129,7 @@ factor/residual_momentum.zarr 残差动量得分及其排名（market_residual_m
 
 ## 注意事项
 
-- Alpha101/Alpha158 输出是原始值（未标准化）。树模型不需要标准化，RealMLP 会自己做 robust scaling；但 pytabkit 的两个模型（`xgb_td`、`realmlp`）会把缺失特征填成 0，而原生 `xgb` 会把 NaN 当作缺失值处理。
+- `Alpha101Stock`/`Alpha158Stock` 的输出在当根 bar 的股票之间做了 z-score。pytabkit 的两个模型（`xgb_td`、`realmlp`）和 torch 模型会把缺失特征填成 0，torch 模型还会把每个特征截断到 ±3；原生 `xgb` 会把 NaN 当作缺失值处理。市场特征没有标准化，它们的取值本来就小（收益率，以及接近 1 的比值），也没有像参考实现那样在训练区间上拟合缩放器。
+- torch pipeline 保留了参考实现的训练设置，完整跑一次很长：GATs 最多 200 个 epoch，MASTER 最多 40 个。第一次跑可以先调低 `epochs`。
 - 实验时可以只用因子子集来减小模型规模。设置 `alpha101_names`/`alpha158_names` 需要 `BaseModel.get_factor_names` 使用配置里的 `factor_names`。
 - 全市场脚本要读几千个 PERMNO；第一次跑先缩小 `START`/`END` 或固定 `factor_names`。内存随 symbol 数 × 天数 × 特征数增长：1,000 个 PERMNO、13 年、全部 251 个特征，float32 大约 3 GB。

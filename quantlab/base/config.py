@@ -243,6 +243,10 @@ QQQ_PERMNO: str = "86755"
 #: PERMNO of the SPY ETF (SPDR S&P 500 ETF Trust), the S&P 500 benchmark.
 SPY_PERMNO: str = "84398"
 
+#: PERMNO of the IWM ETF (iShares Russell 2000 ETF), the small-cap series of
+#: the market-feature factor.
+IWM_PERMNO: str = "88222"
+
 
 @dataclass(kw_only=True, frozen=True)
 class CrspDatasetConfig(DatasetConfig):

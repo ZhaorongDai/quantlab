@@ -7,7 +7,7 @@ directory). It is never a column of an index or market panel: a backtest
 picks it by name as a benchmark, and an ETF ranked against its own holdings
 would be the index competing with itself.
 
-``--etf`` takes a comma-separated list of ``spy``, ``qqq`` (built-in PERMNOs)
+``--etf`` takes a comma-separated list of ``spy``, ``qqq``, ``iwm`` (built-in PERMNOs)
 or ``name=PERMNO`` for any other fund. The raw rows go to
 ``<download-dir>/wrds/crsp_daily/`` and the CRSP reference tables to
 ``<download-dir>/_reference/``; ``--download-dir`` also defaults to the
@@ -25,7 +25,7 @@ Usage::
 
     export WRDS_USERNAME=<your-wrds-username>   # password lives in ~/.pgpass
     uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
-    uv run python scripts/wrds/etf.py --etf iwm=89990 --start 2005-01-01 \\
+    uv run python scripts/wrds/etf.py --etf dia=<PERMNO> --start 2005-01-01 \\
         --end 2024-12-31 --refresh
     uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01 \\
         --download-dir /data/wrds/raw --zarr-dir /data/wrds/zarr
@@ -42,7 +42,7 @@ import sys
 from datetime import date
 
 from quantlab.registry import DataSourceRegistry, convert, run
-from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
+from quantlab.base.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.utils.cli import (
     add_max_workers_arg,
@@ -57,7 +57,7 @@ CAPABILITY = ("us_equity", "1d", "crsp_daily")
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
 
 #: Built-in ETF names and their CRSP PERMNOs.
-KNOWN_ETFS: dict[str, str] = {"spy": SPY_PERMNO, "qqq": QQQ_PERMNO}
+KNOWN_ETFS: dict[str, str] = {"spy": SPY_PERMNO, "qqq": QQQ_PERMNO, "iwm": IWM_PERMNO}
 
 
 def _parse_etfs(parser: argparse.ArgumentParser, value: str) -> dict[str, str]:
@@ -92,7 +92,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help=(
             f"Comma-separated ETFs: {', '.join(KNOWN_ETFS)} (built-in) or "
-            f"name=PERMNO, e.g. spy,qqq,iwm=89990."
+            f"name=PERMNO, e.g. spy,qqq,iwm or name=<PERMNO>."
         ),
     )
     parser.add_argument(
