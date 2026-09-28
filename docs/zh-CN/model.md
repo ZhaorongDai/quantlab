@@ -272,7 +272,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 
 | 钩子 | 默认行为 |
 |---|---|
-| `_dataset(panel, bars, training)`：覆盖 `bars` 的 PyTorch `Dataset` | `CrossSectionDataset`，每个 bar 一项 |
+| `_dataset(panel, bars, training)`：覆盖 `bars` 的 PyTorch `Dataset` | `CrossSectionDataset`，每个 bar 一项；`SymbolSequenceDataset` 提供 Qlib 式的逐标的样本（见下文） |
 | `_dataloader(dataset, training)`：`DataLoader` | 从超参数读取 `batch_size` 和 `num_workers`（默认 `None`，即每步一项，以及 0）；只在训练时打乱，生成器用 `random_seed` 播种；从不丢弃最后一批 |
 | `_transform_feature(x)`：一个 batch 的原始 `x`（缺失处为 NaN）到网络输入 | 截断到 ±3，NaN 变 0 |
 | `_transform_target(y, training)`：一个 bar 的原始标签到 `(target, keep)`；`keep` 把标的从损失里去掉 | `(y, None)`；工具函数 `cs_rank_norm`（Qlib `CSRankNorm`）、`cs_zscore`、`drop_extreme` |
@@ -360,7 +360,59 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 {'val_loss': -0.721, 'test_rank_ic': 0.691}
 ```
 
-需要其他样本形状的模型头覆写 `_dataset`（多 bar 的 batch 还要用自己的 sampler 或 collate 函数覆写 `_dataloader`）；可以照着 `CrossSectionDataset` 写。
+Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训练，而是随机抽取 `(timestamp, symbol)` 样本。`quantlab.torch_model.data` 中的 `SymbolSequenceDataset` 提供这种样本形状：每个格子一个样本项，装着该标的最近 `window_bars` 个 bar 的 `[N, F]`，PyTorch 的默认 collate 把样本项拼成 `[B, N, F]`，`mask` 和 `where` 的形状为 `[B]`。训练时它只包含有有效训练目标的格子；评估时包含每个出现的格子，所以预测依然覆盖整个截面。训练目标在抽取任何 batch 之前就按 bar 在整个截面上算好，所以混有多个 bar 的 batch 看到的仍是每个 bar 自己的截面排名或 z-score；基类会把混合的 batch 按 bar 拆开，所以 `{split}_loss` 依然让每个 bar 权重相同。这个数据集用一次索引调用（`__getitems__`）取出一整个 batch 的窗口，`window_bars=1` 则得到行样本，供 torch 行模型使用。
+
+下面的模型头就是 Qlib 的 GRU 用上这个数据集：`_dataset` 返回序列数据集，`_dataloader` 像 Qlib 一样每批 800 个样本。窗口长于一个 bar 就需要预热 bar，所以给替身因子加一个日历来数 bar：
+
+```python
+>>> import pandas as pd
+>>> from types import SimpleNamespace
+>>> from torch.utils.data import DataLoader
+>>> from quantlab.torch_model.data import SymbolSequenceDataset
+>>> from quantlab.torch_model.training import cs_rank_norm
+>>> days = pd.DatetimeIndex(coords["timestamp"])
+>>> seq_factor = Panel(f_a=f_a, f_b=f_b)
+>>> seq_factor.config = SimpleNamespace(dataset=SimpleNamespace(   # date 之前第 n 个 bar
+...     bar_before=lambda date, n: days[max(days.searchsorted(pd.Timestamp(date)) - n, 0)]))
+>>> seq_factor.store_range = lambda: None
+>>> class GRUNet(nn.Module):
+...     """Qlib's GRU: a GRU over each window, a linear map of its last step."""
+...     def __init__(self, num_features, num_labels, hidden_size):
+...         super().__init__()
+...         self.rnn = nn.GRU(num_features, hidden_size, batch_first=True)
+...         self.fc_out = nn.Linear(hidden_size, num_labels)
+...     def forward(self, x):                  # x: [B, N, F]
+...         out, _ = self.rnn(x)
+...         return self.fc_out(out[:, -1])     # [B, L]
+>>> class GRUHead(TorchModel):
+...     window_bars = 8
+...     def _init_model(self, num_features, num_labels, hyperparameters):
+...         return GRUNet(num_features, num_labels, hyperparameters["hidden_size"])
+...     def _loss(self, output, batch):
+...         return masked_mse(output, batch.y, batch.mask)
+...     def _transform_target(self, y, training):
+...         return cs_rank_norm(y), None
+...     def _dataset(self, panel, bars, training):
+...         return SymbolSequenceDataset(panel, bars, self.window_bars, training)
+...     def _dataloader(self, dataset, training):
+...         generator = torch.Generator().manual_seed(self.config.random_seed)
+...         return DataLoader(dataset, batch_size=800, shuffle=training, generator=generator)
+>>> gru = GRUHead(replace(
+...     torch_config, factors=[seq_factor],
+...     hyperparameters={"epochs": 30, "lr": 1e-2, "hidden_size": 16},
+... )).collect()
+>>> gru_checkpoint = gru.train()
+>>> gru_metrics = json.loads((gru_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in gru_metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.701, 'val_rank_ic': 0.693, 'test_rank_ic': 0.696}
+>>> reloaded = GRUHead(gru.config).load(gru_checkpoint)
+>>> gru_prediction = reloaded.predict_panel(seq_factor.ds)
+>>> gru_prediction["ret"].shape, bool(np.isfinite(gru_prediction["ret"]).all())
+((200, 20), True)
+>>> xr.testing.assert_allclose(gru_prediction, gru.predict_panel(seq_factor.ds))
+```
+
+需要其他样本形状的模型头覆写 `_dataset`（多 bar 的 batch 还要用自己的 sampler 或 collate 函数覆写 `_dataloader`）；可以照着 `CrossSectionDataset` 和 `SymbolSequenceDataset` 写。
 
 ### 记录到 Weights & Biases
 

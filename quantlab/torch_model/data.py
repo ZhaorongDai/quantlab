@@ -7,8 +7,13 @@ hands it to the head's ``_dataset`` hook, which returns a PyTorch
 timestamp and symbol index of each sample, so the base puts predictions
 back into the ``[T, S, L]`` panel the same way for any sample shape.
 
-``CrossSectionDataset`` is the default dataset: one item per bar, holding
-every symbol present at that bar with its last ``window_bars`` bars.
+Two datasets ship:
+
+- ``CrossSectionDataset``, the default: one item per bar, holding every
+  symbol present at that bar with its last ``window_bars`` bars.
+- ``SymbolSequenceDataset``, Qlib style: one item per ``(bar, symbol)``
+  cell, the symbol's last ``window_bars`` bars as ``[N, F]``, batched by the
+  default collation to ``[B, N, F]``.
 """
 
 from dataclasses import dataclass
@@ -264,3 +269,116 @@ class CrossSectionDataset(Dataset):
             y_raw=panel.y_raw[t, symbols],
             where=(torch.full_like(symbols, t), symbols),
         )
+
+
+class SymbolSequenceDataset(Dataset):
+    """One item per ``(bar, symbol)`` cell: the symbol's last ``window_bars`` bars.
+
+    Qlib's sequence models (LSTM, GRU, ALSTM, Transformer) draw random
+    ``(timestamp, symbol)`` samples; this is that sample shape. Item ``i``
+    is a ``Batch`` for one cell ``(t, s)`` with ``x`` shaped ``[N, F]``,
+    ``y`` and ``y_raw`` shaped ``[L]``, a scalar ``mask`` and scalar
+    ``where`` indices, so PyTorch's default collation batches ``B`` items to
+    ``x [B, N, F]`` with ``mask`` and ``where`` shaped ``[B]``. Rows before
+    the panel's first bar are NaN. In training the dataset holds the cells
+    of ``bars`` with a valid training target; in evaluation it holds every
+    present cell of ``bars``, so prediction covers the whole cross-section.
+    Cells are ordered by bar, then by symbol.
+
+    The training target was computed per bar over the whole cross-section
+    before the dataset was built, so a batch mixing bars still sees each
+    bar's cross-sectional target. ``__getitems__`` gathers a whole batch of
+    windows with one indexing call on the panel. ``window_bars=1`` gives row
+    samples, ``x`` shaped ``[B, 1, F]``.
+
+    Batch it with a ``batch_size`` (Qlib uses 800); ``batch_size=None``
+    would feed single cells.
+
+    Parameters
+    ----------
+    panel : TrainingPanel
+        The panel to read.
+    bars : array-like of int
+        Positions of the bars on the panel's time axis.
+    window_bars : int
+        N, bars per window; at least 1.
+    training : bool
+        Whether the dataset feeds training steps.
+
+    Raises
+    ------
+    ValueError
+        If ``window_bars`` is below 1.
+
+    Examples
+    --------
+    >>> panel = TrainingPanel.from_arrays(
+    ...     np.arange(6.0).reshape(3, 2, 1), timestamps=np.arange(3),
+    ...     symbols=np.array(["A", "B"]),
+    ... )
+    >>> dataset = SymbolSequenceDataset(panel, bars=[0, 2], window_bars=2, training=False)
+    >>> len(dataset), dataset[1].x[:, 0], [int(i) for i in dataset[1].where]
+    (4, tensor([nan, 1.]), [0, 1])
+    >>> from torch.utils.data import DataLoader
+    >>> batch = next(iter(DataLoader(dataset, batch_size=4)))
+    >>> tuple(batch.x.shape), batch.where[0].tolist()
+    ((4, 2, 1), [0, 0, 2, 2])
+    """
+
+    def __init__(self, panel: TrainingPanel, bars, window_bars: int, training: bool):
+        """Build the dataset; see the class docstring for parameters."""
+        if window_bars < 1:
+            raise ValueError(f"window_bars must be at least 1, got {window_bars}")
+        self.panel = panel
+        self.window_bars = int(window_bars)
+        self.training = bool(training)
+        device = panel.present.device
+        bars = torch.as_tensor(np.asarray(bars, dtype=np.int64), device=device)
+        usable = panel.mask if self.training else panel.present
+        rows, symbols = torch.nonzero(usable[bars], as_tuple=True)
+        #: The timestamp index and symbol index of every item, ``[len(self)]`` each.
+        self.times = bars[rows]
+        self.symbols = symbols
+        self._offsets = torch.arange(-self.window_bars + 1, 1, device=device)
+
+    def __len__(self) -> int:
+        """Number of cells in the dataset."""
+        return int(self.times.shape[0])
+
+    def _gather(self, indices) -> Batch:
+        """Return the items at ``indices`` as one batched ``Batch``, ``x [B, N, F]``."""
+        panel = self.panel
+        index = torch.as_tensor(indices, dtype=torch.int64, device=self.times.device)
+        t, s = self.times[index], self.symbols[index]
+        rows = t[:, None] + self._offsets  # [B, N], oldest bar first
+        x = panel.x[rows.clamp(min=0), s[:, None]]
+        if bool((rows < 0).any()):
+            x = x.masked_fill((rows < 0)[..., None], float("nan"))
+        return Batch(
+            x=x, y=panel.target[t, s], mask=panel.mask[t, s],
+            y_raw=panel.y_raw[t, s], where=(t, s),
+        )
+
+    def __getitem__(self, i: int) -> Batch:
+        """Return cell ``i`` as a ``Batch`` with ``x`` shaped ``[N, F]``."""
+        return self.__getitems__([i])[0]
+
+    def __getitems__(self, indices) -> list[Batch]:
+        """Return the items at ``indices``, gathered with one indexing call.
+
+        The ``DataLoader`` calls it with a whole batch of indices; the items
+        it returns are views of one gathered block, which the default
+        collation stacks back to ``[B, N, F]``.
+
+        Examples
+        --------
+        >>> [tuple(item.x.shape) for item in dataset.__getitems__([0, 3])]
+        [(2, 1), (2, 1)]
+        """
+        batch = self._gather(indices)
+        return [
+            Batch(x=x, y=y, mask=mask, y_raw=y_raw, where=(t, s))
+            for x, y, mask, y_raw, t, s in zip(
+                batch.x, batch.y, batch.mask, batch.y_raw, *batch.where
+            )
+        ]

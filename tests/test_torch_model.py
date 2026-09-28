@@ -18,7 +18,9 @@ What turns this file red:
 - the stop hooks are not called per fit and per epoch, or the threshold
   helper stops at the wrong epoch;
 - a hook default is missing, or a hook the head overrides is not the one used;
-- a torch `train()` writes no `metrics.json`.
+- a torch `train()` writes no `metrics.json`;
+- a Qlib-style sequence head does not train, reload and predict, or its
+  mixed-bar batches see a target other than each bar's cross-sectional one.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -40,7 +42,7 @@ from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.factor import FactorKunQuant
 from quantlab.base.model import BaseModel, TorchModel
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.torch_model.data import Batch
+from quantlab.torch_model.data import Batch, SymbolSequenceDataset
 from quantlab.torch_model.training import (
     TrainLossThreshold,
     cs_rank_norm,
@@ -1108,3 +1110,92 @@ def test_a_dataset_predicting_outside_the_present_cells_raises(tmp_path, recorde
 
     with pytest.raises(ValueError, match=r"'S4' at bar 2024-02-05.*predicted outside"):
         model.predict_panel(_feature_panel(features))
+
+
+# ---------------------------------------------------------------------------
+# Qlib-style per-symbol sequence heads (issue #52)
+# ---------------------------------------------------------------------------
+
+
+class GRUNet(torch.nn.Module):
+    """Qlib's GRU: a GRU over the window, a linear map of its last output."""
+
+    def __init__(self, num_features, num_labels, hidden_size=8):
+        super().__init__()
+        self.rnn = torch.nn.GRU(num_features, hidden_size, batch_first=True)
+        self.fc_out = torch.nn.Linear(hidden_size, num_labels)
+
+    def forward(self, x):
+        out, _ = self.rnn(x)
+        return self.fc_out(out[:, -1, :])
+
+
+class SequenceGRUHead(TorchModel):
+    """A GRU trained on random `(bar, symbol)` samples, batched `[B, N, F]`."""
+
+    window_bars = 4
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return GRUNet(num_features, num_labels)
+
+    def _loss(self, output, batch):
+        return masked_mse(output, batch.y, batch.mask)
+
+    def _transform_target(self, y, training):
+        return cs_zscore(y), None
+
+    def _dataset(self, panel, bars, training):
+        return SymbolSequenceDataset(panel, bars, self.window_bars, training)
+
+
+def test_a_sequence_head_trains_saves_loads_and_predicts_every_present_cell(
+    tmp_path, recorders
+):
+    features = _features()
+    for values in features.values():
+        values[:10, 3] = np.nan  # S3 absent on bars 0..9
+    label = _label_of(features)
+    label[12:15, 1] = np.nan  # S1 has no label on bars 12..14
+    model = _model(tmp_path, features, label, cls=SequenceGRUHead, epochs=4,
+                   hyperparameters={"batch_size": 16})
+    checkpoint = model.train()
+
+    (run,) = recorders
+    assert run.logged[-1]["train_loss"] < run.logged[0]["train_loss"]
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    assert np.isfinite([metrics["train_loss"], metrics["val_loss"], metrics["test_ic"]]).all()
+
+    out = model.predict_panel(_feature_panel(features))
+    values = out["ret"].values
+    assert np.isnan(values[:10, 3]).all() and np.isfinite(values[10:, 3]).all()
+    assert np.isfinite(np.delete(values, 3, axis=1)).all()  # S1 predicted without a label
+    fresh = SequenceGRUHead(model.config).load(checkpoint)  # no collect() needed
+    xr.testing.assert_allclose(fresh.predict_panel(_feature_panel(features)), out)
+
+
+def test_a_mixed_bar_sequence_batch_sees_each_bars_cross_sectional_target(
+    tmp_path, recorders
+):
+    features = _features()
+    label = _label_of(features)
+    label[5, 0] = np.nan  # one missing label changes bar 5's cross-section
+    seen: list[Batch] = []
+
+    class Spy(SequenceGRUHead):
+        def _train_one_batch(self, epoch, batch):
+            seen.append(batch)
+            return super()._train_one_batch(epoch, batch)
+
+    _model(tmp_path, features, label, cls=Spy, epochs=1,
+           hyperparameters={"batch_size": 7}).train()
+
+    assert any(len(set(b.where[0].tolist())) > 1 for b in seen)
+    samples = 0
+    for batch in seen:
+        assert batch.x.shape == (len(batch.mask), 4, 2) and batch.mask.all()
+        for (t, s), y in zip(zip(*(i.tolist() for i in batch.where)), batch.y):
+            per_bar = cs_zscore(torch.tensor(label[t], dtype=torch.float32)[:, None])
+            torch.testing.assert_close(y, per_bar[s])
+            samples += 1
+    # train bars 0..23 (val_size 0.2, no lookahead to purge), every cell but (5, S0)
+    assert samples == 24 * len(SYMBOLS) - 1

@@ -272,7 +272,7 @@ A head writes three things: `window_bars` (N), `_init_model(num_features, num_la
 
 | Hook | Default |
 |---|---|
-| `_dataset(panel, bars, training)`: the PyTorch `Dataset` over `bars` | `CrossSectionDataset`, one item per bar |
+| `_dataset(panel, bars, training)`: the PyTorch `Dataset` over `bars` | `CrossSectionDataset`, one item per bar; `SymbolSequenceDataset` gives Qlib-style per-symbol samples (see below) |
 | `_dataloader(dataset, training)`: the `DataLoader` | `batch_size` and `num_workers` from the hyperparameters (`None`, one item per step, and 0); shuffled only in training, with a generator seeded from `random_seed`; the last batch never dropped |
 | `_transform_feature(x)`: a batch's raw `x`, NaN where missing, to the network input | clip to ±3, NaN to 0 |
 | `_transform_target(y, training)`: one bar's raw labels to `(target, keep)`; `keep` drops symbols from the loss | `(y, None)`; helpers `cs_rank_norm` (Qlib `CSRankNorm`), `cs_zscore`, `drop_extreme` |
@@ -360,7 +360,59 @@ This head chooses its own optimizer, loss and stopping rule. It z-scores the tar
 {'val_loss': -0.721, 'test_rank_ic': 0.691}
 ```
 
-A head with another sample shape overrides `_dataset` (and, for multi-bar batches, `_dataloader` with its own sampler or collate function); `CrossSectionDataset` is the model to follow.
+Qlib's sequence models (GRU, LSTM, ALSTM, Transformer) train on random `(timestamp, symbol)` samples rather than whole cross-sections. `SymbolSequenceDataset` in `quantlab.torch_model.data` gives that sample shape: one item per cell, holding the symbol's last `window_bars` bars as `[N, F]`, and PyTorch's default collation batches the items to `[B, N, F]` with `mask` and `where` shaped `[B]`. In training it holds only the cells with a valid training target; in evaluation it holds every present cell, so prediction still covers the whole cross-section. The training target is computed per bar over the whole cross-section before any batch is drawn, so a batch that mixes bars still sees each bar's cross-sectional rank or z-score, and `{split}_loss` still weighs every bar the same because the base splits a mixed batch by bar. The dataset gathers a whole batch of windows with one indexing call (`__getitems__`), and `window_bars=1` gives row samples for a torch row model.
+
+The head below is Qlib's GRU on this dataset: `_dataset` returns the sequence dataset and `_dataloader` batches 800 samples, as Qlib does. A window longer than one bar needs warm-up bars, so the stand-in factor gets a calendar to count them on:
+
+```python
+>>> import pandas as pd
+>>> from types import SimpleNamespace
+>>> from torch.utils.data import DataLoader
+>>> from quantlab.torch_model.data import SymbolSequenceDataset
+>>> from quantlab.torch_model.training import cs_rank_norm
+>>> days = pd.DatetimeIndex(coords["timestamp"])
+>>> seq_factor = Panel(f_a=f_a, f_b=f_b)
+>>> seq_factor.config = SimpleNamespace(dataset=SimpleNamespace(   # the bar n bars before date
+...     bar_before=lambda date, n: days[max(days.searchsorted(pd.Timestamp(date)) - n, 0)]))
+>>> seq_factor.store_range = lambda: None
+>>> class GRUNet(nn.Module):
+...     """Qlib's GRU: a GRU over each window, a linear map of its last step."""
+...     def __init__(self, num_features, num_labels, hidden_size):
+...         super().__init__()
+...         self.rnn = nn.GRU(num_features, hidden_size, batch_first=True)
+...         self.fc_out = nn.Linear(hidden_size, num_labels)
+...     def forward(self, x):                  # x: [B, N, F]
+...         out, _ = self.rnn(x)
+...         return self.fc_out(out[:, -1])     # [B, L]
+>>> class GRUHead(TorchModel):
+...     window_bars = 8
+...     def _init_model(self, num_features, num_labels, hyperparameters):
+...         return GRUNet(num_features, num_labels, hyperparameters["hidden_size"])
+...     def _loss(self, output, batch):
+...         return masked_mse(output, batch.y, batch.mask)
+...     def _transform_target(self, y, training):
+...         return cs_rank_norm(y), None
+...     def _dataset(self, panel, bars, training):
+...         return SymbolSequenceDataset(panel, bars, self.window_bars, training)
+...     def _dataloader(self, dataset, training):
+...         generator = torch.Generator().manual_seed(self.config.random_seed)
+...         return DataLoader(dataset, batch_size=800, shuffle=training, generator=generator)
+>>> gru = GRUHead(replace(
+...     torch_config, factors=[seq_factor],
+...     hyperparameters={"epochs": 30, "lr": 1e-2, "hidden_size": 16},
+... )).collect()
+>>> gru_checkpoint = gru.train()
+>>> gru_metrics = json.loads((gru_checkpoint.parent / "metrics.json").read_text())
+>>> {k: round(v, 3) for k, v in gru_metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.701, 'val_rank_ic': 0.693, 'test_rank_ic': 0.696}
+>>> reloaded = GRUHead(gru.config).load(gru_checkpoint)
+>>> gru_prediction = reloaded.predict_panel(seq_factor.ds)
+>>> gru_prediction["ret"].shape, bool(np.isfinite(gru_prediction["ret"]).all())
+((200, 20), True)
+>>> xr.testing.assert_allclose(gru_prediction, gru.predict_panel(seq_factor.ds))
+```
+
+A head with yet another sample shape overrides `_dataset` (and, for multi-bar batches, `_dataloader` with its own sampler or collate function); `CrossSectionDataset` and `SymbolSequenceDataset` are the models to follow.
 
 ### Log to Weights & Biases
 
