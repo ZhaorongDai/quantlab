@@ -275,7 +275,7 @@ A head writes three things: `window_bars` (N), `_init_model(num_features, num_la
 | Hook | Default |
 |---|---|
 | `_dataset(panel, bars, training)`: the PyTorch `Dataset` over `bars` | `CrossSectionDataset`, one item per bar; `SymbolSequenceDataset` gives Qlib-style per-symbol samples (see below) |
-| `_dataloader(dataset, training)`: the `DataLoader` | `batch_size` and `num_workers` from the hyperparameters (`None`, one item per step, and 0); shuffled only in training, with a generator seeded from `random_seed`; the last batch never dropped; memory pinned only for a CPU panel read by workers |
+| `_dataloader(dataset, training)`: the `DataLoader` | `batch_size` and `num_workers` from the hyperparameters (`None`, one item per step, and 0); shuffled only in training, with a generator seeded from `random_seed`; the last batch never dropped; memory pinned only for a CPU panel read by workers of a CUDA model |
 | `_transform_feature(x)`: a batch's raw `x`, NaN where missing, to the network input | clip to ±3, NaN to 0 |
 | `_transform_target(y, training)`: one bar's raw labels to `(target, keep)`; `keep` drops symbols from the loss | `(y, None)`; helpers `cs_rank_norm` (Qlib `CSRankNorm`), `cs_zscore`, `drop_extreme` |
 | `_init_optim(model)`: anything the training step understands, such as a dict of optimizers | Adam at `hyperparameters["lr"]` (`1e-3`) |
@@ -424,7 +424,7 @@ A torch head holds the whole collected panel (features, training target, masks a
 - `"cuda"` forces the GPU. It raises `ValueError` before training with `num_workers > 0`, because a loader worker process cannot index a CUDA tensor, or when no CUDA device is available.
 - `"cpu"` forces CPU memory. Use it when several runs share one GPU.
 
-The default loader pins memory only for a CPU panel read by workers, since pinning without workers made loading slower in a measurement.
+The default loader pins memory only for a CPU panel read by workers of a model on CUDA, since pinning without workers made loading slower in a measurement.
 
 `panel_dtype="float16"` stores the features in half precision, halving the panel's largest part so a full-market panel fits on the GPU. Each batch is cast back to float32 before `_transform_feature`, so the network and the loss still run in float32. A feature too large for float16 (beyond ±65504) raises `ValueError` rather than becoming infinite; factors are normally z-scored long before that. Below, the minimal head from Train a torch model is trained again with its features stored in float16:
 
@@ -440,7 +440,7 @@ The default loader pins memory only for a CPU panel read by workers, since pinni
 '5e-05'
 ```
 
-Measured once on the training server (RTX 5090 D with 32 GiB, 503 GB RAM) on 2026-09-29, at commit 249c815 plus the fixes that ship with it. The panel is CRSP market Alpha158, 3270 bars × 13015 symbols × 169 factors (2012–2024), which is 29 GB of float32 features, with a 5-bar forward return as the label. The head is a two-layer GRU (hidden 64) over `window_bars=8` with the default cross-section dataset. It trains 5 epochs on 2012–2019, with `val_size=0.2`, and is tested on 2020–2024; both runs use the same seed. The factor store predates the missing-bar fix, so the IC values only compare the two runs with each other.
+Measured once on the training server (RTX 5090 D with 32 GiB, 503 GB RAM) on 2026-09-29. The panel is CRSP market Alpha158, 3270 bars × 13015 symbols × 169 factors (2012–2024), which is 29 GB of float32 features, with a 5-bar forward return as the label. The head is a two-layer GRU (hidden 64) over `window_bars=8` with the default cross-section dataset. It trains 5 epochs on 2012–2019, with `val_size=0.2`, and is tested on 2020–2024; both runs use the same seed. The IC values compare the two runs with each other; they are not an evaluation of the model.
 
 | | `panel_device="cuda"`, `panel_dtype="float16"` | `panel_device="cpu"`, `panel_dtype="float32"` |
 |---|---|---|

@@ -1919,8 +1919,7 @@ class TorchModel(BaseModel):
         (default 0) from the hyperparameters, shuffles only when training
         with a generator seeded from ``config.random_seed``, and never drops
         the last batch. Memory is pinned only when the panel sits in CPU
-        memory, workers load it and the model runs on CUDA: pinning without
-        workers made loading about 4 times slower in a measurement.
+        memory, workers load it and the model runs on CUDA.
 
         Examples
         --------
@@ -2093,7 +2092,9 @@ class TorchModel(BaseModel):
 
         Examples
         --------
-        >>> head._resolve_panel_device(10_000)
+        >>> cpu_head.config.hyperparameters["panel_device"]
+        'cpu'
+        >>> cpu_head._resolve_panel_device(10_000)
         'cpu'
         """
         setting, _ = self._panel_settings()

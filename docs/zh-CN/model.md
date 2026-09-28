@@ -275,7 +275,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 | 钩子 | 默认行为 |
 |---|---|
 | `_dataset(panel, bars, training)`：覆盖 `bars` 的 PyTorch `Dataset` | `CrossSectionDataset`，每个 bar 一项；`SymbolSequenceDataset` 提供 Qlib 式的逐标的样本（见下文） |
-| `_dataloader(dataset, training)`：`DataLoader` | 从超参数读取 `batch_size` 和 `num_workers`（默认 `None`，即每步一项，以及 0）；只在训练时打乱，生成器用 `random_seed` 播种；从不丢弃最后一批；只有内存里的面板由 worker 读取时才锁页内存 |
+| `_dataloader(dataset, training)`：`DataLoader` | 从超参数读取 `batch_size` 和 `num_workers`（默认 `None`，即每步一项，以及 0）；只在训练时打乱，生成器用 `random_seed` 播种；从不丢弃最后一批；只有模型在 CUDA 上、内存里的面板由 worker 读取时才锁页内存 |
 | `_transform_feature(x)`：一个 batch 的原始 `x`（缺失处为 NaN）到网络输入 | 截断到 ±3，NaN 变 0 |
 | `_transform_target(y, training)`：一个 bar 的原始标签到 `(target, keep)`；`keep` 把标的从损失里去掉 | `(y, None)`；工具函数 `cs_rank_norm`（Qlib `CSRankNorm`）、`cs_zscore`、`drop_extreme` |
 | `_init_optim(model)`：训练步能理解的任何对象，例如优化器字典 | Adam，学习率 `hyperparameters["lr"]`（`1e-3`） |
@@ -424,7 +424,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 - `"cuda"` 强制放到 GPU 上。与 `num_workers > 0` 一起使用时会在训练前抛出 `ValueError`，因为数据加载器的 worker 进程不能索引 CUDA 张量；没有可用的 CUDA 设备时也会抛出。
 - `"cpu"` 强制放在内存里。多个运行共用一块 GPU 时使用。
 
-默认的数据加载器只在内存里的面板由 worker 读取时才锁页内存，因为实测不用 worker 时锁页反而让加载变慢。
+默认的数据加载器只在模型位于 CUDA 上、内存里的面板由 worker 读取时才锁页内存，因为实测不用 worker 时锁页反而让加载变慢。
 
 `panel_dtype="float16"` 以半精度存储特征，面板最大的部分减半，全市场的面板因此能放进 GPU。每个 batch 在 `_transform_feature` 之前转回 float32，所以网络和损失仍然以 float32 运行。超出 float16 范围（±65504）的特征会抛出 `ValueError`，而不是变成无穷大；因子通常早已做过 z-score，远到不了这个范围。下面把“训练 torch 模型”里的最小模型头以 float16 存储特征重新训练一次：
 
@@ -440,7 +440,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 '5e-05'
 ```
 
-2026-09-29 在训练服务器（RTX 5090 D，32 GiB 显存；503 GB 内存）上测过一次，代码是 249c815 加上随之提交的修复。面板是 CRSP 全市场 Alpha158：3270 个 bar × 13015 个标的 × 169 个因子（2012–2024），float32 特征共 29 GB；标签是 5 个 bar 的远期收益。模型头是两层 GRU（hidden 64），`window_bars=8`，使用默认的截面数据集。在 2012–2019 上训练 5 个 epoch，`val_size=0.2`，在 2020–2024 上测试；两次运行种子相同。这个因子存储早于缺失 bar 的修复，所以 IC 只用于两次运行之间的比较。
+2026-09-29 在训练服务器（RTX 5090 D，32 GiB 显存；503 GB 内存）上测过一次。面板是 CRSP 全市场 Alpha158：3270 个 bar × 13015 个标的 × 169 个因子（2012–2024），float32 特征共 29 GB；标签是 5 个 bar 的远期收益。模型头是两层 GRU（hidden 64），`window_bars=8`，使用默认的截面数据集。在 2012–2019 上训练 5 个 epoch，`val_size=0.2`，在 2020–2024 上测试；两次运行种子相同。IC 只用于两次运行之间的比较，不是对模型的评价。
 
 | | `panel_device="cuda"`，`panel_dtype="float16"` | `panel_device="cpu"`，`panel_dtype="float32"` |
 |---|---|---|
