@@ -24,7 +24,7 @@ Fields are documented with ``#:`` comments so the meaning of each one sits
 beside its definition.
 """
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from types import UnionType
 from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
 
@@ -691,6 +691,48 @@ class PolarsFactorConfig(BaseFactorConfig):
     >>> hasattr(cfg, "mode")
     False
     """
+
+
+@dataclass(kw_only=True, frozen=True)
+class MarketFeatureConfig(BaseFactorConfig):
+    """Config of ``quantlab.factor.market.MarketFeatures``.
+
+    ``dataset`` is the *target*: the panel whose symbols receive the market
+    features, and the calendar ``warmup_bars`` is counted on. ``series``
+    names the index or ETF datasets the features are computed from, one
+    single-symbol dataset per name; the name prefixes the features, as in
+    ``spy_ret_mean_20``. ``to_dict()`` nests each series dataset's config
+    dict under ``series``, and
+    ``quantlab.utils.module.load_factor_from_config`` rebuilds them.
+
+    Examples
+    --------
+    With ``stocks`` the target dataset and ``spy`` a dataset over one ETF:
+
+    >>> cfg = MarketFeatureConfig(dataset=stocks, series={"spy": spy})
+    >>> cfg.warmup_bars, list(cfg.series)
+    (60, ['spy'])
+    """
+
+    #: Bars read before the requested start; 60 fills the longest window.
+    warmup_bars: int = 60
+    #: Series name to the single-symbol dataset it is computed from, in the
+    #: order the features are listed.
+    series: "dict[str, MarketDataset]"
+
+    def to_dict(self):
+        """Return the config as a plain dict, each series as its config dict.
+
+        Examples
+        --------
+        >>> cfg.to_dict()["series"]["spy"]["zarr_file_path"]
+        'data/spy.zarr'
+        """
+        cfg = asdict(replace(self, series={}))
+        cfg["series"] = {
+            name: dataset.get_config() for name, dataset in self.series.items()
+        }
+        return cfg
 
 
 @dataclass(kw_only=True, frozen=True)

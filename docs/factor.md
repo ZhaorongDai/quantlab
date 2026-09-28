@@ -178,6 +178,90 @@ True
 
 A merge never picks a value by input order. A cell holding a value in two inputs raises `ValueError: MergedDataset: variable 'close' holds a value in both SpotKlineDataset(data/spot_half.zarr) and SpotKlineDataset(data/overlap.zarr), for example at symbol 'S3USDT' on 2024-02-01 00:00:00. ...`, and inputs on different bars raise `ValueError: MergedDataset: the inputs have different bar spacing (SpotKlineDataset(data/spot_half.zarr): 1 days 00:00:00, SpotKlineDataset(data/hourly.zarr): 0 days 01:00:00). ...`. A KunQuant factor over a merge lists the shared names in `data_columns`, as a Polars factor spells them in its expressions (`close`, not `Close`). Stream mode refuses a merge when the factor is constructed: `ValueError: MaDeviation: stream mode takes one dataset, got a merge of 2. ...`. `MergedDataset` is itself a dataset, with `panel` and `bar_before`; it holds no store, so `store_path`, `save`, `resample` and the build path refuse. Resample the inputs before merging them; a factor over a merge can itself be resampled when every input cuts bars the same way. A merged dataset cannot yet be a backtest's `price_dataset` or `benchmark_dataset`, which need a store path.
 
+### Broadcast index or ETF features to every symbol
+
+`MarketFeatures` (`quantlab.factor.market`) computes market-wide features from one or more index or ETF series and gives every symbol of a target panel the same values. These are the market inputs of MASTER (`research/qlib-gats-master.md`, section 2.1). Its config is `MarketFeatureConfig`. `dataset` is the target: its symbols receive the features, and `warmup_bars` is counted on its calendar. `series` maps a name to a single-symbol dataset. For each series the factor computes 21 features on the series' own bars: `<name>_ret`, the bar return `close / close[t-1] - 1`, and for d in 5, 10, 20, 30 and 60 bars `<name>_ret_mean_<d>` and `<name>_ret_std_<d>` (the mean and standard deviation of the return over d bars) and `<name>_amount_mean_<d>` and `<name>_amount_std_<d>` (the same for the traded amount, divided by the bar's own amount). The amount is volume times close unless `kwargs["amount_column"]` names a column that holds it. `warmup_bars` defaults to 60, the longest window. The session below writes three small stores, six stocks (`FFF` lists on 1 April) and two ETFs, and computes the features over March and April.
+
+```python
+>>> import json
+>>> import numpy as np, pandas as pd, xarray as xr
+>>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
+>>> from quantlab.dataset.stock import StockDataset
+>>> from quantlab.factor.market import MarketFeatures
+>>> from quantlab.utils.module import load_factor_from_config
+>>> days = pd.bdate_range("2024-01-01", periods=120)
+>>> rng = np.random.default_rng(1)
+>>> def write_store(path, symbols):
+...     close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, (120, len(symbols))), axis=0))
+...     volume = rng.uniform(1e6, 5e6, (120, len(symbols)))
+...     if "FFF" in symbols:  # FFF lists on 1 April
+...         close[days < "2024-04-01", symbols.index("FFF")] = np.nan
+...     _ = xr.Dataset(
+...         {"close": (["timestamp", "symbol"], close),
+...          "adjClose": (["timestamp", "symbol"], close),
+...          "adjVolume": (["timestamp", "symbol"], volume)},
+...         coords={"timestamp": days, "symbol": symbols},
+...     ).to_zarr(path, mode="w")
+...     return StockDataset(DatasetConfig(
+...         raw_data_dir_path="data/raw", zarr_file_path=path,
+...         market="us_equity", frequency="1d",
+...     ))
+...
+>>> stocks = write_store("data/stocks.zarr", ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"])
+>>> spy = write_store("data/spy.zarr", ["84398"])
+>>> qqq = write_store("data/qqq.zarr", ["86755"])
+>>> factor = MarketFeatures(MarketFeatureConfig(
+...     dataset=stocks, series={"spy": spy, "qqq": qqq},
+...     file_path="data/factors/market.zarr",
+... ))
+>>> factor.warmup_bars, factor.num_factors
+(60, 42)
+>>> factor.get_factor_names()[:5]
+('spy_ret', 'spy_ret_mean_5', 'spy_ret_std_5', 'spy_amount_mean_5', 'spy_amount_std_5')
+>>> panel = factor.compute("2024-03-01", "2024-04-30")
+>>> dict(panel.sizes)
+{'timestamp': 43, 'symbol': 6}
+>>> panel["spy_ret_mean_20"].sel(timestamp="2024-03-01").values.round(5)
+array([0.00035, 0.00035, 0.00035, 0.00035, 0.00035,     nan],
+      dtype=float32)
+>>> panel["spy_ret_mean_20"].sel(timestamp="2024-04-01").values.round(5)
+array([-0.00302, -0.00302, -0.00302, -0.00302, -0.00302, -0.00302],
+      dtype=float32)
+>>> factor.options
+{'close_column': 'adjClose', 'volume_column': 'adjVolume', 'amount_column': None, 'presence_column': 'close'}
+>>> cfg = json.loads(json.dumps(factor.get_config()))
+>>> list(cfg["series"]), cfg["series"]["spy"]["zarr_file_path"]
+(['spy', 'qqq'], 'data/spy.zarr')
+>>> load_factor_from_config(cfg) == factor
+True
+>>> factor.build("2024-03-01", "2024-04-30").store_range()
+('2024-03-01', '2024-04-30')
+```
+
+On each bar the values go to every target symbol that has a bar there, that is, whose `kwargs["presence_column"]` (default `close`) is not missing. `FFF` is therefore NaN before it lists, and a model does not see market features on a bar where a symbol had no data. The rolling windows run over each series' own bars, and a target bar that a series lacks is NaN. A window is defined only when all of its bars are. The standard deviations use `ddof=1`, as pandas and Qlib do, an amount of 0 gives NaN rather than an infinite ratio, and the panel is float32. The series columns are `kwargs["close_column"]` (default `adjClose`) and `kwargs["volume_column"]` (default `adjVolume`), looked up after the dataset's `COLUMN_MAP` renaming, so a crypto spot series is read as `close`, `volume` and `amount`. `get_config()` nests each series dataset's config under `series`, and `load_factor_from_config` rebuilds them. If the warm-up is short, the long windows stay NaN on the first bars and `compute` warns: `UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` A series store holding more than one symbol is refused when a panel is computed: `ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
+
+For US equities from WRDS, give each ETF its own CRSP store, as for a backtest benchmark. `CrspDatasetConfig.etf_benchmark` keeps the ETF, which the default security filter drops as a fund:
+
+```python
+from quantlab.base.config import QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig
+from quantlab.dataset.crsp import CrspStockDataset
+from quantlab.factor.market import MarketFeatures
+
+def etf(permno, path):
+    return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
+        permno=permno, zarr_file_path=path,
+        raw_data_dir_path="/data/downloads/us_equity/1d/crsp/wrds",
+        reference_dir="/data/reference/crsp",
+    ))
+
+market = MarketFeatures(MarketFeatureConfig(
+    dataset=stocks,  # the CRSP panel the model trains on
+    series={"spy": etf(SPY_PERMNO, "/data/zarrs/spy.zarr"),
+            "qqq": etf(QQQ_PERMNO, "/data/zarrs/qqq.zarr")},
+    file_path="/data/factors/market.zarr",
+))
+```
+
 ### Resample a factor onto coarser bars
 
 `resample(freq, how)` returns a copy of the factor whose `compute`, `read` and `build` answer on coarser bars. The factor is still computed on its dataset's own bars; only the output is aggregated, so a minute-bar momentum becomes a daily series of the last minute's value without changing what it measures. `freq` and `how` take the same values as `BaseDataset.resample` (see the dataset guide), and `how` may be one method as a string for every factor variable. Bars are cut the way the factor's dataset cuts them.
@@ -391,6 +475,7 @@ The module also has two cross-sectional outlier operators. `CrossSectionalWinsor
 | `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features, the `Stock` class from the copy in `quantlab.factor._support.kunquant_alpha158`; pin `factor_names` while experimenting |
 | `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum; the factor series come from a Fama-French CSV or from the panel |
 | `LiteratureAlpha` | KunQuant | Eight raw/ranked equity characteristics spanning price, risk, liquidity, fundamentals and earnings events |
+| `MarketFeatures` | xarray | 21 return and amount features per index or ETF series, the same for every symbol with a bar; config class `MarketFeatureConfig` |
 | `Forward` | any | shifts a factor forward into a label |
 | `Return`, `BinaryReturn` | KunQuant | forward-return labels, `Forward` subclasses |
 
@@ -573,4 +658,4 @@ A resampled factor is a view of its source panel: `extend()`, `init_stream()` an
 
 ## See also
 
-`backend.md` for `XrBackend` and the append checks behind `extend()`; `dataset.md` for the datasets factors read; `model.md` for how models consume factors and labels and purge each split; `backtest.md` for the check of a label's delay against the engine's fill delay. Modules: `quantlab.base.factor` (`Factor`, `FactorKunQuant`, `FactorPolars`), `quantlab.base.config` (`FactorConfig`, `PolarsFactorConfig`), `quantlab.factor`, `quantlab.label.forward`, `quantlab.label.fret` and `quantlab.my_ops.preprocess`.
+`backend.md` for `XrBackend` and the append checks behind `extend()`; `dataset.md` for the datasets factors read; `model.md` for how models consume factors and labels and purge each split; `backtest.md` for the check of a label's delay against the engine's fill delay. Modules: `quantlab.base.factor` (`Factor`, `FactorKunQuant`, `FactorPolars`), `quantlab.base.config` (`FactorConfig`, `PolarsFactorConfig`, `MarketFeatureConfig`), `quantlab.factor`, `quantlab.label.forward`, `quantlab.label.fret` and `quantlab.my_ops.preprocess`.
