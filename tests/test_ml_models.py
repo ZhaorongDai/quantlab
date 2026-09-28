@@ -18,6 +18,8 @@ from pathlib import Path
 import warnings
 
 import joblib
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -251,14 +253,15 @@ def test_declared_factor_and_label_order_reaches_fit_model(tmp_path, recorders):
     assert call["train_y_first"] == [30.0, 60.0, 120.0]
 
 
-def test_fit_returns_the_test_metrics(tmp_path, recorders):
-    """`_fit` returns the prefixed test metrics -- the dict `train_cv` merges
+def test_train_writes_the_metrics_of_every_split(tmp_path, recorders):
+    """Issue #38: `train()` writes the prefixed train/val/test metrics to
+    `metrics.json` beside the checkpoint -- the same dict `train_cv` merges
     into each fold's result."""
     model = StubMLHead(_config(tmp_path))
     model.collect()
-    model._init_wandb("p", "e")
-    out = model._fit(project_name="p", experiment_name="e", model_name="e.joblib")
-    assert set(out) == {f"test_{k}" for k in METRIC_KEYS}
+    checkpoint = model.train()
+    out = json.loads((checkpoint.parent / "metrics.json").read_text())
+    assert set(out) == {f"{s}_{k}" for s in ("train", "val", "test") for k in METRIC_KEYS}
     assert np.isfinite(out["test_loss"]) and np.isfinite(out["test_ic"])
 
 
@@ -293,10 +296,11 @@ def test_no_val_metrics_without_a_validation_segment(tmp_path, recorders):
 
 def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
     """The ML path persists through `MlBackend` as `.joblib`; a `.pth` here
-    would mean the torch persistence path ran."""
+    would mean the torch persistence path ran. `metrics.json` sits beside
+    `config.json` (issue #38)."""
     model = _trained(tmp_path)
     files = {p.name for p in (tmp_path / "ckpt").rglob("*") if p.is_file()}
-    assert files == {"StubMLHead_total.joblib", "config.json"}
+    assert files == {"StubMLHead_total.joblib", "config.json", "metrics.json"}
     assert joblib.load(_checkpoint(tmp_path)) == model.model
 
 

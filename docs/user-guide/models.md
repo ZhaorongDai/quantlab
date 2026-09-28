@@ -174,6 +174,20 @@ checkpoint. It returns the checkpoint's absolute path. With early stopping on,
 validation segment and keeps only the trees up to the best round. Here 20 of
 the 300 allowed trees were kept.
 
+Beside the checkpoint, `train()` writes `config.json` and `metrics.json`.
+`metrics.json` holds the scores of the first label on its raw values for each
+segment: `train_*`, `val_*` and `test_*`, each of `loss`, `mse`, `rmse`,
+`mae`, `r2`, `ic` and `rank_ic`. These are the values the W&B run summary
+receives, with NaN and infinity written as null. A run with `val_size=0` has
+no `val_*` keys. Torch heads do not write the file yet.
+
+```python
+import json
+
+scores = json.loads((checkpoint.parent / "metrics.json").read_text())
+scores["val_ic"], scores["test_ic"]
+```
+
 The label's lookahead is 2, so of the 280 training bars the first 224 form
 the train segment and the last 56 the validation segment; after the purge
 bars 0 to 221 (to 2022-11-08) are fitted, bars 224 to 277 (to 2023-01-25)
@@ -295,16 +309,21 @@ folds = model.train_cv(train_periods=200)
 Each fold trains a fresh model with its own early stopping and writes its own
 checkpoint directory, `XGBoostRegressor_cv_fold_{i}/`, inside one trial
 directory. `train_cv` returns one dict per fold with the fold's dates,
-experiment name, checkpoint path and, for `MLModel` heads, the `test_*`
-metrics. The fold's `train_end` is the last bar fitted, after the purge.
-The same list is written as `cv_folds.json` in the trial directory,
-together with a `format_version`. Each fold's `config.json` holds the dates
+experiment name, checkpoint path and, for `MLModel` heads, the `train_*`,
+`val_*` and `test_*` metrics. The fold's `train_end` is the last bar fitted,
+after the purge. The same list is written as `cv_folds.json` in the trial
+directory, together with `"format_version": 2` and a `cv_mean` block: the
+mean over folds of every metric, keyed `cv_mean_train_ic`,
+`cv_mean_test_rank_ic` and so on, plus `cv_n_folds`. Folds whose value is
+not finite are left out of a mean. Each fold's `config.json` holds the dates
 the fold was configured with, before the purge, so its `train_end` lies L
 bars later: 2022-10-07 against the manifest's 2022-10-05 for fold 0 of the
 example. `BaseBacktester.run_cv()` reads `cv_folds.json` to backtest each
 fold with its own checkpoint on its own test period (see
 [Backtesting](backtesting.md)). A fold whose test period would run past the
-end of the data is skipped with a warning.
+end of the data is skipped with a warning. `run_cv` refuses a manifest of
+format version 1, written before the `cv_mean` block existed; rerun
+`train_cv` to replace it.
 
 `train_cv` sets the model's `train_*` and `test_*` dates to each fold in
 turn, so afterwards they hold the last fold's dates. `parallel=True` trains
@@ -319,8 +338,8 @@ Every training run, including every CV fold, opens a Weights & Biases run with
 the model's configuration. `XGBoostRegressor` logs per-round training and
 validation curves, writes the final `train_*`, `val_*` and `test_*` metrics
 and per-feature importance to the run summary, and adds an importance table
-and bar chart. `train_cv` adds a `{class}_cv_summary` run with the fold means,
-`cv_mean_test_ic` and so on. The project name is the trial directory's name.
+and bar chart. `train_cv` adds a `{class}_cv_summary` run whose summary is the manifest's
+`cv_mean` block. The project name is the trial directory's name.
 
 The model layer has no switch to skip W&B, so control it with the standard
 environment variables before training starts:
@@ -347,13 +366,15 @@ os.environ.setdefault("WANDB_SILENT", "true")
 This is the output of `uv run python examples/train_model.py` (a Zarr
 warning printed on standard error is left out). The panel has a planted
 one-day reversal, which the model finds, so the test IC is about 0.25 and
-stable across folds. Between each fold's `train_end` and `test_start` lie
+stable across folds. The line `metrics.json val` reads the validation scores
+of the single run back from its `metrics.json`. Between each fold's `train_end` and `test_start` lie
 the two purged bars.
 
 ```text
 features: ['past_ret_1', 'ma_dev_5'] label: ['ret_1']
-checkpoint: models/XGBoostRegressor_trial_20260927_211535_767054/XGBoostRegressor_total/XGBoostRegressor_total.joblib
+checkpoint: models/XGBoostRegressor_trial_20260928_084754_029062/XGBoostRegressor_total/XGBoostRegressor_total.joblib
 trees kept by early stopping: 20
+metrics.json val       IC=+0.285  RankIC=+0.259  R2=+0.084
 prediction panel: {'timestamp': 80, 'symbol': 16} ['ret_1']
 test window            IC=+0.263  RankIC=+0.248  R2=+0.068
 trained_on symbols: 16 resolved eta: 0.05
@@ -362,9 +383,9 @@ fold 0: train 2022-01-03..2022-10-05  test 2022-10-10..2022-12-02  IC=+0.242  Ra
 fold 1: train 2022-02-28..2022-11-30  test 2022-12-05..2023-01-27  IC=+0.277  RankIC=+0.262
 fold 2: train 2022-04-25..2023-01-25  test 2023-01-30..2023-03-24  IC=+0.254  RankIC=+0.223
 fold 3: train 2022-06-20..2023-03-22  test 2023-03-27..2023-05-19  IC=+0.264  RankIC=+0.237
-mean test IC over folds: 0.259
-cv_folds.json: format_version 1 with 4 folds
-keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse', 'test_start', 'train_end', 'train_start']
+cv_folds.json: format_version 2 with 4 folds
+keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse', 'test_start', 'train_end', 'train_ic', 'train_loss', 'train_mae', 'train_mse', 'train_r2', 'train_rank_ic', 'train_rmse', 'train_start', 'val_ic', 'val_loss', 'val_mae', 'val_mse', 'val_r2', 'val_rank_ic', 'val_rmse']
+mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
 ```
 
 ## Train a torch head

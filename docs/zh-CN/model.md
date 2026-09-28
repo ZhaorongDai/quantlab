@@ -68,11 +68,11 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/XGBoostRegressor_total/`，里面有检查点文件和旁边的 `config.json`。`config.json` 保存完整配置，以及一份 `trained_on` 记录：模型训练时见过的特征名、标签名和标的。
+`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/XGBoostRegressor_total/`，里面有检查点文件、旁边的 `config.json` 和 `metrics.json`。`config.json` 保存完整配置，以及一份 `trained_on` 记录：模型训练时见过的特征名、标签名和标的。`metrics.json` 保存这次运行的评分（见下文“评估指标”）。
 
 ```python
 >>> sorted(p.name for p in checkpoint.parent.iterdir())
-['XGBoostRegressor_total.joblib', 'config.json']
+['XGBoostRegressor_total.joblib', 'config.json', 'metrics.json']
 >>> import json
 >>> record = json.loads((checkpoint.parent / "config.json").read_text())
 >>> record["trained_on"]["factor_names"], record["trained_on"]["label_names"], len(record["trained_on"]["symbols"])
@@ -124,7 +124,17 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。树模型在主标签（第一个标签）上计算全部六个指标，覆盖训练、验证和测试三段，并以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。树模型在主标签（第一个标签）的原始值上计算全部六个指标和拟合用的 `loss`，覆盖训练、验证和测试三段。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。torch 模型头暂时不写 `metrics.json`。
+
+```python
+>>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+>>> sorted(metrics)[:7]
+['test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse']
+>>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.707, 'val_rank_ic': 0.687, 'test_rank_ic': 0.679}
+```
+
+`regression_panel_metrics` 可以对任意面板计算同样的评分：
 
 ```python
 >>> from quantlab.utils.metrics import regression_panel_metrics
@@ -166,7 +176,7 @@ True
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, parallel=False, njobs=-1)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -178,7 +188,7 @@ True
 [0.691, 0.649, 0.695, 0.656, 0.697]
 ```
 
-所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即包含 `format_version` 和折列表的清单文件，折列表与返回值相同，含清除后的 `train_end`。回测器根据这个文件回放一次交叉验证。每折的 `config.json` 记录的是该折配置时的日期，即清除之前的日期，所以它的 `train_end` 比清单里的晚 L 个 bar。
+所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即清单文件，包含 `format_version`（2）、与返回值相同的折列表（含清除后的 `train_end`），以及 `cv_mean` 块：每个 `train_*`、`val_*`、`test_*` 指标在各折上的均值，记为 `cv_mean_<指标>`，另有 `cv_n_folds`。非有限的折值不参与平均，NaN 和无穷大写成 null。回测器根据这个文件回放一次交叉验证；它拒绝读取第 1 版清单（出现 `cv_mean` 块之前写的），旧项目请重新运行 `train_cv`。每折的 `config.json` 记录的是该折配置时的日期，即清除之前的日期，所以它的 `train_end` 比清单里的晚 L 个 bar。
 
 ```python
 >>> from pathlib import Path
@@ -187,7 +197,9 @@ True
 ['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']
 >>> manifest = json.loads((trial / "cv_folds.json").read_text())
 >>> manifest["format_version"], len(manifest["folds"])
-(1, 5)
+(2, 5)
+>>> {k: round(v, 3) for k, v in manifest["cv_mean"].items() if k.endswith("rank_ic")}
+{'cv_mean_train_rank_ic': 0.709, 'cv_mean_val_rank_ic': 0.687, 'cv_mean_test_rank_ic': 0.677}
 >>> fold_0 = json.loads((Path(results[0]["checkpoint"]).parent / "config.json").read_text())
 >>> fold_0["train_end"], manifest["folds"][0]["train_end"]
 ('2024-04-09T00:00:00', '2024-04-07T00:00:00')
@@ -223,7 +235,7 @@ True
 
 ### 记录到 Weights & Biases
 
-每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.ml_model.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，把各 `test_*` 指标的均值记为 `cv_mean_test_*`。torch 模型头每个 epoch 记录指标。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
+每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.ml_model.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，其摘要就是清单里的 `cv_mean` 块。torch 模型头每个 epoch 记录指标。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
 
 ## 扩展
 
@@ -348,9 +360,9 @@ ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train
 ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
 ```
 
-`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。torch 模型头的 `train_cv` 不返回 `test_*` 指标，因此每折的字典里只有日期和路径，也不会打开汇总运行。
+`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。torch 模型头的 `train_cv` 不返回指标，因此每折的字典里只有日期和路径，`cv_mean` 为空，也不会打开汇总运行。
 
-`train()` 只返回检查点路径。单次运行的测试指标记录在 W&B 摘要里；对 `MLModel` 的模型头，`train_cv` 会直接返回这些指标。
+`train()` 只返回检查点路径，这次运行的指标在旁边的 `metrics.json` 里。对 `MLModel` 的模型头，`train_cv` 会直接返回这些指标。
 
 检查点是 pickle 文件（`MLModel` 用 `joblib`，`DLModel` 用 `torch.load`）。只加载自己生成或可信的文件。
 

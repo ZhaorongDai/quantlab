@@ -1,7 +1,7 @@
 """The `cv_folds.json` manifest `BaseModel.train_cv` persists (phase 03.7, D-30 / D-36).
 
 `train_cv` writes `{model_save_dir}/{project_name}/cv_folds.json` holding
-`{"format_version": 1, "folds": [...]}`, where `folds` is the JSON form of
+`{"format_version": 2, "folds": [...], "cv_mean": {...}}`, where `folds` is the JSON form of
 exactly the list `train_cv` returns.
 
 Why the manifest exists: `run_cv` (plan 03.7-10) backtests every fold's
@@ -197,14 +197,14 @@ def _read_manifest(save_root: Path) -> dict:
 
 def test_sequential_ml_manifest_equals_returned_folds(tmp_path):
     """The sequential branch: `folds` is the JSON form of the returned list,
-    and the wrapper carries `format_version` 1 and nothing else."""
+    and the wrapper carries `format_version` 2, the folds and `cv_mean`."""
     model = _ml(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 
     manifest = _read_manifest(tmp_path / "ckpt")
-    assert set(manifest) == {"format_version", "folds"}
-    assert manifest["format_version"] == 1
+    assert set(manifest) == {"format_version", "folds", "cv_mean"}
+    assert manifest["format_version"] == 2
     assert manifest["folds"] == to_jsonable(results)
     assert len(results) == N_FOLDS
 
@@ -217,7 +217,7 @@ def test_parallel_ml_manifest_equals_returned_folds(tmp_path):
     results = model.train_cv(train_periods=TRAIN_PERIODS, parallel=True, njobs=2)
 
     manifest = _read_manifest(tmp_path / "ckpt")
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
     assert manifest["folds"] == to_jsonable(results)
     assert len(results) == N_FOLDS
 
@@ -230,7 +230,7 @@ def test_dl_manifest_equals_returned_folds(tmp_path):
     results = model.train_cv(train_periods=TRAIN_PERIODS)
 
     manifest = _read_manifest(tmp_path / "ckpt")
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
     assert manifest["folds"] == to_jsonable(results)
     assert len(manifest["folds"]) == N_FOLDS
     for entry in manifest["folds"]:
@@ -314,7 +314,7 @@ def test_empty_fold_list_still_writes_a_manifest(tmp_path, monkeypatch):
 
     assert results == []
     manifest = _read_manifest(tmp_path / "ckpt")
-    assert manifest == {"format_version": 1, "folds": []}
+    assert manifest == {"format_version": 2, "folds": [], "cv_mean": {}}
 
 
 def test_manifest_is_strict_json_with_null_for_non_finite_metrics(tmp_path):

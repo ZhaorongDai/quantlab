@@ -997,7 +997,8 @@ class BaseBacktester(ABC):
         if isinstance(version, bool) or version != supported:
             raise ValueError(
                 f"{self.class_name}: {path} format_version {version!r} is not "
-                f"supported (supported: {supported})"
+                f"supported (supported: {supported}); older manifests are not "
+                f"migrated, so rerun train_cv to write a current one"
             )
         raw_folds = payload.get("folds")
         if not isinstance(raw_folds, list):

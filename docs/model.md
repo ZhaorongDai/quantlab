@@ -68,11 +68,11 @@ The config carries the factor and label objects, where checkpoints go, and four 
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/XGBoostRegressor_total/`, holding the checkpoint and a `config.json` sidecar. The sidecar stores the full config plus a `trained_on` record: the feature names, label names and symbols the model saw.
+`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/XGBoostRegressor_total/`, holding the checkpoint, a `config.json` sidecar and `metrics.json`. The sidecar stores the full config plus a `trained_on` record: the feature names, label names and symbols the model saw. `metrics.json` holds the scores of the run (see Metrics below).
 
 ```python
 >>> sorted(p.name for p in checkpoint.parent.iterdir())
-['XGBoostRegressor_total.joblib', 'config.json']
+['XGBoostRegressor_total.joblib', 'config.json', 'metrics.json']
 >>> import json
 >>> record = json.loads((checkpoint.parent / "config.json").read_text())
 >>> record["trained_on"]["factor_names"], record["trained_on"]["label_names"], len(record["trained_on"]["symbols"])
@@ -124,7 +124,17 @@ True
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. Tree models compute all six on the primary label (the first one) for the train, validation and test segments and write them to the W&B run summary as `train_*`, `val_*` and `test_*`.
+`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. Tree models compute all six, plus the fitting `loss`, on the raw values of the primary label (the first one) for the train, validation and test segments. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). Torch heads write no `metrics.json` yet.
+
+```python
+>>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+>>> sorted(metrics)[:7]
+['test_ic', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rmse']
+>>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("rank_ic")}
+{'train_rank_ic': 0.707, 'val_rank_ic': 0.687, 'test_rank_ic': 0.679}
+```
+
+`regression_panel_metrics` computes the same scores for any panel:
 
 ```python
 >>> from quantlab.utils.metrics import regression_panel_metrics
@@ -166,7 +176,7 @@ With `early_stopping=True`, training stops when the validation loss has not impr
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and the return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, parallel=False, njobs=-1)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and the return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -178,7 +188,7 @@ With `early_stopping=True`, training stops when the validation loss has not impr
 [0.691, 0.649, 0.695, 0.656, 0.697]
 ```
 
-All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` and the fold list as returned, purged `train_end` included. A backtester replays a cross-validation run from this file. Each fold's `config.json` records the dates the fold was configured with, before the purge, so its `train_end` lies L bars after the manifest's.
+All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` (2), the fold list as returned, purged `train_end` included, and a `cv_mean` block: the mean over folds of every `train_*`, `val_*` and `test_*` metric as `cv_mean_<metric>`, plus `cv_n_folds`. Non-finite fold values are left out of a mean, and NaN and infinity are written as null. A backtester replays a cross-validation run from this file; it refuses a version 1 manifest, written before the `cv_mean` block, so rerun `train_cv` for an old project. Each fold's `config.json` records the dates the fold was configured with, before the purge, so its `train_end` lies L bars after the manifest's.
 
 ```python
 >>> from pathlib import Path
@@ -187,7 +197,9 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 ['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']
 >>> manifest = json.loads((trial / "cv_folds.json").read_text())
 >>> manifest["format_version"], len(manifest["folds"])
-(1, 5)
+(2, 5)
+>>> {k: round(v, 3) for k, v in manifest["cv_mean"].items() if k.endswith("rank_ic")}
+{'cv_mean_train_rank_ic': 0.709, 'cv_mean_val_rank_ic': 0.687, 'cv_mean_test_rank_ic': 0.677}
 >>> fold_0 = json.loads((Path(results[0]["checkpoint"]).parent / "config.json").read_text())
 >>> fold_0["train_end"], manifest["folds"][0]["train_end"]
 ('2024-04-09T00:00:00', '2024-04-07T00:00:00')
@@ -223,7 +235,7 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 
 ### Log to Weights & Biases
 
-Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.ml_model.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run with the mean of each `test_*` metric as `cv_mean_test_*`. Torch heads log their metrics every epoch. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
+Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.ml_model.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run whose summary is the manifest's `cv_mean` block. Torch heads log their metrics every epoch. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
 
 ## Extending
 
@@ -348,9 +360,9 @@ Each fold tests on `train_periods // 5` bars, so `train_cv` refuses a `train_per
 ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
 ```
 
-`train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising. Torch heads return no `test_*` metrics from `train_cv`, so their fold dicts hold only dates and paths and no summary run is opened.
+`train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising. Torch heads return no metrics from `train_cv`, so their fold dicts hold only dates and paths, `cv_mean` is empty and no summary run is opened.
 
-`train()` returns only the checkpoint path. The test metrics of a single run are recorded in the W&B summary; `train_cv` returns them directly for `MLModel` heads.
+`train()` returns only the checkpoint path; the metrics of the run are in `metrics.json` beside it. `train_cv` returns them directly for `MLModel` heads.
 
 Checkpoints are pickles (`joblib` for `MLModel` heads, `torch.load` for `DLModel` heads). Load only files you produced or trust.
 

@@ -264,6 +264,7 @@ def test_dl_train_cv_fold_geometry_golden_parallel(tmp_path):
 ML_FOLD_DATES: list[tuple[str, str, str, str]] = []
 
 METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic")
+SPLITS = ("train", "val", "test")
 FOLD_KEYS = {"fold", "train_start", "train_end", "test_start", "test_end"}
 
 
@@ -454,7 +455,9 @@ def test_ml_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path,
     assert len(results) == 8
     assert [{k: r[k] for k in FOLD_KEYS} for r in results] == expected
     for r in results:
-        assert set(r) == FOLD_KEYS | {"experiment_name", "checkpoint"} | {f"test_{k}" for k in METRIC_KEYS}
+        assert set(r) == FOLD_KEYS | {"experiment_name", "checkpoint"} | {
+            f"{split}_{k}" for split in SPLITS for k in METRIC_KEYS
+        }
         assert r["experiment_name"] == f"StubMLHead_cv_fold_{r['fold']}"
         ckpt = Path(r["checkpoint"])
         assert ckpt.suffix == ".joblib" and ckpt.is_file()
@@ -464,7 +467,7 @@ def test_ml_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path,
 
 def test_ml_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, recorders):
     """8 fold runs plus ONE `{cls}_cv_summary` run, created last, whose
-    summary holds `cv_mean_test_*` (finite-value means of the folds) and
+    summary holds `cv_mean_{train,val,test}_*` (finite-value means of the folds) and
     `cv_n_folds`, and which is finished exactly once. A separate run because
     each fold's `_fit` has already finished its own run by the time the means
     exist."""
@@ -479,11 +482,15 @@ def test_ml_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, recor
     summary_run = recorders[-1]
     assert summary_run.finished == 1
     assert summary_run.summary["cv_n_folds"] == 8
-    assert set(summary_run.summary) == {f"cv_mean_test_{k}" for k in METRIC_KEYS} | {"cv_n_folds"}
-    for k in METRIC_KEYS:
-        values = [r[f"test_{k}"] for r in results if np.isfinite(r[f"test_{k}"])]
-        assert values, k
-        assert summary_run.summary[f"cv_mean_test_{k}"] == pytest.approx(float(np.mean(values)))
+    assert set(summary_run.summary) == {
+        f"cv_mean_{split}_{k}" for split in SPLITS for k in METRIC_KEYS
+    } | {"cv_n_folds"}
+    for split in SPLITS:
+        for k in METRIC_KEYS:
+            key = f"{split}_{k}"
+            values = [r[key] for r in results if np.isfinite(r[key])]
+            assert values, key
+            assert summary_run.summary[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
 
 
 def test_ml_train_cv_parallel_matches_sequential(tmp_path, recorders):

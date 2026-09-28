@@ -990,8 +990,11 @@ class BaseModel(ABC):
 
         A new trial directory is created under ``model_save_dir``, a wandb run
         is opened, and the variant's ``_fit`` trains, evaluates and writes the
-        checkpoint. Returning the path lets a caller record exactly which
-        model was trained and reload it later instead of retraining.
+        checkpoint. The metrics ``_fit`` returns are written to
+        ``metrics.json`` beside the checkpoint's ``config.json``, with NaN and
+        inf as null; a variant that returns no metrics writes no file.
+        Returning the path lets a caller record exactly which model was
+        trained and reload it later instead of retraining.
 
         Returns
         -------
@@ -1004,6 +1007,8 @@ class BaseModel(ABC):
         >>> checkpoint = model.train()
         >>> checkpoint.name, checkpoint.parent.name
         ('MyHead_total.joblib', 'MyHead_total')
+        >>> sorted(json.loads((checkpoint.parent / "metrics.json").read_text()))[:3]
+        ['test_ic', 'test_loss', 'test_mae']
         """
         project_name = self._new_project_name()
         experiment_name = f"{self.class_name}_total"
@@ -1012,14 +1017,21 @@ class BaseModel(ABC):
             project_name=project_name,
             experiment_name=experiment_name,
         )
-        self._fit(
+        metrics = self._fit(
             project_name=project_name,
             experiment_name=experiment_name,
             model_name=model_name,
         )
-        return (
+        checkpoint = (
             Path(self.config.model_save_dir) / project_name / experiment_name / model_name
         ).absolute()
+        if metrics is not None:
+            write_json_atomically(
+                checkpoint.parent / self.METRICS_FILENAME,
+                to_jsonable(metrics),
+                indent=2,
+            )
+        return checkpoint
 
     def _purge_bars(self) -> int:
         """L, the largest ``lookahead_bars()`` among the model's labels."""
@@ -1170,8 +1182,8 @@ class BaseModel(ABC):
         itself; ``record`` holds the purged dates actually fitted. The result
         is ``record`` plus ``experiment_name``, ``checkpoint`` (the absolute
         path of the fold's checkpoint, since the manifest may be read from
-        another working directory) and whatever ``test_*`` metrics ``_fit``
-        returned.
+        another working directory) and whatever ``train_*`` / ``val_*`` /
+        ``test_*`` metrics ``_fit`` returned.
         """
         self.config = dataclasses.replace(
             self.config,
@@ -1217,32 +1229,39 @@ class BaseModel(ABC):
         """
         return copy.deepcopy(self)._train_one_fold(fold, record, project_name)
 
+    #: Name of the metrics file ``train`` writes beside the checkpoint.
+    METRICS_FILENAME = "metrics.json"
     #: Name of the fold manifest ``train_cv`` writes into the trial directory.
     CV_FOLDS_FILENAME = "cv_folds.json"
     #: Format version written into the manifest. Readers reject versions they
     #: do not know, so bump this whenever the manifest structure changes.
-    CV_FOLDS_FORMAT_VERSION = 1
+    #: Version 2 added the ``train_*`` / ``val_*`` fold metrics and ``cv_mean``.
+    CV_FOLDS_FORMAT_VERSION = 2
 
-    #: Keys every fold dict carries. ``test_start`` / ``test_end`` start with
-    #: ``test_`` but are dates, not metrics, and are excluded from CV means.
+    #: Keys every fold dict carries. The four dates start with ``train_`` or
+    #: ``test_`` but are not metrics, and are excluded from CV means.
     _CV_FOLD_KEYS = frozenset(
         {"fold", "train_start", "train_end", "test_start", "test_end"}
     )
 
+    #: Prefixes of the metric keys ``_fit`` returns, one per split.
+    _METRIC_PREFIXES = ("train_", "val_", "test_")
+
     @staticmethod
     def _cv_mean_metrics(results: list[dict]) -> dict:
-        """Average the ``test_*`` metrics over folds as ``cv_mean_{key}``.
+        """Average every ``train_*`` / ``val_*`` / ``test_*`` metric over folds.
 
-        Only finite numeric values count; a metric with no finite value in
-        any fold averages to NaN. ``cv_n_folds`` is added. Returns an empty
-        dict when no fold carries a ``test_*`` metric (the torch variant's
-        ``_fit`` returns none), in which case ``train_cv`` opens no summary run.
+        Each mean is keyed ``cv_mean_{key}``. Only finite numeric values
+        count; a metric with no finite value in any fold averages to NaN.
+        ``cv_n_folds`` is added. Returns an empty dict when no fold carries a
+        metric (the torch variant's ``_fit`` returns none), in which case
+        ``train_cv`` opens no summary run.
         """
         keys: list[str] = []
         for result in results:
             for key, value in result.items():
                 if (
-                    key.startswith("test_")
+                    key.startswith(BaseModel._METRIC_PREFIXES)
                     and key not in BaseModel._CV_FOLD_KEYS
                     and isinstance(value, (int, float, np.integer, np.floating))
                     and not isinstance(value, bool)
@@ -1281,15 +1300,18 @@ class BaseModel(ABC):
         bars, L being the largest ``lookahead_bars()`` among the labels, so
         no fitted label reads a test-period bar. Every fold trains on
         its own dates, gets its own wandb run and its own checkpoint directory
-        ``{class}_cv_fold_{i}/`` inside one trial directory. The mean of the
-        folds' ``test_*`` metrics is written to the summary of a separate
-        ``{class}_cv_summary`` run.
+        ``{class}_cv_fold_{i}/`` inside one trial directory. The fold means of
+        every ``train_*`` / ``val_*`` / ``test_*`` metric, keyed
+        ``cv_mean_{key}``, plus ``cv_n_folds`` are written to the summary of a
+        separate ``{class}_cv_summary`` run.
 
         Before returning, the manifest ``cv_folds.json`` is written atomically
-        into the trial directory as ``{"format_version": 1, "folds": [...]}``,
-        where ``folds`` is the JSON form of the returned list (NaN and inf
-        become null). Its ``train_end`` is the last bar the purge keeps.
-        Backtesters replay a CV run from that file.
+        into the trial directory as ``{"format_version": 2, "folds": [...],
+        "cv_mean": {...}}``, where ``folds`` is the JSON form of the returned
+        list and ``cv_mean`` the summary run's means (NaN and inf become
+        null; ``cv_mean`` is empty when no fold has metrics). Its
+        ``train_end`` is the last bar the purge keeps. Backtesters replay a
+        CV run from that file.
 
         Parameters
         ----------
@@ -1307,7 +1329,8 @@ class BaseModel(ABC):
         -------
         list[dict]
             One dict per fold: the purged fold boundaries, ``experiment_name``, the
-            absolute ``checkpoint`` path and the fold's ``test_*`` metrics.
+            absolute ``checkpoint`` path and the fold's ``train_*``, ``val_*``
+            (when the fold has a validation segment) and ``test_*`` metrics.
 
         Raises
         ------
@@ -1394,6 +1417,7 @@ class BaseModel(ABC):
             {
                 "format_version": self.CV_FOLDS_FORMAT_VERSION,
                 "folds": to_jsonable(results),
+                "cv_mean": to_jsonable(means),
             },
             indent=2,
         )
@@ -1435,10 +1459,19 @@ class BaseModel(ABC):
         """Train, evaluate and save once, then finish the current wandb run.
 
         The checkpoint goes to ``model_save_dir / project_name /
-        experiment_name / model_name``. Returns the test metrics as a dict
-        whose keys start with ``test_`` (``train_cv`` averages them), or None
-        when the variant produces no metrics.
+        experiment_name / model_name``. Returns the metrics of every evaluated
+        split as one dict keyed ``{split}_{metric}`` with split ``train``,
+        ``val`` (only when there is a validation segment) and ``test``
+        (``train`` writes it to ``metrics.json``, ``train_cv`` averages it),
+        or None when the variant produces no metrics.
         """
+
+    def _compute_metrics(self, y: np.ndarray, pred: np.ndarray) -> dict:
+        """Return ``regression_panel_metrics`` for the first label on raw values.
+
+        ``y`` and ``pred`` are ``[T, S, L]``; only label index 0 is scored.
+        """
+        return regression_panel_metrics(pred[..., 0], y[..., 0])
 
     @abstractmethod
     def _predict(self, data: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
@@ -2033,9 +2066,9 @@ class MLModel(BaseModel):
     outer epoch loop would only make coarser and slower.
 
     A head implements four hooks: ``_init_model``, ``_preprocess``,
-    ``_fit_model`` and ``_forward``. ``_loss``, ``_compute_metrics``,
-    ``_evaluate`` and ``_resolved_hyperparameters`` have default
-    implementations that may be overridden. Checkpoints are ``.joblib`` files
+    ``_fit_model`` and ``_forward``. ``_loss``, ``_evaluate``,
+    ``_resolved_hyperparameters`` and the inherited ``_compute_metrics`` have
+    default implementations that may be overridden. Checkpoints are ``.joblib`` files
     written through ``MlBackend``; they are pickles, so only load files you
     trust.
 
@@ -2147,10 +2180,6 @@ class MLModel(BaseModel):
         diff = pred[rows] - y[rows]
         return float(np.sum(diff * diff) / diff.size)
 
-    def _compute_metrics(self, y: np.ndarray, pred: np.ndarray) -> dict:
-        """Return ``regression_panel_metrics`` for the primary label (index 0)."""
-        return regression_panel_metrics(pred[..., 0], y[..., 0])
-
     def _evaluate(
         self, split: str, x: np.ndarray, y: np.ndarray
     ) -> dict[str, float]:
@@ -2178,12 +2207,13 @@ class MLModel(BaseModel):
         bars before validation and before test, as in the torch variant.
         Empty splits skip
         evaluation: no validation segment means no ``val_*`` metrics, and an
-        empty test segment returns ``{}``.
+        empty test segment no ``test_*`` metrics.
 
         Returns
         -------
         dict
-            The ``test_*`` metrics dict.
+            The ``train_*``, ``val_*`` and ``test_*`` metrics, with the
+            values ``_evaluate`` wrote to the wandb summary.
 
         Raises
         ------
@@ -2245,12 +2275,11 @@ class MLModel(BaseModel):
             self._fit_model(train_x, train_y, val_x, val_y)
 
         with Timer(f"{self.class_name}: evaluate"):
-            self._evaluate("train", train_x, train_y)
+            metrics = self._evaluate("train", train_x, train_y)
             if val_x is not None:
-                self._evaluate("val", val_x, val_y)
-            test_metrics = (
-                self._evaluate("test", test_x, test_y) if test_x.shape[0] > 0 else {}
-            )
+                metrics.update(self._evaluate("val", val_x, val_y))
+            if test_x.shape[0] > 0:
+                metrics.update(self._evaluate("test", test_x, test_y))
 
         self._save_model(
             Path(self.config.model_save_dir)
@@ -2262,7 +2291,7 @@ class MLModel(BaseModel):
         if self._wandb_recorder is not None:
             self._wandb_recorder.finish()
 
-        return test_metrics
+        return metrics
 
     def _predict(self, data: torch.Tensor | np.ndarray) -> np.ndarray:
         """Preprocess ``data`` (tensors are converted to numpy) and run ``_forward``.

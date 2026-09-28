@@ -8,7 +8,7 @@ own checkpoint, and stitches the segments into one out-of-sample curve.
 What is locked here, and what turns it red:
 
 - **D-36, the manifest is a versioned persisted format.** A missing file, a
-  missing `format_version`, a version other than 1 and an empty fold list are
+  missing `format_version`, a version other than 2 and an empty fold list are
   each refused with a message naming the problem. A reader that guesses at an
   unknown version would silently misread an old or future training run.
 - **D-16, one checkpoint and one test segment per fold.** Each fold loads the
@@ -233,13 +233,28 @@ def test_run_cv_refuses_a_missing_manifest(tmp_path, cv_project):
 
 
 def test_run_cv_refuses_an_unknown_format_version(tmp_path, cv_project):
-    project = _edited_project(tmp_path, {**cv_project.manifest, "format_version": 2})
+    project = _edited_project(tmp_path, {**cv_project.manifest, "format_version": 3})
     backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
 
     with pytest.raises(
-        ValueError, match=r"format_version 2 is not supported \(supported: 1\)"
+        ValueError, match=r"format_version 3 is not supported \(supported: 2\)"
     ):
         backtester.run_cv()
+
+
+def test_run_cv_refuses_a_version_1_manifest_and_says_to_rerun_train_cv(
+    tmp_path, cv_project
+):
+    """Issue #38: v1 manifests are not migrated; the error names the fix."""
+    assert cv_project.manifest["format_version"] == 2
+    project = _edited_project(tmp_path, {**cv_project.manifest, "format_version": 1})
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
+
+    with pytest.raises(
+        ValueError, match=r"format_version 1 is not supported \(supported: 2\)"
+    ) as excinfo:
+        backtester.run_cv()
+    assert "train_cv" in str(excinfo.value)
 
 
 def test_run_cv_refuses_a_missing_format_version(tmp_path, cv_project):
@@ -252,7 +267,7 @@ def test_run_cv_refuses_a_missing_format_version(tmp_path, cv_project):
 
 
 def test_run_cv_refuses_an_empty_fold_list(tmp_path, cv_project):
-    project = _edited_project(tmp_path, {"format_version": 1, "folds": []})
+    project = _edited_project(tmp_path, {"format_version": 2, "folds": []})
     backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
 
     with pytest.raises(ValueError, match=r"no folds"):
@@ -466,7 +481,7 @@ def test_non_contiguous_folds_are_refused_before_any_simulation(
     tmp_path, cv_project, monkeypatch
 ):
     folds = cv_project.manifest["folds"]
-    payload = {"format_version": 1, "folds": folds[:3] + folds[4:]}
+    payload = {"format_version": 2, "folds": folds[:3] + folds[4:]}
     backtester = _backtester(
         tmp_path, cv_project, cv_project_dir=_edited_project(tmp_path, payload)
     )
@@ -487,7 +502,7 @@ def test_overlapping_folds_are_refused(tmp_path, cv_project, monkeypatch):
     folds = [dict(fold) for fold in cv_project.manifest["folds"]]
     moved_end = FIRST_TEST_BAR + 3 * TEST_PERIODS  # one bar past fold 2's end
     folds[2]["test_end"] = np.datetime_as_string(cv_project.bars[moved_end])
-    payload = {"format_version": 1, "folds": folds}
+    payload = {"format_version": 2, "folds": folds}
     backtester = _backtester(
         tmp_path, cv_project, cv_project_dir=_edited_project(tmp_path, payload)
     )
