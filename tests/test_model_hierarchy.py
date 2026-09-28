@@ -252,13 +252,13 @@ def test_stale_backtest_hooks_are_deleted():
     classes. Locked with `hasattr` / `inspect.signature`, not "no longer
     raises": a bypassed guard still answers `hasattr`. Turns red if any of
     them returns, or if `TorchModel._fit` grows any parameter beyond the abstract
-    `_fit(self, project_name, experiment_name, model_name)`.
+    `_fit(self, checkpoint)`.
     """
     assert not hasattr(BaseModel, "_reset_backtest_dataset_config")
 
     fit_params = list(inspect.signature(TorchModel._fit).parameters)
     assert "backtest" not in fit_params
-    assert fit_params == ["self", "project_name", "experiment_name", "model_name"]
+    assert fit_params == ["self", "checkpoint"]
 
     assert not hasattr(ModelConfig, "backtest_data")
     assert "backtest_data" not in ModelConfig.__dataclass_fields__

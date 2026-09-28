@@ -1072,9 +1072,10 @@ class BaseModel(ABC):
     def train(self) -> Path:
         """Train once on the config's ``train_*`` / ``test_*`` dates and save.
 
-        A new trial directory is created under ``model_save_dir``, a wandb run
-        is opened, and the variant's ``_fit`` trains, evaluates and writes the
-        checkpoint. The metrics ``_fit`` returns are written to
+        A new trial directory is created under ``model_save_dir``, and
+        ``_train_into`` trains into its ``{class}_total`` subdirectory under a
+        wandb run of that name in a project named after the trial directory.
+        The metrics ``_fit`` returns are written to
         ``metrics.json`` beside the checkpoint's ``config.json``, with NaN and
         inf as null; a variant that returns no metrics writes no file.
         Beside it go the per-bar IC series (``ic_series.csv``) and the
@@ -1102,28 +1103,77 @@ class BaseModel(ABC):
         self._check_hyperparameters()
         project_name = self._new_project_name()
         experiment_name = f"{self.class_name}_total"
-        model_name = f"{experiment_name}{self.checkpoint_suffix}"
+        checkpoint, _ = self._train_into(
+            Path(self.config.model_save_dir) / project_name / experiment_name,
+            project_name=project_name,
+            experiment_name=experiment_name,
+        )
+        return checkpoint
+
+    def _train_into(
+        self,
+        run_dir: Path | str,
+        project_name: str,
+        experiment_name: str,
+        *,
+        write_metrics: bool = True,
+    ) -> tuple[Path, dict | None]:
+        """Train, evaluate and save once into a caller-given run directory.
+
+        The random generators are reseeded from ``config.random_seed`` first,
+        so models trained one after another in one process do not share
+        random state. A wandb run named ``experiment_name`` is opened in the
+        wandb project ``project_name``, and the variant's ``_fit`` trains,
+        evaluates and writes the checkpoint ``{experiment_name}{checkpoint_suffix}``
+        and its ``config.json`` into ``run_dir``. When ``_fit`` returns
+        metrics, ``metrics.json`` (only with ``write_metrics``, NaN and inf as
+        null), ``ic_series.csv`` and ``test_predictions.zarr`` are written
+        beside it, see ``_write_evaluation_files``. No trial directory is
+        created: ``train`` and every ``train_cv`` fold pass the directory
+        they lay out themselves.
+
+        Parameters
+        ----------
+        run_dir : Path or str
+            Directory that receives the checkpoint and the evaluation files.
+            It must not exist yet; it is created with its parents.
+        project_name : str
+            wandb project of the run.
+        experiment_name : str
+            wandb run name, also the checkpoint file's stem.
+        write_metrics : bool, default True
+            Write ``metrics.json``; ``train_cv`` folds keep their metrics in
+            ``cv_folds.json`` instead.
+
+        Returns
+        -------
+        tuple[Path, dict or None]
+            The absolute checkpoint path and the metrics ``_fit`` returned.
+
+        Raises
+        ------
+        RuntimeError
+            If ``run_dir`` already exists (see ``_save_model``).
+        """
+        self._set_random_seed(self.config.random_seed)
+        checkpoint = (
+            Path(run_dir) / f"{experiment_name}{self.checkpoint_suffix}"
+        ).absolute()
         self._init_wandb(
             project_name=project_name,
             experiment_name=experiment_name,
         )
         self._ic_series = {}
-        metrics = self._fit(
-            project_name=project_name,
-            experiment_name=experiment_name,
-            model_name=model_name,
-        )
-        checkpoint = (
-            Path(self.config.model_save_dir) / project_name / experiment_name / model_name
-        ).absolute()
+        metrics = self._fit(checkpoint)
         if metrics is not None:
-            write_json_atomically(
-                checkpoint.parent / self.METRICS_FILENAME,
-                to_jsonable(metrics),
-                indent=2,
-            )
+            if write_metrics:
+                write_json_atomically(
+                    checkpoint.parent / self.METRICS_FILENAME,
+                    to_jsonable(metrics),
+                    indent=2,
+                )
             self._write_evaluation_files(checkpoint.parent)
-        return checkpoint
+        return checkpoint, metrics
 
     #: Name of the per-bar IC series file written beside ``metrics.json``.
     IC_SERIES_FILENAME = "ic_series.csv"
@@ -1133,8 +1183,8 @@ class BaseModel(ABC):
     def _write_evaluation_files(self, run_dir: Path) -> None:
         """Write the per-bar IC series and the test-segment predictions of a fit.
 
-        Called by ``train`` and by every ``train_cv`` fold right after
-        ``_fit`` returned metrics, with the run's checkpoint directory.
+        Called by ``_train_into`` right after ``_fit`` returned metrics, with
+        the run's checkpoint directory.
 
         ``ic_series.csv`` has the columns ``split, timestamp, ic, rank_ic``:
         one row per bar of each evaluated split (``train``, ``val``,
@@ -1367,23 +1417,12 @@ class BaseModel(ABC):
         )
 
         experiment_name = f"{self.class_name}_cv_fold_{fold['fold']}"
-        model_name = f"{experiment_name}{self.checkpoint_suffix}"
-
-        self._init_wandb(
+        checkpoint, metrics = self._train_into(
+            Path(self.config.model_save_dir) / project_name / experiment_name,
             project_name=project_name,
             experiment_name=experiment_name,
+            write_metrics=False,
         )
-        self._ic_series = {}
-        metrics = self._fit(
-            project_name=project_name,
-            experiment_name=experiment_name,
-            model_name=model_name,
-        )
-        checkpoint = (
-            Path(self.config.model_save_dir) / project_name / experiment_name / model_name
-        ).absolute()
-        if metrics is not None:
-            self._write_evaluation_files(checkpoint.parent)
         return {
             **record,
             "experiment_name": experiment_name,
@@ -1626,13 +1665,11 @@ class BaseModel(ABC):
         )
 
     @abstractmethod
-    def _fit(
-        self, project_name: str, experiment_name: str, model_name: str
-    ) -> dict | None:
+    def _fit(self, checkpoint: Path) -> dict | None:
         """Train, evaluate and save once, then finish the current wandb run.
 
-        The checkpoint goes to ``model_save_dir / project_name /
-        experiment_name / model_name``. Returns the metrics of every evaluated
+        The checkpoint is saved to ``checkpoint``, with its ``config.json``
+        beside it. Returns the metrics of every evaluated
         split as one dict keyed ``{split}_{metric}`` with split ``train``,
         ``val`` (only when there is a validation segment) and ``test``
         (``train`` writes it to ``metrics.json``, ``train_cv`` averages it),
@@ -2369,9 +2406,7 @@ class TorchModel(BaseModel):
             self._wandb_recorder.summary.update(metrics)
         return metrics
 
-    def _fit(
-        self, project_name: str, experiment_name: str, model_name: str
-    ) -> dict:
+    def _fit(self, checkpoint: Path) -> dict:
         """Build the training panel and target, train until ``_should_stop``, evaluate, save.
 
         The panel is split by ``_fit_segments``, but every window reads the
@@ -2461,9 +2496,7 @@ class TorchModel(BaseModel):
                 if len(bars):
                     metrics.update(self._evaluate(epoch, split, panel, bars))
 
-        self._save_model(
-            Path(config.model_save_dir) / project_name / experiment_name / model_name
-        )
+        self._save_model(checkpoint)
         if self._wandb_recorder is not None:
             self._wandb_recorder.finish()
         self.optim = None
@@ -2758,9 +2791,7 @@ class LibraryModel(BaseModel):
             self._wandb_recorder.summary.update(metrics)
         return metrics
 
-    def _fit(
-        self, project_name: str, experiment_name: str, model_name: str
-    ) -> dict:
+    def _fit(self, checkpoint: Path) -> dict:
         """Build the rows, fit once with ``_fit_model``, evaluate, save and finish the run.
 
         The validation segment is the trailing ``val_size`` share of the
@@ -2843,9 +2874,7 @@ class LibraryModel(BaseModel):
                 if len(bars):
                     metrics.update(self._evaluate(split, panel, bars))
 
-        self._save_model(
-            Path(config.model_save_dir) / project_name / experiment_name / model_name
-        )
+        self._save_model(checkpoint)
         if self._wandb_recorder is not None:
             self._wandb_recorder.finish()
         return metrics
