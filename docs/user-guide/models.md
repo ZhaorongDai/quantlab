@@ -108,8 +108,15 @@ heads read them themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`).
   5): the shipped library heads stop when the validation loss has not
   improved for that many boosting rounds. A torch head decides when to stop
   in its own `_should_stop` hook instead.
-- `batch_size`, `num_workers`, `panel_device` and `panel_dtype`: reserved for
-  the torch data loader and training panel.
+- `batch_size` (default `None`, one item per step) and `num_workers`
+  (default 0): the torch head's default data loader.
+- `panel_device` (default `"auto"`): where a torch head keeps its training
+  panel. `"auto"` uses the GPU when the panel takes at most half the free
+  GPU memory and no loader workers read it, `"cuda"` and `"cpu"` force a
+  device.
+- `panel_dtype` (default `"float32"`): `"float16"` stores the features in
+  half precision, so a large panel fits on the GPU; each batch is cast back
+  to float32.
 
 `_init_model` receives the whole dict, reserved keys included, so never
 splat it into a network or a library constructor. Read the keys a head needs
