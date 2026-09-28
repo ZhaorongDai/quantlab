@@ -43,7 +43,6 @@ from tqdm import tqdm
 
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.base.stopping import StoppingRule
 from quantlab.dl_model.training import CrossSectionWindows, TargetTransform
 from quantlab.enums.constant import Date
 from quantlab.ml_model.backend import MlBackend
@@ -1528,7 +1527,7 @@ class DLModel(BaseModel):
     The base class owns the data side: the windows (see
     ``CrossSectionWindows``: optional clip to ±3, NaN -> 0, zero rows before
     a symbol's history), the shuffled bar order, the head's target
-    transform, the stopping rule, the ``train_*`` / ``val_*`` / ``test_*``
+    transform, the epoch loop, the ``train_*`` / ``val_*`` / ``test_*``
     metrics on the raw first label, ``.pth`` checkpoints and prediction.
     The head owns the learning side, through these hooks:
 
@@ -1548,14 +1547,21 @@ class DLModel(BaseModel):
     ``_preprocess(x)``
         Optional; applied to every window tensor in training and prediction
         alike. The default returns it unchanged.
+    ``_on_fit_start()``, ``_should_stop(epoch, train_loss, val_loss)``, ``_on_fit_end()``
+        Optional stop hooks. The first runs once the network and optimizer
+        exist, the second after each epoch (True stops training), the third
+        after the last epoch, for example to restore the best weights. By
+        default training runs ``config.epochs`` epochs and keeps the last
+        weights; ``ValLossPatience`` and ``TrainLossThreshold`` in
+        ``quantlab.dl_model.training`` are ready-made helpers for them.
 
     ``x`` is ``[S_t, N, F]`` on ``device``; ``y`` is ``[S_t, L]``, the
     head's ``target_transform`` of the bar's labels, with NaN where a label
     is missing. Symbols with a missing label stay in ``x`` as context, so the
     loss must leave the NaN entries out (``masked_mse`` in
     ``quantlab.dl_model.training`` does). A head also declares
-    ``window_bars`` (N), ``target_transform`` (a ``TargetTransform``) and
-    ``stopping`` (a ``StoppingRule``); it may set ``clip_features = False``.
+    ``window_bars`` (N) and ``target_transform`` (a ``TargetTransform``);
+    it may set ``clip_features = False``.
 
     The model's warm-up is N - 1 bars: every feature request, in training
     and in a backtest, starts that many bars earlier on each factor's
@@ -1568,7 +1574,6 @@ class DLModel(BaseModel):
         >>> class LastBarHead(DLModel):
         ...     window_bars = 5
         ...     target_transform = TargetTransform("zscore")
-        ...     stopping = ValLossPatience(patience=3)
         ...     def _init_model(self, num_features, num_labels, hyperparameters):
         ...         return LastBarLinear(num_features, num_labels)
         ...     def _init_optim(self, model):
@@ -1628,17 +1633,6 @@ class DLModel(BaseModel):
         TargetTransform(kind='zscore', drop_extreme=0.0)
         """
 
-    @property
-    @abstractmethod
-    def stopping(self) -> StoppingRule:
-        """When training stops and which weights are kept.
-
-        Examples
-        --------
-        >>> head.stopping
-        ValLossPatience(patience=3)
-        """
-
     @abstractmethod
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict
@@ -1679,7 +1673,7 @@ class DLModel(BaseModel):
         """Return the validation loss of one bar.
 
         Called in eval mode under ``no_grad``. The mean over the validation
-        bars is the epoch's validation loss, which the stopping rule reads,
+        bars is the epoch's validation loss, which ``_should_stop`` receives,
         and the mean over each split's bars is its ``{split}_loss`` metric,
         so the result must convert with ``float()``.
         """
@@ -1692,6 +1686,33 @@ class DLModel(BaseModel):
 
         The return value is not used by the base class; heads typically log
         metrics here.
+        """
+
+    def _on_fit_start(self) -> None:
+        """Prepare per-fit stopping state; called once the network and optimizer exist.
+
+        The default does nothing. A head that stops early builds its helper
+        here, for example ``self.rule = ValLossPatience(10)``, so every fit
+        and every cross-validation fold starts fresh.
+        """
+
+    def _should_stop(
+        self, epoch: int, train_loss: float, val_loss: float | None
+    ) -> bool:
+        """Return True to stop after this epoch; the default never stops early.
+
+        ``train_loss`` is the mean of the epoch's ``_train_one_batch``
+        losses, ``val_loss`` the mean of its ``_val_one_batch`` losses, or
+        None without a validation segment. Training never runs past
+        ``config.epochs``.
+        """
+        return False
+
+    def _on_fit_end(self) -> None:
+        """Choose the weights to keep; called after the last epoch.
+
+        The default keeps the last epoch's weights. A head using
+        ``ValLossPatience`` restores the best ones here.
         """
 
     def _preprocess(self, x: torch.Tensor) -> torch.Tensor:
@@ -1873,7 +1894,7 @@ class DLModel(BaseModel):
     def _fit(
         self, project_name: str, experiment_name: str, model_name: str
     ) -> dict:
-        """Train bar by bar until the stopping rule fires, then evaluate and save.
+        """Train bar by bar until ``_should_stop`` says so, then evaluate and save.
 
         The panel is split by ``_fit_segments``, but every window reads the
         whole collected panel, so the first validation and test bars (and
@@ -1881,8 +1902,9 @@ class DLModel(BaseModel):
         Each epoch calls ``_train_one_batch`` on the training bars in
         shuffled order, then ``_val_one_batch`` on the validation bars when
         there are any, then ``_test_one_batch`` on the test bars. The
-        per-epoch ``train_loss`` / ``val_loss`` are logged to wandb and fed
-        to the head's stopping rule; the loop never runs past
+        per-epoch ``train_loss`` / ``val_loss`` are logged to wandb and passed
+        to ``_should_stop``; ``_on_fit_start`` runs before the first epoch and
+        ``_on_fit_end`` after the last, and the loop never runs past
         ``config.epochs``. Torch is reseeded with ``config.random_seed``
         first, so a fit is reproducible on CPU.
 
@@ -1929,7 +1951,7 @@ class DLModel(BaseModel):
         optim = self._init_optim(self.model)  # type: ignore[arg-type]
         if optim is not None:
             self.optim = optim
-        monitor = self.stopping.monitor()
+        self._on_fit_start()
         rng = np.random.default_rng(config.random_seed)
 
         epoch = 0
@@ -1945,10 +1967,10 @@ class DLModel(BaseModel):
                 if val_loss is not None:
                     logged["val_loss"] = val_loss
                 self._wandb_recorder.log(logged, step=epoch)
-            if monitor.update(train_loss, val_loss, self.model):  # type: ignore[arg-type]
+            if self._should_stop(epoch, train_loss, val_loss):
                 logger.info(f"{self.class_name}: stopping after epoch {epoch}")
                 break
-        monitor.finish(self.model)  # type: ignore[arg-type]
+        self._on_fit_end()
 
         with Timer(f"{self.class_name}: evaluate"):
             metrics = self._evaluate(epoch, "train", windows, y, train_bars)

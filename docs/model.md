@@ -153,7 +153,7 @@ Every head derives from `BaseModel` through one of two variants. The variants di
 
 | Class | Framework | Config | Checkpoint | Methods a head implements |
 |---|---|---|---|---|
-| `DLModel` | torch, one cross-section of symbols per step | `DLConfig` | `.pth` | `_init_model`, `_init_optim`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, plus the declarations `window_bars`, `target_transform`, `stopping` |
+| `DLModel` | torch, one cross-section of symbols per step | `DLConfig` | `.pth` | `_init_model`, `_init_optim`, `_train_one_batch`, `_val_one_batch`, `_test_one_batch`, plus the declarations `window_bars`, `target_transform`; optional `_should_stop`, `_on_fit_start`, `_on_fit_end`, `_preprocess` |
 | `MLModel` | numpy, the library's own early stopping | `MLConfig` | `.joblib` | `_init_model`, `_preprocess`, `_fit_model`, `_forward` |
 
 Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `MLModel` heads; no torch head ships yet. See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
@@ -162,7 +162,7 @@ Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all 
 
 ### Stop training early
 
-With `early_stopping=True`, training stops when the validation loss has not improved for `early_stopping_patience` boosting rounds and the best model is kept. These are `MLConfig` fields; a torch head declares its own stopping rule instead (see Train a torch model). For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/ml_model/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
+With `early_stopping=True`, training stops when the validation loss has not improved for `early_stopping_patience` boosting rounds and the best model is kept. These are `MLConfig` fields; a torch head stops through its own `_should_stop` hook instead (see Train a torch model). For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/ml_model/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
 
 ```python
 >>> from dataclasses import replace
@@ -211,7 +211,7 @@ All folds share one trial directory. Besides one sub-directory per fold it conta
 
 A torch head (`DLModel`) trains on one bar per step: the *cross-section* of that bar, meaning the symbols with at least one finite feature there, each carrying its own last `window_bars` bars of features. The network maps `[S_t, N, F]` to `[S_t, L]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction. A symbol whose label is missing stays in the cross-section as input and adds nothing to the loss. Features are clipped to ±3 and NaN becomes 0 (a head can set `clip_features = False`); window rows before a symbol's first bar are zeros.
 
-A head implements the same hooks as before the cross-section design, now fed one bar at a time. `_init_model(num_features, num_labels, hyperparameters)` builds the network. `_init_optim(model)` returns the optimizer, kept on `self.optim` (`config.lr` is there for it to read). `_train_one_batch(epoch, x, y)` takes one optimisation step and returns its loss; `_val_one_batch` returns the validation loss of one bar, and `_test_one_batch` is called on every test bar after each epoch. `x` is `[S_t, N, F]`; `y` is `[S_t, L]`, the bar's labels after the head's `target_transform`, with NaN where a label is missing, so the loss must leave those entries out (`masked_mse` in `quantlab.dl_model.training` does). The loss, the optimizer, gradient clipping and anything else about a step are the head's choice. The head also declares three things. `window_bars` is N. `target_transform` is `TargetTransform("rank")` (Qlib's `CSRankNorm`) or `TargetTransform("zscore")`, optionally with `drop_extreme`, the share of each tail removed from the bar's training cross-section; metrics still use the raw first label. `stopping` is `ValLossPatience(patience)` (stop after `patience` epochs without a lower validation loss, keep the best epoch's weights) or `TrainLossThreshold(threshold, max_epochs)` (stop once the epoch's training loss reaches the threshold, keep the last weights); both read the mean losses the step hooks return. `DLConfig` adds `epochs`, the cap on either rule, and `lr`. There is no batch size: bars are visited in shuffled order, one per step. An optional `_preprocess(x)` transforms every window at training and prediction time alike.
+A head implements hooks that are fed one bar at a time. `_init_model(num_features, num_labels, hyperparameters)` builds the network. `_init_optim(model)` returns the optimizer, kept on `self.optim` (`config.lr` is there for it to read). `_train_one_batch(epoch, x, y)` takes one optimisation step and returns its loss; `_val_one_batch` returns the validation loss of one bar, and `_test_one_batch` is called on every test bar after each epoch. `x` is `[S_t, N, F]`; `y` is `[S_t, L]`, the bar's labels after the head's `target_transform`, with NaN where a label is missing, so the loss must leave those entries out (`masked_mse` in `quantlab.dl_model.training` does). The loss, the optimizer, gradient clipping and anything else about a step are the head's choice. The head also declares two things. `window_bars` is N. `target_transform` is `TargetTransform("rank")` (Qlib's `CSRankNorm`) or `TargetTransform("zscore")`, optionally with `drop_extreme`, the share of each tail removed from the bar's training cross-section; metrics still use the raw first label. When to stop is the head's too: `_should_stop(epoch, train_loss, val_loss)` runs after every epoch with the mean losses the step hooks returned (`val_loss` is None without a validation segment) and stops training by returning True; `_on_fit_start()` runs before the first epoch and `_on_fit_end()` after the last, where a head can restore the weights it prefers. By default every epoch runs and the last weights are kept. `ValLossPatience(patience)` (stop after `patience` epochs without a lower validation loss, `restore` the best epoch's weights) and `TrainLossThreshold(threshold, max_epochs)` (stop once the training loss reaches the threshold) are helpers to build in `_on_fit_start` and call from the other two hooks. `DLConfig` adds `epochs`, the cap on training, and `lr`. There is no batch size: bars are visited in shuffled order, one per step. An optional `_preprocess(x)` transforms every window at training and prediction time alike.
 
 A model with `window_bars` N needs N - 1 bars of history before the first bar it predicts. `collect()`, and a backtest's feature request, ask each factor for that many extra bars, counted on the factor's own dataset calendar, and warn when the data does not reach that far back. The stand-in panels here have no dataset, so this head uses a one-bar window.
 
@@ -231,9 +231,14 @@ A model with `window_bars` N needs N - 1 bars of history before the first bar it
 >>> class LinearHead(DLModel):
 ...     window_bars = 1
 ...     target_transform = TargetTransform("zscore")
-...     stopping = ValLossPatience(patience=5)
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         return LastBar(num_features, num_labels)
+...     def _on_fit_start(self):
+...         self.patience = ValLossPatience(5)
+...     def _should_stop(self, epoch, train_loss, val_loss):
+...         return self.patience.update(val_loss, self.model)
+...     def _on_fit_end(self):
+...         self.patience.restore(self.model)
 ...     def _init_optim(self, model):
 ...         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
 ...     def _train_one_batch(self, epoch, x, y):
@@ -305,7 +310,7 @@ An `MLModel` head gets `[T, S, F]` features and `[T, S, L]` labels as arrays. `_
 [0.05, -0.02, -0.001]
 ```
 
-A `DLModel` head is its network, its optimizer, its three step hooks and its three declarations; `LinearHead` under Train a torch model is a complete one. The head decides what one step does: the loss, the optimizer, clipping, auxiliary outputs. The base class owns the windows, the bar order, the target transform, the stopping rule, the metrics and the checkpoints.
+A `DLModel` head is its network, its optimizer, its three step hooks, its two declarations and, optionally, its stop hooks; `LinearHead` under Train a torch model is a complete one. The head decides what one step does (the loss, the optimizer, clipping, auxiliary outputs) and when to stop. The base class owns the windows, the bar order, the target transform, the epoch loop, the metrics and the checkpoints.
 
 ## Notes
 

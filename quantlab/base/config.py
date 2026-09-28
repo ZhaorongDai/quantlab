@@ -744,7 +744,7 @@ class DLConfig(_FrozenConfig):
     """Config of a torch model head, trained one cross-section per step.
 
     A step is one bar, so there is no batch size. When training stops is the
-    head's declared stopping rule (``DLModel.stopping``), capped by
+    head's ``_should_stop`` hook (see ``DLModel``), capped by
     ``epochs``. ``train_start``, ``train_end``, ``test_start`` and ``test_end`` bound the
     training and test windows; rolling cross-validation overwrites them fold
     by fold. ``start_date`` and ``end_date`` bound all the data the model
@@ -793,7 +793,7 @@ class DLConfig(_FrozenConfig):
     hyperparameters: dict = field(default_factory=dict)
     #: Learning rate, read by the head's ``_init_optim``.
     lr: float = 1e-3
-    #: Maximum number of training epochs; the head's stopping rule may end
+    #: Maximum number of training epochs; the head's ``_should_stop`` may end
     #: training earlier.
     epochs: int = 100
     #: Fraction of the training window held out, at its end, for validation.

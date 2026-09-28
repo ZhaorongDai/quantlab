@@ -9,7 +9,12 @@ import torch
 from torch import nn
 
 from quantlab.base.model import DLModel
-from quantlab.dl_model.training import TargetTransform, ValLossPatience, masked_mse
+from quantlab.dl_model.training import (
+    TargetTransform,
+    TrainLossThreshold,
+    ValLossPatience,
+    masked_mse,
+)
 
 
 class MeanContextNet(nn.Module):
@@ -30,7 +35,8 @@ class MeanContextHead(DLModel):
     """``MeanContextNet`` with its declarations read from ``hyperparameters``.
 
     ``window_bars`` (default 3), ``transform`` (a ``TargetTransform``,
-    default z-score), ``stopping`` (default ``ValLossPatience(2)``) and
+    default z-score), ``stopping`` (``("patience", n)`` or
+    ``("threshold", threshold, max_epochs)``, default ``("patience", 2)``) and
     ``clip`` (default True) may be overridden per test.
     """
 
@@ -42,9 +48,6 @@ class MeanContextHead(DLModel):
     def target_transform(self) -> TargetTransform:
         return self.config.hyperparameters.get("transform", TargetTransform("zscore"))
 
-    @property
-    def stopping(self):
-        return self.config.hyperparameters.get("stopping", ValLossPatience(2))
 
     @property
     def clip_features(self) -> bool:
@@ -69,6 +72,19 @@ class MeanContextHead(DLModel):
 
     def _test_one_batch(self, epoch, x, y):
         return masked_mse(self.model(x), y)
+
+    def _on_fit_start(self):
+        kind, *args = self.config.hyperparameters.get("stopping", ("patience", 2))
+        self.rule = ValLossPatience(*args) if kind == "patience" else TrainLossThreshold(*args)
+
+    def _should_stop(self, epoch, train_loss, val_loss):
+        if isinstance(self.rule, ValLossPatience):
+            return self.rule.update(val_loss, self.model)
+        return self.rule.update(train_loss)
+
+    def _on_fit_end(self):
+        if isinstance(self.rule, ValLossPatience):
+            self.rule.restore(self.model)
 
 
 class RecordingNet(MeanContextNet):

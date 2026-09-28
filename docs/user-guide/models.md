@@ -96,7 +96,7 @@ before anything else happens. Both share these fields:
   validation and early stopping. The default is 0.2.
 - `early_stopping` and `early_stopping_patience` (`MLConfig` only): stop
   when the validation loss has not improved for that many boosting rounds.
-  A torch head declares its own stopping rule instead.
+  A torch head decides when to stop in its own `_should_stop` hook instead.
 - `hyperparameters` and `random_seed`.
 
 `DLConfig` adds the torch training settings `epochs` (the cap on training)
@@ -393,13 +393,16 @@ bars, features), to `[S_t, L]`. `_train_one_batch(epoch, x, y)` takes one
 optimisation step on one bar, and `_val_one_batch` and `_test_one_batch`
 evaluate one bar; `y` is the bar's target with NaN where a label is missing,
 so the loss must mask it, as `masked_mse` does. The loss, the optimizer and
-any clipping are the head's choice. The head also declares three things.
-`window_bars` is N. `target_transform` turns each bar's labels into the
-training target, a per-bar rank (`"rank"`, Qlib's `CSRankNorm`) or z-score
-(`"zscore"`). `stopping` is `ValLossPatience(patience)`, which keeps the
-epoch with the lowest validation loss, or `TrainLossThreshold(threshold,
-max_epochs)`. This head is a small MLP on each symbol's flattened five-bar
-window:
+any clipping are the head's choice, and so is when to stop: `_should_stop`
+runs after every epoch with its mean training and validation losses, and
+`_on_fit_start` / `_on_fit_end` run around the loop. By default every epoch
+runs and the last weights are kept; `ValLossPatience(patience)`, which
+restores the epoch with the lowest validation loss, and
+`TrainLossThreshold(threshold, max_epochs)` are ready-made helpers for those
+hooks. The head also declares two things. `window_bars` is N.
+`target_transform` turns each bar's labels into the training target, a
+per-bar rank (`"rank"`, Qlib's `CSRankNorm`) or z-score (`"zscore"`). This
+head is a small MLP on each symbol's flattened five-bar window:
 
 ```python
 import torch.nn as nn
@@ -422,9 +425,14 @@ class WindowMLP(nn.Module):
 class WindowMLPHead(DLModel):
     window_bars = 5
     target_transform = TargetTransform("rank")
-    stopping = ValLossPatience(patience=5)
     def _init_model(self, num_features, num_labels, hyperparameters):
         return WindowMLP(num_features, num_labels, self.window_bars)
+    def _on_fit_start(self):
+        self.patience = ValLossPatience(5)
+    def _should_stop(self, epoch, train_loss, val_loss):
+        return self.patience.update(val_loss, self.model)
+    def _on_fit_end(self):
+        self.patience.restore(self.model)
     def _init_optim(self, model):
         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
     def _train_one_batch(self, epoch, x, y):

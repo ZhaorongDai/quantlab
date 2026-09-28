@@ -153,7 +153,7 @@ True
 
 | 类 | 框架 | 配置 | 检查点 | 模型头需要实现的方法 |
 |---|---|---|---|---|
-| `DLModel` | torch，每一步一个标的截面 | `DLConfig` | `.pth` | `_init_model`、`_init_optim`、`_train_one_batch`、`_val_one_batch`、`_test_one_batch`，外加三项声明 `window_bars`、`target_transform`、`stopping` |
+| `DLModel` | torch，每一步一个标的截面 | `DLConfig` | `.pth` | `_init_model`、`_init_optim`、`_train_one_batch`、`_val_one_batch`、`_test_one_batch`，外加两项声明 `window_bars`、`target_transform`；可选 `_should_stop`、`_on_fit_start`、`_on_fit_end`、`_preprocess` |
 | `MLModel` | numpy，使用库自带的提前停止 | `MLConfig` | `.joblib` | `_init_model`、`_preprocess`、`_fit_model`、`_forward` |
 
 自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `MLModel`；目前还没有自带的 torch 模型头。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
@@ -162,7 +162,7 @@ True
 
 ### 提前停止
 
-设置 `early_stopping=True` 后，当验证损失连续 `early_stopping_patience` 个 boosting 轮没有改善时停止训练，并保留最优模型。这两个是 `MLConfig` 的字段；torch 模型头改为声明自己的停止规则（见“训练 torch 模型”）。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/ml_model/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
+设置 `early_stopping=True` 后，当验证损失连续 `early_stopping_patience` 个 boosting 轮没有改善时停止训练，并保留最优模型。这两个是 `MLConfig` 的字段；torch 模型头改用自己的 `_should_stop` 钩子决定何时停止（见“训练 torch 模型”）。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/ml_model/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
 
 ```python
 >>> from dataclasses import replace
@@ -211,7 +211,7 @@ True
 
 torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*，即在该 bar 上至少有一个有限特征值的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络把 `[S_t, N, F]` 映射到 `[S_t, L]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测。标签缺失的标的仍留在截面里作为输入，但不计入损失。特征会被截断到 ±3，NaN 变为 0（模型头可以设 `clip_features = False`）；标的第一个 bar 之前的窗口行全为 0。
 
-模型头实现的仍是截面设计之前的那组钩子，只是现在每次喂一个 bar。`_init_model(num_features, num_labels, hyperparameters)` 构建网络。`_init_optim(model)` 返回优化器，保存在 `self.optim` 上（`config.lr` 就是给它读的）。`_train_one_batch(epoch, x, y)` 执行一步优化并返回损失；`_val_one_batch` 返回一个 bar 的验证损失；`_test_one_batch` 在每个 epoch 之后对每个测试 bar 调用一次。`x` 是 `[S_t, N, F]`；`y` 是 `[S_t, L]`，即该 bar 的标签经过模型头的 `target_transform` 之后的值，标签缺失处为 NaN，所以损失必须排除这些位置（`quantlab.dl_model.training` 里的 `masked_mse` 就是这样做的）。损失、优化器、梯度截断以及一步训练里的其他一切都由模型头决定。模型头还要声明三样东西。`window_bars` 就是 N。`target_transform` 是 `TargetTransform("rank")`（Qlib 的 `CSRankNorm`）或 `TargetTransform("zscore")`，可以再加 `drop_extreme`，即从该 bar 的训练截面里去掉的每侧尾部比例；指标仍然用原始的第一个标签计算。`stopping` 是 `ValLossPatience(patience)`（验证损失连续 `patience` 个 epoch 没有下降就停止，保留最优 epoch 的权重）或 `TrainLossThreshold(threshold, max_epochs)`（某个 epoch 的训练损失达到阈值即停止，保留最后的权重）；两者读的都是各个钩子返回的损失的均值。`DLConfig` 增加了 `epochs`（两种规则共同的上限）和 `lr`。没有 batch size：各个 bar 按打乱后的顺序逐一训练，一步一个 bar。可选的 `_preprocess(x)` 在训练和预测时对每个窗口做同样的变换。
+模型头实现一组钩子，每次喂一个 bar。`_init_model(num_features, num_labels, hyperparameters)` 构建网络。`_init_optim(model)` 返回优化器，保存在 `self.optim` 上（`config.lr` 就是给它读的）。`_train_one_batch(epoch, x, y)` 执行一步优化并返回损失；`_val_one_batch` 返回一个 bar 的验证损失；`_test_one_batch` 在每个 epoch 之后对每个测试 bar 调用一次。`x` 是 `[S_t, N, F]`；`y` 是 `[S_t, L]`，即该 bar 的标签经过模型头的 `target_transform` 之后的值，标签缺失处为 NaN，所以损失必须排除这些位置（`quantlab.dl_model.training` 里的 `masked_mse` 就是这样做的）。损失、优化器、梯度截断以及一步训练里的其他一切都由模型头决定。模型头还要声明两样东西。`window_bars` 就是 N。`target_transform` 是 `TargetTransform("rank")`（Qlib 的 `CSRankNorm`）或 `TargetTransform("zscore")`，可以再加 `drop_extreme`，即从该 bar 的训练截面里去掉的每侧尾部比例；指标仍然用原始的第一个标签计算。何时停止也由模型头决定：`_should_stop(epoch, train_loss, val_loss)` 在每个 epoch 之后调用，拿到的是各个钩子返回的损失的均值（没有验证段时 `val_loss` 为 None），返回 True 就停止训练；`_on_fit_start()` 在第一个 epoch 之前调用，`_on_fit_end()` 在最后一个 epoch 之后调用，模型头可以在这里恢复想保留的权重。默认跑满所有 epoch 并保留最后的权重。`ValLossPatience(patience)`（验证损失连续 `patience` 个 epoch 没有下降就停止，用 `restore` 恢复最优 epoch 的权重）和 `TrainLossThreshold(threshold, max_epochs)`（训练损失达到阈值即停止）是现成的工具，在 `_on_fit_start` 里创建，在另外两个钩子里调用。`DLConfig` 增加了 `epochs`（训练的上限）和 `lr`。没有 batch size：各个 bar 按打乱后的顺序逐一训练，一步一个 bar。可选的 `_preprocess(x)` 在训练和预测时对每个窗口做同样的变换。
 
 `window_bars` 为 N 的模型在预测的第一个 bar 之前需要 N - 1 个 bar 的历史。`collect()` 以及回测的特征请求会向每个因子多要这么多个 bar，按因子自己的数据集日历计数，数据不够早时给出警告。这里的替身面板没有数据集，所以这个模型头用一个 bar 的窗口。
 
@@ -231,9 +231,14 @@ torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*
 >>> class LinearHead(DLModel):
 ...     window_bars = 1
 ...     target_transform = TargetTransform("zscore")
-...     stopping = ValLossPatience(patience=5)
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
 ...         return LastBar(num_features, num_labels)
+...     def _on_fit_start(self):
+...         self.patience = ValLossPatience(5)
+...     def _should_stop(self, epoch, train_loss, val_loss):
+...         return self.patience.update(val_loss, self.model)
+...     def _on_fit_end(self):
+...         self.patience.restore(self.model)
 ...     def _init_optim(self, model):
 ...         return torch.optim.Adam(model.parameters(), lr=self.config.lr)
 ...     def _train_one_batch(self, epoch, x, y):
@@ -305,7 +310,7 @@ torch 模型头（`DLModel`）每一步训练一个 bar：这个 bar 的*截面*
 [0.05, -0.02, -0.001]
 ```
 
-`DLModel` 的模型头由网络、优化器、三个逐步钩子和三项声明组成；“训练 torch 模型”里的 `LinearHead` 就是一个完整的例子。一步训练做什么由模型头决定：损失、优化器、梯度截断、辅助输出。窗口、bar 的顺序、目标变换、停止规则、指标和检查点由基类负责。
+`DLModel` 的模型头由网络、优化器、三个逐步钩子、两项声明以及可选的停止钩子组成；“训练 torch 模型”里的 `LinearHead` 就是一个完整的例子。一步训练做什么（损失、优化器、梯度截断、辅助输出）以及何时停止都由模型头决定。窗口、bar 的顺序、目标变换、epoch 循环、指标和检查点由基类负责。
 
 ## 注意事项
 

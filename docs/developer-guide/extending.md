@@ -668,13 +668,16 @@ hyperparameters)`, returning an `nn.Module` that maps `[S_t, N, F]` to
 hooks `_train_one_batch`, `_val_one_batch` and `_test_one_batch`, each
 called with one bar's `x` (`[S_t, N, F]`) and `y` (`[S_t, L]`, the
 transformed target, NaN where a label is missing). The loss, the optimizer
-and anything else about a step are the head's. It declares `window_bars`,
-`target_transform` (`TargetTransform("rank")` or `TargetTransform("zscore")`,
-optionally with `drop_extreme`) and `stopping` (`ValLossPatience` or
-`TrainLossThreshold`), all from `quantlab.dl_model.training`. The base class
+and anything else about a step are the head's, and so is when to stop:
+`_should_stop(epoch, train_loss, val_loss)` runs after every epoch, between
+`_on_fit_start()` and `_on_fit_end()` (defaults: run every epoch, keep the
+last weights). It declares `window_bars` and `target_transform`
+(`TargetTransform("rank")` or `TargetTransform("zscore")`, optionally with
+`drop_extreme`); `ValLossPatience`, `TrainLossThreshold` and `masked_mse` are
+helpers for the hooks, all from `quantlab.dl_model.training`. The base class
 builds the windows (clipped to ±3, NaN as 0), shuffles the bars, applies the
-target transform, runs the stopping rule on the losses the hooks return, and
-writes the same `metrics.json` as `MLModel`. The model
+target transform, runs the epoch loop, and writes the same `metrics.json` as
+`MLModel`. The model
 requests `window_bars - 1` extra bars of each factor before its start date.
 A GRU per symbol followed by attention across the bar's symbols:
 
@@ -705,7 +708,15 @@ class CrossSectionAttention(nn.Module):
 class AttentionHead(DLModel):
     window_bars = 10
     target_transform = TargetTransform("rank")
-    stopping = ValLossPatience(patience=3)
+
+    def _on_fit_start(self):
+        self.patience = ValLossPatience(3)
+
+    def _should_stop(self, epoch, train_loss, val_loss):
+        return self.patience.update(val_loss, self.model)
+
+    def _on_fit_end(self):
+        self.patience.restore(self.model)
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         return CrossSectionAttention(

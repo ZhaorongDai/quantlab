@@ -245,7 +245,6 @@ quantlab/
         constituent.py   IndexConstituentDataset: index-membership panels
         factor.py        Factor, FactorKunQuant, FactorPolars
         model.py         BaseModel, DLModel, MLModel
-        stopping.py      StoppingRule, EpochMonitor: when a torch head stops
         backtest.py      BaseBacktester and its result types
         backend.py       DataBackend, ModelBackend: storage interfaces
         ...              chunked conversion, download ledgers, progress reporting

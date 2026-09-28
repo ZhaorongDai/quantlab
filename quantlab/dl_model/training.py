@@ -1,4 +1,4 @@
-"""Training rules a deep head declares, and the per-bar windows it is fed.
+"""Training pieces of a deep head, and the per-bar windows it is fed.
 
 A ``DLModel`` trains on one *cross-section* per step: the symbols with at
 least one finite feature at a bar, each carrying its last N bars of features
@@ -9,11 +9,11 @@ base class needs:
   array, one bar at a time.
 - ``TargetTransform`` turns a bar's raw labels into the training target (a
   per-bar rank or z-score, optionally dropping the extremes).
-- ``ValLossPatience`` and ``TrainLossThreshold`` are the two stopping rules
-  (``quantlab.base.stopping`` holds their contract).
+- ``ValLossPatience`` and ``TrainLossThreshold`` are stopping helpers a
+  head calls from its stop hooks (``_should_stop``, ``_on_fit_end``).
 - ``masked_mse`` is a loss for the step hooks that leaves missing labels out.
 
-Each head declares a transform and a stopping rule following its reference
+Each head picks a transform and a stopping behaviour following its reference
 implementation; metrics are always computed on the raw label, never on the
 transformed target.
 """
@@ -24,8 +24,6 @@ from typing import Literal
 import numpy as np
 import torch
 from scipy.stats import rankdata
-
-from quantlab.base.stopping import EpochMonitor, StoppingRule
 
 
 class CrossSectionWindows:
@@ -217,58 +215,57 @@ class TargetTransform:
         return out
 
 
-@dataclass(frozen=True)
-class ValLossPatience(StoppingRule):
-    """Stop after ``patience`` epochs without a lower validation loss.
+class ValLossPatience:
+    """Early stopping on the validation loss, for a head's stop hooks.
 
-    The validation loss is the masked MSE on the transformed target. The
-    weights of the epoch with the lowest validation loss are restored at the
-    end. Without a validation segment no epoch has a validation loss: the
-    loop runs to ``config.epochs`` and keeps the last weights.
+    ``update`` records one epoch's validation loss and snapshots the weights
+    whenever it is the lowest so far; it returns True once ``patience``
+    epochs in a row have not improved on it. ``restore`` loads the best
+    snapshot back. A ``None`` or non-finite loss (no validation segment)
+    never counts, so training then runs to ``config.epochs``. The object
+    holds the state of one fit: build a fresh one in ``_on_fit_start``.
 
     Parameters
     ----------
     patience : int
         Epochs without improvement tolerated before stopping; at least 1.
 
+    Raises
+    ------
+    ValueError
+        If ``patience`` is below 1.
+
     Examples
     --------
     >>> net = torch.nn.Linear(1, 1)
-    >>> monitor = ValLossPatience(patience=2).monitor()
-    >>> [monitor.update(1.0, loss, net) for loss in (3.0, 2.0, 4.0, 5.0)]
+    >>> rule = ValLossPatience(patience=2)
+    >>> [rule.update(loss, net) for loss in (3.0, 2.0, 4.0, 5.0)]
     [False, False, False, True]
+    >>> rule.best
+    2.0
     """
 
-    patience: int
-
-    def __post_init__(self):
-        """Validate ``patience``."""
-        if self.patience < 1:
-            raise ValueError(f"patience must be at least 1, got {self.patience}")
-
-    def monitor(self) -> EpochMonitor:
-        """Return a fresh monitor that snapshots the best epoch's weights.
-
-        Examples
-        --------
-        >>> ValLossPatience(3).monitor().update(1.0, 0.5, torch.nn.Linear(1, 1))
-        False
-        """
-        return _PatienceMonitor(self.patience)
-
-
-class _PatienceMonitor(EpochMonitor):
     def __init__(self, patience: int):
+        """Start a fit with no best loss; see the class docstring."""
+        if patience < 1:
+            raise ValueError(f"patience must be at least 1, got {patience}")
         self.patience = patience
         self.best = float("inf")
         self.bad_epochs = 0
         self.best_state: dict[str, torch.Tensor] | None = None
 
-    def update(self, train_loss, val_loss, model) -> bool:
+    def update(self, val_loss: float | None, model: torch.nn.Module) -> bool:
+        """Record one epoch's validation loss; return True to stop.
+
+        Examples
+        --------
+        >>> ValLossPatience(1).update(0.5, torch.nn.Linear(1, 1))
+        False
+        """
         if val_loss is None or not np.isfinite(val_loss):
             return False
         if val_loss < self.best:
-            self.best = val_loss
+            self.best = float(val_loss)
             self.bad_epochs = 0
             self.best_state = {
                 k: v.detach().cpu().clone() for k, v in model.state_dict().items()
@@ -277,62 +274,64 @@ class _PatienceMonitor(EpochMonitor):
         self.bad_epochs += 1
         return self.bad_epochs >= self.patience
 
-    def finish(self, model) -> None:
+    def restore(self, model: torch.nn.Module) -> None:
+        """Load the best epoch's weights into ``model``; no-op before any snapshot.
+
+        Examples
+        --------
+        >>> net = torch.nn.Linear(1, 1)
+        >>> rule = ValLossPatience(1)
+        >>> _ = rule.update(0.5, net)
+        >>> rule.restore(net)
+        """
         if self.best_state is not None:
             model.load_state_dict(self.best_state)
 
 
-@dataclass(frozen=True)
-class TrainLossThreshold(StoppingRule):
-    """Stop once the epoch's training loss is at or below ``threshold``.
+class TrainLossThreshold:
+    """MASTER's stopping rule, for a head's stop hooks.
 
-    This is MASTER's rule. Training also stops after ``max_epochs`` epochs
-    (and never runs past ``config.epochs``); the last epoch's weights are
-    kept either way, including when the threshold is never reached.
+    ``update`` returns True once an epoch's training loss is at or below
+    ``threshold``, or after ``max_epochs`` epochs; the head keeps the last
+    weights either way. The object counts the epochs of one fit: build a
+    fresh one in ``_on_fit_start``.
 
     Parameters
     ----------
     threshold : float
-        Training loss (masked MSE on the transformed target) to reach.
+        Training loss to reach.
     max_epochs : int
-        Epoch cap; at least 1.
+        Epoch cap; at least 1. Training never runs past ``config.epochs``
+        anyway.
+
+    Raises
+    ------
+    ValueError
+        If ``max_epochs`` is below 1.
 
     Examples
     --------
-    >>> net = torch.nn.Linear(1, 1)
-    >>> monitor = TrainLossThreshold(threshold=0.95, max_epochs=40).monitor()
-    >>> [monitor.update(loss, None, net) for loss in (1.2, 1.0, 0.9)]
+    >>> rule = TrainLossThreshold(threshold=0.95, max_epochs=40)
+    >>> [rule.update(loss) for loss in (1.2, 1.0, 0.9)]
     [False, False, True]
     """
 
-    threshold: float
-    max_epochs: int
-
-    def __post_init__(self):
-        """Validate ``max_epochs``."""
-        if self.max_epochs < 1:
-            raise ValueError(
-                f"max_epochs must be at least 1, got {self.max_epochs}"
-            )
-
-    def monitor(self) -> EpochMonitor:
-        """Return a fresh monitor counting epochs.
-
-        Examples
-        --------
-        >>> TrainLossThreshold(0.5, 1).monitor().update(1.0, None, torch.nn.Linear(1, 1))
-        True
-        """
-        return _ThresholdMonitor(self.threshold, self.max_epochs)
-
-
-class _ThresholdMonitor(EpochMonitor):
     def __init__(self, threshold: float, max_epochs: int):
+        """Start a fit at epoch 0; see the class docstring."""
+        if max_epochs < 1:
+            raise ValueError(f"max_epochs must be at least 1, got {max_epochs}")
         self.threshold = threshold
         self.max_epochs = max_epochs
         self.epochs = 0
 
-    def update(self, train_loss, val_loss, model) -> bool:
+    def update(self, train_loss: float) -> bool:
+        """Record one epoch's training loss; return True to stop.
+
+        Examples
+        --------
+        >>> TrainLossThreshold(0.5, 1).update(1.0)
+        True
+        """
         self.epochs += 1
         return train_loss <= self.threshold or self.epochs >= self.max_epochs
 

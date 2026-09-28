@@ -4,7 +4,7 @@ Quick task 260907-fl6 wrote the first tests for `base/model.py`, each RED
 against a defect of the old epoch/batch loop. Issue #39 replaced that loop
 (one cross-section per step, ADR 0006); the defects that were about batches,
 the epoch-level early-stopping counter and the old validation slice are gone
-with it, and the stopping rules are locked in `tests/test_dl_model.py`. What
+with it, and the stop hooks are locked in `tests/test_dl_model.py`. What
 remains here:
 
 - C  the variable axis must follow the DECLARED order, never alphabetical

@@ -3,7 +3,7 @@
 A deep head maps `[S_t, N, F]` to `[S_t, L]`: the symbols with a finite
 feature at a bar, each with its last N bars. The base class builds the
 windows, drops NaN labels from the loss (never from the input), transforms
-the target per bar, runs the head's stopping rule and reports the shared
+the target per bar, calls the head's stop hooks and reports the shared
 first-label metrics on the raw label.
 
 What turns this file red:
@@ -15,7 +15,8 @@ What turns this file red:
 - a window row before a symbol's history is not zero, or clipping is ignored;
 - the model's warm-up does not make a short request predict like a long one;
 - a target transform is not per bar, or metrics see the transformed target;
-- a stopping rule keeps the wrong weights or runs the wrong number of epochs;
+- the stop hooks are not called per fit and per epoch, or a stopping
+  helper keeps the wrong weights or stops at the wrong epoch;
 - a DL `train()` writes no `metrics.json`.
 
 Everything is synthetic, CPU-only and offline.
@@ -464,55 +465,87 @@ def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path, recorder
 
 def test_val_loss_patience_restores_the_best_epochs_weights():
     net = torch.nn.Linear(1, 1)
-    monitor = ValLossPatience(patience=2).monitor()
+    rule = ValLossPatience(patience=2)
     snapshots = []
     stops = []
     for loss in (3.0, 1.0, 2.0, 4.0):
         with torch.no_grad():
             net.weight.add_(1.0)
         snapshots.append(net.weight.detach().clone())
-        stops.append(monitor.update(0.0, loss, net))
-    monitor.finish(net)
+        stops.append(rule.update(loss, net))
+    rule.restore(net)
 
     assert stops == [False, False, False, True]
     torch.testing.assert_close(net.weight, snapshots[1])
 
 
-def test_train_loss_threshold_stops_at_the_threshold_or_the_cap_keeping_last_weights():
+def test_val_loss_patience_never_stops_without_a_validation_loss():
     net = torch.nn.Linear(1, 1)
-    monitor = TrainLossThreshold(threshold=1.0, max_epochs=10).monitor()
-    assert [monitor.update(x, None, net) for x in (2.0, 1.5, 0.9)] == [False, False, True]
-
-    monitor = TrainLossThreshold(threshold=0.0, max_epochs=3).monitor()
-    assert [monitor.update(1.0, None, net) for _ in range(3)] == [False, False, True]
+    rule = ValLossPatience(patience=1)
+    assert [rule.update(None, net) for _ in range(5)] == [False] * 5
     before = net.weight.detach().clone()
-    monitor.finish(net)
+    rule.restore(net)  # nothing was snapshotted: the weights stay
     torch.testing.assert_close(net.weight, before)
 
 
+def test_train_loss_threshold_stops_at_the_threshold_or_the_cap():
+    rule = TrainLossThreshold(threshold=1.0, max_epochs=10)
+    assert [rule.update(x) for x in (2.0, 1.5, 0.9)] == [False, False, True]
+
+    rule = TrainLossThreshold(threshold=0.0, max_epochs=3)
+    assert [rule.update(1.0) for _ in range(3)] == [False, False, True]
+
+
 @pytest.mark.parametrize(
-    "rule, epochs",
+    "stopping, epochs",
     [
-        (TrainLossThreshold(threshold=float("inf"), max_epochs=40), 1),
-        (TrainLossThreshold(threshold=-1.0, max_epochs=3), 3),
-        (TrainLossThreshold(threshold=-1.0, max_epochs=40), 5),  # config.epochs caps
+        (("threshold", float("inf"), 40), 1),
+        (("threshold", -1.0, 3), 3),
+        (("threshold", -1.0, 40), 5),  # config.epochs caps
     ],
 )
-def test_a_fit_runs_the_epochs_the_stopping_rule_and_config_allow(
-    tmp_path, recorders, rule, epochs
+def test_a_fit_runs_the_epochs_the_heads_stop_hook_and_config_allow(
+    tmp_path, recorders, stopping, epochs
 ):
     model = _model(tmp_path, _features(), _label_of(_features()), epochs=5,
-                   hyperparameters={"stopping": rule})
+                   hyperparameters={"stopping": stopping})
     model.train()
 
     (run,) = recorders
     assert len(run.logged) == epochs
 
 
+class DefaultStoppingHead(MeanContextHead):
+    """Uses DLModel's own stop hooks, recording when each is called."""
+
+    def _on_fit_start(self):
+        self.calls = ["start"]
+        self.initial = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+
+    def _should_stop(self, epoch, train_loss, val_loss):
+        self.calls.append(("epoch", epoch, val_loss is not None))
+        return super(MeanContextHead, self)._should_stop(epoch, train_loss, val_loss)
+
+    def _on_fit_end(self):
+        self.calls.append("end")
+        self.last = {k: v.detach().clone() for k, v in self.model.state_dict().items()}
+        super(MeanContextHead, self)._on_fit_end()
+
+
+def test_the_default_hooks_run_every_epoch_and_keep_the_last_weights(tmp_path, recorders):
+    features = _features()
+    model = _model(tmp_path, features, _label_of(features), cls=DefaultStoppingHead, epochs=4)
+    model.train()
+
+    assert model.calls == ["start"] + [("epoch", e, True) for e in range(4)] + ["end"]
+    assert _same_weights(model.last, _weights(model))
+    assert not _same_weights(model.initial, _weights(model))
+
+
 def test_a_fit_with_val_loss_patience_keeps_its_best_validation_epoch(tmp_path, recorders):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), epochs=15, lr=0.3,
-                   hyperparameters={"stopping": ValLossPatience(3)})
+                   hyperparameters={"stopping": ("patience", 3)})
     checkpoint = model.train()
 
     (run,) = recorders
@@ -566,7 +599,7 @@ class FrozenOptimizerHead(MeanContextHead):
 def test_a_head_can_supply_its_own_optimizer(tmp_path, recorders):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=FrozenOptimizerHead,
-                   hyperparameters={"stopping": TrainLossThreshold(-1.0, 3)})
+                   hyperparameters={"stopping": ("threshold", -1.0, 3)})
     model.train()
 
     assert _same_weights(model.initial, _weights(model))
@@ -586,7 +619,7 @@ class ConstantStepHead(MeanContextHead):
 def test_a_head_decides_what_a_step_does_and_reports(tmp_path, recorders):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=ConstantStepHead,
-                   hyperparameters={"stopping": TrainLossThreshold(-1.0, 3)})
+                   hyperparameters={"stopping": ("threshold", -1.0, 3)})
 
     checkpoint = model.train()
 
@@ -612,7 +645,7 @@ class HookRecordingHead(MeanContextHead):
 def test_test_hook_runs_on_every_test_bar_after_each_epoch(tmp_path, recorders):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=HookRecordingHead,
-                   hyperparameters={"stopping": TrainLossThreshold(-1.0, 2)})
+                   hyperparameters={"stopping": ("threshold", -1.0, 2)})
     model.train()
 
     assert [epoch for epoch, _, _ in model.test_calls] == [0] * 10 + [1] * 10

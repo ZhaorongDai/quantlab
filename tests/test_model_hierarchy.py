@@ -4,7 +4,7 @@
 
 - `BaseModel` -- framework-agnostic lifecycle; the ONLY home of the public
   `train` / `train_cv` / `load` / `predict`;
-- `DLModel` -- the torch variant, step hooks plus three declarations;
+- `DLModel` -- the torch variant, step hooks plus two declarations;
 - `MLModel` -- the numpy variant, four hooks, native early stopping.
 
 What is locked here, and what turns it red:
@@ -130,10 +130,10 @@ def test_base_model_abstract_methods_are_exactly_the_variant_seams():
     )
 
 
-def test_dl_model_abstract_methods_are_the_step_hooks_and_three_declarations():
+def test_dl_model_abstract_methods_are_the_step_hooks_and_two_declarations():
     assert DLModel.__abstractmethods__ == frozenset(
         {"_init_model", "_train_one_batch", "_val_one_batch", "_test_one_batch",
-         "window_bars", "target_transform", "stopping"}
+         "window_bars", "target_transform"}
     )
 
 
@@ -207,7 +207,7 @@ def test_the_fixed_symbol_dl_machinery_and_config_fields_are_deleted():
     the batch/early-stopping config fields went with the fixed-symbol heads."""
     for name in (
         "_preprocess_stream", "_get_refit_optim", "to_tensor",
-        "_align_prediction_symbols",
+        "_align_prediction_symbols", "stopping",
     ):
         assert not hasattr(DLModel, name), name
     for field in ("batch_size", "num_workers", "early_stopping",
