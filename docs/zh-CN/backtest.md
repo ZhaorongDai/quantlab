@@ -459,6 +459,31 @@ timestamp
 ['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config', 'get_config', 'label_delays', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
+`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成目录，并把其中的 `ensemble.json` 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `ensemble.json`，样本内划分所用的训练日期从它旁边的集成级 `config.json` 读取，与单个模型的检查点相同。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
+
+```python
+>>> from quantlab.ensemble_model.seed import SeedEnsemble
+>>> ensemble = SeedEnsemble(make_model(root / "ensemble", cfg, days), seeds=[0, 1, 2])
+>>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,
+... )).run()
+>>> manifest = Path(trained.metrics["trained_checkpoint"])
+>>> manifest.name, sorted(p.name for p in manifest.parent.iterdir())
+('ensemble.json', ['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2'])
+>>> replayed = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config,
+...     model=SeedEnsemble(make_model(root / "replay", cfg, days, train_end=20), seeds=[0, 1, 2]),
+...     checkpoint=str(manifest),
+... )).run()
+>>> replayed.metrics["training_window"]
+('2024-01-01', '2024-02-23')
+>>> bool((replayed.weights["weight"].fillna(0) == result.weights["weight"].fillna(0)).all())
+True
+>>> saved = json.loads((replayed.run_dir / "config.json").read_text())
+>>> saved["model"]["seeds"], sorted(saved["data_fingerprint"])
+([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
+```
+
 ## 注意事项
 
 回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`Total Orders` 是成交笔数。
