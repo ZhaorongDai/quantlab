@@ -1,11 +1,13 @@
-"""`quantlab.api.analyze_factors`: a caller's factor frame in, the library's factor report out.
+"""`quantlab.api.analyze_factors`: a caller's factor frame in, a ``FactorReport`` out.
 
-Tested through the public function (ADR 0011): the analysis, its ``summary()`` and the errors a
+Tested through the public function (ADR 0011): the report, its ``summary()`` and the errors a
 caller sees. Numerical correctness is parity with the library path, ``Factor.analyze`` of the
-same factor and a ``Return`` label on the equivalent Zarr-backed dataset. ``FactorAnalysis
-.summary()`` is a library addition, so it is also checked on the library result directly.
+same factor and a ``Return`` label on the equivalent Zarr-backed dataset, compared on the
+report's ``raw`` analysis. ``FactorAnalysis.summary()`` is a library addition, so it is also
+checked on the library result directly.
 """
 
+import json
 import warnings
 
 import numpy as np
@@ -75,7 +77,11 @@ def _library_analysis(factor, dataset, span: int, quantiles: int) -> FactorAnaly
         return factor.analyze(*WHOLE_STORE, frets=[label], quantiles=quantiles)
 
 
-def _assert_same_metrics(result: FactorAnalysis, expected: FactorAnalysis) -> None:
+def _assert_same_metrics(result, expected: FactorAnalysis) -> None:
+    if isinstance(result, qa.FactorReport):
+        result = result.raw
+    if isinstance(expected, qa.FactorReport):
+        expected = expected.raw
     assert list(result.pairs) == list(expected.pairs)
     for table in (
         "summary_table", "ic_table", "quantile_returns_table", "turnover_table",
@@ -95,11 +101,13 @@ def test_prices_match_factor_analyze_on_a_zarr_dataset(tmp_path, span, quantiles
     result = qa.analyze_factors(factors, prices=prices, span=span, quantiles=quantiles)
 
     expected = _library_analysis(factor, dataset, span, quantiles)
-    assert isinstance(result, FactorAnalysis)
+    assert isinstance(result, qa.FactorReport)
+    assert isinstance(result.raw, FactorAnalysis)
     _assert_same_metrics(result, expected)
-    assert list(result.pairs) == [f"move_1__ret_{span}", f"move_3__ret_{span}"]
-    assert {pair.quantiles for pair in result.pairs.values()} == {quantiles}
-    assert list(result.pairs[f"move_1__ret_{span}"].quantile_returns.columns) == list(
+    pairs = result.raw.pairs
+    assert list(pairs) == [f"move_1__ret_{span}", f"move_3__ret_{span}"]
+    assert {pair.quantiles for pair in pairs.values()} == {quantiles}
+    assert list(pairs[f"move_1__ret_{span}"].quantile_returns.columns) == list(
         range(1, quantiles + 1)
     )
 
@@ -114,9 +122,9 @@ def test_own_returns_long_or_wide_match_the_prices_path(tmp_path):
     by_wide = qa.analyze_factors(factors, wide, span=2)
 
     _assert_same_metrics(by_long, by_prices)
-    assert list(by_wide.pairs) == ["move_1__returns", "move_3__returns"]
-    summary = by_wide.summary_table().assign(fret="ret_2")
-    pd.testing.assert_frame_equal(summary, by_prices.summary_table())
+    assert list(by_wide.raw.pairs) == ["move_1__returns", "move_3__returns"]
+    summary = by_wide.raw.summary_table().assign(fret="ret_2")
+    pd.testing.assert_frame_equal(summary, by_prices.raw.summary_table())
 
 
 def test_span_is_the_horizon_of_own_returns(tmp_path):
@@ -125,8 +133,8 @@ def test_span_is_the_horizon_of_own_returns(tmp_path):
 
     result = qa.analyze_factors(factors, returns, span=4)
 
-    assert {pair.horizon for pair in result.pairs.values()} == {4}
-    assert result.summary_table()["ic_nw_lags"].min() >= 3
+    assert {pair.horizon for pair in result.raw.pairs.values()} == {4}
+    assert result.raw.summary_table()["ic_nw_lags"].min() >= 3
 
 
 def test_polars_inputs_match_pandas(tmp_path):
@@ -157,6 +165,15 @@ def test_price_delay_are_those_of_forward_returns(tmp_path):
     result = qa.analyze_factors(factors, prices=prices, price="close", span=2, delay=0)
 
     _assert_same_metrics(result, qa.analyze_factors(factors, returns, span=2))
+
+
+def test_span_defaults_to_one_with_prices(tmp_path):
+    _, _, factors, prices = _setup(tmp_path)
+
+    result = qa.analyze_factors(factors, prices=prices)
+
+    _assert_same_metrics(result, qa.analyze_factors(factors, prices=prices, span=1))
+    assert list(result.raw.pairs) == ["move_1__ret_1", "move_3__ret_1"]
 
 
 # --------------------------------------------------------------------------- summary
@@ -193,36 +210,54 @@ def test_summary_on_the_library_result_is_pandas_matching_the_metrics(tmp_path):
     assert summary.loc[0, "long_short_return"] == pytest.approx(pair.spread.mean())
 
 
-@pytest.mark.parametrize("library", ["pandas", "polars"])
+@pytest.mark.parametrize("library", ["pandas", "polars", "xarray"])
 def test_summary_through_the_api_is_in_the_callers_library(tmp_path, library):
     _, _, factors, prices = _setup(tmp_path)
     if library == "polars":
-        factors, prices = pl.from_pandas(factors), pl.from_pandas(prices)
+        factors = pl.from_pandas(factors)
+    elif library == "xarray":
+        factors = factors.set_index(["timestamp", "symbol"]).to_xarray()
 
-    analysis = qa.analyze_factors(factors, prices=prices)
-    summary = analysis.summary()
+    report = qa.analyze_factors(factors, prices=prices)
+    summary = report.summary()
 
-    frame_type = pd.DataFrame if library == "pandas" else pl.DataFrame
+    frame_type = pl.DataFrame if library == "polars" else pd.DataFrame
     assert isinstance(summary, frame_type)
     assert list(summary.columns) == SUMMARY_COLUMNS
     if library == "polars":
         summary = summary.to_pandas()
-    pd.testing.assert_frame_equal(summary, _expected_summary(analysis))
+    pd.testing.assert_frame_equal(summary, _expected_summary(report.raw))
+    pd.testing.assert_frame_equal(summary, report.raw.summary())
 
 
 def test_figures_and_save_stay_as_they_are(tmp_path):
     _, _, factors, prices = _setup(tmp_path)
 
-    analysis = qa.analyze_factors(factors, prices=prices)
-    out = analysis.save(tmp_path / "report")
+    report = qa.analyze_factors(factors, prices=prices)
+    out = report.save(tmp_path / "report")
 
-    assert sorted(analysis.figures) == ["move_1__ret_1", "move_3__ret_1"]
+    assert report.figures is report.raw.figures
+    assert sorted(report.figures) == ["move_1__ret_1", "move_3__ret_1"]
     names = {p.name for p in out.iterdir()}
     assert {"summary.csv", "summary.json", "move_1__ret_1.png", "config.json"} <= names
+    assert json.loads((out / "config.json").read_text()) == {}
     pd.testing.assert_frame_equal(
         pd.read_csv(out / "summary.csv")[["factor", "ic_mean"]],
-        analysis.summary_table()[["factor", "ic_mean"]],
+        report.raw.summary_table()[["factor", "ic_mean"]],
     )
+
+
+def test_plot_false_draws_no_figure_and_keeps_the_summary(tmp_path):
+    _, _, factors, prices = _setup(tmp_path)
+
+    report = qa.analyze_factors(factors, prices=prices, plot=False)
+
+    assert report.figures == {}
+    pd.testing.assert_frame_equal(
+        report.summary(), qa.analyze_factors(factors, prices=prices).summary()
+    )
+    out = report.save(tmp_path / "report")
+    assert (out / "move_1__ret_1.png").exists()
 
 
 # --------------------------------------------------------------------------- errors
@@ -248,7 +283,35 @@ def test_both_or_neither_of_returns_and_prices_raises():
     with pytest.raises(ValueError, match="exactly one of returns= and prices="):
         qa.analyze_factors(factors)
     with pytest.raises(ValueError, match="exactly one of returns= and prices="):
-        qa.analyze_factors(factors, returns, prices=prices)
+        qa.analyze_factors(factors, returns, span=1, prices=prices)
+
+
+def test_own_returns_without_span_raise_naming_it():
+    factors, prices = _small()
+
+    with pytest.raises(ValueError, match="returns= needs span="):
+        qa.analyze_factors(factors, qa.forward_returns(prices))
+
+
+def test_more_quantiles_than_the_largest_cross_section_raise_naming_it():
+    factors, prices = _small()
+    returns = qa.forward_returns(prices)
+    # Only 4 symbols carry a return on any bar.
+    returns.loc[returns["symbol"].isin(["E", "F"]), "ret_1"] = np.nan
+
+    with pytest.raises(ValueError, match=r"quantiles=5 .* largest cross-section.* 4 symbol"):
+        qa.analyze_factors(factors, returns, span=1)
+    assert qa.analyze_factors(factors, returns, span=1, quantiles=4, plot=False)
+
+
+def test_zones_are_named_when_factors_and_returns_share_no_cell():
+    factors, prices = _small()
+    returns = qa.forward_returns(prices)
+    # The same wall-clock dates, written in Tokyo: nine hours earlier in UTC.
+    returns["timestamp"] = returns["timestamp"].dt.tz_localize("Asia/Tokyo")
+
+    with pytest.raises(ValueError, match=r"share no.*factors are naive.*returns were Asia/Tokyo"):
+        qa.analyze_factors(factors, returns, span=1)
 
 
 @pytest.mark.parametrize(
@@ -264,7 +327,7 @@ def test_bad_arguments_raise_before_any_work(kwargs, error, match):
     factors, prices = _small()
 
     with pytest.raises(error, match=match):
-        qa.analyze_factors(factors, qa.forward_returns(prices), **kwargs)
+        qa.analyze_factors(factors, qa.forward_returns(prices), **{"span": 1, **kwargs})
 
 
 def test_price_or_delay_with_own_returns_raises():
@@ -272,9 +335,9 @@ def test_price_or_delay_with_own_returns_raises():
     returns = qa.forward_returns(prices)
 
     with pytest.raises(ValueError, match=r"price='close'.*only with prices="):
-        qa.analyze_factors(factors, returns, price="close")
+        qa.analyze_factors(factors, returns, span=1, price="close")
     with pytest.raises(ValueError, match=r"delay=0.*only with prices="):
-        qa.analyze_factors(factors, returns, delay=0)
+        qa.analyze_factors(factors, returns, span=1, delay=0)
 
 
 def test_a_missing_price_column_raises_naming_it():
@@ -303,7 +366,7 @@ def test_returns_with_two_value_columns_raise():
     returns = qa.forward_returns(prices).assign(other=0.0)
 
     with pytest.raises(ValueError, match="one value column"):
-        qa.analyze_factors(factors, returns)
+        qa.analyze_factors(factors, returns, span=1)
 
 
 def test_returns_sharing_no_bar_with_the_factors_raise():
@@ -311,8 +374,9 @@ def test_returns_sharing_no_bar_with_the_factors_raise():
     returns = qa.forward_returns(prices)
     returns["timestamp"] = returns["timestamp"] + pd.Timedelta(days=365)
 
-    with pytest.raises(ValueError, match="share no"):
-        qa.analyze_factors(factors, returns)
+    with pytest.raises(ValueError, match="share no") as error:
+        qa.analyze_factors(factors, returns, span=1)
+    assert "time zone" not in str(error.value)
 
 
 def test_a_columns_entry_naming_nothing_raises():

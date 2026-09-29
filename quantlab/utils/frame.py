@@ -197,7 +197,6 @@ def to_field_panel(
     *,
     columns: Mapping[str, str] | None = None,
     purpose: str = "the frame",
-    keep_name: bool = False,
 ) -> FieldPanel:
     """Return a single-field input as one panel variable, where it gave cells, its zone.
 
@@ -228,10 +227,6 @@ def to_field_panel(
         Renames ``{caller_name: name}``, applied to the names ``data`` has.
     purpose : str, default "the frame"
         What the input is, for error messages (``"weights"``).
-    keep_name : bool, default False
-        Keep the input's own name for the variable: a long frame's value column, a
-        panel's variable, a named ``DataArray``. ``field`` then names only a wide
-        frame's (or an unnamed ``DataArray``'s).
 
     Returns
     -------
@@ -268,7 +263,7 @@ def to_field_panel(
            [ True, False]])
     """
     if isinstance(data, xr.DataArray):
-        data = data.to_dataset(name=data.name if keep_name and data.name else field)
+        data = data.to_dataset(name=field)
     if library_of(data) == "xarray":
         panel = _panel_to_panel(data, columns_present(columns, data), (), purpose)
         if len(panel.data_vars) != 1:
@@ -276,8 +271,7 @@ def to_field_panel(
                 f"{purpose} must hold one variable on (timestamp, symbol), got "
                 f"{list(panel.data_vars)}."
             )
-        name = next(iter(panel.data_vars))
-        values = panel[name].rename(name if keep_name else field).astype(float)
+        values = panel[next(iter(panel.data_vars))].rename(field).astype(float)
         return FieldPanel(values, xr.ones_like(values, dtype=bool), None)
 
     frame = _as_pandas(data)
@@ -299,8 +293,6 @@ def to_field_panel(
                 f"{purpose} in long form needs one value column beside timestamp and "
                 f"symbol, got {', '.join(repr(v) for v in value_columns) or 'none'}."
             )
-        if keep_name:
-            field = value_columns[0]
         frame = frame.rename(columns={value_columns[0]: field}).assign(_given=True)
     elif "timestamp" in frame.columns:
         frame = frame.melt(id_vars="timestamp", var_name="symbol", value_name=field)

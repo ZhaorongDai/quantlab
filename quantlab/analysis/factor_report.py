@@ -53,7 +53,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 import pandas as pd
@@ -395,9 +395,6 @@ class FactorAnalysis:
     correlation_figure : matplotlib.figure.Figure or None
         The figure of ``correlation``, held when no ``output_dir`` was
         given.
-    library : {"pandas", "polars"}, default "pandas"
-        The frame library ``summary()`` returns;
-        ``quantlab.api.analyze_factors`` sets the caller's.
     """
 
     pairs: dict[str, PairAnalysis]
@@ -405,9 +402,8 @@ class FactorAnalysis:
     config: dict = field(default_factory=dict)
     correlation: FactorCorrelation | None = None
     correlation_figure: "Figure | None" = None
-    library: Literal["pandas", "polars"] = "pandas"
 
-    def summary(self):
+    def summary(self) -> pd.DataFrame:
         """Return the headline metrics, one row per pair, to sort and filter factors by.
 
         Columns:
@@ -429,15 +425,28 @@ class FactorAnalysis:
 
         Returns
         -------
-        pandas.DataFrame or polars.DataFrame
-            In ``library``: pandas for a library analysis, the caller's
-            library for one from ``quantlab.api.analyze_factors``.
+        pandas.DataFrame
+            One row per pair, in the order of ``pairs``.
 
         Examples
         --------
-        >>> analysis.summary().round(4)
-           factor   fret    ic  rank_ic    icir  rank_icir  long_short_return  turnover
-        0  signal  ret_1  0.26   0.2384  1.1109     1.0118             0.0069    0.8068
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> import xarray as xr
+        >>> from quantlab.analysis.factor_report import FactorAnalyzer, Fret
+        >>> rng = np.random.default_rng(0)
+        >>> coords = {"timestamp": pd.date_range("2024-01-01", periods=100),
+        ...           "symbol": [f"S{i}" for i in range(20)]}
+        >>> raw = rng.normal(size=(100, 20))
+        >>> signal = xr.DataArray(raw, coords=coords, dims=("timestamp", "symbol"))
+        >>> ret = xr.DataArray(0.01 * (0.3 * raw + rng.normal(size=(100, 20))),
+        ...                    coords=coords, dims=("timestamp", "symbol"))
+        >>> analysis = FactorAnalyzer(plot=False).analyze_panels(
+        ...     signal.to_dataset(name="signal"), [Fret(ret.to_dataset(name="ret_1"))]
+        ... )
+        >>> analysis.summary()[["factor", "fret", "ic", "rank_ic", "turnover"]].round(4)
+           factor   fret    ic  rank_ic  turnover
+        0  signal  ret_1  0.26   0.2384    0.8068
         """
         rows = []
         for pair in self.pairs.values():
@@ -452,14 +461,7 @@ class FactorAnalysis:
                 "long_short_return": s["mean_spread"],
                 "turnover": (s["mean_turnover_top"] + s["mean_turnover_bottom"]) / 2,
             })
-        table = pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
-        if self.library == "polars":
-            return pl.from_pandas(table)
-        if self.library != "pandas":
-            raise ValueError(
-                f"FactorAnalysis.library must be 'pandas' or 'polars', got {self.library!r}"
-            )
-        return table
+        return pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
 
     def summary_table(self) -> pd.DataFrame:
         """Return the scalar metrics, one row per pair.
@@ -725,6 +727,33 @@ class FactorAnalysis:
         return pd.concat(frames, ignore_index=True)
 
 
+@dataclass(frozen=True)
+class Fret:
+    """A forward-return panel for ``FactorAnalyzer.analyze_panels``.
+
+    Attributes
+    ----------
+    panel : xarray.Dataset
+        Forward returns on ``(timestamp, symbol)``; every variable is a fret
+        and names its pairs.
+    horizon : int, default 1
+        Bars the returns span; cumulative returns compound the per-bar rate
+        ``(1 + r) ** (1 / horizon) - 1``.
+    name : str, default "returns"
+        What error messages call the panel.
+
+    Examples
+    --------
+    >>> import xarray as xr
+    >>> Fret(xr.Dataset(), horizon=5).name
+    'returns'
+    """
+
+    panel: xr.Dataset
+    horizon: int = 1
+    name: str = "returns"
+
+
 class FactorAnalyzer:
     """Compute alphalens-style metrics of factor variables against frets.
 
@@ -859,32 +888,31 @@ class FactorAnalyzer:
 
         return self.analyze_panels(
             features[names],
-            labels,
-            [self._horizon_of(fret) for fret in frets],
+            [
+                Fret(panel, self._horizon_of(fret), type(fret).__name__)
+                for fret, panel in zip(frets, labels)
+            ],
             config={
                 "factor": factor.get_config(),
                 "frets": [fret.get_config() for fret in frets],
             },
             output_dir=output_dir,
             factor_label=factor.class_name,
-            fret_labels=[type(fret).__name__ for fret in frets],
         )
 
     def analyze_panels(
         self,
         features: xr.Dataset,
-        labels: Sequence[xr.Dataset],
-        horizons: Sequence[int],
+        frets: Sequence[Fret],
         *,
         config: dict | None = None,
         output_dir: str | Path | None = None,
         factor_label: str = "factors",
-        fret_labels: Sequence[str] | None = None,
     ) -> FactorAnalysis:
-        """Analyze every variable of ``features`` against every label panel.
+        """Analyze every variable of ``features`` against every fret panel.
 
         The panel-level core of ``run``, for panels that come from no
-        ``Factor`` object: each label panel is checked for the factor's bar
+        ``Factor`` object: each fret panel is checked for the features' bar
         spacing, inner-joined with ``features`` and analyzed; the factor
         correlation, the figures and ``output_dir`` are handled as in
         ``run``.
@@ -894,21 +922,17 @@ class FactorAnalyzer:
         features : xarray.Dataset
             The factor variables on ``(timestamp, symbol)``; every variable
             is analyzed.
-        labels : sequence of xarray.Dataset
-            Forward-return panels on ``(timestamp, symbol)``; every variable
-            of each is a fret.
-        horizons : sequence of int
-            Bars each label panel's returns span, in the order of ``labels``.
+        frets : sequence of Fret
+            The forward-return panels, each with its horizon and the name
+            error messages give it.
         config : dict, optional
             Recorded as ``FactorAnalysis.config``; empty when None.
         output_dir : str or pathlib.Path, optional
             When given, ``FactorAnalysis.save`` writes the results there and
             the figures are not kept in memory.
         factor_label : str, default "factors"
-            Names the features in error messages.
-        fret_labels : sequence of str, optional
-            Names each label panel in error messages; ``"returns"`` when
-            None.
+            Names the features in error messages (``run`` passes the factor's
+            class name).
 
         Returns
         -------
@@ -918,41 +942,46 @@ class FactorAnalyzer:
         Raises
         ------
         ValueError
-            If no label panel is given, ``horizons`` or ``fret_labels`` do not
-            match ``labels`` in length, a label panel's bar spacing differs
-            from the features', a label panel shares no cell with the
-            features, or two pairs share a name.
+            If no fret is given, a fret panel's bar spacing differs from the
+            features', a fret panel shares no cell with the features, or two
+            pairs share a name.
 
         Examples
         --------
-        >>> analysis = FactorAnalyzer(plot=False).analyze_panels(
-        ...     signal.to_dataset(name="signal"), [ret.to_dataset(name="ret_1")], [1]
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> import xarray as xr
+        >>> from quantlab.analysis.factor_report import FactorAnalyzer, Fret
+        >>> rng = np.random.default_rng(0)
+        >>> coords = {"timestamp": pd.date_range("2024-01-01", periods=50),
+        ...           "symbol": [f"S{i}" for i in range(10)]}
+        >>> raw = rng.normal(size=(50, 10))
+        >>> features = xr.Dataset({"signal": (("timestamp", "symbol"), raw)}, coords=coords)
+        >>> rets = xr.Dataset(
+        ...     {"ret_2": (("timestamp", "symbol"), 0.3 * raw + rng.normal(size=(50, 10)))},
+        ...     coords=coords,
         ... )
-        >>> list(analysis.pairs), analysis.config
-        (['signal__ret_1'], {})
+        >>> analysis = FactorAnalyzer(plot=False).analyze_panels(
+        ...     features, [Fret(rets, horizon=2)]
+        ... )
+        >>> list(analysis.pairs), analysis.pairs["signal__ret_2"].horizon, analysis.config
+        (['signal__ret_2'], 2, {})
         """
-        if not labels:
-            raise ValueError("analyze_panels needs at least one label panel in `labels`")
-        fret_labels = list(fret_labels or ["returns"] * len(labels))
-        if not len(horizons) == len(fret_labels) == len(labels):
-            raise ValueError(
-                f"analyze_panels got {len(labels)} label panel(s), {len(horizons)} "
-                f"horizon(s) and {len(fret_labels)} fret label(s); give one of each "
-                f"per panel"
-            )
+        if not frets:
+            raise ValueError("analyze_panels needs at least one Fret in `frets`")
         pairs: dict[str, PairAnalysis] = {}
-        for panel, horizon, fret_label in zip(labels, horizons, fret_labels):
-            self.check_frequency(features, panel, factor_label, fret_label)
-            aligned_features, aligned_labels = xr.align(
-                features, panel, join="inner"
-            )
+        for fret in frets:
+            self.check_frequency(features, fret.panel, factor_label, fret.name)
+            aligned_features, aligned_labels = xr.align(features, fret.panel, join="inner")
             if aligned_features.sizes.get("timestamp", 0) == 0 or aligned_features.sizes.get(
                 "symbol", 0
             ) == 0:
                 raise ValueError(
-                    f"{factor_label} and {fret_label} share no (timestamp, symbol) cells"
+                    f"{factor_label} and {fret.name} share no (timestamp, symbol) cells"
                 )
-            for pair in self.analyze_many(aligned_features, aligned_labels, horizon=horizon):
+            for pair in self.analyze_many(
+                aligned_features, aligned_labels, horizon=fret.horizon
+            ):
                 if pair.key in pairs:
                     raise ValueError(
                         f"two factor/fret pairs are both named {pair.key!r}; "

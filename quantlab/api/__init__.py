@@ -42,6 +42,7 @@ Examples
 from collections.abc import Mapping
 
 from quantlab.api import _factors, _labels
+from quantlab.api._factor_report import FactorReport
 from quantlab.api._report import BacktestReport
 from quantlab.base.config import BacktestConfig
 
@@ -242,11 +243,12 @@ def analyze_factors(
     *,
     prices=None,
     price: str = "open",
-    span: int = 1,
+    span: int | None = None,
     delay: int = 1,
     quantiles: int = 5,
+    plot: bool = True,
     columns: Mapping[str, str] | None = None,
-):
+) -> FactorReport:
     """Report how well each factor orders symbols by their forward return.
 
     Every factor column is paired with the forward returns, and the library's factor
@@ -265,7 +267,7 @@ def analyze_factors(
     factors : pandas.DataFrame, polars.DataFrame or xarray.Dataset
         Factor values in long form: ``timestamp``, ``symbol`` and one numeric column per
         factor, such as ``compute_factors`` returns. Its library is the one
-        ``summary()`` returns.
+        ``FactorReport.summary()`` returns (pandas for a panel).
     returns : DataFrame, optional
         Forward returns, long (``timestamp``, ``symbol`` and one value column, whose name
         becomes the fret's) or wide (timestamps in a ``timestamp`` column or a pandas
@@ -274,40 +276,49 @@ def analyze_factors(
         Bars in long form holding the ``price`` column.
     price : str, default "open"
         With ``prices``, the column the returns are computed on.
-    span : int, default 1
-        Bars the forward returns span, at least 1: with ``prices`` the holding period,
-        with ``returns`` the horizon they were computed over. Cumulative bucket returns
-        compound the per-bar rate ``(1 + r) ** (1 / span) - 1``, and the IC's Newey-West
+    span : int, optional
+        Bars the forward returns span, at least 1. With ``prices`` the holding period,
+        1 when not given. With ``returns`` it is required: the horizon the returns were
+        computed over, which only the caller knows. Cumulative bucket returns compound
+        the per-bar rate ``(1 + r) ** (1 / span) - 1``, and the IC's Newey-West
         t-statistic allows for the overlap of multi-bar returns.
     delay : int, default 1
         With ``prices``, the bars between the signal bar and the entry bar.
     quantiles : int, default 5
-        Buckets per bar, at least 2. A bar with fewer symbols than buckets has no bucket
-        returns.
+        Buckets per bar, at least 2 and at most the largest cross-section (the most
+        symbols on one bar with both a factor value and a return). A bar with fewer
+        symbols than buckets has no bucket returns.
+    plot : bool, default True
+        Draw one figure per factor into ``FactorReport.figures``. Drawing dominates the
+        cost of a large report (all of Alpha158 on 50 bars x 300 symbols: about 19 s
+        with figures, 1.4 s without); with ``False`` the figures are empty and ``save``
+        draws them only then.
     columns : mapping of str to str, optional
         Renames caller columns onto the canonical names, ``{"date": "timestamp"}``,
         applied to each input where it has the column.
 
     Returns
     -------
-    quantlab.analysis.factor_report.FactorAnalysis
-        The library's report: ``pairs`` (the metrics of each ``"<factor>__<fret>"``),
-        ``summary()`` (the headline metrics, a frame of the ``factors``' library),
-        ``summary_table()`` and the other tables, ``figures`` and ``save(dir)``. Its
-        ``config`` is empty, since no factor or label object was involved.
+    FactorReport
+        ``summary()`` (the headline metrics per factor, a frame of the ``factors``'
+        library), ``figures``, ``save(dir)`` and ``raw``, the library's
+        ``FactorAnalysis`` with every metric and table.
 
     Raises
     ------
     ValueError
-        If both or neither of ``returns`` and ``prices`` are given, ``price`` or ``delay``
-        is set with ``returns``, ``span`` is below 1, ``delay`` below 0 or ``quantiles``
-        below 2, the ``price`` column is missing, the factors have no factor column or a
-        non-numeric one, ``columns`` names a column no input has, the returns are long
-        with other than one value column, a ``(timestamp, symbol)`` pair repeats, the
-        factors and returns differ in bar spacing, or they share no bar and symbol.
+        If both or neither of ``returns`` and ``prices`` are given, ``returns`` comes
+        without ``span``, ``price`` or ``delay`` is set with ``returns``, ``span`` is
+        below 1, ``delay`` below 0 or ``quantiles`` below 2 or above the largest
+        cross-section (named), the ``price`` column is missing, the factors have no
+        factor column or a non-numeric one, ``columns`` names a column no input has, the
+        returns are long with other than one value column, a ``(timestamp, symbol)`` pair
+        repeats, the factors and returns differ in bar spacing, or they share no bar and
+        symbol (naming both time zones when they differ).
     TypeError
         If an input is not a pandas or polars DataFrame (or an xarray panel), ``price``
-        is not a string, or ``span``, ``delay`` or ``quantiles`` is not an int.
+        is not a string, ``span``, ``delay`` or ``quantiles`` is not an int, or ``plot``
+        is not a bool.
 
     Examples
     --------
@@ -326,10 +337,10 @@ def analyze_factors(
     ...     momentum=prices.groupby("symbol")["close"].pct_change(5),
     ...     reversal=-prices.groupby("symbol")["close"].pct_change(1),
     ... )[["timestamp", "symbol", "momentum", "reversal"]]
-    >>> analysis = qa.analyze_factors(factors, prices=prices, span=5)
-    >>> list(analysis.pairs)
-    ['momentum__ret_5', 'reversal__ret_5']
-    >>> summary = analysis.summary()
+    >>> report = qa.analyze_factors(factors, prices=prices, span=5)
+    >>> report
+    FactorReport(2 pairs: momentum__ret_5, reversal__ret_5)
+    >>> summary = report.summary()
     >>> list(summary.columns)
     ['factor', 'fret', 'ic', 'rank_ic', 'icir', 'rank_icir', 'long_short_return', 'turnover']
     >>> summary.sort_values("rank_ic", ascending=False)[["factor", "rank_ic", "turnover"]].round(4)
@@ -337,13 +348,14 @@ def analyze_factors(
     0  momentum   0.0474    0.3958
     1  reversal   0.0001    0.7885
 
-    The caller's own forward returns, here in wide form:
+    The caller's own forward returns, here in wide form, with three buckets and no
+    figures:
 
     >>> returns = qa.forward_returns(prices, span=5).pivot(
     ...     index="timestamp", columns="symbol", values="ret_5")
-    >>> analysis = qa.analyze_factors(factors, returns, span=5, quantiles=3)
-    >>> list(analysis.pairs), analysis.pairs["momentum__returns"].quantiles
-    (['momentum__returns', 'reversal__returns'], 3)
+    >>> report = qa.analyze_factors(factors, returns, span=5, quantiles=3, plot=False)
+    >>> report.raw.pairs["momentum__returns"].quantiles, report.figures
+    (3, {})
     """
     from quantlab.api import _analysis
 
@@ -355,6 +367,7 @@ def analyze_factors(
         span=span,
         delay=delay,
         quantiles=quantiles,
+        plot=plot,
         columns=columns,
     )
 
