@@ -135,6 +135,11 @@ class SeedEnsemble(BaseEnsemble):
             for member in self.members
         ]
 
+    def _member_panel_predictions(self) -> list[xr.Dataset]:
+        """Predict the one shared collected panel with every member."""
+        data = self.members[0].data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        return [member.predict_panel(data) for member in self.members]
+
     def fingerprint_inputs(self, start, end) -> list[tuple]:
         """Return the data ``predict_window(start, end)`` reads, for fingerprinting.
 

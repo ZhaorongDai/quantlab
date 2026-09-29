@@ -10,8 +10,9 @@ What is locked here, and what turns it red:
   of the members' predictions.
 - `train()` writes `SeedEnsemble_trial_*/` holding `member_{k}/` (each with
   the usual checkpoint, config.json, metrics.json, ic_series.csv and
-  test_predictions.zarr), an ensemble-level `config.json` with the shared
-  dates and label configs, and `ensemble.json` listing every member's class,
+  test_predictions.zarr), the ensemble-level evaluation files (see
+  test_ensemble_evaluation_files.py), an ensemble-level `config.json` with
+  the shared dates and label configs, and `ensemble.json` listing every member's class,
   relative checkpoint and seed; it returns the path of `ensemble.json`.
 - A member failing mid-training leaves no `ensemble.json`, and the member
   directories already written stay.
@@ -171,9 +172,12 @@ def test_train_writes_members_ensemble_config_and_manifest(tmp_path):
     assert sorted(p.name for p in directory.iterdir()) == [
         "config.json",
         "ensemble.json",
+        "ic_series.csv",
         "member_0",
         "member_1",
         "member_2",
+        "metrics.json",
+        "test_predictions.zarr",
     ]
 
     saved = json.loads(manifest.read_text())

@@ -160,7 +160,7 @@ True
 {'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679, 'icir': 5.524, 'rank_icir': 4.813}
 ```
 
-The per-timestamp values behind IC and RankIC are `cross_sectional_ic_series` and `cross_sectional_rank_ic_series` (NaN on a skipped timestamp), and `information_ratio` turns such a series into an ICIR. `regression_panel_metrics(pred, target, return_series=True)` returns both series with the metrics.
+The per-timestamp values behind IC and RankIC are `cross_sectional_ic_series` and `cross_sectional_rank_ic_series` (NaN on a skipped timestamp), and `information_ratio` turns such a series into an ICIR. `regression_panel_metrics(pred, target, return_series=True)` returns both series with the metrics. `ic_panel_metrics` takes the same arguments and returns only `ic`, `rank_ic`, `icir` and `rank_icir`, for predictions whose scale carries no meaning.
 
 ### IC series and saved predictions
 
@@ -303,14 +303,14 @@ The folds train one after another, on the one collected panel.
 True
 ```
 
-`train()` creates one ensemble directory `checkpoints/SeedEnsemble_trial_<timestamp>/` and trains the members in order, member k into `member_{k}/` with its own W&B run `XGBoostRegressor_member_{k}`; each member directory holds the usual checkpoint, `config.json`, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. Then it writes `config.json` with what the members share, the training and test dates and the label configs (it is not a model config), and last `ensemble.json`, the manifest. `train()` returns the manifest's path. If a member fails, no manifest is written and the member directories already written stay.
+`train()` creates one ensemble directory `checkpoints/SeedEnsemble_trial_<timestamp>/` and trains the members in order, member k into `member_{k}/` with its own W&B run `XGBoostRegressor_member_{k}`; each member directory holds the usual checkpoint, `config.json`, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. Then it writes the evaluation files of the averaged prediction (see below), `config.json` with what the members share, the training and test dates and the label configs (it is not a model config), and last `ensemble.json`, the manifest. `train()` returns the manifest's path. If a member or the ensemble evaluation fails, no manifest is written and the files already written stay.
 
 ```python
 >>> manifest = ensemble.train()
 >>> manifest.name
 'ensemble.json'
 >>> sorted(p.name for p in manifest.parent.iterdir())
-['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2']
+['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
 >>> sorted(p.name for p in (manifest.parent / "member_0").iterdir())
 ['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> saved = json.loads(manifest.read_text())
@@ -338,6 +338,23 @@ True
 >>> y = label.ds["ret"].sel(timestamp=slice("2024-06-01", "2024-07-18")).values
 >>> [round(cross_sectional_rank_ic(m["ret"].values, y), 3) for m in members], round(cross_sectional_rank_ic(window["ret"].values, y), 3)
 ([0.682, 0.687, 0.689], 0.688)
+```
+
+The ensemble directory also holds the evaluation files of the averaged prediction, written after the last member and before `ensemble.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). `metrics.json` holds only `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`). There is no loss, MSE, MAE or R2, because the average is in z-score units. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
+
+```python
+>>> metrics = json.loads((manifest.parent / "metrics.json").read_text())
+>>> sorted(metrics)
+['test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir']
+>>> [round(json.loads((manifest.parent / f"member_{k}" / "metrics.json").read_text())["test_rank_ic"], 3) for k in range(3)], round(metrics["test_rank_ic"], 3)
+([0.682, 0.687, 0.689], 0.688)
+>>> import pandas as pd
+>>> pd.read_csv(manifest.parent / "ic_series.csv").groupby("split", sort=False).size().to_dict()
+{'train': 119, 'val': 29, 'test': 48}
+>>> saved = xr.open_zarr(manifest.parent / "test_predictions.zarr").load()
+>>> tests = [xr.open_zarr(manifest.parent / f"member_{k}" / "test_predictions.zarr").load() for k in range(3)]
+>>> dict(saved.sizes), bool(np.allclose(saved["ret"], average_predictions(tests)["ret"]))
+({'timestamp': 48, 'symbol': 20}, True)
 ```
 
 `load(manifest)` restores every member from the checkpoints the manifest lists, and `check_checkpoint(manifest)` checks them without loading: the manifest must be of format version 1 and list as many members as the ensemble has, each with the ensemble's member class and seed, and every member checkpoint must exist and pass the member's own `check_checkpoint`. `get_config()` returns the wrapped model's config and the seeds, and `SeedEnsemble.from_config` rebuilds the ensemble from it. A `SeedEnsemble` satisfies the backtester's `Predictor` protocol, so it is backtested like one model (see the backtest guide).
