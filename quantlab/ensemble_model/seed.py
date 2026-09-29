@@ -30,7 +30,9 @@ class SeedEnsemble(BaseEnsemble):
     member (its warm-up included), and hands them to every member's
     ``predict_panel``. ``train()``, ``load()`` and ``check_checkpoint()``
     work on an ``ensemble.json`` manifest (see ``BaseEnsemble``) that
-    records each member's seed.
+    records each member's seed; ``train_cv()`` writes one such directory
+    per walk-forward fold and a ``cv_folds.json`` that a backtester's
+    ``run_cv`` replays.
 
     Parameters
     ----------

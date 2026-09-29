@@ -469,7 +469,7 @@ timestamp
 ... )).run()
 >>> manifest = Path(trained.metrics["trained_checkpoint"])
 >>> manifest.name, sorted(p.name for p in manifest.parent.iterdir())
-('ensemble.json', ['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2'])
+('ensemble.json', ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr'])
 >>> replayed = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config,
 ...     model=SeedEnsemble(make_model(root / "replay", cfg, days, train_end=20), seeds=[0, 1, 2]),
@@ -482,6 +482,25 @@ True
 >>> saved = json.loads((replayed.run_dir / "config.json").read_text())
 >>> saved["model"]["seeds"], sorted(saved["data_fingerprint"])
 ([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
+```
+
+`run_cv()` 以同样的方式回放集成的交叉验证。`SeedEnsemble.train_cv`（见 model 指南的“平均多个种子”）写出的 `cv_folds.json` 与单个模型的 `train_cv` 格式相同，其中的 `checkpoint` 是每个 `fold_{i}/` 的 `ensemble.json`。以集成为 `model`、以这个目录为 `cv_project_dir` 时，每一折加载自己的集成，该折集成级 `config.json` 记录的训练日期与清单中的日期相互核对，与单个模型的折相同。回测器为此无需任何改动。`MomentumHead` 的各个种子结果仍然一致，所以拼接后的权重与上文单个模型交叉验证的权重相同。
+
+```python
+>>> cv_ensemble = SeedEnsemble(make_model(root / "ensemble_cv", cfg2, days2, train_end=29), seeds=[0, 1, 2])
+>>> folds = cv_ensemble.collect().train_cv(train_periods=30)
+>>> ensemble_cv_dir = Path(folds[0]["checkpoint"]).parent.parent
+>>> ensemble_cv = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     cv_config,
+...     model=SeedEnsemble(make_model(root / "ensemble_cv_backtest", cfg2, days2, train_end=29), seeds=[0, 1, 2]),
+...     cv_project_dir=str(ensemble_cv_dir),
+... )).run_cv()
+>>> len(ensemble_cv.folds), Path(ensemble_cv.folds[0]["checkpoint"]).relative_to(ensemble_cv_dir).as_posix()
+(8, 'fold_0/ensemble.json')
+>>> bool((ensemble_cv.weights["weight"].fillna(0) == cv.weights["weight"].fillna(0)).all())
+True
+>>> ensemble_cv.metrics["stitched"]["in_sample_ranges"]
+[]
 ```
 
 ## 注意事项

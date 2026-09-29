@@ -376,6 +376,33 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 各成员依次训练，每个成员在训练前一刻用自己的 `random_seed` 重设随机数生成器。
 
+`train_cv(train_periods, expanding=False)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的 W&B 运行 `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
+
+`cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，只有 IC 一族；`cv_mean` 是它们的均值。返回值就是折列表。同一个项目里另有一个 W&B 运行 `SeedEnsemble_cv_summary`，记录 `cv_mean_*` 的值。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
+
+```python
+>>> folds = ensemble.train_cv(train_periods=100)
+>>> [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in folds] == [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in results]
+True
+>>> cv_dir = Path(folds[0]["checkpoint"]).parent.parent
+>>> cv_dir.name.startswith("SeedEnsemble_cv_"), sorted(p.name for p in cv_dir.iterdir())
+(True, ['cv_folds.json', 'fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4'])
+>>> sorted(p.name for p in (cv_dir / "fold_0").iterdir())
+['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'test_predictions.zarr']
+>>> sorted(p.name for p in (cv_dir / "fold_0" / "member_0").iterdir())
+['XGBoostRegressor_fold_0_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
+>>> cv_manifest = json.loads((cv_dir / "cv_folds.json").read_text())
+>>> cv_manifest["format_version"], sorted(cv_manifest["folds"][0])
+(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir'])
+>>> [round(r["test_rank_ic"], 3) for r in folds]
+[0.69, 0.651, 0.709, 0.672, 0.698]
+>>> {k: round(v, 3) for k, v in cv_manifest["cv_mean"].items() if k.endswith("rank_ic")}
+{'cv_mean_train_rank_ic': 0.712, 'cv_mean_val_rank_ic': 0.697, 'cv_mean_test_rank_ic': 0.684}
+>>> fold_0 = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2]).load(folds[0]["checkpoint"])
+>>> [m.model is not None for m in fold_0.members]
+[True, True, True]
+```
+
 ### 训练 torch 模型
 
 torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基类把收集到的数据组装成一个由 torch 张量构成的*训练面板*：特征 `x`（`[T, S, F]`）、训练目标（`[T, S, L]`）及其 `mask`（`[T, S]`）、原始标签 `y_raw`，以及 `present`（`[T, S]`，至少有一个有限特征值的格子），外加时间戳和标的。模型头的 `_dataset(panel, bars, training)` 返回覆盖若干 bar 的 `torch.utils.data.Dataset`，`_dataloader(dataset, training)` 负责分批。默认数据集是 `quantlab.torch_model.data` 中的 `CrossSectionDataset`，每个 bar 一个样本项：这个 bar 的*截面*，即在该 bar 上出现的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。

@@ -469,7 +469,7 @@ A `SeedEnsemble` (see Average several seeds in the model guide) is such a predic
 ... )).run()
 >>> manifest = Path(trained.metrics["trained_checkpoint"])
 >>> manifest.name, sorted(p.name for p in manifest.parent.iterdir())
-('ensemble.json', ['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2'])
+('ensemble.json', ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr'])
 >>> replayed = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config,
 ...     model=SeedEnsemble(make_model(root / "replay", cfg, days, train_end=20), seeds=[0, 1, 2]),
@@ -482,6 +482,25 @@ True
 >>> saved = json.loads((replayed.run_dir / "config.json").read_text())
 >>> saved["model"]["seeds"], sorted(saved["data_fingerprint"])
 ([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
+```
+
+`run_cv()` replays an ensemble's cross-validation the same way. `SeedEnsemble.train_cv` (see Average several seeds in the model guide) writes a `cv_folds.json` in the format of a single model's `train_cv`, whose `checkpoint` entries are the `ensemble.json` of each `fold_{i}/`. With an ensemble as `model` and that directory as `cv_project_dir`, each fold loads its own ensemble, and the training dates of its in-sample split are cross-checked against the fold's ensemble-level `config.json`, as for a single model's fold. The backtester needs no change for it. With `MomentumHead` the seeds agree again, so the stitched weights equal those of the single model's cross-validation above.
+
+```python
+>>> cv_ensemble = SeedEnsemble(make_model(root / "ensemble_cv", cfg2, days2, train_end=29), seeds=[0, 1, 2])
+>>> folds = cv_ensemble.collect().train_cv(train_periods=30)
+>>> ensemble_cv_dir = Path(folds[0]["checkpoint"]).parent.parent
+>>> ensemble_cv = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     cv_config,
+...     model=SeedEnsemble(make_model(root / "ensemble_cv_backtest", cfg2, days2, train_end=29), seeds=[0, 1, 2]),
+...     cv_project_dir=str(ensemble_cv_dir),
+... )).run_cv()
+>>> len(ensemble_cv.folds), Path(ensemble_cv.folds[0]["checkpoint"]).relative_to(ensemble_cv_dir).as_posix()
+(8, 'fold_0/ensemble.json')
+>>> bool((ensemble_cv.weights["weight"].fillna(0) == cv.weights["weight"].fillna(0)).all())
+True
+>>> ensemble_cv.metrics["stitched"]["in_sample_ranges"]
+[]
 ```
 
 ## Notes
