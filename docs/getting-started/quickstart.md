@@ -169,7 +169,7 @@ the last label it trains on reads bar 249.
 
 ```python
 from quantlab.base.config import ModelConfig
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.model.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(
     ModelConfig(

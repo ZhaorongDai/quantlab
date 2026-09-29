@@ -1,4 +1,4 @@
-"""Orchestration tests for `quantlab/base/model.py:LibraryModel` (quick task 260914-lno).
+"""Orchestration tests for `quantlab/base/library_model.py:LibraryModel` (quick task 260914-lno).
 
 `LibraryModel` is the non-torch variant of the model layer: no epoch loop, one
 `_fit_model` call per fit, native early stopping left to the library. These
@@ -26,7 +26,8 @@ import torch
 import xarray as xr
 
 from quantlab.base.config import FactorConfig, ModelConfig
-from quantlab.base.model import BaseModel, LibraryModel
+from quantlab.base.library_model import LibraryModel
+from quantlab.base.model import BaseModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.alpha158 import Alpha158SpotKline
 from tests.label_stubs import StubLabel

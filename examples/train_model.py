@@ -55,7 +55,7 @@ from quantlab.base.config import DatasetConfig, FactorConfig, ModelConfig
 from quantlab.base.factor import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.fret import Return
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.model.xgb import XGBoostRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.module import load_model_from_config
 

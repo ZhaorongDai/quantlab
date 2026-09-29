@@ -41,12 +41,12 @@ from quantlab.config import get_data_root
 from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.ensemble_model.seed import SeedEnsemble
+from quantlab.model.seed_ensemble import SeedEnsemble
 from quantlab.enums.constant import Date
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
-from quantlab.library_model.realmlp import RealMLPRegressor
+from quantlab.model.realmlp import RealMLPRegressor
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.

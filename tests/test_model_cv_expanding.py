@@ -18,7 +18,7 @@ import xarray as xr
 
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig
-from quantlab.base.model import LibraryModel
+from quantlab.base.library_model import LibraryModel
 from tests.backtest_fixtures import make_model, make_stock_dataset, write_price_store
 from tests.label_stubs import StubLabel
 

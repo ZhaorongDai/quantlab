@@ -20,8 +20,8 @@ import numpy as np
 from loguru import logger
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import LibraryModel
-from quantlab.library_model.data import Rows
+from quantlab.base.library_model import LibraryModel
+from quantlab.base.library_model import Rows
 
 
 class TabkitRegressor(LibraryModel):

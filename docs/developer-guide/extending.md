@@ -23,10 +23,10 @@ an extension work with the rest of the code.
 The abstract base class of each layer lives in `quantlab/base/` and names the
 hooks a subclass fills in. The concrete class lives with the code that uses
 it: datasets in `quantlab/dataset/`, vendor clients in `quantlab/acquisition/`,
-factors in `quantlab/factor/`, labels in `quantlab/label/`, model heads in
-`quantlab/torch_model/` or `quantlab/library_model/`, backtesters in
-`quantlab/backtest/`. Support code that is not itself a dataset or an
-acquisition goes in that layer's private `_support/` package.
+factors in `quantlab/factor/`, labels in `quantlab/label/`, models in
+`quantlab/model/`, backtesters in
+`quantlab/backtest/`. Support code that is not itself a dataset, an
+acquisition or a model goes in that layer's private `_support/` package.
 
 Every configurable object records its class as a dotted import path in
 `config.name`, and saved configs are rebuilt from that path by
@@ -596,7 +596,7 @@ walk-forward cross-validation (both purged by the labels' lookahead), checkpoint
 are `_init_model`, `_fit_model` (fit once, with the library's
 own early stopping if it has one, and leave the fitted model in `self.model`)
 and `_forward`. The base builds the rows: `_fit_model(train_rows, val_rows)`
-gets `quantlab.library_model.data.Rows` with `x [n, F]`, `y [n, L]` (the
+gets `quantlab.base.library_model.Rows` with `x [n, F]`, `y [n, L]` (the
 training target), `y_raw` and `where`, one row per cell with a valid
 training target and NaN features kept, and `_forward` maps `[n, F]` rows to
 `[n, L]`. `_transform_feature` (inf to NaN), `_transform_target` (the same
@@ -666,7 +666,7 @@ finite feature at a bar, each with its own window of the last `window_bars`
 bars. A head writes `window_bars`, `_init_model(num_features, num_labels,
 hyperparameters)`, returning an `nn.Module` that maps `[S_t, N, F]` to
 `[S_t, L]` for any number of symbols S_t, and `_loss(output, batch)`, where
-`batch` is a `quantlab.torch_model.data.Batch` (`x`, `y`, `mask`, `y_raw`,
+`batch` is a `quantlab.base.torch_data.Batch` (`x`, `y`, `mask`, `y_raw`,
 `where`) with missing labels already masked. Every other choice is an
 optional hook with a default: `_dataset` (`CrossSectionDataset`, one item per
 bar; return your own `Dataset` for another sample shape, with every item's
@@ -681,7 +681,7 @@ hyperparameter's count of epochs). `_init_model` receives the whole
 `hyperparameters` dict, whose reserved keys (`epochs`, `lr`, `batch_size`,
 `num_workers`, `panel_device`, `panel_dtype`, `early_stopping`,
 `early_stopping_patience`) the base classes read, so read the head's own keys
-by name rather than splatting the dict into the network. `quantlab.torch_model.training` has helpers for them: `masked_mse`,
+by name rather than splatting the dict into the network. `quantlab.utils.torch_training` has helpers for them: `masked_mse`,
 `cs_rank_norm`, `cs_zscore`, `drop_extreme` and `TrainLossThreshold`. The
 base class builds the training panel, computes the training target once per
 fit, moves batches to the device, runs the epoch loop, evaluates under
@@ -697,7 +697,7 @@ from torch import nn
 
 from quantlab.base.config import ModelConfig
 from quantlab.base.model import TorchModel
-from quantlab.torch_model.training import cs_rank_norm, masked_mse
+from quantlab.utils.torch_training import cs_rank_norm, masked_mse
 
 
 class CrossSectionAttention(nn.Module):
@@ -748,8 +748,8 @@ AttentionHead_total.pth
 The features are requested from 2024-01-03, nine bars before `start_date`,
 so the first training bar has a full ten-bar window.
 
-`quantlab/torch_model/gats.py` (`GATsRegressor`) and
-`quantlab/torch_model/master.py` (`MASTERRegressor`) are complete
+`quantlab/model/gats.py` (`GATsRegressor`) and
+`quantlab/model/master.py` (`MASTERRegressor`) are complete
 cross-section heads that reproduce published models, and the patterns to
 copy for a new one:
 
@@ -775,9 +775,9 @@ copy for a new one:
 Every training run opens a Weights & Biases run; set `WANDB_MODE=disabled` in
 the environment to keep it offline. On macOS, set `OMP_NUM_THREADS=1` before
 importing anything when one process uses both torch and xgboost. The
-reference heads are `quantlab/library_model/xgb.py` and
-`quantlab/library_model/realmlp.py` for `LibraryModel`, and
-`quantlab/torch_model/gats.py` and `quantlab/torch_model/master.py` for
+reference heads are `quantlab/model/xgb.py` and
+`quantlab/model/realmlp.py` for `LibraryModel`, and
+`quantlab/model/gats.py` and `quantlab/model/master.py` for
 `TorchModel`.
 
 ## A backtest market or selection rule

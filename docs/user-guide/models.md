@@ -58,11 +58,11 @@ The head classes, the concrete models you instantiate, are:
 
 | Class | Module | Variant | Library | Predicts |
 |---|---|---|---|---|
-| `XGBoostRegressor` | `quantlab.library_model.xgb` | `LibraryModel` | xgboost | returns |
-| `XGBTDRegressor` | `quantlab.library_model.xgb_td` | `LibraryModel` | pytabkit (XGBoost with tuned defaults) | returns |
-| `RealMLPRegressor` | `quantlab.library_model.realmlp` | `LibraryModel` | pytabkit (RealMLP network) | returns |
-| `GATsRegressor` | `quantlab.torch_model.gats` | `TorchModel` | torch (Qlib's GATs: LSTM encoder, attention over the bar's cross-section) | returns |
-| `MASTERRegressor` | `quantlab.torch_model.master` | `TorchModel` | torch (MASTER: market-gated features, attention over time and across symbols) | returns |
+| `XGBoostRegressor` | `quantlab.model.xgb` | `LibraryModel` | xgboost | returns |
+| `XGBTDRegressor` | `quantlab.model.xgb_td` | `LibraryModel` | pytabkit (XGBoost with tuned defaults) | returns |
+| `RealMLPRegressor` | `quantlab.model.realmlp` | `LibraryModel` | pytabkit (RealMLP network) | returns |
+| `GATsRegressor` | `quantlab.model.gats` | `TorchModel` | torch (Qlib's GATs: LSTM encoder, attention over the bar's cross-section) | returns |
+| `MASTERRegressor` | `quantlab.model.master` | `TorchModel` | torch (MASTER: market-gated features, attention over time and across symbols) | returns |
 
 `XGBoostRegressor` is the usual starting point. It is fast on the CPU,
 handles missing feature values natively and records feature importance.
@@ -170,7 +170,7 @@ testing:
 
 ```python
 from quantlab.base.config import ModelConfig
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.model.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(ModelConfig(
     factors=[features],
@@ -457,7 +457,7 @@ reference implementation, and fills every hyperparameter you leave out
 from its `DEFAULTS` class attribute. The metrics in `metrics.json` are
 always computed on the raw label, whatever the training target.
 
-`GATsRegressor` (`quantlab.torch_model.gats`) is Qlib's GATs: an LSTM
+`GATsRegressor` (`quantlab.model.gats`) is Qlib's GATs: an LSTM
 encodes each symbol's window, one attention head mixes the encodings of
 all the symbols of the bar, and two linear layers give the prediction. It
 trains on each bar's cross-sectional rank of the label (Qlib's
@@ -467,7 +467,7 @@ Alpha158 benchmark settings: a 20-bar window, hidden size 64, two LSTM
 layers, dropout 0.7, learning rate 1e-4, at most 200 epochs, and
 `early_stop` 10. It needs no data beyond the factors.
 
-`MASTERRegressor` (`quantlab.torch_model.master`) is MASTER, a
+`MASTERRegressor` (`quantlab.model.master`) is MASTER, a
 transformer that attends over each stock's own history and across the
 stocks of every bar. A gate driven by market-wide features decides how
 much each stock feature counts. The gate's inputs are named by the
@@ -482,8 +482,8 @@ width 256 and learning rate 1e-5.
 
 ```python
 from quantlab.base.config import ModelConfig
-from quantlab.torch_model.gats import GATsRegressor
-from quantlab.torch_model.master import MASTERRegressor
+from quantlab.model.gats import GATsRegressor
+from quantlab.model.master import MASTERRegressor
 
 gats = GATsRegressor(ModelConfig(
     factors=[alpha158], labels=[label], model_save_dir="models",
@@ -541,7 +541,7 @@ the epoch with the lowest validation loss:
 import torch.nn as nn
 from quantlab.base.config import ModelConfig
 from quantlab.base.model import TorchModel
-from quantlab.torch_model.training import cs_rank_norm, masked_mse
+from quantlab.utils.torch_training import cs_rank_norm, masked_mse
 
 class WindowMLP(nn.Module):
     """A small MLP on each symbol's flattened window."""

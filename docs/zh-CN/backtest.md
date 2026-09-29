@@ -462,7 +462,7 @@ timestamp
 `SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成目录，并把其中的 `ensemble.json` 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `ensemble.json`，样本内划分所用的训练日期从它旁边的集成级 `config.json` 读取，与单个模型的检查点相同。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
 
 ```python
->>> from quantlab.ensemble_model.seed import SeedEnsemble
+>>> from quantlab.model.seed_ensemble import SeedEnsemble
 >>> ensemble = SeedEnsemble(make_model(root / "ensemble", cfg, days), seeds=[0, 1, 2])
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,

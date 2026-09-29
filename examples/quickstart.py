@@ -50,7 +50,7 @@ from quantlab.base.config import (
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.label.fret import Return
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.model.xgb import XGBoostRegressor
 from quantlab.utils.module import load_backtester_from_config
 
 # Zarr 3 warns that consolidated metadata is not part of its spec; harmless.

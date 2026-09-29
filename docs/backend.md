@@ -373,4 +373,4 @@ If a crash leaves a `.superseded.tmp` directory next to a store, `widen_symbol_a
 
 ## See also
 
-`dataset.md` describes how datasets persist panels through `XrBackend`; `chunking.md` covers building a store window by window with `append`; `factor.md` shows how Polars factors consume `get_lazyframe`. Modules: `quantlab.base.backend` (`DataBackend`, `ModelBackend`), `quantlab.backend` (`XrBackend`, `PlBackend`) and `quantlab.library_model.backend` (`MlBackend`, the model-side backend).
+`dataset.md` describes how datasets persist panels through `XrBackend`; `chunking.md` covers building a store window by window with `append`; `factor.md` shows how Polars factors consume `get_lazyframe`. Modules: `quantlab.base.backend` (`DataBackend`, `ModelBackend`), `quantlab.backend` (`XrBackend`, `PlBackend`) and `quantlab.base.library_model` (`MlBackend`, the model-side backend).

@@ -1,4 +1,4 @@
-"""Tests for `quantlab/library_model/xgb.py:XGBoostRegressor` (quick task 260914-lno).
+"""Tests for `quantlab/model/xgb.py:XGBoostRegressor` (quick task 260914-lno).
 
 What is locked, and what turns it red:
 
@@ -35,8 +35,9 @@ import xgboost as xgb
 from loguru import logger
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import BaseModel, LibraryModel
-from quantlab.library_model.xgb import (
+from quantlab.base.library_model import LibraryModel
+from quantlab.base.model import BaseModel
+from quantlab.model.xgb import (
     XGBoostRegressor,
     ccc_loss_metric,
     ccc_objective,
@@ -164,7 +165,7 @@ class FakeRecorder:
         self.finished += 1
 
 
-#: Mirrors `quantlab.library_model.xgb._IMPORTANCE_CHART_PREFIX`. Every feature
+#: Mirrors `quantlab.model.xgb._IMPORTANCE_CHART_PREFIX`. Every feature
 #: importance Charts object is logged under a key starting with this, which is
 #: what tells a chart row apart from a per-round curve row.
 CHART_PREFIX = "feature_importance"

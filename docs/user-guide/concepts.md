@@ -237,8 +237,8 @@ folds and adds a `folds/` directory with each fold's own weights and equity. See
 
 The code follows one rule: abstract base classes live in `quantlab/base/`, and the concrete
 implementations live next to the code that uses them. To add a new model you subclass
-`quantlab.base.model.TorchModel` or `quantlab.base.model.LibraryModel` and put the result in
-`quantlab/torch_model/` or `quantlab/library_model/`; to add a data
+`quantlab.base.torch_model.TorchModel` or `quantlab.base.library_model.LibraryModel` and put the result in
+`quantlab/model/`; to add a data
 source you subclass `quantlab.base.acquisition.Acquisition` and register it. The
 [extending guide](../developer-guide/extending.md) walks through each case.
 
@@ -250,7 +250,10 @@ quantlab/
         data.py          BaseDataset, MarketDataset: raw tier to Zarr panel
         constituent.py   IndexConstituentDataset: index-membership panels
         factor.py        Factor, FactorKunQuant, FactorPolars
-        model.py         BaseModel, TorchModel, LibraryModel
+        model.py         BaseModel: the training lifecycle shared by every model
+        torch_model.py   TorchModel: the epoch loop of torch heads
+        library_model.py LibraryModel, Rows, MlBackend: heads whose library trains itself
+        torch_data.py    TrainingPanel, Batch and the PyTorch datasets a torch head picks from
         backtest.py      BaseBacktester and its result types
         backend.py       DataBackend, ModelBackend: storage interfaces
         ...              chunked conversion, download ledgers, progress reporting
@@ -258,11 +261,11 @@ quantlab/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
     factor/          Alpha101, Alpha158, momentum, residual momentum, market features
     label/           Forward (forward.py) and the forward-return labels (fret.py)
-    library_model/   XGBoost, pytabkit and RealMLP heads, joblib checkpoint backend
-    torch_model/     GATs and MASTER heads; training panel, datasets, target transforms, stopping
+    model/           one entry per model: xgb.py, xgb_td.py, realmlp.py, gats.py, master.py,
+                     seed_ensemble.py; private support code in _support/
     backtest/        vectorbt engine, top-N selector, the US-equity backtester
     my_ops/          custom KunQuant operators
-    utils/           config loaders (module.py), metrics, report, fingerprints, CLI helpers
+    utils/           config loaders (module.py), metrics, torch target transforms, report, CLI helpers
     config/          data-root resolution and config factories for the bundled datasets
     enums/           shared literal types (markets, frequencies, vendors)
     backend.py       XrBackend (Zarr) and PlBackend (parquet)

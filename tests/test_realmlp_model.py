@@ -1,4 +1,4 @@
-"""Tests for `quantlab/library_model/realmlp.py:RealMLPRegressor`.
+"""Tests for `quantlab/model/realmlp.py:RealMLPRegressor`.
 
 What is locked, and what turns it red:
 
@@ -31,8 +31,9 @@ from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import BaseModel, LibraryModel
-from quantlab.library_model.realmlp import RealMLPRegressor
+from quantlab.base.library_model import LibraryModel
+from quantlab.base.model import BaseModel
+from quantlab.model.realmlp import RealMLPRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.label_stubs import StubLabel
 

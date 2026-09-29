@@ -33,8 +33,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.ensemble_model._support import base as ensemble_base
-from quantlab.ensemble_model.seed import SeedEnsemble
+from quantlab.model._support import ensemble as ensemble_base
+from quantlab.model.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.backtest_fixtures import SeededHead, make_model, write_price_store

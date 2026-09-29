@@ -22,7 +22,7 @@ import numpy as np
 import pytest
 import torch
 
-from quantlab.torch_model.data import TrainingPanel
+from quantlab.base.torch_data import TrainingPanel
 from tests.test_torch_model import _features, _feature_panel, _label_of, _model
 
 
