@@ -21,6 +21,7 @@ its ``hyperparameters`` are listed in ``RESERVED_HYPERPARAMETERS``. Concrete hea
 ``quantlab/library_model``.
 """
 
+import copy
 import dataclasses
 import json
 import os

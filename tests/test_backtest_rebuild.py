@@ -41,6 +41,7 @@ from loguru import logger
 import quantlab.utils.module as module_utils
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig
+from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -319,7 +320,7 @@ def test_rebuild_refuses_a_config_missing_a_field(tmp_path, monkeypatch, field_n
         module_utils, "load_dataset_from_config", lambda cfg: built.append(cfg)
     )
     monkeypatch.setattr(
-        module_utils, "load_model_from_config", lambda cfg: built.append(cfg)
+        BaseModel, "from_config", classmethod(lambda cls, cfg: built.append(cfg))
     )
 
     with pytest.raises(ValueError, match=field_name):
@@ -393,7 +394,9 @@ def test_non_backtester_class_is_refused_before_building_anything(
         module_utils, "load_dataset_from_config", lambda cfg: dataset_calls.append(cfg)
     )
     monkeypatch.setattr(
-        module_utils, "load_model_from_config", lambda cfg: model_calls.append(cfg)
+        BaseModel,
+        "from_config",
+        classmethod(lambda cls, cfg: model_calls.append(cfg)),
     )
 
     with pytest.raises(TypeError, match=r"quantlab\.dataset\.stock\.StockDataset"):
