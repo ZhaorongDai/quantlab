@@ -33,7 +33,7 @@ On disk ``train()`` writes::
         member_0/            one member's usual run directory
         member_1/
         ...
-        metrics.json         IC metrics of the combined prediction
+        metrics.json         IC metrics of the combined prediction, member correlation
         ic_series.csv        their per-bar series, in the single-model layout
         test_predictions.zarr  the combined test-segment prediction
         config.json          what every member shares: dates and labels
@@ -68,7 +68,7 @@ from loguru import logger
 
 from quantlab.base.model import BaseModel
 from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.ensemble import average_predictions
+from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import ic_panel_metrics
 
@@ -487,7 +487,7 @@ class BaseEnsemble(ABC):
         >>> sorted(p.name for p in manifest.parent.iterdir())
         ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
         >>> sorted(json.loads((manifest.parent / "metrics.json").read_text()))
-        ['test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir']
+        ['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir']
         """
         for member in self.members:
             member._check_hyperparameters()
@@ -614,7 +614,8 @@ class BaseEnsemble(ABC):
             ``train_end``, ``test_start`` and ``test_end``, the absolute
             ``checkpoint`` path of the fold's ``ensemble.json`` and the
             fold's ensemble metrics (``{split}_ic``, ``{split}_rank_ic``,
-            ``{split}_icir``, ``{split}_rank_icir``).
+            ``{split}_icir``, ``{split}_rank_icir``,
+            ``{split}_member_correlation``).
 
         Raises
         ------
@@ -627,7 +628,7 @@ class BaseEnsemble(ABC):
         --------
         >>> results = ensemble.collect().train_cv(train_periods=30)
         >>> len(results), sorted(results[0])[:6]
-        (8, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_rank_ic'])
+        (8, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_member_correlation'])
         >>> Path(results[0]["checkpoint"]).relative_to(ensemble.model_save_dir).parts[1:]
         ('fold_0', 'ensemble.json')
         """
@@ -712,14 +713,18 @@ class BaseEnsemble(ABC):
         skipped when it has no bars (so no ``val_*`` without a validation
         segment). On each split ``ic_panel_metrics`` scores the combined
         prediction of the first label against that label's raw values in
-        the first member's panel. No error metric is computed: the default combination
-        is in z-score units, not in the target's.
+        the first member's panel, and ``member_correlation`` measures how
+        much the members' first-label predictions agree on it. No error
+        metric is computed: the default combination is in z-score units, not
+        in the target's.
 
         Written into ``run_dir``:
 
         - ``metrics.json`` (only with ``write_metrics``): ``{split}_ic``,
-          ``{split}_rank_ic``, ``{split}_icir`` and ``{split}_rank_icir``,
-          NaN and inf as null.
+          ``{split}_rank_ic``, ``{split}_icir``, ``{split}_rank_icir`` and
+          ``{split}_member_correlation`` (the mean over bars of the mean
+          pairwise Pearson correlation of the members' predictions over
+          their common finite symbols), NaN and inf as null.
         - ``ic_series.csv``: the per-bar series behind them, in the layout
           of a single model's file (``BaseModel._write_ic_series``).
         - ``test_predictions.zarr``: the combined prediction on the test
@@ -735,7 +740,8 @@ class BaseEnsemble(ABC):
         data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
         )
-        combined = self._combine(self._member_panel_predictions())
+        predictions = self._member_panel_predictions()
+        combined = self._combine(predictions)
         label = first.get_label_names()[0]
         metrics, series = {}, {}
         segments = first._fit_segments(data)
@@ -750,6 +756,14 @@ class BaseEnsemble(ABC):
                 return_series=True,
             )
             metrics.update({f"{split}_{key}": value for key, value in values.items()})
+            metrics[f"{split}_member_correlation"], _ = member_correlation(
+                [
+                    member[label]
+                    .reindex(timestamp=stamps, symbol=data.symbol.values)
+                    .values
+                    for member in predictions
+                ]
+            )
             series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
 
         if write_metrics:

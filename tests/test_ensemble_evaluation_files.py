@@ -7,8 +7,10 @@ the single-model layout, before `ensemble.json` is written.
 What turns this file red:
 
 - the ensemble `metrics.json` holds a key outside the IC family (`ic`,
-  `rank_ic`, `icir`, `rank_icir` per split), or `val_*` keys without a
-  validation segment, or misses them with one;
+  `rank_ic`, `icir`, `rank_icir` per split) and `member_correlation`, or
+  `val_*` keys without a validation segment, or misses them with one;
+- `{split}_member_correlation` is not `member_correlation` of the members'
+  first-label predictions on that split, or leaves `[-1, 1]`;
 - a value differs from the same panel metrics computed independently on
   `average_predictions` of the members' predictions over the member's
   purged train / validation / test segments, against the raw first label;
@@ -35,13 +37,14 @@ import xarray as xr
 
 from quantlab.model import ensemble as ensemble_base
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
-from quantlab.utils.ensemble import average_predictions
+from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.backtest_fixtures import SeededHead, make_model, write_price_store
 
 N_BARS = 60
 SEEDS = [0, 1, 2]
 IC_KEYS = ("ic", "rank_ic", "icir", "rank_icir")
+METRIC_KEYS = (*IC_KEYS, "member_correlation")
 ENSEMBLE_FILES = [
     "config.json",
     "ensemble.json",
@@ -96,7 +99,8 @@ def _expected(ensemble):
     data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
         ["timestamp", "symbol"]
     )
-    averaged = average_predictions([m.predict_panel(data) for m in ensemble.members])
+    predictions = [m.predict_panel(data) for m in ensemble.members]
+    averaged = average_predictions(predictions)
     label = first.get_label_names()[0]
     metrics, series = {}, {}
     for split, part in zip(("train", "val", "test"), first._fit_segments(data)):
@@ -108,6 +112,12 @@ def _expected(ensemble):
         values, per_bar = regression_panel_metrics(pred, target, return_series=True)
         for key in IC_KEYS:
             metrics[f"{split}_{key}"] = values[key]
+        metrics[f"{split}_member_correlation"], _ = member_correlation(
+            [
+                p[label].sel(timestamp=stamps, symbol=data.symbol.values).values
+                for p in predictions
+            ]
+        )
         series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
     return metrics, series
 
@@ -127,12 +137,24 @@ def test_metrics_are_the_ic_family_of_the_averaged_prediction(tmp_path, val_size
     saved = json.loads((manifest.parent / "metrics.json").read_text())
     expected, _ = _expected(ensemble)
 
-    assert sorted(saved) == sorted(f"{s}_{k}" for s in splits for k in IC_KEYS)
+    assert sorted(saved) == sorted(f"{s}_{k}" for s in splits for k in METRIC_KEYS)
     assert sorted(expected) == sorted(saved)
     for key, value in expected.items():
         assert _close(saved[key], value), key
     member = json.loads((manifest.parent / "member_0" / "metrics.json").read_text())
     assert saved["test_ic"] != member["test_ic"]
+
+
+@pytest.mark.parametrize("val_size", [0.0, 0.2])
+def test_member_correlation_is_recorded_per_split_within_bounds(tmp_path, val_size):
+    _, manifest = _trained(tmp_path, val_size=val_size)
+
+    saved = json.loads((manifest.parent / "metrics.json").read_text())
+    splits = ("train", "val", "test") if val_size else ("train", "test")
+
+    for split in splits:
+        value = saved[f"{split}_member_correlation"]
+        assert value is not None and -1.0 <= value <= 1.0, split
 
 
 def test_train_lays_out_the_ensemble_files(tmp_path):
@@ -231,7 +253,9 @@ def test_train_into_returns_the_manifest_and_the_metrics(tmp_path):
     _, metrics = ensemble._train_into(quiet, project_name="cv", write_metrics=False)
     assert not (quiet / "metrics.json").exists()
     assert (quiet / "ic_series.csv").is_file() and (quiet / "ensemble.json").is_file()
-    assert sorted(metrics) == sorted(f"{s}_{k}" for s in ("train", "test") for k in IC_KEYS)
+    assert sorted(metrics) == sorted(
+        f"{s}_{k}" for s in ("train", "test") for k in METRIC_KEYS
+    )
 
 
 def test_the_base_panel_predictions_match_the_seed_ensemble_override(tmp_path):

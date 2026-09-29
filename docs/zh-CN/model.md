@@ -340,12 +340,12 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-集成目录里还有平均预测的评估文件，在最后一个成员训练完之后、`ensemble.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。`metrics.json` 只含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
+集成目录里还有平均预测的评估文件，在最后一个成员训练完之后、`ensemble.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。`metrics.json` 含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
 
 ```python
 >>> metrics = json.loads((manifest.parent / "metrics.json").read_text())
 >>> sorted(metrics)
-['test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir']
+['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir']
 >>> [round(json.loads((manifest.parent / f"member_{k}" / "metrics.json").read_text())["test_rank_ic"], 3) for k in range(3)], round(metrics["test_rank_ic"], 3)
 ([0.682, 0.687, 0.689], 0.688)
 >>> import pandas as pd
@@ -355,6 +355,41 @@ True
 >>> tests = [xr.open_zarr(manifest.parent / f"member_{k}" / "test_predictions.zarr").load() for k in range(3)]
 >>> dict(saved.sizes), bool(np.allclose(saved["ret"], average_predictions(tests)["ret"]))
 ({'timestamp': 48, 'symbol': 20}, True)
+```
+
+`{split}_member_correlation` 是各成员在该段上第一个标签预测的 `member_correlation`（位于 `quantlab.utils.ensemble`）。每个 bar 上只取所有成员预测都有限的标的，在这些标的上计算每一对成员的 Pearson 相关系数，再对成员对取平均（某个成员在这个 bar 上为常数时，含它的成员对不参与），然后对 bar 取平均，忽略 NaN。公共标的少于两个的 bar 跳过。取值在 `[-1, 1]` 内，没有可用 bar 时为 null。`member_correlation(predictions)` 接受每个成员一个 `[T, S]` 数组（形状必须相同），返回均值和逐 bar 序列；只有一个成员时两者都是 NaN。
+
+这个数说明平均能带来多少提升。设有 `k` 个成员，平均 IC 为 `IC_i`，两两平均相关系数为 `ρ`，等权平均的 IC 近似为
+
+```text
+IC_ens ≈ mean IC_i × sqrt(k / (1 + (k - 1) ρ))
+```
+
+`ρ` 接近 1 时各成员几乎相同，集成 IC 停留在成员的平均水平。`ρ` 接近 0 时各成员的误差互不相关，平均最多把成员的平均 IC 放大 `sqrt(k)` 倍，但只放大成员共有的方向：成员的平均 IC 本身是零附近的噪声时，对互不相关的成员取平均会放大这个噪声，集成 IC 会比成员的平均 IC 离零更远，正负皆有可能。种子集成的成员 `ρ` 接近 0，说明每个种子学到的是互不相关的噪声，这是模型本身的问题，而不是集成的问题。
+
+```python
+>>> import numpy as np
+>>> from quantlab.utils.ensemble import member_correlation
+>>> from quantlab.utils.metrics import ic_panel_metrics
+>>> rng = np.random.default_rng(0)
+>>> target = rng.normal(size=(250, 300))
+>>> def report(members):
+...     rho, _ = member_correlation(members)
+...     ic = float(np.mean([ic_panel_metrics(m, target)["ic"] for m in members]))
+...     k = len(members)
+...     predicted = ic * np.sqrt(k / (1 + (k - 1) * rho))
+...     actual = ic_panel_metrics(np.mean(members, axis=0), target)["ic"]
+...     return round(rho, 3), round(ic, 3), round(float(predicted), 3), round(actual, 3)
+>>> independent = [0.1 * target + rng.normal(size=target.shape) for _ in range(4)]
+>>> report(independent)
+(0.01, 0.096, 0.19, 0.19)
+>>> shared = rng.normal(size=target.shape)
+>>> alike = [0.1 * target + shared + 0.3 * rng.normal(size=target.shape) for _ in range(4)]
+>>> report(alike)
+(0.918, 0.093, 0.096, 0.096)
+>>> rho, per_bar = member_correlation(independent)
+>>> per_bar.shape
+(250,)
 ```
 
 `load(manifest)` 从清单列出的检查点恢复每个成员，`check_checkpoint(manifest)` 只检查不加载：清单的格式版本必须是 1，成员数与集成相同，每个成员的类和种子与集成的成员一致，每个成员检查点都必须存在并通过该成员自己的 `check_checkpoint`。`get_config()` 返回被包装模型的配置和种子，`SeedEnsemble.from_config` 据此重建集成。`SeedEnsemble` 满足回测器的 `Predictor` 协议，所以像单个模型一样回测（见 backtest 指南）。
@@ -378,7 +413,7 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 `train_cv(train_periods, expanding=False)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的 W&B 运行 `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
 
-`cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，只有 IC 一族；`cv_mean` 是它们的均值。返回值就是折列表。同一个项目里另有一个 W&B 运行 `SeedEnsemble_cv_summary`，记录 `cv_mean_*` 的值。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
+`cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，即 IC 一族和 `{split}_member_correlation`；`cv_mean` 是它们的均值。返回值就是折列表。同一个项目里另有一个 W&B 运行 `SeedEnsemble_cv_summary`，记录 `cv_mean_*` 的值。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
 
 ```python
 >>> folds = ensemble.train_cv(train_periods=100)
@@ -393,7 +428,7 @@ True
 ['XGBoostRegressor_fold_0_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> cv_manifest = json.loads((cv_dir / "cv_folds.json").read_text())
 >>> cv_manifest["format_version"], sorted(cv_manifest["folds"][0])
-(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir'])
+(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir'])
 >>> [round(r["test_rank_ic"], 3) for r in folds]
 [0.69, 0.651, 0.709, 0.672, 0.698]
 >>> {k: round(v, 3) for k, v in cv_manifest["cv_mean"].items() if k.endswith("rank_ic")}

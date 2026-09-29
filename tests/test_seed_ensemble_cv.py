@@ -14,7 +14,8 @@ What is locked here, and what turns it red:
   live in `cv_folds.json`.
 - `cv_folds.json` is format version 2: each fold record holds the purged
   fold dates, the absolute path of the fold's `ensemble.json` and the
-  ensemble-level IC metrics (no error metric), and `cv_mean` averages them
+  ensemble-level IC metrics and `member_correlation` (no error metric),
+  each correlation within `[-1, 1]`, and `cv_mean` averages them
   the way `BaseModel` does.
 - W&B: one run per member per fold, `{MemberClass}_fold_{i}_member_{k}`, all
   in one project named after the CV directory, plus a
@@ -62,7 +63,7 @@ LAST_TEST_BAR = TRAIN_PERIODS + N_FOLDS * TEST_PERIODS - 1
 HORIZON = 2
 SEEDS = [0, 1, 2]
 DATE_KEYS = ("fold", "train_start", "train_end", "test_start", "test_end")
-IC_METRICS = {"ic", "rank_ic", "icir", "rank_icir"}
+ENSEMBLE_METRICS = {"ic", "rank_ic", "icir", "rank_icir", "member_correlation"}
 
 
 @pytest.fixture(autouse=True)
@@ -218,12 +219,15 @@ def test_cv_folds_json_is_v2_with_ensemble_metrics_and_cv_mean(cv_run):
         assert checkpoint == cv_dir / f"fold_{i}" / "ensemble.json"
         assert result["checkpoint"] == entry["checkpoint"]
         metrics = set(entry) - set(DATE_KEYS) - {"checkpoint"}
-        assert metrics == {f"{s}_{m}" for s in ("train", "test") for m in IC_METRICS}
+        assert metrics == {f"{s}_{m}" for s in ("train", "test") for m in ENSEMBLE_METRICS}
+        for split in ("train", "test"):
+            assert -1.0 <= entry[f"{split}_member_correlation"] <= 1.0
         assert tuple(entry[k] for k in DATE_KEYS) == tuple(result[k] for k in DATE_KEYS)
 
     assert manifest["cv_mean"]["cv_n_folds"] == N_FOLDS
     expected = BaseModel._cv_mean_metrics(results)
     assert set(manifest["cv_mean"]) == set(expected)
+    assert "cv_mean_test_member_correlation" in expected
     for key, value in expected.items():
         assert manifest["cv_mean"][key] == pytest.approx(value)
 
