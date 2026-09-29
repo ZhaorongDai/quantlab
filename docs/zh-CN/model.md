@@ -704,19 +704,21 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 
 ### 选择训练设备
 
-每个内置模型头都在训练开始时选择训练设备：有可用的 CUDA 设备时用 CUDA，否则用 CPU。Apple MPS 不会被自动选中，要用它需要显式传入。
+每个内置模型头都在训练开始时和加载检查点时选择设备：有可用的 CUDA 设备时用 CUDA，否则用 CPU。Apple MPS 不会被自动选中，要用它需要显式传入。
 
 - torch 模型头询问 PyTorch（`TorchModel.device`）；除 `panel_device` 外没有其他可配置项（见“把训练面板放在 GPU 上”）。
-- `RealMLPRegressor` 在 PyTorch 看到 CUDA 设备时把 pytabkit 的构造参数 `device` 设为 `"cuda"`，否则设为 `"cpu"`。`device=None` 视同未设置，因为 pytabkit 自己的 `None` 在 Mac 上会选 MPS。拟合后网络被移到 CPU 上，因此评估和预测在 CPU 上进行，在 CUDA 上训练的检查点也能在没有 CUDA 的机器上加载并预测。
-- `XGBoostRegressor` 在安装的 xgboost 是 CUDA 版本、且 CUDA 驱动报告有可见设备时（遵守 `CUDA_VISIBLE_DEVICES`）把 xgboost 的 `device` 设为 `"cuda"`，否则设为 `"cpu"`。检查读取 `xgboost.build_info()` 并通过 `ctypes` 询问驱动，不导入 PyTorch。训练好的 Booster 随后切换到 CPU 做预测，因此对 numpy 行预测时不会出现设备不匹配的警告，检查点也能在没有 CUDA 的机器上加载。
-- `XGBTDRegressor` 按 `XGBoostRegressor` 的规则确定设备。pytabkit 不会把设备转交给 xgboost，所以模型头把它合并进 pytabkit 内部 `xgboost.train` 调用的参数；pytabkit 自己的 `device` 参数保持未设置。拟合好的 Booster 同样切换到 CPU 做预测。
+- `RealMLPRegressor` 在 PyTorch 看到 CUDA 设备时把 pytabkit 的构造参数 `device` 设为 `"cuda"`，否则设为 `"cpu"`。`device=None` 视同未设置，因为 pytabkit 自己的 `None` 在 Mac 上会选 MPS。
+- `XGBoostRegressor` 在安装的 xgboost 是 CUDA 版本、且 CUDA 驱动报告有可见设备时（遵守 `CUDA_VISIBLE_DEVICES`）把 xgboost 的 `device` 设为 `"cuda"`，否则设为 `"cpu"`。检查读取 `xgboost.build_info()` 并通过 `ctypes` 询问驱动，不导入 PyTorch。
+- `XGBTDRegressor` 按 `XGBoostRegressor` 的规则确定设备。pytabkit 不会把设备转交给 xgboost，所以模型头把它合并进 pytabkit 内部 `xgboost.train` 调用的参数；pytabkit 自己的 `device` 参数保持未设置。
+
+训练好的模型在同一进程里的评估和后续预测中留在训练设备上。只有检查点从 CPU 写出（RealMLP 网络为写入移到 CPU 再移回，xgboost 的 Booster 以 `device="cpu"` 保存），因此在 GPU 上训练的模型能在没有 GPU 的机器上加载并预测。`load` 按同一规则把模型放到加载机器选出的设备上。
 
 `hyperparameters` 里给出的 `device` 原样传给库（`"cpu"`、`"cuda:1"`、`"mps"` 等）。无论哪种情况，实际使用的设备都记录在 `config.json` 的 `resolved_hyperparameters` 里，而 `hyperparameters` 保留调用方传入的内容。在没有 CUDA 的机器上（如下例）：
 
 ```python
 >>> from dataclasses import replace
 >>> from quantlab.model.predefined.realmlp import RealMLPRegressor
->>> xgb_config = ModelConfig(
+>>> device_config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
 ...     train_start="2024-01-01", train_end="2024-05-31",
@@ -727,15 +729,15 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 ...     """Train ``head``; return its recorded device and whether the caller gave one."""
 ...     record = json.loads((head.collect().train().parent / "config.json").read_text())
 ...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
->>> trained_device(XGBoostRegressor(xgb_config))
+>>> trained_device(XGBoostRegressor(device_config))
 ('cpu', False)
->>> trained_device(RealMLPRegressor(replace(xgb_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
+>>> trained_device(RealMLPRegressor(replace(device_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
 ('cpu', False)
->>> trained_device(XGBoostRegressor(replace(xgb_config, hyperparameters={"num_boost_round": 50, "device": "cpu"})))
+>>> trained_device(XGBoostRegressor(replace(device_config, hyperparameters={"num_boost_round": 50, "device": "cpu"})))
 ('cpu', True)
 ```
 
-在有 CUDA 的机器上，前两次调用返回 `('cuda', False)`。2026-09-29 在训练服务器（RTX 5090 D，xgboost 3.4.1 CUDA 版本）上用 400 个 bar × 200 个标的的合成面板检查过：`XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor` 都记录了 `'cuda'`，Booster 训练时报告 `cuda:0`，各自训练时进程占用了显存，pytabkit 的 Lightning trainer 输出 `GPU available: True (cuda), used: True`。随后 RealMLP 检查点在服务器上以 `CUDA_VISIBLE_DEVICES=` 以及在 Mac 上都能加载并预测，与服务器上的预测相差不超过 5e-8。
+在有 CUDA 的机器上，前两次调用返回 `('cuda', False)`。
 
 ### 把训练面板放在 GPU 上
 

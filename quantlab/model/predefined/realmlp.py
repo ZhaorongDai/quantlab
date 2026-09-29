@@ -23,7 +23,7 @@ from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
 from quantlab.model.library_model import Rows
-from quantlab.model.predefined._support.devices import torch_default_device
+from quantlab.model.predefined._support.devices import resolve_device, torch_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
 
 
@@ -151,7 +151,10 @@ class RealMLPRegressor(TabkitRegressor):
     ``device``, ``n_threads``, ...). Without ``device`` the head trains on
     ``"cuda"`` when torch sees a CUDA device and on ``"cpu"`` otherwise;
     Apple MPS is used only when asked for (``device="mps"``). The device
-    chosen is recorded in ``resolved_hyperparameters``.
+    chosen is recorded in ``resolved_hyperparameters``. The network stays on
+    it for evaluation and prediction; the checkpoint is written from the CPU
+    so it loads without CUDA, and a loaded model is moved to the default
+    device by the same rule.
 
     With ``hyperparameters["early_stopping"]`` set and validation rows,
     pytabkit's early stopping watches the
@@ -206,6 +209,9 @@ class RealMLPRegressor(TabkitRegressor):
         "val_fraction": 0.0,
         "verbosity": 0,
     }
+    #: Device of the network in memory: the training device after a fit,
+    #: the resolved default after a load.
+    _device: str | None = None
 
     def _early_stopping_params(self) -> dict:
         """Return the pytabkit early-stopping keys implied by the config."""
@@ -227,10 +233,11 @@ class RealMLPRegressor(TabkitRegressor):
         never MPS; pytabkit's own ``device=None`` would pick MPS on a Mac.
         The resolved device is recorded with the other parameters.
         """
-        params = super()._resolve_params(hyperparameters)
-        if params.get("device") is None:
-            params["device"] = self._params["device"] = torch_default_device()
-        return params
+        super()._resolve_params(hyperparameters)
+        self._params["device"] = self._device = resolve_device(
+            self._params.get("device"), torch_default_device
+        )
+        return dict(self._params)
 
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict
@@ -251,10 +258,7 @@ class RealMLPRegressor(TabkitRegressor):
     def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Fit the estimator and record the stopping epoch in the run summary.
 
-        The validation rows are passed to pytabkit when there are any. The
-        fitted estimator is then moved to the CPU, so evaluation, prediction
-        and the checkpoint run on the CPU and the checkpoint loads without
-        CUDA.
+        The validation rows are passed to pytabkit when there are any.
         """
         self._warn_without_validation(val_rows)
         callbacks = [] if self._wandb_recorder is None else [_WandbEpochCallback(self)]
@@ -265,10 +269,6 @@ class RealMLPRegressor(TabkitRegressor):
                 self.model.fit(
                     train_rows.x, train_rows.y, X_val=val_rows.x, y_val=val_rows.y
                 )
-        # Keep the fitted network on the CPU, so the ``.joblib`` checkpoint
-        # holds no CUDA tensor and loads on a machine without CUDA.
-        # ``resolved_hyperparameters`` keeps the training device.
-        self.model.to("cpu")
 
         if self._wandb_recorder is not None and val_rows is not None:
             stop_epoch = self._stop_epoch()
@@ -286,6 +286,31 @@ class RealMLPRegressor(TabkitRegressor):
         if isinstance(stop, dict):
             stop = next(iter(stop.values()), None)
         return None if stop is None else int(stop)
+
+    def _write_checkpoint(self, path) -> None:
+        """Write the estimator from the CPU, so the checkpoint loads without CUDA.
+
+        The network is moved to the CPU for the write and back to its device
+        afterwards, so evaluation and later predictions stay on it.
+        """
+        self.model.to("cpu")
+        try:
+            super()._write_checkpoint(path)
+        finally:
+            self.model.to(self._device or "cpu")
+
+    def _read_checkpoint(self, path) -> None:
+        """Load the estimator and move it to the default device.
+
+        The device is ``hyperparameters["device"]`` when given, otherwise
+        ``"cuda"`` when torch sees a CUDA device and ``"cpu"`` otherwise, as
+        for training.
+        """
+        super()._read_checkpoint(path)
+        self._device = resolve_device(
+            self.config.hyperparameters.get("device"), torch_default_device
+        )
+        self.model.to(self._device)
 
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """Predict ``[n, L]`` from imputed ``[n, F]`` feature rows."""

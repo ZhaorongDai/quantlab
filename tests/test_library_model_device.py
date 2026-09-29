@@ -10,17 +10,21 @@ What is locked, and what turns it red:
 - the XGBoost probe needs a CUDA build of xgboost AND a visible CUDA device,
   asks the CUDA driver without importing torch, and never raises;
 - ``XGBTDRegressor`` follows the xgboost rule and injects the device into
-  pytabkit's inner ``xgboost.train`` (pytabkit forwards none), clears the
-  injected parameter after ``fit``, and predicts on the CPU;
-- a fitted RealMLP is moved to the CPU before its checkpoint is written, so
-  a checkpoint trained on CUDA loads without CUDA (checked for real on the
-  training server and a Mac; locked here by the order of the calls).
+  pytabkit's inner ``xgboost.train`` (pytabkit forwards none), and nested
+  ``active_callbacks`` blocks restore the outer slots;
+- a fitted model stays on its training device in memory; only the
+  checkpoint is written on the CPU (every xgboost Booster with
+  ``device="cpu"``, the RealMLP network moved to the CPU for the write and
+  back), and a loaded model is placed on the default device by the same
+  rule, an explicit ``device`` winning; predictions after a CPU save and
+  load match the in-memory ones.
 
 CUDA availability is patched both ways; no test needs a GPU.
 """
 
 import subprocess
 import sys
+from contextlib import nullcontext as _nothing
 
 import numpy as np
 import pytest
@@ -154,16 +158,6 @@ def test_xgboost_honours_an_explicit_device(tmp_path, cuda, given):
     assert head._resolved_hyperparameters()["device"] == given
 
 
-def test_a_trained_xgboost_booster_predicts_on_the_cpu(tmp_path, recorders_off):
-    """Whatever it trained on (CUDA on a GPU host), the Booster predicts numpy rows on the CPU."""
-    import json
-
-    head = _head(XGBoostRegressor, tmp_path, {"num_boost_round": 2})
-    head.collect().train()
-    booster = json.loads(head.model.save_config())
-    assert booster["learner"]["generic_param"]["device"] == "cpu"
-
-
 def test_xgboost_default_params_pin_no_device():
     assert "device" not in XGBoostRegressor.DEFAULT_PARAMS
 
@@ -228,6 +222,24 @@ def test_resolving_the_xgboost_device_does_not_import_torch(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# One rule for every head
+# --------------------------------------------------------------------------
+
+
+def test_resolve_device_fills_only_an_unset_device():
+    calls = []
+
+    def default():
+        calls.append(1)
+        return "cuda"
+
+    assert devices.resolve_device(None, default) == "cuda"
+    assert devices.resolve_device("cpu", default) == "cpu"
+    assert devices.resolve_device("mps", default) == "mps"
+    assert len(calls) == 1
+
+
+# --------------------------------------------------------------------------
 # XGBTD
 # --------------------------------------------------------------------------
 
@@ -274,24 +286,146 @@ def test_xgb_td_leaves_no_injected_parameter_behind(tmp_path, recorders_off):
     assert tabkit._active_params() == {}
 
 
-def test_a_trained_xgb_td_booster_predicts_on_the_cpu(tmp_path, recorders_off):
+# --------------------------------------------------------------------------
+# Nested active_callbacks
+# --------------------------------------------------------------------------
+
+
+def test_nested_active_callbacks_restore_the_outer_slots():
+    from quantlab.model.predefined._support import tabkit
+
+    outer_cb, inner_cb = object(), object()
+    with tabkit.active_callbacks(xgb_callbacks=[outer_cb], xgb_params={"device": "cuda"}):
+        with tabkit.active_callbacks(xgb_callbacks=[inner_cb], xgb_params={"device": "cpu"}):
+            assert tabkit._active_params() == {"device": "cpu"}
+            assert tabkit._active_list("xgb_callbacks") == [inner_cb]
+        assert tabkit._active_params() == {"device": "cuda"}
+        assert tabkit._active_list("xgb_callbacks") == [outer_cb]
+    assert tabkit._active_params() == {}
+    assert tabkit._active_list("xgb_callbacks") == []
+
+
+# --------------------------------------------------------------------------
+# Checkpoints are written on the CPU; the model in memory keeps its device
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def booster_devices(monkeypatch):
+    """Record the last device set on every xgboost Booster, by Booster id."""
+    import xgboost
+
+    last: dict[int, str] = {}
+    original = xgboost.Booster.set_param
+
+    def spy(self, params, value=None):
+        items = params.items() if isinstance(params, dict) else (
+            [(params, value)] if isinstance(params, str) else list(params)
+        )
+        for key, val in items:
+            if key == "device":
+                last[id(self)] = val
+        return original(self, params, value)
+
+    monkeypatch.setattr(xgboost.Booster, "set_param", spy)
+    return last
+
+
+def _saved_booster_devices(model) -> list[str]:
+    """Return the ``device`` in the config of every Booster of a loaded checkpoint."""
     import json
 
-    head = _head(XGBTDRegressor, tmp_path, {"n_estimators": 3, "n_threads": 1})
+    boosters = [model] if hasattr(model, "save_config") else [
+        sub.model for est in model for sub in est.alg_interface_.sub_split_interfaces
+    ]
+    return [json.loads(b.save_config())["learner"]["generic_param"]["device"] for b in boosters]
+
+
+def _live_boosters(head) -> list:
+    if isinstance(head, XGBoostRegressor):
+        return [head.model]
+    return [sub.model for est in head.model for sub in est.alg_interface_.sub_split_interfaces]
+
+
+XGB_HEADS = [
+    (XGBoostRegressor, {"num_boost_round": 3}),
+    (XGBTDRegressor, {"n_estimators": 3, "n_threads": 1}),
+]
+
+
+@pytest.mark.parametrize("cls, hyper", XGB_HEADS)
+def test_xgb_heads_keep_the_training_device_in_memory_and_save_on_the_cpu(
+    tmp_path, cuda, recorders_off, booster_devices, cls, hyper
+):
+    """On a host without CUDA xgboost falls back to the CPU itself; the head's
+    own calls are what is checked: every live Booster ends on the training
+    device, every saved one reads ``cpu``."""
+    import joblib
+
+    cuda(True)
+    head = _head(cls, tmp_path, hyper)
+    with pytest.warns(UserWarning) if not devices.xgboost_cuda_available() else _nothing():
+        checkpoint = head.collect().train()
+
+    live = _live_boosters(head)
+    assert live and all(booster_devices[id(b)] == "cuda" for b in live)
+    assert head._device == "cuda"
+    assert set(_saved_booster_devices(joblib.load(checkpoint))) == {"cpu"}
+
+
+@pytest.mark.parametrize("cls, hyper", XGB_HEADS)
+@pytest.mark.parametrize(
+    "available, given, expected",
+    [(True, None, "cuda"), (False, None, "cpu"), (True, "cpu", "cpu")],
+)
+def test_xgb_heads_load_onto_the_default_device(
+    tmp_path, cuda, recorders_off, booster_devices, cls, hyper, available, given, expected
+):
+    cuda(False)
+    checkpoint = _head(cls, tmp_path, hyper).collect().train()
+
+    cuda(available)
+    extra = {} if given is None else {"device": given}
+    loaded = _head(cls, tmp_path, {**hyper, **extra}).load(checkpoint)
+
+    live = _live_boosters(loaded)
+    assert live and all(booster_devices[id(b)] == expected for b in live)
+    assert loaded._device == expected
+
+
+@pytest.mark.parametrize("cls, hyper", XGB_HEADS)
+def test_xgb_predictions_after_a_cpu_save_and_load_match_the_in_memory_ones(
+    tmp_path, recorders_off, cls, hyper
+):
+    head = _head(cls, tmp_path, hyper)
+    checkpoint = head.collect().train()
+    x = np.random.default_rng(3).standard_normal((6, 3, 1)).astype("float32")
+
+    loaded = _head(cls, tmp_path, hyper).load(checkpoint)
+    np.testing.assert_allclose(loaded.predict(x), head.predict(x), rtol=1e-6, atol=1e-7)
+
+
+def test_realmlp_is_written_on_the_cpu_and_moved_back_to_its_device(tmp_path, cuda, recorders_off, monkeypatch):
+    """A network on ``cuda`` goes to the CPU for the write and back afterwards."""
+    from pytabkit import RealMLP_TD_Regressor
+
+    from quantlab.model.library_model import LibraryModel
+
+    cuda(False)
+    head = _head(RealMLPRegressor, tmp_path, {"n_epochs": 2, "n_threads": 1})
     head.collect().train()
-    for estimator in head.model:
-        for sub in estimator.alg_interface_.sub_split_interfaces:
-            booster = json.loads(sub.model.save_config())
-            assert booster["learner"]["generic_param"]["device"] == "cpu"
+
+    events = []
+    monkeypatch.setattr(RealMLP_TD_Regressor, "to", lambda self, device: events.append(("to", device)))
+    monkeypatch.setattr(LibraryModel, "_write_checkpoint", lambda self, path: events.append(("write",)))
+    head._device = "cuda"
+    head._write_checkpoint(tmp_path / "x.joblib")
+
+    assert events == [("to", "cpu"), ("write",), ("to", "cuda")]
 
 
-# --------------------------------------------------------------------------
-# RealMLP checkpoints load without CUDA
-# --------------------------------------------------------------------------
-
-
-def test_a_fitted_realmlp_is_moved_to_the_cpu_before_it_is_saved(tmp_path, cuda, recorders_off, monkeypatch):
-    """Whatever it trained on, the estimator is on the CPU when the checkpoint is written."""
+def test_realmlp_is_not_moved_before_evaluation(tmp_path, cuda, recorders_off, monkeypatch):
+    """Training and evaluation run on the training device; only the write moves it."""
     from pytabkit import RealMLP_TD_Regressor
 
     from quantlab.model.library_model import LibraryModel
@@ -305,12 +439,39 @@ def test_a_fitted_realmlp_is_moved_to_the_cpu_before_it_is_saved(tmp_path, cuda,
     original_write = LibraryModel._write_checkpoint
     monkeypatch.setattr(
         LibraryModel, "_write_checkpoint",
-        lambda self, path: (events.append(("write", None)), original_write(self, path))[1],
+        lambda self, path: (events.append(("write",)), original_write(self, path))[1],
+    )
+    original_evaluate = LibraryModel._evaluate
+    monkeypatch.setattr(
+        LibraryModel, "_evaluate",
+        lambda self, *a: (events.append(("evaluate",)), original_evaluate(self, *a))[1],
     )
     cuda(False)
-    head = _head(RealMLPRegressor, tmp_path, {"n_epochs": 2, "n_threads": 1})
-    head.collect().train()
+    _head(RealMLPRegressor, tmp_path, {"n_epochs": 2, "n_threads": 1}).collect().train()
 
-    assert ("to", "cpu") in events
-    assert events.index(("to", "cpu")) < events.index(("write", None))
-    assert head._resolved_hyperparameters()["device"] == "cpu"
+    first_move = events.index(("to", "cpu"))
+    assert ("evaluate",) in events[:first_move]
+    assert events[first_move:] == [("to", "cpu"), ("write",), ("to", "cpu")]
+
+
+@pytest.mark.parametrize(
+    "available, given, expected",
+    [(True, None, "cuda"), (False, None, "cpu"), (True, "cpu", "cpu")],
+)
+def test_realmlp_loads_onto_the_default_device(
+    tmp_path, cuda, recorders_off, monkeypatch, available, given, expected
+):
+    from pytabkit import RealMLP_TD_Regressor
+
+    hyper = {"n_epochs": 2, "n_threads": 1}
+    cuda(False)
+    checkpoint = _head(RealMLPRegressor, tmp_path, hyper).collect().train()
+
+    moves = []
+    monkeypatch.setattr(RealMLP_TD_Regressor, "to", lambda self, device: moves.append(device))
+    cuda(available)
+    extra = {} if given is None else {"device": given}
+    loaded = _head(RealMLPRegressor, tmp_path, {**hyper, **extra}).load(checkpoint)
+
+    assert moves == [expected]
+    assert loaded._device == expected

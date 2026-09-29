@@ -161,8 +161,9 @@ class TabkitRegressor(LibraryModel):
 # that slot: one wraps ``xgboost.train`` to append the active xgboost callbacks,
 # the other wraps ``TabNNModule.create_callbacks`` to append the active
 # Lightning callbacks. The ``xgboost.train`` wrapper also merges the active
-# xgboost parameters (the resolved ``device``) into the call's params, because
-# pytabkit forwards no device to xgboost. Outside an active fit both patches are pass-throughs,
+# xgboost parameters (the resolved ``device``) into the call's params,
+# because pytabkit forwards no device to xgboost. Outside an active fit both
+# patches are pass-throughs,
 # so the plain ``XGBoostRegressor`` is unaffected, and the slot being
 # thread-local keeps fits running on different threads apart.
 
@@ -233,23 +234,27 @@ def active_callbacks(xgb_callbacks=None, lightning_callbacks=None, xgb_params=No
     While the block runs, every ``xgboost.train`` call on this thread gets
     the xgboost callbacks appended and ``xgb_params`` merged over its
     params, and every pytabkit ``TabNNModule`` gets the Lightning callbacks
-    appended. The slots are cleared on exit, also on error.
+    appended. On exit, also on error, the slots go back to what they held
+    before the block, so nested blocks restore the outer ones.
 
     Examples
     --------
-    >>> with active_callbacks(xgb_callbacks=[callback]):
+    >>> with active_callbacks(xgb_callbacks=[callback], xgb_params={"device": "cuda"}):
     ...     estimator.fit(x, y, X_val=val_x, y_val=val_y)
     """
     if xgb_callbacks or xgb_params:
         _install_xgboost_train_hook()
     if lightning_callbacks:
         _install_lightning_callbacks_hook()
+    outer = (
+        _active_list("xgb_callbacks"),
+        _active_list("lightning_callbacks"),
+        _active_params(),
+    )
     _active.xgb_callbacks = list(xgb_callbacks or [])
     _active.lightning_callbacks = list(lightning_callbacks or [])
     _active.xgb_params = dict(xgb_params or {})
     try:
         yield
     finally:
-        _active.xgb_callbacks = []
-        _active.lightning_callbacks = []
-        _active.xgb_params = {}
+        _active.xgb_callbacks, _active.lightning_callbacks, _active.xgb_params = outer

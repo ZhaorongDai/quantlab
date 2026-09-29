@@ -1,22 +1,47 @@
-"""Default training device of the library heads.
+"""Default device of the library heads.
 
-A head resolves its device when training starts, not when the module is
-imported: CUDA when a CUDA device is available, otherwise the CPU. Apple
-MPS is never chosen automatically, because MPS runs are not deterministic
-and a macOS process mixing torch and xgboost already needs
-``OMP_NUM_THREADS=1``; pass ``device="mps"`` explicitly to use it.
+A head resolves its device when training starts and again when a
+checkpoint is loaded, not when the module is imported: CUDA when a CUDA
+device is available, otherwise the CPU. Apple MPS is never chosen
+automatically, because MPS runs are not deterministic and a macOS process
+mixing torch and xgboost already needs ``OMP_NUM_THREADS=1``; pass
+``device="mps"`` explicitly to use it.
 
-The two helpers answer for their own library. ``torch_default_device``
-asks torch, which a pytabkit head has imported anyway.
-``xgboost_default_device`` never imports torch: it reads xgboost's build
-information and, only for a CUDA build, asks the CUDA driver how many
-devices are visible through ``ctypes``. The driver answer honours
-``CUDA_VISIBLE_DEVICES`` and costs no CUDA context.
+``resolve_device`` is the one rule every head applies: an explicit device
+wins, an unset one (``None``) becomes the library's default. The defaults
+come from ``torch_default_device``, which asks torch (a pytabkit head has
+imported it anyway), and ``xgboost_default_device``, which never imports
+torch: ``xgboost_cuda_available`` reads xgboost's build information and,
+only for a CUDA build, asks ``cuda_driver_device_count`` how many devices
+the CUDA driver sees. That answer honours ``CUDA_VISIBLE_DEVICES``. It
+creates no CUDA context, but ``cuInit`` does initialise the driver in the
+calling process, so a process that later forks workers which use CUDA
+should start them with the ``spawn`` method.
 """
 
 import ctypes
 import functools
 import sys
+
+
+def resolve_device(requested: str | None, default) -> str:
+    """Return ``requested``, or ``default()`` when it is ``None``.
+
+    Parameters
+    ----------
+    requested : str or None
+        The device the caller asked for, ``None`` when unset.
+    default : callable
+        Returns the default device; called only when ``requested`` is None.
+
+    Examples
+    --------
+    >>> resolve_device(None, lambda: "cuda")
+    'cuda'
+    >>> resolve_device("cpu", lambda: "cuda")
+    'cpu'
+    """
+    return default() if requested is None else requested
 
 
 def torch_default_device() -> str:

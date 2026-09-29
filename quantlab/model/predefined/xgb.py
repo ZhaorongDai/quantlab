@@ -15,6 +15,7 @@ shadow the ``xgboost`` package inside this package.
 
 import numpy as np
 import re
+from contextlib import contextmanager
 
 import wandb
 import xgboost as xgb
@@ -23,7 +24,7 @@ from loguru import logger
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.library_model import Rows
-from quantlab.model.predefined._support.devices import xgboost_default_device
+from quantlab.model.predefined._support.devices import resolve_device, xgboost_default_device
 
 #: scikit-learn style aliases mapped to the native ``xgb.train`` parameter
 #: names. Aliases are rewritten on the user's dict before it is merged with
@@ -51,6 +52,29 @@ _IMPORTANCE_CHART_TOP_N = 30
 #: Key prefix of the chart objects. It is distinct from the ``importance_``
 #: prefix of the per-factor summary scalars so the two never collide.
 _IMPORTANCE_CHART_PREFIX = "feature_importance"
+
+
+@contextmanager
+def boosters_on_cpu(boosters, device: str | None):
+    """Put ``boosters`` on ``device="cpu"`` for the block, then back on ``device``.
+
+    Used to write a checkpoint that loads on a machine without CUDA while
+    the Boosters in memory keep their device. ``device=None`` leaves them
+    on the CPU.
+
+    Examples
+    --------
+    >>> with boosters_on_cpu([booster], "cuda"):
+    ...     joblib.dump(booster, "model.joblib")
+    """
+    for booster in boosters:
+        booster.set_param({"device": "cpu"})
+    try:
+        yield
+    finally:
+        if device not in (None, "cpu"):
+            for booster in boosters:
+                booster.set_param({"device": device})
 
 
 def pooled_ccc_loss(y_true, y_pred) -> float:
@@ -573,6 +597,9 @@ class XGBoostRegressor(LibraryModel):
         super().__init__(config)
         self._params: dict | None = None
         self._num_boost_round: int | None = None
+        # Device of the Booster in memory: the training device after a fit,
+        # the resolved default after a load.
+        self._device: str | None = None
         # Round index of the last per-round log, reused as the step of the
         # feature-importance charts.
         self._last_log_step: int | None = None
@@ -631,8 +658,9 @@ class XGBoostRegressor(LibraryModel):
             "seed": self.config.random_seed,
             **user,
         }
-        if self._params.get("device") is None:
-            self._params["device"] = xgboost_default_device()
+        self._params["device"] = self._device = resolve_device(
+            self._params.get("device"), xgboost_default_device
+        )
         if self.early_stopping:
             metrics = self._params["eval_metric"]
             metrics = [metrics] if isinstance(metrics, str) else list(metrics)
@@ -663,9 +691,7 @@ class XGBoostRegressor(LibraryModel):
     def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Train the Booster with ``xgb.train`` and record the run's summary.
 
-        NaN features are xgboost's missing values. The trained Booster is
-        switched to ``device="cpu"`` for prediction; ``resolved_hyperparameters``
-        keeps the training device. With early stopping, the
+        NaN features are xgboost's missing values. With early stopping, the
         best iteration and its score are written to the W&B summary,
         followed by the feature importance.
         """
@@ -720,11 +746,6 @@ class XGBoostRegressor(LibraryModel):
             callbacks=callbacks,
             verbose_eval=False,
         )
-        # Predict on the CPU whatever the training device: prediction inputs
-        # are numpy arrays, which a CUDA Booster copies to the GPU with a
-        # device-mismatch warning on every call, and a CPU Booster loads on a
-        # machine without CUDA.
-        self.model.set_param({"device": "cpu"})
 
         if use_early_stopping and self._wandb_recorder is not None:
             self._wandb_recorder.summary.update(
@@ -752,14 +773,41 @@ class XGBoostRegressor(LibraryModel):
             booster_type=str((self._params or {}).get("booster", "gbtree")),
         )
 
+    def _write_checkpoint(self, path) -> None:
+        """Write the Booster with ``device="cpu"``, so it loads without CUDA.
+
+        The Booster in memory goes back to its device afterwards.
+        """
+        with boosters_on_cpu([self.model], self._device):
+            super()._write_checkpoint(path)
+
+    def _read_checkpoint(self, path) -> None:
+        """Load the Booster and place it on the default device.
+
+        The device is ``hyperparameters["device"]`` when given, otherwise
+        ``"cuda"`` when xgboost can train on CUDA here and ``"cpu"``
+        otherwise, as for training.
+        """
+        super()._read_checkpoint(path)
+        self._device = resolve_device(
+            self.config.hyperparameters.get("device"), xgboost_default_device
+        )
+        self.model.set_param({"device": self._device})
+
     def _forward(self, x: np.ndarray) -> np.ndarray:
         """Predict ``[n, L]`` from ``[n, F]`` feature rows.
 
+        On a CUDA Booster the rows go through a ``DMatrix``, which xgboost
+        copies to the GPU without the device-mismatch warning
+        ``inplace_predict`` raises for host arrays. Otherwise
         ``inplace_predict``, which skips building a ``DMatrix``, is tried
         first. Boosters that do not support it
         (``gblinear``) fall back to ``predict`` on a ``DMatrix``. NaN is
         treated as missing on both paths.
         """
+        if self._device not in (None, "cpu"):
+            pred = self.model.predict(xgb.DMatrix(x))  # type: ignore[union-attr]
+            return np.asarray(pred).reshape(len(x), -1)
         try:
             pred = self.model.inplace_predict(x)  # type: ignore[union-attr]
         except xgb.core.XGBoostError as exc:
