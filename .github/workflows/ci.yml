@@ -32,6 +32,11 @@ jobs:
           enable-cache: true
           cache-dependency-glob: uv.lock
 
+      - name: Install libomp (macOS)
+        # xgboost's macOS wheel links Homebrew's libomp.dylib and does not bundle it.
+        if: runner.os == 'macOS'
+        run: brew install libomp
+
       - name: Install the locked environment
         run: uv sync --locked --dev
 
