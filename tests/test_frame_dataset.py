@@ -183,6 +183,20 @@ def test_a_frame_dataset_with_a_path_reads_its_store(tmp_path, store):
     assert on_disk.bar_before("2024-01-03", 1) == pd.Timestamp("2024-01-02")
 
 
+@pytest.mark.parametrize("unit", ["s", "ms", "us", "ns"])
+def test_timestamps_are_held_in_nanoseconds_as_a_store_reads_them(tmp_path, unit):
+    frame = _hourly_frame().assign(
+        timestamp=lambda f: f["timestamp"].astype(f"datetime64[{unit}]")
+    )
+    held = FrameDataset(frame)
+    on_disk = held.to_zarr(tmp_path / "held.zarr")
+
+    assert held.panel("2024-01-01", "2024-01-02")["timestamp"].dtype == "datetime64[ns]"
+    xr.testing.assert_identical(
+        on_disk.panel("2024-01-01", "2024-01-02"), held.panel("2024-01-01", "2024-01-02")
+    )
+
+
 def test_a_frame_dataset_without_data_or_path_is_refused():
     with pytest.raises(ValueError, match="zarr_file_path"):
         FrameDataset(FrameDatasetConfig())

@@ -26,6 +26,10 @@ from quantlab.base.data import MarketDataset
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.utils.frame import to_panel
 
+#: Directory of a backtest run directory that ``persist_with_run`` writes the held
+#: panels into, one ``<config field>.zarr`` store each.
+RUN_INPUTS_DIRNAME = "inputs"
+
 
 class FrameDataset(MarketDataset):
     """A market dataset whose panel is held in memory.
@@ -145,10 +149,6 @@ class FrameDataset(MarketDataset):
         panel = XrBackend().read(str(config.zarr_file_path)).get_xarray_dataset(
             ["timestamp", "symbol"]
         )
-        # Zarr reads str labels back as numpy's StringDType; hold them as the
-        # object strings a frame gives, so both forms compare and align alike.
-        if panel["symbol"].dtype.kind == "T":
-            panel = panel.assign_coords(symbol=panel["symbol"].values.astype(object))
         self.data_backend.to_internal(panel.load())
         self._apply_resample()
 
@@ -276,6 +276,120 @@ class FrameDataset(MarketDataset):
                 resample_how=None,
             )
         )
+
+    def persist_with_run(self, run_dir: Path, name: str) -> dict:
+        """Write the held panel into ``run_dir`` and return a config reading it.
+
+        The panel belongs to no project store, so a backtest run directory keeps a
+        copy: ``inputs/<name>.zarr``, written by ``to_zarr``. The returned config names
+        it relative to the run directory, so the directory can be moved;
+        ``resolve_run_config`` resolves it again when the run is rebuilt.
+
+        Parameters
+        ----------
+        run_dir : Path
+            The run directory being written.
+        name : str
+            The backtest config field holding this dataset (``"price_dataset"``).
+
+        Returns
+        -------
+        dict
+            This dataset's config reading the copy, with its path relative to
+            ``run_dir``.
+
+        Raises
+        ------
+        FileExistsError
+            If the copy exists already.
+
+        Examples
+        --------
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> run_dir = Path(tempfile.mkdtemp())
+        >>> FrameDataset(frame).persist_with_run(run_dir, "price_dataset")["zarr_file_path"]
+        'inputs/price_dataset.zarr'
+        >>> [p.name for p in (run_dir / "inputs").iterdir()]
+        ['price_dataset.zarr']
+        """
+        relative = Path(RUN_INPUTS_DIRNAME) / f"{name}.zarr"
+        config = self.to_zarr(Path(run_dir) / relative).get_config()
+        config["zarr_file_path"] = relative.as_posix()
+        return config
+
+    @classmethod
+    def resolve_run_config(cls, config: dict, run_dir: Path | None) -> dict:
+        """Return ``config`` with a store named relative to ``run_dir`` made absolute.
+
+        A relative ``zarr_file_path`` is one ``persist_with_run`` recorded; it is
+        resolved against ``run_dir`` and never against the working directory. An
+        absolute path, or none, is left as it is. ``config`` is not modified.
+
+        Parameters
+        ----------
+        config : dict
+            A recorded ``FrameDataset`` config.
+        run_dir : Path or None
+            The run directory the config was read from.
+
+        Returns
+        -------
+        dict
+            The config to construct the dataset from.
+
+        Raises
+        ------
+        ValueError
+            If the path is relative and ``run_dir`` is ``None``.
+
+        Examples
+        --------
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> FrameDataset.resolve_run_config(
+        ...     {"zarr_file_path": "inputs/price_dataset.zarr"}, "/runs/WeightsVectorBt_1"
+        ... )
+        {'zarr_file_path': '/runs/WeightsVectorBt_1/inputs/price_dataset.zarr'}
+        >>> FrameDataset.resolve_run_config(
+        ...     {"zarr_file_path": "inputs/price_dataset.zarr"}, None)
+        Traceback (most recent call last):
+        ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', ...
+        """
+        path = config.get("zarr_file_path")
+        if path is None or Path(path).is_absolute():
+            return config
+        if run_dir is None:
+            name = config.get("name") or f"{cls.__module__}.{cls.__qualname__}"
+            raise ValueError(
+                f"{name} reads the store {path!r}, which is relative to the run "
+                f"directory the config was saved in; pass run_dir= (the directory "
+                f"holding config.json) to rebuild it. It is never resolved against the "
+                f"working directory."
+            )
+        return {**config, "zarr_file_path": str(Path(run_dir) / path)}
+
+    def ticker_store(self) -> None:
+        """Return ``None``: a caller's symbols are shown as they are.
+
+        The panel came from a caller, not from a CRSP store, so no ticker sidecar
+        applies, even when it was read back from a run directory's ``inputs/``.
+
+        Examples
+        --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"],
+        ...     "close": [10.0]})
+        >>> FrameDataset(frame).ticker_store() is None
+        True
+        """
+        return None
 
     def resample(self, freq: str, how: Mapping[str, str] | str) -> Self:
         """Return a dataset holding this panel resampled onto ``freq``, in memory.

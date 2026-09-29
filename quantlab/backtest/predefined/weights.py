@@ -10,7 +10,8 @@ recording the market fields, the simulated ``weights.zarr``, ``equity.zarr``,
 ``inputs/`` holding the panel of a price or benchmark ``FrameDataset``, which
 ``config.json`` names relative to the run directory. The directory is therefore
 self-contained: ``load_backtester_from_config(config, run_dir=run_dir)`` rebuilds the
-backtester and ``run_weights(run_dir / "weights.zarr")`` replays the run.
+backtester, and ``run_weights`` given the saved weights,
+``XrBackend().read(run_dir / "weights.zarr").data``, replays the run.
 """
 
 import xarray as xr
@@ -77,6 +78,7 @@ class WeightsVectorBt(VectorBtBacktester):
     Kept on disk, the run rebuilds from its directory and replays its weights:
 
     >>> import dataclasses, json, tempfile
+    >>> from quantlab.backend import XrBackend
     >>> from quantlab.utils.module import load_backtester_from_config
     >>> kept = WeightsVectorBt(
     ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
@@ -86,7 +88,7 @@ class WeightsVectorBt(VectorBtBacktester):
     ['price_dataset.zarr']
     >>> config = json.loads((run_dir / "config.json").read_text())
     >>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
-    >>> replay = rebuilt.run_weights(run_dir / "weights.zarr")
+    >>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
     >>> replay.simulation.value.values.round(2).tolist()
     [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
     """

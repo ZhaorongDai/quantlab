@@ -484,7 +484,15 @@ def _panel_to_panel(
 
 
 def _sorted(panel: xr.Dataset) -> xr.Dataset:
-    """Return ``panel`` sorted by timestamp, symbols in ``sort_symbol_axis`` order."""
+    """Return ``panel`` sorted by timestamp, symbols in ``sort_symbol_axis`` order.
+
+    The timestamps are cast to ``datetime64[ns]``, the resolution every store is read
+    back in, so a panel held in memory and its copy on disk agree to the nanosecond
+    (a duration averaged over them would otherwise round differently).
+    """
+    panel = panel.assign_coords(
+        timestamp=panel["timestamp"].values.astype("datetime64[ns]")
+    )
     order = sort_symbol_axis(panel["symbol"].values.tolist())
     panel = panel.sortby("timestamp").reindex(symbol=order)
     return panel.transpose(*INDEX_COLUMNS)

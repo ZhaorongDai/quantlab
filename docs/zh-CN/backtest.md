@@ -470,11 +470,12 @@ False
 
 ### 重建一次给定权重的运行
 
-`run_weights()` 的运行没有模型可以重新预测权重，所以要用它保存下来的权重重放：`run_weights()` 也接受一个指向含 `weight` 变量的 Zarr store 的路径，例如运行目录里的 `weights.zarr`。当价格或基准数据集是 `FrameDataset` 时（每次 `quantlab.api.backtest` 运行，以及上面的 `WeightsVectorBt` 会话），它的面板没有自己的 store，因此运行会把它写到 `inputs/` 下，`config.json` 以相对运行目录的路径指向这个 store。把读取配置所在的目录作为 `run_dir` 传入；运行目录可以移动。接着 `WeightsVectorBt` 的会话：
+`run_weights()` 的运行没有模型可以重新预测权重，所以要用它保存下来的权重重放：用 `XrBackend().read(path).data` 读取运行目录里的 `weights.zarr`，把这个面板传给 `run_weights()`。当价格或基准数据集是 `FrameDataset` 时（每次 `quantlab.api.backtest` 运行，以及上面的 `WeightsVectorBt` 会话），它的面板没有自己的 store，因此由数据集自己（它的 `persist_with_run`）把面板写到 `inputs/` 下，`config.json` 以相对运行目录的路径指向这个 store。把读取配置所在的目录作为 `run_dir` 传入；运行目录可以移动。从项目 store 读取的数据集什么都不写，路径保持不变。接着 `WeightsVectorBt` 的会话：
 
 ```python
 >>> import dataclasses, json, shutil, tempfile
 >>> from pathlib import Path
+>>> from quantlab.backend import XrBackend
 >>> from quantlab.utils.module import load_backtester_from_config
 >>> kept = WeightsVectorBt(
 ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
@@ -486,14 +487,17 @@ False
 'inputs/price_dataset.zarr'
 >>> run_dir = Path(shutil.move(kept.run_dir, tempfile.mkdtemp()))
 >>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
->>> replay = rebuilt.run_weights(run_dir / "weights.zarr")
+>>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
 >>> replay.simulation.value.values.round(2).tolist()
 [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
+>>> json.loads((replay.run_dir / "metrics.json").read_text()) == json.loads(
+...     (run_dir / "metrics.json").read_text())
+True
 >>> json.loads((replay.run_dir / "fingerprint.json").read_text()) == rebuilt.expected_fingerprint
 True
 ```
 
-重建出的 `FrameDataset` 把 store 读进内存；重放会再次写出自己的 `inputs/`，所以它的目录同样可以独立重建。相对的 store 路径永远不会按当前工作目录解析：
+重建出的 `FrameDataset` 把 store 读进内存；重放会再次写出自己的 `inputs/`，所以它的目录同样可以独立重建。它的标的按原样显示：`FrameDataset` 不指定任何用于查找 CRSP ticker 附属文件的 store（`ticker_store()` 为 `None`），即使它是从 `inputs/` 读回来的。相对的 store 路径永远不会按当前工作目录解析：
 
 ```python
 >>> load_backtester_from_config(config)

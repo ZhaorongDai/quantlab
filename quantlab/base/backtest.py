@@ -26,7 +26,6 @@ the data has changed.
 """
 
 import json
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -57,15 +56,11 @@ from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.split import in_sample_window, purge_segments, split_ranges
 from quantlab.utils.timer import Timer
 
-from .config import BacktestConfig, FactorConfig, ForwardConfig, FrameDatasetConfig
+from .config import BacktestConfig, FactorConfig, ForwardConfig
 
-#: Directory of a run directory holding the panels of the datasets held in
-#: memory (``FrameDataset``), one ``<config field>.zarr`` store each.
-INPUTS_DIRNAME = "inputs"
-
-#: The config fields whose datasets are written under ``INPUTS_DIRNAME`` when
-#: they are held in memory.
-INPUT_DATASET_FIELDS = ("price_dataset", "benchmark_dataset")
+#: The config fields holding datasets a run directory records, each asked
+#: through ``persist_with_run`` what a rebuild needs written beside the run.
+RUN_DATASET_FIELDS = ("price_dataset", "benchmark_dataset")
 
 #: Fields of a data fingerprint that are compared against the expected run;
 #: any difference logs a warning.
@@ -469,9 +464,11 @@ class BaseBacktester(ABC):
         the model for its lists of missing or extra symbols. The lookup is
         built on first access and reset whenever a new config is assigned.
         When no such file exists, ``label()`` returns each symbol unchanged,
-        so panels from other vendors are unaffected. A price dataset held in
-        memory has no store path and so no sidecar: the property is ``None``
-        and ``_symbol_labels`` shows its symbols as they are.
+        so panels from other vendors are unaffected. The price dataset names
+        the store to look beside (``ticker_store()``); a dataset for which no
+        sidecar can apply (a ``FrameDataset``, even one read back from a run
+        directory) names none: the property is ``None`` and
+        ``_symbol_labels`` shows its symbols as they are.
 
         Examples
         --------
@@ -479,7 +476,7 @@ class BaseBacktester(ABC):
         >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
         ['AAA', 'BBB']
         """
-        path = self.config.price_dataset.config.zarr_file_path
+        path = self.config.price_dataset.ticker_store()
         if path is None:
             return None
         if self._ticker_lookup is None:
@@ -1075,9 +1072,7 @@ class BaseBacktester(ABC):
             benchmark=stitched_benchmark,
         )
 
-    def run_weights(
-        self, weights: "xr.Dataset | xr.DataArray | str | os.PathLike"
-    ) -> BacktestResult:
+    def run_weights(self, weights: xr.Dataset | xr.DataArray) -> BacktestResult:
         """Backtest a precomputed target-weight panel over the configured window.
 
         Subclasses do not override this method. No model is involved:
@@ -1097,12 +1092,12 @@ class BaseBacktester(ABC):
 
         Parameters
         ----------
-        weights : xarray.Dataset, xarray.DataArray, str or os.PathLike
+        weights : xarray.Dataset or xarray.DataArray
             Target weights on ``(timestamp, symbol)``, in either axis order.
             A dataset must carry a ``weight`` variable; a data array is used
-            whatever its name; a path names a Zarr store holding such a
-            dataset, such as a run directory's ``weights.zarr``, which
-            replays that run. The timestamps must be exactly the price bars
+            whatever its name. A run directory's ``weights.zarr``, read with
+            ``XrBackend().read(path).data``, replays that run. The
+            timestamps must be exactly the price bars
             of the window and the symbols exactly the price dataset's
             symbols, in any order (they are aligned to the price axes). Every
             row is all-NaN (hold) or all-finite (rebalance) with a gross
@@ -1122,8 +1117,6 @@ class BaseBacktester(ABC):
             ``(timestamp, symbol)``, their bars or symbols differ from the
             prices' (naming the first missing or extra ones), or a row breaks
             the contract (naming the offending bar).
-        FileNotFoundError
-            If ``weights`` is a path that does not exist.
 
         Examples
         --------
@@ -1148,19 +1141,6 @@ class BaseBacktester(ABC):
         >>> sorted(result.metrics), result.simulation.value.sizes
         (['notes', 'whole'], Frozen({'timestamp': 30}))
         """
-        if isinstance(weights, (str, os.PathLike)):
-            weights = (
-                XrBackend()
-                .read(str(weights))
-                .get_xarray_dataset(["timestamp", "symbol"])
-                .load()
-            )
-            # Zarr reads str labels back as numpy's StringDType, which does
-            # not cast to the fixed-width str the alignment compares.
-            if weights["symbol"].dtype.kind == "T":
-                weights = weights.assign_coords(
-                    symbol=weights["symbol"].values.astype(object)
-                )
         return self._run_window(
             lambda start_date, end_date: self._weights_window(
                 weights, start_date, end_date
@@ -2665,14 +2645,15 @@ class BaseBacktester(ABC):
 
         A CRSP benchmark store is keyed by PERMNO, a bare number, so the
         ticker sidecar beside the benchmark's own store (not the price
-        store) names it as of the window's last bar. Without a sidecar, or
-        without a store (a benchmark held in memory), the axis label is
-        returned unchanged.
+        store, as ``ticker_store()`` names it) names it as of the window's last
+        bar. Without a sidecar, or when the dataset names no store to look
+        beside (a ``FrameDataset``), the axis label is returned unchanged.
         """
         dataset = self.config.benchmark_dataset
-        if dataset is None or not axis_symbol or dataset.config.zarr_file_path is None:
+        store = None if dataset is None else dataset.ticker_store()
+        if store is None or not axis_symbol:
             return axis_symbol
-        lookup = CrspTickerLookup.beside_store(dataset.config.zarr_file_path)
+        lookup = CrspTickerLookup.beside_store(store)
         return str(lookup.label([axis_symbol], pd.Timestamp(as_of).date())[0])
 
     def _relative_stats(
@@ -3068,27 +3049,24 @@ class BaseBacktester(ABC):
         return self._persist_run_dir(_write)
 
     def _run_dir_config(self, run_dir: Path) -> dict:
-        """Write the in-memory input panels under ``run_dir`` and return its ``config.json``.
+        """Return the ``config.json`` of ``run_dir``, writing what its datasets need.
 
-        ``get_config()``, except that every dataset of ``INPUT_DATASET_FIELDS``
-        whose config is a ``FrameDatasetConfig`` (a ``FrameDataset``, whose
-        panel belongs to the caller rather than to a project store) has its
-        panel written to ``inputs/<field>.zarr`` by its ``to_zarr`` and is
-        recorded reading that store, named relative to the run directory.
-        ``load_backtester_from_config(config, run_dir=...)`` resolves it
-        against the directory it was read from, so a moved run directory
-        still rebuilds. A dataset read from a project store is recorded as it
-        is.
+        ``get_config()``, except that each dataset of ``RUN_DATASET_FIELDS``
+        is asked through ``persist_with_run(run_dir, field)`` what a rebuild
+        needs: a dataset read from a project store writes nothing and is
+        recorded as it is; a ``FrameDataset`` writes its panel to
+        ``inputs/<field>.zarr`` and is recorded reading it, relative to the
+        run directory, which ``load_backtester_from_config(config,
+        run_dir=...)`` resolves again.
         """
         config = self.get_config()
-        for name in INPUT_DATASET_FIELDS:
+        for name in RUN_DATASET_FIELDS:
             dataset = getattr(self.config, name)
-            if dataset is None or not isinstance(dataset.config, FrameDatasetConfig):
+            if dataset is None:
                 continue
-            relative = Path(INPUTS_DIRNAME) / f"{name}.zarr"
-            written = dataset.to_zarr(run_dir / relative).get_config()
-            written["zarr_file_path"] = relative.as_posix()
-            config[name] = written
+            recorded = dataset.persist_with_run(run_dir, name)
+            if recorded is not None:
+                config[name] = recorded
         return config
 
     def _persist_run_dir(self, write) -> Path | None:

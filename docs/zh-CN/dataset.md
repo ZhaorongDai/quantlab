@@ -363,7 +363,7 @@ Traceback (most recent call last):
 ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store of its own to write. Build a new FrameDataset from updated data, or write a copy with to_zarr(path).
 ```
 
-`to_zarr(path)` 把持有的面板写入一个新的 Zarr store（重采样后的 dataset 写的是重采样后的 bar），并返回一个从该 store 读回的 `FrameDataset`；已存在的路径会被拒绝。用 `zarr_file_path` 指向某个 store 的 `FrameDatasetConfig` 构造的 `FrameDataset`，会在构造时把该 store 一次性读入内存，之后与任何 `FrameDataset` 行为相同：依旧拒绝构建和保存，其 `resample()` 也留在内存中，`store_path` 为 `None`，不会写入或读取源 store 旁边的任何 store。回测运行目录就是这样保存输入面板的（见回测指南中的“重建一次给定权重的运行”），这种 dataset 的 `get_config()` 可以通过 `load_dataset_from_config` 重建。
+`to_zarr(path)` 把持有的面板写入一个新的 Zarr store（重采样后的 dataset 写的是重采样后的 bar），并返回一个从该 store 读回的 `FrameDataset`；已存在的路径会被拒绝。用 `zarr_file_path` 指向某个 store 的 `FrameDatasetConfig` 构造的 `FrameDataset`，会在构造时把该 store 一次性读入内存，之后与任何 `FrameDataset` 行为相同：依旧拒绝构建和保存，其 `resample()` 也留在内存中，`store_path` 为 `None`，不会写入或读取源 store 旁边的任何 store。回测运行目录就是这样保存输入面板的（见回测指南中的“重建一次给定权重的运行”），这种 dataset 的 `get_config()` 可以通过 `load_dataset_from_config` 重建。这由每个 dataset 都有的三个钩子承担，回测器和加载器因此无需任何特例：`persist_with_run(run_dir, name)` 写出运行目录重建所需的内容（默认什么都不写；`FrameDataset` 写出 `inputs/<name>.zarr`，并返回以相对运行目录的路径指向它的配置），类方法 `resolve_run_config(config, run_dir)` 把记录下来的配置还原成可以用来构造的配置（默认原样返回；`FrameDataset` 解析相对路径，没有 `run_dir` 时拒绝），`ticker_store()` 给出其 CRSP ticker 附属文件为标的命名的那个 store（默认是 dataset 自己的 store，`FrameDataset` 为 `None`）。
 
 ```python
 >>> import tempfile
@@ -384,13 +384,23 @@ True
 >>> mem.to_zarr(path)
 Traceback (most recent call last):
     ...
-FileExistsError: FrameDataset.to_zarr(): /tmp/.../bars.zarr already exists; a store is never overwritten.
+FileExistsError: FrameDataset.to_zarr(): .../bars.zarr already exists; a store is never overwritten.
 >>> hourly_path = Path(tempfile.mkdtemp()) / "hours.zarr"
 >>> stored = hourly.to_zarr(hourly_path)
 >>> stored.resample("1d", "last").store_path is None
 True
 >>> sorted(p.name for p in hourly_path.parent.iterdir())
 ['hours.zarr']
+>>> run_dir = Path(tempfile.mkdtemp())
+>>> recorded = mem.persist_with_run(run_dir, "price_dataset")
+>>> recorded["zarr_file_path"], mem.ticker_store()
+('inputs/price_dataset.zarr', None)
+>>> resolved = FrameDataset.resolve_run_config(recorded, run_dir)
+>>> FrameDataset(FrameDatasetConfig(**resolved)) == on_disk
+False
+>>> FrameDataset(FrameDatasetConfig(**resolved)).panel("2024-01-02", "2024-01-03").equals(
+...     on_disk.panel("2024-01-02", "2024-01-03"))
+True
 ```
 
 ## 扩展

@@ -3,8 +3,9 @@
 A run given `output_dir` (or saved with `BacktestReport.save`) holds its input panels
 under `inputs/`, and its `config.json` names them relative to the run directory, so
 `load_backtester_from_config(config, run_dir=run_dir)` rebuilds the backtester and
-`run_weights(run_dir / "weights.zarr")` replays the saved weights with the same equity,
-metrics and data fingerprints, even after the directory has moved.
+replaying the saved `weights.zarr` through `run_weights` writes the same `metrics.json`,
+equity and data fingerprints, without a warning, even after the directory has moved. A
+run on a Zarr-backed dataset writes no `inputs/` and keeps its store paths.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -20,8 +21,14 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.api as qa
+from quantlab.backend import XrBackend
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.dataset.memory import FrameDataset
+from quantlab.dataset.stock import StockDataset
+from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.module import load_backtester_from_config
+from tests.backtest_fixtures import write_price_store
 
 N_BARS = 30
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD"]
@@ -79,11 +86,12 @@ def _scores() -> pd.DataFrame:
 
 
 def _report(output_dir=None, *, benchmark: bool = True):
+    """Top-2 of daily-rebalanced scores: the average trade durations are not whole days."""
     return qa.backtest(
         _prices(),
         scores=_scores(),
         top_n=2,
-        rebalance_periods=5,
+        rebalance_periods=1,
         benchmark=_prices(["QQQ"], seed=7) if benchmark else None,
         output_dir=output_dir,
     )
@@ -93,24 +101,25 @@ def _config(run_dir: Path) -> dict:
     return json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
 
 
-def _fingerprint(run_dir: Path) -> dict:
-    return json.loads((run_dir / "fingerprint.json").read_text(encoding="utf-8"))
+def _json(run_dir: Path, name: str) -> dict:
+    return json.loads((run_dir / name).read_text(encoding="utf-8"))
 
 
-def _fingerprint_warnings(messages: list[str]) -> list[str]:
-    return [m for m in messages if "data fingerprint mismatch" in m]
+def _replay(run_dir: Path):
+    """Rebuild the run in ``run_dir`` and replay its saved weights."""
+    rebuilt = load_backtester_from_config(_config(run_dir), run_dir=run_dir)
+    return rebuilt, rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
 
 
-def _assert_same_run(first, second) -> None:
-    np.testing.assert_array_equal(
-        first.simulation.value.values, second.simulation.value.values
-    )
-    np.testing.assert_array_equal(
-        first.simulation.returns.values, second.simulation.returns.values
-    )
-    assert json.dumps(first.metrics, sort_keys=True, default=str) == json.dumps(
-        second.metrics, sort_keys=True, default=str
-    )
+def _assert_same_run(first_dir: Path, second_dir: Path) -> None:
+    """The two run directories hold the same metrics, weights, equity and fingerprints."""
+    assert first_dir != second_dir
+    assert _json(second_dir, "metrics.json") == _json(first_dir, "metrics.json")
+    assert _json(second_dir, "fingerprint.json") == _json(first_dir, "fingerprint.json")
+    for store in ("weights.zarr", "equity.zarr"):
+        xr.testing.assert_identical(
+            xr.open_zarr(first_dir / store).load(), xr.open_zarr(second_dir / store).load()
+        )
 
 
 # --------------------------------------------------------------------------- inputs
@@ -147,6 +156,28 @@ def test_without_output_dir_nothing_is_written(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_a_run_on_a_zarr_backed_dataset_writes_no_inputs(tmp_path):
+    prices = StockDataset(write_price_store(tmp_path / "store", n_bars=N_BARS))
+    stored = xr.open_zarr(prices.config.zarr_file_path).load()
+    weights = xr.zeros_like(stored["adjClose"]).rename("weight")
+    config = CrossSectionBacktestConfig(
+        price_dataset=prices,
+        start_date="2024-01-01",
+        end_date=_bars()[-1].strftime("%Y-%m-%d"),
+        output_dir=str(tmp_path / "runs"),
+        rebalance_periods=1,
+        direction="long_only",
+        top_n=2,
+    )
+
+    run_dir = USEquityCrossectionSelectStockVectorBt(config).run_weights(weights).run_dir
+
+    assert not (run_dir / "inputs").exists()
+    assert _config(run_dir)["price_dataset"] == json.loads(
+        json.dumps(to_jsonable(prices.get_config()))
+    )
+
+
 # --------------------------------------------------------------------------- rebuild
 
 
@@ -156,51 +187,37 @@ def test_the_rebuilt_run_replays_the_weights_with_the_same_result(
 ):
     report = _report(tmp_path / "runs", benchmark=benchmark)
     run_dir = report.raw.run_dir
+    duration = pd.Timedelta(report.metrics["whole"]["Avg Winning Trade Duration"])
+    assert duration % pd.Timedelta("1D") != pd.Timedelta(0)
+    warning_messages.clear()
 
-    rebuilt = load_backtester_from_config(_config(run_dir), run_dir=run_dir)
-    again = rebuilt.run_weights(run_dir / "weights.zarr")
+    rebuilt, again = _replay(run_dir)
 
-    _assert_same_run(report.raw, again)
-    xr.testing.assert_identical(
-        xr.open_zarr(run_dir / "weights.zarr").load(),
-        xr.open_zarr(again.run_dir / "weights.zarr").load(),
-    )
-    assert rebuilt.expected_fingerprint == _fingerprint(run_dir)
-    assert _fingerprint(again.run_dir) == _fingerprint(run_dir)
-    assert _fingerprint_warnings(warning_messages) == []
-    if benchmark:
-        np.testing.assert_array_equal(
-            report.raw.benchmark.value.values, again.benchmark.value.values
-        )
+    _assert_same_run(run_dir, again.run_dir)
+    assert rebuilt.expected_fingerprint == _json(run_dir, "fingerprint.json")
+    assert warning_messages == []
 
 
 def test_a_moved_run_directory_still_rebuilds(tmp_path, warning_messages):
-    report = _report(tmp_path / "runs")
-    moved = Path(shutil.move(report.raw.run_dir, tmp_path / "elsewhere"))
+    first = _report(tmp_path / "runs").raw.run_dir
+    moved = Path(shutil.move(first, tmp_path / "elsewhere"))
+    warning_messages.clear()
 
-    again = load_backtester_from_config(_config(moved), run_dir=moved).run_weights(
-        moved / "weights.zarr"
-    )
+    _, again = _replay(moved)
 
-    _assert_same_run(report.raw, again)
-    assert _fingerprint_warnings(warning_messages) == []
+    _assert_same_run(moved, again.run_dir)
+    assert warning_messages == []
 
 
 def test_a_rebuilt_run_writes_a_self_contained_directory_again(tmp_path):
     first = _report(tmp_path / "runs").raw.run_dir
-    second = (
-        load_backtester_from_config(_config(first), run_dir=first)
-        .run_weights(first / "weights.zarr")
-        .run_dir
-    )
+    second = _replay(first)[1].run_dir
     shutil.rmtree(first)
 
-    third = load_backtester_from_config(_config(second), run_dir=second).run_weights(
-        second / "weights.zarr"
-    )
+    third = _replay(second)[1].run_dir
 
     assert _config(second)["price_dataset"]["zarr_file_path"] == "inputs/price_dataset.zarr"
-    assert _fingerprint(third.run_dir) == _fingerprint(second)
+    _assert_same_run(second, third)
 
 
 def test_the_rebuilt_config_round_trips_through_the_loader(tmp_path):
@@ -221,11 +238,3 @@ def test_a_relative_input_path_needs_the_run_directory(tmp_path):
 
     with pytest.raises(ValueError, match="relative to the run directory.*run_dir="):
         load_backtester_from_config(_config(run_dir))
-
-
-def test_run_weights_refuses_a_missing_weight_store(tmp_path):
-    run_dir = _report(tmp_path / "runs").raw.run_dir
-    rebuilt = load_backtester_from_config(_config(run_dir), run_dir=run_dir)
-
-    with pytest.raises(FileNotFoundError, match="nowhere.zarr"):
-        rebuilt.run_weights(tmp_path / "nowhere.zarr")

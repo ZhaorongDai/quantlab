@@ -20,6 +20,8 @@ Examples
 
 import copy
 import importlib
+import os
+from pathlib import Path
 
 
 def get_cls_from_path(path: str):
@@ -75,26 +77,24 @@ def _config_cls_of(cls) -> type:
     return config_cls
 
 
-def load_dataset_from_config(config: dict, *, run_dir=None):
+def load_dataset_from_config(
+    config: dict, *, run_dir: "str | os.PathLike | None" = None
+):
     """Rebuild a dataset from its config dict.
 
-    The class named in ``config["name"]`` is imported and constructed with its
-    own declared config class. The input dict is deep-copied first and is
-    returned to the caller unchanged.
-
-    A dataset whose config class is ``FrameDatasetConfig`` (a ``FrameDataset``)
-    and whose ``zarr_file_path`` is relative names an input store of a backtest
-    run directory, relative to that directory; it is resolved against
-    ``run_dir``, never against the working directory. Every other path is used
-    as written.
+    The class named in ``config["name"]`` is imported, its
+    ``resolve_run_config(config, run_dir)`` prepares the config (a
+    ``FrameDataset`` resolves a store a backtest run directory recorded
+    relative to itself; every other dataset uses its paths as written), and
+    the class is constructed with its own declared config class. The input
+    dict is deep-copied first and is returned to the caller unchanged.
 
     Parameters
     ----------
     config : dict
         The dict a dataset's ``config.to_dict()`` produced.
-    run_dir : str or Path, optional
-        The run directory the config was read from, for relative
-        ``FrameDataset`` stores.
+    run_dir : str or os.PathLike, optional
+        The run directory the config was read from.
 
     Returns
     -------
@@ -104,8 +104,9 @@ def load_dataset_from_config(config: dict, *, run_dir=None):
     Raises
     ------
     ValueError
-        If a ``FrameDataset`` store path is relative and ``run_dir`` is not
-        given.
+        If the class's ``resolve_run_config`` refuses the config, such as a
+        ``FrameDataset`` store named relative to a run directory without
+        ``run_dir``.
 
     Examples
     --------
@@ -124,37 +125,8 @@ def load_dataset_from_config(config: dict, *, run_dir=None):
         config["datasets"] = [
             load_dataset_from_config(d, run_dir=run_dir) for d in config["datasets"]
         ]
-    _resolve_input_store(config, config_cls, run_dir)
+    config = cls.resolve_run_config(config, None if run_dir is None else Path(run_dir))
     return cls(config_cls(**config))
-
-
-def _resolve_input_store(config: dict, config_cls: type, run_dir) -> None:
-    """Resolve a relative ``FrameDataset`` store path in ``config`` against ``run_dir``.
-
-    Raises
-    ------
-    ValueError
-        If the path is relative and ``run_dir`` is ``None``.
-    """
-    from pathlib import Path
-
-    from quantlab.base.config import FrameDatasetConfig
-
-    path = config.get("zarr_file_path")
-    if (
-        not issubclass(config_cls, FrameDatasetConfig)
-        or path is None
-        or Path(path).is_absolute()
-    ):
-        return
-    if run_dir is None:
-        raise ValueError(
-            f"{config['name']} reads the store {path!r}, which is relative to the run "
-            f"directory the config was saved in; pass run_dir= (the directory holding "
-            f"config.json) to rebuild it. It is never resolved against the working "
-            f"directory."
-        )
-    config["zarr_file_path"] = str(Path(run_dir) / path)
 
 
 def load_factor_from_config(config: dict):
@@ -240,7 +212,9 @@ def load_model_from_config(config: dict):
     return get_cls_from_path(config["name"]).from_config(config)
 
 
-def load_backtester_from_config(config: dict, *, run_dir=None):
+def load_backtester_from_config(
+    config: dict, *, run_dir: "str | os.PathLike | None" = None
+):
     """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
     The price dataset, the model (through ``from_config`` of the class its
@@ -248,13 +222,15 @@ def load_backtester_from_config(config: dict, *, run_dir=None):
     ``run_weights()`` run without one), an optional
     benchmark dataset and every scalar parameter are rebuilt, and the backtester is constructed with its declared config class.
     Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
-    backtest; a ``run_weights()`` run is replayed by
-    ``run_weights(run_dir / "weights.zarr")``, the weights it simulated.
+    backtest; a ``run_weights()`` run is replayed by passing ``run_weights``
+    the weights it simulated, ``XrBackend().read(run_dir / "weights.zarr").data``.
 
-    A run whose price or benchmark dataset was a ``FrameDataset`` (every
-    ``quantlab.api.backtest`` run) holds that panel under the run directory's
-    ``inputs/``, and its config names the store relative to the run directory,
-    so the directory can be moved; such a config needs ``run_dir``.
+    The datasets are rebuilt through ``load_dataset_from_config`` with
+    ``run_dir``. A run whose price or benchmark dataset was a ``FrameDataset``
+    (every ``quantlab.api.backtest`` run) holds that panel under the run
+    directory's ``inputs/``, and its config names the store relative to the
+    run directory, so the directory can be moved; such a config needs
+    ``run_dir``.
 
     Two keys are records rather than config fields. ``data_fingerprint``
     describes the data the original run read (time range, axis sizes and a
@@ -272,7 +248,7 @@ def load_backtester_from_config(config: dict, *, run_dir=None):
     ----------
     config : dict
         The dict read from a run directory's ``config.json``.
-    run_dir : str or Path, optional
+    run_dir : str or os.PathLike, optional
         The run directory ``config`` was read from. Required when the config
         names ``inputs/`` stores, which are resolved against it.
 
@@ -307,6 +283,7 @@ def load_backtester_from_config(config: dict, *, run_dir=None):
     >>> import numpy as np
     >>> import pandas as pd
     >>> import quantlab.api as qa
+    >>> from quantlab.backend import XrBackend
     >>> from quantlab.utils.module import load_backtester_from_config
     >>> bars = pd.bdate_range("2024-01-01", periods=5)
     >>> prices = pd.DataFrame({
@@ -321,7 +298,10 @@ def load_backtester_from_config(config: dict, *, run_dir=None):
     >>> config["price_dataset"]["zarr_file_path"]
     'inputs/price_dataset.zarr'
     >>> backtester = load_backtester_from_config(config, run_dir=run_dir)
-    >>> again = backtester.run_weights(run_dir / "weights.zarr")
+    >>> again = backtester.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+    >>> json.loads((again.run_dir / "metrics.json").read_text()) == json.loads(
+    ...     (run_dir / "metrics.json").read_text())
+    True
     >>> again.simulation.value.values.round(2).tolist()
     [1000000.0, 1044873.23, 1126424.31, 1207975.4, 1289526.48]
     >>> (again.simulation.value == report.raw.simulation.value).all().item()

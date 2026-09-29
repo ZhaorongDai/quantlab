@@ -194,8 +194,8 @@ class BacktestReport:
         under ``inputs/`` and ``config.json`` names them relative to the run directory,
         so ``quantlab.utils.module.load_backtester_from_config(config, run_dir=...)``
         rebuilds the backtester, even after the directory has moved, and its
-        ``run_weights(run_dir / "weights.zarr")`` replays the run. The report itself
-        is unchanged.
+        ``run_weights`` given ``XrBackend().read(run_dir / "weights.zarr").data``
+        replays the run. The report itself is unchanged.
 
         Parameters
         ----------

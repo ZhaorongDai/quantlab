@@ -470,11 +470,12 @@ The classes must be importable by dotted path. A class defined in a script is na
 
 ### Rebuild a run of given weights
 
-A `run_weights()` run has no model to predict its weights again, so it is replayed from the weights it saved: `run_weights()` also takes a path to a Zarr store holding a `weight` variable, such as the run directory's `weights.zarr`. When the price or benchmark dataset is a `FrameDataset` (every `quantlab.api.backtest` run, and the `WeightsVectorBt` session above), its panel has no store of its own, so the run writes it under `inputs/` and `config.json` names that store relative to the run directory. Pass the directory the config was read from as `run_dir`; the run directory can be moved. Continuing the `WeightsVectorBt` session:
+A `run_weights()` run has no model to predict its weights again, so it is replayed from the weights it saved: read the run directory's `weights.zarr` with `XrBackend().read(path).data` and pass the panel to `run_weights()`. When the price or benchmark dataset is a `FrameDataset` (every `quantlab.api.backtest` run, and the `WeightsVectorBt` session above), its panel has no store of its own, so the dataset writes it under `inputs/` (its `persist_with_run`) and `config.json` names that store relative to the run directory. Pass the directory the config was read from as `run_dir`; the run directory can be moved. A dataset read from a project store writes nothing and keeps its path. Continuing the `WeightsVectorBt` session:
 
 ```python
 >>> import dataclasses, json, shutil, tempfile
 >>> from pathlib import Path
+>>> from quantlab.backend import XrBackend
 >>> from quantlab.utils.module import load_backtester_from_config
 >>> kept = WeightsVectorBt(
 ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
@@ -486,14 +487,17 @@ A `run_weights()` run has no model to predict its weights again, so it is replay
 'inputs/price_dataset.zarr'
 >>> run_dir = Path(shutil.move(kept.run_dir, tempfile.mkdtemp()))
 >>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
->>> replay = rebuilt.run_weights(run_dir / "weights.zarr")
+>>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
 >>> replay.simulation.value.values.round(2).tolist()
 [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
+>>> json.loads((replay.run_dir / "metrics.json").read_text()) == json.loads(
+...     (run_dir / "metrics.json").read_text())
+True
 >>> json.loads((replay.run_dir / "fingerprint.json").read_text()) == rebuilt.expected_fingerprint
 True
 ```
 
-The rebuilt `FrameDataset` reads the store into memory; the replay writes its own `inputs/` again, so its directory rebuilds on its own too. A relative store path is never resolved against the working directory:
+The rebuilt `FrameDataset` reads the store into memory; the replay writes its own `inputs/` again, so its directory rebuilds on its own too. Its symbols are shown as they are: a `FrameDataset` names no store for a CRSP ticker sidecar (`ticker_store()` is `None`), even when read back from `inputs/`. A relative store path is never resolved against the working directory:
 
 ```python
 >>> load_backtester_from_config(config)
