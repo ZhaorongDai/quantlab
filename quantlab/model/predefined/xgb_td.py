@@ -20,8 +20,13 @@ from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
 from quantlab.model.library_model import Rows
+from quantlab.model.predefined._support.devices import resolve_device, xgboost_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
-from quantlab.model.predefined.xgb import _WandbEvalCallback, record_feature_importance
+from quantlab.model.predefined.xgb import (
+    _WandbEvalCallback,
+    boosters_on_cpu,
+    record_feature_importance,
+)
 
 
 class _XGBTDEstimator(XGB_TD_Regressor):
@@ -68,7 +73,15 @@ class XGBTDRegressor(TabkitRegressor):
 
     Hyperparameters are the constructor arguments of ``XGB_TD_Regressor``
     (``n_estimators``, ``max_depth``, ``lr``, ``subsample``, ``n_threads``,
-    ...). pytabkit's tuned defaults fill in whatever is not given:
+    ``device``, ...). Unless ``device`` is given, training runs on ``"cuda"``
+    when xgboost can train on CUDA here and on ``"cpu"`` otherwise, never on
+    Apple MPS (the rule of ``XGBoostRegressor``). pytabkit forwards no
+    device to xgboost, so the head injects it into pytabkit's inner
+    ``xgboost.train`` call; the device is recorded in
+    ``resolved_hyperparameters``. The Boosters stay on that device in
+    memory; the checkpoint is written with ``device="cpu"`` so it loads
+    without CUDA, and a loaded model is placed on the default device by the
+    same rule. pytabkit's tuned defaults fill in whatever is not given:
     1000 rounds, depth 9, learning rate 0.05, subsample 0.7.
 
     With validation rows,
@@ -130,6 +143,9 @@ class XGBTDRegressor(TabkitRegressor):
         "val_fraction": 0.0,
         "verbosity": 0,
     }
+    #: Device of the Boosters in memory: the training device after a fit,
+    #: the resolved default after a load.
+    _device: str | None = None
 
     def _early_stopping_rounds(self) -> int | None:
         """Return the patience to inject, or None when early stopping is off."""
@@ -142,6 +158,9 @@ class XGBTDRegressor(TabkitRegressor):
     ) -> list[_XGBTDEstimator]:
         """Resolve the parameters and return one unfitted estimator per label.
 
+        ``device`` is kept out of the estimators' arguments and resolved for
+        xgboost instead (see the class docstring).
+
         ``num_features`` is unused; pytabkit infers it from the arrays passed
         to ``fit``.
 
@@ -152,6 +171,13 @@ class XGBTDRegressor(TabkitRegressor):
             ``XGB_TD_Regressor`` constructor argument.
         """
         params = self._resolve_params(hyperparameters)
+        # The device is xgboost's, injected into the inner ``xgboost.train``
+        # call by ``_fit_model``. pytabkit's own ``device`` argument only
+        # books resources, and it checks the name against torch's devices.
+        params.pop("device", None)
+        self._params["device"] = self._device = resolve_device(
+            self._params.get("device"), xgboost_default_device
+        )
         rounds = self._early_stopping_rounds()
         estimators = []
         for _ in range(num_labels):
@@ -180,7 +206,10 @@ class XGBTDRegressor(TabkitRegressor):
         for i, estimator in enumerate(self.model):
             suffix = self._key_suffix(names, i)
             self._last_log_step = None
-            with active_callbacks(xgb_callbacks=self._round_callbacks(suffix)):
+            with active_callbacks(
+                xgb_callbacks=self._round_callbacks(suffix),
+                xgb_params={"device": self._params["device"]},
+            ):
                 if val_rows is None:
                     estimator.fit(train_rows.x, train_rows.y[:, i])
                     self._pin_all_rounds(estimator)
@@ -248,6 +277,35 @@ class XGBTDRegressor(TabkitRegressor):
             self.class_name,
             suffix=suffix,
         )
+
+    def _boosters(self) -> list:
+        """Return every fitted Booster, over all labels and pytabkit sub-splits."""
+        return [
+            sub.model
+            for estimator in self.model
+            for sub in estimator.alg_interface_.sub_split_interfaces
+        ]
+
+    def _write_checkpoint(self, path) -> None:
+        """Write the estimators with every Booster on ``device="cpu"``.
+
+        The Boosters in memory go back to their device afterwards.
+        """
+        with boosters_on_cpu(self._boosters(), self._device):
+            super()._write_checkpoint(path)
+
+    def _read_checkpoint(self, path) -> None:
+        """Load the estimators and place every Booster on the default device.
+
+        The rule is ``XGBoostRegressor``'s: ``hyperparameters["device"]``
+        when given, otherwise CUDA when xgboost can use it, else the CPU.
+        """
+        super()._read_checkpoint(path)
+        self._device = resolve_device(
+            self.config.hyperparameters.get("device"), xgboost_default_device
+        )
+        for booster in self._boosters():
+            booster.set_param({"device": self._device})
 
     @staticmethod
     def _pin_all_rounds(estimator: _XGBTDEstimator) -> None:

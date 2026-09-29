@@ -67,7 +67,7 @@ cd quantlab
 uv sync
 ```
 
-Neural-network models use a CUDA GPU when one is available and the CPU otherwise. See the
+All model heads, neural-network and tree models alike, use a CUDA GPU when one is available and the CPU otherwise. See the
 [installation guide](docs/getting-started/installation.md) for GPU and macOS notes.
 
 ## Quick start

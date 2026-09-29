@@ -506,7 +506,8 @@ Here `alpha158` is a stock factor, `market` a `MarketFeatures` factor and
 `label` a forward-return label. A torch head asks every factor for
 `window_bars - 1` bars before `start_date`, so the factor stores must
 reach that far back; with the 20-bar GATs window, that is 19 bars.
-Training runs on a CUDA GPU when PyTorch sees one. The reserved
+Training runs on a CUDA GPU when PyTorch sees one, as it does for
+the library heads. The reserved
 `panel_device` and `panel_dtype` hyperparameters decide whether the whole
 feature panel is copied to the GPU and in what precision, which matters for
 a market-wide universe (see [Installation](../getting-started/installation.md#gpu-support)).

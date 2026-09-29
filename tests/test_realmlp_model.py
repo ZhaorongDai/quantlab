@@ -33,6 +33,7 @@ from pytabkit import RealMLP_TD_Regressor
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import BaseModel
+from quantlab.model.predefined._support.devices import torch_default_device
 from quantlab.model.predefined.realmlp import RealMLPRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.label_stubs import StubLabel
@@ -316,7 +317,7 @@ def test_default_params_pin_val_fraction_to_zero(tmp_path, recorders):
     assert RealMLPRegressor.DEFAULT_PARAMS["val_fraction"] == 0.0
     fitted = model.model.get_params()
     assert fitted["val_fraction"] == 0.0
-    assert fitted["device"] == "cpu"
+    assert fitted["device"] == torch_default_device()
     assert fitted["random_state"] == 42
 
 
@@ -338,6 +339,7 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
     saved = json.loads((_only_checkpoint(tmp_path / "ckpt").parent / "config.json").read_text())
     expected = {
         **RealMLPRegressor.DEFAULT_PARAMS,
+        "device": torch_default_device(),
         "random_state": 42,
         "use_early_stopping": True,
         "early_stopping_additive_patience": 4,

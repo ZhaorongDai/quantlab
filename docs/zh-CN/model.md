@@ -702,6 +702,43 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 - 输出每个标签一列，而不是只有一列；
 - 始终达不到阈值时，训练在 `epochs` 处停止并保留最后的权重；官方代码在这种情况下没有可保存的权重。
 
+### 选择训练设备
+
+每个内置模型头都在训练开始时和加载检查点时选择设备：有可用的 CUDA 设备时用 CUDA，否则用 CPU。Apple MPS 不会被自动选中，要用它需要显式传入。
+
+- torch 模型头询问 PyTorch（`TorchModel.device`）；除 `panel_device` 外没有其他可配置项（见“把训练面板放在 GPU 上”）。
+- `RealMLPRegressor` 在 PyTorch 看到 CUDA 设备时把 pytabkit 的构造参数 `device` 设为 `"cuda"`，否则设为 `"cpu"`。`device=None` 视同未设置，因为 pytabkit 自己的 `None` 在 Mac 上会选 MPS。
+- `XGBoostRegressor` 在安装的 xgboost 是 CUDA 版本、且 CUDA 驱动报告有可见设备时（遵守 `CUDA_VISIBLE_DEVICES`）把 xgboost 的 `device` 设为 `"cuda"`，否则设为 `"cpu"`。检查读取 `xgboost.build_info()` 并通过 `ctypes` 询问驱动，不导入 PyTorch。
+- `XGBTDRegressor` 按 `XGBoostRegressor` 的规则确定设备。pytabkit 不会把设备转交给 xgboost，所以模型头把它合并进 pytabkit 内部 `xgboost.train` 调用的参数；pytabkit 自己的 `device` 参数保持未设置。
+
+训练好的模型在同一进程里的评估和后续预测中留在训练设备上。只有检查点从 CPU 写出（RealMLP 网络为写入移到 CPU 再移回，xgboost 的 Booster 以 `device="cpu"` 保存），因此在 GPU 上训练的模型能在没有 GPU 的机器上加载并预测。`load` 按同一规则把模型放到加载机器选出的设备上。
+
+`hyperparameters` 里给出的 `device` 原样传给库（`"cpu"`、`"cuda:1"`、`"mps"` 等）。无论哪种情况，实际使用的设备都记录在 `config.json` 的 `resolved_hyperparameters` 里，而 `hyperparameters` 保留调用方传入的内容。在没有 CUDA 的机器上（如下例）：
+
+```python
+>>> from dataclasses import replace
+>>> from quantlab.model.predefined.realmlp import RealMLPRegressor
+>>> device_config = ModelConfig(
+...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+...     factor_data_strategy="read", label_data_strategy="read",
+...     train_start="2024-01-01", train_end="2024-05-31",
+...     test_start="2024-06-01", test_end="2024-07-18",
+...     hyperparameters={"num_boost_round": 50, "max_depth": 3},
+... )
+>>> def trained_device(head):
+...     """Train ``head``; return its recorded device and whether the caller gave one."""
+...     record = json.loads((head.collect().train().parent / "config.json").read_text())
+...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
+>>> trained_device(XGBoostRegressor(device_config))
+('cpu', False)
+>>> trained_device(RealMLPRegressor(replace(device_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
+('cpu', False)
+>>> trained_device(XGBoostRegressor(replace(device_config, hyperparameters={"num_boost_round": 50, "device": "cpu"})))
+('cpu', True)
+```
+
+在有 CUDA 的机器上，前两次调用返回 `('cuda', False)`。
+
 ### 把训练面板放在 GPU 上
 
 torch 模型头把收集到的整个面板（特征、训练目标、掩码和原始标签）作为张量放在同一个设备上，数据集从中切出 batch。在 GPU 上，从已经在显存里的面板切一个 bar，只要从内存复制过去的一小部分时间，所以面板放在哪里往往决定了一个 epoch 跑多快。`panel_device` 在训练开始时以及每次预测时决定位置：
