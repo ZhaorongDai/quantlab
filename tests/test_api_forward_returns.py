@@ -170,6 +170,35 @@ def test_a_missing_price_column_raises_naming_the_available_columns(tmp_path, li
     assert "'open'" in message
     for present in ("close", "high", "low", "volume"):
         assert repr(present) in message
+    assert "price='close' to use" in message
+    assert "columns=" in message
+
+
+@pytest.mark.parametrize("library", ["pandas", "polars"])
+def test_without_close_the_first_present_column_is_suggested(tmp_path, library):
+    frame, _ = _frame(tmp_path)
+    frame = frame[["timestamp", "symbol", "high", "low"]]
+    if library == "polars":
+        frame = pl.from_pandas(frame)
+
+    with pytest.raises(ValueError, match=r"price='high' to use"):
+        qa.forward_returns(frame, price="close")
+
+
+def test_the_suggestion_uses_the_names_after_columns_renames(tmp_path):
+    frame, _ = _frame(tmp_path)
+    renamed = frame.drop(columns="open").rename(columns={"close": "Close"})
+
+    with pytest.raises(ValueError, match=r"price='close' to use"):
+        qa.forward_returns(renamed, columns={"Close": "close"})
+
+
+def test_a_multiindexed_frame_is_checked_on_its_columns(tmp_path):
+    frame, _ = _frame(tmp_path)
+    indexed = frame.drop(columns="open").set_index(["timestamp", "symbol"])
+
+    with pytest.raises(ValueError, match=r"'open'.*price='close' to use"):
+        qa.forward_returns(indexed)
 
 
 def test_an_unknown_price_column_raises_naming_the_available_columns(tmp_path):

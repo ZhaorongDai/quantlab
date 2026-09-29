@@ -180,12 +180,15 @@ def forward_returns(
         One row per ``(timestamp, symbol)`` of the frame's full grid, columns
         ``timestamp``, ``symbol`` and ``ret_{span}`` (``ret_binary_{span}`` with
         ``binary=True``), in the frame's library; or the panel on ``(timestamp, symbol)``
-        with ``as_xarray=True``.
+        with ``as_xarray=True``. The values are float32, computed by the library's
+        KunQuant label path, so compare them with float64 returns at a float32-level
+        tolerance, not exactly.
 
     Raises
     ------
     ValueError
-        If the ``price`` column is missing (the message lists the columns present),
+        If the ``price`` column is missing (the message lists the columns present and
+        suggests one as ``price=``),
         ``span`` is below 1, ``delay`` is below 0, ``columns`` names an absent column, or
         a ``(timestamp, symbol)`` pair repeats.
     TypeError
