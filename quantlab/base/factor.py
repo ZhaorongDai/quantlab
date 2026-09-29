@@ -826,7 +826,8 @@ class Factor(ABC):
         -------
         FactorAnalysis
             ``pairs`` (metrics per ``"<factor>__<fret>"``), ``figures``
-            (matplotlib figures, same keys) and tidy tables through
+            (matplotlib figures, same keys), the headline metrics per pair
+            through ``summary()`` and tidy tables through
             ``summary_table()``, ``ic_table()``, ``quantile_returns_table()``,
             ``turnover_table()`` and ``monthly_ic_table()``; with two or more
             factor variables also ``correlation``, their
