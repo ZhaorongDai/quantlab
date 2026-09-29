@@ -6,9 +6,11 @@ One self-contained script per universe and model, plus one factor analysis per u
 
 | Universe | Model pipelines | Factor analysis |
 | --- | --- | --- |
-| S&P 500 | `sp500_xgb.py`, `sp500_xgb_td.py`, `sp500_realmlp.py`, `sp500_gats.py`, `sp500_master.py` | `sp500_factor_analysis.py` |
+| S&P 500 | `sp500_xgb.py`, `sp500_xgb_td.py`, `sp500_realmlp.py`, `sp500_realmlp_seed_ensemble.py`, `sp500_gats.py`, `sp500_master.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`, `nasdaq100_xgb_td.py`, `nasdaq100_realmlp.py`, `nasdaq100_gats.py`, `nasdaq100_master.py` | `nasdaq100_factor_analysis.py` |
 | CRSP market | `market_xgb.py`, `market_xgb_td.py`, `market_realmlp.py`, `market_gats.py`, `market_master.py` | `market_factor_analysis.py`, `market_residual_momentum.py` |
+
+`sp500_realmlp_seed_ensemble.py` is `sp500_realmlp.py` with the head wrapped in a `SeedEnsemble`: one RealMLP per seed in `SEEDS`, predictions averaged as per-bar cross-sectional z-scores, trained by the backtest itself (`model_mode="train"`); see "Average several seeds" in [docs/model.md](../../docs/model.md).
 
 The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost), `RealMLPRegressor` (pytabkit tuned-default MLP), and two torch heads that learn on each bar's cross-section of stocks: `GATsRegressor` (Qlib's GATs: an LSTM over each stock's last 20 bars, then attention across the bar's stocks) and `MASTERRegressor` (MASTER: SPY, QQQ and IWM market features gate the stock features, then attention over each stock's last 8 bars and across the bar's stocks); [docs/model.md](../../docs/model.md) describes both under "Train GATs on the cross-section" and "Train MASTER with market features". Every model pipeline runs the same five steps:
 
@@ -80,6 +82,7 @@ Everything lives at the top of each script, in this order:
 | `TRAIN_START` ... `TEST_END` | training and out-of-sample test windows (model pipelines) |
 | `WINDOW_BARS` | bars in each stock's window (torch pipelines: 20 for GATs, 8 for MASTER) |
 | `ETFS` | the ETFs whose market features gate the stock features (MASTER pipelines) |
+| `SEEDS` | one ensemble member per seed, at least two, all distinct (`sp500_realmlp_seed_ensemble.py`) |
 | `HORIZON` | label span in bars; the label reads `HORIZON + 1` bars ahead (delay 1) |
 | `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
 | `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`warmup_bars=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |

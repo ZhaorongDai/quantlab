@@ -6,9 +6,11 @@
 
 | 股票池 | 模型 pipeline | 因子分析 |
 | --- | --- | --- |
-| S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py`、`sp500_gats.py`、`sp500_master.py` | `sp500_factor_analysis.py` |
+| S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py`、`sp500_realmlp_seed_ensemble.py`、`sp500_gats.py`、`sp500_master.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py`、`nasdaq100_gats.py`、`nasdaq100_master.py` | `nasdaq100_factor_analysis.py` |
 | CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py`、`market_gats.py`、`market_master.py` | `market_factor_analysis.py`、`market_residual_momentum.py` |
+
+`sp500_realmlp_seed_ensemble.py` 就是把 `sp500_realmlp.py` 的模型包进 `SeedEnsemble`：`SEEDS` 里每个种子训练一个 RealMLP，预测按每根 bar 的截面 z-score 取平均，由回测自己训练（`model_mode="train"`）；见 [docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“平均多个种子”一节。
 
 模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）、`RealMLPRegressor`（pytabkit 调优默认参数的 MLP），以及两个在每个 bar 的股票截面上学习的 torch 模型：`GATsRegressor`（Qlib 的 GATs：先用 LSTM 读每只股票最近 20 根 bar，再在当根 bar 的股票之间做注意力）和 `MASTERRegressor`（MASTER：SPY、QQQ、IWM 的市场特征对股票特征做门控，再在每只股票最近 8 根 bar 之内和当根 bar 的股票之间做注意力）；[docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“在截面上训练 GATs”和“用市场特征训练 MASTER”两节分别介绍了它们。每个模型 pipeline 都跑同样的五步：
 
@@ -80,6 +82,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `TRAIN_START` ... `TEST_END` | 训练窗口与样本外测试窗口（模型 pipeline） |
 | `WINDOW_BARS` | 每只股票窗口的 bar 数（torch pipeline：GATs 为 20，MASTER 为 8） |
 | `ETFS` | 用市场特征给股票特征做门控的 ETF（MASTER pipeline） |
+| `SEEDS` | 每个种子一个集成成员，至少两个且互不相同（`sp500_realmlp_seed_ensemble.py`） |
 | `HORIZON` | 标签跨度（bar 数）；标签向前读 `HORIZON + 1` 根 bar（delay 为 1） |
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
