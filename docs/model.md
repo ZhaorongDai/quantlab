@@ -702,6 +702,41 @@ Known differences from the official implementation:
 - the output has one column per label instead of one;
 - when the threshold is never reached, training stops at `epochs` with the last weights; the official code has no weights to save in that case.
 
+### Choose the training device
+
+Every shipped head except `XGBTDRegressor` picks its training device when training starts: CUDA when a CUDA device is available, otherwise the CPU. Apple MPS is never picked automatically; pass it explicitly to use it.
+
+- A torch head asks PyTorch (`TorchModel.device`); nothing is configurable beyond `panel_device` (see Keep the training panel on the GPU).
+- `RealMLPRegressor` fills in pytabkit's `device` constructor argument with `"cuda"` when PyTorch sees a CUDA device and `"cpu"` otherwise. `device=None` counts as unset, because pytabkit's own `None` would choose MPS on a Mac.
+- `XGBoostRegressor` sets xgboost's `device` to `"cuda"` when the installed xgboost is a CUDA build and the CUDA driver reports a visible device (`CUDA_VISIBLE_DEVICES` is honoured), and to `"cpu"` otherwise. The check reads `xgboost.build_info()` and asks the driver through `ctypes`, without importing PyTorch. The trained Booster is then switched to the CPU for prediction, so prediction on numpy rows raises no device-mismatch warning and the checkpoint loads on a machine without CUDA.
+- `XGBTDRegressor` passes no device: pytabkit's XGBoost path does not forward one to xgboost, so it trains on the CPU.
+
+A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"cuda:1"`, `"mps"`, ...). Either way the device used is recorded under `resolved_hyperparameters` in `config.json`, while `hyperparameters` keeps what the caller passed. On a machine without CUDA, as here:
+
+```python
+>>> from dataclasses import replace
+>>> from quantlab.model.predefined.realmlp import RealMLPRegressor
+>>> xgb_config = ModelConfig(
+...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+...     factor_data_strategy="read", label_data_strategy="read",
+...     train_start="2024-01-01", train_end="2024-05-31",
+...     test_start="2024-06-01", test_end="2024-07-18",
+...     hyperparameters={"num_boost_round": 50, "max_depth": 3},
+... )
+>>> def trained_device(head):
+...     """Train ``head``; return its recorded device and whether the caller gave one."""
+...     record = json.loads((head.collect().train().parent / "config.json").read_text())
+...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
+>>> trained_device(XGBoostRegressor(xgb_config))
+('cpu', False)
+>>> trained_device(RealMLPRegressor(replace(xgb_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
+('cpu', False)
+>>> trained_device(XGBoostRegressor(replace(xgb_config, hyperparameters={"num_boost_round": 50, "device": "cpu"})))
+('cpu', True)
+```
+
+The first two calls return `('cuda', False)` on a CUDA machine. Checked on the training server (RTX 5090 D, xgboost 3.4.1 CUDA build) on 2026-09-29 with a synthetic 400-bar × 200-symbol panel: both heads recorded `'cuda'`, the process held GPU memory while each trained, and pytabkit's Lightning trainer logged `GPU available: True (cuda), used: True`.
+
 ### Keep the training panel on the GPU
 
 A torch head holds the whole collected panel (features, training target, masks and raw labels) as tensors on one device, and its datasets slice batches from it. On a GPU, slicing a bar from a panel already there takes a fraction of the time of copying it from CPU memory, so where the panel lives often decides how fast an epoch runs. `panel_device` chooses it when training starts and for every prediction:

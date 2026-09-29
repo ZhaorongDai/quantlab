@@ -23,6 +23,7 @@ from loguru import logger
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.library_model import Rows
+from quantlab.model.predefined._support.devices import xgboost_default_device
 
 #: scikit-learn style aliases mapped to the native ``xgb.train`` parameter
 #: names. Aliases are rewritten on the user's dict before it is merged with
@@ -491,7 +492,10 @@ class XGBoostRegressor(LibraryModel):
     early-stopping keys the base class reads (``head_hyperparameters``).
     ``num_boost_round`` (default 1000) is taken out separately; every other key overrides the
     matching entry of ``DEFAULT_PARAMS``, and ``seed`` defaults to
-    ``config.random_seed``. scikit-learn style aliases such as
+    ``config.random_seed``. Unless ``device`` is given, training runs on
+    ``"cuda"`` when the installed xgboost is a CUDA build and a CUDA device
+    is visible, and on ``"cpu"`` otherwise, never on Apple MPS; the check
+    does not import torch. scikit-learn style aliases such as
     ``learning_rate`` or ``n_estimators`` are rewritten to the native names
     first; giving both an alias and its native name raises ``ValueError``.
     The user's dict is never modified, and the parameters actually used are
@@ -555,7 +559,6 @@ class XGBoostRegressor(LibraryModel):
         "max_depth": 6,
         "subsample": 0.8,
         "colsample_bytree": 0.8,
-        "device": "cpu",
         "eval_metric": "rmse",
     }
     DEFAULT_NUM_BOOST_ROUND = 1000
@@ -604,6 +607,8 @@ class XGBoostRegressor(LibraryModel):
         The early-stopping keys (``reserved_hyperparameters``) are dropped and
         aliases normalised first, then ``num_boost_round`` is split off,
         then the remaining keys override ``DEFAULT_PARAMS`` and the seed.
+        An unset ``device`` becomes ``"cuda"`` when xgboost can train on
+        CUDA here and ``"cpu"`` otherwise (``xgboost_default_device``).
         With early stopping on, ``rmse`` is appended to an ``eval_metric``
         that lacks it.
 
@@ -626,6 +631,8 @@ class XGBoostRegressor(LibraryModel):
             "seed": self.config.random_seed,
             **user,
         }
+        if self._params.get("device") is None:
+            self._params["device"] = xgboost_default_device()
         if self.early_stopping:
             metrics = self._params["eval_metric"]
             metrics = [metrics] if isinstance(metrics, str) else list(metrics)
@@ -656,7 +663,9 @@ class XGBoostRegressor(LibraryModel):
     def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Train the Booster with ``xgb.train`` and record the run's summary.
 
-        NaN features are xgboost's missing values. With early stopping, the
+        NaN features are xgboost's missing values. The trained Booster is
+        switched to ``device="cpu"`` for prediction; ``resolved_hyperparameters``
+        keeps the training device. With early stopping, the
         best iteration and its score are written to the W&B summary,
         followed by the feature importance.
         """
@@ -711,6 +720,11 @@ class XGBoostRegressor(LibraryModel):
             callbacks=callbacks,
             verbose_eval=False,
         )
+        # Predict on the CPU whatever the training device: prediction inputs
+        # are numpy arrays, which a CUDA Booster copies to the GPU with a
+        # device-mismatch warning on every call, and a CPU Booster loads on a
+        # machine without CUDA.
+        self.model.set_param({"device": "cpu"})
 
         if use_early_stopping and self._wandb_recorder is not None:
             self._wandb_recorder.summary.update(

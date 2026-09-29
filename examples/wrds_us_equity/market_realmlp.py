@@ -133,7 +133,7 @@ def build_model() -> RealMLPRegressor:
             # patience counts epochs. The head reads these two keys itself.
             "early_stopping": True, "early_stopping_patience": 50,
             # pytabkit RealMLP_TD_Regressor constructor arguments.
-            "n_epochs": 256, "device": "cpu", "n_threads": 8,
+            "n_epochs": 256, "n_threads": 8,
         },
     ))
 

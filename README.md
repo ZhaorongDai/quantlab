@@ -66,7 +66,7 @@ cd quantlab
 uv sync
 ```
 
-Neural-network models use a CUDA GPU when one is available and the CPU otherwise. See the
+Neural-network models, RealMLP and XGBoost use a CUDA GPU when one is available and the CPU otherwise. See the
 [installation guide](docs/getting-started/installation.md) for GPU and macOS notes.
 
 ## Quick start

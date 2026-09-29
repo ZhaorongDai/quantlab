@@ -702,6 +702,41 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 - 输出每个标签一列，而不是只有一列；
 - 始终达不到阈值时，训练在 `epochs` 处停止并保留最后的权重；官方代码在这种情况下没有可保存的权重。
 
+### 选择训练设备
+
+除 `XGBTDRegressor` 外，每个内置模型头都在训练开始时选择训练设备：有可用的 CUDA 设备时用 CUDA，否则用 CPU。Apple MPS 不会被自动选中，要用它需要显式传入。
+
+- torch 模型头询问 PyTorch（`TorchModel.device`）；除 `panel_device` 外没有其他可配置项（见“把训练面板放在 GPU 上”）。
+- `RealMLPRegressor` 在 PyTorch 看到 CUDA 设备时把 pytabkit 的构造参数 `device` 设为 `"cuda"`，否则设为 `"cpu"`。`device=None` 视同未设置，因为 pytabkit 自己的 `None` 在 Mac 上会选 MPS。
+- `XGBoostRegressor` 在安装的 xgboost 是 CUDA 版本、且 CUDA 驱动报告有可见设备时（遵守 `CUDA_VISIBLE_DEVICES`）把 xgboost 的 `device` 设为 `"cuda"`，否则设为 `"cpu"`。检查读取 `xgboost.build_info()` 并通过 `ctypes` 询问驱动，不导入 PyTorch。训练好的 Booster 随后切换到 CPU 做预测，因此对 numpy 行预测时不会出现设备不匹配的警告，检查点也能在没有 CUDA 的机器上加载。
+- `XGBTDRegressor` 不传设备：pytabkit 的 XGBoost 路径不会把设备转交给 xgboost，所以它在 CPU 上训练。
+
+`hyperparameters` 里给出的 `device` 原样传给库（`"cpu"`、`"cuda:1"`、`"mps"` 等）。无论哪种情况，实际使用的设备都记录在 `config.json` 的 `resolved_hyperparameters` 里，而 `hyperparameters` 保留调用方传入的内容。在没有 CUDA 的机器上（如下例）：
+
+```python
+>>> from dataclasses import replace
+>>> from quantlab.model.predefined.realmlp import RealMLPRegressor
+>>> xgb_config = ModelConfig(
+...     factors=[factor], labels=[label], model_save_dir="checkpoints",
+...     factor_data_strategy="read", label_data_strategy="read",
+...     train_start="2024-01-01", train_end="2024-05-31",
+...     test_start="2024-06-01", test_end="2024-07-18",
+...     hyperparameters={"num_boost_round": 50, "max_depth": 3},
+... )
+>>> def trained_device(head):
+...     """Train ``head``; return its recorded device and whether the caller gave one."""
+...     record = json.loads((head.collect().train().parent / "config.json").read_text())
+...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
+>>> trained_device(XGBoostRegressor(xgb_config))
+('cpu', False)
+>>> trained_device(RealMLPRegressor(replace(xgb_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
+('cpu', False)
+>>> trained_device(XGBoostRegressor(replace(xgb_config, hyperparameters={"num_boost_round": 50, "device": "cpu"})))
+('cpu', True)
+```
+
+在有 CUDA 的机器上，前两次调用返回 `('cuda', False)`。2026-09-29 在训练服务器（RTX 5090 D，xgboost 3.4.1 CUDA 版本）上用 400 个 bar × 200 个标的的合成面板检查过：两个模型头都记录了 `'cuda'`，各自训练时进程占用了显存，pytabkit 的 Lightning trainer 输出 `GPU available: True (cuda), used: True`。
+
 ### 把训练面板放在 GPU 上
 
 torch 模型头把收集到的整个面板（特征、训练目标、掩码和原始标签）作为张量放在同一个设备上，数据集从中切出 batch。在 GPU 上，从已经在显存里的面板切一个 bar，只要从内存复制过去的一小部分时间，所以面板放在哪里往往决定了一个 epoch 跑多快。`panel_device` 在训练开始时以及每次预测时决定位置：

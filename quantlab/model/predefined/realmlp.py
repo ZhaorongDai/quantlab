@@ -23,6 +23,7 @@ from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
 from quantlab.model.library_model import Rows
+from quantlab.model.predefined._support.devices import torch_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
 
 
@@ -147,7 +148,10 @@ class RealMLPRegressor(TabkitRegressor):
 
     Hyperparameters are the constructor arguments of
     ``RealMLP_TD_Regressor`` (``n_epochs``, ``hidden_sizes``, ``lr``,
-    ``device``, ``n_threads``, ...).
+    ``device``, ``n_threads``, ...). Without ``device`` the head trains on
+    ``"cuda"`` when torch sees a CUDA device and on ``"cpu"`` otherwise;
+    Apple MPS is used only when asked for (``device="mps"``). The device
+    chosen is recorded in ``resolved_hyperparameters``.
 
     With ``hyperparameters["early_stopping"]`` set and validation rows,
     pytabkit's early stopping watches the
@@ -199,7 +203,6 @@ class RealMLPRegressor(TabkitRegressor):
     """
 
     DEFAULT_PARAMS: dict = {
-        "device": "cpu",
         "val_fraction": 0.0,
         "verbosity": 0,
     }
@@ -215,6 +218,19 @@ class RealMLPRegressor(TabkitRegressor):
             ),
             "early_stopping_multiplicative_patience": 1.0,
         }
+
+    def _resolve_params(self, hyperparameters: dict) -> dict:
+        """Merge the parameters and fill in the default ``device``.
+
+        Without a ``device`` (or with ``device=None``) the device is
+        ``"cuda"`` when torch sees a CUDA device and ``"cpu"`` otherwise,
+        never MPS; pytabkit's own ``device=None`` would pick MPS on a Mac.
+        The resolved device is recorded with the other parameters.
+        """
+        params = super()._resolve_params(hyperparameters)
+        if params.get("device") is None:
+            params["device"] = self._params["device"] = torch_default_device()
+        return params
 
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict

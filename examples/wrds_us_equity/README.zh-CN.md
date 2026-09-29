@@ -56,7 +56,7 @@ uv run python scripts/fama_french.py --download-dir data/downloads
 
 每次 `index.py` 运行在 `data/data/us_equity/1d/` 下写出两个仓库：`wrds_crsp_<index>_1d.zarr`（窗口内曾经是成分股的所有 PERMNO 的价格）和 `wrds_crsp_<index>_membership.zarr`（每日的 `is_member`），其中 `<index>` 为 `sp500` 或 `nasdaq100`。`market.py` 写出 `wrds_crsp_market_1d.zarr`（全市场脚本直接读它）和 `wrds_crsp_market_membership.zarr`（上市面板，全市场脚本用不到）。`etf.py` 写出 `wrds_crsp_spy_1d.zarr`、`wrds_crsp_qqq_1d.zarr` 和 `wrds_crsp_iwm_1d.zarr`；缺少其中任何一个时，MASTER pipeline 会停下并提示需要运行的命令。pipeline 从同一个数据根目录读取它们（`QUANTLAB_DATA_DIR`、仓库旁的 `data/`，或每个脚本顶部的 `DATA_ROOT`）。
 
-KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。有 CUDA GPU 时 torch pipeline 会在 GPU 上训练；训练面板不超过 GPU 空闲显存的一半时也放在 GPU 上（超参数里的 `panel_device`、`panel_dtype`，见 [docs/zh-CN/model.md](../../docs/zh-CN/model.md)）。
+KunQuant 需要编译因子计算图，因此需要 C++ 编译器。模型脚本在 macOS 上会自动设置 `OMP_NUM_THREADS=1`（xgboost 与 torch 同进程）。有 CUDA GPU 时 torch、RealMLP 和 XGBoost pipeline 会在 GPU 上训练（默认不会用 Apple MPS）；torch pipeline 的训练面板不超过 GPU 空闲显存的一半时也放在 GPU 上（超参数里的 `panel_device`、`panel_dtype`，见 [docs/zh-CN/model.md](../../docs/zh-CN/model.md)）。
 
 Weights & Biases 记录默认开启（`wandb_mode="online"`）：先运行一次 `wandb login`；或者把 `wandb_mode` 设为 `"offline"`（写到本地 `wandb/`，之后用 `wandb sync` 上传）或 `"disabled"`。
 
