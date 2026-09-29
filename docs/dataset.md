@@ -331,7 +331,7 @@ Nothing is read from or written to disk, so building or saving is refused: `from
 >>> mem.save()
 Traceback (most recent call last):
     ...
-ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store of its own to write. Build a new FrameDataset from updated data, or write a copy with to_zarr(path).
 ```
 
 `resample(freq, how)` takes the same `freq` and `how` as on a Zarr-backed dataset (see [Resample onto coarser bars](#resample-onto-coarser-bars)) and cuts and aggregates the bars the same way, UTC-clock buckets labelled at their start. The result is a new `FrameDataset` holding the resampled panel in memory: nothing is written, `store_path` is `None`, and it refuses building, saving and stream mode like any `FrameDataset`. The source is not changed.
@@ -360,7 +360,37 @@ timestamp
 >>> daily.update()
 Traceback (most recent call last):
     ...
-ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store of its own to write. Build a new FrameDataset from updated data, or write a copy with to_zarr(path).
+```
+
+`to_zarr(path)` writes the held panel to a new Zarr store (a resampled dataset writes its resampled bars) and returns a `FrameDataset` read back from it; an existing path is refused. A `FrameDataset` built from a `FrameDatasetConfig` whose `zarr_file_path` names a store reads that store into memory once, at construction, and then behaves like any `FrameDataset`: it still refuses building and saving, and its `resample()` stays in memory, with `store_path` `None` and no store beside the source written or read. This is how a backtest run directory keeps its input panels (see Rebuild a run of given weights in the backtest guide), and `get_config()` of such a dataset rebuilds through `load_dataset_from_config`.
+
+```python
+>>> import tempfile
+>>> from pathlib import Path
+>>> from quantlab.base.config import FrameDatasetConfig
+>>> path = Path(tempfile.mkdtemp()) / "bars.zarr"
+>>> on_disk = mem.to_zarr(path)
+>>> on_disk.store_path == str(path), mem.store_path
+(True, None)
+>>> again = FrameDataset(FrameDatasetConfig(zarr_file_path=str(path)))
+>>> again.panel("2024-01-02", "2024-01-03")["close"].to_pandas()
+symbol       AAA   BBB
+timestamp
+2024-01-02  10.0  20.0
+2024-01-03  11.0   NaN
+>>> again == on_disk
+True
+>>> mem.to_zarr(path)
+Traceback (most recent call last):
+    ...
+FileExistsError: FrameDataset.to_zarr(): /tmp/.../bars.zarr already exists; a store is never overwritten.
+>>> hourly_path = Path(tempfile.mkdtemp()) / "hours.zarr"
+>>> stored = hourly.to_zarr(hourly_path)
+>>> stored.resample("1d", "last").store_path is None
+True
+>>> sorted(p.name for p in hourly_path.parent.iterdir())
+['hours.zarr']
 ```
 
 ## Extending

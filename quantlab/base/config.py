@@ -502,17 +502,23 @@ class FrameDatasetConfig(BaseDatasetConfig):
 
     The panel itself is not part of the config: a ``FrameDataset`` is handed its data at
     construction, so no Zarr store is needed and ``zarr_file_path`` defaults to ``None``.
-    The dates and symbols are unused, as there is nothing to convert from raw files; the
-    resample fields are set by ``resample()`` as on any dataset.
+    A config that names a store is how the panel comes back from disk: a
+    ``FrameDataset`` built from it reads that store into memory (the rebuild path of a
+    saved backtest run, whose ``config.json`` names the store relative to the run
+    directory). The dates and symbols are unused, as there is nothing to convert from
+    raw files; the resample fields are set by ``resample()`` as on any dataset.
 
     Examples
     --------
     >>> cfg = FrameDatasetConfig()
     >>> cfg.zarr_file_path is None
     True
+    >>> FrameDatasetConfig(zarr_file_path="inputs/price_dataset.zarr").zarr_file_path
+    'inputs/price_dataset.zarr'
     """
 
-    #: Path of a Zarr store holding the panel; ``None`` for a panel held only in memory.
+    #: Path of a Zarr store holding the panel, read at construction; ``None`` for a
+    #: panel handed over in memory.
     zarr_file_path: str | None = None
 
 

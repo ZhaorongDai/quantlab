@@ -270,6 +270,7 @@ Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Fi
 | `liquidations.json` | The forced liquidations. |
 | `fingerprint.json` | A digest of the price and factor data the run read. |
 | `report.html` | Equity, drawdown and monthly-return charts, a metrics table and notes. |
+| `inputs/` | Only when the price or benchmark dataset is a `FrameDataset` held in memory: its panel as `price_dataset.zarr` or `benchmark_dataset.zarr`, which `config.json` names relative to the run directory (see [Rebuild a run of given weights](#rebuild-a-run-of-given-weights)). |
 
 ## Common tasks
 
@@ -466,6 +467,40 @@ False
 ```
 
 The classes must be importable by dotted path. A class defined in a script is named `__main__.X` and cannot be found from another process, so the dataset, factors, model and backtester belong in modules. A config written by a train-mode run retrains when it is rebuilt; set `model_mode` to `"load"` and `checkpoint` to the recorded `trained_checkpoint` to replay the same model.
+
+### Rebuild a run of given weights
+
+A `run_weights()` run has no model to predict its weights again, so it is replayed from the weights it saved: `run_weights()` also takes a path to a Zarr store holding a `weight` variable, such as the run directory's `weights.zarr`. When the price or benchmark dataset is a `FrameDataset` (every `quantlab.api.backtest` run, and the `WeightsVectorBt` session above), its panel has no store of its own, so the run writes it under `inputs/` and `config.json` names that store relative to the run directory. Pass the directory the config was read from as `run_dir`; the run directory can be moved. Continuing the `WeightsVectorBt` session:
+
+```python
+>>> import dataclasses, json, shutil, tempfile
+>>> from pathlib import Path
+>>> from quantlab.utils.module import load_backtester_from_config
+>>> kept = WeightsVectorBt(
+...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
+... ).run_weights(weights)
+>>> sorted(p.name for p in kept.run_dir.iterdir())
+['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+>>> config = json.loads((kept.run_dir / "config.json").read_text())
+>>> config["price_dataset"]["zarr_file_path"]
+'inputs/price_dataset.zarr'
+>>> run_dir = Path(shutil.move(kept.run_dir, tempfile.mkdtemp()))
+>>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
+>>> replay = rebuilt.run_weights(run_dir / "weights.zarr")
+>>> replay.simulation.value.values.round(2).tolist()
+[1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
+>>> json.loads((replay.run_dir / "fingerprint.json").read_text()) == rebuilt.expected_fingerprint
+True
+```
+
+The rebuilt `FrameDataset` reads the store into memory; the replay writes its own `inputs/` again, so its directory rebuilds on its own too. A relative store path is never resolved against the working directory:
+
+```python
+>>> load_backtester_from_config(config)
+Traceback (most recent call last):
+  ...
+ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', which is relative to the run directory the config was saved in; pass run_dir= (the directory holding config.json) to rebuild it. It is never resolved against the working directory.
+```
 
 ## Extending
 

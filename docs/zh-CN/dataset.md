@@ -331,7 +331,7 @@ True
 >>> mem.save()
 Traceback (most recent call last):
     ...
-ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store of its own to write. Build a new FrameDataset from updated data, or write a copy with to_zarr(path).
 ```
 
 `resample(freq, how)` 接受与 Zarr dataset 相同的 `freq` 和 `how`（见[重采样到更粗的 bar](#重采样到更粗的-bar)），切分和聚合 bar 的方式也相同：按 UTC 时钟分桶，以桶的起点为标签。结果是一个新的 `FrameDataset`，在内存中持有重采样后的面板：不写任何文件，`store_path` 为 `None`，并像任何 `FrameDataset` 一样拒绝构建、保存和 stream 模式。源 dataset 不变。
@@ -360,7 +360,37 @@ timestamp
 >>> daily.update()
 Traceback (most recent call last):
     ...
-ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store of its own to write. Build a new FrameDataset from updated data, or write a copy with to_zarr(path).
+```
+
+`to_zarr(path)` 把持有的面板写入一个新的 Zarr store（重采样后的 dataset 写的是重采样后的 bar），并返回一个从该 store 读回的 `FrameDataset`；已存在的路径会被拒绝。用 `zarr_file_path` 指向某个 store 的 `FrameDatasetConfig` 构造的 `FrameDataset`，会在构造时把该 store 一次性读入内存，之后与任何 `FrameDataset` 行为相同：依旧拒绝构建和保存，其 `resample()` 也留在内存中，`store_path` 为 `None`，不会写入或读取源 store 旁边的任何 store。回测运行目录就是这样保存输入面板的（见回测指南中的“重建一次给定权重的运行”），这种 dataset 的 `get_config()` 可以通过 `load_dataset_from_config` 重建。
+
+```python
+>>> import tempfile
+>>> from pathlib import Path
+>>> from quantlab.base.config import FrameDatasetConfig
+>>> path = Path(tempfile.mkdtemp()) / "bars.zarr"
+>>> on_disk = mem.to_zarr(path)
+>>> on_disk.store_path == str(path), mem.store_path
+(True, None)
+>>> again = FrameDataset(FrameDatasetConfig(zarr_file_path=str(path)))
+>>> again.panel("2024-01-02", "2024-01-03")["close"].to_pandas()
+symbol       AAA   BBB
+timestamp
+2024-01-02  10.0  20.0
+2024-01-03  11.0   NaN
+>>> again == on_disk
+True
+>>> mem.to_zarr(path)
+Traceback (most recent call last):
+    ...
+FileExistsError: FrameDataset.to_zarr(): /tmp/.../bars.zarr already exists; a store is never overwritten.
+>>> hourly_path = Path(tempfile.mkdtemp()) / "hours.zarr"
+>>> stored = hourly.to_zarr(hourly_path)
+>>> stored.resample("1d", "last").store_path is None
+True
+>>> sorted(p.name for p in hourly_path.parent.iterdir())
+['hours.zarr']
 ```
 
 ## 扩展

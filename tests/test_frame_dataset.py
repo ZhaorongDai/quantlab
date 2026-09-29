@@ -13,10 +13,12 @@ import pytest
 import xarray as xr
 
 from conftest import compute_all
-from quantlab.base.config import FactorConfig
+from quantlab.backend import XrBackend
+from quantlab.base.config import FactorConfig, FrameDatasetConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.utils.module import load_dataset_from_config
 from tests.backtest_fixtures import ADJUSTED_COLUMNS, write_price_store
 
 
@@ -147,3 +149,130 @@ def test_a_stream_mode_factor_refuses_a_frame_dataset(store):
 def test_datasets_holding_different_data_are_not_equal(store):
     assert FrameDataset(store) == FrameDataset(store.copy())
     assert FrameDataset(store) != FrameDataset(store * 2)
+
+
+# --------------------------------------------------------------------------- on disk
+
+
+def _hourly_frame() -> pd.DataFrame:
+    timestamps = pd.date_range("2024-01-01", periods=48, freq="h")
+    return pd.DataFrame(
+        {
+            "timestamp": np.repeat(timestamps, 2),
+            "symbol": ["AAA", "BBB"] * 48,
+            "close": np.arange(96, dtype=float),
+        }
+    )
+
+
+def _files_under(root) -> list[str]:
+    return sorted(str(path.relative_to(root)) for path in root.rglob("*"))
+
+
+def test_a_frame_dataset_with_a_path_reads_its_store(tmp_path, store):
+    path = tmp_path / "held.zarr"
+    XrBackend().to_internal(store).write(str(path))
+
+    on_disk = FrameDataset(FrameDatasetConfig(zarr_file_path=str(path)))
+
+    xr.testing.assert_equal(
+        on_disk.panel("2024-01-01", "2024-12-31"),
+        FrameDataset(store).panel("2024-01-01", "2024-12-31"),
+    )
+    assert on_disk.store_path == str(path)
+    assert on_disk.bar_before("2024-01-03", 1) == pd.Timestamp("2024-01-02")
+
+
+def test_a_frame_dataset_without_data_or_path_is_refused():
+    with pytest.raises(ValueError, match="zarr_file_path"):
+        FrameDataset(FrameDatasetConfig())
+
+
+def test_columns_are_refused_with_a_config(tmp_path, store):
+    path = tmp_path / "held.zarr"
+    XrBackend().to_internal(store).write(str(path))
+
+    with pytest.raises(ValueError, match="columns"):
+        FrameDataset(FrameDatasetConfig(zarr_file_path=str(path)), columns={"a": "b"})
+
+
+def test_to_zarr_writes_the_held_panel_and_reads_it_back(tmp_path, store):
+    held = FrameDataset(store)
+
+    on_disk = held.to_zarr(tmp_path / "held.zarr")
+
+    assert on_disk.config.zarr_file_path == str(tmp_path / "held.zarr")
+    assert (tmp_path / "held.zarr").is_dir()
+    xr.testing.assert_equal(
+        on_disk.panel("2024-01-01", "2024-12-31"), held.panel("2024-01-01", "2024-12-31")
+    )
+    assert held.config.zarr_file_path is None
+
+
+def test_to_zarr_refuses_an_existing_path(tmp_path, store):
+    (tmp_path / "held.zarr").mkdir()
+
+    with pytest.raises(FileExistsError, match="held.zarr"):
+        FrameDataset(store).to_zarr(tmp_path / "held.zarr")
+
+
+def test_to_zarr_of_a_resample_stores_the_resampled_bars(tmp_path):
+    daily = FrameDataset(_hourly_frame()).resample("1d", "last")
+
+    on_disk = daily.to_zarr(tmp_path / "daily.zarr")
+
+    assert on_disk.config.resample_freq is None
+    xr.testing.assert_equal(
+        on_disk.panel("2024-01-01", "2024-01-02"), daily.panel("2024-01-01", "2024-01-02")
+    )
+
+
+def test_a_path_backed_frame_dataset_round_trips_through_the_loader(tmp_path, store):
+    on_disk = FrameDataset(store).to_zarr(tmp_path / "held.zarr")
+
+    rebuilt = load_dataset_from_config(on_disk.get_config())
+
+    assert type(rebuilt) is FrameDataset
+    assert rebuilt == on_disk
+
+
+def test_the_loader_refuses_a_frame_dataset_held_only_in_memory(store):
+    with pytest.raises(ValueError, match="zarr_file_path"):
+        load_dataset_from_config(FrameDataset(store).get_config())
+
+
+def test_a_path_backed_resample_stays_in_memory(tmp_path):
+    path = tmp_path / "hourly.zarr"
+    FrameDataset(_hourly_frame()).to_zarr(path)
+    # A store where a Zarr-backed dataset would look for its resampled cache
+    # (ADR 0002), holding different values: it must never be read.
+    decoy = tmp_path / "hourly_resample_1d.zarr"
+    FrameDataset(_hourly_frame().assign(close=-1.0)).resample("1d", "last").to_zarr(decoy)
+    before = _files_under(tmp_path)
+
+    daily = FrameDataset(FrameDatasetConfig(zarr_file_path=str(path))).resample("1d", "last")
+
+    assert daily.store_path is None
+    panel = daily.panel("2024-01-01", "2024-01-02")
+    np.testing.assert_array_equal(panel["close"].sel(symbol="AAA").values, [46.0, 94.0])
+    assert daily.bar_before("2024-01-02", 1) == pd.Timestamp("2024-01-01")
+    with pytest.raises(ValueError, match="FrameDataset.save"):
+        daily.save()
+    assert _files_under(tmp_path) == before
+
+
+def test_a_path_with_resample_fields_resamples_the_store_in_memory(tmp_path):
+    path = tmp_path / "hourly.zarr"
+    FrameDataset(_hourly_frame()).to_zarr(path)
+
+    daily = FrameDataset(
+        FrameDatasetConfig(
+            zarr_file_path=str(path), resample_freq="1d", resample_how="last"
+        )
+    )
+
+    assert daily.store_path is None
+    np.testing.assert_array_equal(
+        daily.panel("2024-01-01", "2024-01-02")["close"].sel(symbol="BBB").values,
+        [47.0, 95.0],
+    )

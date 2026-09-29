@@ -36,6 +36,7 @@ RUN_DIR_ARTIFACTS = [
     "config.json",
     "equity.zarr",
     "fingerprint.json",
+    "inputs",
     "liquidations.json",
     "metrics.json",
     "report.html",

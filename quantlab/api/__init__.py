@@ -321,8 +321,8 @@ def backtest(
         on the same bars for comparison; adds ``"benchmark"`` and ``"relative"`` (excess
         return and drawdown) to the metrics.
     output_dir : str or Path, optional
-        Also write the library's run directory under this directory (see
-        ``BacktestReport.save``).
+        Also write the library's run directory under this directory, input panels
+        included, so the run rebuilds from it (see ``BacktestReport.save``).
     columns : mapping of str to str, optional
         Renames caller columns onto the canonical names, ``{"date": "timestamp"}``. The
         prices must have every key; the other frames are renamed where they have one.
