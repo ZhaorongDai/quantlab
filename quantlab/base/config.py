@@ -496,6 +496,26 @@ class MergedDatasetConfig(_FrozenConfig):
         }
 
 
+@dataclass(kw_only=True, frozen=True)
+class FrameDatasetConfig(BaseDatasetConfig):
+    """Config of a dataset held in memory, built from a caller's frame or panel.
+
+    The panel itself is not part of the config: a ``FrameDataset`` is handed its data at
+    construction, so no Zarr store is needed and ``zarr_file_path`` defaults to ``None``.
+    The dates and symbols are unused, as there is nothing to convert from raw files; the
+    resample fields are set by ``resample()`` as on any dataset.
+
+    Examples
+    --------
+    >>> cfg = FrameDatasetConfig()
+    >>> cfg.zarr_file_path is None
+    True
+    """
+
+    #: Path of a Zarr store holding the panel; ``None`` for a panel held only in memory.
+    zarr_file_path: str | None = None
+
+
 @dataclass
 class AcquisitionConfig:
     """Config of a raw-data download for one market, frequency and vendor.

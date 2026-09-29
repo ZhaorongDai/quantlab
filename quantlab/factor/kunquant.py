@@ -96,27 +96,35 @@ class FactorKunQuant(Factor):
         return other
 
     def _check_dataset(self) -> None:
-        """Refuse a merged input in stream mode.
+        """Refuse a merged or in-memory input in stream mode.
 
         A stream is fed one bar at a time for a fixed symbol list, which a
-        merge of several stores does not have.
+        merge of several stores does not have; a ``FrameDataset`` holds a
+        finished panel rather than live bars.
 
         Raises
         ------
         ValueError
             If ``config.mode`` is ``"stream"`` and ``config.dataset`` is a
-            ``MergedDataset``.
+            ``MergedDataset`` or a ``FrameDataset``.
         """
+        from quantlab.dataset.memory import FrameDataset
         from quantlab.dataset.merged import MergedDataset
 
-        if self.config.mode == "stream" and isinstance(
-            self.config.dataset, MergedDataset
-        ):
+        if self.config.mode != "stream":
+            return
+        if isinstance(self.config.dataset, MergedDataset):
             raise ValueError(
                 f"{self.class_name}: stream mode takes one dataset, got a "
                 f"merge of {len(self.config.dataset.datasets)}. A stream is "
                 f"fed one bar at a time for a fixed symbol list; compute a "
                 f"merged input in batch mode."
+            )
+        if isinstance(self.config.dataset, FrameDataset):
+            raise ValueError(
+                f"{self.class_name}: stream mode cannot run on a FrameDataset, "
+                f"which holds a finished panel in memory rather than live bars; "
+                f"compute it in batch mode."
             )
 
     def compute(
