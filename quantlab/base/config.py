@@ -908,29 +908,50 @@ class BacktestConfig:
     ... )
     >>> cfg.fees, cfg.slippage, cfg.init_cash
     (0.0005, 0.0005, 1000000.0)
+
+    A config for ``run_weights()`` needs no model, and with
+    ``output_dir=None`` the run stays in memory:
+
+    >>> weights_cfg = BacktestConfig(
+    ...     price_dataset=price_dataset,
+    ...     start_date="2023-01-01",
+    ...     end_date="2023-12-31",
+    ...     output_dir=None,
+    ...     rebalance_periods=5,
+    ... )
+    >>> weights_cfg.model, weights_cfg.model_mode, weights_cfg.output_dir
+    (None, None, None)
     """
 
     #: The dataset whose prices the simulation trades on.
     price_dataset: "MarketDataset"
-    #: The model that produces the scores the target weights are built from:
-    #: any object with the members of ``quantlab.base.backtest.Predictor``,
-    #: such as a ``BaseModel`` (the annotation names the usual case, because
-    #: this module does not import the backtest layer).
-    model: "BaseModel"
-    #: ``"train"`` trains ``model`` on its own dates first; ``"load"`` restores
-    #: a checkpoint (``checkpoint`` for ``run()``, ``cv_project_dir`` for
-    #: ``run_cv()``).
-    model_mode: Literal["train", "load"]
-
     #: First date of the backtest window, inclusive.
     start_date: str
     #: Last date of the backtest window, inclusive.
     end_date: str
-    #: Directory each run writes its own run directory under.
-    output_dir: str
 
     #: Rebalance every this many bars.
     rebalance_periods: int
+
+    #: Directory each run writes its own run directory under. ``None`` keeps
+    #: the run in memory: the backtest writes no run directory and the
+    #: result's ``run_dir`` is ``None``. It covers the backtest's own files
+    #: only: with ``model_mode="train"`` the model still writes its checkpoint
+    #: where its own config points.
+    output_dir: str | None
+
+    #: The model that produces the scores the target weights are built from:
+    #: any object with the members of ``quantlab.base.backtest.Predictor``,
+    #: such as a ``BaseModel`` (the annotation names the usual case, because
+    #: this module does not import the backtest layer). ``run()`` and
+    #: ``run_cv()`` require it; ``run_weights()`` backtests precomputed
+    #: weights and ignores it, so it may be ``None`` there. ``model`` and
+    #: ``model_mode`` are both set or both ``None``.
+    model: "BaseModel | None" = None
+    #: ``"train"`` trains ``model`` on its own dates first; ``"load"`` restores
+    #: a checkpoint (``checkpoint`` for ``run()``, ``cv_project_dir`` for
+    #: ``run_cv()``). Required by ``run()`` and ``run_cv()``, like ``model``.
+    model_mode: Literal["train", "load"] | None = None
 
     #: Checkpoint to restore in ``"load"`` mode for ``run()``.
     checkpoint: str | None = None
