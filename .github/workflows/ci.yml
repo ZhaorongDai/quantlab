@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu matches the Linux training server; macos (arm64) matches the dev host,
+        # where the darwin-only paths run (OpenMP guard, KunQuant symbol padding).
+        os: [ubuntu-latest, macos-latest]
+    env:
+      WANDB_MODE: disabled
+      MPLBACKEND: Agg
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the locked environment
+        run: uv sync --locked --dev
+
+      - name: Test suite
+        # test_crsp_rebuild_measurements.py rebuilds the real CRSP store under data/;
+        # it is a local gate on real data, not a unit test.
+        run: uv run pytest -q --ignore=tests/test_crsp_rebuild_measurements.py
+
+      - name: API doctests
+        run: uv run pytest -q --doctest-modules quantlab/api/
