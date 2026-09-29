@@ -325,13 +325,42 @@ True
 10
 ```
 
-它不读写磁盘，因此构建和保存都会被拒绝：`from_raw_data()`、`from_raw_data_chunked()`、`update()` 和 `save()` 都会报错，建在它上面的 stream 模式因子也会报错。`resample()` 可用，返回一个持有重采样后面板的 dataset，同样在内存中。
+它不读写磁盘，因此构建和保存都会被拒绝：`from_raw_data()`、`from_raw_data_chunked()`、`update()` 和 `save()` 都会报错，建在它上面的 stream 模式因子也会报错。
 
 ```python
 >>> mem.save()
 Traceback (most recent call last):
     ...
 ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+```
+
+`resample(freq, how)` 接受与 Zarr dataset 相同的 `freq` 和 `how`（见[重采样到更粗的 bar](#重采样到更粗的-bar)），切分和聚合 bar 的方式也相同：按 UTC 时钟分桶，以桶的起点为标签。结果是一个新的 `FrameDataset`，在内存中持有重采样后的面板：不写任何文件，`store_path` 为 `None`，并像任何 `FrameDataset` 一样拒绝构建、保存和 stream 模式。源 dataset 不变。
+
+```python
+>>> hours = pd.DataFrame({
+...     "timestamp": pd.date_range("2024-01-02 09:30", periods=4, freq="h").repeat(2),
+...     "symbol": ["AAA", "BBB"] * 4,
+...     "close": [10.0, 20.0, 11.0, 21.0, 12.0, 22.0, 13.0, 23.0],
+...     "volume": 100.0,
+... })
+>>> hourly = FrameDataset(hours)
+>>> daily = hourly.resample("1d", {"close": "last", "volume": "sum"})
+>>> daily.panel("2024-01-02", "2024-01-02")["close"].to_pandas()
+symbol       AAA   BBB
+timestamp
+2024-01-02  13.0  23.0
+>>> daily.panel("2024-01-02", "2024-01-02")["volume"].to_pandas()
+symbol        AAA    BBB
+timestamp
+2024-01-02  400.0  400.0
+>>> daily.bar_before("2024-01-03", 1), hourly.panel("2024-01-02", "2024-01-02").sizes["timestamp"]
+(Timestamp('2024-01-02 00:00:00'), 4)
+>>> daily.config.resample_freq, daily.store_path
+('1d', None)
+>>> daily.update()
+Traceback (most recent call last):
+    ...
+ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
 ```
 
 ## 扩展

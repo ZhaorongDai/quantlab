@@ -128,6 +128,61 @@ class FrameDataset(MarketDataset):
         other.data_backend.to_internal(self._held())
         return other
 
+    def resample(self, freq: str, how: Mapping[str, str] | str) -> Self:
+        """Return a dataset holding this panel resampled onto ``freq``, in memory.
+
+        The bars are cut and aggregated as on a Zarr-backed dataset: UTC-clock buckets
+        labelled at their start, one ``ResampleMethod`` per variable, NaN cells skipped.
+        Nothing is written: there is no sibling store, and ``store_path`` stays ``None``.
+        The copy is still a ``FrameDataset``, so it refuses ``from_raw_data``,
+        ``from_raw_data_chunked``, ``update``, ``save`` and stream mode. This dataset is
+        not changed.
+
+        Parameters
+        ----------
+        freq : str
+            A ``ResampleFrequency`` token, coarser than the held bars.
+        how : mapping of str to str, or str
+            One ``ResampleMethod`` for every variable, or a ``{variable: method}``
+            mapping naming every variable.
+
+        Returns
+        -------
+        FrameDataset
+            A new dataset whose config carries ``resample_freq`` and ``resample_how``.
+
+        Raises
+        ------
+        ValueError
+            If ``freq`` or a method is not a known token, ``freq`` is not coarser than
+            the held bars, or ``how`` does not name every variable.
+
+        Examples
+        --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.date_range("2024-01-02", periods=4, freq="12h").repeat(2),
+        ...     "symbol": ["AAA", "BBB"] * 4,
+        ...     "close": [10.0, 20.0, 11.0, 21.0, 12.0, 22.0, 13.0, 23.0],
+        ...     "volume": [1.0] * 8,
+        ... })
+        >>> daily = FrameDataset(frame).resample("1d", {"close": "last", "volume": "sum"})
+        >>> panel = daily.panel("2024-01-02", "2024-01-03")
+        >>> panel["close"].values
+        array([[11., 21.],
+               [13., 23.]])
+        >>> panel["volume"].values
+        array([[2., 2.],
+               [2., 2.]])
+        >>> daily.store_path is None
+        True
+        >>> daily.save()
+        Traceback (most recent call last):
+        ValueError: FrameDataset.save(): the panel is held in memory, ...
+        """
+        return super().resample(freq, how)
+
     def panel(
         self,
         start: "str | pd.Timestamp",
