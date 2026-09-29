@@ -29,7 +29,7 @@ import xarray as xr
 from conftest import WHOLE_STORE
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
 
 # The `data_columns`/`factor_names` pairing below is LOAD-BEARING, not
 # arbitrary. `init_stream()` calls `queryBufferHandle` for every name in

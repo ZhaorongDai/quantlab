@@ -49,7 +49,7 @@ write_raw(raw, "2023-01-02", "2023-12-29", {"AAA": "2023-01-01", "BBB": "2023-07
 A `TimeChunkPlanner` splits the timestamps that actually occur in the raw data into windows at a period boundary. The granularity is one of `year`, `quarter`, `month`, `day` or `hour`. Every window edge is a timestamp present in the data, never a calendar period end, so a window never names a day on which nothing traded.
 
 ```python
->>> from quantlab.base.chunking import TimeChunkPlanner
+>>> from quantlab.utils.chunking import TimeChunkPlanner
 >>> planner = TimeChunkPlanner("quarter")
 >>> for start, end in planner.plan_from_timestamps(pd.bdate_range("2023-01-02", "2023-12-29")):
 ...     print(start.date(), end.date())
@@ -235,7 +235,7 @@ A rebuild replaces the whole store. The original store and ledger are moved asid
 `reporter` receives one event per window and `cancel` is checked before each window. A `CallbackProgressReporter` forwards events to a function, and `CancelToken.cancel()` stops the loop at the next window boundary. The windows written so far stay in the store and the run can be resumed; a cancelled rebuild instead restores the original store.
 
 ```python
->>> from quantlab.base.progress import CallbackProgressReporter, CancelToken
+>>> from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 >>> events, token = [], CancelToken()
 >>> def on_event(event):
 ...     events.append(event.kind)
@@ -386,4 +386,4 @@ Argument errors: `TimeChunkPlanner: unknown granularity 'week'; accepted values 
 
 ## See also
 
-The dataset guide describes the panel and the config. The backend guide covers `XrBackend.append`, `widen_symbol_axis` and the checks that refuse an unsafe append. The acquisition guide covers producing the raw tree. Relevant modules: `quantlab.base.chunking` (`TimeChunkPlanner`, `ChunkLedger`), `quantlab.base.data` (`from_raw_data_chunked`, `update`, `ConversionResult`), `quantlab.base.rebuild` and `quantlab.base.progress`.
+The dataset guide describes the panel and the config. The backend guide covers `XrBackend.append`, `widen_symbol_axis` and the checks that refuse an unsafe append. The acquisition guide covers producing the raw tree. Relevant modules: `quantlab.utils.chunking` (`TimeChunkPlanner`, `ChunkLedger`), `quantlab.base.data` (`from_raw_data_chunked`, `update`, `ConversionResult`), `quantlab.base.rebuild` and `quantlab.utils.progress`.

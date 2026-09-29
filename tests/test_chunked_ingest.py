@@ -34,10 +34,10 @@ import xarray as xr
 import zarr
 from loguru import logger
 
-from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
+from quantlab.utils.chunking import ChunkLedger, TimeChunkPlanner
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.base.data import BaseDataset
-from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
+from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend import XrBackend
 from quantlab.dataset.stock import StockDataset
 

@@ -20,13 +20,18 @@ Zarr store, building a `DatasetConfig`), which are the same as in
 A handful of rules hold across all layers, and following them is what makes
 an extension work with the rest of the code.
 
-The abstract base class of each layer lives in `quantlab/base/` and names the
-hooks a subclass fills in. The concrete class lives with the code that uses
-it: datasets in `quantlab/dataset/`, vendor clients in `quantlab/acquisition/`,
-factors in `quantlab/factor/`, labels in `quantlab/label/`, models in
-`quantlab/model/`, backtesters in
-`quantlab/backtest/`. Support code that is not itself a dataset, an
-acquisition or a model goes in that layer's private `_support/` package.
+The root base class of each layer lives in `quantlab/base/`, and nothing else
+does. The classes an extension subclasses live at the top level of their layer:
+`quantlab/factor/kunquant.py` and `polars.py`, `quantlab/label/forward.py`,
+`quantlab/model/torch_model.py`, `library_model.py` and `ensemble.py`,
+`quantlab/backtest/engine_vectorbt.py`. The implementations quantlab ships live
+in that layer's `predefined/` package (`quantlab/factor/predefined/`,
+`quantlab/label/predefined/`, `quantlab/model/predefined/`,
+`quantlab/backtest/predefined/`), and a framework module never imports them.
+Datasets live in `quantlab/dataset/` and vendor clients in
+`quantlab/acquisition/`, one entry per vendor. Support code that is not itself
+one of those things goes in the private `_support/` package beside the code
+that uses it.
 
 Every configurable object records its class as a dotted import path in
 `config.name`, and saved configs are rebuilt from that path by
@@ -405,7 +410,7 @@ factor asks it for a date range and changes nothing on it.
 import polars as pl
 
 from quantlab.base.config import PolarsFactorConfig
-from quantlab.base.factor import FactorPolars
+from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.stock import StockDataset
 
 
@@ -452,7 +457,7 @@ enough; a backtest warms each factor up by its own `warmup_bars` the same
 way. `build` writes the store and records its range; `read(start, end)`
 returns any range inside it without computing. Column names are the store's own (`adjVolume` in a Tiingo-shaped
 store), and parameters belong in `config.kwargs`, so one class serves many
-configs. `quantlab/factor/momentum.py` is the reference implementation.
+configs. `quantlab/factor/predefined/momentum.py` is the reference implementation.
 
 ## A KunQuant factor
 
@@ -468,7 +473,7 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 
 
 class MaDeviation(FactorKunQuant):
@@ -513,10 +518,10 @@ KunQuant uses (8 on most machines), which is why this panel has eight symbols.
 A graph that needs inputs beyond `config.data_columns` of the dataset
 overrides `_kunquant_inputs(inputs)`: it receives the dataset panel, calls
 `super()._kunquant_inputs(inputs)` and adds `[time, symbol]` float32 arrays to
-the returned dict, as `quantlab/factor/residual_momentum.py` does with the
+the returned dict, as `quantlab/factor/predefined/residual_momentum.py` does with the
 Fama-French series. `compute()` runs the graph on what it returns.
 Existing operator compositions to reuse are in
-`quantlab/factor/alpha101.py`, `quantlab/factor/alpha158.py` and
+`quantlab/factor/predefined/alpha101.py`, `quantlab/factor/predefined/alpha158.py` and
 `quantlab/my_ops/preprocess.py`.
 
 ## A label
@@ -582,7 +587,7 @@ At every split boundary the model drops the last `lookahead_bars()` bars
 (the largest among its labels) of the earlier segment. A backtest refuses a label whose
 `delay` differs from its engine's `fill_delay_bars`. To give a label a class
 of its own, subclass `Forward` and build the trailing factor in `__init__`,
-as `Return` and `BinaryReturn` in `quantlab/label/fret.py` do.
+as `Return` and `BinaryReturn` in `quantlab/label/predefined/fret.py` do.
 
 ## A model head
 
@@ -596,7 +601,7 @@ walk-forward cross-validation (both purged by the labels' lookahead), checkpoint
 are `_init_model`, `_fit_model` (fit once, with the library's
 own early stopping if it has one, and leave the fitted model in `self.model`)
 and `_forward`. The base builds the rows: `_fit_model(train_rows, val_rows)`
-gets `quantlab.base.library_model.Rows` with `x [n, F]`, `y [n, L]` (the
+gets `quantlab.model.library_model.Rows` with `x [n, F]`, `y [n, L]` (the
 training target), `y_raw` and `where`, one row per cell with a valid
 training target and NaN features kept, and `_forward` maps `[n, F]` rows to
 `[n, L]`. `_transform_feature` (inf to NaN), `_transform_target` (the same
@@ -611,7 +616,7 @@ eight symbols. A ridge regression:
 import numpy as np
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.library_model import LibraryModel
+from quantlab.model.library_model import LibraryModel
 
 
 class RidgeHead(LibraryModel):
@@ -666,7 +671,7 @@ finite feature at a bar, each with its own window of the last `window_bars`
 bars. A head writes `window_bars`, `_init_model(num_features, num_labels,
 hyperparameters)`, returning an `nn.Module` that maps `[S_t, N, F]` to
 `[S_t, L]` for any number of symbols S_t, and `_loss(output, batch)`, where
-`batch` is a `quantlab.base.torch_data.Batch` (`x`, `y`, `mask`, `y_raw`,
+`batch` is a `quantlab.model.torch_data.Batch` (`x`, `y`, `mask`, `y_raw`,
 `where`) with missing labels already masked. Every other choice is an
 optional hook with a default: `_dataset` (`CrossSectionDataset`, one item per
 bar; return your own `Dataset` for another sample shape, with every item's
@@ -681,7 +686,7 @@ hyperparameter's count of epochs). `_init_model` receives the whole
 `hyperparameters` dict, whose reserved keys (`epochs`, `lr`, `batch_size`,
 `num_workers`, `panel_device`, `panel_dtype`, `early_stopping`,
 `early_stopping_patience`) the base classes read, so read the head's own keys
-by name rather than splatting the dict into the network. `quantlab.utils.torch_training` has helpers for them: `masked_mse`,
+by name rather than splatting the dict into the network. `quantlab.model.torch_training` has helpers for them: `masked_mse`,
 `cs_rank_norm`, `cs_zscore`, `drop_extreme` and `TrainLossThreshold`. The
 base class builds the training panel, computes the training target once per
 fit, moves batches to the device, runs the epoch loop, evaluates under
@@ -696,8 +701,8 @@ import torch
 from torch import nn
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.torch_model import TorchModel
-from quantlab.utils.torch_training import cs_rank_norm, masked_mse
+from quantlab.model.torch_model import TorchModel
+from quantlab.model.torch_training import cs_rank_norm, masked_mse
 
 
 class CrossSectionAttention(nn.Module):
@@ -748,8 +753,8 @@ AttentionHead_total.pth
 The features are requested from 2024-01-03, nine bars before `start_date`,
 so the first training bar has a full ten-bar window.
 
-`quantlab/model/gats.py` (`GATsRegressor`) and
-`quantlab/model/master.py` (`MASTERRegressor`) are complete
+`quantlab/model/predefined/gats.py` (`GATsRegressor`) and
+`quantlab/model/predefined/master.py` (`MASTERRegressor`) are complete
 cross-section heads that reproduce published models, and the patterns to
 copy for a new one:
 
@@ -775,9 +780,9 @@ copy for a new one:
 Every training run opens a Weights & Biases run; set `WANDB_MODE=disabled` in
 the environment to keep it offline. On macOS, set `OMP_NUM_THREADS=1` before
 importing anything when one process uses both torch and xgboost. The
-reference heads are `quantlab/model/xgb.py` and
-`quantlab/model/realmlp.py` for `LibraryModel`, and
-`quantlab/model/gats.py` and `quantlab/model/master.py` for
+reference heads are `quantlab/model/predefined/xgb.py` and
+`quantlab/model/predefined/realmlp.py` for `LibraryModel`, and
+`quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` for
 `TorchModel`.
 
 ## A backtest market or selection rule

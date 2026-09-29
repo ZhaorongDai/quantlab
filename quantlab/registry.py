@@ -39,7 +39,7 @@ from typing import Callable
 from quantlab.base.acquisition import Acquisition, AcquisitionResult
 from quantlab.base.config import AcquisitionConfig, DatasetConfig
 from quantlab.base.data import ConversionResult, MarketDataset
-from quantlab.base.progress import CancelToken, ProgressReporter
+from quantlab.utils.progress import CancelToken, ProgressReporter
 from quantlab.enums.data import Frequency, Market, UniverseCategory, Vendor
 
 
@@ -644,7 +644,7 @@ def run(
     Needs the vendor's credential in the environment and network access::
 
         from quantlab.base.config import AcquisitionConfig
-        from quantlab.base.progress import CancelToken
+        from quantlab.utils.progress import CancelToken
         from quantlab.registry import DataSourceRegistry, run
 
         source = DataSourceRegistry.get("tiingo")

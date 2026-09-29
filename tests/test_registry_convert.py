@@ -421,7 +421,7 @@ def test_alpaca_rows_carry_targets_on_bars_and_none_on_tick() -> None:
 # never checks the token" from "`convert()` drops the argument".
 # ---------------------------------------------------------------------------
 
-from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
+from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 
 
 class _RecordingReporter(ProgressReporter):

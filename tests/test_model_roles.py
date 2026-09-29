@@ -12,10 +12,10 @@ import pytest
 from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.momentum import Momentum
 from quantlab.label.forward import Forward
-from quantlab.label.fret import Return
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.label.predefined.fret import Return
+from quantlab.model.predefined.xgb import XGBoostRegressor
 
 
 def _momentum(dataset_config: DatasetConfig) -> Momentum:

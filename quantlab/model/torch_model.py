@@ -2,10 +2,10 @@
 
 ``TorchModel`` extends ``BaseModel`` with the epoch loop: the collected panel is held as a
 ``TrainingPanel`` of torch tensors, the head's ``_dataset`` hook turns it into a PyTorch
-``Dataset`` (one cross-section per bar by default, see ``quantlab.base.torch_data``) and
+``Dataset`` (one cross-section per bar by default, see ``quantlab.model.torch_data``) and
 ``_dataloader`` batches it. A head implements the window, the network and the loss; every other
-learning choice is an optional hook. Checkpoints are ``.pth`` files. Concrete heads live in
-``quantlab/model``.
+learning choice is an optional hook. Checkpoints are ``.pth`` files. Shipped heads live in
+``quantlab/model/predefined``.
 """
 
 from abc import abstractmethod
@@ -19,11 +19,12 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from quantlab.base.model import TORCH_RESERVED_HYPERPARAMETERS, BaseModel
-from quantlab.base.torch_data import Batch, CrossSectionDataset, TrainingPanel
+from quantlab.model.torch_data import Batch, CrossSectionDataset, TrainingPanel
+from quantlab.model.training_target import TrainingTargetMixin
 from quantlab.utils.timer import Timer
 
 
-class TorchModel(BaseModel):
+class TorchModel(TrainingTargetMixin, BaseModel):
     """Torch variant: standard PyTorch datasets and loaders, every learning choice a hook.
 
     The base class assembles the collected panel as a ``TrainingPanel`` of

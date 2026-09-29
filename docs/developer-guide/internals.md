@@ -32,7 +32,7 @@ raw/demo/month=2024-01/part-5b7fc3dffa5ab4a0-00000.pqt
 
 A *watermark* records the date range of a symbol's data already on disk, for
 example `{"last_date": "2024-03-29", "start_date": "2024-01-02"}`. Before each
-pass, `Acquisition._run` asks `CoverageLedger` (`quantlab.base.coverage`)
+pass, `Acquisition._run` asks `CoverageLedger` (`quantlab.utils.coverage`)
 which requested symbols are not yet covered for the requested window, and
 fetches only those. A watermark is written only after the symbol's whole
 batch has been fetched and written, so a symbol interrupted mid-download has
@@ -43,13 +43,13 @@ removes the entry.
 
 A *batch* is one request covering several symbols. Vendors such as Alpaca
 answer it as a chain of pages linked by opaque tokens, so a batch can itself
-be interrupted halfway. The *page ledger* (`quantlab.base.pageledger`)
+be interrupted halfway. The *page ledger* (`quantlab.utils.pageledger`)
 records, per batch, every page fetched, the token the next request must send,
 and the shard files each page was written to. `Acquisition._fetch_batch` is
 the only pagination loop, and it resumes from the ledger:
 
 ```python
-from quantlab.base.pageledger import PageLedger
+from quantlab.utils.pageledger import PageLedger
 
 roster = ["AAPL", "MSFT"]
 key = PageLedger.batch_key("alpaca", "1m", "2024-01-02", "2024-01-05", roster)
@@ -99,7 +99,7 @@ write.
 
 Converting a large raw tier into a Zarr store is also resumable.
 `BaseDataset.from_raw_data_chunked` splits the time axis into windows with
-`TimeChunkPlanner` (`quantlab.base.chunking`), densifies each window onto one
+`TimeChunkPlanner` (`quantlab.utils.chunking`), densifies each window onto one
 symbol axis fixed for the whole range before the first window (so all windows
 line up column by column), appends it to the store, and records it in a
 `ChunkLedger` next to the store (`<store>.chunks.json`). A re-run skips the

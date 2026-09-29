@@ -39,11 +39,11 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.base.model import BaseModel
-from quantlab.base.ensemble import BaseEnsemble
-from quantlab.model.seed_ensemble import SeedEnsemble
+from quantlab.model.ensemble import BaseEnsemble
+from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from tests.backtest_fixtures import (
     SeededHead,
     make_model,

@@ -39,12 +39,12 @@ from KunQuant.Stage import Function
 
 from quantlab.base.config import ModelConfig, FactorConfig, ForwardConfig
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.base.model import BaseModel
-from quantlab.base.torch_model import TorchModel
+from quantlab.model.torch_model import TorchModel
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.base.torch_data import Batch, SymbolSequenceDataset
-from quantlab.utils.torch_training import (
+from quantlab.model.torch_data import Batch, SymbolSequenceDataset
+from quantlab.model.torch_training import (
     TrainLossThreshold,
     cs_rank_norm,
     cs_zscore,

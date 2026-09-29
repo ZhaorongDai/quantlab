@@ -39,7 +39,7 @@ import zarr
 from loguru import logger
 
 import quantlab.utils.module as module_utils
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig
 from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable

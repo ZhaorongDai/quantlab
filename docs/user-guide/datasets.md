@@ -439,5 +439,5 @@ you (see [Factors](factors.md)).
 - [Extending quantlab](../developer-guide/extending.md): write a dataset for a
   new vendor by implementing `_raw_data_to_xr`.
 - The docstrings of `quantlab.base.data.BaseDataset`,
-  `quantlab.backend.XrBackend` and `quantlab.base.chunking.ChunkLedger` for
+  `quantlab.backend.XrBackend` and `quantlab.utils.chunking.ChunkLedger` for
   every parameter.

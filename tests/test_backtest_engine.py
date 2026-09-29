@@ -57,7 +57,7 @@ from vectorbt.generic.enums import DrawdownStatus
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.backtest.selection import rebalance_mask
-from quantlab.backtest.us_equity import (
+from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )

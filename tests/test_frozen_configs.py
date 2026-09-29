@@ -38,14 +38,14 @@ from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.nbbo import NbboPanelDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
-from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.alpha101 import Alpha101SpotKline, Alpha101Stock
+from quantlab.factor.predefined.alpha158 import Alpha158SpotKline, Alpha158Stock
+from quantlab.factor.predefined.momentum import Momentum
 from quantlab.label.forward import Forward
-from quantlab.label.fret import BinaryReturn, Return
-from quantlab.model.realmlp import RealMLPRegressor
-from quantlab.model.xgb import XGBoostRegressor
-from quantlab.model.xgb_td import XGBTDRegressor
+from quantlab.label.predefined.fret import BinaryReturn, Return
+from quantlab.model.predefined.realmlp import RealMLPRegressor
+from quantlab.model.predefined.xgb import XGBoostRegressor
+from quantlab.model.predefined.xgb_td import XGBTDRegressor
 from tests.torch_heads import MeanContextHead
 
 _OHLCV = ("open", "high", "low", "close", "volume", "amount")
@@ -433,7 +433,7 @@ def test_a_model_rejects_the_wrong_config_class(factor_cases, tmp_path: Path) ->
 
 
 def _literature_alpha(tmp_path: Path):
-    from quantlab.factor.literature_alpha import LiteratureAlpha
+    from quantlab.factor.predefined.literature_alpha import LiteratureAlpha
     from tests.test_literature_alpha import _config, _dataset, _synthetic_panel
 
     panel, _, _ = _synthetic_panel(periods=30)
@@ -441,7 +441,7 @@ def _literature_alpha(tmp_path: Path):
 
 
 def _residual_momentum(tmp_path: Path):
-    from quantlab.factor.residual_momentum import ResidualMomentumFF3
+    from quantlab.factor.predefined.residual_momentum import ResidualMomentumFF3
     from tests.test_residual_momentum import _factor_config, _monthly_dataset
 
     dataset, _ = _monthly_dataset(tmp_path)

@@ -108,12 +108,12 @@ The built-in sets are thin wrappers around KunQuant's predefined libraries:
 
 | Class | Module | Reads | Output |
 |---|---|---|---|
-| `Alpha101SpotKline` | `quantlab.factor.alpha101` | crypto klines: `open`, `high`, `low`, `close`, `volume`, `amount` | Alpha101 formulas, z-scored along time |
-| `Alpha101Stock` | `quantlab.factor.alpha101` | US equities: `adjOpen` to `adjVolume` | Alpha101 formulas, z-scored across symbols |
-| `Alpha158SpotKline` | `quantlab.factor.alpha158` | crypto klines, as above | 169 Alpha158 features, z-scored along time |
-| `Alpha158Stock` | `quantlab.factor.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, z-scored across symbols |
-| `ResidualMomentumFF3` | `quantlab.factor.residual_momentum` | US equities: `ret`, plus a Fama-French CSV | residual momentum and regression diagnostics |
-| `MarketFeatures` | `quantlab.factor.market` | single-symbol index or ETF stores: `adjClose`, `adjVolume` | 21 return and amount features per series, the same for every symbol with a bar |
+| `Alpha101SpotKline` | `quantlab.factor.predefined.alpha101` | crypto klines: `open`, `high`, `low`, `close`, `volume`, `amount` | Alpha101 formulas, z-scored along time |
+| `Alpha101Stock` | `quantlab.factor.predefined.alpha101` | US equities: `adjOpen` to `adjVolume` | Alpha101 formulas, z-scored across symbols |
+| `Alpha158SpotKline` | `quantlab.factor.predefined.alpha158` | crypto klines, as above | 169 Alpha158 features, z-scored along time |
+| `Alpha158Stock` | `quantlab.factor.predefined.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, z-scored across symbols |
+| `ResidualMomentumFF3` | `quantlab.factor.predefined.residual_momentum` | US equities: `ret`, plus a Fama-French CSV | residual momentum and regression diagnostics |
+| `MarketFeatures` | `quantlab.factor.predefined.market` | single-symbol index or ETF stores: `adjClose`, `adjVolume` | 21 return and amount features per series, the same for every symbol with a bar |
 
 Alpha101 is the public list of 101 formulaic trading signals from
 Kakushadze (2016). Alpha158 is the feature library of Microsoft's Qlib
@@ -133,7 +133,7 @@ Compute three Alpha158 features from February to the end of the store:
 
 ```python
 from quantlab.base.config import FactorConfig
-from quantlab.factor.alpha158 import Alpha158Stock
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
 
 alpha = Alpha158Stock(FactorConfig(
     warmup_bars=20,
@@ -173,7 +173,7 @@ The US-equity stores carry no dollar-volume (`amount`) column, so
 
 Both z-score across symbols, so a symbol with no bar that day (not yet
 listed or already delisted) must not count. They build their graphs from a
-copy of KunQuant 0.1.11's Alpha101 and Alpha158 in `quantlab.factor._support`
+copy of KunQuant 0.1.11's Alpha101 and Alpha158 in `quantlab.factor.predefined._support`
 that is NaN in every output on such a bar, where KunQuant's own graphs give
 0 or a clipping bound. On a bar with data the values are KunQuant's.
 The crypto classes use KunQuant's graphs unchanged.
@@ -249,7 +249,7 @@ the stores you built earlier (see
 
 ## Write a Polars factor
 
-A Polars factor is a subclass of `quantlab.base.factor.FactorPolars` that
+A Polars factor is a subclass of `quantlab.factor.polars.FactorPolars` that
 overrides one method, `_get_factor_lazyframe`. It receives the dataset as a
 `polars.LazyFrame` with `timestamp` and `symbol` columns plus the store's own
 columns, and returns a lazy frame with exactly `timestamp`, `symbol` and the
@@ -260,7 +260,7 @@ them separately:
 ```python
 import polars as pl
 from quantlab.base.config import PolarsFactorConfig
-from quantlab.base.factor import FactorPolars
+from quantlab.factor.polars import FactorPolars
 
 class VolumeSurprise(FactorPolars):
     """Today's volume relative to its trailing mean, per symbol."""
@@ -297,14 +297,14 @@ that shifts and rolling windows stay within one symbol. End with the
 `.select(...)`: any price column left in the frame would be stored as a
 factor. And spell columns exactly as the store does. No renaming happens on
 the Polars path (except over a merged input, which carries the shared
-names), which is why the built-in `quantlab.factor.momentum.Momentum`
+names), which is why the built-in `quantlab.factor.predefined.momentum.Momentum`
 reads `Close` and works only on the crypto kline store. Reading the names
 from the schema means the constructor reads a few rows of the store, so the
 store must exist before you build the factor.
 
 ## Write a KunQuant factor
 
-A KunQuant factor subclasses `quantlab.base.factor.FactorKunQuant` and
+A KunQuant factor subclasses `quantlab.factor.kunquant.FactorKunQuant` and
 implements `_get_factor_names` and `_get_factor_func`. The second one builds
 an operator graph. It has an `Input` for each column in `data_columns`,
 KunQuant operators such as `WindowedAvg` or `BackRef` (the value `n` bars
@@ -313,7 +313,7 @@ builds such a factor.
 
 KunQuant operators look only backwards in time, so a factor graph cannot
 peek at the future by accident. The operator catalogue lives in
-`KunQuant.ops`, and the Alpha101 and Alpha158 sources in `quantlab/factor/`
+`KunQuant.ops`, and the Alpha101 and Alpha158 sources in `quantlab/factor/predefined/`
 show larger graphs.
 
 ## Normalisation operators
@@ -339,7 +339,7 @@ feature, the close's distance from its ten-day mean, in all three forms:
 import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
 
 class MaDeviation(FactorKunQuant):
@@ -404,7 +404,7 @@ a feature and, wrapped, as a label.
 
 ### Forward-return labels
 
-`quantlab.label.fret` provides the two standard labels, both `Forward`
+`quantlab.label.predefined.fret` provides the two standard labels, both `Forward`
 subclasses with `span = n` and `delay = 1`. They read `adjOpen` and take `n`
 from `kwargs["n_forward_periods"]` of the `FactorConfig` they are built from.
 
@@ -414,7 +414,7 @@ from `kwargs["n_forward_periods"]` of the `FactorConfig` they are built from.
   that return is positive and 0.0 otherwise.
 
 ```python
-from quantlab.label.fret import BinaryReturn, Return
+from quantlab.label.predefined.fret import BinaryReturn, Return
 
 ret = Return(FactorConfig(
     warmup_bars=5, dataset=dataset, mode="batch",

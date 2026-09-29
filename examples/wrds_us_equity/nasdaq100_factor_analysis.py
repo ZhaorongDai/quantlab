@@ -36,9 +36,9 @@ from quantlab.dataset.constituent import CompustatNasdaq100ConstituentDataset
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.constant import Date
-from quantlab.factor.alpha101 import Alpha101Stock
-from quantlab.factor.alpha158 import Alpha158Stock
-from quantlab.label.fret import Return
+from quantlab.factor.predefined.alpha101 import Alpha101Stock
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.label.predefined.fret import Return
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.

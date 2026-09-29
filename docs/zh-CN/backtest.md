@@ -4,7 +4,7 @@
 
 回测拿一个训练好的收益模型和一份价格数据集，展示模型的预测如果拿来交易会得到什么结果。模型对每个标的、每根 bar 给出一个分数，选股规则把分数变成目标权重，模拟引擎按这些权重成交并记录净值曲线。每次运行都会写出一个运行目录，里面有权重、净值曲线、指标、HTML 报告，以及重建这次运行所需的配置。
 
-主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、选股规则 `CrossSectionTopNSelector`（`quantlab/backtest/selection.py`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/us_equity.py`）。
+主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、选股规则 `CrossSectionTopNSelector`（`quantlab/backtest/selection.py`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
 
 ## 前置条件
 
@@ -26,8 +26,8 @@ import polars as pl
 import xarray as xr
 
 from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
-from quantlab.base.factor import FactorPolars
-from quantlab.base.library_model import LibraryModel
+from quantlab.factor.polars import FactorPolars
+from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 
@@ -137,7 +137,7 @@ def train_cv_project(model, train_periods):
 >>> import pandas as pd
 >>> import xarray as xr
 >>> from demo_parts import *
->>> from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+>>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 >>> from quantlab.base.config import CrossSectionBacktestConfig
 >>> root = Path(tempfile.mkdtemp())
 >>> cfg = write_price_store(root, delist={"FFF": 36})
@@ -366,7 +366,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 >>> from quantlab.utils.module import load_backtester_from_config
 >>> config = json.loads((result.run_dir / "config.json").read_text())
 >>> config["name"], config["direction"], config["top_n"]
-('quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt', 'long_only', 2)
+('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', 'long_only', 2)
 >>> again = load_backtester_from_config(config).run()
 >>> again.metrics["whole"] == result.metrics["whole"]
 True
@@ -387,7 +387,7 @@ import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.backtest.selection import rebalance_mask
-from quantlab.backtest.us_equity import US_EQUITY_MARKET
+from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
 from quantlab.base.config import BacktestConfig
 
 
@@ -462,7 +462,7 @@ timestamp
 `SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成目录，并把其中的 `ensemble.json` 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `ensemble.json`，样本内划分所用的训练日期从它旁边的集成级 `config.json` 读取，与单个模型的检查点相同。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
 
 ```python
->>> from quantlab.model.seed_ensemble import SeedEnsemble
+>>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 >>> ensemble = SeedEnsemble(make_model(root / "ensemble", cfg, days), seeds=[0, 1, 2])
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,
@@ -543,7 +543,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 >>> load_backtester_from_config(config)
 Traceback (most recent call last):
   ...
-ValueError: quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
+ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
 如果 `cv_folds.json` 中间缺了一折，`run_cv()` 拒绝跨缺口拼接，报错信息包含 `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`。恢复清单，或者把 `start_date` 与 `end_date` 收窄到一段连续的折。

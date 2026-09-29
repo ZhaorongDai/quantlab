@@ -875,7 +875,7 @@ def test_alpha158_computes_over_a_crsp_panel_with_no_consumer_change(
     """
     import numpy as np
 
-    from quantlab.factor.alpha158 import Alpha158Stock
+    from quantlab.factor.predefined.alpha158 import Alpha158Stock
 
     dataset_config, days, _ = _split_series_store(tmp_path, with_companions=True)
     factor = Alpha158Stock(
@@ -915,7 +915,7 @@ def test_the_return_label_equals_the_next_days_crsp_ret(mock_crsp_session, tmp_p
     """
     import numpy as np
 
-    from quantlab.label.fret import Return
+    from quantlab.label.predefined.fret import Return
 
     dataset_config, days, returns = _split_series_store(tmp_path, with_companions=True)
     label = Return(
@@ -951,7 +951,7 @@ def test_return_label_over_lehmans_delisting_day(mock_crsp_session, tmp_path):
     on. If the delisting row were dropped, or its return double-counted, this
     cell would hold NaN or -0.84 instead.
     """
-    from quantlab.label.fret import Return
+    from quantlab.label.predefined.fret import Return
     from tests.crsp_fixtures import LEHMAN_2008_ROWS
 
     # Lehman's five VERBATIM rows, padded to the eight-symbol KunQuant width

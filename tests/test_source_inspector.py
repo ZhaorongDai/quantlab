@@ -164,7 +164,7 @@ def test_the_stock_zarr_fixture_opens_and_carries_a_symbol_index(
 # ---------------------------------------------------------------------------
 # 03.4-04 Task 1 -- the CoverageLedger extraction (D-09)
 #
-# `quantlab/base/coverage.py` is where coverage judgement now lives, and it is
+# `quantlab/utils/coverage.py` is where coverage judgement now lives, and it is
 # a LEAF: `Acquisition` composes a ledger and delegates, while the inspector
 # built in Task 2 composes one directly. These tests pin the two properties the
 # extraction ADDED (an explicit sidecar enumeration, and the shared
@@ -193,7 +193,7 @@ def test_iter_watermark_symbols_skips_the_manifest_and_the_page_ledgers(
     """
     import json
 
-    from quantlab.base.coverage import (
+    from quantlab.utils.coverage import (
         FAILURE_MANIFEST_NAME,
         PAGE_LEDGER_DIR_NAME,
         CoverageLedger,
@@ -248,7 +248,7 @@ def test_the_failure_manifest_name_is_declared_once_and_bound_by_acquisition(
     import re
 
     import quantlab.base.acquisition as acquisition_module
-    from quantlab.base.coverage import FAILURE_MANIFEST_NAME, CoverageLedger
+    from quantlab.utils.coverage import FAILURE_MANIFEST_NAME, CoverageLedger
 
     assert acquisition_module.Acquisition.FAILURE_MANIFEST_NAME == (
         FAILURE_MANIFEST_NAME
@@ -434,7 +434,7 @@ def _sidecar_tree(config, *, covered=(), widened=(), legacy=(), no_data=()):
     """
     import json
 
-    from quantlab.base.coverage import CoverageLedger
+    from quantlab.utils.coverage import CoverageLedger
 
     ledger = CoverageLedger.for_config(config)
     root = ledger.watermark_root
@@ -575,7 +575,7 @@ def test_inspector_binds_no_client() -> None:
     from pathlib import Path
 
     import quantlab.acquisition._support.inspector as inspector_module
-    import quantlab.base.coverage as coverage_module
+    import quantlab.utils.coverage as coverage_module
     from quantlab.base.acquisition import Acquisition
 
     for module in (inspector_module, coverage_module):
@@ -665,7 +665,7 @@ def test_coverage_is_the_same_code_as_the_real_run(
 
     from quantlab.acquisition._support.inspector import SourceInspector
     from quantlab.acquisition.tiingo import TiingoAcquisition
-    from quantlab.base.coverage import CoverageLedger
+    from quantlab.utils.coverage import CoverageLedger
 
     config = acquisition_config(
         vendor="tiingo", symbols=("AAPL", "MSFT", "GOOG", "TSLA")
@@ -785,7 +785,7 @@ def test_tick_watermark_roots_agree_between_the_two_ledger_constructors(
     monkeypatch.setenv("APCA_API_SECRET_KEY", "not-a-real-secret")
 
     from quantlab.acquisition.alpaca import AlpacaAcquisition
-    from quantlab.base.coverage import CoverageLedger
+    from quantlab.utils.coverage import CoverageLedger
 
     tick = acquisition_config(
         vendor="alpaca", frequency="tick", kwargs={"data_type": "trades"}
@@ -837,7 +837,7 @@ def test_inventory_reports_the_two_tiers_separately(
     import json
 
     from quantlab.acquisition._support.inspector import SourceInspector
-    from quantlab.base.coverage import (
+    from quantlab.utils.coverage import (
         FAILURE_MANIFEST_NAME,
         PAGE_LEDGER_DIR_NAME,
     )
@@ -927,7 +927,7 @@ def test_inventory_makes_one_traversal_and_one_sidecar_pass(
     import os as os_module
 
     from quantlab.acquisition._support.inspector import SourceInspector
-    from quantlab.base.coverage import CoverageLedger
+    from quantlab.utils.coverage import CoverageLedger
 
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
     _sidecar_tree(config, covered=("AAPL", "MSFT"), legacy=("GOOG",))

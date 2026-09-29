@@ -27,7 +27,7 @@ All output shown on this page comes from that script.
 ## What the backtester does
 
 The concrete class shipped with quantlab is
-`USEquityCrossectionSelectStockVectorBt` in `quantlab.backtest.us_equity`. It
+`USEquityCrossectionSelectStockVectorBt` in `quantlab.backtest.predefined.us_equity`. It
 is a *cross-sectional stock-selection* backtester: on each rebalance day it
 ranks every symbol in the price dataset by the model's score and holds the
 best ones. It is configured with a `CrossSectionBacktestConfig`
@@ -63,7 +63,7 @@ inside the backtest itself. With `model_mode="train"`, the backtester calls the
 model's `collect()` and `train()` before predicting:
 
 ```python
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig
 
 backtester = USEquityCrossectionSelectStockVectorBt(
@@ -185,7 +185,7 @@ the return that the backtest actually earns, which starts at the open of
 *t + 1*. A label is a factor wrapped in `Forward` (`quantlab.label.forward`):
 its value at bar *t* is the wrapped factor at bar *t + delay + span*, where
 `span` is the number of bars it accumulates over and `delay` the number of
-bars before the first of them. The `Return` label in `quantlab.label.fret`
+bars before the first of them. The `Return` label in `quantlab.label.predefined.fret`
 has `delay=1` (`adjOpen[t + n + 1] / adjOpen[t + 1] - 1`), and so does the
 label in the example script, a `Forward` over a trailing 5-bar open-to-open
 return with `span=5`. Second, a target percentage is measured against the

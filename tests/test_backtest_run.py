@@ -45,7 +45,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import CrossSectionBacktestConfig
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -192,7 +192,7 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
     config = _strict_json(result.run_dir / "config.json")
     assert (
         config["name"]
-        == "quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt"
+        == "quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt"
     )
     assert config["model"]["name"] == "tests.backtest_fixtures.FirstFeatureHead"
     assert config["price_dataset"]["name"].endswith("StockDataset")

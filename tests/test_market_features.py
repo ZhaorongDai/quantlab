@@ -22,7 +22,7 @@ import xarray as xr
 
 from quantlab.base.config import DatasetConfig, MarketFeatureConfig, PolarsFactorConfig
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.market import MarketFeatures
+from quantlab.factor.predefined.market import MarketFeatures
 from quantlab.utils.module import load_factor_from_config
 from tests.backtest_fixtures import PastReturnFactor, write_price_store
 
@@ -357,7 +357,7 @@ def test_the_config_round_trips_through_the_class_path_loader(stores):
     factor = _factor(stores, kwargs={"amount_column": None})
     saved = json.loads(json.dumps(factor.get_config()))
 
-    assert saved["name"] == "quantlab.factor.market.MarketFeatures"
+    assert saved["name"] == "quantlab.factor.predefined.market.MarketFeatures"
     assert list(saved["series"]) == ["spy", "qqq"]
     assert saved["series"]["spy"]["zarr_file_path"] == stores["spy"][0].zarr_file_path
 

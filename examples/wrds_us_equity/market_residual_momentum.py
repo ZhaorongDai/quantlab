@@ -33,8 +33,8 @@ from loguru import logger
 from quantlab.base.config import CrspDatasetConfig, FactorConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
-from quantlab.factor.residual_momentum import ResidualMomentumFF3
-from quantlab.label.fret import Return
+from quantlab.factor.predefined.residual_momentum import ResidualMomentumFF3
+from quantlab.label.predefined.fret import Return
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.

@@ -22,9 +22,9 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.momentum import Momentum
 
 
 class MaDeviation(FactorKunQuant):

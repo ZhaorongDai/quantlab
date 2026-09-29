@@ -12,13 +12,15 @@ validation, requesting the factor and label panels over the model's date
 range and collecting them into one dataset, the public ``train`` /
 ``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, the
 checkpoint directory layout with its ``config.json`` sidecar file, and the
-fold boundaries of rolling cross-validation. The two variants live beside
-it: ``quantlab.base.torch_model.TorchModel`` (PyTorch: one cross-section of
+fold boundaries of rolling cross-validation. It imports no training
+framework. The two variants live in the model layer:
+``quantlab.model.torch_model.TorchModel`` (PyTorch: one cross-section of
 symbols per training step, each with its own window of past bars, ``.pth``
-checkpoints) and ``quantlab.base.library_model.LibraryModel`` (tree models and
-other libraries that train themselves, ``.joblib`` checkpoints). Both take one
+checkpoints) and ``quantlab.model.library_model.LibraryModel`` (tree models and
+other libraries that train themselves, ``.joblib`` checkpoints), which share
+the training target of ``quantlab.model.training_target``. Both take one
 ``ModelConfig``; the reserved keys of its ``hyperparameters`` are listed in
-``RESERVED_HYPERPARAMETERS``. Concrete heads live in ``quantlab/model``.
+``RESERVED_HYPERPARAMETERS``. Shipped heads live in ``quantlab/model/predefined``.
 """
 
 import copy
@@ -35,7 +37,6 @@ from typing import Self
 
 import numpy as np
 import pandas as pd
-import torch
 import wandb
 import wandb.sdk
 import xarray as xr
@@ -44,7 +45,6 @@ from loguru import logger
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.enums.constant import Date
-from quantlab.base.torch_data import TrainingPanel
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import regression_panel_metrics
@@ -276,7 +276,7 @@ class BaseModel(ABC):
         Examples
         --------
         >>> model._normalize_config(config).name
-        'quantlab.model.xgb.XGBoostRegressor'
+        'quantlab.model.predefined.xgb.XGBoostRegressor'
         """
         if not isinstance(config, self.config_cls):
             raise TypeError(
@@ -1146,9 +1146,7 @@ class BaseModel(ABC):
         self._emitted_load_warnings.add(message)
         logger.warning(message)
 
-    def predict(
-        self, data: torch.Tensor | np.ndarray
-    ) -> torch.Tensor | np.ndarray:
+    def predict(self, data):
         """Return ``[T, S, L]`` predictions for a ``[T, S, F]`` input.
 
         The variant's ``_predict`` decides the accepted and returned types: the
@@ -1849,7 +1847,7 @@ class BaseModel(ABC):
 
         return results
 
-    def _assert_shape_match_y(self, data: np.ndarray | torch.Tensor):
+    def _assert_shape_match_y(self, data):
         """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_labels]``."""
         num_symbols, num_labels = (
             self.num_symbols,
@@ -1860,7 +1858,7 @@ class BaseModel(ABC):
                 f"Train y shape mismatch: [num_times, {num_symbols}, {num_labels}] vs {data.shape}"
             )
 
-    def _assert_shape_match_x(self, data: np.ndarray | torch.Tensor):
+    def _assert_shape_match_x(self, data):
         """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_factors]``."""
         num_symbols, num_features = (
             self.num_symbols,
@@ -1910,81 +1908,8 @@ class BaseModel(ABC):
         )
         return metrics
 
-    def _transform_target(self, y: torch.Tensor, training: bool):
-        """Turn one bar's raw ``[S_t, L]`` labels into ``(target, keep)``.
-
-        Shared by both variants: ``y`` is a float32 CPU tensor for a torch
-        head and a library head alike, so one transform (a rank, a z-score,
-        dropping the extremes) serves both.
-
-        Called once per bar per fit, before training: ``training`` is True on
-        the training bars and False on the validation and test bars. ``y``
-        holds the labels of the bar's present symbols, NaN where missing.
-        ``keep`` is None or ``[S_t]`` booleans; a symbol it drops leaves the
-        loss but stays in the input as context. ``target`` has one row per
-        symbol, or one per kept symbol. A symbol whose target is not finite
-        in every label is masked out. The default returns ``(y, None)``.
-        """
-        return y, None
-
-    def _training_panel(self, data: xr.Dataset) -> TrainingPanel:
-        """Return the collected panel as a ``TrainingPanel`` with no target yet."""
-        with Timer(f"{self.class_name}: to_array"):
-            return TrainingPanel.from_arrays(
-                self.to_array(data, self.get_factor_names()),
-                timestamps=data.timestamp.values,
-                symbols=data.symbol.values,
-                y_raw=self.to_array(data, self.get_label_names()),
-            )
-
-    def _fill_target(self, panel: TrainingPanel, bars, training: bool) -> None:
-        """Compute the training target of ``bars`` once, through ``_transform_target``.
-
-        Each bar's raw labels of its present symbols go through the hook
-        once; the result and its validity are written into ``panel.target``
-        and ``panel.mask``. ``keep`` only clears ``mask``: a dropped symbol
-        stays in the feature panel as context.
-
-        Raises
-        ------
-        ValueError
-            If the hook returns a ``keep`` or a target of the wrong shape.
-        """
-        num_labels = panel.y_raw.shape[-1]
-        for t in bars:
-            symbols = torch.nonzero(panel.present[t]).flatten()
-            n = len(symbols)
-            if not n:
-                continue
-            target, keep = self._transform_target(panel.y_raw[t, symbols], training)
-            target = torch.as_tensor(target, dtype=torch.float32).cpu()
-            if keep is None:
-                keep = torch.ones(n, dtype=torch.bool)
-            else:
-                keep = torch.as_tensor(keep, dtype=torch.bool).cpu()
-                if tuple(keep.shape) != (n,):
-                    raise ValueError(
-                        f"{self.class_name}._transform_target: keep must have {n} "
-                        f"entries at bar {panel.timestamps[t]}, got {tuple(keep.shape)}"
-                    )
-                if target.shape[0] == int(keep.sum()) != n:
-                    full = torch.full((n, num_labels), float("nan"))
-                    full[keep] = target
-                    target = full
-            if tuple(target.shape) != (n, num_labels):
-                raise ValueError(
-                    f"{self.class_name}._transform_target: expected a target of shape "
-                    f"{(n, num_labels)} at bar {panel.timestamps[t]}, "
-                    f"got {tuple(target.shape)}"
-                )
-            valid = keep & torch.isfinite(target).all(dim=-1)
-            panel.target[t, symbols] = torch.where(
-                valid[:, None], target, torch.zeros_like(target)
-            )
-            panel.mask[t, symbols] = valid
-
     @abstractmethod
-    def _predict(self, data: torch.Tensor | np.ndarray) -> torch.Tensor | np.ndarray:
+    def _predict(self, data):
         """Variant implementation of ``predict``; ``self.model`` is guaranteed set."""
 
     @abstractmethod

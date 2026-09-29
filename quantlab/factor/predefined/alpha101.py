@@ -19,10 +19,10 @@ from KunQuant.predefined import Alpha101
 from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig
-from quantlab.base.factor import FactorKunQuant
-from quantlab.factor._support import kunquant_alpha101
-from quantlab.factor._support.nan_preserving_ops import missing_bars_only
-from quantlab.factor._support.zscore import TimeSeriesZScoredFactor
+from quantlab.factor.kunquant import FactorKunQuant
+from quantlab.factor.predefined._support import kunquant_alpha101
+from quantlab.factor.predefined._support.nan_preserving_ops import missing_bars_only
+from quantlab.factor.predefined._support.zscore import TimeSeriesZScoredFactor
 from quantlab.my_ops.preprocess import WindowedZScore, CrossSectionalZScore
 
 
@@ -104,7 +104,7 @@ class Alpha101Stock(FactorKunQuant):
     wrapped in ``CrossSectionalZScore``: US equities are traded here with
     cross-sectional strategies, so each alpha is standardized across the
     symbols of the same bar, never along a symbol's own history. The graphs
-    come from ``quantlab.factor._support.kunquant_alpha101`` and are built
+    come from ``quantlab.factor.predefined._support.kunquant_alpha101`` and are built
     inside ``missing_bars_only``: a symbol with no bar that day is NaN in
     every operator, so it stays out of the ranks and the z-score, and every
     other value is KunQuant's, including the 0 its formulas give a value

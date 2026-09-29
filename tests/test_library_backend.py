@@ -9,7 +9,7 @@ implementations returned `None` implicitly, so any chained call died with
 had never actually been run.
 
 `MlBackend` is now the checkpoint persistence backend of
-`quantlab/base/library_model.py:LibraryModel` (quick task 260914-lno): `_write_checkpoint`
+`quantlab/model/library_model.py:LibraryModel` (quick task 260914-lno): `_write_checkpoint`
 and `_read_checkpoint` go through it, so `XGBoostRegressor`'s `.joblib` files
 are written and read here. It was fixed before that first caller arrived,
 which is what this file locks.
@@ -21,7 +21,7 @@ import joblib
 import pytest
 
 from quantlab.base.backend import ModelBackend
-from quantlab.base.library_model import MlBackend
+from quantlab.model.library_model import MlBackend
 
 
 class _Model:

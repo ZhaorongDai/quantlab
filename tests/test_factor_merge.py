@@ -21,11 +21,12 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
-from quantlab.base.factor import FactorKunQuant, FactorPolars
+from quantlab.factor.kunquant import FactorKunQuant
+from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.label.fret import Return
+from quantlab.label.predefined.fret import Return
 from quantlab.utils.module import load_dataset_from_config, load_factor_from_config
 
 SPOT_TO_SHARED = {

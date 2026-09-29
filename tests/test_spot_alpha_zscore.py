@@ -13,8 +13,8 @@ import pytest
 
 from quantlab.base.config import FactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.alpha101 import Alpha101SpotKline
-from quantlab.factor.alpha158 import Alpha158SpotKline
+from quantlab.factor.predefined.alpha101 import Alpha101SpotKline
+from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
 
 
 def _std5(dataset, tmp_path: Path, warmup_bars: int, **kwargs) -> Alpha158SpotKline:

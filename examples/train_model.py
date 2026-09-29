@@ -52,10 +52,10 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import DatasetConfig, FactorConfig, ModelConfig
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
-from quantlab.label.fret import Return
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.label.predefined.fret import Return
+from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.module import load_model_from_config
 

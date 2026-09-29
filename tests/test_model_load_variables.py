@@ -42,7 +42,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import ModelConfig
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.model.predefined.xgb import XGBoostRegressor
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 

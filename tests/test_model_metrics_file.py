@@ -26,7 +26,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.library_model import LibraryModel
+from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
 from tests.torch_heads import OneBarHead

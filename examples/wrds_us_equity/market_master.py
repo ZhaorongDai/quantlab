@@ -34,7 +34,7 @@ from pathlib import Path
 
 from loguru import logger
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     IWM_PERMNO,
     QQQ_PERMNO,
@@ -47,11 +47,11 @@ from quantlab.base.config import (
 )
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
-from quantlab.factor.alpha101 import Alpha101Stock
-from quantlab.factor.alpha158 import Alpha158Stock
-from quantlab.factor.market import MarketFeatures
-from quantlab.label.fret import Return
-from quantlab.model.master import MASTERRegressor
+from quantlab.factor.predefined.alpha101 import Alpha101Stock
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.factor.predefined.market import MarketFeatures
+from quantlab.label.predefined.fret import Return
+from quantlab.model.predefined.master import MASTERRegressor
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.

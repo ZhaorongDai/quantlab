@@ -224,7 +224,7 @@ When a batch completes and the vendor returned no rows for a symbol, the symbol 
 A `CancelToken` stops a run at the next batch boundary; work already in flight completes. Progress events go to a reporter: `TqdmProgressReporter` (the default, unless `kwargs["progress"]` is false), `NullProgressReporter`, or `CallbackProgressReporter`, which passes each `ProgressEvent` to a function. Both are attached to the object, not the config, so the config stays serializable.
 
 ```python
->>> from quantlab.base.progress import CallbackProgressReporter, CancelToken
+>>> from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 >>> class StopAfterBBB(DemoAcquisition):
 ...     token = None
 ...     def _fetch_page(self, symbols, *args, **kwargs):
@@ -334,7 +334,7 @@ Intraday frequencies also need `SESSION_TIME_ZONE`, the time zone whose calendar
 
 ## Notes
 
-Only parquet files may live under the raw directory, and the sidecars must live outside it, in the sibling `_watermarks` tree. A config never carries credentials, since `AcquisitionConfig.to_dict()` is written to disk next to model checkpoints. `CoverageLedger.for_config(config)` in `quantlab.base.coverage` applies the same classification as the engine without a vendor class, so it works on a machine that has no API keys.
+Only parquet files may live under the raw directory, and the sidecars must live outside it, in the sibling `_watermarks` tree. A config never carries credentials, since `AcquisitionConfig.to_dict()` is written to disk next to model checkpoints. `CoverageLedger.for_config(config)` in `quantlab.utils.coverage` applies the same classification as the engine without a vendor class, so it works on a machine that has no API keys.
 
 Symbols become both path segments and query values, so each must match the ticker pattern (uppercase letters and digits, at most seven characters, plus up to two suffixes after `.` or `-`). Anything else stops the run before any request:
 
@@ -361,4 +361,4 @@ Raw tick data is written exactly as the vendor sent it, with no resampling and n
 
 ## See also
 
-The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universes](user-guide/universes.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.base.coverage.CoverageLedger` and `quantlab.base.progress` list every option.
+The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universes](user-guide/universes.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.utils.coverage.CoverageLedger` and `quantlab.utils.progress` list every option.

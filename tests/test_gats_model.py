@@ -22,8 +22,8 @@ import numpy as np
 import pytest
 import torch
 
-from quantlab.model.gats import GATsNet, GATsRegressor
-from quantlab.utils.torch_training import cs_rank_norm
+from quantlab.model.predefined.gats import GATsNet, GATsRegressor
+from quantlab.model.torch_training import cs_rank_norm
 from tests.qlib_gats_reference import GATModel
 from tests.test_torch_model import _feature_panel, _features, _label_of, _model
 

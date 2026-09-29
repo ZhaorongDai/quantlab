@@ -699,7 +699,7 @@ class PolarsFactorConfig(BaseFactorConfig):
 
 @dataclass(kw_only=True, frozen=True)
 class MarketFeatureConfig(BaseFactorConfig):
-    """Config of ``quantlab.factor.market.MarketFeatures``.
+    """Config of ``quantlab.factor.predefined.market.MarketFeatures``.
 
     ``dataset`` is the *target*: the panel whose symbols receive the market
     features, and the calendar ``warmup_bars`` is counted on. ``series``

@@ -116,7 +116,7 @@ def load_factor_from_config(config: dict):
     nested ``dataset`` dict is replaced by a rebuilt dataset; a label's
     (``quantlab.label.forward.Forward``) nested ``factor`` dict is replaced
     by a rebuilt factor, recursively. A market-feature factor's
-    (``quantlab.factor.market.MarketFeatures``) ``series`` dict of dataset
+    (``quantlab.factor.predefined.market.MarketFeatures``) ``series`` dict of dataset
     config dicts is rebuilt into datasets as well. The object is then
     constructed with its declared config class. The caller's dict is never
     modified.

@@ -271,7 +271,7 @@ A store is derived from the raw and reference tiers, so changed conversion code 
 
 ```python
 >>> from quantlab.base.config import FactorConfig
->>> from quantlab.factor.alpha101 import Alpha101Stock
+>>> from quantlab.factor.predefined.alpha101 import Alpha101Stock
 >>> dataset = CrspStockDataset(config)
 >>> factor = Alpha101Stock(FactorConfig(
 ...     warmup_bars=20,

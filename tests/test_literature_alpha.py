@@ -12,7 +12,7 @@ from conftest import compute_all
 
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.literature_alpha import (
+from quantlab.factor.predefined.literature_alpha import (
     LiteratureAlpha,
     LiteratureAlphaParameters,
 )

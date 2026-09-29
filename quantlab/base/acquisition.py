@@ -23,8 +23,8 @@ from the next page instead of starting over.
 This layer writes raw files only. Converting them into the project's
 canonical panel, an ``xarray.Dataset`` indexed by ``timestamp`` and
 ``symbol``, is the matching dataset class's job. Coverage bookkeeping lives
-in ``quantlab.base.coverage``, the page ledger in ``quantlab.base.pageledger``
-and progress events in ``quantlab.base.progress``.
+in ``quantlab.utils.coverage``, the page ledger in ``quantlab.utils.pageledger``
+and progress events in ``quantlab.utils.progress``.
 """
 
 import os
@@ -40,18 +40,18 @@ from joblib import Parallel, delayed
 from loguru import logger
 
 from quantlab.base.config import AcquisitionConfig
-from quantlab.base.coverage import (
+from quantlab.utils.coverage import (
     DEFAULT_LEGACY_WATERMARK_POLICY as _DEFAULT_LEGACY_WATERMARK_POLICY,
 )
-from quantlab.base.coverage import (
+from quantlab.utils.coverage import (
     FAILURE_MANIFEST_NAME as _FAILURE_MANIFEST_NAME,
 )
-from quantlab.base.coverage import (
+from quantlab.utils.coverage import (
     LEGACY_WATERMARK_POLICIES as _LEGACY_WATERMARK_POLICIES,
 )
-from quantlab.base.coverage import CoverageLedger
-from quantlab.base.pageledger import PageLedger
-from quantlab.base.progress import (
+from quantlab.utils.coverage import CoverageLedger
+from quantlab.utils.pageledger import PageLedger
+from quantlab.utils.progress import (
     QUOTA_EXHAUSTED_DESCRIPTION,
     CancelToken,
     NullProgressReporter,
@@ -489,7 +489,7 @@ class Acquisition(ABC):
     DEFAULT_MAX_WORKERS = 8
 
     #: Filename of the failure manifest, written under ``config.watermark_path``
-    #: next to the per-symbol sidecars. Imported from ``quantlab.base.coverage``
+    #: next to the per-symbol sidecars. Imported from ``quantlab.utils.coverage``
     #: so this writer and the read-only inspector, which needs no vendor
     #: credentials, name the same file.
     FAILURE_MANIFEST_NAME = _FAILURE_MANIFEST_NAME
@@ -511,7 +511,7 @@ class Acquisition(ABC):
     #: Accepted values of ``config.kwargs["legacy_watermarks"]``. ``"warn"``
     #: skips a sidecar with no recorded covered start but reports it on every
     #: run; ``"refetch"`` treats unknown coverage as not covered. Imported
-    #: from ``quantlab.base.coverage`` so the coverage ledger uses the same
+    #: from ``quantlab.utils.coverage`` so the coverage ledger uses the same
     #: set. They are class attributes because command-line scripts read them
     #: for their argument choices and a subclass may restrict them.
     LEGACY_WATERMARK_POLICIES = _LEGACY_WATERMARK_POLICIES

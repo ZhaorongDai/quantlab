@@ -40,15 +40,15 @@ import xarray as xr
 
 import quantlab.utils.module as module_utils
 from quantlab.base.config import ModelConfig
-from quantlab.base.library_model import LibraryModel
+from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import (
     LIBRARY_RESERVED_HYPERPARAMETERS,
     RESERVED_HYPERPARAMETERS,
     TORCH_RESERVED_HYPERPARAMETERS,
     BaseModel,
 )
-from quantlab.base.torch_model import TorchModel
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.model.torch_model import TorchModel
+from quantlab.model.predefined.xgb import XGBoostRegressor
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
@@ -156,10 +156,10 @@ def test_library_model_abstract_methods_are_the_three_numpy_hooks():
 def test_the_row_building_is_the_base_classes_alone():
     """Issue #51: the base builds the rows, so the ML preprocess hook and the
     per-head row helpers are gone from every library head."""
-    from quantlab.model.realmlp import RealMLPRegressor
-    from quantlab.model._support.tabkit import TabkitRegressor
-    from quantlab.model.xgb import XGBoostRegressor
-    from quantlab.model.xgb_td import XGBTDRegressor
+    from quantlab.model.predefined.realmlp import RealMLPRegressor
+    from quantlab.model.predefined._support.tabkit import TabkitRegressor
+    from quantlab.model.predefined.xgb import XGBoostRegressor
+    from quantlab.model.predefined.xgb_td import XGBTDRegressor
 
     for cls in (LibraryModel, TabkitRegressor, XGBoostRegressor, XGBTDRegressor, RealMLPRegressor):
         for name in (
@@ -447,7 +447,7 @@ def test_loader_rebuilds_the_shipped_xgboost_head(tmp_path, monkeypatch):
     the class lookup itself is not faked."""
     _patch_factor_loader(monkeypatch)
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
-    assert saved["name"] == "quantlab.model.xgb.XGBoostRegressor"
+    assert saved["name"] == "quantlab.model.predefined.xgb.XGBoostRegressor"
 
     model = module_utils.load_model_from_config(saved)
 

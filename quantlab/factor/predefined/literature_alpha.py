@@ -50,8 +50,8 @@ from KunQuant.Stage import Function
 from loguru import logger
 
 from quantlab.base.config import FactorConfig
-from quantlab.base.factor import FactorKunQuant
-from quantlab.factor.residual_momentum import (
+from quantlab.factor.kunquant import FactorKunQuant
+from quantlab.factor.predefined.residual_momentum import (
     FAMA_FRENCH_COLUMNS,
     compound_onto_bars,
     read_fama_french,

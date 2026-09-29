@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the selection rule `CrossSectionTopNSelector` (`quantlab/backtest/selection.py`) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the selection rule `CrossSectionTopNSelector` (`quantlab/backtest/selection.py`) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -26,8 +26,8 @@ import polars as pl
 import xarray as xr
 
 from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
-from quantlab.base.factor import FactorPolars
-from quantlab.base.library_model import LibraryModel
+from quantlab.factor.polars import FactorPolars
+from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 
@@ -137,7 +137,7 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 >>> import pandas as pd
 >>> import xarray as xr
 >>> from demo_parts import *
->>> from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+>>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 >>> from quantlab.base.config import CrossSectionBacktestConfig
 >>> root = Path(tempfile.mkdtemp())
 >>> cfg = write_price_store(root, delist={"FFF": 36})
@@ -366,7 +366,7 @@ The run then carries two more metric blocks, each with `whole`, `in_sample` and 
 >>> from quantlab.utils.module import load_backtester_from_config
 >>> config = json.loads((result.run_dir / "config.json").read_text())
 >>> config["name"], config["direction"], config["top_n"]
-('quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt', 'long_only', 2)
+('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', 'long_only', 2)
 >>> again = load_backtester_from_config(config).run()
 >>> again.metrics["whole"] == result.metrics["whole"]
 True
@@ -387,7 +387,7 @@ import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.backtest.selection import rebalance_mask
-from quantlab.backtest.us_equity import US_EQUITY_MARKET
+from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
 from quantlab.base.config import BacktestConfig
 
 
@@ -462,7 +462,7 @@ The backtester reads no model config and calls no other model method. A config w
 A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble directory and records its `ensemble.json` as `trained_checkpoint`; in load mode `checkpoint` is that `ensemble.json`, and the training dates for the in-sample split are read from the ensemble-level `config.json` beside it, as for one model's checkpoint. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
 
 ```python
->>> from quantlab.model.seed_ensemble import SeedEnsemble
+>>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 >>> ensemble = SeedEnsemble(make_model(root / "ensemble", cfg, days), seeds=[0, 1, 2])
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,
@@ -543,7 +543,7 @@ A stored config with a missing field is refused instead of being filled from cur
 >>> load_backtester_from_config(config)
 Traceback (most recent call last):
   ...
-ValueError: quantlab.backtest.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
+ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
 If a fold is missing from the middle of `cv_folds.json`, `run_cv()` refuses to stitch across the gap with `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`. Restore the manifest, or narrow `start_date` and `end_date` to a contiguous range of folds.

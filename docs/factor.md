@@ -48,7 +48,7 @@ The session first writes a small synthetic spot store and defines a helper that 
 >>> from quantlab.backend import XrBackend
 >>> from quantlab.base.config import DatasetConfig, PolarsFactorConfig
 >>> from quantlab.dataset.spot import SpotKlineDataset
->>> from quantlab.factor.momentum import Momentum
+>>> from quantlab.factor.predefined.momentum import Momentum
 >>> rng = np.random.default_rng(0)
 >>> symbols = [f"S{i}USDT" for i in range(8)]
 >>> close = 100 + np.cumsum(rng.normal(size=(90, 8)), axis=0)
@@ -123,7 +123,7 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 ```python
 >>> cfg = factor.get_config()
 >>> cfg["name"], cfg["kwargs"], cfg["dataset"]["market"]
-('quantlab.factor.momentum.Momentum', {'n': 5}, 'crypto_spot')
+('quantlab.factor.predefined.momentum.Momentum', {'n': 5}, 'crypto_spot')
 >>> from quantlab.utils.module import load_factor_from_config
 >>> rebuilt = load_factor_from_config(cfg)
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
@@ -136,7 +136,7 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 ```python
 >>> import polars as pl
->>> from quantlab.base.factor import FactorPolars
+>>> from quantlab.factor.polars import FactorPolars
 >>> from quantlab.dataset.merged import MergedDataset
 >>> from quantlab.dataset.stock import StockDataset
 >>> XrBackend().to_internal(raw.sel(symbol=symbols[:4])).write("data/spot_half.zarr")
@@ -180,14 +180,14 @@ A merge never picks a value by input order. A cell holding a value in two inputs
 
 ### Broadcast index or ETF features to every symbol
 
-`MarketFeatures` (`quantlab.factor.market`) computes market-wide features from one or more index or ETF series and gives every symbol of a target panel the same values. These are the market inputs of MASTER (`research/qlib-gats-master.md`, section 2.1). Its config is `MarketFeatureConfig`. `dataset` is the target: its symbols receive the features, and `warmup_bars` is counted on its calendar. `series` maps a name to a single-symbol dataset. For each series the factor computes 21 features on the series' own bars: `<name>_ret`, the bar return `close / close[t-1] - 1`, and for d in 5, 10, 20, 30 and 60 bars `<name>_ret_mean_<d>` and `<name>_ret_std_<d>` (the mean and standard deviation of the return over d bars) and `<name>_amount_mean_<d>` and `<name>_amount_std_<d>` (the same for the traded amount, divided by the bar's own amount). The amount is volume times close unless `kwargs["amount_column"]` names a column that holds it. `warmup_bars` defaults to 60, the longest window. The session below writes three small stores, six stocks (`FFF` lists on 1 April) and two ETFs, and computes the features over March and April.
+`MarketFeatures` (`quantlab.factor.predefined.market`) computes market-wide features from one or more index or ETF series and gives every symbol of a target panel the same values. These are the market inputs of MASTER (`research/qlib-gats-master.md`, section 2.1). Its config is `MarketFeatureConfig`. `dataset` is the target: its symbols receive the features, and `warmup_bars` is counted on its calendar. `series` maps a name to a single-symbol dataset. For each series the factor computes 21 features on the series' own bars: `<name>_ret`, the bar return `close / close[t-1] - 1`, and for d in 5, 10, 20, 30 and 60 bars `<name>_ret_mean_<d>` and `<name>_ret_std_<d>` (the mean and standard deviation of the return over d bars) and `<name>_amount_mean_<d>` and `<name>_amount_std_<d>` (the same for the traded amount, divided by the bar's own amount). The amount is volume times close unless `kwargs["amount_column"]` names a column that holds it. `warmup_bars` defaults to 60, the longest window. The session below writes three small stores, six stocks (`FFF` lists on 1 April) and two ETFs, and computes the features over March and April.
 
 ```python
 >>> import json
 >>> import numpy as np, pandas as pd, xarray as xr
 >>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
 >>> from quantlab.dataset.stock import StockDataset
->>> from quantlab.factor.market import MarketFeatures
+>>> from quantlab.factor.predefined.market import MarketFeatures
 >>> from quantlab.utils.module import load_factor_from_config
 >>> market_days = pd.bdate_range("2024-01-01", periods=120)
 >>> market_rng = np.random.default_rng(1)
@@ -247,7 +247,7 @@ from quantlab.base.config import (
     IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig,
 )
 from quantlab.dataset.crsp import CrspStockDataset
-from quantlab.factor.market import MarketFeatures
+from quantlab.factor.predefined.market import MarketFeatures
 
 def etf(permno, path):
     return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
@@ -372,12 +372,12 @@ Traceback (most recent call last):
 ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024-01-21 to 2024-03-20, which does not contain 2024-02-01 to 2024-03-26 00:00:00. Extend it with extend(end) or rebuild it with build(start, end).
 ```
 
-`Return` and `BinaryReturn` in `quantlab.label.fret` are `Forward` labels over a private trailing-return KunQuant factor, and are labels only. `Return` at bar t is `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`, the return of a position entered at the next bar's adjusted open and held for n bars, with n read from `kwargs["n_forward_periods"]`; `BinaryReturn` is 1.0 where that return is positive and 0.0 elsewhere. Both have `span = n` and `delay = 1`, so their lookahead is n + 1. They read `adjOpen`, so the dataset must carry adjusted prices; a US equity dataset does, the crypto spot dataset does not. The session below starts at the store's first bar, so `compute` warns that the 5 warm-up bars are missing, and the store ends on 2024-01-30, so the last 3 bars have no label.
+`Return` and `BinaryReturn` in `quantlab.label.predefined.fret` are `Forward` labels over a private trailing-return KunQuant factor, and are labels only. `Return` at bar t is `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`, the return of a position entered at the next bar's adjusted open and held for n bars, with n read from `kwargs["n_forward_periods"]`; `BinaryReturn` is 1.0 where that return is positive and 0.0 elsewhere. Both have `span = n` and `delay = 1`, so their lookahead is n + 1. They read `adjOpen`, so the dataset must carry adjusted prices; a US equity dataset does, the crypto spot dataset does not. The session below starts at the store's first bar, so `compute` warns that the 5 warm-up bars are missing, and the store ends on 2024-01-30, so the last 3 bars have no label.
 
 ```python
 >>> from quantlab.base.config import FactorConfig
 >>> from quantlab.dataset.stock import StockDataset
->>> from quantlab.label.fret import Return
+>>> from quantlab.label.predefined.fret import Return
 >>> px = 50 + np.cumsum(rng.normal(size=(30, 8)), axis=0)
 >>> stock = xr.Dataset(
 ...     {"adjOpen": (["timestamp", "symbol"], px)},
@@ -476,8 +476,8 @@ The module also has two cross-sectional outlier operators. `CrossSectionalWinsor
 | Class | Backend | Notes |
 |---|---|---|
 | `Momentum` | Polars | reference Polars factor, reads `Close` |
-| `Alpha101SpotKline`, `Alpha101Stock` | KunQuant | KunQuant's Alpha101 library; the `Stock` class builds it from a copy in `quantlab.factor._support.kunquant_alpha101` that is NaN on a bar with no data |
-| `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features, the `Stock` class from the copy in `quantlab.factor._support.kunquant_alpha158`; pin `factor_names` while experimenting |
+| `Alpha101SpotKline`, `Alpha101Stock` | KunQuant | KunQuant's Alpha101 library; the `Stock` class builds it from a copy in `quantlab.factor.predefined._support.kunquant_alpha101` that is NaN on a bar with no data |
+| `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features, the `Stock` class from the copy in `quantlab.factor.predefined._support.kunquant_alpha158`; pin `factor_names` while experimenting |
 | `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum; the factor series come from a Fama-French CSV or from the panel |
 | `LiteratureAlpha` | KunQuant | Eight raw/ranked equity characteristics spanning price, risk, liquidity, fundamentals and earnings events |
 | `MarketFeatures` | xarray | 21 return and amount features per index or ETF series, the same for every symbol with a bar; config class `MarketFeatureConfig` |
@@ -524,7 +524,7 @@ share volume.
 
 ```python
 from quantlab.base.config import FactorConfig
-from quantlab.factor.literature_alpha import LiteratureAlpha
+from quantlab.factor.predefined.literature_alpha import LiteratureAlpha
 
 factor = LiteratureAlpha(FactorConfig(
     warmup_bars=400,
@@ -550,7 +550,7 @@ Subclass `FactorPolars` and implement `_get_factor_lazyframe`. It receives the d
 
 ```python
 >>> import polars as pl
->>> from quantlab.base.factor import FactorPolars
+>>> from quantlab.factor.polars import FactorPolars
 >>> class RelativeVolume(FactorPolars):
 ...     def _get_factor_lazyframe(self, lf):
 ...         volume = pl.col("Volume")
@@ -583,7 +583,7 @@ Subclass `FactorKunQuant` and implement `_get_factor_names` and `_get_factor_fun
 >>> from KunQuant.Op import Builder, Input, Output
 >>> from KunQuant.Stage import Function
 >>> from quantlab.base.config import FactorConfig
->>> from quantlab.base.factor import FactorKunQuant
+>>> from quantlab.factor.kunquant import FactorKunQuant
 >>> from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
 >>> class MaDeviation(FactorKunQuant):
 ...     def _get_factor_names(self):
@@ -663,4 +663,4 @@ A resampled factor is a view of its source panel: `extend()`, `init_stream()` an
 
 ## See also
 
-`backend.md` for `XrBackend` and the append checks behind `extend()`; `dataset.md` for the datasets factors read; `model.md` for how models consume factors and labels and purge each split; `backtest.md` for the check of a label's delay against the engine's fill delay. Modules: `quantlab.base.factor` (`Factor`, `FactorKunQuant`, `FactorPolars`), `quantlab.base.config` (`FactorConfig`, `PolarsFactorConfig`, `MarketFeatureConfig`), `quantlab.factor`, `quantlab.label.forward`, `quantlab.label.fret` and `quantlab.my_ops.preprocess`.
+`backend.md` for `XrBackend` and the append checks behind `extend()`; `dataset.md` for the datasets factors read; `model.md` for how models consume factors and labels and purge each split; `backtest.md` for the check of a label's delay against the engine's fill delay. Modules: `quantlab.base.factor` (`Factor`, `FactorKunQuant`, `FactorPolars`), `quantlab.base.config` (`FactorConfig`, `PolarsFactorConfig`, `MarketFeatureConfig`), `quantlab.factor`, `quantlab.label.forward`, `quantlab.label.predefined.fret` and `quantlab.my_ops.preprocess`.

@@ -47,7 +47,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.backtest.engine_vectorbt as engine_module
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.backtest import SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig
 from tests.backtest_fixtures import (

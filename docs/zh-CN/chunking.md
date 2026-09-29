@@ -49,7 +49,7 @@ write_raw(raw, "2023-01-02", "2023-12-29", {"AAA": "2023-01-01", "BBB": "2023-07
 `TimeChunkPlanner` 把原始数据里实际出现的时间戳，按周期边界切成窗口。粒度可选 `year`、`quarter`、`month`、`day` 或 `hour`。每个窗口的两端都是数据里真实存在的时间戳，而不是日历上的周期末，所以窗口不会指向一个没有交易的日子。
 
 ```python
->>> from quantlab.base.chunking import TimeChunkPlanner
+>>> from quantlab.utils.chunking import TimeChunkPlanner
 >>> planner = TimeChunkPlanner("quarter")
 >>> for start, end in planner.plan_from_timestamps(pd.bdate_range("2023-01-02", "2023-12-29")):
 ...     print(start.date(), end.date())
@@ -235,7 +235,7 @@ rebuild 会替换整个 store。运行期间原来的 store 和台账被移到�
 `reporter` 接收每个窗口的事件，`cancel` 在每个窗口之前被检查。`CallbackProgressReporter` 把事件转发给一个函数，`CancelToken.cancel()` 让循环在下一个窗口边界停止。已写入的窗口留在 store 中，运行可以恢复；被取消的 rebuild 则会恢复原来的 store。
 
 ```python
->>> from quantlab.base.progress import CallbackProgressReporter, CancelToken
+>>> from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 >>> events, token = [], CancelToken()
 >>> def on_event(event):
 ...     events.append(event.kind)
@@ -385,4 +385,4 @@ rebuild 是整个 store 的操作。无论是哪个标的触发的，它都会�
 
 ## 另请参阅
 
-dataset 指南介绍面板和 config。backend 指南介绍 `XrBackend.append`、`widen_symbol_axis`，以及拒绝不安全追加的检查。acquisition 指南介绍如何生成原始数据树。相关模块：`quantlab.base.chunking`（`TimeChunkPlanner`、`ChunkLedger`）、`quantlab.base.data`（`from_raw_data_chunked`、`update`、`ConversionResult`）、`quantlab.base.rebuild` 和 `quantlab.base.progress`。
+dataset 指南介绍面板和 config。backend 指南介绍 `XrBackend.append`、`widen_symbol_axis`，以及拒绝不安全追加的检查。acquisition 指南介绍如何生成原始数据树。相关模块：`quantlab.utils.chunking`（`TimeChunkPlanner`、`ChunkLedger`）、`quantlab.base.data`（`from_raw_data_chunked`、`update`、`ConversionResult`）、`quantlab.base.rebuild` 和 `quantlab.utils.progress`。

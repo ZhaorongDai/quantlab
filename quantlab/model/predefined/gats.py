@@ -12,8 +12,8 @@ import copy
 import torch
 from torch import nn
 
-from quantlab.base.torch_model import TorchModel
-from quantlab.utils.torch_training import cs_rank_norm, masked_mse
+from quantlab.model.torch_model import TorchModel
+from quantlab.model.torch_training import cs_rank_norm, masked_mse
 
 
 class GATsNet(nn.Module):

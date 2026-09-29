@@ -1,4 +1,4 @@
-"""Tests for `quantlab/model/xgb_td.py:XGBTDRegressor`.
+"""Tests for `quantlab/model/predefined/xgb_td.py:XGBTDRegressor`.
 
 What is locked, and what turns it red:
 
@@ -37,10 +37,10 @@ from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.library_model import LibraryModel
+from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import BaseModel
-from quantlab.model._support.tabkit import TabkitRegressor
-from quantlab.model.xgb_td import XGBTDRegressor, _XGBTDEstimator
+from quantlab.model.predefined._support.tabkit import TabkitRegressor
+from quantlab.model.predefined.xgb_td import XGBTDRegressor, _XGBTDEstimator
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.label_stubs import StubLabel
 

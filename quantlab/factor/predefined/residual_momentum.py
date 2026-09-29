@@ -51,7 +51,7 @@ from KunQuant.Stage import Function
 from loguru import logger
 
 from quantlab.base.config import FactorConfig
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 
 #: Columns of a Fama-French CSV besides ``date``, as ``scripts/fama_french.py``
 #: writes them: the market excess return, the size and value factors and the

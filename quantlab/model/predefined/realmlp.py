@@ -22,15 +22,15 @@ from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
-from quantlab.base.library_model import Rows
-from quantlab.model._support.tabkit import TabkitRegressor, active_callbacks
+from quantlab.model.library_model import Rows
+from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
 
 
 class _WandbEpochCallback(Callback):
     """Log every epoch's training loss and validation error to a W&B run.
 
     A Lightning callback that pytabkit's ``TabNNModule`` receives through
-    ``quantlab.model._support.tabkit.active_callbacks``. The training loss is the
+    ``quantlab.model.predefined._support.tabkit.active_callbacks``. The training loss is the
     mean of the per-batch losses ``training_step`` returns. The validation
     error is recomputed from the module's own validation predictions the
     way its ``on_validation_epoch_end`` computes it, for every name in
@@ -162,7 +162,7 @@ class RealMLPRegressor(TabkitRegressor):
     error pytabkit stops on (``val-rmse``), at ``step=epoch``, plus
     ``best_val_rmse`` and ``epochs_trained`` in the summary, through a
     Lightning callback injected into pytabkit's trainer (see
-    ``quantlab.model._support.tabkit.active_callbacks``).
+    ``quantlab.model.predefined._support.tabkit.active_callbacks``).
 
     ``train_cv`` (rolling walk-forward cross-validation) is inherited. Each
     fold does its own early stopping and writes its own ``.joblib``. The folds

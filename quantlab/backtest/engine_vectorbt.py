@@ -5,7 +5,7 @@ top of ``vectorbt.Portfolio.from_orders``: target-percent weights, a one-bar
 delay between signal and fill, forced liquidation of delisted holdings, and
 the whole-window and sliced statistics a run directory records. It is the
 only module in the package that imports vectorbt; concrete backtesters such
-as ``quantlab.backtest.us_equity`` subclass it and supply the market
+as ``quantlab.backtest.predefined.us_equity`` subclass it and supply the market
 conventions and the signal rule. The module is named ``engine_vectorbt``
 rather than ``vectorbt`` so it cannot shadow the library it imports.
 
