@@ -340,12 +340,12 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-The ensemble directory also holds the evaluation files of the averaged prediction, written after the last member and before `ensemble.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). `metrics.json` holds only `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`). There is no loss, MSE, MAE or R2, because the average is in z-score units. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
+The ensemble directory also holds the evaluation files of the averaged prediction, written after the last member and before `ensemble.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). `metrics.json` holds `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`), and `{split}_member_correlation`, how much the members agree (below). There is no loss, MSE, MAE or R2, because the average is in z-score units. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
 
 ```python
 >>> metrics = json.loads((manifest.parent / "metrics.json").read_text())
 >>> sorted(metrics)
-['test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir']
+['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir']
 >>> [round(json.loads((manifest.parent / f"member_{k}" / "metrics.json").read_text())["test_rank_ic"], 3) for k in range(3)], round(metrics["test_rank_ic"], 3)
 ([0.682, 0.687, 0.689], 0.688)
 >>> import pandas as pd
@@ -355,6 +355,41 @@ The ensemble directory also holds the evaluation files of the averaged predictio
 >>> tests = [xr.open_zarr(manifest.parent / f"member_{k}" / "test_predictions.zarr").load() for k in range(3)]
 >>> dict(saved.sizes), bool(np.allclose(saved["ret"], average_predictions(tests)["ret"]))
 ({'timestamp': 48, 'symbol': 20}, True)
+```
+
+`{split}_member_correlation` is `member_correlation` (in `quantlab.utils.ensemble`) of the members' first-label predictions on that split. On each bar only the symbols where every member's prediction is finite count; over them the Pearson correlation of each pair of members is computed and averaged over the pairs (a pair with a constant member on that bar is left out), and the bar values are averaged over bars, ignoring NaN. A bar with fewer than two common symbols is skipped. The value lies in `[-1, 1]` and is null when no bar is usable. `member_correlation(predictions)` takes one `[T, S]` array per member, all of one shape, and returns the mean and the per-bar series; with a single member both are NaN.
+
+The number tells how much averaging can add. With `k` members of mean IC `IC_i` and mean pairwise correlation `ρ`, the equal-weight average has approximately
+
+```text
+IC_ens ≈ mean IC_i × sqrt(k / (1 + (k - 1) ρ))
+```
+
+With `ρ` near 1 the members are copies of one another and the ensemble IC stays at the members' mean. With `ρ` near 0 the members' errors are unrelated and averaging multiplies their mean IC by up to `sqrt(k)`, but only in the direction the members share: when their mean IC is itself noise around zero, averaging uncorrelated members amplifies that noise, and the ensemble IC lands further from zero than the members' mean, on either side. A seed ensemble whose members show `ρ` close to 0 has learned unrelated noise from each seed, which reads as a model problem rather than an ensembling one.
+
+```python
+>>> import numpy as np
+>>> from quantlab.utils.ensemble import member_correlation
+>>> from quantlab.utils.metrics import ic_panel_metrics
+>>> rng = np.random.default_rng(0)
+>>> target = rng.normal(size=(250, 300))
+>>> def report(members):
+...     rho, _ = member_correlation(members)
+...     ic = float(np.mean([ic_panel_metrics(m, target)["ic"] for m in members]))
+...     k = len(members)
+...     predicted = ic * np.sqrt(k / (1 + (k - 1) * rho))
+...     actual = ic_panel_metrics(np.mean(members, axis=0), target)["ic"]
+...     return round(rho, 3), round(ic, 3), round(float(predicted), 3), round(actual, 3)
+>>> independent = [0.1 * target + rng.normal(size=target.shape) for _ in range(4)]
+>>> report(independent)
+(0.01, 0.096, 0.19, 0.19)
+>>> shared = rng.normal(size=target.shape)
+>>> alike = [0.1 * target + shared + 0.3 * rng.normal(size=target.shape) for _ in range(4)]
+>>> report(alike)
+(0.918, 0.093, 0.096, 0.096)
+>>> rho, per_bar = member_correlation(independent)
+>>> per_bar.shape
+(250,)
 ```
 
 `load(manifest)` restores every member from the checkpoints the manifest lists, and `check_checkpoint(manifest)` checks them without loading: the manifest must be of format version 1 and list as many members as the ensemble has, each with the ensemble's member class and seed, and every member checkpoint must exist and pass the member's own `check_checkpoint`. `get_config()` returns the wrapped model's config and the seeds, and `SeedEnsemble.from_config` rebuilds the ensemble from it. A `SeedEnsemble` satisfies the backtester's `Predictor` protocol, so it is backtested like one model (see the backtest guide).
@@ -378,7 +413,7 @@ The members train one after another, and each reseeds its random generators from
 
 `train_cv(train_periods, expanding=False)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own W&B run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
 
-`cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family only; `cv_mean` averages them. The return value is the fold list. A separate W&B run `SeedEnsemble_cv_summary` in the same project carries the `cv_mean_*` values. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
+`cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family and `{split}_member_correlation`; `cv_mean` averages them. The return value is the fold list. A separate W&B run `SeedEnsemble_cv_summary` in the same project carries the `cv_mean_*` values. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
 
 ```python
 >>> folds = ensemble.train_cv(train_periods=100)
@@ -393,7 +428,7 @@ True
 ['XGBoostRegressor_fold_0_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> cv_manifest = json.loads((cv_dir / "cv_folds.json").read_text())
 >>> cv_manifest["format_version"], sorted(cv_manifest["folds"][0])
-(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir'])
+(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir'])
 >>> [round(r["test_rank_ic"], 3) for r in folds]
 [0.69, 0.651, 0.709, 0.672, 0.698]
 >>> {k: round(v, 3) for k, v in cv_manifest["cv_mean"].items() if k.endswith("rank_ic")}
