@@ -21,6 +21,7 @@ backtest the portfolio those predictions imply. Every stage is driven by a small
 configuration object, so any run can be saved, rebuilt and repeated exactly.
 
 - **Documentation:** [docs/README.md](docs/README.md)
+- **Using your own DataFrames:** [docs/api.md](docs/api.md)
 - **Examples:** [examples/](examples/README.md)
 - **Source code:** https://github.com/ZhaorongDai/quantlab
 - **Bug reports:** https://github.com/ZhaorongDai/quantlab/issues
@@ -200,6 +201,10 @@ installation and the quick start. The *user guide* has one page per pipeline sta
 sources, WRDS, datasets, universes, factors, models and backtesting. The *developer guide*
 shows how to add your own data source, dataset, storage backend, factor, model or backtest
 rule, and explains the machinery that makes long jobs safe to interrupt.
+
+If you already hold your data in pandas or polars DataFrames and want one capability, such as
+factors, forward returns, a factor report or a backtest, without the project's stores and
+configurations, start with the [frame API guide](docs/api.md) (`quantlab.api`).
 
 Every public class and function also has a docstring in the
 [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) format, readable with

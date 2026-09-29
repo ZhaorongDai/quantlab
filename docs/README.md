@@ -19,6 +19,10 @@ synthetic data, from a price panel to a backtest report.
 
 ## User guide
 
+[Frame API](api.md) is for data you already hold in pandas or polars DataFrames: `quantlab.api`
+computes factors and forward returns, reports on factors and backtests weights or scores
+straight from a DataFrame, with no stores or configuration objects.
+
 [Concepts](user-guide/concepts.md) explains the pipeline stages and what each consumes and
 produces, the panel format, configuration objects, and the directories that models and
 backtests write.
@@ -66,6 +70,7 @@ working on.
 
 | Page | What it covers |
 |------|----------------|
+| [Frame API](api.md) | `quantlab.api`: factors, forward returns, factor reports and backtests from your own DataFrames |
 | [Acquisition](acquisition.md) | How a download runs: batches, failure isolation, incremental refresh and the raw file layout |
 | [Data source registry](registry.md) | The catalogue of sources, `run()` and `convert()`, progress events and the read-only inspector |
 | [Resumable downloads](pageledger.md) | How a multi-page download resumes after an interruption |
