@@ -6,7 +6,8 @@ curve, metrics and an HTML report comes out. ``BaseBacktester`` owns the
 three public entry points, ``run()`` (backtest one model), ``run_cv()``
 (replay every fold of a cross-validation run as one continuous curve) and
 ``run_weights()`` (backtest a precomputed target-weight panel, no model),
-and every step between them that does not depend on the simulation engine. Engine
+and every step between them that does not depend on the simulation engine, plus
+``report_figure()``, the report chart of a result held in memory. Engine
 layers such as ``VectorBtBacktester`` implement the simulation hooks, and
 concrete classes add a ``MarketSpec`` and a signal generator.
 
@@ -45,7 +46,11 @@ from quantlab.backend import XrBackend
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.backtest_report import DASH, write_backtest_report
+from quantlab.utils.backtest_report import (
+    DASH,
+    backtest_report_figure,
+    write_backtest_report,
+)
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.split import in_sample_window, purge_segments, split_ranges
@@ -443,7 +448,7 @@ class BaseBacktester(ABC):
         self.config = config
 
     @property
-    def ticker_lookup(self) -> CrspTickerLookup:
+    def ticker_lookup(self) -> CrspTickerLookup | None:
         """Lookup that turns symbol ids into readable ticker names.
 
         It reads the ``.crsp_tickers.json`` file stored next to the price
@@ -455,7 +460,9 @@ class BaseBacktester(ABC):
         the model for its lists of missing or extra symbols. The lookup is
         built on first access and reset whenever a new config is assigned.
         When no such file exists, ``label()`` returns each symbol unchanged,
-        so panels from other vendors are unaffected.
+        so panels from other vendors are unaffected. A price dataset held in
+        memory has no store path and so no sidecar: the property is ``None``
+        and ``_symbol_labels`` shows its symbols as they are.
 
         Examples
         --------
@@ -463,11 +470,23 @@ class BaseBacktester(ABC):
         >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
         ['AAA', 'BBB']
         """
+        path = self.config.price_dataset.config.zarr_file_path
+        if path is None:
+            return None
         if self._ticker_lookup is None:
-            self._ticker_lookup = CrspTickerLookup.beside_store(
-                self.config.price_dataset.config.zarr_file_path
-            )
+            self._ticker_lookup = CrspTickerLookup.beside_store(path)
         return self._ticker_lookup
+
+    def _symbol_labels(self, symbols, day) -> list[str]:
+        """Return readable labels of price-dataset ``symbols`` as of ``day``.
+
+        Through ``ticker_lookup`` when the price dataset has a store, and the
+        symbols themselves (as ``str``) for a dataset held in memory.
+        """
+        lookup = self.ticker_lookup
+        if lookup is None:
+            return [str(symbol) for symbol in symbols]
+        return lookup.label(symbols, day)
 
     @property
     @abstractmethod
@@ -1121,6 +1140,120 @@ class BaseBacktester(ABC):
                 "the whole window only.",
             ),
         )
+
+    def report_figure(self, result: BacktestResult):
+        """Return the chart of ``report.html`` for ``result`` as a plotly figure.
+
+        The same figure a run directory's report embeds (equity, drawdown and
+        monthly returns, the in-sample range shaded, the deepest drawdown
+        marked, the benchmark rows when a benchmark ran), built from the
+        result in memory, so a run kept with ``output_dir=None`` can be
+        looked at too. ``result`` must come from ``run()`` or
+        ``run_weights()`` of a backtester with this config, which is checked
+        without reading any data: its bars lie inside the configured window,
+        its curve starts at ``init_cash``, and it has a benchmark curve exactly
+        when a benchmark is configured. A ``run_cv()`` result is refused: its
+        stitched curve is drawn in the ``report.html`` of its run directory.
+
+        Parameters
+        ----------
+        result : BacktestResult
+            The result to draw.
+
+        Returns
+        -------
+        plotly.graph_objects.Figure
+            The figure, not yet shown or written.
+
+        Raises
+        ------
+        TypeError
+            If ``result`` is a ``CVBacktestResult`` or not a ``BacktestResult``.
+        ValueError
+            If ``result`` does not match this config (see above), naming what
+            differs.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> import xarray as xr
+        >>> from quantlab.backtest.predefined.weights import WeightsVectorBt
+        >>> from quantlab.base.config import WeightsBacktestConfig
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> bars = pd.bdate_range("2024-01-01", periods=5)
+        >>> prices = FrameDataset(pd.DataFrame({
+        ...     "timestamp": np.repeat(bars, 2), "symbol": ["AAA", "BBB"] * 5,
+        ...     "open": np.linspace(10.0, 14.0, 10), "close": np.linspace(10.5, 14.5, 10),
+        ... }))
+        >>> backtester = WeightsVectorBt(WeightsBacktestConfig(
+        ...     price_dataset=prices, start_date="2024-01-01", end_date="2024-01-05",
+        ...     output_dir=None, rebalance_periods=1,
+        ...     fill_price_column="open", valuation_price_column="close",
+        ...     trading_days_per_year=252, session_minutes_per_day=390,
+        ... ))
+        >>> weights = xr.DataArray(
+        ...     [[0.5, 0.5]] + [[np.nan, np.nan]] * 4, dims=("timestamp", "symbol"),
+        ...     coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
+        ... )
+        >>> result = backtester.run_weights(weights)
+        >>> figure = backtester.report_figure(result)
+        >>> [trace.name for trace in figure.data][:2]
+        ['equity', 'drawdown']
+        """
+        if isinstance(result, CVBacktestResult):
+            raise TypeError(
+                f"{self.class_name}.report_figure() draws one run() or "
+                f"run_weights() result, got a run_cv() result; its stitched curve "
+                f"is drawn in the report.html of its run directory"
+            )
+        if not isinstance(result, BacktestResult):
+            raise TypeError(
+                f"{self.class_name}.report_figure() takes the BacktestResult of "
+                f"run() or run_weights(), got {type(result).__name__}"
+            )
+        self._check_result_matches_config(result)
+        return backtest_report_figure(
+            result.simulation.value,
+            **self._report_chart_inputs(
+                result.simulation, result.metrics, result.benchmark
+            ),
+        )
+
+    def _check_result_matches_config(self, result: BacktestResult) -> None:
+        """Refuse a result another config produced; reads no data.
+
+        Raises
+        ------
+        ValueError
+            If the result's bars leave the configured window, its curve does
+            not start at ``init_cash``, or it has a benchmark curve without a
+            configured benchmark or the other way round.
+        """
+        timestamps = result.simulation.value.timestamp.values
+        start = self._label_ns(self._iso_date(self.config.start_date))
+        end = self._label_ns(self._iso_date(self.config.end_date)) + np.timedelta64(1, "D")
+        if timestamps.size and (timestamps[0] < start or timestamps[-1] >= end):
+            raise ValueError(
+                f"{self.class_name}: the result covers {self._bar_label(timestamps[0])} "
+                f"..{self._bar_label(timestamps[-1])}, outside this config's window "
+                f"{self._iso_date(self.config.start_date)}.."
+                f"{self._iso_date(self.config.end_date)}; draw a result with the "
+                f"backtester that produced it"
+            )
+        first_value = float(result.simulation.value.values[0]) if timestamps.size else None
+        if first_value is not None and not np.isclose(first_value, self.config.init_cash):
+            raise ValueError(
+                f"{self.class_name}: the result starts at {first_value}, not this "
+                f"config's init_cash {self.config.init_cash}"
+            )
+        configured = self.config.benchmark_dataset is not None
+        if configured != (result.benchmark is not None):
+            raise ValueError(
+                f"{self.class_name}: the result has "
+                f"{'a' if result.benchmark is not None else 'no'} benchmark curve but "
+                f"this config has {'a' if configured else 'no'} benchmark_dataset"
+            )
 
     def _run_window(
         self, backtest_window, notes: tuple[str, ...] = ()
@@ -1852,11 +1985,19 @@ class BaseBacktester(ABC):
             if column not in ds.data_vars:
                 raise ValueError(
                     f"{self.class_name}: price column {column!r} not found in "
-                    f"{dataset.config.zarr_file_path}"
+                    f"{self._where(dataset)}"
                 )
         prices = ds[[fill, valuation]].load()
         self._record_price_fingerprint(prices)
         return prices
+
+    @staticmethod
+    def _where(dataset: MarketDataset) -> str:
+        """Name where ``dataset`` reads from, for messages: its store, or memory."""
+        path = dataset.config.zarr_file_path
+        if path is None:
+            return f"the {type(dataset).__name__} held in memory"
+        return str(path)
 
     def _record_price_fingerprint(self, prices: xr.Dataset) -> None:
         """Record the fingerprint of the two price columns under ``price_dataset``."""
@@ -1902,14 +2043,14 @@ class BaseBacktester(ABC):
             if column not in ds.data_vars:
                 raise ValueError(
                     f"{self.class_name}: benchmark price column {column!r} not "
-                    f"found in {dataset.config.zarr_file_path}"
+                    f"found in {self._where(dataset)}"
                 )
         symbols = [str(symbol) for symbol in ds.symbol.values]
         if len(symbols) != 1:
             raise ValueError(
                 f"{self.class_name}: the benchmark dataset must hold exactly one "
                 f"symbol, got {len(symbols)} in "
-                f"{dataset.config.zarr_file_path}: {symbols[:10]}"
+                f"{self._where(dataset)}: {symbols[:10]}"
             )
         self._benchmark_axis_symbol = symbols[0]
         read = ds[[fill, valuation]].load()
@@ -2493,11 +2634,12 @@ class BaseBacktester(ABC):
 
         A CRSP benchmark store is keyed by PERMNO, a bare number, so the
         ticker sidecar beside the benchmark's own store (not the price
-        store) names it as of the window's last bar. Without a sidecar the
-        axis label is returned unchanged.
+        store) names it as of the window's last bar. Without a sidecar, or
+        without a store (a benchmark held in memory), the axis label is
+        returned unchanged.
         """
         dataset = self.config.benchmark_dataset
-        if dataset is None or not axis_symbol:
+        if dataset is None or not axis_symbol or dataset.config.zarr_file_path is None:
             return axis_symbol
         lookup = CrspTickerLookup.beside_store(dataset.config.zarr_file_path)
         return str(lookup.label([axis_symbol], pd.Timestamp(as_of).date())[0])
@@ -2783,7 +2925,7 @@ class BaseBacktester(ABC):
         benchmark = block.get("benchmark")
         if isinstance(benchmark, dict):
             dataset = self.config.benchmark_dataset
-            where = "" if dataset is None else f" ({dataset.config.zarr_file_path})"
+            where = "" if dataset is None else f" ({self._where(dataset)})"
             summary["Benchmark"] = f"{_text(benchmark.get('symbol'))}{where}, buy and hold"
             whole = (block.get("relative") or {}).get("whole") or {}
             for label, key in (
@@ -2873,21 +3015,16 @@ class BaseBacktester(ABC):
             write_json_atomically(
                 run_dir / "metrics.json", to_jsonable(metrics), indent=2
             )
-            drawdown_span = self._drawdown_span(simulation)
+            chart = self._report_chart_inputs(simulation, metrics, benchmark)
             write_backtest_report(
                 simulation.value,
                 run_dir / "report.html",
-                in_sample_range=metrics.get("in_sample_range"),
-                notes=metrics["notes"],
                 title=name,
                 summary=self._report_summary(
-                    simulation, metrics, drawdown_span=drawdown_span
+                    simulation, metrics, drawdown_span=chart["drawdown_span"]
                 ),
                 metrics=metrics,
-                returns=simulation.returns,
-                init_cash=self.config.init_cash,
-                drawdown_span=drawdown_span,
-                **self._benchmark_report_inputs(benchmark, metrics),
+                **chart,
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
@@ -2951,6 +3088,27 @@ class BaseBacktester(ABC):
             "benchmark_value": benchmark.value,
             "benchmark_returns": benchmark.returns,
             "benchmark_name": info.get("symbol") or "benchmark",
+        }
+
+    def _report_chart_inputs(
+        self,
+        simulation: SimulationResult,
+        metrics: dict,
+        benchmark: SimulationResult | None,
+    ) -> dict:
+        """Return the chart keyword arguments shared by ``report.html`` and ``report_figure``.
+
+        ``metrics`` is the metric level carrying the split keys and ``notes``
+        (a run's metrics themselves); ``simulation.value`` is passed
+        positionally by the callers.
+        """
+        return {
+            "in_sample_range": metrics.get("in_sample_range"),
+            "notes": metrics["notes"],
+            "returns": simulation.returns,
+            "init_cash": self.config.init_cash,
+            "drawdown_span": self._drawdown_span(simulation),
+            **self._benchmark_report_inputs(benchmark, metrics),
         }
 
     @staticmethod

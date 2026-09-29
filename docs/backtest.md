@@ -372,6 +372,37 @@ Traceback (most recent call last):
 ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exactly the price bars of the backtest window: 1 missing ['2024-02-12'], 0 extra [], 0 duplicated
 ```
 
+`WeightsVectorBt` (`quantlab/backtest/predefined/weights.py`) backtests given weights on any market: its `WeightsBacktestConfig` names the fill and valuation columns and the annualization (`trading_days_per_year`, `session_minutes_per_day`) instead of a class constant, and it takes no model. It is the backtester `quantlab.api.backtest` runs. The price dataset may be a `FrameDataset` held in memory; with no store there is no ticker sidecar, so symbols are shown as they are, without a warning.
+
+```python
+>>> import numpy as np
+>>> import pandas as pd
+>>> import xarray as xr
+>>> from quantlab.backtest.predefined.weights import WeightsVectorBt
+>>> from quantlab.base.config import WeightsBacktestConfig
+>>> from quantlab.dataset.memory import FrameDataset
+>>> bars = pd.bdate_range("2024-01-01", periods=5)
+>>> prices = FrameDataset(pd.DataFrame({
+...     "timestamp": np.repeat(bars, 2),
+...     "symbol": ["AAA", "BBB"] * 5,
+...     "open": [10.0, 20.0, 11.0, 20.0, 12.0, 21.0, 12.0, 22.0, 13.0, 22.0],
+...     "close": [10.5, 20.0, 11.5, 20.5, 12.0, 21.5, 12.5, 22.0, 13.0, 22.5],
+... }))
+>>> backtester = WeightsVectorBt(WeightsBacktestConfig(
+...     price_dataset=prices, start_date="2024-01-01", end_date="2024-01-05",
+...     output_dir=None, rebalance_periods=1, fees=0.0, slippage=0.0,
+...     fill_price_column="open", valuation_price_column="close",
+...     trading_days_per_year=252, session_minutes_per_day=390,
+... ))
+>>> weights = xr.DataArray(
+...     [[1.0, 0.0]] + [[np.nan, np.nan]] * 4, dims=("timestamp", "symbol"),
+...     coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
+... )
+>>> result = backtester.run_weights(weights)
+>>> result.simulation.value.values.round(2).tolist()
+[1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
+```
+
 ### Keep a run in memory
 
 With `output_dir=None` a run writes nothing: no run directory, no report. `result.run_dir` is `None` and everything else is in the result. This holds for `run()`, `run_cv()` and `run_weights()`. `output_dir` has no default, so pass `None` explicitly. `output_dir=None` covers the backtest's own run directory only: with `model_mode="train"` the model still writes its checkpoint where its own config points.
@@ -382,6 +413,14 @@ With `output_dir=None` a run writes nothing: no run directory, no report. `resul
 ... ).run_weights(result.weights)
 >>> in_memory.run_dir is None, round(in_memory.metrics["whole"]["Total Return [%]"], 2)
 (True, -5.85)
+```
+
+`report_figure(result)` returns the chart `report.html` would embed (equity, drawdown, monthly returns, and the benchmark rows when a benchmark ran) as a plotly figure, so a run kept in memory can be looked at too. It takes the result of `run()` or `run_weights()`.
+
+```python
+>>> figure = weights_backtester.report_figure(in_memory)
+>>> type(figure).__name__
+'Figure'
 ```
 
 ### Compare against a benchmark
@@ -559,7 +598,7 @@ True
 
 No borrow or short-financing cost is modelled, so short-side returns are optimistic; the metrics `notes` say so. Trade statistics use the position view: one trade is one symbol's round trip from entry to flat, and trimming a holding back to its target weight is not a closed trade. `Total Orders` is the number of fills.
 
-`benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` and `run_cv()` need `model` and `model_mode`, which `run_weights()` ignores. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. Every label's `delay` must equal the engine's `fill_delay_bars` (see [Label delay and fill delay](#label-delay-and-fill-delay)). On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected.
+`benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` and `run_cv()` need `model` and `model_mode`, which `run_weights()` ignores. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. Every label's `delay` must equal the engine's `fill_delay_bars` (see [Label delay and fill delay](#label-delay-and-fill-delay)). On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected; a dataset held in memory (`FrameDataset`) has no store and uses the axis names without a warning.
 
 A backtester built with the wrong config class:
 

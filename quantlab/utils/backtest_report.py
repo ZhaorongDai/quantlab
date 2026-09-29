@@ -6,7 +6,8 @@ drawdown and the compounded monthly returns on a shared time axis, a
 year-by-month heatmap of those monthly returns, a metric table with one column
 per window slice, and the notes. The in-sample range is shaded across the
 figure and the deepest drawdown is marked by a pair of triangles on the
-equity curve. *In-sample* means the bars the model was trained on;
+equity curve. ``backtest_report_figure`` returns that chart alone, as a plotly
+figure. *In-sample* means the bars the model was trained on;
 *out-of-sample* means the bars it never saw, which are the honest test.
 
 With a benchmark the figure grows two rows. The benchmark's NAV is drawn on
@@ -37,7 +38,7 @@ import plotly.graph_objects as go
 import xarray as xr
 from plotly.subplots import make_subplots
 
-__all__ = ["write_backtest_report"]
+__all__ = ["backtest_report_figure", "write_backtest_report"]
 
 #: Shown in place of a value the run does not have. An em dash rather than a
 #: hyphen so it cannot be read as the minus sign of a negative number.
@@ -175,6 +176,70 @@ def write_backtest_report(
     >>> "<h1>demo_run</h1>" in open("report.html").read()
     True
     """
+    fig = backtest_report_figure(
+        value,
+        in_sample_range=in_sample_range,
+        notes=notes,
+        returns=returns,
+        init_cash=init_cash,
+        drawdown_span=drawdown_span,
+        benchmark_value=benchmark_value,
+        benchmark_returns=benchmark_returns,
+        benchmark_name=benchmark_name,
+    )
+    reference = _aligned_benchmark(benchmark_value, value.to_pandas())
+    div = fig.to_html(full_html=False, include_plotlyjs="cdn")
+    heatmap = _monthly_heatmap_div(returns)
+    Path(path).write_text(
+        _document(
+            title,
+            summary,
+            metrics,
+            div,
+            notes,
+            heatmap,
+            benchmark=reference is not None,
+        ),
+        encoding="utf-8",
+    )
+
+
+def backtest_report_figure(
+    value: xr.DataArray,
+    *,
+    in_sample_range: tuple[str, str] | None = None,
+    notes: list[str] | None = None,
+    returns: xr.DataArray | None = None,
+    init_cash: float | None = None,
+    drawdown_span: dict | None = None,
+    benchmark_value: xr.DataArray | None = None,
+    benchmark_returns: xr.DataArray | None = None,
+    benchmark_name: str = "benchmark",
+) -> go.Figure:
+    """Return the plotly figure of a backtest report, the chart ``report.html`` embeds.
+
+    Equity, drawdown and compounded monthly returns on a shared time axis, the
+    in-sample range shaded, the deepest drawdown marked and the notes below; with a
+    benchmark, its NAV beside the portfolio's and the excess-return and
+    excess-drawdown rows. The parameters mean what they mean for
+    ``write_backtest_report``, which draws its chart with this function.
+
+    Returns
+    -------
+    plotly.graph_objects.Figure
+        The figure, not yet shown or written.
+
+    Examples
+    --------
+    >>> import pandas as pd, xarray as xr
+    >>> from quantlab.utils.backtest_report import backtest_report_figure
+    >>> ts = pd.bdate_range("2024-01-01", periods=5)
+    >>> value = xr.DataArray([100.0, 104.0, 98.0, 103.0, 110.0],
+    ...                      dims=("timestamp",), coords={"timestamp": ts})
+    >>> figure = backtest_report_figure(value, init_cash=100.0)
+    >>> [trace.name for trace in figure.data]
+    ['equity', 'drawdown']
+    """
     equity = value.to_pandas()
     drawdown = equity / equity.cummax() - 1.0
     reference = _aligned_benchmark(benchmark_value, equity)
@@ -271,21 +336,7 @@ def write_backtest_report(
         barmode="group",
         updatemenus=[_axis_toggle()],
     )
-
-    div = fig.to_html(full_html=False, include_plotlyjs="cdn")
-    heatmap = _monthly_heatmap_div(returns)
-    Path(path).write_text(
-        _document(
-            title,
-            summary,
-            metrics,
-            div,
-            notes,
-            heatmap,
-            benchmark=reference is not None,
-        ),
-        encoding="utf-8",
-    )
+    return fig
 
 
 # ---------------------------------------------------------------------------

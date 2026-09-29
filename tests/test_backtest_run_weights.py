@@ -349,3 +349,85 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
     report = (result.run_dir / "report.html").read_text()
     assert "In-sample" not in report
     assert "precomputed weights" in report
+
+
+# --------------------------------------------------------------------------
+# report_figure
+# --------------------------------------------------------------------------
+
+
+def _weights_result(stores, **overrides):
+    backtester = USEquityCrossectionSelectStockVectorBt(
+        _config(stores, with_model=False, output_dir=None, **overrides)
+    )
+    return backtester, backtester.run_weights(_hold_everywhere(stores))
+
+
+def test_report_figure_draws_a_result_of_its_own_backtester(stores):
+    backtester, result = _weights_result(stores)
+
+    figure = backtester.report_figure(result)
+
+    names = [trace.name for trace in figure.data]
+    assert names[0] == "equity" and "benchmark_equity" in names
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        (dict(start_date=_day(_bars()[WINDOW_START + 1])), r"window"),
+        (dict(init_cash=5.0), r"init_cash"),
+        (dict(benchmark_dataset=None), r"benchmark"),
+    ],
+)
+def test_report_figure_refuses_a_result_of_another_config(stores, overrides, message):
+    _, result = _weights_result(stores)
+    other = USEquityCrossectionSelectStockVectorBt(
+        _config(stores, with_model=False, output_dir=None, **overrides)
+    )
+
+    with pytest.raises(ValueError, match=message):
+        other.report_figure(result)
+
+
+def test_report_figure_refuses_a_cv_result(stores):
+    from quantlab.base.backtest import CVBacktestResult
+
+    backtester, result = _weights_result(stores)
+    cv_result = CVBacktestResult(
+        run_dir=None,
+        folds=[],
+        weights=result.weights,
+        simulation=result.simulation,
+        metrics={},
+    )
+
+    with pytest.raises(TypeError, match=r"run_cv\(\) result"):
+        backtester.report_figure(cv_result)
+
+
+# --------------------------------------------------------------------------
+# WeightsVectorBt config checks
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("top_n", [True, 2.0, 0])
+def test_weights_backtester_refuses_a_top_n_that_is_not_a_positive_integer(stores, top_n):
+    from quantlab.backtest.predefined.weights import WeightsVectorBt
+    from quantlab.base.config import WeightsBacktestConfig
+
+    bars = _bars()
+    config = WeightsBacktestConfig(
+        price_dataset=make_stock_dataset(stores["dataset"]),
+        start_date=_day(bars[WINDOW_START]),
+        end_date=_day(bars[WINDOW_END]),
+        output_dir=None,
+        rebalance_periods=1,
+        fill_price_column="adjOpen",
+        valuation_price_column="adjClose",
+        trading_days_per_year=252,
+        session_minutes_per_day=390,
+        top_n=top_n,
+    )
+    with pytest.raises(ValueError, match=r"top_n must be an integer >= 1 or None"):
+        WeightsVectorBt(config)

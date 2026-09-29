@@ -4,7 +4,8 @@
 one quantlab capability without adopting the project's stores and configs (ADR 0011). A
 function takes a *frame*, a DataFrame in long form with one row per ``timestamp`` and
 ``symbol``, and returns a frame of the same library; ``as_xarray=True`` returns the
-library's own ``xarray`` panel instead. Nothing is written to disk.
+library's own ``xarray`` panel instead. Nothing is written to disk unless an
+``output_dir`` is given.
 
 The canonical columns are ``timestamp``, ``symbol``, ``open``, ``high``, ``low``,
 ``close`` and ``volume``, plus ``amount`` (traded value) where a function needs it. The
@@ -41,6 +42,8 @@ Examples
 from collections.abc import Mapping
 
 from quantlab.api import _factors, _labels
+from quantlab.api._report import BacktestReport
+from quantlab.base.config import BacktestConfig
 
 
 def compute_factors(
@@ -230,4 +233,177 @@ def forward_returns(
         binary=binary,
         columns=columns,
         as_xarray=as_xarray,
+    )
+
+
+def backtest(
+    prices,
+    *,
+    weights=None,
+    scores=None,
+    top_n: int | None = None,
+    direction: str = "long_only",
+    rebalance_periods: int = 1,
+    fill: str = "open",
+    valuation: str = "close",
+    market: str = "equity",
+    trading_days_per_year: int | None = None,
+    session_minutes_per_day: int | None = None,
+    fees: float = BacktestConfig.fees,
+    slippage: float = BacktestConfig.slippage,
+    init_cash: float = BacktestConfig.init_cash,
+    benchmark=None,
+    output_dir=None,
+    columns: Mapping[str, str] | None = None,
+) -> BacktestReport:
+    """Backtest target weights, or the top-N names of a score, on a price frame.
+
+    Exactly one signal is given. ``weights`` are simulated as given; ``scores`` become
+    equal weights on the ``top_n`` highest-scoring names (and, for ``direction=
+    "long_short"``, minus the ``top_n`` lowest) every ``rebalance_periods`` bars, a name
+    being eligible when it has a score and a fill price on the next bar. A weight formed
+    at bar t fills at bar t+1's ``fill`` price and the portfolio is valued at the
+    ``valuation`` price. The run covers every bar of ``prices``; the bar interval is the
+    most common spacing of its timestamps. There is no training window, so the metrics
+    cover the whole window. Nothing is written and no W&B run is started, unless
+    ``output_dir`` is given.
+
+    Weights follow the target-weight contract: on a bar that has weights every symbol
+    has a finite weight and the gross exposure (sum of absolute weights) is at most 1;
+    a bar without weights holds the current positions. A weight frame may leave things
+    out:
+
+    - a symbol without a weight on a bar that has weights for other symbols gets
+      weight 0: a row left out of a long frame, or a NaN cell of a wide frame, so a
+      sparse long frame listing only the names held and its pivot mean the same;
+    - a bar without any weight is a hold: absent from a long frame, or an all-NaN row
+      of a wide frame. A frame listing only the rebalance bars is therefore enough; to
+      go flat on a bar, give it explicit zeros;
+    - a NaN written in a long frame beside finite weights on the same bar breaks the
+      contract and raises, as does a bar with gross exposure above 1.
+
+    Timestamps in a time zone are converted to UTC and naive ones are taken as UTC;
+    when the weights', scores' or benchmark's bars miss the prices' and the inputs came
+    in different zones, the error names both zones.
+
+    Parameters
+    ----------
+    prices : pandas.DataFrame, polars.DataFrame or xarray.Dataset
+        Bars in long form, one row per ``timestamp`` and ``symbol``, holding the
+        ``fill`` and ``valuation`` columns. The report's frames are of this library.
+    weights : DataFrame, optional
+        Target weights, long (``timestamp``, ``symbol`` and one value column, of any
+        name) or wide (timestamps in a ``timestamp`` column or in a pandas
+        ``DatetimeIndex`` of any name; one column per symbol).
+    scores : DataFrame, optional
+        Scores ranking the symbols, higher is better, long or wide like ``weights``. A
+        symbol without a score on a bar (a left-out row, a NaN cell) is not selected.
+    top_n : int, optional
+        Names held per side; required with ``scores``, refused with ``weights``.
+    direction : {"long_only", "long_short"}, default "long_only"
+        The selection side, with ``scores`` only.
+    rebalance_periods : int, default 1
+        With ``scores``, rebalance every this many bars. With ``weights``, which are
+        traded as given, the spacing they were built with: it only annualizes the
+        turnover metric (``Annualized Turnover [%]``), as in the library backtester.
+    fill, valuation : str, default "open", "close"
+        The price columns orders fill at and the portfolio is valued at.
+    market : {"equity", "crypto"}, default "equity"
+        The annualization: 252 trading days of 390 minutes, or 365 days of 1440.
+    trading_days_per_year, session_minutes_per_day : int, optional
+        Override one half of ``market``'s annualization.
+    fees, slippage : float, default 0.0005
+        Proportional cost per trade, as in ``BacktestConfig``.
+    init_cash : float, default 1_000_000.0
+        Starting cash.
+    benchmark : DataFrame, optional
+        One symbol's bars, with the ``fill`` and ``valuation`` columns, bought and held
+        on the same bars for comparison; adds ``"benchmark"`` and ``"relative"`` (excess
+        return and drawdown) to the metrics.
+    output_dir : str or Path, optional
+        Also write the library's run directory under this directory (see
+        ``BacktestReport.save``).
+    columns : mapping of str to str, optional
+        Renames caller columns onto the canonical names, ``{"date": "timestamp"}``. The
+        prices must have every key; the other frames are renamed where they have one.
+
+    Returns
+    -------
+    BacktestReport
+        Equity, returns, weights, orders and trades as frames, the metrics as a dict,
+        the benchmark curve, ``plot()``, ``save()`` and the library result as ``raw``.
+
+    Raises
+    ------
+    ValueError
+        If both or neither of ``weights`` and ``scores`` are given, ``top_n`` is missing
+        with scores or given with weights, ``direction`` is set with weights, ``market``
+        is unknown, a price column is missing (named), the
+        prices have fewer than two bars, the weights or scores name a bar or symbol the
+        prices lack, or a weight row breaks the contract (naming the bar).
+    TypeError
+        If a frame is not a pandas or polars DataFrame (or an xarray panel).
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import quantlab.api as qa
+    >>> rng = np.random.default_rng(0)
+    >>> bars = pd.bdate_range("2024-01-01", periods=60)
+    >>> symbols = ["AAA", "BBB", "CCC", "DDD"]
+    >>> close = 100 * np.exp(rng.normal(0, 0.01, (60, 4)).cumsum(axis=0))
+    >>> prices = pd.DataFrame({
+    ...     "timestamp": np.repeat(bars, 4), "symbol": symbols * 60,
+    ...     "open": (close * 0.999).ravel(), "close": close.ravel(),
+    ... })
+
+    Hold ``AAA`` and ``BBB`` half and half from the first bar:
+
+    >>> weights = pd.DataFrame({"timestamp": bars[0], "symbol": ["AAA", "BBB"],
+    ...                         "weight": [0.5, 0.5]})
+    >>> report = qa.backtest(prices, weights=weights)
+    >>> report
+    BacktestReport(60 bars x 4 symbols, total return 0.86%)
+    >>> report.orders[["timestamp", "symbol", "side"]]
+       timestamp symbol side
+    0 2024-01-02    AAA  Buy
+    1 2024-01-02    BBB  Buy
+
+    Or hold the two names with the highest past 5-bar return, rebalanced every five
+    bars (the first rebalance has no scores yet, so it stays flat):
+
+    >>> momentum = prices.assign(
+    ...     score=prices.groupby("symbol")["close"].pct_change(5)
+    ... )[["timestamp", "symbol", "score"]]
+    >>> report = qa.backtest(prices, scores=momentum, top_n=2, rebalance_periods=5)
+    >>> sorted(report.metrics)
+    ['notes', 'whole']
+    >>> report.weights[report.weights["timestamp"] == bars[5]]
+        timestamp symbol  weight
+    20 2024-01-08    AAA     0.0
+    21 2024-01-08    BBB     0.5
+    22 2024-01-08    CCC     0.0
+    23 2024-01-08    DDD     0.5
+    """
+    from quantlab.api import _backtest
+
+    return _backtest.backtest(
+        prices,
+        weights=weights,
+        scores=scores,
+        top_n=top_n,
+        direction=direction,
+        rebalance_periods=rebalance_periods,
+        fill=fill,
+        valuation=valuation,
+        market=market,
+        trading_days_per_year=trading_days_per_year,
+        session_minutes_per_day=session_minutes_per_day,
+        fees=fees,
+        slippage=slippage,
+        init_cash=init_cash,
+        benchmark=benchmark,
+        output_dir=output_dir,
+        columns=columns,
     )

@@ -154,12 +154,12 @@ class UniverseMask:
         >>> mask.missing_members
         ['DDD']
         """
+        # A market dataset held in memory has no store, so no ticker sidecar.
+        path = market_dataset.config.zarr_file_path
         return cls(
             market_dataset.panel(start, end),
             constituent_dataset.panel(start, end),
-            ticker_lookup=CrspTickerLookup.beside_store(
-                market_dataset.config.zarr_file_path
-            ),
+            ticker_lookup=None if path is None else CrspTickerLookup.beside_store(path),
         )
 
     @property
