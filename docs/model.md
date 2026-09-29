@@ -704,12 +704,12 @@ Known differences from the official implementation:
 
 ### Choose the training device
 
-Every shipped head except `XGBTDRegressor` picks its training device when training starts: CUDA when a CUDA device is available, otherwise the CPU. Apple MPS is never picked automatically; pass it explicitly to use it.
+Every shipped head picks its training device when training starts: CUDA when a CUDA device is available, otherwise the CPU. Apple MPS is never picked automatically; pass it explicitly to use it.
 
 - A torch head asks PyTorch (`TorchModel.device`); nothing is configurable beyond `panel_device` (see Keep the training panel on the GPU).
-- `RealMLPRegressor` fills in pytabkit's `device` constructor argument with `"cuda"` when PyTorch sees a CUDA device and `"cpu"` otherwise. `device=None` counts as unset, because pytabkit's own `None` would choose MPS on a Mac.
+- `RealMLPRegressor` fills in pytabkit's `device` constructor argument with `"cuda"` when PyTorch sees a CUDA device and `"cpu"` otherwise. `device=None` counts as unset, because pytabkit's own `None` would choose MPS on a Mac. After fitting, the network is moved to the CPU, so evaluation and prediction run there and a checkpoint trained on CUDA loads and predicts on a machine without CUDA.
 - `XGBoostRegressor` sets xgboost's `device` to `"cuda"` when the installed xgboost is a CUDA build and the CUDA driver reports a visible device (`CUDA_VISIBLE_DEVICES` is honoured), and to `"cpu"` otherwise. The check reads `xgboost.build_info()` and asks the driver through `ctypes`, without importing PyTorch. The trained Booster is then switched to the CPU for prediction, so prediction on numpy rows raises no device-mismatch warning and the checkpoint loads on a machine without CUDA.
-- `XGBTDRegressor` passes no device: pytabkit's XGBoost path does not forward one to xgboost, so it trains on the CPU.
+- `XGBTDRegressor` resolves the device by the `XGBoostRegressor` rule. pytabkit does not forward a device to xgboost, so the head merges it into the params of pytabkit's inner `xgboost.train` call; pytabkit's own `device` argument stays unset. The fitted Boosters are switched to the CPU for prediction, as above.
 
 A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"cuda:1"`, `"mps"`, ...). Either way the device used is recorded under `resolved_hyperparameters` in `config.json`, while `hyperparameters` keeps what the caller passed. On a machine without CUDA, as here:
 
@@ -735,7 +735,7 @@ A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"c
 ('cpu', True)
 ```
 
-The first two calls return `('cuda', False)` on a CUDA machine. Checked on the training server (RTX 5090 D, xgboost 3.4.1 CUDA build) on 2026-09-29 with a synthetic 400-bar × 200-symbol panel: both heads recorded `'cuda'`, the process held GPU memory while each trained, and pytabkit's Lightning trainer logged `GPU available: True (cuda), used: True`.
+The first two calls return `('cuda', False)` on a CUDA machine. Checked on the training server (RTX 5090 D, xgboost 3.4.1 CUDA build) on 2026-09-29 with a synthetic 400-bar × 200-symbol panel: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor` all recorded `'cuda'`, the Boosters reported `cuda:0` while training, each process held GPU memory while it trained, and pytabkit's Lightning trainer logged `GPU available: True (cuda), used: True`. The RealMLP checkpoint then loaded and predicted with `CUDA_VISIBLE_DEVICES=` on the server and on a Mac, matching the server's predictions to 5e-8.
 
 ### Keep the training panel on the GPU
 

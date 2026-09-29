@@ -39,6 +39,7 @@ from pytabkit import XGB_TD_Regressor
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import BaseModel
+from quantlab.model.predefined._support.devices import xgboost_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor
 from quantlab.model.predefined.xgb_td import XGBTDRegressor, _XGBTDEstimator
 from quantlab.utils.metrics import regression_panel_metrics
@@ -371,6 +372,7 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
         **XGBTDRegressor.DEFAULT_PARAMS,
         "random_state": 42,
         **hyper,
+        "device": xgboost_default_device(),
         "early_stopping_rounds": 4,
     }
     assert saved["resolved_hyperparameters"] == expected

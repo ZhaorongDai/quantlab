@@ -251,7 +251,10 @@ class RealMLPRegressor(TabkitRegressor):
     def _fit_model(self, train_rows: Rows, val_rows: Rows | None) -> None:
         """Fit the estimator and record the stopping epoch in the run summary.
 
-        The validation rows are passed to pytabkit when there are any.
+        The validation rows are passed to pytabkit when there are any. The
+        fitted estimator is then moved to the CPU, so evaluation, prediction
+        and the checkpoint run on the CPU and the checkpoint loads without
+        CUDA.
         """
         self._warn_without_validation(val_rows)
         callbacks = [] if self._wandb_recorder is None else [_WandbEpochCallback(self)]
@@ -262,6 +265,10 @@ class RealMLPRegressor(TabkitRegressor):
                 self.model.fit(
                     train_rows.x, train_rows.y, X_val=val_rows.x, y_val=val_rows.y
                 )
+        # Keep the fitted network on the CPU, so the ``.joblib`` checkpoint
+        # holds no CUDA tensor and loads on a machine without CUDA.
+        # ``resolved_hyperparameters`` keeps the training device.
+        self.model.to("cpu")
 
         if self._wandb_recorder is not None and val_rows is not None:
             stop_epoch = self._stop_epoch()

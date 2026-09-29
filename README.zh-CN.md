@@ -60,7 +60,7 @@ cd quantlab
 uv sync
 ```
 
-神经网络模型、RealMLP 和 XGBoost 在有 CUDA GPU 时使用 GPU，否则使用 CPU。GPU 和 macOS 的注意事项见
+所有模型头（神经网络和树模型）在有 CUDA GPU 时使用 GPU，否则使用 CPU。GPU 和 macOS 的注意事项见
 [安装指南](docs/getting-started/installation.md)。
 
 ## 快速上手

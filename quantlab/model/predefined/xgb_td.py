@@ -20,6 +20,7 @@ from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
 from quantlab.model.library_model import Rows
+from quantlab.model.predefined._support.devices import xgboost_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
 from quantlab.model.predefined.xgb import _WandbEvalCallback, record_feature_importance
 
@@ -68,7 +69,13 @@ class XGBTDRegressor(TabkitRegressor):
 
     Hyperparameters are the constructor arguments of ``XGB_TD_Regressor``
     (``n_estimators``, ``max_depth``, ``lr``, ``subsample``, ``n_threads``,
-    ...). pytabkit's tuned defaults fill in whatever is not given:
+    ``device``, ...). Unless ``device`` is given, training runs on ``"cuda"``
+    when xgboost can train on CUDA here and on ``"cpu"`` otherwise, never on
+    Apple MPS (the rule of ``XGBoostRegressor``). pytabkit forwards no
+    device to xgboost, so the head injects it into pytabkit's inner
+    ``xgboost.train`` call; the device is recorded in
+    ``resolved_hyperparameters``, and the fitted Boosters are switched to
+    the CPU for prediction. pytabkit's tuned defaults fill in whatever is not given:
     1000 rounds, depth 9, learning rate 0.05, subsample 0.7.
 
     With validation rows,
@@ -142,6 +149,9 @@ class XGBTDRegressor(TabkitRegressor):
     ) -> list[_XGBTDEstimator]:
         """Resolve the parameters and return one unfitted estimator per label.
 
+        ``device`` is kept out of the estimators' arguments and resolved for
+        xgboost instead (see the class docstring).
+
         ``num_features`` is unused; pytabkit infers it from the arrays passed
         to ``fit``.
 
@@ -152,6 +162,11 @@ class XGBTDRegressor(TabkitRegressor):
             ``XGB_TD_Regressor`` constructor argument.
         """
         params = self._resolve_params(hyperparameters)
+        # The device is xgboost's, injected into the inner ``xgboost.train``
+        # call by ``_fit_model``. pytabkit's own ``device`` argument only
+        # books resources, and it checks the name against torch's devices.
+        device = params.pop("device", None)
+        self._params["device"] = xgboost_default_device() if device is None else device
         rounds = self._early_stopping_rounds()
         estimators = []
         for _ in range(num_labels):
@@ -180,7 +195,10 @@ class XGBTDRegressor(TabkitRegressor):
         for i, estimator in enumerate(self.model):
             suffix = self._key_suffix(names, i)
             self._last_log_step = None
-            with active_callbacks(xgb_callbacks=self._round_callbacks(suffix)):
+            with active_callbacks(
+                xgb_callbacks=self._round_callbacks(suffix),
+                xgb_params={"device": self._params["device"]},
+            ):
                 if val_rows is None:
                     estimator.fit(train_rows.x, train_rows.y[:, i])
                     self._pin_all_rounds(estimator)
@@ -189,6 +207,7 @@ class XGBTDRegressor(TabkitRegressor):
                         train_rows.x, train_rows.y[:, i],
                         X_val=val_rows.x, y_val=val_rows.y[:, i],
                     )
+            self._predict_on_cpu(estimator)
             if self._wandb_recorder is not None:
                 self._record_booster(estimator, names[i], suffix)
 
@@ -248,6 +267,17 @@ class XGBTDRegressor(TabkitRegressor):
             self.class_name,
             suffix=suffix,
         )
+
+    @staticmethod
+    def _predict_on_cpu(estimator: _XGBTDEstimator) -> None:
+        """Switch every fitted Booster of ``estimator`` to ``device="cpu"``.
+
+        pytabkit predicts from a ``DMatrix`` built on the CPU, and a CPU
+        Booster loads on a machine without CUDA. ``resolved_hyperparameters``
+        keeps the training device.
+        """
+        for sub in estimator.alg_interface_.sub_split_interfaces:
+            sub.model.set_param({"device": "cpu"})
 
     @staticmethod
     def _pin_all_rounds(estimator: _XGBTDEstimator) -> None:

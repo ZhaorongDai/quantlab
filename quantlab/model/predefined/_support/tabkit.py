@@ -160,7 +160,9 @@ class TabkitRegressor(LibraryModel):
 # thread-local slot for the duration of ``fit``, and two one-time patches read
 # that slot: one wraps ``xgboost.train`` to append the active xgboost callbacks,
 # the other wraps ``TabNNModule.create_callbacks`` to append the active
-# Lightning callbacks. Outside an active fit both patches are pass-throughs,
+# Lightning callbacks. The ``xgboost.train`` wrapper also merges the active
+# xgboost parameters (the resolved ``device``) into the call's params, because
+# pytabkit forwards no device to xgboost. Outside an active fit both patches are pass-throughs,
 # so the plain ``XGBoostRegressor`` is unaffected, and the slot being
 # thread-local keeps fits running on different threads apart.
 
@@ -173,8 +175,13 @@ def _active_list(name: str) -> list:
     return list(getattr(_active, name, None) or [])
 
 
+def _active_params() -> dict:
+    """Return the thread's active xgboost parameters (empty when none)."""
+    return dict(getattr(_active, "xgb_params", None) or {})
+
+
 def _install_xgboost_train_hook() -> None:
-    """Wrap ``xgboost.train`` once so active xgboost callbacks are appended."""
+    """Wrap ``xgboost.train`` once so active callbacks and parameters are applied."""
     if "xgboost" in _installed:
         return
     import xgboost
@@ -185,6 +192,12 @@ def _install_xgboost_train_hook() -> None:
         extra = _active_list("xgb_callbacks")
         if extra:
             kwargs["callbacks"] = [*(kwargs.get("callbacks") or []), *extra]
+        params = _active_params()
+        if params:
+            if args:
+                args = ({**dict(args[0] or {}), **params}, *args[1:])
+            else:
+                kwargs["params"] = {**dict(kwargs.get("params") or {}), **params}
         return original(*args, **kwargs)
 
     train_with_active_callbacks.__wrapped__ = original  # type: ignore[attr-defined]
@@ -214,27 +227,29 @@ def _install_lightning_callbacks_hook() -> None:
 
 
 @contextmanager
-def active_callbacks(xgb_callbacks=None, lightning_callbacks=None):
-    """Make ``xgb_callbacks`` and ``lightning_callbacks`` active on this thread.
+def active_callbacks(xgb_callbacks=None, lightning_callbacks=None, xgb_params=None):
+    """Make ``xgb_callbacks``, ``lightning_callbacks`` and ``xgb_params`` active on this thread.
 
     While the block runs, every ``xgboost.train`` call on this thread gets
-    the xgboost callbacks appended and every pytabkit ``TabNNModule`` gets
-    the Lightning callbacks appended. The slot is cleared on exit, also on
-    error.
+    the xgboost callbacks appended and ``xgb_params`` merged over its
+    params, and every pytabkit ``TabNNModule`` gets the Lightning callbacks
+    appended. The slots are cleared on exit, also on error.
 
     Examples
     --------
     >>> with active_callbacks(xgb_callbacks=[callback]):
     ...     estimator.fit(x, y, X_val=val_x, y_val=val_y)
     """
-    if xgb_callbacks:
+    if xgb_callbacks or xgb_params:
         _install_xgboost_train_hook()
     if lightning_callbacks:
         _install_lightning_callbacks_hook()
     _active.xgb_callbacks = list(xgb_callbacks or [])
     _active.lightning_callbacks = list(lightning_callbacks or [])
+    _active.xgb_params = dict(xgb_params or {})
     try:
         yield
     finally:
         _active.xgb_callbacks = []
         _active.lightning_callbacks = []
+        _active.xgb_params = {}
