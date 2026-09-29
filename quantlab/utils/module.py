@@ -20,6 +20,8 @@ Examples
 
 import copy
 import importlib
+import os
+from pathlib import Path
 
 
 def get_cls_from_path(path: str):
@@ -75,22 +77,36 @@ def _config_cls_of(cls) -> type:
     return config_cls
 
 
-def load_dataset_from_config(config: dict):
+def load_dataset_from_config(
+    config: dict, *, run_dir: "str | os.PathLike | None" = None
+):
     """Rebuild a dataset from its config dict.
 
-    The class named in ``config["name"]`` is imported and constructed with its
-    own declared config class. The input dict is deep-copied first and is
-    returned to the caller unchanged.
+    The class named in ``config["name"]`` is imported, its
+    ``resolve_run_config(config, run_dir)`` prepares the config (a
+    ``FrameDataset`` resolves a store a backtest run directory recorded
+    relative to itself; every other dataset uses its paths as written), and
+    the class is constructed with its own declared config class. The input
+    dict is deep-copied first and is returned to the caller unchanged.
 
     Parameters
     ----------
     config : dict
         The dict a dataset's ``config.to_dict()`` produced.
+    run_dir : str or os.PathLike, optional
+        The run directory the config was read from.
 
     Returns
     -------
     BaseDataset
         A dataset instance.
+
+    Raises
+    ------
+    ValueError
+        If the class's ``resolve_run_config`` refuses the config, such as a
+        ``FrameDataset`` store named relative to a run directory without
+        ``run_dir``.
 
     Examples
     --------
@@ -104,9 +120,13 @@ def load_dataset_from_config(config: dict):
     # Configs saved before `catalog_path` was removed still carry the key.
     config.pop("catalog_path", None)
     cls = get_cls_from_path(config["name"])
+    config_cls = _config_cls_of(cls)
     if "datasets" in config:  # a merged dataset nests its inputs' configs
-        config["datasets"] = [load_dataset_from_config(d) for d in config["datasets"]]
-    return cls(_config_cls_of(cls)(**config))
+        config["datasets"] = [
+            load_dataset_from_config(d, run_dir=run_dir) for d in config["datasets"]
+        ]
+    config = cls.resolve_run_config(config, None if run_dir is None else Path(run_dir))
+    return cls(config_cls(**config))
 
 
 def load_factor_from_config(config: dict):
@@ -192,7 +212,9 @@ def load_model_from_config(config: dict):
     return get_cls_from_path(config["name"]).from_config(config)
 
 
-def load_backtester_from_config(config: dict):
+def load_backtester_from_config(
+    config: dict, *, run_dir: "str | os.PathLike | None" = None
+):
     """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
     The price dataset, the model (through ``from_config`` of the class its
@@ -200,8 +222,15 @@ def load_backtester_from_config(config: dict):
     ``run_weights()`` run without one), an optional
     benchmark dataset and every scalar parameter are rebuilt, and the backtester is constructed with its declared config class.
     Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
-    backtest; a ``run_weights()`` run is re-run by passing it the run
-    directory's ``weights.zarr``.
+    backtest; a ``run_weights()`` run is replayed by passing ``run_weights``
+    the weights it simulated, ``XrBackend().read(run_dir / "weights.zarr").data``.
+
+    The datasets are rebuilt through ``load_dataset_from_config`` with
+    ``run_dir``. A run whose price or benchmark dataset was a ``FrameDataset``
+    (every ``quantlab.api.backtest`` run) holds that panel under the run
+    directory's ``inputs/``, and its config names the store relative to the
+    run directory, so the directory can be moved; such a config needs
+    ``run_dir``.
 
     Two keys are records rather than config fields. ``data_fingerprint``
     describes the data the original run read (time range, axis sizes and a
@@ -219,6 +248,9 @@ def load_backtester_from_config(config: dict):
     ----------
     config : dict
         The dict read from a run directory's ``config.json``.
+    run_dir : str or os.PathLike, optional
+        The run directory ``config`` was read from. Required when the config
+        names ``inputs/`` stores, which are resolved against it.
 
     Returns
     -------
@@ -231,7 +263,8 @@ def load_backtester_from_config(config: dict):
         If ``config["name"]`` is not a ``BaseBacktester`` subclass. This is
         checked before any nested dataset or model is built.
     ValueError
-        If any config field other than ``name`` is missing.
+        If any config field other than ``name`` is missing, or the config
+        names ``inputs/`` stores and ``run_dir`` is not given.
 
     Examples
     --------
@@ -242,6 +275,37 @@ def load_backtester_from_config(config: dict):
     ...     config = json.load(f)
     >>> backtester = load_backtester_from_config(config)
     >>> result = backtester.run()
+
+    A ``quantlab.api.backtest`` run kept with ``output_dir``, rebuilt from its
+    directory and replayed from its saved weights:
+
+    >>> import json, tempfile
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import quantlab.api as qa
+    >>> from quantlab.backend import XrBackend
+    >>> from quantlab.utils.module import load_backtester_from_config
+    >>> bars = pd.bdate_range("2024-01-01", periods=5)
+    >>> prices = pd.DataFrame({
+    ...     "timestamp": np.repeat(bars, 2), "symbol": ["AAA", "BBB"] * 5,
+    ...     "open": np.linspace(10.0, 14.0, 10), "close": np.linspace(10.5, 14.5, 10),
+    ... })
+    >>> weights = pd.DataFrame({"timestamp": [bars[0]], "symbol": ["AAA"],
+    ...                         "weight": [1.0]})
+    >>> report = qa.backtest(prices, weights=weights, output_dir=tempfile.mkdtemp())
+    >>> run_dir = report.raw.run_dir
+    >>> config = json.loads((run_dir / "config.json").read_text())
+    >>> config["price_dataset"]["zarr_file_path"]
+    'inputs/price_dataset.zarr'
+    >>> backtester = load_backtester_from_config(config, run_dir=run_dir)
+    >>> again = backtester.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+    >>> json.loads((again.run_dir / "metrics.json").read_text()) == json.loads(
+    ...     (run_dir / "metrics.json").read_text())
+    True
+    >>> again.simulation.value.values.round(2).tolist()
+    [1000000.0, 1044873.23, 1126424.31, 1207975.4, 1289526.48]
+    >>> (again.simulation.value == report.raw.simulation.value).all().item()
+    True
     """
     # Imported here so this module does not import the backtest layer at
     # import time.
@@ -272,7 +336,9 @@ def load_backtester_from_config(config: dict):
             f"from the values the stored backtest ran with"
         )
 
-    config["price_dataset"] = load_dataset_from_config(config["price_dataset"])
+    config["price_dataset"] = load_dataset_from_config(
+        config["price_dataset"], run_dir=run_dir
+    )
     # The model is rebuilt by its own class, so any predictor (a model, or an
     # ensemble of models) round-trips without a special case here.
     # A config for run_weights() carries no model.
@@ -284,7 +350,9 @@ def load_backtester_from_config(config: dict):
     )
     benchmark = config.get("benchmark_dataset")
     config["benchmark_dataset"] = (
-        None if benchmark is None else load_dataset_from_config(benchmark)
+        None
+        if benchmark is None
+        else load_dataset_from_config(benchmark, run_dir=run_dir)
     )
 
     backtester = cls(_config_cls_of(cls)(**config))

@@ -466,6 +466,7 @@ succeeded, so a crashed run leaves no half-written directory behind.
 | `fingerprint.json` | A content hash and extent of every dataset the run read. |
 | `report.html` | The human-readable report. |
 | `folds/` | `run_cv()` only: per-fold `weights.zarr` and `equity.zarr`. |
+| `inputs/` | Only for a price or benchmark `FrameDataset` held in memory: its panel, named in `config.json` relative to the run directory, so `load_backtester_from_config(config, run_dir=run_dir)` rebuilds the run. |
 
 All JSON files are strict JSON: NaN and infinities are written as `null` and
 timestamps as ISO strings.

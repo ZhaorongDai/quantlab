@@ -5,9 +5,14 @@
 reads it through the same public requests (``panel``, ``bar_before``, ``head``,
 ``to_kunquant``), answered from the panel it holds instead of from a Zarr store. The frame
 is converted by ``quantlab.utils.frame.to_panel``, the same rules ``quantlab.api`` applies.
+A ``FrameDatasetConfig`` naming a store instead reads that store into memory once, at
+construction: this is how a saved run's inputs come back when the run is rebuilt.
 """
 
+import dataclasses
+import os
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Self
 
 import numpy as np
@@ -20,6 +25,10 @@ from quantlab.base.config import FrameDatasetConfig
 from quantlab.base.data import MarketDataset
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.utils.frame import to_panel
+
+#: Directory of a backtest run directory that ``persist_with_run`` writes the held
+#: panels into, one ``<config field>.zarr`` store each.
+RUN_INPUTS_DIRNAME = "inputs"
 
 
 class FrameDataset(MarketDataset):
@@ -34,25 +43,37 @@ class FrameDataset(MarketDataset):
     named, so name them as the factor reading them expects (``adjClose`` for the stock
     factors, ``close`` for the crypto ones).
 
-    Nothing is read from or written to disk. There are no raw files, so
-    ``from_raw_data``, ``from_raw_data_chunked`` and ``update`` refuse, as does ``save``;
-    a stream-mode factor refuses it too, since a stream is fed live bars rather than a
-    held panel. ``resample()`` returns a dataset holding the resampled panel.
+    Built from a frame or panel, nothing is read from or written to disk. Built from a
+    ``FrameDatasetConfig`` whose ``zarr_file_path`` names a store (one ``to_zarr``
+    wrote, for example), the store is read into memory once, at construction, and
+    resampled there when the config carries ``resample_freq``; the store is never
+    written. This is the form ``quantlab.utils.module.load_dataset_from_config``
+    rebuilds from ``get_config()``. Either way there are no raw files, so
+    ``from_raw_data``, ``from_raw_data_chunked`` and ``update`` refuse, as does
+    ``save``; a stream-mode factor refuses it too, since a stream is fed live bars
+    rather than a held panel. ``resample()`` returns a dataset holding the resampled
+    panel, and ``to_zarr(path)`` writes the held panel to a new store.
 
     Parameters
     ----------
-    data : pandas.DataFrame, polars.DataFrame or xarray.Dataset
-        The bars, as a long frame or a panel on ``(timestamp, symbol)``.
+    data : pandas.DataFrame, polars.DataFrame, xarray.Dataset or FrameDatasetConfig
+        The bars, as a long frame or a panel on ``(timestamp, symbol)``; or a config
+        naming the Zarr store to read them from.
     columns : mapping of str to str, optional
-        Renames the frame's columns before conversion, ``{caller_name: name}``.
+        Renames the frame's columns before conversion, ``{caller_name: name}``. Not
+        accepted with a config, whose store is already in the library's names.
 
     Raises
     ------
     TypeError
-        If ``data`` is not a pandas or polars frame or an xarray panel.
+        If ``data`` is not a pandas or polars frame, an xarray panel or a
+        ``FrameDatasetConfig``.
     ValueError
         If ``timestamp`` or ``symbol`` is missing after renaming, ``columns`` names an
-        absent column, or a ``(timestamp, symbol)`` pair repeats.
+        absent column, a ``(timestamp, symbol)`` pair repeats, or ``data`` is a config
+        without ``zarr_file_path`` or comes with ``columns``.
+    FileNotFoundError
+        If the config's store does not exist.
 
     Examples
     --------
@@ -69,6 +90,18 @@ class FrameDataset(MarketDataset):
            [11., nan]])
     >>> ds.bar_before("2024-01-03", 1)
     Timestamp('2024-01-02 00:00:00')
+
+    Read back from a store:
+
+    >>> import tempfile
+    >>> from pathlib import Path
+    >>> from quantlab.base.config import FrameDatasetConfig
+    >>> path = str(Path(tempfile.mkdtemp()) / "bars.zarr")
+    >>> _ = ds.to_zarr(path)
+    >>> FrameDataset(FrameDatasetConfig(zarr_file_path=path)).panel(
+    ...     "2024-01-02", "2024-01-03")["close"].values
+    array([[10., 20.],
+           [11., nan]])
     """
 
     # Narrower type annotation for readers and type checkers only.
@@ -78,10 +111,46 @@ class FrameDataset(MarketDataset):
     config_cls = FrameDatasetConfig
 
     def __init__(self, data, *, columns: Mapping[str, str] | None = None):
-        """Convert and hold ``data``; see the class docstring for parameters."""
+        """Convert and hold ``data``, or read the store its config names.
+
+        See the class docstring for parameters.
+        """
+        if isinstance(data, FrameDatasetConfig):
+            self._init_from_store(data, columns)
+            return
         panel = to_panel(data, columns=columns, purpose="FrameDataset").load()
         super().__init__(FrameDatasetConfig())
         self.data_backend.to_internal(panel)
+
+    def _init_from_store(
+        self, config: FrameDatasetConfig, columns: Mapping[str, str] | None
+    ) -> None:
+        """Read the store ``config`` names into memory, resampling it if configured.
+
+        Raises
+        ------
+        ValueError
+            If ``columns`` is given or the config names no store.
+        FileNotFoundError
+            If the store does not exist.
+        """
+        if columns is not None:
+            raise ValueError(
+                f"{type(self).__name__}: columns= renames a frame's columns; a "
+                f"FrameDatasetConfig names a store already in the library's names, so "
+                f"pass no columns with it."
+            )
+        if config.zarr_file_path is None:
+            raise ValueError(
+                f"{type(self).__name__}: a FrameDatasetConfig without zarr_file_path "
+                f"names no store to read; pass the frame or panel itself instead."
+            )
+        super().__init__(config)
+        panel = XrBackend().read(str(config.zarr_file_path)).get_xarray_dataset(
+            ["timestamp", "symbol"]
+        )
+        self.data_backend.to_internal(panel.load())
+        self._apply_resample()
 
     def __eq__(self, other: object) -> bool:
         """Return whether ``other`` is a ``FrameDataset`` with an equal config and panel.
@@ -128,12 +197,207 @@ class FrameDataset(MarketDataset):
         other.data_backend.to_internal(self._held())
         return other
 
+    @property
+    def store_path(self) -> str | None:
+        """Return the store the panel was read from, or ``None``.
+
+        ``None`` for a panel handed over at construction, and for a resampled
+        dataset, whose bars are resampled in memory with no store of their own
+        beside the source (ADR 0011, an exception to ADR 0002's resampled-store
+        cache).
+
+        Examples
+        --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> FrameDataset(frame).store_path is None
+        True
+        """
+        if self.config.resample_freq is not None:
+            return None
+        return self.config.zarr_file_path
+
+    def to_zarr(self, path: "str | os.PathLike") -> Self:
+        """Write the held panel to a new Zarr store and return a dataset reading it.
+
+        The panel is written as held: a resampled dataset writes its resampled bars,
+        and the returned dataset's config carries no resample fields. This dataset is
+        not changed. A backtest run directory's ``inputs/`` stores are written this way.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            The store to create; it must not exist.
+
+        Returns
+        -------
+        FrameDataset
+            A dataset whose config names ``path``, read back from it.
+
+        Raises
+        ------
+        FileExistsError
+            If ``path`` exists; a store is never overwritten.
+
+        Examples
+        --------
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> path = Path(tempfile.mkdtemp()) / "bars.zarr"
+        >>> on_disk = FrameDataset(frame).to_zarr(path)
+        >>> on_disk.store_path == str(path)
+        True
+        >>> on_disk.panel("2024-01-03", "2024-01-03")["close"].values
+        array([[11., nan]])
+        >>> FrameDataset(frame).to_zarr(path)
+        Traceback (most recent call last):
+        FileExistsError: FrameDataset.to_zarr(): ... already exists; a store is never overwritten.
+        """
+        target = Path(path)
+        if target.exists():
+            raise FileExistsError(
+                f"{self.class_name}.to_zarr(): {target} already exists; a store is "
+                f"never overwritten."
+            )
+        XrBackend().to_internal(self._held()).write(str(target))
+        return type(self)(
+            dataclasses.replace(
+                self.config,
+                zarr_file_path=str(target),
+                resample_freq=None,
+                resample_how=None,
+            )
+        )
+
+    def persist_with_run(self, run_dir: Path, name: str) -> dict:
+        """Write the held panel into ``run_dir`` and return a config reading it.
+
+        The panel belongs to no project store, so a backtest run directory keeps a
+        copy: ``inputs/<name>.zarr``, written by ``to_zarr``. The returned config names
+        it relative to the run directory, so the directory can be moved;
+        ``resolve_run_config`` resolves it again when the run is rebuilt.
+
+        Parameters
+        ----------
+        run_dir : Path
+            The run directory being written.
+        name : str
+            The backtest config field holding this dataset (``"price_dataset"``).
+
+        Returns
+        -------
+        dict
+            This dataset's config reading the copy, with its path relative to
+            ``run_dir``.
+
+        Raises
+        ------
+        FileExistsError
+            If the copy exists already.
+
+        Examples
+        --------
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> run_dir = Path(tempfile.mkdtemp())
+        >>> FrameDataset(frame).persist_with_run(run_dir, "price_dataset")["zarr_file_path"]
+        'inputs/price_dataset.zarr'
+        >>> [p.name for p in (run_dir / "inputs").iterdir()]
+        ['price_dataset.zarr']
+        """
+        relative = Path(RUN_INPUTS_DIRNAME) / f"{name}.zarr"
+        config = self.to_zarr(Path(run_dir) / relative).get_config()
+        config["zarr_file_path"] = relative.as_posix()
+        return config
+
+    @classmethod
+    def resolve_run_config(cls, config: dict, run_dir: Path | None) -> dict:
+        """Return ``config`` with a store named relative to ``run_dir`` made absolute.
+
+        A relative ``zarr_file_path`` is one ``persist_with_run`` recorded; it is
+        resolved against ``run_dir`` and never against the working directory. An
+        absolute path, or none, is left as it is. ``config`` is not modified.
+
+        Parameters
+        ----------
+        config : dict
+            A recorded ``FrameDataset`` config.
+        run_dir : Path or None
+            The run directory the config was read from.
+
+        Returns
+        -------
+        dict
+            The config to construct the dataset from.
+
+        Raises
+        ------
+        ValueError
+            If the path is relative and ``run_dir`` is ``None``.
+
+        Examples
+        --------
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> FrameDataset.resolve_run_config(
+        ...     {"zarr_file_path": "inputs/price_dataset.zarr"}, "/runs/WeightsVectorBt_1"
+        ... )
+        {'zarr_file_path': '/runs/WeightsVectorBt_1/inputs/price_dataset.zarr'}
+        >>> FrameDataset.resolve_run_config(
+        ...     {"zarr_file_path": "inputs/price_dataset.zarr"}, None)
+        Traceback (most recent call last):
+        ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', ...
+        """
+        path = config.get("zarr_file_path")
+        if path is None or Path(path).is_absolute():
+            return config
+        if run_dir is None:
+            name = config.get("name") or f"{cls.__module__}.{cls.__qualname__}"
+            raise ValueError(
+                f"{name} reads the store {path!r}, which is relative to the run "
+                f"directory the config was saved in; pass run_dir= (the directory "
+                f"holding config.json) to rebuild it. It is never resolved against the "
+                f"working directory."
+            )
+        return {**config, "zarr_file_path": str(Path(run_dir) / path)}
+
+    def ticker_store(self) -> None:
+        """Return ``None``: a caller's symbols are shown as they are.
+
+        The panel came from a caller, not from a CRSP store, so no ticker sidecar
+        applies, even when it was read back from a run directory's ``inputs/``.
+
+        Examples
+        --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"],
+        ...     "close": [10.0]})
+        >>> FrameDataset(frame).ticker_store() is None
+        True
+        """
+        return None
+
     def resample(self, freq: str, how: Mapping[str, str] | str) -> Self:
         """Return a dataset holding this panel resampled onto ``freq``, in memory.
 
         The bars are cut and aggregated as on a Zarr-backed dataset: UTC-clock buckets
         labelled at their start, one ``ResampleMethod`` per variable, NaN cells skipped.
-        Nothing is written: there is no sibling store, and ``store_path`` stays ``None``.
+        Nothing is written or read: there is no sibling store, not even beside a store
+        this dataset was read from, and ``store_path`` is ``None``.
         The copy is still a ``FrameDataset``, so it refuses ``from_raw_data``,
         ``from_raw_data_chunked``, ``update``, ``save`` and stream mode. This dataset is
         not changed.
@@ -268,12 +532,13 @@ class FrameDataset(MarketDataset):
         """Raise: a held panel has no raw files and no store."""
         raise ValueError(
             f"{self.class_name}.{method}(): the panel is held in memory, handed over at "
-            f"construction; there are no raw files to build it from and no store to write. "
-            f"Build a new FrameDataset from updated data instead."
+            f"construction; there are no raw files to build it from and no store of its "
+            f"own to write. Build a new FrameDataset from updated data, or write a copy "
+            f"with to_zarr(path)."
         )
 
     def save(self, **kwargs):
-        """Refuse: a held panel has no store.
+        """Refuse: a held panel has no store of its own; ``to_zarr`` writes a copy.
 
         Raises
         ------
