@@ -82,8 +82,9 @@ _METHOD_KINDS = (
     functools.partialmethod,
 )
 
-#: D-02's user-facing entry points, both defined once on `BaseBacktester`.
-_ENTRY_POINTS = ("run", "run_cv")
+#: D-02's user-facing entry points, all defined once on `BaseBacktester`
+#: (`run_weights` since #64).
+_ENTRY_POINTS = ("run", "run_cv", "run_weights")
 
 #: Class-dict entries that are callable methods. Unlike `_METHOD_KINDS` this
 #: excludes properties, which are attribute surface rather than entry points.
@@ -121,10 +122,10 @@ def test_abstract_method_sets_are_exact():
 
 
 def test_run_lives_only_on_base_backtester():
-    """`run()` and `run_cv()` are the two templates (D-02): nothing above the
-    base redefines either or grows a public method of its own, and the public
-    callables the base itself defines are exactly the two entry points plus
-    `get_config`."""
+    """`run()`, `run_cv()` and `run_weights()` are the templates (D-02): nothing
+    above the base redefines one or grows a public method of its own, and the
+    public callables the base itself defines are exactly the three entry points
+    plus `get_config`."""
     for entry in _ENTRY_POINTS:
         assert entry in vars(BaseBacktester), entry
 
@@ -151,7 +152,12 @@ def test_run_lives_only_on_base_backtester():
         for name, value in vars(BaseBacktester).items()
         if not name.startswith("_") and isinstance(value, _CALLABLE_KINDS)
     }
-    assert public_callables == {"run", "run_cv", "get_config"}, public_callables
+    assert public_callables == {
+        "run",
+        "run_cv",
+        "run_weights",
+        "get_config",
+    }, public_callables
 
 
 def test_backtest_configs_are_constructed_with_their_own_classes():

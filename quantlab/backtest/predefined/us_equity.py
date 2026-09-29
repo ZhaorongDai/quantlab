@@ -82,13 +82,18 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
 
         Both come from the config once, so a label the model does not declare
         or an invalid ``direction`` / ``top_n`` is reported before any data is
-        read or any model trained.
+        read or any model trained. A config without a model (for
+        ``run_weights()``) has no score label to resolve.
         """
         config = self.config
-        label_names = [
-            str(name) for label in config.model.labels for name in label.get_factor_names()
-        ]
-        self._score_label = resolve_score_label(config.score_label, label_names)
+        self._score_label = None
+        if config.model is not None:
+            label_names = [
+                str(name)
+                for label in config.model.labels
+                for name in label.get_factor_names()
+            ]
+            self._score_label = resolve_score_label(config.score_label, label_names)
         self._selector = CrossSectionTopNSelector(
             direction=config.direction, top_n=config.top_n
         )

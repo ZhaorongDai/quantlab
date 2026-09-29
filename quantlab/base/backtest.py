@@ -2,10 +2,11 @@
 
 This module sits at the end of the pipeline: a trained return model and a
 price dataset go in, and a run directory holding target weights, an equity
-curve, metrics and an HTML report comes out. ``BaseBacktester`` owns the two
-public entry points, ``run()`` (backtest one model) and ``run_cv()`` (replay
-every fold of a cross-validation run as one continuous curve), and every
-step between them that does not depend on the simulation engine. Engine
+curve, metrics and an HTML report comes out. ``BaseBacktester`` owns the
+three public entry points, ``run()`` (backtest one model), ``run_cv()``
+(replay every fold of a cross-validation run as one continuous curve) and
+``run_weights()`` (backtest a precomputed target-weight panel, no model),
+and every step between them that does not depend on the simulation engine. Engine
 layers such as ``VectorBtBacktester`` implement the simulation hooks, and
 concrete classes add a ``MarketSpec`` and a signal generator.
 
@@ -286,14 +287,16 @@ class SimulationResult:
 
 @dataclass
 class BacktestResult:
-    """Return value of ``BaseBacktester.run()``.
+    """Return value of ``BaseBacktester.run()`` and ``BaseBacktester.run_weights()``.
 
-    ``run_dir`` is the directory this run wrote its artifacts to.
+    ``run_dir`` is the directory this run wrote its artifacts to, or ``None``
+    when ``config.output_dir`` is ``None`` and nothing was written.
     ``predictions`` and ``weights`` are panels on ``(timestamp, symbol)``
-    covering exactly the backtest window; ``metrics`` is the same mapping
-    written to ``metrics.json``. ``benchmark`` is the buy-and-hold simulation
-    of ``config.benchmark_dataset`` on the same bars, or ``None`` when no
-    benchmark is configured.
+    covering exactly the backtest window; ``predictions`` is ``None`` for a
+    ``run_weights()`` run, which has no model. ``metrics`` is the same
+    mapping written to ``metrics.json``. ``benchmark`` is the buy-and-hold
+    simulation of ``config.benchmark_dataset`` on the same bars, or ``None``
+    when no benchmark is configured.
 
     Examples
     --------
@@ -306,8 +309,8 @@ class BacktestResult:
      'out_of_sample_ranges', 'training_window', 'whole']
     """
 
-    run_dir: Path
-    predictions: xr.Dataset
+    run_dir: Path | None
+    predictions: xr.Dataset | None
     weights: xr.Dataset
     simulation: SimulationResult
     metrics: dict = field(default_factory=dict)
@@ -331,6 +334,7 @@ class _BacktestWindow:
 class CVBacktestResult:
     """Return value of ``BaseBacktester.run_cv()``.
 
+    ``run_dir`` is ``None`` when ``config.output_dir`` is ``None``.
     ``folds`` holds one record per replayed fold: the manifest fields
     (``fold``, the four dates, ``checkpoint``) plus that fold's own
     ``predictions``, ``weights``, ``simulation`` and ``metrics`` from an
@@ -351,7 +355,7 @@ class CVBacktestResult:
      'training_windows', 'whole']
     """
 
-    run_dir: Path
+    run_dir: Path | None
     folds: list[dict]
     weights: xr.Dataset
     simulation: SimulationResult
@@ -370,11 +374,14 @@ class BaseBacktester(ABC):
     (``_generate_signals``) onto that engine. Concrete classes also set
     ``config_cls``, the config class the ``config`` setter accepts.
 
-    The public entry points ``run()`` and ``run_cv()`` are defined here and
-    never overridden. Both run the same fixed sequence of steps and call the
-    hooks above along the way: prepare the model, request the factor
-    panels for the window and predict, generate signals, simulate, compute
-    metrics, then write the run directory.
+    The public entry points ``run()``, ``run_cv()`` and ``run_weights()``
+    are defined here and never overridden. ``run()`` and ``run_cv()`` run the
+    same fixed sequence of steps and call the hooks above along the way:
+    prepare the model, request the factor panels for the window and predict,
+    generate signals, simulate, compute metrics, then write the run
+    directory. ``run_weights()`` starts from given target weights, so it
+    skips the model and ``_generate_signals`` and needs no model on the
+    config.
 
     Parameters
     ----------
@@ -491,7 +498,9 @@ class BaseBacktester(ABC):
 
         The type check is the first statement, before any other validation,
         so a wrong config class fails with a message naming the expected
-        class. ``model_mode="load"`` needs at least one of ``checkpoint``
+        class. ``model`` and ``model_mode`` may both be ``None`` (a config
+        for ``run_weights()`` only); ``run()`` and ``run_cv()`` refuse such a
+        config when called. ``model_mode="load"`` needs at least one of ``checkpoint``
         (used by ``run()``) and ``cv_project_dir`` (used by ``run_cv()``);
         whichever entry point is called later rejects the missing one. The
         ``checkpoint``, ``cv_project_dir`` and ``output_dir`` fields are
@@ -507,7 +516,7 @@ class BaseBacktester(ABC):
             ``config.benchmark_dataset`` is neither ``None`` nor a
             ``MarketDataset``.
         ValueError
-            If ``model_mode``, the load-mode paths,
+            If ``model_mode`` (other than ``None``), the load-mode paths,
             ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``
             or the date order are invalid.
 
@@ -531,11 +540,14 @@ class BaseBacktester(ABC):
                 f"{self.class_name} declares no MARKET spec; a concrete "
                 f"backtester must set the MARKET class attribute"
             )
-        # Checked on the class first, so a property is not evaluated here.
+        # Checked on the class first, so a property is not evaluated here. A
+        # config without a model serves run_weights() only; run() and
+        # run_cv() refuse it when called.
         missing = sorted(
             name
             for name in get_protocol_members(Predictor)
-            if not (hasattr(type(config.model), name) or hasattr(config.model, name))
+            if config.model is not None
+            and not (hasattr(type(config.model), name) or hasattr(config.model, name))
         )
         if missing:
             raise TypeError(
@@ -544,10 +556,10 @@ class BaseBacktester(ABC):
                 f"{type(config.model).__name__} lacks {missing}"
             )
 
-        if config.model_mode not in ("train", "load"):
+        if config.model_mode not in ("train", "load", None):
             raise ValueError(
-                f"{self.class_name}: model_mode must be 'train' or 'load', got "
-                f"{config.model_mode!r}"
+                f"{self.class_name}: model_mode must be 'train', 'load' or None, "
+                f"got {config.model_mode!r}"
             )
         # run() needs the checkpoint and run_cv() needs cv_project_dir; each
         # entry point rejects its own missing field when called.
@@ -645,10 +657,16 @@ class BaseBacktester(ABC):
         ('mypkg.backtest.MyBacktester', 'load', 5)
         >>> sorted(cfg["data_fingerprint"])  # present once run() has read
         ['factor[0]:PastReturnFactor', 'price_dataset']
+
+        A config without a model (for ``run_weights()``) records ``None``:
+
+        >>> weights_backtester.get_config()["model"] is None
+        True
         """
         cfg = self.config.to_dict()
         cfg["price_dataset"] = self.config.price_dataset.get_config()
-        cfg["model"] = self.config.model.get_config()
+        model = self.config.model
+        cfg["model"] = None if model is None else model.get_config()
         cfg["benchmark_dataset"] = (
             None
             if self.config.benchmark_dataset is None
@@ -734,9 +752,10 @@ class BaseBacktester(ABC):
         Raises
         ------
         ValueError
-            If ``model_mode="load"`` without ``config.checkpoint``, a label's
-            ``delay`` differs from ``fill_delay_bars``, or the window has no
-            price bars.
+            If ``config.model`` or ``config.model_mode`` is ``None``,
+            ``model_mode="load"`` comes without ``config.checkpoint``, a
+            label's ``delay`` differs from ``fill_delay_bars``, or the window
+            has no price bars.
 
         Examples
         --------
@@ -758,6 +777,7 @@ class BaseBacktester(ABC):
         >>> result.metrics["out_of_sample_ranges"]
         [('2024-02-12', '2024-03-11')]
         """
+        self._require_model("run()")
         if self.config.model_mode == "load" and self.config.checkpoint is None:
             raise ValueError(
                 f"{self.class_name}: run() with model_mode='load' requires "
@@ -857,8 +877,8 @@ class BaseBacktester(ABC):
         Raises
         ------
         ValueError
-            If ``config.cv_project_dir`` is unset, ``model_mode``
-            is not ``"load"``, a label's ``delay`` differs from
+            If ``config.model`` is ``None``, ``config.cv_project_dir`` is
+            unset, ``model_mode`` is not ``"load"``, a label's ``delay`` differs from
             ``fill_delay_bars``, the manifest is malformed, no fold falls
             inside the window, or the fold test segments are not
             contiguous.
@@ -885,6 +905,7 @@ class BaseBacktester(ABC):
         >>> cv.metrics["stitched"]["in_sample_ranges"]
         []
         """
+        self._require_model("run_cv()")
         if self.config.cv_project_dir is None:
             raise ValueError(
                 f"{self.class_name}: run_cv() requires config.cv_project_dir, the "
@@ -1037,6 +1058,210 @@ class BaseBacktester(ABC):
             metrics=metrics,
             benchmark=stitched_benchmark,
         )
+
+    def run_weights(self, weights: xr.Dataset | xr.DataArray) -> BacktestResult:
+        """Backtest a precomputed target-weight panel over the configured window.
+
+        Subclasses do not override this method. No model is involved:
+        ``config.model`` and ``config.model_mode`` are ignored and may be
+        ``None``, and ``_generate_signals`` is not called. The fill and
+        valuation prices of ``config.price_dataset`` are read for the window
+        ``config.start_date``..``config.end_date``, the weights are checked
+        against the target-weight contract on exactly those bars, and the
+        engine simulates them (a weight formed at bar t fills at bar t+1's
+        fill price). The benchmark, when configured, is simulated and
+        compared as in ``run()``. There is no training window, so the metrics
+        cover the whole window only: ``whole`` (plus ``benchmark`` and
+        ``relative``, each with a ``whole`` block, when a benchmark ran) and
+        ``notes``, with no in-sample or out-of-sample block. The run
+        directory is written like ``run()``'s when ``config.output_dir`` is
+        set; the data fingerprints cover the prices and the benchmark.
+
+        Parameters
+        ----------
+        weights : xarray.Dataset or xarray.DataArray
+            Target weights on ``(timestamp, symbol)``, in either axis order.
+            A dataset must carry a ``weight`` variable; a data array is used
+            whatever its name. The timestamps must be exactly the price bars
+            of the window and the symbols exactly the price dataset's
+            symbols, in any order (they are aligned to the price axes). Every
+            row is all-NaN (hold) or all-finite (rebalance) with a gross
+            exposure, the sum of absolute weights, of at most 1.
+
+        Returns
+        -------
+        BacktestResult
+            The run directory (``None`` without ``output_dir``), the weights
+            aligned to the price axes, the simulation, the metrics and the
+            benchmark simulation; ``predictions`` is ``None``.
+
+        Raises
+        ------
+        ValueError
+            If the window has no price bars, the weights are not on
+            ``(timestamp, symbol)``, their bars or symbols differ from the
+            prices' (naming the first missing or extra ones), or a row breaks
+            the contract (naming the offending bar).
+
+        Examples
+        --------
+        With ``prices`` a price dataset and ``weights`` a weight panel on its
+        30 bars from 2024-02-12 to 2024-03-22 (here the weights of an
+        earlier ``run()``):
+
+        >>> backtester = USEquityCrossectionSelectStockVectorBt(
+        ...     CrossSectionBacktestConfig(
+        ...         price_dataset=prices,
+        ...         start_date="2024-02-12",
+        ...         end_date="2024-03-22",
+        ...         rebalance_periods=5,
+        ...         direction="long_only",
+        ...         top_n=2,
+        ...     )
+        ... )
+        >>> result = backtester.run_weights(weights)
+        >>> result.run_dir is None, result.predictions is None
+        (True, True)
+        >>> sorted(result.metrics), result.simulation.value.sizes
+        (['notes', 'whole'], Frozen({'timestamp': 30}))
+        """
+        start_date = self._iso_date(self.config.start_date)
+        end_date = self._iso_date(self.config.end_date)
+        # Per-run state: nothing from an earlier run() carries over.
+        self._fingerprints = {}
+        self._trained_checkpoint = None
+
+        try:
+            prices = self._load_prices(start_date, end_date)
+            if prices.sizes.get("timestamp", 0) == 0:
+                raise ValueError(
+                    f"{self.class_name}: no price bars between {start_date} and "
+                    f"{end_date}"
+                )
+            benchmark_prices = self._load_benchmark_prices(
+                start_date, end_date, prices.timestamp.values
+            )
+        except Exception:
+            self._compare_fingerprints_on_failure()
+            raise
+        self._compare_fingerprints()
+
+        weights = self._align_weights(weights, prices)
+        self._assert_weights_contract(weights, prices)
+        with Timer(f"{self.class_name}: simulate"):
+            simulation = self._simulate(weights, prices)
+        benchmark = (
+            None
+            if benchmark_prices is None
+            else self._simulate_benchmark(benchmark_prices)
+        )
+        metrics = self._compute_metrics(simulation, benchmark, None)
+        metrics["notes"] = self._report_notes() + [
+            "run_weights: the target weights were given, not predicted by a "
+            "model, so there is no training window and the metrics cover the "
+            "whole window only."
+        ]
+        run_dir = self._report_and_persist(
+            None, weights, simulation, metrics, benchmark=benchmark, from_weights=True
+        )
+        # wandb is off by default; nothing leaves the machine unless enabled.
+        if self.config.use_wandb:
+            self._log_to_wandb(run_dir, metrics)
+
+        return BacktestResult(
+            run_dir=run_dir,
+            predictions=None,
+            weights=weights,
+            simulation=simulation,
+            metrics=metrics,
+            benchmark=benchmark,
+        )
+
+    def _require_model(self, entry: str) -> None:
+        """Refuse to run ``entry`` on a config without a model or a model mode.
+
+        Raises
+        ------
+        ValueError
+            If ``config.model`` or ``config.model_mode`` is ``None``.
+        """
+        for name in ("model", "model_mode"):
+            if getattr(self.config, name) is None:
+                raise ValueError(
+                    f"{self.class_name}: {entry} requires config.{name}, but it "
+                    f"is None; set config.model and config.model_mode, or "
+                    f"backtest precomputed weights with run_weights()"
+                )
+
+    def _align_weights(
+        self, weights: xr.Dataset | xr.DataArray, prices: xr.Dataset
+    ) -> xr.Dataset:
+        """Return ``weights`` as a ``weight`` panel on exactly the price axes.
+
+        A data array becomes the ``weight`` variable whatever its name. The
+        panel is transposed to ``(timestamp, symbol)`` and reordered onto the
+        price bars and symbols. The two sets must match exactly, since a
+        missing bar or symbol has no defined weight; the row contract itself
+        is left to ``_assert_weights_contract``.
+
+        Raises
+        ------
+        ValueError
+            If there is no ``weight`` variable, the dimensions are not
+            ``timestamp`` and ``symbol``, or the bars or symbols differ from
+            the prices'; the message names the first few differences.
+        """
+        if isinstance(weights, xr.DataArray):
+            weights = weights.rename("weight").to_dataset()
+        if "weight" not in weights.data_vars:
+            raise ValueError(
+                f"{self.class_name}: weights must carry a 'weight' variable, got "
+                f"{list(weights.data_vars)}"
+            )
+        weight = weights["weight"]
+        if set(weight.dims) != {"timestamp", "symbol"}:
+            raise ValueError(
+                f"{self.class_name}: weight dims must be timestamp and symbol, "
+                f"got {weight.dims}"
+            )
+        bars = prices.timestamp.values.astype("datetime64[ns]")
+        symbols = prices.symbol.values.astype(str)
+        weight = weight.transpose("timestamp", "symbol").assign_coords(
+            timestamp=weight.timestamp.values.astype("datetime64[ns]"),
+            symbol=weight.symbol.values.astype(str),
+        )
+        self._assert_same_axis("bars", weight.timestamp.values, bars)
+        self._assert_same_axis("symbols", weight.symbol.values, symbols)
+        weight = weight.reindex(timestamp=bars, symbol=symbols)
+        return weight.to_dataset().assign_coords(
+            timestamp=prices.timestamp.values, symbol=prices.symbol.values
+        )
+
+    def _assert_same_axis(
+        self, axis: str, given: np.ndarray, wanted: np.ndarray
+    ) -> None:
+        """Raise unless ``given`` holds exactly the labels of ``wanted``, once each.
+
+        ``axis`` names the axis in the message (``"bars"`` or
+        ``"symbols"``); bar labels are written with ``_bar_label``.
+        """
+
+        def _show(values: np.ndarray) -> list[str]:
+            """Format the first five labels of ``values`` for the message."""
+            if axis == "bars":
+                return [self._bar_label(value) for value in values[:5]]
+            return [str(value) for value in values[:5]]
+
+        missing = np.setdiff1d(wanted, given)
+        extra = np.setdiff1d(given, wanted)
+        duplicated = given.size - np.unique(given).size
+        if missing.size or extra.size or duplicated:
+            raise ValueError(
+                f"{self.class_name}: the weight {axis} must be exactly the price "
+                f"{axis} of the backtest window: {missing.size} missing "
+                f"{_show(missing)}, {extra.size} extra {_show(extra)}, "
+                f"{duplicated} duplicated"
+            )
 
     #: Manifest fields shared by each fold record and the per-fold entries of
     #: metrics.json.
@@ -1881,16 +2106,17 @@ class BaseBacktester(ABC):
         if mixed.any():
             first = timestamps[int(np.argmax(mixed))]
             raise ValueError(
-                f"{self.class_name}: weight row at {first} mixes NaN and finite "
-                f"values; a row must be all-NaN (hold) or all-finite (rebalance)"
+                f"{self.class_name}: weight row at {self._bar_label(first)} mixes "
+                f"NaN and finite values; a row must be all-NaN (hold) or "
+                f"all-finite (rebalance)"
             )
         gross = np.where(all_finite, np.abs(np.nan_to_num(values)).sum(axis=1), 0.0)
         over = gross > 1 + 1e-9
         if over.any():
             idx = int(np.argmax(over))
             raise ValueError(
-                f"{self.class_name}: weight row at {timestamps[idx]} has gross "
-                f"exposure {gross[idx]} > 1"
+                f"{self.class_name}: weight row at {self._bar_label(timestamps[idx])} "
+                f"has gross exposure {gross[idx]} > 1"
             )
 
     @abstractmethod
@@ -2148,7 +2374,7 @@ class BaseBacktester(ABC):
         self,
         simulation: SimulationResult,
         benchmark: SimulationResult | None,
-        split: dict,
+        split: dict | None,
     ) -> dict:
         """Compute the whole, in-sample and out-of-sample metric blocks.
 
@@ -2166,7 +2392,10 @@ class BaseBacktester(ABC):
         the benchmark. Every key of ``split`` is copied to the top level;
         the in-sample ranges come from ``split["in_sample_ranges"]`` when
         present (the stitched curve) and from the single
-        ``split["in_sample_range"]`` otherwise.
+        ``split["in_sample_range"]`` otherwise. ``split=None`` (a
+        ``run_weights()`` run, which has no training window) computes the
+        ``whole`` blocks only: no ``in_sample`` or ``out_of_sample`` key
+        appears at any level and no split key is added.
         """
         whole = self._engine_stats(simulation)
         whole.update(
@@ -2187,6 +2416,18 @@ class BaseBacktester(ABC):
                 **self._period_record_stats(simulation, ranges),
             }
 
+        if split is None:
+            if benchmark is not None:
+                whole_range = self._whole_range(simulation)
+                metrics["benchmark"] = {
+                    **self._benchmark_identity(simulation),
+                    "whole": self._period_returns_stats(benchmark, whole_range),
+                }
+                metrics["relative"] = {
+                    "whole": self._relative_stats(simulation, benchmark, whole_range)
+                }
+            return metrics
+
         if "in_sample_ranges" in split:
             in_sample_ranges = list(split["in_sample_ranges"])
         else:
@@ -2196,14 +2437,9 @@ class BaseBacktester(ABC):
         metrics["out_of_sample"] = _slice(list(split["out_of_sample_ranges"]))
 
         if benchmark is not None:
-            timestamps = simulation.value.timestamp.values
-            whole_range = [
-                (self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))
-            ]
-            axis_symbol = self._benchmark_axis_symbol or ""
+            whole_range = self._whole_range(simulation)
             metrics["benchmark"] = {
-                "symbol": self._benchmark_display_name(axis_symbol, timestamps[-1]),
-                "axis_symbol": axis_symbol,
+                **self._benchmark_identity(simulation),
                 "whole": self._period_returns_stats(benchmark, whole_range),
                 "in_sample": (
                     self._period_returns_stats(benchmark, in_sample_ranges)
@@ -2236,6 +2472,20 @@ class BaseBacktester(ABC):
         for key, value in split.items():
             metrics[key] = value
         return metrics
+
+    def _whole_range(self, simulation: SimulationResult) -> list[tuple[str, str]]:
+        """Return the simulation's first and last bar as one inclusive label range."""
+        timestamps = simulation.value.timestamp.values
+        return [(self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))]
+
+    def _benchmark_identity(self, simulation: SimulationResult) -> dict:
+        """Return the ``symbol`` and ``axis_symbol`` keys of the benchmark block."""
+        axis_symbol = self._benchmark_axis_symbol or ""
+        as_of = simulation.value.timestamp.values[-1]
+        return {
+            "symbol": self._benchmark_display_name(axis_symbol, as_of),
+            "axis_symbol": axis_symbol,
+        }
 
     def _benchmark_display_name(self, axis_symbol: str, as_of) -> str:
         """Return the benchmark's readable name, its ticker when the store has one.
@@ -2403,7 +2653,7 @@ class BaseBacktester(ABC):
             if np.isfinite(number):
                 out[prefix] = number
 
-    def _log_to_wandb(self, run_dir: Path, metrics: dict) -> None:
+    def _log_to_wandb(self, run_dir: Path | None, metrics: dict) -> None:
         """Log the metrics and report to a separate wandb run.
 
         Called only when ``use_wandb`` is set. The project is
@@ -2413,11 +2663,13 @@ class BaseBacktester(ABC):
         finite numeric leaves of the ``whole``, ``in_sample`` and
         ``out_of_sample`` blocks as ``whole/<metric>`` and so on (plus the
         ``benchmark`` and ``relative`` blocks when a benchmark ran), and
-        ``report`` carries the HTML report.
+        ``report`` carries the HTML report. A run kept in memory
+        (``run_dir`` is ``None``) has no report to log and is named like a
+        run directory would be.
         """
         run = wandb.init(
             project=f"{self.class_name}_backtest",
-            name=run_dir.name,
+            name=self._run_dir_name() if run_dir is None else run_dir.name,
             config=to_jsonable(self.get_config()),
         )
         summary: dict = {}
@@ -2425,7 +2677,8 @@ class BaseBacktester(ABC):
             if metrics.get(block) is not None:
                 self._flatten_numeric(block, metrics[block], summary)
         run.summary.update(summary)
-        run.log({"report": wandb.Html((run_dir / "report.html").read_text())})
+        if run_dir is not None:
+            run.log({"report": wandb.Html((run_dir / "report.html").read_text())})
         run.finish()
 
     def _run_dir_name(self) -> str:
@@ -2454,6 +2707,7 @@ class BaseBacktester(ABC):
         block: dict,
         *,
         drawdown_span: dict | None = None,
+        from_weights: bool = False,
     ) -> dict:
         """Return the "dates and settings" lines at the top of ``report.html``.
 
@@ -2475,7 +2729,9 @@ class BaseBacktester(ABC):
         split key degrades the page instead of raising inside the staged
         run directory. ``drawdown_span`` adds one line describing the
         deepest drawdown in trading days (bars), matching the markers on
-        the equity chart.
+        the equity chart. ``from_weights=True`` (a ``run_weights()`` run)
+        drops the training-window and in/out-of-sample lines and the model
+        mode, and says the weights were given instead.
         """
 
         def _pair(value) -> str | None:
@@ -2507,15 +2763,21 @@ class BaseBacktester(ABC):
             "Backtest window": f"{first} .. {last} ({timestamps.size} bars)",
             "Bar interval": str(pd.Timedelta(simulation.bar_interval)),
         }
-        if "training_windows" in block:
-            summary["Training windows"] = _text(_pairs(block.get("training_windows")))
-            summary["In-sample ranges"] = _text(_pairs(block.get("in_sample_ranges")))
-        else:
-            summary["Training window"] = _text(_pair(block.get("training_window")))
-            summary["In-sample range"] = _text(_pair(block.get("in_sample_range")))
-        summary["Out-of-sample ranges"] = _text(
-            _pairs(block.get("out_of_sample_ranges"))
-        )
+        # Given weights have no training window, so no split lines.
+        if not from_weights:
+            if "training_windows" in block:
+                summary["Training windows"] = _text(
+                    _pairs(block.get("training_windows"))
+                )
+                summary["In-sample ranges"] = _text(
+                    _pairs(block.get("in_sample_ranges"))
+                )
+            else:
+                summary["Training window"] = _text(_pair(block.get("training_window")))
+                summary["In-sample range"] = _text(_pair(block.get("in_sample_range")))
+            summary["Out-of-sample ranges"] = _text(
+                _pairs(block.get("out_of_sample_ranges"))
+            )
         benchmark = block.get("benchmark")
         if isinstance(benchmark, dict):
             dataset = self.config.benchmark_dataset
@@ -2542,7 +2804,10 @@ class BaseBacktester(ABC):
                 f"depth {DASH if depth is None else format(float(depth), '.2%')}, "
                 f"{'recovered' if drawdown_span.get('recovered') else 'not recovered by the last bar'}"
             )
-        summary["Model mode"] = _text(self.config.model_mode)
+        if from_weights:
+            summary["Signal"] = "precomputed weights (run_weights), no model"
+        else:
+            summary["Model mode"] = _text(self.config.model_mode)
         summary["Rebalance every"] = f"{self.config.rebalance_periods} bars"
         # Selection fields exist only on cross-sectional configs; a
         # time-series backtester's report simply lacks these two lines.
@@ -2562,8 +2827,14 @@ class BaseBacktester(ABC):
         metrics: dict,
         *,
         benchmark: SimulationResult | None = None,
-    ) -> Path:
+        from_weights: bool = False,
+    ) -> Path | None:
         """Write a new run directory with every artifact of a ``run()``.
+
+        Also used by ``run_weights()``, which passes ``from_weights=True`` so
+        the report's summary lines describe given weights rather than a
+        model. Nothing is written, and ``None`` is returned, when
+        ``config.output_dir`` is ``None``.
 
         The directory holds ``config.json``, ``weights.zarr``,
         ``equity.zarr`` (``value`` and ``returns``, plus ``benchmark_value``
@@ -2585,8 +2856,8 @@ class BaseBacktester(ABC):
 
         Returns
         -------
-        Path
-            The final run directory.
+        Path or None
+            The final run directory, or ``None`` without ``output_dir``.
         """
         # Everything is written to a staging directory that is renamed into
         # place only after the last artifact succeeds.
@@ -2612,7 +2883,10 @@ class BaseBacktester(ABC):
                 notes=self._report_notes(),
                 title=name,
                 summary=self._report_summary(
-                    simulation, metrics, drawdown_span=drawdown_span
+                    simulation,
+                    metrics,
+                    drawdown_span=drawdown_span,
+                    from_weights=from_weights,
                 ),
                 metrics=metrics,
                 returns=simulation.returns,
@@ -2626,8 +2900,12 @@ class BaseBacktester(ABC):
 
         return self._persist_run_dir(_write)
 
-    def _persist_run_dir(self, write) -> Path:
+    def _persist_run_dir(self, write) -> Path | None:
         """Create ``output_dir/{ClassName}_{timestamp}/`` and fill it through ``write``.
+
+        With ``config.output_dir`` set to ``None`` the run stays in memory:
+        ``write`` is never called, nothing is created, and ``None`` is
+        returned.
 
         ``write(directory, name)`` writes every artifact into ``directory``;
         ``name`` is the final directory name, used as the report title. The
@@ -2646,6 +2924,8 @@ class BaseBacktester(ABC):
         """
         import shutil
 
+        if self.config.output_dir is None:
+            return None
         final = Path(self.config.output_dir) / self._run_dir_name()
         if final.exists():
             raise RuntimeError(f"{final} already exists")
@@ -2738,7 +3018,7 @@ class BaseBacktester(ABC):
         metrics: dict,
         *,
         benchmark: SimulationResult | None = None,
-    ) -> Path:
+    ) -> Path | None:
         """Write a new run directory with every artifact of a ``run_cv()``.
 
         The top level describes the stitched curve with the same files as a
@@ -2755,8 +3035,8 @@ class BaseBacktester(ABC):
 
         Returns
         -------
-        Path
-            The final run directory.
+        Path or None
+            The final run directory, or ``None`` without ``output_dir``.
         """
         # As in run(): write to a staging directory, rename when complete.
         def _write(run_dir: Path, name: str) -> None:

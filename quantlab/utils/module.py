@@ -196,10 +196,12 @@ def load_backtester_from_config(config: dict):
     """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
     The price dataset, the model (through ``from_config`` of the class its
-    config names, so any ``Predictor`` rebuilds itself), an optional
+    config names, so any ``Predictor`` rebuilds itself; ``None`` for a
+    ``run_weights()`` run without one), an optional
     benchmark dataset and every scalar parameter are rebuilt, and the backtester is constructed with its declared config class.
     Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
-    backtest.
+    backtest; a ``run_weights()`` run is re-run by passing it the run
+    directory's ``weights.zarr``.
 
     Two keys are records rather than config fields. ``data_fingerprint``
     describes the data the original run read (time range, axis sizes and a
@@ -273,8 +275,12 @@ def load_backtester_from_config(config: dict):
     config["price_dataset"] = load_dataset_from_config(config["price_dataset"])
     # The model is rebuilt by its own class, so any predictor (a model, or an
     # ensemble of models) round-trips without a special case here.
-    config["model"] = get_cls_from_path(config["model"]["name"]).from_config(
-        config["model"]
+    # A config for run_weights() carries no model.
+    model = config.get("model")
+    config["model"] = (
+        None
+        if model is None
+        else get_cls_from_path(model["name"]).from_config(model)
     )
     benchmark = config.get("benchmark_dataset")
     config["benchmark_dataset"] = (

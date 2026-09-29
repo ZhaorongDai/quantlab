@@ -127,7 +127,7 @@ def train_cv_project(model, train_periods):
 
 ### What a run does
 
-`BaseBacktester.run()` backtests one model over the window `start_date` to `end_date`. It checks every label's delay against the engine's fill delay, loads the checkpoint (or trains the model first), computes the features on the window, predicts a score per symbol and bar, asks the concrete class for target weights, simulates them, computes metrics and writes the run directory. `run_cv()` does the same for every fold of a `train_cv` run and stitches the folds into one curve.
+`BaseBacktester.run()` backtests one model over the window `start_date` to `end_date`. It checks every label's delay against the engine's fill delay, loads the checkpoint (or trains the model first), computes the features on the window, predicts a score per symbol and bar, asks the concrete class for target weights, simulates them, computes metrics and writes the run directory. `run_cv()` does the same for every fold of a `train_cv` run and stitches the folds into one curve. `run_weights(weights)` skips the model and backtests target weights you already have (see [Backtest precomputed weights](#backtest-precomputed-weights)).
 
 The first session trains a checkpoint and backtests a rule that holds the two highest-scoring symbols and rebalances every five bars. Log lines go to stderr and are not shown.
 
@@ -259,7 +259,7 @@ Turnover is the one-sided traded value of a bar divided by the portfolio value b
 
 ### The run directory
 
-Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Files go to a hidden staging directory that is renamed when every file has been written, so `output_dir` only holds complete runs.
+Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Files go to a hidden staging directory that is renamed when every file has been written, so `output_dir` only holds complete runs. With `output_dir=None` nothing is written (see [Keep a run in memory](#keep-a-run-in-memory)).
 
 | File | Content |
 | --- | --- |
@@ -330,6 +330,58 @@ The top-level files of the run directory describe the stitched curve, and `folds
 ([], [('2024-02-12', '2024-04-17')])
 >>> round(stitched["whole"]["Total Return [%]"], 2), round(cv.folds[0]["metrics"]["whole"]["Total Return [%]"], 2)
 (-3.11, -1.62)
+```
+
+### Backtest precomputed weights
+
+`run_weights(weights)` backtests a target-weight panel that already exists, for example weights built by another tool or saved by an earlier run, without a model. The config needs no `model` and no `model_mode`. The backtester reads the fill and valuation prices of the window `start_date` to `end_date`, checks the weights against [the target-weight contract](#the-target-weight-contract) on exactly those bars and symbols, and simulates them with the same t+1 fill. The panel is a dataset with a `weight` variable or a data array, in either axis order; it is aligned to the price axes. The benchmark works as in `run()`. There is no training window, so the metrics hold whole-window blocks only (`whole`, and `benchmark` and `relative` with a `whole` slice each when a benchmark is set), with no in-sample or out-of-sample split, and the report leaves out the split lines. Fed the weights of the first session, it reproduces that run.
+
+```python
+>>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
+>>> weights_backtester = USEquityCrossectionSelectStockVectorBt(weights_config)
+>>> replay = weights_backtester.run_weights(result.weights)
+>>> sorted(replay.metrics), replay.predictions is None
+(['notes', 'whole'], True)
+>>> replay.metrics["whole"] == result.metrics["whole"]
+True
+>>> sorted(p.name for p in replay.run_dir.iterdir())
+['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+```
+
+`run()` and `run_cv()` still need a model:
+
+```python
+>>> weights_backtester.run()
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: run() requires config.model, but it is None; set config.model and config.model_mode, or backtest precomputed weights with run_weights()
+```
+
+Weights that break the contract are refused, naming the bar:
+
+```python
+>>> broken = result.weights.copy(deep=True)
+>>> broken["weight"][5, 0] = 0.9
+>>> weights_backtester.run_weights(broken)
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: weight row at 2024-02-19 has gross exposure 1.9 > 1
+>>> weights_backtester.run_weights(result.weights.isel(timestamp=slice(1, None)))
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exactly the price bars of the backtest window: 1 missing ['2024-02-12'], 0 extra [], 0 duplicated
+```
+
+### Keep a run in memory
+
+With `output_dir=None` a run writes nothing: no run directory, no report. `result.run_dir` is `None` and everything else is in the result. This holds for `run()`, `run_cv()` and `run_weights()`.
+
+```python
+>>> in_memory = USEquityCrossectionSelectStockVectorBt(
+...     dataclasses.replace(weights_config, output_dir=None)
+... ).run_weights(result.weights)
+>>> in_memory.run_dir is None, round(in_memory.metrics["whole"]["Total Return [%]"], 2)
+(True, -5.85)
 ```
 
 ### Compare against a benchmark
@@ -507,7 +559,7 @@ True
 
 No borrow or short-financing cost is modelled, so short-side returns are optimistic; the metrics `notes` say so. Trade statistics use the position view: one trade is one symbol's round trip from entry to flat, and trimming a holding back to its target weight is not a closed trade. `Total Orders` is the number of fills.
 
-`benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. Every label's `delay` must equal the engine's `fill_delay_bars` (see [Label delay and fill delay](#label-delay-and-fill-delay)). On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected.
+`benchmark_dataset` must hold exactly one symbol (see [Compare against a benchmark](#compare-against-a-benchmark)). A concrete backtester must set `MARKET`. `run()` and `run_cv()` need `model` and `model_mode`, which `run_weights()` ignores. `run()` in load mode needs `checkpoint`, and `run_cv()` needs `cv_project_dir` and `model_mode="load"`. Every label's `delay` must equal the engine's `fill_delay_bars` (see [Label delay and fill delay](#label-delay-and-fill-delay)). On a price store without a CRSP ticker sidecar the backtester logs one warning that it falls back to labelling symbols by their axis names, and the run is unaffected.
 
 A backtester built with the wrong config class:
 

@@ -56,6 +56,12 @@ engine: dates, warm-up, the in-sample split, metrics and persistence.
 simulation with vectorbt. The concrete class adds the market's price columns
 (a `MarketSpec`) and the rule that turns scores into weights.
 
+When the target weights already exist, `run_weights(weights)` starts at
+step 4: it needs no model on the config (`model` and `model_mode` may be
+`None`), simulates the given weights over the configured window, and reports
+whole-window metrics only, since there is no training window to split
+against. See "Backtest precomputed weights" in [backtest](../backtest.md).
+
 ## A first backtest
 
 The example trains a small linear model on a one-factor momentum signal
@@ -441,11 +447,12 @@ simulation. Each fold's weights and equity are also written under
 
 ## The run directory
 
-Every `run()` and `run_cv()` creates a new directory
-`{output_dir}/{ClassName}_{YYYYmmdd_HHMMSS_ffffff}/`. An existing directory is
-never overwritten. The artifacts are written into a hidden staging directory
-first and renamed into place only when all of them succeeded, so a crashed
-run leaves no half-written directory behind.
+Every `run()`, `run_cv()` and `run_weights()` creates a new directory
+`{output_dir}/{ClassName}_{YYYYmmdd_HHMMSS_ffffff}/`, unless `output_dir` is
+`None`: then nothing is written and the result's `run_dir` is `None`. An
+existing directory is never overwritten. The artifacts are written into a
+hidden staging directory first and renamed into place only when all of them
+succeeded, so a crashed run leaves no half-written directory behind.
 
 | File | Content |
 |---|---|

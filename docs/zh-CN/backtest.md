@@ -127,7 +127,7 @@ def train_cv_project(model, train_periods):
 
 ### 一次运行做了什么
 
-`BaseBacktester.run()` 在 `start_date` 到 `end_date` 的窗口上回测一个模型。它先检查每个标签的延迟是否等于引擎的成交延迟，然后加载 checkpoint（或先训练模型），在窗口上计算特征，为每个标的、每根 bar 预测分数，向具体的回测器类要目标权重，模拟成交，计算指标，最后写出运行目录。`run_cv()` 对一次 `train_cv` 的每一折做同样的事，并把各折拼接成一条曲线。
+`BaseBacktester.run()` 在 `start_date` 到 `end_date` 的窗口上回测一个模型。它先检查每个标签的延迟是否等于引擎的成交延迟，然后加载 checkpoint（或先训练模型），在窗口上计算特征，为每个标的、每根 bar 预测分数，向具体的回测器类要目标权重，模拟成交，计算指标，最后写出运行目录。`run_cv()` 对一次 `train_cv` 的每一折做同样的事，并把各折拼接成一条曲线。`run_weights(weights)` 不经过模型，直接回测已有的目标权重（见[回测预先算好的权重](#回测预先算好的权重)）。
 
 第一个会话先训练一个 checkpoint，然后回测一条规则：持有分数最高的两个标的，每五根 bar 调仓一次。日志输出到 stderr，这里没有显示。
 
@@ -259,7 +259,7 @@ out_of_sample -5.61 -4.27 13
 
 ### 运行目录
 
-每次运行在 `output_dir` 下写一个新目录 `{ClassName}_{timestamp}`。文件先写入一个隐藏的暂存目录，全部写完后才改名，所以 `output_dir` 里只会有完整的运行。
+每次运行在 `output_dir` 下写一个新目录 `{ClassName}_{timestamp}`。文件先写入一个隐藏的暂存目录，全部写完后才改名，所以 `output_dir` 里只会有完整的运行。`output_dir=None` 时什么都不写（见[只在内存中运行](#只在内存中运行)）。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -330,6 +330,58 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ([], [('2024-02-12', '2024-04-17')])
 >>> round(stitched["whole"]["Total Return [%]"], 2), round(cv.folds[0]["metrics"]["whole"]["Total Return [%]"], 2)
 (-3.11, -1.62)
+```
+
+### 回测预先算好的权重
+
+`run_weights(weights)` 在没有模型的情况下回测一个已有的目标权重面板，例如别的工具算出的权重，或一次早先运行保存下来的权重。配置不需要 `model` 和 `model_mode`。回测器读取 `start_date` 到 `end_date` 窗口内的成交价和估值价，在恰好这些 bar 和标的上按[目标权重契约](#目标权重契约)检查权重，并以同样的 t+1 成交方式模拟。权重面板可以是带 `weight` 变量的数据集，也可以是数据数组，坐标轴顺序不限，会对齐到价格的坐标轴上。基准的处理与 `run()` 相同。这类运行没有训练窗口，所以指标只有全窗口的部分（`whole`；设置了基准时还有 `benchmark` 和 `relative`，各自只含 `whole`），没有样本内/样本外的拆分，报告里也不出现拆分相关的行。把第一段会话得到的权重传进去，就能复现那次运行。
+
+```python
+>>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
+>>> weights_backtester = USEquityCrossectionSelectStockVectorBt(weights_config)
+>>> replay = weights_backtester.run_weights(result.weights)
+>>> sorted(replay.metrics), replay.predictions is None
+(['notes', 'whole'], True)
+>>> replay.metrics["whole"] == result.metrics["whole"]
+True
+>>> sorted(p.name for p in replay.run_dir.iterdir())
+['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+```
+
+`run()` 和 `run_cv()` 仍然需要模型：
+
+```python
+>>> weights_backtester.run()
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: run() requires config.model, but it is None; set config.model and config.model_mode, or backtest precomputed weights with run_weights()
+```
+
+违反契约的权重会被拒绝，错误信息指出出问题的 bar：
+
+```python
+>>> broken = result.weights.copy(deep=True)
+>>> broken["weight"][5, 0] = 0.9
+>>> weights_backtester.run_weights(broken)
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: weight row at 2024-02-19 has gross exposure 1.9 > 1
+>>> weights_backtester.run_weights(result.weights.isel(timestamp=slice(1, None)))
+Traceback (most recent call last):
+  ...
+ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exactly the price bars of the backtest window: 1 missing ['2024-02-12'], 0 extra [], 0 duplicated
+```
+
+### 只在内存中运行
+
+`output_dir=None` 时运行不写任何文件：没有运行目录，也没有报告。`result.run_dir` 为 `None`，其余内容都在返回的结果里。`run()`、`run_cv()` 和 `run_weights()` 都是如此。
+
+```python
+>>> in_memory = USEquityCrossectionSelectStockVectorBt(
+...     dataclasses.replace(weights_config, output_dir=None)
+... ).run_weights(result.weights)
+>>> in_memory.run_dir is None, round(in_memory.metrics["whole"]["Total Return [%]"], 2)
+(True, -5.85)
 ```
 
 ### 与基准对比
@@ -507,7 +559,7 @@ True
 
 回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`Total Orders` 是成交笔数。
 
-`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。每个标签的 `delay` 必须等于引擎的 `fill_delay_bars`（见[标签延迟与成交延迟](#标签延迟与成交延迟)）。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
+`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。`run()` 和 `run_cv()` 需要 `model` 和 `model_mode`，`run_weights()` 不使用这两项。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。每个标签的 `delay` 必须等于引擎的 `fill_delay_bars`（见[标签延迟与成交延迟](#标签延迟与成交延迟)）。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
 
 配置类用错时：
 
