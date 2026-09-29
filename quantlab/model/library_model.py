@@ -3,8 +3,8 @@
 ``LibraryModel`` is the base class of heads whose library trains itself (XGBoost, pytabkit):
 there is no epoch loop, the head's ``_fit_model`` receives flat ``Rows`` (one per
 ``(bar, symbol)`` cell with a valid training target) and uses the library's native early
-stopping. Checkpoints are ``.joblib`` files written through ``MlBackend``. Concrete heads live in
-``quantlab/model``.
+stopping. Checkpoints are ``.joblib`` files written through ``MlBackend``. Shipped heads live in
+``quantlab/model/predefined``.
 """
 
 from abc import abstractmethod
@@ -18,7 +18,8 @@ from loguru import logger
 
 from quantlab.base.backend import ModelBackend
 from quantlab.base.model import LIBRARY_RESERVED_HYPERPARAMETERS, BaseModel
-from quantlab.base.torch_data import TrainingPanel
+from quantlab.model.torch_data import TrainingPanel
+from quantlab.model.training_target import TrainingTargetMixin
 from quantlab.utils.timer import Timer
 
 
@@ -167,7 +168,7 @@ class MlBackend(ModelBackend):
         return self
 
 
-class LibraryModel(BaseModel):
+class LibraryModel(TrainingTargetMixin, BaseModel):
     """Numpy variant for tree models and other non-torch libraries.
 
     There is no epoch loop and no copy-based rollback. Training, early

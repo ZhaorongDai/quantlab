@@ -8,7 +8,7 @@ receive a result object describing what happened.
 Scaffolded by plan 03.4-01 (Wave 0), which could only pin the fixture and
 arity contracts its subjects had yet to acquire. FILLED IN by plan 03.4-05:
 `AcquisitionResult` arrived with 03.4-02, and `ProgressEvent`,
-`ProgressReporter`, `CancelToken` and the rest of `quantlab/base/progress.py`
+`ProgressReporter`, `CancelToken` and the rest of `quantlab/utils/progress.py`
 with 03.4-05, so every selector below now matches a real test.
 
 TWO RULES THIS FILE IS SUBJECT TO, both from incidents recorded in
@@ -107,7 +107,7 @@ def test_the_progress_knob_is_read_through_kwargs_and_defaults_on(
 # ---------------------------------------------------------------------------
 # D-16 -- progress as event objects through a pluggable reporter
 #
-# Every test below imports `quantlab.base.progress` INSIDE its own body rather
+# Every test below imports `quantlab.utils.progress` INSIDE its own body rather
 # than at module scope. That is deliberate and follows 03.4-03's Task-1 RED
 # pattern: a module-scope import of a not-yet-existing module fails the whole
 # FILE with a collection error, which the TDD RED gate classifies as a
@@ -177,7 +177,7 @@ def test_emits_one_event_per_batch(mock_tiingo_client, acquisition_config) -> No
     multiset, and a console rendering a bar from that stream would show a bar
     that finishes before it starts.
     """
-    from quantlab.base.progress import CallbackProgressReporter
+    from quantlab.utils.progress import CallbackProgressReporter
 
     symbols = ("AAPL", "MSFT", "GOOG", "AMZN", "META")
     config = acquisition_config(vendor="tiingo", symbols=symbols)
@@ -226,7 +226,7 @@ def test_a_raising_reporter_does_not_abort(
     genuinely inert. A warning record is asserted too, so the exception is
     swallowed but not hidden (RESEARCH A6).
     """
-    from quantlab.base.progress import CallbackProgressReporter
+    from quantlab.utils.progress import CallbackProgressReporter
 
     class _Exploding(CallbackProgressReporter):
         def __init__(self):
@@ -291,7 +291,7 @@ def test_tqdm_default_bar_arguments_are_unchanged(
     is a regression dressed as a refactor -- every existing shell run would
     look hung for hours.
     """
-    import quantlab.base.progress as progress
+    import quantlab.utils.progress as progress
 
     _RecordingTqdm.constructions = []
     monkeypatch.setattr(progress, "tqdm", _RecordingTqdm)
@@ -325,7 +325,7 @@ def test_the_progress_knob_off_constructs_no_bar(
     opt-out is unchanged -- and the run still completes, which is asserted so
     the test cannot pass because nothing ran at all.
     """
-    import quantlab.base.progress as progress
+    import quantlab.utils.progress as progress
 
     _RecordingTqdm.constructions = []
     monkeypatch.setattr(progress, "tqdm", _RecordingTqdm)
@@ -408,7 +408,7 @@ def test_cancel_check_is_first(mock_tiingo_client, acquisition_config) -> None:
     (L-6). The abort is deliberately NOT set, so this proves the cancel token
     reaches the guard on its own rather than riding the quota flag.
     """
-    from quantlab.base.progress import CancelToken
+    from quantlab.utils.progress import CancelToken
 
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
     acq = TiingoAcquisition(config)
@@ -450,7 +450,7 @@ def test_cancel_is_not_a_quota_abort(
     """
     from loguru import logger
 
-    from quantlab.base.progress import CancelToken
+    from quantlab.utils.progress import CancelToken
 
     config = acquisition_config(
         vendor="tiingo",
@@ -501,7 +501,7 @@ def test_cancel_leaves_a_resumable_store(
     real guarantee of a first-statement check -- only batches already past the
     guard can still reach the vendor.
     """
-    from quantlab.base.progress import CancelToken
+    from quantlab.utils.progress import CancelToken
 
     root = tmp_path / "run"
     config = acquisition_config(
@@ -564,7 +564,7 @@ def test_cancelling_twice_or_after_the_run_is_a_no_op(
     user double-clicking) and a cancel AFTER it (the console's stop signal
     racing a run that just completed).
     """
-    from quantlab.base.progress import CallbackProgressReporter, CancelToken
+    from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 
     config = acquisition_config(
         vendor="tiingo",
@@ -616,7 +616,7 @@ def test_run_forwards_the_reporter_and_the_cancel_token(
 
     from quantlab.registry import run
     from quantlab.acquisition.tiingo import TIINGO_SOURCE
-    from quantlab.base.progress import CallbackProgressReporter, CancelToken
+    from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 
     parameters = inspect.signature(run).parameters
     for name in ("reporter", "cancel"):
@@ -781,7 +781,7 @@ def test_result_and_manifest_agree(
     """
     import json
 
-    from quantlab.base.progress import CancelToken
+    from quantlab.utils.progress import CancelToken
 
     # -- scenario 1: multi-pass -------------------------------------------
     flaky, permanent = "MSFT", "AMZN"
@@ -1171,7 +1171,7 @@ def test_result_is_scrubbed(
     from loguru import logger
 
     from quantlab.acquisition.tiingo import KEY_ENV, TiingoAcquisition
-    from quantlab.base.progress import CallbackProgressReporter
+    from quantlab.utils.progress import CallbackProgressReporter
 
     sentinel = "sup3rs3cr3t-tiingo-value-2f9c4d"
     monkeypatch.setenv(KEY_ENV, sentinel)
@@ -1247,7 +1247,7 @@ def test_logging_is_unchanged(
 
     from loguru import logger
 
-    from quantlab.base.progress import CallbackProgressReporter
+    from quantlab.utils.progress import CallbackProgressReporter
 
     # -- negative: no sink is installed anywhere under quantlab/ -----------
     forbidden = ("logger.add", "logger.remove")

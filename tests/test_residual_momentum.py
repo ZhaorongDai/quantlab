@@ -19,7 +19,7 @@ from conftest import WHOLE_STORE, compute_all
 
 from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.residual_momentum import (
+from quantlab.factor.predefined.residual_momentum import (
     ResidualMomentumFF3,
     ResidualMomentumParameters,
     compound_onto_bars,

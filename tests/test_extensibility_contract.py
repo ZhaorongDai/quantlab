@@ -32,8 +32,8 @@ from quantlab.base.data import MarketDataset
 CORE_LAYER_FILES = (
     "quantlab/base/factor.py",
     "quantlab/base/model.py",
-    "quantlab/base/torch_model.py",
-    "quantlab/base/library_model.py",
+    "quantlab/model/torch_model.py",
+    "quantlab/model/library_model.py",
     "quantlab/base/backend.py",
     "quantlab/base/backtest.py",
 )

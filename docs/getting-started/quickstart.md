@@ -122,8 +122,8 @@ KunQuant, a library that compiles a declarative graph of operators to native cod
 import dataclasses
 
 from quantlab.base.config import FactorConfig
-from quantlab.factor.alpha158 import Alpha158Stock
-from quantlab.label.fret import Return
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.label.predefined.fret import Return
 
 factor = Alpha158Stock(
     FactorConfig(
@@ -169,7 +169,7 @@ the last label it trains on reads bar 249.
 
 ```python
 from quantlab.base.config import ModelConfig
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.model.predefined.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(
     ModelConfig(
@@ -234,7 +234,7 @@ so the strategy never trades on a price it could not have seen. The simulation i
 by vectorbt.
 
 ```python
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig
 
 backtester = USEquityCrossectionSelectStockVectorBt(

@@ -52,13 +52,15 @@ from quantlab.base.config import (
 )
 from quantlab.base.constituent import IndexConstituentDataset
 from quantlab.base.data import BaseDataset, MarketDataset
-from quantlab.base.factor import Factor, FactorKunQuant, FactorPolars
+from quantlab.base.factor import Factor
+from quantlab.factor.kunquant import FactorKunQuant
+from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.constituent import SP500ConstituentDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.alpha101 import Alpha101Stock
-from quantlab.factor.momentum import Momentum
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.factor.predefined.alpha101 import Alpha101Stock
+from quantlab.factor.predefined.momentum import Momentum
+from quantlab.model.predefined.xgb import XGBoostRegressor
 from tests.label_stubs import StubLabel
 from tests.test_model_hierarchy import FakePanel, _kwargs
 

@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from quantlab.acquisition.tiingo import TiingoAcquisition
-from quantlab.base.pageledger import PageLedger
+from quantlab.utils.pageledger import PageLedger
 from quantlab.utils import atomic
 from quantlab.utils.atomic import write_json_atomically
 

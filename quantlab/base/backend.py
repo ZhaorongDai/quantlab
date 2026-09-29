@@ -265,7 +265,7 @@ class ModelBackend(ABC):
     The model-side twin of ``DataBackend``: it knows nothing about
     dimensions or coordinates, only how to load a model from a path, save it
     back, or adopt one already in memory. The concrete implementation used
-    by ``LibraryModel`` is ``quantlab/base/library_model.py:MlBackend``.
+    by ``LibraryModel`` is ``quantlab/model/library_model.py:MlBackend``.
 
     Examples
     --------

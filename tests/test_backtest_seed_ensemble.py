@@ -26,9 +26,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig
-from quantlab.model.seed_ensemble import SeedEnsemble
+from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils import module as module_utils
 from quantlab.utils.ensemble import average_predictions
 from tests.backtest_fixtures import (

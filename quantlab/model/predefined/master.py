@@ -15,8 +15,8 @@ import torch
 from torch import nn
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.torch_model import TorchModel
-from quantlab.utils.torch_training import (
+from quantlab.model.torch_model import TorchModel
+from quantlab.model.torch_training import (
     TrainLossThreshold,
     cs_zscore,
     drop_extreme,
@@ -278,7 +278,7 @@ class MASTERRegressor(TorchModel):
     Each step is one bar: every symbol with a finite feature, each with its
     last ``window_bars`` bars, goes through ``MASTERNet``. The factors named
     by ``hyperparameters["gate_features"]`` are the market features (for
-    example those of ``quantlab.factor.market``, the same at every symbol);
+    example those of ``quantlab.factor.predefined.market``, the same at every symbol);
     every other factor is a stock feature they gate. In training the label's
     top and bottom ``drop_extreme`` share leave the loss, and the rest is
     z-scored per bar; validation and test targets are z-scored only. The

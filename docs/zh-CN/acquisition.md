@@ -224,7 +224,7 @@ tiingo/month=2024-01/part-b57bb3d00d22bced-00000.pqt
 `CancelToken` 会让运行在下一个批次边界处停下，已经在飞的工作会完成。进度事件发往 reporter：`TqdmProgressReporter`（默认，除非 `kwargs["progress"]` 为 false）、`NullProgressReporter`，或者把每个 `ProgressEvent` 传给函数的 `CallbackProgressReporter`。两者都挂在对象上而不是 config 上，config 因此保持可序列化。
 
 ```python
->>> from quantlab.base.progress import CallbackProgressReporter, CancelToken
+>>> from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 >>> class StopAfterBBB(DemoAcquisition):
 ...     token = None
 ...     def _fetch_page(self, symbols, *args, **kwargs):
@@ -331,7 +331,7 @@ Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的�
 
 ## 注意事项
 
-原始目录下只能放 parquet 文件，边车必须放在它之外、与之并列的 `_watermarks` 目录中。config 不携带凭证，因为 `AcquisitionConfig.to_dict()` 会被写到模型 checkpoint 旁边的磁盘上。`quantlab.base.coverage` 中的 `CoverageLedger.for_config(config)` 用与引擎相同的规则分类，但不需要厂商类，所以在没有 API key 的机器上也能使用。
+原始目录下只能放 parquet 文件，边车必须放在它之外、与之并列的 `_watermarks` 目录中。config 不携带凭证，因为 `AcquisitionConfig.to_dict()` 会被写到模型 checkpoint 旁边的磁盘上。`quantlab.utils.coverage` 中的 `CoverageLedger.for_config(config)` 用与引擎相同的规则分类，但不需要厂商类，所以在没有 API key 的机器上也能使用。
 
 标的会同时成为路径段和查询参数值，因此每个标的都必须符合 ticker 模式（大写字母和数字，最多 7 个字符，后面最多再跟两个以 `.` 或 `-` 开头的后缀）。其他写法会在发出任何请求之前中止运行：
 
@@ -358,4 +358,4 @@ RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must
 
 ## 另请参阅
 
-[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universes](../user-guide/universes.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.base.coverage.CoverageLedger` 和 `quantlab.base.progress` 的类文档字符串列出了全部选项。
+[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universes](../user-guide/universes.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.utils.coverage.CoverageLedger` 和 `quantlab.utils.progress` 的类文档字符串列出了全部选项。

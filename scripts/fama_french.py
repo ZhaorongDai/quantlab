@@ -9,7 +9,7 @@ them to decimal returns (0.01 means 1%) and writes them as
     date,mkt_rf,smb,hml,risk_free
 
 to ``<download-dir>/fama_french/ff3_daily.csv`` (or ``ff3_monthly.csv``).
-That is the file ``quantlab.factor.residual_momentum.ResidualMomentumFF3``
+That is the file ``quantlab.factor.predefined.residual_momentum.ResidualMomentumFF3``
 reads through its ``fama_french_csv`` parameter. Monthly rows are dated at
 the month's end. ``--download-dir`` defaults to the current directory, like
 the WRDS scripts.

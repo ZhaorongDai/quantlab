@@ -40,7 +40,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
     DatasetConfig,
@@ -48,9 +48,9 @@ from quantlab.base.config import (
     ModelConfig,
 )
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.alpha158 import Alpha158Stock
-from quantlab.label.fret import Return
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.label.predefined.fret import Return
+from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.module import load_backtester_from_config
 
 # Zarr 3 warns that consolidated metadata is not part of its spec; harmless.

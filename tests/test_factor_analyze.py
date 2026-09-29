@@ -31,9 +31,9 @@ from quantlab.base.config import (
     ForwardConfig,
     PolarsFactorConfig,
 )
-from quantlab.base.factor import FactorPolars
+from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.momentum import Momentum
 from quantlab.label.forward import Forward
 from quantlab.utils.module import load_factor_from_config
 
@@ -308,9 +308,9 @@ def test_importing_the_factor_layer_does_not_import_matplotlib():
 
 
 def test_analyze_against_the_kunquant_return_label(tmp_path):
-    """End to end with ``quantlab.label.fret.Return`` and its horizon."""
+    """End to end with ``quantlab.label.predefined.fret.Return`` and its horizon."""
     from quantlab.dataset.stock import StockDataset
-    from quantlab.label.fret import Return
+    from quantlab.label.predefined.fret import Return
 
     rng = np.random.default_rng(0)
     symbols = [f"T{i}" for i in range(8)]

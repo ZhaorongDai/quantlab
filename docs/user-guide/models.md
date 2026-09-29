@@ -30,7 +30,7 @@ bar. The backtester ranks symbols by it.
 
 A label is a `quantlab.label.forward.Forward`: a factor shifted forward so
 that its value at bar t describes bars after t. `Return` and `BinaryReturn`
-in `quantlab.label.fret` are `Forward` labels. Because a label reads the
+in `quantlab.label.predefined.fret` are `Forward` labels. Because a label reads the
 future, the model checks the roles when it is built: every object in
 `labels` must be a label and none in `factors` may be one. Either mistake
 raises `TypeError`, naming the misplaced object.
@@ -58,11 +58,11 @@ The head classes, the concrete models you instantiate, are:
 
 | Class | Module | Variant | Library | Predicts |
 |---|---|---|---|---|
-| `XGBoostRegressor` | `quantlab.model.xgb` | `LibraryModel` | xgboost | returns |
-| `XGBTDRegressor` | `quantlab.model.xgb_td` | `LibraryModel` | pytabkit (XGBoost with tuned defaults) | returns |
-| `RealMLPRegressor` | `quantlab.model.realmlp` | `LibraryModel` | pytabkit (RealMLP network) | returns |
-| `GATsRegressor` | `quantlab.model.gats` | `TorchModel` | torch (Qlib's GATs: LSTM encoder, attention over the bar's cross-section) | returns |
-| `MASTERRegressor` | `quantlab.model.master` | `TorchModel` | torch (MASTER: market-gated features, attention over time and across symbols) | returns |
+| `XGBoostRegressor` | `quantlab.model.predefined.xgb` | `LibraryModel` | xgboost | returns |
+| `XGBTDRegressor` | `quantlab.model.predefined.xgb_td` | `LibraryModel` | pytabkit (XGBoost with tuned defaults) | returns |
+| `RealMLPRegressor` | `quantlab.model.predefined.realmlp` | `LibraryModel` | pytabkit (RealMLP network) | returns |
+| `GATsRegressor` | `quantlab.model.predefined.gats` | `TorchModel` | torch (Qlib's GATs: LSTM encoder, attention over the bar's cross-section) | returns |
+| `MASTERRegressor` | `quantlab.model.predefined.master` | `TorchModel` | torch (MASTER: market-gated features, attention over time and across symbols) | returns |
 
 `XGBoostRegressor` is the usual starting point. It is fast on the CPU,
 handles missing feature values natively and records feature importance.
@@ -170,7 +170,7 @@ testing:
 
 ```python
 from quantlab.base.config import ModelConfig
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.model.predefined.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(ModelConfig(
     factors=[features],
@@ -457,7 +457,7 @@ reference implementation, and fills every hyperparameter you leave out
 from its `DEFAULTS` class attribute. The metrics in `metrics.json` are
 always computed on the raw label, whatever the training target.
 
-`GATsRegressor` (`quantlab.model.gats`) is Qlib's GATs: an LSTM
+`GATsRegressor` (`quantlab.model.predefined.gats`) is Qlib's GATs: an LSTM
 encodes each symbol's window, one attention head mixes the encodings of
 all the symbols of the bar, and two linear layers give the prediction. It
 trains on each bar's cross-sectional rank of the label (Qlib's
@@ -467,7 +467,7 @@ Alpha158 benchmark settings: a 20-bar window, hidden size 64, two LSTM
 layers, dropout 0.7, learning rate 1e-4, at most 200 epochs, and
 `early_stop` 10. It needs no data beyond the factors.
 
-`MASTERRegressor` (`quantlab.model.master`) is MASTER, a
+`MASTERRegressor` (`quantlab.model.predefined.master`) is MASTER, a
 transformer that attends over each stock's own history and across the
 stocks of every bar. A gate driven by market-wide features decides how
 much each stock feature counts. The gate's inputs are named by the
@@ -482,8 +482,8 @@ width 256 and learning rate 1e-5.
 
 ```python
 from quantlab.base.config import ModelConfig
-from quantlab.model.gats import GATsRegressor
-from quantlab.model.master import MASTERRegressor
+from quantlab.model.predefined.gats import GATsRegressor
+from quantlab.model.predefined.master import MASTERRegressor
 
 gats = GATsRegressor(ModelConfig(
     factors=[alpha158], labels=[label], model_save_dir="models",
@@ -540,8 +540,8 @@ the epoch with the lowest validation loss:
 ```python
 import torch.nn as nn
 from quantlab.base.config import ModelConfig
-from quantlab.base.torch_model import TorchModel
-from quantlab.utils.torch_training import cs_rank_norm, masked_mse
+from quantlab.model.torch_model import TorchModel
+from quantlab.model.torch_training import cs_rank_norm, masked_mse
 
 class WindowMLP(nn.Module):
     """A small MLP on each symbol's flattened window."""

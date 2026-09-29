@@ -39,7 +39,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
     DatasetConfig,
@@ -47,8 +47,8 @@ from quantlab.base.config import (
     ModelConfig,
     PolarsFactorConfig,
 )
-from quantlab.base.factor import FactorPolars
-from quantlab.base.library_model import LibraryModel
+from quantlab.factor.polars import FactorPolars
+from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 from quantlab.utils.module import load_backtester_from_config

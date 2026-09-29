@@ -51,7 +51,7 @@ from quantlab.base.config import (
     ModelConfig,
     PolarsFactorConfig,
 )
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from tests.torch_heads import MeanContextHead
 from tests.backtest_fixtures import (
     SYMBOLS,

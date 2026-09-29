@@ -8,7 +8,7 @@ full value, so the warm-up must cover the alpha's lookback plus the z-score
 window.
 """
 
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 
 
 class TimeSeriesZScoredFactor(FactorKunQuant):

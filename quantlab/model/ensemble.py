@@ -21,7 +21,7 @@ of different classes over different factors. Optional hooks:
   reports reading.
 - ``_member_seed``: the seed recorded for each member in the manifest.
 
-Shipped ensembles are in ``quantlab/model`` (``SeedEnsemble``,
+Shipped ensembles are in ``quantlab/model/predefined`` (``SeedEnsemble``,
 ``ModelEnsemble``).
 
 The ensemble composes models and inherits none: each member is a complete
@@ -158,7 +158,7 @@ class BaseEnsemble(ABC):
         Examples
         --------
         >>> ensemble.import_path
-        'quantlab.model.seed_ensemble.SeedEnsemble'
+        'quantlab.model.predefined.seed_ensemble.SeedEnsemble'
         """
         return _class_path(self)
 

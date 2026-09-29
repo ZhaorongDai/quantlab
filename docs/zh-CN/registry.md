@@ -108,7 +108,7 @@ result.failures                                       # 本次运行的 {标的:
 >>> import demo_source
 >>> root = Path(tempfile.mkdtemp())
 >>> acq_cfg, ds_cfg = demo_source.make_configs(root)
->>> from quantlab.base.progress import CallbackProgressReporter
+>>> from quantlab.utils.progress import CallbackProgressReporter
 >>> events = []
 >>> result = run(demo_source.DEMO, acq_cfg, reporter=CallbackProgressReporter(events.append))
 >>> for e in events: print(e.kind, e.completed, e.total, e.symbols)
@@ -127,7 +127,7 @@ run_finished 3 3 ()
 在回调里设置 `CancelToken`，运行会在下一个批次边界停下。结果里 `cancelled=True`，`succeeded` 只包含已完成的标的。用同一个配置再次调用 `run()`，这些标的会被跳过。
 
 ```python
->>> from quantlab.base.progress import CancelToken
+>>> from quantlab.utils.progress import CancelToken
 >>> token = CancelToken()
 >>> def stop_after_first(event):
 ...     if event.kind == "batch_completed" and event.completed == 1:
@@ -347,4 +347,4 @@ ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ('us_equity
 
 ## 另请参阅
 
-[acquisition](acquisition.md) 指南讲下载引擎、分批、续跑和失败清单。[WRDS TAQ](wrds_taq.md) 指南详述 `wrds` 数据源。另见 [pageledger](pageledger.md)（页级续跑）以及 [dataset](dataset.md) 和 [chunking](chunking.md)（`convert()` 写出什么）。模块文档字符串：`quantlab.registry`、`quantlab.acquisition._support.inspector`、`quantlab.base.progress`。
+[acquisition](acquisition.md) 指南讲下载引擎、分批、续跑和失败清单。[WRDS TAQ](wrds_taq.md) 指南详述 `wrds` 数据源。另见 [pageledger](pageledger.md)（页级续跑）以及 [dataset](dataset.md) 和 [chunking](chunking.md)（`convert()` 写出什么）。模块文档字符串：`quantlab.registry`、`quantlab.acquisition._support.inspector`、`quantlab.utils.progress`。

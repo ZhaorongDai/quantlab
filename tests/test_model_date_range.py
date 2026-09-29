@@ -18,8 +18,8 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, ModelConfig
-from quantlab.base.factor import FactorKunQuant
-from quantlab.base.library_model import LibraryModel
+from quantlab.factor.kunquant import FactorKunQuant
+from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.label.forward import Forward
 

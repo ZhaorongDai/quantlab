@@ -24,8 +24,8 @@ from conftest import WHOLE_STORE, compute_all
 from quantlab.backend import PlBackend, XrBackend
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.alpha158 import Alpha158SpotKline
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
+from quantlab.factor.predefined.momentum import Momentum
 from quantlab.utils.module import load_dataset_from_config, load_factor_from_config
 from quantlab.utils.resample import session_labels
 

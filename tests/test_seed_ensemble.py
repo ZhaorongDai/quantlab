@@ -35,7 +35,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.model.seed_ensemble import SeedEnsemble
+from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
 from tests.test_backtest_contracts import (
@@ -328,7 +328,7 @@ def test_config_round_trips_the_wrapped_model_and_seeds(tmp_path):
     config = ensemble.get_config()
 
     assert config == {
-        "name": "quantlab.model.seed_ensemble.SeedEnsemble",
+        "name": "quantlab.model.predefined.seed_ensemble.SeedEnsemble",
         "seeds": [5, 1, 4],
         "model": model.get_config(),
     }
@@ -350,11 +350,17 @@ def test_model_package_layout_and_layering():
     are empty, nothing else in quantlab imports it (so `base/` never reaches
     up into a concrete head), and it imports no backtest module."""
     package = REPO_ROOT / "quantlab/model"
-    for init in (package / "__init__.py", package / "_support/__init__.py"):
+    for init in (
+        package / "__init__.py",
+        package / "predefined/__init__.py",
+        package / "predefined/_support/__init__.py",
+    ):
         assert init.stat().st_size == 0, init
 
     # Positive control: the resolver sees the package's own imports.
-    assert "quantlab.model.xgb" in _resolved_imports(package / "xgb_td.py")
+    assert "quantlab.model.predefined.xgb" in _resolved_imports(
+        package / "predefined/xgb_td.py"
+    )
 
     offenders = {
         str(path.relative_to(REPO_ROOT)): sorted(

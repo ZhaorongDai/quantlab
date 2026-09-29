@@ -15,8 +15,8 @@ import polars as pl
 import xarray as xr
 
 from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
-from quantlab.base.factor import FactorPolars
-from quantlab.base.library_model import LibraryModel
+from quantlab.factor.polars import FactorPolars
+from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 

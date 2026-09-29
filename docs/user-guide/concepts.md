@@ -235,38 +235,44 @@ folds and adds a `folds/` directory with each fold's own weights and equity. See
 
 ## Package layout
 
-The code follows one rule: abstract base classes live in `quantlab/base/`, and the concrete
-implementations live next to the code that uses them. To add a new model you subclass
-`quantlab.base.torch_model.TorchModel` or `quantlab.base.library_model.LibraryModel` and put the result in
-`quantlab/model/`; to add a data
+The code follows one rule in three places. `quantlab/base/` holds the root base class of each
+layer and nothing else. Each layer's top level holds its extension framework: the classes you
+subclass to write your own factor, label, model or backtester. Each layer's `predefined/`
+package holds the implementations quantlab ships. To add a new model you subclass
+`quantlab.model.torch_model.TorchModel` or `quantlab.model.library_model.LibraryModel`; to
+add a KunQuant factor you subclass `quantlab.factor.kunquant.FactorKunQuant`; to add a data
 source you subclass `quantlab.base.acquisition.Acquisition` and register it. The
 [extending guide](../developer-guide/extending.md) walks through each case.
 
 ```text
 quantlab/
-    base/            abstract base classes and shared machinery
+    base/            the root base class of each layer
         config.py        every config dataclass
         acquisition.py   Acquisition: resumable vendor downloads
         data.py          BaseDataset, MarketDataset: raw tier to Zarr panel
         constituent.py   IndexConstituentDataset: index-membership panels
-        factor.py        Factor, FactorKunQuant, FactorPolars
+        factor.py        Factor
         model.py         BaseModel: the training lifecycle shared by every model
-        torch_model.py   TorchModel: the epoch loop of torch heads
-        library_model.py LibraryModel, Rows, MlBackend: heads whose library trains itself
-        torch_data.py    TrainingPanel, Batch and the PyTorch datasets a torch head picks from
-        ensemble.py      BaseEnsemble: members, combination rule, manifest
-        backtest.py      BaseBacktester and its result types
+        backtest.py      BaseBacktester, the Predictor protocol and the result types
         backend.py       DataBackend, ModelBackend: storage interfaces
-        ...              chunked conversion, download ledgers, progress reporting
+        rebuild.py       BaseStoreRebuilder
     acquisition/     one module per vendor: tiingo.py, alpaca.py, wrds/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
-    factor/          Alpha101, Alpha158, momentum, residual momentum, market features
-    label/           Forward (forward.py) and the forward-return labels (fret.py)
-    model/           one entry per model: xgb.py, xgb_td.py, realmlp.py, gats.py, master.py,
-                     seed_ensemble.py, model_ensemble.py; private support code in _support/
-    backtest/        vectorbt engine, top-N selector, the US-equity backtester
+    factor/          kunquant.py (FactorKunQuant), polars.py (FactorPolars)
+        predefined/      Alpha101, Alpha158, literature alphas, momentum, residual momentum,
+                         market features
+    label/           forward.py (Forward: a factor shifted into a label)
+        predefined/      fret.py: the forward-return labels
+    model/           torch_model.py (TorchModel), library_model.py (LibraryModel, Rows,
+                     MlBackend), ensemble.py (BaseEnsemble), training_target.py, torch_data.py,
+                     torch_training.py (target transforms, losses, stopping rules)
+        predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
+                         model_ensemble.py
+    backtest/        engine_vectorbt.py (VectorBtBacktester), selection.py (top-N selector)
+        predefined/      us_equity.py: the US-equity backtester
     my_ops/          custom KunQuant operators
-    utils/           config loaders (module.py), metrics, torch target transforms, report, CLI helpers
+    utils/           config loaders (module.py), metrics, progress, chunking, download ledgers,
+                     report, CLI helpers
     config/          data-root resolution and config factories for the bundled datasets
     enums/           shared literal types (markets, frequencies, vendors)
     backend.py       XrBackend (Zarr) and PlBackend (parquet)
@@ -281,5 +287,5 @@ examples/            runnable example scripts
 Directories whose name starts with an underscore, such as `quantlab/dataset/_support/`, hold
 private helpers for the layer above them and are not meant to be imported from outside it.
 Import every class by its full module path, for example
-`from quantlab.factor.alpha158 import Alpha158Stock`; the package `__init__.py` files do not
+`from quantlab.factor.predefined.alpha158 import Alpha158Stock`; the package `__init__.py` files do not
 re-export anything.

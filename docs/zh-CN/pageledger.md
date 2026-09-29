@@ -18,7 +18,7 @@
 >>> import polars as pl
 >>> from quantlab.base.acquisition import Acquisition
 >>> from quantlab.base.config import AcquisitionConfig
->>> from quantlab.base.pageledger import PageLedger
+>>> from quantlab.utils.pageledger import PageLedger
 >>> class PagedAcquisition(Acquisition):
 ...     VENDOR = "alpaca"
 ...     RAW_COLUMNS = ("timestamp", "symbol", "vendor", "close")
@@ -238,4 +238,4 @@ ValueError: StuckAcquisition: the vendor returned the SAME page token it was giv
 
 ## 另请参阅
 
-[acquisition](acquisition.md) 指南介绍账本外层的下载循环。`quantlab.base.pageledger.PageLedger` 和 `quantlab.base.acquisition.Acquisition._fetch_batch` 的类文档字符串详细描述了每个方法和写入顺序。
+[acquisition](acquisition.md) 指南介绍账本外层的下载循环。`quantlab.utils.pageledger.PageLedger` 和 `quantlab.base.acquisition.Acquisition._fetch_batch` 的类文档字符串详细描述了每个方法和写入顺序。

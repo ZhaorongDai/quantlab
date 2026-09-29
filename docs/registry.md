@@ -108,7 +108,7 @@ A `CallbackProgressReporter` collects the events. Each event carries `completed`
 >>> import demo_source
 >>> root = Path(tempfile.mkdtemp())
 >>> acq_cfg, ds_cfg = demo_source.make_configs(root)
->>> from quantlab.base.progress import CallbackProgressReporter
+>>> from quantlab.utils.progress import CallbackProgressReporter
 >>> events = []
 >>> result = run(demo_source.DEMO, acq_cfg, reporter=CallbackProgressReporter(events.append))
 >>> for e in events: print(e.kind, e.completed, e.total, e.symbols)
@@ -127,7 +127,7 @@ run_finished 3 3 ()
 Setting a `CancelToken` from the callback stops the run at the next batch boundary. The result reports `cancelled=True` and only the symbols that finished. Calling `run()` again with the same config skips them.
 
 ```python
->>> from quantlab.base.progress import CancelToken
+>>> from quantlab.utils.progress import CancelToken
 >>> token = CancelToken()
 >>> def stop_after_first(event):
 ...     if event.kind == "batch_completed" and event.completed == 1:
@@ -347,4 +347,4 @@ Descriptors hold no base URL or host, and `SourceInspector` imports no vendor mo
 
 ## See also
 
-The [acquisition](acquisition.md) guide covers the download engine, batching, resume and the failure manifest. The [WRDS TAQ](wrds_taq.md) guide covers the `wrds` source in detail. See also [pageledger](pageledger.md) (page-level resume) and [dataset](dataset.md) and [chunking](chunking.md) (what `convert()` writes). Module docstrings: `quantlab.registry`, `quantlab.acquisition._support.inspector`, `quantlab.base.progress`.
+The [acquisition](acquisition.md) guide covers the download engine, batching, resume and the failure manifest. The [WRDS TAQ](wrds_taq.md) guide covers the `wrds` source in detail. See also [pageledger](pageledger.md) (page-level resume) and [dataset](dataset.md) and [chunking](chunking.md) (what `convert()` writes). Module docstrings: `quantlab.registry`, `quantlab.acquisition._support.inspector`, `quantlab.utils.progress`.

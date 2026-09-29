@@ -52,7 +52,7 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 
 ```python
 >>> from quantlab.base.config import ModelConfig
->>> from quantlab.model.xgb import XGBoostRegressor
+>>> from quantlab.model.predefined.xgb import XGBoostRegressor
 >>> config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
@@ -198,7 +198,7 @@ True
 | `TorchModel` | torch，每一步一个标的截面 | `.pth` | `window_bars`、`_init_model`、`_loss`；其余是带默认实现的可选钩子（见“训练 torch 模型”） |
 | `LibraryModel` | numpy 行，使用库自带的提前停止 | `.joblib` | `_init_model`、`_fit_model`、`_forward`；可选 `_transform_feature`、`_transform_target`、`_loss`（见“扩展”） |
 
-自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；以及 `TorchModel` 模型头 `GATsRegressor`（`quantlab.model.gats`，截面上的 Qlib GATs）和 `MASTERRegressor`（`quantlab.model.master`，市场引导的 transformer MASTER）。所有自带模型（包括集成）都放在 `quantlab/model/`，新模型头要继承的基类放在 `quantlab/base/`（`torch_model.py`、`library_model.py`）。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
+自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；以及 `TorchModel` 模型头 `GATsRegressor`（`quantlab.model.predefined.gats`，截面上的 Qlib GATs）和 `MASTERRegressor`（`quantlab.model.predefined.master`，市场引导的 transformer MASTER）。所有自带模型（包括集成）都放在 `quantlab/model/predefined/`，新模型头或新集成要继承的类放在 `quantlab/model/` 顶层（`torch_model.py`、`library_model.py`、`ensemble.py`）。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
 
 ### 配置与保留超参数
 
@@ -222,7 +222,7 @@ True
 
 ### 提前停止
 
-在 `hyperparameters` 里设置 `"early_stopping": True` 后，当验证损失连续 `early_stopping_patience` 个 boosting 轮没有改善时停止训练，并保留最优模型。这两个是库模型头自己读取的保留键，不会传给库；torch 模型头改用自己的 `_should_stop` 钩子决定何时停止（见“训练 torch 模型”）。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/model/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
+在 `hyperparameters` 里设置 `"early_stopping": True` 后，当验证损失连续 `early_stopping_patience` 个 boosting 轮没有改善时停止训练，并保留最优模型。这两个是库模型头自己读取的保留键，不会传给库；torch 模型头改用自己的 `_should_stop` 钩子决定何时停止（见“训练 torch 模型”）。对 `XGBoostRegressor`，检查点会被截断到最优的那一轮。判据是验证段上的 RMSE。模型本身以 pooled 一致性相关系数（concordance correlation）损失 `1 - ccc` 为训练目标（见 `quantlab/model/predefined/xgb.py` 中的 `ccc_objective`）；在 `hyperparameters` 里指定 `objective` 则改回 xgboost 的内置目标。
 
 ```python
 >>> from dataclasses import replace
@@ -287,11 +287,11 @@ True
 
 ### 平均多个种子
 
-`quantlab.model.seed_ensemble` 中的 `SeedEnsemble(model, seeds)` 用多个随机种子训练同一份配置，并预测它们的平均。第 k 个成员是模型的类，建在模型的配置上，把 `random_seed` 换成 `seeds[k]`；`seeds` 是至少两个互不相同的整数组成的显式列表。成员读取相同的数据：`collect()` 只在第一个成员上收集一次面板，其余成员共用这个数据后端；`predict_window` 只请求一次特征，再交给每个成员。
+`quantlab.model.predefined.seed_ensemble` 中的 `SeedEnsemble(model, seeds)` 用多个随机种子训练同一份配置，并预测它们的平均。第 k 个成员是模型的类，建在模型的配置上，把 `random_seed` 换成 `seeds[k]`；`seeds` 是至少两个互不相同的整数组成的显式列表。成员读取相同的数据：`collect()` 只在第一个成员上收集一次面板，其余成员共用这个数据后端；`predict_window` 只请求一次特征，再交给每个成员。
 
 ```python
 >>> from dataclasses import replace
->>> from quantlab.model.seed_ensemble import SeedEnsemble
+>>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 >>> sampled = replace(config, hyperparameters={
 ...     "num_boost_round": 50, "max_depth": 3, "subsample": 0.7, "colsample_bytree": 0.5,
 ... })
@@ -315,7 +315,7 @@ True
 ['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> saved = json.loads(manifest.read_text())
 >>> saved["format_version"], saved["members"][1]
-(1, {'name': 'quantlab.model.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
+(1, {'name': 'quantlab.model.predefined.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
 >>> sorted(json.loads((manifest.parent / "config.json").read_text()))
 ['labels', 'test_end', 'test_start', 'train_end', 'train_start']
 ```
@@ -367,7 +367,7 @@ True
 True
 >>> cfg = ensemble.get_config()
 >>> cfg["name"], cfg["seeds"], cfg["model"]["name"]
-('quantlab.model.seed_ensemble.SeedEnsemble', [0, 1, 2], 'quantlab.model.xgb.XGBoostRegressor')
+('quantlab.model.predefined.seed_ensemble.SeedEnsemble', [0, 1, 2], 'quantlab.model.predefined.xgb.XGBoostRegressor')
 >>> SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 0])
 Traceback (most recent call last):
   ...
@@ -405,14 +405,14 @@ True
 
 ### 组合不同的模型
 
-`quantlab.model.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。成员的标签配置、训练窗口和测试窗口必须相同，因为回测器按同一个窗口划分样本内和样本外；否则构造时抛出 `ValueError`。每个成员各自收集数据、各自请求特征，集成的预测是各成员逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
+`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。成员的标签配置、训练窗口和测试窗口必须相同，因为回测器按同一个窗口划分样本内和样本外；否则构造时抛出 `ValueError`。每个成员各自收集数据、各自请求特征，集成的预测是各成员逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
 
 ```python
->>> from quantlab.model.model_ensemble import ModelEnsemble
+>>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
 >>> ensemble = ModelEnsemble([xgb, gats])  # 标签和日期相同，因子不同
 >>> config = ensemble.get_config()
 >>> [m["name"] for m in config["members"]]
-['quantlab.model.xgb.XGBoostRegressor', 'quantlab.model.gats.GATsRegressor']
+['quantlab.model.predefined.xgb.XGBoostRegressor', 'quantlab.model.predefined.gats.GATsRegressor']
 >>> manifest = ensemble.collect().train()
 >>> restored = ModelEnsemble.from_config(config).load(manifest)
 >>> [type(m).__name__ for m in restored.members]
@@ -438,13 +438,13 @@ True
 
 ### 训练 torch 模型
 
-torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基类把收集到的数据组装成一个由 torch 张量构成的*训练面板*：特征 `x`（`[T, S, F]`）、训练目标（`[T, S, L]`）及其 `mask`（`[T, S]`）、原始标签 `y_raw`，以及 `present`（`[T, S]`，至少有一个有限特征值的格子），外加时间戳和标的。模型头的 `_dataset(panel, bars, training)` 返回覆盖若干 bar 的 `torch.utils.data.Dataset`，`_dataloader(dataset, training)` 负责分批。默认数据集是 `quantlab.base.torch_data` 中的 `CrossSectionDataset`，每个 bar 一个样本项：这个 bar 的*截面*，即在该 bar 上出现的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
+torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基类把收集到的数据组装成一个由 torch 张量构成的*训练面板*：特征 `x`（`[T, S, F]`）、训练目标（`[T, S, L]`）及其 `mask`（`[T, S]`）、原始标签 `y_raw`，以及 `present`（`[T, S]`，至少有一个有限特征值的格子），外加时间戳和标的。模型头的 `_dataset(panel, bars, training)` 返回覆盖若干 bar 的 `torch.utils.data.Dataset`，`_dataloader(dataset, training)` 负责分批。默认数据集是 `quantlab.model.torch_data` 中的 `CrossSectionDataset`，每个 bar 一个样本项：这个 bar 的*截面*，即在该 bar 上出现的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
 
 每个样本项都是一个 `Batch`：`x`、`y`（训练目标，无效处为 0）、`mask`（样本在每个标签上都有有效训练目标时为 True）、`y_raw`（原始标签）和 `where`（每个样本的时间下标和标的下标，形状与 `mask` 相同）。对一个截面来说，`mask` 是 `[S_t]`，`y` 是 `[S_t, L]`。各数据段的预测以及 `predict_panel` 都来自 `training=False` 的数据集，并按 `where` 放回 `[T, S, L]`；如果数据集漏掉了某个出现的格子，或者把它预测了两次，就会抛出 `ValueError`，并指明是哪个 bar。
 
 训练目标在每次拟合时、第一个 epoch 之前只计算一次：`_transform_target(y, training)` 拿到每个 bar 的原始标签，只有训练段的 bar 上 `training=True`。它返回的 `keep` 只把标的从损失里去掉。每个 epoch 都要变化的目标（例如给标签加噪声）应该写在模型头自己的 `_train_one_batch` 里。
 
-模型头需要写三样东西：`window_bars`（N）、`_init_model(num_features, num_labels, hyperparameters)`（网络，多个网络时放进 `nn.ModuleDict`）和 `_loss(output, batch)`（一个 batch 的损失）。`output` 是网络的原始输出。缺失的标签已经被遮蔽并在 `y` 中置 0，因此损失只需计入 `mask` 为 True 的样本，`quantlab.utils.torch_training` 里的 `masked_mse` 就是这样做的。其余的选择都是带默认实现的可选钩子：
+模型头需要写三样东西：`window_bars`（N）、`_init_model(num_features, num_labels, hyperparameters)`（网络，多个网络时放进 `nn.ModuleDict`）和 `_loss(output, batch)`（一个 batch 的损失）。`output` 是网络的原始输出。缺失的标签已经被遮蔽并在 `y` 中置 0，因此损失只需计入 `mask` 为 True 的样本，`quantlab.model.torch_training` 里的 `masked_mse` 就是这样做的。其余的选择都是带默认实现的可选钩子：
 
 | 钩子 | 默认行为 |
 |---|---|
@@ -471,8 +471,8 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 >>> import torch
 >>> import torch.nn as nn
 >>> from quantlab.base.config import ModelConfig
->>> from quantlab.base.torch_model import TorchModel
->>> from quantlab.utils.torch_training import cs_zscore, masked_mse
+>>> from quantlab.model.torch_model import TorchModel
+>>> from quantlab.model.torch_training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
 ...     """对每个标的最新一个 bar 做线性映射。"""
 ...     def __init__(self, num_features, num_labels):
@@ -538,7 +538,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 {'val_loss': -0.721, 'test_rank_ic': 0.691}
 ```
 
-Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训练，而是随机抽取 `(timestamp, symbol)` 样本。`quantlab.base.torch_data` 中的 `SymbolSequenceDataset` 提供这种样本形状：每个格子一个样本项，装着该标的最近 `window_bars` 个 bar 的 `[N, F]`，PyTorch 的默认 collate 把样本项拼成 `[B, N, F]`，`mask` 和 `where` 的形状为 `[B]`。训练时它只包含有有效训练目标的格子；评估时包含每个出现的格子，所以预测依然覆盖整个截面。训练目标在抽取任何 batch 之前就按 bar 在整个截面上算好，所以混有多个 bar 的 batch 看到的仍是每个 bar 自己的截面排名或 z-score；基类会把混合的 batch 按 bar 拆开，所以 `{split}_loss` 依然让每个 bar 权重相同。这个数据集用一次索引调用（`__getitems__`）取出一整个 batch 的窗口，`window_bars=1` 则得到行样本，供 torch 行模型使用。
+Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训练，而是随机抽取 `(timestamp, symbol)` 样本。`quantlab.model.torch_data` 中的 `SymbolSequenceDataset` 提供这种样本形状：每个格子一个样本项，装着该标的最近 `window_bars` 个 bar 的 `[N, F]`，PyTorch 的默认 collate 把样本项拼成 `[B, N, F]`，`mask` 和 `where` 的形状为 `[B]`。训练时它只包含有有效训练目标的格子；评估时包含每个出现的格子，所以预测依然覆盖整个截面。训练目标在抽取任何 batch 之前就按 bar 在整个截面上算好，所以混有多个 bar 的 batch 看到的仍是每个 bar 自己的截面排名或 z-score；基类会把混合的 batch 按 bar 拆开，所以 `{split}_loss` 依然让每个 bar 权重相同。这个数据集用一次索引调用（`__getitems__`）取出一整个 batch 的窗口，`window_bars=1` 则得到行样本，供 torch 行模型使用。
 
 下面的模型头就是 Qlib 的 GRU 用上这个数据集：`_dataset` 返回序列数据集，`_dataloader` 像 Qlib 一样每批 800 个样本。窗口长于一个 bar 就需要预热 bar，所以给替身因子加一个日历来数 bar：
 
@@ -546,8 +546,8 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 >>> import pandas as pd
 >>> from types import SimpleNamespace
 >>> from torch.utils.data import DataLoader
->>> from quantlab.base.torch_data import SymbolSequenceDataset
->>> from quantlab.utils.torch_training import cs_rank_norm
+>>> from quantlab.model.torch_data import SymbolSequenceDataset
+>>> from quantlab.model.torch_training import cs_rank_norm
 >>> days = pd.DatetimeIndex(coords["timestamp"])
 >>> seq_factor = Panel(f_a=f_a, f_b=f_b)
 >>> seq_factor.config = SimpleNamespace(dataset=SimpleNamespace(   # date 之前第 n 个 bar
@@ -594,7 +594,7 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 
 ### 在截面上训练 GATs
 
-`GATsRegressor`（`quantlab.model.gats`）复现 Qlib 的 GATs，即 `qlib/contrib/model/pytorch_gats_ts.py` 中的 `GATModel`。每个标的的窗口先经过一个 LSTM，保留其最后一个 bar 的隐状态。随后用一个注意力头给该 bar 上每一对标的打分（包括标的自身），打分式是 Qlib 的 `LeakyReLU(a[:H]·Wh_j + a[H:]·Wh_i)`，并在整个 bar 上做 softmax。每个标的的隐状态加上所有隐状态按注意力加权的组合，再依次经过 `Linear(H, H)`、LeakyReLU 和 `Linear(H, L)`。注意力覆盖整个截面，所以网络不需要标的列表，也不需要图数据。`GATsNet` 沿用 Qlib 的参数名，测试套件中有一个测试检查它在相同权重和输入下与 Qlib 的 `GATModel` 输出一致。
+`GATsRegressor`（`quantlab.model.predefined.gats`）复现 Qlib 的 GATs，即 `qlib/contrib/model/pytorch_gats_ts.py` 中的 `GATModel`。每个标的的窗口先经过一个 LSTM，保留其最后一个 bar 的隐状态。随后用一个注意力头给该 bar 上每一对标的打分（包括标的自身），打分式是 Qlib 的 `LeakyReLU(a[:H]·Wh_j + a[H:]·Wh_i)`，并在整个 bar 上做 softmax。每个标的的隐状态加上所有隐状态按注意力加权的组合，再依次经过 `Linear(H, H)`、LeakyReLU 和 `Linear(H, L)`。注意力覆盖整个截面，所以网络不需要标的列表，也不需要图数据。`GATsNet` 沿用 Qlib 的参数名，测试套件中有一个测试检查它在相同权重和输入下与 Qlib 的 `GATModel` 输出一致。
 
 这个模型头用默认的 `CrossSectionDataset` 训练，每步一个 bar，每个 epoch 内的 bar 顺序打乱。训练目标是标签的 Qlib `CSRankNorm`（`cs_rank_norm`），用于训练损失和验证损失；损失是有标签的标的上的 MSE。优化器是 Adam，梯度值截断到 3。未设置的超参数取 `GATsRegressor.DEFAULTS` 里 Qlib Alpha158 基准的值：`window_bars` 20、`hidden_size` 64、`num_layers` 2、`dropout` 0.7、`base_model` `"LSTM"`（或 `"GRU"`）、`lr` 1e-4、`epochs` 200、`early_stop` 10。
 
@@ -603,7 +603,7 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 下面的会话在带日历的替身因子 `seq_factor` 上训练一个小的 GATs。模型从 2024-01-20 开始，所以 `collect()` 向因子多要它之前的 4 个 warm-up bar（`window_bars - 1`），第一个 bar 就有完整的窗口。一个 loguru sink 记下模型头停止时输出的那一行日志：
 
 ```python
->>> from quantlab.model.gats import GATsRegressor
+>>> from quantlab.model.predefined.gats import GATsRegressor
 >>> gats = GATsRegressor(replace(
 ...     torch_config, factors=[seq_factor],
 ...     start_date="2024-01-20", train_start="2024-01-20",
@@ -636,7 +636,7 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 
 ### 用市场特征训练 MASTER
 
-`MASTERRegressor`（`quantlab.model.master`）复现 MASTER（Li et al., "MASTER: Market-Guided Stock Transformer for Stock Price Forecasting", AAAI 2024），依据的是作者仓库 `SJTU-DMTai/MASTER`；它不在 Qlib 里。它的网络把 F 个特征分成两部分。其中 G 个是*门控特征*，即全市场的输入，在同一个 bar 上所有标的取值相同；其余 F - G 个是个股特征。门控把门控特征在窗口最后一个 bar 上的取值 m 映射为 `(F - G) · softmax(Linear(m) / beta)`：每个个股特征一个权重，权重之和为 F - G，用来在窗口的每个 bar 上缩放个股特征。缩放后的个股特征依次经过带正弦位置编码的 `Linear(F - G, D)`、每个标的内部跨 N 个 bar 的注意力、每个 bar 上跨标的的注意力，以及以最后一个 bar 为查询的时间注意力，最后由 `Linear(D, L)` 给出预测。
+`MASTERRegressor`（`quantlab.model.predefined.master`）复现 MASTER（Li et al., "MASTER: Market-Guided Stock Transformer for Stock Price Forecasting", AAAI 2024），依据的是作者仓库 `SJTU-DMTai/MASTER`；它不在 Qlib 里。它的网络把 F 个特征分成两部分。其中 G 个是*门控特征*，即全市场的输入，在同一个 bar 上所有标的取值相同；其余 F - G 个是个股特征。门控把门控特征在窗口最后一个 bar 上的取值 m 映射为 `(F - G) · softmax(Linear(m) / beta)`：每个个股特征一个权重，权重之和为 F - G，用来在窗口的每个 bar 上缩放个股特征。缩放后的个股特征依次经过带正弦位置编码的 `Linear(F - G, D)`、每个标的内部跨 N 个 bar 的注意力、每个 bar 上跨标的的注意力，以及以最后一个 bar 为查询的时间注意力，最后由 `Linear(D, L)` 给出预测。
 
 `hyperparameters["gate_features"]` 在模型的因子变量中指明哪些是门控特征，其余因子变量都是个股特征。这个键是必需的；构造时会拒绝模型没有的名字，也拒绝覆盖全部因子的列表。门控特征通常来自一个基于指数或 ETF 序列的 `MarketFeatures` 因子（见 factor 指南），把它作为模型的因子之一传入，并把 `gate_features` 设为它的变量名。下面的 `stocks` 是股票数据集，`spy`、`qqq` 和 `iwm` 是各含一只 ETF 的数据集（factor 指南介绍了如何从 CRSP 构建），`alpha158` 是一个个股因子，`config` 是带有标签和日期的 `ModelConfig`：
 
@@ -644,8 +644,8 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 from dataclasses import replace
 
 from quantlab.base.config import MarketFeatureConfig
-from quantlab.factor.market import MarketFeatures
-from quantlab.model.master import MASTERRegressor
+from quantlab.factor.predefined.market import MarketFeatures
+from quantlab.model.predefined.master import MASTERRegressor
 
 market = MarketFeatures(MarketFeatureConfig(
     dataset=stocks, series={"spy": spy, "qqq": qqq, "iwm": iwm},
@@ -659,7 +659,7 @@ master = MASTERRegressor(replace(
 
 训练时，模型头把每个 bar 上第一个标签最高和最低各 `drop_extreme` 比例的标的从损失中去掉（这些标的仍留在截面里），再对其余标的逐 bar 做 z-score（`drop_extreme` 和 `cs_zscore`）；验证和测试目标只做 z-score。损失是有目标的标的上的 MSE，优化器是 Adam，梯度值截断到 3。未设置的超参数取 `MASTERRegressor.DEFAULTS` 里的官方值：`window_bars` 8、`d_model` 256、`t_nhead` 4、`s_nhead` 2、`dropout` 0.5、`beta` 5.0（论文在 CSI800 上用 2）、`lr` 1e-5、`epochs` 40、`train_loss_threshold` 0.95、`drop_extreme` 0.025。
 
-MASTER 与官方代码一样按训练损失停止：第一个训练损失不超过 `train_loss_threshold` 的 epoch 结束后停止训练，否则跑满 `epochs`，两种情况都保留最后的权重。验证损失照常计算和记录，但不决定何时停止。这条规则就是 `quantlab.utils.torch_training` 中的 `TrainLossThreshold`。
+MASTER 与官方代码一样按训练损失停止：第一个训练损失不超过 `train_loss_threshold` 的 epoch 结束后停止训练，否则跑满 `epochs`，两种情况都保留最后的权重。验证损失照常计算和记录，但不决定何时停止。这条规则就是 `quantlab.model.torch_training` 中的 `TrainLossThreshold`。
 
 下面的会话加入一个市场因子的替身，即两条在同一 bar 的所有标的上取值相同的序列，并训练一个由它们门控的小 MASTER。`master.model.gate` 把两个市场取值映射为两个个股特征 `f_a` 和 `f_b` 的权重：
 
@@ -670,7 +670,7 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 >>> market_stand_in = Panel(spy_ret=np.repeat(spy_ret[:, None], 20, axis=1),
 ...                         spy_ret_mean_5=np.repeat(spy_ret_mean_5[:, None], 20, axis=1))
 >>> market_stand_in.config, market_stand_in.store_range = seq_factor.config, seq_factor.store_range
->>> from quantlab.model.master import MASTERRegressor
+>>> from quantlab.model.predefined.master import MASTERRegressor
 >>> master = MASTERRegressor(replace(
 ...     torch_config, factors=[seq_factor, market_stand_in],
 ...     start_date="2024-01-20", train_start="2024-01-20",
@@ -738,13 +738,13 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 
 ### 记录到 Weights & Biases
 
-每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.model._support.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，其摘要就是清单里的 `cv_mean` 块。torch 模型头每个 epoch 记录 `train_loss` 和 `val_loss`，并把最终指标写入运行摘要。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
+每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.model.predefined._support.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，其摘要就是清单里的 `cv_mean` 块。torch 模型头每个 epoch 记录 `train_loss` 和 `val_loss`，并把最终指标写入运行摘要。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
 
 ## 扩展
 
 新的模型头继承 `LibraryModel` 或 `TorchModel`，实现上表列出的方法即可，其余都不用改。之后它就能使用 `train`、`train_cv`、`load`、`predict_panel` 和各个回测器。
 
-`LibraryModel` 的模型头拿到的是行，由基类构建。`_fit_model(train_rows, val_rows)` 收到两个 `quantlab.base.library_model.Rows`；没有验证段、或验证段里没有可用的行时，第二个是 None。每个 `Rows` 带有 `x [n, F]`、`y [n, L]`（训练目标）、`y_raw [n, L]`（原始标签）和 `where`（每一行的时间下标和标的下标）。只有训练目标有效的单元格才成为行；NaN 特征保留下来，交给库自己的缺失值处理。`_forward` 把 `[n, F]` 的行映射成 `[n, L]` 的预测，预测时它会看到每一个至少有一个有限特征的单元格。`_fit_model` 必须把拟合好的对象放到 `self.model` 里，检查点保存的就是这个对象（通过 joblib）。真正的模型在拟合过程中才创建时，`_init_model` 可以返回 `None`。另有三个可选钩子：
+`LibraryModel` 的模型头拿到的是行，由基类构建。`_fit_model(train_rows, val_rows)` 收到两个 `quantlab.model.library_model.Rows`；没有验证段、或验证段里没有可用的行时，第二个是 None。每个 `Rows` 带有 `x [n, F]`、`y [n, L]`（训练目标）、`y_raw [n, L]`（原始标签）和 `where`（每一行的时间下标和标的下标）。只有训练目标有效的单元格才成为行；NaN 特征保留下来，交给库自己的缺失值处理。`_forward` 把 `[n, F]` 的行映射成 `[n, L]` 的预测，预测时它会看到每一个至少有一个有限特征的单元格。`_fit_model` 必须把拟合好的对象放到 `self.model` 里，检查点保存的就是这个对象（通过 joblib）。真正的模型在拟合过程中才创建时，`_init_model` 可以返回 `None`。另有三个可选钩子：
 
 | 钩子 | 默认 |
 |---|---|
@@ -753,7 +753,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 | `_loss(target, pred)`：把一个 bar 的 `[n, L]` 行变成一个数；它在各 bar 上的均值就是 `{split}_loss` | MSE |
 
 ```python
->>> from quantlab.base.library_model import LibraryModel
+>>> from quantlab.model.library_model import LibraryModel
 >>> class RidgeHead(LibraryModel):
 ...     """所有标的共用的闭式岭回归。"""
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -790,9 +790,9 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 [(0.716, 0.003), (0.69, 0.027)]
 ```
 
-`TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/gats.py` 和 `quantlab/model/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
+`TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/predefined/gats.py` 和 `quantlab/model/predefined/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
-新的集成继承 `quantlab.base.ensemble.BaseEnsemble`，把成员（至少两个标签配置和窗口都相同的模型）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（清单里记录的种子）。`ModelEnsemble` 是最小的完整示例。
+新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个标签配置和窗口都相同的模型）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（清单里记录的种子）。`ModelEnsemble` 是最小的完整示例。
 
 ## 注意事项
 
@@ -889,4 +889,4 @@ ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/base/torch_model.py`、`quantlab/base/torch_data.py`、`quantlab/model/gats.py`、`quantlab/model/master.py`、`quantlab/utils/torch_training.py`、`quantlab/factor/market.py`、`quantlab/model/xgb.py`、`quantlab/base/library_model.py`、`quantlab/model/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/model_ensemble.py`（`ModelEnsemble`）、`quantlab/base/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）和 `quantlab/utils/metrics.py` 的 docstring。

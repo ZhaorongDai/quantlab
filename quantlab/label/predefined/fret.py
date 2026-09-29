@@ -22,7 +22,7 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import FactorConfig, ForwardConfig
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.label.forward import Forward
 
 
@@ -100,7 +100,7 @@ class _OpenToOpenLabel(Forward):
         --------
         >>> cfg = label.get_config()
         >>> cfg["name"], cfg["kwargs"]
-        ('quantlab.label.fret.Return', {'n_forward_periods': 5})
+        ('quantlab.label.predefined.fret.Return', {'n_forward_periods': 5})
         """
         return {**self.config.factor.get_config(), "name": self.import_path}
 

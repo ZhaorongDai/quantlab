@@ -30,8 +30,8 @@ from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.base.data import MarketDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.alpha101 import Alpha101SpotKline, Alpha101Stock
-from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
+from quantlab.factor.predefined.alpha101 import Alpha101SpotKline, Alpha101Stock
+from quantlab.factor.predefined.alpha158 import Alpha158SpotKline, Alpha158Stock
 
 
 _ADJUSTED_STOCK_COLUMNS = ["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"]
@@ -343,7 +343,7 @@ def test_batch_compute_pads_the_symbol_axis_on_macos(
     padded, by decision."""
     import sys
 
-    from quantlab.base.factor import FactorKunQuant
+    from quantlab.factor.kunquant import FactorKunQuant
 
     monkeypatch.setattr(sys, "platform", "linux")
     assert FactorKunQuant._symbol_padding(5) == 0

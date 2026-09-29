@@ -269,7 +269,7 @@ store 是由原始层和参考层派生出来的，所以转换代码或过滤�
 
 ```python
 >>> from quantlab.base.config import FactorConfig
->>> from quantlab.factor.alpha101 import Alpha101Stock
+>>> from quantlab.factor.predefined.alpha101 import Alpha101Stock
 >>> dataset = CrspStockDataset(config)
 >>> factor = Alpha101Stock(FactorConfig(
 ...     warmup_bars=20,

@@ -29,7 +29,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.backtest import Predictor
 from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.base.model import BaseModel

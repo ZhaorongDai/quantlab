@@ -16,8 +16,8 @@ import torch
 import xarray as xr
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.library_model import LibraryModel
-from quantlab.utils.torch_training import cs_rank_norm
+from quantlab.model.library_model import LibraryModel
+from quantlab.model.torch_training import cs_rank_norm
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 

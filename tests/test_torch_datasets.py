@@ -24,7 +24,7 @@ import torch
 
 from torch.utils.data import DataLoader
 
-from quantlab.base.torch_data import (
+from quantlab.model.torch_data import (
     Batch,
     CrossSectionDataset,
     SymbolSequenceDataset,

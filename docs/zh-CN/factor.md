@@ -48,7 +48,7 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 >>> from quantlab.backend import XrBackend
 >>> from quantlab.base.config import DatasetConfig, PolarsFactorConfig
 >>> from quantlab.dataset.spot import SpotKlineDataset
->>> from quantlab.factor.momentum import Momentum
+>>> from quantlab.factor.predefined.momentum import Momentum
 >>> rng = np.random.default_rng(0)
 >>> symbols = [f"S{i}USDT" for i in range(8)]
 >>> close = 100 + np.cumsum(rng.normal(size=(90, 8)), axis=0)
@@ -123,7 +123,7 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 ```python
 >>> cfg = factor.get_config()
 >>> cfg["name"], cfg["kwargs"], cfg["dataset"]["market"]
-('quantlab.factor.momentum.Momentum', {'n': 5}, 'crypto_spot')
+('quantlab.factor.predefined.momentum.Momentum', {'n': 5}, 'crypto_spot')
 >>> from quantlab.utils.module import load_factor_from_config
 >>> rebuilt = load_factor_from_config(cfg)
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
@@ -136,7 +136,7 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 ```python
 >>> import polars as pl
->>> from quantlab.base.factor import FactorPolars
+>>> from quantlab.factor.polars import FactorPolars
 >>> from quantlab.dataset.merged import MergedDataset
 >>> from quantlab.dataset.stock import StockDataset
 >>> XrBackend().to_internal(raw.sel(symbol=symbols[:4])).write("data/spot_half.zarr")
@@ -180,14 +180,14 @@ True
 
 ### 把指数或 ETF 特征广播到每个标的
 
-`MarketFeatures`（`quantlab.factor.market`）从一个或多个指数或 ETF 序列计算全市场特征，并让目标面板的每个标的取相同的值。这就是 MASTER 的市场输入（`../research/qlib-gats-master.md` 第 2.1 节）。它的配置类是 `MarketFeatureConfig`。`dataset` 是目标：它的标的接收这些特征，`warmup_bars` 也按它的日历计数。`series` 把名字映射到只含一个标的的数据集。对每个序列，因子在该序列自己的 bar 上计算 21 个特征：`<name>_ret`，即 bar 收益 `close / close[t-1] - 1`；以及对 d 取 5、10、20、30、60 个 bar，`<name>_ret_mean_<d>` 和 `<name>_ret_std_<d>`（收益在 d 个 bar 上的均值和标准差），`<name>_amount_mean_<d>` 和 `<name>_amount_std_<d>`（成交额的均值和标准差，再除以当根 bar 自己的成交额）。成交额是成交量乘收盘价，除非 `kwargs["amount_column"]` 指定了存放成交额的列。`warmup_bars` 默认为 60，即最长的窗口。下面的会话写出三个小存储：六只股票（`FFF` 于 4 月 1 日上市）和两只 ETF，并计算 3 月和 4 月的特征。
+`MarketFeatures`（`quantlab.factor.predefined.market`）从一个或多个指数或 ETF 序列计算全市场特征，并让目标面板的每个标的取相同的值。这就是 MASTER 的市场输入（`../research/qlib-gats-master.md` 第 2.1 节）。它的配置类是 `MarketFeatureConfig`。`dataset` 是目标：它的标的接收这些特征，`warmup_bars` 也按它的日历计数。`series` 把名字映射到只含一个标的的数据集。对每个序列，因子在该序列自己的 bar 上计算 21 个特征：`<name>_ret`，即 bar 收益 `close / close[t-1] - 1`；以及对 d 取 5、10、20、30、60 个 bar，`<name>_ret_mean_<d>` 和 `<name>_ret_std_<d>`（收益在 d 个 bar 上的均值和标准差），`<name>_amount_mean_<d>` 和 `<name>_amount_std_<d>`（成交额的均值和标准差，再除以当根 bar 自己的成交额）。成交额是成交量乘收盘价，除非 `kwargs["amount_column"]` 指定了存放成交额的列。`warmup_bars` 默认为 60，即最长的窗口。下面的会话写出三个小存储：六只股票（`FFF` 于 4 月 1 日上市）和两只 ETF，并计算 3 月和 4 月的特征。
 
 ```python
 >>> import json
 >>> import numpy as np, pandas as pd, xarray as xr
 >>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
 >>> from quantlab.dataset.stock import StockDataset
->>> from quantlab.factor.market import MarketFeatures
+>>> from quantlab.factor.predefined.market import MarketFeatures
 >>> from quantlab.utils.module import load_factor_from_config
 >>> market_days = pd.bdate_range("2024-01-01", periods=120)
 >>> market_rng = np.random.default_rng(1)
@@ -247,7 +247,7 @@ from quantlab.base.config import (
     IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig,
 )
 from quantlab.dataset.crsp import CrspStockDataset
-from quantlab.factor.market import MarketFeatures
+from quantlab.factor.predefined.market import MarketFeatures
 
 def etf(permno, path):
     return CrspStockDataset(CrspDatasetConfig.etf_benchmark(
@@ -372,12 +372,12 @@ Traceback (most recent call last):
 ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024-01-21 to 2024-03-20, which does not contain 2024-02-01 to 2024-03-26 00:00:00. Extend it with extend(end) or rebuild it with build(start, end).
 ```
 
-`quantlab.label.fret` 中的 `Return` 和 `BinaryReturn` 是包装了一个私有滞后收益 KunQuant 因子的 `Forward` 标签，只能用作标签。`Return` 在第 t 根 bar 上的值是 `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`，即在下一根 bar 的复权开盘价建仓、持有 n 根 bar 的收益，n 从 `kwargs["n_forward_periods"]` 读取；`BinaryReturn` 在该收益为正时取 1.0，否则取 0.0。两者都是 `span = n`、`delay = 1`，所以前瞻为 n + 1。它们读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；存储结束于 2024-01-30，所以最后 3 根 bar 没有标签。
+`quantlab.label.predefined.fret` 中的 `Return` 和 `BinaryReturn` 是包装了一个私有滞后收益 KunQuant 因子的 `Forward` 标签，只能用作标签。`Return` 在第 t 根 bar 上的值是 `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`，即在下一根 bar 的复权开盘价建仓、持有 n 根 bar 的收益，n 从 `kwargs["n_forward_periods"]` 读取；`BinaryReturn` 在该收益为正时取 1.0，否则取 0.0。两者都是 `span = n`、`delay = 1`，所以前瞻为 n + 1。它们读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；存储结束于 2024-01-30，所以最后 3 根 bar 没有标签。
 
 ```python
 >>> from quantlab.base.config import FactorConfig
 >>> from quantlab.dataset.stock import StockDataset
->>> from quantlab.label.fret import Return
+>>> from quantlab.label.predefined.fret import Return
 >>> px = 50 + np.cumsum(rng.normal(size=(30, 8)), axis=0)
 >>> stock = xr.Dataset(
 ...     {"adjOpen": (["timestamp", "symbol"], px)},
@@ -476,8 +476,8 @@ XrBackend()
 | 类 | 后端 | 说明 |
 |---|---|---|
 | `Momentum` | Polars | Polars 参考因子，读取 `Close` |
-| `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库；`Stock` 类用 `quantlab.factor._support.kunquant_alpha101` 中的副本构建，没有数据的 bar 输出 NaN |
-| `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
+| `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库；`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha101` 中的副本构建，没有数据的 bar 输出 NaN |
+| `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
 | `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
@@ -519,7 +519,7 @@ PIT 正确性由数据层负责。`gross_profit`、`total_assets` 和
 
 ```python
 from quantlab.base.config import FactorConfig
-from quantlab.factor.literature_alpha import LiteratureAlpha
+from quantlab.factor.predefined.literature_alpha import LiteratureAlpha
 
 factor = LiteratureAlpha(FactorConfig(
     warmup_bars=400,
@@ -545,7 +545,7 @@ features = factor.compute("2020-01-01", "2024-12-31")
 
 ```python
 >>> import polars as pl
->>> from quantlab.base.factor import FactorPolars
+>>> from quantlab.factor.polars import FactorPolars
 >>> class RelativeVolume(FactorPolars):
 ...     def _get_factor_lazyframe(self, lf):
 ...         volume = pl.col("Volume")
@@ -578,7 +578,7 @@ features = factor.compute("2020-01-01", "2024-12-31")
 >>> from KunQuant.Op import Builder, Input, Output
 >>> from KunQuant.Stage import Function
 >>> from quantlab.base.config import FactorConfig
->>> from quantlab.base.factor import FactorKunQuant
+>>> from quantlab.factor.kunquant import FactorKunQuant
 >>> from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
 >>> class MaDeviation(FactorKunQuant):
 ...     def _get_factor_names(self):
@@ -658,4 +658,4 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 
 ## 另请参阅
 
-`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.fret` 和 `quantlab.my_ops.preprocess`。
+`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.base.factor`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.predefined.fret` 和 `quantlab.my_ops.preprocess`。

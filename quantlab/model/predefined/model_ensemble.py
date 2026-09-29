@@ -12,7 +12,7 @@ model.
 
 from typing import Self
 
-from quantlab.base.ensemble import BaseEnsemble
+from quantlab.model.ensemble import BaseEnsemble
 from quantlab.utils.module import get_cls_from_path
 
 
@@ -67,7 +67,7 @@ class ModelEnsemble(BaseEnsemble):
         --------
         >>> config = ModelEnsemble([xgb, gats]).get_config()
         >>> config["name"], [m["name"] for m in config["members"]]
-        ('quantlab.model.model_ensemble.ModelEnsemble', ['quantlab.model.xgb.XGBoostRegressor', 'quantlab.model.gats.GATsRegressor'])
+        ('quantlab.model.predefined.model_ensemble.ModelEnsemble', ['quantlab.model.predefined.xgb.XGBoostRegressor', 'quantlab.model.predefined.gats.GATsRegressor'])
         """
         return {
             "name": self.import_path,

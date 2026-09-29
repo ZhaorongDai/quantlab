@@ -21,7 +21,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import CrossSectionBacktestConfig
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,

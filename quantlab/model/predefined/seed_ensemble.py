@@ -16,7 +16,7 @@ from typing import Self
 
 import xarray as xr
 
-from quantlab.base.ensemble import BaseEnsemble
+from quantlab.model.ensemble import BaseEnsemble
 from quantlab.utils.module import get_cls_from_path
 
 
@@ -196,7 +196,7 @@ class SeedEnsemble(BaseEnsemble):
         --------
         >>> config = SeedEnsemble(model, [0, 1]).get_config()
         >>> config["name"], config["seeds"], config["model"]["name"]
-        ('quantlab.model.seed_ensemble.SeedEnsemble', [0, 1], 'tests.backtest_fixtures.SeededHead')
+        ('quantlab.model.predefined.seed_ensemble.SeedEnsemble', [0, 1], 'tests.backtest_fixtures.SeededHead')
         """
         return {
             "name": self.import_path,

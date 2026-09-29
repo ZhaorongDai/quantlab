@@ -196,7 +196,7 @@ each `ProgressEvent`; `NullProgressReporter` discards them. The example script
 collects the events of a three-symbol download:
 
 ```python
-from quantlab.base.progress import CallbackProgressReporter
+from quantlab.utils.progress import CallbackProgressReporter
 
 events = []
 result = run(source, config, reporter=CallbackProgressReporter(events.append))
@@ -215,7 +215,7 @@ for event in events:
 
 `coverage` carries counts of symbols already on disk in `event.detail`, and
 `quota_exhausted` and `cancelled` mark early stops. The full list is
-`quantlab.base.progress.EVENT_KINDS`. An exception raised inside a reporter is
+`quantlab.utils.progress.EVENT_KINDS`. An exception raised inside a reporter is
 logged and ignored, so a bug in your progress display cannot end a long
 download.
 
@@ -227,7 +227,7 @@ boundary, keeps every completed batch on disk, and a later run resumes from
 there. In the example, the token is set as soon as the first batch lands:
 
 ```python
-from quantlab.base.progress import CallbackProgressReporter, CancelToken
+from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 
 token = CancelToken()
 

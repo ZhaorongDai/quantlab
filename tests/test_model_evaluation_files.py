@@ -31,8 +31,8 @@ import xarray as xr
 
 from quantlab.base.config import ModelConfig
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.base.library_model import LibraryModel
-from quantlab.model.xgb import XGBoostRegressor
+from quantlab.model.library_model import LibraryModel
+from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.metrics import information_ratio
 from tests.label_stubs import StubLabel
 from tests.torch_heads import MeanContextHead, OneBarHead

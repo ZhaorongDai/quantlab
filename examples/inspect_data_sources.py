@@ -31,7 +31,7 @@ from loguru import logger
 from quantlab.acquisition._support.inspector import SourceInspector
 from quantlab.acquisition.tiingo import TiingoAcquisition
 from quantlab.base.acquisition import Acquisition
-from quantlab.base.progress import CallbackProgressReporter, CancelToken
+from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 from quantlab.config import set_data_root, stock_acquisition_config, stock_kline_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.registry import (

@@ -32,9 +32,9 @@ import xarray as xr
 
 from conftest import compute_all
 from quantlab.base.config import DatasetConfig, PolarsFactorConfig
-from quantlab.base.factor import FactorPolars
+from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.momentum import Momentum
 
 
 class _ProbeCalled(Exception):

@@ -24,7 +24,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.model.model_ensemble import ModelEnsemble
+from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import ic_panel_metrics
@@ -120,7 +120,7 @@ def test_manifest_round_trips_through_config(tmp_path):
     assert [e["seed"] for e in entries] == [None, None]
 
     config = json.loads(json.dumps(to_jsonable(ensemble.get_config())))
-    assert config["name"] == "quantlab.model.model_ensemble.ModelEnsemble"
+    assert config["name"] == "quantlab.model.predefined.model_ensemble.ModelEnsemble"
     rebuilt = ModelEnsemble.from_config(config).load(manifest)
     assert [type(m) for m in rebuilt.members] == [FirstFeatureHead, SeededHead]
     xr.testing.assert_allclose(

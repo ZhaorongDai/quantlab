@@ -24,9 +24,9 @@ from quantlab.base.config import (
     ForwardConfig,
     PolarsFactorConfig,
 )
-from quantlab.base.factor import FactorKunQuant
+from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.spot import SpotKlineDataset
-from quantlab.factor.momentum import Momentum
+from quantlab.factor.predefined.momentum import Momentum
 from quantlab.label.forward import Forward
 from quantlab.utils.module import load_factor_from_config
 

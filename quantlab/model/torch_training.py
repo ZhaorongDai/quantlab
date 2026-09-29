@@ -1,7 +1,7 @@
 """Training pieces a ``TorchModel`` head may pick for its hooks.
 
 The data a head is fed (the training panel, ``Batch`` and the datasets)
-lives in ``quantlab.base.torch_data``. This module holds the pieces of a
+lives in ``quantlab.model.torch_data``. This module holds the pieces of a
 head's learning strategy:
 
 - ``cs_rank_norm``, ``cs_zscore`` and ``drop_extreme`` are target transforms

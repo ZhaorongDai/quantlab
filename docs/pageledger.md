@@ -18,7 +18,7 @@ A page is one response: some rows plus the token of the next page, or no token o
 >>> import polars as pl
 >>> from quantlab.base.acquisition import Acquisition
 >>> from quantlab.base.config import AcquisitionConfig
->>> from quantlab.base.pageledger import PageLedger
+>>> from quantlab.utils.pageledger import PageLedger
 >>> class PagedAcquisition(Acquisition):
 ...     VENDOR = "alpaca"
 ...     RAW_COLUMNS = ("timestamp", "symbol", "vendor", "close")
@@ -238,4 +238,4 @@ Each page record also stores `last_symbol` and `last_timestamp`. They are meant 
 
 ## See also
 
-The [acquisition](acquisition.md) guide for the download loop around the ledger. The class docstrings of `quantlab.base.pageledger.PageLedger` and `quantlab.base.acquisition.Acquisition._fetch_batch` describe every method and the write order in detail.
+The [acquisition](acquisition.md) guide for the download loop around the ledger. The class docstrings of `quantlab.utils.pageledger.PageLedger` and `quantlab.base.acquisition.Acquisition._fetch_batch` describe every method and the write order in detail.

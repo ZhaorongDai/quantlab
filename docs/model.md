@@ -52,7 +52,7 @@ The config carries the factor and label objects, where checkpoints go, and four 
 
 ```python
 >>> from quantlab.base.config import ModelConfig
->>> from quantlab.model.xgb import XGBoostRegressor
+>>> from quantlab.model.predefined.xgb import XGBoostRegressor
 >>> config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
 ...     factor_data_strategy="read", label_data_strategy="read",
@@ -198,7 +198,7 @@ Every head derives from `BaseModel` through one of two variants. The variants di
 | `TorchModel` | torch, one cross-section of symbols per step | `.pth` | `window_bars`, `_init_model`, `_loss`; optional hooks with defaults (see Train a torch model) |
 | `LibraryModel` | numpy rows, the library's own early stopping | `.joblib` | `_init_model`, `_fit_model`, `_forward`; optional `_transform_feature`, `_transform_target`, `_loss` (see Extending) |
 
-Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads, and the `TorchModel` heads `GATsRegressor` (`quantlab.model.gats`, Qlib's GATs on the cross-section) and `MASTERRegressor` (`quantlab.model.master`, the market-guided transformer MASTER). Every shipped model, the ensembles included, lives in `quantlab/model/`, and the classes a new head subclasses live in `quantlab/base/` (`torch_model.py`, `library_model.py`). See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
+Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads, and the `TorchModel` heads `GATsRegressor` (`quantlab.model.predefined.gats`, Qlib's GATs on the cross-section) and `MASTERRegressor` (`quantlab.model.predefined.master`, the market-guided transformer MASTER). Every shipped model, the ensembles included, lives in `quantlab/model/predefined/`, and the classes a new head or ensemble subclasses live at the top of `quantlab/model/` (`torch_model.py`, `library_model.py`, `ensemble.py`). See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
 
 ### Configuration and reserved hyperparameters
 
@@ -222,7 +222,7 @@ Every other key is the head's own. `_init_model(num_features, num_labels, hyperp
 
 ### Stop training early
 
-With `"early_stopping": True` in `hyperparameters`, training stops when the validation loss has not improved for `early_stopping_patience` boosting rounds and the best model is kept. These are reserved keys the library heads read and never pass to the library; a torch head stops through its own `_should_stop` hook instead (see Train a torch model). For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/model/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
+With `"early_stopping": True` in `hyperparameters`, training stops when the validation loss has not improved for `early_stopping_patience` boosting rounds and the best model is kept. These are reserved keys the library heads read and never pass to the library; a torch head stops through its own `_should_stop` hook instead (see Train a torch model). For `XGBoostRegressor` the checkpoint is truncated to the best round. The metric is the RMSE on the validation segment. The booster itself is fit on a pooled concordance correlation loss (`1 - ccc`, see `ccc_objective` in `quantlab/model/predefined/xgb.py`); giving `objective` in `hyperparameters` switches back to a built-in xgboost objective.
 
 ```python
 >>> from dataclasses import replace
@@ -287,11 +287,11 @@ The folds train one after another, on the one collected panel.
 
 ### Average several seeds
 
-`SeedEnsemble(model, seeds)` in `quantlab.model.seed_ensemble` trains one config under several random seeds and predicts their average. Member k is the model's class built on the model's config with `random_seed=seeds[k]`; `seeds` is an explicit list of at least two distinct integers. The members read the same data: `collect()` collects the panel once, on the first member, and every other member shares that data backend, and `predict_window` requests the features once and hands them to every member.
+`SeedEnsemble(model, seeds)` in `quantlab.model.predefined.seed_ensemble` trains one config under several random seeds and predicts their average. Member k is the model's class built on the model's config with `random_seed=seeds[k]`; `seeds` is an explicit list of at least two distinct integers. The members read the same data: `collect()` collects the panel once, on the first member, and every other member shares that data backend, and `predict_window` requests the features once and hands them to every member.
 
 ```python
 >>> from dataclasses import replace
->>> from quantlab.model.seed_ensemble import SeedEnsemble
+>>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 >>> sampled = replace(config, hyperparameters={
 ...     "num_boost_round": 50, "max_depth": 3, "subsample": 0.7, "colsample_bytree": 0.5,
 ... })
@@ -315,7 +315,7 @@ True
 ['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> saved = json.loads(manifest.read_text())
 >>> saved["format_version"], saved["members"][1]
-(1, {'name': 'quantlab.model.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
+(1, {'name': 'quantlab.model.predefined.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
 >>> sorted(json.loads((manifest.parent / "config.json").read_text()))
 ['labels', 'test_end', 'test_start', 'train_end', 'train_start']
 ```
@@ -367,7 +367,7 @@ The ensemble directory also holds the evaluation files of the averaged predictio
 True
 >>> cfg = ensemble.get_config()
 >>> cfg["name"], cfg["seeds"], cfg["model"]["name"]
-('quantlab.model.seed_ensemble.SeedEnsemble', [0, 1, 2], 'quantlab.model.xgb.XGBoostRegressor')
+('quantlab.model.predefined.seed_ensemble.SeedEnsemble', [0, 1, 2], 'quantlab.model.predefined.xgb.XGBoostRegressor')
 >>> SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 0])
 Traceback (most recent call last):
   ...
@@ -405,14 +405,14 @@ True
 
 ### Combine different models
 
-`ModelEnsemble(members)` in `quantlab.model.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. The members must share their label configs and their training and test windows, since the backtester splits in-sample from out-of-sample by one window; otherwise the constructor raises `ValueError`. Each member collects its own data and requests its own features, and the ensemble predicts the equal-weight mean of the members' per-bar cross-sectional z-scores, as `SeedEnsemble` does. `train()`, `train_cv()`, `load()`, the evaluation files and the manifest are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
+`ModelEnsemble(members)` in `quantlab.model.predefined.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. The members must share their label configs and their training and test windows, since the backtester splits in-sample from out-of-sample by one window; otherwise the constructor raises `ValueError`. Each member collects its own data and requests its own features, and the ensemble predicts the equal-weight mean of the members' per-bar cross-sectional z-scores, as `SeedEnsemble` does. `train()`, `train_cv()`, `load()`, the evaluation files and the manifest are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
 
 ```python
->>> from quantlab.model.model_ensemble import ModelEnsemble
+>>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
 >>> ensemble = ModelEnsemble([xgb, gats])  # same label and dates, different factors
 >>> config = ensemble.get_config()
 >>> [m["name"] for m in config["members"]]
-['quantlab.model.xgb.XGBoostRegressor', 'quantlab.model.gats.GATsRegressor']
+['quantlab.model.predefined.xgb.XGBoostRegressor', 'quantlab.model.predefined.gats.GATsRegressor']
 >>> manifest = ensemble.collect().train()
 >>> restored = ModelEnsemble.from_config(config).load(manifest)
 >>> [type(m).__name__ for m in restored.members]
@@ -438,13 +438,13 @@ The combination rule is the hook `_combine(predictions)`: it receives one predic
 
 ### Train a torch model
 
-A torch head (`TorchModel`) is fed through standard PyTorch components. The base class builds a *training panel* of torch tensors from the collected data: features `x` (`[T, S, F]`), the training target (`[T, S, L]`), its `mask` (`[T, S]`), the raw labels `y_raw` and `present` (`[T, S]`, a cell with at least one finite feature), with the timestamps and symbols. The head's `_dataset(panel, bars, training)` returns a `torch.utils.data.Dataset` over some bars and `_dataloader(dataset, training)` batches it. The default dataset, `CrossSectionDataset` in `quantlab.base.torch_data`, gives one item per bar: the bar's *cross-section*, meaning its present symbols, each carrying its own last `window_bars` bars of features. The network then sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
+A torch head (`TorchModel`) is fed through standard PyTorch components. The base class builds a *training panel* of torch tensors from the collected data: features `x` (`[T, S, F]`), the training target (`[T, S, L]`), its `mask` (`[T, S]`), the raw labels `y_raw` and `present` (`[T, S]`, a cell with at least one finite feature), with the timestamps and symbols. The head's `_dataset(panel, bars, training)` returns a `torch.utils.data.Dataset` over some bars and `_dataloader(dataset, training)` batches it. The default dataset, `CrossSectionDataset` in `quantlab.model.torch_data`, gives one item per bar: the bar's *cross-section*, meaning its present symbols, each carrying its own last `window_bars` bars of features. The network then sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
 
 Every item is a `Batch`: `x`, `y` (the training target, 0 where invalid), `mask` (True where the sample has a valid training target in every label), `y_raw` (the raw labels) and `where`, the timestamp index and symbol index of every sample, shaped like `mask`. For one cross-section `mask` is `[S_t]` and `y` is `[S_t, L]`. Predictions for every split and for `predict_panel` come from the `training=False` dataset and are put back into `[T, S, L]` through `where`; a dataset that leaves a present cell unpredicted, or predicts it twice, raises `ValueError` naming the bar.
 
 The training target is computed once per fit, before the first epoch: `_transform_target(y, training)` receives each bar's raw labels, with `training=True` on the training bars only. The `keep` it returns only removes symbols from the loss. A target that should change every epoch, such as label noise, belongs in the head's own `_train_one_batch`.
 
-A head writes three things: `window_bars` (N), `_init_model(num_features, num_labels, hyperparameters)` (the network, or several in an `nn.ModuleDict`) and `_loss(output, batch)`, the loss of one batch. `output` is whatever the network returned. Missing labels are already masked and set to 0 in `y`, so a loss only has to count the `mask` samples, as `masked_mse` in `quantlab.utils.torch_training` does. Every other choice is an optional hook with a working default:
+A head writes three things: `window_bars` (N), `_init_model(num_features, num_labels, hyperparameters)` (the network, or several in an `nn.ModuleDict`) and `_loss(output, batch)`, the loss of one batch. `output` is whatever the network returned. Missing labels are already masked and set to 0 in `y`, so a loss only has to count the `mask` samples, as `masked_mse` in `quantlab.model.torch_training` does. Every other choice is an optional hook with a working default:
 
 | Hook | Default |
 |---|---|
@@ -471,8 +471,8 @@ The smallest head is a window, a network and a loss:
 >>> import torch
 >>> import torch.nn as nn
 >>> from quantlab.base.config import ModelConfig
->>> from quantlab.base.torch_model import TorchModel
->>> from quantlab.utils.torch_training import cs_zscore, masked_mse
+>>> from quantlab.model.torch_model import TorchModel
+>>> from quantlab.model.torch_training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
 ...     """A linear map of each symbol's latest bar."""
 ...     def __init__(self, num_features, num_labels):
@@ -538,7 +538,7 @@ This head chooses its own optimizer, loss and stopping rule. It z-scores the tar
 {'val_loss': -0.721, 'test_rank_ic': 0.691}
 ```
 
-Qlib's sequence models (GRU, LSTM, ALSTM, Transformer) train on random `(timestamp, symbol)` samples rather than whole cross-sections. `SymbolSequenceDataset` in `quantlab.base.torch_data` gives that sample shape: one item per cell, holding the symbol's last `window_bars` bars as `[N, F]`, and PyTorch's default collation batches the items to `[B, N, F]` with `mask` and `where` shaped `[B]`. In training it holds only the cells with a valid training target; in evaluation it holds every present cell, so prediction still covers the whole cross-section. The training target is computed per bar over the whole cross-section before any batch is drawn, so a batch that mixes bars still sees each bar's cross-sectional rank or z-score, and `{split}_loss` still weighs every bar the same because the base splits a mixed batch by bar. The dataset gathers a whole batch of windows with one indexing call (`__getitems__`), and `window_bars=1` gives row samples for a torch row model.
+Qlib's sequence models (GRU, LSTM, ALSTM, Transformer) train on random `(timestamp, symbol)` samples rather than whole cross-sections. `SymbolSequenceDataset` in `quantlab.model.torch_data` gives that sample shape: one item per cell, holding the symbol's last `window_bars` bars as `[N, F]`, and PyTorch's default collation batches the items to `[B, N, F]` with `mask` and `where` shaped `[B]`. In training it holds only the cells with a valid training target; in evaluation it holds every present cell, so prediction still covers the whole cross-section. The training target is computed per bar over the whole cross-section before any batch is drawn, so a batch that mixes bars still sees each bar's cross-sectional rank or z-score, and `{split}_loss` still weighs every bar the same because the base splits a mixed batch by bar. The dataset gathers a whole batch of windows with one indexing call (`__getitems__`), and `window_bars=1` gives row samples for a torch row model.
 
 The head below is Qlib's GRU on this dataset: `_dataset` returns the sequence dataset and `_dataloader` batches 800 samples, as Qlib does. A window longer than one bar needs warm-up bars, so the stand-in factor gets a calendar to count them on:
 
@@ -546,8 +546,8 @@ The head below is Qlib's GRU on this dataset: `_dataset` returns the sequence da
 >>> import pandas as pd
 >>> from types import SimpleNamespace
 >>> from torch.utils.data import DataLoader
->>> from quantlab.base.torch_data import SymbolSequenceDataset
->>> from quantlab.utils.torch_training import cs_rank_norm
+>>> from quantlab.model.torch_data import SymbolSequenceDataset
+>>> from quantlab.model.torch_training import cs_rank_norm
 >>> days = pd.DatetimeIndex(coords["timestamp"])
 >>> seq_factor = Panel(f_a=f_a, f_b=f_b)
 >>> seq_factor.config = SimpleNamespace(dataset=SimpleNamespace(   # the bar n bars before date
@@ -594,7 +594,7 @@ A head with yet another sample shape overrides `_dataset` (and, for multi-bar ba
 
 ### Train GATs on the cross-section
 
-`GATsRegressor` (`quantlab.model.gats`) reproduces Qlib's GATs, the `GATModel` of `qlib/contrib/model/pytorch_gats_ts.py`. Each symbol's window goes through an LSTM, and the hidden state of its last bar is kept. One attention head then scores every pair of symbols of the bar, self included, with Qlib's `LeakyReLU(a[:H]·Wh_j + a[H:]·Wh_i)` and a softmax over the bar. Each symbol's state plus the attention-weighted mix of all states goes through `Linear(H, H)`, LeakyReLU and `Linear(H, L)`. The attention runs over the whole cross-section, so the network needs no symbol list and no graph data. `GATsNet` holds Qlib's parameter names, and a test in the suite checks that it gives the same output as Qlib's `GATModel` for the same weights and input.
+`GATsRegressor` (`quantlab.model.predefined.gats`) reproduces Qlib's GATs, the `GATModel` of `qlib/contrib/model/pytorch_gats_ts.py`. Each symbol's window goes through an LSTM, and the hidden state of its last bar is kept. One attention head then scores every pair of symbols of the bar, self included, with Qlib's `LeakyReLU(a[:H]·Wh_j + a[H:]·Wh_i)` and a softmax over the bar. Each symbol's state plus the attention-weighted mix of all states goes through `Linear(H, H)`, LeakyReLU and `Linear(H, L)`. The attention runs over the whole cross-section, so the network needs no symbol list and no graph data. `GATsNet` holds Qlib's parameter names, and a test in the suite checks that it gives the same output as Qlib's `GATModel` for the same weights and input.
 
 The head trains on the default `CrossSectionDataset`, one bar per step with the bars of an epoch shuffled. Its training target is Qlib's `CSRankNorm` of the label (`cs_rank_norm`), used for the training and validation loss; the loss is the MSE over the symbols with a label. The optimizer is Adam, with gradient values clipped at 3. Every unset hyperparameter takes Qlib's Alpha158 benchmark value from `GATsRegressor.DEFAULTS`: `window_bars` 20, `hidden_size` 64, `num_layers` 2, `dropout` 0.7, `base_model` `"LSTM"` (or `"GRU"`), `lr` 1e-4, `epochs` 200 and `early_stop` 10.
 
@@ -603,7 +603,7 @@ It stops like Qlib. After each epoch it keeps the weights of a strictly lower va
 The session below trains a small GATs on the stand-in factor with a calendar, `seq_factor`. The model starts on 2024-01-20, so `collect()` asks the factor for the 4 warm-up bars before it (`window_bars - 1`) and the first bar has a full window. A loguru sink records the line the head logs when it stops:
 
 ```python
->>> from quantlab.model.gats import GATsRegressor
+>>> from quantlab.model.predefined.gats import GATsRegressor
 >>> gats = GATsRegressor(replace(
 ...     torch_config, factors=[seq_factor],
 ...     start_date="2024-01-20", train_start="2024-01-20",
@@ -636,7 +636,7 @@ Known differences from Qlib's implementation:
 
 ### Train MASTER with market features
 
-`MASTERRegressor` (`quantlab.model.master`) reproduces MASTER (Li et al., "MASTER: Market-Guided Stock Transformer for Stock Price Forecasting", AAAI 2024) from the authors' repository `SJTU-DMTai/MASTER`; it is not part of Qlib. Its network splits the F features in two. G of them are *gate features*, market-wide inputs that are the same for every symbol on a bar, and the other F - G are stock features. The gate maps the gate features' values at the last bar of the window, m, to `(F - G) · softmax(Linear(m) / beta)`: one weight per stock feature, the weights summing to F - G, which rescale the stock features at every bar of the window. The rescaled stock features then pass `Linear(F - G, D)` with a sinusoidal position encoding, attention over the N bars within each symbol, attention across the symbols at every bar, and a temporal attention queried by the last bar, and `Linear(D, L)` gives the prediction.
+`MASTERRegressor` (`quantlab.model.predefined.master`) reproduces MASTER (Li et al., "MASTER: Market-Guided Stock Transformer for Stock Price Forecasting", AAAI 2024) from the authors' repository `SJTU-DMTai/MASTER`; it is not part of Qlib. Its network splits the F features in two. G of them are *gate features*, market-wide inputs that are the same for every symbol on a bar, and the other F - G are stock features. The gate maps the gate features' values at the last bar of the window, m, to `(F - G) · softmax(Linear(m) / beta)`: one weight per stock feature, the weights summing to F - G, which rescale the stock features at every bar of the window. The rescaled stock features then pass `Linear(F - G, D)` with a sinusoidal position encoding, attention over the N bars within each symbol, attention across the symbols at every bar, and a temporal attention queried by the last bar, and `Linear(D, L)` gives the prediction.
 
 `hyperparameters["gate_features"]` names the gate features among the model's factor variables; every other factor variable is a stock feature. It is required, and construction refuses a name the model does not have and a list that covers every factor. The gate features usually come from a `MarketFeatures` factor over index or ETF series (see the factor guide), passed as one of the model's factors, with `gate_features` set to its variable names. Below, `stocks` is the stock dataset, `spy`, `qqq` and `iwm` are single-ETF datasets (the factor guide shows how to build them from CRSP), `alpha158` is a stock factor and `config` a `ModelConfig` with the label and the dates:
 
@@ -644,8 +644,8 @@ Known differences from Qlib's implementation:
 from dataclasses import replace
 
 from quantlab.base.config import MarketFeatureConfig
-from quantlab.factor.market import MarketFeatures
-from quantlab.model.master import MASTERRegressor
+from quantlab.factor.predefined.market import MarketFeatures
+from quantlab.model.predefined.master import MASTERRegressor
 
 market = MarketFeatures(MarketFeatureConfig(
     dataset=stocks, series={"spy": spy, "qqq": qqq, "iwm": iwm},
@@ -659,7 +659,7 @@ master = MASTERRegressor(replace(
 
 In training the head drops each bar's top and bottom `drop_extreme` share of the first label from the loss (the symbols stay in the cross-section) and z-scores the rest per bar (`drop_extreme` and `cs_zscore`); the validation and test targets are z-scored only. The loss is the MSE over the symbols with a target, the optimizer Adam with gradient values clipped at 3. Every unset hyperparameter takes the official value from `MASTERRegressor.DEFAULTS`: `window_bars` 8, `d_model` 256, `t_nhead` 4, `s_nhead` 2, `dropout` 0.5, `beta` 5.0 (the paper uses 2 for CSI800), `lr` 1e-5, `epochs` 40, `train_loss_threshold` 0.95 and `drop_extreme` 0.025.
 
-MASTER stops on the training loss, as the official code does: training ends after the first epoch whose training loss is at or below `train_loss_threshold`, or after `epochs`, and keeps the last weights either way. The validation loss is computed and logged but does not stop training. The rule is `TrainLossThreshold` in `quantlab.utils.torch_training`.
+MASTER stops on the training loss, as the official code does: training ends after the first epoch whose training loss is at or below `train_loss_threshold`, or after `epochs`, and keeps the last weights either way. The validation loss is computed and logged but does not stop training. The rule is `TrainLossThreshold` in `quantlab.model.torch_training`.
 
 The session below adds a stand-in for the market factor, two series that are equal across the symbols of a bar, and trains a small MASTER gated by them. `master.model.gate` maps the two market values to the weights of the two stock features, `f_a` and `f_b`:
 
@@ -670,7 +670,7 @@ The session below adds a stand-in for the market factor, two series that are equ
 >>> market_stand_in = Panel(spy_ret=np.repeat(spy_ret[:, None], 20, axis=1),
 ...                         spy_ret_mean_5=np.repeat(spy_ret_mean_5[:, None], 20, axis=1))
 >>> market_stand_in.config, market_stand_in.store_range = seq_factor.config, seq_factor.store_range
->>> from quantlab.model.master import MASTERRegressor
+>>> from quantlab.model.predefined.master import MASTERRegressor
 >>> master = MASTERRegressor(replace(
 ...     torch_config, factors=[seq_factor, market_stand_in],
 ...     start_date="2024-01-20", train_start="2024-01-20",
@@ -738,13 +738,13 @@ The two trained models' test predictions correlate at 0.986, both pooled and on 
 
 ### Log to Weights & Biases
 
-Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.model._support.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run whose summary is the manifest's `cv_mean` block. Torch heads log `train_loss` and `val_loss` every epoch and write the final metrics to the run summary. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
+Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.model.predefined._support.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run whose summary is the manifest's `cv_mean` block. Torch heads log `train_loss` and `val_loss` every epoch and write the final metrics to the run summary. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
 
 ## Extending
 
 A new head subclasses `LibraryModel` or `TorchModel` and implements the methods listed in the table above; nothing else needs to change. The head is then usable with `train`, `train_cv`, `load`, `predict_panel` and the backtesters.
 
-A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows, val_rows)` receives two `quantlab.base.library_model.Rows`, the second None when there is no validation segment or it has no usable row. Each carries `x [n, F]`, `y [n, L]` (the training target), `y_raw [n, L]` (the raw label) and `where`, the timestamp and symbol index of every row. Only cells with a valid training target become rows; NaN features stay, for the library's own missing-value handling. `_forward` maps `[n, F]` rows to `[n, L]` predictions, and at prediction time it sees every cell with a finite feature. `_fit_model` must leave the fitted object in `self.model`, and that object is what the checkpoint stores (via joblib). `_init_model` may return `None` when the real model is created during fitting. Three hooks are optional:
+A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows, val_rows)` receives two `quantlab.model.library_model.Rows`, the second None when there is no validation segment or it has no usable row. Each carries `x [n, F]`, `y [n, L]` (the training target), `y_raw [n, L]` (the raw label) and `where`, the timestamp and symbol index of every row. Only cells with a valid training target become rows; NaN features stay, for the library's own missing-value handling. `_forward` maps `[n, F]` rows to `[n, L]` predictions, and at prediction time it sees every cell with a finite feature. `_fit_model` must leave the fitted object in `self.model`, and that object is what the checkpoint stores (via joblib). `_init_model` may return `None` when the real model is created during fitting. Three hooks are optional:
 
 | Hook | Default |
 |---|---|
@@ -753,7 +753,7 @@ A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows
 | `_loss(target, pred)`: one bar's `[n, L]` rows to a number; its per-bar mean is `{split}_loss` | MSE |
 
 ```python
->>> from quantlab.base.library_model import LibraryModel
+>>> from quantlab.model.library_model import LibraryModel
 >>> class RidgeHead(LibraryModel):
 ...     """Closed-form ridge regression shared by every symbol."""
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -790,9 +790,9 @@ Overriding `_transform_target` changes what the library fits and nothing else. B
 [(0.716, 0.003), (0.69, 0.027)]
 ```
 
-A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/gats.py` and `quantlab/model/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
+A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
 
-A new ensemble subclasses `quantlab.base.ensemble.BaseEnsemble`, passes its members (at least two models with the same label configs and windows) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest's `config.json` can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded in the manifest). `ModelEnsemble` is the smallest complete example.
+A new ensemble subclasses `quantlab.model.ensemble.BaseEnsemble`, passes its members (at least two models with the same label configs and windows) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest's `config.json` can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded in the manifest). `ModelEnsemble` is the smallest complete example.
 
 ## Notes
 
@@ -889,4 +889,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/base/torch_model.py`, `quantlab/base/torch_data.py`, `quantlab/model/gats.py`, `quantlab/model/master.py`, `quantlab/utils/torch_training.py`, `quantlab/factor/market.py`, `quantlab/model/xgb.py`, `quantlab/base/library_model.py`, `quantlab/model/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/model_ensemble.py` (`ModelEnsemble`), `quantlab/base/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`) and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`) and `quantlab/utils/metrics.py`.

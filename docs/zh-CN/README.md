@@ -43,22 +43,22 @@
 
 ```text
 quantlab/
-  base/         抽象契约：数据集、因子、模型、回测器、采集
+  base/         每层最根的基类：数据集、因子、模型、回测器、采集
   acquisition/  Tiingo、Alpaca、WRDS 下载器
   dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
-  factor/       因子集合：Alpha101、Alpha158、动量、股票池过滤
-  label/        未来收益标签
-  model/        每个文件一个模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成、异构模型集成
-  backtest/     vectorbt 引擎、TopN 选股、美股回测器
+  factor/       因子框架（KunQuant、Polars 两种后端）；predefined/ 下是自带因子：Alpha101、Alpha158、动量等
+  label/        标签框架（Forward）；predefined/ 下是自带的未来收益标签
+  model/        模型框架（TorchModel、LibraryModel、BaseEnsemble）；predefined/ 下是自带模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成、异构模型集成
+  backtest/     vectorbt 引擎、TopN 选股；predefined/ 下是美股回测器
   backend.py    Zarr 与 Parquet 存储后端
   registry.py   数据源登记表，以及 run() 与 convert() 入口
   universe.py   时点股票池
   config/       配置工厂与随包发布的标的元数据
-  utils/        命令行辅助、指标、序列化、报告生成
+  utils/        命令行辅助、指标、序列化、进度与下载台账、报告生成
 scripts/wrds/   WRDS 下载脚本：index.py、market.py、etf.py、nbbo.py
 scripts/fama_french.py  下载 Fama-French 三因子 CSV
 tests/          测试套件
 ```
 
 每个公开的类和函数也都有 numpydoc 格式的 docstring，其中包含 `Examples` 小节。可以用 `help()` 查看，
-例如 `help(quantlab.base.torch_model.TorchModel)`。
+例如 `help(quantlab.model.torch_model.TorchModel)`。

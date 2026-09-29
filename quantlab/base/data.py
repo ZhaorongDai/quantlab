@@ -40,7 +40,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
-from quantlab.base.progress import CancelToken, ProgressEvent, ProgressReporter
+from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data
 from quantlab.enums.constant import Date
@@ -1123,7 +1123,7 @@ class BaseDataset(ABC):
         1
         """
         self._refuse_if_resampled("from_raw_data_chunked")
-        from quantlab.base.chunking import ChunkLedger, TimeChunkPlanner
+        from quantlab.utils.chunking import ChunkLedger, TimeChunkPlanner
 
         # The private marker is accepted by identity; the error lists only the
         # public strategies.
@@ -1667,7 +1667,7 @@ class BaseDataset(ABC):
             return ledger, None
 
         # Remaining case: on_new_listing == "rebuild".
-        from quantlab.base.chunking import ChunkLedger
+        from quantlab.utils.chunking import ChunkLedger
 
         logger.warning(
             f"{self.class_name}: rebuilding {store_path}: every window will "

@@ -39,7 +39,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.utils.module as module_utils
-from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.utils.backtest_report import write_backtest_report
 from tests.backtest_fixtures import (

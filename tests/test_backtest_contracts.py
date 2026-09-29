@@ -6,7 +6,7 @@ it keeps the architecture plan 03.7-01 built from eroding silently. The layer is
 - `BaseBacktester` (`quantlab/base/backtest.py`) -- the ONLY home of `run()`;
 - `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`) -- the engine
   layer, still abstract;
-- `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/us_equity.py`)
+- `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`)
   -- a named composition of a market spec, a selector and an engine.
 
 What is locked here, the decision each lock enforces, and what turns it red:
@@ -61,7 +61,7 @@ from pathlib import Path
 import pytest
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.us_equity import (
+from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )
@@ -309,7 +309,7 @@ def test_no_lower_layer_imports_the_backtest_layer():
     # Positive control: the concrete class really does import the layer, so
     # the resolver is not blind to it.
     assert "quantlab.backtest.engine_vectorbt" in _resolved_imports(
-        backtest_pkg / "us_equity.py"
+        backtest_pkg / "predefined/us_equity.py"
     )
 
     offenders = {}
