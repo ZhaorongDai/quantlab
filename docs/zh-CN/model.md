@@ -285,6 +285,80 @@ True
 
 各折依次训练，共用同一份已收集的面板。
 
+### 平均多个种子
+
+`quantlab.ensemble_model.seed` 中的 `SeedEnsemble(model, seeds)` 用多个随机种子训练同一份配置，并预测它们的平均。第 k 个成员是模型的类，建在模型的配置上，把 `random_seed` 换成 `seeds[k]`；`seeds` 是至少两个互不相同的整数组成的显式列表。成员读取相同的数据：`collect()` 只在第一个成员上收集一次面板，其余成员共用这个数据后端；`predict_window` 只请求一次特征，再交给每个成员。
+
+```python
+>>> from dataclasses import replace
+>>> from quantlab.ensemble_model.seed import SeedEnsemble
+>>> sampled = replace(config, hyperparameters={
+...     "num_boost_round": 50, "max_depth": 3, "subsample": 0.7, "colsample_bytree": 0.5,
+... })
+>>> ensemble = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2])
+>>> [m.config.random_seed for m in ensemble.members]
+[0, 1, 2]
+>>> ensemble = ensemble.collect()
+>>> all(m.data_backend is ensemble.members[0].data_backend for m in ensemble.members)
+True
+```
+
+`train()` 新建一个集成目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，按顺序训练各成员，第 k 个成员训练到 `member_{k}/`，并有自己的 W&B run `XGBoostRegressor_member_{k}`；每个成员目录里是常规的检查点、`config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。随后写入 `config.json`，记录各成员共有的内容，即训练与测试日期和标签配置（它不是模型配置），最后写入清单 `ensemble.json`。`train()` 返回清单的路径。某个成员失败时不写清单，已经写好的成员目录保留。
+
+```python
+>>> manifest = ensemble.train()
+>>> manifest.name
+'ensemble.json'
+>>> sorted(p.name for p in manifest.parent.iterdir())
+['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2']
+>>> sorted(p.name for p in (manifest.parent / "member_0").iterdir())
+['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
+>>> saved = json.loads(manifest.read_text())
+>>> saved["format_version"], saved["members"][1]
+(1, {'name': 'quantlab.library_model.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
+>>> sorted(json.loads((manifest.parent / "config.json").read_text()))
+['labels', 'test_end', 'test_start', 'train_end', 'train_start']
+```
+
+清单为每个成员记录它的类（点分路径）、相对清单所在目录的检查点路径和种子；除种子字段外不含任何种子集成专有的内容，所以由不同模型组成的集成也可以写同样的格式。
+
+集成的预测是其成员预测的 `average_predictions`（位于 `quantlab.utils.ensemble`）。每个成员的面板在每个 bar 上按标的做 z-score，即 `(x - mean) / std`，与 `CrossSectionalZScore` 一样取 `ddof=1`；再对各成员的 z-score 等权平均，忽略 NaN。某个成员在某个 bar 上的有限值少于两个，或截面为常数时，该成员在这个 bar 上不参与平均；只有部分成员有预测的格子取这些成员的平均，没有任何成员预测的格子为 NaN。各面板的坐标做外连接，变量集合不同的面板抛出 `ValueError`。结果的单位是 z-score，而非收益：每个 bar 的均值为 0。
+
+```python
+>>> window = ensemble.predict_window("2024-06-01", "2024-07-18")
+>>> window.sizes["timestamp"], list(window.data_vars)
+(48, ['ret'])
+>>> members = [m.predict_window("2024-06-01", "2024-07-18") for m in ensemble.members]
+>>> round(float(members[0]["ret"][0, 0]), 4), round(float(members[1]["ret"][0, 0]), 4)
+(-0.0077, -0.002)
+>>> from quantlab.utils.ensemble import average_predictions
+>>> bool(np.allclose(average_predictions(members)["ret"], window["ret"]))
+True
+>>> from quantlab.utils.metrics import cross_sectional_rank_ic
+>>> y = label.ds["ret"].sel(timestamp=slice("2024-06-01", "2024-07-18")).values
+>>> [round(cross_sectional_rank_ic(m["ret"].values, y), 3) for m in members], round(cross_sectional_rank_ic(window["ret"].values, y), 3)
+([0.682, 0.687, 0.689], 0.688)
+```
+
+`load(manifest)` 从清单列出的检查点恢复每个成员，`check_checkpoint(manifest)` 只检查不加载：清单的格式版本必须是 1，成员数与集成相同，每个成员的类和种子与集成的成员一致，每个成员检查点都必须存在并通过该成员自己的 `check_checkpoint`。`get_config()` 返回被包装模型的配置和种子，`SeedEnsemble.from_config` 据此重建集成。`SeedEnsemble` 满足回测器的 `Predictor` 协议，所以像单个模型一样回测（见 backtest 指南）。
+
+```python
+>>> restored = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2])
+>>> restored.check_checkpoint(manifest)
+>>> restored = restored.load(manifest)
+>>> bool(np.allclose(restored.predict_window("2024-06-01", "2024-07-18")["ret"], window["ret"]))
+True
+>>> cfg = ensemble.get_config()
+>>> cfg["name"], cfg["seeds"], cfg["model"]["name"]
+('quantlab.ensemble_model.seed.SeedEnsemble', [0, 1, 2], 'quantlab.library_model.xgb.XGBoostRegressor')
+>>> SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 0])
+Traceback (most recent call last):
+  ...
+ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
+```
+
+各成员依次训练，每个成员在训练前一刻用自己的 `random_seed` 重设随机数生成器。
+
 ### 训练 torch 模型
 
 torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基类把收集到的数据组装成一个由 torch 张量构成的*训练面板*：特征 `x`（`[T, S, F]`）、训练目标（`[T, S, L]`）及其 `mask`（`[T, S]`）、原始标签 `y_raw`，以及 `present`（`[T, S]`，至少有一个有限特征值的格子），外加时间戳和标的。模型头的 `_dataset(panel, bars, training)` 返回覆盖若干 bar 的 `torch.utils.data.Dataset`，`_dataloader(dataset, training)` 负责分批。默认数据集是 `quantlab.torch_model.data` 中的 `CrossSectionDataset`，每个 bar 一个样本项：这个 bar 的*截面*，即在该 bar 上出现的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
@@ -736,4 +810,4 @@ ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/torch_model/`（`gats.py`、`master.py`、`data.py`、`training.py`）、`quantlab/factor/market.py`、`quantlab/library_model/xgb.py`、`quantlab/library_model/backend.py` 和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/torch_model/`（`gats.py`、`master.py`、`data.py`、`training.py`）、`quantlab/factor/market.py`、`quantlab/library_model/xgb.py`、`quantlab/library_model/backend.py`、`quantlab/ensemble_model/seed.py`（`SeedEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）和 `quantlab/utils/metrics.py` 的 docstring。

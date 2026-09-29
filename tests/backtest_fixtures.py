@@ -170,6 +170,26 @@ class FirstFeatureHead(LibraryModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
+class SeededHead(LibraryModel):
+    """Library head whose fit draws a coefficient from the seeded numpy generator.
+
+    Every label's prediction is ``x0 + w * x0 ** 2`` for feature 0, with ``w``
+    drawn from ``numpy.random`` at fit time. Training reseeds that generator
+    from ``config.random_seed``, so one seed always gives the same ``w`` and
+    two seeds give different cross-sectional rankings.
+    """
+
+    def _init_model(self, num_features, num_labels, hyperparameters):
+        return {"num_labels": num_labels, "w": 0.0}
+
+    def _fit_model(self, train_rows, val_rows):
+        self.model["w"] = float(np.random.normal(0.0, 50.0))
+
+    def _forward(self, x):
+        x0 = x[..., :1]
+        return np.repeat(x0 + self.model["w"] * x0**2, self.model["num_labels"], axis=-1)
+
+
 def make_stock_dataset(dataset_config: DatasetConfig) -> StockDataset:
     """A fresh `StockDataset` over a COPY of the config, so no two datasets
     alias one mutable config object."""
@@ -189,8 +209,10 @@ def make_model(
     train_end: str,
     test_start: str,
     test_end: str,
-) -> FirstFeatureHead:
-    """A `FirstFeatureHead` over one `PastReturnFactor` and one `ForwardReturnLabel`."""
+    head: type[LibraryModel] = FirstFeatureHead,
+) -> LibraryModel:
+    """A `head` (by default `FirstFeatureHead`) over one `PastReturnFactor` and one
+    `ForwardReturnLabel`."""
     factor = PastReturnFactor(
         PolarsFactorConfig(
             warmup_bars=warmup_bars,
@@ -205,7 +227,7 @@ def make_model(
             kwargs={"n_forward_periods": n_forward_periods},
         )
     )
-    return FirstFeatureHead(
+    return head(
         ModelConfig(
             factors=[factor],
             labels=[label],

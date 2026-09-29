@@ -459,6 +459,31 @@ The backtester reads no model config and calls no other model method. A config w
 ['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config', 'get_config', 'label_delays', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
+A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble directory and records its `ensemble.json` as `trained_checkpoint`; in load mode `checkpoint` is that `ensemble.json`, and the training dates for the in-sample split are read from the ensemble-level `config.json` beside it, as for one model's checkpoint. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
+
+```python
+>>> from quantlab.ensemble_model.seed import SeedEnsemble
+>>> ensemble = SeedEnsemble(make_model(root / "ensemble", cfg, days), seeds=[0, 1, 2])
+>>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,
+... )).run()
+>>> manifest = Path(trained.metrics["trained_checkpoint"])
+>>> manifest.name, sorted(p.name for p in manifest.parent.iterdir())
+('ensemble.json', ['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2'])
+>>> replayed = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config,
+...     model=SeedEnsemble(make_model(root / "replay", cfg, days, train_end=20), seeds=[0, 1, 2]),
+...     checkpoint=str(manifest),
+... )).run()
+>>> replayed.metrics["training_window"]
+('2024-01-01', '2024-02-23')
+>>> bool((replayed.weights["weight"].fillna(0) == result.weights["weight"].fillna(0)).all())
+True
+>>> saved = json.loads((replayed.run_dir / "config.json").read_text())
+>>> saved["model"]["seeds"], sorted(saved["data_fingerprint"])
+([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
+```
+
 ## Notes
 
 No borrow or short-financing cost is modelled, so short-side returns are optimistic; the metrics `notes` say so. Trade statistics use the position view: one trade is one symbol's round trip from entry to flat, and trimming a holding back to its target weight is not a closed trade. `Total Orders` is the number of fills.

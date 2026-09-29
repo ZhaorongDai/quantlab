@@ -285,6 +285,80 @@ True
 
 The folds train one after another, on the one collected panel.
 
+### Average several seeds
+
+`SeedEnsemble(model, seeds)` in `quantlab.ensemble_model.seed` trains one config under several random seeds and predicts their average. Member k is the model's class built on the model's config with `random_seed=seeds[k]`; `seeds` is an explicit list of at least two distinct integers. The members read the same data: `collect()` collects the panel once, on the first member, and every other member shares that data backend, and `predict_window` requests the features once and hands them to every member.
+
+```python
+>>> from dataclasses import replace
+>>> from quantlab.ensemble_model.seed import SeedEnsemble
+>>> sampled = replace(config, hyperparameters={
+...     "num_boost_round": 50, "max_depth": 3, "subsample": 0.7, "colsample_bytree": 0.5,
+... })
+>>> ensemble = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2])
+>>> [m.config.random_seed for m in ensemble.members]
+[0, 1, 2]
+>>> ensemble = ensemble.collect()
+>>> all(m.data_backend is ensemble.members[0].data_backend for m in ensemble.members)
+True
+```
+
+`train()` creates one ensemble directory `checkpoints/SeedEnsemble_trial_<timestamp>/` and trains the members in order, member k into `member_{k}/` with its own W&B run `XGBoostRegressor_member_{k}`; each member directory holds the usual checkpoint, `config.json`, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. Then it writes `config.json` with what the members share, the training and test dates and the label configs (it is not a model config), and last `ensemble.json`, the manifest. `train()` returns the manifest's path. If a member fails, no manifest is written and the member directories already written stay.
+
+```python
+>>> manifest = ensemble.train()
+>>> manifest.name
+'ensemble.json'
+>>> sorted(p.name for p in manifest.parent.iterdir())
+['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2']
+>>> sorted(p.name for p in (manifest.parent / "member_0").iterdir())
+['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
+>>> saved = json.loads(manifest.read_text())
+>>> saved["format_version"], saved["members"][1]
+(1, {'name': 'quantlab.library_model.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
+>>> sorted(json.loads((manifest.parent / "config.json").read_text()))
+['labels', 'test_end', 'test_start', 'train_end', 'train_start']
+```
+
+The manifest lists every member as its class (dotted path), its checkpoint relative to the manifest's directory and its seed, and names nothing specific to seeds beyond that field, so an ensemble of different models can write the same format.
+
+The ensemble's prediction is `average_predictions` (in `quantlab.utils.ensemble`) of its members' predictions. Each member's panel is z-scored over symbols on each bar, `(x - mean) / std` with `ddof=1` as `CrossSectionalZScore` does, and the z-scores are averaged over members with equal weights, ignoring NaN. A member whose bar has fewer than two finite values or a constant cross-section is left out on that bar; a cell only some members predict is the mean of those members, and a cell no member predicts is NaN. The panels' coordinates are outer-joined, and panels with different variable sets raise `ValueError`. The result is in z-score units, not returns: each bar has mean 0.
+
+```python
+>>> window = ensemble.predict_window("2024-06-01", "2024-07-18")
+>>> window.sizes["timestamp"], list(window.data_vars)
+(48, ['ret'])
+>>> members = [m.predict_window("2024-06-01", "2024-07-18") for m in ensemble.members]
+>>> round(float(members[0]["ret"][0, 0]), 4), round(float(members[1]["ret"][0, 0]), 4)
+(-0.0077, -0.002)
+>>> from quantlab.utils.ensemble import average_predictions
+>>> bool(np.allclose(average_predictions(members)["ret"], window["ret"]))
+True
+>>> from quantlab.utils.metrics import cross_sectional_rank_ic
+>>> y = label.ds["ret"].sel(timestamp=slice("2024-06-01", "2024-07-18")).values
+>>> [round(cross_sectional_rank_ic(m["ret"].values, y), 3) for m in members], round(cross_sectional_rank_ic(window["ret"].values, y), 3)
+([0.682, 0.687, 0.689], 0.688)
+```
+
+`load(manifest)` restores every member from the checkpoints the manifest lists, and `check_checkpoint(manifest)` checks them without loading: the manifest must be of format version 1 and list as many members as the ensemble has, each with the ensemble's member class and seed, and every member checkpoint must exist and pass the member's own `check_checkpoint`. `get_config()` returns the wrapped model's config and the seeds, and `SeedEnsemble.from_config` rebuilds the ensemble from it. A `SeedEnsemble` satisfies the backtester's `Predictor` protocol, so it is backtested like one model (see the backtest guide).
+
+```python
+>>> restored = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2])
+>>> restored.check_checkpoint(manifest)
+>>> restored = restored.load(manifest)
+>>> bool(np.allclose(restored.predict_window("2024-06-01", "2024-07-18")["ret"], window["ret"]))
+True
+>>> cfg = ensemble.get_config()
+>>> cfg["name"], cfg["seeds"], cfg["model"]["name"]
+('quantlab.ensemble_model.seed.SeedEnsemble', [0, 1, 2], 'quantlab.library_model.xgb.XGBoostRegressor')
+>>> SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 0])
+Traceback (most recent call last):
+  ...
+ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
+```
+
+The members train one after another, and each reseeds its random generators from its own `random_seed` right before it trains.
+
 ### Train a torch model
 
 A torch head (`TorchModel`) is fed through standard PyTorch components. The base class builds a *training panel* of torch tensors from the collected data: features `x` (`[T, S, F]`), the training target (`[T, S, L]`), its `mask` (`[T, S]`), the raw labels `y_raw` and `present` (`[T, S]`, a cell with at least one finite feature), with the timestamps and symbols. The head's `_dataset(panel, bars, training)` returns a `torch.utils.data.Dataset` over some bars and `_dataloader(dataset, training)` batches it. The default dataset, `CrossSectionDataset` in `quantlab.torch_model.data`, gives one item per bar: the bar's *cross-section*, meaning its present symbols, each carrying its own last `window_bars` bars of features. The network then sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
@@ -736,4 +810,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/torch_model/` (`gats.py`, `master.py`, `data.py`, `training.py`), `quantlab/factor/market.py`, `quantlab/library_model/xgb.py`, `quantlab/library_model/backend.py` and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/torch_model/` (`gats.py`, `master.py`, `data.py`, `training.py`), `quantlab/factor/market.py`, `quantlab/library_model/xgb.py`, `quantlab/library_model/backend.py`, `quantlab/ensemble_model/seed.py` (`SeedEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`) and `quantlab/utils/metrics.py`.
