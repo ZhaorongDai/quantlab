@@ -334,7 +334,7 @@ The top-level files of the run directory describe the stitched curve, and `folds
 
 ### Backtest precomputed weights
 
-`run_weights(weights)` backtests a target-weight panel that already exists, for example weights built by another tool or saved by an earlier run, without a model. The config needs no `model` and no `model_mode`. The backtester reads the fill and valuation prices of the window `start_date` to `end_date`, checks the weights against [the target-weight contract](#the-target-weight-contract) on exactly those bars and symbols, and simulates them with the same t+1 fill. The panel is a dataset with a `weight` variable or a data array, in either axis order; it is aligned to the price axes. The benchmark works as in `run()`. There is no training window, so the metrics hold whole-window blocks only (`whole`, and `benchmark` and `relative` with a `whole` slice each when a benchmark is set), with no in-sample or out-of-sample split, and the report leaves out the split lines. Fed the weights of the first session, it reproduces that run.
+`run_weights(weights)` backtests a target-weight panel that already exists, for example weights built by another tool or saved by an earlier run, without a model. The config needs no `model` and no `model_mode`; the two are set together or left `None` together, and a config with only one of them is refused when the backtester is built. The backtester reads the fill and valuation prices of the window `start_date` to `end_date`, checks the weights against [the target-weight contract](#the-target-weight-contract) on exactly those bars and symbols, and simulates them with the same t+1 fill. The panel is a dataset with a `weight` variable or a data array, in either axis order; it is aligned to the price axes. The benchmark works as in `run()`. There is no training window, so the metrics hold whole-window blocks only (`whole`, and `benchmark` and `relative` with a `whole` slice each when a benchmark is set), with no in-sample or out-of-sample split, and the report leaves out the split lines. Fed the weights of the first session, whose config has no benchmark, it reproduces that run, so the metrics are `whole` and `notes` only.
 
 ```python
 >>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
@@ -374,7 +374,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 
 ### Keep a run in memory
 
-With `output_dir=None` a run writes nothing: no run directory, no report. `result.run_dir` is `None` and everything else is in the result. This holds for `run()`, `run_cv()` and `run_weights()`.
+With `output_dir=None` a run writes nothing: no run directory, no report. `result.run_dir` is `None` and everything else is in the result. This holds for `run()`, `run_cv()` and `run_weights()`. `output_dir` has no default, so pass `None` explicitly. `output_dir=None` covers the backtest's own run directory only: with `model_mode="train"` the model still writes its checkpoint where its own config points.
 
 ```python
 >>> in_memory = USEquityCrossectionSelectStockVectorBt(

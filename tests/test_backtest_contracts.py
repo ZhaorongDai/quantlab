@@ -82,8 +82,7 @@ _METHOD_KINDS = (
     functools.partialmethod,
 )
 
-#: D-02's user-facing entry points, all defined once on `BaseBacktester`
-#: (`run_weights` since #64).
+#: D-02's user-facing entry points, all defined once on `BaseBacktester`.
 _ENTRY_POINTS = ("run", "run_cv", "run_weights")
 
 #: Class-dict entries that are callable methods. Unlike `_METHOD_KINDS` this

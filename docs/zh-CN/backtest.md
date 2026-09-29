@@ -334,7 +334,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### 回测预先算好的权重
 
-`run_weights(weights)` 在没有模型的情况下回测一个已有的目标权重面板，例如别的工具算出的权重，或一次早先运行保存下来的权重。配置不需要 `model` 和 `model_mode`。回测器读取 `start_date` 到 `end_date` 窗口内的成交价和估值价，在恰好这些 bar 和标的上按[目标权重契约](#目标权重契约)检查权重，并以同样的 t+1 成交方式模拟。权重面板可以是带 `weight` 变量的数据集，也可以是数据数组，坐标轴顺序不限，会对齐到价格的坐标轴上。基准的处理与 `run()` 相同。这类运行没有训练窗口，所以指标只有全窗口的部分（`whole`；设置了基准时还有 `benchmark` 和 `relative`，各自只含 `whole`），没有样本内/样本外的拆分，报告里也不出现拆分相关的行。把第一段会话得到的权重传进去，就能复现那次运行。
+`run_weights(weights)` 在没有模型的情况下回测一个已有的目标权重面板，例如别的工具算出的权重，或一次早先运行保存下来的权重。配置不需要 `model` 和 `model_mode`；这两项要么同时设置，要么同时为 `None`，只设置其中一项的配置在构造回测器时就会被拒绝。回测器读取 `start_date` 到 `end_date` 窗口内的成交价和估值价，在恰好这些 bar 和标的上按[目标权重契约](#目标权重契约)检查权重，并以同样的 t+1 成交方式模拟。权重面板可以是带 `weight` 变量的数据集，也可以是数据数组，坐标轴顺序不限，会对齐到价格的坐标轴上。基准的处理与 `run()` 相同。这类运行没有训练窗口，所以指标只有全窗口的部分（`whole`；设置了基准时还有 `benchmark` 和 `relative`，各自只含 `whole`），没有样本内/样本外的拆分，报告里也不出现拆分相关的行。把第一段会话得到的权重传进去（那段会话的配置没有设置基准），就能复现那次运行，因此指标只有 `whole` 和 `notes`。
 
 ```python
 >>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
@@ -374,7 +374,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 
 ### 只在内存中运行
 
-`output_dir=None` 时运行不写任何文件：没有运行目录，也没有报告。`result.run_dir` 为 `None`，其余内容都在返回的结果里。`run()`、`run_cv()` 和 `run_weights()` 都是如此。
+`output_dir=None` 时运行不写任何文件：没有运行目录，也没有报告。`result.run_dir` 为 `None`，其余内容都在返回的结果里。`run()`、`run_cv()` 和 `run_weights()` 都是如此。`output_dir` 没有默认值，需要显式传入 `None`。`output_dir=None` 只管回测自己的运行目录：在 `model_mode="train"` 下，模型仍会把 checkpoint 写到它自己的配置指定的位置。
 
 ```python
 >>> in_memory = USEquityCrossectionSelectStockVectorBt(

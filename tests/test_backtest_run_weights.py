@@ -8,9 +8,9 @@ only, since there is no training window to split against. What is locked here:
 - **Parity.** The weights a model-driven `run()` produced, fed to
   `run_weights` on a config with no model, give the same equity curve, the
   same whole-window metrics and the same benchmark comparison.
-- **No model needed.** `model` and `model_mode` are optional on the config;
-  `run()` and `run_cv()` refuse such a config with a message naming what is
-  missing.
+- **No model needed.** `model` and `model_mode` are both set or both `None`
+  (a half-set pair is refused at construction); `run()` and `run_cv()` refuse
+  a config without a model with a message pointing at `run_weights`.
 - **Contract.** Weights that break the D-03 contract (a row mixing NaN and
   finite values, gross exposure above one, axes other than the price bars)
   raise, naming the offending bar.
@@ -226,11 +226,22 @@ def test_run_cv_refuses_a_config_without_a_model(stores):
         backtester.run_cv()
 
 
-def test_run_refuses_a_model_without_a_model_mode(stores):
+def test_a_model_without_a_model_mode_is_refused_at_construction(stores):
     config = _config(stores, with_model=True, model_mode=None)
-    backtester = USEquityCrossectionSelectStockVectorBt(config)
-    with pytest.raises(ValueError, match=r"run\(\) requires config\.model_mode"):
-        backtester.run()
+    with pytest.raises(
+        ValueError,
+        match=r"model and model_mode must be both set or both None, got "
+        r"model=FirstFeatureHead and model_mode=None",
+    ):
+        USEquityCrossectionSelectStockVectorBt(config)
+
+
+def test_a_model_mode_without_a_model_is_refused_at_construction(stores):
+    config = _config(stores, with_model=False, model_mode="load")
+    with pytest.raises(
+        ValueError, match=r"got model=None and model_mode='load'"
+    ):
+        USEquityCrossectionSelectStockVectorBt(config)
 
 
 def test_config_without_a_model_serializes_and_rebuilds(stores):

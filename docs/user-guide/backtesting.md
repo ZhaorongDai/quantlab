@@ -449,8 +449,10 @@ simulation. Each fold's weights and equity are also written under
 
 Every `run()`, `run_cv()` and `run_weights()` creates a new directory
 `{output_dir}/{ClassName}_{YYYYmmdd_HHMMSS_ffffff}/`, unless `output_dir` is
-`None`: then nothing is written and the result's `run_dir` is `None`. An
-existing directory is never overwritten. The artifacts are written into a
+`None`: then nothing is written and the result's `run_dir` is `None`
+(`output_dir=None` covers the backtest's own run directory only; with
+`model_mode="train"` the model still writes its checkpoint where its own
+config points). An existing directory is never overwritten. The artifacts are written into a
 hidden staging directory first and renamed into place only when all of them
 succeeded, so a crashed run leaves no half-written directory behind.
 
