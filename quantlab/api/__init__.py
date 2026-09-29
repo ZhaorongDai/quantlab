@@ -40,7 +40,7 @@ Examples
 
 from collections.abc import Mapping
 
-from quantlab.api import _factors
+from quantlab.api import _factors, _labels
 
 
 def compute_factors(
@@ -128,3 +128,106 @@ def compute_factors(
     12
     """
     return _factors.compute_factors(frame, factor, columns=columns, as_xarray=as_xarray)
+
+
+def forward_returns(
+    frame,
+    *,
+    price: str = "open",
+    span: int = 1,
+    delay: int = 1,
+    binary: bool = False,
+    columns: Mapping[str, str] | None = None,
+    as_xarray: bool = False,
+):
+    """Compute the forward return of each bar, the label factors are judged against.
+
+    The label at bar ``t`` is the return of a position entered ``delay`` bars later and
+    held ``span`` bars, both at the ``price`` column::
+
+        price[t + delay + span] / price[t + delay] - 1
+
+    ``delay + span`` is the label's lookahead: the last ``delay + span`` bars of the
+    frame have no later bars to read and are NaN. The defaults match the library's
+    ``Return`` label, a signal at bar ``t`` filled at bar ``t + 1``'s open. The whole frame
+    is computed at once.
+
+    Parameters
+    ----------
+    frame : pandas.DataFrame or polars.DataFrame
+        Bars in long form: ``timestamp``, ``symbol`` and the ``price`` column.
+    price : str, default "open"
+        The column the return is computed on, after ``columns`` renames. There is no
+        fallback to another column: use the column a backtest fills at, so the label and
+        the fill agree.
+    span : int, default 1
+        Bars the return is held over; at least 1.
+    delay : int, default 1
+        Bars between the signal bar and the entry bar; at least 0. With 0 the position is
+        entered at the signal bar's own price.
+    binary : bool, default False
+        Return 1.0 where the forward return is positive and 0.0 elsewhere (the library's
+        ``BinaryReturn``) instead of the return (``Return``).
+    columns : mapping of str to str, optional
+        Renames the frame's columns onto the canonical names, ``{"date": "timestamp",
+        "ticker": "symbol", "Open": "open"}``.
+    as_xarray : bool, default False
+        Return the ``xarray.Dataset`` panel instead of a frame.
+
+    Returns
+    -------
+    pandas.DataFrame, polars.DataFrame or xarray.Dataset
+        One row per ``(timestamp, symbol)`` of the frame's full grid, columns
+        ``timestamp``, ``symbol`` and ``ret_{span}`` (``ret_binary_{span}`` with
+        ``binary=True``), in the frame's library; or the panel on ``(timestamp, symbol)``
+        with ``as_xarray=True``. The values are float32, computed by the library's
+        KunQuant label path, so compare them with float64 returns at a float32-level
+        tolerance, not exactly.
+
+    Raises
+    ------
+    ValueError
+        If the ``price`` column is missing (the message lists the columns present and
+        suggests one as ``price=``),
+        ``span`` is below 1, ``delay`` is below 0, ``columns`` names an absent column, or
+        a ``(timestamp, symbol)`` pair repeats.
+    TypeError
+        If ``frame`` is not a pandas or polars DataFrame, ``price`` is not a string,
+        ``span`` or ``delay`` is not an int, or ``binary`` is not a bool.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> import quantlab.api as qa
+    >>> frame = pd.DataFrame({
+    ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"] * 2),
+    ...     "symbol": ["AAA"] * 3 + ["BBB"] * 3,
+    ...     "open": [10.0, 11.0, 12.1, 20.0, 19.0, 19.0],
+    ...     "close": [10.5, 11.5, 12.5, 19.5, 19.2, 18.0],
+    ... })
+    >>> qa.forward_returns(frame)
+       timestamp symbol  ret_1
+    0 2024-01-02    AAA    0.1
+    1 2024-01-02    BBB    0.0
+    2 2024-01-03    AAA    NaN
+    3 2024-01-03    BBB    NaN
+    4 2024-01-04    AAA    NaN
+    5 2024-01-04    BBB    NaN
+    >>> qa.forward_returns(frame, price="close", delay=0, binary=True)
+       timestamp symbol  ret_binary_1
+    0 2024-01-02    AAA           1.0
+    1 2024-01-02    BBB           0.0
+    2 2024-01-03    AAA           1.0
+    3 2024-01-03    BBB           0.0
+    4 2024-01-04    AAA           NaN
+    5 2024-01-04    BBB           NaN
+    """
+    return _labels.forward_returns(
+        frame,
+        price=price,
+        span=span,
+        delay=delay,
+        binary=binary,
+        columns=columns,
+        as_xarray=as_xarray,
+    )
