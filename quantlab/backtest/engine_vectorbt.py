@@ -358,7 +358,7 @@ class VectorBtBacktester(BaseBacktester):
             # On a PERMNO axis (CRSP's permanent numeric security id) the label
             # is a bare number, so look up the ticker as of the fill day.
             fill_day = pd.Timestamp(timestamps[t + 1]).date()
-            named = self.ticker_lookup.label(
+            named = self._symbol_labels(
                 [symbols[j] for j in delisted], fill_day
             )
             for j, name in zip(delisted, named):

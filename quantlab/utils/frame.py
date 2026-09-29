@@ -22,7 +22,7 @@ The input rules:
 """
 
 from collections.abc import Iterable, Mapping
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -120,8 +120,46 @@ def to_panel(
     >>> panel["symbol"].values.tolist()
     ['7', '9']
     """
+    return to_panel_with_zone(data, columns=columns, required=required, purpose=purpose)[0]
+
+
+def to_panel_with_zone(
+    data,
+    *,
+    columns: Mapping[str, str] | None = None,
+    required: Iterable[str] = (),
+    purpose: str = "the frame",
+) -> tuple[xr.Dataset, str | None]:
+    """Return ``to_panel(data)`` and the time zone its timestamps came in.
+
+    The panel's timestamps are naive UTC whatever the input's zone, so two inputs whose
+    bars fail to line up may differ only in the zone they were written in; the zone lets
+    an error message say so.
+
+    Parameters
+    ----------
+    data, columns, required, purpose
+        As for ``to_panel``.
+
+    Returns
+    -------
+    panel : xr.Dataset
+        As ``to_panel`` returns it.
+    zone : str or None
+        The name of the input timestamps' time zone, ``None`` when they were naive (an
+        ``xarray`` panel's always are).
+
+    Examples
+    --------
+    >>> frame = pd.DataFrame({"timestamp": pd.to_datetime(["2024-01-02 09:30"]),
+    ...                       "symbol": ["A"], "close": [1.0]})
+    >>> frame["timestamp"] = frame["timestamp"].dt.tz_localize("America/New_York")
+    >>> panel, zone = to_panel_with_zone(frame)
+    >>> zone, str(pd.Timestamp(panel["timestamp"].values[0]))
+    ('America/New_York', '2024-01-02 14:30:00')
+    """
     if library_of(data) == "xarray":
-        return _panel_to_panel(data, columns, tuple(required), purpose)
+        return _panel_to_panel(data, columns, tuple(required), purpose), None
     frame = _as_pandas(data)
     if isinstance(frame.index, pd.MultiIndex):
         frame = frame.reset_index()
@@ -131,13 +169,26 @@ def to_panel(
     _check_no_null_keys(frame, purpose)
 
     timestamps = pd.to_datetime(frame["timestamp"])
-    if timestamps.dt.tz is not None:
+    zone = None if timestamps.dt.tz is None else str(timestamps.dt.tz)
+    if zone is not None:
         timestamps = timestamps.dt.tz_convert("UTC").dt.tz_localize(None)
     frame = frame.assign(timestamp=timestamps, symbol=frame["symbol"].astype(str))
     _check_unique(frame, purpose)
 
     panel = xr.Dataset.from_dataframe(frame.set_index(list(INDEX_COLUMNS)))
-    return _sorted(panel)
+    return _sorted(panel), zone
+
+
+class FieldPanel(NamedTuple):
+    """A single-field input as a panel variable; see ``to_field_panel``."""
+
+    #: The field on ``(timestamp, symbol)``, NaN where the input had no value.
+    values: xr.DataArray
+    #: ``True`` where the input gave a cell: a row of a long frame, a non-NaN cell of a
+    #: wide frame, every cell of a panel.
+    given: xr.DataArray
+    #: The input timestamps' time zone, ``None`` when naive.
+    zone: str | None
 
 
 def to_field_panel(
@@ -146,8 +197,8 @@ def to_field_panel(
     *,
     columns: Mapping[str, str] | None = None,
     purpose: str = "the frame",
-) -> tuple[xr.DataArray, xr.DataArray]:
-    """Return a single-field input as one panel variable, plus where it had a row.
+) -> FieldPanel:
+    """Return a single-field input as one panel variable, where it gave cells, its zone.
 
     A single-field input (weights, scores) carries one number per timestamp and symbol,
     so besides the long form it may come wide, one row per timestamp and one column per
@@ -155,12 +206,14 @@ def to_field_panel(
 
     - long: ``timestamp`` and ``symbol`` columns (or a pandas ``(timestamp, symbol)``
       MultiIndex) and exactly one value column, of any name;
-    - wide: the timestamps in a ``timestamp`` column or, for pandas, a ``DatetimeIndex``,
-      and every other column a symbol;
+    - wide: the timestamps in a ``timestamp`` column or in a pandas ``DatetimeIndex``
+      (whatever its name), and every other column a symbol;
     - an ``xarray.DataArray`` or a one-variable ``xarray.Dataset`` on ``(timestamp,
       symbol)``.
 
-    ``columns`` renames the names ``data`` has among its keys and ignores the others, so
+    A NaN cell of a wide frame counts as not given, like a row a long frame leaves out,
+    so a sparse long frame and its pivot mean the same thing. ``columns`` renames the
+    names ``data`` has among its keys and ignores the others (``columns_present``), so
     one mapping written for a caller's price frame also serves the single-field frames
     beside it. The input rules of ``to_panel`` then apply.
 
@@ -177,26 +230,26 @@ def to_field_panel(
 
     Returns
     -------
-    values : xr.DataArray
-        The field on ``(timestamp, symbol)``, named ``field``, NaN where the input had no
-        row or held NaN.
-    given : xr.DataArray
-        Boolean on the same axes: ``True`` where a long frame had a row, and everywhere
-        for a wide frame or a panel, whose cells all exist.
+    FieldPanel
+        ``values`` (the field on ``(timestamp, symbol)``, named ``field``, NaN where not
+        given or NaN), ``given`` (boolean on the same axes: a row of a long frame, a
+        non-NaN cell of a wide frame, every cell of a panel) and ``zone`` (the input
+        timestamps' time zone, ``None`` when naive).
 
     Raises
     ------
     TypeError
         If ``data`` is none of the accepted types.
     ValueError
-        If a long frame has other than one value column, a wide frame has no timestamps,
-        a panel has more than one variable, or a ``to_panel`` rule fails.
+        If a long frame has other than one value column, a wide frame has no timestamps
+        or both a ``DatetimeIndex`` and a ``timestamp`` column, a panel has more than one
+        variable, or a ``to_panel`` rule fails.
 
     Examples
     --------
     >>> long = pd.DataFrame({"timestamp": ["2024-01-02", "2024-01-02", "2024-01-03"],
     ...                      "symbol": ["A", "B", "A"], "w": [0.5, 0.5, 1.0]})
-    >>> values, given = to_field_panel(long, "weight")
+    >>> values, given, zone = to_field_panel(long, "weight")
     >>> values.values
     array([[0.5, 0.5],
            [1. , nan]])
@@ -205,49 +258,95 @@ def to_field_panel(
            [ True, False]])
     >>> wide = pd.DataFrame({"A": [0.5, 1.0], "B": [0.5, np.nan]},
     ...                     index=pd.to_datetime(["2024-01-02", "2024-01-03"]))
-    >>> bool(to_field_panel(wide, "weight")[1].all())
-    True
+    >>> to_field_panel(wide, "weight").given.values
+    array([[ True,  True],
+           [ True, False]])
     """
     if isinstance(data, xr.DataArray):
         data = data.to_dataset(name=field)
     if library_of(data) == "xarray":
-        present = list(data.dims) + list(data.data_vars)
-        panel = _panel_to_panel(data, _present_keys(columns, present), (), purpose)
+        panel = _panel_to_panel(data, columns_present(columns, data), (), purpose)
         if len(panel.data_vars) != 1:
             raise ValueError(
                 f"{purpose} must hold one variable on (timestamp, symbol), got "
                 f"{list(panel.data_vars)}."
             )
         values = panel[next(iter(panel.data_vars))].rename(field).astype(float)
-        return values, xr.ones_like(values, dtype=bool)
+        return FieldPanel(values, xr.ones_like(values, dtype=bool), None)
 
     frame = _as_pandas(data)
     if isinstance(frame.index, pd.MultiIndex):
         frame = frame.reset_index()
     elif isinstance(frame.index, pd.DatetimeIndex):
-        frame = frame.rename_axis(frame.index.name or "timestamp").reset_index()
-    names = list(frame.columns)
-    frame = _rename(frame, _present_keys(columns, names), names, purpose)
+        if "timestamp" in frame.columns:
+            raise ValueError(
+                f"{purpose} has both a DatetimeIndex and a 'timestamp' column; keep the "
+                f"timestamps in one of them."
+            )
+        frame = frame.rename_axis("timestamp").reset_index()
+    frame = _rename(frame, columns_present(columns, frame), list(frame.columns), purpose)
 
     if "symbol" in frame.columns:
-        values = [name for name in frame.columns if name not in INDEX_COLUMNS]
-        if len(values) != 1:
+        value_columns = [name for name in frame.columns if name not in INDEX_COLUMNS]
+        if len(value_columns) != 1:
             raise ValueError(
                 f"{purpose} in long form needs one value column beside timestamp and "
-                f"symbol, got {', '.join(repr(v) for v in values) or 'none'}."
+                f"symbol, got {', '.join(repr(v) for v in value_columns) or 'none'}."
             )
-        frame = frame.rename(columns={values[0]: field}).assign(_given=True)
+        frame = frame.rename(columns={value_columns[0]: field}).assign(_given=True)
     elif "timestamp" in frame.columns:
         frame = frame.melt(id_vars="timestamp", var_name="symbol", value_name=field)
-        frame = frame.assign(_given=True)
+        frame = frame.assign(_given=frame[field].notna())
     else:
         raise ValueError(
             f"{purpose} is neither long (timestamp and symbol columns and one value "
             f"column) nor wide (timestamps in a 'timestamp' column or a DatetimeIndex, "
             f"one column per symbol). Present columns: {list(frame.columns)}."
         )
-    panel = to_panel(frame, purpose=purpose)
-    return panel[field].astype(float), panel["_given"].notnull()
+    panel, zone = to_panel_with_zone(frame, purpose=purpose)
+    given = panel["_given"].fillna(False).astype(bool)
+    return FieldPanel(panel[field].astype(float), given, zone)
+
+
+def columns_present(columns: Mapping[str, str] | None, data) -> dict:
+    """Return the entries of ``columns`` whose caller name ``data`` has.
+
+    The names looked at are a frame's columns and, for pandas, its index level names,
+    or a panel's dimensions and variables. A caller's one mapping can then be applied
+    to every frame of a call, each renamed where it has the name.
+
+    Parameters
+    ----------
+    columns : mapping of str to str or None
+        ``{caller_name: name}``.
+    data : pandas.DataFrame, polars.DataFrame, polars.LazyFrame, xarray.Dataset or xarray.DataArray
+        The frame or panel.
+
+    Returns
+    -------
+    dict
+        The entries naming something ``data`` has; empty for ``None``.
+
+    Raises
+    ------
+    TypeError
+        If ``data`` is none of the accepted types.
+
+    Examples
+    --------
+    >>> weights = pd.DataFrame({"date": [], "ticker": [], "w": []})
+    >>> columns_present({"date": "timestamp", "ticker": "symbol", "Close": "close"}, weights)
+    {'date': 'timestamp', 'ticker': 'symbol'}
+    """
+    if isinstance(data, xr.DataArray):
+        names = set(data.dims)
+    elif library_of(data) == "pandas":
+        names = set(data.columns) | {name for name in data.index.names if name}
+    elif library_of(data) == "xarray":
+        names = set(data.dims) | set(data.data_vars)
+    else:
+        names = set(data.collect_schema().names())
+    return {name: target for name, target in (columns or {}).items() if name in names}
 
 
 def to_frame(panel: xr.Dataset, library: Library):
@@ -306,11 +405,6 @@ def _rename(obj, columns, present: list, purpose: str):
     if isinstance(obj, xr.Dataset):
         return obj.rename(dict(columns))
     return obj.rename(columns=dict(columns))
-
-
-def _present_keys(columns, present: list) -> dict:
-    """Return the entries of ``columns`` whose caller name is among ``present``."""
-    return {name: target for name, target in (columns or {}).items() if name in present}
 
 
 def _check_present(present: list, needed: tuple, purpose: str) -> None:

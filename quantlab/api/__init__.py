@@ -170,12 +170,18 @@ def backtest(
     a bar without weights holds the current positions. A weight frame may leave things
     out:
 
-    - a symbol absent on a bar that has weights for other symbols gets weight 0, so a
-      sparse frame listing only the names held is enough;
-    - a bar absent from the frame is a hold, so a frame listing only the rebalance bars
-      is enough; to go flat on a bar, give it explicit zeros;
-    - a NaN written beside finite weights on the same bar breaks the contract and
-      raises, as does a bar with gross exposure above 1.
+    - a symbol without a weight on a bar that has weights for other symbols gets
+      weight 0: a row left out of a long frame, or a NaN cell of a wide frame, so a
+      sparse long frame listing only the names held and its pivot mean the same;
+    - a bar without any weight is a hold: absent from a long frame, or an all-NaN row
+      of a wide frame. A frame listing only the rebalance bars is therefore enough; to
+      go flat on a bar, give it explicit zeros;
+    - a NaN written in a long frame beside finite weights on the same bar breaks the
+      contract and raises, as does a bar with gross exposure above 1.
+
+    Timestamps in a time zone are converted to UTC and naive ones are taken as UTC;
+    when the weights', scores' or benchmark's bars miss the prices' and the inputs came
+    in different zones, the error names both zones.
 
     Parameters
     ----------
@@ -184,10 +190,11 @@ def backtest(
         ``fill`` and ``valuation`` columns. The report's frames are of this library.
     weights : DataFrame, optional
         Target weights, long (``timestamp``, ``symbol`` and one value column, of any
-        name) or wide (timestamps in a ``timestamp`` column or, for pandas, a
-        ``DatetimeIndex``; one column per symbol).
+        name) or wide (timestamps in a ``timestamp`` column or in a pandas
+        ``DatetimeIndex`` of any name; one column per symbol).
     scores : DataFrame, optional
-        Scores ranking the symbols, higher is better, long or wide like ``weights``.
+        Scores ranking the symbols, higher is better, long or wide like ``weights``. A
+        symbol without a score on a bar (a left-out row, a NaN cell) is not selected.
     top_n : int, optional
         Names held per side; required with ``scores``, refused with ``weights``.
     direction : {"long_only", "long_short"}, default "long_only"

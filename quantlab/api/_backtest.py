@@ -3,7 +3,7 @@
 The caller's prices (and benchmark) become ``FrameDataset``s, the weights or scores
 become a weight panel on exactly the price axes, and ``WeightsVectorBt.run_weights``
 simulates it with the market conventions the caller chose. The backtest layer is
-imported inside the function, so importing ``quantlab.api`` does not load vectorbt or
+imported inside the functions, so importing ``quantlab.api`` does not load vectorbt or
 plotly.
 """
 
@@ -13,10 +13,21 @@ import xarray as xr
 
 from quantlab.api._report import BacktestReport
 from quantlab.dataset.memory import FrameDataset
-from quantlab.utils.frame import library_of, to_field_panel, to_panel
+from quantlab.utils.frame import (
+    columns_present,
+    library_of,
+    to_field_panel,
+    to_panel_with_zone,
+)
 
-#: ``market`` name to ``(trading_days_per_year, session_minutes_per_day)``.
-MARKETS = {"equity": (252, 390), "crypto": (365, 1440)}
+#: The ``market`` names: ``equity`` reads ``US_EQUITY_MARKET``'s annualization.
+MARKET_NAMES = ("equity", "crypto")
+
+#: Crypto trades every day around the clock. The library has no crypto backtester and
+#: so no crypto ``MarketSpec`` to read these from; a spec here would also have to name
+#: price columns, which the caller chooses with ``fill`` and ``valuation``.
+CRYPTO_TRADING_DAYS_PER_YEAR = 365
+CRYPTO_SESSION_MINUTES_PER_DAY = 1440
 
 #: Offending labels named in an error message.
 LABELS_SHOWN = 5
@@ -50,7 +61,9 @@ def backtest(
     _check_signal(weights, scores, top_n, direction)
     days, minutes = _annualization(market, trading_days_per_year, session_minutes_per_day)
 
-    panel = to_panel(prices, columns=columns, required=(fill, valuation), purpose="prices")
+    panel, zone = to_panel_with_zone(
+        prices, columns=columns, required=(fill, valuation), purpose="prices"
+    )
     if panel.sizes["timestamp"] < 2:
         raise ValueError(
             f"prices hold {panel.sizes['timestamp']} bar(s); a backtest needs at least "
@@ -58,18 +71,16 @@ def backtest(
         )
     benchmark_dataset = None
     if benchmark is not None:
-        benchmark_panel = to_panel(
-            benchmark,
-            columns=_keys_present(columns, benchmark),
-            required=(fill, valuation),
-            purpose="benchmark",
+        benchmark_dataset = FrameDataset(
+            _benchmark_panel(panel, zone, benchmark, columns, fill, valuation)
         )
-        benchmark_dataset = FrameDataset(benchmark_panel)
 
     if weights is not None:
-        weight = _weights_on(panel, weights, columns)
+        weight = _weights_on(panel, zone, weights, columns)
     else:
-        weight = _selected(panel, scores, columns, fill, top_n, direction, rebalance_periods)
+        weight = _selected(
+            panel, zone, scores, columns, fill, top_n, direction, rebalance_periods
+        )
 
     timestamps = pd.DatetimeIndex(panel["timestamp"].values)
     config = WeightsBacktestConfig(
@@ -123,66 +134,108 @@ def _check_signal(weights, scores, top_n, direction) -> None:
 
 def _annualization(market, trading_days_per_year, session_minutes_per_day) -> tuple[int, int]:
     """Return ``(days, minutes)`` of ``market``, each overridable."""
-    if market not in MARKETS:
+    if market not in MARKET_NAMES:
         raise ValueError(
             f"Unknown market {market!r}. Valid markets: "
-            f"{', '.join(repr(name) for name in MARKETS)}; override the annualization "
-            f"with trading_days_per_year= and session_minutes_per_day=."
+            f"{', '.join(repr(name) for name in MARKET_NAMES)}; override the "
+            f"annualization with trading_days_per_year= and session_minutes_per_day=."
         )
-    days, minutes = MARKETS[market]
+    if market == "equity":
+        from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
+
+        days = US_EQUITY_MARKET.trading_days_per_year
+        minutes = US_EQUITY_MARKET.session_minutes_per_day
+    else:
+        days, minutes = CRYPTO_TRADING_DAYS_PER_YEAR, CRYPTO_SESSION_MINUTES_PER_DAY
     return (
         days if trading_days_per_year is None else trading_days_per_year,
         minutes if session_minutes_per_day is None else session_minutes_per_day,
     )
 
 
-def _keys_present(columns, frame) -> dict | None:
-    """Return the entries of ``columns`` naming a column (or index level) ``frame`` has."""
-    library = library_of(frame)
-    if not columns:
-        return None
-    if library == "pandas":
-        names = set(frame.columns) | {name for name in frame.index.names if name}
-    elif library == "xarray":
-        names = set(frame.dims) | set(frame.data_vars)
-    else:
-        names = set(frame.collect_schema().names())
-    return {name: target for name, target in columns.items() if name in names}
+def _zone_hint(prices_zone: str | None, what: str, zone: str | None) -> str:
+    """Return a sentence naming both time zones when they differ, else ``""``.
+
+    Naive timestamps are taken as UTC, so naive and UTC count as the same zone.
+    """
+
+    def _said(who: str, name: str | None) -> str:
+        return f"{who} are naive, taken as UTC" if name is None else f"{who} were {name}"
+
+    if (prices_zone or "UTC") == (zone or "UTC"):
+        return ""
+    return (
+        f" The bars may differ only by time zone: {_said('prices', prices_zone)}; "
+        f"{_said(what, zone)}."
+    )
 
 
-def _on_price_axes(values: xr.DataArray, panel: xr.Dataset, what: str) -> None:
-    """Raise naming the first bars or symbols of ``values`` the prices do not have."""
+def _onto_price_axes(
+    panel: xr.Dataset, prices_zone, what: str, field
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Return ``field``'s values and given-mask reindexed onto the price axes.
+
+    Raises
+    ------
+    ValueError
+        Naming the first bars or symbols ``field`` has and the prices lack, with a
+        time-zone hint when the two inputs came in different zones.
+    """
     for dim, noun in (("timestamp", "bar"), ("symbol", "symbol")):
-        extra = np.setdiff1d(values[dim].values, panel[dim].values)
+        extra = np.setdiff1d(field.values[dim].values, panel[dim].values)
         if extra.size:
             shown = ", ".join(
                 repr(pd.Timestamp(v).isoformat() if dim == "timestamp" else str(v))
                 for v in extra[:LABELS_SHOWN]
             )
+            hint = _zone_hint(prices_zone, what, field.zone) if dim == "timestamp" else ""
             raise ValueError(
                 f"The {what} name {extra.size} {noun}(s) the prices do not have, for "
                 f"example {shown}. Every {noun} of the {what} must be one of the "
-                f"prices'."
+                f"prices'.{hint}"
             )
+    axes = {"timestamp": panel["timestamp"].values, "symbol": panel["symbol"].values}
+    return field.values.reindex(axes), field.given.reindex(axes, fill_value=False)
 
 
-def _weights_on(panel: xr.Dataset, weights, columns) -> xr.DataArray:
+def _benchmark_panel(panel, prices_zone, benchmark, columns, fill, valuation):
+    """Return the benchmark panel, refusing one whose bars miss prices' in another zone.
+
+    A benchmark in the same zone that lacks some price bars is left to the backtester,
+    which carries its previous price forward on them.
+    """
+    benchmark_panel, zone = to_panel_with_zone(
+        benchmark,
+        columns=columns_present(columns, benchmark),
+        required=(fill, valuation),
+        purpose="benchmark",
+    )
+    hint = _zone_hint(prices_zone, "benchmark", zone)
+    missing = np.setdiff1d(panel["timestamp"].values, benchmark_panel["timestamp"].values)
+    if hint and missing.size:
+        shown = ", ".join(repr(pd.Timestamp(v).isoformat()) for v in missing[:LABELS_SHOWN])
+        raise ValueError(
+            f"The benchmark has no bar at {missing.size} price bar(s), for example "
+            f"{shown}.{hint}"
+        )
+    return benchmark_panel
+
+
+def _weights_on(panel: xr.Dataset, prices_zone, weights, columns) -> xr.DataArray:
     """Return the caller's weights as a weight panel on exactly the price axes.
 
-    On a bar the weights name, a price symbol they leave out gets 0; a bar they do not
-    name at all is a hold (all NaN). A NaN the caller wrote stays NaN, so a row mixing
-    it with finite weights is refused by the backtester, naming the bar.
+    On a bar that has a weight, a price symbol without one (left out of a long frame,
+    NaN in a wide one) gets 0; a bar without any weight is a hold (all NaN). A NaN
+    written in a long frame or a panel stays NaN, so a row mixing it with finite
+    weights is refused by the backtester, naming the bar.
     """
-    values, given = to_field_panel(weights, "weight", columns=columns, purpose="weights")
-    _on_price_axes(values, panel, "weights")
-    axes = {"timestamp": panel["timestamp"].values, "symbol": panel["symbol"].values}
-    values = values.reindex(axes)
-    given = given.reindex(axes, fill_value=False)
+    field = to_field_panel(weights, "weight", columns=columns, purpose="weights")
+    values, given = _onto_price_axes(panel, prices_zone, "weights", field)
     bar_given = given.any("symbol")
     return values.where(given, xr.where(bar_given, 0.0, np.nan))
 
 
-def _selected(panel, scores, columns, fill, top_n, direction, rebalance_periods):
+def _selected(panel, prices_zone, scores, columns, fill, top_n, direction, rebalance_periods):
     """Return top-N weights selected from ``scores`` on the price axes.
 
     A symbol without a score on a bar is not eligible there, and neither is one without
@@ -190,11 +243,8 @@ def _selected(panel, scores, columns, fill, top_n, direction, rebalance_periods)
     """
     from quantlab.backtest.selection import CrossSectionTopNSelector, rebalance_mask
 
-    values, _ = to_field_panel(scores, "score", columns=columns, purpose="scores")
-    _on_price_axes(values, panel, "scores")
-    values = values.reindex(
-        timestamp=panel["timestamp"].values, symbol=panel["symbol"].values
-    )
+    field = to_field_panel(scores, "score", columns=columns, purpose="scores")
+    values, _ = _onto_price_axes(panel, prices_zone, "scores", field)
     selector = CrossSectionTopNSelector(direction=direction, top_n=top_n)
     next_fill = panel[fill].shift(timestamp=-1)
     mask = rebalance_mask(panel.sizes["timestamp"], rebalance_periods)

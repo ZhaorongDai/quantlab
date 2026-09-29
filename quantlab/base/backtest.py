@@ -448,7 +448,7 @@ class BaseBacktester(ABC):
         self.config = config
 
     @property
-    def ticker_lookup(self) -> CrspTickerLookup:
+    def ticker_lookup(self) -> CrspTickerLookup | None:
         """Lookup that turns symbol ids into readable ticker names.
 
         It reads the ``.crsp_tickers.json`` file stored next to the price
@@ -460,8 +460,9 @@ class BaseBacktester(ABC):
         the model for its lists of missing or extra symbols. The lookup is
         built on first access and reset whenever a new config is assigned.
         When no such file exists, ``label()`` returns each symbol unchanged,
-        so panels from other vendors are unaffected; a price dataset held in
-        memory (no store path) has no sidecar and labels quietly the same way.
+        so panels from other vendors are unaffected. A price dataset held in
+        memory has no store path and so no sidecar: the property is ``None``
+        and ``_symbol_labels`` shows its symbols as they are.
 
         Examples
         --------
@@ -469,11 +470,23 @@ class BaseBacktester(ABC):
         >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
         ['AAA', 'BBB']
         """
+        path = self.config.price_dataset.config.zarr_file_path
+        if path is None:
+            return None
         if self._ticker_lookup is None:
-            self._ticker_lookup = CrspTickerLookup.beside_store(
-                self.config.price_dataset.config.zarr_file_path
-            )
+            self._ticker_lookup = CrspTickerLookup.beside_store(path)
         return self._ticker_lookup
+
+    def _symbol_labels(self, symbols, day) -> list[str]:
+        """Return readable labels of price-dataset ``symbols`` as of ``day``.
+
+        Through ``ticker_lookup`` when the price dataset has a store, and the
+        symbols themselves (as ``str``) for a dataset held in memory.
+        """
+        lookup = self.ticker_lookup
+        if lookup is None:
+            return [str(symbol) for symbol in symbols]
+        return lookup.label(symbols, day)
 
     @property
     @abstractmethod
@@ -1136,8 +1149,11 @@ class BaseBacktester(ABC):
         marked, the benchmark rows when a benchmark ran), built from the
         result in memory, so a run kept with ``output_dir=None`` can be
         looked at too. ``result`` must come from ``run()`` or
-        ``run_weights()`` of a backtester with this engine and config; a
-        ``run_cv()`` result is refused.
+        ``run_weights()`` of a backtester with this config, which is checked
+        without reading any data: its bars lie inside the configured window,
+        its curve starts at ``init_cash``, and it has a benchmark curve exactly
+        when a benchmark is configured. A ``run_cv()`` result is refused: its
+        stitched curve is drawn in the ``report.html`` of its run directory.
 
         Parameters
         ----------
@@ -1152,7 +1168,10 @@ class BaseBacktester(ABC):
         Raises
         ------
         TypeError
-            If ``result`` is not a ``BacktestResult``.
+            If ``result`` is a ``CVBacktestResult`` or not a ``BacktestResult``.
+        ValueError
+            If ``result`` does not match this config (see above), naming what
+            differs.
 
         Examples
         --------
@@ -1182,17 +1201,59 @@ class BaseBacktester(ABC):
         >>> [trace.name for trace in figure.data][:2]
         ['equity', 'drawdown']
         """
+        if isinstance(result, CVBacktestResult):
+            raise TypeError(
+                f"{self.class_name}.report_figure() draws one run() or "
+                f"run_weights() result, got a run_cv() result; its stitched curve "
+                f"is drawn in the report.html of its run directory"
+            )
         if not isinstance(result, BacktestResult):
             raise TypeError(
                 f"{self.class_name}.report_figure() takes the BacktestResult of "
                 f"run() or run_weights(), got {type(result).__name__}"
             )
+        self._check_result_matches_config(result)
         return backtest_report_figure(
             result.simulation.value,
             **self._report_chart_inputs(
                 result.simulation, result.metrics, result.benchmark
             ),
         )
+
+    def _check_result_matches_config(self, result: BacktestResult) -> None:
+        """Refuse a result another config produced; reads no data.
+
+        Raises
+        ------
+        ValueError
+            If the result's bars leave the configured window, its curve does
+            not start at ``init_cash``, or it has a benchmark curve without a
+            configured benchmark or the other way round.
+        """
+        timestamps = result.simulation.value.timestamp.values
+        start = self._label_ns(self._iso_date(self.config.start_date))
+        end = self._label_ns(self._iso_date(self.config.end_date)) + np.timedelta64(1, "D")
+        if timestamps.size and (timestamps[0] < start or timestamps[-1] >= end):
+            raise ValueError(
+                f"{self.class_name}: the result covers {self._bar_label(timestamps[0])} "
+                f"..{self._bar_label(timestamps[-1])}, outside this config's window "
+                f"{self._iso_date(self.config.start_date)}.."
+                f"{self._iso_date(self.config.end_date)}; draw a result with the "
+                f"backtester that produced it"
+            )
+        first_value = float(result.simulation.value.values[0]) if timestamps.size else None
+        if first_value is not None and not np.isclose(first_value, self.config.init_cash):
+            raise ValueError(
+                f"{self.class_name}: the result starts at {first_value}, not this "
+                f"config's init_cash {self.config.init_cash}"
+            )
+        configured = self.config.benchmark_dataset is not None
+        if configured != (result.benchmark is not None):
+            raise ValueError(
+                f"{self.class_name}: the result has "
+                f"{'a' if result.benchmark is not None else 'no'} benchmark curve but "
+                f"this config has {'a' if configured else 'no'} benchmark_dataset"
+            )
 
     def _run_window(
         self, backtest_window, notes: tuple[str, ...] = ()
@@ -2578,7 +2639,7 @@ class BaseBacktester(ABC):
         returned unchanged.
         """
         dataset = self.config.benchmark_dataset
-        if dataset is None or not axis_symbol:
+        if dataset is None or not axis_symbol or dataset.config.zarr_file_path is None:
             return axis_symbol
         lookup = CrspTickerLookup.beside_store(dataset.config.zarr_file_path)
         return str(lookup.label([axis_symbol], pd.Timestamp(as_of).date())[0])

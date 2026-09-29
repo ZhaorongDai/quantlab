@@ -64,16 +64,13 @@ class CrspTickerLookup:
 
     Parameters
     ----------
-    sidecar_path : str, Path or None
+    sidecar_path : str or Path
         Path of the ticker sidecar. Use ``beside_store`` to derive it from
-        the store path. ``None`` is the lookup of a panel held in memory,
-        which has no store and so no sidecar: ``label`` returns every symbol
-        as it is, without the unusable-sidecar warning, and ``as_of``
-        raises ``FileNotFoundError``.
+        the store path.
 
     Attributes
     ----------
-    sidecar_path : Path or None
+    sidecar_path : Path
         The sidecar path.
 
     Examples
@@ -87,9 +84,9 @@ class CrspTickerLookup:
     ['FB', 'AAPL', '99999']
     """
 
-    def __init__(self, sidecar_path: str | Path | None) -> None:
+    def __init__(self, sidecar_path: str | Path) -> None:
         """Initialize the lookup without reading the file; see the class docstring."""
-        self.sidecar_path = None if sidecar_path is None else Path(sidecar_path)
+        self.sidecar_path = Path(sidecar_path)
         self._payload: dict | None = None
         #: Whether this object already warned that its sidecar is unusable.
         #: It only limits logging (see ``_degrade``) and never affects a
@@ -99,11 +96,10 @@ class CrspTickerLookup:
 
     def __repr__(self) -> str:
         """Return ``CrspTickerLookup('<sidecar path>')``."""
-        shown = None if self.sidecar_path is None else str(self.sidecar_path)
-        return f"CrspTickerLookup({shown!r})"
+        return f"CrspTickerLookup({str(self.sidecar_path)!r})"
 
     @classmethod
-    def beside_store(cls, zarr_file_path: str | Path | None) -> "CrspTickerLookup":
+    def beside_store(cls, zarr_file_path: str | Path) -> "CrspTickerLookup":
         """Return the lookup for the sidecar written next to ``zarr_file_path``.
 
         This is the one place on the read side that appends the sidecar
@@ -117,9 +113,8 @@ class CrspTickerLookup:
 
         Parameters
         ----------
-        zarr_file_path : str, Path or None
-            Path of the CRSP Zarr store; ``None`` for a panel held in memory
-            (a ``FrameDataset``), which gets the lookup without a sidecar.
+        zarr_file_path : str or Path
+            Path of the CRSP Zarr store.
 
         Returns
         -------
@@ -128,14 +123,9 @@ class CrspTickerLookup:
 
         Examples
         --------
-        >>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
         >>> CrspTickerLookup.beside_store("data/data/us_equity/1d/crsp.zarr")
         CrspTickerLookup('data/data/us_equity/1d/crsp.zarr.crsp_tickers.json')
-        >>> CrspTickerLookup.beside_store(None)
-        CrspTickerLookup(None)
         """
-        if zarr_file_path is None:
-            return cls(None)
         from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 
         return cls(str(zarr_file_path) + TICKER_SIDECAR_SUFFIX)
@@ -164,11 +154,6 @@ class CrspTickerLookup:
         ['generated_from', 'intervals', 'vintage_product_end']
         """
         if self._payload is None:
-            if self.sidecar_path is None:
-                raise FileNotFoundError(
-                    f"{type(self).__name__}: this lookup belongs to a panel held "
-                    f"in memory, which has no store and so no ticker sidecar."
-                )
             if not self.sidecar_path.exists():
                 raise FileNotFoundError(
                     f"{type(self).__name__}: no ticker sidecar at "
@@ -415,8 +400,6 @@ class CrspTickerLookup:
         >>> lookup.label(["AAPL", "MSFT"], date(2020, 1, 1))
         ['AAPL', 'MSFT']
         """
-        if self.sidecar_path is None:
-            return [str(value) for value in permnos]
         try:
             intervals = self._intervals()
         except _UNUSABLE as exc:

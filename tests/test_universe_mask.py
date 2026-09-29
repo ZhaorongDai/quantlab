@@ -549,3 +549,32 @@ def test_from_datasets_masks_the_requested_range_of_two_stores(tmp_path) -> None
     assert list(mask.timestamps) == list(_MARKET_DAYS[1:4])
     assert mask.symbols == ["AAA", "BBB"]
     assert mask.missing_members == ["GONE"]
+
+
+def test_datasets_held_in_memory_label_symbols_without_a_sidecar() -> None:
+    """A market dataset with no store has no ticker sidecar to look for, so the
+    missing members keep their names and nothing warns about a sidecar."""
+    from quantlab.dataset.memory import FrameDataset
+
+    days = pd.bdate_range("2024-01-01", periods=3)
+    market = FrameDataset(pd.DataFrame({"timestamp": days, "symbol": "AAA", "close": 1.0}))
+    membership = FrameDataset(
+        pd.DataFrame(
+            {
+                "timestamp": np.repeat(days, 2),
+                "symbol": ["AAA", "BBB"] * 3,
+                "is_member": True,
+            }
+        )
+    )
+    messages = []
+    handler = logger.add(messages.append, level="WARNING")
+    try:
+        report = UniverseMask.from_datasets(
+            market, membership, "2024-01-01", "2024-01-03"
+        ).report()
+    finally:
+        logger.remove(handler)
+
+    assert report["missing_labels"] == ["BBB"]
+    assert not [m for m in messages if "sidecar" in m]

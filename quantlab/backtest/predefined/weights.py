@@ -3,9 +3,12 @@
 ``WeightsVectorBt`` is the backtester ``quantlab.api.backtest`` runs: a caller's frame
 names its own price columns and its own market, so the ``MarketSpec`` comes from the
 ``WeightsBacktestConfig`` rather than from a class constant. It has no signal rule of its
-own and takes no model; its only entry point is ``run_weights()``. A saved run's
-``config.json`` names this class, so ``load_backtester_from_config`` rebuilds it like any
-other backtester.
+own and takes no model; its only entry point is ``run_weights()``. A run given an
+``output_dir`` writes the usual run directory: ``config.json`` naming this class and
+recording the market fields, the simulated ``weights.zarr``, ``equity.zarr``,
+``metrics.json``, ``liquidations.json``, ``fingerprint.json`` and ``report.html``. The
+price and benchmark panels of a ``FrameDataset`` are not written, so such a run cannot
+be rebuilt from its directory yet.
 """
 
 import xarray as xr
@@ -124,9 +127,12 @@ class WeightsVectorBt(VectorBtBacktester):
                 f"{self.class_name}: direction must be 'long_only', 'long_short' or "
                 f"None, got {config.direction!r}"
             )
-        if config.top_n is not None and config.top_n < 1:
+        top_n = config.top_n
+        if top_n is not None and (
+            isinstance(top_n, bool) or not isinstance(top_n, int) or top_n < 1
+        ):
             raise ValueError(
-                f"{self.class_name}: top_n must be >= 1 or None, got {config.top_n}"
+                f"{self.class_name}: top_n must be an integer >= 1 or None, got {top_n!r}"
             )
         self.MARKET = self._market_of(config)
 

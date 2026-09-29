@@ -186,6 +186,89 @@ def test_wide_weight_frames_match_the_long_frame(stores):
         )
 
 
+@pytest.mark.parametrize("index_name", [None, "date", "timestamp"])
+def test_any_datetime_index_holds_the_timestamps_of_a_wide_frame(stores, index_name):
+    weights = _selected_weights(stores)
+    expected = qa.backtest(stores["frame"], weights=_long(weights))
+    wide = weights["weight"].to_pandas().rename_axis(index=index_name, columns=None)
+
+    report = qa.backtest(stores["frame"], weights=wide)
+
+    np.testing.assert_array_equal(report.equity["value"], expected.equity["value"])
+
+
+def test_a_sparse_long_frame_and_its_pivot_give_the_same_backtest(stores):
+    frame = _long(_selected_weights(stores))
+    sparse = frame[frame["weight"].fillna(0.0) != 0.0].reset_index(drop=True)
+    # The pivot leaves NaN where the long frame has no row: on a bar with weights that
+    # is 0, and a bar the long frame lacks is not in the pivot at all (a hold).
+    wide = sparse.pivot(index="timestamp", columns="symbol", values="weight")
+    assert wide.isna().any().any()
+
+    long_report = qa.backtest(stores["frame"], weights=sparse)
+    wide_report = qa.backtest(stores["frame"], weights=wide)
+    polars_report = qa.backtest(stores["frame"], weights=pl.from_pandas(wide.reset_index()))
+
+    xr.testing.assert_identical(wide_report.raw.weights, long_report.raw.weights)
+    xr.testing.assert_identical(polars_report.raw.weights, long_report.raw.weights)
+    np.testing.assert_array_equal(wide_report.equity["value"], long_report.equity["value"])
+
+
+def test_an_all_nan_wide_row_is_a_hold(stores):
+    weights = _selected_weights(stores, periods=1)
+    wide = weights["weight"].to_pandas()
+    wide.iloc[3] = np.nan
+
+    report = qa.backtest(stores["frame"], weights=wide)
+
+    assert report.raw.weights["weight"].isel(timestamp=3).isnull().all()
+    assert report.raw.weights["weight"].isel(timestamp=2).notnull().all()
+
+
+@pytest.mark.parametrize(
+    "prices_zone, weights_zone, hint",
+    [
+        (None, "America/New_York", r"prices are naive, taken as UTC; weights were America/New_York"),
+        ("Asia/Tokyo", None, r"prices were Asia/Tokyo; weights are naive, taken as UTC"),
+    ],
+)
+def test_misaligned_bars_in_another_time_zone_hint_at_the_zone(
+    stores, prices_zone, weights_zone, hint
+):
+    prices = stores["frame"].copy()
+    weights = _long(_selected_weights(stores))
+    if prices_zone:
+        prices["timestamp"] = prices["timestamp"].dt.tz_localize(prices_zone)
+    if weights_zone:
+        weights["timestamp"] = weights["timestamp"].dt.tz_localize(weights_zone)
+
+    with pytest.raises(ValueError, match=hint):
+        qa.backtest(prices, weights=weights)
+
+
+def test_misaligned_scores_and_benchmark_hint_at_the_zone(stores):
+    scores = _scores().rename("score").to_dataframe().reset_index()
+    scores["timestamp"] = scores["timestamp"].dt.tz_localize("Europe/Berlin")
+    with pytest.raises(ValueError, match=r"scores were Europe/Berlin"):
+        qa.backtest(stores["frame"], scores=scores, top_n=2)
+
+    benchmark = stores["benchmark_frame"].copy()
+    benchmark["timestamp"] = benchmark["timestamp"].dt.tz_localize("Europe/Berlin")
+    with pytest.raises(ValueError, match=r"benchmark were Europe/Berlin"):
+        qa.backtest(
+            stores["frame"], weights=_long(_selected_weights(stores)), benchmark=benchmark
+        )
+
+
+def test_misaligned_bars_in_the_same_zone_give_no_zone_hint(stores):
+    weights = _long(_selected_weights(stores))
+    weights.loc[weights["timestamp"] == _bars()[-1], "timestamp"] = pd.Timestamp("2030-01-01")
+
+    with pytest.raises(ValueError) as caught:
+        qa.backtest(stores["frame"], weights=weights)
+    assert "naive" not in str(caught.value)
+
+
 @pytest.mark.parametrize("direction", ["long_only", "long_short"])
 def test_scores_with_top_n_equal_selecting_first_then_backtesting_the_weights(stores, direction):
     weights = _selected_weights(stores, direction=direction, top_n=2, periods=3)
