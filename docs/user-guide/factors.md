@@ -397,8 +397,9 @@ bar `t`. It is configured by `quantlab.base.config.ForwardConfig`:
 label at `t` is known only once bar `t + lookahead` has closed. `read(start,
 end)` and `compute(start, end)` ask the wrapped factor for `lookahead` bars
 past `end`, counted on the dataset's calendar, then shift and trim the panel
-back to the request. A label is therefore NaN only where the later bars do
-not exist, at the end of the dataset. A `Forward` owns no store: `build`,
+back to the request. The shift therefore adds NaN only where the later bars
+do not exist, at the end of the dataset; a NaN of the wrapped factor stays
+NaN in the label. A `Forward` owns no store: `build`,
 `extend` and `read` act on the wrapped factor's store, which then serves as
 a feature and, wrapped, as a label.
 
@@ -411,7 +412,10 @@ from `kwargs["n_forward_periods"]` of the `FactorConfig` they are built from.
 - `Return` is the regression target `ret_{n}`, the return from the open of
   bar `t + 1` to the open of bar `t + n + 1`.
 - `BinaryReturn` is the classification target `ret_binary_{n}`: 1.0 when
-  that return is positive and 0.0 otherwise.
+  that return is positive, 0.0 when it is zero or negative, and NaN when it
+  is NaN. It is NaN exactly where `Return` of the same `n` is NaN: where an
+  open inside the span is missing (a gap in the prices, a symbol not yet
+  listed or already delisted) and where the later bars do not exist.
 
 ```python
 from quantlab.label.predefined.fret import BinaryReturn, Return

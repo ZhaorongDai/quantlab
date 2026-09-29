@@ -4,9 +4,9 @@ A *label* is the value a model learns to predict. Here it is the return a
 position opened after bar ``t`` would earn over the next ``n`` bars.
 ``Return`` is the regression target (that return itself) and
 ``BinaryReturn`` the classification target (1.0 when the return is
-positive, else 0.0). Both read ``adjOpen``, the split- and dividend-adjusted
-open price, and take the horizon ``n`` from
-``config.kwargs["n_forward_periods"]``.
+positive, 0.0 when it is not, NaN when it is missing). Both read
+``adjOpen``, the split- and dividend-adjusted open price, and take the
+horizon ``n`` from ``config.kwargs["n_forward_periods"]``.
 
 KunQuant, the library that computes the graph, compiles formulas to native
 code and can only look backwards in time. Each label therefore wraps a
@@ -51,7 +51,11 @@ class _TrailingOpenReturn(FactorKunQuant):
 
 
 class _TrailingOpenDirection(FactorKunQuant):
-    """1.0 where the trailing ``n``-bar open-to-open return is positive, else 0.0."""
+    """The sign of the trailing ``n``-bar open-to-open return.
+
+    1.0 where the return is positive, 0.0 where it is zero or negative, and
+    NaN where it is NaN. ``Equals(ret, ret)`` is KunQuant's not-NaN test.
+    """
 
     def _get_factor_names(self) -> tuple[str, ...]:
         """Return ``("ret_binary_{n}",)``."""
@@ -61,8 +65,11 @@ class _TrailingOpenDirection(FactorKunQuant):
         """Build the KunQuant graph of the trailing return's sign."""
         builder = Builder()
         with builder:
+            ret = _trailing_return(self)
             binary = op.Select(
-                _trailing_return(self) > 0, op.ConstantOp(1.0), op.ConstantOp(0.0)
+                op.Equals(ret, ret),
+                op.Select(ret > 0, op.ConstantOp(1.0), op.ConstantOp(0.0)),
+                op.ConstantOp("nan"),
             )
             Output(binary, self._get_factor_names()[0])
         return Function(builder.ops)
@@ -112,8 +119,8 @@ class Return(_OpenToOpenLabel):
     ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1``: the position is entered at
     the next bar's adjusted open and exited ``n`` bars later at the adjusted
     open. It is a ``Forward`` label with ``span = n`` and ``delay = 1``, so
-    ``lookahead_bars()`` is ``n + 1``. Only timestamps without ``n + 1``
-    later bars in the dataset are NaN.
+    ``lookahead_bars()`` is ``n + 1``. The label is NaN where either open is
+    missing and at timestamps without ``n + 1`` later bars in the dataset.
 
     The output column is ``ret_{n}``.
 
@@ -143,11 +150,14 @@ class BinaryReturn(_OpenToOpenLabel):
     """Forward n-bar open-to-open direction label.
 
     At signal timestamp ``t`` the label is 1.0 when
-    ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1 > 0`` and 0.0 otherwise: the
-    position is entered at the next bar's adjusted open and judged ``n`` bars
-    later at the adjusted open. It is a ``Forward`` label with ``span = n``
-    and ``delay = 1``. Only timestamps without ``n + 1`` later bars in the
-    dataset are NaN.
+    ``adjOpen[t + n + 1] / adjOpen[t + 1] - 1 > 0``, 0.0 when that return is
+    zero or negative, and NaN when it is NaN: the position is entered at the
+    next bar's adjusted open and judged ``n`` bars later at the adjusted
+    open. The label is therefore NaN exactly where ``Return`` of the same
+    horizon is NaN: where either open is missing (a gap in the prices, a
+    symbol not yet listed or already delisted) and at timestamps without
+    ``n + 1`` later bars in the dataset. It is a ``Forward`` label with
+    ``span = n`` and ``delay = 1``.
 
     The output column is ``ret_binary_{n}``.
 
@@ -160,13 +170,38 @@ class BinaryReturn(_OpenToOpenLabel):
 
     Examples
     --------
-    >>> label = BinaryReturn(FactorConfig(
-    ...     warmup_bars=5, dataset=dataset, mode="batch",
-    ...     data_columns=["adjOpen"], kwargs={"n_forward_periods": 5},
-    ...     file_path="ret_binary_open.zarr",
+    One symbol whose open on 3 January is missing. The labels on 1 and 2
+    January read that open and are NaN, like the last two, which have no
+    two later bars.
+
+    >>> import numpy as np, pandas as pd, xarray as xr
+    >>> from quantlab.backend import XrBackend
+    >>> from quantlab.base.config import DatasetConfig, FactorConfig
+    >>> from quantlab.dataset.stock import StockDataset
+    >>> from quantlab.label.predefined.fret import BinaryReturn, Return
+    >>> opens = np.array([10.0, 11.0, np.nan, 12.0, 11.0, 13.0, 12.0, 14.0])
+    >>> XrBackend().to_internal(xr.Dataset(
+    ...     {"adjOpen": (["timestamp", "symbol"], opens[:, None])},
+    ...     coords={"timestamp": pd.date_range("2024-01-01", periods=8), "symbol": ["A"]},
+    ... )).write("data/stock.zarr")
+    XrBackend()
+    >>> dataset = StockDataset(DatasetConfig(
+    ...     raw_data_dir_path="data/raw", zarr_file_path="data/stock.zarr",
+    ...     market="us_equity", frequency="1d",
     ... ))
-    >>> label.get_factor_names()
-    ('ret_binary_5',)
+    >>> config = dict(
+    ...     warmup_bars=1, dataset=dataset, mode="batch", data_columns=["adjOpen"],
+    ...     kwargs={"n_forward_periods": 1}, njobs=1,
+    ... )
+    >>> ret = Return(FactorConfig(file_path="data/ret.zarr", **config))
+    >>> up = BinaryReturn(FactorConfig(file_path="data/up.zarr", **config))
+    >>> up.get_factor_names()
+    ('ret_binary_1',)
+    >>> ret.compute("2024-01-01", "2024-01-08")["ret_1"].values[:, 0].round(3)
+    array([   nan,    nan, -0.083,  0.182, -0.077,  0.167,    nan,    nan],
+          dtype=float32)
+    >>> up.compute("2024-01-01", "2024-01-08")["ret_binary_1"].values[:, 0]
+    array([nan, nan,  0.,  1.,  0.,  1., nan, nan], dtype=float32)
     """
 
     _trailing = _TrailingOpenDirection

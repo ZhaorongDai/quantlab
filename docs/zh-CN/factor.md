@@ -372,7 +372,7 @@ Traceback (most recent call last):
 ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024-01-21 to 2024-03-20, which does not contain 2024-02-01 to 2024-03-26 00:00:00. Extend it with extend(end) or rebuild it with build(start, end).
 ```
 
-`quantlab.label.predefined.fret` 中的 `Return` 和 `BinaryReturn` 是包装了一个私有滞后收益 KunQuant 因子的 `Forward` 标签，只能用作标签。`Return` 在第 t 根 bar 上的值是 `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`，即在下一根 bar 的复权开盘价建仓、持有 n 根 bar 的收益，n 从 `kwargs["n_forward_periods"]` 读取；`BinaryReturn` 在该收益为正时取 1.0，否则取 0.0。两者都是 `span = n`、`delay = 1`，所以前瞻为 n + 1。它们读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；存储结束于 2024-01-30，所以最后 3 根 bar 没有标签。
+`quantlab.label.predefined.fret` 中的 `Return` 和 `BinaryReturn` 是包装了一个私有滞后收益 KunQuant 因子的 `Forward` 标签，只能用作标签。`Return` 在第 t 根 bar 上的值是 `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`，即在下一根 bar 的复权开盘价建仓、持有 n 根 bar 的收益，n 从 `kwargs["n_forward_periods"]` 读取；`BinaryReturn` 在该收益为正时取 1.0，为零或为负时取 0.0，为 NaN 时取 NaN，因此它恰好在 `Return` 为 NaN 的位置为 NaN：持有区间内有开盘价缺失（价格有缺口、股票尚未上市或已经退市），或者后面的 bar 不存在。两者都是 `span = n`、`delay = 1`，所以前瞻为 n + 1。它们读取 `adjOpen`，所以数据集必须带复权价格：美股数据集有，加密现货数据集没有。下面的会话从存储的第一根 bar 开始，所以 `compute` 会警告缺少 5 根预热 bar；存储结束于 2024-01-30，所以最后 3 根 bar 没有标签。
 
 ```python
 >>> from quantlab.base.config import FactorConfig

@@ -118,3 +118,40 @@ def test_a_return_label_rebuilds_from_its_factor_config(cls, dataset_config, tmp
     assert config["kwargs"] == {"n_forward_periods": N}
     assert "dataset" in config and "factor" not in config
     assert rebuilt == label
+
+
+@pytest.fixture
+def ragged_dataset_config(stock_zarr):
+    """60 daily bars with interior NaN opens, a late listing and an early delisting.
+
+    ``AAPL`` misses two interior opens, ``MSFT`` lists on bar 15 and ``NVDA``
+    delists after bar 40.
+    """
+    config = stock_zarr(symbols=["AAPL", "MSFT", "NVDA"], periods=60)
+    panel = xr.open_zarr(config.zarr_file_path).load()
+    opens = panel["adjOpen"].transpose("timestamp", "symbol").values.copy()
+    opens[[20, 33], 0] = np.nan
+    opens[:15, 1] = np.nan
+    opens[41:, 2] = np.nan
+    panel["adjOpen"] = (("timestamp", "symbol"), opens)
+    panel.to_zarr(config.zarr_file_path, mode="w")
+    return config
+
+
+def test_a_binary_return_is_nan_wherever_the_return_is_nan(
+    ragged_dataset_config, tmp_path
+):
+    ret = Return(_config(ragged_dataset_config, tmp_path, "ret"))
+    up = BinaryReturn(_config(ragged_dataset_config, tmp_path, "up"))
+
+    returns = _values(ret.compute("2024-01-01", "2024-02-29"), f"ret_{N}")
+    got = _values(up.compute("2024-01-01", "2024-02-29"), f"ret_binary_{N}")
+
+    missing = np.isnan(returns)
+    # Interior gaps, the late listing and the early delisting all leave holes
+    # before the forward-shift tail.
+    assert missing[: -(N + 1)].any(axis=0).all()
+    np.testing.assert_array_equal(np.isnan(got), missing)
+    np.testing.assert_array_equal(
+        got[~missing], (returns[~missing] > 0).astype(float)
+    )
