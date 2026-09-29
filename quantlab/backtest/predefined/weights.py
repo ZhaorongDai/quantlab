@@ -6,9 +6,12 @@ names its own price columns and its own market, so the ``MarketSpec`` comes from
 own and takes no model; its only entry point is ``run_weights()``. A run given an
 ``output_dir`` writes the usual run directory: ``config.json`` naming this class and
 recording the market fields, the simulated ``weights.zarr``, ``equity.zarr``,
-``metrics.json``, ``liquidations.json``, ``fingerprint.json`` and ``report.html``. The
-price and benchmark panels of a ``FrameDataset`` are not written, so such a run cannot
-be rebuilt from its directory yet.
+``metrics.json``, ``liquidations.json``, ``fingerprint.json`` and ``report.html``, plus
+``inputs/`` holding the panel of a price or benchmark ``FrameDataset``, which
+``config.json`` names relative to the run directory. The directory is therefore
+self-contained: ``load_backtester_from_config(config, run_dir=run_dir)`` rebuilds the
+backtester, and ``run_weights`` given the saved weights,
+``XrBackend().read(run_dir / "weights.zarr").data``, replays the run.
 """
 
 import xarray as xr
@@ -70,6 +73,23 @@ class WeightsVectorBt(VectorBtBacktester):
     ... )
     >>> result = backtester.run_weights(weights)
     >>> result.simulation.value.values.round(2).tolist()
+    [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
+
+    Kept on disk, the run rebuilds from its directory and replays its weights:
+
+    >>> import dataclasses, json, tempfile
+    >>> from quantlab.backend import XrBackend
+    >>> from quantlab.utils.module import load_backtester_from_config
+    >>> kept = WeightsVectorBt(
+    ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
+    ... ).run_weights(weights)
+    >>> run_dir = kept.run_dir
+    >>> sorted(path.name for path in (run_dir / "inputs").iterdir())
+    ['price_dataset.zarr']
+    >>> config = json.loads((run_dir / "config.json").read_text())
+    >>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
+    >>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+    >>> replay.simulation.value.values.round(2).tolist()
     [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
     """
 

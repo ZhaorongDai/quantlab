@@ -8,17 +8,16 @@ factor, its public ``config.factor``, in a ``Forward`` with the caller's ``span`
 not load KunQuant.
 """
 
-import os
 from numbers import Integral
 
 import pandas as pd
 import polars as pl
 import xarray as xr
 
+from quantlab.api._compute import NJOBS, compute_over, output_library
 from quantlab.base.config import FactorConfig, ForwardConfig
-from quantlab.dataset.memory import FrameDataset
 from quantlab.label.forward import Forward
-from quantlab.utils.frame import INDEX_COLUMNS, library_of, to_frame, to_panel
+from quantlab.utils.frame import INDEX_COLUMNS, to_panel
 
 #: The field the library labels read.
 LABEL_FIELD = "adjOpen"
@@ -31,7 +30,7 @@ def forward_returns(frame, *, price, span, delay, binary, columns, as_xarray):
     """Compute the forward-return label; see ``quantlab.api.forward_returns``."""
     _check_arguments(price, span, delay, binary)
     span, delay = int(span), int(delay)
-    library = library_of(frame)
+    library = output_library(frame, as_xarray)
     _check_price_present(frame, price, columns)
     purpose = f"forward_returns(price={price!r})"
     panel = to_panel(frame, columns=columns, required=(price,), purpose=purpose)
@@ -41,22 +40,23 @@ def forward_returns(frame, *, price, span, delay, binary, columns, as_xarray):
         from quantlab.label.predefined.fret import BinaryReturn as label_cls
     else:
         from quantlab.label.predefined.fret import Return as label_cls
-    label = label_cls(
-        FactorConfig(
-            warmup_bars=0,
-            dataset=FrameDataset(panel),
-            mode="batch",
-            data_columns=(LABEL_FIELD,),
-            kwargs={"n_forward_periods": span},
-            njobs=os.cpu_count() or 1,
-        )
-    )
-    if delay != label.config.delay:
-        label = Forward(ForwardConfig(factor=label.config.factor, span=span, delay=delay))
 
-    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
-    result = label.compute(timestamps[0], timestamps[-1])
-    return to_frame(result.transpose(*INDEX_COLUMNS), "xarray" if as_xarray else library)
+    def build(dataset):
+        label = label_cls(
+            FactorConfig(
+                warmup_bars=0,
+                dataset=dataset,
+                mode="batch",
+                data_columns=(LABEL_FIELD,),
+                kwargs={"n_forward_periods": span},
+                njobs=NJOBS,
+            )
+        )
+        if delay != label.config.delay:
+            label = Forward(ForwardConfig(factor=label.config.factor, span=span, delay=delay))
+        return label
+
+    return compute_over(panel, build, library)
 
 
 def _check_price_present(frame, price: str, columns) -> None:

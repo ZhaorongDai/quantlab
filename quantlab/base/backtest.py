@@ -58,6 +58,10 @@ from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
 
+#: The config fields holding datasets a run directory records, each asked
+#: through ``persist_with_run`` what a rebuild needs written beside the run.
+RUN_DATASET_FIELDS = ("price_dataset", "benchmark_dataset")
+
 #: Fields of a data fingerprint that are compared against the expected run;
 #: any difference logs a warning.
 FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
@@ -460,9 +464,11 @@ class BaseBacktester(ABC):
         the model for its lists of missing or extra symbols. The lookup is
         built on first access and reset whenever a new config is assigned.
         When no such file exists, ``label()`` returns each symbol unchanged,
-        so panels from other vendors are unaffected. A price dataset held in
-        memory has no store path and so no sidecar: the property is ``None``
-        and ``_symbol_labels`` shows its symbols as they are.
+        so panels from other vendors are unaffected. The price dataset names
+        the store to look beside (``ticker_store()``); a dataset for which no
+        sidecar can apply (a ``FrameDataset``, even one read back from a run
+        directory) names none: the property is ``None`` and
+        ``_symbol_labels`` shows its symbols as they are.
 
         Examples
         --------
@@ -470,7 +476,7 @@ class BaseBacktester(ABC):
         >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
         ['AAA', 'BBB']
         """
-        path = self.config.price_dataset.config.zarr_file_path
+        path = self.config.price_dataset.ticker_store()
         if path is None:
             return None
         if self._ticker_lookup is None:
@@ -682,7 +688,10 @@ class BaseBacktester(ABC):
         are replaced by their own ``get_config()`` output. After a run the
         mapping also carries ``data_fingerprint``, one fingerprint per dataset
         the run read, and after a train-mode run ``trained_checkpoint``, so a
-        saved ``config.json`` can rebuild and replay the same run.
+        saved ``config.json`` can rebuild and replay the same run. A run
+        directory's ``config.json`` differs in one respect: a price or
+        benchmark ``FrameDataset`` is recorded reading the copy of its panel
+        under ``inputs/``, named relative to the run directory.
 
         Examples
         --------
@@ -1086,7 +1095,9 @@ class BaseBacktester(ABC):
         weights : xarray.Dataset or xarray.DataArray
             Target weights on ``(timestamp, symbol)``, in either axis order.
             A dataset must carry a ``weight`` variable; a data array is used
-            whatever its name. The timestamps must be exactly the price bars
+            whatever its name. A run directory's ``weights.zarr``, read with
+            ``XrBackend().read(path).data``, replays that run. The
+            timestamps must be exactly the price bars
             of the window and the symbols exactly the price dataset's
             symbols, in any order (they are aligned to the price axes). Every
             row is all-NaN (hold) or all-finite (rebalance) with a gross
@@ -2634,14 +2645,15 @@ class BaseBacktester(ABC):
 
         A CRSP benchmark store is keyed by PERMNO, a bare number, so the
         ticker sidecar beside the benchmark's own store (not the price
-        store) names it as of the window's last bar. Without a sidecar, or
-        without a store (a benchmark held in memory), the axis label is
-        returned unchanged.
+        store, as ``ticker_store()`` names it) names it as of the window's last
+        bar. Without a sidecar, or when the dataset names no store to look
+        beside (a ``FrameDataset``), the axis label is returned unchanged.
         """
         dataset = self.config.benchmark_dataset
-        if dataset is None or not axis_symbol or dataset.config.zarr_file_path is None:
+        store = None if dataset is None else dataset.ticker_store()
+        if store is None or not axis_symbol:
             return axis_symbol
-        lookup = CrspTickerLookup.beside_store(dataset.config.zarr_file_path)
+        lookup = CrspTickerLookup.beside_store(store)
         return str(lookup.label([axis_symbol], pd.Timestamp(as_of).date())[0])
 
     def _relative_stats(
@@ -2979,7 +2991,9 @@ class BaseBacktester(ABC):
         The directory holds ``config.json``, ``weights.zarr``,
         ``equity.zarr`` (``value`` and ``returns``, plus ``benchmark_value``
         and ``benchmark_returns`` when a benchmark ran), ``liquidations.json``,
-        ``metrics.json``, ``report.html`` and ``fingerprint.json``. Each
+        ``metrics.json``, ``report.html`` and ``fingerprint.json``, plus
+        ``inputs/`` when a dataset is held in memory (see
+        ``_run_dir_config``). Each
         JSON file goes through ``to_jsonable`` (NaN and infinities become
         null, timestamps become ISO strings) and is written atomically.
 
@@ -3004,7 +3018,9 @@ class BaseBacktester(ABC):
         def _write(run_dir: Path, name: str) -> None:
             """Write every artifact of this run into ``run_dir`` titled ``name``."""
             write_json_atomically(
-                run_dir / "config.json", to_jsonable(self.get_config()), indent=2
+                run_dir / "config.json",
+                to_jsonable(self._run_dir_config(run_dir)),
+                indent=2,
             )
             self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
             write_json_atomically(
@@ -3031,6 +3047,27 @@ class BaseBacktester(ABC):
             )
 
         return self._persist_run_dir(_write)
+
+    def _run_dir_config(self, run_dir: Path) -> dict:
+        """Return the ``config.json`` of ``run_dir``, writing what its datasets need.
+
+        ``get_config()``, except that each dataset of ``RUN_DATASET_FIELDS``
+        is asked through ``persist_with_run(run_dir, field)`` what a rebuild
+        needs: a dataset read from a project store writes nothing and is
+        recorded as it is; a ``FrameDataset`` writes its panel to
+        ``inputs/<field>.zarr`` and is recorded reading it, relative to the
+        run directory, which ``load_backtester_from_config(config,
+        run_dir=...)`` resolves again.
+        """
+        config = self.get_config()
+        for name in RUN_DATASET_FIELDS:
+            dataset = getattr(self.config, name)
+            if dataset is None:
+                continue
+            recorded = dataset.persist_with_run(run_dir, name)
+            if recorded is not None:
+                config[name] = recorded
+        return config
 
     def _persist_run_dir(self, write) -> Path | None:
         """Create ``output_dir/{ClassName}_{timestamp}/`` and fill it through ``write``.
@@ -3195,7 +3232,9 @@ class BaseBacktester(ABC):
         def _write(run_dir: Path, name: str) -> None:
             """Write every artifact of this CV run into ``run_dir`` titled ``name``."""
             write_json_atomically(
-                run_dir / "config.json", to_jsonable(self.get_config()), indent=2
+                run_dir / "config.json",
+                to_jsonable(self._run_dir_config(run_dir)),
+                indent=2,
             )
             self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
             for record in records:

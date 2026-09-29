@@ -56,15 +56,19 @@ class XrBackend(DataBackend):
         """Create an empty backend; call ``read`` or ``to_internal`` to fill it."""
         super().__init__()
 
-    def read(self, path: str, **kwargs) -> Self:
+    def read(self, path: "str | os.PathLike", **kwargs) -> Self:
         """Open the Zarr store at ``path`` lazily into ``data``.
 
         Every call opens the store again and replaces whatever ``data``
-        held; nothing is cached across calls.
+        held; nothing is cached across calls. Zarr reads a string dimension
+        coordinate (such as ``symbol``) back as numpy's variable-width
+        ``StringDType``; it is handed back as object strings, the form a
+        panel built from a frame has, so labels from a store and from memory
+        compare, align and cast to ``str`` alike.
 
         Parameters
         ----------
-        path : str
+        path : str or os.PathLike
             Directory of the Zarr store.
         **kwargs
             Passed through to ``xarray.open_dataset``.
@@ -76,13 +80,34 @@ class XrBackend(DataBackend):
 
         Examples
         --------
-        >>> backend = XrBackend().read("prices.zarr")
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> import xarray as xr
+        >>> from quantlab.backend import XrBackend
+        >>> panel = xr.Dataset(
+        ...     {"close": (("timestamp", "symbol"), np.ones((4, 2)))},
+        ...     coords={"timestamp": pd.date_range("2024-01-02", periods=4),
+        ...             "symbol": np.array(["AAA", "BBB"], dtype=object)},
+        ... )
+        >>> path = Path(tempfile.mkdtemp()) / "prices.zarr"
+        >>> _ = XrBackend().to_internal(panel).write(str(path))
+        >>> backend = XrBackend().read(path)
         >>> dict(backend.data.sizes)
         {'timestamp': 4, 'symbol': 2}
+        >>> backend.data["symbol"].dtype
+        dtype('O')
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
-        self.data = xr.open_dataset(path, **kwargs)
+        data = xr.open_dataset(path, **kwargs)
+        strings = {
+            name: data[name].values.astype(object)
+            for name in data.indexes
+            if data[name].dtype.kind == "T"
+        }
+        self.data = data.assign_coords(strings) if strings else data
         return self
 
     #: Chunk length pinned along the append dimension when a store is created

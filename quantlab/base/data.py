@@ -915,6 +915,107 @@ class BaseDataset(ABC):
         """
         return self.config.to_dict()  # type: ignore
 
+    def persist_with_run(self, run_dir: Path, name: str) -> dict | None:
+        """Write what a backtest run directory needs to rebuild this dataset.
+
+        A backtester calls this while it writes a run directory, once per
+        dataset of its config, with ``name`` the config field (such as
+        ``"price_dataset"``). The return value is the config ``config.json``
+        records for the dataset, or ``None`` to record ``get_config()`` as it
+        is. A dataset read from a project store needs nothing written: the
+        store outlives the run, so the default writes nothing and returns
+        ``None``. A dataset whose panel belongs to no store (``FrameDataset``)
+        writes a copy into ``run_dir`` and returns a config reading it.
+
+        Parameters
+        ----------
+        run_dir : Path
+            The run directory being written.
+        name : str
+            The backtest config field holding this dataset.
+
+        Returns
+        -------
+        dict or None
+            The config to record, or ``None`` for ``get_config()``.
+
+        Examples
+        --------
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> from quantlab.base.config import DatasetConfig
+        >>> from quantlab.dataset.stock import StockDataset
+        >>> ds = StockDataset(DatasetConfig(
+        ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
+        ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
+        ...     market="us_equity", frequency="1d", vendor="tiingo",
+        ... ))
+        >>> run_dir = Path(tempfile.mkdtemp())
+        >>> ds.persist_with_run(run_dir, "price_dataset") is None
+        True
+        >>> list(run_dir.iterdir())
+        []
+        """
+        return None
+
+    @classmethod
+    def resolve_run_config(cls, config: dict, run_dir: Path | None) -> dict:
+        """Return a config ``config.json`` recorded, made usable to rebuild the dataset.
+
+        The loader calls this on the class a saved config names before
+        constructing it, with ``run_dir`` the run directory the config was
+        read from (``None`` when the caller gave none). It is the inverse of
+        ``persist_with_run``: the default returns ``config`` unchanged, since
+        a store path is used as written; ``FrameDataset`` resolves a store
+        named relative to the run directory. ``config`` is not modified.
+
+        Parameters
+        ----------
+        config : dict
+            The recorded config of a dataset of this class.
+        run_dir : Path or None
+            The run directory the config was read from.
+
+        Returns
+        -------
+        dict
+            The config to construct the dataset from.
+
+        Examples
+        --------
+        >>> from quantlab.dataset.stock import StockDataset
+        >>> StockDataset.resolve_run_config({"zarr_file_path": "prices.zarr"}, None)
+        {'zarr_file_path': 'prices.zarr'}
+        """
+        return config
+
+    def ticker_store(self) -> str | None:
+        """Return the store whose CRSP ticker sidecar names this dataset's symbols.
+
+        A backtester labels symbols through the ``.crsp_tickers.json`` sidecar
+        beside this store when one exists there (see
+        ``BaseBacktester.ticker_lookup``). The default is the dataset's own
+        store; ``None`` means no sidecar can apply and symbols are shown as
+        they are, without looking for one.
+
+        Returns
+        -------
+        str or None
+            The store path, or ``None``.
+
+        Examples
+        --------
+        >>> from quantlab.base.config import DatasetConfig
+        >>> from quantlab.dataset.stock import StockDataset
+        >>> StockDataset(DatasetConfig(
+        ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
+        ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
+        ...     market="us_equity", frequency="1d", vendor="tiingo",
+        ... )).ticker_store()
+        'data/us_equity/1d/us_all.zarr'
+        """
+        return self.config.zarr_file_path
+
     def get_lazyframe(self) -> pl.LazyFrame:
         """Return the built panel as a long-format polars ``LazyFrame``.
 
