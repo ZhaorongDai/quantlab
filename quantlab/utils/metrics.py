@@ -383,13 +383,56 @@ def regression_panel_metrics(
     >>> series["rank_ic"]
     array([1., 1.])
     """
-    ic = cross_sectional_ic_series(pred, target)
-    rank_ic = cross_sectional_rank_ic_series(pred, target)
+    ic_metrics, series = ic_panel_metrics(pred, target, return_series=True)
     metrics = {
         "mse": mse(pred, target),
         "rmse": rmse(pred, target),
         "mae": mae(pred, target),
         "r2": r2(pred, target),
+        **ic_metrics,
+    }
+    if return_series:
+        return metrics, series
+    return metrics
+
+
+def ic_panel_metrics(
+    pred, target, *, return_series: bool = False
+) -> dict[str, float] | tuple[dict[str, float], dict[str, np.ndarray]]:
+    """Return the four IC metrics keyed ``ic, rank_ic, icir, rank_icir``.
+
+    The IC half of ``regression_panel_metrics``, which calls it: the mean and
+    the ``information_ratio`` of one ``cross_sectional_ic_series`` and of one
+    ``cross_sectional_rank_ic_series``. It suits predictions whose scale
+    means nothing, such as an ensemble's average of z-scores, where an error
+    metric would compare units that differ from the target's.
+
+    Parameters
+    ----------
+    pred : array_like
+        A 2-D ``[T, S]`` panel of predictions.
+    target : array_like
+        A 2-D ``[T, S]`` panel of realised values.
+    return_series : bool, default False
+        Also return the two per-row series, as ``{"ic": ..., "rank_ic":
+        ...}`` (length ``T``, NaN on a skipped row).
+
+    Returns
+    -------
+    dict or tuple
+        The metrics, or ``(metrics, series)`` when ``return_series`` is True.
+
+    Examples
+    --------
+    On the panel from ``cross_sectional_ic``, whose two rows have the same
+    IC, so the ICIR is undefined:
+
+    >>> ic_panel_metrics(pred, target)
+    {'ic': 0.989743318610787, 'rank_ic': 1.0, 'icir': nan, 'rank_icir': nan}
+    """
+    ic = cross_sectional_ic_series(pred, target)
+    rank_ic = cross_sectional_rank_ic_series(pred, target)
+    metrics = {
         "ic": _finite_mean(ic),
         "rank_ic": _finite_mean(rank_ic),
         "icir": information_ratio(ic),

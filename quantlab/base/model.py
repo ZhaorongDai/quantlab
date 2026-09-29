@@ -1411,11 +1411,37 @@ class BaseModel(ABC):
         collected features with ``warmup_bars`` bars before the first test
         bar. No store is written when the test segment has no bars.
         """
+        self._write_ic_series(run_dir / self.IC_SERIES_FILENAME, self._ic_series)
+
+        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
+            ["timestamp", "symbol"]
+        )
+        test_stamps = self._fit_segments(data)[2].timestamp.values
+        if len(test_stamps) == 0:
+            return
+        stamps = data.timestamp.values
+        first, last = np.searchsorted(stamps, [test_stamps[0], test_stamps[-1]])
+        features = data.isel(
+            timestamp=slice(max(0, int(first) - self.warmup_bars), int(last) + 1)
+        )
+        predictions = self.predict_panel(features).sel(timestamp=test_stamps)
+        predictions.to_zarr(run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w")
+
+    @staticmethod
+    def _write_ic_series(path: Path, series: dict) -> None:
+        """Write per-bar IC series to ``path`` as ``ic_series.csv``, atomically.
+
+        ``series`` maps a split name to ``(timestamps, ic, rank_ic)`` arrays
+        of one length. The rows follow the splits ``train``, ``val``,
+        ``test`` that ``series`` holds, each in its given order; a bar where
+        neither value is finite has no row. An ensemble writes its own file
+        through here, so both files share one layout.
+        """
         rows = []
         for split in ("train", "val", "test"):
-            if split not in self._ic_series:
+            if split not in series:
                 continue
-            stamps, ic, rank_ic = self._ic_series[split]
+            stamps, ic, rank_ic = series[split]
             keep = np.isfinite(ic) | np.isfinite(rank_ic)
             rows.append(
                 pd.DataFrame(
@@ -1432,24 +1458,9 @@ class BaseModel(ABC):
             if rows
             else pd.DataFrame(columns=["split", "timestamp", "ic", "rank_ic"])
         )
-        path = run_dir / self.IC_SERIES_FILENAME
         staging = path.with_name(path.name + ".tmp")
         frame.to_csv(staging, index=False)
         os.replace(staging, path)
-
-        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
-            ["timestamp", "symbol"]
-        )
-        test_stamps = self._fit_segments(data)[2].timestamp.values
-        if len(test_stamps) == 0:
-            return
-        stamps = data.timestamp.values
-        first, last = np.searchsorted(stamps, [test_stamps[0], test_stamps[-1]])
-        features = data.isel(
-            timestamp=slice(max(0, int(first) - self.warmup_bars), int(last) + 1)
-        )
-        predictions = self.predict_panel(features).sel(timestamp=test_stamps)
-        predictions.to_zarr(run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w")
 
     def _check_hyperparameters(self) -> None:
         """Validate the reserved hyperparameters this variant reads.

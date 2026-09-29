@@ -160,7 +160,7 @@ True
 {'mse': 0.003, 'rmse': 0.051, 'mae': 0.04, 'r2': 0.491, 'ic': 0.698, 'rank_ic': 0.679, 'icir': 5.524, 'rank_icir': 4.813}
 ```
 
-IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cross_sectional_rank_ic_series` 给出（被跳过的时间点为 NaN），`information_ratio` 把这样的序列变成 ICIR。`regression_panel_metrics(pred, target, return_series=True)` 会把两条序列和指标一起返回。
+IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cross_sectional_rank_ic_series` 给出（被跳过的时间点为 NaN），`information_ratio` 把这样的序列变成 ICIR。`regression_panel_metrics(pred, target, return_series=True)` 会把两条序列和指标一起返回。`ic_panel_metrics` 参数相同，只返回 `ic`、`rank_ic`、`icir` 和 `rank_icir`，用于尺度没有意义的预测。
 
 ### IC 序列与保存的预测
 
@@ -303,14 +303,14 @@ True
 True
 ```
 
-`train()` 新建一个集成目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，按顺序训练各成员，第 k 个成员训练到 `member_{k}/`，并有自己的 W&B run `XGBoostRegressor_member_{k}`；每个成员目录里是常规的检查点、`config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。随后写入 `config.json`，记录各成员共有的内容，即训练与测试日期和标签配置（它不是模型配置），最后写入清单 `ensemble.json`。`train()` 返回清单的路径。某个成员失败时不写清单，已经写好的成员目录保留。
+`train()` 新建一个集成目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，按顺序训练各成员，第 k 个成员训练到 `member_{k}/`，并有自己的 W&B run `XGBoostRegressor_member_{k}`；每个成员目录里是常规的检查点、`config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。随后写入平均预测的评估文件（见下文）和 `config.json`，后者记录各成员共有的内容，即训练与测试日期和标签配置（它不是模型配置），最后写入清单 `ensemble.json`。`train()` 返回清单的路径。某个成员或集成评估失败时不写清单，已经写好的文件保留。
 
 ```python
 >>> manifest = ensemble.train()
 >>> manifest.name
 'ensemble.json'
 >>> sorted(p.name for p in manifest.parent.iterdir())
-['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2']
+['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
 >>> sorted(p.name for p in (manifest.parent / "member_0").iterdir())
 ['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
 >>> saved = json.loads(manifest.read_text())
@@ -338,6 +338,23 @@ True
 >>> y = label.ds["ret"].sel(timestamp=slice("2024-06-01", "2024-07-18")).values
 >>> [round(cross_sectional_rank_ic(m["ret"].values, y), 3) for m in members], round(cross_sectional_rank_ic(window["ret"].values, y), 3)
 ([0.682, 0.687, 0.689], 0.688)
+```
+
+集成目录里还有平均预测的评估文件，在最后一个成员训练完之后、`ensemble.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。`metrics.json` 只含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
+
+```python
+>>> metrics = json.loads((manifest.parent / "metrics.json").read_text())
+>>> sorted(metrics)
+['test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir']
+>>> [round(json.loads((manifest.parent / f"member_{k}" / "metrics.json").read_text())["test_rank_ic"], 3) for k in range(3)], round(metrics["test_rank_ic"], 3)
+([0.682, 0.687, 0.689], 0.688)
+>>> import pandas as pd
+>>> pd.read_csv(manifest.parent / "ic_series.csv").groupby("split", sort=False).size().to_dict()
+{'train': 119, 'val': 29, 'test': 48}
+>>> saved = xr.open_zarr(manifest.parent / "test_predictions.zarr").load()
+>>> tests = [xr.open_zarr(manifest.parent / f"member_{k}" / "test_predictions.zarr").load() for k in range(3)]
+>>> dict(saved.sizes), bool(np.allclose(saved["ret"], average_predictions(tests)["ret"]))
+({'timestamp': 48, 'symbol': 20}, True)
 ```
 
 `load(manifest)` 从清单列出的检查点恢复每个成员，`check_checkpoint(manifest)` 只检查不加载：清单的格式版本必须是 1，成员数与集成相同，每个成员的类和种子与集成的成员一致，每个成员检查点都必须存在并通过该成员自己的 `check_checkpoint`。`get_config()` 返回被包装模型的配置和种子，`SeedEnsemble.from_config` 据此重建集成。`SeedEnsemble` 满足回测器的 `Predictor` 协议，所以像单个模型一样回测（见 backtest 指南）。

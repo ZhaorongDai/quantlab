@@ -19,6 +19,9 @@ On disk ``train()`` writes::
         member_0/            one member's usual run directory
         member_1/
         ...
+        metrics.json         IC metrics of the averaged prediction
+        ic_series.csv        their per-bar series, in the single-model layout
+        test_predictions.zarr  the averaged test-segment prediction
         config.json          what every member shares: dates and labels
         ensemble.json        the manifest, written last
 
@@ -41,6 +44,7 @@ import xarray as xr
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.metrics import ic_panel_metrics
 
 
 def _class_path(obj) -> str:
@@ -83,6 +87,12 @@ class BaseEnsemble(ABC):
     CONFIG_FILENAME = "config.json"
     #: The manifest format this class writes and reads.
     MANIFEST_FORMAT_VERSION = 1
+    #: Name of the IC metrics file of the averaged prediction.
+    METRICS_FILENAME = "metrics.json"
+    #: Name of the per-bar IC series file of the averaged prediction.
+    IC_SERIES_FILENAME = "ic_series.csv"
+    #: Name of the zarr store holding the averaged test-segment prediction.
+    TEST_PREDICTIONS_FILENAME = "test_predictions.zarr"
 
     def __init__(self, members: Sequence):
         """Initialize the ensemble; see the class docstring for parameters."""
@@ -248,6 +258,20 @@ class BaseEnsemble(ABC):
         """
         return [member.predict_window(start, end) for member in self.members]
 
+    def _member_panel_predictions(self) -> list[xr.Dataset]:
+        """Return each member's prediction over its whole collected panel.
+
+        Each member predicts the panel in its own data backend, so every bar
+        is predicted with all the history collected before it. Used to
+        evaluate the averaged prediction after training.
+        """
+        return [
+            member.predict_panel(
+                member.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+            )
+            for member in self.members
+        ]
+
     def predict_window(self, start, end) -> xr.Dataset:
         """Predict every bar from ``start`` to ``end`` as the members' average.
 
@@ -366,17 +390,21 @@ class BaseEnsemble(ABC):
 
         Every member's hyperparameters are checked first. Then a new
         ``{class}_trial_{timestamp}`` directory is created under
-        ``model_save_dir``, and member k is trained, in order, into
-        ``member_{k}/`` under a wandb run ``{MemberClass}_member_{k}`` in a
-        project named after the directory; each member writes its usual
-        checkpoint, ``config.json``, ``metrics.json``, ``ic_series.csv`` and
-        ``test_predictions.zarr`` there. Each member reseeds its generators
-        from its own ``random_seed`` right before it trains. Afterwards
-        ``config.json`` is written with the shared training and test dates
-        and label configs (it is not a model config), and last, atomically,
-        ``ensemble.json``. If a member fails, the error propagates, no
-        manifest is written and the member directories already written stay.
-        Call ``collect()`` first.
+        ``model_save_dir`` and filled by ``_train_into``: member k is
+        trained, in order, into ``member_{k}/`` under a wandb run
+        ``{MemberClass}_member_{k}`` in a project named after the directory;
+        each member writes its usual checkpoint, ``config.json``,
+        ``metrics.json``, ``ic_series.csv`` and ``test_predictions.zarr``
+        there, and reseeds its generators from its own ``random_seed`` right
+        before it trains. The ensemble directory then gets the evaluation
+        files of the averaged prediction (``metrics.json``,
+        ``ic_series.csv``, ``test_predictions.zarr``, see
+        ``_write_evaluation_files``), ``config.json`` with the shared
+        training and test dates and label configs (it is not a model
+        config), and last, atomically, ``ensemble.json``. If a member or the
+        ensemble evaluation fails, the error propagates, no manifest is
+        written and the files already written stay. Call ``collect()``
+        first.
 
         Returns
         -------
@@ -389,16 +417,57 @@ class BaseEnsemble(ABC):
         >>> manifest.name, manifest.parent.name.startswith("SeedEnsemble_trial_")
         ('ensemble.json', True)
         >>> sorted(p.name for p in manifest.parent.iterdir())
-        ['config.json', 'ensemble.json', 'member_0', 'member_1', 'member_2']
+        ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
+        >>> sorted(json.loads((manifest.parent / "metrics.json").read_text()))
+        ['test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir']
         """
         for member in self.members:
             member._check_hyperparameters()
         directory = self._new_directory()
+        manifest, _ = self._train_into(directory, project_name=directory.name)
+        return manifest
+
+    def _train_into(
+        self,
+        run_dir: Path | str,
+        project_name: str,
+        *,
+        write_metrics: bool = True,
+    ) -> tuple[Path, dict]:
+        """Train every member, evaluate the average and write the manifest into ``run_dir``.
+
+        Member k trains into ``run_dir/member_{k}`` under the wandb run
+        ``{MemberClass}_member_{k}`` in the wandb project ``project_name``.
+        Then come the evaluation files of the averaged prediction (see
+        ``_write_evaluation_files``; ``metrics.json`` only with
+        ``write_metrics``), ``config.json`` and last ``ensemble.json``.
+        Hyperparameters are not checked here: ``train`` checks them first,
+        as a walk-forward loop would once before its folds.
+
+        Parameters
+        ----------
+        run_dir : Path or str
+            The ensemble directory. It is created with its parents when
+            missing; its ``member_{k}`` subdirectories must not exist yet.
+        project_name : str
+            wandb project of the members' runs.
+        write_metrics : bool, default True
+            Write the ensemble's ``metrics.json``; a caller that records the
+            metrics elsewhere passes False.
+
+        Returns
+        -------
+        tuple[Path, dict]
+            The absolute ``ensemble.json`` path and the ensemble metrics,
+            with NaN where a metric is undefined.
+        """
+        directory = Path(run_dir).absolute()
+        directory.mkdir(parents=True, exist_ok=True)
         entries = []
         for k, member in enumerate(self.members):
             checkpoint, _ = member._train_into(
                 directory / f"member_{k}",
-                project_name=directory.name,
+                project_name=project_name,
                 experiment_name=f"{member.class_name}_member_{k}",
             )
             entries.append(
@@ -408,6 +477,7 @@ class BaseEnsemble(ABC):
                     "seed": self._member_seed(k),
                 }
             )
+        metrics = self._write_evaluation_files(directory, write_metrics=write_metrics)
         write_json_atomically(
             directory / self.CONFIG_FILENAME,
             to_jsonable(self._shared_config()),
@@ -419,7 +489,72 @@ class BaseEnsemble(ABC):
             {"format_version": self.MANIFEST_FORMAT_VERSION, "members": entries},
             indent=2,
         )
-        return manifest
+        return manifest, metrics
+
+    def _write_evaluation_files(
+        self, run_dir: Path, *, write_metrics: bool = True
+    ) -> dict:
+        """Evaluate the averaged prediction of the trained members and write its files.
+
+        Every member predicts its whole collected panel
+        (``_member_panel_predictions``) and the predictions are averaged by
+        ``average_predictions``. The splits are the first member's: its
+        collected panel cut by its ``_fit_segments`` into the purged train,
+        validation and test segments a single model evaluates, a split being
+        skipped when it has no bars (so no ``val_*`` without a validation
+        segment). On each split ``ic_panel_metrics`` scores the averaged
+        prediction of the first label against that label's raw values in
+        the first member's panel. No error metric is computed: the average
+        is in z-score units, not in the target's.
+
+        Written into ``run_dir``:
+
+        - ``metrics.json`` (only with ``write_metrics``): ``{split}_ic``,
+          ``{split}_rank_ic``, ``{split}_icir`` and ``{split}_rank_icir``,
+          NaN and inf as null.
+        - ``ic_series.csv``: the per-bar series behind them, in the layout
+          of a single model's file (``BaseModel._write_ic_series``).
+        - ``test_predictions.zarr``: the averaged prediction on the test
+          bars, one variable per label; not written when the test segment
+          has no bars.
+
+        Returns
+        -------
+        dict
+            The metrics, with NaN where a metric is undefined.
+        """
+        first = self.members[0]
+        data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
+            ["timestamp", "symbol"]
+        )
+        averaged = average_predictions(self._member_panel_predictions())
+        label = first.get_label_names()[0]
+        metrics, series = {}, {}
+        segments = first._fit_segments(data)
+        for split, part in zip(("train", "val", "test"), segments):
+            stamps = part.timestamp.values
+            if len(stamps) == 0:
+                continue
+            pred = averaged[label].reindex(timestamp=stamps, symbol=data.symbol.values)
+            values, per_bar = ic_panel_metrics(
+                pred.values,
+                data[label].sel(timestamp=stamps).values,
+                return_series=True,
+            )
+            metrics.update({f"{split}_{key}": value for key, value in values.items()})
+            series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
+
+        if write_metrics:
+            write_json_atomically(
+                run_dir / self.METRICS_FILENAME, to_jsonable(metrics), indent=2
+            )
+        first._write_ic_series(run_dir / self.IC_SERIES_FILENAME, series)
+        test_stamps = segments[2].timestamp.values
+        if len(test_stamps):
+            averaged.reindex(timestamp=test_stamps).to_zarr(
+                run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w"
+            )
+        return metrics
 
     # ------------------------------------------------------------------
     # The manifest: check and load
