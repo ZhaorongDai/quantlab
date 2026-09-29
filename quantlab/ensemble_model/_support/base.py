@@ -25,6 +25,14 @@ On disk ``train()`` writes::
         config.json          what every member shares: dates and labels
         ensemble.json        the manifest, written last
 
+``train_cv`` writes one ensemble directory per walk-forward fold::
+
+    {model_save_dir}/{EnsembleClass}_cv_{timestamp}/
+        cv_folds.json        the fold manifest ``run_cv`` replays
+        fold_0/              an ensemble directory as above, without metrics.json
+        fold_1/
+        ...
+
 ``ensemble.json`` is ``{"format_version": 1, "members": [{"name": ...,
 "checkpoint": ..., "seed": ...}, ...]}``: each member's class as a dotted
 path, its checkpoint relative to the manifest's directory, and its seed
@@ -32,6 +40,7 @@ path, its checkpoint relative to the manifest's directory, and its seed
 specific to one kind of ensemble.
 """
 
+import dataclasses
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -39,8 +48,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Self
 
+import wandb
 import xarray as xr
+from loguru import logger
 
+from quantlab.base.model import BaseModel
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
@@ -103,6 +115,7 @@ class BaseEnsemble(ABC):
             )
         self._check_members_agree(members)
         self.members = members
+        self._wandb_recorder = None
 
     def __repr__(self) -> str:
         """Return ``ClassName(members=[...])``."""
@@ -353,14 +366,15 @@ class BaseEnsemble(ABC):
     # Training and the ensemble directory
     # ------------------------------------------------------------------
 
-    def _new_directory(self) -> Path:
-        """Create and return a fresh ``{class}_trial_{%Y%m%d_%H%M%S_%f}`` directory.
+    def _new_directory(self, kind: str = "trial") -> Path:
+        """Create and return a fresh ``{class}_{kind}_{%Y%m%d_%H%M%S_%f}`` directory.
 
         The directory is created under ``model_save_dir``; when the name is
-        taken, ``_1``, ``_2``, ... are appended.
+        taken, ``_1``, ``_2``, ... are appended. ``train`` passes ``"trial"``
+        and ``train_cv`` passes ``"cv"``.
         """
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        base = f"{self.class_name}_trial_{stamp}"
+        base = f"{self.class_name}_{kind}_{stamp}"
         root = self.model_save_dir.absolute()
         root.mkdir(parents=True, exist_ok=True)
         name, suffix = base, 1
@@ -432,17 +446,19 @@ class BaseEnsemble(ABC):
         run_dir: Path | str,
         project_name: str,
         *,
+        run_tag: str | None = None,
         write_metrics: bool = True,
     ) -> tuple[Path, dict]:
         """Train every member, evaluate the average and write the manifest into ``run_dir``.
 
         Member k trains into ``run_dir/member_{k}`` under the wandb run
-        ``{MemberClass}_member_{k}`` in the wandb project ``project_name``.
+        ``{MemberClass}_member_{k}`` (``{MemberClass}_{run_tag}_member_{k}``
+        with a ``run_tag``) in the wandb project ``project_name``.
         Then come the evaluation files of the averaged prediction (see
         ``_write_evaluation_files``; ``metrics.json`` only with
         ``write_metrics``), ``config.json`` and last ``ensemble.json``.
         Hyperparameters are not checked here: ``train`` checks them first,
-        as a walk-forward loop would once before its folds.
+        and ``train_cv`` once before its folds.
 
         Parameters
         ----------
@@ -451,6 +467,10 @@ class BaseEnsemble(ABC):
             missing; its ``member_{k}`` subdirectories must not exist yet.
         project_name : str
             wandb project of the members' runs.
+        run_tag : str, optional
+            Inserted into every member's wandb run name, so that runs of
+            several ensemble directories in one project stay apart;
+            ``train_cv`` passes ``fold_{i}``.
         write_metrics : bool, default True
             Write the ensemble's ``metrics.json``; a caller that records the
             metrics elsewhere passes False.
@@ -464,11 +484,12 @@ class BaseEnsemble(ABC):
         directory = Path(run_dir).absolute()
         directory.mkdir(parents=True, exist_ok=True)
         entries = []
+        tag = "" if run_tag is None else f"_{run_tag}"
         for k, member in enumerate(self.members):
             checkpoint, _ = member._train_into(
                 directory / f"member_{k}",
                 project_name=project_name,
-                experiment_name=f"{member.class_name}_member_{k}",
+                experiment_name=f"{member.class_name}{tag}_member_{k}",
             )
             entries.append(
                 {
@@ -490,6 +511,139 @@ class BaseEnsemble(ABC):
             indent=2,
         )
         return manifest, metrics
+
+    def train_cv(self, train_periods: int, expanding: bool = False) -> list[dict]:
+        """Run a walk-forward cross-validation of the ensemble and return per-fold results.
+
+        The folds are those ``BaseModel.train_cv`` trains for the first
+        member: laid out by ``BaseModel._cv_folds`` over the first member's
+        collected timestamps between its ``start_date`` and ``end_date``,
+        sliding or, with ``expanding=True``, growing from the first fold's
+        start, and each training window loses its last L bars, L being the
+        largest ``lookahead_bars()`` among the labels. Every member's
+        hyperparameters are checked once, before any directory is created.
+
+        A new ``{class}_cv_{timestamp}`` directory is created under
+        ``model_save_dir``. For fold i, every member's config gets the
+        fold's dates before the purge (the members purge them themselves,
+        as a single model's fold does), and ``_train_into`` fills
+        ``fold_{i}/`` like ``train()`` fills its directory: member k in
+        ``member_{k}/`` under the wandb run ``{MemberClass}_fold_{i}_member_{k}``,
+        the evaluation files of the averaged prediction, ``config.json`` and
+        ``ensemble.json``. The fold's ensemble metrics go into the manifest
+        instead of a ``metrics.json``. Folds train one after another. After
+        the last fold the members keep its dates, as a model does after its
+        own ``train_cv``. The fold means of the ensemble metrics, keyed
+        ``cv_mean_{key}``, and ``cv_n_folds`` go to the summary of a
+        separate ``{class}_cv_summary`` wandb run in the same project.
+
+        Last, ``cv_folds.json`` is written atomically into the CV directory
+        as ``{"format_version": 2, "folds": [...], "cv_mean": {...}}`` (NaN
+        and inf as null), the format ``BaseModel.train_cv`` writes, so a
+        backtester's ``run_cv`` replays it with the ensemble as its model.
+        Call ``collect()`` first.
+
+        Parameters
+        ----------
+        train_periods : int
+            Number of timestamps in the first fold's training segment, and
+            in every fold's when sliding. The test segment is one fifth of
+            it.
+        expanding : bool, default False
+            Train every fold from the first fold's start instead of sliding
+            a fixed-length window.
+
+        Returns
+        -------
+        list[dict]
+            One dict per fold: ``fold``, the purged ``train_start``,
+            ``train_end``, ``test_start`` and ``test_end``, the absolute
+            ``checkpoint`` path of the fold's ``ensemble.json`` and the
+            fold's ensemble metrics (``{split}_ic``, ``{split}_rank_ic``,
+            ``{split}_icir``, ``{split}_rank_icir``).
+
+        Raises
+        ------
+        ValueError
+            If ``train_periods`` is below 5, no timestamp falls inside the
+            date range, the purge leaves a fold no training bar, or a
+            member's hyperparameters are invalid.
+
+        Examples
+        --------
+        >>> results = ensemble.collect().train_cv(train_periods=30)
+        >>> len(results), sorted(results[0])[:6]
+        (8, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_rank_ic'])
+        >>> Path(results[0]["checkpoint"]).relative_to(ensemble.model_save_dir).parts[1:]
+        ('fold_0', 'ensemble.json')
+        """
+        for member in self.members:
+            member._check_hyperparameters()
+        first = self.members[0]
+        if train_periods < 5:
+            raise ValueError(
+                f"{self.class_name}: train_cv(train_periods={train_periods}) needs "
+                f"at least 5 training bars, since each fold tests on "
+                f"train_periods // 5 bars."
+            )
+        start_date, end_date = first.config.start_date, first.config.end_date
+        data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        timestamps = data.sel(timestamp=slice(start_date, end_date)).timestamp.values
+        if len(timestamps) == 0:
+            raise ValueError(f"No data found between {start_date} and {end_date}")
+
+        folds = BaseModel._cv_folds(timestamps, train_periods, expanding=expanding)
+        lookahead = first._purge_bars()
+        records = [
+            BaseModel._purged_fold(timestamps, fold, lookahead) for fold in folds
+        ]
+        logger.info(
+            f"{self.class_name}: {len(folds)} walk-forward folds from {start_date} "
+            f"to {end_date} with {train_periods} training periods"
+        )
+
+        directory = self._new_directory("cv")
+        results = []
+        for fold, record in zip(folds, records):
+            for member in self.members:
+                member.config = dataclasses.replace(
+                    member.config,
+                    train_start=fold["train_start"],
+                    train_end=fold["train_end"],
+                    test_start=fold["test_start"],
+                    test_end=fold["test_end"],
+                )
+            manifest, metrics = self._train_into(
+                directory / f"fold_{fold['fold']}",
+                project_name=directory.name,
+                run_tag=f"fold_{fold['fold']}",
+                write_metrics=False,
+            )
+            results.append({**record, "checkpoint": str(manifest), **metrics})
+
+        means = BaseModel._cv_mean_metrics(results)
+        if means:
+            self._init_wandb(directory.name, f"{self.class_name}_cv_summary")
+            if self._wandb_recorder is not None:
+                self._wandb_recorder.summary.update(means)
+                self._wandb_recorder.finish()
+
+        write_json_atomically(
+            directory / BaseModel.CV_FOLDS_FILENAME,
+            {
+                "format_version": BaseModel.CV_FOLDS_FORMAT_VERSION,
+                "folds": to_jsonable(results),
+                "cv_mean": to_jsonable(means),
+            },
+            indent=2,
+        )
+        return results
+
+    def _init_wandb(self, project_name: str, experiment_name: str) -> None:
+        """Open a wandb run with ``get_config()`` as its config."""
+        self._wandb_recorder = wandb.init(
+            project=project_name, name=experiment_name, config=self.get_config()
+        )
 
     def _write_evaluation_files(
         self, run_dir: Path, *, write_metrics: bool = True

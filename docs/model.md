@@ -376,6 +376,33 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 The members train one after another, and each reseeds its random generators from its own `random_seed` right before it trains.
 
+`train_cv(train_periods, expanding=False)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own W&B run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
+
+`cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family only; `cv_mean` averages them. The return value is the fold list. A separate W&B run `SeedEnsemble_cv_summary` in the same project carries the `cv_mean_*` values. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
+
+```python
+>>> folds = ensemble.train_cv(train_periods=100)
+>>> [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in folds] == [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in results]
+True
+>>> cv_dir = Path(folds[0]["checkpoint"]).parent.parent
+>>> cv_dir.name.startswith("SeedEnsemble_cv_"), sorted(p.name for p in cv_dir.iterdir())
+(True, ['cv_folds.json', 'fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4'])
+>>> sorted(p.name for p in (cv_dir / "fold_0").iterdir())
+['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'test_predictions.zarr']
+>>> sorted(p.name for p in (cv_dir / "fold_0" / "member_0").iterdir())
+['XGBoostRegressor_fold_0_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
+>>> cv_manifest = json.loads((cv_dir / "cv_folds.json").read_text())
+>>> cv_manifest["format_version"], sorted(cv_manifest["folds"][0])
+(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_rank_ic', 'val_rank_icir'])
+>>> [round(r["test_rank_ic"], 3) for r in folds]
+[0.69, 0.651, 0.709, 0.672, 0.698]
+>>> {k: round(v, 3) for k, v in cv_manifest["cv_mean"].items() if k.endswith("rank_ic")}
+{'cv_mean_train_rank_ic': 0.712, 'cv_mean_val_rank_ic': 0.697, 'cv_mean_test_rank_ic': 0.684}
+>>> fold_0 = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2]).load(folds[0]["checkpoint"])
+>>> [m.model is not None for m in fold_0.members]
+[True, True, True]
+```
+
 ### Train a torch model
 
 A torch head (`TorchModel`) is fed through standard PyTorch components. The base class builds a *training panel* of torch tensors from the collected data: features `x` (`[T, S, F]`), the training target (`[T, S, L]`), its `mask` (`[T, S]`), the raw labels `y_raw` and `present` (`[T, S]`, a cell with at least one finite feature), with the timestamps and symbols. The head's `_dataset(panel, bars, training)` returns a `torch.utils.data.Dataset` over some bars and `_dataloader(dataset, training)` batches it. The default dataset, `CrossSectionDataset` in `quantlab.torch_model.data`, gives one item per bar: the bar's *cross-section*, meaning its present symbols, each carrying its own last `window_bars` bars of features. The network then sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
