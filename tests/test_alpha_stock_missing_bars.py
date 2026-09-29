@@ -179,12 +179,16 @@ class _KunQuantAlpha158(FactorKunQuant):
         return Function(builder.ops)
 
 
-#: alpha015 ranks a 3-bar correlation of ranks, which is exactly tied for
-#: many symbols; which of the tied values ranks first depends on the last bit
-#: of float arithmetic, so any change to the compiled graph can reorder them
-#: (KunQuant's own source notes the rank differs from pandas's for this
-#: reason). Its missing-bar behaviour is still checked by the tests above.
-TIE_ORDER_DEPENDENT = {"alpha015"}
+#: alpha013, alpha015 and alpha016 rank a short rolling covariance or
+#: correlation of ranks. Built from integer ranks, that statistic is exactly
+#: tied across symbols on most bars (alpha013: 111 of the 116 bars here), so
+#: which tied value ranks first depends on the last bit of float arithmetic,
+#: and that depends on the compiler and the CPU the graph is compiled for
+#: (``-march=native``): alpha013 reorders on GitHub's ubuntu-latest runner but
+#: not on macOS arm64 or gcc 11 with AVX2. KunQuant's own source notes the
+#: rank differs from pandas's for this reason. Their missing-bar behaviour is
+#: still checked by the tests above.
+TIE_ORDER_DEPENDENT = {"alpha013", "alpha015", "alpha016"}
 
 
 @pytest.mark.parametrize(
