@@ -21,9 +21,11 @@ What is locked here, the decision each lock enforces, and what turns it red:
   `BaseBacktester` in the concrete class's MRO may define `run`, `run_cv` or
   any public function, classmethod, staticmethod or property of its own. An
   override that "only calls super()" is still a second implementation of the
-  public entry, so it is red. Since plan 03.7-10 the public callables defined
-  on `BaseBacktester` itself are also pinned to exactly `run`, `run_cv` and
-  `get_config`, so a third public entry point on the base is red too.
+  public entry, so it is red. The public callables defined on `BaseBacktester`
+  itself are also pinned: the entry points `run`, `run_cv` and `run_weights`,
+  plus `get_config` and `report_figure` (the report chart of a result in
+  memory, which `quantlab.api` draws), so any other public method on the base
+  is red too.
 - **Type check first (D-01).** A concrete backtester given a plain
   `BacktestConfig` raises `TypeError` naming `CrossSectionBacktestConfig`
   before any dataset or model attribute is read. The config carries bare
@@ -39,8 +41,9 @@ What is locked here, the decision each lock enforces, and what turns it red:
   `quantlab.config`. Relative spellings are resolved against the file's
   package, because a substring scan cannot see them.
 - **One-directional layering.** No quantlab module outside
-  `quantlab/backtest/`, `quantlab/base/backtest.py` and
-  `quantlab/utils/module.py` (the config loader) imports the backtest layer.
+  `quantlab/backtest/`, `quantlab/base/backtest.py`,
+  `quantlab/utils/module.py` (the config loader) and `quantlab/api/` (the
+  frame facade above every layer, ADR 0011) imports the backtest layer.
 - **vectorbt stays inside the engine (D-31).** No quantlab module other than
   `quantlab/backtest/engine_vectorbt.py` imports vectorbt, with no exemption.
   (Plan 03.7-14 shipped a temporary exemption for the legacy helper package;
@@ -156,6 +159,7 @@ def test_run_lives_only_on_base_backtester():
         "run_cv",
         "run_weights",
         "get_config",
+        "report_figure",
     }, public_callables
 
 
@@ -302,14 +306,16 @@ def test_backtest_layer_never_imports_config_factories():
 
 
 def test_no_lower_layer_imports_the_backtest_layer():
-    """Layering: the backtest layer is imported only by itself and by
+    """Layering: the backtest layer is imported only by itself, by
     `quantlab/utils/module.py`, the config loader that rebuilds a backtester
-    from its dotted path."""
+    from its dotted path, and by `quantlab/api/`, the facade that sits above
+    every layer."""
     allowed_files = {
         REPO_ROOT / "quantlab/base/backtest.py",
         REPO_ROOT / "quantlab/utils/module.py",
     }
     backtest_pkg = REPO_ROOT / "quantlab/backtest"
+    api_pkg = REPO_ROOT / "quantlab/api"
 
     # Positive control: the concrete class really does import the layer, so
     # the resolver is not blind to it.
@@ -319,7 +325,7 @@ def test_no_lower_layer_imports_the_backtest_layer():
 
     offenders = {}
     for path in _python_files(REPO_ROOT / "quantlab"):
-        if path in allowed_files or backtest_pkg in path.parents:
+        if path in allowed_files or backtest_pkg in path.parents or api_pkg in path.parents:
             continue
         names = sorted(
             name

@@ -372,6 +372,37 @@ Traceback (most recent call last):
 ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exactly the price bars of the backtest window: 1 missing ['2024-02-12'], 0 extra [], 0 duplicated
 ```
 
+`WeightsVectorBt`（`quantlab/backtest/predefined/weights.py`）可以在任意市场上回测给定的权重：成交价列、估值价列和年化参数（`trading_days_per_year`、`session_minutes_per_day`）写在它的 `WeightsBacktestConfig` 里，而不是类常量；它不接受模型。`quantlab.api.backtest` 运行的就是这个回测器。价格数据集可以是保存在内存中的 `FrameDataset`；没有 store 也就没有 ticker 附属文件，标的按原样显示，不会记录警告。
+
+```python
+>>> import numpy as np
+>>> import pandas as pd
+>>> import xarray as xr
+>>> from quantlab.backtest.predefined.weights import WeightsVectorBt
+>>> from quantlab.base.config import WeightsBacktestConfig
+>>> from quantlab.dataset.memory import FrameDataset
+>>> bars = pd.bdate_range("2024-01-01", periods=5)
+>>> prices = FrameDataset(pd.DataFrame({
+...     "timestamp": np.repeat(bars, 2),
+...     "symbol": ["AAA", "BBB"] * 5,
+...     "open": [10.0, 20.0, 11.0, 20.0, 12.0, 21.0, 12.0, 22.0, 13.0, 22.0],
+...     "close": [10.5, 20.0, 11.5, 20.5, 12.0, 21.5, 12.5, 22.0, 13.0, 22.5],
+... }))
+>>> backtester = WeightsVectorBt(WeightsBacktestConfig(
+...     price_dataset=prices, start_date="2024-01-01", end_date="2024-01-05",
+...     output_dir=None, rebalance_periods=1, fees=0.0, slippage=0.0,
+...     fill_price_column="open", valuation_price_column="close",
+...     trading_days_per_year=252, session_minutes_per_day=390,
+... ))
+>>> weights = xr.DataArray(
+...     [[1.0, 0.0]] + [[np.nan, np.nan]] * 4, dims=("timestamp", "symbol"),
+...     coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
+... )
+>>> result = backtester.run_weights(weights)
+>>> result.simulation.value.values.round(2).tolist()
+[1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
+```
+
 ### 只在内存中运行
 
 `output_dir=None` 时运行不写任何文件：没有运行目录，也没有报告。`result.run_dir` 为 `None`，其余内容都在返回的结果里。`run()`、`run_cv()` 和 `run_weights()` 都是如此。`output_dir` 没有默认值，需要显式传入 `None`。`output_dir=None` 只管回测自己的运行目录：在 `model_mode="train"` 下，模型仍会把 checkpoint 写到它自己的配置指定的位置。
@@ -382,6 +413,14 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ... ).run_weights(result.weights)
 >>> in_memory.run_dir is None, round(in_memory.metrics["whole"]["Total Return [%]"], 2)
 (True, -5.85)
+```
+
+`report_figure(result)` 以 plotly 图形返回 `report.html` 中嵌入的那张图（净值、回撤、月度收益，设置了基准时还有基准相关的行），因此只在内存中运行的结果也能查看。它接受 `run()` 或 `run_weights()` 的结果。
+
+```python
+>>> figure = weights_backtester.report_figure(in_memory)
+>>> type(figure).__name__
+'Figure'
 ```
 
 ### 与基准对比
@@ -559,7 +598,7 @@ True
 
 回测不模拟借券费用或做空融资成本，所以空头一侧的收益偏乐观；指标里的 `notes` 也有说明。交易统计采用持仓视角：一笔交易是某个标的从建仓到清仓的一次完整往返，把持仓减回目标权重不算一笔已平仓交易。`Total Orders` 是成交笔数。
 
-`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。`run()` 和 `run_cv()` 需要 `model` 和 `model_mode`，`run_weights()` 不使用这两项。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。每个标签的 `delay` 必须等于引擎的 `fill_delay_bars`（见[标签延迟与成交延迟](#标签延迟与成交延迟)）。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响。
+`benchmark_dataset` 必须只含一个标的（见[与基准对比](#与基准对比)）。具体的回测器必须设置 `MARKET`。`run()` 和 `run_cv()` 需要 `model` 和 `model_mode`，`run_weights()` 不使用这两项。load 模式下 `run()` 需要 `checkpoint`，`run_cv()` 需要 `cv_project_dir` 和 `model_mode="load"`。每个标签的 `delay` 必须等于引擎的 `fill_delay_bars`（见[标签延迟与成交延迟](#标签延迟与成交延迟)）。价格存储旁没有 CRSP ticker 附属文件时，回测器会记录一条警告，说明改用坐标轴上的标的名作为标签，运行本身不受影响；保存在内存中的数据集（`FrameDataset`）没有存储，直接使用标的名，不记录警告。
 
 配置类用错时：
 

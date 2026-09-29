@@ -1055,3 +1055,53 @@ class CrossSectionBacktestConfig(BacktestConfig):
     #: The model label whose prediction ranks the symbols. ``None`` selects
     #: the model's first label.
     score_label: str | None = None
+
+
+@dataclass(kw_only=True)
+class WeightsBacktestConfig(BacktestConfig):
+    """Config of a backtest of given target weights, market conventions included.
+
+    The backtester reading it (``WeightsVectorBt``) has no fixed market: the fill and
+    valuation columns and the annualization are fields here instead of a class
+    constant, so one class serves any frame a caller brings. It takes no model; its
+    weights come to ``run_weights()``. ``direction`` and ``top_n`` record the
+    top-N selection that built the weights from scores, when one did; they are shown
+    in the report and never used to select.
+
+    Examples
+    --------
+    >>> import pandas as pd
+    >>> from quantlab.base.config import WeightsBacktestConfig
+    >>> from quantlab.dataset.memory import FrameDataset
+    >>> price_dataset = FrameDataset(pd.DataFrame({
+    ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+    ...     "symbol": ["AAA", "AAA"], "open": [10.0, 11.0], "close": [10.5, 11.5],
+    ... }))
+    >>> cfg = WeightsBacktestConfig(
+    ...     price_dataset=price_dataset,
+    ...     start_date="2024-01-01",
+    ...     end_date="2024-06-28",
+    ...     output_dir=None,
+    ...     rebalance_periods=1,
+    ...     fill_price_column="open",
+    ...     valuation_price_column="close",
+    ...     trading_days_per_year=252,
+    ...     session_minutes_per_day=390,
+    ... )
+    >>> cfg.model, cfg.top_n
+    (None, None)
+    """
+
+    #: Price variable orders fill at.
+    fill_price_column: str
+    #: Price variable the portfolio is valued at after each bar.
+    valuation_price_column: str
+    #: Trading days in a year, to annualize daily and longer bars.
+    trading_days_per_year: int
+    #: Minutes of one trading session, to annualize intraday bars.
+    session_minutes_per_day: int
+    #: The selection side the weights were built with, or ``None`` for weights
+    #: given as such. A record only.
+    direction: Literal["long_only", "long_short"] | None = None
+    #: The names per side the weights were built with, or ``None``. A record only.
+    top_n: int | None = None
