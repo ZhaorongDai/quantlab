@@ -15,7 +15,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.factor.momentum import Momentum
 from quantlab.label.forward import Forward
 from quantlab.label.fret import Return
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.model.xgb import XGBoostRegressor
 
 
 def _momentum(dataset_config: DatasetConfig) -> Momentum:

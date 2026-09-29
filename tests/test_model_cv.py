@@ -49,7 +49,9 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import BaseModel, TorchModel, LibraryModel
+from quantlab.base.library_model import LibraryModel
+from quantlab.base.model import BaseModel
+from quantlab.base.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 

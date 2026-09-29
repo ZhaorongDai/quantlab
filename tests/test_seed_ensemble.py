@@ -21,7 +21,7 @@ What is locked here, and what turns it red:
   class, count or seed that does not match, and a missing member checkpoint.
 - `get_config()` / `from_config()` round-trip the wrapped model's config and
   the seeds.
-- Layout: `quantlab/ensemble_model/` has empty `__init__.py` files, no other
+- Layout: `quantlab/model/` has empty `__init__.py` files, no other
   quantlab module imports it, and it imports no backtest module.
 
 Everything is synthetic, CPU-only and offline.
@@ -35,7 +35,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.ensemble_model.seed import SeedEnsemble
+from quantlab.model.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
 from tests.test_backtest_contracts import (
@@ -328,7 +328,7 @@ def test_config_round_trips_the_wrapped_model_and_seeds(tmp_path):
     config = ensemble.get_config()
 
     assert config == {
-        "name": "quantlab.ensemble_model.seed.SeedEnsemble",
+        "name": "quantlab.model.seed_ensemble.SeedEnsemble",
         "seeds": [5, 1, 4],
         "model": model.get_config(),
     }
@@ -345,24 +345,24 @@ def test_config_round_trips_the_wrapped_model_and_seeds(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_ensemble_package_layout_and_layering():
-    """The ensemble package sits above the model layer: its `__init__.py`
-    files are empty, nothing else in quantlab imports it, and it imports no
-    backtest module."""
-    package = REPO_ROOT / "quantlab/ensemble_model"
+def test_model_package_layout_and_layering():
+    """The model package sits above the base layer: its `__init__.py` files
+    are empty, nothing else in quantlab imports it (so `base/` never reaches
+    up into a concrete head), and it imports no backtest module."""
+    package = REPO_ROOT / "quantlab/model"
     for init in (package / "__init__.py", package / "_support/__init__.py"):
         assert init.stat().st_size == 0, init
 
     # Positive control: the resolver sees the package's own imports.
-    assert "quantlab.ensemble_model._support.base" in _resolved_imports(
-        package / "seed.py"
+    assert "quantlab.model._support.ensemble" in _resolved_imports(
+        package / "seed_ensemble.py"
     )
 
     offenders = {
         str(path.relative_to(REPO_ROOT)): sorted(
             name
             for name in _resolved_imports(path)
-            if _is_or_under(name, "quantlab.ensemble_model")
+            if _is_or_under(name, "quantlab.model")
         )
         for path in _python_files(REPO_ROOT / "quantlab")
         if package not in path.parents

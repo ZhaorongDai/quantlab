@@ -8,8 +8,8 @@ MeanContextHead``. Each is a small ``TorchModel``: the network maps
 import torch
 from torch import nn
 
-from quantlab.base.model import TorchModel
-from quantlab.torch_model.training import (
+from quantlab.base.torch_model import TorchModel
+from quantlab.utils.torch_training import (
     TrainLossThreshold,
     cs_rank_norm,
     cs_zscore,

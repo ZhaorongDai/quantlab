@@ -19,9 +19,9 @@ import numpy as np
 from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
-from quantlab.library_model.data import Rows
-from quantlab.library_model.tabkit import TabkitRegressor, active_callbacks
-from quantlab.library_model.xgb import _WandbEvalCallback, record_feature_importance
+from quantlab.base.library_model import Rows
+from quantlab.model._support.tabkit import TabkitRegressor, active_callbacks
+from quantlab.model.xgb import _WandbEvalCallback, record_feature_importance
 
 
 class _XGBTDEstimator(XGB_TD_Regressor):
@@ -94,7 +94,7 @@ class XGBTDRegressor(TabkitRegressor):
     trained (``num_boosted_rounds``) and the per-factor importance with its
     charts, exactly as ``XGBoostRegressor`` records them. The callback is
     injected into pytabkit's inner ``xgboost.train`` call (see
-    ``quantlab.library_model.tabkit.active_callbacks``).
+    ``quantlab.model._support.tabkit.active_callbacks``).
 
     Parameters
     ----------

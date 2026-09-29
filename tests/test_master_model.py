@@ -24,8 +24,8 @@ import numpy as np
 import pytest
 import torch
 
-from quantlab.torch_model.master import MASTERNet, MASTERRegressor
-from quantlab.torch_model.training import cs_zscore, drop_extreme
+from quantlab.model.master import MASTERNet, MASTERRegressor
+from quantlab.utils.torch_training import cs_zscore, drop_extreme
 from tests.master_reference import MASTER
 from tests.test_torch_model import _feature_panel, _features, _label_of, _model
 

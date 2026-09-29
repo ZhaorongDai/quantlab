@@ -15,8 +15,8 @@ import torch
 from torch import nn
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import TorchModel
-from quantlab.torch_model.training import (
+from quantlab.base.torch_model import TorchModel
+from quantlab.utils.torch_training import (
     TrainLossThreshold,
     cs_zscore,
     drop_extreme,

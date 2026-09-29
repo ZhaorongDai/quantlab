@@ -58,7 +58,7 @@ from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.momentum import Momentum
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.model.xgb import XGBoostRegressor
 from tests.label_stubs import StubLabel
 from tests.test_model_hierarchy import FakePanel, _kwargs
 

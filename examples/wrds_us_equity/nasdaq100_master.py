@@ -49,7 +49,7 @@ from quantlab.factor.alpha101 import Alpha101Stock
 from quantlab.factor.alpha158 import Alpha158Stock
 from quantlab.factor.market import MarketFeatures
 from quantlab.label.fret import Return
-from quantlab.torch_model.master import MASTERRegressor
+from quantlab.model.master import MASTERRegressor
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.

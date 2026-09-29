@@ -42,8 +42,8 @@ from loguru import logger
 from quantlab.backtest.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.base.model import BaseModel
-from quantlab.ensemble_model._support.base import BaseEnsemble
-from quantlab.ensemble_model.seed import SeedEnsemble
+from quantlab.model._support.ensemble import BaseEnsemble
+from quantlab.model.seed_ensemble import SeedEnsemble
 from tests.backtest_fixtures import (
     SeededHead,
     make_model,

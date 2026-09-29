@@ -34,8 +34,8 @@ import xarray as xr
 
 import quantlab.utils.module as module_utils
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import LibraryModel
-from quantlab.library_model.xgb import XGBoostRegressor
+from quantlab.base.library_model import LibraryModel
+from quantlab.model.xgb import XGBoostRegressor
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 

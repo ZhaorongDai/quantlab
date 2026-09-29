@@ -43,9 +43,9 @@ from quantlab.factor.alpha158 import Alpha158SpotKline, Alpha158Stock
 from quantlab.factor.momentum import Momentum
 from quantlab.label.forward import Forward
 from quantlab.label.fret import BinaryReturn, Return
-from quantlab.library_model.realmlp import RealMLPRegressor
-from quantlab.library_model.xgb import XGBoostRegressor
-from quantlab.library_model.xgb_td import XGBTDRegressor
+from quantlab.model.realmlp import RealMLPRegressor
+from quantlab.model.xgb import XGBoostRegressor
+from quantlab.model.xgb_td import XGBTDRegressor
 from tests.torch_heads import MeanContextHead
 
 _OHLCV = ("open", "high", "low", "close", "volume", "amount")

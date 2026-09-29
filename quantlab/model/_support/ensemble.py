@@ -140,7 +140,7 @@ class BaseEnsemble(ABC):
         Examples
         --------
         >>> ensemble.import_path
-        'quantlab.ensemble_model.seed.SeedEnsemble'
+        'quantlab.model.seed_ensemble.SeedEnsemble'
         """
         return _class_path(self)
 

@@ -48,8 +48,7 @@ quantlab/
   dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
   factor/       因子集合：Alpha101、Alpha158、动量、股票池过滤
   label/        未来收益标签
-  torch_model/     PyTorch 模型的训练规则：窗口、目标变换、停止规则
-  library_model/     XGBoost 模型头，以及非 torch 模型的检查点存储
+  model/        每个文件一个模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成
   backtest/     vectorbt 引擎、TopN 选股、美股回测器
   backend.py    Zarr 与 Parquet 存储后端
   registry.py   数据源登记表，以及 run() 与 convert() 入口
@@ -62,4 +61,4 @@ tests/          测试套件
 ```
 
 每个公开的类和函数也都有 numpydoc 格式的 docstring，其中包含 `Examples` 小节。可以用 `help()` 查看，
-例如 `help(quantlab.base.model.TorchModel)`。
+例如 `help(quantlab.base.torch_model.TorchModel)`。
