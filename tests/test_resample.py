@@ -23,6 +23,7 @@ import xarray as xr
 from conftest import WHOLE_STORE, compute_all
 from quantlab.backend import PlBackend, XrBackend
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
 from quantlab.factor.predefined.momentum import Momentum
@@ -390,6 +391,114 @@ def test_kunquant_factor_resample_and_stream_refusal(
     assert compute_all(factor).sizes["timestamp"] == DAYS * BARS_PER_DAY
     with pytest.raises(ValueError, match="init_stream"):
         daily.init_stream()
+
+
+# -- in-memory dataset ----------------------------------------------------------
+
+
+def _frame_of(config: DatasetConfig) -> FrameDataset:
+    """A ``FrameDataset`` holding the same bars as the store, handed over as a long frame."""
+    long = xr.open_zarr(config.zarr_file_path).load().to_dataframe().reset_index()
+    return FrameDataset(long)
+
+
+def _files_under(*roots: Path) -> set[Path]:
+    return {path for root in roots for path in root.rglob("*")}
+
+
+@pytest.mark.parametrize(
+    ("freq", "how"),
+    [
+        ("5m", OHLCV_HOW),
+        ("1h", "mean"),
+        ("1d", OHLCV_HOW),
+        ("1d", "count"),
+        ("1d", {**OHLCV_HOW, "Close": "min", "Volume": "max"}),
+    ],
+    ids=["5m-ohlcv", "1h-mean", "1d-ohlcv", "1d-count", "1d-mixed"],
+)
+def test_a_resampled_frame_dataset_equals_the_zarr_backed_resample(
+    minute_config: DatasetConfig, freq, how
+):
+    stored = SpotKlineDataset(minute_config).resample(freq, how)
+
+    held = _frame_of(minute_config).resample(freq, how)
+
+    xr.testing.assert_identical(held.panel(*WHOLE_STORE), stored.panel(*WHOLE_STORE))
+    last = stored.panel(*WHOLE_STORE)["timestamp"].values[-1]
+    assert held.bar_before(last, 1) == stored.bar_before(last, 1)
+    assert (held.config.resample_freq, held.config.resample_how) == (freq, how)
+
+
+def test_a_chained_frame_resample_equals_the_zarr_backed_chain(minute_config: DatasetConfig):
+    stored = SpotKlineDataset(minute_config).resample("5m", OHLCV_HOW).resample("1d", OHLCV_HOW)
+
+    held = _frame_of(minute_config).resample("5m", OHLCV_HOW).resample("1d", OHLCV_HOW)
+
+    xr.testing.assert_identical(held.panel(*WHOLE_STORE), stored.panel(*WHOLE_STORE))
+
+
+def test_a_frame_resample_writes_no_file(
+    minute_config: DatasetConfig, tmp_path: Path, monkeypatch
+):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    source = _frame_of(minute_config)
+    before = _files_under(tmp_path)
+
+    daily = source.resample("5m", OHLCV_HOW).resample("1d", OHLCV_HOW)
+    daily.panel(*WHOLE_STORE)
+    daily.bar_before("2024-01-03", 1)
+    daily.head(2).collect()
+
+    assert daily.store_path is None
+    assert _files_under(tmp_path) == before
+    assert list(cwd.iterdir()) == []
+
+
+def test_a_frame_resample_leaves_the_source_unchanged(minute_config: DatasetConfig):
+    source = _frame_of(minute_config)
+    held = source.panel(*WHOLE_STORE)
+
+    source.resample("1d", OHLCV_HOW)
+
+    assert source.config.resample_freq is None
+    xr.testing.assert_identical(source.panel(*WHOLE_STORE), held)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda d: d.from_raw_data(),
+        lambda d: d.from_raw_data_chunked(),
+        lambda d: d.update(),
+        lambda d: d.save(),
+    ],
+    ids=["from_raw_data", "from_raw_data_chunked", "update", "save"],
+)
+def test_a_resampled_frame_dataset_refuses_building_and_saving(
+    minute_config: DatasetConfig, call
+):
+    daily = _frame_of(minute_config).resample("1d", OHLCV_HOW)
+    with pytest.raises(ValueError, match="FrameDataset.*in memory"):
+        call(daily)
+
+
+def test_a_stream_mode_factor_refuses_a_resampled_frame_dataset(
+    minute_config_8: DatasetConfig,
+):
+    daily = _frame_of(minute_config_8).resample("1d", OHLCV_HOW)
+    with pytest.raises(ValueError, match="stream.*FrameDataset"):
+        Alpha158SpotKline(
+            FactorConfig(
+                warmup_bars=0,
+                dataset=daily,
+                mode="stream",
+                data_columns=["open", "close", "volume"],
+                factor_names=["KMID"],
+            )
+        )
 
 
 # -- session-based labels -------------------------------------------------------

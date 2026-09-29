@@ -325,13 +325,42 @@ The variables keep their names in `to_kunquant()`, so name them as the factor re
 10
 ```
 
-Nothing is read from or written to disk, so building or saving is refused: `from_raw_data()`, `from_raw_data_chunked()`, `update()` and `save()` raise, and so does a stream-mode factor built on the dataset. `resample()` works and returns a dataset holding the resampled panel, again in memory.
+Nothing is read from or written to disk, so building or saving is refused: `from_raw_data()`, `from_raw_data_chunked()`, `update()` and `save()` raise, and so does a stream-mode factor built on the dataset.
 
 ```python
 >>> mem.save()
 Traceback (most recent call last):
     ...
 ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+```
+
+`resample(freq, how)` takes the same `freq` and `how` as on a Zarr-backed dataset (see [Resample onto coarser bars](#resample-onto-coarser-bars)) and cuts and aggregates the bars the same way, UTC-clock buckets labelled at their start. The result is a new `FrameDataset` holding the resampled panel in memory: nothing is written, `store_path` is `None`, and it refuses building, saving and stream mode like any `FrameDataset`. The source is not changed.
+
+```python
+>>> hours = pd.DataFrame({
+...     "timestamp": pd.date_range("2024-01-02 09:30", periods=4, freq="h").repeat(2),
+...     "symbol": ["AAA", "BBB"] * 4,
+...     "close": [10.0, 20.0, 11.0, 21.0, 12.0, 22.0, 13.0, 23.0],
+...     "volume": 100.0,
+... })
+>>> hourly = FrameDataset(hours)
+>>> daily = hourly.resample("1d", {"close": "last", "volume": "sum"})
+>>> daily.panel("2024-01-02", "2024-01-02")["close"].to_pandas()
+symbol       AAA   BBB
+timestamp
+2024-01-02  13.0  23.0
+>>> daily.panel("2024-01-02", "2024-01-02")["volume"].to_pandas()
+symbol        AAA    BBB
+timestamp
+2024-01-02  400.0  400.0
+>>> daily.bar_before("2024-01-03", 1), hourly.panel("2024-01-02", "2024-01-02").sizes["timestamp"]
+(Timestamp('2024-01-02 00:00:00'), 4)
+>>> daily.config.resample_freq, daily.store_path
+('1d', None)
+>>> daily.update()
+Traceback (most recent call last):
+    ...
+ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
 ```
 
 ## Extending
