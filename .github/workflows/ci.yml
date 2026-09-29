@@ -13,13 +13,20 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
+    # Windows is not a supported platform yet: its job runs for information and does
+    # not fail the workflow.
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         # ubuntu matches the Linux training server; macos (arm64) matches the dev host,
         # where the darwin-only paths run (OpenMP guard, KunQuant symbol padding).
         os: [ubuntu-latest, macos-latest]
+        experimental: [false]
+        include:
+          - os: windows-latest
+            experimental: true
     env:
       WANDB_MODE: disabled
       MPLBACKEND: Agg
@@ -36,6 +43,12 @@ jobs:
         # xgboost's macOS wheel links Homebrew's libomp.dylib and does not bundle it.
         if: runner.os == 'macOS'
         run: brew install libomp
+
+      - name: Put MSVC on PATH (Windows)
+        # KunQuant compiles factor graphs to native code at run time with the host
+        # C++ compiler.
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
 
       - name: Install the locked environment
         run: uv sync --locked --dev

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+import pytest
 import xarray as xr
 from KunQuant.Op import Input
 
