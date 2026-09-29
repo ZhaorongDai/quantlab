@@ -33,7 +33,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.model._support import ensemble as ensemble_base
+from quantlab.base import ensemble as ensemble_base
 from quantlab.model.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.metrics import regression_panel_metrics

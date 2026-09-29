@@ -1,14 +1,28 @@
-"""The shared base of every ensemble of models.
+"""The base class of every ensemble of models, shipped or user-written.
 
 ``BaseEnsemble`` holds what does not depend on where an ensemble's members
 come from: the ``Predictor`` members derived from the members (labels,
 label delays, training and test windows, with the label configs and the
-windows checked identical across members), prediction by ``average_predictions`` over the members, the
-ensemble directory ``train()`` writes, and the ``ensemble.json`` manifest
-that ``load`` and ``check_checkpoint`` read. A concrete ensemble builds its
-members and supplies ``get_config`` / ``from_config``; it may override how
-members collect their data and features (``collect``,
-``_member_predictions``) and which data it fingerprints.
+windows checked identical across members), prediction by combining the
+members' predictions, the ensemble directory ``train()`` writes, and the
+``ensemble.json`` manifest that ``load`` and ``check_checkpoint`` read.
+
+A concrete ensemble builds its members and implements ``get_config`` /
+``from_config``; nothing else is required, and the defaults work for members
+of different classes over different factors. Optional hooks:
+
+- ``_combine``: how the members' prediction panels become the ensemble's,
+  ``average_predictions`` (per-bar z-score, equal-weight mean) by default.
+  Both ``predict_window`` and the ensemble-level evaluation files use it.
+- ``collect``, ``_member_predictions``, ``_member_panel_predictions``: how
+  members collect their data and features, each member on its own by
+  default; an ensemble whose members read the same data shares it.
+- ``fingerprint_inputs``, ``training_fingerprint_inputs``: which data it
+  reports reading.
+- ``_member_seed``: the seed recorded for each member in the manifest.
+
+Shipped ensembles are in ``quantlab/model`` (``SeedEnsemble``,
+``ModelEnsemble``).
 
 The ensemble composes models and inherits none: each member is a complete
 model (a ``BaseModel``) with its own checkpoint.
@@ -19,9 +33,9 @@ On disk ``train()`` writes::
         member_0/            one member's usual run directory
         member_1/
         ...
-        metrics.json         IC metrics of the averaged prediction
+        metrics.json         IC metrics of the combined prediction
         ic_series.csv        their per-bar series, in the single-model layout
-        test_predictions.zarr  the averaged test-segment prediction
+        test_predictions.zarr  the combined test-segment prediction
         config.json          what every member shares: dates and labels
         ensemble.json        the manifest, written last
 
@@ -65,7 +79,11 @@ def _class_path(obj) -> str:
 
 
 class BaseEnsemble(ABC):
-    """Base class of an ensemble that averages the predictions of several models.
+    """Base class of an ensemble that combines the predictions of several models.
+
+    Subclass it, build the members and implement ``get_config`` and
+    ``from_config``; override ``_combine`` to replace the equal-weight
+    z-score average (see the module docstring for every hook).
 
     Parameters
     ----------
@@ -99,11 +117,11 @@ class BaseEnsemble(ABC):
     CONFIG_FILENAME = "config.json"
     #: The manifest format this class writes and reads.
     MANIFEST_FORMAT_VERSION = 1
-    #: Name of the IC metrics file of the averaged prediction.
+    #: Name of the IC metrics file of the combined prediction.
     METRICS_FILENAME = "metrics.json"
-    #: Name of the per-bar IC series file of the averaged prediction.
+    #: Name of the per-bar IC series file of the combined prediction.
     IC_SERIES_FILENAME = "ic_series.csv"
-    #: Name of the zarr store holding the averaged test-segment prediction.
+    #: Name of the zarr store holding the combined test-segment prediction.
     TEST_PREDICTIONS_FILENAME = "test_predictions.zarr"
 
     def __init__(self, members: Sequence):
@@ -145,7 +163,7 @@ class BaseEnsemble(ABC):
         return _class_path(self)
 
     def _check_members_agree(self, members: list) -> None:
-        """Refuse members that would not average into one prediction.
+        """Refuse members that would not combine into one prediction.
 
         The members must carry the same labels, compared by each label's
         ``get_config()`` (which holds its variables and delay), and share one
@@ -276,7 +294,7 @@ class BaseEnsemble(ABC):
 
         Each member predicts the panel in its own data backend, so every bar
         is predicted with all the history collected before it. Used to
-        evaluate the averaged prediction after training.
+        evaluate the combined prediction after training.
         """
         return [
             member.predict_panel(
@@ -285,13 +303,49 @@ class BaseEnsemble(ABC):
             for member in self.members
         ]
 
-    def predict_window(self, start, end) -> xr.Dataset:
-        """Predict every bar from ``start`` to ``end`` as the members' average.
+    def _combine(self, predictions: list[xr.Dataset]) -> xr.Dataset:
+        """Combine the members' prediction panels into the ensemble's prediction.
 
-        The members' predictions are averaged by ``average_predictions``:
-        z-scored over symbols per member, variable and bar, then averaged
-        with equal weights, ignoring NaN. The result is in z-score units.
-        Every member must be trained or loaded.
+        The default is ``average_predictions``: z-scored over symbols per
+        member, variable and bar, then averaged with equal weights, ignoring
+        NaN, in z-score units. Override it for another rule, such as fixed
+        weights or a rank average; it sees only the predictions, so a rule
+        whose parameters are learned in training does not fit here.
+
+        Parameters
+        ----------
+        predictions : list[xr.Dataset]
+            One panel per member, in member order, each on
+            ``(timestamp, symbol)`` with one variable per label name. The
+            members' coordinates may differ.
+
+        Returns
+        -------
+        xr.Dataset
+            One variable per label name on ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import pandas as pd
+        >>> import xarray as xr
+        >>> def panel(values):
+        ...     return xr.Dataset(
+        ...         {"ret": (("timestamp", "symbol"), np.array([values]))},
+        ...         coords={"timestamp": pd.date_range("2024-01-01", periods=1),
+        ...                 "symbol": ["A", "B", "C"]},
+        ...     )
+        >>> BaseEnsemble._combine(None, [panel([1.0, 2.0, 3.0]), panel([30.0, 10.0, 20.0])])["ret"].values
+        array([[ 0. , -0.5,  0.5]])
+        """
+        return average_predictions(predictions)
+
+    def predict_window(self, start, end) -> xr.Dataset:
+        """Predict every bar from ``start`` to ``end`` by combining the members.
+
+        The members' predictions are combined by ``_combine``, by default
+        the equal-weight mean of their per-bar z-scores. Every member must
+        be trained or loaded.
 
         Parameters
         ----------
@@ -309,8 +363,8 @@ class BaseEnsemble(ABC):
         >>> list(out.data_vars), out.sizes["timestamp"]
         (['fwd_ret_1'], 21)
         """
-        averaged = average_predictions(self._member_predictions(start, end))
-        return averaged.sel(timestamp=slice(start, end))
+        combined = self._combine(self._member_predictions(start, end))
+        return combined.sel(timestamp=slice(start, end))
 
     def fingerprint_inputs(self, start, end) -> list[tuple]:
         """Return the data ``predict_window(start, end)`` reads, for fingerprinting.
@@ -411,7 +465,7 @@ class BaseEnsemble(ABC):
         ``metrics.json``, ``ic_series.csv`` and ``test_predictions.zarr``
         there, and reseeds its generators from its own ``random_seed`` right
         before it trains. The ensemble directory then gets the evaluation
-        files of the averaged prediction (``metrics.json``,
+        files of the combined prediction (``metrics.json``,
         ``ic_series.csv``, ``test_predictions.zarr``, see
         ``_write_evaluation_files``), ``config.json`` with the shared
         training and test dates and label configs (it is not a model
@@ -449,12 +503,12 @@ class BaseEnsemble(ABC):
         run_tag: str | None = None,
         write_metrics: bool = True,
     ) -> tuple[Path, dict]:
-        """Train every member, evaluate the average and write the manifest into ``run_dir``.
+        """Train every member, evaluate the combination and write the manifest into ``run_dir``.
 
         Member k trains into ``run_dir/member_{k}`` under the wandb run
         ``{MemberClass}_member_{k}`` (``{MemberClass}_{run_tag}_member_{k}``
         with a ``run_tag``) in the wandb project ``project_name``.
-        Then come the evaluation files of the averaged prediction (see
+        Then come the evaluation files of the combined prediction (see
         ``_write_evaluation_files``; ``metrics.json`` only with
         ``write_metrics``), ``config.json`` and last ``ensemble.json``.
         Hyperparameters are not checked here: ``train`` checks them first,
@@ -529,7 +583,7 @@ class BaseEnsemble(ABC):
         as a single model's fold does), and ``_train_into`` fills
         ``fold_{i}/`` like ``train()`` fills its directory: member k in
         ``member_{k}/`` under the wandb run ``{MemberClass}_fold_{i}_member_{k}``,
-        the evaluation files of the averaged prediction, ``config.json`` and
+        the evaluation files of the combined prediction, ``config.json`` and
         ``ensemble.json``. The fold's ensemble metrics go into the manifest
         instead of a ``metrics.json``. Folds train one after another. After
         the last fold the members keep its dates, as a model does after its
@@ -648,17 +702,17 @@ class BaseEnsemble(ABC):
     def _write_evaluation_files(
         self, run_dir: Path, *, write_metrics: bool = True
     ) -> dict:
-        """Evaluate the averaged prediction of the trained members and write its files.
+        """Evaluate the combined prediction of the trained members and write its files.
 
         Every member predicts its whole collected panel
-        (``_member_panel_predictions``) and the predictions are averaged by
-        ``average_predictions``. The splits are the first member's: its
+        (``_member_panel_predictions``) and the predictions are combined by
+        ``_combine``, the same rule ``predict_window`` uses. The splits are the first member's: its
         collected panel cut by its ``_fit_segments`` into the purged train,
         validation and test segments a single model evaluates, a split being
         skipped when it has no bars (so no ``val_*`` without a validation
-        segment). On each split ``ic_panel_metrics`` scores the averaged
+        segment). On each split ``ic_panel_metrics`` scores the combined
         prediction of the first label against that label's raw values in
-        the first member's panel. No error metric is computed: the average
+        the first member's panel. No error metric is computed: the default combination
         is in z-score units, not in the target's.
 
         Written into ``run_dir``:
@@ -668,7 +722,7 @@ class BaseEnsemble(ABC):
           NaN and inf as null.
         - ``ic_series.csv``: the per-bar series behind them, in the layout
           of a single model's file (``BaseModel._write_ic_series``).
-        - ``test_predictions.zarr``: the averaged prediction on the test
+        - ``test_predictions.zarr``: the combined prediction on the test
           bars, one variable per label; not written when the test segment
           has no bars.
 
@@ -681,7 +735,7 @@ class BaseEnsemble(ABC):
         data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
         )
-        averaged = average_predictions(self._member_panel_predictions())
+        combined = self._combine(self._member_panel_predictions())
         label = first.get_label_names()[0]
         metrics, series = {}, {}
         segments = first._fit_segments(data)
@@ -689,7 +743,7 @@ class BaseEnsemble(ABC):
             stamps = part.timestamp.values
             if len(stamps) == 0:
                 continue
-            pred = averaged[label].reindex(timestamp=stamps, symbol=data.symbol.values)
+            pred = combined[label].reindex(timestamp=stamps, symbol=data.symbol.values)
             values, per_bar = ic_panel_metrics(
                 pred.values,
                 data[label].sel(timestamp=stamps).values,
@@ -705,7 +759,7 @@ class BaseEnsemble(ABC):
         first._write_ic_series(run_dir / self.IC_SERIES_FILENAME, series)
         test_stamps = segments[2].timestamp.values
         if len(test_stamps):
-            averaged.reindex(timestamp=test_stamps).to_zarr(
+            combined.reindex(timestamp=test_stamps).to_zarr(
                 run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w"
             )
         return metrics

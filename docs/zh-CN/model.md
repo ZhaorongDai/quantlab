@@ -403,6 +403,39 @@ True
 [True, True, True]
 ```
 
+### 组合不同的模型
+
+`quantlab.model.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。成员的标签配置、训练窗口和测试窗口必须相同，因为回测器按同一个窗口划分样本内和样本外；否则构造时抛出 `ValueError`。每个成员各自收集数据、各自请求特征，集成的预测是各成员逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
+
+```python
+>>> from quantlab.model.model_ensemble import ModelEnsemble
+>>> ensemble = ModelEnsemble([xgb, gats])  # 标签和日期相同，因子不同
+>>> config = ensemble.get_config()
+>>> [m["name"] for m in config["members"]]
+['quantlab.model.xgb.XGBoostRegressor', 'quantlab.model.gats.GATsRegressor']
+>>> manifest = ensemble.collect().train()
+>>> restored = ModelEnsemble.from_config(config).load(manifest)
+>>> [type(m).__name__ for m in restored.members]
+['XGBoostRegressor', 'GATsRegressor']
+```
+
+合成规则是钩子 `_combine(predictions)`：它按成员顺序收到每个成员的预测面板，返回集成的面板。`predict_window` 以及集成层的 `metrics.json`、`ic_series.csv`、`test_predictions.zarr` 都经过它，所以评估的就是回测的那份预测。在子类里重写它即可换规则，例如改成百分位排名的平均：
+
+```python
+>>> import xarray as xr
+>>> class RankAverage(ModelEnsemble):
+...     """Average the members' per-bar cross-sectional percentile ranks."""
+...     def _combine(self, predictions):
+...         aligned = xr.align(*predictions, join="outer")
+...         return sum(p.rank("symbol", pct=True) for p in aligned) / len(aligned)
+>>> ranked = RankAverage([xgb, gats])
+>>> manifest = ranked.collect().train()
+>>> sorted(p.name for p in manifest.parent.iterdir())
+['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'metrics.json', 'test_predictions.zarr']
+```
+
+`_combine` 只看得到预测。需要在训练中学习参数的规则（例如在验证段上拟合权重）目前还不支持。
+
 ### 训练 torch 模型
 
 torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基类把收集到的数据组装成一个由 torch 张量构成的*训练面板*：特征 `x`（`[T, S, F]`）、训练目标（`[T, S, L]`）及其 `mask`（`[T, S]`）、原始标签 `y_raw`，以及 `present`（`[T, S]`，至少有一个有限特征值的格子），外加时间戳和标的。模型头的 `_dataset(panel, bars, training)` 返回覆盖若干 bar 的 `torch.utils.data.Dataset`，`_dataloader(dataset, training)` 负责分批。默认数据集是 `quantlab.base.torch_data` 中的 `CrossSectionDataset`，每个 bar 一个样本项：这个 bar 的*截面*，即在该 bar 上出现的标的，每个标的带着自己最近 `window_bars` 个 bar 的特征。网络看到的是 `[S_t, N, F]`，其中标的数 S_t 逐 bar 变化，所以网络不能依赖标的的顺序或数量。训练之后才加入的标的同样会得到预测，标签缺失的标的仍作为上下文留在输入里。
@@ -438,7 +471,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 >>> import torch
 >>> import torch.nn as nn
 >>> from quantlab.base.config import ModelConfig
->>> from quantlab.base.model import TorchModel
+>>> from quantlab.base.torch_model import TorchModel
 >>> from quantlab.utils.torch_training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
 ...     """对每个标的最新一个 bar 做线性映射。"""
@@ -720,7 +753,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 | `_loss(target, pred)`：把一个 bar 的 `[n, L]` 行变成一个数；它在各 bar 上的均值就是 `{split}_loss` | MSE |
 
 ```python
->>> from quantlab.base.model import LibraryModel
+>>> from quantlab.base.library_model import LibraryModel
 >>> class RidgeHead(LibraryModel):
 ...     """所有标的共用的闭式岭回归。"""
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -758,6 +791,8 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 ```
 
 `TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/gats.py` 和 `quantlab/model/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
+
+新的集成继承 `quantlab.base.ensemble.BaseEnsemble`，把成员（至少两个标签配置和窗口都相同的模型）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（清单里记录的种子）。`ModelEnsemble` 是最小的完整示例。
 
 ## 注意事项
 
@@ -854,4 +889,4 @@ ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/base/torch_model.py`、`quantlab/base/torch_data.py`、`quantlab/model/gats.py`、`quantlab/model/master.py`、`quantlab/utils/torch_training.py`、`quantlab/factor/market.py`、`quantlab/model/xgb.py`、`quantlab/base/library_model.py`、`quantlab/model/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/base/torch_model.py`、`quantlab/base/torch_data.py`、`quantlab/model/gats.py`、`quantlab/model/master.py`、`quantlab/utils/torch_training.py`、`quantlab/factor/market.py`、`quantlab/model/xgb.py`、`quantlab/base/library_model.py`、`quantlab/model/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/model_ensemble.py`（`ModelEnsemble`）、`quantlab/base/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）和 `quantlab/utils/metrics.py` 的 docstring。

@@ -540,7 +540,7 @@ the epoch with the lowest validation loss:
 ```python
 import torch.nn as nn
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import TorchModel
+from quantlab.base.torch_model import TorchModel
 from quantlab.utils.torch_training import cs_rank_norm, masked_mse
 
 class WindowMLP(nn.Module):

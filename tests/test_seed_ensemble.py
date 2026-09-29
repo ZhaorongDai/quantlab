@@ -354,9 +354,7 @@ def test_model_package_layout_and_layering():
         assert init.stat().st_size == 0, init
 
     # Positive control: the resolver sees the package's own imports.
-    assert "quantlab.model._support.ensemble" in _resolved_imports(
-        package / "seed_ensemble.py"
-    )
+    assert "quantlab.model.xgb" in _resolved_imports(package / "xgb_td.py")
 
     offenders = {
         str(path.relative_to(REPO_ROOT)): sorted(

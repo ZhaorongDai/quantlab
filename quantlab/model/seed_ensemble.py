@@ -16,7 +16,7 @@ from typing import Self
 
 import xarray as xr
 
-from quantlab.model._support.ensemble import BaseEnsemble
+from quantlab.base.ensemble import BaseEnsemble
 from quantlab.utils.module import get_cls_from_path
 
 

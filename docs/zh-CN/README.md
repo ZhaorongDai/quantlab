@@ -48,7 +48,7 @@ quantlab/
   dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
   factor/       因子集合：Alpha101、Alpha158、动量、股票池过滤
   label/        未来收益标签
-  model/        每个文件一个模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成
+  model/        每个文件一个模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成、异构模型集成
   backtest/     vectorbt 引擎、TopN 选股、美股回测器
   backend.py    Zarr 与 Parquet 存储后端
   registry.py   数据源登记表，以及 run() 与 convert() 入口

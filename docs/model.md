@@ -403,6 +403,39 @@ True
 [True, True, True]
 ```
 
+### Combine different models
+
+`ModelEnsemble(members)` in `quantlab.model.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. The members must share their label configs and their training and test windows, since the backtester splits in-sample from out-of-sample by one window; otherwise the constructor raises `ValueError`. Each member collects its own data and requests its own features, and the ensemble predicts the equal-weight mean of the members' per-bar cross-sectional z-scores, as `SeedEnsemble` does. `train()`, `train_cv()`, `load()`, the evaluation files and the manifest are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
+
+```python
+>>> from quantlab.model.model_ensemble import ModelEnsemble
+>>> ensemble = ModelEnsemble([xgb, gats])  # same label and dates, different factors
+>>> config = ensemble.get_config()
+>>> [m["name"] for m in config["members"]]
+['quantlab.model.xgb.XGBoostRegressor', 'quantlab.model.gats.GATsRegressor']
+>>> manifest = ensemble.collect().train()
+>>> restored = ModelEnsemble.from_config(config).load(manifest)
+>>> [type(m).__name__ for m in restored.members]
+['XGBoostRegressor', 'GATsRegressor']
+```
+
+The combination rule is the hook `_combine(predictions)`: it receives one prediction panel per member, in member order, and returns the ensemble's panel. `predict_window` and the ensemble-level `metrics.json`, `ic_series.csv` and `test_predictions.zarr` all go through it, so what is evaluated is what is backtested. Overriding it in a subclass changes the rule, for example to an average of percentile ranks:
+
+```python
+>>> import xarray as xr
+>>> class RankAverage(ModelEnsemble):
+...     """Average the members' per-bar cross-sectional percentile ranks."""
+...     def _combine(self, predictions):
+...         aligned = xr.align(*predictions, join="outer")
+...         return sum(p.rank("symbol", pct=True) for p in aligned) / len(aligned)
+>>> ranked = RankAverage([xgb, gats])
+>>> manifest = ranked.collect().train()
+>>> sorted(p.name for p in manifest.parent.iterdir())
+['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'metrics.json', 'test_predictions.zarr']
+```
+
+`_combine` sees only the predictions. A rule whose parameters are learned during training, such as weights fitted on the validation segment, is not supported yet.
+
 ### Train a torch model
 
 A torch head (`TorchModel`) is fed through standard PyTorch components. The base class builds a *training panel* of torch tensors from the collected data: features `x` (`[T, S, F]`), the training target (`[T, S, L]`), its `mask` (`[T, S]`), the raw labels `y_raw` and `present` (`[T, S]`, a cell with at least one finite feature), with the timestamps and symbols. The head's `_dataset(panel, bars, training)` returns a `torch.utils.data.Dataset` over some bars and `_dataloader(dataset, training)` batches it. The default dataset, `CrossSectionDataset` in `quantlab.base.torch_data`, gives one item per bar: the bar's *cross-section*, meaning its present symbols, each carrying its own last `window_bars` bars of features. The network then sees `[S_t, N, F]`, where the number of symbols S_t changes from bar to bar, so it must not depend on the order or the number of symbols. A symbol that joins after training still gets a prediction, and a symbol whose label is missing stays in the input as context.
@@ -438,7 +471,7 @@ The smallest head is a window, a network and a loss:
 >>> import torch
 >>> import torch.nn as nn
 >>> from quantlab.base.config import ModelConfig
->>> from quantlab.base.model import TorchModel
+>>> from quantlab.base.torch_model import TorchModel
 >>> from quantlab.utils.torch_training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
 ...     """A linear map of each symbol's latest bar."""
@@ -720,7 +753,7 @@ A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows
 | `_loss(target, pred)`: one bar's `[n, L]` rows to a number; its per-bar mean is `{split}_loss` | MSE |
 
 ```python
->>> from quantlab.base.model import LibraryModel
+>>> from quantlab.base.library_model import LibraryModel
 >>> class RidgeHead(LibraryModel):
 ...     """Closed-form ridge regression shared by every symbol."""
 ...     def _init_model(self, num_features, num_labels, hyperparameters):
@@ -758,6 +791,8 @@ Overriding `_transform_target` changes what the library fits and nothing else. B
 ```
 
 A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/gats.py` and `quantlab/model/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
+
+A new ensemble subclasses `quantlab.base.ensemble.BaseEnsemble`, passes its members (at least two models with the same label configs and windows) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest's `config.json` can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded in the manifest). `ModelEnsemble` is the smallest complete example.
 
 ## Notes
 
@@ -854,4 +889,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/base/torch_model.py`, `quantlab/base/torch_data.py`, `quantlab/model/gats.py`, `quantlab/model/master.py`, `quantlab/utils/torch_training.py`, `quantlab/factor/market.py`, `quantlab/model/xgb.py`, `quantlab/base/library_model.py`, `quantlab/model/seed_ensemble.py` (`SeedEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`) and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/base/torch_model.py`, `quantlab/base/torch_data.py`, `quantlab/model/gats.py`, `quantlab/model/master.py`, `quantlab/utils/torch_training.py`, `quantlab/factor/market.py`, `quantlab/model/xgb.py`, `quantlab/base/library_model.py`, `quantlab/model/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/model_ensemble.py` (`ModelEnsemble`), `quantlab/base/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`) and `quantlab/utils/metrics.py`.

@@ -254,6 +254,7 @@ quantlab/
         torch_model.py   TorchModel: the epoch loop of torch heads
         library_model.py LibraryModel, Rows, MlBackend: heads whose library trains itself
         torch_data.py    TrainingPanel, Batch and the PyTorch datasets a torch head picks from
+        ensemble.py      BaseEnsemble: members, combination rule, manifest
         backtest.py      BaseBacktester and its result types
         backend.py       DataBackend, ModelBackend: storage interfaces
         ...              chunked conversion, download ledgers, progress reporting
@@ -262,7 +263,7 @@ quantlab/
     factor/          Alpha101, Alpha158, momentum, residual momentum, market features
     label/           Forward (forward.py) and the forward-return labels (fret.py)
     model/           one entry per model: xgb.py, xgb_td.py, realmlp.py, gats.py, master.py,
-                     seed_ensemble.py; private support code in _support/
+                     seed_ensemble.py, model_ensemble.py; private support code in _support/
     backtest/        vectorbt engine, top-N selector, the US-equity backtester
     my_ops/          custom KunQuant operators
     utils/           config loaders (module.py), metrics, torch target transforms, report, CLI helpers

@@ -611,7 +611,7 @@ eight symbols. A ridge regression:
 import numpy as np
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import LibraryModel
+from quantlab.base.library_model import LibraryModel
 
 
 class RidgeHead(LibraryModel):
@@ -696,7 +696,7 @@ import torch
 from torch import nn
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.model import TorchModel
+from quantlab.base.torch_model import TorchModel
 from quantlab.utils.torch_training import cs_rank_norm, masked_mse
 
 
