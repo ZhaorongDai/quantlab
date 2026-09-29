@@ -7,16 +7,15 @@ classes are named by dotted path and imported only when used, so importing
 ``quantlab.api`` does not load KunQuant.
 """
 
-import os
 from dataclasses import dataclass
 
 import numpy as np
-import pandas as pd
 
+from quantlab.api._compute import NJOBS, compute_over, output_library
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import Factor
 from quantlab.dataset.memory import FrameDataset
-from quantlab.utils.frame import INDEX_COLUMNS, library_of, to_frame, to_panel
+from quantlab.utils.frame import to_panel
 from quantlab.utils.module import get_cls_from_path
 
 #: The canonical price and volume columns of a frame.
@@ -58,7 +57,7 @@ CATALOG = {
 
 def compute_factors(frame, factor, *, columns, as_xarray):
     """Compute ``factor`` over every bar of ``frame``; see ``quantlab.api.compute_factors``."""
-    library = "xarray" if as_xarray else library_of(frame)
+    library = output_library(frame, as_xarray)
     cls, entry, label = _resolve(factor)
     if entry is None:
         panel = to_panel(frame, columns=columns, purpose=label)
@@ -68,10 +67,7 @@ def compute_factors(frame, factor, *, columns, as_xarray):
     numeric = tuple(
         name for name, var in panel.data_vars.items() if np.issubdtype(var.dtype, np.number)
     )
-    instance = cls(_config(cls, FrameDataset(panel), numeric))
-    timestamps = pd.DatetimeIndex(panel["timestamp"].values)
-    result = instance.compute(timestamps[0], timestamps[-1])
-    return to_frame(result.transpose(*INDEX_COLUMNS), library)
+    return compute_over(panel, lambda dataset: cls(_config(cls, dataset, numeric)), library)
 
 
 def _resolve(factor) -> tuple[type, "_Entry | None", str]:
@@ -116,7 +112,7 @@ def _config(cls: type, dataset: FrameDataset, variables: tuple[str, ...]):
             dataset=dataset,
             mode="batch",
             data_columns=variables,
-            njobs=os.cpu_count() or 1,
+            njobs=NJOBS,
         )
     return config_cls(warmup_bars=0, dataset=dataset)
 

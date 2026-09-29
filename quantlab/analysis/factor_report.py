@@ -53,7 +53,7 @@ import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Sequence
 
 import numpy as np
 import pandas as pd
@@ -117,6 +117,11 @@ def _per_bar_rate(returns: pd.DataFrame | pd.Series, horizon: int):
 
 #: Name of the forward-return column in the long frame of ``_collect``.
 FRET_COLUMN = "__fret"
+
+#: Columns of ``FactorAnalysis.summary()``.
+SUMMARY_COLUMNS = (
+    "factor", "fret", "ic", "rank_ic", "icir", "rank_icir", "long_short_return", "turnover"
+)
 #: Resolution of the saved PNG figures.
 FIGURE_DPI = 110
 
@@ -390,6 +395,9 @@ class FactorAnalysis:
     correlation_figure : matplotlib.figure.Figure or None
         The figure of ``correlation``, held when no ``output_dir`` was
         given.
+    library : {"pandas", "polars"}, default "pandas"
+        The frame library ``summary()`` returns;
+        ``quantlab.api.analyze_factors`` sets the caller's.
     """
 
     pairs: dict[str, PairAnalysis]
@@ -397,6 +405,61 @@ class FactorAnalysis:
     config: dict = field(default_factory=dict)
     correlation: FactorCorrelation | None = None
     correlation_figure: "Figure | None" = None
+    library: Literal["pandas", "polars"] = "pandas"
+
+    def summary(self):
+        """Return the headline metrics, one row per pair, to sort and filter factors by.
+
+        Columns:
+
+        - ``factor``, ``fret``: the pair;
+        - ``ic``: mean per-period Pearson IC (``pearson_ic_mean``);
+        - ``rank_ic``: mean per-period Spearman IC (``ic_mean``);
+        - ``icir``, ``rank_icir``: each mean over its standard deviation
+          (``pearson_ir``, ``ir``);
+        - ``long_short_return``: mean per-period forward return of the top
+          quantile minus the bottom one (``mean_spread``), over the fret's
+          horizon;
+        - ``turnover``: mean per-period turnover of the top and bottom
+          quantiles, averaged (``mean_turnover_top``,
+          ``mean_turnover_bottom``).
+
+        Every value is one of ``summary_table()``'s, which holds the full set
+        of scalar metrics.
+
+        Returns
+        -------
+        pandas.DataFrame or polars.DataFrame
+            In ``library``: pandas for a library analysis, the caller's
+            library for one from ``quantlab.api.analyze_factors``.
+
+        Examples
+        --------
+        >>> analysis.summary().round(4)
+           factor   fret    ic  rank_ic    icir  rank_icir  long_short_return  turnover
+        0  signal  ret_1  0.26   0.2384  1.1109     1.0118             0.0069    0.8068
+        """
+        rows = []
+        for pair in self.pairs.values():
+            s = pair.summary
+            rows.append({
+                "factor": pair.factor_name,
+                "fret": pair.fret_name,
+                "ic": s["pearson_ic_mean"],
+                "rank_ic": s["ic_mean"],
+                "icir": s["pearson_ir"],
+                "rank_icir": s["ir"],
+                "long_short_return": s["mean_spread"],
+                "turnover": (s["mean_turnover_top"] + s["mean_turnover_bottom"]) / 2,
+            })
+        table = pd.DataFrame(rows, columns=SUMMARY_COLUMNS)
+        if self.library == "polars":
+            return pl.from_pandas(table)
+        if self.library != "pandas":
+            raise ValueError(
+                f"FactorAnalysis.library must be 'pandas' or 'polars', got {self.library!r}"
+            )
+        return table
 
     def summary_table(self) -> pd.DataFrame:
         """Return the scalar metrics, one row per pair.
@@ -794,24 +857,102 @@ class FactorAnalyzer:
                 f"available: {available}"
             )
 
-        pairs: dict[str, PairAnalysis] = {}
-        for fret, fret_labels in zip(frets, labels):
-            self.check_frequency(
-                features, fret_labels, factor.class_name, type(fret).__name__
+        return self.analyze_panels(
+            features[names],
+            labels,
+            [self._horizon_of(fret) for fret in frets],
+            config={
+                "factor": factor.get_config(),
+                "frets": [fret.get_config() for fret in frets],
+            },
+            output_dir=output_dir,
+            factor_label=factor.class_name,
+            fret_labels=[type(fret).__name__ for fret in frets],
+        )
+
+    def analyze_panels(
+        self,
+        features: xr.Dataset,
+        labels: Sequence[xr.Dataset],
+        horizons: Sequence[int],
+        *,
+        config: dict | None = None,
+        output_dir: str | Path | None = None,
+        factor_label: str = "factors",
+        fret_labels: Sequence[str] | None = None,
+    ) -> FactorAnalysis:
+        """Analyze every variable of ``features`` against every label panel.
+
+        The panel-level core of ``run``, for panels that come from no
+        ``Factor`` object: each label panel is checked for the factor's bar
+        spacing, inner-joined with ``features`` and analyzed; the factor
+        correlation, the figures and ``output_dir`` are handled as in
+        ``run``.
+
+        Parameters
+        ----------
+        features : xarray.Dataset
+            The factor variables on ``(timestamp, symbol)``; every variable
+            is analyzed.
+        labels : sequence of xarray.Dataset
+            Forward-return panels on ``(timestamp, symbol)``; every variable
+            of each is a fret.
+        horizons : sequence of int
+            Bars each label panel's returns span, in the order of ``labels``.
+        config : dict, optional
+            Recorded as ``FactorAnalysis.config``; empty when None.
+        output_dir : str or pathlib.Path, optional
+            When given, ``FactorAnalysis.save`` writes the results there and
+            the figures are not kept in memory.
+        factor_label : str, default "factors"
+            Names the features in error messages.
+        fret_labels : sequence of str, optional
+            Names each label panel in error messages; ``"returns"`` when
+            None.
+
+        Returns
+        -------
+        FactorAnalysis
+            The metrics, figures and ``config``.
+
+        Raises
+        ------
+        ValueError
+            If no label panel is given, ``horizons`` or ``fret_labels`` do not
+            match ``labels`` in length, a label panel's bar spacing differs
+            from the features', a label panel shares no cell with the
+            features, or two pairs share a name.
+
+        Examples
+        --------
+        >>> analysis = FactorAnalyzer(plot=False).analyze_panels(
+        ...     signal.to_dataset(name="signal"), [ret.to_dataset(name="ret_1")], [1]
+        ... )
+        >>> list(analysis.pairs), analysis.config
+        (['signal__ret_1'], {})
+        """
+        if not labels:
+            raise ValueError("analyze_panels needs at least one label panel in `labels`")
+        fret_labels = list(fret_labels or ["returns"] * len(labels))
+        if not len(horizons) == len(fret_labels) == len(labels):
+            raise ValueError(
+                f"analyze_panels got {len(labels)} label panel(s), {len(horizons)} "
+                f"horizon(s) and {len(fret_labels)} fret label(s); give one of each "
+                f"per panel"
             )
+        pairs: dict[str, PairAnalysis] = {}
+        for panel, horizon, fret_label in zip(labels, horizons, fret_labels):
+            self.check_frequency(features, panel, factor_label, fret_label)
             aligned_features, aligned_labels = xr.align(
-                features[names], fret_labels, join="inner"
+                features, panel, join="inner"
             )
             if aligned_features.sizes.get("timestamp", 0) == 0 or aligned_features.sizes.get(
                 "symbol", 0
             ) == 0:
                 raise ValueError(
-                    f"{factor.class_name} and {type(fret).__name__} share no "
-                    f"(timestamp, symbol) cells"
+                    f"{factor_label} and {fret_label} share no (timestamp, symbol) cells"
                 )
-            for pair in self.analyze_many(
-                aligned_features, aligned_labels, horizon=self._horizon_of(fret)
-            ):
+            for pair in self.analyze_many(aligned_features, aligned_labels, horizon=horizon):
                 if pair.key in pairs:
                     raise ValueError(
                         f"two factor/fret pairs are both named {pair.key!r}; "
@@ -819,17 +960,13 @@ class FactorAnalyzer:
                     )
                 pairs[pair.key] = pair
 
-        config = {
-            "factor": factor.get_config(),
-            "frets": [fret.get_config() for fret in frets],
-        }
         correlation = None
-        if len(names) >= 2:
+        if len(features.data_vars) >= 2:
             correlation = FactorCorrelation.compute(
-                features[names], threshold=self.correlation_threshold
+                features, threshold=self.correlation_threshold
             )
         analysis = FactorAnalysis(
-            pairs=pairs, figures={}, config=config, correlation=correlation
+            pairs=pairs, figures={}, config=dict(config or {}), correlation=correlation
         )
         if output_dir is not None:
             analysis.save(output_dir, workers=self.workers if self.plot else 0)
