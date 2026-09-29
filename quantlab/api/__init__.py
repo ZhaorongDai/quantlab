@@ -21,8 +21,21 @@ dataset held in memory, which advanced users can also plug into the full pipelin
 
 Examples
 --------
+>>> import pandas as pd
 >>> import quantlab.api as qa
->>> factors = qa.compute_factors(frame, "alpha158")
+>>> frame = pd.DataFrame({
+...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"]),
+...     "symbol": ["AAA", "BBB", "AAA", "BBB"],
+...     "open": [10.0, 20.0, 10.5, 19.0], "high": [11.0, 21.0, 11.5, 20.5],
+...     "low": [9.5, 19.5, 10.0, 18.5], "close": [10.5, 20.5, 11.0, 19.5],
+...     "volume": [1e6, 2e6, 1.1e6, 1.8e6],
+... })
+>>> qa.compute_factors(frame, "alpha158")[["timestamp", "symbol", "KMID"]]
+   timestamp symbol      KMID
+0 2024-01-02    AAA  0.707107
+1 2024-01-02    BBB -0.707107
+2 2024-01-03    AAA  0.707107
+3 2024-01-03    BBB -0.707107
 """
 
 from collections.abc import Mapping
@@ -58,12 +71,12 @@ def compute_factors(
           (``Alpha158SpotKline``, ``Alpha101SpotKline``), z-scored along time over 20
           bars; also read ``amount``.
 
-        A class from this list behaves as its short name. Any other class is built with
-        its ``config_cls``, no warm-up and batch mode, on a dataset holding every column
-        of the frame under its canonical name; a KunQuant factor is fed every numeric
-        column. Factors needing fundamentals or factor-return series
-        (``LiteratureAlpha``, ``ResidualMomentumFF3``, ``MarketFeatures``) are not in the
-        catalog.
+        A class from this list, or a subclass of one, reads the columns of its short
+        name. Any other class is built with its ``config_cls``, no warm-up and batch mode,
+        on a dataset holding every column of the frame under its canonical name; a
+        KunQuant factor is fed every numeric column. Factors needing fundamentals or
+        factor-return series (``LiteratureAlpha``, ``ResidualMomentumFF3``,
+        ``MarketFeatures``) are not in the catalog.
     columns : mapping of str to str, optional
         Renames the frame's columns onto the canonical names, ``{"date": "timestamp",
         "ticker": "symbol", "Close": "close"}``.

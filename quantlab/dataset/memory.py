@@ -56,6 +56,8 @@ class FrameDataset(MarketDataset):
 
     Examples
     --------
+    >>> import pandas as pd
+    >>> from quantlab.dataset.memory import FrameDataset
     >>> frame = pd.DataFrame({
     ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
     ...     "symbol": ["AAA", "BBB", "AAA"],
@@ -88,8 +90,14 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
-        >>> FrameDataset(frame) == FrameDataset(frame.copy())
-        True
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
+        >>> ds == FrameDataset(frame.copy()), ds == FrameDataset(frame.assign(close=0.0))
+        (True, False)
         """
         if type(other) is not type(self):
             return NotImplemented
@@ -106,6 +114,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> other = ds.copy()
         >>> other == ds, other.config is ds.config
         (True, False)
@@ -143,6 +157,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> dict(ds.panel("2024-01-03", "2024-01-03", symbols=["BBB"]).sizes)
         {'timestamp': 1, 'symbol': 1}
         """
@@ -170,6 +190,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> ds.head(2).collect().columns
         ['timestamp', 'symbol', 'close']
         """
@@ -201,6 +227,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> ds.save()
         Traceback (most recent call last):
         ValueError: FrameDataset.save(): the panel is held in memory, ...
@@ -217,6 +249,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> ds.from_raw_data()
         Traceback (most recent call last):
         ValueError: FrameDataset.from_raw_data(): the panel is held in memory, ...
@@ -233,6 +271,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> ds.from_raw_data_chunked()
         Traceback (most recent call last):
         ValueError: FrameDataset.from_raw_data_chunked(): the panel is held in memory, ...
@@ -249,6 +293,12 @@ class FrameDataset(MarketDataset):
 
         Examples
         --------
+        >>> import pandas as pd
+        >>> from quantlab.dataset.memory import FrameDataset
+        >>> frame = pd.DataFrame({
+        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
+        >>> ds = FrameDataset(frame)
         >>> ds.update()
         Traceback (most recent call last):
         ValueError: FrameDataset.update(): the panel is held in memory, ...

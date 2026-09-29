@@ -172,6 +172,19 @@ def test_a_catalog_class_passed_directly_equals_its_short_name(tmp_path):
     xr.testing.assert_equal(by_class, qa.compute_factors(frame, "alpha158", as_xarray=True))
 
 
+def test_a_subclass_of_a_catalog_class_reads_its_entry_columns(tmp_path):
+    from quantlab.factor.predefined.alpha158 import Alpha158Stock
+
+    class MyAlpha158(Alpha158Stock):
+        pass
+
+    frame, _ = _equity_frame(tmp_path)
+
+    result = qa.compute_factors(frame, MyAlpha158, as_xarray=True)
+
+    xr.testing.assert_equal(result, qa.compute_factors(frame, "alpha158", as_xarray=True))
+
+
 def test_any_factor_subclass_reads_the_canonical_columns():
     frame = _small_frame()
 
@@ -261,6 +274,31 @@ def test_integer_symbols_become_strings(library):
     symbols = result["symbol"].to_list()
     assert all(isinstance(s, str) for s in symbols)
     assert sorted(set(symbols)) == ["10107", "7000"]
+
+
+@pytest.mark.parametrize("library", ["pandas", "polars"])
+@pytest.mark.parametrize(
+    "timestamp, symbol",
+    [(pd.Timestamp("2024-01-02"), None), (pd.NaT, "AAA")],
+    ids=["null-symbol", "null-timestamp"],
+)
+def test_a_row_without_timestamp_or_symbol_raises(library, timestamp, symbol):
+    frame = pd.concat(
+        [_small_frame(), pd.DataFrame([{"timestamp": timestamp, "symbol": symbol, "close": 3.0}])],
+        ignore_index=True,
+    )
+    if library == "polars":
+        frame = pl.from_pandas(frame)
+
+    with pytest.raises(ValueError, match=r"1 row\(s\) with a missing timestamp or symbol.*row 8"):
+        qa.compute_factors(frame, CloseChange)
+
+
+def test_a_timestamp_index_asks_for_reset_index():
+    frame = _small_frame().set_index("timestamp")
+
+    with pytest.raises(ValueError, match=r"reset_index\(\)"):
+        qa.compute_factors(frame, CloseChange)
 
 
 # --------------------------------------------------------------------------- errors

@@ -11,8 +11,8 @@ The input rules:
 
 - a pandas ``(timestamp, symbol)`` MultiIndex is moved into columns;
 - ``columns`` renames the caller's columns first (``{"date": "timestamp"}``);
-- ``timestamp`` and ``symbol`` columns are required, every other column becomes a
-  variable;
+- ``timestamp`` and ``symbol`` columns are required, with no missing values; every
+  other column becomes a variable;
 - a repeated ``(timestamp, symbol)`` pair raises, listing the first ones;
 - timezone-aware timestamps are converted to UTC and made naive;
 - symbols are cast to ``str``;
@@ -33,8 +33,8 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 #: The two index columns of a long frame.
 INDEX_COLUMNS = ("timestamp", "symbol")
 
-#: Duplicate ``(timestamp, symbol)`` pairs named in the error message.
-DUPLICATES_SHOWN = 5
+#: Offending rows or pairs named in an error message.
+ROWS_SHOWN = 5
 
 Library = Literal["pandas", "polars", "xarray"]
 
@@ -105,8 +105,8 @@ def to_panel(
     TypeError
         If ``data`` is not a pandas or polars frame or an xarray panel.
     ValueError
-        If ``columns`` names a column ``data`` lacks, a required column is missing, or a
-        ``(timestamp, symbol)`` pair repeats.
+        If ``columns`` names a column ``data`` lacks, a required column is missing, a row
+        has no timestamp or symbol, or a ``(timestamp, symbol)`` pair repeats.
 
     Examples
     --------
@@ -125,7 +125,9 @@ def to_panel(
     if isinstance(frame.index, pd.MultiIndex):
         frame = frame.reset_index()
     frame = _rename(frame, columns, list(frame.columns), purpose)
+    _check_not_in_index(frame, purpose)
     _check_present(list(frame.columns), INDEX_COLUMNS + tuple(required), purpose)
+    _check_no_null_keys(frame, purpose)
 
     timestamps = pd.to_datetime(frame["timestamp"])
     if timestamps.dt.tz is not None:
@@ -206,6 +208,34 @@ def _check_present(present: list, needed: tuple, purpose: str) -> None:
         )
 
 
+def _check_not_in_index(frame: pd.DataFrame, purpose: str) -> None:
+    """Raise suggesting ``reset_index()`` when an index column sits in the index."""
+    indexed = [
+        name
+        for name in INDEX_COLUMNS
+        if name not in frame.columns and name in (frame.index.names or [])
+    ]
+    if indexed:
+        raise ValueError(
+            f"{purpose} holds {', '.join(repr(n) for n in indexed)} in its index, not as a "
+            f"column. Call frame.reset_index() first, or index the frame by both "
+            f"timestamp and symbol."
+        )
+
+
+def _check_no_null_keys(frame: pd.DataFrame, purpose: str) -> None:
+    """Raise counting and showing the rows whose timestamp or symbol is missing."""
+    null = frame["timestamp"].isna() | frame["symbol"].isna()
+    if not null.any():
+        return
+    shown = frame.loc[null, list(INDEX_COLUMNS)].head(ROWS_SHOWN)
+    listed = ", ".join(f"row {i}: ({t}, {s!r})" for i, t, s in shown.itertuples())
+    raise ValueError(
+        f"{purpose} has {int(null.sum())} row(s) with a missing timestamp or symbol, for "
+        f"example {listed}. Every row needs both; drop or fill those rows first."
+    )
+
+
 def _check_unique(frame: pd.DataFrame, purpose: str) -> None:
     """Raise listing the first repeated ``(timestamp, symbol)`` pairs."""
     repeated = frame.duplicated(list(INDEX_COLUMNS), keep=False)
@@ -214,7 +244,7 @@ def _check_unique(frame: pd.DataFrame, purpose: str) -> None:
     pairs = frame.loc[repeated, list(INDEX_COLUMNS)].drop_duplicates()
     shown = ", ".join(
         f"({pd.Timestamp(t)}, {s!r})"
-        for t, s in pairs.head(DUPLICATES_SHOWN).itertuples(index=False)
+        for t, s in pairs.head(ROWS_SHOWN).itertuples(index=False)
     )
     raise ValueError(
         f"{purpose} has {len(pairs)} duplicate (timestamp, symbol) pair(s), for example "
@@ -233,6 +263,8 @@ def _panel_to_panel(
     panel = panel.drop_vars(
         [name for name, var in panel.data_vars.items() if set(var.dims) != set(INDEX_COLUMNS)]
     )
+    if pd.isna(panel["timestamp"].values).any() or pd.isna(panel["symbol"].values).any():
+        raise ValueError(f"{purpose} has a missing timestamp or symbol label.")
     panel = panel.assign_coords(symbol=panel["symbol"].values.astype(str).astype(object))
     if len(np.unique(panel["timestamp"].values)) != panel.sizes["timestamp"] or len(
         np.unique(panel["symbol"].values)

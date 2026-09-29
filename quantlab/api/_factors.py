@@ -89,9 +89,13 @@ def _resolve(factor) -> tuple[type, "_Entry | None", str]:
             f"factor must be a short name ({', '.join(repr(n) for n in CATALOG)}) or a "
             f"Factor subclass, got {factor!r}."
         )
-    path = f"{factor.__module__}.{factor.__qualname__}"
-    for entry in CATALOG.values():
-        if entry.class_path == path:
+    # The nearest catalog class in the method resolution order wins, so a subclass of a
+    # catalog class reads that entry's fields. Paths are compared rather than classes,
+    # so a Polars factor does not import the KunQuant catalog classes.
+    by_path = {entry.class_path: entry for entry in CATALOG.values()}
+    for base in factor.__mro__:
+        entry = by_path.get(f"{base.__module__}.{base.__qualname__}")
+        if entry is not None:
             return factor, entry, factor.__name__
     return factor, None, factor.__name__
 

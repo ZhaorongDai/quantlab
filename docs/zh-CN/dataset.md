@@ -277,6 +277,63 @@ timestamp
 
 默认按 UTC 时钟切 bar，标签取 bar 的起点，适合以开盘时间打标签的 bar。按交易时段切 bar 的 dataset 可覆盖 `_resample_labels`；`NbboPanelDataset` 按 NYSE 交易时段切分，因此 `"1d"` 给每个时段打上该日期零点的标签，能与日线 store 对齐。
 
+### 在内存中持有自己的 frame
+
+`FrameDataset`（`quantlab.dataset.memory`）是一个 `MarketDataset`，其面板在构造时传入并保存在内存中，没有原始文件，也没有 Zarr store。已经以 pandas 或 polars DataFrame、或以 `xarray` 面板形式持有的数据，就是通过它进入 quantlab 的：凡是接受 dataset 的地方（例如因子 config）都接受它，它从内存回答 `panel()`、`bar_before()`、`head()` 和 `to_kunquant()`。
+
+frame 为长表格式，每个 `timestamp` 和 `symbol` 一行。`columns` 先对你的列重命名。pandas 的 `(timestamp, symbol)` MultiIndex 会被自动 reset，带时区的时间戳转换为 UTC 并去掉时区，symbol 转为 `str`，没有对应行的 `(timestamp, symbol)` 单元格填为 NaN。重复的 `(timestamp, symbol)`，或缺少 timestamp 或 symbol 的行，会报错。其余每一列都以原名成为一个变量。
+
+```python
+>>> import pandas as pd
+>>> from quantlab.dataset.memory import FrameDataset
+>>> frame = pd.DataFrame({
+...     "date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+...     "ticker": ["AAA", "BBB", "AAA"],
+...     "px": [10.0, 20.0, 11.0],
+... })
+>>> mem = FrameDataset(frame, columns={"date": "timestamp", "ticker": "symbol", "px": "close"})
+>>> mem.panel("2024-01-02", "2024-01-03")["close"].to_pandas()
+symbol       AAA   BBB
+timestamp
+2024-01-02  10.0  20.0
+2024-01-03  11.0   NaN
+>>> mem.bar_before("2024-01-03", 1)
+Timestamp('2024-01-02 00:00:00')
+>>> FrameDataset(mem.panel("2024-01-02", "2024-01-03")) == mem
+True
+```
+
+`to_kunquant()` 按变量原名导出，因此变量要按读取它的因子所期望的名称命名：例如 `Alpha158Stock` 读取复权后的 `adjOpen`、`adjHigh`、`adjLow`、`adjClose` 和 `adjVolume`。建在该 dataset 上的因子，计算结果与在持有相同 bar 的 Zarr dataset 上完全一致。
+
+```python
+>>> import numpy as np
+>>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.predefined.alpha158 import Alpha158Stock
+>>> days = pd.bdate_range("2024-01-01", periods=10)
+>>> close = 100 + np.arange(30.0).reshape(10, 3) * np.array([1.0, -0.5, 0.2])
+>>> bars = pd.DataFrame({
+...     "timestamp": np.repeat(days, 3), "symbol": ["AAA", "BBB", "CCC"] * 10,
+...     "adjOpen": close.ravel() - 0.5, "adjHigh": close.ravel() + 1.0,
+...     "adjLow": close.ravel() - 1.0, "adjClose": close.ravel(), "adjVolume": 1e6,
+... })
+>>> factor = Alpha158Stock(FactorConfig(
+...     warmup_bars=0, dataset=FrameDataset(bars), mode="batch",
+...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"],
+...     factor_names=["KMID"], njobs=4,
+... ))
+>>> factor.compute("2024-01-01", "2024-01-12")["KMID"].sizes["timestamp"]
+10
+```
+
+它不读写磁盘，因此构建和保存都会被拒绝：`from_raw_data()`、`from_raw_data_chunked()`、`update()` 和 `save()` 都会报错，建在它上面的 stream 模式因子也会报错。`resample()` 可用，返回一个持有重采样后面板的 dataset，同样在内存中。
+
+```python
+>>> mem.save()
+Traceback (most recent call last):
+    ...
+ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+```
+
 ## 扩展
 
 ### 新增一个市场数据源
@@ -418,4 +475,4 @@ timestamp
 
 ## 另请参阅
 
-chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.base.data`、`quantlab.base.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。
+chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.base.data`、`quantlab.base.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset.memory`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。

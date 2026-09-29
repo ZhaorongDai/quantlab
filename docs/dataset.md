@@ -277,6 +277,63 @@ timestamp
 
 Bars are cut on the UTC clock by default, labelled at their start, which suits bars stamped at their open time. A dataset whose bars follow trading sessions overrides `_resample_labels`; `NbboPanelDataset` cuts by NYSE session, so `"1d"` labels each session with its date at midnight and lines up with daily stores.
 
+### Hold your own frame in memory
+
+`FrameDataset` (`quantlab.dataset.memory`) is a `MarketDataset` whose panel is handed over at construction and held in memory, with no raw files and no Zarr store. It is how data you already hold as a pandas or polars DataFrame, or as an `xarray` panel, enters the library: anything that accepts a dataset (a factor config, for example) accepts it, and it answers `panel()`, `bar_before()`, `head()` and `to_kunquant()` from memory.
+
+A frame is in long form, one row per `timestamp` and `symbol`. `columns` renames your columns first. A pandas `(timestamp, symbol)` MultiIndex is reset, timezone-aware timestamps become naive UTC, symbols become `str`, and a `(timestamp, symbol)` cell with no row becomes NaN. A repeated pair, or a row with no timestamp or symbol, raises. Every other column becomes a variable under its own name.
+
+```python
+>>> import pandas as pd
+>>> from quantlab.dataset.memory import FrameDataset
+>>> frame = pd.DataFrame({
+...     "date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+...     "ticker": ["AAA", "BBB", "AAA"],
+...     "px": [10.0, 20.0, 11.0],
+... })
+>>> mem = FrameDataset(frame, columns={"date": "timestamp", "ticker": "symbol", "px": "close"})
+>>> mem.panel("2024-01-02", "2024-01-03")["close"].to_pandas()
+symbol       AAA   BBB
+timestamp
+2024-01-02  10.0  20.0
+2024-01-03  11.0   NaN
+>>> mem.bar_before("2024-01-03", 1)
+Timestamp('2024-01-02 00:00:00')
+>>> FrameDataset(mem.panel("2024-01-02", "2024-01-03")) == mem
+True
+```
+
+The variables keep their names in `to_kunquant()`, so name them as the factor reading them expects: the adjusted `adjOpen`, `adjHigh`, `adjLow`, `adjClose` and `adjVolume` for `Alpha158Stock`, for example. A factor built on the dataset then computes exactly what it computes on a Zarr-backed dataset holding the same bars.
+
+```python
+>>> import numpy as np
+>>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.predefined.alpha158 import Alpha158Stock
+>>> days = pd.bdate_range("2024-01-01", periods=10)
+>>> close = 100 + np.arange(30.0).reshape(10, 3) * np.array([1.0, -0.5, 0.2])
+>>> bars = pd.DataFrame({
+...     "timestamp": np.repeat(days, 3), "symbol": ["AAA", "BBB", "CCC"] * 10,
+...     "adjOpen": close.ravel() - 0.5, "adjHigh": close.ravel() + 1.0,
+...     "adjLow": close.ravel() - 1.0, "adjClose": close.ravel(), "adjVolume": 1e6,
+... })
+>>> factor = Alpha158Stock(FactorConfig(
+...     warmup_bars=0, dataset=FrameDataset(bars), mode="batch",
+...     data_columns=["adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"],
+...     factor_names=["KMID"], njobs=4,
+... ))
+>>> factor.compute("2024-01-01", "2024-01-12")["KMID"].sizes["timestamp"]
+10
+```
+
+Nothing is read from or written to disk, so building or saving is refused: `from_raw_data()`, `from_raw_data_chunked()`, `update()` and `save()` raise, and so does a stream-mode factor built on the dataset. `resample()` works and returns a dataset holding the resampled panel, again in memory.
+
+```python
+>>> mem.save()
+Traceback (most recent call last):
+    ...
+ValueError: FrameDataset.save(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store to write. Build a new FrameDataset from updated data instead.
+```
+
 ## Extending
 
 ### A new market source
@@ -418,4 +475,4 @@ Two rows with the same `(timestamp, symbol)` reaching `to_xarray()` raise `Value
 
 ## See also
 
-The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.base.data`, `quantlab.base.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.
+The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.base.data`, `quantlab.base.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset.memory`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.
