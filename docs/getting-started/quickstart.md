@@ -309,7 +309,7 @@ print("Out-of-sample ranges:", result.metrics["out_of_sample_ranges"])
   Total Return [%]   10.984
   Sharpe Ratio       1.410
   Max Drawdown [%]   8.645
-Metric groups: ['in_sample', 'in_sample_range', 'notes', 'out_of_sample', 'out_of_sample_ranges', 'training_window', 'whole']
+Metric groups: ['in_sample', 'in_sample_range', 'notes', 'out_of_sample', 'out_of_sample_ranges', 'portfolio_construction', 'training_window', 'whole']
 In-sample range: None
 Out-of-sample ranges: [('2023-01-02', '2023-07-14')]
 ```

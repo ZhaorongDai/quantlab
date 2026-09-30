@@ -12,6 +12,8 @@ What is locked here, and what turns it red:
   construction rule needs nothing from the shipped ones;
 - the portfolio layer never imports the backtest layer (the backtest layer may import
   the portfolio layer), so an event-driven engine can depend on the portfolio layer alone;
+- cvxpy is imported by the mean-variance optimiser only, never by the base package or
+  the portfolio framework;
 - every `predefined` package's `__init__.py` is empty.
 
 Static checks, plus one subprocess import; offline.
@@ -94,3 +96,12 @@ def test_the_portfolio_layer_never_imports_the_backtest_layer():
         for path in files
     }
     assert {name: found for name, found in offenders.items() if found} == {}
+
+
+def test_only_the_mean_variance_optimizer_imports_a_solver():
+    importers = sorted(
+        str(path.relative_to(REPO_ROOT))
+        for path in _python_files(REPO_ROOT / "quantlab")
+        if any(_is_or_under(name, "cvxpy") for name in _resolved_imports(path))
+    )
+    assert importers == ["quantlab/portfolio/predefined/mean_variance.py"]

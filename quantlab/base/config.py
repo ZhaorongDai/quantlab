@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from .data import MarketDataset
     from .factor import Factor
     from .model import BaseModel
-    from .portfolio import PortfolioConstructor
+    from .portfolio import PortfolioConstructor, RiskModel
 
 
 def _allows_tuple(annotation) -> bool:
@@ -831,6 +831,59 @@ class TopNConfig(_FrozenConfig):
     #: The label whose prediction ranks the symbols. ``None`` selects the
     #: predictor's first label.
     score_label: str | None = None
+
+
+@dataclass(frozen=True)
+class LedoitWolfConfig(_FrozenConfig):
+    """Config of ``LedoitWolfRiskModel``: a shrunk sample covariance of trailing returns.
+
+    Examples
+    --------
+    >>> LedoitWolfConfig(lookback_bars=252).lookback_bars
+    252
+    """
+
+    #: Bars of trailing one-bar returns the covariance is estimated from;
+    #: at least 2. A symbol needs a finite return on every one of them.
+    lookback_bars: int
+
+
+@dataclass(frozen=True, kw_only=True)
+class MeanVarianceConfig(_FrozenConfig):
+    """Config of ``MeanVarianceOptimizer``: Markowitz weights with a turnover penalty.
+
+    The optimiser maximises ``w @ mu - risk_aversion / 2 * w @ Sigma @ w -
+    turnover_penalty * |w - w_current|_1``, with ``mu`` and ``Sigma`` on the
+    span of ``expected_return_label``.
+
+    Examples
+    --------
+    >>> cfg = MeanVarianceConfig(
+    ...     expected_return_label="ret_5",
+    ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=252)),
+    ...     ic=0.05, risk_aversion=10.0, weight_cap=0.05,
+    ... )
+    >>> cfg.direction, cfg.turnover_penalty
+    ('long_only', 0.0)
+    """
+
+    #: The label whose prediction gives the expected return; its span sets
+    #: the horizon of the expected return and the covariance.
+    expected_return_label: str
+    #: The risk model estimating the covariance of one-bar returns.
+    risk_model: "RiskModel"
+    #: Information coefficient of the Grinold calibration
+    #: ``mu = ic * sigma * z``, for example a CV run's mean IC.
+    ic: float
+    #: Risk aversion ``lambda`` of the variance penalty.
+    risk_aversion: float
+    #: Penalty ``kappa`` per unit of one-way turnover against the current
+    #: weights; 0 trades freely.
+    turnover_penalty: float = 0.0
+    #: Largest weight of one symbol.
+    weight_cap: float = 1.0
+    #: ``"long_only"``: fully invested, non-negative weights.
+    direction: Literal["long_only"] = "long_only"
 
 
 @dataclass(frozen=True)

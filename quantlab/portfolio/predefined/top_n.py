@@ -75,7 +75,7 @@ class TopNConstructor(PortfolioConstructor):
         if config.top_n < 1:
             raise ValueError(f"top_n must be >= 1, got {config.top_n}")
 
-    def check_predictor(self, labels: list[str], label_scales: dict[str, str]) -> None:
+    def bind(self, predictor) -> None:
         """Refuse a predictor without labels, or without ``score_label``.
 
         Any scale ranks, so ``label_scales`` is not read.
@@ -88,11 +88,14 @@ class TopNConstructor(PortfolioConstructor):
 
         Examples
         --------
+        With ``model`` a model predicting ``ret_5`` and ``ret_1``:
+
         >>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2, score_label="ret_20"))
-        >>> rule.check_predictor(["ret_5", "ret_1"], {})
+        >>> rule.bind(model)
         Traceback (most recent call last):
         ValueError: score_label 'ret_20' is not one of the predictor's labels ['ret_5', 'ret_1']
         """
+        labels = self._label_names(predictor)
         if not labels:
             raise ValueError("the predictor declares no labels to score by")
         label = self.config.score_label
@@ -164,11 +167,14 @@ class TopNConstructor(PortfolioConstructor):
         predictions: xr.Dataset,
         eligible: xr.DataArray,
         rebalance: np.ndarray,
+        returns: xr.DataArray | None = None,
     ) -> xr.Dataset:
         """Build top-n target weights for every bar of a panel, vectorised.
 
         Returns exactly what ``PortfolioConstructor.construct_panel``'s
-        per-bar loop returns, without building a context per bar.
+        per-bar loop returns, without building a context per bar. Top-n
+        reads neither the current weights nor the returns, and never fails
+        a bar.
 
         Parameters
         ----------
@@ -178,12 +184,14 @@ class TopNConstructor(PortfolioConstructor):
             Booleans on the same labels as ``predictions`` (in any order).
         rebalance : np.ndarray
             One boolean per timestamp, True on rebalance bars.
+        returns : xr.DataArray, optional
+            One-bar returns, checked like the loop checks them and not read.
 
         Returns
         -------
         xr.Dataset
             One ``weight`` variable on ``(timestamp, symbol)``; all NaN on a
-            bar that does not rebalance.
+            bar that does not rebalance. ``attrs["failed_bars"]`` is empty.
 
         Raises
         ------
@@ -209,6 +217,7 @@ class TopNConstructor(PortfolioConstructor):
         predictions = predictions.transpose("timestamp", "symbol")
         eligible_values = self._check_eligible(eligible, predictions)
         rebalance = self._check_rebalance(rebalance, predictions)
+        self._check_returns(returns, predictions)
         scores = np.asarray(
             predictions[self._score_label(predictions)].values, dtype=np.float64
         )
@@ -216,7 +225,9 @@ class TopNConstructor(PortfolioConstructor):
         weights = np.full(scores.shape, np.nan, dtype=np.float64)
         for t in np.flatnonzero(rebalance):
             weights[t] = self._book(scores[t], eligible_values[t], timestamps[t])
-        return xr.Dataset(
+        out = xr.Dataset(
             {"weight": (("timestamp", "symbol"), weights)},
             coords={"timestamp": timestamps, "symbol": predictions.symbol.values},
         )
+        out.attrs["failed_bars"] = []
+        return out

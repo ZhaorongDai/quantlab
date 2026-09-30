@@ -93,6 +93,22 @@ def _select(direction, top_n, scores, fill=None, rebalance=None) -> np.ndarray:
     return out["weight"].values
 
 
+class _Label:
+    def __init__(self, name):
+        self.name = name
+
+    def get_factor_names(self):
+        return (self.name,)
+
+
+class _Predictor:
+    """Just the `labels` a rule's `bind` reads."""
+
+    def __init__(self, names):
+        self.labels = [_Label(name) for name in names]
+        self.label_scales = {name: "raw" for name in names}
+
+
 @contextlib.contextmanager
 def _warnings():
     """Capture loguru WARNING messages into a list; the sink is always removed."""
@@ -342,7 +358,7 @@ def test_score_label_defaults_to_first_label():
 
     assert first.construct_panel(predictions, eligible, mask)["weight"].values.tolist() == [[0.0, 1.0, 0.0]]
     assert chosen.construct_panel(predictions, eligible, mask)["weight"].values.tolist() == [[1.0, 0.0, 0.0]]
-    chosen.check_predictor(["ret_5", "ret_1"], {})
+    chosen.bind(_Predictor(["ret_5", "ret_1"]))
 
 
 def test_unknown_score_label_raises_listing_known_labels():
@@ -352,13 +368,13 @@ def test_unknown_score_label_raises_listing_known_labels():
     list."""
     rule = TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="ret_20"))
     with pytest.raises(ValueError) as excinfo:
-        rule.check_predictor(["ret_5", "ret_1"], {})
+        rule.bind(_Predictor(["ret_5", "ret_1"]))
     message = str(excinfo.value)
     assert "ret_20" in message
     assert "ret_5" in message and "ret_1" in message
 
     with pytest.raises(ValueError):
-        TopNConstructor(TopNConfig(direction="long_only", top_n=1)).check_predictor([], {})
+        TopNConstructor(TopNConfig(direction="long_only", top_n=1)).bind(_Predictor([]))
 
 
 def test_selector_rejects_bad_parameters():

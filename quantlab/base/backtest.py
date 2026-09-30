@@ -1726,6 +1726,7 @@ class BaseBacktester(ABC):
             else self._simulate_benchmark(benchmark_prices)
         )
         metrics = self._compute_metrics(simulation, benchmark, split)
+        metrics.update(self._signal_metrics())
         return _BacktestWindow(
             predictions=predictions,
             prices=prices,
@@ -2324,6 +2325,15 @@ class BaseBacktester(ABC):
         ``(timestamp, symbol)`` whose rows are all-NaN on hold bars and
         all-finite with gross exposure at most 1 on rebalance bars.
         """
+
+    def _signal_metrics(self) -> dict:
+        """Return metrics about the last ``_generate_signals`` call, for ``metrics.json``.
+
+        Called right after the window's metrics are computed; the keys are
+        added to them. The default adds nothing; a backtester whose signal
+        generation can hold a bar after a failure reports it here.
+        """
+        return {}
 
     @abstractmethod
     def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:

@@ -1,0 +1,246 @@
+"""The mean-variance optimiser and the Ledoit-Wolf risk model on hand-built contexts (#79).
+
+What is locked here, and what turns it red (no store, no model, no vectorbt):
+
+- Long-only weights sum to one, are non-negative, respect the cap, and put
+  0.0 on ineligible symbols and on symbols without enough return history.
+- A larger turnover penalty moves the solution toward the current weights.
+- The Grinold expected return is `ic * sigma * z` by hand, `sigma` from the
+  span-scaled covariance.
+- The covariance is the risk model's one-bar covariance times the
+  expected-return label's span.
+- An infeasible bar raises `PortfolioConstructionError`; so does an
+  unbound optimiser's `problem_inputs` (RuntimeError) and bad parameters.
+- `LedoitWolfRiskModel` returns a symmetric positive-definite covariance;
+  given volatilities become the square roots of its diagonal.
+- The optimiser and its risk model round-trip through `get_config`.
+"""
+
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+
+from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
+from quantlab.base.portfolio import PortfolioConstructionError, PortfolioContext
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
+
+SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+LOOKBACK = 40
+SPAN = 5
+
+
+class _Label:
+    def __init__(self, name, span):
+        self.name, self.span = name, span
+
+    def get_factor_names(self):
+        return (self.name,)
+
+    def span_bars(self):
+        return self.span
+
+
+class _Predictor:
+    def __init__(self, spans):
+        self.labels = [_Label(name, span) for name, span in spans.items()]
+        self.label_scales = {name: "raw" for name in spans}
+
+
+def _context(*, seed=0, eligible=None, current=None, prediction=None, returns=None):
+    rng = np.random.default_rng(seed)
+    n = len(SYMBOLS)
+    if returns is None:
+        vols = np.linspace(0.01, 0.03, n)
+        returns = rng.normal(0.0, 1.0, size=(LOOKBACK, n)) * vols
+    if prediction is None:
+        prediction = rng.normal(size=n)
+    coords = {"symbol": SYMBOLS}
+    return PortfolioContext(
+        timestamp=pd.Timestamp("2024-03-01"),
+        predictions=xr.Dataset({"ret_5": ("symbol", prediction)}, coords=coords),
+        eligible=xr.DataArray(
+            np.ones(n, bool) if eligible is None else np.asarray(eligible), dims="symbol", coords=coords
+        ),
+        current_weights=xr.DataArray(
+            np.zeros(n) if current is None else np.asarray(current, float), dims="symbol", coords=coords
+        ),
+        returns=xr.DataArray(
+            returns,
+            dims=("timestamp", "symbol"),
+            coords={"timestamp": pd.bdate_range("2024-01-01", periods=len(returns)), **coords},
+        ),
+    )
+
+
+def _optimizer(**overrides) -> MeanVarianceOptimizer:
+    params = dict(
+        expected_return_label="ret_5",
+        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        ic=0.05,
+        risk_aversion=5.0,
+        weight_cap=0.3,
+    )
+    params.update(overrides)
+    optimizer = MeanVarianceOptimizer(MeanVarianceConfig(**params))
+    optimizer.bind(_Predictor({"ret_5": SPAN, "vol_5": SPAN}))
+    return optimizer
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_long_only_weights_are_fully_invested_non_negative_and_capped(seed):
+    weights = _optimizer().construct(_context(seed=seed)).values
+
+    assert weights.sum() == pytest.approx(1.0, abs=1e-9)
+    assert (weights >= 0).all()
+    assert (weights <= 0.3 + 1e-6).all()
+
+
+def test_ineligible_and_short_history_symbols_get_zero():
+    returns = np.random.default_rng(1).normal(0.0, 0.02, size=(LOOKBACK, len(SYMBOLS)))
+    returns[:3, 4] = np.nan  # EEE lacks three bars of history
+    prediction = np.array([0.0, 0.0, 0.0, 0.0, 9.0, 9.0])  # the best two are excluded
+
+    weights = _optimizer(weight_cap=0.5).construct(
+        _context(eligible=[True, True, True, True, True, False], prediction=prediction, returns=returns)
+    )
+
+    assert weights.sel(symbol="EEE") == 0.0
+    assert weights.sel(symbol="FFF") == 0.0
+    assert float(weights.sum()) == pytest.approx(1.0)
+
+
+def test_a_larger_turnover_penalty_moves_the_solution_toward_the_current_weights():
+    current = np.array([0.3, 0.3, 0.3, 0.1, 0.0, 0.0])
+    context = _context(seed=3, current=current)
+
+    distances = [
+        np.abs(_optimizer(turnover_penalty=kappa).construct(context).values - current).sum()
+        for kappa in (0.0, 0.001, 0.01)
+    ]
+
+    assert distances[0] > distances[1] > distances[2]
+    assert distances[2] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_the_grinold_expected_return_matches_a_hand_computation():
+    context = _context(seed=4)
+    optimizer = _optimizer()
+
+    inputs = optimizer.problem_inputs(context)
+
+    one_bar = optimizer.config.risk_model.estimate(context).covariance
+    sigma = np.sqrt(np.diag(one_bar) * SPAN)
+    prediction = context.predictions["ret_5"].values
+    z = (prediction - prediction.mean()) / prediction.std(ddof=1)
+    np.testing.assert_allclose(inputs.expected_return, 0.05 * sigma * z, rtol=1e-12)
+
+
+def test_the_covariance_is_scaled_to_the_expected_return_labels_span():
+    context = _context(seed=5)
+    optimizer = _optimizer()
+
+    inputs = optimizer.problem_inputs(context)
+
+    one_bar = optimizer.config.risk_model.estimate(context).covariance
+    np.testing.assert_allclose(inputs.covariance, one_bar * SPAN, rtol=1e-12)
+    assert optimizer.span == SPAN
+
+
+def test_an_infeasible_bar_raises_a_portfolio_construction_error():
+    # Two candidates cannot hold a fully invested book under a 0.3 cap.
+    with pytest.raises(PortfolioConstructionError, match="infeasible"):
+        _optimizer().construct(_context(eligible=[True, True, False, False, False, False]))
+
+
+def test_bind_checks_the_label_and_reads_its_span():
+    optimizer = MeanVarianceOptimizer(
+        MeanVarianceConfig(
+            expected_return_label="ret_5",
+            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            ic=0.05,
+            risk_aversion=5.0,
+        )
+    )
+    with pytest.raises(RuntimeError, match="bind"):
+        optimizer.problem_inputs(_context())
+    with pytest.raises(ValueError, match="ret_5"):
+        optimizer.bind(_Predictor({"ret_1": 1}))
+
+    optimizer.bind(_Predictor({"ret_1": 1, "ret_5": 5}))
+    assert optimizer.span == 5
+
+
+@pytest.mark.parametrize(
+    "overrides, match",
+    [
+        ({"direction": "long_short"}, "long_only"),
+        ({"weight_cap": 0.0}, "weight_cap"),
+        ({"weight_cap": 1.5}, "weight_cap"),
+        ({"risk_aversion": -1.0}, "risk_aversion"),
+        ({"turnover_penalty": -0.1}, "turnover_penalty"),
+    ],
+)
+def test_bad_parameters_are_refused_at_construction(overrides, match):
+    params = dict(
+        expected_return_label="ret_5",
+        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        ic=0.05,
+        risk_aversion=5.0,
+    )
+    params.update(overrides)
+    with pytest.raises(ValueError, match=match):
+        MeanVarianceOptimizer(MeanVarianceConfig(**params))
+
+
+def test_ledoit_wolf_is_symmetric_positive_definite_with_more_symbols_than_bars():
+    rng = np.random.default_rng(6)
+    symbols = [f"S{i}" for i in range(30)]
+    returns = rng.normal(0.0, 0.02, size=(10, 30))
+    coords = {"symbol": symbols}
+    context = PortfolioContext(
+        timestamp=pd.Timestamp("2024-03-01"),
+        predictions=xr.Dataset(coords=coords),
+        eligible=xr.DataArray(np.ones(30, bool), dims="symbol", coords=coords),
+        current_weights=xr.DataArray(np.zeros(30), dims="symbol", coords=coords),
+        returns=xr.DataArray(returns, dims=("timestamp", "symbol"), coords={
+            "timestamp": pd.bdate_range("2024-01-01", periods=10), **coords}),
+    )
+
+    covariance = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=10)).estimate(context).covariance
+
+    np.testing.assert_allclose(covariance, covariance.T)
+    assert (np.linalg.eigvalsh(covariance) > 0).all()
+
+
+def test_given_volatilities_become_the_square_roots_of_the_diagonal():
+    context = _context(seed=7)
+    given = xr.DataArray(np.linspace(0.01, 0.06, len(SYMBOLS)), dims="symbol", coords={"symbol": SYMBOLS})
+    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK))
+
+    estimate = risk.estimate(context, volatility=given)
+    historical = risk.estimate(context)
+
+    np.testing.assert_allclose(np.sqrt(estimate.variance), given.values, rtol=1e-12)
+    # The correlations are kept: D C D with the given D.
+    corr = lambda c: c / np.sqrt(np.outer(np.diag(c), np.diag(c)))  # noqa: E731
+    np.testing.assert_allclose(corr(estimate.covariance), corr(historical.covariance), rtol=1e-10)
+    assert (np.linalg.eigvalsh(estimate.covariance) > 0).all()
+
+
+def test_the_optimizer_round_trips_through_its_config_with_its_risk_model():
+    optimizer = _optimizer(turnover_penalty=0.002)
+
+    config = json.loads(json.dumps(optimizer.get_config()))
+    rebuilt = MeanVarianceOptimizer.from_config(config)
+
+    assert config["name"] == "quantlab.portfolio.predefined.mean_variance.MeanVarianceOptimizer"
+    assert config["risk_model"] == {
+        "lookback_bars": LOOKBACK,
+        "name": "quantlab.portfolio.predefined.ledoit_wolf.LedoitWolfRiskModel",
+    }
+    assert rebuilt == optimizer
+    assert rebuilt.lookback_bars == LOOKBACK

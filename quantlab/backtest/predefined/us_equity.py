@@ -8,12 +8,15 @@ inherited from ``VectorBtBacktester``. A saved run's ``config.json`` rebuilds it
 ``quantlab.utils.module.load_backtester_from_config``.
 """
 
+import warnings
+
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
 from quantlab.base.backtest import MarketSpec
 from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.portfolio import PortfolioConstructor
 
 #: Price conventions for US equities. Orders fill at the split- and
@@ -95,14 +98,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
                 f"got {type(config.constructor).__name__}"
             )
         if config.model is not None:
-            label_names = [
-                str(name)
-                for label in config.model.labels
-                for name in label.get_factor_names()
-            ]
-            config.constructor.check_predictor(
-                label_names, dict(config.model.label_scales)
-            )
+            config.constructor.bind(config.model)
 
     def _generate_signals(
         self, predictions: xr.Dataset, prices: xr.Dataset
@@ -111,8 +107,65 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
 
         A symbol is eligible when its next-bar fill price, read from the
         raw, not forward-filled, price panel, is finite; the rule also skips
-        symbols without a finite prediction of the label it reads.
+        symbols without a finite prediction of the label it reads. The rule
+        is handed the one-bar valuation-price returns from the constructor's
+        ``lookback_bars`` bars before the window (``_valuation_returns``), for
+        its return window and to drift the current weights. Bars the rule
+        failed on are kept for ``_signal_metrics``.
         """
         eligible = next_bar_eligible(prices[self.MARKET.fill_price_column])
         mask = rebalance_mask(prices.sizes["timestamp"], self.config.rebalance_periods)
-        return self.config.constructor.construct_panel(predictions, eligible, mask)
+        weights = self.config.constructor.construct_panel(
+            predictions, eligible, mask, returns=self._valuation_returns(prices)
+        )
+        self._failed_bars = list(weights.attrs.pop("failed_bars", []))
+        return weights
+
+    def _valuation_returns(self, prices: xr.Dataset) -> xr.DataArray:
+        """Return one-bar valuation-price returns over the window and its warm-up.
+
+        The warm-up is the constructor's ``lookback_bars`` bars before the
+        window's first bar, counted on the price dataset's calendar, so the
+        first bar already has a full return window; when the dataset holds
+        fewer, a warning names the shortfall and the first windows are
+        short. The return at a bar is its valuation price over the previous
+        bar's, minus one, NaN where either is missing, on the window's
+        symbols.
+        """
+        dataset = self.config.price_dataset
+        column = self.MARKET.valuation_price_column
+        first, last = prices.timestamp.values[0], prices.timestamp.values[-1]
+        lookback = self.config.constructor.lookback_bars
+        try:
+            start = dataset.bar_before(first, lookback)
+        except InsufficientHistoryError as exc:
+            warnings.warn(
+                f"{self.class_name}: {type(self.config.constructor).__name__} reads "
+                f"{lookback} bar(s) of returns before the window but the price "
+                f"dataset holds only {exc.available}; the first return windows are "
+                f"short by {lookback - exc.available} bar(s).",
+                UserWarning,
+                stacklevel=2,
+            )
+            start = dataset.bar_before(first, exc.available)
+        valuation = (
+            dataset.panel(start, last)[column]
+            .reindex(symbol=prices.symbol.values)
+            .transpose("timestamp", "symbol")
+            .load()
+        )
+        return valuation / valuation.shift(timestamp=1) - 1.0
+
+    def _signal_metrics(self) -> dict:
+        """Report the rebalance bars the constructor could not decide and held.
+
+        ``{"portfolio_construction": {"failed_bar_count": n, "failed_bars":
+        [...]}}``, the bars as ISO timestamps.
+        """
+        failed = list(getattr(self, "_failed_bars", []))
+        return {
+            "portfolio_construction": {
+                "failed_bar_count": len(failed),
+                "failed_bars": failed,
+            }
+        }
