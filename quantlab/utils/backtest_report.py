@@ -1493,9 +1493,9 @@ def _span(pair: object) -> tuple[pd.Timestamp, pd.Timestamp, str] | None:
 
 
 def _ticks(low: pd.Timestamp, high: pd.Timestamp) -> list[tuple[pd.Timestamp, str]]:
-    """At most six axis ticks on month starts, labelled by year when a step is whole years."""
+    """At most seven axis ticks on month starts, labelled by year when a step is whole years."""
     months = (high.year - low.year) * 12 + high.month - low.month + 1
-    step = next((m for m in (1, 3, 6, 12, 24, 60, 120) if months / m <= 6), 240)
+    step = next((m for m in (1, 3, 6, 12, 24, 36, 60, 120) if months / m <= 7), 240)
     first = pd.Timestamp(year=low.year, month=1, day=1)
     ticks = []
     for date in pd.date_range(first, high, freq=pd.DateOffset(months=step)):

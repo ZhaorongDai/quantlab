@@ -561,3 +561,14 @@ def test_a_window_that_does_not_parse_is_left_out_and_nothing_raises(tmp_path):
 def test_without_windows_there_is_no_timeline(tmp_path):
     html, _ = _page(tmp_path)
     assert "<h2>Windows</h2>" not in html
+
+
+def test_the_timeline_axis_labels_every_other_year_over_thirteen_years(tmp_path):
+    windows = {
+        "backtest": ["2020-01-02", "2024-12-31"],
+        "folds": [{"label": "model", "training": ["2012-01-03", "2019-12-31"], "traded": ["2020-01-02", "2024-12-31"]}],
+    }
+    html = _timeline_page(tmp_path, windows)
+
+    block = html[html.index("<h2>Windows</h2>") : html.index("</svg>")]
+    assert re.findall(r'text-anchor="middle">([^<]+)</text>', block) == ["2014", "2016", "2018", "2020", "2022", "2024"]
