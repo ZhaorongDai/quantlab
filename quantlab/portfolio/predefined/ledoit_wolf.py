@@ -20,9 +20,12 @@ class LedoitWolfRiskModel(RiskModel):
     """Ledoit-Wolf shrunk covariance of the trailing one-bar returns.
 
     A symbol is covered when every one of the ``lookback_bars`` returns in
-    the context's window is finite and they are not all equal; the others
-    have too little history (or no measurable risk) and are left out of the
-    estimate. The covered symbols' sample
+    the context's window is finite, they are not all equal, and its
+    staleness at the bar is at most ``max_stale_bars`` (when the context
+    carries one); the others have too little history, no measurable risk or
+    no recent price, and are left out of the estimate. A halt inside the
+    window shows as zero returns and then the gap, so a short one keeps the
+    symbol covered. The covered symbols' sample
     covariance is shrunk (``sklearn.covariance.ledoit_wolf``), converted to
     correlations ``C`` and scaled back by volatilities ``D``: the given
     ones where ``volatility`` is passed (a symbol without a finite positive
@@ -32,12 +35,12 @@ class LedoitWolfRiskModel(RiskModel):
     Parameters
     ----------
     config : LedoitWolfConfig
-        ``lookback_bars``, at least 2.
+        ``lookback_bars``, at least 2, and ``max_stale_bars``, at least 0.
 
     Raises
     ------
     ValueError
-        If ``lookback_bars`` is below 2.
+        If ``lookback_bars`` is below 2 or ``max_stale_bars`` is negative.
 
     Examples
     --------
@@ -63,6 +66,15 @@ class LedoitWolfRiskModel(RiskModel):
     >>> given = xr.DataArray([0.02, 0.03, 0.04], dims="symbol", coords={"symbol": symbols})
     >>> np.sqrt(risk.estimate(context, volatility=given).variance).round(6)
     array([0.02, 0.03])
+
+    A backtest also hands each symbol's staleness; ``BBB``, 7 bars without a
+    price, exceeds the default ``max_stale_bars`` of 5:
+
+    >>> import dataclasses
+    >>> stale = dataclasses.replace(context, staleness=xr.DataArray(
+    ...     [0.0, 7.0, 0.0], dims="symbol", coords={"symbol": symbols}))
+    >>> risk.estimate(stale).symbols.tolist()
+    ['AAA']
     """
 
     config_cls = LedoitWolfConfig
@@ -74,6 +86,10 @@ class LedoitWolfRiskModel(RiskModel):
             raise ValueError(
                 f"lookback_bars must be >= 2 to estimate a covariance, got "
                 f"{config.lookback_bars}"
+            )
+        if config.max_stale_bars < 0:
+            raise ValueError(
+                f"max_stale_bars must be >= 0, got {config.max_stale_bars}"
             )
 
     def estimate(
@@ -118,6 +134,11 @@ class LedoitWolfRiskModel(RiskModel):
         covered &= np.nanmax(window, axis=0, initial=-np.inf) > np.nanmin(
             window, axis=0, initial=np.inf
         )
+        if context.staleness is not None:
+            staleness = np.asarray(
+                context.staleness.sel(symbol=symbols).values, dtype=np.float64
+            )
+            covered &= np.isfinite(staleness) & (staleness <= self.config.max_stale_bars)
         if volatility is not None:
             given = np.asarray(volatility.sel(symbol=symbols).values, dtype=np.float64)
             covered &= np.isfinite(given) & (given > 0)

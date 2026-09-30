@@ -91,8 +91,15 @@ class PortfolioContext:
     returns : xr.DataArray or None
         The trailing window of one-bar returns ending at the bar, on
         ``(timestamp, symbol)``, of the rule's ``lookback_bars`` length (no
-        bars for a rule that needs none); NaN where a symbol has no return.
-        ``None`` in a context built by hand for a rule that reads none.
+        bars for a rule that needs none). Each return is computed from the
+        last valuation price known at its bar, so a halt shows as zero
+        returns and then the whole gap on the bar the symbol trades again;
+        NaN before a symbol's first price and on its first bar. ``None`` in a
+        context built by hand for a rule that reads none.
+    staleness : xr.DataArray or None
+        Bars since each symbol's last real valuation price, on ``symbol``:
+        0 when it has one at the bar, NaN before its first. ``None`` without
+        prices.
     factors : xr.Dataset or None
         The values at the bar of the ``Factor`` panels the rule declares in
         ``required_factors()`` (a factor risk model's exposures, for
@@ -121,6 +128,7 @@ class PortfolioContext:
     current_weights: xr.DataArray
     returns: xr.DataArray | None = None
     factors: xr.Dataset | None = None
+    staleness: xr.DataArray | None = None
 
     @property
     def symbols(self) -> np.ndarray:
@@ -191,13 +199,15 @@ def _align_mask(mask: xr.DataArray, predictions: xr.Dataset) -> np.ndarray:
 class _PriceHistory:
     """The prices ``construct_panel`` reads, on the prediction symbols.
 
-    ``returns`` holds the raw one-bar valuation returns; ``raw_fill`` the
-    fill prices as given, ``fill`` and ``valuation`` the forward-filled
-    prices, and ``delisted`` the delisting marks, as ``[T, S]`` arrays; and
-    ``positions`` each prediction bar's row in them.
+    ``returns`` holds the one-bar returns of the forward-filled valuation
+    price and ``staleness`` the bars since each symbol's last real valuation
+    price; ``raw_fill`` the fill prices as given, ``fill`` and ``valuation``
+    the forward-filled prices, and ``delisted`` the delisting marks, as
+    ``[T, S]`` arrays; and ``positions`` each prediction bar's row in them.
     """
 
     returns: xr.DataArray
+    staleness: np.ndarray
     raw_fill: np.ndarray
     fill: np.ndarray
     valuation: np.ndarray
@@ -920,6 +930,13 @@ class PortfolioConstructor(_Configured, ABC):
                 ),
                 returns=window,
                 factors=None if factors is None else factors.isel(timestamp=t, drop=True),
+                staleness=None
+                if history is None
+                else xr.DataArray(
+                    history.staleness[position].copy(),
+                    dims="symbol",
+                    coords={"symbol": symbols},
+                ),
             )
             try:
                 row = self._checked_row(self.construct(context), context)
@@ -959,8 +976,9 @@ class PortfolioConstructor(_Configured, ABC):
     def _check_prices(self, fill_price, valuation_price, delisted, predictions: xr.Dataset):
         """Return the price history the loop reads, or None without prices.
 
-        The history holds the raw one-bar valuation returns (the context's
-        window), the raw and forward-filled fill prices, the forward-filled
+        The history holds the one-bar returns of the forward-filled valuation
+        price and the staleness (the context's window and staleness), the
+        raw and forward-filled fill prices, the forward-filled
         valuation prices and the delisting marks (the modelled holdings),
         and each prediction bar's position in them.
         """
@@ -999,11 +1017,16 @@ class PortfolioConstructor(_Configured, ABC):
                 .values,
                 dtype=bool,
             )
+        valuation_filled = valuation_price.ffill("timestamp")
+        priced = np.isfinite(np.asarray(valuation_price.values, dtype=np.float64))
+        rows = np.arange(priced.shape[0])[:, None]
+        last = np.maximum.accumulate(np.where(priced, rows, -1), axis=0)
         return _PriceHistory(
-            returns=valuation_price / valuation_price.shift(timestamp=1) - 1.0,
+            returns=valuation_filled / valuation_filled.shift(timestamp=1) - 1.0,
+            staleness=np.where(last >= 0, rows - last, np.nan).astype(np.float64),
             raw_fill=fill_price.values.astype(np.float64),
             fill=fill_price.ffill("timestamp").values.astype(np.float64),
-            valuation=valuation_price.ffill("timestamp").values.astype(np.float64),
+            valuation=valuation_filled.values.astype(np.float64),
             delisted=marks,
             positions=positions,
         )

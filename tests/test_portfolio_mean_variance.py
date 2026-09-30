@@ -251,6 +251,7 @@ def test_the_optimizer_round_trips_through_its_config_with_its_risk_model():
     assert config["name"] == "quantlab.portfolio.predefined.mean_variance.MeanVarianceOptimizer"
     assert config["risk_model"] == {
         "lookback_bars": LOOKBACK,
+        "max_stale_bars": 5,
         "name": "quantlab.portfolio.predefined.ledoit_wolf.LedoitWolfRiskModel",
     }
     assert rebuilt == optimizer

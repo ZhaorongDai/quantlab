@@ -839,13 +839,18 @@ class LedoitWolfConfig(_FrozenConfig):
 
     Examples
     --------
-    >>> LedoitWolfConfig(lookback_bars=252).lookback_bars
-    252
+    >>> cfg = LedoitWolfConfig(lookback_bars=252)
+    >>> cfg.lookback_bars, cfg.max_stale_bars
+    (252, 5)
     """
 
     #: Bars of trailing one-bar returns the covariance is estimated from;
     #: at least 2. A symbol needs a finite return on every one of them.
     lookback_bars: int
+    #: Largest staleness (bars since the symbol's last real price) a symbol
+    #: may have at the bar and still be covered; a halt no longer than this
+    #: stays in the estimate, flat returns and then its gap.
+    max_stale_bars: int = 5
 
 
 @dataclass(frozen=True, kw_only=True)
