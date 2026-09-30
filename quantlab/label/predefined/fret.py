@@ -15,7 +15,14 @@ private factor computing the trailing return ``adjOpen[t] / adjOpen[t - n] -
 it ``n + 1`` bars earlier. The label at ``t`` is then ``adjOpen[t + n + 1] /
 adjOpen[t + 1] - 1``: a position entered at the next bar's open, because a
 signal formed at bar ``t`` cannot trade before then.
+
+``Volatility`` follows the same conventions over the same opens: the
+sample standard deviation of the one-bar open-to-open returns inside the
+``n``-bar window, times ``sqrt(n)``, so a ``Return`` and a ``Volatility``
+of the same ``n`` describe the same holding period.
 """
+
+import math
 
 import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
@@ -72,6 +79,30 @@ class _TrailingOpenDirection(FactorKunQuant):
                 op.ConstantOp("nan"),
             )
             Output(binary, self._get_factor_names()[0])
+        return Function(builder.ops)
+
+
+class _TrailingOpenVolatility(FactorKunQuant):
+    """The trailing ``n``-bar open-to-open volatility, ``Volatility`` shifts forward.
+
+    The sample standard deviation (``ddof=1``) of the last ``n`` one-bar
+    returns ``adjOpen[k] / adjOpen[k - 1] - 1``, times ``sqrt(n)``. NaN when
+    any of the ``n + 1`` opens is missing.
+    """
+
+    def _get_factor_names(self) -> tuple[str, ...]:
+        """Return ``("vol_{n}",)``."""
+        return (f"vol_{self.config.kwargs['n_forward_periods']}",)
+
+    def _get_factor_func(self) -> Function:
+        """Build the KunQuant graph of the trailing volatility."""
+        n = self.config.kwargs["n_forward_periods"]
+        builder = Builder()
+        with builder:
+            open_ = Input("adjOpen")
+            one_bar = op.SubConst(op.Div(open_, op.BackRef(open_, 1)), 1.0)
+            volatility = op.MulConst(op.WindowedStddev(one_bar, n), math.sqrt(n))
+            Output(volatility, self._get_factor_names()[0])
         return Function(builder.ops)
 
 
@@ -205,3 +236,72 @@ class BinaryReturn(_OpenToOpenLabel):
     """
 
     _trailing = _TrailingOpenDirection
+
+
+class Volatility(_OpenToOpenLabel):
+    """Forward n-bar open-to-open volatility label.
+
+    At signal timestamp ``t`` the label is the sample standard deviation
+    (``ddof=1``) of the one-bar returns ``adjOpen[k] / adjOpen[k - 1] - 1``
+    for ``k`` in ``t + 2 .. t + n + 1``, times ``sqrt(n)``: the volatility
+    over the ``n`` bars a position entered at the next bar's adjusted open
+    is held, on the same span scale as ``Return`` of the same ``n``. Like
+    ``Return`` it is a ``Forward`` label with ``span = n`` and ``delay = 1``,
+    so ``lookahead_bars()`` is ``n + 1``. It is NaN where any open in the
+    window is missing and at timestamps without ``n + 1`` later bars.
+
+    The output column is ``vol_{n}``.
+
+    Parameters
+    ----------
+    factor_config : FactorConfig
+        The KunQuant factor config of the trailing volatility. Set
+        ``data_columns`` to ``["adjOpen"]`` and
+        ``kwargs["n_forward_periods"]`` to the horizon ``n``, at least 2
+        (one return has no sample standard deviation).
+
+    Raises
+    ------
+    ValueError
+        If ``n_forward_periods`` is below 2.
+
+    Examples
+    --------
+    One symbol whose opens alternate between two one-bar returns. Every
+    window of two returns then holds one of each.
+
+    >>> import numpy as np, pandas as pd, xarray as xr
+    >>> from quantlab.backend import XrBackend
+    >>> from quantlab.base.config import DatasetConfig, FactorConfig
+    >>> from quantlab.dataset.stock import StockDataset
+    >>> from quantlab.label.predefined.fret import Volatility
+    >>> opens = 10.0 * np.cumprod([1.0, 1.1, 0.9, 1.1, 0.9, 1.1, 0.9, 1.1])
+    >>> XrBackend().to_internal(xr.Dataset(
+    ...     {"adjOpen": (["timestamp", "symbol"], opens[:, None])},
+    ...     coords={"timestamp": pd.date_range("2024-01-01", periods=8), "symbol": ["A"]},
+    ... )).write("data/stock.zarr")
+    XrBackend()
+    >>> dataset = StockDataset(DatasetConfig(
+    ...     raw_data_dir_path="data/raw", zarr_file_path="data/stock.zarr",
+    ...     market="us_equity", frequency="1d",
+    ... ))
+    >>> vol = Volatility(FactorConfig(
+    ...     warmup_bars=3, dataset=dataset, mode="batch", data_columns=["adjOpen"],
+    ...     kwargs={"n_forward_periods": 2}, njobs=1, file_path="data/vol.zarr",
+    ... ))
+    >>> vol.lookahead_bars(), vol.span_bars(), vol.get_factor_names()
+    (3, 2, ('vol_2',))
+    >>> vol.compute("2024-01-01", "2024-01-08")["vol_2"].values[:, 0].round(4)
+    array([0.2, 0.2, 0.2, 0.2, 0.2, nan, nan, nan], dtype=float32)
+    """
+
+    _trailing = _TrailingOpenVolatility
+
+    def __init__(self, factor_config: FactorConfig):
+        """Initialize the label; see the class docstring for parameters."""
+        if factor_config.kwargs.get("n_forward_periods", 0) < 2:
+            raise ValueError(
+                "Volatility needs kwargs['n_forward_periods'] >= 2, got "
+                f"{factor_config.kwargs.get('n_forward_periods')!r}"
+            )
+        super().__init__(factor_config)
