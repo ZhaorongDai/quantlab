@@ -458,9 +458,13 @@ def volatility_level_metrics(pred, target) -> dict[str, float]:
     volatility has no variance ratio). ``qlike`` is the mean over those
     cells of ``q - log(q) - 1`` with ``q = target**2 / pred**2``: zero for a
     perfect prediction, and it penalises an under-prediction of variance
-    more than an over-prediction of the same size. ``variance_ratio`` is
-    ``mean(target**2) / mean(pred**2)``: 1 when the predicted variance is
-    unbiased, above 1 when risk is under-predicted.
+    more than an over-prediction of the same size; a prediction close to
+    zero where the target is not makes it very large, and infinite (written
+    as null in ``metrics.json``) once ``q`` overflows, which flags a model
+    predicting next to no risk. ``variance_ratio`` is ``mean(target**2) /
+    mean(pred**2)``, pooled over cells, so the most volatile symbols weigh
+    most: 1 when the predicted variance is unbiased, above 1 when risk is
+    under-predicted.
 
     Parameters
     ----------
@@ -493,3 +497,35 @@ def volatility_level_metrics(pred, target) -> dict[str, float]:
         "qlike": float(np.mean(q - np.log(q) - 1.0)),
         "variance_ratio": float(realised.mean() / predicted.mean()),
     }
+
+
+def scores_volatility_level(label, scale: str | None) -> bool:
+    """Return whether a label's predictions get ``volatility_level_metrics``.
+
+    They do when the label's ``kind`` is ``"volatility"`` and the prediction
+    is on the label's own scale (``scale`` is ``"raw"``, as a predictor's
+    ``label_scales`` reports it): a level metric on a standardized
+    prediction compares units that differ from the label's. An object
+    without ``kind`` counts as a return label.
+
+    Parameters
+    ----------
+    label : object
+        The label object, such as a ``Forward``.
+    scale : str or None
+        The prediction's scale for that label, ``"raw"`` or
+        ``"standardized"``.
+
+    Returns
+    -------
+    bool
+
+    Examples
+    --------
+    >>> from quantlab.label.predefined.fret import Return, Volatility
+    >>> scores_volatility_level(Volatility, "raw"), scores_volatility_level(Volatility, "standardized")
+    (True, False)
+    >>> scores_volatility_level(Return, "raw")
+    False
+    """
+    return getattr(label, "kind", "return") == "volatility" and scale == "raw"

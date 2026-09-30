@@ -254,11 +254,11 @@ its current weight, is not picked again, and the picks share what is left of
 the book, `(1 - locked) / k` each long-only, and per side `0.5` minus that
 side's locked exposure long-short. Ties are broken by symbol order, so the
 same panel always gives the same weights; when a book's cut falls inside a
-group of equal scores, the tied symbols left out are recorded as the
-`tie_at_cutoff` event in `metrics.json` and on the report's Trading table, a
-sign that the picks came from symbol order rather than from the model. When fewer than `top_n` symbols can
-be picked, the book is split among those that can, and a warning names the
-bar.
+group of equal scores, the number of tied symbols left out is recorded as
+the `tie_at_cutoff` event in `metrics.json` and on the report's Trading
+table, a sign that the picks came from symbol order rather than from the
+model. When fewer than `top_n` symbols can be picked, the book is split
+among those that can, and a warning names the bar.
 
 `MeanVarianceOptimizer` is the other shipped rule: it maximises expected
 return minus a risk penalty and a turnover penalty, with a covariance from a

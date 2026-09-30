@@ -828,10 +828,12 @@ class PortfolioConstructor(_Configured, ABC):
         A bar that returns all NaN holds. A bar whose ``construct`` raises
         ``PortfolioConstructionError`` holds too, with a warning, and is
         listed in the result's ``attrs["failed_bars"]``. Events a returned
-        row names in ``attrs["events"]`` (``{name: [symbol, ...]}``, such as
-        the optimiser's ``closed_without_risk``) are gathered by name into
-        the result's ``attrs["events"]``, one ``{"bar", "symbols"}`` record
-        per bar. A bar that does not
+        row reports in ``attrs["events"]`` are gathered by name into the
+        result's ``attrs["events"]``, one record per bar: an event that
+        names its symbols (``{name: [symbol, ...]}``, such as the
+        optimiser's ``closed_without_risk``) gives ``{"bar", "symbols"}``,
+        one that only counts them (``{name: n}``, such as the top-n rule's
+        ``tie_at_cutoff``) gives ``{"bar", "count"}``. A bar that does not
         rebalance gets an all-NaN row, meaning "hold". A returned row must
         keep every locked position (held, not tradable) at its current
         weight and give 0.0 to a symbol neither tradable nor held.
@@ -955,10 +957,13 @@ class PortfolioConstructor(_Configured, ABC):
                 )
                 failed.append(label)
                 continue
-            for name, names in decided.attrs.get("events", {}).items():
-                events.setdefault(name, []).append(
-                    {"bar": pd.Timestamp(timestamps[t]).isoformat(), "symbols": list(names)}
-                )
+            for name, value in decided.attrs.get("events", {}).items():
+                record = {"bar": pd.Timestamp(timestamps[t]).isoformat()}
+                if isinstance(value, (int, np.integer)):
+                    record["count"] = int(value)
+                else:
+                    record["symbols"] = list(value)
+                events.setdefault(name, []).append(record)
             if np.isnan(row).all():
                 continue
             weights[t] = row

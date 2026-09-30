@@ -62,6 +62,23 @@ array([0.375, 0.   , 0.375, 0.25 ])
 
 `DDD` 被持有时停牌，所以保持 0.25；剩下的 0.75 由可交易标的中分数最高的两个平分。
 
+分数相同的标的按标的顺序排列。当某一侧的截断点落在一组同分标的中间时，持有哪几只是由标的顺序而不是模型决定的，这一行会把被排除的并列标的数量记为 `tie_at_cutoff` 事件。下面 `BBB`、`CCC` 和 `DDD` 分数相同，`BBB` 排在最前，另外两只被排除。如果模型只输出少数几个不同的预测值，大多数调仓都会出现这个事件。
+
+```python
+>>> tied = PortfolioContext(
+...     timestamp=pd.Timestamp("2024-03-01"),
+...     predictions=xr.Dataset({"ret_5": on_symbols([0.8, 0.5, 0.5, 0.5])}),
+...     tradable=on_symbols([True, True, True, True]),
+...     current_weights=on_symbols([0.0, 0.0, 0.0, 0.0]),
+... )
+>>> weights = TopNConstructor(TopNConfig(direction="long_only", top_n=2)).construct(tied)
+>>> weights.values
+array([0.5, 0.5, 0. , 0. ])
+>>> weights.attrs
+{'events': {'tie_at_cutoff': 2}}
+
+```
+
 ### 在回测中
 
 向量化回测调用 `construct_panel`。它在调仓 bar 上逐根调用 `construct`，并为每根 bar 构造 context：
@@ -72,7 +89,7 @@ array([0.375, 0.   , 0.375, 0.25 ])
 
 回测器在构造时调用规则的 `bind(predictor)`，这时还没有读任何数据、也没有训练任何模型。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
 
-规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。回测在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如下文的 `closed_without_risk`。
+规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。回测在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
 
 运行目录的 `config.json` 记录了规则的全部参数和它的风险模型，`load_backtester_from_config` 能据此重建。
 

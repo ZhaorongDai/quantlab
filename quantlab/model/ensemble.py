@@ -84,7 +84,11 @@ from quantlab.base.model import BaseModel
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.jsonable import to_jsonable
-from quantlab.utils.metrics import ic_panel_metrics, volatility_level_metrics
+from quantlab.utils.metrics import (
+    ic_panel_metrics,
+    scores_volatility_level,
+    volatility_level_metrics,
+)
 
 
 def _as_time(value) -> pd.Timestamp:
@@ -187,8 +191,9 @@ class BaseEnsemble(ABC):
     def _check_members_agree(self, members: list) -> None:
         """Refuse members that predict a label of one name with different configs.
 
-        Labels are compared by ``get_config()``, which holds their variables
-        and delay; every variable name a label outputs is checked.
+        Labels are compared by ``get_config()``, which holds their class,
+        variables and delay, and by ``kind``, which decides how the label is
+        evaluated; every variable name a label outputs is checked.
 
         Raises
         ------
@@ -196,20 +201,21 @@ class BaseEnsemble(ABC):
             Naming the first member whose label differs from an earlier
             member's label of the same name.
         """
-        seen: dict[str, tuple[int, dict]] = {}
+        seen: dict[str, tuple[int, dict, str]] = {}
         for k, member in enumerate(members):
             for label in member.labels:
-                config = label.get_config()
+                config, kind = label.get_config(), getattr(label, "kind", "return")
                 for name in label.get_factor_names():
                     if name not in seen:
-                        seen[name] = (k, config)
+                        seen[name] = (k, config, kind)
                         continue
-                    first, reference = seen[name]
-                    if config != reference:
+                    first, reference, reference_kind = seen[name]
+                    if (config, kind) != (reference, reference_kind):
                         raise ValueError(
                             f"{self.class_name}: member {k} ({type(member).__name__}) "
-                            f"predicts label {name!r} with config {config!r}, but "
-                            f"member {first} predicts it with {reference!r}; a label "
+                            f"predicts label {name!r} with config {config!r} (kind "
+                            f"{kind!r}), but member {first} predicts it with "
+                            f"{reference!r} (kind {reference_kind!r}); a label "
                             f"several members predict must have one config"
                         )
 
@@ -853,14 +859,12 @@ class BaseEnsemble(ABC):
         predictions = self._member_panel_predictions()
         combined = self._combine(predictions)
         scales = self.label_scales
-        kinds: dict[str, str] = {}
-        for member in self.members:
-            for obj in member.config.labels:
-                for name in member._variable_names(obj):
-                    kinds.setdefault(str(name), getattr(obj, "kind", "return"))
+        # Members agree on every label of one name (_check_members_agree), so
+        # the first label object naming a variable speaks for all of them.
+        objects = {str(name): obj for obj in reversed(self.labels) for name in obj.get_factor_names()}
         metrics, series = {}, {}
         for i, (label, owners) in enumerate(self._label_owners().items()):
-            level = kinds.get(label) == "volatility" and scales.get(label) == "raw"
+            level = scores_volatility_level(objects.get(label), scales.get(label))
             member = self.members[owners[0]]
             data = member.data_backend.get_xarray_dataset(
                 ["timestamp", "symbol"]

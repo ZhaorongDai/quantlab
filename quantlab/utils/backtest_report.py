@@ -1185,9 +1185,12 @@ def _trading_section(metrics: dict) -> str:
                              [_format(construction["failed_bar_count"], "int")]))
         for event, record in construction.items():
             if isinstance(record, dict) and "count" in record:
+                bars = record.get("bars")
+                on = f" on {len(bars):,} bar(s)" if isinstance(bars, list) else ""
                 rows.append(_row(f"Constructor event: {event}",
-                                 "How many times the portfolio constructor reported this event.",
-                                 [_format(record["count"], "int")]))
+                                 "Symbols the portfolio constructor reported this event for, summed over "
+                                 "the rebalance bars it happened on.",
+                                 [_format(record["count"], "int") + on]))
     return _table(f"Trading{_suffix(metrics)}", ["", "Value"], rows)
 
 

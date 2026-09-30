@@ -20,11 +20,11 @@ class TopNConstructor(PortfolioConstructor):
     A locked position (held, not tradable at the bar) keeps its current
     weight and is never picked. The picks come from the other symbols that
     are tradable with a finite score, ranked with a stable sort, so ties
-    resolve by symbol order; when a book's cut falls inside a group of equal
-    scores, the tied symbols left out are named in the row's
-    ``attrs["events"]["tie_at_cutoff"]``, so a run records how often its
-    picks were decided by symbol order rather than by the scores. With ``direction="long_only"`` each of the
-    ``k`` highest-scoring picks gets ``(1 - L) / k``, ``L`` the sum of the
+    resolve by symbol order. When the cut of a book that picks falls inside
+    a group of equal scores, the row's ``attrs["events"]["tie_at_cutoff"]``
+    counts the tied symbols left out, so a run records how often its picks
+    were decided by symbol order rather than by the scores. With
+    ``direction="long_only"`` each of the ``k`` highest-scoring picks gets ``(1 - L) / k``, ``L`` the sum of the
     locked weights; with nothing locked that is ``1/k``, for a gross
     exposure of 100%. With ``direction="long_short"`` the top ``k`` get
     ``(0.5 - L_long) / k`` each and the bottom ``k`` get ``-(0.5 - L_short)
@@ -118,12 +118,29 @@ class TopNConstructor(PortfolioConstructor):
     def _book(
         self, scores: np.ndarray, tradable: np.ndarray, current: np.ndarray, timestamp
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Return one rebalance bar's weights and the tied symbols its cut left out.
+        """Decide one rebalance bar's weights and count the ties its cuts broke.
 
-        The second array holds the positions of the unpicked symbols whose
-        score equals the score at a book's cut (the last long pick, or the
-        last short pick from the bottom); it is empty when every cut falls
-        between two different scores.
+        Parameters
+        ----------
+        scores : np.ndarray
+            The bar's scores per symbol, NaN where there is none.
+        tradable : np.ndarray
+            Whether each symbol can trade at the bar.
+        current : np.ndarray
+            The weights held before the bar.
+        timestamp
+            The bar, named in the warning when fewer than ``top_n`` symbols
+            can be picked.
+
+        Returns
+        -------
+        row : np.ndarray
+            The weights to hold after the bar.
+        tied : int
+            How many unpicked symbols score exactly what a book's last pick
+            scores (the last long pick, or the last short pick from the
+            bottom); a book that picks nothing, for want of candidates or of
+            budget, has no cut and adds none.
         """
         locked = ~tradable & (current != 0)
         row = np.where(locked, current, 0.0)
@@ -137,24 +154,25 @@ class TopNConstructor(PortfolioConstructor):
                 f"{pd.Timestamp(timestamp)}: only {k} symbol(s) to pick per book "
                 f"for top_n={top_n}"
             )
+        # The score each book that picked was cut at.
+        cuts = []
         if k > 0:
             if long_only:
                 budget = 1.0 - row.sum()
                 if budget > 0:
                     row[order[:k]] = budget / k
+                    cuts.append(scores[order[k - 1]])
             else:
                 long_budget = 0.5 - row[row > 0].sum()
                 short_budget = 0.5 + row[row < 0].sum()
                 if long_budget > 0:
                     row[order[:k]] = long_budget / k
+                    cuts.append(scores[order[k - 1]])
                 if short_budget > 0:
                     row[order[-k:]] = -short_budget / k
-        if k == 0:
-            return row, order[:0]
-        # The symbols no book picked, and the score each book was cut at.
+                    cuts.append(scores[order[-k]])
         unpicked = order[k:] if long_only else order[k : order.size - k]
-        cuts = [scores[order[k - 1]]] if long_only else [scores[order[k - 1]], scores[order[-k]]]
-        return row, unpicked[np.isin(scores[unpicked], cuts)]
+        return row, int(np.isin(scores[unpicked], cuts).sum())
 
     def construct(self, context: PortfolioContext) -> xr.DataArray:
         """Return the equal-weight top-n book of the context's bar.
@@ -186,6 +204,6 @@ class TopNConstructor(PortfolioConstructor):
             context.timestamp,
         )
         weights = xr.DataArray(row, dims="symbol", coords={"symbol": symbols})
-        if tied.size:
-            weights.attrs["events"] = {"tie_at_cutoff": [str(s) for s in np.asarray(symbols)[tied]]}
+        if tied:
+            weights.attrs["events"] = {"tie_at_cutoff": tied}
         return weights

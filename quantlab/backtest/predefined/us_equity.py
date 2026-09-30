@@ -188,16 +188,21 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         """Report the bars the constructor could not decide, and its events.
 
         ``{"portfolio_construction": {"failed_bar_count": n, "failed_bars":
-        [...], <event>: {"count": m, "bars": [{"bar", "symbols"}, ...]}}}``,
-        the bars as ISO timestamps; an event such as the optimiser's
-        ``closed_without_risk`` appears only when it happened, ``count``
-        being the number of symbols over all its bars.
+        [...], <event>: {"count": m, "bars": [...]}}}``, the bars as ISO
+        timestamps; an event appears only when it happened, ``count`` being
+        the number of symbols it involved over all its bars and ``bars`` one
+        record per bar, ``{"bar", "symbols"}`` for an event that names them
+        (the optimiser's ``closed_without_risk``) or ``{"bar", "count"}`` for
+        one that counts them (the top-n rule's ``tie_at_cutoff``).
         """
         failed = list(getattr(self, "_failed_bars", []))
         block = {"failed_bar_count": len(failed), "failed_bars": failed}
         for name, records in getattr(self, "_events", {}).items():
             block[name] = {
-                "count": sum(len(record["symbols"]) for record in records),
+                "count": sum(
+                    record["count"] if "count" in record else len(record["symbols"])
+                    for record in records
+                ),
                 "bars": list(records),
             }
         return {"portfolio_construction": block}

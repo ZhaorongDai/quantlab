@@ -15,13 +15,15 @@ What turns this file red:
   ``{split}_variance_ratio``, or their values differ from the metric on its
   saved test predictions;
 - a return label, a standardized volatility prediction, or a volatility
-  label averaged over several members gets them.
+  label averaged over several members gets them;
+- an ensemble accepts members that give one label name different kinds.
 
 Everything is synthetic, CPU-only and offline.
 """
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -31,6 +33,7 @@ import xarray as xr
 from quantlab.base.config import FactorConfig, ModelConfig, PolarsFactorConfig
 from quantlab.label.forward import Forward
 from quantlab.label.predefined.fret import BinaryReturn, Return, Volatility
+from quantlab.model.ensemble import BaseEnsemble
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.metrics import volatility_level_metrics
@@ -220,3 +223,26 @@ def test_a_volatility_label_averaged_over_members_gets_no_level_metrics(tmp_path
     assert ensemble.label_scales == {f"vol_{HORIZON}": "standardized"}
     assert not any(key.endswith(LEVEL_KEYS) for key in metrics), sorted(metrics)
     assert "test_ic" in metrics
+
+
+def test_members_naming_one_label_with_different_kinds_are_refused():
+    """The kind decides how a label is scored, so members must agree on it."""
+
+    class _Label:
+        def __init__(self, kind):
+            self.kind = kind
+
+        def get_config(self):
+            return {"name": "label", "span": HORIZON}
+
+        def get_factor_names(self):
+            return (f"vol_{HORIZON}",)
+
+    class _Member:
+        def __init__(self, kind):
+            self.labels = [_Label(kind)]
+
+    ensemble = SimpleNamespace(class_name="TestEnsemble")
+    BaseEnsemble._check_members_agree(ensemble, [_Member("volatility"), _Member("volatility")])
+    with pytest.raises(ValueError, match="kind 'return'.*kind 'volatility'"):
+        BaseEnsemble._check_members_agree(ensemble, [_Member("volatility"), _Member("return")])

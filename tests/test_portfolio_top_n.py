@@ -583,12 +583,11 @@ def _events(direction, top_n, scores) -> dict:
     return out.attrs["events"]
 
 
-def test_a_long_cut_through_tied_scores_names_the_tied_symbols_left_out():
+def test_a_long_cut_through_tied_scores_counts_the_tied_symbols_left_out():
     scores = _panel([3.0, 2.0, 2.0, 2.0, 1.0, 0.0])
 
     (record,) = _events("long_only", 2, scores)["tie_at_cutoff"]
-    assert record["symbols"] == ["CCC", "DDD"]
-    assert record["bar"] == "2024-01-01T00:00:00"
+    assert record == {"bar": "2024-01-01T00:00:00", "count": 2}
     # The weights are the plain top-n book: the tie still resolves by axis order.
     assert _select("long_only", 2, scores)[0].tolist() == [0.5, 0.5, 0.0, 0.0, 0.0, 0.0]
 
@@ -597,7 +596,7 @@ def test_a_short_cut_through_tied_scores_is_reported_too():
     scores = _panel([3.0, 2.0, 1.0, 0.0, 0.0, 0.0])
 
     (record,) = _events("long_short", 1, scores)["tie_at_cutoff"]
-    assert record["symbols"] == ["DDD", "EEE"]
+    assert record["count"] == 2
 
 
 def test_no_event_when_every_cut_falls_between_different_scores():
@@ -615,7 +614,23 @@ def test_one_record_per_tied_bar():
 
     records = _events("long_only", 2, scores)["tie_at_cutoff"]
     assert [r["bar"][:10] for r in records] == ["2024-01-01", "2024-01-03"]
-    assert all(r["symbols"] == ["CCC", "DDD", "EEE", "FFF"] for r in records)
+    assert all(r["count"] == 4 for r in records)
+
+
+def test_a_book_that_picks_nothing_has_no_cut_to_report():
+    """Locked positions use the whole long budget: nothing is picked, nothing is tied out."""
+    rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+    context = PortfolioContext(
+        timestamp=pd.Timestamp("2024-01-02"),
+        predictions=xr.Dataset({"score": ("symbol", [1.0] * 6)}, coords={"symbol": SYMBOLS}),
+        tradable=xr.DataArray([False, True, True, True, True, True], dims="symbol",
+                              coords={"symbol": SYMBOLS}),
+        current_weights=xr.DataArray([1.0, 0, 0, 0, 0, 0], dims="symbol", coords={"symbol": SYMBOLS}),
+    )
+
+    weights = rule.construct(context)
+    assert weights.values.tolist() == [1.0, 0, 0, 0, 0, 0]
+    assert "events" not in weights.attrs
 
 
 def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path, monkeypatch):
@@ -641,7 +656,8 @@ def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path, m
     )).run()
 
     block = result.metrics["portfolio_construction"]["tie_at_cutoff"]
-    assert len(block["bars"]) == 5
-    assert block["count"] == sum(len(record["symbols"]) for record in block["bars"])
+    # Six symbols, two picked: four tied out on each of the five rebalances.
+    assert [record["count"] for record in block["bars"]] == [4] * 5
+    assert block["count"] == 20
     page = (result.run_dir / "report.html").read_text(encoding="utf-8")
-    assert ">Constructor event: tie_at_cutoff</th>" in page
+    assert ">Constructor event: tie_at_cutoff</th><td>20 on 5 bar(s)</td>" in page

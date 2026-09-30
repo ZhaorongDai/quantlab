@@ -62,6 +62,23 @@ array([0.375, 0.   , 0.375, 0.25 ])
 
 `DDD` is halted while held, so it keeps its 0.25. The two best tradable scores share the remaining 0.75.
 
+Equal scores are ranked by symbol order. When a book's cut falls inside a group of equal scores, the symbol order, not the model, decides which of them are held, and the row counts the tied symbols left out as a `tie_at_cutoff` event. Below, `BBB`, `CCC` and `DDD` score the same, `BBB` comes first, and two are left out. A model that predicts only a handful of distinct values makes this event appear on most rebalances.
+
+```python
+>>> tied = PortfolioContext(
+...     timestamp=pd.Timestamp("2024-03-01"),
+...     predictions=xr.Dataset({"ret_5": on_symbols([0.8, 0.5, 0.5, 0.5])}),
+...     tradable=on_symbols([True, True, True, True]),
+...     current_weights=on_symbols([0.0, 0.0, 0.0, 0.0]),
+... )
+>>> weights = TopNConstructor(TopNConfig(direction="long_only", top_n=2)).construct(tied)
+>>> weights.values
+array([0.5, 0.5, 0. , 0. ])
+>>> weights.attrs
+{'events': {'tie_at_cutoff': 2}}
+
+```
+
 ### In a backtest
 
 The vectorised backtest calls `construct_panel`. It loops `construct` over the rebalance bars and builds each bar's context:
@@ -72,7 +89,7 @@ The vectorised backtest calls `construct_panel`. It loops `construct` over the r
 
 The backtester calls the rule's `bind(predictor)` when it is built, before any data is read or any model trained. This is where a rule checks the labels it needs, so a misconfigured rule fails at once.
 
-A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. The backtest holds the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `closed_without_risk` below.
+A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. The backtest holds the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `tie_at_cutoff` above or `closed_without_risk` below, with its `count` (the symbols it involved over all its bars) and one record per bar.
 
 The run's `config.json` records the rule with all its parameters and its risk model, and `load_backtester_from_config` rebuilds it.
 
