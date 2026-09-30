@@ -56,8 +56,8 @@ _STYLE = """
   .kv.pos { color: #1b8a5a; } .kv.neg { color: #e03b30; }
   .ks { font-size: 11px; color: #777; }
   .layout { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
-  .tables { flex: 0 0 auto; max-width: 100%; overflow-x: auto; }
-  .charts { flex: 1 1 640px; min-width: 0; }
+  .tables { flex: 0 1 440px; min-width: 320px; max-width: 100%; overflow-x: auto; }
+  .charts { flex: 1 1 720px; min-width: 0; }
   .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e5e5e5; margin-top: 20px; }
   .tab { border: 0; background: none; padding: 6px 12px; cursor: pointer; color: #555;
          border-bottom: 2px solid transparent; font-size: 13px; }
@@ -66,7 +66,8 @@ _STYLE = """
   table.summary { border-collapse: collapse; font-size: 13px; }
   table.summary th { text-align: left; padding: 3px 16px 3px 0;
                      font-weight: 600; color: #444; white-space: nowrap; }
-  table.summary td { padding: 3px 0; font-variant-numeric: tabular-nums; }
+  table.summary td { padding: 3px 0; font-variant-numeric: tabular-nums;
+                     overflow-wrap: anywhere; }
   table.metrics { border-collapse: collapse; font-size: 13px; }
   table.metrics th, table.metrics td { padding: 3px 16px 3px 0;
                                        border-bottom: 1px solid #eee;
