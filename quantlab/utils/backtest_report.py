@@ -903,7 +903,7 @@ _RELATIVE_SHOWN_ELSEWHERE = frozenset({"Strategy Total Return [%]", "Benchmark T
 #: The key rows of the in-sample vs out-of-sample table.
 _SPLIT_METRICS = ("Total Return [%]", "Annualized Return [%]", "Annualized Volatility [%]",
                   "Sharpe Ratio", "Max Drawdown [%]")
-_SPLIT_RELATIVE = ("Excess Return [%]", "Information Ratio", "Beta")
+_SPLIT_RELATIVE = ("Excess Return [%]", "Excess Max Drawdown [%]", "Information Ratio", "Beta")
 
 
 def _number(value: object) -> float | None:
@@ -1256,8 +1256,10 @@ def _kpi_section(metrics: dict | None, benchmark_name: str | None) -> str:
         ]
     else:
         cards = [
+            # The out-of-sample slice ends on the last bar too, but only the
+            # whole window reports the value there.
             _card("Total return", _format(s.get("Total Return [%]"), "pct"),
-                  f"end value {_format(s.get('End Value'), 'money')}"),
+                  f"end value {_format(_slice(metrics, 'whole', fallback=True).get('End Value'), 'money')}"),
             _card("Annualised return", _format(s.get("Annualized Return [%]"), "pct"), ""),
             _card("Win rate", _format(s.get("Rebalance Win Rate [%]"), "pct1"),
                   f"monthly {_format(s.get('Monthly Win Rate [%]'), 'pct1')}"),
@@ -1466,34 +1468,68 @@ def _figure_div(fig: go.Figure) -> str:
     """A figure as an HTML fragment reusing the plotly.js the page loads."""
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
 
-#: Timeline colours: the training window, the bars traded out-of-sample and
-#: the traded bars that fall inside a training window.
-TRAINING_COLOUR = "#c6dbef"
-TRADED_COLOUR = "#2b8a3e"
-IN_SAMPLE_COLOUR = "#e03b30"
+#: The timeline's bar kinds: ``(fold key, colour, legend text)``. A fold's
+#: ``training`` window, the bars it ``traded`` out-of-sample and its
+#: ``in_sample`` bars (traded inside its own training window).
+_TIMELINE_KINDS = (
+    ("training", "#c6dbef", "training"),
+    ("traded", "#2b8a3e", "traded, out-of-sample"),
+    ("in_sample", "#e03b30", "traded, in-sample"),
+)
+_TIMELINE_COLOUR = {key: colour for key, colour, _ in _TIMELINE_KINDS}
 
 #: Timeline geometry in pixels: the drawing width, the row-label gutter and
 #: the height the fold rows share before a row stops shrinking.
-_TL_WIDTH = 420
-_TL_GUTTER = 56
-_TL_ROWS_HEIGHT = 260
+_TIMELINE_WIDTH = 420
+_TIMELINE_GUTTER = 56
+_TIMELINE_ROWS_HEIGHT = 260
 
 
 def _span(pair: object) -> tuple[pd.Timestamp, pd.Timestamp, str] | None:
-    """A label pair as ``(start, end, "start .. end")``, or ``None`` if it does not parse."""
+    """Parse a pair of bar labels for the timeline.
+
+    Parameters
+    ----------
+    pair : object
+        A ``[first, last]`` pair of bar labels, as ``metrics.json`` carries
+        them.
+
+    Returns
+    -------
+    tuple[pd.Timestamp, pd.Timestamp, str] or None
+        The two bars as naive UTC timestamps, so labels with and without a
+        UTC offset share one axis, and the pair as ``"first .. last"``
+        text; ``None`` for anything that is not two parseable, ordered
+        labels.
+    """
     if not isinstance(pair, (list, tuple)) or len(pair) != 2:
         return None
     try:
         start, end = pd.Timestamp(str(pair[0])), pd.Timestamp(str(pair[1]))
     except (TypeError, ValueError):
         return None
-    if pd.isna(start) or pd.isna(end) or end < start:
+    if pd.isna(start) or pd.isna(end):
+        return None
+    start, end = (t.tz_convert(None) if t.tzinfo is not None else t for t in (start, end))
+    if end < start:
         return None
     return start, end, f"{pair[0]} .. {pair[1]}"
 
 
 def _ticks(low: pd.Timestamp, high: pd.Timestamp) -> list[tuple[pd.Timestamp, str]]:
-    """At most seven axis ticks on month starts, labelled by year when a step is whole years."""
+    """Choose the timeline's axis ticks.
+
+    Parameters
+    ----------
+    low, high : pd.Timestamp
+        The first and last instant on the axis, naive.
+
+    Returns
+    -------
+    list[tuple[pd.Timestamp, str]]
+        At most seven month starts inside the axis, each with its label:
+        the year when the step is whole years, else ``YYYY-MM``.
+    """
     months = (high.year - low.year) * 12 + high.month - low.month + 1
     step = next((m for m in (1, 3, 6, 12, 24, 36, 60, 120) if months / m <= 7), 240)
     first = pd.Timestamp(year=low.year, month=1, day=1)
@@ -1505,16 +1541,29 @@ def _ticks(low: pd.Timestamp, high: pd.Timestamp) -> list[tuple[pd.Timestamp, st
 
 
 def _timeline_section(windows: dict | None) -> str:
-    """The run's windows as an inline SVG timeline, or the empty string without them.
+    """Draw the run's windows as an inline SVG timeline.
 
-    The top row is the backtest window: out-of-sample bars in green, bars
-    inside a training window in red. Below it, one row per trained model
-    (one for a model backtest, one per fold for a walk-forward CV run)
-    holds its training window in light blue and the bars it traded in
-    green, its in-sample bars red, so sliding and expanding folds read as a
-    staircase of equal or growing bars. Every bar carries its dates as a
-    tooltip. The drawing scales to the column; rows shrink as folds are
-    added, and only every fifth fold is named once they get thin.
+    With several folds (a walk-forward CV run) the top row is the backtest
+    window, its out-of-sample bars green and the bars inside a training
+    window red, and each fold has a row below it with its training window
+    in light blue, the bars it traded in green and its in-sample bars red,
+    so sliding and expanding folds read as a staircase of equal or growing
+    bars. A model backtest has a single row, its training window beside
+    the backtest window, and a run without a model a single row of traded
+    bars. Every bar carries its dates as a tooltip; rows shrink as folds
+    are added, and only every fifth fold is named once they get thin. The
+    legend lists only the kinds drawn.
+
+    Parameters
+    ----------
+    windows : dict or None
+        The ``windows`` input of ``write_backtest_report``.
+
+    Returns
+    -------
+    str
+        The section's HTML, or the empty string without a parseable
+        backtest window.
     """
     if not isinstance(windows, dict):
         return ""
@@ -1527,55 +1576,75 @@ def _timeline_section(windows: dict | None) -> str:
     ]
     low, high = min(s[0] for s in spans), max(s[1] for s in spans)
     width = max((high - low).total_seconds(), 1.0)
+    drawn: set[str] = set()
 
     def x(when: pd.Timestamp) -> float:
-        return _TL_GUTTER + (when - low).total_seconds() / width * (_TL_WIDTH - _TL_GUTTER - 4)
+        """The horizontal position of ``when`` on the drawing."""
+        return _TIMELINE_GUTTER + (when - low).total_seconds() / width * (_TIMELINE_WIDTH - _TIMELINE_GUTTER - 4)
 
-    def bar(span, y: float, height: float, colour: str, tip: str) -> str:
+    def bar(span: tuple, y: float, height: float, kind: str, tip: str) -> str:
+        """One bar of ``kind`` over ``span`` with its dates as the tooltip."""
+        drawn.add(kind)
         start, end, text = span
         return (f'<rect x="{x(start):.1f}" y="{y:.1f}" width="{max(1.0, x(end) - x(start)):.1f}" '
-                f'height="{height:.1f}" fill="{colour}"><title>{_escape(tip)} {_escape(text)}</title></rect>')
+                f'height="{height:.1f}" fill="{_TIMELINE_COLOUR[kind]}"><title>{_escape(tip)} '
+                f"{_escape(text)}</title></rect>")
 
-    row = 14.0 if len(folds) <= 1 else max(4.0, min(12.0, _TL_ROWS_HEIGHT / len(folds)))
+    # The backtest row: out-of-sample runs and in-sample runs, or, for a run
+    # without a split, the whole window as traded bars.
+    out_of_sample = [s for s in map(_span, windows.get("out_of_sample") or []) if s]
+    in_sample = [s for s in map(_span, windows.get("in_sample") or []) if s]
+    split = bool(folds or out_of_sample)
+    backtest_bars = [("traded", span, "out-of-sample") for span in out_of_sample] or [
+        ("traded", backtest, "traded" if not split else "out-of-sample")
+    ]
+    backtest_bars += [("in_sample", span, "in-sample") for span in in_sample]
+
+    # One fold: its training window joins the backtest row, whose traded
+    # bars are the fold's, so the two rows would repeat each other.
+    single = len(folds) <= 1
+    rows = [(str(folds[0].get("label", "")) if folds else "backtest",
+             ([("training", _span(folds[0].get("training")), "training")] if folds else []) + backtest_bars)]
+    if not single:
+        rows = [("backtest", backtest_bars)] + [
+            (str(fold.get("label", "")),
+             [(key, _span(fold.get(key)), tip) for key, tip in
+              (("training", "training"), ("traded", "traded"), ("in_sample", "in-sample"))])
+            for fold in folds
+        ]
+
+    row = 14.0 if single else max(4.0, min(12.0, _TIMELINE_ROWS_HEIGHT / len(folds)))
     gap = 2.0 if row > 6 else 1.0
-    height = (len(folds) + 1) * (row + gap) + 16
+    height = len(rows) * (row + gap) + 16
     parts = []
     for when, text in _ticks(low, high):
         parts.append(f'<line x1="{x(when):.1f}" x2="{x(when):.1f}" y1="0" y2="{height - 14:.1f}" stroke="#eee"/>'
                      f'<text x="{x(when):.1f}" y="{height - 3:.1f}" text-anchor="middle">{_escape(text)}</text>')
-    parts.append(f'<text x="0" y="{row - 2:.1f}">backtest</text>')
-    out_of_sample = [s for s in map(_span, windows.get("out_of_sample") or []) if s]
-    for span in out_of_sample or [backtest]:
-        parts.append(bar(span, 0, row, TRADED_COLOUR, "out-of-sample" if out_of_sample else "backtest"))
-    for span in filter(None, map(_span, windows.get("in_sample") or [])):
-        parts.append(bar(span, 0, row, IN_SAMPLE_COLOUR, "in-sample"))
-    for i, fold in enumerate(folds):
-        y = (i + 1) * (row + gap)
-        name = str(fold.get("label", ""))
-        if row >= 9 or i % 5 == 0:
+    for i, (name, bars) in enumerate(rows):
+        y = i * (row + gap)
+        # Fold rows are numbered from the second row; name every fifth when thin.
+        if row >= 9 or i == 0 or (i - 1) % 5 == 0:
             parts.append(f'<text x="0" y="{y + row - 1:.1f}">{_escape(name)}</text>')
-        for key, colour, tip in (("training", TRAINING_COLOUR, "training"), ("traded", TRADED_COLOUR, "traded"),
-                                 ("in_sample", IN_SAMPLE_COLOUR, "in-sample")):
-            span = _span(fold.get(key))
-            if span:
-                parts.append(bar(span, y, row, colour, f"{name} {tip}"))
+        prefix = "" if i == 0 and name == "backtest" else f"{name} "
+        parts += [bar(span, y, row, kind, f"{prefix}{tip}") for kind, span, tip in bars if span]
 
     caption = f"Backtest {backtest[2]}"
     if _number(windows.get("bars")) is not None:
         caption += f" ({int(windows['bars']):,} bars)"
     trained = [s for s in (_span(fold.get("training")) for fold in folds) if s]
-    if len(folds) > 1:
+    if not single:
         kind = "expanding" if len(trained) > 1 and len({s[0] for s in trained}) == 1 else "sliding"
         caption += f"; {len(folds)} folds, {kind} training window"
     legend = "".join(
-        f'<span><span class="sw" style="background:{colour}"></span>{text}</span>'
-        for colour, text in ((TRAINING_COLOUR, "training"), (TRADED_COLOUR, "traded, out-of-sample"),
-                             (IN_SAMPLE_COLOUR, "traded, in-sample"))
+        f'<span><span class="sw" style="background:{colour}"></span>'
+        f'{"traded" if key == "traded" and not split else text}</span>'
+        for key, colour, text in _TIMELINE_KINDS
+        if key in drawn
     )
     return (
         "  <h2>Windows</h2>\n"
         f'  <div class="timeline"><div class="caption">{_escape(caption)}</div>\n'
-        f'  <svg viewBox="0 0 {_TL_WIDTH} {height:.0f}" width="100%" style="max-width:{_TL_WIDTH}px">'
+        f'  <svg viewBox="0 0 {_TIMELINE_WIDTH} {height:.0f}" width="100%" style="max-width:{_TIMELINE_WIDTH}px">'
         + "".join(parts) + "</svg>\n"
         f'  <div class="legend">{legend}</div></div>\n'
     )

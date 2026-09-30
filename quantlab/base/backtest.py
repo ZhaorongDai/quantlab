@@ -2995,11 +2995,9 @@ class BaseBacktester(ABC):
         formatted text that the report module escapes and renders.
         ``block`` is the metric level carrying the split keys:
         ``run()`` passes the metrics themselves, ``run_cv()`` passes
-        ``metrics["stitched"]``. It holds only what no table, card or
-        chart on the page shows: the dates are on the windows timeline
-        (``_report_windows``), the excess over the benchmark in the
-        relative table, the starting capital in the strategy table and the
-        drawdown depth in the risk rows. Every key is read with ``.get()``
+        ``metrics["stitched"]``. It holds the settings the page shows
+        nowhere else; the dates are on the windows timeline built by
+        ``_report_windows``. Every key is read with ``.get()``
         and a missing value renders as a dash, never as ``None``, so a
         renamed key degrades the page instead of raising inside the staged
         run directory. ``drawdown_span`` adds one line naming the bars of

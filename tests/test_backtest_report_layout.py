@@ -255,6 +255,17 @@ def test_with_an_in_sample_part_the_headline_numbers_are_out_of_sample(tmp_path)
     assert "<h2>Relative to QQQ (out-of-sample)</h2>" in html
 
 
+def test_the_end_value_card_note_comes_from_the_whole_window(tmp_path):
+    metrics = _metrics(benchmark=False, in_sample=True)
+    del metrics["out_of_sample"]["End Value"]
+    r, b, value, bvalue = _paths()
+    path = tmp_path / "report.html"
+    write_backtest_report(_series(value), path, in_sample_range=(str(BARS[0].date()), str(BARS[99].date())),
+                          notes=[], title="t", metrics=metrics)
+
+    assert re.search(r'class="kl">Total return</div>.*?class="ks">end value 2,467,452<', path.read_text(), re.S)
+
+
 def test_every_chart_shades_the_in_sample_range(tmp_path):
     html, _ = _page(tmp_path, in_sample=True)
 
@@ -527,14 +538,39 @@ def test_the_timeline_caption_names_the_window_and_the_kind_of_cv(tmp_path):
     assert "10 folds, expanding training window" in expanding
 
 
-def test_a_model_backtest_has_one_row_and_no_fold_count(tmp_path):
-    windows = _windows(1, in_sample=False)
+def test_a_model_backtest_is_one_row_of_training_and_traded_bars(tmp_path):
+    windows = _windows(1)
     windows["folds"][0]["label"] = "model"
     html = _timeline_page(tmp_path, windows)
 
     tips = _tooltips(html)
-    assert [tip.split(" ")[0] for tip in tips] == ["out-of-sample", "model", "model"]
-    assert "folds" not in html[html.index("<h2>Windows</h2>") : html.index("</svg>")]
+    assert [" ".join(tip.split(" ")[:2]) for tip in tips] == ["model training", "model out-of-sample", "model in-sample"]
+    block = html[html.index("<h2>Windows</h2>") : html.index("</svg>")]
+    assert "folds" not in block and ">backtest</text>" not in block
+
+
+def test_a_run_without_a_model_is_one_row_of_traded_bars_and_a_one_entry_legend(tmp_path):
+    html = _timeline_page(tmp_path, {"backtest": ["2020-01-02", "2020-06-30"], "bars": 125, "folds": []})
+
+    assert _tooltips(html) == ["traded 2020-01-02 .. 2020-06-30"]
+    legend = html[html.index('<div class="legend">') : html.index("</div></div>", html.index('<div class="legend">'))]
+    assert re.findall(r"</span>([^<]+)</span>", legend) == ["traded"]
+
+
+def test_the_legend_lists_only_the_kinds_drawn(tmp_path):
+    html = _timeline_page(tmp_path, _windows(3, in_sample=False))
+
+    legend = html[html.index('<div class="legend">') : html.index("</div></div>", html.index('<div class="legend">'))]
+    assert re.findall(r"</span>([^<]+)</span>", legend) == ["training", "traded, out-of-sample"]
+
+
+def test_labels_with_a_utc_offset_share_the_axis_and_nothing_raises(tmp_path):
+    windows = _windows(3)
+    windows["backtest"] = [f"{windows['backtest'][0]}T14:30:00+00:00", f"{windows['backtest'][1]}T21:00:00+00:00"]
+    windows["folds"][0]["training"] = [f"{d}T14:30:00-05:00" for d in windows["folds"][0]["training"]]
+    tips = _tooltips(_timeline_page(tmp_path, windows))
+
+    assert any(tip.startswith("fold 0 training") and "-05:00" in tip for tip in tips)
 
 
 def test_many_folds_shrink_the_rows_and_name_every_fifth(tmp_path):

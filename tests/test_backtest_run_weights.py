@@ -24,6 +24,7 @@ Everything is synthetic, CPU-only and offline.
 
 import json
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -183,6 +184,23 @@ def test_run_weights_reproduces_the_run_that_produced_the_weights(stores):
     )
     xr.testing.assert_identical(result.weights, run_result.weights)
     assert result.predictions is None
+
+
+def test_the_report_timeline_of_given_weights_is_one_row_of_traded_bars(stores):
+    """No model, so no training window: one row, the window the weights traded."""
+    run_result = USEquityCrossectionSelectStockVectorBt(
+        _config(stores, with_model=True)
+    ).run()
+    result = _run_weights(
+        stores, run_result.weights, output_dir=str(stores["root"] / "weights_runs")
+    )
+
+    page = (result.run_dir / "report.html").read_text(encoding="utf-8")
+    timeline = page[page.index("<h2>Windows</h2>") : page.index("</svg>")]
+    timestamps = result.simulation.value.timestamp.values
+    assert re.findall(r"<title>([^<]+)</title>", timeline) == [
+        f"traded {_day(timestamps[0])} .. {_day(timestamps[-1])}"
+    ]
 
 
 def test_run_weights_accepts_a_data_array_in_any_axis_order(stores):

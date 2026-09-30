@@ -309,7 +309,7 @@ def test_report_draws_benchmark_nav_and_the_excess_tab(benchmark_run):
         assert f'"name":"{name}"' in page, name
     assert re.search(r"<h2>Strategy vs [^<]+</h2>", page)
     assert re.search(r"<h2>Relative to [^<]+</h2>", page)
-    # The excess is in the relative table, so the setup lines do not repeat it.
+    # The excess is stated once, in the relative table.
     assert ">Excess return (geometric)</th>" in page
     assert "Excess return vs benchmark" not in page
 
@@ -366,7 +366,8 @@ def test_report_without_benchmark_keeps_three_rows(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
+@pytest.mark.parametrize("expanding", [False, True], ids=["sliding", "expanding"])
+def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path, expanding):
     n_bars, train_periods = 80, 30
     dataset_config = write_price_store(tmp_path / "store", n_bars=n_bars)
     bars = _bars(n_bars)
@@ -380,7 +381,7 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
     )
     model = make_model(tmp_path / "train", dataset_config, **dates)
     model.collect()
-    model.train_cv(train_periods=train_periods)
+    model.train_cv(train_periods=train_periods, expanding=expanding)
     (manifest,) = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
 
     config = CrossSectionBacktestConfig(
@@ -421,7 +422,8 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
         assert f"fold {record['fold']} training {training[0]} .. {training[1]}</title>" in page
         traded = record["simulation"].value.timestamp.values
         assert f"fold {record['fold']} traded {_day(traded[0])} .. {_day(traded[-1])}</title>" in page
-    assert f"{len(cv.folds)} folds" in page
+    kind = "expanding" if expanding else "sliding"
+    assert f"{len(cv.folds)} folds, {kind} training window" in page
 
 
 # --------------------------------------------------------------------------
