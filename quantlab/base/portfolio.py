@@ -348,6 +348,14 @@ class CovarianceEstimate:
 class RiskModel(_Configured, ABC):
     """Base class of every risk model: the covariance of returns at one bar.
 
+    "Risk model" is the industry's name (a Barra-style risk model), not a
+    model in this project's sense: a risk model is not trained, has no
+    checkpoint and is not a ``BaseModel``. It is an estimator run afresh at
+    every bar from what the context holds, such as the trailing return
+    window. A forecast that feeds it, such as predicted volatility, comes
+    from a model in ``quantlab/model`` through the predictor; the risk model
+    only combines it with what it estimates.
+
     Subclass it, set ``config_cls`` to a dataclass of the model's
     parameters (with a ``lookback_bars`` field when it reads a return
     window) and implement ``estimate``. The estimate is of one-bar returns;
