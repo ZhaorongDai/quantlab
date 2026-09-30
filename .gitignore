@@ -248,3 +248,6 @@ output
 Untitled*.ipynb
 factor_test.py
 output.txt
+
+# Local experiment logs and scripts
+experiments/
