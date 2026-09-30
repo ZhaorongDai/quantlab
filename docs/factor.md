@@ -406,6 +406,8 @@ array([-0.03945,  0.01532], dtype=float32)
 array([0.00357,     nan,     nan,     nan], dtype=float32)
 ```
 
+`Volatility` in the same module is the matching volatility label, for a model that forecasts risk: at bar t it is the sample standard deviation (`ddof=1`) of the one-bar returns `adjOpen[k] / adjOpen[k - 1] - 1` for k from t + 2 to t + n + 1, times `sqrt(n)`, so it covers the same opens as `Return` of the same n and is on the same span scale. It has `span = n` and `delay = 1` like `Return`, is NaN where an open in the window is missing and on the last n + 1 bars, is named `vol_{n}`, and needs n of at least 2.
+
 A model takes labels, objects with `lookahead_bars()` such as `Forward`, only in its `labels` and refuses them among its `factors`. At every split boundary it drops the last L bars of the earlier segment, L being the largest lookahead among its labels (see `model.md`). A backtest refuses a label whose `delay` differs from its engine's fill delay (see `backtest.md`).
 
 ### Analyze a factor
@@ -486,6 +488,7 @@ The module also has two cross-sectional outlier operators. `CrossSectionalWinsor
 | `MarketFeatures` | xarray | 21 return and amount features per index or ETF series, the same for every symbol with a bar; config class `MarketFeatureConfig` |
 | `Forward` | any | shifts a factor forward into a label |
 | `Return`, `BinaryReturn` | KunQuant | forward-return labels, `Forward` subclasses |
+| `Volatility` | KunQuant | forward span-scale volatility label, a `Forward` subclass |
 
 Each class docstring shows its config.
 

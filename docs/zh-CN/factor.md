@@ -406,6 +406,8 @@ array([-0.03945,  0.01532], dtype=float32)
 array([0.00357,     nan,     nan,     nan], dtype=float32)
 ```
 
+同一模块中的 `Volatility` 是配套的波动率标签，供预测风险的模型使用：它在第 t 根 bar 上的值是 k 从 t + 2 到 t + n + 1 的单 bar 收益 `adjOpen[k] / adjOpen[k - 1] - 1` 的样本标准差（`ddof=1`）乘以 `sqrt(n)`，因此与同 n 的 `Return` 覆盖同样的开盘价、处在同一个 span 尺度上。它和 `Return` 一样是 `span = n`、`delay = 1`，窗口内有开盘价缺失时以及最后 n + 1 根 bar 上为 NaN，列名为 `vol_{n}`，要求 n 至少为 2。
+
 模型只在 `labels` 中接受标签，即带有 `lookahead_bars()` 的对象（如 `Forward`），并拒绝把它们放进 `factors`。在每个切分边界上，模型丢弃前一段的最后 L 根 bar，L 是其所有标签中最大的前瞻（见 `model.md`）。标签的 `delay` 与回测引擎的成交延迟不一致时，回测拒绝运行（见 `backtest.md`）。
 
 ### 分析一个因子
@@ -486,6 +488,7 @@ XrBackend()
 | `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
 | `Forward` | 任意 | 把一个因子向前平移成标签 |
 | `Return`、`BinaryReturn` | KunQuant | 前瞻收益标签，`Forward` 的子类 |
+| `Volatility` | KunQuant | 前瞻 span 尺度波动率标签，`Forward` 的子类 |
 
 每个类的 docstring 里都有配置示例。
 
