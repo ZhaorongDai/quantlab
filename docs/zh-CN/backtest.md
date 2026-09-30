@@ -157,14 +157,14 @@ def train_cv_project(model, train_periods):
 ... ))
 >>> result = backtester.run()
 >>> sorted(p.name for p in result.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 运行目录位于 `output_dir` 之下，返回的结果里有预测、权重、模拟结果和指标。
 
 ### 目标权重契约
 
-权重是 `(timestamp, symbol)` 上的 `weight` 变量。每一行要么全是 NaN，表示这根 bar 不调仓、保持原有仓位；要么全是有限值，表示把组合调整到这些占组合价值的比例。调仓行的总敞口（绝对权重之和）不超过 1。调仓 bar 上没被选中的标的权重是 `0.0`，不能是 NaN。
+权重是 `(timestamp, symbol)` 上的 `weight` 变量。有限值表示该标的在这根 bar 成交后应占组合价值的比例；NaN 表示保持该标的的持仓、不交易。全为 NaN 的一行表示这根 bar 不调仓；一行也可以两者混合，例如只保留某一笔持仓不动。一行目标的总敞口（绝对权重之和）不超过 1。库自带的组合构建规则在调仓 bar 上给每个标的有限权重，没被选中的是 `0.0`。
 
 ```python
 >>> result.weights["weight"].to_pandas().iloc[:7].round(2)
@@ -191,7 +191,7 @@ timestamp
 order                                                            
 0     2024-02-13    CCC  9465.316230  52.850849  250.125000   Buy
 1     2024-02-13    FFF  8221.655639  60.723809  249.625125   Buy
-2     2024-02-20    FFF  8221.655639  62.012933  254.924491  Sell
+2     2024-02-20    FFF  8221.655639  61.958954    0.000000  Sell
 >>> adj_open = xr.open_zarr(root / "prices.zarr")["adjOpen"]
 >>> float(adj_open.sel(timestamp="2024-02-13", symbol="CCC"))
 52.82443690819098
@@ -216,13 +216,17 @@ Traceback (most recent call last):
 ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret_1',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
 ```
 
-### 退市的持仓
+### 被拒订单与退市的持仓
 
-模拟之前，两列价格都会做前向填充。某标的在一次调仓后被持有，而下一根 bar 上没有原始成交价，就会在那根 bar 上按最后已知价格卖出，其余标的照常调仓，这次卖出会记为一条强制平仓记录。`FFF` 从 2024-02-20 起没有价格，并且在第一个组合里，所以出现了这条记录。选股规则从不选择下一根 bar 没有价格的标的，所以上面第二个组合里没有 `FFF`。
+模拟之前，两列价格都会做前向填充；随后每根成交 bar 按市场的方式执行（ADR 0014）。订单在成交 bar 上没有原始成交价（标的停牌）时是一笔*被拒订单*：持仓保持不变，订单作废，由下一次调仓重新决策。本会成交的被拒订单列在 `result.simulation.rejected_orders` 和指标的 `execution` 块里，同时给出 `rejected_order_count` 和 `max_target_deviation`，即目标权重与其成交 bar 之后实际持有权重的最大差距（含手续费和现金的影响）。
+
+价格在窗口内中止的标的，在它最后一根有价格的 bar 上视为退市（`MarketDataset.delisting_bars`；知道停牌信息的数据集可以覆盖它）。下一根 bar 上，对它的持仓按最后的估值价转为现金，不收手续费和滑点，并记为一条*退市结算*。在 CRSP 数据上，最后的复权收盘价已经包含退市收益。`FFF` 从 2024-02-20 起没有价格，并且在第一个组合里，于 2024-02-20 按 2024-02-19 的收盘价结算；上面价格为 61.96 的那笔订单就是这次结算。
 
 ```python
->>> result.simulation.liquidations
-[{'symbol': 'FFF', 'axis_symbol': 'FFF', 'signal_timestamp': Timestamp('2024-02-19 00:00:00'), 'fill_timestamp': Timestamp('2024-02-20 00:00:00'), 'price': 62.04395518050185}]
+>>> result.simulation.settlements
+[{'symbol': 'FFF', 'axis_symbol': 'FFF', 'delisting_timestamp': Timestamp('2024-02-19 00:00:00'), 'settlement_timestamp': Timestamp('2024-02-20 00:00:00'), 'price': 61.95895375478968}]
+>>> result.metrics["execution"]["rejected_order_count"]
+0
 ```
 
 窗口开头没有价格、且从未被持有的标的，被视为尚未上市，价格出现后正常交易。
@@ -246,8 +250,8 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 ```python
 >>> for part in ("whole", "in_sample", "out_of_sample"):
 ...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["Total Orders"])
-whole -5.85 -2.32 19
-in_sample -0.25 -0.1 6
+whole -5.87 -2.33 19
+in_sample -0.27 -0.11 6
 out_of_sample -5.61 -4.27 13
 >>> list(m["whole"])[:6]
 ['Start', 'End', 'Period', 'Start Value', 'End Value', 'Total Return [%]']
@@ -266,8 +270,8 @@ out_of_sample -5.61 -4.27 13
 | `config.json` | 配置，嵌套着价格数据集和模型，以及数据指纹。 |
 | `weights.zarr` | `(timestamp, symbol)` 上的目标权重。 |
 | `equity.zarr` | `timestamp` 上的组合 `value` 与每根 bar 的 `returns`。 |
-| `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。`run()` 和 `run_cv()` 的每个折还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar。 |
-| `liquidations.json` | 强制平仓记录。 |
+| `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()` 和 `run_cv()` 的每个折还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar。 |
+| `settlements.json` | 退市结算记录。 |
 | `fingerprint.json` | 本次运行读取的价格数据和因子数据的摘要。 |
 | `report.html` | 净值、回撤、月度收益图表，指标表和备注。 |
 | `inputs/` | 仅当价格或基准数据集是保存在内存中的 `FrameDataset` 时写出：它的面板存为 `price_dataset.zarr` 或 `benchmark_dataset.zarr`，`config.json` 以相对运行目录的路径指向它（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。 |
@@ -336,18 +340,18 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### 回测预先算好的权重
 
-`run_weights(weights)` 在没有模型的情况下回测一个已有的目标权重面板，例如别的工具算出的权重，或一次早先运行保存下来的权重。配置不需要 `model` 和 `model_mode`；这两项要么同时设置，要么同时为 `None`，只设置其中一项的配置在构造回测器时就会被拒绝。回测器读取 `start_date` 到 `end_date` 窗口内的成交价和估值价，在恰好这些 bar 和标的上按[目标权重契约](#目标权重契约)检查权重，并以同样的 t+1 成交方式模拟。权重面板可以是带 `weight` 变量的数据集，也可以是数据数组，坐标轴顺序不限，会对齐到价格的坐标轴上。基准的处理与 `run()` 相同。这类运行没有训练窗口，所以指标只有全窗口的部分（`whole`；设置了基准时还有 `benchmark` 和 `relative`，各自只含 `whole`），没有样本内/样本外的拆分，报告里也不出现拆分相关的行。把第一段会话得到的权重传进去（那段会话的配置没有设置基准），就能复现那次运行，因此指标只有 `whole` 和 `notes`。
+`run_weights(weights)` 在没有模型的情况下回测一个已有的目标权重面板，例如别的工具算出的权重，或一次早先运行保存下来的权重。配置不需要 `model` 和 `model_mode`；这两项要么同时设置，要么同时为 `None`，只设置其中一项的配置在构造回测器时就会被拒绝。回测器读取 `start_date` 到 `end_date` 窗口内的成交价和估值价，在恰好这些 bar 和标的上按[目标权重契约](#目标权重契约)检查权重，并以同样的 t+1 成交方式模拟。权重面板可以是带 `weight` 变量的数据集，也可以是数据数组，坐标轴顺序不限，会对齐到价格的坐标轴上。基准的处理与 `run()` 相同。这类运行没有训练窗口，所以指标只有全窗口的部分（`whole`；设置了基准时还有 `benchmark` 和 `relative`，各自只含 `whole`），没有样本内/样本外的拆分，报告里也不出现拆分相关的行。把第一段会话得到的权重传进去（那段会话的配置没有设置基准），就能复现那次运行，因此指标只有 `whole`、`execution` 和 `notes`。
 
 ```python
 >>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
 >>> weights_backtester = USEquityCrossectionSelectStockVectorBt(weights_config)
 >>> replay = weights_backtester.run_weights(result.weights)
 >>> sorted(replay.metrics), replay.predictions is None
-(['notes', 'whole'], True)
+(['execution', 'notes', 'whole'], True)
 >>> replay.metrics["whole"] == result.metrics["whole"]
 True
 >>> sorted(p.name for p in replay.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 `run()` 和 `run_cv()` 仍然需要模型：
@@ -482,7 +486,7 @@ False
 ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
 ... ).run_weights(weights)
 >>> sorted(p.name for p in kept.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 >>> config = json.loads((kept.run_dir / "config.json").read_text())
 >>> config["price_dataset"]["zarr_file_path"]
 'inputs/price_dataset.zarr'

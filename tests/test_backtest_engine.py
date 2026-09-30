@@ -7,12 +7,13 @@ What this file locks:
   rebalance under ``direction="both"`` (D-05), slippage moves buys up and sells
   down, fees are size x fill price x rate, the config defaults are 5bp / 5bp /
   1,000,000 (D-19), and order sizes are fractional (D-20);
-- the delisting rule (D-07): prices are forward-filled so one NaN-priced
-  holding cannot freeze every later rebalance of the whole group (RESEARCH
-  Pitfall 2), a held symbol whose raw fill price turns NaN is force-liquidated
-  at its last price and recorded, a rebalance row mixing NaN and finite
-  weights is refused before vectorbt runs (Pitfall 3), and a symbol that lists
-  late trades normally;
+- execution at the fill bar (ADR 0014): prices are forward-filled so one
+  NaN-priced holding cannot freeze every later rebalance of the whole group
+  (RESEARCH Pitfall 2); an order whose raw fill price is NaN is a rejected
+  order, which keeps the holding and is recorded; a rebalance row may keep
+  some positions (NaN) while trading the rest; a held symbol that delists is
+  settled into cash at its last valuation on the next bar and recorded; and a
+  symbol that lists late trades normally;
 - the market spec (D-04), construction-time score-label validation (D-11),
   the buy-and-hold benchmark hook, and that a sibling engine subclass needs
   no change to ``BaseBacktester`` (D-01);
@@ -384,7 +385,7 @@ def _write_ticker_sidecar(dataset_config) -> "Path":
     return path
 
 
-def test_a_ticker_sidecar_names_the_liquidated_permno(tmp_path):
+def test_a_ticker_sidecar_names_the_settled_permno(tmp_path):
     """03.11-09 / D-03: the log line and the record say META, not 13407.
 
     The bars are in 2024, so the as-of answer is META; the SAME PERMNO on a
@@ -397,13 +398,13 @@ def test_a_ticker_sidecar_names_the_liquidated_permno(tmp_path):
 
     simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
 
-    assert simulation.liquidations, "the delisted holding must be recorded"
-    record = simulation.liquidations[0]
+    assert simulation.settlements, "the delisted holding must be recorded"
+    record = simulation.settlements[0]
     assert record["symbol"] == "META"
     assert record["axis_symbol"] == "13407"
 
 
-def test_a_missing_ticker_sidecar_leaves_the_liquidation_record_working(tmp_path):
+def test_a_missing_ticker_sidecar_leaves_the_settlement_record_working(tmp_path):
     """T-03.11-30: the audit file is an ANNOTATION, not a dependency.
 
     Same panel, no sidecar on disk. The record falls back to the PERMNO's own
@@ -415,42 +416,103 @@ def test_a_missing_ticker_sidecar_leaves_the_liquidation_record_working(tmp_path
 
     simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
 
-    record = simulation.liquidations[0]
+    record = simulation.settlements[0]
     assert record["symbol"] == "13407"
     assert record["axis_symbol"] == "13407"
 
 
-def test_held_symbol_that_delists_is_liquidated_at_its_last_price_and_recorded(tmp_path):
-    """D-07: one record for A, filled on bar 5 at A's last finite fill price."""
-    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+def test_held_symbol_that_delists_is_settled_at_its_last_valuation_and_recorded(tmp_path):
+    """A's last price is bar 2: it becomes cash on bar 3 at bar 2's valuation, fee-free."""
+    backtester = _backtester(tmp_path, fees=0.001, slippage=0.001)
     ts, symbols, fill, valuation, weights = _delisting_case()
-    last_price = float(fill[DELIST_BAR - 1, 0])
+    last_valuation = float(valuation[DELIST_BAR - 1, 0])
 
     simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
 
-    assert simulation.liquidations == [
+    assert simulation.settlements == [
         {
-            # CONTROL ARM for 03.11-09: this price store has no
-            # `.crsp_tickers.json` beside it, so the human-readable `symbol`
-            # is the axis's own label, byte-identical to what this test
-            # asserted before the sidecar existed. Only a store that HAS the
-            # sidecar gets a period-correct ticker here.
+            # No `.crsp_tickers.json` beside this store, so the display name
+            # is the axis label; a store with the sidecar gets the ticker.
             "symbol": "A",
             "axis_symbol": "A",
-            "signal_timestamp": ts[4],
-            "fill_timestamp": ts[5],
-            "price": last_price,
+            "delisting_timestamp": ts[DELIST_BAR - 1],
+            "settlement_timestamp": ts[DELIST_BAR],
+            "price": last_valuation,
         }
     ]
-    record = simulation.liquidations[0]
+    record = simulation.settlements[0]
     assert type(record["symbol"]) is str
-    assert type(record["axis_symbol"]) is str
-    assert isinstance(record["signal_timestamp"], pd.Timestamp)
-    assert isinstance(record["fill_timestamp"], pd.Timestamp)
+    assert isinstance(record["settlement_timestamp"], pd.Timestamp)
     assert type(record["price"]) is float
     sells = [o for o in _orders_for(simulation.orders, "A") if o["side"] == "Sell"]
-    assert [o["timestamp"] for o in sells] == [ts[5]]
-    assert sells[0]["price"] == last_price
+    assert [(o["timestamp"], o["price"], o["fees"]) for o in sells] == [(ts[DELIST_BAR], last_valuation, 0.0)]
+    # The later target of 0.0 on A is no order and no rejection: A is no longer held.
+    assert simulation.rejected_orders == []
+
+
+def test_a_settlement_carries_the_delisting_return_of_the_last_valuation(tmp_path):
+    """CRSP-shaped: on the delisting bar the open is missing and the adjusted
+    close carries the delisting return; the holding settles at that close."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    ts, symbols, fill, valuation, weights = _delisting_case()
+    fill[DELIST_BAR - 1, 0] = NAN  # no open on the delisting bar
+    valuation[DELIST_BAR - 1, 0] = valuation[DELIST_BAR - 2, 0] * 0.4  # a -60% delisting return
+
+    simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
+
+    assert simulation.settlements[0]["price"] == float(valuation[DELIST_BAR - 1, 0])
+    held_value = float(simulation.value.sel(timestamp=ts[DELIST_BAR - 1]))
+    assert float(simulation.value.sel(timestamp=ts[DELIST_BAR])) == pytest.approx(held_value)
+
+
+def test_an_order_without_a_fill_price_is_rejected_and_the_holding_kept(tmp_path):
+    """B halts on bars 3-4; the bar-2 signal to sell B and buy A is half rejected:
+    A is bought with the cash there is, B stays held through the halt, and it
+    trades normally at the next rebalance once it has prices again."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    n = 8
+    ts = _timestamps(n)
+    symbols = ["A", "B"]
+    fill = np.array([[10.0 + t, 20.0 + t] for t in range(n)])
+    valuation = fill + 0.5
+    fill[3:5, 1] = NAN
+    valuation[3:5, 1] = NAN
+    rows = np.full((n, 2), NAN)
+    rows[0] = [0.5, 0.5]
+    rows[2] = [1.0, 0.0]
+    rows[5] = [1.0, 0.0]
+
+    simulation = backtester._simulate(_weights(rows, ts, symbols), _panel(fill, valuation, ts, symbols))
+
+    b_orders = _orders_for(simulation.orders, "B")
+    assert [(o["side"], o["timestamp"]) for o in b_orders] == [("Buy", ts[1]), ("Sell", ts[6])]
+    assert simulation.rejected_orders == [
+        {"symbol": "B", "axis_symbol": "B", "signal_timestamp": ts[2], "fill_timestamp": ts[3]}
+    ]
+    assert simulation.settlements == []
+    assert simulation.max_target_deviation > 0.3
+
+
+def test_a_rebalance_row_may_keep_some_positions(tmp_path):
+    """[1.0, NaN] trades A and leaves B's holding untouched."""
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
+    n = 5
+    ts = _timestamps(n)
+    symbols = ["A", "B", "C"]
+    fill = np.array([[10.0 + t, 20.0 + t, 30.0 + t] for t in range(n)])
+    rows = np.full((n, 3), NAN)
+    rows[0] = [0.0, 0.5, 0.5]
+    rows[2] = [0.5, NAN, 0.0]
+
+    simulation = backtester._simulate(_weights(rows, ts, symbols), _panel(fill, fill, ts, symbols))
+
+    assert [o["timestamp"] for o in _orders_for(simulation.orders, "B")] == [ts[1]]
+    assert [(o["side"], o["timestamp"]) for o in _orders_for(simulation.orders, "C")] == [
+        ("Buy", ts[1]),
+        ("Sell", ts[3]),
+    ]
+    assert [(o["side"], o["timestamp"]) for o in _orders_for(simulation.orders, "A")] == [("Buy", ts[3])]
+    assert simulation.rejected_orders == []
 
 
 def test_delisting_does_not_freeze_other_symbols(tmp_path):
@@ -486,35 +548,8 @@ def test_symbol_listing_late_fills_normally_once_listed(tmp_path):
     c_orders = _orders_for(simulation.orders, "C")
     assert [(o["side"], o["timestamp"]) for o in c_orders] == [("Buy", ts[6])]
     assert c_orders[0]["price"] == float(fill[6, 2])
-    assert not [r for r in simulation.liquidations if r["symbol"] == "C"]
-
-
-def test_rebalance_row_mixing_nan_and_finite_is_refused_before_simulating(
-    tmp_path, monkeypatch
-):
-    """Pitfall 3: [1.0, NaN] would silently hold B and block A; refuse it loudly."""
-    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
-    calls = []
-
-    def _spy(**kwargs):
-        calls.append(kwargs)
-        raise AssertionError("vectorbt from_orders was reached")
-
-    # Replace the engine module's `vbt` name only, so the real vectorbt
-    # Portfolio class stays untouched for every other test in the process.
-    monkeypatch.setattr(
-        engine_module,
-        "vbt",
-        types.SimpleNamespace(Portfolio=types.SimpleNamespace(from_orders=_spy)),
-    )
-    ts = _timestamps(4)
-    symbols = ["A", "B"]
-    fill = [[10.0, 20.0], [11.0, 21.0], [12.0, 22.0], [13.0, 23.0]]
-    rows = [[NAN, NAN], [1.0, NAN], [NAN, NAN], [NAN, NAN]]
-
-    with pytest.raises(ValueError, match=_day(ts[1])):
-        backtester._simulate(_weights(rows, ts, symbols), _panel(fill, fill, ts, symbols))
-    assert calls == []
+    assert simulation.settlements == []
+    assert simulation.rejected_orders == []
 
 
 RUN_BARS = 60
@@ -553,7 +588,7 @@ def _trained_run_config(tmp_path, dataset_config, **overrides) -> CrossSectionBa
     return CrossSectionBacktestConfig(**kwargs)
 
 
-def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
+def test_end_to_end_delisting_run_records_the_settlement(tmp_path):
     """Through run(): the selected symbol delists mid-window and is recorded."""
     delist_bar = RUN_WINDOW_START + 3
     # The fixture store is seeded, so a probe store with the same seed tells
@@ -580,26 +615,26 @@ def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
     ).run()
 
     bars = pd.bdate_range("2024-01-01", periods=RUN_BARS)
-    liquidations = result.simulation.liquidations
-    assert liquidations, "the delisted holding must be recorded"
-    for record in liquidations:
-        assert set(record) == {
-            "symbol",
-            "axis_symbol",
-            "signal_timestamp",
-            "fill_timestamp",
-            "price",
-        }
-    first = liquidations[0]
-    # No ticker sidecar beside this store, so the two agree (03.11-09 control
-    # arm). The record keeps both because on a CRSP store they differ, and
-    # reindexing a panel by the NAME would miss on a rename day.
+    settlements = result.simulation.settlements
+    assert settlements, "the delisted holding must be recorded"
+    first = settlements[0]
+    # No ticker sidecar beside this store, so the two agree. The record keeps
+    # both because on a CRSP store they differ, and reindexing a panel by the
+    # NAME would miss on a rename day.
     assert first["symbol"] == picked
     assert first["axis_symbol"] == picked
-    assert first["signal_timestamp"] == bars[RUN_WINDOW_START + 5]
-    assert first["fill_timestamp"] == bars[RUN_WINDOW_START + 6]
-    last_open = probe[MARKET.fill_price_column].sel(symbol=picked).values[delist_bar - 1]
-    assert first["price"] == pytest.approx(float(last_open), rel=1e-12)
+    assert first["delisting_timestamp"] == bars[delist_bar - 1]
+    assert first["settlement_timestamp"] == bars[delist_bar]
+    last_close = probe[MARKET.valuation_price_column].sel(symbol=picked).values[delist_bar - 1]
+    assert first["price"] == pytest.approx(float(last_close), rel=1e-12)
+
+    import json
+
+    assert json.loads((result.run_dir / "settlements.json").read_text())[0]["axis_symbol"] == picked
+    assert not (result.run_dir / "liquidations.json").exists()
+    execution = json.loads((result.run_dir / "metrics.json").read_text())["execution"]
+    assert set(execution) == {"rejected_order_count", "rejected_orders", "max_target_deviation"}
+    assert execution["rejected_order_count"] == len(execution["rejected_orders"])
 
 
 # --------------------------------------------------------------------------
@@ -1027,7 +1062,7 @@ def _drawdown_simulation(values: list[float]) -> SimulationResult:
         value=value,
         returns=value,
         orders=xr.Dataset(),
-        liquidations=[],
+        settlements=[],
         bar_interval=np.timedelta64(1, "D"),
         native=types.SimpleNamespace(drawdowns=series.vbt(freq="1D").drawdowns),
     )
@@ -1266,3 +1301,25 @@ def test_run_cv_refuses_a_label_whose_delay_differs_from_the_fill_delay(
 
     with pytest.raises(ValueError, match=DELAY_MISMATCH):
         backtester.run_cv()
+
+
+def test_a_halt_through_the_window_end_is_not_a_delisting(tmp_path):
+    """`delisting_bars` looks past the window: BBB stops two bars before the
+    window's end but trades again later in the store, so only CCC, which never
+    trades again, is marked on its last priced bar."""
+    dataset_config = write_price_store(tmp_path, n_bars=30, delist_at={"CCC": 15})
+    store = xr.open_zarr(dataset_config.zarr_file_path).load()
+    j = list(store.symbol.values).index("BBB")
+    for name in store.data_vars:
+        values = store[name].transpose("timestamp", "symbol").values.copy()
+        values[18:22, j] = NAN
+        store[name] = (("timestamp", "symbol"), values)
+    store.to_zarr(dataset_config.zarr_file_path, mode="w")
+    dataset = make_stock_dataset(dataset_config)
+    bars = pd.bdate_range("2024-01-01", periods=30)
+
+    marks = dataset.delisting_bars(dataset.panel(_day(bars[5]), _day(bars[19])), MARKET.valuation_price_column)
+
+    marked = marks.where(marks, drop=True)
+    assert marked.symbol.values.tolist() == ["CCC"]
+    assert pd.Timestamp(marked.timestamp.values[0]) == bars[14]

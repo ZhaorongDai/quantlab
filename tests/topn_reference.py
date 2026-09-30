@@ -1,8 +1,9 @@
 """The scenario behind `tests/topn_reference.npz`, the top-n regression anchor.
 
 The file holds the weights and equity of long-only and long-short top-n
-backtests, captured with `CrossSectionTopNSelector` before top-n selection
-moved into the portfolio layer (#76). This module builds the same store,
+backtests. The weights were captured with `CrossSectionTopNSelector` before
+top-n selection moved into the portfolio layer (#76); the equity was
+recaptured for delisting settlement (#86). This module builds the same store,
 model and dates, so a test re-runs the scenario through `TopNConstructor` and
 compares bit for bit. Symbols list late and delist early, so the eligibility
 rule (a finite score and a next-bar fill price) shapes the books.

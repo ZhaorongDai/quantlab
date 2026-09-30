@@ -2,7 +2,7 @@
 
 ``VectorBtBacktester`` implements the engine hooks of ``BaseBacktester`` on
 top of ``vectorbt.Portfolio.from_orders``: target-percent weights, a one-bar
-delay between signal and fill, forced liquidation of delisted holdings, and
+delay between signal and fill, rejected orders, delisting settlements, and
 the whole-window and sliced statistics a run directory records. It is the
 only module in the package that imports vectorbt; concrete backtesters such
 as ``quantlab.backtest.predefined.us_equity`` subclass it and supply the market
@@ -46,24 +46,30 @@ class VectorBtBacktester(BaseBacktester):
     - No borrow or short-financing cost is modelled, so short-side returns
       are optimistic.
 
-    Delisting: both price columns are forward-filled before they reach the
-    engine, because vectorbt would otherwise keep a NaN-priced holding at its
-    last value and silently skip every later rebalance of the whole group.
-    With the fill in place, a symbol that is held after a rebalance bar ``t``
-    and has no raw fill price on bar ``t + 1`` is sold there at its last known
-    price while the other symbols rebalance normally. Each such forced
-    liquidation is recorded in ``SimulationResult.liquidations`` as a dict
-    with the keys ``symbol`` (the display name: the ticker the symbol traded
-    under on the fill day when the price store has a ticker lookup file,
-    otherwise the axis label), ``axis_symbol`` (the label on the panel's ``symbol`` axis),
-    ``signal_timestamp``, ``fill_timestamp`` and ``price`` (the last known
-    fill price). A symbol whose prices are NaN at the start of the window and
-    that was never held is not yet listed rather than delisted, and trades
-    normally once it lists.
+    Execution at the fill bar (ADR 0014): both price columns are
+    forward-filled before they reach vectorbt, which would otherwise keep a
+    NaN-priced holding at its last value and silently skip every later
+    rebalance of the whole group. On each fill bar the engine then does what
+    a market would:
 
-    A weight row that mixes NaN and finite values is refused before the
-    simulation runs: on a rebalance row NaN means "keep the position", which
-    would hold cash the other orders need and silently block them.
+    - A NaN weight keeps the symbol's holding; a row may mix NaN and finite
+      targets.
+    - An order whose raw (not forward-filled) fill price is NaN is a
+      *rejected order*: the holding is kept and the order expires. It is
+      recorded in ``SimulationResult.rejected_orders`` when it would have
+      traded (a non-zero target, or a symbol held before the bar).
+    - A symbol the price dataset marks as delisted on bar ``b``
+      (``MarketDataset.delisting_bars``) is settled on bar ``b + 1``: the
+      holding becomes cash at its last valuation price, with no fee or
+      slippage, whatever the weights ask for it there. Each settlement is
+      recorded in ``SimulationResult.settlements``.
+
+    Records name the symbol by ``symbol`` (the display name: the ticker the
+    symbol traded under that day when the price store has a ticker lookup
+    file, otherwise the axis label) and ``axis_symbol`` (the label on the
+    panel's ``symbol`` axis). A symbol whose prices are NaN at the start of
+    the window is not yet listed rather than delisted, and trades normally
+    once it lists.
 
     Trade statistics use vectorbt's position view: one trade is one symbol's
     round trip from entry to flat, so trimming a holding back to its target
@@ -130,7 +136,9 @@ class VectorBtBacktester(BaseBacktester):
         "sortino_ratio",
     )
 
-    def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:
+    def _simulate(
+        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None
+    ) -> SimulationResult:
         """Simulate ``weights`` on ``prices`` with ``Portfolio.from_orders``.
 
         This is the only method that builds pandas objects: the weight and
@@ -142,13 +150,8 @@ class VectorBtBacktester(BaseBacktester):
         Raises
         ------
         ValueError
-            If fewer than two price bars are given, or a weight row
-            mixes NaN and finite values.
+            If fewer than two price bars are given.
         """
-        # The base class checks the weights in run(), but a caller of
-        # _simulate would skip that check, so check again here.
-        self._refuse_mixed_weight_rows(weights)
-
         cfg = self.config
         market = self.MARKET
 
@@ -163,28 +166,55 @@ class VectorBtBacktester(BaseBacktester):
         )
 
         w = weights["weight"].transpose("timestamp", "symbol").to_pandas()
-        raw_fill = prices[market.fill_price_column].transpose(  # type: ignore[union-attr]
-            "timestamp", "symbol"
+        raw_fill = np.asarray(
+            prices[market.fill_price_column]  # type: ignore[union-attr]
+            .transpose("timestamp", "symbol")
+            .values,
+            dtype=np.float64,
         )
-        fill = raw_fill.to_pandas().ffill()
+        fill = (
+            prices[market.fill_price_column]  # type: ignore[union-attr]
+            .transpose("timestamp", "symbol")
+            .to_pandas()
+            .ffill()
+        )
         valuation = (
             prices[market.valuation_price_column]  # type: ignore[union-attr]
             .transpose("timestamp", "symbol")
             .to_pandas()
             .ffill()
         )
+        dataset = cfg.price_dataset if dataset is None else dataset
+        delisted = np.asarray(
+            dataset.delisting_bars(
+                prices, market.valuation_price_column  # type: ignore[union-attr]
+            )
+            .transpose("timestamp", "symbol")
+            .values,
+            dtype=bool,
+        )
+        plan = self._execution_plan(
+            target=np.asarray(w.shift(1).to_numpy(), dtype=np.float64),
+            raw_fill=raw_fill,
+            fill=np.asarray(fill.to_numpy(), dtype=np.float64),
+            valuation=np.asarray(valuation.to_numpy(), dtype=np.float64),
+            delisted=delisted,
+        )
+
+        def frame(values):
+            return pd.DataFrame(values, index=fill.index, columns=fill.columns)
 
         pf = vbt.Portfolio.from_orders(
             close=valuation,
-            price=fill,
-            size=w.shift(1),
+            price=frame(plan["price"]),
+            size=frame(plan["size"]),
             size_type="targetpercent",
             direction="both",
             group_by=True,
             cash_sharing=True,
             call_seq="auto",
-            fees=cfg.fees,
-            slippage=cfg.slippage,
+            fees=frame(np.where(plan["settle"], 0.0, cfg.fees)),
+            slippage=frame(np.where(plan["settle"], 0.0, cfg.slippage)),
             init_cash=cfg.init_cash,
             freq=pd.Timedelta(bar_interval),
         )
@@ -241,43 +271,140 @@ class VectorBtBacktester(BaseBacktester):
                 }
             )
 
-        liquidations = self._forced_liquidations(
-            weight_values=np.asarray(w.to_numpy(), dtype=np.float64),
-            raw_fill=np.asarray(raw_fill.values, dtype=np.float64),
-            filled_fill=np.asarray(fill.to_numpy(), dtype=np.float64),
-            orders=orders,
-            timestamps=timestamps,
-            symbols=np.asarray(fill.columns),
+        symbols = np.asarray(fill.columns)
+        held = self._signed_order_sizes(orders, timestamps, symbols).values
+        cash = np.asarray(pf.cash().to_numpy(), dtype=np.float64).reshape(
+            timestamps.size, -1
+        ).sum(axis=1)
+        settlements, rejected = self._execution_records(
+            plan, held, orders, timestamps, symbols
         )
 
         return SimulationResult(
             value=value_da,
             returns=returns_da,
             orders=orders,
-            liquidations=liquidations,
+            settlements=settlements,
+            rejected_orders=rejected,
+            max_target_deviation=self._max_target_deviation(plan, held, cash),
             bar_interval=bar_interval,
             trades=trades,
             native=pf,
         )
 
-    def _refuse_mixed_weight_rows(self, weights: xr.Dataset) -> None:
-        """Raise ``ValueError`` if a weight row mixes NaN and finite values.
+    @staticmethod
+    def _execution_plan(
+        target: np.ndarray,
+        raw_fill: np.ndarray,
+        fill: np.ndarray,
+        valuation: np.ndarray,
+        delisted: np.ndarray,
+    ) -> dict:
+        """Return the orders the market accepts at each fill bar, as ``[T, S]`` arrays.
 
-        A hold row is all NaN and a rebalance row is all finite; nothing else
-        is accepted.
+        ``target`` is the weight each bar fills to (the weights shifted one
+        bar, NaN where a symbol keeps its holding). An order whose raw fill
+        price is NaN is rejected: its size becomes NaN, so the holding is
+        kept. A symbol delisted on bar ``b`` is settled on bar ``b + 1``: a
+        target of 0.0 priced at its last valuation, which replaces any
+        target the weights gave it there. The plan holds ``size``,
+        ``price``, ``target``, ``rejected`` and ``settle``.
         """
-        values = np.asarray(
-            weights["weight"].transpose("timestamp", "symbol").values, dtype=np.float64
-        )
-        mixed = ~(np.isnan(values).all(axis=1) | np.isfinite(values).all(axis=1))
-        if mixed.any():
-            first = pd.Timestamp(weights.timestamp.values[int(np.argmax(mixed))])
-            raise ValueError(
-                f"{self.class_name}: weight row at {first} mixes NaN and finite "
-                f"values; a rebalance row must be all-finite and a hold row "
-                f"all-NaN (vectorbt reads NaN on a rebalance row as 'keep the "
-                f"position' and silently blocks the rest of the rebalance)"
+        settle = np.zeros_like(delisted)
+        settle[1:] = delisted[:-1]
+        rejected = np.isfinite(target) & np.isnan(raw_fill) & ~settle
+        size = np.where(rejected, np.nan, target)
+        size[settle] = 0.0
+        price = np.where(settle, valuation, fill)
+        return {
+            "size": size,
+            "price": price,
+            "target": target,
+            "rejected": rejected,
+            "settle": settle,
+        }
+
+    def _execution_records(
+        self,
+        plan: dict,
+        held: np.ndarray,
+        orders: xr.Dataset,
+        timestamps: np.ndarray,
+        symbols: np.ndarray,
+    ) -> tuple[list[dict], list[dict]]:
+        """Return the delisting settlements and the rejected orders, in time order.
+
+        A settlement is recorded where a holding was settled; a rejection
+        where the rejected order would have traded, that is, where the
+        target is not zero or the symbol was held before the fill bar.
+        ``held`` is the signed position after each bar. The record fields
+        are described on ``SimulationResult``.
+        """
+        sizes = np.abs(np.asarray(orders["size"].values, dtype=np.float64))
+        # A position that nets out to floating-point residue is not a holding.
+        tolerance = 1e-9 * max(1.0, float(sizes.max(initial=0.0)))
+        held_before = np.zeros_like(held)
+        held_before[1:] = held[:-1]
+        was_held = np.abs(held_before) > tolerance
+
+        settlements, rejected = [], []
+        for b in range(1, timestamps.size):
+            settled = np.flatnonzero(plan["settle"][b] & was_held[b])
+            refused = np.flatnonzero(
+                plan["rejected"][b] & ((plan["target"][b] != 0.0) | was_held[b])
             )
+            if settled.size == 0 and refused.size == 0:
+                continue
+            # These records are read by people (the log and the run's JSON
+            # files). On a PERMNO axis (CRSP's permanent numeric security id)
+            # the label is a bare number, so look up the ticker as of the day.
+            day = pd.Timestamp(timestamps[b]).date()
+            for j, name in zip(settled, self._symbol_labels([symbols[j] for j in settled], day)):
+                record = {
+                    "symbol": name,
+                    "axis_symbol": str(symbols[j]),
+                    "delisting_timestamp": pd.Timestamp(timestamps[b - 1]),
+                    "settlement_timestamp": pd.Timestamp(timestamps[b]),
+                    "price": float(plan["price"][b, j]),
+                }
+                logger.info(
+                    f"{self.class_name}: delisting settlement of {record['symbol']}: "
+                    f"delisted {record['delisting_timestamp']}, settled "
+                    f"{record['settlement_timestamp']} at its last valuation "
+                    f"{record['price']}"
+                )
+                settlements.append(record)
+            for j, name in zip(refused, self._symbol_labels([symbols[j] for j in refused], day)):
+                record = {
+                    "symbol": name,
+                    "axis_symbol": str(symbols[j]),
+                    "signal_timestamp": pd.Timestamp(timestamps[b - 1]),
+                    "fill_timestamp": pd.Timestamp(timestamps[b]),
+                }
+                logger.info(
+                    f"{self.class_name}: rejected order for {record['symbol']} "
+                    f"(no fill price): signal {record['signal_timestamp']}, fill "
+                    f"{record['fill_timestamp']}; the holding is kept"
+                )
+                rejected.append(record)
+        return settlements, rejected
+
+    @staticmethod
+    def _max_target_deviation(plan: dict, held: np.ndarray, cash: np.ndarray) -> float | None:
+        """Return the largest |target - held weight| right after a fill bar, or None.
+
+        The held weight is the position times the bar's order price over
+        the portfolio valued at those prices after the orders. Settled
+        symbols are left out; rejected ones are not.
+        """
+        compared = np.isfinite(plan["target"]) & ~plan["settle"]
+        bars = np.flatnonzero(compared.any(axis=1))
+        if bars.size == 0:
+            return None
+        worth = held[bars] * np.nan_to_num(plan["price"][bars])
+        weights = worth / (cash[bars] + worth.sum(axis=1))[:, None]
+        gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
+        return float(gap.max())
 
     @staticmethod
     def _signed_order_sizes(
@@ -322,61 +449,6 @@ class VectorBtBacktester(BaseBacktester):
             coords={"timestamp": ts, "symbol": syms},
         )
 
-    def _forced_liquidations(
-        self,
-        weight_values: np.ndarray,
-        raw_fill: np.ndarray,
-        filled_fill: np.ndarray,
-        orders: xr.Dataset,
-        timestamps: np.ndarray,
-        symbols: np.ndarray,
-    ) -> list[dict]:
-        """Return one record per holding sold because its price disappeared.
-
-        A holding is force-liquidated when a rebalance bar ``t`` has a
-        following bar inside the window, the position after bar ``t`` is
-        non-zero and the raw fill price at ``t + 1`` is NaN. The record fields
-        are described on the class.
-        """
-        n_bars = timestamps.size
-        held = self._signed_order_sizes(orders, timestamps, symbols).values
-        sizes = np.abs(np.asarray(orders["size"].values, dtype=np.float64))
-        # A position that nets out to floating-point residue is not a holding.
-        # The tolerance is 1e-9 of the largest single fill size.
-        tolerance = 1e-9 * max(1.0, float(sizes.max(initial=0.0)))
-
-        records = []
-        for t in np.flatnonzero(np.isfinite(weight_values).all(axis=1)):
-            if t + 1 >= n_bars:
-                continue
-            delisted = np.flatnonzero(
-                (np.abs(held[t]) > tolerance) & np.isnan(raw_fill[t + 1])
-            )
-            if delisted.size == 0:
-                continue
-            # These records are read by people (the log and liquidations.json).
-            # On a PERMNO axis (CRSP's permanent numeric security id) the label
-            # is a bare number, so look up the ticker as of the fill day.
-            fill_day = pd.Timestamp(timestamps[t + 1]).date()
-            named = self._symbol_labels(
-                [symbols[j] for j in delisted], fill_day
-            )
-            for j, name in zip(delisted, named):
-                record = {
-                    "symbol": name,
-                    "axis_symbol": str(symbols[j]),
-                    "signal_timestamp": pd.Timestamp(timestamps[t]),
-                    "fill_timestamp": pd.Timestamp(timestamps[t + 1]),
-                    "price": float(filled_fill[t + 1, j]),
-                }
-                logger.info(
-                    f"{self.class_name}: forced liquidation of {record['symbol']} "
-                    f"(no fill price on the next bar): signal {record['signal_timestamp']}, fill "
-                    f"{record['fill_timestamp']} at last price {record['price']}"
-                )
-                records.append(record)
-        return records
-
     def _simulate_benchmark(self, benchmark_prices: xr.Dataset) -> SimulationResult:
         """Buy the single benchmark symbol with all capital and hold it.
 
@@ -397,7 +469,9 @@ class VectorBtBacktester(BaseBacktester):
                 "symbol": benchmark_prices.symbol.values,
             },
         )
-        return self._simulate(weights, benchmark_prices)
+        return self._simulate(
+            weights, benchmark_prices, dataset=self.config.benchmark_dataset
+        )
 
     def _engine_stats(self, simulation: SimulationResult) -> dict:
         """Return vectorbt's whole-window statistics as a plain dict.

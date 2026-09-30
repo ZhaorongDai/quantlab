@@ -226,8 +226,8 @@ def _weights_on(panel: xr.Dataset, prices_zone, weights, columns) -> xr.DataArra
 
     On a bar that has a weight, a price symbol without one (left out of a long frame,
     NaN in a wide one) gets 0; a bar without any weight is a hold (all NaN). A NaN
-    written in a long frame or a panel stays NaN, so a row mixing it with finite
-    weights is refused by the backtester, naming the bar.
+    written in a long frame or a panel stays NaN, which keeps that symbol's holding
+    on that bar.
     """
     field = to_field_panel(weights, "weight", columns=columns, purpose="weights")
     values, given = _onto_price_axes(panel, prices_zone, "weights", field)

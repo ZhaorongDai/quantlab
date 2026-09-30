@@ -415,8 +415,9 @@ def backtest(
     - a bar without any weight is a hold: absent from a long frame, or an all-NaN row
       of a wide frame. A frame listing only the rebalance bars is therefore enough; to
       go flat on a bar, give it explicit zeros;
-    - a NaN written in a long frame beside finite weights on the same bar breaks the
-      contract and raises, as does a bar with gross exposure above 1.
+    - a NaN written in a long frame beside finite weights on the same bar keeps that
+      symbol's holding there, untraded; a bar whose weights have a gross exposure
+      above 1 raises.
 
     Timestamps in a time zone are converted to UTC and naive ones are taken as UTC;
     when the weights', scores' or benchmark's bars miss the prices' and the inputs came
@@ -514,7 +515,7 @@ def backtest(
     ... )[["timestamp", "symbol", "score"]]
     >>> report = qa.backtest(prices, scores=momentum, top_n=2, rebalance_periods=5)
     >>> sorted(report.metrics)
-    ['notes', 'whole']
+    ['execution', 'notes', 'whole']
     >>> report.weights[report.weights["timestamp"] == bars[5]]
         timestamp symbol  weight
     20 2024-01-08    AAA     0.0

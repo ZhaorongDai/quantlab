@@ -189,7 +189,7 @@ class BacktestReport:
         The run is simulated again from the same prices and weights with
         ``output_dir=directory``, which is deterministic, so the directory
         (``config.json``, ``weights.zarr``, ``equity.zarr``, ``metrics.json``,
-        ``liquidations.json``, ``fingerprint.json``, ``report.html``) describes exactly
+        ``settlements.json``, ``fingerprint.json``, ``report.html``) describes exactly
         this report. It is self-contained: the price and benchmark panels are written
         under ``inputs/`` and ``config.json`` names them relative to the run directory,
         so ``quantlab.utils.module.load_backtester_from_config(config, run_dir=...)``
@@ -224,7 +224,7 @@ class BacktestReport:
         >>> report = qa.backtest(prices, weights=weights)
         >>> run_dir = report.save(tempfile.mkdtemp())
         >>> sorted(path.name for path in run_dir.iterdir())
-        ['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+        ['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
         >>> sorted(path.name for path in (run_dir / "inputs").iterdir())
         ['price_dataset.zarr']
         """

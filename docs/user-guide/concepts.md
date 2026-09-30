@@ -96,8 +96,8 @@ had already been delisted, has NaN in that cell rather than a missing row. This 
 the data survivorship-bias free: survivorship bias is the error of studying only the companies
 that still exist today, which overstates returns because the failures have silently dropped
 out. A panel that keeps delisted symbols as columns, with values up to their last trading day,
-lets models and backtests see the failures too. The backtester liquidates a holding whose
-prices stop, and records it.
+lets models and backtests see the failures too. The backtester settles a holding whose
+prices stop into cash at its last valuation, and records the settlement.
 
 The `symbol` coordinate is usually a ticker string. Panels built from CRSP use the PERMNO
 instead, CRSP's permanent integer identifier for a security, because tickers are reused and
@@ -215,7 +215,7 @@ after the backtester class and the time. Its contents are:
 | `weights.zarr` | the target-weight panel, one `weight` per `(timestamp, symbol)` |
 | `equity.zarr` | the simulated portfolio value and per-bar returns |
 | `metrics.json` | performance statistics for the whole window, the in-sample part and the out-of-sample part, with their date ranges and explanatory notes |
-| `liquidations.json` | holdings closed because their symbol stopped trading |
+| `settlements.json` | holdings turned into cash because their symbol delisted |
 | `fingerprint.json` | a SHA-256 digest, date range and shape of each input the run read |
 | `report.html` | an interactive plotly report of the equity curve and summary statistics |
 

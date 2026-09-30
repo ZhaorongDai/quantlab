@@ -272,13 +272,14 @@ def main() -> None:
 
         weights = result.weights["weight"].to_pandas()
         print("first rebalance:", weights.iloc[0][weights.iloc[0] > 0].round(4).to_dict())
-        for record in result.simulation.liquidations:
+        for record in result.simulation.settlements:
             print(
-                "forced liquidation:", record["symbol"],
-                "signal", record["signal_timestamp"].date(),
-                "fill", record["fill_timestamp"].date(),
+                "delisting settlement:", record["symbol"],
+                "delisted", record["delisting_timestamp"].date(),
+                "settled", record["settlement_timestamp"].date(),
                 f"at {record['price']:.2f}",
             )
+        print("rejected orders:", result.metrics["execution"]["rejected_order_count"])
 
         # --- 4. load mode, long/short ----------------------------------------
         checkpoint = result.metrics["trained_checkpoint"]

@@ -342,7 +342,7 @@ Weights come long, one row per `(timestamp, symbol)` with one value column of an
 
 - a symbol without a weight on a bar that has weights for other symbols gets weight 0: a row left out of a long frame, or a NaN cell of a wide frame;
 - a bar without any weight holds the previous positions: absent from a long frame, or an all-NaN row of a wide frame. A frame listing only the rebalance bars is therefore enough, and going flat on a bar takes explicit zeros;
-- a NaN written in a long frame beside finite weights on the same bar raises, and so does a bar with gross exposure above 1.
+- a NaN written in a long frame beside finite weights on the same bar keeps that symbol's holding there, untraded; a bar whose weights have a gross exposure above 1 raises.
 
 Here `AAA` and `BBB` are held half and half from the first bar, and the portfolio goes flat on the 60th bar. The frame names only those two bars, and on the 60th only `AAA`: `BBB`, left out, gets weight 0 as well. In the wide pivot of the same frame `BBB`'s cell on that bar is NaN, and the run is the same:
 
@@ -431,7 +431,7 @@ ValueError: scores= needs top_n=, the number of names held per side.
 >>> index["symbol"] = "INDEX"
 >>> compared = qa.backtest(prices, weights=weights, benchmark=index)
 >>> sorted(compared.metrics)
-['benchmark', 'notes', 'relative', 'whole']
+['benchmark', 'execution', 'notes', 'relative', 'whole']
 >>> compared.benchmark.tail(2)
      timestamp          value   returns
 118 2024-06-13  967050.957213 -0.016379
@@ -472,7 +472,7 @@ ValueError: scores= needs top_n=, the number of names held per side.
 
 ### Keeping a run
 
-By default nothing is written. `output_dir=` writes the library's run directory, named `WeightsVectorBt_<timestamp>`, under that directory; `report.save(directory)` writes the same directory after the fact. The run directory holds `config.json`, `weights.zarr`, `equity.zarr`, `metrics.json`, `liquidations.json`, `fingerprint.json` and `report.html`, and under `inputs/` the price and benchmark panels, which `config.json` names relative to the run directory. The directory can be moved; here it is moved before the run is rebuilt from it in two lines:
+By default nothing is written. `output_dir=` writes the library's run directory, named `WeightsVectorBt_<timestamp>`, under that directory; `report.save(directory)` writes the same directory after the fact. The run directory holds `config.json`, `weights.zarr`, `equity.zarr`, `metrics.json`, `settlements.json`, `fingerprint.json` and `report.html`, and under `inputs/` the price and benchmark panels, which `config.json` names relative to the run directory. The directory can be moved; here it is moved before the run is rebuilt from it in two lines:
 
 ```python
 >>> import json
@@ -485,7 +485,7 @@ By default nothing is written. `output_dir=` writes the library's run directory,
 True
 >>> run_dir = Path(shutil.move(kept.raw.run_dir, tempfile.mkdtemp()))
 >>> sorted(path.name for path in run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 >>> sorted(path.name for path in (run_dir / "inputs").iterdir())
 ['benchmark_dataset.zarr', 'price_dataset.zarr']
 >>> rebuilt = load_backtester_from_config(json.loads((run_dir / "config.json").read_text()), run_dir=run_dir)

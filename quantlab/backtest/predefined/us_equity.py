@@ -75,8 +75,8 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     ... )
     >>> result = backtester.run()
     >>> sorted(p.name for p in result.run_dir.iterdir())
-    ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
-     'metrics.json', 'report.html', 'weights.zarr']
+    ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json',
+     'report.html', 'settlements.json', 'weights.zarr']
     >>> result.weights["weight"].dims
     ('timestamp', 'symbol')
     """

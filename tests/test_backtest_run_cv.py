@@ -641,7 +641,7 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         "weights.zarr",
         "equity.zarr",
         "metrics.json",
-        "liquidations.json",
+        "settlements.json",
         "fingerprint.json",
         "report.html",
         "folds",
@@ -688,10 +688,10 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         assert "Total Return [%]" in entry["metrics"]["whole"]
     assert metrics["stitched"]["in_sample_ranges"] == []
 
-    # --- liquidations.json ---------------------------------------------------
-    liquidations = _strict_json(run_dir / "liquidations.json")
-    assert set(liquidations) == {"stitched", "folds"}
-    assert [entry["fold"] for entry in liquidations["folds"]] == list(range(N_FOLDS))
+    # --- settlements.json ----------------------------------------------------
+    settlements = _strict_json(run_dir / "settlements.json")
+    assert set(settlements) == {"stitched", "folds"}
+    assert [entry["fold"] for entry in settlements["folds"]] == list(range(N_FOLDS))
 
     # --- fingerprint.json and config.json: the union window (D-27) -----------
     fingerprint = _strict_json(run_dir / "fingerprint.json")

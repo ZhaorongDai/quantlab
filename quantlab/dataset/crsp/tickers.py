@@ -3,7 +3,7 @@
 CRSP (the Center for Research in Security Prices) is a US stock database. A
 PERMNO is its permanent integer id for one security. The CRSP price panel
 uses the PERMNO as its ``symbol`` axis: the right id for code, but not what
-a person wants to read in a log line, a ``liquidations.json`` entry or a
+a person wants to read in a log line, a ``settlements.json`` entry or a
 coverage report. The readable names live in a JSON *sidecar* next to the
 Zarr store, ``{zarr}.crsp_tickers.json``, as date intervals per PERMNO. One
 name per PERMNO would not do: FB and META are the same PERMNO 13407, so a
@@ -214,7 +214,7 @@ class CrspTickerLookup:
         for the same reason.
 
         It warns only once per object because one caller passes a whole batch
-        of forced-liquidation records to a single ``label`` call and would
+        of settlement records to a single ``label`` call and would
         otherwise log hundreds of identical lines. The ``_degraded`` flag
         never affects a return value, so a race between threads can at most
         cause a duplicate log line.
@@ -362,7 +362,7 @@ class CrspTickerLookup:
 
         This is the entry point for display code. It takes a batch because
         every caller prints a list (a missing-member report, a dropped-symbol
-        warning, the liquidation records of one date).
+        warning, the settlement records of one date).
 
         It never raises. An unknown PERMNO falls back to its own digits, and
         so does every PERMNO when the sidecar is missing, unparseable or

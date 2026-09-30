@@ -194,7 +194,7 @@ def test_slice_statistics_compare_exact_bar_timestamps_not_days(tmp_path):
             returns.values, dims="timestamp", coords={"timestamp": index.values}
         ),
         orders=xr.Dataset(),
-        liquidations=[],
+        settlements=[],
         bar_interval=np.timedelta64(1, "h"),
         trades=trades,
         native=types.SimpleNamespace(returns=lambda: returns),
@@ -245,7 +245,7 @@ def test_whole_order_count_is_zero_for_an_order_less_simulation(tmp_path, monkey
             np.zeros(index.size), dims="timestamp", coords={"timestamp": index.values}
         ),
         orders=xr.Dataset(),
-        liquidations=[],
+        settlements=[],
         bar_interval=np.timedelta64(1, "h"),
         trades=xr.Dataset(),
         native=None,

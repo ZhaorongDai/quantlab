@@ -38,9 +38,9 @@ RUN_DIR_ARTIFACTS = [
     "equity.zarr",
     "fingerprint.json",
     "inputs",
-    "liquidations.json",
     "metrics.json",
     "report.html",
+    "settlements.json",
     "weights.zarr",
 ]
 
@@ -153,7 +153,7 @@ def test_weights_through_the_api_match_the_zarr_backed_backtester(stores):
     )
     _assert_same_block(report.metrics["whole"], expected.metrics["whole"])
     assert report.metrics["notes"] == expected.metrics["notes"]
-    assert sorted(report.metrics) == ["notes", "whole"]
+    assert sorted(report.metrics) == ["execution", "notes", "whole"]
     assert len(report.orders) == expected.simulation.orders.sizes["order"]
     np.testing.assert_array_equal(
         report.orders["size"].to_numpy(), expected.simulation.orders["size"].values
@@ -335,15 +335,19 @@ def test_gross_exposure_above_one_raises_naming_the_bar(stores):
         qa.backtest(stores["frame"], weights=frame)
 
 
-def test_an_explicit_nan_beside_finite_weights_raises_naming_the_bar(stores):
+def test_an_explicit_nan_beside_finite_weights_keeps_that_holding(stores):
     frame = _long(_selected_weights(stores))
     bar = _bars()[5]
     on_bar = frame["timestamp"] == bar
     frame.loc[on_bar, "weight"] = 0.1
     frame.loc[on_bar & (frame["symbol"] == "AAA"), "weight"] = np.nan
 
-    with pytest.raises(ValueError, match=rf"weight row at {bar:%Y-%m-%d} mixes NaN"):
-        qa.backtest(stores["frame"], weights=frame)
+    report = qa.backtest(stores["frame"], weights=frame)
+
+    orders = report.raw.simulation.orders
+    fill_bar = np.datetime64(_bars()[6])
+    traded = {str(s) for s, t in zip(orders["symbol"].values, orders["timestamp"].values) if t == fill_bar}
+    assert "AAA" not in traded and traded
 
 
 def test_weights_on_a_symbol_without_prices_raise(stores):
@@ -452,7 +456,7 @@ def test_a_benchmark_frame_gives_the_library_excess_metrics(stores):
         stores["frame"], weights=_long(weights), benchmark=stores["benchmark_frame"]
     )
 
-    assert sorted(report.metrics) == ["benchmark", "notes", "relative", "whole"]
+    assert sorted(report.metrics) == ["benchmark", "execution", "notes", "relative", "whole"]
     assert report.metrics["benchmark"]["symbol"] == "QQQ"
     _assert_same_block(report.metrics["relative"]["whole"], expected.metrics["relative"]["whole"])
     _assert_same_block(
@@ -467,13 +471,12 @@ def test_without_a_benchmark_the_report_has_none(stores):
     assert report.benchmark is None
 
 
-def test_a_liquidation_on_a_frame_names_the_symbol_without_a_sidecar_warning(tmp_path):
+def test_a_settlement_on_a_frame_names_the_symbol_without_a_sidecar_warning(tmp_path):
     price_config = write_price_store(tmp_path, n_bars=N_BARS, delist_at={"BBB": 12})
     frame = _canonical_frame(price_config.zarr_file_path)
     bars = _bars()
     weights = pd.DataFrame(
-        # Bought on bar 3; bar 11 rebalances to the same holding, whose next fill
-        # price is missing, so it is sold at its last price.
+        # Bought on bar 3; its last price is bar 11, so it is settled on bar 12.
         {"timestamp": [bars[3], bars[11]], "symbol": ["BBB", "BBB"], "weight": [1.0, 1.0]}
     )
     messages = []
@@ -483,7 +486,7 @@ def test_a_liquidation_on_a_frame_names_the_symbol_without_a_sidecar_warning(tmp
     finally:
         logger.remove(handler)
 
-    assert [r["symbol"] for r in report.raw.simulation.liquidations] == ["BBB"]
+    assert [r["symbol"] for r in report.raw.simulation.settlements] == ["BBB"]
     assert not [m for m in messages if "sidecar" in m]
 
 

@@ -278,9 +278,16 @@ class SimulationResult:
     ``price``, ``fees`` and ``side``. ``trades`` is a dataset on a ``trade``
     dimension with ``symbol``, ``entry_timestamp``, ``exit_timestamp``,
     ``pnl``, ``return`` and ``status`` (``"Open"`` or ``"Closed"``), empty
-    when nothing traded. ``liquidations`` records forced exits of delisted
-    holdings. ``native`` is the engine's own result object and is read only
-    by the engine that produced it.
+    when nothing traded. ``settlements`` records delisted holdings turned
+    into cash at their last valuation (``symbol``, ``axis_symbol``,
+    ``delisting_timestamp``, ``settlement_timestamp``, ``price``).
+    ``rejected_orders`` records orders that found no fill price
+    (``symbol``, ``axis_symbol``, ``signal_timestamp``, ``fill_timestamp``);
+    the holding was kept. ``max_target_deviation`` is the largest absolute
+    gap between a target weight and the weight held right after its fill
+    bar, rejections, cash and fees included; ``None`` when nothing
+    rebalanced. ``native`` is the engine's own result object and is read
+    only by the engine that produced it.
 
     Examples
     --------
@@ -296,10 +303,12 @@ class SimulationResult:
     value: xr.DataArray
     returns: xr.DataArray
     orders: xr.Dataset
-    liquidations: list[dict]
+    settlements: list[dict]
     bar_interval: np.timedelta64
     trades: xr.Dataset | None = None
     native: object | None = None
+    rejected_orders: list[dict] = field(default_factory=list)
+    max_target_deviation: float | None = None
 
 
 @dataclass
@@ -319,11 +328,11 @@ class BacktestResult:
     --------
     >>> result = backtester.run()
     >>> sorted(p.name for p in result.run_dir.iterdir())
-    ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json',
-     'metrics.json', 'report.html', 'weights.zarr']
+    ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json',
+     'report.html', 'settlements.json', 'weights.zarr']
     >>> sorted(result.metrics)
-    ['in_sample', 'in_sample_range', 'notes', 'out_of_sample',
-     'out_of_sample_ranges', 'training_window', 'whole']
+    ['execution', 'in_sample', 'in_sample_range', 'notes', 'out_of_sample',
+     'out_of_sample_ranges', 'portfolio_construction', 'training_window', 'whole']
     """
 
     run_dir: Path | None
@@ -468,7 +477,8 @@ class BaseBacktester(ABC):
         symbols are PERMNOs, permanent numeric security ids, and this file
         records which ticker each PERMNO traded under on each date. The
         backtester is the only layer that knows where the price store is, so
-        it owns the lookup: the engine uses it for liquidation records and
+        it owns the lookup: the engine uses it for settlement and
+        rejected-order records and
         the model for its lists of missing or extra symbols. The lookup is
         built on first access and reset whenever a new config is assigned.
         When no such file exists, ``label()`` returns each symbol unchanged,
@@ -1110,9 +1120,10 @@ class BaseBacktester(ABC):
             ``XrBackend().read(path).data``, replays that run. The
             timestamps must be exactly the price bars
             of the window and the symbols exactly the price dataset's
-            symbols, in any order (they are aligned to the price axes). Every
-            row is all-NaN (hold) or all-finite (rebalance) with a gross
-            exposure, the sum of absolute weights, of at most 1.
+            symbols, in any order (they are aligned to the price axes). A
+            NaN keeps the symbol's holding and a finite value is its target;
+            the targets of a row have a gross exposure, the sum of their
+            absolute values, of at most 1.
 
         Returns
         -------
@@ -1149,7 +1160,7 @@ class BaseBacktester(ABC):
         >>> result.run_dir is None, result.predictions is None
         (True, True)
         >>> sorted(result.metrics), result.simulation.value.sizes
-        (['notes', 'whole'], Frozen({'timestamp': 30}))
+        (['execution', 'notes', 'whole'], Frozen({'timestamp': 30}))
         """
         return self._run_window(
             lambda start_date, end_date: self._weights_window(
@@ -2263,9 +2274,10 @@ class BaseBacktester(ABC):
         """Check the target-weight contract of ``weights`` against ``prices``.
 
         ``weights`` must carry a ``weight`` variable on ``("timestamp",
-        "symbol")`` with exactly the price axes. Every row is either all-NaN
-        (hold) or all-finite (rebalance), and a rebalance row's gross
-        exposure, the sum of absolute weights, is at most 1.
+        "symbol")`` with exactly the price axes. A NaN keeps the symbol's
+        holding and a finite value is its target; a row may mix the two
+        (all NaN holds the whole book). The gross exposure of a row's
+        targets, the sum of their absolute values, is at most 1.
 
         Raises
         ------
@@ -2295,17 +2307,7 @@ class BaseBacktester(ABC):
 
         values = weight.values
         timestamps = weight.timestamp.values
-        all_nan = np.isnan(values).all(axis=1)
-        all_finite = np.isfinite(values).all(axis=1)
-        mixed = ~(all_nan | all_finite)
-        if mixed.any():
-            first = timestamps[int(np.argmax(mixed))]
-            raise ValueError(
-                f"{self.class_name}: weight row at {self._bar_label(first)} mixes "
-                f"NaN and finite values; a row must be all-NaN (hold) or "
-                f"all-finite (rebalance)"
-            )
-        gross = np.where(all_finite, np.abs(np.nan_to_num(values)).sum(axis=1), 0.0)
+        gross = np.abs(np.nan_to_num(values)).sum(axis=1)
         over = gross > 1 + 1e-9
         if over.any():
             idx = int(np.argmax(over))
@@ -2322,8 +2324,8 @@ class BaseBacktester(ABC):
 
         Both inputs share the price axes. The result must pass
         ``_assert_weights_contract``: a ``weight`` variable on
-        ``(timestamp, symbol)`` whose rows are all-NaN on hold bars and
-        all-finite with gross exposure at most 1 on rebalance bars.
+        ``(timestamp, symbol)``, NaN where a symbol keeps its holding, with
+        the gross exposure of each row's targets at most 1.
         """
 
     def _signal_metrics(self) -> dict:
@@ -2336,8 +2338,14 @@ class BaseBacktester(ABC):
         return {}
 
     @abstractmethod
-    def _simulate(self, weights: xr.Dataset, prices: xr.Dataset) -> SimulationResult:
-        """Simulate the portfolio; a signal at bar t fills at bar t+1's fill price."""
+    def _simulate(
+        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None
+    ) -> SimulationResult:
+        """Simulate the portfolio; a signal at bar t fills at bar t+1's fill price.
+
+        ``dataset`` is the market dataset ``prices`` came from, which marks
+        its delistings; ``config.price_dataset`` when omitted.
+        """
 
     @abstractmethod
     def _simulate_benchmark(self, benchmark_prices: xr.Dataset) -> SimulationResult:
@@ -2593,7 +2601,9 @@ class BaseBacktester(ABC):
         slices of return statistics (``_period_returns_stats`` over the whole
         window and over each slice's ranges), and ``relative`` holds the
         three slices of ``_relative_stats``, the strategy measured against
-        the benchmark. Every key of ``split`` is copied to the top level;
+        the benchmark. ``execution`` holds the simulation's
+        ``rejected_order_count``, ``rejected_orders`` and
+        ``max_target_deviation``. Every key of ``split`` is copied to the top level;
         the in-sample ranges come from ``split["in_sample_ranges"]`` when
         present (the stitched curve) and from the single
         ``split["in_sample_range"]`` otherwise. ``split=None`` (a
@@ -2609,7 +2619,14 @@ class BaseBacktester(ABC):
         # often we traded. A run with no fills has no `order` dimension, so
         # use `.sizes.get` rather than a subscript that would raise.
         whole["Total Orders"] = int(simulation.orders.sizes.get("order", 0))
-        metrics: dict = {"whole": whole}
+        metrics: dict = {
+            "whole": whole,
+            "execution": {
+                "rejected_order_count": len(simulation.rejected_orders),
+                "rejected_orders": list(simulation.rejected_orders),
+                "max_target_deviation": simulation.max_target_deviation,
+            },
+        }
 
         # The slices other than `whole`, by name; none without a split.
         slices: dict[str, list[tuple[str, str]]] = {}
@@ -3014,7 +3031,7 @@ class BaseBacktester(ABC):
 
         The directory holds ``config.json``, ``weights.zarr``,
         ``equity.zarr`` (``value`` and ``returns``, plus ``benchmark_value``
-        and ``benchmark_returns`` when a benchmark ran), ``liquidations.json``,
+        and ``benchmark_returns`` when a benchmark ran), ``settlements.json``,
         ``metrics.json``, ``report.html`` and ``fingerprint.json``, plus
         ``inputs/`` when a dataset is held in memory (see
         ``_run_dir_config``). Each
@@ -3048,8 +3065,8 @@ class BaseBacktester(ABC):
             )
             self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
             write_json_atomically(
-                run_dir / "liquidations.json",
-                to_jsonable(simulation.liquidations),
+                run_dir / "settlements.json",
+                to_jsonable(simulation.settlements),
                 indent=2,
             )
             write_json_atomically(
@@ -3238,7 +3255,7 @@ class BaseBacktester(ABC):
         The top level describes the stitched curve with the same files as a
         ``run()`` directory: ``config.json``, ``weights.zarr``,
         ``equity.zarr``, ``metrics.json`` (``stitched``, ``folds``,
-        ``notes``), ``liquidations.json`` (``stitched`` plus per-fold
+        ``notes``), ``settlements.json`` (``stitched`` plus per-fold
         ``folds``), ``fingerprint.json`` (the stitched window) and
         ``report.html``. The report receives ``metrics["stitched"]``, shades
         no in-sample range (the several in-sample ranges are listed in the
@@ -3271,14 +3288,14 @@ class BaseBacktester(ABC):
                     record.get("benchmark"),
                 )
             write_json_atomically(
-                run_dir / "liquidations.json",
+                run_dir / "settlements.json",
                 to_jsonable(
                     {
-                        "stitched": simulation.liquidations,
+                        "stitched": simulation.settlements,
                         "folds": [
                             {
                                 "fold": record["fold"],
-                                "liquidations": record["simulation"].liquidations,
+                                "settlements": record["simulation"].settlements,
                             }
                             for record in records
                         ],

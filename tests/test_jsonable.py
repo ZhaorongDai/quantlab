@@ -1,7 +1,7 @@
 """Strictness of `quantlab/utils/jsonable.py:to_jsonable` (phase 03.7, code review WR-07).
 
 `to_jsonable` serializes every JSON artifact a backtest or a CV run persists:
-`metrics.json`, `config.json`, `fingerprint.json`, `liquidations.json` and
+`metrics.json`, `config.json`, `fingerprint.json`, `settlements.json` and
 `cv_folds.json`. The fold dicts in `cv_folds.json` carry whatever a model's
 `_fit` returns. Before the fix the function was strict only syntactically:
 

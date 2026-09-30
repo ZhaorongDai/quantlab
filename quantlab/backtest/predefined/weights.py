@@ -6,7 +6,7 @@ names its own price columns and its own market, so the ``MarketSpec`` comes from
 own and takes no model; its only entry point is ``run_weights()``. A run given an
 ``output_dir`` writes the usual run directory: ``config.json`` naming this class and
 recording the market fields, the simulated ``weights.zarr``, ``equity.zarr``,
-``metrics.json``, ``liquidations.json``, ``fingerprint.json`` and ``report.html``, plus
+``metrics.json``, ``settlements.json``, ``fingerprint.json`` and ``report.html``, plus
 ``inputs/`` holding the panel of a price or benchmark ``FrameDataset``, which
 ``config.json`` names relative to the run directory. The directory is therefore
 self-contained: ``load_backtester_from_config(config, run_dir=run_dir)`` rebuilds the

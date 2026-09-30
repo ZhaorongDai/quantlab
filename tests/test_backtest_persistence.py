@@ -2,7 +2,7 @@
 
 D-24: every run writes its own directory `output_dir/{class}_{timestamp}/`
 holding config.json, weights.zarr, equity.zarr (value, returns),
-liquidations.json, metrics.json, report.html and fingerprint.json. An existing
+settlements.json, metrics.json, report.html and fingerprint.json. An existing
 directory is never overwritten, and every JSON artifact is strict JSON (NaN and
 inf persisted as null, timestamps as ISO strings).
 
@@ -27,8 +27,8 @@ window and the in-sample/out-of-sample ranges, every string byte-identical to
 the same run's metrics.json -- carries the whole/in-sample/out-of-sample
 metrics as an HTML table, and draws named traces on three rows of a shared time
 axis: "equity" on x, "drawdown" on x2, and "monthly_return". Forced
-liquidations are NOT drawn on the chart (quick 260916-hro) even for a run that
-liquidated, while liquidations.json still records them in full; that pairing
+delisting settlements are NOT drawn on the chart (quick 260916-hro) even for a
+run that settled one, while settlements.json still records them in full; that pairing
 is asserted in one place below. The in-sample range is shaded when the
 window overlaps training, there is no benchmark trace, and the note that
 short-side returns are optimistic because no borrow cost is modelled still
@@ -98,9 +98,9 @@ D24_ARTIFACTS = [
     "config.json",
     "equity.zarr",
     "fingerprint.json",
-    "liquidations.json",
     "metrics.json",
     "report.html",
+    "settlements.json",
     "weights.zarr",
 ]
 
@@ -262,15 +262,15 @@ def test_equity_zarr_has_value_and_returns_on_timestamp(overlap_run):
 def test_every_json_artifact_is_strict_json(overlap_run):
     result = overlap_run["result"]
     run_dir = result.run_dir
-    for name in ("config.json", "metrics.json", "liquidations.json", "fingerprint.json"):
+    for name in ("config.json", "metrics.json", "settlements.json", "fingerprint.json"):
         _strict_json(run_dir / name)
 
-    # Not vacuous: the run really liquidated, and each record carries the
-    # pd.Timestamp fields that plain json.dump cannot serialize.
-    liquidations = _strict_json(run_dir / "liquidations.json")
-    assert result.simulation.liquidations, "the fixture run must liquidate"
-    assert len(liquidations) == len(result.simulation.liquidations)
-    first = liquidations[0]
+    # Not vacuous: the run really settled a delisting, and each record carries
+    # the pd.Timestamp fields that plain json.dump cannot serialize.
+    settlements = _strict_json(run_dir / "settlements.json")
+    assert result.simulation.settlements, "the fixture run must settle a delisting"
+    assert len(settlements) == len(result.simulation.settlements)
+    first = settlements[0]
     # 03.11-09: the record carries BOTH halves of a security's name -- the
     # human `symbol` (the period-correct ticker when a `.crsp_tickers.json`
     # sits beside the price store) and `axis_symbol`, the panel label itself.
@@ -279,14 +279,14 @@ def test_every_json_artifact_is_strict_json(overlap_run):
     assert set(first) == {
         "symbol",
         "axis_symbol",
-        "signal_timestamp",
-        "fill_timestamp",
+        "delisting_timestamp",
+        "settlement_timestamp",
         "price",
     }
-    assert first["symbol"] == result.simulation.liquidations[0]["symbol"]
+    assert first["symbol"] == result.simulation.settlements[0]["symbol"]
     assert first["axis_symbol"] == first["symbol"]
-    assert pd.Timestamp(first["fill_timestamp"]) == pd.Timestamp(
-        result.simulation.liquidations[0]["fill_timestamp"]
+    assert pd.Timestamp(first["settlement_timestamp"]) == pd.Timestamp(
+        result.simulation.settlements[0]["settlement_timestamp"]
     )
 
 
@@ -1053,35 +1053,35 @@ def test_the_page_states_the_deepest_drawdown_span_in_words(overlap_run):
         assert label in text, (name, label, text)
 
 
-def test_the_liquidating_run_drops_the_chart_markers_and_keeps_the_json(overlap_run):
+def test_the_settling_run_draws_no_chart_markers_and_keeps_the_json(overlap_run):
     """D-02 in ONE test: the picture loses the markers, the data survives.
 
     Split across two tests, either half could be deleted while the other kept
     passing -- and that is precisely the regression worth guarding, because
-    the chart trace and liquidations.json were fed from the SAME
-    `simulation.liquidations` and only the chart was meant to lose it.
+    the chart trace and the records file were fed from the SAME
+    `simulation.settlements` and only the chart was meant to lose it.
     """
     result = overlap_run["result"]
     traces = _report_traces(_report_html(overlap_run))
 
-    # Non-vacuity: this run really did force a liquidation, so an absent
+    # Non-vacuity: this run really did settle a delisting, so an absent
     # marker cannot be explained away by there being nothing to draw.
-    assert result.simulation.liquidations, "the fixture run must liquidate"
+    assert result.simulation.settlements, "the fixture run must settle a delisting"
     assert "liquidation" not in traces
 
     # ...and the artifact still carries every record, field for field.
-    persisted = _strict_json(result.run_dir / "liquidations.json")
-    assert len(persisted) == len(result.simulation.liquidations)
-    for stored, live in zip(persisted, result.simulation.liquidations):
+    persisted = _strict_json(result.run_dir / "settlements.json")
+    assert len(persisted) == len(result.simulation.settlements)
+    for stored, live in zip(persisted, result.simulation.settlements):
         assert set(stored) == {
             "symbol",
             "axis_symbol",
-            "signal_timestamp",
-            "fill_timestamp",
+            "delisting_timestamp",
+            "settlement_timestamp",
             "price",
         }
         assert stored["symbol"] == live["symbol"]
-        for field in ("fill_timestamp", "signal_timestamp"):
+        for field in ("settlement_timestamp", "delisting_timestamp"):
             assert pd.Timestamp(stored[field]) == pd.Timestamp(live[field]), field
         assert stored["price"] == pytest.approx(live["price"], rel=1e-12)
 

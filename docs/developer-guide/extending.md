@@ -794,8 +794,9 @@ used for annualizing; and `_generate_signals`, which turns the model's
 prediction panel and the prices into target weights. The weights must follow
 the contract described in
 [Backtesting](../user-guide/backtesting.md#target-weights-the-signal-format):
-all-NaN rows on hold bars, all-finite rows with gross exposure at most 1 on
-rebalance bars. The backtester checks this before simulating.
+a finite weight is a target, NaN keeps a holding, and the targets of a row
+have a gross exposure of at most 1. The backtester checks this before
+simulating.
 
 This backtester trades a round-the-clock market on unadjusted `open` and
 `close` columns and holds every symbol the model scores above zero, equally
@@ -861,8 +862,8 @@ symbols, and the market's year length is used for annualizing:
 
 Requiring a finite next-bar fill price keeps a symbol that is about to lose
 its prices from being bought. Everything after `_generate_signals` is
-inherited: execution at the next bar's open, forced liquidation of delisted
-holdings, metrics and the run directory.
+inherited: execution at the next bar's open, rejected orders, delisting
+settlements, metrics and the run directory.
 
 A backtester reaches the model only through the `Predictor` protocol
 (`quantlab.base.backtest.Predictor`): `labels`, `label_delays`,

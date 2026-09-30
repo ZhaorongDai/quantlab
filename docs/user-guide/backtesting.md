@@ -95,19 +95,20 @@ content as the run's `metrics.json`:
 
 ```text
 == long-only top 3, train mode
-run directory: USEquityCrossectionSelectStockVectorBt_20260927_211527_526449
-  Total Return [%]      9.170
-  Sharpe Ratio          1.888
-  Max Drawdown [%]      6.116
+run directory: USEquityCrossectionSelectStockVectorBt_20260930_002352_615308
+  Total Return [%]      8.584
+  Sharpe Ratio          1.771
+  Max Drawdown [%]      6.499
   Total Orders            126
-  turnover/rebal. [%]    139.9
+  turnover/rebal. [%]    134.5
   training window     ('2023-01-02', '2023-09-08')
   in-sample range     ('2023-09-04', '2023-09-08')
   out-of-sample       [('2023-09-11', '2024-02-23')]
-  out-of-sample Sharpe 1.855
-files: ['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+  out-of-sample Sharpe 1.736
+files: ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 first rebalance: {'S08': 0.3333, 'S10': 0.3333, 'S11': 0.3333}
-forced liquidation: S08 signal 2023-12-18 fill 2023-12-19 at 72.50
+delisting settlement: S08 delisted 2023-12-15 settled 2023-12-18 at 71.30
+rejected orders: 0
 ```
 
 To backtest a model you have already trained, pass `model_mode="load"` and
@@ -153,20 +154,21 @@ fills; a negative weight is a short position. Target weights say where the
 portfolio should be, not how many shares to trade, so the same signal works
 whatever the current holdings are.
 
-Each row of the weight panel is one of two kinds:
+A finite weight is a target; a NaN keeps the symbol's current holding
+untraded:
 
-- A hold row is entirely NaN. It means "do nothing on this bar; keep the
-  current positions".
-- A rebalance row is entirely finite. Symbols that should not be held get
-  exactly `0.0`. The *gross exposure* of the row, the sum of the absolute
-  weights, must be at most 1, so the portfolio is never leveraged.
+- A row that is entirely NaN is a hold row: nothing is traded on that bar.
+- A rebalance row gives finite targets. Symbols that should not be held get
+  exactly `0.0`, and the portfolio construction rules shipped with the
+  library give every symbol a finite weight. A row may also mix the two, to
+  leave some holdings alone; a kept holding still uses the cash it is worth,
+  so the other targets can be filled only as far as the remaining cash allows.
+- The *gross exposure* of a row's targets, the sum of their absolute values,
+  must be at most 1, so the portfolio is never leveraged.
 
-The backtester checks these rules before simulating and raises `ValueError`
-naming the first offending bar. The strictness is deliberate: vectorbt reads
-a NaN on a rebalance row as "keep this position", and a single NaN would hold
-cash that the other orders on that row need, silently blocking the rebalance.
-A rebalance row with nothing to buy is therefore all zeros (the portfolio goes
-to cash), never all NaN.
+The backtester checks the gross exposure and the axes before simulating and
+raises `ValueError` naming the first offending bar. A rebalance row with
+nothing to buy is all zeros (the portfolio goes to cash), not all NaN.
 
 The weights of every run are saved as `weights.zarr`, so any other tool can
 read exactly what was traded.
@@ -232,12 +234,12 @@ The example prints the exposures of the first long/short rebalance row:
 
 ```text
 == long/short top 3 / bottom 3, load mode
-run directory: USEquityCrossectionSelectStockVectorBt_20260927_211527_838321
-  Total Return [%]      3.257
-  Sharpe Ratio          1.382
-  Max Drawdown [%]      2.315
+run directory: USEquityCrossectionSelectStockVectorBt_20260930_002352_913990
+  Total Return [%]      2.979
+  Sharpe Ratio          1.267
+  Max Drawdown [%]      2.577
   Total Orders            175
-  turnover/rebal. [%]    144.1
+  turnover/rebal. [%]    137.2
   gross exposure 1.0 net exposure 0.0
 ```
 
@@ -282,28 +284,35 @@ A symbol whose prices are NaN at the start of the window and that has never
 been held is treated as not yet listed. It trades normally once its prices
 appear.
 
-A holding whose prices disappear is treated as delisted. Both price columns
-are forward-filled before they reach vectorbt, so the position keeps its last
-known value, and at the next rebalance the holding is sold at its last known
-fill price while the rest of the portfolio rebalances normally. This is a
-*forced liquidation*. It is logged, recorded in `SimulationResult.liquidations`
-and written to `liquidations.json`. The record from the example run:
+Each fill bar is executed the way a market would (ADR 0014). An order whose
+raw fill price is missing on its fill bar, because the symbol is halted, is a
+*rejected order*: the holding is kept at its last known price, the order
+expires, and the next rebalance decides again. Rejected orders that would have
+traded are logged, recorded in `SimulationResult.rejected_orders` and counted
+in the `execution` block of `metrics.json`.
+
+A holding whose prices stop inside the window is treated as delisted on its
+last priced bar (`MarketDataset.delisting_bars`). On the next bar it is
+settled into cash at its last valuation price, with no fee or slippage,
+whether or not that bar rebalances. This is a *delisting settlement*: it is
+logged, recorded in `SimulationResult.settlements` and written to
+`settlements.json`. On CRSP data the last adjusted close already carries the
+delisting return, so the settlement includes it. The record from the example
+run:
 
 ```json
-{"symbol": "S08", "axis_symbol": "S08", "signal_timestamp": "2023-12-18T00:00:00",
- "fill_timestamp": "2023-12-19T00:00:00", "price": 72.50323178958098}
+{"symbol": "S08", "axis_symbol": "S08", "delisting_timestamp": "2023-12-15T00:00:00",
+ "settlement_timestamp": "2023-12-18T00:00:00", "price": 71.30062583949969}
 ```
 
 `axis_symbol` is the label on the panel's symbol axis. `symbol` is the name a
 person reads: for CRSP data, whose axis holds numeric PERMNOs (CRSP's
 permanent security identifiers), it is the ticker the security traded under on
-the fill day; for other data it equals `axis_symbol`. Between the last real
-price and the forced sale the position is valued at its frozen last price, so
-a large `rebalance_periods` makes that stretch longer.
+the settlement day; for other data it equals `axis_symbol`.
 
-The forward fill matters. Without it, vectorbt keeps a NaN-priced holding and
-silently skips every later rebalance of the whole portfolio, not just the
-delisted symbol.
+Both price columns are forward-filled before they reach vectorbt. Without the
+fill, vectorbt keeps a NaN-priced holding and silently skips every later
+rebalance of the whole portfolio, not just the halted or delisted symbol.
 
 ## Costs and assumptions
 
@@ -370,6 +379,7 @@ never re-simulated, because that would reset the capital and change the path.
 | `whole` | vectorbt's portfolio statistics for the whole window, plus the three turnover rows and `Total Orders`. |
 | `in_sample`, `out_of_sample` | Return statistics and order, trade and turnover counts restricted to those bars, or `null` when there are none. |
 | `training_window`, `in_sample_range`, `out_of_sample_ranges` | The date ranges that define the split. |
+| `execution` | `rejected_order_count`, `rejected_orders`, and `max_target_deviation`: the largest gap between a target weight and the weight held right after its fill bar, rejections, fees and cash included. |
 | `trained_checkpoint` | Train mode only: the checkpoint the run produced. |
 | `notes` | The caveats also shown at the bottom of the report. |
 
@@ -424,16 +434,16 @@ an overlap would have two models trading the same bars, so both raise
 
 ```text
 == run_cv over 10 folds (stitched)
-run directory: USEquityCrossectionSelectStockVectorBt_20260927_211531_146492
-  Total Return [%]     15.392
-  Sharpe Ratio          1.837
-  Max Drawdown [%]      6.116
+run directory: USEquityCrossectionSelectStockVectorBt_20260930_002356_032174
+  Total Return [%]     14.772
+  Sharpe Ratio          1.768
+  Max Drawdown [%]      6.499
   Total Orders            209
-  turnover/rebal. [%]    150.8
+  turnover/rebal. [%]    147.1
   fold 0: 2023-05-22..2023-06-16 return   3.26%
   fold 1: 2023-06-19..2023-07-14 return  -0.24%
   fold 2: 2023-07-17..2023-08-11 return   1.31%
-files: ['config.json', 'equity.zarr', 'fingerprint.json', 'folds', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+files: ['config.json', 'equity.zarr', 'fingerprint.json', 'folds', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 `train_cv` purges the last L bars of every fold's training segment and
@@ -464,7 +474,7 @@ succeeded, so a crashed run leaves no half-written directory behind.
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. |
 | `equity.zarr` | Portfolio `value` and per-bar `returns` on `timestamp`. |
 | `metrics.json` | The metric blocks described above. |
-| `liquidations.json` | One record per forced liquidation. |
+| `settlements.json` | One record per delisting settlement. |
 | `fingerprint.json` | A content hash and extent of every dataset the run read. |
 | `report.html` | The human-readable report. |
 | `folds/` | `run_cv()` only: per-fold `weights.zarr` and `equity.zarr`. |

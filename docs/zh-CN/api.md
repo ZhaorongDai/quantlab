@@ -342,7 +342,7 @@ True
 
 - 在一根有其他标的权重的 bar 上，没有权重的标的取权重 0：长格式中省略的行，或宽格式中的 NaN 单元格；
 - 完全没有权重的 bar 保持原有仓位：长格式中不出现，或宽格式中整行为 NaN。因此只列出调仓 bar 的 frame 就够了；要在某根 bar 上清仓，需显式写 0；
-- 长格式中与同一根 bar 上的有限权重并列写出的 NaN 会报错，总敞口超过 1 的 bar 也会报错。
+- 长格式中与同一根 bar 上的有限权重并列写出的 NaN 表示该标的在这根 bar 上保持持仓、不交易；权重总敞口超过 1 的 bar 会报错。
 
 下面从第一根 bar 起等额持有 `AAA` 和 `BBB`，在第 60 根 bar 清仓。frame 只列出这两根 bar，第 60 根上只有 `AAA`：省略的 `BBB` 同样取权重 0。在同一个 frame 的宽格式透视表中，`BBB` 在该 bar 上的单元格是 NaN，回测结果相同：
 
@@ -431,7 +431,7 @@ ValueError: scores= needs top_n=, the number of names held per side.
 >>> index["symbol"] = "INDEX"
 >>> compared = qa.backtest(prices, weights=weights, benchmark=index)
 >>> sorted(compared.metrics)
-['benchmark', 'notes', 'relative', 'whole']
+['benchmark', 'execution', 'notes', 'relative', 'whole']
 >>> compared.benchmark.tail(2)
      timestamp          value   returns
 118 2024-06-13  967050.957213 -0.016379
@@ -472,7 +472,7 @@ ValueError: scores= needs top_n=, the number of names held per side.
 
 ### 保留一次运行
 
-默认不写任何文件。`output_dir=` 在该目录下写出库的运行目录，名为 `WeightsVectorBt_<timestamp>`；`report.save(directory)` 在事后写出同样的目录。运行目录包含 `config.json`、`weights.zarr`、`equity.zarr`、`metrics.json`、`liquidations.json`、`fingerprint.json` 和 `report.html`，`inputs/` 下是价格和基准面板，`config.json` 以相对于运行目录的路径指向它们。运行目录可以移动；下面先移动它，再用两行代码从中重建这次运行：
+默认不写任何文件。`output_dir=` 在该目录下写出库的运行目录，名为 `WeightsVectorBt_<timestamp>`；`report.save(directory)` 在事后写出同样的目录。运行目录包含 `config.json`、`weights.zarr`、`equity.zarr`、`metrics.json`、`settlements.json`、`fingerprint.json` 和 `report.html`，`inputs/` 下是价格和基准面板，`config.json` 以相对于运行目录的路径指向它们。运行目录可以移动；下面先移动它，再用两行代码从中重建这次运行：
 
 ```python
 >>> import json
@@ -485,7 +485,7 @@ ValueError: scores= needs top_n=, the number of names held per side.
 True
 >>> run_dir = Path(shutil.move(kept.raw.run_dir, tempfile.mkdtemp()))
 >>> sorted(path.name for path in run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 >>> sorted(path.name for path in (run_dir / "inputs").iterdir())
 ['benchmark_dataset.zarr', 'price_dataset.zarr']
 >>> rebuilt = load_backtester_from_config(json.loads((run_dir / "config.json").read_text()), run_dir=run_dir)

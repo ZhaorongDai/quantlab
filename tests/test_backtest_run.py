@@ -7,7 +7,7 @@ t+1-open fills in vectorbt, and persist the run directory.
 What is locked, and what turns it red:
 
 - the run directory holds exactly the D-24 artifacts: config.json,
-  weights.zarr, equity.zarr, liquidations.json, metrics.json, report.html and
+  weights.zarr, equity.zarr, settlements.json, metrics.json, report.html and
   fingerprint.json (their contents are locked in
   tests/test_backtest_persistence.py);
 - predictions are one variable per label on (timestamp, symbol), cover every
@@ -120,9 +120,9 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
         "config.json",
         "equity.zarr",
         "fingerprint.json",
-        "liquidations.json",
         "metrics.json",
         "report.html",
+        "settlements.json",
         "weights.zarr",
     ]
 

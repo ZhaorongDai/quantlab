@@ -51,9 +51,9 @@ RUN_DIR_ARTIFACTS = [
     "config.json",
     "equity.zarr",
     "fingerprint.json",
-    "liquidations.json",
     "metrics.json",
     "report.html",
+    "settlements.json",
     "weights.zarr",
 ]
 
@@ -275,12 +275,16 @@ def _hold_everywhere(stores) -> xr.Dataset:
     )
 
 
-def test_a_row_mixing_nan_and_finite_values_is_refused_naming_the_bar(stores):
+def test_a_row_mixing_nan_and_finite_values_trades_only_the_finite_targets(stores):
     weights = _hold_everywhere(stores)
     weights["weight"][3, 0] = 0.5
-    bar = _day(weights.timestamp.values[3])
-    with pytest.raises(ValueError, match=rf"weight row at {bar} mixes NaN"):
-        _run_weights(stores, weights, output_dir=None)
+
+    result = _run_weights(stores, weights, output_dir=None)
+
+    orders = result.simulation.orders
+    fill_bar = weights.timestamp.values[4]
+    traded = {str(s) for s, t in zip(orders["symbol"].values, orders["timestamp"].values) if t == fill_bar}
+    assert traded == {str(weights.symbol.values[0])}
 
 
 def test_gross_exposure_above_one_is_refused_naming_the_bar(stores):
@@ -335,7 +339,7 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
     assert result.run_dir.parent == stores["root"] / "runs"
     assert sorted(p.name for p in result.run_dir.iterdir()) == RUN_DIR_ARTIFACTS
     metrics = json.loads((result.run_dir / "metrics.json").read_text())
-    assert sorted(metrics) == ["benchmark", "notes", "relative", "whole"]
+    assert sorted(metrics) == ["benchmark", "execution", "notes", "relative", "whole"]
     assert sorted(metrics["benchmark"]) == ["axis_symbol", "symbol", "whole"]
     assert sorted(metrics["relative"]) == ["whole"]
     assert sorted(result.metrics) == sorted(metrics)

@@ -260,10 +260,10 @@ mask to it. Prices of held positions must stay available until they are sold,
 otherwise a held symbol would have no price to trade at.
 
 A symbol that leaves because it delisted, so that its price disappears
-altogether, is handled separately. If a symbol is held after a rebalance and
-has no fill price on the next bar, the engine sells it at its last known
-price and records a *forced liquidation* (symbol, signal and fill timestamps,
-price) in the run's `liquidations.json`. A symbol that has no price at the
+altogether, is handled separately. A held symbol whose prices stop inside the
+window is settled into cash at its last valuation on the next bar, and the
+engine records a *delisting settlement* (symbol, delisting and settlement
+timestamps, price) in the run's `settlements.json`. A symbol that has no price at the
 start of the window and was never held is simply not listed yet, and trades
 normally once it lists.
 

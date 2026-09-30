@@ -1950,6 +1950,86 @@ class MarketDataset(BaseDataset):
         """
         return panel.rename(self.shared_name_map(panel.data_vars))
 
+    def delisting_bars(self, prices: xr.Dataset, valuation_column: str) -> xr.DataArray:
+        """Mark, in a price panel, the last bar of each symbol that delisted in it.
+
+        A backtest settles a delisted holding into cash at its last
+        valuation on the bar after this one. The default marks a symbol's
+        last bar with a valid ``valuation_column`` price in the panel when
+        the dataset has no valid price for it on any later bar, inside the
+        panel or after it; a symbol halted through the end of the panel that
+        trades again later is not delisted. On a CRSP store the marked bar
+        is the delisting row, whose adjusted close already carries the
+        delisting return. A dataset that knows more (a halt without a later
+        price, say) overrides this.
+
+        Parameters
+        ----------
+        prices : xr.Dataset
+            A panel of this dataset on ``(timestamp, symbol)``.
+        valuation_column : str
+            The price the portfolio is valued at.
+
+        Returns
+        -------
+        xr.DataArray
+            Booleans on the panel's ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        >>> panel = xr.Dataset(
+        ...     {"close": (("timestamp", "symbol"), [[1.0, 2.0], [1.1, np.nan], [1.2, np.nan]])},
+        ...     coords={"timestamp": pd.bdate_range("2024-01-01", periods=3), "symbol": ["A", "B"]},
+        ... )
+        >>> dataset.delisting_bars(panel, "close").values  # B's last price is bar 0
+        array([[False,  True],
+               [False, False],
+               [False, False]])
+        """
+        valid = np.isfinite(
+            np.asarray(
+                prices[valuation_column].transpose("timestamp", "symbol").values,
+                dtype=np.float64,
+            )
+        )
+        n_bars = valid.shape[0]
+        # The last valid row per symbol; -1 for a symbol never priced.
+        last = np.where(
+            valid.any(axis=0), n_bars - 1 - np.argmax(valid[::-1], axis=0), -1
+        )
+        marks = np.zeros_like(valid)
+        stopped = (last >= 0) & (last < n_bars - 1)
+        stopped[stopped] = ~self._priced_after(
+            pd.Timestamp(prices.timestamp.values[-1]),
+            valuation_column,
+            prices.symbol.values[stopped],
+        )
+        marks[last[stopped], np.flatnonzero(stopped)] = True
+        return xr.DataArray(
+            marks,
+            dims=("timestamp", "symbol"),
+            coords={
+                "timestamp": prices.timestamp.values,
+                "symbol": prices.symbol.values,
+            },
+        )
+
+    def _priced_after(self, end: pd.Timestamp, column: str, symbols) -> np.ndarray:
+        """Whether each of ``symbols`` has a valid ``column`` price after ``end`` in the dataset."""
+        if len(symbols) == 0:
+            return np.zeros(0, dtype=bool)
+        calendar = self._calendar()
+        later = calendar[calendar > end]
+        if len(later) == 0:
+            return np.zeros(len(symbols), dtype=bool)
+        panel = self.panel(later[0], later[-1])
+        if column not in panel.data_vars:
+            return np.zeros(len(symbols), dtype=bool)
+        return np.asarray(
+            panel[column].reindex(symbol=list(symbols)).notnull().any("timestamp").values,
+            dtype=bool,
+        )
+
     def shared_name_map(self, names) -> dict[str, str]:
         """Return the part of ``COLUMN_MAP`` that applies to ``names``.
 

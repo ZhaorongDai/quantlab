@@ -157,14 +157,14 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 ... ))
 >>> result = backtester.run()
 >>> sorted(p.name for p in result.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 The run directory sits under `output_dir`, and the result holds the predictions, weights, simulation and metrics.
 
 ### The target-weight contract
 
-The weights are a `weight` variable on `(timestamp, symbol)`. A row is either all NaN, meaning no rebalance on that bar and positions are kept, or all finite, meaning the portfolio is rebalanced to those fractions of its value. A rebalance row has a gross exposure (the sum of absolute weights) of at most 1. A symbol that is not selected has the weight `0.0` on a rebalance bar, never NaN.
+The weights are a `weight` variable on `(timestamp, symbol)`. A finite weight is the fraction of portfolio value the symbol should hold after the bar fills; a NaN keeps the symbol's holding untraded. An all-NaN row is a bar without a rebalance, and a row may mix the two, for example to leave one holding alone. The targets of a row have a gross exposure (the sum of absolute weights) of at most 1. The shipped portfolio construction rules give every symbol a finite weight on a rebalance bar, `0.0` for one that is not selected.
 
 ```python
 >>> result.weights["weight"].to_pandas().iloc[:7].round(2)
@@ -191,7 +191,7 @@ A weight row formed at bar `t` executes at the fill price of bar `t + 1`. For US
 order                                                            
 0     2024-02-13    CCC  9465.316230  52.850849  250.125000   Buy
 1     2024-02-13    FFF  8221.655639  60.723809  249.625125   Buy
-2     2024-02-20    FFF  8221.655639  62.012933  254.924491  Sell
+2     2024-02-20    FFF  8221.655639  61.958954    0.000000  Sell
 >>> adj_open = xr.open_zarr(root / "prices.zarr")["adjOpen"]
 >>> float(adj_open.sel(timestamp="2024-02-13", symbol="CCC"))
 52.82443690819098
@@ -216,13 +216,17 @@ Traceback (most recent call last):
 ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret_1',) has delay=0, but the engine fills a weight fill_delay_bars=1 bar(s) after the bar it forms on; the model would learn a return the backtest never trades
 ```
 
-### Delisted holdings
+### Rejected orders and delisted holdings
 
-Both price columns are forward-filled before the simulation. A symbol that is held after a rebalance and has no raw fill price on the next bar is sold on that bar at its last known price, while the other symbols rebalance normally, and the sale is recorded as a forced liquidation. `FFF` has no price from 2024-02-20 and is in the first portfolio. The selector never picks a symbol that has no price on the next bar, so `FFF` is absent from the second portfolio above.
+Both price columns are forward-filled before the simulation, and each fill bar is then executed the way a market would (ADR 0014). An order whose raw fill price is missing on its fill bar, because the symbol is halted, is a *rejected order*: the holding is kept, the order expires, and the next rebalance decides again. Rejected orders that would have traded are listed in `result.simulation.rejected_orders` and in the `execution` block of the metrics, with `rejected_order_count` and `max_target_deviation`, the largest gap between a target weight and the weight held right after its fill bar (fees and cash included).
+
+A symbol whose prices stop inside the window is delisted on its last priced bar (`MarketDataset.delisting_bars`; a dataset that knows its halts may override it). On the next bar a holding in it is settled into cash at its last valuation price, with no fee or slippage, and the *delisting settlement* is recorded. On a CRSP store the last adjusted close already carries the delisting return. `FFF` has no price from 2024-02-20, is in the first portfolio, and is settled on 2024-02-20 at its 2024-02-19 close; the order at price 61.96 above is that settlement.
 
 ```python
->>> result.simulation.liquidations
-[{'symbol': 'FFF', 'axis_symbol': 'FFF', 'signal_timestamp': Timestamp('2024-02-19 00:00:00'), 'fill_timestamp': Timestamp('2024-02-20 00:00:00'), 'price': 62.04395518050185}]
+>>> result.simulation.settlements
+[{'symbol': 'FFF', 'axis_symbol': 'FFF', 'delisting_timestamp': Timestamp('2024-02-19 00:00:00'), 'settlement_timestamp': Timestamp('2024-02-20 00:00:00'), 'price': 61.95895375478968}]
+>>> result.metrics["execution"]["rejected_order_count"]
+0
 ```
 
 A symbol with no prices at the start of the window that was never held is treated as not yet listed and trades once its prices begin.
@@ -246,8 +250,8 @@ All parts come from one continuous simulation, so capital and positions carry ac
 ```python
 >>> for part in ("whole", "in_sample", "out_of_sample"):
 ...     print(part, round(m[part]["Total Return [%]"], 2), round(m[part]["Sharpe Ratio"], 2), m[part]["Total Orders"])
-whole -5.85 -2.32 19
-in_sample -0.25 -0.1 6
+whole -5.87 -2.33 19
+in_sample -0.27 -0.11 6
 out_of_sample -5.61 -4.27 13
 >>> list(m["whole"])[:6]
 ['Start', 'End', 'Period', 'Start Value', 'End Value', 'Total Return [%]']
@@ -266,8 +270,8 @@ Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Fi
 | `config.json` | The configuration, with the price dataset and the model nested, and a data fingerprint. |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. |
 | `equity.zarr` | The portfolio `value` and per-bar `returns` on `timestamp`. |
-| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. A `run()` or a `run_cv()` fold also records `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead. |
-| `liquidations.json` | The forced liquidations. |
+| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()` or a `run_cv()` fold also records `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead. |
+| `settlements.json` | The delisting settlements. |
 | `fingerprint.json` | A digest of the price and factor data the run read. |
 | `report.html` | Equity, drawdown and monthly-return charts, a metrics table and notes. |
 | `inputs/` | Only when the price or benchmark dataset is a `FrameDataset` held in memory: its panel as `price_dataset.zarr` or `benchmark_dataset.zarr`, which `config.json` names relative to the run directory (see [Rebuild a run of given weights](#rebuild-a-run-of-given-weights)). |
@@ -336,18 +340,18 @@ The top-level files of the run directory describe the stitched curve, and `folds
 
 ### Backtest precomputed weights
 
-`run_weights(weights)` backtests a target-weight panel that already exists, for example weights built by another tool or saved by an earlier run, without a model. The config needs no `model` and no `model_mode`; the two are set together or left `None` together, and a config with only one of them is refused when the backtester is built. The backtester reads the fill and valuation prices of the window `start_date` to `end_date`, checks the weights against [the target-weight contract](#the-target-weight-contract) on exactly those bars and symbols, and simulates them with the same t+1 fill. The panel is a dataset with a `weight` variable or a data array, in either axis order; it is aligned to the price axes. The benchmark works as in `run()`. There is no training window, so the metrics hold whole-window blocks only (`whole`, and `benchmark` and `relative` with a `whole` slice each when a benchmark is set), with no in-sample or out-of-sample split, and the report leaves out the split lines. Fed the weights of the first session, whose config has no benchmark, it reproduces that run, so the metrics are `whole` and `notes` only.
+`run_weights(weights)` backtests a target-weight panel that already exists, for example weights built by another tool or saved by an earlier run, without a model. The config needs no `model` and no `model_mode`; the two are set together or left `None` together, and a config with only one of them is refused when the backtester is built. The backtester reads the fill and valuation prices of the window `start_date` to `end_date`, checks the weights against [the target-weight contract](#the-target-weight-contract) on exactly those bars and symbols, and simulates them with the same t+1 fill. The panel is a dataset with a `weight` variable or a data array, in either axis order; it is aligned to the price axes. The benchmark works as in `run()`. There is no training window, so the metrics hold whole-window blocks only (`whole`, and `benchmark` and `relative` with a `whole` slice each when a benchmark is set), with no in-sample or out-of-sample split, and the report leaves out the split lines. Fed the weights of the first session, whose config has no benchmark, it reproduces that run, so the metrics are `whole`, `execution` and `notes` only.
 
 ```python
 >>> weights_config = dataclasses.replace(backtester.config, model=None, model_mode=None, checkpoint=None)
 >>> weights_backtester = USEquityCrossectionSelectStockVectorBt(weights_config)
 >>> replay = weights_backtester.run_weights(result.weights)
 >>> sorted(replay.metrics), replay.predictions is None
-(['notes', 'whole'], True)
+(['execution', 'notes', 'whole'], True)
 >>> replay.metrics["whole"] == result.metrics["whole"]
 True
 >>> sorted(p.name for p in replay.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 `run()` and `run_cv()` still need a model:
@@ -482,7 +486,7 @@ A `run_weights()` run has no model to predict its weights again, so it is replay
 ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
 ... ).run_weights(weights)
 >>> sorted(p.name for p in kept.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'liquidations.json', 'metrics.json', 'report.html', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
 >>> config = json.loads((kept.run_dir / "config.json").read_text())
 >>> config["price_dataset"]["zarr_file_path"]
 'inputs/price_dataset.zarr'
