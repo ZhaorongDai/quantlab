@@ -254,7 +254,7 @@ quantlab/
         factor.py        Factor
         model.py         BaseModel: the training lifecycle shared by every model
         backtest.py      BaseBacktester, the Predictor protocol and the result types
-        backend.py       DataBackend, ModelBackend: storage interfaces
+        backend.py       DataBackend: the storage interface
         rebuild.py       BaseStoreRebuilder
     acquisition/     one module per vendor: tiingo.py, alpaca.py, wrds/
     dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
@@ -263,8 +263,8 @@ quantlab/
                          market features
     label/           forward.py (Forward: a factor shifted into a label)
         predefined/      fret.py: the forward-return and volatility labels
-    model/           torch_model.py (TorchModel), library_model.py (LibraryModel, Rows,
-                     MlBackend), ensemble.py (BaseEnsemble), training_target.py, torch_data.py,
+    model/           torch_model.py (TorchModel), library_model.py (LibraryModel, Rows),
+                     ensemble.py (BaseEnsemble), training_target.py, torch_data.py,
                      torch_training.py (target transforms, losses, stopping rules)
         predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
                          model_ensemble.py

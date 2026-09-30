@@ -1,22 +1,21 @@
-"""Library variant of the model layer: ``LibraryModel``, its rows and its checkpoint backend.
+"""Library variant of the model layer: ``LibraryModel`` and its rows.
 
 ``LibraryModel`` is the base class of heads whose library trains itself (XGBoost, pytabkit):
 there is no epoch loop, the head's ``_fit_model`` receives flat ``Rows`` (one per
 ``(bar, symbol)`` cell with a valid training target) and uses the library's native early
-stopping. Checkpoints are ``.joblib`` files written through ``MlBackend``. Shipped heads live in
+stopping. Checkpoints are ``.joblib`` files written with joblib. Shipped heads live in
 ``quantlab/model/predefined``.
 """
 
 from abc import abstractmethod
 from pathlib import Path
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 import joblib
 import numpy as np
 import torch
 from loguru import logger
 
-from quantlab.base.backend import ModelBackend
 from quantlab.base.model import LIBRARY_RESERVED_HYPERPARAMETERS, BaseModel
 from quantlab.model.torch_data import TrainingPanel
 from quantlab.model.training_target import TrainingTargetMixin
@@ -59,115 +58,6 @@ class Rows(NamedTuple):
     where: tuple[np.ndarray, np.ndarray]
 
 
-class MlBackend(ModelBackend):
-    """Persist one model object with joblib.
-
-    ``write``, ``read`` and ``to_internal`` all return ``self`` so calls can
-    be chained. ``write`` creates missing parent directories. The constructor
-    takes no arguments; the backend is empty until ``read`` or
-    ``to_internal`` gives it a model.
-
-    Examples
-    --------
-    >>> MlBackend().to_internal({"coef": 2.5}).write("ckpt/model.joblib")
-    MlBackend()
-    >>> MlBackend().read("ckpt/model.joblib").get_model()
-    {'coef': 2.5}
-    """
-
-    def get_model(self):
-        """Return the held model object.
-
-        Raises
-        ------
-        AttributeError
-            If nothing has been loaded with ``read`` or ``to_internal`` yet.
-
-        Examples
-        --------
-        >>> MlBackend().to_internal({"coef": 2.5}).get_model()
-        {'coef': 2.5}
-        """
-        return self.model
-
-    def write(self, path: str, **kwargs) -> Self:
-        """Dump the held model to ``path`` with ``joblib.dump`` and return ``self``.
-
-        Missing parent directories of ``path`` are created.
-
-        Parameters
-        ----------
-        path : str
-            Destination file, conventionally ending in ``.joblib``.
-        **kwargs
-            Forwarded to ``joblib.dump``, for example ``compress=3``.
-
-        Returns
-        -------
-        MlBackend
-            This backend, for chaining.
-
-        Examples
-        --------
-        >>> backend = MlBackend().to_internal({"coef": 2.5})
-        >>> backend.write("ckpt/model.joblib", compress=3)
-        MlBackend()
-        """
-        if not Path(path).parent.exists():
-            Path(path).parent.mkdir(parents=True)
-        joblib.dump(self.model, path, **kwargs)
-        return self
-
-    def read(self, path: str, **kwargs) -> Self:
-        """Load the model at ``path`` with ``joblib.load`` and return ``self``.
-
-        Parameters
-        ----------
-        path : str
-            A file previously written by ``write`` or ``joblib.dump``.
-        **kwargs
-            Forwarded to ``joblib.load``.
-
-        Returns
-        -------
-        MlBackend
-            This backend, now holding the loaded model.
-
-        Raises
-        ------
-        FileNotFoundError
-            If ``path`` does not exist.
-
-        Examples
-        --------
-        >>> MlBackend().read("ckpt/model.joblib").get_model()
-        {'coef': 2.5}
-        """
-        self.model = joblib.load(path, **kwargs)
-        return self
-
-    def to_internal(self, model) -> Self:
-        """Adopt an in-memory model object and return ``self``.
-
-        Parameters
-        ----------
-        model : object
-            Any picklable object, typically a fitted estimator.
-
-        Returns
-        -------
-        MlBackend
-            This backend, now holding ``model``.
-
-        Examples
-        --------
-        >>> MlBackend().to_internal({"coef": 2.5})
-        MlBackend()
-        """
-        self.model = model
-        return self
-
-
 class LibraryModel(TrainingTargetMixin, BaseModel):
     """Numpy variant for tree models and other non-torch libraries.
 
@@ -191,7 +81,7 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
     inherited ``_compute_metrics`` have defaults that may be overridden.
     ``{split}_loss`` is ``_loss`` on the training target per bar, averaged
     over bars; the other metrics score the raw first label. Checkpoints are
-    ``.joblib`` files written through ``MlBackend``; they are pickles, so only
+    ``.joblib`` files written with ``joblib.dump``; they are pickles, so only
     load files you trust.
 
     Examples
@@ -518,14 +408,14 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         return np.asarray(self.predict(x))
 
     def _write_checkpoint(self, path: Path) -> None:
-        """Serialize ``self.model`` to ``path`` through ``MlBackend``."""
-        MlBackend().to_internal(self.model).write(str(path))
+        """Serialize ``self.model`` to ``path`` with ``joblib.dump``."""
+        joblib.dump(self.model, path)
 
     def _read_checkpoint(self, path: Path) -> None:
-        """Load the whole model from ``path`` through ``MlBackend``.
+        """Load the whole model from ``path`` with ``joblib.load``.
 
         ``_init_model`` is not called: the file holds the complete model, and
         rebuilding an empty one first would require collecting data to know
         the feature count.
         """
-        self.model = MlBackend().read(str(path)).get_model()
+        self.model = joblib.load(path)

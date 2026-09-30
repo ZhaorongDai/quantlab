@@ -1,14 +1,12 @@
-"""Abstract storage contracts for data and for trained models.
+"""The abstract storage contract for data panels.
 
-This module defines the two interfaces the rest of the pipeline uses to keep
-"where something is stored" separate from "what it means". ``DataBackend`` is
-the contract a dataset or factor object talks to when it reads, writes,
-filters or converts its *panel* (an ``xarray.Dataset`` indexed by
-``timestamp`` and ``symbol``). Concrete implementations live in
+``DataBackend`` keeps "where something is stored" separate from "what it
+means": it is the contract a dataset or factor object talks to when it
+reads, writes, filters or converts its *panel* (an ``xarray.Dataset``
+indexed by ``timestamp`` and ``symbol``). Concrete implementations live in
 ``quantlab/backend.py`` (``XrBackend`` for Zarr, ``PlBackend`` for Parquet).
-``ModelBackend`` is the much smaller counterpart for persisting a fitted
-model object. Neither contract assumes a particular schema, so a backend can
-be swapped without touching the layers above it. See ``docs/backend.md``.
+The contract assumes no particular schema, so a backend can be swapped
+without touching the layers above it. See ``docs/backend.md``.
 """
 
 from abc import ABC, abstractmethod
@@ -255,124 +253,5 @@ class DataBackend(ABC):
         XrBackend()
         >>> backend.data["symbol"].values.tolist()
         ['BBB']
-        """
-        ...
-
-
-class ModelBackend(ABC):
-    """Contract for a storage medium that holds one fitted model object.
-
-    The model-side twin of ``DataBackend``: it knows nothing about
-    dimensions or coordinates, only how to load a model from a path, save it
-    back, or adopt one already in memory. The concrete implementation used
-    by ``LibraryModel`` is ``quantlab/model/library_model.py:MlBackend``.
-
-    Examples
-    --------
-    Any picklable object can stand in for a fitted model:
-
-    >>> MlBackend().to_internal(fitted).write("checkpoints/model.joblib")
-    MlBackend()
-    >>> MlBackend().read("checkpoints/model.joblib").get_model() == fitted
-    True
-    """
-
-    def __repr__(self) -> str:
-        """Return the class name followed by empty parentheses."""
-        return f"{self.__class__.__name__}()"
-
-    @property
-    def model(self):
-        """The model object this backend currently holds.
-
-        Raises
-        ------
-        AttributeError
-            If nothing has been loaded yet.
-
-        Examples
-        --------
-        >>> MlBackend().to_internal(fitted).model is fitted
-        True
-        >>> MlBackend().model
-        Traceback (most recent call last):
-        AttributeError: Please call 'read' or 'to_internal' first.
-        """
-        try:
-            return self._model
-        except AttributeError:
-            raise AttributeError("Please call 'read' or 'to_internal' first.")
-
-    @model.setter
-    def model(self, model):
-        """Replace the held model.
-
-        Examples
-        --------
-        >>> backend = MlBackend()
-        >>> backend.model = fitted
-        """
-        self._model = model
-
-    @abstractmethod
-    def get_model(self):
-        """Return the held model object.
-
-        Examples
-        --------
-        >>> MlBackend().to_internal(fitted).get_model() is fitted
-        True
-        """
-        ...
-
-    @abstractmethod
-    def read(self, path: str, **kwargs) -> Self:
-        """Load the model stored at ``path`` and return ``self``.
-
-        Parameters
-        ----------
-        path : str
-            Location of the checkpoint file.
-        **kwargs
-            Options for the underlying loader.
-
-        Examples
-        --------
-        >>> MlBackend().read("checkpoints/model.joblib")
-        MlBackend()
-        """
-        ...
-
-    @abstractmethod
-    def write(self, path: str, **kwargs) -> Self:
-        """Persist the held model to ``path`` and return ``self``.
-
-        Parameters
-        ----------
-        path : str
-            Location of the checkpoint file.
-        **kwargs
-            Options for the underlying writer.
-
-        Examples
-        --------
-        >>> MlBackend().to_internal(fitted).write("checkpoints/model.joblib")
-        MlBackend()
-        """
-        ...
-
-    @abstractmethod
-    def to_internal(self, model) -> Self:
-        """Adopt an in-memory model object, bypassing disk.
-
-        Parameters
-        ----------
-        model : object
-            The fitted model to hold.
-
-        Examples
-        --------
-        >>> MlBackend().to_internal(fitted)
-        MlBackend()
         """
         ...

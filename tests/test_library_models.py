@@ -471,7 +471,7 @@ def test_no_val_metrics_without_a_validation_segment(tmp_path, recorders):
 
 
 def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
-    """The library path persists through `MlBackend` as `.joblib`; a `.pth` here
+    """The library path persists with joblib as `.joblib`; a `.pth` here
     would mean the torch persistence path ran. `metrics.json` sits beside
     `config.json` (issue #38), with the IC series and the test predictions
     (issue #49)."""
