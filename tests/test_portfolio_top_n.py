@@ -46,6 +46,8 @@ from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from tests.backtest_fixtures import FirstFeatureHead, make_model, make_stock_dataset, write_price_store
 
 NAN = np.nan
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
@@ -564,3 +566,82 @@ def test_a_row_mixing_nan_and_weights_is_refused():
         PortfolioConstructor.construct_panel(
             Broken(TopNConfig(direction="long_only", top_n=2)), predictions, tradable, mask
         )
+
+
+# --------------------------------------------------------------------------
+# A cut through tied scores is reported as an event (#93)
+# --------------------------------------------------------------------------
+
+
+def _events(direction, top_n, scores) -> dict:
+    """``construct_panel``'s ``attrs["events"]`` for one rebalance bar per row."""
+    rule = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
+    rebalance = np.ones(scores.sizes["timestamp"], dtype=bool)
+    out = rule.construct_panel(
+        scores.to_dataset(name="score"), np.isfinite(_finite_fill(scores)), rebalance
+    )
+    return out.attrs["events"]
+
+
+def test_a_long_cut_through_tied_scores_names_the_tied_symbols_left_out():
+    scores = _panel([3.0, 2.0, 2.0, 2.0, 1.0, 0.0])
+
+    (record,) = _events("long_only", 2, scores)["tie_at_cutoff"]
+    assert record["symbols"] == ["CCC", "DDD"]
+    assert record["bar"] == "2024-01-01T00:00:00"
+    # The weights are the plain top-n book: the tie still resolves by axis order.
+    assert _select("long_only", 2, scores)[0].tolist() == [0.5, 0.5, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_a_short_cut_through_tied_scores_is_reported_too():
+    scores = _panel([3.0, 2.0, 1.0, 0.0, 0.0, 0.0])
+
+    (record,) = _events("long_short", 1, scores)["tie_at_cutoff"]
+    assert record["symbols"] == ["DDD", "EEE"]
+
+
+def test_no_event_when_every_cut_falls_between_different_scores():
+    # A tie inside the picks, and one among the unpicked below the cut,
+    # decide nothing.
+    scores = _panel([[2.0, 2.0, 1.0, 0.5, 0.5, 0.0], [5.0, 4.0, 3.0, 2.0, 1.0, 0.0]])
+    assert _events("long_only", 2, scores) == {}
+
+    # Both long_short cuts (2.0 | 1.0 and 0.8 | 0.5) fall between scores.
+    assert _events("long_short", 2, _panel([2.0, 2.0, 1.0, 0.8, 0.5, 0.0])) == {}
+
+
+def test_one_record_per_tied_bar():
+    scores = _panel([[1.0] * 6, [5.0, 4.0, 3.0, 2.0, 1.0, 0.0], [1.0] * 6])
+
+    records = _events("long_only", 2, scores)["tie_at_cutoff"]
+    assert [r["bar"][:10] for r in records] == ["2024-01-01", "2024-01-03"]
+    assert all(r["symbols"] == ["CCC", "DDD", "EEE", "FFF"] for r in records)
+
+
+def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path, monkeypatch):
+    """A model that predicts one value for every symbol ties every bar."""
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+
+    class ConstantHead(FirstFeatureHead):
+        def _forward(self, x):
+            return np.zeros(x.shape[:-1] + (self.model["num_labels"],))
+
+    dataset_config = write_price_store(tmp_path / "store", n_bars=60)
+    bars = pd.DatetimeIndex(xr.open_zarr(dataset_config.zarr_file_path).timestamp.values)
+    day = lambda i: bars[i].strftime("%Y-%m-%d")  # noqa: E731
+    model = make_model(
+        tmp_path / "train", dataset_config, head=ConstantHead,
+        start_date=day(0), end_date=day(29), train_start=day(0), train_end=day(24),
+        test_start=day(25), test_end=day(29),
+    )
+    result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+        price_dataset=make_stock_dataset(dataset_config), model=model, model_mode="train",
+        start_date=day(30), end_date=day(55), output_dir=str(tmp_path / "runs"),
+        rebalance_periods=5, constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
+    )).run()
+
+    block = result.metrics["portfolio_construction"]["tie_at_cutoff"]
+    assert len(block["bars"]) == 5
+    assert block["count"] == sum(len(record["symbols"]) for record in block["bars"])
+    page = (result.run_dir / "report.html").read_text(encoding="utf-8")
+    assert ">Constructor event: tie_at_cutoff</th>" in page
