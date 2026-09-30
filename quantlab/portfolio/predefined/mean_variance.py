@@ -71,18 +71,23 @@ def _project_capped_simplex(values: np.ndarray, cap: float) -> np.ndarray:
     """Return the nearest point to ``values`` with ``sum = 1`` and ``0 <= w <= cap``.
 
     The Euclidean projection is ``clip(values - tau, 0, cap)`` for the shift
-    ``tau`` that makes it sum to one, found by bisection; it removes a
-    solver's round-off without moving an exact solution.
+    ``tau`` that makes it sum to one; it removes a solver's round-off
+    without moving an exact solution. The sum falls as ``tau`` grows, so
+    ``tau`` is bisected between ``low`` (every weight at the cap, a sum of
+    ``n * cap >= 1``) and ``high`` (every weight at zero) until no float
+    lies between the two. The ``high`` end is returned: its sum is at most
+    one, so the gross exposure never exceeds one.
     """
     low, high = values.min() - cap, values.max()
-    for _ in range(200):
+    while True:
         tau = (low + high) / 2
+        if not low < tau < high:
+            break
         if np.clip(values - tau, 0.0, cap).sum() > 1:
             low = tau
         else:
             high = tau
-    projected = np.clip(values - (low + high) / 2, 0.0, cap)
-    return projected
+    return np.clip(values - high, 0.0, cap)
 
 
 class MeanVarianceOptimizer(PortfolioConstructor):
