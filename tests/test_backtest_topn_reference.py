@@ -1,4 +1,4 @@
-"""Top-n selection through the portfolio layer reproduces the pre-migration backtests exactly.
+"""Top-n selection through the portfolio layer reproduces the pre-migration backtests.
 
 `tests/topn_reference.npz` holds the weights and equity of a long-only and a
 long-short top-n backtest. The weights were captured with
@@ -7,9 +7,12 @@ The equity was recaptured when a delisted holding started to be settled at its
 last valuation instead of sold at its last open (#86): it is bit-identical to
 the #76 capture on every bar before CCC's settlement bar, and differs from
 there on. The weights are unchanged by tradability at t and locked positions
-(#87): CCC is never held when its prices stop, so nothing is ever locked here. Re-running the same scenario through the backtester's
-`constructor` must give bit-identical weights and equity, and a backtester
-rebuilt from the run's `config.json` must re-run it identically.
+(#87): CCC is never held when its prices stop, so nothing is ever locked here.
+Re-running the same scenario through the backtester's `constructor` must give
+bit-identical weights, and equity equal to a relative 1e-12: the reference was
+captured on macOS arm64, and x86_64 Linux rounds the simulation's last digit
+differently on a few bars (a relative 2e-16). A backtester rebuilt from the
+run's `config.json` must re-run it identically, bit for bit, on one machine.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -51,7 +54,7 @@ def _backtester(tmp_path, case, *, output_dir=None):
 
 
 @pytest.mark.parametrize("case", sorted(CASES))
-def test_top_n_backtests_are_bit_identical_to_the_pre_migration_reference(tmp_path, case):
+def test_top_n_backtests_reproduce_the_pre_migration_reference(tmp_path, case):
     reference = np.load(REFERENCE)
 
     result = _backtester(tmp_path, case).run()
@@ -60,7 +63,10 @@ def test_top_n_backtests_are_bit_identical_to_the_pre_migration_reference(tmp_pa
     np.testing.assert_array_equal(weights.timestamp.values, reference[f"{case}_timestamps"])
     np.testing.assert_array_equal(weights.symbol.values.astype(str), reference[f"{case}_symbols"])
     np.testing.assert_array_equal(weights.values, reference[f"{case}_weights"])
-    np.testing.assert_array_equal(result.simulation.value.values, reference[f"{case}_value"])
+    # Not bit for bit: the last digit of the equity differs across CPU architectures.
+    np.testing.assert_allclose(
+        result.simulation.value.values, reference[f"{case}_value"], rtol=1e-12, atol=0
+    )
 
 
 def test_the_constructor_round_trips_through_config_json_and_reruns_identically(tmp_path):
