@@ -20,8 +20,9 @@ class LedoitWolfRiskModel(RiskModel):
     """Ledoit-Wolf shrunk covariance of the trailing one-bar returns.
 
     A symbol is covered when every one of the ``lookback_bars`` returns in
-    the context's window is finite; the others have too little history
-    and are left out of the estimate. The covered symbols' sample
+    the context's window is finite and they are not all equal; the others
+    have too little history (or no measurable risk) and are left out of the
+    estimate. The covered symbols' sample
     covariance is shrunk (``sklearn.covariance.ledoit_wolf``), converted to
     correlations ``C`` and scaled back by volatilities ``D``: the given
     ones where ``volatility`` is passed (a symbol without a finite positive
@@ -113,6 +114,10 @@ class LedoitWolfRiskModel(RiskModel):
                 context.returns.sel(symbol=symbols).values, dtype=np.float64
             )[-self.config.lookback_bars :]
         covered = (len(window) == self.config.lookback_bars) & np.isfinite(window).all(axis=0)
+        # A flat price has zero variance, and no correlation to scale by.
+        covered &= np.nanmax(window, axis=0, initial=-np.inf) > np.nanmin(
+            window, axis=0, initial=np.inf
+        )
         if volatility is not None:
             given = np.asarray(volatility.sel(symbol=symbols).values, dtype=np.float64)
             covered &= np.isfinite(given) & (given > 0)

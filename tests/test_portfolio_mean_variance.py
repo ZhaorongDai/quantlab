@@ -244,3 +244,38 @@ def test_the_optimizer_round_trips_through_its_config_with_its_risk_model():
     }
     assert rebuilt == optimizer
     assert rebuilt.lookback_bars == LOOKBACK
+
+
+def test_a_flat_price_is_left_out_of_the_risk_model():
+    returns = np.random.default_rng(8).normal(0.0, 0.02, size=(LOOKBACK, len(SYMBOLS)))
+    returns[:, 2] = 0.0  # CCC never moves
+
+    estimate = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)).estimate(
+        _context(returns=returns)
+    )
+
+    assert "CCC" not in estimate.symbols.tolist()
+    assert np.isfinite(estimate.covariance).all()
+    weights = _optimizer().construct(_context(returns=returns))
+    assert weights.sel(symbol="CCC") == 0.0
+
+
+def test_a_constant_prediction_gives_no_expected_return():
+    inputs = _optimizer().problem_inputs(_context(prediction=np.full(len(SYMBOLS), 0.1)))
+
+    assert (inputs.expected_return == 0.0).all()
+
+
+class _NanRisk(LedoitWolfRiskModel):
+    def estimate(self, context, volatility=None):
+        estimate = super().estimate(context, volatility)
+        covariance = estimate.covariance.copy()
+        covariance[0, 1] = covariance[1, 0] = np.nan
+        return type(estimate)(symbols=estimate.symbols, covariance=covariance)
+
+
+def test_non_finite_problem_data_is_a_construction_error_not_a_crash():
+    optimizer = _optimizer(risk_model=_NanRisk(LedoitWolfConfig(lookback_bars=LOOKBACK)))
+
+    with pytest.raises(PortfolioConstructionError):
+        optimizer.construct(_context())

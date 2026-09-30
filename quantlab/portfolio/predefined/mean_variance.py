@@ -24,6 +24,7 @@ from quantlab.base.portfolio import (
     PortfolioConstructor,
     PortfolioContext,
 )
+from quantlab.utils.ensemble import _cross_sectional_zscore
 
 _SOLVED = (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 
@@ -58,13 +59,13 @@ class MeanVarianceInputs:
 
 
 def _zscore(values: np.ndarray) -> np.ndarray:
-    """Cross-sectional z-score with ``ddof=1``; all 0.0 when it is undefined."""
-    if values.size < 2:
-        return np.zeros_like(values)
-    std = values.std(ddof=1)
-    if not np.isfinite(std) or std == 0:
-        return np.zeros_like(values)
-    return (values - values.mean()) / std
+    """Cross-sectional z-score with ``ddof=1``; all 0.0 when it is undefined.
+
+    ``_cross_sectional_zscore``, which also treats fewer than two values or
+    a constant cross-section (a one-ulp residue in the standard deviation
+    included) as undefined.
+    """
+    return np.nan_to_num(_cross_sectional_zscore(values), nan=0.0)
 
 
 def _project_capped_simplex(values: np.ndarray, cap: float) -> np.ndarray:
@@ -338,7 +339,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         )
         try:
             problem.solve()
-        except cp.error.SolverError as exc:
+        except (cp.error.SolverError, ValueError, ArithmeticError) as exc:
+            # cvxpy raises ValueError for non-finite problem data.
             raise PortfolioConstructionError(f"the solver failed: {exc}") from exc
         if problem.status not in _SOLVED or w.value is None:
             raise PortfolioConstructionError(f"no solution: status {problem.status!r}")
