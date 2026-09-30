@@ -6,8 +6,10 @@ time (streaming mode, for live data). Subclass it and implement ``_get_factor_fu
 factor sets are in ``quantlab/factor/predefined``.
 """
 
+import atexit
 import datetime
 import sys
+import time
 from abc import abstractmethod
 from typing import Self
 
@@ -22,6 +24,79 @@ from KunQuant.Stage import Function
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import Factor
 from quantlab.utils.timer import Timer
+
+#: The multi-thread executors handed out by ``shared_executor``, one per thread count.
+_EXECUTORS: dict[int, kr.Executor] = {}
+
+#: Seconds ``_release_executors`` waits before dropping the executors at exit.
+_EXIT_SETTLE_SECONDS = 0.02
+
+
+def shared_executor(num_threads: int) -> kr.Executor:
+    """Return the process-wide KunQuant multi-thread executor for ``num_threads``.
+
+    Every KunQuant run in quantlab takes its executor from here instead of
+    calling ``KunRunner.createMultiThreadExecutor``. The first call for a
+    thread count creates the executor; later calls return the same object,
+    which lives until the interpreter exits.
+
+    The reason is a lost wake-up in KunQuant's executor destructor (kunquant
+    0.1.11). A worker thread reads the ``closing`` flag and then parks on a
+    condition variable without re-checking the flag under the lock, so when
+    the destructor sets the flag and notifies inside that window the worker
+    sleeps forever and the destructor's ``join`` never returns. The destructor
+    runs while Python holds the GIL, so the whole process freezes and nothing
+    at the Python level can time it out. The window is open while workers are
+    starting up or settling after a run: creating an executor, running one
+    graph and dropping it hangs within about a thousand repetitions, while
+    reusing one executor ran 100,000 graphs without a hang, and dropping each
+    executor 2 ms after its run survived 20,000 repetitions. Reusing one
+    executor per thread count removes all but the final destruction, which
+    ``_release_executors`` performs at exit after the workers have settled.
+
+    Reuse is safe because ``runGraph`` and ``StreamContext.run`` wait until all
+    their work is done before returning, so no work is left on the executor
+    between runs. The idle worker threads of a cached executor wait on a
+    condition variable and use no CPU.
+
+    Parameters
+    ----------
+    num_threads : int
+        Number of worker threads, as ``FactorConfig.njobs``.
+
+    Returns
+    -------
+    KunRunner.Executor
+        The cached executor for ``num_threads``.
+
+    Examples
+    --------
+    >>> shared_executor(4) is shared_executor(4)
+    True
+    >>> shared_executor(4) is shared_executor(2)
+    False
+    """
+    executor = _EXECUTORS.get(num_threads)
+    if executor is None:
+        if not _EXECUTORS:
+            atexit.register(_release_executors)
+        executor = kr.createMultiThreadExecutor(num_threads)
+        _EXECUTORS[num_threads] = executor
+    return executor
+
+
+def _release_executors() -> None:
+    """Drop the cached executors at exit, once their workers have settled.
+
+    Left to module teardown, the executors would be destroyed at a moment
+    nobody chose, possibly right after a run finished. Waiting a short, fixed
+    time first lets every worker reach its condition-variable wait, where the
+    destructor's wake-up cannot be missed. Releasing them, rather than keeping
+    them forever, also keeps nanobind (KunQuant's binding library) from
+    reporting them as leaked at shutdown.
+    """
+    time.sleep(_EXIT_SETTLE_SECONDS)
+    _EXECUTORS.clear()
 
 
 class FactorKunQuant(Factor):
@@ -224,7 +299,7 @@ class FactorKunQuant(Factor):
             lib = self._make_stream()
             modu = lib.getModule(f"{self.__class__.__name__}_stream")  # type: ignore
 
-            executor = kr.createMultiThreadExecutor(self.config.njobs)
+            executor = shared_executor(self.config.njobs)
             stream = kr.StreamContext(executor, modu, self.num_symbols)
 
             buffer_name_to_id = {}
@@ -318,7 +393,7 @@ class FactorKunQuant(Factor):
 
         modu = self._lib.getModule(f"{self.__class__.__name__}")  # type: ignore
 
-        executor = kr.createMultiThreadExecutor(self.config.njobs)
+        executor = shared_executor(self.config.njobs)
         with Timer(f" {self.__class__.__name__}: cal"):
             out_dict = kr.runGraph(executor, modu, input_dict, 0, num_time)
 

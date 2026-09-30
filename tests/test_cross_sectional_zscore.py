@@ -36,6 +36,7 @@ from KunQuant.ops import WindowedAvg
 from KunQuant.ops.MiscOp import GenericCrossSectionalOp
 from KunQuant.runner import KunRunner as kr
 
+from quantlab.factor.kunquant import shared_executor
 from quantlab.my_ops.preprocess import CrossSectionalZScore
 
 _N_TIMES = 40
@@ -108,7 +109,7 @@ def batch_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
         cfake.CppCompilerConfig(),
     )
     modu = lib.getModule("CrossSectionalZScoreBatch")
-    executor = kr.createMultiThreadExecutor(4)
+    executor = shared_executor(4)
     out = kr.runGraph(
         executor, modu, {"close": np.ascontiguousarray(close)}, 0, _N_TIMES
     )
@@ -120,8 +121,7 @@ def stream_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
     """Compile one STREAM module with all three outputs and drive it bar by bar.
 
     `getCurrentBuffer` returns a buffer that the next `run()` overwrites, so
-    each bar is copied into a preallocated (T, S) array. The executor is kept
-    referenced for as long as the stream context lives.
+    each bar is copied into a preallocated (T, S) array.
     """
     close = _panel()
     lib = cfake.compileit(
@@ -136,7 +136,7 @@ def stream_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
         cfake.CppCompilerConfig(),
     )
     modu = lib.getModule("CrossSectionalZScoreStream")
-    executor = kr.createMultiThreadExecutor(4)
+    executor = shared_executor(4)
     ctx = kr.StreamContext(executor, modu, _N_SYMBOLS)
     h_close = ctx.queryBufferHandle("close")
     handles = {name: ctx.queryBufferHandle(name) for name in _OUTPUT_NAMES}
@@ -149,7 +149,7 @@ def stream_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
         ctx.run()
         for name, handle in handles.items():
             got[name][t] = ctx.getCurrentBuffer(handle)[:_N_SYMBOLS]
-    del ctx, executor
+    del ctx
     return close, got
 
 

@@ -31,6 +31,7 @@ from KunQuant.ops import WindowedAvg
 from KunQuant.ops.MiscOp import GenericCrossSectionalOp
 from KunQuant.runner import KunRunner as kr
 
+from quantlab.factor.kunquant import shared_executor
 from quantlab.my_ops.preprocess import (
     CrossSectionalTrim,
     CrossSectionalWinsorize,
@@ -135,7 +136,7 @@ def batch_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
         cfake.CppCompilerConfig(),
     )
     modu = lib.getModule("CrossSectionalBoundsBatch")
-    executor = kr.createMultiThreadExecutor(4)
+    executor = shared_executor(4)
     out = kr.runGraph(
         executor, modu, {"close": np.ascontiguousarray(close)}, 0, _N_TIMES
     )
@@ -157,7 +158,7 @@ def stream_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
         cfake.CppCompilerConfig(),
     )
     modu = lib.getModule("CrossSectionalBoundsStream")
-    executor = kr.createMultiThreadExecutor(4)
+    executor = shared_executor(4)
     ctx = kr.StreamContext(executor, modu, _N_SYMBOLS)
     h_close = ctx.queryBufferHandle("close")
     handles = {name: ctx.queryBufferHandle(name) for name in _OUTPUT_NAMES}
@@ -170,7 +171,7 @@ def stream_outputs() -> tuple[np.ndarray, dict[str, np.ndarray]]:
         ctx.run()
         for name, handle in handles.items():
             got[name][t] = ctx.getCurrentBuffer(handle)[:_N_SYMBOLS]
-    del ctx, executor
+    del ctx
     return close, got
 
 
