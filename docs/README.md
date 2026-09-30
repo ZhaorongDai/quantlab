@@ -83,6 +83,7 @@ working on.
 | [Factors](factor.md) | The KunQuant and Polars factor backends, merged inputs, labels and normalization |
 | [Models](model.md) | The model hierarchy, training, cross-validation and checkpoints |
 | [Backtesting](backtest.md) | Target weights, simulation, metrics and run directories |
+| [Portfolio construction](portfolio.md) | Rules from predictions to weights: top-n, mean-variance optimisation, risk models, calibration and spans |
 
 A Chinese translation of the topic pages is in [zh-CN](zh-CN/README.md).
 

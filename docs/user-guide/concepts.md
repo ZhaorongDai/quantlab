@@ -59,13 +59,14 @@ in one call with the library's own early stopping (`LibraryModel`). The torch fa
 such as those of the `MarketFeatures` factor); the library family ships `XGBoostRegressor`,
 `XGBTDRegressor` and `RealMLPRegressor`. See [models](models.md).
 
-Selection turns predictions into target weights: for every symbol, the fraction of the
-portfolio it should hold. The cross-sectional selector ranks the symbols on each rebalance bar
-and holds the best `top_n` (and optionally shorts the worst `top_n`). A dedicated portfolio
-optimisation stage is not implemented yet; today the selector plays that role inside the
-backtester.
+Portfolio construction turns predictions into target weights: for every symbol, the
+fraction of the portfolio it should hold. It decides one rebalance bar at a time, from that
+bar's predictions and the weights currently held. `TopNConstructor` holds the best `top_n`
+(and optionally shorts the worst `top_n`); `MeanVarianceOptimizer` trades expected return off
+against risk from a risk model and a turnover penalty. See
+[portfolio construction](../portfolio.md).
 
-The backtester runs the model over a date window, asks the selector for weights, simulates
+The backtester runs the model over a date window, asks the constructor for weights, simulates
 the resulting trades with vectorbt, computes performance metrics and writes everything to a
 run directory. See [backtesting](backtesting.md).
 

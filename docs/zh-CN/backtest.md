@@ -4,7 +4,7 @@
 
 回测拿一个训练好的收益模型和一份价格数据集，展示模型的预测如果拿来交易会得到什么结果。模型对每个标的、每根 bar 给出一个分数，选股规则把分数变成目标权重，模拟引擎按这些权重成交并记录净值曲线。每次运行都会写出一个运行目录，里面有权重、净值曲线、指标、HTML 报告，以及重建这次运行所需的配置。
 
-主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、调仓时点（`quantlab/backtest/selection.py`）、配置里 `constructor` 持有的组合构建规则 `TopNConstructor`（`quantlab/portfolio/predefined/top_n.py`，继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
+主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、调仓时点（`quantlab/backtest/selection.py`）、配置里 `constructor` 持有的组合构建规则（继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`：这里用 `TopNConstructor`，也可以用[组合构建](portfolio.md)里的均值-方差优化器），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
 
 ## 前置条件
 
@@ -688,6 +688,7 @@ ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStoc
 
 ## 另请参阅
 
+- [portfolio](portfolio.md)：从预测到权重的规则，包括 top-n、均值-方差优化器及其风险模型。
 - [model](model.md)：`train`、`train_cv`、`cv_folds.json` 与 `predict_panel`。
 - [dataset](dataset.md)：价格数据集；[factor](factor.md)：模型使用的因子和标签。
 - [backend](backend.md)：权重和净值曲线所写入的 Zarr 存储。

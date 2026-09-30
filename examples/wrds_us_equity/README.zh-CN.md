@@ -6,11 +6,13 @@
 
 | 股票池 | 模型 pipeline | 因子分析 |
 | --- | --- | --- |
-| S&P 500 | `sp500_xgb.py`、`sp500_xgb_td.py`、`sp500_realmlp.py`、`sp500_realmlp_seed_ensemble.py`、`sp500_gats.py`、`sp500_master.py` | `sp500_factor_analysis.py` |
+| S&P 500 | `sp500_xgb.py`、`sp500_xgb_mvo.py`、`sp500_xgb_td.py`、`sp500_realmlp.py`、`sp500_realmlp_seed_ensemble.py`、`sp500_gats.py`、`sp500_master.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`、`nasdaq100_xgb_td.py`、`nasdaq100_realmlp.py`、`nasdaq100_gats.py`、`nasdaq100_master.py` | `nasdaq100_factor_analysis.py` |
 | CRSP 全市场 | `market_xgb.py`、`market_xgb_td.py`、`market_realmlp.py`、`market_gats.py`、`market_master.py` | `market_factor_analysis.py`、`market_residual_momentum.py` |
 
 `sp500_realmlp_seed_ensemble.py` 就是把 `sp500_realmlp.py` 的模型包进 `SeedEnsemble`：`SEEDS` 里每个种子训练一个 RealMLP，预测按每根 bar 的截面 z-score 取平均，由回测自己训练（`model_mode="train"`）；见 [docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“平均多个种子”一节。
+
+`sp500_xgb_mvo.py` 是指数增强 pipeline：训练两个 XGBoost 模型，一个预测 5 根 bar 的 `Return` 标签，一个预测 5 根 bar 的 `Volatility` 标签，组成一个 `ModelEnsemble`，回测时在当天的指数成分股上用 `MeanVarianceOptimizer` 代替 TopN，与 SPY 对比：Grinold 预期收益、预测波动率夹 Ledoit-Wolf 相关性、换手惩罚，候选池 200 个标的；见 [docs/zh-CN/portfolio.md](../../docs/zh-CN/portfolio.md)。
 
 模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）、`RealMLPRegressor`（pytabkit 调优默认参数的 MLP），以及两个在每个 bar 的股票截面上学习的 torch 模型：`GATsRegressor`（Qlib 的 GATs：先用 LSTM 读每只股票最近 20 根 bar，再在当根 bar 的股票之间做注意力）和 `MASTERRegressor`（MASTER：SPY、QQQ、IWM 的市场特征对股票特征做门控，再在每只股票最近 8 根 bar 之内和当根 bar 的股票之间做注意力）；[docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“在截面上训练 GATs”和“用市场特征训练 MASTER”两节分别介绍了它们。每个模型 pipeline 都跑同样的五步：
 
@@ -87,7 +89,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
 | `build_model()` | `ModelConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数、pytabkit 构造参数，或 torch 模型的设置，默认取参考实现的值：GATs 最多 200 个 epoch、耐心 10；MASTER 最多 40 个 epoch，训练损失降到 0.95 即停） |
-| `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`top_n`（S&P 500 为 50，Nasdaq-100 为 10，全市场为 100）、`direction`、成本，以及 ETF `benchmark_dataset` |
+| `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`constructor`（`TopNConstructor`，`top_n` 在 S&P 500 为 50、Nasdaq-100 为 10、全市场为 100，以及它的 `direction`；`sp500_xgb_mvo.py` 用 `MeanVarianceOptimizer`）、成本，以及 ETF `benchmark_dataset` |
 | `analyze()` | `Factor.analyze()` 的 `quantiles` 和 `factor_names`（因子分析 pipeline） |
 
 ## 输出

@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the rebalance schedule (`quantlab/backtest/selection.py`), the portfolio construction rule `TopNConstructor` (`quantlab/portfolio/predefined/top_n.py`, a `PortfolioConstructor` from `quantlab/base/portfolio.py`) that the config's `constructor` holds and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the rebalance schedule (`quantlab/backtest/selection.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/base/portfolio.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -688,6 +688,7 @@ If a fold is missing from the middle of `cv_folds.json`, `run_cv()` refuses to s
 
 ## See also
 
+- [portfolio](portfolio.md) for the rules from predictions to weights: top-n, the mean-variance optimiser and its risk models.
 - [model](model.md) for `train`, `train_cv`, `cv_folds.json` and `predict_panel`.
 - [dataset](dataset.md) for the price dataset and [factor](factor.md) for the factors and labels a model consumes.
 - [backend](backend.md) for the Zarr stores the weights and equity curve are written to.

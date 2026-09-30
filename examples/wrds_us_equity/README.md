@@ -6,11 +6,13 @@ One self-contained script per universe and model, plus one factor analysis per u
 
 | Universe | Model pipelines | Factor analysis |
 | --- | --- | --- |
-| S&P 500 | `sp500_xgb.py`, `sp500_xgb_td.py`, `sp500_realmlp.py`, `sp500_realmlp_seed_ensemble.py`, `sp500_gats.py`, `sp500_master.py` | `sp500_factor_analysis.py` |
+| S&P 500 | `sp500_xgb.py`, `sp500_xgb_mvo.py`, `sp500_xgb_td.py`, `sp500_realmlp.py`, `sp500_realmlp_seed_ensemble.py`, `sp500_gats.py`, `sp500_master.py` | `sp500_factor_analysis.py` |
 | Nasdaq-100 | `nasdaq100_xgb.py`, `nasdaq100_xgb_td.py`, `nasdaq100_realmlp.py`, `nasdaq100_gats.py`, `nasdaq100_master.py` | `nasdaq100_factor_analysis.py` |
 | CRSP market | `market_xgb.py`, `market_xgb_td.py`, `market_realmlp.py`, `market_gats.py`, `market_master.py` | `market_factor_analysis.py`, `market_residual_momentum.py` |
 
 `sp500_realmlp_seed_ensemble.py` is `sp500_realmlp.py` with the head wrapped in a `SeedEnsemble`: one RealMLP per seed in `SEEDS`, predictions averaged as per-bar cross-sectional z-scores, trained by the backtest itself (`model_mode="train"`); see "Average several seeds" in [docs/model.md](../../docs/model.md).
+
+`sp500_xgb_mvo.py` is an enhanced-index pipeline: it trains two XGBoost models, one on the 5-bar `Return` label and one on the 5-bar `Volatility` label, as one `ModelEnsemble`, and backtests them over the day's index members with the `MeanVarianceOptimizer` instead of TopN, against SPY: Grinold expected returns, predicted volatilities around Ledoit-Wolf correlations, a turnover penalty and a pool of 200 candidates; see [docs/portfolio.md](../../docs/portfolio.md).
 
 The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost), `RealMLPRegressor` (pytabkit tuned-default MLP), and two torch heads that learn on each bar's cross-section of stocks: `GATsRegressor` (Qlib's GATs: an LSTM over each stock's last 20 bars, then attention across the bar's stocks) and `MASTERRegressor` (MASTER: SPY, QQQ and IWM market features gate the stock features, then attention over each stock's last 8 bars and across the bar's stocks); [docs/model.md](../../docs/model.md) describes both under "Train GATs on the cross-section" and "Train MASTER with market features". Every model pipeline runs the same five steps:
 
@@ -87,7 +89,7 @@ Everything lives at the top of each script, in this order:
 | `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
 | `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`warmup_bars=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
 | `build_model()` | the `ModelConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, the pytabkit constructor arguments, or the torch head's settings with the reference values as defaults: 200 epochs with patience 10 for GATs, at most 40 epochs until the training loss reaches 0.95 for MASTER) |
-| `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, `top_n` (50 for the S&P 500, 10 for the Nasdaq-100, 100 for the market), `direction`, costs, and the ETF `benchmark_dataset` |
+| `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, the `constructor` (`TopNConstructor` with `top_n` 50 for the S&P 500, 10 for the Nasdaq-100 and 100 for the market, and its `direction`; the `MeanVarianceOptimizer` in `sp500_xgb_mvo.py`), costs, and the ETF `benchmark_dataset` |
 | `analyze()` | `quantiles` and `factor_names` of `Factor.analyze()` (factor-analysis pipelines) |
 
 ## Outputs

@@ -257,6 +257,11 @@ same panel always gives the same weights. When fewer than `top_n` symbols can
 be picked, the book is split among those that can, and a warning names the
 bar.
 
+`MeanVarianceOptimizer` is the other shipped rule: it maximises expected
+return minus a risk penalty and a turnover penalty, with a covariance from a
+risk model and, optionally, volatilities predicted by a second model. See
+[portfolio construction](../portfolio.md).
+
 ## Warm-up
 
 A factor needs history before it has a value: a 20-bar momentum is undefined
