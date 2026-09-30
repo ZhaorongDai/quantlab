@@ -353,7 +353,9 @@ def backtest_report_figure(
         height=900,
         margin={"b": 140},
         showlegend=reference is not None,
-        legend={"orientation": "h", "x": 1.0, "xanchor": "right", "y": 1.02, "yanchor": "bottom"},
+        # Below the chart: in the page's half-width column a legend on top
+        # wraps onto two rows and runs into the linear/log buttons.
+        legend={"orientation": "h", "x": 0.0, "xanchor": "left", "y": -0.06, "yanchor": "top"},
         barmode="group",
         updatemenus=[_axis_toggle()],
     )
