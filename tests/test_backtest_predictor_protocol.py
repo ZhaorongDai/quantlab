@@ -111,6 +111,7 @@ def test_base_model_satisfies_the_protocol_structurally():
         "train_bounds",
         "test_bounds",
         "label_delays",
+        "label_scales",
         "predict_window",
         "fingerprint_inputs",
         "training_fingerprint_inputs",
@@ -177,7 +178,8 @@ def _without(member: str) -> type:
 
 
 @pytest.mark.parametrize(
-    "member", ["predict_window", "label_delays", "from_config", "check_checkpoint"]
+    "member",
+    ["predict_window", "label_delays", "label_scales", "from_config", "check_checkpoint"],
 )
 def test_an_object_missing_a_member_is_refused(tmp_path, member):
     dataset_config, bars = _setup(tmp_path)

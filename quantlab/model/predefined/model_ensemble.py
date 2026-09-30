@@ -3,8 +3,10 @@
 ``ModelEnsemble(members)`` takes the member models as given, for example an
 XGBoost regressor and a GATs network over different factors. Every member
 collects its own data and requests its own features; their predictions are
-averaged after a per-bar cross-sectional z-score (``average_predictions``).
-The members must share their labels and their training and test windows.
+combined label by label: a label several members predict is averaged after a
+per-bar cross-sectional z-score (``average_predictions``), a label one member
+predicts is passed through, so a return model and a volatility model make one
+predictor. A label several members predict must have one config.
 The ensemble satisfies the backtester's ``Predictor`` protocol, so it is
 backtested, loaded and rebuilt from a run's ``config.json`` like a single
 model.
@@ -20,8 +22,8 @@ class ModelEnsemble(BaseEnsemble):
     """An ensemble of models given one by one, of any classes and over any factors.
 
     Every hook keeps ``BaseEnsemble``'s default: each member collects, predicts
-    and is fingerprinted on its own, and the predictions are combined by
-    ``average_predictions``. Subclass it and override ``_combine`` for another
+    and is fingerprinted on its own, and the predictions are combined label by
+    label (averaged when shared, passed through otherwise). Subclass it and override ``_combine`` for another
     combination rule. ``train()`` writes an ``ensemble.json`` manifest with a
     null seed per member; ``train_cv()`` writes one such directory per
     walk-forward fold.
@@ -29,8 +31,9 @@ class ModelEnsemble(BaseEnsemble):
     Parameters
     ----------
     members : sequence of BaseModel
-        At least two untrained or trained models whose label configs and
-        training and test windows are identical.
+        At least two untrained or trained models. A label two members
+        predict must have the same config in both, and their test windows
+        must overlap.
 
     Attributes
     ----------
@@ -40,8 +43,8 @@ class ModelEnsemble(BaseEnsemble):
     Raises
     ------
     ValueError
-        If fewer than two members are given, or two members differ in label
-        configs or in training or test window.
+        If fewer than two members are given, two members predict a label of
+        one name with different configs, or the test windows do not overlap.
 
     Examples
     --------

@@ -440,7 +440,7 @@ True
 
 ### 组合不同的模型
 
-`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。成员的标签配置、训练窗口和测试窗口必须相同，因为回测器按同一个窗口划分样本内和样本外；否则构造时抛出 `ValueError`。每个成员各自收集数据、各自请求特征，集成的预测是各成员逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
+`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。每个成员各自收集数据、各自请求特征，集成对每个标签只在预测它的成员之间合成：多个成员预测的标签取它们逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样；只有一个成员预测的标签直接透传该成员的预测，不做任何改动。因此一个收益模型加一个波动率模型（`quantlab.label.predefined.fret.Volatility`）就组成一个预测器，它的标签是各成员标签的并集，按首次出现的顺序排列。多个成员预测的同名标签在每个成员里的配置必须相同，否则构造时抛出 `ValueError` 并指明是哪个成员。成员的窗口可以不同：集成的训练截止日取最晚的成员，测试窗口取各成员测试窗口的交集（没有交集时构造即报错），所以回测器的样本外区间没有被任何成员见过。`train_cv` 对所有成员使用同一套折划分，并按成员中最大的 lookahead 清洗。`label_scales` 报告每个标签的尺度：平均得到的标签为 `"standardized"`，透传的标签沿用成员自己的尺度；模型当且仅当保留恒等的 `_transform_target` 时报告 `"raw"`。评估文件用预测该标签的成员的真实值给每个标签打分：第一个标签沿用上面的键，其余标签的键为 `{split}_{label}_{metric}`，`member_correlation` 只对至少两个成员预测的标签报告。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
 
 ```python
 >>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
@@ -864,7 +864,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 
 `TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/predefined/gats.py` 和 `quantlab/model/predefined/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
-新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个标签配置和窗口都相同的模型）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（清单里记录的种子）。`ModelEnsemble` 是最小的完整示例。
+新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（清单里记录的种子）。`ModelEnsemble` 是最小的完整示例。
 
 ## 注意事项
 

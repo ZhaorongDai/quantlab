@@ -747,6 +747,25 @@ class BaseModel(ABC):
         """
         return tuple(label.config.delay for label in self.config.labels)
 
+    @property
+    def label_scales(self) -> dict[str, str]:
+        """Each label name's prediction scale: ``"raw"`` or ``"standardized"``.
+
+        ``"raw"`` means the prediction is in the label's own units (a
+        forward return in return units), ``"standardized"`` that it only
+        ranks the cross-section. A model is ``"raw"`` exactly when its
+        training target is the label itself; the model layer's variants
+        report ``"standardized"`` for every label once a head overrides
+        ``_transform_target``. A model without a training-target hook
+        predicts its labels as they are.
+
+        Examples
+        --------
+        >>> model.label_scales
+        {'fwd_ret_1': 'raw'}
+        """
+        return {str(name): "raw" for name in self.get_label_names()}
+
     def predict_window(self, start, end) -> xr.Dataset:
         """Predict every bar from ``start`` to ``end`` from freshly requested features.
 

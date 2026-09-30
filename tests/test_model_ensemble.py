@@ -3,8 +3,8 @@
 What is locked here, and what turns it red:
 
 - `ModelEnsemble` takes members of different classes over different factors
-  and keeps them as given; fewer than two members, or members whose labels or
-  windows differ, raise `ValueError`.
+  and keeps them as given; fewer than two members raise `ValueError`, and
+  members whose test windows differ test on their intersection.
 - Its prediction is `average_predictions` of each member's own prediction,
   every member requesting its own features.
 - `train()` writes a manifest listing each member's class with a null seed,
@@ -16,6 +16,7 @@ What is locked here, and what turns it red:
 Everything is synthetic, CPU-only and offline.
 """
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -87,11 +88,13 @@ def test_fewer_than_two_members_raise(tmp_path):
         ModelEnsemble(members[:1])
 
 
-def test_members_with_different_windows_raise(tmp_path):
-    members, _ = _members(tmp_path)
-    other, _ = _members(tmp_path / "other", test_end_bar=28)
-    with pytest.raises(ValueError):
-        ModelEnsemble([members[0], other[1]])
+def test_members_with_different_test_windows_test_on_their_intersection(tmp_path):
+    members, bars = _members(tmp_path)
+    members[1].config = dataclasses.replace(members[1].config, test_end=_day(bars[28]))
+
+    ensemble = ModelEnsemble(members)
+
+    assert ensemble.test_bounds == (_day(bars[25]), _day(bars[28]))
 
 
 def test_prediction_is_the_average_of_each_members_own_prediction(tmp_path):

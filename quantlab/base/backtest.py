@@ -103,6 +103,11 @@ class Predictor(Protocol):
     label_delays : tuple[int, ...]
         Each label's ``delay`` in bars, in the order of ``labels``; each must
         equal the engine's ``fill_delay_bars``.
+    label_scales : dict[str, str]
+        Each label name's prediction scale: ``"raw"`` when the prediction is
+        in the label's own units, ``"standardized"`` when it only ranks the
+        cross-section (a model fitted on a transformed target, a label an
+        ensemble averages). A rule that needs return units checks it.
 
     Methods
     -------
@@ -147,6 +152,9 @@ class Predictor(Protocol):
 
     @property
     def label_delays(self) -> tuple[int, ...]: ...
+
+    @property
+    def label_scales(self) -> dict[str, str]: ...
 
     def predict_window(self, start, end) -> xr.Dataset: ...
 

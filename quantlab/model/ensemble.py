@@ -2,18 +2,30 @@
 
 ``BaseEnsemble`` holds what does not depend on where an ensemble's members
 come from: the ``Predictor`` members derived from the members (labels,
-label delays, training and test windows, with the label configs and the
-windows checked identical across members), prediction by combining the
-members' predictions, the ensemble directory ``train()`` writes, and the
-``ensemble.json`` manifest that ``load`` and ``check_checkpoint`` read.
+label delays and scales, training and test windows), prediction by
+combining the members' predictions, the ensemble directory ``train()``
+writes, and the ``ensemble.json`` manifest that ``load`` and
+``check_checkpoint`` read.
+
+Each label is combined over the members that predict it (ADR 0013): the
+ensemble's labels are the union of the members' labels in first-appearance
+order, a label several members predict is standardised per bar and
+averaged, and a label only one member predicts is passed through unchanged.
+So seed ensembles, ensembles of different models and a return model paired
+with a volatility model are one rule. A label predicted by several members
+must have the same config in each. The training end is the latest
+member's, the test window the intersection of the members'.
 
 A concrete ensemble builds its members and implements ``get_config`` /
 ``from_config``; nothing else is required, and the defaults work for members
 of different classes over different factors. Optional hooks:
 
-- ``_combine``: how the members' prediction panels become the ensemble's,
-  ``average_predictions`` (per-bar z-score, equal-weight mean) by default.
-  Both ``predict_window`` and the ensemble-level evaluation files use it.
+- ``_combine``: how the members' prediction panels become the ensemble's;
+  by default each label is averaged over its members with
+  ``average_predictions`` (per-bar z-score, equal-weight mean) or passed
+  through from its only member. Both ``predict_window`` and the
+  ensemble-level evaluation files use it. An override should keep
+  ``label_scales`` true, overriding it too when needed.
 - ``collect``, ``_member_predictions``, ``_member_panel_predictions``: how
   members collect their data and features, each member on its own by
   default; an ensemble whose members read the same data shares it.
@@ -34,9 +46,9 @@ On disk ``train()`` writes::
         member_1/
         ...
         metrics.json         IC metrics of the combined prediction, member correlation
-        ic_series.csv        their per-bar series, in the single-model layout
+        ic_series.csv        the first label's per-bar series, in the single-model layout
         test_predictions.zarr  the combined test-segment prediction
-        config.json          what every member shares: dates and labels
+        config.json          the ensemble's dates and labels
         ensemble.json        the manifest, written last
 
 ``train_cv`` writes one ensemble directory per walk-forward fold::
@@ -62,6 +74,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Self
 
+import numpy as np
+import pandas as pd
 import wandb
 import xarray as xr
 from loguru import logger
@@ -73,6 +87,11 @@ from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import ic_panel_metrics
 
 
+def _as_time(value) -> pd.Timestamp:
+    """Order a date bound: ``value`` as a ``pd.Timestamp`` (a ``numpy.str_`` too)."""
+    return pd.Timestamp(str(value) if isinstance(value, str) else value)
+
+
 def _class_path(obj) -> str:
     """Return the dotted import path of ``obj``'s class."""
     return f"{type(obj).__module__}.{type(obj).__qualname__}"
@@ -82,14 +101,15 @@ class BaseEnsemble(ABC):
     """Base class of an ensemble that combines the predictions of several models.
 
     Subclass it, build the members and implement ``get_config`` and
-    ``from_config``; override ``_combine`` to replace the equal-weight
-    z-score average (see the module docstring for every hook).
+    ``from_config``; override ``_combine`` to replace the per-label rule
+    (see the module docstring for every hook).
 
     Parameters
     ----------
     members : sequence
-        At least two models (``BaseModel`` instances) whose label configs and
-        training and test windows are identical.
+        At least two models (``BaseModel`` instances). A label two members
+        predict must have the same config in both, and their test windows
+        must overlap.
 
     Attributes
     ----------
@@ -99,8 +119,9 @@ class BaseEnsemble(ABC):
     Raises
     ------
     ValueError
-        If there are fewer than two members, or two members differ in
-        label configs or in training or test window.
+        If there are fewer than two members, two members predict a label of
+        one name with different configs, or the members' test windows do
+        not overlap.
 
     Examples
     --------
@@ -133,6 +154,7 @@ class BaseEnsemble(ABC):
             )
         self._check_members_agree(members)
         self.members = members
+        self.test_bounds  # refuses members whose test windows do not overlap
         self._wandb_recorder = None
 
     def __repr__(self) -> str:
@@ -163,74 +185,137 @@ class BaseEnsemble(ABC):
         return _class_path(self)
 
     def _check_members_agree(self, members: list) -> None:
-        """Refuse members that would not combine into one prediction.
+        """Refuse members that predict a label of one name with different configs.
 
-        The members must carry the same labels, compared by each label's
-        ``get_config()`` (which holds its variables and delay), and share one
-        training and test window, since the backtester's in-sample split has
-        one training window.
+        Labels are compared by ``get_config()``, which holds their variables
+        and delay; every variable name a label outputs is checked.
 
         Raises
         ------
         ValueError
-            Naming the first member that differs from member 0 and how.
+            Naming the first member whose label differs from an earlier
+            member's label of the same name.
         """
-        first = members[0]
-        reference = {
-            "labels": [label.get_config() for label in first.labels],
-            "train_bounds": tuple(first.train_bounds),
-            "test_bounds": tuple(first.test_bounds),
-        }
-        for k, member in enumerate(members[1:], start=1):
-            own = {
-                "labels": [label.get_config() for label in member.labels],
-                "train_bounds": tuple(member.train_bounds),
-                "test_bounds": tuple(member.test_bounds),
-            }
-            for key, value in reference.items():
-                if own[key] != value:
-                    raise ValueError(
-                        f"{self.class_name}: member {k} ({type(member).__name__}) "
-                        f"has {key} {own[key]!r}, member 0 has {value!r}; every "
-                        f"member must share them"
-                    )
+        seen: dict[str, tuple[int, dict]] = {}
+        for k, member in enumerate(members):
+            for label in member.labels:
+                config = label.get_config()
+                for name in label.get_factor_names():
+                    if name not in seen:
+                        seen[name] = (k, config)
+                        continue
+                    first, reference = seen[name]
+                    if config != reference:
+                        raise ValueError(
+                            f"{self.class_name}: member {k} ({type(member).__name__}) "
+                            f"predicts label {name!r} with config {config!r}, but "
+                            f"member {first} predicts it with {reference!r}; a label "
+                            f"several members predict must have one config"
+                        )
 
     # ------------------------------------------------------------------
     # Predictor members derived from the members
     # ------------------------------------------------------------------
 
+    def _label_owners(self) -> dict[str, list[int]]:
+        """Map each label name to the indices of the members predicting it.
+
+        The names follow first appearance over the members in order.
+        """
+        owners: dict[str, list[int]] = {}
+        for k, member in enumerate(self.members):
+            for name in member.get_label_names():
+                owners.setdefault(str(name), []).append(k)
+        return owners
+
     @property
     def labels(self) -> list:
-        """The label objects every member predicts, in config order.
+        """The union of the members' label objects, in first-appearance order.
+
+        A label several members predict appears once, as the first member
+        predicting it holds it.
 
         Examples
         --------
         >>> [label.get_factor_names() for label in ensemble.labels]
         [('fwd_ret_1',)]
         """
-        return list(self.members[0].labels)
+        labels, seen = [], set()
+        for member in self.members:
+            for label in member.labels:
+                names = tuple(label.get_factor_names())
+                if names in seen:
+                    continue
+                seen.add(names)
+                labels.append(label)
+        return labels
+
+    @property
+    def label_scales(self) -> dict[str, str]:
+        """Each label name's prediction scale: ``"raw"`` or ``"standardized"``.
+
+        A label averaged over several members is ``"standardized"`` (the
+        default combine is in per-bar z-score units); a label only one
+        member predicts keeps that member's scale.
+
+        Examples
+        --------
+        >>> ensemble.label_scales
+        {'fwd_ret_1': 'standardized'}
+        """
+        return {
+            name: (
+                "standardized"
+                if len(owners) > 1
+                else self.members[owners[0]].label_scales[name]
+            )
+            for name, owners in self._label_owners().items()
+        }
 
     @property
     def train_bounds(self) -> tuple:
-        """The training window ``(train_start, train_end)`` every member shares.
+        """The training window ``(train_start, train_end)`` covering every member's.
+
+        The earliest member start and the latest member end, so a bar
+        after ``train_end`` was seen in training by no member.
 
         Examples
         --------
         >>> ensemble.train_bounds
         ('2024-01-01', '2024-02-02')
         """
-        return tuple(self.members[0].train_bounds)
+        bounds = [tuple(member.train_bounds) for member in self.members]
+        return (
+            min((b[0] for b in bounds), key=_as_time),
+            max((b[1] for b in bounds), key=_as_time),
+        )
 
     @property
     def test_bounds(self) -> tuple:
-        """The test window ``(test_start, test_end)`` every member shares.
+        """The test window ``(test_start, test_end)`` every member tests on.
+
+        The intersection of the members' test windows: the latest start and
+        the earliest end.
+
+        Raises
+        ------
+        ValueError
+            If the members' test windows do not overlap.
 
         Examples
         --------
         >>> ensemble.test_bounds
         ('2024-02-05', '2024-02-09')
         """
-        return tuple(self.members[0].test_bounds)
+        bounds = [tuple(member.test_bounds) for member in self.members]
+        start = max((b[0] for b in bounds), key=_as_time)
+        end = min((b[1] for b in bounds), key=_as_time)
+        if _as_time(start) > _as_time(end):
+            raise ValueError(
+                f"{self.class_name}: the members' test windows {bounds!r} do not "
+                f"overlap, so the ensemble has no test window"
+            )
+        return start, end
 
     @property
     def label_delays(self) -> tuple[int, ...]:
@@ -241,7 +326,7 @@ class BaseEnsemble(ABC):
         >>> ensemble.label_delays
         (1,)
         """
-        return tuple(self.members[0].label_delays)
+        return tuple(label.config.delay for label in self.labels)
 
     @property
     def model_save_dir(self) -> Path:
@@ -306,23 +391,27 @@ class BaseEnsemble(ABC):
     def _combine(self, predictions: list[xr.Dataset]) -> xr.Dataset:
         """Combine the members' prediction panels into the ensemble's prediction.
 
-        The default is ``average_predictions``: z-scored over symbols per
-        member, variable and bar, then averaged with equal weights, ignoring
-        NaN, in z-score units. Override it for another rule, such as fixed
-        weights or a rank average; it sees only the predictions, so a rule
-        whose parameters are learned in training does not fit here.
+        The default groups by label. A label several members predict is
+        ``average_predictions`` of their panels: z-scored over symbols per
+        member and bar, then averaged with equal weights, ignoring NaN, in
+        z-score units. A label one member predicts is that member's
+        prediction, unchanged. Override it for another rule, such as fixed
+        weights or a rank average (and ``label_scales`` with it when the
+        scales change); it sees only the predictions, so a rule whose
+        parameters are learned in training does not fit here.
 
         Parameters
         ----------
         predictions : list[xr.Dataset]
             One panel per member, in member order, each on
-            ``(timestamp, symbol)`` with one variable per label name. The
-            members' coordinates may differ.
+            ``(timestamp, symbol)`` with one variable per label name the
+            member predicts. The members' coordinates may differ.
 
         Returns
         -------
         xr.Dataset
-            One variable per label name on ``(timestamp, symbol)``.
+            One variable per label name on ``(timestamp, symbol)``, in
+            first-appearance order, over the union of the coordinates.
 
         Examples
         --------
@@ -337,15 +426,32 @@ class BaseEnsemble(ABC):
         ...     )
         >>> BaseEnsemble._combine(None, [panel([1.0, 2.0, 3.0]), panel([30.0, 10.0, 20.0])])["ret"].values
         array([[ 0. , -0.5,  0.5]])
+        >>> vol = panel([0.2, 0.3, 0.1]).rename(ret="vol")
+        >>> out = BaseEnsemble._combine(None, [panel([1.0, 2.0, 3.0]), vol])
+        >>> list(out.data_vars), out["vol"].values
+        (['ret', 'vol'], array([[0.2, 0.3, 0.1]]))
         """
-        return average_predictions(predictions)
+        owners: dict[str, list[int]] = {}
+        for k, panel in enumerate(predictions):
+            for name in panel.data_vars:
+                owners.setdefault(str(name), []).append(k)
+        if all(len(ks) == len(predictions) for ks in owners.values()):
+            return average_predictions(predictions)
+        parts = []
+        for name, ks in owners.items():
+            if len(ks) > 1:
+                parts.append(average_predictions([predictions[k][[name]] for k in ks]))
+            else:
+                parts.append(predictions[ks[0]][[name]])
+        return xr.merge(parts, join="outer", compat="override", combine_attrs="drop_conflicts")
 
     def predict_window(self, start, end) -> xr.Dataset:
         """Predict every bar from ``start`` to ``end`` by combining the members.
 
-        The members' predictions are combined by ``_combine``, by default
-        the equal-weight mean of their per-bar z-scores. Every member must
-        be trained or loaded.
+        The members' predictions are combined by ``_combine``: by default a
+        label several members predict is the equal-weight mean of their
+        per-bar z-scores and a label one member predicts is its prediction.
+        Every member must be trained or loaded.
 
         Parameters
         ----------
@@ -442,7 +548,7 @@ class BaseEnsemble(ABC):
             return root / name
 
     def _shared_config(self) -> dict:
-        """Return what every member shares, for the ensemble-level ``config.json``."""
+        """Return the ensemble's dates and labels, for the ensemble-level ``config.json``."""
         train_start, train_end = self.train_bounds
         test_start, test_end = self.test_bounds
         return {
@@ -574,7 +680,7 @@ class BaseEnsemble(ABC):
         collected timestamps between its ``start_date`` and ``end_date``,
         sliding or, with ``expanding=True``, growing from the first fold's
         start, and each training window loses its last L bars, L being the
-        largest ``lookahead_bars()`` among the labels. Every member's
+        largest ``lookahead_bars()`` among every member's labels. Every member's
         hyperparameters are checked once, before any directory is created.
 
         A new ``{class}_cv_{timestamp}`` directory is created under
@@ -648,7 +754,7 @@ class BaseEnsemble(ABC):
             raise ValueError(f"No data found between {start_date} and {end_date}")
 
         folds = BaseModel._cv_folds(timestamps, train_periods, expanding=expanding)
-        lookahead = first._purge_bars()
+        lookahead = max(member._purge_bars() for member in self.members)
         records = [
             BaseModel._purged_fold(timestamps, fold, lookahead) for fold in folds
         ]
@@ -707,71 +813,87 @@ class BaseEnsemble(ABC):
 
         Every member predicts its whole collected panel
         (``_member_panel_predictions``) and the predictions are combined by
-        ``_combine``, the same rule ``predict_window`` uses. The splits are the first member's: its
-        collected panel cut by its ``_fit_segments`` into the purged train,
-        validation and test segments a single model evaluates, a split being
-        skipped when it has no bars (so no ``val_*`` without a validation
-        segment). On each split ``ic_panel_metrics`` scores the combined
-        prediction of the first label against that label's raw values in
-        the first member's panel, and ``member_correlation`` measures how
-        much the members' first-label predictions agree on it. No error
-        metric is computed: the default combination is in z-score units, not
-        in the target's.
+        ``_combine``, the same rule ``predict_window`` uses. Each label is
+        scored against the truth of the first member predicting it: that
+        member's collected panel, cut by its ``_fit_segments`` into the
+        purged train, validation and test segments a single model evaluates,
+        a split being skipped when it has no bars (so no ``val_*`` without a
+        validation segment). On each split ``ic_panel_metrics`` scores the
+        combined prediction of the label against the label's raw values,
+        and, for a label at least two members predict,
+        ``member_correlation`` measures how much their predictions of it
+        agree. No error metric is computed: an averaged label is in z-score
+        units, not in the target's.
 
         Written into ``run_dir``:
 
-        - ``metrics.json`` (only with ``write_metrics``): ``{split}_ic``,
-          ``{split}_rank_ic``, ``{split}_icir``, ``{split}_rank_icir`` and
-          ``{split}_member_correlation`` (the mean over bars of the mean
-          pairwise Pearson correlation of the members' predictions over
-          their common finite symbols), NaN and inf as null.
-        - ``ic_series.csv``: the per-bar series behind them, in the layout
-          of a single model's file (``BaseModel._write_ic_series``).
-        - ``test_predictions.zarr``: the combined prediction on the test
-          bars, one variable per label; not written when the test segment
-          has no bars.
+        - ``metrics.json`` (only with ``write_metrics``): for the first
+          label ``{split}_ic``, ``{split}_rank_ic``, ``{split}_icir``,
+          ``{split}_rank_icir`` and, when shared, ``{split}_member_correlation``
+          (the mean over bars of the mean pairwise Pearson correlation of the
+          members' predictions over their common finite symbols); for every
+          other label the same keys as ``{split}_{label}_{metric}``. NaN and
+          inf as null.
+        - ``ic_series.csv``: the first label's per-bar series behind them, in
+          the layout of a single model's file (``BaseModel._write_ic_series``).
+        - ``test_predictions.zarr``: the combined prediction, one variable
+          per label, on the first member's test bars inside the ensemble's
+          ``test_bounds``; not written when there are none.
 
         Returns
         -------
         dict
             The metrics, with NaN where a metric is undefined.
         """
-        first = self.members[0]
-        data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
-            ["timestamp", "symbol"]
-        )
         predictions = self._member_panel_predictions()
         combined = self._combine(predictions)
-        label = first.get_label_names()[0]
         metrics, series = {}, {}
-        segments = first._fit_segments(data)
-        for split, part in zip(("train", "val", "test"), segments):
-            stamps = part.timestamp.values
-            if len(stamps) == 0:
-                continue
-            pred = combined[label].reindex(timestamp=stamps, symbol=data.symbol.values)
-            values, per_bar = ic_panel_metrics(
-                pred.values,
-                data[label].sel(timestamp=stamps).values,
-                return_series=True,
-            )
-            metrics.update({f"{split}_{key}": value for key, value in values.items()})
-            metrics[f"{split}_member_correlation"], _ = member_correlation(
-                [
-                    member[label]
-                    .reindex(timestamp=stamps, symbol=data.symbol.values)
-                    .values
-                    for member in predictions
-                ]
-            )
-            series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
+        for i, (label, owners) in enumerate(self._label_owners().items()):
+            member = self.members[owners[0]]
+            data = member.data_backend.get_xarray_dataset(
+                ["timestamp", "symbol"]
+            ).sortby(["timestamp", "symbol"])
+            prefix = "" if i == 0 else f"{label}_"
+            for split, part in zip(("train", "val", "test"), member._fit_segments(data)):
+                stamps = part.timestamp.values
+                if len(stamps) == 0:
+                    continue
+                pred = combined[label].reindex(timestamp=stamps, symbol=data.symbol.values)
+                values, per_bar = ic_panel_metrics(
+                    pred.values,
+                    data[label].sel(timestamp=stamps).values,
+                    return_series=True,
+                )
+                metrics.update(
+                    {f"{split}_{prefix}{key}": value for key, value in values.items()}
+                )
+                if len(owners) > 1:
+                    metrics[f"{split}_{prefix}member_correlation"], _ = member_correlation(
+                        [
+                            predictions[k][label]
+                            .reindex(timestamp=stamps, symbol=data.symbol.values)
+                            .values
+                            for k in owners
+                        ]
+                    )
+                if i == 0:
+                    series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
 
         if write_metrics:
             write_json_atomically(
                 run_dir / self.METRICS_FILENAME, to_jsonable(metrics), indent=2
             )
+        first = self.members[0]
         first._write_ic_series(run_dir / self.IC_SERIES_FILENAME, series)
-        test_stamps = segments[2].timestamp.values
+        data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
+            ["timestamp", "symbol"]
+        )
+        test_stamps = first._fit_segments(data)[2].timestamp.values
+        test_start, test_end = self.test_bounds
+        test_stamps = test_stamps[
+            (test_stamps >= np.datetime64(_as_time(test_start)))
+            & (test_stamps <= np.datetime64(_as_time(test_end)))
+        ]
         if len(test_stamps):
             combined.reindex(timestamp=test_stamps).to_zarr(
                 run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w"

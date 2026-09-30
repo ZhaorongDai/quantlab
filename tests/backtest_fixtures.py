@@ -286,6 +286,10 @@ class DelegatingPredictor:
     def label_delays(self):
         return self.inner.label_delays
 
+    @property
+    def label_scales(self):
+        return self.inner.label_scales
+
     def predict_window(self, start, end):
         return self.inner.predict_window(start, end)
 

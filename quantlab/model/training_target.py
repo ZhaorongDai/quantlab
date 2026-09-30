@@ -37,6 +37,25 @@ class TrainingTargetMixin:
         """
         return y, None
 
+    @property
+    def label_scales(self) -> dict[str, str]:
+        """Each label name's prediction scale: ``"raw"`` or ``"standardized"``.
+
+        ``"raw"`` exactly when the head keeps the default, identity
+        ``_transform_target``: the model is then fitted on the labels
+        themselves and predicts in their units. A head that overrides the
+        hook (a rank, a z-score) is ``"standardized"`` for every label, since
+        the one transform applies to all of them.
+
+        Examples
+        --------
+        >>> model.label_scales
+        {'fwd_ret_1': 'raw'}
+        """
+        identity = type(self)._transform_target is TrainingTargetMixin._transform_target
+        scale = "raw" if identity else "standardized"
+        return {str(name): scale for name in self.get_label_names()}
+
     def _training_panel(self, data: xr.Dataset) -> TrainingPanel:
         """Return the collected panel as a ``TrainingPanel`` with no target yet."""
         with Timer(f"{self.class_name}: to_array"):
