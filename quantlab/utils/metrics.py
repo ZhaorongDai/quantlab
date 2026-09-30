@@ -1,4 +1,5 @@
-"""Regression metrics for prediction panels: MSE, RMSE, MAE, R2, IC and RankIC.
+"""Regression metrics for prediction panels: MSE, RMSE, MAE, R2, IC and RankIC,
+and the level metrics of a volatility prediction.
 
 The return models score their predictions with these functions. Predictions
 and targets are ``[T, S]`` panels (time by symbol), and every function follows
@@ -21,6 +22,12 @@ skipped row. The ICIR (information ratio of the IC) divides the mean of the
 valid values of such a series by their sample standard deviation
 (``information_ratio``), so it measures how stable a signal is, not only how
 strong.
+
+The IC of a volatility prediction measures only how well it ranks the
+symbols' volatility. A consumer that uses the predicted level, such as a
+covariance built from it, also needs the level right, which
+``volatility_level_metrics`` scores: the QLIKE loss and the ratio of realised
+to predicted variance.
 """
 
 import numpy as np
@@ -441,3 +448,48 @@ def ic_panel_metrics(
     if return_series:
         return metrics, {"ic": ic, "rank_ic": rank_ic}
     return metrics
+
+
+def volatility_level_metrics(pred, target) -> dict[str, float]:
+    """Return the level metrics of a volatility prediction, ``qlike`` and ``variance_ratio``.
+
+    Both compare predicted and realised variance on the cells where the
+    prediction and the target are finite and positive (a non-positive
+    volatility has no variance ratio). ``qlike`` is the mean over those
+    cells of ``q - log(q) - 1`` with ``q = target**2 / pred**2``: zero for a
+    perfect prediction, and it penalises an under-prediction of variance
+    more than an over-prediction of the same size. ``variance_ratio`` is
+    ``mean(target**2) / mean(pred**2)``: 1 when the predicted variance is
+    unbiased, above 1 when risk is under-predicted.
+
+    Parameters
+    ----------
+    pred : array_like
+        A 2-D ``[T, S]`` panel of predicted volatilities.
+    target : array_like
+        A 2-D ``[T, S]`` panel of realised volatilities, on the same scale.
+
+    Returns
+    -------
+    dict[str, float]
+        ``{"qlike": ..., "variance_ratio": ...}``, NaN without a usable cell.
+
+    Examples
+    --------
+    A prediction of half the realised volatility on every cell, so a
+    quarter of its variance:
+
+    >>> volatility_level_metrics([[0.1, 0.2]], [[0.2, 0.4]])
+    {'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
+    """
+    p, t, mask = _joint(pred, target)
+    with np.errstate(invalid="ignore"):
+        mask &= (p > 0) & (t > 0)
+    if not mask.any():
+        return {"qlike": float("nan"), "variance_ratio": float("nan")}
+    predicted, realised = p[mask] ** 2, t[mask] ** 2
+    q = realised / predicted
+    return {
+        "qlike": float(np.mean(q - np.log(q) - 1.0)),
+        "variance_ratio": float(realised.mean() / predicted.mean()),
+    }

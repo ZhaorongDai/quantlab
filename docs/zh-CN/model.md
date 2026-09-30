@@ -162,6 +162,23 @@ True
 
 IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cross_sectional_rank_ic_series` 给出（被跳过的时间点为 NaN），`information_ratio` 把这样的序列变成 ICIR。`regression_panel_metrics(pred, target, return_series=True)` 会把两条序列和指标一起返回。`ic_panel_metrics` 参数相同，只返回 `ic`、`rank_ic`、`icir` 和 `rank_icir`，用于尺度没有意义的预测。
 
+### 波动率标签
+
+对于不是收益的标签，IC 衡量的是预测对标签的排序准不准，而不是 alpha。波动率模型的 IC 说明它能否按风险给标的排序，但均值方差优化器还要用预测的数值本身：协方差矩阵的对角线和 Grinold 公式里的 sigma 都是预测的波动率。一个排序很好、却把方差低估了一半的模型，会让优化器实际的风险厌恶也只剩一半。标签通过类属性 `kind` 声明自己衡量的是什么：`Forward` 和所有收益标签为 `"return"`，`Volatility` 为 `"volatility"`。当主标签的 `kind` 是 `"volatility"`、且模型按标签本身的尺度预测它（`label_scales` 为 `"raw"`）时，每个数据段的指标里会多出两项水平指标，由 `volatility_level_metrics` 在预测值和标签都有限且为正的单元格上计算：
+
+- `{split}_qlike`：`q - log(q) - 1` 的均值，其中 `q = realised**2 / predicted**2`。预测完全准确时为 0；方差低估受到的惩罚比同等幅度的高估更重。
+- `{split}_variance_ratio`：`mean(realised**2) / mean(predicted**2)`。预测方差无偏时为 1，大于 1 表示风险被低估。
+
+如果每个单元格的预测都是实际波动率的一半，预测的方差就只有实际的四分之一：
+
+```python
+>>> from quantlab.utils.metrics import volatility_level_metrics
+>>> volatility_level_metrics([[0.1, 0.2]], [[0.2, 0.4]])
+{'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
+```
+
+收益标签，以及模型头按标准化尺度预测的波动率标签（即重写了 `_transform_target` 的模型头），都不会有这两项；IC 系列指标对所有标签照常报告。
+
 ### IC 序列与保存的预测
 
 每次运行还会在 `metrics.json` 旁边写两个文件，之后要算新指标或做集成时可以直接从磁盘读取，不必重新预测：
@@ -340,7 +357,7 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-集成目录里还有平均预测的评估文件，在最后一个成员训练完之后、`ensemble.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。`metrics.json` 含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
+集成目录里还有平均预测的评估文件，在最后一个成员训练完之后、`ensemble.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。`metrics.json` 含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的波动率标签保留这个尺度，也会有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的波动率标签是 z 分数单位，两项都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
 
 ```python
 >>> metrics = json.loads((manifest.parent / "metrics.json").read_text())

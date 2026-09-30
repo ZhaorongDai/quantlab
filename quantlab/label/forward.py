@@ -60,6 +60,10 @@ class Forward:
 
     #: Config class ``quantlab.utils.module.load_factor_from_config`` builds.
     config_cls = ForwardConfig
+    #: What the label measures: ``"return"``, or ``"volatility"`` for a label
+    #: whose predicted level is used as a volatility. Model evaluation reads
+    #: it to add level metrics, never the label's class.
+    kind = "return"
 
     def __init__(self, config: ForwardConfig):
         """Initialize the label; see the class docstring for parameters."""

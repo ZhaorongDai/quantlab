@@ -162,6 +162,23 @@ True
 
 The per-timestamp values behind IC and RankIC are `cross_sectional_ic_series` and `cross_sectional_rank_ic_series` (NaN on a skipped timestamp), and `information_ratio` turns such a series into an ICIR. `regression_panel_metrics(pred, target, return_series=True)` returns both series with the metrics. `ic_panel_metrics` takes the same arguments and returns only `ic`, `rank_ic`, `icir` and `rank_icir`, for predictions whose scale carries no meaning.
 
+### Volatility labels
+
+For a label that is not a return, the IC measures how well the prediction ranks the label, not alpha. A volatility model's IC says whether it orders the symbols by risk, but a mean-variance optimiser also uses the predicted level: the covariance's diagonal and the Grinold sigma are the predicted volatility, so a model that ranks well and under-predicts variance by half halves the optimiser's effective risk aversion. A label declares what it measures in its class attribute `kind`: `"return"` for `Forward` and every return label, `"volatility"` for `Volatility`. When the primary label's `kind` is `"volatility"` and the model predicts it on its own scale (`label_scales` is `"raw"`), the metrics gain two level metrics per segment, computed by `volatility_level_metrics` on the cells where both prediction and label are finite and positive:
+
+- `{split}_qlike`: the mean of `q - log(q) - 1` with `q = realised**2 / predicted**2`. It is 0 for a perfect prediction and penalises under-predicted variance more than over-predicted variance of the same size.
+- `{split}_variance_ratio`: `mean(realised**2) / mean(predicted**2)`. It is 1 when the predicted variance is unbiased and above 1 when risk is under-predicted.
+
+A prediction of half the realised volatility on every cell predicts a quarter of the variance:
+
+```python
+>>> from quantlab.utils.metrics import volatility_level_metrics
+>>> volatility_level_metrics([[0.1, 0.2]], [[0.2, 0.4]])
+{'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
+```
+
+A return label, and a volatility label a head predicts on a standardized scale (a head overriding `_transform_target`), get neither key; the IC keys are reported for every label.
+
 ### IC series and saved predictions
 
 Every run also writes two files beside `metrics.json`, so a new metric or an ensemble can be computed from disk without predicting again:
@@ -340,7 +357,7 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-The ensemble directory also holds the evaluation files of the averaged prediction, written after the last member and before `ensemble.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). `metrics.json` holds `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`), and `{split}_member_correlation`, how much the members agree (below). There is no loss, MSE, MAE or R2, because the average is in z-score units. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
+The ensemble directory also holds the evaluation files of the averaged prediction, written after the last member and before `ensemble.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). `metrics.json` holds `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`), and `{split}_member_correlation`, how much the members agree (below). There is no loss, MSE, MAE or R2, because the average is in z-score units. A volatility label only one member predicts, on the label's own scale, keeps that scale and also gets `{split}_qlike` and `{split}_variance_ratio` (see Volatility labels above; for a label other than the first, `{split}_{label}_qlike`); a volatility label averaged over several members is in z-score units and gets neither. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
 
 ```python
 >>> metrics = json.loads((manifest.parent / "metrics.json").read_text())

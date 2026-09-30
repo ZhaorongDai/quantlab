@@ -250,7 +250,10 @@ class Volatility(_OpenToOpenLabel):
     so ``lookahead_bars()`` is ``n + 1``. It is NaN where any open in the
     window is missing and at timestamps without ``n + 1`` later bars.
 
-    The output column is ``vol_{n}``.
+    The output column is ``vol_{n}``. Its ``kind`` is ``"volatility"``, so
+    a model predicting it on the label's own scale also reports the level
+    metrics ``qlike`` and ``variance_ratio`` (see
+    ``quantlab.utils.metrics.volatility_level_metrics``).
 
     Parameters
     ----------
@@ -296,6 +299,7 @@ class Volatility(_OpenToOpenLabel):
     """
 
     _trailing = _TrailingOpenVolatility
+    kind = "volatility"
 
     def __init__(self, factor_config: FactorConfig):
         """Initialize the label; see the class docstring for parameters."""

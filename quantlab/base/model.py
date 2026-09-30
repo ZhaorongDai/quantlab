@@ -47,7 +47,7 @@ from quantlab.base.data import InsufficientHistoryError
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
-from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.metrics import regression_panel_metrics, volatility_level_metrics
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
@@ -1916,10 +1916,20 @@ class BaseModel(ABC):
         and rank IC series behind ``ic`` / ``icir`` and ``rank_ic`` /
         ``rank_icir`` are kept under ``split`` for ``_write_evaluation_files``,
         so the file and ``metrics.json`` come from the same predictions.
+        When the first label's ``kind`` is ``"volatility"`` and the model
+        predicts it on its own scale (``label_scales`` ``"raw"``), the
+        ``volatility_level_metrics`` ``qlike`` and ``variance_ratio`` are
+        added: the IC only scores how the prediction ranks volatility.
         """
         metrics, series = regression_panel_metrics(
             pred[..., 0], y[..., 0], return_series=True
         )
+        first = str(self.get_label_names()[0])
+        if (
+            getattr(self.config.labels[0], "kind", "return") == "volatility"
+            and self.label_scales.get(first) == "raw"
+        ):
+            metrics.update(volatility_level_metrics(pred[..., 0], y[..., 0]))
         self._ic_series[split] = (
             np.asarray(timestamps),
             series["ic"],

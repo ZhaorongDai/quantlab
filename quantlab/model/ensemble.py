@@ -84,7 +84,7 @@ from quantlab.base.model import BaseModel
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.jsonable import to_jsonable
-from quantlab.utils.metrics import ic_panel_metrics
+from quantlab.utils.metrics import ic_panel_metrics, volatility_level_metrics
 
 
 def _as_time(value) -> pd.Timestamp:
@@ -823,7 +823,11 @@ class BaseEnsemble(ABC):
         and, for a label at least two members predict,
         ``member_correlation`` measures how much their predictions of it
         agree. No error metric is computed: an averaged label is in z-score
-        units, not in the target's.
+        units, not in the target's. A label whose ``kind`` is
+        ``"volatility"`` and whose combined prediction is on its own scale
+        (``label_scales`` ``"raw"``, a label one raw member predicts) also
+        gets the ``volatility_level_metrics`` ``qlike`` and
+        ``variance_ratio``.
 
         Written into ``run_dir``:
 
@@ -831,9 +835,10 @@ class BaseEnsemble(ABC):
           label ``{split}_ic``, ``{split}_rank_ic``, ``{split}_icir``,
           ``{split}_rank_icir`` and, when shared, ``{split}_member_correlation``
           (the mean over bars of the mean pairwise Pearson correlation of the
-          members' predictions over their common finite symbols); for every
-          other label the same keys as ``{split}_{label}_{metric}``. NaN and
-          inf as null.
+          members' predictions over their common finite symbols), and
+          ``{split}_qlike`` / ``{split}_variance_ratio`` for a raw volatility
+          label; for every other label the same keys as
+          ``{split}_{label}_{metric}``. NaN and inf as null.
         - ``ic_series.csv``: the first label's per-bar series behind them, in
           the layout of a single model's file (``BaseModel._write_ic_series``).
         - ``test_predictions.zarr``: the combined prediction, one variable
@@ -847,8 +852,15 @@ class BaseEnsemble(ABC):
         """
         predictions = self._member_panel_predictions()
         combined = self._combine(predictions)
+        scales = self.label_scales
+        kinds: dict[str, str] = {}
+        for member in self.members:
+            for obj in member.config.labels:
+                for name in member._variable_names(obj):
+                    kinds.setdefault(str(name), getattr(obj, "kind", "return"))
         metrics, series = {}, {}
         for i, (label, owners) in enumerate(self._label_owners().items()):
+            level = kinds.get(label) == "volatility" and scales.get(label) == "raw"
             member = self.members[owners[0]]
             data = member.data_backend.get_xarray_dataset(
                 ["timestamp", "symbol"]
@@ -864,6 +876,10 @@ class BaseEnsemble(ABC):
                     data[label].sel(timestamp=stamps).values,
                     return_series=True,
                 )
+                if level:
+                    values.update(volatility_level_metrics(
+                        pred.values, data[label].sel(timestamp=stamps).values
+                    ))
                 metrics.update(
                     {f"{split}_{prefix}{key}": value for key, value in values.items()}
                 )
