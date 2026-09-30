@@ -243,10 +243,10 @@ class BaseEnsemble(ABC):
         labels, seen = [], set()
         for member in self.members:
             for label in member.labels:
-                names = tuple(label.get_factor_names())
-                if names in seen:
+                names = {str(name) for name in label.get_factor_names()}
+                if names <= seen:
                     continue
-                seen.add(names)
+                seen |= names
                 labels.append(label)
         return labels
 

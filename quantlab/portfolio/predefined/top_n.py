@@ -143,6 +143,12 @@ class TopNConstructor(PortfolioConstructor):
         -------
         xr.DataArray
             One finite weight per symbol of ``context.symbols``.
+
+        Examples
+        --------
+        >>> rule = TopNConstructor(TopNConfig(direction="long_short", top_n=1))
+        >>> rule.construct(context).values
+        array([ 0.5, -0.5,  0. ,  0. ])
         """
         symbols = context.symbols
         scores = context.predictions[self._score_label(context.predictions)]
