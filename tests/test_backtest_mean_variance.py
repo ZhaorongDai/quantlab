@@ -434,3 +434,55 @@ def test_a_holding_halted_at_a_rebalance_stays_locked(tmp_path):
             rtol=1e-9,
             atol=1e-12,
         )
+
+
+def test_a_mean_variance_backtest_keeps_a_halted_holding_locked_and_rebuilds(tmp_path):
+    """The optimiser's largest first-rebalance holding halts over the second
+    rebalance and its fill bar: the book keeps it at its drifted weight (the
+    driver would refuse otherwise), nothing fails, and the run rebuilds."""
+    probe, _, bars = _backtester(tmp_path / "probe", _optimizer())
+    first = probe.run().weights["weight"].sel(timestamp=bars[WINDOW[0]])
+    top = str(first.symbol.values[int(first.argmax())])
+
+    backtester, dataset_config, bars = _backtester(tmp_path / "run", _optimizer(), output_dir=str(tmp_path / "runs"))
+    second = WINDOW[0] + REBALANCE
+    _halt(dataset_config, top, [second, second + 1])
+    original = backtester.run()
+
+    row = original.weights["weight"].sel(timestamp=bars[second])
+    assert float(row.sel(symbol=top)) > 0
+    assert float(row.sum()) == pytest.approx(1.0, abs=1e-9)
+    assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
+    saved = json.loads((original.run_dir / "config.json").read_text())
+    again = load_backtester_from_config(saved).run()
+    np.testing.assert_array_equal(again.weights["weight"].values, original.weights["weight"].values)
+
+
+@dataclass(frozen=True)
+class ReporterConfig:
+    lookback_bars: int = 0
+
+
+class Reporter(PortfolioConstructor):
+    """Holds AAA and reports an event naming BBB on every bar."""
+
+    config_cls = ReporterConfig
+
+    def construct(self, context):
+        row = xr.zeros_like(context.current_weights)
+        row.loc[{"symbol": "AAA"}] = 1.0
+        row.attrs["events"] = {"closed_without_risk": ["BBB"]}
+        return row
+
+
+def test_a_constructors_events_reach_metrics_json(tmp_path):
+    backtester, _, bars = _backtester(tmp_path, Reporter(ReporterConfig()), output_dir=str(tmp_path / "runs"))
+
+    result = backtester.run()
+
+    block = json.loads((result.run_dir / "metrics.json").read_text())["portfolio_construction"]
+    rebalances = [pd.Timestamp(bars[t]).isoformat() for t in range(WINDOW[0], WINDOW[1], REBALANCE)]
+    assert block["closed_without_risk"] == {
+        "count": len(rebalances),
+        "bars": [{"bar": bar, "symbols": ["BBB"]} for bar in rebalances],
+    }

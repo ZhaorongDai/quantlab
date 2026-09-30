@@ -132,6 +132,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
             factors=self._required_factor_panels(prices),
         )
         self._failed_bars = list(weights.attrs.pop("failed_bars", []))
+        self._events = dict(weights.attrs.pop("events", {}))
         return weights
 
     def _required_factor_panels(self, prices: xr.Dataset) -> xr.Dataset | None:
@@ -184,15 +185,19 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         )
 
     def _signal_metrics(self) -> dict:
-        """Report the rebalance bars the constructor could not decide and held.
+        """Report the bars the constructor could not decide, and its events.
 
         ``{"portfolio_construction": {"failed_bar_count": n, "failed_bars":
-        [...]}}``, the bars as ISO timestamps.
+        [...], <event>: {"count": m, "bars": [{"bar", "symbols"}, ...]}}}``,
+        the bars as ISO timestamps; an event such as the optimiser's
+        ``closed_without_risk`` appears only when it happened, ``count``
+        being the number of symbols over all its bars.
         """
         failed = list(getattr(self, "_failed_bars", []))
-        return {
-            "portfolio_construction": {
-                "failed_bar_count": len(failed),
-                "failed_bars": failed,
+        block = {"failed_bar_count": len(failed), "failed_bars": failed}
+        for name, records in getattr(self, "_events", {}).items():
+            block[name] = {
+                "count": sum(len(record["symbols"]) for record in records),
+                "bars": list(records),
             }
-        }
+        return {"portfolio_construction": block}

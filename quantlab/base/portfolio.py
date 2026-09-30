@@ -827,7 +827,11 @@ class PortfolioConstructor(_Configured, ABC):
 
         A bar that returns all NaN holds. A bar whose ``construct`` raises
         ``PortfolioConstructionError`` holds too, with a warning, and is
-        listed in the result's ``attrs["failed_bars"]``. A bar that does not
+        listed in the result's ``attrs["failed_bars"]``. Events a returned
+        row names in ``attrs["events"]`` (``{name: [symbol, ...]}``, such as
+        the optimiser's ``closed_without_risk``) are gathered by name into
+        the result's ``attrs["events"]``, one ``{"bar", "symbols"}`` record
+        per bar. A bar that does not
         rebalance gets an all-NaN row, meaning "hold". A returned row must
         keep every locked position (held, not tradable) at its current
         weight and give 0.0 to a symbol neither tradable nor held.
@@ -859,7 +863,8 @@ class PortfolioConstructor(_Configured, ABC):
         xr.Dataset
             One ``weight`` variable on ``(timestamp, symbol)``, on the
             predictions' labels, with ``attrs["failed_bars"]`` the ISO
-            timestamps of the bars held after a failure.
+            timestamps of the bars held after a failure and
+            ``attrs["events"]`` the rows' events by name.
 
         Raises
         ------
@@ -885,8 +890,8 @@ class PortfolioConstructor(_Configured, ABC):
         array([[0.5, 0. , 0.5],
                [nan, nan, nan],
                [0.5, 0.5, 0. ]])
-        >>> weights.attrs["failed_bars"]
-        []
+        >>> weights.attrs["failed_bars"], weights.attrs["events"]
+        ([], {})
         """
         predictions = predictions.transpose(*_DIMS)
         tradable_values = _align_mask(tradable, predictions)
@@ -901,6 +906,7 @@ class PortfolioConstructor(_Configured, ABC):
         weights = np.full((len(timestamps), len(symbols)), np.nan)
         traded = np.zeros(len(symbols))  # the last traded row, without prices
         failed = []
+        events: dict[str, list[dict]] = {}
         for t in np.flatnonzero(rebalance):
             if history is None:
                 current = traded
@@ -939,7 +945,8 @@ class PortfolioConstructor(_Configured, ABC):
                 ),
             )
             try:
-                row = self._checked_row(self.construct(context), context)
+                decided = self.construct(context)
+                row = self._checked_row(decided, context)
             except PortfolioConstructionError as exc:
                 label = pd.Timestamp(timestamps[t]).isoformat()
                 logger.warning(
@@ -948,6 +955,10 @@ class PortfolioConstructor(_Configured, ABC):
                 )
                 failed.append(label)
                 continue
+            for name, names in decided.attrs.get("events", {}).items():
+                events.setdefault(name, []).append(
+                    {"bar": pd.Timestamp(timestamps[t]).isoformat(), "symbols": list(names)}
+                )
             if np.isnan(row).all():
                 continue
             weights[t] = row
@@ -959,6 +970,7 @@ class PortfolioConstructor(_Configured, ABC):
             coords={"timestamp": timestamps, "symbol": symbols},
         )
         out.attrs["failed_bars"] = failed
+        out.attrs["events"] = events
         return out
 
     @staticmethod

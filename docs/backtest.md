@@ -270,7 +270,7 @@ Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Fi
 | `config.json` | The configuration, with the price dataset and the model nested, and a data fingerprint. |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. |
 | `equity.zarr` | The portfolio `value` and per-bar `returns` on `timestamp`. |
-| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()` or a `run_cv()` fold also records `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead. |
+| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()` or a `run_cv()` fold also records `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them), with its `count` and its `bars`. |
 | `settlements.json` | The delisting settlements. |
 | `fingerprint.json` | A digest of the price and factor data the run read. |
 | `report.html` | Equity, drawdown and monthly-return charts, a metrics table and notes. |
