@@ -5,8 +5,9 @@ What is locked here, and what turns it red:
 - The constructor's `lookback_bars` extends the price warm-up: the first
   backtest bar's context already holds a full, finite window of one-bar
   valuation returns ending at that bar.
-- The current weights a constructor is handed are the last rebalance's
-  weights drifted by the valuation-price returns since, renormalised.
+- The current weights a constructor is handed are the holdings the
+  simulation carries at that bar's close: the last traded weights filled at
+  the next bar's open and marked to this bar's close, across a halt.
 - A bar whose construction raises `PortfolioConstructionError` holds (an
   all-NaN row), is logged, and is listed in `metrics.json`.
 - A `MeanVarianceOptimizer` backtest is fully invested on every rebalance
@@ -137,22 +138,53 @@ def test_the_first_backtest_bar_has_a_full_return_window(tmp_path):
     )
 
 
-def test_the_current_weights_are_the_last_rebalance_weights_drifted(tmp_path):
+def _halt(dataset_config, symbol, bars):
+    """Blank every price of ``symbol`` on ``bars`` (a trading halt)."""
+    store = xr.open_zarr(dataset_config.zarr_file_path).load()
+    j = list(store.symbol.values).index(symbol)
+    for name in store.data_vars:
+        values = store[name].transpose("timestamp", "symbol").values.copy()
+        values[bars, j] = np.nan
+        store[name] = (("timestamp", "symbol"), values)
+    store.to_zarr(dataset_config.zarr_file_path, mode="w")
+
+
+def _engine_weights_at_close(result, close, bar) -> np.ndarray:
+    """The simulation's holdings valued at ``bar``'s close, as weights of its portfolio value."""
+    orders = result.simulation.orders
+    symbols = list(result.weights.symbol.values)
+    shares = np.zeros(len(symbols))
+    for ts, symbol, size, side in zip(
+        orders["timestamp"].values, orders["symbol"].values, orders["size"].values, orders["side"].values
+    ):
+        if ts <= bar:
+            shares[symbols.index(str(symbol))] += size if side == "Buy" else -size
+    close = close.sel(timestamp=bar).values
+    value = float(result.simulation.value.sel(timestamp=bar))
+    return shares * close / value
+
+
+def test_the_current_weights_are_the_holdings_the_simulation_carries(tmp_path):
+    """With no fees, the drifted weights handed to the rule at a rebalance bar
+    equal the simulation's own holdings at that bar's close: filled at the
+    next bar's open (no overnight move from the signal bar's close), carried
+    across BBB's two-bar halt at its last price, then marked to the close
+    once it trades again."""
     backtester, dataset_config, bars = _backtester(tmp_path, Recorder(RecorderConfig()))
+    # A halt strictly inside the first holding period, after the fill bar.
+    _halt(dataset_config, "BBB", [WINDOW[0] + 2, WINDOW[0] + 3])
 
-    backtester.run()
+    result = backtester.run()
 
-    close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].transpose("timestamp", "symbol").values
+    store = xr.open_zarr(dataset_config.zarr_file_path).load()
+    close = store["adjClose"].ffill("timestamp").transpose("timestamp", "symbol")
     assert (SEEN[0].current_weights.values == 0.0).all()
-    held = np.zeros(close.shape[1])
-    held[:2] = 0.5
     for k in range(1, len(SEEN)):
-        t0 = WINDOW[0] + (k - 1) * REBALANCE
-        t1 = t0 + REBALANCE
-        growth = close[t1] / close[t0]
-        expected = held * growth / (1 + (held * (growth - 1)).sum())
-        np.testing.assert_allclose(SEEN[k].current_weights.values, expected, rtol=1e-12)
-        assert not np.allclose(expected, held)
+        bar = np.datetime64(SEEN[k].timestamp)
+        np.testing.assert_allclose(
+            SEEN[k].current_weights.values, _engine_weights_at_close(result, close, bar), rtol=1e-9, atol=1e-12
+        )
+    assert not np.allclose(SEEN[1].current_weights.values[:2], 0.5)
 
 
 def test_a_failing_bar_holds_is_logged_and_recorded(tmp_path):

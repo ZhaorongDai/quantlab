@@ -73,9 +73,10 @@ class PortfolioContext:
         it has a fill price at the next bar. A rule treats a symbol without
         a finite prediction of the label it reads as ineligible too.
     current_weights : xr.DataArray
-        The weights currently held, on ``symbol``: the last rebalance's
-        weights drifted by the valuation-price returns since, 0.0 where
-        nothing is held, all 0.0 before the first rebalance.
+        The weights currently held, on ``symbol``: the last traded weights,
+        filled at the next bar's fill price and drifted to this bar's
+        valuation price; 0.0 where nothing is held, all 0.0 before the first
+        rebalance.
     returns : xr.DataArray or None
         The trailing window of one-bar returns ending at the bar, on
         ``(timestamp, symbol)``, of the rule's ``lookback_bars`` length (no
@@ -153,6 +154,21 @@ def _align_eligible(eligible: xr.DataArray, predictions: xr.Dataset) -> np.ndarr
         timestamp=predictions.timestamp.values, symbol=predictions.symbol.values
     )
     return np.asarray(aligned.values, dtype=bool)
+
+
+@dataclass(frozen=True)
+class _PriceHistory:
+    """The prices ``construct_panel`` reads, on the prediction symbols.
+
+    ``returns`` holds the raw one-bar valuation returns; ``fill`` and
+    ``valuation`` the forward-filled prices as ``[T, S]`` arrays; and
+    ``positions`` each prediction bar's row in them.
+    """
+
+    returns: xr.DataArray
+    fill: np.ndarray
+    valuation: np.ndarray
+    positions: np.ndarray
 
 
 class _Configured:
@@ -497,24 +513,29 @@ class PortfolioConstructor(_Configured, ABC):
         predictions: xr.Dataset,
         eligible: xr.DataArray,
         rebalance: np.ndarray,
-        returns: xr.DataArray | None = None,
+        *,
+        fill_price: xr.DataArray | None = None,
+        valuation_price: xr.DataArray | None = None,
     ) -> xr.Dataset:
         """Build target weights for every bar of a panel.
 
         The default loops ``construct`` over the rebalance bars in time
         order, handing each the context of its own bar only: its
         predictions, its eligibility, the ``lookback_bars`` one-bar returns
-        ending at it, and the weights currently held. Those are the last
-        rebalance's weights drifted by ``returns`` since and renormalised to
-        the portfolio's value, ``w * (1 + R) / (1 + sum(w * R))`` with ``R``
-        each symbol's compounded return (a missing return counts as 0); all
-        0.0 before the first rebalance, and not drifted without ``returns``.
-        A bar that returns all NaN holds. A bar whose ``construct`` raises
-        ``PortfolioConstructionError`` holds too, with a warning, and is
-        listed in the result's ``attrs["failed_bars"]``. A bar that does
-        not rebalance gets an all-NaN row, meaning "hold". A rule may
-        override this for speed; the override must return exactly what the
-        loop does.
+        of ``valuation_price`` ending at it, and the weights currently held.
+        Those are the weights of the last bar that traded, filled at the
+        next bar's fill price and held to this bar's valuation price: each
+        symbol grows by ``g = valuation[t] / fill[t0 + 1]``, both prices
+        forward-filled as the simulation values them (a delisted holding
+        keeps its last price until it is sold), and the weights are
+        renormalised to the portfolio's value, ``w * g / (1 + sum(w * (g -
+        1)))``. They are all 0.0 before the first rebalance, and not drifted
+        without prices. A bar that returns all NaN holds. A bar whose
+        ``construct`` raises ``PortfolioConstructionError`` holds too, with
+        a warning, and is listed in the result's ``attrs["failed_bars"]``. A
+        bar that does not rebalance gets an all-NaN row, meaning "hold". A
+        rule may override this for speed; the override must return exactly
+        what the loop does.
 
         Parameters
         ----------
@@ -524,10 +545,11 @@ class PortfolioConstructor(_Configured, ABC):
             Booleans on the same labels as ``predictions`` (in any order).
         rebalance : np.ndarray
             One boolean per timestamp, True on rebalance bars.
-        returns : xr.DataArray, optional
-            One-bar returns on ``(timestamp, symbol)``: every timestamp of
-            ``predictions`` and, before them, the warm-up the return window
-            needs. Required when ``lookback_bars`` is positive.
+        fill_price, valuation_price : xr.DataArray, optional
+            Raw (not forward-filled) prices on ``(timestamp, symbol)``: every
+            timestamp of ``predictions`` and, before them, the warm-up the
+            return window needs. Given together; required when
+            ``lookback_bars`` is positive.
 
         Returns
         -------
@@ -540,9 +562,10 @@ class PortfolioConstructor(_Configured, ABC):
         ------
         ValueError
             If ``rebalance`` does not have one entry per timestamp, the
-            eligibility panel is on other labels, ``returns`` is missing or
-            lacks a prediction timestamp, or ``construct`` returns weights on
-            other symbols or a row mixing NaN and finite values.
+            eligibility panel is on other labels, only one price is given, a
+            price is missing or lacks a prediction timestamp, or
+            ``construct`` returns weights on other symbols or a row mixing
+            NaN and finite values.
 
         Examples
         --------
@@ -565,30 +588,34 @@ class PortfolioConstructor(_Configured, ABC):
         rebalance = self._check_rebalance(rebalance, predictions)
         timestamps = predictions.timestamp.values
         symbols = predictions.symbol.values
-        returns, positions = self._check_returns(returns, predictions)
+        history = self._check_prices(fill_price, valuation_price, predictions)
         lookback = self.lookback_bars
-        returns_values = None if returns is None else np.asarray(returns.values, dtype=np.float64)
 
         weights = np.full((len(timestamps), len(symbols)), np.nan)
-        current = np.zeros(len(symbols))
-        valued_at = None  # returns position `current` was last valued at
+        traded = np.zeros(len(symbols))  # the last traded row
+        traded_at = None  # its position in the price history
         failed = []
         for t in np.flatnonzero(rebalance):
-            if returns is not None:
-                position = int(positions[t])
-                if valued_at is not None and current.any():
-                    current = self._drift(current, returns_values[valued_at + 1 : position + 1])
-                valued_at = position
-                window = returns.isel(
-                    timestamp=slice(max(0, position - lookback + 1), position + 1)
-                    if lookback
-                    else slice(position + 1, position + 1)
-                )
-            else:
+            if history is None:
+                current = traded
                 window = xr.DataArray(
                     np.empty((0, len(symbols))),
                     dims=_DIMS,
                     coords={"timestamp": timestamps[:0], "symbol": symbols},
+                )
+            else:
+                position = int(history.positions[t])
+                current = (
+                    traded
+                    if traded_at is None
+                    else self._drift(
+                        traded, history.valuation[position] / history.fill[traded_at + 1]
+                    )
+                )
+                window = history.returns.isel(
+                    timestamp=slice(max(0, position - lookback + 1), position + 1)
+                    if lookback
+                    else slice(position + 1, position + 1)
                 )
             context = PortfolioContext(
                 timestamp=pd.Timestamp(timestamps[t]),
@@ -597,7 +624,9 @@ class PortfolioConstructor(_Configured, ABC):
                     eligible_values[t].copy(), dims="symbol", coords={"symbol": symbols}
                 ),
                 current_weights=xr.DataArray(
-                    current.copy(), dims="symbol", coords={"symbol": symbols}
+                    np.array(current, dtype=np.float64),
+                    dims="symbol",
+                    coords={"symbol": symbols},
                 ),
                 returns=window,
             )
@@ -614,7 +643,8 @@ class PortfolioConstructor(_Configured, ABC):
             if np.isnan(row).all():
                 continue
             weights[t] = row
-            current = row
+            traded = row
+            traded_at = None if history is None else int(history.positions[t])
         out = xr.Dataset(
             {"weight": (_DIMS, weights)},
             coords={"timestamp": timestamps, "symbol": symbols},
@@ -623,9 +653,12 @@ class PortfolioConstructor(_Configured, ABC):
         return out
 
     @staticmethod
-    def _drift(weights: np.ndarray, returns: np.ndarray) -> np.ndarray:
-        """Drift ``weights`` by the one-bar ``returns`` rows and renormalise to value."""
-        growth = np.prod(1.0 + np.nan_to_num(returns, nan=0.0), axis=0)
+    def _drift(weights: np.ndarray, growth: np.ndarray) -> np.ndarray:
+        """Grow each weight by ``growth`` and renormalise to the portfolio's value.
+
+        A symbol without a growth (never priced) is held flat.
+        """
+        growth = np.where(np.isfinite(growth), growth, 1.0)
         value = 1.0 + float(np.sum(weights * (growth - 1.0)))
         return weights * growth / value
 
@@ -646,25 +679,41 @@ class PortfolioConstructor(_Configured, ABC):
             )
         return rebalance
 
-    def _check_returns(self, returns, predictions: xr.Dataset):
-        """Return ``returns`` on the predictions' symbols and each prediction bar's position in it."""
-        if returns is None:
+    def _check_prices(self, fill_price, valuation_price, predictions: xr.Dataset):
+        """Return the price history the loop reads, or None without prices.
+
+        The history holds the raw one-bar valuation returns (the context's
+        window), the forward-filled fill and valuation prices (the drift),
+        and each prediction bar's position in them.
+        """
+        if fill_price is None and valuation_price is None:
             if self.lookback_bars:
                 raise ValueError(
                     f"{type(self).__name__} reads {self.lookback_bars} bars of "
-                    f"returns; pass returns= to construct_panel"
+                    f"returns; pass fill_price= and valuation_price= to construct_panel"
                 )
-            return None, None
-        returns = returns.transpose(*_DIMS).reindex(symbol=predictions.symbol.values)
-        positions = pd.Index(returns.timestamp.values).get_indexer(
+            return None
+        if fill_price is None or valuation_price is None:
+            raise ValueError("pass fill_price and valuation_price together")
+        symbols = predictions.symbol.values
+        valuation_price = valuation_price.transpose(*_DIMS).reindex(symbol=symbols)
+        fill_price = fill_price.transpose(*_DIMS).reindex(
+            timestamp=valuation_price.timestamp.values, symbol=symbols
+        )
+        positions = pd.Index(valuation_price.timestamp.values).get_indexer(
             predictions.timestamp.values
         )
         if (positions < 0).any():
             raise ValueError(
-                "returns must cover every prediction timestamp; missing "
+                "the prices must cover every prediction timestamp; missing "
                 f"{[str(v) for v in predictions.timestamp.values[positions < 0][:5]]}"
             )
-        return returns, positions
+        return _PriceHistory(
+            returns=valuation_price / valuation_price.shift(timestamp=1) - 1.0,
+            fill=fill_price.ffill("timestamp").values.astype(np.float64),
+            valuation=valuation_price.ffill("timestamp").values.astype(np.float64),
+            positions=positions,
+        )
 
     def _checked_row(self, weights: xr.DataArray, symbols: np.ndarray, timestamp) -> np.ndarray:
         """Return one bar's weights on ``symbols``, refusing another axis or a mixed row."""

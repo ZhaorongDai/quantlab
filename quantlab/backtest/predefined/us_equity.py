@@ -108,32 +108,37 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         A symbol is eligible when its next-bar fill price, read from the
         raw, not forward-filled, price panel, is finite; the rule also skips
         symbols without a finite prediction of the label it reads. The rule
-        is handed the one-bar valuation-price returns from the constructor's
-        ``lookback_bars`` bars before the window (``_valuation_returns``), for
-        its return window and to drift the current weights. Bars the rule
-        failed on are kept for ``_signal_metrics``.
+        is handed the raw fill and valuation prices from the constructor's
+        ``lookback_bars`` bars before the window (``_price_history``), for
+        its return window and to drift the current weights the way the
+        simulation values them. Bars the rule failed on are kept for
+        ``_signal_metrics``.
         """
         eligible = next_bar_eligible(prices[self.MARKET.fill_price_column])
         mask = rebalance_mask(prices.sizes["timestamp"], self.config.rebalance_periods)
+        history = self._price_history(prices)
         weights = self.config.constructor.construct_panel(
-            predictions, eligible, mask, returns=self._valuation_returns(prices)
+            predictions,
+            eligible,
+            mask,
+            fill_price=history[self.MARKET.fill_price_column],
+            valuation_price=history[self.MARKET.valuation_price_column],
         )
         self._failed_bars = list(weights.attrs.pop("failed_bars", []))
         return weights
 
-    def _valuation_returns(self, prices: xr.Dataset) -> xr.DataArray:
-        """Return one-bar valuation-price returns over the window and its warm-up.
+    def _price_history(self, prices: xr.Dataset) -> xr.Dataset:
+        """Return the raw fill and valuation prices over the window and its warm-up.
 
         The warm-up is the constructor's ``lookback_bars`` bars before the
         window's first bar, counted on the price dataset's calendar, so the
-        first bar already has a full return window; when the dataset holds
-        fewer, a warning names the shortfall and the first windows are
-        short. The return at a bar is its valuation price over the previous
-        bar's, minus one, NaN where either is missing, on the window's
-        symbols.
+        first bar already has a full window of one-bar returns (the first
+        return needs the bar before it, which the warm-up supplies); when
+        the dataset holds fewer, a warning names the shortfall and the first
+        windows are short. The panel is on the window's symbols.
         """
         dataset = self.config.price_dataset
-        column = self.MARKET.valuation_price_column
+        columns = [self.MARKET.fill_price_column, self.MARKET.valuation_price_column]
         first, last = prices.timestamp.values[0], prices.timestamp.values[-1]
         lookback = self.config.constructor.lookback_bars
         try:
@@ -148,13 +153,12 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
                 stacklevel=2,
             )
             start = dataset.bar_before(first, exc.available)
-        valuation = (
-            dataset.panel(start, last)[column]
+        return (
+            dataset.panel(start, last)[columns]
             .reindex(symbol=prices.symbol.values)
             .transpose("timestamp", "symbol")
             .load()
         )
-        return valuation / valuation.shift(timestamp=1) - 1.0
 
     def _signal_metrics(self) -> dict:
         """Report the rebalance bars the constructor could not decide and held.
