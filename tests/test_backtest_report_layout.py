@@ -19,6 +19,9 @@ What is locked here, and what turns it red:
 - The cumulative excess figure carries a log and an arithmetic curve with a
   toggle between them; exp(final log) - 1 is the geometric excess, and a
   value that reaches zero leaves a gap instead of raising.
+- The windows timeline draws the backtest row and one row per trained model
+  (one for a model backtest, one per walk-forward fold), with every window's
+  dates as a tooltip, and names a CV run sliding or expanding.
 - The "Portfolio" tab draws the turnover series it is given, and the holdings
   and gross exposure of the target weights on the rebalance bars, a symbol a
   row leaves NaN counted at its last target.
@@ -464,3 +467,97 @@ def test_rows_without_a_direction_or_with_a_tie_mark_nothing(tmp_path):
     # Skew has no better side; a missing benchmark value marks nothing either.
     assert "better" not in re.search(r"<tr>(?:(?!</tr>).)*>Skew</th>.*?</tr>", html, re.S).group(0)
     assert "better" not in re.search(r"<tr>(?:(?!</tr>).)*>End value</th>.*?</tr>", html, re.S).group(0)
+
+
+# ------------------------------------------------------------------ timeline
+
+
+def _windows(n_folds, *, expanding=False, in_sample=True):
+    """Windows of a walk-forward run: 60-bar training windows, 20-bar test segments."""
+    BARS = pd.bdate_range("2020-01-01", periods=60 + 20 * n_folds + 2)  # noqa: N806
+    folds = []
+    for i in range(n_folds):
+        start = 0 if expanding else 20 * i
+        test = 60 + 20 * i
+        folds.append({
+            "label": f"fold {i}",
+            "training": [str(BARS[start].date()), str(BARS[test + 1].date())],
+            "traded": [str(BARS[test].date()), str(BARS[test + 19].date())],
+            "in_sample": [str(BARS[test].date()), str(BARS[test + 1].date())] if in_sample else None,
+        })
+    return {
+        "backtest": [folds[0]["traded"][0], folds[-1]["traded"][1]],
+        "bars": 20 * n_folds,
+        "in_sample": [fold["in_sample"] for fold in folds if fold["in_sample"]],
+        "out_of_sample": [[str(BARS[62 + 20 * i].date()), str(BARS[79 + 20 * i].date())] for i in range(n_folds)],
+        "folds": folds,
+    }
+
+
+def _timeline_page(tmp_path, windows):
+    """Write a report carrying ``windows`` and return its HTML."""
+    path = tmp_path / "report.html"
+    write_backtest_report(_series(_paths()[2]), path, in_sample_range=None, notes=[], title="t", windows=windows)
+    return path.read_text(encoding="utf-8")
+
+
+def _tooltips(html):
+    """Every tooltip of the windows timeline."""
+    start = html.index("<h2>Windows</h2>")
+    return re.findall(r"<title>([^<]+)</title>", html[start : html.index("</svg>", start)])
+
+
+def test_a_walk_forward_run_draws_one_timeline_row_per_fold(tmp_path):
+    windows = _windows(10)
+    tips = _tooltips(_timeline_page(tmp_path, windows))
+
+    for fold in windows["folds"]:
+        assert f"{fold['label']} training {fold['training'][0]} .. {fold['training'][1]}" in tips
+        assert f"{fold['label']} traded {fold['traded'][0]} .. {fold['traded'][1]}" in tips
+        assert f"{fold['label']} in-sample {fold['in_sample'][0]} .. {fold['in_sample'][1]}" in tips
+    assert sum(tip.startswith("out-of-sample ") for tip in tips) == 10
+    assert sum(tip.startswith("in-sample ") for tip in tips) == 10
+
+
+def test_the_timeline_caption_names_the_window_and_the_kind_of_cv(tmp_path):
+    sliding = _timeline_page(tmp_path, _windows(10))
+    expanding = _timeline_page(tmp_path, _windows(10, expanding=True))
+
+    assert "(200 bars); 10 folds, sliding training window" in sliding
+    assert "10 folds, expanding training window" in expanding
+
+
+def test_a_model_backtest_has_one_row_and_no_fold_count(tmp_path):
+    windows = _windows(1, in_sample=False)
+    windows["folds"][0]["label"] = "model"
+    html = _timeline_page(tmp_path, windows)
+
+    tips = _tooltips(html)
+    assert [tip.split(" ")[0] for tip in tips] == ["out-of-sample", "model", "model"]
+    assert "folds" not in html[html.index("<h2>Windows</h2>") : html.index("</svg>")]
+
+
+def test_many_folds_shrink_the_rows_and_name_every_fifth(tmp_path):
+    html = _timeline_page(tmp_path, _windows(30))
+
+    block = html[html.index("<h2>Windows</h2>") : html.index("</svg>")]
+    names = re.findall(r">(fold \d+)</text>", block)
+    assert names == [f"fold {i}" for i in range(0, 30, 5)]
+    heights = {float(h) for h in re.findall(r'<rect [^>]*height="([\d.]+)"', block)}
+    assert max(heights) < 12
+
+
+def test_a_window_that_does_not_parse_is_left_out_and_nothing_raises(tmp_path):
+    windows = _windows(3)
+    windows["folds"][1]["training"] = ["not a date", None]
+    windows["folds"][2]["traded"] = "2024"
+    tips = _tooltips(_timeline_page(tmp_path, windows))
+
+    assert not any(tip.startswith("fold 1 training") for tip in tips)
+    assert not any(tip.startswith("fold 2 traded") for tip in tips)
+    assert any(tip.startswith("fold 0 training") for tip in tips)
+
+
+def test_without_windows_there_is_no_timeline(tmp_path):
+    html, _ = _page(tmp_path)
+    assert "<h2>Windows</h2>" not in html

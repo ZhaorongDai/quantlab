@@ -309,11 +309,9 @@ def test_report_draws_benchmark_nav_and_the_excess_tab(benchmark_run):
         assert f'"name":"{name}"' in page, name
     assert re.search(r"<h2>Strategy vs [^<]+</h2>", page)
     assert re.search(r"<h2>Relative to [^<]+</h2>", page)
-    # The summary's excess lines are whole-window; they say so when the
-    # cards and tables show the out-of-sample slice instead.
-    span = " (whole window)" if result.metrics.get("in_sample") else ""
-    assert f"Excess return vs benchmark{span}<" in page
-    assert f"Excess max drawdown vs benchmark{span}<" in page
+    # The excess is in the relative table, so the setup lines do not repeat it.
+    assert ">Excess return (geometric)</th>" in page
+    assert "Excess return vs benchmark" not in page
 
 
 def _page_traces(page: str) -> dict:
@@ -415,6 +413,15 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
     assert "benchmark_dataset" in json.loads((cv.run_dir / "fingerprint.json").read_text())
     page = (Path(cv.run_dir) / "report.html").read_text(encoding="utf-8")
     assert '"name":"excess_drawdown"' in page
+    # The windows timeline draws one row per fold, each with the training
+    # window and the traded bars metrics.json records for it.
+    assert "<h2>Windows</h2>" in page
+    for record in cv.folds:
+        training = record["metrics"]["training_window"]
+        assert f"fold {record['fold']} training {training[0]} .. {training[1]}</title>" in page
+        traded = record["simulation"].value.timestamp.values
+        assert f"fold {record['fold']} traded {_day(traded[0])} .. {_day(traded[-1])}</title>" in page
+    assert f"{len(cv.folds)} folds" in page
 
 
 # --------------------------------------------------------------------------

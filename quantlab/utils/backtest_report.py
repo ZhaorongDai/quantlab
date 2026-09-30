@@ -82,6 +82,12 @@ _STYLE = """
                               text-transform: uppercase; letter-spacing: .05em;
                               padding-top: 10px; border-bottom: 1px solid #ccc; }
   ul.notes { font-size: 13px; color: #444; padding-left: 20px; }
+  .timeline { font-size: 12px; color: #333; }
+  .timeline .caption { color: #555; margin: 0 0 6px; }
+  .timeline svg text { font-size: 10px; fill: #555; }
+  .timeline .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #555; margin-top: 4px; }
+  .timeline .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
+                  vertical-align: -1px; margin-right: 4px; }
 """
 
 
@@ -103,11 +109,13 @@ def write_backtest_report(
     weights: xr.DataArray | None = None,
     turnover: xr.DataArray | None = None,
     bars_per_year: float | None = None,
+    windows: dict | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
     The page opens with a row of headline numbers, then the tables on the
-    left (strategy against the benchmark by group, the excess over it,
+    left (a timeline of the run's windows, the setup, strategy against the
+    benchmark by group, the excess over it,
     trading, and in-sample against out-of-sample when the run has an
     in-sample part) and the charts on the right in tabs: Performance (NAV,
     drawdown, monthly returns and the monthly heatmap), Excess (cumulative
@@ -178,13 +186,22 @@ def write_backtest_report(
     weights : xr.DataArray | None
         Target weights on ``(timestamp, symbol)``, an all-NaN row on a bar
         that holds; the Portfolio tab draws the holdings and exposure of
-        every row without NaN.
+        every other row, a NaN cell counted at that symbol's last target.
     turnover : xr.DataArray | None
         Turnover per fill bar on ``timestamp``: buys plus sells over the
         previous bar's value, so replacing the whole book is about 2. Drawn
         as bars on the Portfolio tab.
     bars_per_year : float | None
         Bars in a year, the window of the Rolling tab; 252 when not given.
+    windows : dict | None
+        The run's windows, drawn as a timeline at the top of the left
+        column: ``backtest`` (first and last bar label), ``bars`` (bar
+        count), ``in_sample`` and ``out_of_sample`` (lists of label pairs)
+        and ``folds``, one dict per trained model with ``label`` (row
+        name), ``training`` (its effective training window), ``traded``
+        (the bars it traded) and ``in_sample`` (the traded bars inside its
+        training window), each pair or ``None``. A pair that does not parse
+        is left out of the drawing.
 
     Examples
     --------
@@ -235,7 +252,7 @@ def write_backtest_report(
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
     Path(path).write_text(
-        _document(title, summary, metrics, tabs, notes, benchmark_name=name),
+        _document(title, summary, metrics, tabs, notes, benchmark_name=name, windows=windows),
         encoding="utf-8",
     )
 
@@ -1449,9 +1466,123 @@ def _figure_div(fig: go.Figure) -> str:
     """A figure as an HTML fragment reusing the plotly.js the page loads."""
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
 
+#: Timeline colours: the training window, the bars traded out-of-sample and
+#: the traded bars that fall inside a training window.
+TRAINING_COLOUR = "#c6dbef"
+TRADED_COLOUR = "#2b8a3e"
+IN_SAMPLE_COLOUR = "#e03b30"
+
+#: Timeline geometry in pixels: the drawing width, the row-label gutter and
+#: the height the fold rows share before a row stops shrinking.
+_TL_WIDTH = 420
+_TL_GUTTER = 56
+_TL_ROWS_HEIGHT = 260
+
+
+def _span(pair: object) -> tuple[pd.Timestamp, pd.Timestamp, str] | None:
+    """A label pair as ``(start, end, "start .. end")``, or ``None`` if it does not parse."""
+    if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+        return None
+    try:
+        start, end = pd.Timestamp(str(pair[0])), pd.Timestamp(str(pair[1]))
+    except (TypeError, ValueError):
+        return None
+    if pd.isna(start) or pd.isna(end) or end < start:
+        return None
+    return start, end, f"{pair[0]} .. {pair[1]}"
+
+
+def _ticks(low: pd.Timestamp, high: pd.Timestamp) -> list[tuple[pd.Timestamp, str]]:
+    """At most six axis ticks on month starts, labelled by year when a step is whole years."""
+    months = (high.year - low.year) * 12 + high.month - low.month + 1
+    step = next((m for m in (1, 3, 6, 12, 24, 60, 120) if months / m <= 6), 240)
+    first = pd.Timestamp(year=low.year, month=1, day=1)
+    ticks = []
+    for date in pd.date_range(first, high, freq=pd.DateOffset(months=step)):
+        if date > low:
+            ticks.append((date, str(date.year) if step % 12 == 0 else date.strftime("%Y-%m")))
+    return ticks
+
+
+def _timeline_section(windows: dict | None) -> str:
+    """The run's windows as an inline SVG timeline, or the empty string without them.
+
+    The top row is the backtest window: out-of-sample bars in green, bars
+    inside a training window in red. Below it, one row per trained model
+    (one for a model backtest, one per fold for a walk-forward CV run)
+    holds its training window in light blue and the bars it traded in
+    green, its in-sample bars red, so sliding and expanding folds read as a
+    staircase of equal or growing bars. Every bar carries its dates as a
+    tooltip. The drawing scales to the column; rows shrink as folds are
+    added, and only every fifth fold is named once they get thin.
+    """
+    if not isinstance(windows, dict):
+        return ""
+    backtest = _span(windows.get("backtest"))
+    if backtest is None:
+        return ""
+    folds = [fold for fold in windows.get("folds") or [] if isinstance(fold, dict)]
+    spans = [backtest] + [
+        span for fold in folds for span in (_span(fold.get("training")), _span(fold.get("traded"))) if span
+    ]
+    low, high = min(s[0] for s in spans), max(s[1] for s in spans)
+    width = max((high - low).total_seconds(), 1.0)
+
+    def x(when: pd.Timestamp) -> float:
+        return _TL_GUTTER + (when - low).total_seconds() / width * (_TL_WIDTH - _TL_GUTTER - 4)
+
+    def bar(span, y: float, height: float, colour: str, tip: str) -> str:
+        start, end, text = span
+        return (f'<rect x="{x(start):.1f}" y="{y:.1f}" width="{max(1.0, x(end) - x(start)):.1f}" '
+                f'height="{height:.1f}" fill="{colour}"><title>{_escape(tip)} {_escape(text)}</title></rect>')
+
+    row = 14.0 if len(folds) <= 1 else max(4.0, min(12.0, _TL_ROWS_HEIGHT / len(folds)))
+    gap = 2.0 if row > 6 else 1.0
+    height = (len(folds) + 1) * (row + gap) + 16
+    parts = []
+    for when, text in _ticks(low, high):
+        parts.append(f'<line x1="{x(when):.1f}" x2="{x(when):.1f}" y1="0" y2="{height - 14:.1f}" stroke="#eee"/>'
+                     f'<text x="{x(when):.1f}" y="{height - 3:.1f}" text-anchor="middle">{_escape(text)}</text>')
+    parts.append(f'<text x="0" y="{row - 2:.1f}">backtest</text>')
+    out_of_sample = [s for s in map(_span, windows.get("out_of_sample") or []) if s]
+    for span in out_of_sample or [backtest]:
+        parts.append(bar(span, 0, row, TRADED_COLOUR, "out-of-sample" if out_of_sample else "backtest"))
+    for span in filter(None, map(_span, windows.get("in_sample") or [])):
+        parts.append(bar(span, 0, row, IN_SAMPLE_COLOUR, "in-sample"))
+    for i, fold in enumerate(folds):
+        y = (i + 1) * (row + gap)
+        name = str(fold.get("label", ""))
+        if row >= 9 or i % 5 == 0:
+            parts.append(f'<text x="0" y="{y + row - 1:.1f}">{_escape(name)}</text>')
+        for key, colour, tip in (("training", TRAINING_COLOUR, "training"), ("traded", TRADED_COLOUR, "traded"),
+                                 ("in_sample", IN_SAMPLE_COLOUR, "in-sample")):
+            span = _span(fold.get(key))
+            if span:
+                parts.append(bar(span, y, row, colour, f"{name} {tip}"))
+
+    caption = f"Backtest {backtest[2]}"
+    if _number(windows.get("bars")) is not None:
+        caption += f" ({int(windows['bars']):,} bars)"
+    trained = [s for s in (_span(fold.get("training")) for fold in folds) if s]
+    if len(folds) > 1:
+        kind = "expanding" if len(trained) > 1 and len({s[0] for s in trained}) == 1 else "sliding"
+        caption += f"; {len(folds)} folds, {kind} training window"
+    legend = "".join(
+        f'<span><span class="sw" style="background:{colour}"></span>{text}</span>'
+        for colour, text in ((TRAINING_COLOUR, "training"), (TRADED_COLOUR, "traded, out-of-sample"),
+                             (IN_SAMPLE_COLOUR, "traded, in-sample"))
+    )
+    return (
+        "  <h2>Windows</h2>\n"
+        f'  <div class="timeline"><div class="caption">{_escape(caption)}</div>\n'
+        f'  <svg viewBox="0 0 {_TL_WIDTH} {height:.0f}" width="100%" style="max-width:{_TL_WIDTH}px">'
+        + "".join(parts) + "</svg>\n"
+        f'  <div class="legend">{legend}</div></div>\n'
+    )
+
 
 def _summary_section(summary: dict[str, str] | None) -> str:
-    """Render the dates-and-setup table, or the empty string when there is none."""
+    """Render the setup table, or the empty string when there is none."""
     if not summary:
         return ""
     rows = "\n".join(
@@ -1459,7 +1590,7 @@ def _summary_section(summary: dict[str, str] | None) -> str:
         for label, text in summary.items()
     )
     return (
-        "  <h2>Dates and setup</h2>\n"
+        "  <h2>Setup</h2>\n"
         '  <table class="summary">\n'
         f"{rows}\n"
         "  </table>\n"
@@ -1492,6 +1623,7 @@ def _document(
     notes: list[str] | None,
     *,
     benchmark_name: str | None = None,
+    windows: dict | None = None,
 ) -> str:
     """Assemble the page: headline cards, the tables beside the chart tabs, the notes.
 
@@ -1528,7 +1660,7 @@ def _document(
         f"  <h1>{_escape(title)}</h1>\n"
         f"{_kpi_section(metrics, benchmark_name)}"
         '  <div class="layout">\n'
-        f'  <div class="tables">\n{_summary_section(summary)}{tables}  </div>\n'
+        f'  <div class="tables">\n{_timeline_section(windows)}{_summary_section(summary)}{tables}  </div>\n'
         f'  <div class="charts">\n  <div class="tabs">{buttons}</div>{panes}\n  </div>\n'
         "  </div>\n"
         f"{_notes_section(notes)}"

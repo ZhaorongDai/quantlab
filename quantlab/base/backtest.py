@@ -2988,107 +2988,46 @@ class BaseBacktester(ABC):
         *,
         drawdown_span: dict | None = None,
     ) -> dict:
-        """Return the "dates and settings" lines at the top of ``report.html``.
+        """Return the "Setup" lines of ``report.html``.
 
         Pure presentation: it reads ``block`` and ``self.config``, computes
         no statistics, and returns an ordered mapping of label to
         formatted text that the report module escapes and renders.
         ``block`` is the metric level carrying the split keys:
         ``run()`` passes the metrics themselves, ``run_cv()`` passes
-        ``metrics["stitched"]``. Both spellings of the split are handled,
-        the singular ``training_window`` / ``in_sample_range`` of a run and
-        the plural ``training_windows`` / ``in_sample_ranges`` of the
-        stitched curve.
-
-        The window's first and last bar are taken from the range endpoints
-        already in ``block``, so the page shows the same strings as
-        ``metrics.json``; only when there is no range at all are they
-        formatted from the timestamps. Every key is read with ``.get()`` and
-        a missing value renders as a dash, never as ``None``, so a renamed
-        split key degrades the page instead of raising inside the staged
-        run directory. ``drawdown_span`` adds one line describing the
-        deepest drawdown in trading days (bars), matching the markers on
-        the equity chart. A ``block`` without ``out_of_sample_ranges`` has no
-        split (a ``run_weights()`` run, which has no training window and no
-        model): the training-window and in/out-of-sample lines are left out
-        and a "Signal" line replaces the model mode.
+        ``metrics["stitched"]``. It holds only what no table, card or
+        chart on the page shows: the dates are on the windows timeline
+        (``_report_windows``), the excess over the benchmark in the
+        relative table, the starting capital in the strategy table and the
+        drawdown depth in the risk rows. Every key is read with ``.get()``
+        and a missing value renders as a dash, never as ``None``, so a
+        renamed key degrades the page instead of raising inside the staged
+        run directory. ``drawdown_span`` adds one line naming the bars of
+        the deepest drawdown and its length in trading days, matching the
+        markers on the equity chart. A ``block`` without
+        ``out_of_sample_ranges`` has no model (a ``run_weights()`` run): a
+        "Signal" line replaces the model mode.
         """
-
-        def _pair(value) -> str | None:
-            """Format a label pair as ``a .. b``, or ``None`` when empty."""
-            return f"{value[0]} .. {value[1]}" if value else None
-
-        def _pairs(values) -> str | None:
-            """Format several label pairs joined by ``; ``, or ``None`` when empty."""
-            rendered = [text for text in map(_pair, values or []) if text]
-            return "; ".join(rendered) if rendered else None
 
         def _text(value) -> str:
             """Render ``value`` as text, with a dash for ``None``."""
             return DASH if value is None else str(value)
 
-        ranges = [block.get("in_sample_range")]
-        ranges += list(block.get("in_sample_ranges") or [])
-        ranges += list(block.get("out_of_sample_ranges") or [])
-        endpoints = [label for item in ranges if item for label in (item[0], item[1])]
-        timestamps = simulation.value.timestamp.values
-        if endpoints:
-            first = min(endpoints, key=self._label_ns)
-            last = max(endpoints, key=self._label_ns)
-        else:
-            first = self._bar_label(timestamps[0])
-            last = self._bar_label(timestamps[-1])
-
-        summary = {
-            "Backtest window": f"{first} .. {last} ({timestamps.size} bars)",
-            "Bar interval": str(pd.Timedelta(simulation.bar_interval)),
-        }
-        # Given weights have no training window, so no split lines.
-        has_split = "out_of_sample_ranges" in block
-        if has_split:
-            if "training_windows" in block:
-                summary["Training windows"] = _text(
-                    _pairs(block.get("training_windows"))
-                )
-                summary["In-sample ranges"] = _text(
-                    _pairs(block.get("in_sample_ranges"))
-                )
-            else:
-                summary["Training window"] = _text(_pair(block.get("training_window")))
-                summary["In-sample range"] = _text(_pair(block.get("in_sample_range")))
-            summary["Out-of-sample ranges"] = _text(
-                _pairs(block.get("out_of_sample_ranges"))
-            )
+        summary = {"Bar interval": str(pd.Timedelta(simulation.bar_interval))}
         benchmark = block.get("benchmark")
         if isinstance(benchmark, dict):
             dataset = self.config.benchmark_dataset
             where = "" if dataset is None else f" ({self._where(dataset)})"
             summary["Benchmark"] = f"{_text(benchmark.get('symbol'))}{where}, buy and hold"
-            whole = (block.get("relative") or {}).get("whole") or {}
-            # The cards and tables show the out-of-sample slice when there
-            # is an in-sample one, so these whole-window lines say so.
-            span = " (whole window)" if block.get("in_sample") else ""
-            for label, key in (
-                (f"Excess return vs benchmark{span}", "Excess Return [%]"),
-                (f"Excess max drawdown vs benchmark{span}", "Excess Max Drawdown [%]"),
-            ):
-                value = whole.get(key)
-                summary[label] = (
-                    f"{float(value):.2f}%"
-                    if isinstance(value, (int, float)) and np.isfinite(value)
-                    else DASH
-                )
         if drawdown_span:
             bars = drawdown_span.get("bars")
-            depth = drawdown_span.get("depth")
             summary["Deepest drawdown (valley to recovery)"] = (
                 f"{_text(drawdown_span.get('valley'))} .. "
                 f"{_text(drawdown_span.get('end'))}, "
                 f"{DASH if bars is None else f'{bars} trading days'}, "
-                f"depth {DASH if depth is None else format(float(depth), '.2%')}, "
                 f"{'recovered' if drawdown_span.get('recovered') else 'not recovered by the last bar'}"
             )
-        if has_split:
+        if "out_of_sample_ranges" in block:
             summary["Model mode"] = _text(self.config.model_mode)
         else:
             summary["Signal"] = "precomputed weights (run_weights), no model"
@@ -3101,11 +3040,80 @@ class BaseBacktester(ABC):
         else:
             summary["Top N"] = _text(getattr(self.config, "top_n", None))
             summary["Direction"] = _text(getattr(self.config, "direction", None))
-        summary["Initial cash"] = f"{float(self.config.init_cash):,.2f}"
         summary["Fees"] = _text(self.config.fees)
         if block.get("trained_checkpoint") is not None:
             summary["Trained checkpoint"] = _text(block["trained_checkpoint"])
         return summary
+
+    def _report_windows(
+        self,
+        simulation: SimulationResult,
+        block: dict,
+        records: list[dict] | None = None,
+    ) -> dict:
+        """Return the ``windows`` input of ``write_backtest_report``, its timeline.
+
+        Parameters
+        ----------
+        simulation : SimulationResult
+            The simulated curve; its first and last bar are the backtest
+            window.
+        block : dict
+            The metric level carrying the split keys, as for
+            ``_report_summary``: ``in_sample_range`` or
+            ``in_sample_ranges``, ``out_of_sample_ranges`` and, for a model
+            backtest, ``training_window``.
+        records : list[dict] or None, optional
+            The folds of a ``run_cv()`` run, each with its ``fold`` number,
+            its own ``simulation`` (the bars it traded) and ``metrics``
+            (its ``training_window`` and ``in_sample_range``). Without
+            them the run's own model is the one row.
+
+        Returns
+        -------
+        dict
+            ``backtest``, ``bars``, ``in_sample``, ``out_of_sample`` and
+            ``folds``, with the labels ``metrics.json`` carries, so the
+            page and the metrics cannot drift apart. A ``run_weights()``
+            run has no model and no fold row.
+        """
+
+        def _traded(sim: SimulationResult) -> tuple[str, str]:
+            """Return the first and last bar label of ``sim``."""
+            timestamps = sim.value.timestamp.values
+            return self._bar_label(timestamps[0]), self._bar_label(timestamps[-1])
+
+        in_sample = list(block.get("in_sample_ranges") or [])
+        if block.get("in_sample_range"):
+            in_sample.append(block["in_sample_range"])
+        if records is not None:
+            folds = [
+                {
+                    "label": f"fold {record['fold']}",
+                    "training": record["metrics"].get("training_window"),
+                    "traded": _traded(record["simulation"]),
+                    "in_sample": record["metrics"].get("in_sample_range"),
+                }
+                for record in records
+            ]
+        elif "training_window" in block:
+            folds = [
+                {
+                    "label": "model",
+                    "training": block.get("training_window"),
+                    "traded": _traded(simulation),
+                    "in_sample": block.get("in_sample_range"),
+                }
+            ]
+        else:
+            folds = []
+        return {
+            "backtest": _traded(simulation),
+            "bars": int(simulation.value.sizes["timestamp"]),
+            "in_sample": in_sample,
+            "out_of_sample": list(block.get("out_of_sample_ranges") or []),
+            "folds": folds,
+        }
 
     def _report_and_persist(
         self,
@@ -3129,8 +3137,9 @@ class BaseBacktester(ABC):
         JSON file goes through ``to_jsonable`` (NaN and infinities become
         null, timestamps become ISO strings) and is written atomically.
 
-        ``report.html`` is self-contained: the summary lines from
-        ``_report_summary``, headline numbers, the metric tables (the
+        ``report.html`` is self-contained: headline numbers, a timeline
+        of the backtest and training windows from ``_report_windows``, the
+        setup lines from ``_report_summary``, the metric tables (the
         out-of-sample slice when the run has an in-sample part, with an
         in-sample vs out-of-sample table) and the chart tabs: Performance
         (equity, drawdown and monthly returns with the in-sample range
@@ -3172,6 +3181,7 @@ class BaseBacktester(ABC):
                 summary=self._report_summary(
                     simulation, metrics, drawdown_span=chart["drawdown_span"]
                 ),
+                windows=self._report_windows(simulation, metrics),
                 metrics=metrics,
                 **chart,
                 **self._report_portfolio_inputs(weights, simulation),
@@ -3437,6 +3447,7 @@ class BaseBacktester(ABC):
                 summary=self._report_summary(
                     simulation, metrics["stitched"], drawdown_span=drawdown_span
                 ),
+                windows=self._report_windows(simulation, metrics["stitched"], records),
                 metrics=metrics["stitched"],
                 returns=simulation.returns,
                 init_cash=self.config.init_cash,
