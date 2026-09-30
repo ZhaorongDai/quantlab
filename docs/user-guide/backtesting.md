@@ -70,7 +70,8 @@ model's `collect()` and `train()` before predicting:
 
 ```python
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 backtester = USEquityCrossectionSelectStockVectorBt(
     CrossSectionBacktestConfig(
@@ -81,8 +82,7 @@ backtester = USEquityCrossectionSelectStockVectorBt(
         end_date=day(N_BARS - 1),
         output_dir=str(root / "backtests"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=3,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=3)),
         fees=0.0005,
         slippage=0.0005,
     )
@@ -128,8 +128,7 @@ long_short = USEquityCrossectionSelectStockVectorBt(
         end_date=day(N_BARS - 1),
         output_dir=str(root / "backtests"),
         rebalance_periods=5,
-        direction="long_short",
-        top_n=3,
+        constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=3)),
     )
 )
 ls_result = long_short.run()
@@ -138,8 +137,9 @@ ls_result = long_short.run()
 The config is validated when the backtester is constructed, before any data
 is read: a wrong config class raises `TypeError`, and invalid dates, a
 `rebalance_periods` below 1, negative fees or slippage, a non-positive
-`init_cash`, an unknown `direction` or a `score_label` the model does not
-predict raise `ValueError`. See the docstrings of
+`init_cash`, a `constructor` that is not a `PortfolioConstructor` (`TypeError`),
+an unknown `direction` or a `score_label` the model does not predict raise
+`ValueError`. See the docstrings of
 `quantlab.base.config.BacktestConfig` and `CrossSectionBacktestConfig` for
 every field.
 
@@ -216,8 +216,10 @@ of the window never rebalances, because a signal formed there has no next bar
 inside the window to fill on. `quantlab.backtest.selection.rebalance_mask`
 computes this schedule.
 
-On each rebalance bar, `CrossSectionTopNSelector` builds equal-weight
-portfolios from the scores:
+On each rebalance bar, the config's `constructor`, a portfolio construction
+rule, turns that bar's predictions into weights. `TopNConstructor` (config
+`TopNConfig(direction, top_n, score_label)`) builds equal-weight portfolios
+from the scores:
 
 - With `direction="long_only"`, the `top_n` highest-scoring symbols get a
   weight of `1 / top_n` each, for a gross exposure of 100%.
@@ -242,7 +244,8 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260927_211527_838321
 The score is the model's prediction of the label named by `score_label`, or
 of its first label when `score_label` is `None`. A symbol is eligible on a bar
 only when its score is finite and it has a price on the next bar, since that
-is where the order would fill. Ties are broken by symbol order, so the same
+is where the order would fill: the backtester passes the next-bar rule as an
+eligibility mask, and the rule skips symbols without a finite score. Ties are broken by symbol order, so the same
 panel always gives the same weights. When fewer than `top_n` symbols are
 eligible, the book is split among the eligible ones and a warning names the
 bar.
@@ -403,8 +406,7 @@ cv_backtester = USEquityCrossectionSelectStockVectorBt(
         end_date=day(N_BARS - 1),
         output_dir=str(root / "backtests"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=3,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=3)),
     )
 )
 cv_result = cv_backtester.run_cv()

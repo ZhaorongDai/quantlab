@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the selection rule `CrossSectionTopNSelector` (`quantlab/backtest/selection.py`) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the rebalance schedule and eligibility helpers (`quantlab/backtest/selection.py`), the portfolio construction rule `TopNConstructor` (`quantlab/portfolio/predefined/top_n.py`, a `PortfolioConstructor` from `quantlab/base/portfolio.py`) that the config's `constructor` holds and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -138,7 +138,8 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 >>> import xarray as xr
 >>> from demo_parts import *
 >>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
->>> from quantlab.base.config import CrossSectionBacktestConfig
+>>> from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+>>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> root = Path(tempfile.mkdtemp())
 >>> cfg = write_price_store(root, delist={"FFF": 36})
 >>> days = pd.bdate_range("2024-01-01", periods=60)
@@ -152,8 +153,7 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 ...     end_date="2024-03-22",
 ...     output_dir=str(root / "runs"),
 ...     rebalance_periods=5,
-...     direction="long_only",
-...     top_n=2,
+...     constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
 ... ))
 >>> result = backtester.run()
 >>> sorted(p.name for p in result.run_dir.iterdir())
@@ -281,7 +281,8 @@ With `model_mode="train"` the model is trained on its own configured dates first
 ```python
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=make_model(root / "train_mode", cfg, days),
-...     model_mode="train", checkpoint=None, direction="long_short", top_n=1,
+...     model_mode="train", checkpoint=None,
+...     constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=1)),
 ... )).run()
 >>> Path(trained.metrics["trained_checkpoint"]).name
 'MomentumHead_total.joblib'
@@ -457,8 +458,8 @@ The run then carries two more metric blocks, each with `whole`, `in_sample` and 
 ```python
 >>> from quantlab.utils.module import load_backtester_from_config
 >>> config = json.loads((result.run_dir / "config.json").read_text())
->>> config["name"], config["direction"], config["top_n"]
-('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', 'long_only', 2)
+>>> config["name"], config["constructor"]
+('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', {'direction': 'long_only', 'top_n': 2, 'score_label': None, 'name': 'quantlab.portfolio.predefined.top_n.TopNConstructor'})
 >>> again = load_backtester_from_config(config).run()
 >>> again.metrics["whole"] == result.metrics["whole"]
 True
@@ -540,7 +541,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
         return weight.where(rebalance).to_dataset(name="weight")  # NaN on hold bars
 ```
 
-Its config class is `BacktestConfig`, so `direction` and `top_n` are not required.
+Its config class is `BacktestConfig`, so no `constructor` is required.
 
 ```python
 >>> from score_weighted import ScoreWeightedBacktester
@@ -564,7 +565,7 @@ timestamp
 2024-02-19  0.044  0.767  0.000  0.189  0.0  0.000
 ```
 
-To keep the top-N rule with another score, `CrossSectionTopNSelector(direction, top_n).select(scores, next_fill_price, rebalance)` accepts any score panel and returns the same `weight` dataset. Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
+To keep the top-N rule with another score, `TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, eligible, rebalance)` accepts any score panel (a dataset with one variable per label) with a boolean eligibility panel, such as `next_bar_eligible(fill_price)` from `quantlab.backtest.selection`, and returns the same `weight` dataset. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.base.portfolio`) and implement `construct`. Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
 
 ### Backtest any predictor
 
@@ -651,10 +652,13 @@ TypeError: USEquityCrossectionSelectStockVectorBt requires a CrossSectionBacktes
 A score label the model does not declare:
 
 ```python
->>> USEquityCrossectionSelectStockVectorBt(dataclasses.replace(backtester.config, score_label="fwd_ret_5"))
+>>> USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config,
+...     constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2, score_label="fwd_ret_5")),
+... ))
 Traceback (most recent call last):
   ...
-ValueError: score_label 'fwd_ret_5' is not one of the model's labels ['open_ret_1']
+ValueError: score_label 'fwd_ret_5' is not one of the predictor's labels ['open_ret_1']
 ```
 
 `run_cv()` without `cv_project_dir`:
@@ -669,11 +673,11 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 A stored config with a missing field is refused instead of being filled from current defaults:
 
 ```python
->>> del config["top_n"]
+>>> del config["constructor"]
 >>> load_backtester_from_config(config)
 Traceback (most recent call last):
   ...
-ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
+ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
 If a fold is missing from the middle of `cv_folds.json`, `run_cv()` refuses to stitch across the gap with `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`. Restore the manifest, or narrow `start_date` and `end_date` to a contiguous range of folds.

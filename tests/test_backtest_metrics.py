@@ -49,7 +49,8 @@ from loguru import logger
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.backtest import SimulationResult
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -127,8 +128,7 @@ def _unit_backtester(
             end_date=_day(BARS[39]),
             output_dir=str(tmp_path / "runs"),
             rebalance_periods=5,
-            direction="long_only",
-            top_n=2,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         )
     )
 
@@ -150,8 +150,7 @@ def _run_backtester(
         end_date=_day(BARS[window_end_bar]),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
     kwargs.update(overrides)
     return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))

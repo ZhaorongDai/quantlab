@@ -41,10 +41,11 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.model import BaseModel
 from quantlab.model.ensemble import BaseEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SeededHead,
     make_model,
@@ -371,8 +372,7 @@ def test_run_cv_replays_the_ensemble_cv_run(cv_run, tmp_path, monkeypatch):
             end_date=_day(bars[LAST_TEST_BAR]),
             output_dir=str(tmp_path / "runs"),
             rebalance_periods=2,
-            direction="long_only",
-            top_n=2,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
             fees=0.0,
             slippage=0.0,
             init_cash=1_000_000.0,

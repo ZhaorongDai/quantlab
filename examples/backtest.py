@@ -46,12 +46,14 @@ from quantlab.base.config import (
     ForwardConfig,
     ModelConfig,
     PolarsFactorConfig,
+    TopNConfig,
 )
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 from quantlab.utils.module import load_backtester_from_config
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 # zarr warns on every write that consolidated metadata is not part of the
 # Zarr v3 specification; it is harmless here.
@@ -254,8 +256,7 @@ def main() -> None:
                 end_date=day(N_BARS - 1),
                 output_dir=str(root / "backtests"),
                 rebalance_periods=5,
-                direction="long_only",
-                top_n=3,
+                constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=3)),
                 fees=0.0005,
                 slippage=0.0005,
             )
@@ -291,8 +292,7 @@ def main() -> None:
                 end_date=day(N_BARS - 1),
                 output_dir=str(root / "backtests"),
                 rebalance_periods=5,
-                direction="long_short",
-                top_n=3,
+                constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=3)),
             )
         )
         ls_result = long_short.run()
@@ -332,8 +332,7 @@ def main() -> None:
                 end_date=day(N_BARS - 1),
                 output_dir=str(root / "backtests"),
                 rebalance_periods=5,
-                direction="long_only",
-                top_n=3,
+                constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=3)),
             )
         )
         cv_result = cv_backtester.run_cv()

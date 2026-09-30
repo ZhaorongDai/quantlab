@@ -40,9 +40,10 @@ from loguru import logger
 
 import quantlab.utils.module as module_utils
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig
+from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
 from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -137,8 +138,7 @@ def _backtester(
         end_date=_day(BARS[WINDOW_END_BAR]),
         output_dir=str(root / "runs"),
         rebalance_periods=REBALANCE_PERIODS,
-        direction="long_only",
-        top_n=TOP_N,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=TOP_N)),
         fees=0.0,
         slippage=0.0,
         init_cash=INIT_CASH,
@@ -209,8 +209,7 @@ def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
             end_date=_day(CV_BARS[CV_LAST_TEST_BAR]),
             output_dir=str(tmp_path / "runs"),
             rebalance_periods=REBALANCE_PERIODS,
-            direction="long_only",
-            top_n=TOP_N,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=TOP_N)),
             fees=0.0,
             slippage=0.0,
             init_cash=INIT_CASH,
@@ -297,12 +296,12 @@ def test_loader_does_not_mutate_its_input(tmp_path):
     assert saved == before
 
 
-@pytest.mark.parametrize("field_name", ["init_cash", "fees", "score_label", "use_wandb"])
+@pytest.mark.parametrize("field_name", ["init_cash", "fees", "constructor", "use_wandb"])
 def test_rebuild_refuses_a_config_missing_a_field(tmp_path, monkeypatch, field_name):
     """Code review WR-06: a config missing a field is refused, not filled from today's defaults.
 
-    `init_cash` is the executor-reported gap; `fees`, `score_label` and
-    `use_wandb` have defaults that could change later. The old loader built
+    `init_cash` is the executor-reported gap; `fees` and `use_wandb` have
+    defaults that could change later, and `constructor` holds the rule. The old loader built
     the config with `**config` and silently took the current default, so an
     older config.json rebuilt into a different backtest. The refusal must
     name the field and come before any dataset or model is built. Red on the
@@ -354,11 +353,9 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
         fees=0.0007,
         slippage=0.0003,
         init_cash=250_000.0,
-        score_label="fwd_ret_1",
+        constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=1, score_label="fwd_ret_1")),
         use_wandb=True,
         rebalance_periods=3,
-        direction="long_short",
-        top_n=1,
     )
     for field in fields(CrossSectionBacktestConfig):
         if field.default is MISSING or field.name in ("benchmark_dataset", "name"):

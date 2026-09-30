@@ -46,12 +46,14 @@ from quantlab.base.config import (
     DatasetConfig,
     FactorConfig,
     ModelConfig,
+    TopNConfig,
 )
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.module import load_backtester_from_config
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 # Zarr 3 warns that consolidated metadata is not part of its spec; harmless.
 warnings.filterwarnings("ignore", message="Consolidated metadata")
@@ -205,8 +207,7 @@ def main() -> None:
                 end_date=day(N_BARS - 1),
                 output_dir=str(root / "backtests"),
                 rebalance_periods=5,
-                direction="long_only",
-                top_n=4,
+                constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=4)),
             )
         )
         result = backtester.run()

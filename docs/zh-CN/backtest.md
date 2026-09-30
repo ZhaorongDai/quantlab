@@ -4,7 +4,7 @@
 
 回测拿一个训练好的收益模型和一份价格数据集，展示模型的预测如果拿来交易会得到什么结果。模型对每个标的、每根 bar 给出一个分数，选股规则把分数变成目标权重，模拟引擎按这些权重成交并记录净值曲线。每次运行都会写出一个运行目录，里面有权重、净值曲线、指标、HTML 报告，以及重建这次运行所需的配置。
 
-主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、选股规则 `CrossSectionTopNSelector`（`quantlab/backtest/selection.py`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
+主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、调仓时点与可成交判定的辅助函数（`quantlab/backtest/selection.py`）、配置里 `constructor` 持有的组合构建规则 `TopNConstructor`（`quantlab/portfolio/predefined/top_n.py`，继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
 
 ## 前置条件
 
@@ -138,7 +138,8 @@ def train_cv_project(model, train_periods):
 >>> import xarray as xr
 >>> from demo_parts import *
 >>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
->>> from quantlab.base.config import CrossSectionBacktestConfig
+>>> from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+>>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> root = Path(tempfile.mkdtemp())
 >>> cfg = write_price_store(root, delist={"FFF": 36})
 >>> days = pd.bdate_range("2024-01-01", periods=60)
@@ -152,8 +153,7 @@ def train_cv_project(model, train_periods):
 ...     end_date="2024-03-22",
 ...     output_dir=str(root / "runs"),
 ...     rebalance_periods=5,
-...     direction="long_only",
-...     top_n=2,
+...     constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
 ... ))
 >>> result = backtester.run()
 >>> sorted(p.name for p in result.run_dir.iterdir())
@@ -281,7 +281,8 @@ out_of_sample -5.61 -4.27 13
 ```python
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=make_model(root / "train_mode", cfg, days),
-...     model_mode="train", checkpoint=None, direction="long_short", top_n=1,
+...     model_mode="train", checkpoint=None,
+...     constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=1)),
 ... )).run()
 >>> Path(trained.metrics["trained_checkpoint"]).name
 'MomentumHead_total.joblib'
@@ -457,8 +458,8 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ```python
 >>> from quantlab.utils.module import load_backtester_from_config
 >>> config = json.loads((result.run_dir / "config.json").read_text())
->>> config["name"], config["direction"], config["top_n"]
-('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', 'long_only', 2)
+>>> config["name"], config["constructor"]
+('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', {'direction': 'long_only', 'top_n': 2, 'score_label': None, 'name': 'quantlab.portfolio.predefined.top_n.TopNConstructor'})
 >>> again = load_backtester_from_config(config).run()
 >>> again.metrics["whole"] == result.metrics["whole"]
 True
@@ -540,7 +541,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
         return weight.where(rebalance).to_dataset(name="weight")  # 非调仓 bar 为 NaN
 ```
 
-它的配置类是 `BacktestConfig`，所以不需要 `direction` 和 `top_n`。
+它的配置类是 `BacktestConfig`，所以不需要 `constructor`。
 
 ```python
 >>> from score_weighted import ScoreWeightedBacktester
@@ -564,7 +565,7 @@ timestamp
 2024-02-19  0.044  0.767  0.000  0.189  0.0  0.000
 ```
 
-如果想沿用 top-N 规则、只换分数，`CrossSectionTopNSelector(direction, top_n).select(scores, next_fill_price, rebalance)` 接受任意分数面板并返回同样的 `weight` 数据集。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
+如果想沿用 top-N 规则、只换分数，`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, eligible, rebalance)` 接受任意分数面板（每个标签一个变量的数据集）和一个布尔型可成交面板（例如 `quantlab.backtest.selection` 中的 `next_bar_eligible(fill_price)`），并返回同样的 `weight` 数据集。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
 
 ### 回测任意预测器
 
@@ -651,10 +652,13 @@ TypeError: USEquityCrossectionSelectStockVectorBt requires a CrossSectionBacktes
 模型没有声明的 score 标签：
 
 ```python
->>> USEquityCrossectionSelectStockVectorBt(dataclasses.replace(backtester.config, score_label="fwd_ret_5"))
+>>> USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config,
+...     constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2, score_label="fwd_ret_5")),
+... ))
 Traceback (most recent call last):
   ...
-ValueError: score_label 'fwd_ret_5' is not one of the model's labels ['open_ret_1']
+ValueError: score_label 'fwd_ret_5' is not one of the predictor's labels ['open_ret_1']
 ```
 
 没有 `cv_project_dir` 就调用 `run_cv()`：
@@ -669,11 +673,11 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 保存的配置缺少字段时，会被拒绝，而不是用当前默认值补上：
 
 ```python
->>> del config["top_n"]
+>>> del config["constructor"]
 >>> load_backtester_from_config(config)
 Traceback (most recent call last):
   ...
-ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['top_n']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
+ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
 如果 `cv_folds.json` 中间缺了一折，`run_cv()` 拒绝跨缺口拼接，报错信息包含 `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`。恢复清单，或者把 `start_date` 与 `end_date` 收窄到一段连续的折。

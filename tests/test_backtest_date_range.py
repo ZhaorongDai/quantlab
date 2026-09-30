@@ -20,8 +20,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -66,8 +67,7 @@ def _backtester(tmp_path, price_dataset, model, bars, **overrides):
         end_date=_day(bars[50]),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         fees=0.0,
         slippage=0.0,
         init_cash=1_000_000.0,

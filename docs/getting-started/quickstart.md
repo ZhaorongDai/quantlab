@@ -228,14 +228,15 @@ through `train_cv()` is covered in [models](../user-guide/models.md).
 
 A backtest replays the model over a period and simulates trading its predictions.
 `USEquityCrossectionSelectStockVectorBt` implements a cross-sectional strategy: every
-`rebalance_periods` bars it ranks all symbols by their predicted return and holds the `top_n`
-best in equal weights. Orders decided at the close of bar t are filled at the open of bar t+1,
+`rebalance_periods` bars its `constructor`, here a `TopNConstructor`, ranks all symbols by
+their predicted return and holds the `top_n` best in equal weights. Orders decided at the close of bar t are filled at the open of bar t+1,
 so the strategy never trades on a price it could not have seen. The simulation itself is done
 by vectorbt.
 
 ```python
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 backtester = USEquityCrossectionSelectStockVectorBt(
     CrossSectionBacktestConfig(
@@ -247,8 +248,7 @@ backtester = USEquityCrossectionSelectStockVectorBt(
         end_date="2023-07-14",    # bar 399
         output_dir=str(root / "backtests"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=4,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=4)),
     )
 )
 result = backtester.run()

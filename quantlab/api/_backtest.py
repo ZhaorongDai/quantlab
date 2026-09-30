@@ -241,11 +241,14 @@ def _selected(panel, prices_zone, scores, columns, fill, top_n, direction, rebal
     A symbol without a score on a bar is not eligible there, and neither is one without
     a fill price on the next bar, exactly as in the library's selection backtester.
     """
-    from quantlab.backtest.selection import CrossSectionTopNSelector, rebalance_mask
+    from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
+    from quantlab.base.config import TopNConfig
+    from quantlab.portfolio.predefined.top_n import TopNConstructor
 
     field = to_field_panel(scores, "score", columns=columns, purpose="scores")
     values, _ = _onto_price_axes(panel, prices_zone, "scores", field)
-    selector = CrossSectionTopNSelector(direction=direction, top_n=top_n)
-    next_fill = panel[fill].shift(timestamp=-1)
+    constructor = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
     mask = rebalance_mask(panel.sizes["timestamp"], rebalance_periods)
-    return selector.select(values, next_fill, mask)["weight"]
+    return constructor.construct_panel(
+        values.to_dataset(name="score"), next_bar_eligible(panel[fill]), mask
+    )["weight"]

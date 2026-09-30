@@ -17,8 +17,9 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig
+from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
 from quantlab.model.library_model import LibraryModel
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import make_model, make_stock_dataset, write_price_store
 from tests.label_stubs import StubLabel
 
@@ -243,8 +244,7 @@ def test_an_expanding_manifest_replays_with_run_cv(tmp_path):
             end_date=_day(stamps[BT_TRAIN_PERIODS + BT_N_FOLDS * BT_TEST_PERIODS - 1]),
             output_dir=str(tmp_path / "runs"),
             rebalance_periods=2,
-            direction="long_only",
-            top_n=2,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
             fees=0.0,
             slippage=0.0,
             init_cash=1_000_000.0,

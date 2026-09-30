@@ -5,10 +5,13 @@ What is locked here, and what turns it red:
 
 - importing any `quantlab/base` module loads no torch (the training target of both model
   variants lives in `quantlab/model/training_target.py`, not on `BaseModel`);
-- no `quantlab/base` module imports the factor, label, model or backtest layers;
+- no `quantlab/base` module imports the factor, label, model, backtest or portfolio layers;
 - no layer's framework module (a top-level file of `quantlab/factor`, `quantlab/label`,
-  `quantlab/model`, `quantlab/backtest`) imports that layer's `predefined` package, so a
-  user's own factor, label, model or backtester needs nothing from the shipped ones;
+  `quantlab/model`, `quantlab/backtest`, `quantlab/portfolio`) imports that layer's
+  `predefined` package, so a user's own factor, label, model, backtester or portfolio
+  construction rule needs nothing from the shipped ones;
+- the portfolio layer never imports the backtest layer (the backtest layer may import
+  the portfolio layer), so an event-driven engine can depend on the portfolio layer alone;
 - every `predefined` package's `__init__.py` is empty.
 
 Static checks, plus one subprocess import; offline.
@@ -27,7 +30,7 @@ from tests.test_backtest_contracts import (
 )
 
 BASE = REPO_ROOT / "quantlab/base"
-LAYERS = ("factor", "label", "model", "backtest")
+LAYERS = ("factor", "label", "model", "backtest", "portfolio")
 
 
 def test_importing_the_base_layer_loads_no_torch():
@@ -77,3 +80,17 @@ def test_framework_modules_never_import_their_predefined_package(layer):
 def test_predefined_init_files_are_empty(layer):
     for init in (REPO_ROOT / "quantlab" / layer / "predefined").rglob("__init__.py"):
         assert init.stat().st_size == 0, init
+
+
+def test_the_portfolio_layer_never_imports_the_backtest_layer():
+    root = REPO_ROOT / "quantlab/portfolio"
+    files = _python_files(root)
+    # Positive control: the shipped rules are seen.
+    assert any(path.name == "top_n.py" for path in files)
+    offenders = {
+        path.name: sorted(
+            name for name in _resolved_imports(path) if _is_or_under(name, "quantlab.backtest")
+        )
+        for path in files
+    }
+    assert {name: found for name, found in offenders.items() if found} == {}

@@ -219,8 +219,9 @@ def load_backtester_from_config(
 
     The price dataset, the model (through ``from_config`` of the class its
     config names, so any ``Predictor`` rebuilds itself; ``None`` for a
-    ``run_weights()`` run without one), an optional
-    benchmark dataset and every scalar parameter are rebuilt, and the backtester is constructed with its declared config class.
+    ``run_weights()`` run without one), the portfolio construction rule of a
+    cross-sectional config (likewise through its class's ``from_config``), an
+    optional benchmark dataset and every scalar parameter are rebuilt, and the backtester is constructed with its declared config class.
     Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
     backtest; a ``run_weights()`` run is replayed by passing ``run_weights``
     the weights it simulated, ``XrBackend().read(run_dir / "weights.zarr").data``.
@@ -348,6 +349,13 @@ def load_backtester_from_config(
         if model is None
         else get_cls_from_path(model["name"]).from_config(model)
     )
+    # A cross-sectional config holds its portfolio construction rule, rebuilt
+    # by the class its config names.
+    constructor = config.get("constructor")
+    if constructor is not None:
+        config["constructor"] = get_cls_from_path(constructor["name"]).from_config(
+            constructor
+        )
     benchmark = config.get("benchmark_dataset")
     config["benchmark_dataset"] = (
         None

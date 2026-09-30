@@ -262,14 +262,17 @@ quantlab/
         predefined/      Alpha101, Alpha158, literature alphas, momentum, residual momentum,
                          market features
     label/           forward.py (Forward: a factor shifted into a label)
-        predefined/      fret.py: the forward-return labels
+        predefined/      fret.py: the forward-return and volatility labels
     model/           torch_model.py (TorchModel), library_model.py (LibraryModel, Rows,
                      MlBackend), ensemble.py (BaseEnsemble), training_target.py, torch_data.py,
                      torch_training.py (target transforms, losses, stopping rules)
         predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
                          model_ensemble.py
-    backtest/        engine_vectorbt.py (VectorBtBacktester), selection.py (top-N selector)
+    backtest/        engine_vectorbt.py (VectorBtBacktester), selection.py (rebalance schedule,
+                     next-bar eligibility)
         predefined/      us_equity.py: the US-equity backtester
+    portfolio/       portfolio construction: the rule from one bar's scores to weights
+        predefined/      top_n.py: TopNConstructor
     my_ops/          custom KunQuant operators
     utils/           config loaders (module.py), metrics, progress, chunking, download ledgers,
                      report, CLI helpers

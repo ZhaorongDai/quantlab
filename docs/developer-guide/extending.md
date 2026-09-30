@@ -880,10 +880,13 @@ decision is recorded in ADR 0008.
 Two smaller variations need even less code. To reuse top-N selection on a
 different market, subclass `USEquityCrossectionSelectStockVectorBt` and set
 only `MARKET`. To reuse the selection rule with another engine, call
-`CrossSectionTopNSelector(direction, top_n).select(scores, next_fill_price,
-rebalance)` from `quantlab.backtest.selection`; it depends on no simulation
-engine. A new selection parameter belongs on a new config dataclass derived
-from `BacktestConfig`, named in `config_cls`, so that `config.json` records it
+`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(predictions,
+eligible, rebalance)` from `quantlab.portfolio.predefined.top_n`, or its
+per-bar `construct(context)` from a bar handler; the portfolio layer depends on
+no simulation engine. A new rule from scores to weights subclasses
+`quantlab.base.portfolio.PortfolioConstructor` and implements `construct`; it
+goes in the config's `constructor`. A new backtest parameter belongs on a new
+config dataclass derived from `BacktestConfig`, named in `config_cls`, so that `config.json` records it
 and `load_backtester_from_config` can rebuild the run. Construction-time checks
 go in `_validate_config`, which runs at the end of the config setter.
 

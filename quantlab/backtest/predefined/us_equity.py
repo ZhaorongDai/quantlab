@@ -2,22 +2,19 @@
 
 ``USEquityCrossectionSelectStockVectorBt`` is the concrete backtester of the
 pipeline for daily US equities. It composes the ``US_EQUITY_MARKET`` price
-conventions, a ``CrossSectionTopNSelector`` that turns model scores into
-target weights, and the vectorbt simulation engine inherited from
-``VectorBtBacktester``. A saved run's ``config.json`` rebuilds it through
+conventions, the portfolio construction rule of its config that turns
+predictions into target weights, and the vectorbt simulation engine
+inherited from ``VectorBtBacktester``. A saved run's ``config.json`` rebuilds it through
 ``quantlab.utils.module.load_backtester_from_config``.
 """
 
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import (
-    CrossSectionTopNSelector,
-    rebalance_mask,
-    resolve_score_label,
-)
+from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
 from quantlab.base.backtest import MarketSpec
 from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.portfolio import PortfolioConstructor
 
 #: Price conventions for US equities. Orders fill at the split- and
 #: dividend-adjusted open and the portfolio is valued at the adjusted close;
@@ -32,26 +29,34 @@ US_EQUITY_MARKET = MarketSpec(
 
 
 class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
-    """Daily US-equity backtester: top-N stock selection simulated with vectorbt.
+    """Daily US-equity backtester: a portfolio construction rule simulated with vectorbt.
 
-    On every rebalance bar the model's predictions rank every symbol in the
-    price dataset, the selector picks the top ``top_n`` (and, for
-    ``direction="long_short"``, shorts the bottom ``top_n``), and the
-    equal-weight targets are held until the next rebalance bar. The class only
-    wires the pieces together: the market conventions are ``MARKET``, the
-    selection rule is a ``CrossSectionTopNSelector`` built from the config, and
-    every engine behaviour comes from ``VectorBtBacktester``.
+    On every rebalance bar the config's ``constructor`` turns the
+    predictions of that bar into target weights, for example the top
+    ``top_n`` symbols with ``TopNConstructor``, and the targets are held
+    until the next rebalance bar. A symbol is eligible when it has a fill
+    price at the next bar. The class only wires the pieces together: the
+    market conventions are ``MARKET``, the rule is the config's
+    ``constructor``, and every engine behaviour comes from
+    ``VectorBtBacktester``.
 
     Parameters
     ----------
     config : CrossSectionBacktestConfig
         The backtest configuration: price dataset, model, date window and
-        output directory, plus the selection settings ``rebalance_periods``,
-        ``direction``, ``top_n`` and ``score_label``.
+        output directory, plus ``rebalance_periods`` and ``constructor``.
+
+    Raises
+    ------
+    TypeError
+        If ``constructor`` is not a ``PortfolioConstructor``.
+    ValueError
+        If the constructor refuses the model's labels.
 
     Examples
     --------
-    >>> from quantlab.base.config import CrossSectionBacktestConfig
+    >>> from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+    >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
     >>> backtester = USEquityCrossectionSelectStockVectorBt(
     ...     CrossSectionBacktestConfig(
     ...         price_dataset=prices,  # a StockDataset over a Zarr store
@@ -62,8 +67,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     ...         end_date="2024-03-11",
     ...         output_dir="runs",
     ...         rebalance_periods=5,
-    ...         direction="long_only",
-    ...         top_n=2,
+    ...         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     ...     )
     ... )
     >>> result = backtester.run()
@@ -78,37 +82,37 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     MARKET = US_EQUITY_MARKET
 
     def _validate_config(self) -> None:
-        """Resolve the score label and build the selector at construction time.
+        """Check the constructor against the model's labels at construction time.
 
-        Both come from the config once, so a label the model does not declare
-        or an invalid ``direction`` / ``top_n`` is reported before any data is
-        read or any model trained. A config without a model (for
-        ``run_weights()``) has no score label to resolve.
+        A label the rule needs and the model does not predict is reported
+        before any data is read or any model trained. A config without a
+        model (for ``run_weights()``) has no labels to check.
         """
         config = self.config
-        self._score_label = None
+        if not isinstance(config.constructor, PortfolioConstructor):
+            raise TypeError(
+                f"{self.class_name}: constructor must be a PortfolioConstructor, "
+                f"got {type(config.constructor).__name__}"
+            )
         if config.model is not None:
             label_names = [
                 str(name)
                 for label in config.model.labels
                 for name in label.get_factor_names()
             ]
-            self._score_label = resolve_score_label(config.score_label, label_names)
-        self._selector = CrossSectionTopNSelector(
-            direction=config.direction, top_n=config.top_n
-        )
+            config.constructor.check_predictor(
+                label_names, dict(config.model.label_scales)
+            )
 
     def _generate_signals(
         self, predictions: xr.Dataset, prices: xr.Dataset
     ) -> xr.Dataset:
-        """Turn the model's predictions into top-N target weights.
+        """Turn the model's predictions into target weights through the constructor.
 
-        The scores are the predictions of the resolved score label. The
-        next-bar fill price comes from the raw, not forward-filled, price
-        panel, so a symbol with no price on the next bar is ineligible on this
-        one.
+        A symbol is eligible when its next-bar fill price, read from the
+        raw, not forward-filled, price panel, is finite; the rule also skips
+        symbols without a finite prediction of the label it reads.
         """
-        scores = predictions[self._score_label]
-        next_fill = prices[self.MARKET.fill_price_column].shift(timestamp=-1)
+        eligible = next_bar_eligible(prices[self.MARKET.fill_price_column])
         mask = rebalance_mask(prices.sizes["timestamp"], self.config.rebalance_periods)
-        return self._selector.select(scores, next_fill, mask)
+        return self.config.constructor.construct_panel(predictions, eligible, mask)

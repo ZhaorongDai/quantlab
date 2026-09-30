@@ -32,8 +32,9 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.utils.module import load_backtester_from_config
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -115,8 +116,7 @@ def _config(stores, *, with_model: bool, **overrides) -> CrossSectionBacktestCon
         end_date=_day(bars[WINDOW_END]),
         output_dir=str(stores["root"] / "runs"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         benchmark_dataset=make_stock_dataset(stores["benchmark"]),
     )
     if with_model:

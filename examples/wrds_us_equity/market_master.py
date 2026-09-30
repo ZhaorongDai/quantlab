@@ -44,6 +44,7 @@ from quantlab.base.config import (
     FactorConfig,
     MarketFeatureConfig,
     ModelConfig,
+    TopNConfig,
 )
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
@@ -52,6 +53,7 @@ from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.factor.predefined.market import MarketFeatures
 from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.master import MASTERRegressor
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
@@ -205,7 +207,8 @@ def backtest(checkpoint: Path):
         output_dir=str(WORK / "backtests" / "master"),
         # Rebalance every 5 bars into the top 100 scores; "long_short"
         # would also short the bottom 100.
-        rebalance_periods=5, top_n=100, direction="long_only",
+        rebalance_periods=5,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=100)),
         fees=0.0005, slippage=0.0005, init_cash=1_000_000.0,
         use_wandb=WANDB_MODE != "disabled", benchmark_dataset=benchmark,
     ))

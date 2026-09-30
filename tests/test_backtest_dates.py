@@ -50,8 +50,10 @@ from quantlab.base.config import (
     ModelConfig,
     ModelConfig,
     PolarsFactorConfig,
+    TopNConfig,
 )
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.torch_heads import MeanContextHead
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -124,8 +126,7 @@ def _backtester(
             end_date=_day(bars[end_bar]),
             output_dir=str(tmp_path / "runs"),
             rebalance_periods=REBALANCE_PERIODS,
-            direction="long_only",
-            top_n=TOP_N,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=TOP_N)),
             fees=0.0,
             slippage=0.0,
             init_cash=1_000_000.0,
@@ -381,7 +382,7 @@ def test_symbol_absent_from_predictions_gets_zero_weight_on_rebalance_rows(tmp_p
 
 
 def test_predictions_align_to_price_symbols_by_label_not_position(tmp_path):
-    """Carried from plans 01 and 03: `CrossSectionTopNSelector.select` pairs
+    """Carried from plans 01 and 03: the former top-n selector paired
     scores with fill prices by shape only. `predict_panel` returns symbols
     sorted, so a price store written in reverse order has the same shape and
     a different order. Only the reindex onto `prices.symbol` keeps them paired.

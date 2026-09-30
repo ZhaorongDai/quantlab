@@ -44,8 +44,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -106,8 +107,7 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
             end_date=_day(bars[WINDOW_END_BAR]),
             output_dir=str(tmp_path / "runs"),
             rebalance_periods=REBALANCE_PERIODS,
-            direction="long_only",
-            top_n=TOP_N,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=TOP_N)),
             fees=0.0,
             slippage=0.0,
             init_cash=INIT_CASH,

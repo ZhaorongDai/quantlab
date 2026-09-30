@@ -27,10 +27,11 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils import module as module_utils
 from quantlab.utils.ensemble import average_predictions
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SeededHead,
     make_model,
@@ -88,8 +89,7 @@ def _backtester(tmp_path, dataset_config, model, bars, *, name, checkpoint=None)
             end_date=_day(bars[WINDOW[1]]),
             output_dir=str(tmp_path / name / "runs"),
             rebalance_periods=5,
-            direction="long_only",
-            top_n=2,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
             fees=0.0,
             slippage=0.0,
             init_cash=1_000_000.0,

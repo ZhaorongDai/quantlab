@@ -4,7 +4,7 @@ Tested only through the public function and the report it returns (ADR 0011). Nu
 correctness is parity with the library path: the same weights backtested through the API
 on a frame and through `USEquityCrossectionSelectStockVectorBt.run_weights` on the
 equivalent Zarr store give the same equity, orders and metrics, and `scores` + `top_n`
-equals selecting with `CrossSectionTopNSelector` first and backtesting the weights. The
+equals selecting with `TopNConstructor` first and backtesting the weights. The
 weight-frame rules (long or wide, a symbol missing on a given bar is 0, a bar missing
 entirely is a hold) are tested here too, since the conversion has no tests of its own.
 
@@ -24,9 +24,10 @@ from loguru import logger
 
 import quantlab.api as qa
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.backtest.selection import CrossSectionTopNSelector, rebalance_mask
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.stock import StockDataset
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import SYMBOLS, write_price_store
 
 N_BARS = 40
@@ -95,8 +96,7 @@ def _library_run(stores, weights: xr.Dataset, *, benchmark: bool = False):
         end_date=bars[-1].strftime("%Y-%m-%d"),
         output_dir=None,
         rebalance_periods=1,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         benchmark_dataset=StockDataset(stores["benchmark"]) if benchmark else None,
     )
     return USEquityCrossectionSelectStockVectorBt(config).run_weights(weights)
@@ -112,11 +112,13 @@ def _scores(seed: int = 3) -> xr.DataArray:
 
 
 def _selected_weights(stores, *, direction="long_only", top_n=2, periods=5) -> xr.Dataset:
-    """Top-N weights selected by the library selector on the store's own prices."""
+    """Top-N weights selected by the library's top-n rule on the store's own prices."""
     prices = xr.open_zarr(stores["prices"].zarr_file_path).load()
-    next_fill = prices["adjOpen"].shift(timestamp=-1)
-    return CrossSectionTopNSelector(direction=direction, top_n=top_n).select(
-        _scores(), next_fill, rebalance_mask(N_BARS, periods)
+    constructor = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
+    return constructor.construct_panel(
+        _scores().to_dataset(name="score"),
+        next_bar_eligible(prices["adjOpen"]),
+        rebalance_mask(N_BARS, periods),
     )
 
 

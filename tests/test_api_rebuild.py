@@ -23,11 +23,12 @@ from loguru import logger
 import quantlab.api as qa
 from quantlab.backend import XrBackend
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.module import load_backtester_from_config
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import write_price_store
 
 N_BARS = 30
@@ -166,8 +167,7 @@ def test_a_run_on_a_zarr_backed_dataset_writes_no_inputs(tmp_path):
         end_date=_bars()[-1].strftime("%Y-%m-%d"),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=1,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
 
     run_dir = USEquityCrossectionSelectStockVectorBt(config).run_weights(weights).run_dir

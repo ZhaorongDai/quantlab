@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .data import MarketDataset
     from .factor import Factor
     from .model import BaseModel
+    from .portfolio import PortfolioConstructor
 
 
 def _allows_tuple(annotation) -> bool:
@@ -812,6 +813,27 @@ class ForwardConfig(_FrozenConfig):
 
 
 @dataclass(frozen=True)
+class TopNConfig(_FrozenConfig):
+    """Config of ``TopNConstructor``: equal-weight top-n selection.
+
+    Examples
+    --------
+    >>> cfg = TopNConfig(direction="long_short", top_n=20)
+    >>> cfg.score_label is None
+    True
+    """
+
+    #: ``"long_only"`` holds the top ``top_n`` names; ``"long_short"`` also
+    #: shorts the bottom ``top_n``, with the two books disjoint.
+    direction: Literal["long_only", "long_short"]
+    #: Number of names selected per book at every rebalance.
+    top_n: int
+    #: The label whose prediction ranks the symbols. ``None`` selects the
+    #: predictor's first label.
+    score_label: str | None = None
+
+
+@dataclass(frozen=True)
 class ModelConfig(_FrozenConfig):
     """Config of every model head, torch or library.
 
@@ -1033,7 +1055,10 @@ class BacktestConfig:
 
 @dataclass(kw_only=True)
 class CrossSectionBacktestConfig(BacktestConfig):
-    """Config of a cross-sectional top-N selection backtest.
+    """Config of a cross-sectional backtest: a predictor's scores turned into weights.
+
+    On every rebalance bar ``constructor``, a portfolio construction rule,
+    turns the predictions of that bar into the weights to hold after it.
 
     Examples
     --------
@@ -1046,21 +1071,20 @@ class CrossSectionBacktestConfig(BacktestConfig):
     ...     end_date="2023-12-31",
     ...     output_dir="/data/backtests",
     ...     rebalance_periods=5,
-    ...     direction="long_short",
-    ...     top_n=20,
+    ...     constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=20)),
     ... )
-    >>> cfg.score_label is None
-    True
+    >>> cfg.constructor
+    TopNConstructor(direction='long_short', top_n=20, score_label=None)
     """
 
-    #: ``"long_only"`` holds the top ``top_n`` names; ``"long_short"`` also
-    #: shorts the bottom ``top_n``, with the two legs disjoint.
-    direction: Literal["long_only", "long_short"]
-    #: Number of names selected on each side at every rebalance.
-    top_n: int
-    #: The model label whose prediction ranks the symbols. ``None`` selects
-    #: the model's first label.
-    score_label: str | None = None
+    #: The portfolio construction rule (a ``PortfolioConstructor``, such as
+    #: ``quantlab.portfolio.predefined.top_n.TopNConstructor``) that turns
+    #: each rebalance bar's predictions into target weights.
+    constructor: "PortfolioConstructor"
+
+    #: Fields holding live objects. ``to_dict`` skips them; the backtester's
+    #: ``get_config`` nests each one's own config instead.
+    _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset", "constructor")
 
 
 @dataclass(kw_only=True)

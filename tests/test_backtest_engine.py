@@ -62,8 +62,9 @@ from quantlab.backtest.predefined.us_equity import (
     USEquityCrossectionSelectStockVectorBt,
 )
 from quantlab.base.backtest import BaseBacktester, SimulationResult
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.label.forward import Forward
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -118,8 +119,7 @@ def _config(tmp_path, **overrides) -> CrossSectionBacktestConfig:
         end_date=_day(bars[39]),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=1,
-        direction="long_only",
-        top_n=1,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=1)),
     )
     kwargs.update(overrides)
     return CrossSectionBacktestConfig(**kwargs)
@@ -545,8 +545,7 @@ def _trained_run_config(tmp_path, dataset_config, **overrides) -> CrossSectionBa
         end_date=_day(bars[RUN_WINDOW_END]),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         fees=0.0,
         slippage=0.0,
     )
@@ -573,7 +572,11 @@ def test_end_to_end_delisting_run_records_the_liquidation(tmp_path):
         tmp_path / "store", n_bars=RUN_BARS, delist_at={picked: delist_bar}
     )
     result = USEquityCrossectionSelectStockVectorBt(
-        _trained_run_config(tmp_path, dataset_config, top_n=1)
+        _trained_run_config(
+            tmp_path,
+            dataset_config,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=1)),
+        )
     ).run()
 
     bars = pd.bdate_range("2024-01-01", periods=RUN_BARS)
@@ -659,7 +662,12 @@ def test_us_equity_market_uses_adjusted_columns():
 
 def test_unknown_score_label_fails_at_construction_before_training(tmp_path):
     """D-11: a mistyped score_label fails when the backtester is built, before training."""
-    config = _config(tmp_path, score_label="no_such_label")
+    config = _config(
+        tmp_path,
+        constructor=TopNConstructor(
+            TopNConfig(direction="long_only", top_n=1, score_label="no_such_label")
+        ),
+    )
 
     with pytest.raises(ValueError, match="no_such_label"):
         USEquityCrossectionSelectStockVectorBt(config)

@@ -40,8 +40,9 @@ from loguru import logger
 
 import quantlab.utils.module as module_utils
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.utils.backtest_report import write_backtest_report
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -107,8 +108,7 @@ def _config(tmp_path, benchmark_config=None, **overrides) -> CrossSectionBacktes
         end_date=_day(bars[WINDOW_END]),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         fees=0.0,
         slippage=0.0,
         benchmark_dataset=make_stock_dataset(benchmark_config),
@@ -380,8 +380,7 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
         end_date=_day(bars[-1]),
         output_dir=str(tmp_path / "runs"),
         rebalance_periods=2,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         benchmark_dataset=make_stock_dataset(_benchmark_store(tmp_path, n_bars=n_bars)),
     )
     cv = USEquityCrossectionSelectStockVectorBt(config).run_cv()

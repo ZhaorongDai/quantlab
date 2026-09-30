@@ -727,6 +727,9 @@ class BaseBacktester(ABC):
             if self.config.benchmark_dataset is None
             else self.config.benchmark_dataset.get_config()
         )
+        constructor = getattr(self.config, "constructor", None)
+        if constructor is not None:
+            cfg["constructor"] = constructor.get_config()
         if self._fingerprints:
             cfg["data_fingerprint"] = dict(self._fingerprints)
         # After a train-mode run, record the checkpoint it produced so load
@@ -1139,8 +1142,7 @@ class BaseBacktester(ABC):
         ...         end_date="2024-03-22",
         ...         output_dir=None,
         ...         rebalance_periods=5,
-        ...         direction="long_only",
-        ...         top_n=2,
+        ...         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
         ...     )
         ... )
         >>> result = backtester.run_weights(weights)
@@ -2973,10 +2975,14 @@ class BaseBacktester(ABC):
         else:
             summary["Signal"] = "precomputed weights (run_weights), no model"
         summary["Rebalance every"] = f"{self.config.rebalance_periods} bars"
-        # Selection fields exist only on cross-sectional configs; a
-        # time-series backtester's report simply lacks these two lines.
-        summary["Top N"] = _text(getattr(self.config, "top_n", None))
-        summary["Direction"] = _text(getattr(self.config, "direction", None))
+        # A cross-sectional config names its portfolio construction rule; a
+        # weights config records the selection its weights came from, if any.
+        constructor = getattr(self.config, "constructor", None)
+        if constructor is not None:
+            summary["Portfolio construction"] = _text(repr(constructor))
+        else:
+            summary["Top N"] = _text(getattr(self.config, "top_n", None))
+            summary["Direction"] = _text(getattr(self.config, "direction", None))
         summary["Initial cash"] = f"{float(self.config.init_cash):,.2f}"
         summary["Fees"] = _text(self.config.fees)
         if block.get("trained_checkpoint") is not None:

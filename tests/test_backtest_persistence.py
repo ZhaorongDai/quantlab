@@ -70,7 +70,8 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     ADJUSTED_COLUMNS,
     RAW_COLUMNS,
@@ -173,8 +174,7 @@ def _backtester(
         end_date=_day(BARS[window_end_bar]),
         output_dir=str(root / "runs"),
         rebalance_periods=5,
-        direction="long_only",
-        top_n=2,
+        constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
     )
     kwargs.update(overrides)
     return USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(**kwargs))
@@ -639,8 +639,7 @@ def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warning
                 end_date=_day(BARS[50]),
                 output_dir=str(tmp_path / "runs"),
                 rebalance_periods=5,
-                direction="long_only",
-                top_n=2,
+                constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
             )
         )
 
@@ -978,7 +977,8 @@ def test_report_states_the_window_and_split_dates_as_text(overlap_run):
     # The setup those numbers were produced under is on the page too.
     config = overlap_run["backtester"].config
     assert f"<td>{config.model_mode}</td>" in html
-    assert f"<td>{config.direction}</td>" in html
+    assert "TopNConstructor(" in html
+    assert config.constructor.config.direction in html
 
 
 def test_report_without_in_sample_overlap_has_no_shaded_range(disjoint_run):
