@@ -8,8 +8,9 @@ over long-only, fully invested weights, or dollar-neutral long-short
 weights of gross exposure at most one, under a per-symbol cap. The expected
 return ``mu`` is calibrated from a label's prediction (Grinold: ``ic *
 sigma * z``) or is the prediction itself (``raw``), the covariance ``Sigma``
-comes from a risk model, and both are on the span of the expected-return
-label. This is the only quantlab module that imports cvxpy.
+comes from a risk model, its volatilities optionally from a volatility
+label's prediction, and all are on the span of the expected-return label.
+This is the only quantlab module that imports cvxpy.
 """
 
 from dataclasses import dataclass, field
@@ -221,6 +222,16 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     the label's scale as ``"raw"``. ``w_current`` is the context's current
     weights.
 
+    With ``volatility_label`` set (a ``Volatility`` label, say), the
+    volatilities come from a model: the label's prediction at the bar,
+    divided by ``sqrt(n)``, is handed to the risk model as the one-bar
+    volatilities, so ``Sigma`` is the predicted volatilities around the risk
+    model's historical correlations, its diagonal the squared predictions,
+    and the Grinold ``sigma`` is the prediction itself. A symbol without a
+    finite positive volatility prediction has no risk estimate, like one
+    without enough history. ``bind`` requires the label to have the span of
+    ``expected_return_label`` and a ``"raw"`` scale.
+
     With ``candidate_top_k`` set, only a pool is optimised: the
     ``candidate_top_k`` candidates with the largest ``mu`` (largest ``|mu|``
     long-short) plus every candidate currently held, so a held symbol that
@@ -247,7 +258,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     config : MeanVarianceConfig
         ``expected_return_label``, ``risk_model``, ``risk_aversion``,
         ``calibration``, ``ic``, ``turnover_penalty``, ``weight_cap``,
-        ``direction`` and ``candidate_top_k``.
+        ``direction``, ``candidate_top_k`` and ``volatility_label``.
 
     Raises
     ------
@@ -367,7 +378,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         return self._span
 
     def bind(self, predictor) -> None:
-        """Check the predictor predicts ``expected_return_label`` and read its span.
+        """Check the predictor predicts the optimiser's labels and read the span.
 
         Parameters
         ----------
@@ -377,10 +388,12 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         Raises
         ------
         ValueError
-            If the predictor does not predict ``expected_return_label``, the
-            label has no ``span_bars()`` (it is not a ``Forward`` label), or
-            ``calibration="raw"`` and the predictor does not report the
-            label's scale as ``"raw"``.
+            If the predictor does not predict ``expected_return_label`` or
+            ``volatility_label``, either has no ``span_bars()`` (it is not a
+            ``Forward`` label), their spans differ, the predictor does not
+            report ``volatility_label``'s scale as ``"raw"``, or
+            ``calibration="raw"`` and it does not report
+            ``expected_return_label``'s scale as ``"raw"``.
 
         Examples
         --------
@@ -388,32 +401,50 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         >>> optimizer.span
         5
         """
-        name = self.config.expected_return_label
+        config = self.config
+        name = config.expected_return_label
+        span = self._label_span(predictor, "expected_return_label", name)
+        scales = dict(predictor.label_scales)
+        if config.calibration == "raw" and scales.get(name) != "raw":
+            raise ValueError(
+                f"calibration='raw' reads the prediction of {name!r} as a return, "
+                f"but the predictor reports its scale as {scales.get(name)!r}, not 'raw' "
+                f"(a model fitted on a transformed target, or a label an ensemble "
+                f"averages); use calibration='grinold'"
+            )
+        volatility = config.volatility_label
+        if volatility is not None:
+            volatility_span = self._label_span(predictor, "volatility_label", volatility)
+            if volatility_span != span:
+                raise ValueError(
+                    f"the span of volatility_label {volatility!r} is {volatility_span} "
+                    f"bars, but the span of expected_return_label {name!r} is {span}; "
+                    f"the two must match"
+                )
+            if scales.get(volatility) != "raw":
+                raise ValueError(
+                    f"volatility_label {volatility!r} is read as a volatility, but the "
+                    f"predictor reports its scale as {scales.get(volatility)!r}, not "
+                    f"'raw' (a model fitted on a transformed target, or a label an "
+                    f"ensemble averages)"
+                )
+        self._span = span
+
+    def _label_span(self, predictor, config_field: str, name: str) -> int:
+        """Return the span of the predictor's label ``name``, which ``config_field`` names."""
         labels = self._label_names(predictor)
         if name not in labels:
-            raise ValueError(
-                f"expected_return_label {name!r} is not one of the predictor's "
-                f"labels {labels}"
-            )
+            raise ValueError(f"{config_field} {name!r} is not one of the predictor's labels {labels}")
         label = next(
             label for label in predictor.labels if name in label.get_factor_names()
         )
         span_bars = getattr(label, "span_bars", None)
         if span_bars is None:
             raise ValueError(
-                f"expected_return_label {name!r} is a {type(label).__name__}, which "
-                f"has no span_bars(); the expected return needs a Forward label"
+                f"{config_field} {name!r} is a {type(label).__name__}, which has no "
+                f"span_bars(); it needs a Forward label"
             )
-        if self.config.calibration == "raw":
-            scale = dict(predictor.label_scales).get(name)
-            if scale != "raw":
-                raise ValueError(
-                    f"calibration='raw' reads the prediction of {name!r} as a return, "
-                    f"but the predictor reports its scale as {scale!r}, not 'raw' "
-                    f"(a model fitted on a transformed target, or a label an ensemble "
-                    f"averages); use calibration='grinold'"
-                )
-        self._span = int(span_bars())
+        return int(span_bars())
 
     def problem_inputs(self, context: PortfolioContext) -> MeanVarianceInputs:
         """Return the candidates of the context's bar and their ``mu``, ``Sigma`` and weights.
@@ -458,7 +489,13 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         tradable = np.asarray(context.tradable.values, dtype=bool)
         locked = np.asarray(context.locked.values, dtype=bool)
         held = current_all != 0
-        estimate = config.risk_model.estimate(context).scaled(self._span)
+        volatility = None
+        if config.volatility_label is not None:
+            # The label is on the span; the risk model takes one-bar volatilities.
+            volatility = context.predictions[config.volatility_label].sel(
+                symbol=symbols
+            ) / np.sqrt(self._span)
+        estimate = config.risk_model.estimate(context, volatility).scaled(self._span)
         position = pd.Index(estimate.symbols).get_indexer(symbols)
         covered = position >= 0
         free = tradable & ~locked & covered & (np.isfinite(prediction) | held)

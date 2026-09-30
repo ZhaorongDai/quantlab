@@ -870,6 +870,8 @@ class MeanVarianceConfig(_FrozenConfig):
     ... )
     >>> cfg.direction, cfg.calibration, cfg.turnover_penalty, cfg.candidate_top_k
     ('long_only', 'grinold', 0.0, None)
+    >>> cfg.volatility_label is None
+    True
     """
 
     #: The label whose prediction gives the expected return; its span sets
@@ -903,6 +905,13 @@ class MeanVarianceConfig(_FrozenConfig):
     #: every symbol currently held; the rest get 0.0. ``None`` optimises
     #: over every tradable symbol.
     candidate_top_k: int | None = None
+    #: The label whose prediction gives each symbol's volatility over the
+    #: span, such as ``Volatility``; it must have the expected-return
+    #: label's span and a ``"raw"`` scale. The covariance is then these
+    #: volatilities around the risk model's correlations, and the Grinold
+    #: ``sigma`` is the prediction. ``None`` keeps the risk model's own
+    #: (historical) volatilities.
+    volatility_label: str | None = None
 
 
 @dataclass(frozen=True)
