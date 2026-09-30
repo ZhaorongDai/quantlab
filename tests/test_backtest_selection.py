@@ -6,7 +6,7 @@ the portfolio layer's, locked in `test_portfolio_top_n.py`):
 - **D-18 schedule.** `rebalance_mask` anchors at the first bar and steps by
   `rebalance_periods`; the last bar never rebalances, since its signal has no
   next bar inside the window to fill on.
-- **D-12 eligibility.** `next_bar_eligible` marks a symbol eligible at bar t
+- **Tradability (ADR 0014).** `MarketDataset.tradable_bars` marks a symbol tradable at bar t
   exactly when its fill price at t + 1 is finite.
 """
 
@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
+from quantlab.backtest.selection import rebalance_mask
 
 
 def test_rebalance_mask_anchors_at_first_bar_and_steps_by_period():
@@ -50,21 +50,24 @@ def test_rebalance_mask_rejects_non_positive_period():
             rebalance_mask(10, period)
 
 
-def test_a_symbol_is_eligible_when_its_next_bar_fill_price_is_finite():
-    """A symbol delisted after bar 1 is ineligible from bar 1 on, one listing
-    at bar 2 is eligible from bar 1, and nothing is eligible on the last bar."""
-    fill = xr.DataArray(
-        [[10.0, np.nan], [11.0, np.nan], [np.nan, 20.0], [np.nan, 21.0]],
-        dims=("timestamp", "symbol"),
+def test_a_symbol_is_tradable_where_it_has_a_fill_price_at_the_bar(tmp_path):
+    """Tradability reads only the bar itself (ADR 0014): OLD, delisted after
+    bar 1, is tradable on bars 0-1; NEW, listing at bar 2, from bar 2; the
+    last bar is tradable like any other."""
+    from tests.backtest_fixtures import make_stock_dataset, write_price_store
+
+    dataset = make_stock_dataset(write_price_store(tmp_path, n_bars=4))
+    fill = xr.Dataset(
+        {"adjOpen": (("timestamp", "symbol"), [[10.0, np.nan], [11.0, np.nan], [np.nan, 20.0], [np.nan, 21.0]])},
         coords={"timestamp": pd.bdate_range("2024-01-01", periods=4), "symbol": ["OLD", "NEW"]},
     )
 
-    eligible = next_bar_eligible(fill)
+    tradable = dataset.tradable_bars(fill, "adjOpen")
 
-    assert eligible.dims == ("timestamp", "symbol")
-    assert eligible.values.tolist() == [
+    assert tradable.dims == ("timestamp", "symbol")
+    assert tradable.values.tolist() == [
+        [True, False],
         [True, False],
         [False, True],
         [False, True],
-        [False, False],
     ]

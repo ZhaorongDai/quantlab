@@ -2,9 +2,7 @@
 
 ``TopNConstructor`` ranks the symbols of a bar by one label's prediction and
 holds the top ``top_n`` with equal weights, or with ``direction="long_short"``
-also shorts the bottom ``top_n``. Its per-bar ``construct`` and its
-vectorised ``construct_panel`` share one book-building function, so the two
-agree bit for bit.
+also shorts the bottom ``top_n``, around the locked positions it must keep.
 """
 
 import numpy as np
@@ -19,16 +17,19 @@ from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
 class TopNConstructor(PortfolioConstructor):
     """Equal-weight top-n selection on each rebalance bar.
 
-    With ``direction="long_only"`` each of the ``k`` highest-scoring symbols
-    gets a weight of ``1/k``, for a gross exposure of 100%. With
-    ``direction="long_short"`` the top ``k`` symbols get ``+0.5/k`` each and
-    the bottom ``k`` get ``-0.5/k`` each; the two books never share a
-    symbol, so the gross exposure is 100% and the net exposure is zero.
-    ``k`` is ``top_n``, reduced when fewer symbols are eligible, and a
-    warning names the bar. A symbol is eligible when the context marks it
-    so and its score is finite. Eligible symbols are ranked with a stable
-    sort, so ties resolve by symbol order. With no eligible symbol the row
-    is all 0.0, that is, flat. The current weights are not read.
+    A locked position (held, not tradable at the bar) keeps its current
+    weight and is never picked. The picks come from the other symbols that
+    are tradable with a finite score, ranked with a stable sort, so ties
+    resolve by symbol order. With ``direction="long_only"`` each of the
+    ``k`` highest-scoring picks gets ``(1 - L) / k``, ``L`` the sum of the
+    locked weights; with nothing locked that is ``1/k``, for a gross
+    exposure of 100%. With ``direction="long_short"`` the top ``k`` get
+    ``(0.5 - L_long) / k`` each and the bottom ``k`` get ``-(0.5 - L_short)
+    / k`` each, ``L_long`` and ``L_short`` the locked long and short
+    exposure; the two books never share a symbol. A side with no budget
+    left adds nothing. ``k`` is ``top_n``, reduced when fewer symbols can
+    be picked, and a warning names the bar. With no pick the row is the
+    locked positions and 0.0 elsewhere.
 
     Parameters
     ----------
@@ -53,7 +54,7 @@ class TopNConstructor(PortfolioConstructor):
     ...     timestamp=pd.Timestamp("2024-01-02"),
     ...     predictions=xr.Dataset({"ret": ("symbol", [0.3, 0.1, np.nan, 0.2])},
     ...                            coords={"symbol": symbols}),
-    ...     eligible=xr.DataArray([True, True, True, True], dims="symbol",
+    ...     tradable=xr.DataArray([True, True, True, True], dims="symbol",
     ...                           coords={"symbol": symbols}),
     ...     current_weights=xr.DataArray(np.zeros(4), dims="symbol",
     ...                                  coords={"symbol": symbols}),
@@ -111,25 +112,34 @@ class TopNConstructor(PortfolioConstructor):
             return self.config.score_label
         return str(next(iter(predictions.data_vars)))
 
-    def _book(self, scores: np.ndarray, eligible: np.ndarray, timestamp) -> np.ndarray:
-        """Return one rebalance bar's weights from its scores and eligibility."""
-        row = np.zeros(scores.shape[0], dtype=np.float64)
-        idx = np.flatnonzero(eligible & np.isfinite(scores))
+    def _book(
+        self, scores: np.ndarray, tradable: np.ndarray, current: np.ndarray, timestamp
+    ) -> np.ndarray:
+        """Return one rebalance bar's weights from its scores, tradability and holdings."""
+        locked = ~tradable & (current != 0)
+        row = np.where(locked, current, 0.0)
+        idx = np.flatnonzero(tradable & ~locked & np.isfinite(scores))
         order = idx[np.argsort(-scores[idx], kind="stable")]
         top_n = self.config.top_n
         long_only = self.config.direction == "long_only"
         k = min(top_n, order.size) if long_only else min(top_n, order.size // 2)
         if k < top_n:
             logger.warning(
-                f"{pd.Timestamp(timestamp)}: only {k} eligible symbol(s) per book "
+                f"{pd.Timestamp(timestamp)}: only {k} symbol(s) to pick per book "
                 f"for top_n={top_n}"
             )
         if k > 0:
             if long_only:
-                row[order[:k]] = 1.0 / k
+                budget = 1.0 - row.sum()
+                if budget > 0:
+                    row[order[:k]] = budget / k
             else:
-                row[order[:k]] = 0.5 / k
-                row[order[-k:]] = -0.5 / k
+                long_budget = 0.5 - row[row > 0].sum()
+                short_budget = 0.5 + row[row < 0].sum()
+                if long_budget > 0:
+                    row[order[:k]] = long_budget / k
+                if short_budget > 0:
+                    row[order[-k:]] = -short_budget / k
         return row
 
     def construct(self, context: PortfolioContext) -> xr.DataArray:
@@ -140,7 +150,7 @@ class TopNConstructor(PortfolioConstructor):
         Parameters
         ----------
         context : PortfolioContext
-            The bar's predictions and eligibility.
+            The bar's predictions, tradability and current weights.
 
         Returns
         -------
@@ -157,84 +167,8 @@ class TopNConstructor(PortfolioConstructor):
         scores = context.predictions[self._score_label(context.predictions)]
         row = self._book(
             np.asarray(scores.sel(symbol=symbols).values, dtype=np.float64),
-            np.asarray(context.eligible.values, dtype=bool),
+            np.asarray(context.tradable.values, dtype=bool),
+            np.asarray(context.current_weights.sel(symbol=symbols).values, dtype=np.float64),
             context.timestamp,
         )
         return xr.DataArray(row, dims="symbol", coords={"symbol": symbols})
-
-    def construct_panel(
-        self,
-        predictions: xr.Dataset,
-        eligible: xr.DataArray,
-        rebalance: np.ndarray,
-        *,
-        fill_price: xr.DataArray | None = None,
-        valuation_price: xr.DataArray | None = None,
-        factors: xr.Dataset | None = None,
-    ) -> xr.Dataset:
-        """Build top-n target weights for every bar of a panel, vectorised.
-
-        Returns exactly what ``PortfolioConstructor.construct_panel``'s
-        per-bar loop returns, without building a context per bar. Top-n
-        reads neither the current weights nor the prices, and never fails
-        a bar.
-
-        Parameters
-        ----------
-        predictions : xr.Dataset
-            One variable per label on ``(timestamp, symbol)``.
-        eligible : xr.DataArray
-            Booleans on the same labels as ``predictions`` (in any order).
-        rebalance : np.ndarray
-            One boolean per timestamp, True on rebalance bars.
-        fill_price, valuation_price : xr.DataArray, optional
-            Prices, checked like the loop checks them and not read.
-        factors : xr.Dataset, optional
-            Factor panels, checked like the loop checks them and not read;
-            top-n declares no ``required_factors()``.
-
-        Returns
-        -------
-        xr.Dataset
-            One ``weight`` variable on ``(timestamp, symbol)``; all NaN on a
-            bar that does not rebalance. ``attrs["failed_bars"]`` is empty.
-
-        Raises
-        ------
-        ValueError
-            If ``rebalance`` does not have one entry per timestamp or the
-            eligibility panel is on other labels.
-
-        Examples
-        --------
-        >>> ts = pd.bdate_range("2024-01-01", periods=3)
-        >>> scores = xr.Dataset(
-        ...     {"ret": (("timestamp", "symbol"), [[0.3, 0.1, np.nan, 0.2],
-        ...                                        [0.0, 0.5, 0.4, 0.1],
-        ...                                        [0.9, 0.8, 0.7, 0.6]])},
-        ...     coords={"timestamp": ts, "symbol": ["AAA", "BBB", "CCC", "DDD"]},
-        ... )
-        >>> eligible = xr.ones_like(scores["ret"], dtype=bool)
-        >>> rule.construct_panel(scores, eligible, np.array([True, False, False]))["weight"].values
-        array([[0.5, 0. , 0. , 0.5],
-               [nan, nan, nan, nan],
-               [nan, nan, nan, nan]])
-        """
-        predictions = predictions.transpose("timestamp", "symbol")
-        eligible_values = self._check_eligible(eligible, predictions)
-        rebalance = self._check_rebalance(rebalance, predictions)
-        self._check_prices(fill_price, valuation_price, predictions)
-        self._check_factors(factors, predictions)
-        scores = np.asarray(
-            predictions[self._score_label(predictions)].values, dtype=np.float64
-        )
-        timestamps = predictions.timestamp.values
-        weights = np.full(scores.shape, np.nan, dtype=np.float64)
-        for t in np.flatnonzero(rebalance):
-            weights[t] = self._book(scores[t], eligible_values[t], timestamps[t])
-        out = xr.Dataset(
-            {"weight": (("timestamp", "symbol"), weights)},
-            coords={"timestamp": timestamps, "symbol": predictions.symbol.values},
-        )
-        out.attrs["failed_bars"] = []
-        return out

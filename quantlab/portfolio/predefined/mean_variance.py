@@ -43,7 +43,7 @@ class MeanVarianceInputs:
     Attributes
     ----------
     symbols : np.ndarray
-        The candidates: eligible, with a finite expected-return prediction
+        The candidates: tradable, with a finite expected-return prediction
         and covered by the risk model; with ``candidate_top_k``, only the
         pool.
     expected_return : np.ndarray
@@ -151,7 +151,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     """Mean-variance weights with a turnover penalty, long-only or long-short.
 
     On each rebalance bar the candidates are the symbols the context marks
-    eligible, with a finite prediction of ``expected_return_label`` and
+    tradable, with a finite prediction of ``expected_return_label`` and
     covered by the risk model (enough return history); every other symbol
     gets 0.0. Over the candidates the optimiser solves
 
@@ -197,7 +197,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     A bar without candidates, or long-only with fewer than ``1 /
     weight_cap``, is infeasible, and a bar the solver fails on or leaves
     unsolved raises ``PortfolioConstructionError``: the backtest holds the
-    current position there and records the bar.
+    current position there and records the bar. So does a bar with a locked
+    position (held, not tradable), which the optimiser does not yet price.
 
     ``lookback_bars`` and ``required_factors()`` are the risk model's.
     ``bind`` reads the span from the predictor's label, so a backtest binds
@@ -221,7 +222,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     Examples
     --------
     ``model`` predicts the 5-bar ``ret_5``; ``context`` is a bar of four
-    symbols ``AAA``..``DDD``, all eligible and none held, with 60 bars of
+    symbols ``AAA``..``DDD``, all tradable and none held, with 60 bars of
     one-bar returns of volatility 1%, 1.5%, 2% and 2.5% and ``ret_5``
     predictions 0.8, -0.1, -0.3 and 0.2. With a risk aversion of 5 on so small
     an expected return the book leans toward the low-volatility symbols:
@@ -403,8 +404,14 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         )
         estimate = config.risk_model.estimate(context).scaled(self._span)
         position = pd.Index(estimate.symbols).get_indexer(symbols)
+        if bool(context.locked.any()):
+            raise PortfolioConstructionError(
+                f"held symbols that are not tradable at the bar "
+                f"{context.symbols[context.locked.values].tolist()[:5]}; the optimiser "
+                f"does not yet price locked positions"
+            )
         candidate = (
-            np.asarray(context.eligible.values, dtype=bool)
+            np.asarray(context.tradable.values, dtype=bool)
             & np.isfinite(prediction)
             & (position >= 0)
         )

@@ -75,16 +75,18 @@ def backtest(
             _benchmark_panel(panel, zone, benchmark, columns, fill, valuation)
         )
 
+    price_dataset = FrameDataset(panel)
     if weights is not None:
         weight = _weights_on(panel, zone, weights, columns)
     else:
         weight = _selected(
-            panel, zone, scores, columns, fill, top_n, direction, rebalance_periods
+            price_dataset, panel, zone, scores, columns, fill, valuation, top_n,
+            direction, rebalance_periods,
         )
 
     timestamps = pd.DatetimeIndex(panel["timestamp"].values)
     config = WeightsBacktestConfig(
-        price_dataset=FrameDataset(panel),
+        price_dataset=price_dataset,
         start_date=timestamps[0].strftime("%Y-%m-%d"),
         end_date=timestamps[-1].strftime("%Y-%m-%d"),
         output_dir=None if output_dir is None else str(output_dir),
@@ -235,13 +237,17 @@ def _weights_on(panel: xr.Dataset, prices_zone, weights, columns) -> xr.DataArra
     return values.where(given, xr.where(bar_given, 0.0, np.nan))
 
 
-def _selected(panel, prices_zone, scores, columns, fill, top_n, direction, rebalance_periods):
+def _selected(
+    dataset, panel, prices_zone, scores, columns, fill, valuation, top_n, direction,
+    rebalance_periods,
+):
     """Return top-N weights selected from ``scores`` on the price axes.
 
-    A symbol without a score on a bar is not eligible there, and neither is one without
-    a fill price on the next bar, exactly as in the library's selection backtester.
+    Exactly as in the library's backtester: a symbol is selectable where it has a
+    score and is tradable (a fill price at that bar), and a held symbol that is not
+    tradable keeps its current weight, the holdings modelled from the prices.
     """
-    from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
+    from quantlab.backtest.selection import rebalance_mask
     from quantlab.base.config import TopNConfig
     from quantlab.portfolio.predefined.top_n import TopNConstructor
 
@@ -250,5 +256,10 @@ def _selected(panel, prices_zone, scores, columns, fill, top_n, direction, rebal
     constructor = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
     mask = rebalance_mask(panel.sizes["timestamp"], rebalance_periods)
     return constructor.construct_panel(
-        values.to_dataset(name="score"), next_bar_eligible(panel[fill]), mask
+        values.to_dataset(name="score"),
+        dataset.tradable_bars(panel, fill),
+        mask,
+        fill_price=panel[fill],
+        valuation_price=panel[valuation],
+        delisted=dataset.delisting_bars(panel, valuation),
     )["weight"]

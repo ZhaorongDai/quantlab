@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the rebalance schedule and eligibility helpers (`quantlab/backtest/selection.py`), the portfolio construction rule `TopNConstructor` (`quantlab/portfolio/predefined/top_n.py`, a `PortfolioConstructor` from `quantlab/base/portfolio.py`) that the config's `constructor` holds and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the rebalance schedule (`quantlab/backtest/selection.py`), the portfolio construction rule `TopNConstructor` (`quantlab/portfolio/predefined/top_n.py`, a `PortfolioConstructor` from `quantlab/base/portfolio.py`) that the config's `constructor` holds and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -164,7 +164,7 @@ The run directory sits under `output_dir`, and the result holds the predictions,
 
 ### The target-weight contract
 
-The weights are a `weight` variable on `(timestamp, symbol)`. A finite weight is the fraction of portfolio value the symbol should hold after the bar fills; a NaN keeps the symbol's holding untraded. An all-NaN row is a bar without a rebalance, and a row may mix the two, for example to leave one holding alone. The targets of a row have a gross exposure (the sum of absolute weights) of at most 1. The shipped portfolio construction rules give every symbol a finite weight on a rebalance bar, `0.0` for one that is not selected.
+The weights are a `weight` variable on `(timestamp, symbol)`. A finite weight is the fraction of portfolio value the symbol should hold after the bar fills; a NaN keeps the symbol's holding untraded. An all-NaN row is a bar without a rebalance, and a row may mix the two, for example to leave one holding alone. The targets of a row have a gross exposure (the sum of absolute weights) of at most 1. The shipped portfolio construction rules give every symbol a finite weight on a rebalance bar, `0.0` for one that is not selected. A rule decides from what is known at the bar (ADR 0014): a symbol is *tradable* where the price dataset's `tradable_bars` says so, by default when it has a fill price at that bar, and a held symbol that is not tradable is a *locked position*, which keeps its current weight. The backtester refuses a rule that moves a locked position or gives weight to a symbol that is neither tradable nor held.
 
 ```python
 >>> result.weights["weight"].to_pandas().iloc[:7].round(2)
@@ -513,7 +513,7 @@ ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_d
 
 ## Extending
 
-A new selection rule is a subclass of `VectorBtBacktester` with three members: `config_cls`, `MARKET` and `_generate_signals(predictions, prices)`. The method returns a dataset whose `weight` variable satisfies the contract above. `predictions` and `prices` share the same `(timestamp, symbol)` axes. The rule below weights each eligible symbol in proportion to its positive score and stays flat when no score is positive. It reuses `rebalance_mask` and the `US_EQUITY_MARKET` price conventions. Save it as `score_weighted.py`.
+A new selection rule is a subclass of `VectorBtBacktester` with three members: `config_cls`, `MARKET` and `_generate_signals(predictions, prices)`. The method returns a dataset whose `weight` variable satisfies the contract above. `predictions` and `prices` share the same `(timestamp, symbol)` axes. The rule below weights each tradable symbol in proportion to its positive score and stays flat when no score is positive. It reuses `rebalance_mask` and the `US_EQUITY_MARKET` price conventions. Save it as `score_weighted.py`.
 
 ```python
 """A new selection rule: long-only weights proportional to positive scores."""
@@ -533,9 +533,9 @@ class ScoreWeightedBacktester(VectorBtBacktester):
     def _generate_signals(self, predictions, prices):
         label = list(predictions.data_vars)[0]  # the model's first label
         scores = predictions[label].transpose("timestamp", "symbol")
-        # A symbol without a price on the next bar cannot be filled: not eligible.
-        next_fill = prices[self.MARKET.fill_price_column].shift(timestamp=-1)
-        positive = scores.where(next_fill.notnull()).clip(min=0).fillna(0.0)
+        # A symbol without a fill price at the bar cannot be traded there (ADR 0014).
+        tradable = self.config.price_dataset.tradable_bars(prices, self.MARKET.fill_price_column)
+        positive = scores.where(tradable).clip(min=0).fillna(0.0)
         total = positive.sum("symbol")
         weight = (positive / total.where(total > 0)).fillna(0.0)  # flat if no score
         rebalance = xr.DataArray(
@@ -562,14 +562,14 @@ Its config class is `BacktestConfig`, so no `constructor` is required.
 ... ))
 >>> w = custom.run().weights["weight"].to_pandas()
 >>> w.iloc[[0, 1, 5]].round(3)
-symbol        AAA    BBB    CCC    DDD  EEE    FFF
-timestamp                                         
-2024-02-12  0.000  0.000  0.541  0.000  0.0  0.459
-2024-02-13    NaN    NaN    NaN    NaN  NaN    NaN
-2024-02-19  0.044  0.767  0.000  0.189  0.0  0.000
+symbol        AAA    BBB    CCC   DDD  EEE    FFF
+timestamp                                        
+2024-02-12  0.000  0.000  0.541  0.00  0.0  0.459
+2024-02-13    NaN    NaN    NaN   NaN  NaN    NaN
+2024-02-19  0.037  0.647  0.000  0.16  0.0  0.156
 ```
 
-To keep the top-N rule with another score, `TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, eligible, rebalance)` accepts any score panel (a dataset with one variable per label) with a boolean eligibility panel, such as `next_bar_eligible(fill_price)` from `quantlab.backtest.selection`, and returns the same `weight` dataset. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.base.portfolio`) and implement `construct`. Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
+To keep the top-N rule with another score, `TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, tradable, rebalance)` accepts any score panel (a dataset with one variable per label) with a boolean tradability panel, such as a price dataset's `tradable_bars(prices, fill_column)`, and returns the same `weight` dataset; pass `fill_price=`, `valuation_price=` and `delisted=` as well to hand each bar the holdings the simulation would carry. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.base.portfolio`) and implement `construct`. Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
 
 ### Backtest any predictor
 

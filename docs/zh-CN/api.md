@@ -332,7 +332,7 @@ True
 `backtest(prices, ...)` 用库的 vectorbt 回测器在 `prices` 的 bar 上模拟一个组合。信号恰好是以下之一：
 
 - `weights=`：目标权重，即每根 bar 之后每个标的占组合价值的比例，正为多头、负为空头，每根 bar 的总敞口（绝对权重之和）不超过 1；
-- `scores=`：在每根 bar 上给标的排序的数值，越高越好，例如一个因子或模型的预测，需同时给出 `top_n=`。每 `rebalance_periods` 根 bar，分数最高的 `top_n` 个标的等权持有；`direction="long_short"` 时，分数最低的 `top_n` 个标的还会等权做空。一个标的有分数、且下一根 bar 有成交价时才可入选。
+- `scores=`：在每根 bar 上给标的排序的数值，越高越好，例如一个因子或模型的预测，需同时给出 `top_n=`。每 `rebalance_periods` 根 bar，分数最高的 `top_n` 个标的等权持有；`direction="long_short"` 时，分数最低的 `top_n` 个标的还会等权做空。一个标的有分数、且在该 bar 上有成交价时才可入选；没有成交价的持仓保持原权重，与库里的回测器一致。
 
 第 `t` 根 bar 上形成的权重在第 `t + 1` 根 bar 以 `fill` 价格（默认 `open`）成交，组合按 `valuation` 价格（默认 `close`）估值。bar 间隔取时间戳之间最常见的间距。没有训练窗口，所以指标覆盖整个区间。
 

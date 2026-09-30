@@ -19,18 +19,18 @@ What this file locks, and why each rule matters:
   books never share a symbol. An overlapping symbol would net to zero while
   still being counted twice in gross exposure, so the book would be both
   under-invested and mis-reported.
-- **D-10** fixed `top_n`, and **D-12 eligibility**: a symbol needs a finite
-  score AND a finite next-bar fill price. A symbol delisted at t+1 cannot be
-  filled, so selecting it would leave its book weight uninvested. When fewer
-  than `top_n` symbols are eligible, the book splits equally among the ones
-  that are, and a warning names the bar.
+- **D-10** fixed `top_n`, and **tradability (ADR 0014)**: a symbol needs a
+  finite score AND must be tradable at the bar (here: a finite fill price at
+  the bar). When fewer than `top_n` symbols can be picked, the book splits
+  equally among the ones that can, and a warning names the bar. A held
+  symbol that is not tradable is a locked position and keeps its weight
+  (more in `tests/test_portfolio_locked_positions.py`).
 - **Deterministic ties.** Equal scores resolve by symbol-axis order through a
   stable sort, so one panel always yields one set of weights (D-25
   reproducibility).
 - **D-11 score-label resolution**, and the D-03 invariant on randomized panels.
-- **ADR 0012.** The vectorised `construct_panel` equals the base class's
-  per-bar loop bit for bit, and a rule sees only the context of the bar it
-  decides on. The rule round-trips through `get_config` / `from_config`.
+- **ADR 0012.** `construct_panel` is the base class's per-bar loop, and a
+  rule sees only the context of the bar it decides on. The rule round-trips through `get_config` / `from_config`.
 """
 
 import contextlib
@@ -70,10 +70,10 @@ def _panel(values, symbols=SYMBOLS) -> xr.DataArray:
 
 
 def _finite_fill(scores: xr.DataArray) -> xr.DataArray:
-    """A next-bar fill price panel that is finite everywhere, on the score axes.
+    """A fill price panel that is finite everywhere, on the score axes.
 
-    `_select` turns it into the eligibility mask the backtester passes: a
-    symbol is eligible where its next-bar fill price is finite.
+    `_select` turns it into the tradability mask: a symbol is tradable where
+    its fill price at the bar is finite.
     """
     return xr.full_like(scores, 100.0)
 
@@ -85,9 +85,9 @@ def _select(direction, top_n, scores, fill=None, rebalance=None) -> np.ndarray:
     if rebalance is None:
         rebalance = np.ones(scores.sizes["timestamp"], dtype=bool)
     rule = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
-    eligible = np.isfinite(fill)
+    tradable = np.isfinite(fill)
     out = rule.construct_panel(
-        scores.to_dataset(name="score"), eligible, np.asarray(rebalance, dtype=bool)
+        scores.to_dataset(name="score"), tradable, np.asarray(rebalance, dtype=bool)
     )
     assert out["weight"].dims == ("timestamp", "symbol")
     return out["weight"].values
@@ -160,7 +160,7 @@ def test_long_short_books_are_half_each_and_disjoint():
 
 
 def test_nan_score_is_never_selected():
-    """BBB would be the top name but its score is NaN, so it is ineligible and
+    """BBB would be the top name but its score is NaN, so it is untradable and
     the next two finite scores (DDD, FFF) are chosen (D-12). Goes red if NaN
     survives into the ranking, where `-nan` sorts to an arbitrary position."""
     scores = list(DISTINCT)
@@ -192,7 +192,7 @@ def test_fill_prices_pair_with_scores_by_label_not_position():
     shape as the scores and its symbols in reverse order. Pairing by position
     would put the NaN on EEE, select BBB and target a symbol that cannot be
     filled. The old `select` compared shapes only and went red here. The
-    rule aligns the eligibility panel by coordinate label, so BBB is ineligible and DDD and
+    rule aligns the tradability panel by coordinate label, so BBB is untradable and DDD and
     FFF are chosen, exactly as with an identically ordered fill panel.
     """
     scores = _panel(DISTINCT)
@@ -230,7 +230,7 @@ def test_fill_prices_on_other_labels_are_refused():
 
 
 def test_short_long_only_book_splits_among_available_and_warns():
-    """Bar 0 has every symbol eligible; on bar 1 only CCC is. With top_n=2,
+    """Bar 0 has every symbol tradable; on bar 1 only CCC is. With top_n=2,
     bar 1 puts the whole book (1.0) on CCC, and exactly one WARNING fires,
     naming bar 1's timestamp and not bar 0's. Goes red if a short book keeps
     1/top_n (leaving cash idle), or if the warning is silent or names the
@@ -248,10 +248,10 @@ def test_short_long_only_book_splits_among_available_and_warns():
     assert str(pd.Timestamp(timestamps[0]).date()) not in messages[0]
 
 
-def test_long_short_with_fewer_than_twice_top_n_eligible_stays_disjoint():
-    """Three eligible symbols (BBB 0.9, DDD 0.5, FFF 0.1) with top_n=2: each
+def test_long_short_with_fewer_than_twice_top_n_tradable_stays_disjoint():
+    """Three tradable symbols (BBB 0.9, DDD 0.5, FFF 0.1) with top_n=2: each
     book gets k = 3 // 2 = 1, so BBB is +0.5, FFF is -0.5, DDD is 0.0, and a
-    warning fires. Goes red if k is computed as min(top_n, n_eligible): both
+    warning fires. Goes red if k is computed as min(top_n, n_tradable): both
     books would then take two names and DDD would sit in both."""
     scores = _panel([NAN, 0.9, NAN, 0.5, NAN, 0.1])
 
@@ -350,14 +350,14 @@ def test_score_label_defaults_to_first_label():
         },
         coords={"timestamp": ts, "symbol": ["AAA", "BBB", "CCC"]},
     )
-    eligible = xr.ones_like(predictions["ret_5"], dtype=bool)
+    tradable = xr.ones_like(predictions["ret_5"], dtype=bool)
     mask = np.array([True])
 
     first = TopNConstructor(TopNConfig(direction="long_only", top_n=1))
     chosen = TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="ret_1"))
 
-    assert first.construct_panel(predictions, eligible, mask)["weight"].values.tolist() == [[0.0, 1.0, 0.0]]
-    assert chosen.construct_panel(predictions, eligible, mask)["weight"].values.tolist() == [[1.0, 0.0, 0.0]]
+    assert first.construct_panel(predictions, tradable, mask)["weight"].values.tolist() == [[0.0, 1.0, 0.0]]
+    assert chosen.construct_panel(predictions, tradable, mask)["weight"].values.tolist() == [[1.0, 0.0, 0.0]]
     chosen.bind(_Predictor(["ret_5", "ret_1"]))
 
 
@@ -400,14 +400,16 @@ def test_the_backtest_config_holds_a_constructor_not_selection_fields():
 
 
 def test_weights_contract_holds_on_random_panels():
-    """50 seeded panels (T=12, S=8) with random NaN holes in scores and next
-    fill prices, a random period in 1..4, a random top_n in 1..5, and the two
+    """50 seeded panels (T=12, S=8) with random NaN holes in scores and fill
+    prices, a random period in 1..4, a random top_n in 1..5, and the two
     directions alternating by seed. On every panel:
 
     - every non-rebalance row is all NaN;
     - every rebalance row is fully finite, with sum(|w|) <= 1 + 1e-12;
-    - a long_short rebalance row with any nonzero weight nets to 0 within
-      1e-12.
+    - a locked position (held in the last rebalance row, no fill price now)
+      keeps its weight;
+    - a long_short rebalance row without locked positions and with any
+      nonzero weight nets to 0 within 1e-12.
 
     Each failure message carries the seed, direction, top_n and period, so the
     breaking panel can be rebuilt. The trailing non-vacuity checks make sure
@@ -437,6 +439,7 @@ def test_weights_contract_holds_on_random_panels():
             mask,
         )
 
+        previous = np.zeros(len(symbols))
         for t in range(n_bars):
             row = weights[t]
             where = f"{context} t={t}"
@@ -445,15 +448,18 @@ def test_weights_contract_holds_on_random_panels():
                 continue
             assert np.isfinite(row).all(), where
             assert np.abs(row).sum() <= 1.0 + 1e-12, where
-            eligible = int((np.isfinite(scores[t]) & np.isfinite(fill[t])).sum())
+            locked = (previous != 0) & ~np.isfinite(fill[t])
+            np.testing.assert_array_equal(row[locked], previous[locked], err_msg=where)
+            tradable = int((np.isfinite(scores[t]) & np.isfinite(fill[t]) & ~locked).sum())
             if direction == "long_short":
-                if eligible // 2 < top_n:
+                if tradable // 2 < top_n:
                     short_book_rows += 1
-                if (row != 0.0).any():
+                if (row != 0.0).any() and not locked.any():
                     long_short_nonzero_rows += 1
                     assert abs(row.sum()) <= 1e-12, where
-            elif eligible < top_n:
+            elif tradable < top_n:
                 short_book_rows += 1
+            previous = row
 
     assert long_short_nonzero_rows > 0
     assert short_book_rows > 0
@@ -470,7 +476,7 @@ def _random_case(seed: int):
     scores = rng.normal(size=(n_bars, len(symbols)))
     scores[rng.random(scores.shape) < 0.25] = NAN
     scores[:, 3] = scores[:, 4]  # ties
-    eligible = rng.random(scores.shape) > 0.2
+    tradable = rng.random(scores.shape) > 0.2
     timestamps = pd.bdate_range("2024-01-01", periods=n_bars)
     predictions = xr.Dataset(
         {
@@ -480,20 +486,7 @@ def _random_case(seed: int):
         coords={"timestamp": timestamps, "symbol": symbols},
     )
     mask = rebalance_mask(n_bars, int(rng.integers(1, 4)))
-    return predictions, xr.DataArray(eligible, coords=predictions["fwd_ret_1"].coords), mask
-
-
-@pytest.mark.parametrize("direction", ["long_only", "long_short"])
-@pytest.mark.parametrize("score_label", [None, "fwd_ret_5"])
-def test_the_vectorised_panel_equals_the_per_bar_loop(direction, score_label):
-    rule = TopNConstructor(TopNConfig(direction=direction, top_n=3, score_label=score_label))
-    for seed in range(20):
-        predictions, eligible, mask = _random_case(seed)
-
-        fast = rule.construct_panel(predictions, eligible, mask)
-        loop = PortfolioConstructor.construct_panel(rule, predictions, eligible, mask)
-
-        xr.testing.assert_identical(fast, loop)
+    return predictions, xr.DataArray(tradable, coords=predictions["fwd_ret_1"].coords), mask
 
 
 class RecordingConstructor(PortfolioConstructor):
@@ -511,10 +504,10 @@ class RecordingConstructor(PortfolioConstructor):
 
 
 def test_a_constructor_sees_only_the_bar_it_decides_on():
-    predictions, eligible, mask = _random_case(0)
+    predictions, tradable, mask = _random_case(0)
     rule = RecordingConstructor(TopNConfig(direction="long_only", top_n=1))
 
-    rule.construct_panel(predictions, eligible, mask)
+    rule.construct_panel(predictions, tradable, mask)
 
     rebalance_bars = predictions.timestamp.values[mask]
     assert [c.timestamp for c in rule.contexts] == [pd.Timestamp(t) for t in rebalance_bars]
@@ -524,12 +517,12 @@ def test_a_constructor_sees_only_the_bar_it_decides_on():
         xr.testing.assert_equal(
             context.predictions, predictions.isel(timestamp=t, drop=True)
         )
-        np.testing.assert_array_equal(context.eligible.values, eligible.values[t])
-        assert context.eligible.dims == context.current_weights.dims == ("symbol",)
+        np.testing.assert_array_equal(context.tradable.values, tradable.values[t])
+        assert context.tradable.dims == context.current_weights.dims == ("symbol",)
 
 
 def test_the_current_weights_are_the_last_rebalance_weights():
-    predictions, eligible, mask = _random_case(1)
+    predictions, tradable, mask = _random_case(1)
     seen = []
 
     class Remembering(TopNConstructor):
@@ -538,7 +531,7 @@ def test_the_current_weights_are_the_last_rebalance_weights():
             return super().construct(context)
 
     rule = Remembering(TopNConfig(direction="long_only", top_n=2))
-    weights = PortfolioConstructor.construct_panel(rule, predictions, eligible, mask)["weight"].values
+    weights = PortfolioConstructor.construct_panel(rule, predictions, tradable, mask)["weight"].values
 
     bars = np.flatnonzero(mask)
     assert (seen[0] == 0.0).all()
@@ -566,8 +559,8 @@ def test_a_row_mixing_nan_and_weights_is_refused():
             row[0] = NAN
             return row
 
-    predictions, eligible, mask = _random_case(2)
+    predictions, tradable, mask = _random_case(2)
     with pytest.raises(ValueError, match="mixing"):
         PortfolioConstructor.construct_panel(
-            Broken(TopNConfig(direction="long_only", top_n=2)), predictions, eligible, mask
+            Broken(TopNConfig(direction="long_only", top_n=2)), predictions, tradable, mask
         )

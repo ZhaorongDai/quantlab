@@ -332,7 +332,7 @@ True
 `backtest(prices, ...)` simulates a portfolio on the bars of `prices` with the library's vectorbt backtester. The signal is exactly one of:
 
 - `weights=`: target weights, the fraction of portfolio value held in each symbol after a bar, positive long and negative short, with gross exposure (the sum of absolute weights) at most 1 on every bar;
-- `scores=`: numbers that rank the symbols on each bar, higher is better, such as a factor or a model prediction, with `top_n=`. Every `rebalance_periods` bars the `top_n` highest-scoring symbols get equal weights; with `direction="long_short"` the `top_n` lowest get equal negative weights too. A symbol is eligible when it has a score and a fill price on the next bar.
+- `scores=`: numbers that rank the symbols on each bar, higher is better, such as a factor or a model prediction, with `top_n=`. Every `rebalance_periods` bars the `top_n` highest-scoring symbols get equal weights; with `direction="long_short"` the `top_n` lowest get equal negative weights too. A symbol can be picked when it has a score and a fill price at that bar; a held symbol without a fill price keeps its weight, as in the library's backtester.
 
 A weight formed at bar `t` fills at bar `t + 1`'s `fill` price (default `open`), and the portfolio is valued at the `valuation` price (default `close`). The bar interval is the most common spacing between the timestamps. There is no training window, so the metrics cover the whole window.
 

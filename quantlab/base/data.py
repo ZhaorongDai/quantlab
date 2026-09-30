@@ -1950,6 +1950,38 @@ class MarketDataset(BaseDataset):
         """
         return panel.rename(self.shared_name_map(panel.data_vars))
 
+    def tradable_bars(self, prices: xr.Dataset, fill_column: str) -> xr.DataArray:
+        """Mark, in a price panel, which symbols can be traded at each bar.
+
+        Judged from nothing later than the bar, so a backtest and a live
+        engine agree (ADR 0014). The default: a real, not forward-filled,
+        ``fill_column`` price at the bar. A dataset that knows more, such as
+        a halt flag, overrides this.
+
+        Parameters
+        ----------
+        prices : xr.Dataset
+            A panel of this dataset on ``(timestamp, symbol)``.
+        fill_column : str
+            The price orders fill at.
+
+        Returns
+        -------
+        xr.DataArray
+            Booleans on the panel's ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        >>> panel = xr.Dataset(
+        ...     {"open": (("timestamp", "symbol"), [[1.0, 2.0], [1.1, np.nan]])},
+        ...     coords={"timestamp": pd.bdate_range("2024-01-01", periods=2), "symbol": ["A", "B"]},
+        ... )
+        >>> dataset.tradable_bars(panel, "open").values
+        array([[ True,  True],
+               [ True, False]])
+        """
+        return prices[fill_column].transpose("timestamp", "symbol").notnull()
+
     def delisting_bars(self, prices: xr.Dataset, valuation_column: str) -> xr.DataArray:
         """Mark, in a price panel, the last bar of each symbol that delisted in it.
 

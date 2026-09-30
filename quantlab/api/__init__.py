@@ -397,7 +397,8 @@ def backtest(
     Exactly one signal is given. ``weights`` are simulated as given; ``scores`` become
     equal weights on the ``top_n`` highest-scoring names (and, for ``direction=
     "long_short"``, minus the ``top_n`` lowest) every ``rebalance_periods`` bars, a name
-    being eligible when it has a score and a fill price on the next bar. A weight formed
+    being picked only when it has a score and a fill price at that bar, and a held name
+    without one keeping its weight. A weight formed
     at bar t fills at bar t+1's ``fill`` price and the portfolio is valued at the
     ``valuation`` price. The run covers every bar of ``prices``; the bar interval is the
     most common spacing of its timestamps. There is no training window, so the metrics

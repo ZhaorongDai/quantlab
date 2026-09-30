@@ -68,7 +68,8 @@ SEEN: list = []
 
 
 class Recorder(PortfolioConstructor):
-    """Holds AAA and BBB half and half, records its contexts, fails on one call."""
+    """Holds AAA and BBB half and half around any locked position, records its
+    contexts, fails on one call."""
 
     config_cls = RecorderConfig
 
@@ -80,8 +81,10 @@ class Recorder(PortfolioConstructor):
         SEEN.append(context)
         if self.config.fail_on is not None and len(SEEN) - 1 == self.config.fail_on:
             raise PortfolioConstructionError("solver gave up")
-        row = xr.zeros_like(context.current_weights)
-        row.loc[{"symbol": ["AAA", "BBB"]}] = 0.5
+        locked = context.locked
+        row = context.current_weights.where(locked, 0.0)
+        free = [s for s in ("AAA", "BBB") if not bool(locked.sel(symbol=s))]
+        row.loc[{"symbol": free}] = (1.0 - float(row.sum())) / len(free)
         return row
 
 
@@ -380,4 +383,54 @@ def test_raw_calibration_on_a_standardized_label_is_refused_when_the_backtest_is
                 rebalance_periods=REBALANCE,
                 constructor=optimizer,
             )
+        )
+
+
+def test_a_symbol_priced_at_the_bar_can_be_chosen_and_its_order_is_rejected(tmp_path):
+    """BBB has a price on the first rebalance bar but none on the next: it is
+    tradable at the bar (no look-ahead), so the rule buys it, and the engine
+    rejects that order. The next rebalance starts from what was really held."""
+    backtester, dataset_config, bars = _backtester(tmp_path, Recorder(RecorderConfig()))
+    _halt(dataset_config, "BBB", [WINDOW[0] + 1])
+
+    result = backtester.run()
+
+    assert bool(SEEN[0].tradable.sel(symbol="BBB"))
+    assert result.weights["weight"].sel(timestamp=bars[WINDOW[0]], symbol="BBB") == 0.5
+    rejected = [(r["axis_symbol"], r["signal_timestamp"]) for r in result.simulation.rejected_orders]
+    assert ("BBB", pd.Timestamp(bars[WINDOW[0]])) in rejected
+    assert result.metrics["execution"]["rejected_order_count"] == len(result.simulation.rejected_orders)
+    close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].load().ffill("timestamp").transpose("timestamp", "symbol")
+    for context in SEEN[1:]:
+        np.testing.assert_allclose(
+            context.current_weights.values,
+            _engine_weights_at_close(result, close, np.datetime64(context.timestamp)),
+            rtol=1e-9,
+            atol=1e-12,
+        )
+    assert SEEN[1].current_weights.sel(symbol="BBB") == 0.0
+
+
+def test_a_holding_halted_at_a_rebalance_stays_locked(tmp_path):
+    """BBB is held from the first rebalance and halted over the second one and
+    its fill bar: it keeps its weight there and AAA gets the rest of the book."""
+    backtester, dataset_config, bars = _backtester(tmp_path, Recorder(RecorderConfig()))
+    second = WINDOW[0] + REBALANCE
+    _halt(dataset_config, "BBB", [second, second + 1])
+
+    result = backtester.run()
+
+    locked = SEEN[1]
+    assert bool(locked.locked.sel(symbol="BBB"))
+    held = float(locked.current_weights.sel(symbol="BBB"))
+    row = result.weights["weight"].sel(timestamp=bars[second])
+    assert float(row.sel(symbol="BBB")) == held > 0
+    assert float(row.sel(symbol="AAA")) == pytest.approx(1.0 - held, abs=1e-15)
+    close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].load().ffill("timestamp").transpose("timestamp", "symbol")
+    for context in SEEN[1:]:
+        np.testing.assert_allclose(
+            context.current_weights.values,
+            _engine_weights_at_close(result, close, np.datetime64(context.timestamp)),
+            rtol=1e-9,
+            atol=1e-12,
         )

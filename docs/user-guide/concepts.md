@@ -268,8 +268,7 @@ quantlab/
                      torch_training.py (target transforms, losses, stopping rules)
         predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
                          model_ensemble.py
-    backtest/        engine_vectorbt.py (VectorBtBacktester), selection.py (rebalance schedule,
-                     next-bar eligibility)
+    backtest/        engine_vectorbt.py (VectorBtBacktester), selection.py (rebalance schedule)
         predefined/      us_equity.py: the US-equity backtester
     portfolio/       portfolio construction: the rule from one bar's scores to weights
         predefined/      top_n.py: TopNConstructor

@@ -13,7 +13,7 @@ import warnings
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
+from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.backtest import MarketSpec
 from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.base.data import InsufficientHistoryError
@@ -37,11 +37,12 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     On every rebalance bar the config's ``constructor`` turns the
     predictions of that bar into target weights, for example the top
     ``top_n`` symbols with ``TopNConstructor``, and the targets are held
-    until the next rebalance bar. A symbol is eligible when it has a fill
-    price at the next bar. The class only wires the pieces together: the
-    market conventions are ``MARKET``, the rule is the config's
-    ``constructor``, and every engine behaviour comes from
-    ``VectorBtBacktester``.
+    until the next rebalance bar. A symbol is tradable at a bar as the price
+    dataset's ``tradable_bars`` says (by default, when it has a fill price
+    at that bar), and a held symbol that is not tradable stays locked. The
+    class only wires the pieces together: the market conventions are
+    ``MARKET``, the rule is the config's ``constructor``, and every engine
+    behaviour comes from ``VectorBtBacktester``.
 
     Parameters
     ----------
@@ -105,25 +106,29 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     ) -> xr.Dataset:
         """Turn the model's predictions into target weights through the constructor.
 
-        A symbol is eligible when its next-bar fill price, read from the
-        raw, not forward-filled, price panel, is finite; the rule also skips
-        symbols without a finite prediction of the label it reads. The rule
-        is handed the raw fill and valuation prices from the constructor's
-        ``lookback_bars`` bars before the window (``_price_history``), for
-        its return window and to drift the current weights the way the
-        simulation values them, and the panels of its ``required_factors()``
-        over the window (``_required_factor_panels``). Bars the rule failed
-        on are kept for ``_signal_metrics``.
+        Tradability at each bar comes from the price dataset's
+        ``tradable_bars`` on the raw, not forward-filled, window panel; the
+        rule also skips symbols without a finite prediction of the label it
+        reads. The rule is handed the raw fill and valuation prices from the
+        constructor's ``lookback_bars`` bars before the window
+        (``_price_history``), for its return window and to model the
+        holdings the way the simulation trades them, the dataset's
+        ``delisting_bars`` of the window (the same marks the simulation
+        settles), and the panels of its ``required_factors()`` over the
+        window (``_required_factor_panels``). Bars the rule failed on are
+        kept for ``_signal_metrics``.
         """
-        eligible = next_bar_eligible(prices[self.MARKET.fill_price_column])
+        dataset = self.config.price_dataset
+        tradable = dataset.tradable_bars(prices, self.MARKET.fill_price_column)
         mask = rebalance_mask(prices.sizes["timestamp"], self.config.rebalance_periods)
         history = self._price_history(prices)
         weights = self.config.constructor.construct_panel(
             predictions,
-            eligible,
+            tradable,
             mask,
             fill_price=history[self.MARKET.fill_price_column],
             valuation_price=history[self.MARKET.valuation_price_column],
+            delisted=dataset.delisting_bars(prices, self.MARKET.valuation_price_column),
             factors=self._required_factor_panels(prices),
         )
         self._failed_bars = list(weights.attrs.pop("failed_bars", []))

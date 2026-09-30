@@ -250,7 +250,7 @@ through the model's predictions. A symbol that leaves the universe has NaN
 factors, so the model predicts NaN for it, and on the next rebalance bar the
 selector does not consider it. Its target weight becomes 0, and because a
 signal formed at bar t fills at bar t + 1's open, the position is sold at the
-open of the bar after that rebalance. Eligibility is evaluated only on
+open of the bar after that rebalance. Selection happens only on
 rebalance bars, so with `rebalance_periods=5` a position can be held up to
 four bars after it left the universe; with `rebalance_periods=1` it is sold
 the next day. See [Backtesting](backtesting.md).

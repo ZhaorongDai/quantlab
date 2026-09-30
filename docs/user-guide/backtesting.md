@@ -244,12 +244,17 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260930_002352_913990
 ```
 
 The score is the model's prediction of the label named by `score_label`, or
-of its first label when `score_label` is `None`. A symbol is eligible on a bar
-only when its score is finite and it has a price on the next bar, since that
-is where the order would fill: the backtester passes the next-bar rule as an
-eligibility mask, and the rule skips symbols without a finite score. Ties are broken by symbol order, so the same
-panel always gives the same weights. When fewer than `top_n` symbols are
-eligible, the book is split among the eligible ones and a warning names the
+of its first label when `score_label` is `None`. A symbol can be picked on a
+bar only when its score is finite and it is *tradable* there: the price
+dataset's `tradable_bars` says so from nothing later than the bar, by default
+when the symbol has a fill price at that bar (ADR 0014). Whether the order
+then fills at the next bar is the engine's business (see rejected orders
+below). A held symbol that is not tradable is a *locked position*: it keeps
+its current weight, is not picked again, and the picks share what is left of
+the book, `(1 - locked) / k` each long-only, and per side `0.5` minus that
+side's locked exposure long-short. Ties are broken by symbol order, so the
+same panel always gives the same weights. When fewer than `top_n` symbols can
+be picked, the book is split among those that can, and a warning names the
 bar.
 
 ## Warm-up

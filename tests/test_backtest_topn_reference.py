@@ -6,7 +6,8 @@ long-short top-n backtest. The weights were captured with
 The equity was recaptured when a delisted holding started to be settled at its
 last valuation instead of sold at its last open (#86): it is bit-identical to
 the #76 capture on every bar before CCC's settlement bar, and differs from
-there on. Re-running the same scenario through the backtester's
+there on. The weights are unchanged by tradability at t and locked positions
+(#87): CCC is never held when its prices stop, so nothing is ever locked here. Re-running the same scenario through the backtester's
 `constructor` must give bit-identical weights and equity, and a backtester
 rebuilt from the run's `config.json` must re-run it identically.
 

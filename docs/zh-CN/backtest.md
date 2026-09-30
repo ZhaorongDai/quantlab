@@ -4,7 +4,7 @@
 
 回测拿一个训练好的收益模型和一份价格数据集，展示模型的预测如果拿来交易会得到什么结果。模型对每个标的、每根 bar 给出一个分数，选股规则把分数变成目标权重，模拟引擎按这些权重成交并记录净值曲线。每次运行都会写出一个运行目录，里面有权重、净值曲线、指标、HTML 报告，以及重建这次运行所需的配置。
 
-主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、调仓时点与可成交判定的辅助函数（`quantlab/backtest/selection.py`）、配置里 `constructor` 持有的组合构建规则 `TopNConstructor`（`quantlab/portfolio/predefined/top_n.py`，继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
+主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、调仓时点（`quantlab/backtest/selection.py`）、配置里 `constructor` 持有的组合构建规则 `TopNConstructor`（`quantlab/portfolio/predefined/top_n.py`，继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
 
 ## 前置条件
 
@@ -164,7 +164,7 @@ def train_cv_project(model, train_periods):
 
 ### 目标权重契约
 
-权重是 `(timestamp, symbol)` 上的 `weight` 变量。有限值表示该标的在这根 bar 成交后应占组合价值的比例；NaN 表示保持该标的的持仓、不交易。全为 NaN 的一行表示这根 bar 不调仓；一行也可以两者混合，例如只保留某一笔持仓不动。一行目标的总敞口（绝对权重之和）不超过 1。库自带的组合构建规则在调仓 bar 上给每个标的有限权重，没被选中的是 `0.0`。
+权重是 `(timestamp, symbol)` 上的 `weight` 变量。有限值表示该标的在这根 bar 成交后应占组合价值的比例；NaN 表示保持该标的的持仓、不交易。全为 NaN 的一行表示这根 bar 不调仓；一行也可以两者混合，例如只保留某一笔持仓不动。一行目标的总敞口（绝对权重之和）不超过 1。库自带的组合构建规则在调仓 bar 上给每个标的有限权重，没被选中的是 `0.0`。规则只依据这根 bar 上已知的信息做决定（ADR 0014）：价格数据集的 `tradable_bars` 认为可交易的标的才是*可交易*的，默认即该 bar 上有成交价；持有但不可交易的标的是*锁定仓位*，保持当前权重。规则若改动锁定仓位，或给既不可交易也未持有的标的分配权重，回测器会拒绝。
 
 ```python
 >>> result.weights["weight"].to_pandas().iloc[:7].round(2)
@@ -533,9 +533,9 @@ class ScoreWeightedBacktester(VectorBtBacktester):
     def _generate_signals(self, predictions, prices):
         label = list(predictions.data_vars)[0]  # 模型的第一个标签
         scores = predictions[label].transpose("timestamp", "symbol")
-        # 下一根 bar 没有价格的标的无法成交，不参与选择。
-        next_fill = prices[self.MARKET.fill_price_column].shift(timestamp=-1)
-        positive = scores.where(next_fill.notnull()).clip(min=0).fillna(0.0)
+        # 在这根 bar 上没有成交价的标的不能交易，不参与选择（ADR 0014）。
+        tradable = self.config.price_dataset.tradable_bars(prices, self.MARKET.fill_price_column)
+        positive = scores.where(tradable).clip(min=0).fillna(0.0)
         total = positive.sum("symbol")
         weight = (positive / total.where(total > 0)).fillna(0.0)  # 没有正分数则空仓
         rebalance = xr.DataArray(
@@ -562,14 +562,14 @@ class ScoreWeightedBacktester(VectorBtBacktester):
 ... ))
 >>> w = custom.run().weights["weight"].to_pandas()
 >>> w.iloc[[0, 1, 5]].round(3)
-symbol        AAA    BBB    CCC    DDD  EEE    FFF
-timestamp                                         
-2024-02-12  0.000  0.000  0.541  0.000  0.0  0.459
-2024-02-13    NaN    NaN    NaN    NaN  NaN    NaN
-2024-02-19  0.044  0.767  0.000  0.189  0.0  0.000
+symbol        AAA    BBB    CCC   DDD  EEE    FFF
+timestamp                                        
+2024-02-12  0.000  0.000  0.541  0.00  0.0  0.459
+2024-02-13    NaN    NaN    NaN   NaN  NaN    NaN
+2024-02-19  0.037  0.647  0.000  0.16  0.0  0.156
 ```
 
-如果想沿用 top-N 规则、只换分数，`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, eligible, rebalance)` 接受任意分数面板（每个标签一个变量的数据集）和一个布尔型可成交面板（例如 `quantlab.backtest.selection` 中的 `next_bar_eligible(fill_price)`），并返回同样的 `weight` 数据集。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
+如果想沿用 top-N 规则、只换分数，`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, tradable, rebalance)` 接受任意分数面板（每个标签一个变量的数据集）和一个布尔型可交易面板（例如价格数据集的 `tradable_bars(prices, fill_column)`），并返回同样的 `weight` 数据集；再传入 `fill_price=`、`valuation_price=` 和 `delisted=`，每根 bar 拿到的就是模拟中实际持有的仓位。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
 
 ### 回测任意预测器
 

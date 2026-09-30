@@ -51,7 +51,7 @@ class LedoitWolfRiskModel(RiskModel):
     >>> context = PortfolioContext(
     ...     timestamp=pd.Timestamp("2024-03-25"),
     ...     predictions=xr.Dataset(coords={"symbol": symbols}),
-    ...     eligible=xr.DataArray([True] * 3, dims="symbol", coords={"symbol": symbols}),
+    ...     tradable=xr.DataArray([True] * 3, dims="symbol", coords={"symbol": symbols}),
     ...     current_weights=xr.DataArray(np.zeros(3), dims="symbol", coords={"symbol": symbols}),
     ...     returns=xr.DataArray(window, dims=("timestamp", "symbol"), coords={
     ...         "timestamp": pd.bdate_range("2024-01-01", periods=60), "symbol": symbols}),

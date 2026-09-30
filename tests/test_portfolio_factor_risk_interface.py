@@ -97,7 +97,7 @@ def _context(seed=1, current=None):
     return PortfolioContext(
         timestamp=pd.Timestamp("2024-03-01"),
         predictions=xr.Dataset({"ret_5": ("symbol", rng.normal(size=n))}, coords=coords),
-        eligible=xr.DataArray(np.ones(n, bool), dims="symbol", coords=coords),
+        tradable=xr.DataArray(np.ones(n, bool), dims="symbol", coords=coords),
         current_weights=xr.DataArray(
             np.zeros(n) if current is None else np.asarray(current, float), dims="symbol", coords=coords
         ),

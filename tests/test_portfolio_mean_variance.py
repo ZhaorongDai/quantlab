@@ -69,7 +69,7 @@ def _context(*, seed=0, eligible=None, current=None, prediction=None, returns=No
     return PortfolioContext(
         timestamp=pd.Timestamp("2024-03-01"),
         predictions=xr.Dataset({"ret_5": ("symbol", prediction)}, coords=coords),
-        eligible=xr.DataArray(
+        tradable=xr.DataArray(
             np.ones(n, bool) if eligible is None else np.asarray(eligible), dims="symbol", coords=coords
         ),
         current_weights=xr.DataArray(
@@ -215,7 +215,7 @@ def test_ledoit_wolf_is_symmetric_positive_definite_with_more_symbols_than_bars(
     context = PortfolioContext(
         timestamp=pd.Timestamp("2024-03-01"),
         predictions=xr.Dataset(coords=coords),
-        eligible=xr.DataArray(np.ones(30, bool), dims="symbol", coords=coords),
+        tradable=xr.DataArray(np.ones(30, bool), dims="symbol", coords=coords),
         current_weights=xr.DataArray(np.zeros(30), dims="symbol", coords=coords),
         returns=xr.DataArray(returns, dims=("timestamp", "symbol"), coords={
             "timestamp": pd.bdate_range("2024-01-01", periods=10), **coords}),

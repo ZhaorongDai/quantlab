@@ -829,17 +829,15 @@ class PositiveScoreEqualWeight(VectorBtBacktester):
     def _generate_signals(self, predictions, prices):
         label = list(predictions.data_vars)[0]  # the model's first label
         scores = predictions[label].transpose("timestamp", "symbol").values
-        next_fill = (
-            prices[self.MARKET.fill_price_column]
-            .shift(timestamp=-1)
-            .transpose("timestamp", "symbol")
-            .values
-        )
+        # Tradable at the bar: a fill price there, nothing later (ADR 0014).
+        tradable = self.config.price_dataset.tradable_bars(
+            prices, self.MARKET.fill_price_column
+        ).values
         rebalance = rebalance_mask(scores.shape[0], self.config.rebalance_periods)
 
         weights = np.full(scores.shape, np.nan)  # NaN row: hold
         for t in np.flatnonzero(rebalance):
-            chosen = np.isfinite(scores[t]) & np.isfinite(next_fill[t]) & (scores[t] > 0)
+            chosen = np.isfinite(scores[t]) & tradable[t] & (scores[t] > 0)
             row = np.zeros(scores.shape[1])  # rebalance row: all finite
             if chosen.any():
                 row[chosen] = 1.0 / chosen.sum()  # gross exposure <= 1
@@ -860,10 +858,11 @@ symbols, and the market's year length is used for annualizing:
 365 days 00:00:00 8760.0             # year_freq("1D"), bars per year at "1h"
 ```
 
-Requiring a finite next-bar fill price keeps a symbol that is about to lose
-its prices from being bought. Everything after `_generate_signals` is
-inherited: execution at the next bar's open, rejected orders, delisting
-settlements, metrics and the run directory.
+The rule reads only what is known at the bar. An order that finds no price
+at the next bar is rejected by the engine, and a delisted holding is settled.
+Everything after `_generate_signals` is inherited: execution at the next
+bar's open, rejected orders, delisting settlements, metrics and the run
+directory.
 
 A backtester reaches the model only through the `Predictor` protocol
 (`quantlab.base.backtest.Predictor`): `labels`, `label_delays`,
@@ -882,7 +881,7 @@ Two smaller variations need even less code. To reuse top-N selection on a
 different market, subclass `USEquityCrossectionSelectStockVectorBt` and set
 only `MARKET`. To reuse the selection rule with another engine, call
 `TopNConstructor(TopNConfig(direction, top_n)).construct_panel(predictions,
-eligible, rebalance)` from `quantlab.portfolio.predefined.top_n`, or its
+tradable, rebalance)` from `quantlab.portfolio.predefined.top_n`, or its
 per-bar `construct(context)` from a bar handler; the portfolio layer depends on
 no simulation engine. A new rule from scores to weights subclasses
 `quantlab.base.portfolio.PortfolioConstructor` and implements `construct`; it

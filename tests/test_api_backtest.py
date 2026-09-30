@@ -24,7 +24,7 @@ from loguru import logger
 
 import quantlab.api as qa
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.backtest.selection import next_bar_eligible, rebalance_mask
+from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -112,13 +112,18 @@ def _scores(seed: int = 3) -> xr.DataArray:
 
 
 def _selected_weights(stores, *, direction="long_only", top_n=2, periods=5) -> xr.Dataset:
-    """Top-N weights selected by the library's top-n rule on the store's own prices."""
+    """Top-N weights selected by the library's top-n rule on the store's own prices,
+    as the library backtester drives it."""
     prices = xr.open_zarr(stores["prices"].zarr_file_path).load()
+    dataset = StockDataset(stores["prices"])
     constructor = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
     return constructor.construct_panel(
         _scores().to_dataset(name="score"),
-        next_bar_eligible(prices["adjOpen"]),
+        dataset.tradable_bars(prices, "adjOpen"),
         rebalance_mask(N_BARS, periods),
+        fill_price=prices["adjOpen"],
+        valuation_price=prices["adjClose"],
+        delisted=dataset.delisting_bars(prices, "adjClose"),
     )
 
 
@@ -621,3 +626,29 @@ def test_columns_maps_the_price_and_weight_frames(stores):
     )
 
     np.testing.assert_array_equal(report.equity["value"], expected.equity["value"])
+
+
+def test_scores_through_the_api_match_the_library_rule_through_a_halt(stores):
+    """Every symbol halts on bars 9-10 in turn with the ones after it; a held one
+    stays locked at its weight there, in the API exactly as in the library."""
+    path = stores["prices"].zarr_file_path
+    store = xr.open_zarr(path).load()
+    for name in store.data_vars:
+        values = store[name].transpose("timestamp", "symbol").values.copy()
+        values[9:11, :3] = np.nan
+        store[name] = (("timestamp", "symbol"), values)
+    store.to_zarr(path, mode="w")
+    frame = _canonical_frame(path)
+    weights = _selected_weights(stores, top_n=2, periods=3)
+    scores = _scores().rename("score").to_dataframe().reset_index()
+
+    report = qa.backtest(frame, scores=scores, top_n=2, rebalance_periods=3)
+
+    xr.testing.assert_equal(report.raw.weights, weights)
+    np.testing.assert_array_equal(
+        report.equity["value"].to_numpy(), _library_run(stores, weights).simulation.value.values
+    )
+    at_9 = weights["weight"].isel(timestamp=9).values
+    held_before = weights["weight"].isel(timestamp=6).values
+    assert (held_before[:3] != 0).any(), "a halted symbol must have been held"
+    assert (at_9[:3][held_before[:3] != 0] != 0).all()

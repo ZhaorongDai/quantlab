@@ -896,7 +896,7 @@ class MeanVarianceConfig(_FrozenConfig):
     #: Optimise only over the ``candidate_top_k`` symbols with the largest
     #: expected return (largest absolute one for ``"long_short"``) plus
     #: every symbol currently held; the rest get 0.0. ``None`` optimises
-    #: over every eligible symbol.
+    #: over every tradable symbol.
     candidate_top_k: int | None = None
 
 
