@@ -270,7 +270,7 @@ out_of_sample -5.61 -4.27 13
 | `config.json` | 配置，嵌套着价格数据集和模型，以及数据指纹。 |
 | `weights.zarr` | `(timestamp, symbol)` 上的目标权重。 |
 | `equity.zarr` | `timestamp` 上的组合 `value` 与每根 bar 的 `returns`。 |
-| `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()` 和 `run_cv()` 的每个折还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），带 `count` 和 `bars`。 |
+| `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），带 `count` 和 `bars`。 |
 | `settlements.json` | 退市结算记录。 |
 | `fingerprint.json` | 本次运行读取的价格数据和因子数据的摘要。 |
 | `report.html` | 净值、回撤、月度收益图表，指标表和备注。 |
@@ -303,7 +303,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### 回放一次交叉验证
 
-`train_cv` 会为每个滚动折写一个 checkpoint，并在项目目录里写一个 `cv_folds.json` 清单。`run_cv()` 读取清单，用各折自己的 checkpoint 回测该折的测试段，再把拼接后的权重整体模拟一次。`cv_project_dir` 指向项目目录，`model_mode` 必须是 `"load"`。只使用测试段落在窗口内的折，这些测试段必须逐 bar 首尾相接。
+`train_cv` 会为每个滚动折写一个 checkpoint，并在项目目录里写一个 `cv_folds.json` 清单。`run_cv()` 读取清单，用各折自己的 checkpoint 回测该折的测试段，再把拼接后的各折预测一次性转换为权重，使持仓像一个账户那样跨折延续，并整体模拟一次。`cv_project_dir` 指向项目目录，`model_mode` 必须是 `"load"`。只使用测试段落在窗口内的折，这些测试段必须逐 bar 首尾相接。
 
 ```python
 >>> cfg2 = write_price_store(root / "cv", n_bars=80)

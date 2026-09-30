@@ -428,9 +428,10 @@ cv_result = cv_backtester.run_cv()
 ```
 
 Each fold whose test segment lies inside the backtest window is backtested on
-its own test segment with its own checkpoint. The fold weights are then
-concatenated and simulated once as a single *stitched* curve, with capital
-carried across fold boundaries, so the stitched curve is a trading path you
+its own test segment with its own checkpoint. The fold predictions are then
+concatenated, turned into weights in one pass and simulated once as a single
+*stitched* curve, with holdings and capital carried across fold
+boundaries, so the stitched curve is a trading path you
 could actually have followed with a model retrained every fold. Before
 loading any model, `run_cv()` checks on the price calendar that the selected
 test segments abut exactly: a gap would leave bars that no model traded, and

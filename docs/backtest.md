@@ -270,7 +270,7 @@ Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Fi
 | `config.json` | The configuration, with the price dataset and the model nested, and a data fingerprint. |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. |
 | `equity.zarr` | The portfolio `value` and per-bar `returns` on `timestamp`. |
-| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()` or a `run_cv()` fold also records `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them), with its `count` and its `bars`. |
+| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()`, a `run_cv()` fold and the stitched `run_cv()` pass also record `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them), with its `count` and its `bars`. |
 | `settlements.json` | The delisting settlements. |
 | `fingerprint.json` | A digest of the price and factor data the run read. |
 | `report.html` | Equity, drawdown and monthly-return charts, a metrics table and notes. |
@@ -303,7 +303,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### Replay a cross-validation run
 
-`train_cv` writes one checkpoint per walk-forward fold and a `cv_folds.json` manifest into its project directory. `run_cv()` reads the manifest, backtests each fold's test segment with the fold's own checkpoint, and simulates the concatenated weights once. `cv_project_dir` points at the project directory and `model_mode` must be `"load"`. Only folds whose test segment lies inside the window are used, and those segments must follow each other bar for bar.
+`train_cv` writes one checkpoint per walk-forward fold and a `cv_folds.json` manifest into its project directory. `run_cv()` reads the manifest, backtests each fold's test segment with the fold's own checkpoint, then turns the concatenated fold predictions into weights in one pass, so the holdings carry across fold boundaries as in one account, and simulates them once. `cv_project_dir` points at the project directory and `model_mode` must be `"load"`. Only folds whose test segment lies inside the window are used, and those segments must follow each other bar for bar.
 
 ```python
 >>> cfg2 = write_price_store(root / "cv", n_bars=80)

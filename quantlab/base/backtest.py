@@ -368,9 +368,10 @@ class CVBacktestResult:
     ``folds`` holds one record per replayed fold: the manifest fields
     (``fold``, the four dates, ``checkpoint``) plus that fold's own
     ``predictions``, ``weights``, ``simulation`` and ``metrics`` from an
-    independent per-fold simulation. ``weights`` and ``simulation`` are the
-    concatenated fold weights and the single continuous simulation over
-    them. ``metrics`` mirrors ``metrics.json`` with the keys ``stitched``,
+    independent per-fold simulation. ``weights`` are built in one pass over
+    the concatenated fold predictions, as one account whose holdings carry
+    across fold boundaries, and ``simulation`` is the single continuous
+    simulation of them. ``metrics`` mirrors ``metrics.json`` with the keys ``stitched``,
     ``folds`` and ``notes``. ``benchmark`` is the buy-and-hold benchmark
     simulated over the stitched span, or ``None`` without a benchmark; each
     fold record also carries its own ``benchmark``.
@@ -894,10 +895,14 @@ class BaseBacktester(ABC):
         purge; it is purged the same way before it is compared with the
         manifest.
 
-        The per-fold weights are concatenated and simulated once over the
-        prices from the first ``test_start`` to the last ``test_end``, with
-        capital carried across fold boundaries; per-fold metrics still come
-        from the independent per-fold simulations. Fingerprints cover the
+        The fold predictions are then concatenated and turned into weights
+        in one pass of ``_generate_signals`` over the prices from the first
+        ``test_start`` to the last ``test_end``, so the holdings a rule is
+        handed, locked positions included, carry across fold boundaries and
+        the rebalance schedule runs on from the first bar; the weights are
+        simulated once, with capital carried across as well, and the
+        ``stitched`` metrics record the pass's ``portfolio_construction``.
+        Per-fold metrics still come from the independent per-fold backtests. Fingerprints cover the
         whole stitched window. The manifest's fold dates are authoritative;
         a checkpoint whose recorded training dates select different bars
         only logs a warning.
@@ -1007,12 +1012,14 @@ class BaseBacktester(ABC):
                 }
             )
 
-        # Concatenate the fold weights and simulate the whole span once, with
-        # capital carried across fold boundaries.
+        # One account over the whole span: the folds' predictions are
+        # concatenated and turned into weights in one pass, so the current
+        # weights carry across fold boundaries, and simulated once, so the
+        # capital does too.
         first_start = folds[0]["test_start"]
         last_end = folds[-1]["test_end"]
-        stitched_weights = xr.concat(
-            [record["weights"] for record in records], dim="timestamp"
+        stitched_predictions = xr.concat(
+            [record["predictions"] for record in records], dim="timestamp"
         )
 
         # The per-fold loop left only the last fold's fingerprints. Take the
@@ -1034,13 +1041,17 @@ class BaseBacktester(ABC):
         self._compare_fingerprints()
 
         if not np.array_equal(
-            stitched_weights.timestamp.values.astype("datetime64[ns]"),
+            stitched_predictions.timestamp.values.astype("datetime64[ns]"),
             stitched_prices.timestamp.values.astype("datetime64[ns]"),
         ):
             raise ValueError(
-                f"{self.class_name}: the concatenated fold weights do not cover "
+                f"{self.class_name}: the concatenated fold predictions do not cover "
                 f"exactly the price bars {first_start}..{last_end}"
             )
+        stitched_weights = self._generate_signals(
+            stitched_predictions.reindex(symbol=stitched_prices.symbol.values),
+            stitched_prices,
+        )
         self._assert_weights_contract(stitched_weights, stitched_prices)
         stitched_simulation = self._simulate(stitched_weights, stitched_prices)
         stitched_benchmark = (
@@ -1053,11 +1064,13 @@ class BaseBacktester(ABC):
             stitched_benchmark,
             self._stitched_split(stitched_prices.timestamp.values, records),
         )
+        stitched_metrics.update(self._signal_metrics())
 
         notes = self._report_notes() + [
             f"run_cv: the stitched curve is one continuous simulation over folds "
             f"{[fold['fold'] for fold in folds]} ({first_start}..{last_end}), "
-            f"capital carried across fold boundaries; per-fold metrics come from "
+            f"capital and holdings carried across fold boundaries; per-fold "
+            f"metrics come from "
             f"separate per-fold simulations. Each fold's first label-lookahead "
             f"bars are in-sample (metrics stitched.in_sample_ranges) and are not "
             f"shaded in this report."

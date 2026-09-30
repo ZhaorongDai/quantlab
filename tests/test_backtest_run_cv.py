@@ -29,9 +29,10 @@ What is locked here, and what turns it red:
   models. Either way the stitched curve would describe no real trading path.
 - **Fold selection.** Only folds whose test segment lies inside the config's
   backtest window are run.
-- **D-35, the stitched curve.** It is ONE continuous simulation over the
-  concatenated fold weights, so capital carries across fold boundaries, while
-  every fold also gets its own simulation that starts from `init_cash`.
+- **D-35, the stitched curve.** Its weights come from one pass over the
+  concatenated fold predictions and it is ONE continuous simulation, so
+  holdings and capital carry across fold boundaries (#90), while every fold
+  also gets its own backtest that starts flat from `init_cash`.
 - **D-24 / D-35, the run directory.** The top-level artifacts describe the
   stitched curve, and `folds/fold_{i}/` holds each fold's weights and equity.
 
@@ -39,6 +40,7 @@ Everything is synthetic, CPU-only and offline. Configs are constructed
 directly, never through the factories in `quantlab/config/__init__.py` (D-32).
 """
 
+import dataclasses
 import json
 import types
 from pathlib import Path
@@ -51,7 +53,9 @@ from loguru import logger
 
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.portfolio import PortfolioConstructor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     make_model,
@@ -706,3 +710,45 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
     config = _strict_json(run_dir / "config.json")
     assert config["cv_project_dir"] == str(cv_project.project_dir)
     assert config["data_fingerprint"] == fingerprint
+
+
+#: Contexts every `_Recorder` saw, in call order.
+_SEEN: list = []
+
+
+@dataclasses.dataclass(frozen=True)
+class _RecorderConfig:
+    top_n: int = TOP_N
+
+
+class _Recorder(PortfolioConstructor):
+    """Top-n by the first label, recording every context it is handed."""
+
+    config_cls = _RecorderConfig
+
+    def construct(self, context):
+        _SEEN.append(context)
+        rule = TopNConstructor(TopNConfig(direction="long_only", top_n=self.config.top_n))
+        return rule.construct(context)
+
+
+def test_the_stitched_pass_hands_each_fold_the_holdings_the_previous_one_left(
+    tmp_path, cv_project
+):
+    _SEEN.clear()
+    backtester = _backtester(tmp_path, cv_project)
+    backtester.config = dataclasses.replace(
+        backtester.config, constructor=_Recorder(_RecorderConfig())
+    )
+
+    result = backtester.run_cv()
+
+    n_bars = LAST_TEST_BAR - FIRST_TEST_BAR + 1
+    rebalances = int(rebalance_mask(n_bars, REBALANCE_PERIODS).sum())
+    stitched, per_fold = _SEEN[-rebalances:], _SEEN[:-rebalances]
+    boundary = pd.Timestamp(_test_bars(cv_project, 1)[0])
+    in_fold = next(c for c in per_fold if c.timestamp == boundary)
+    carried = next(c for c in stitched if c.timestamp == boundary)
+    assert (in_fold.current_weights.values == 0).all()
+    assert float(carried.current_weights.sum()) == pytest.approx(1.0, abs=1e-9)
+    assert result.metrics["stitched"]["portfolio_construction"]["failed_bar_count"] == 0
