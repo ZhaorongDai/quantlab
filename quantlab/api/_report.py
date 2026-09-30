@@ -158,7 +158,8 @@ class BacktestReport:
         """Return the chart of the library's backtest report as a plotly figure.
 
         The same figure ``report.html`` embeds: equity, drawdown and monthly returns,
-        the deepest drawdown marked, and with a benchmark its NAV and the excess rows.
+        the deepest drawdown marked, and with a benchmark its NAV, drawdown and monthly returns
+        beside the portfolio's.
 
         Returns
         -------

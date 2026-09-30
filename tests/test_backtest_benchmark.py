@@ -293,22 +293,36 @@ def test_config_json_rebuilds_the_benchmark(benchmark_run):
     np.testing.assert_allclose(again.benchmark.value.values, result.benchmark.value.values)
 
 
-def test_report_draws_benchmark_nav_excess_return_and_excess_drawdown(benchmark_run):
+def test_report_draws_benchmark_nav_and_the_excess_tab(benchmark_run):
     _, result = benchmark_run
     page = (result.run_dir / "report.html").read_text(encoding="utf-8")
     for name in (
         "equity",
         "benchmark_equity",
-        "excess_return",
-        "excess_drawdown",
         "benchmark_drawdown",
         "benchmark_monthly_return",
+        "cumulative_excess_log",
+        "cumulative_excess_arithmetic",
+        "excess_drawdown",
+        "turnover",
     ):
         assert f'"name":"{name}"' in page, name
-    assert "Excess over benchmark" in page
-    assert "Benchmark (buy and hold)" in page
-    assert "Excess return vs benchmark" in page
-    assert "Excess max drawdown vs benchmark" in page
+    assert re.search(r"<h2>Strategy vs [^<]+</h2>", page)
+    assert re.search(r"<h2>Relative to [^<]+</h2>", page)
+    # The summary's excess lines are whole-window; they say so when the
+    # cards and tables show the out-of-sample slice instead.
+    span = " (whole window)" if result.metrics.get("in_sample") else ""
+    assert f"Excess return vs benchmark{span}<" in page
+    assert f"Excess max drawdown vs benchmark{span}<" in page
+
+
+def _page_traces(page: str) -> dict:
+    """Every trace of every figure on the page, by name."""
+    traces, pos = {}, 0
+    while (i := page.find("Plotly.newPlot(", pos)) >= 0:
+        batch, pos = json.JSONDecoder().raw_decode(page, page.index("[", i))
+        traces.update({trace["name"]: trace for trace in batch})
+    return traces
 
 
 def test_report_excess_curves_are_the_value_ratio(tmp_path):
@@ -328,15 +342,15 @@ def test_report_excess_curves_are_the_value_ratio(tmp_path):
     page = path.read_text(encoding="utf-8")
     import plotly.io as pio
 
-    match = re.search(r"Plotly\.newPlot\(\s*\"[^\"]+\",\s*(\[.*?\]),\s*\{", page, re.S)
-    assert match, page[:500]
-    traces = {trace["name"]: trace for trace in json.loads(match.group(1))}
-    excess = pio.from_json(json.dumps({"data": [traces["excess_return"]]})).data[0].y
+    traces = _page_traces(page)
+    log = pio.from_json(json.dumps({"data": [traces["cumulative_excess_log"]]})).data[0].y
     excess_dd = pio.from_json(json.dumps({"data": [traces["excess_drawdown"]]})).data[0].y
-    np.testing.assert_allclose(excess, [0.0, 0.1, -0.01, 0.2, 118 / 110 - 1])
+    np.testing.assert_allclose(np.exp(log) - 1, [0.0, 0.1, -0.01, 0.2, 118 / 110 - 1], atol=1e-12)
     np.testing.assert_allclose(
         excess_dd, [0.0, 0.0, 0.99 / 1.1 - 1, 0.0, (118 / 110) / 1.2 - 1]
     )
+    first_figure = page[: page.index("Plotly.newPlot(", page.index("Plotly.newPlot(") + 1)]
+    assert '"name":"excess_drawdown"' not in first_figure
 
 
 def test_report_without_benchmark_keeps_three_rows(tmp_path):
@@ -401,3 +415,62 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path):
     assert "benchmark_dataset" in json.loads((cv.run_dir / "fingerprint.json").read_text())
     page = (Path(cv.run_dir) / "report.html").read_text(encoding="utf-8")
     assert '"name":"excess_drawdown"' in page
+
+
+# --------------------------------------------------------------------------
+# win rates: per holding period and per calendar month
+# --------------------------------------------------------------------------
+
+
+def _expected_win_rates(result, *, against_benchmark: bool) -> tuple[float, float]:
+    """Share of holding periods and of months whose compounded return beats
+    the benchmark's (or zero). A holding period runs from a fill bar up to
+    the bar before the next fill; bars before the first fill hold nothing."""
+    ts = pd.DatetimeIndex(result.simulation.returns.timestamp.values)
+    r = pd.Series(result.simulation.returns.values, ts)
+    b = pd.Series(result.benchmark.returns.values, ts) if against_benchmark else pd.Series(0.0, ts)
+    fills = np.unique(result.simulation.orders["timestamp"].values.astype("datetime64[ns]"))
+    period = np.searchsorted(fills, ts.values.astype("datetime64[ns]"), side="right") - 1
+    ok = (period >= 0) & r.notna().values & b.notna().values
+
+    def share(keys):
+        frame = pd.DataFrame({"r": r.values[ok], "b": b.values[ok], "k": keys[ok]})
+        grouped = frame.groupby("k")
+        rp = grouped["r"].apply(lambda x: np.prod(1 + x) - 1)
+        bp = grouped["b"].apply(lambda x: np.prod(1 + x) - 1)
+        return float((rp > bp).mean() * 100)
+
+    return share(period), share(np.asarray(ts.to_period("M").astype(str)))
+
+
+def test_win_rates_per_holding_period_and_per_month(benchmark_run):
+    _, result = benchmark_run
+
+    rebalance, monthly = _expected_win_rates(result, against_benchmark=True)
+    relative = result.metrics["relative"]["whole"]
+    assert relative["Rebalance Win Rate vs Benchmark [%]"] == pytest.approx(rebalance)
+    assert relative["Monthly Win Rate vs Benchmark [%]"] == pytest.approx(monthly)
+
+    rebalance, monthly = _expected_win_rates(result, against_benchmark=False)
+    whole = result.metrics["whole"]
+    assert whole["Rebalance Win Rate [%]"] == pytest.approx(rebalance)
+    assert whole["Monthly Win Rate [%]"] == pytest.approx(monthly)
+    for name in ("in_sample", "out_of_sample"):
+        block = result.metrics.get(name)
+        if block:
+            assert "Rebalance Win Rate [%]" in block and "Monthly Win Rate [%]" in block
+
+
+def test_a_bar_at_or_below_minus_100_percent_is_left_out_of_the_win_rates(benchmark_run):
+    """A value that reached zero has no log return: the bar is dropped, not counted as a loss."""
+    backtester, _ = benchmark_run
+    bars = pd.date_range("2024-01-01", periods=6, freq="D")
+    returns = xr.DataArray([0.0, 0.1, -1.0, 0.05, np.nan, 0.02], dims=("timestamp",), coords={"timestamp": bars})
+    orders = xr.Dataset({"timestamp": ("order", bars[[1, 3]].values)})
+    simulation = type("Simulation", (), {"returns": returns, "orders": orders})()
+
+    rates = backtester._win_rates(simulation, [("2024-01-01", "2024-01-06")])
+
+    # Two holding periods: bar 1 (+10%) with bar 2 dropped, and bars 3-5 (+5%, NaN, +2%).
+    assert rates["Rebalance Win Rate [%]"] == pytest.approx(100.0)
+    assert rates["Monthly Win Rate [%]"] == pytest.approx(100.0)

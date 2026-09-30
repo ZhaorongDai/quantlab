@@ -556,7 +556,8 @@ def test_plot_returns_the_report_figure(stores):
 
     assert isinstance(figure, go.Figure)
     names = {trace.name for trace in figure.data}
-    assert {"equity", "drawdown", "benchmark_equity", "excess_return"} <= names
+    assert {"equity", "drawdown", "benchmark_equity", "benchmark_drawdown"} <= names
+    assert "excess_return" not in names and "excess_drawdown" not in names
 
 
 # --------------------------------------------------------------------------- libraries

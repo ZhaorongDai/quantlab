@@ -494,15 +494,21 @@ succeeded, so a crashed run leaves no half-written directory behind.
 All JSON files are strict JSON: NaN and infinities are written as `null` and
 timestamps as ISO strings.
 
-`report.html` is a single page with a summary table of the dates and settings,
-an interactive chart of the equity curve, the drawdown (the fall from the
-running peak) and the monthly returns on a shared time axis, a year-by-month
-heatmap of monthly returns, a metric table with columns for the whole window,
-in-sample, out-of-sample and their difference, and the notes. The in-sample
-range is shaded on the chart, and two triangles mark the deepest drawdown from
-its lowest point to its recovery. The page loads plotly.js from a CDN, so
-viewing it needs network access, while the file itself stays small (about
-40 KB for the example runs).
+`report.html` is a single page: a row of headline numbers (total and excess
+return, information ratio, Sharpe ratio, max drawdown, beta, turnover), the
+metric tables on the left (the dates and settings; the strategy against the
+benchmark grouped into returns, risk and risk-adjusted ratios; the excess over
+the benchmark; trading; and in-sample against out-of-sample when the run has
+an in-sample part), and the charts on the right in tabs: Performance (equity,
+drawdown and monthly returns with a year-by-month heatmap), Excess (the
+cumulative excess return, log or arithmetic, and the excess drawdown), Rolling
+(one-year statistics) and Portfolio (turnover, holdings and exposure per
+rebalance). With an in-sample part the headline numbers are out-of-sample, and
+every chart shades the in-sample range; two triangles mark the deepest
+drawdown from its lowest point to its recovery. See
+[the report page](../backtest.md#the-report-page). The page loads plotly.js from a CDN, so
+viewing it needs network access, while the file itself stays at a few hundred
+kilobytes (about 650 KB for five years of daily bars with a benchmark).
 
 Set `use_wandb=True` to also log the metrics and the report to a separate
 Weights & Biases run in the project `{ClassName}_backtest`. It is off by

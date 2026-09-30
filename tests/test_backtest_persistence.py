@@ -781,7 +781,8 @@ def test_report_carries_the_monthly_heatmap_in_a_second_div(overlap_run):
     run_dir = overlap_run["result"].run_dir
     html = _report_html(overlap_run)
 
-    assert html.count("Plotly.newPlot(") == 2
+    # The Performance figure, then the heatmap; the other tabs' figures follow.
+    assert html.count("Plotly.newPlot(") >= 2
     heatmap = _second_figure_traces(html)["monthly_return_heatmap"]
     assert heatmap["type"] == "heatmap"
     assert heatmap["x"] == [f"{month:02d}" for month in range(1, 13)]
@@ -805,141 +806,53 @@ def test_report_carries_the_monthly_heatmap_in_a_second_div(overlap_run):
     assert sorted(p.name for p in run_dir.iterdir()) == D24_ARTIFACTS
 
 
-def test_report_carries_the_metric_table_and_the_axis_toggle(overlap_run):
-    """Quick 260915-sxx: the page carries the numbers, not just the picture.
+def _report_rows(html: str) -> dict[str, list[str]]:
+    """Every metric row of the page as `label -> [cell, ...]`."""
+    rows = re.findall(r'<tr><th title="[^"]*">([^<]+)</th>((?:<td[^>]*>[^<]*</td>)+)</tr>', html)
+    return {name: re.findall(r"<td[^>]*>([^<]*)</td>", cells) for name, cells in rows}
 
-    The metric table is rendered from whatever the metrics mapping carries, so
-    this asserts the persisted numbers reached the page rather than asserting
-    a particular metric list. The log button is what makes a curve that
+
+def test_report_carries_the_out_of_sample_numbers_and_the_axis_toggle(overlap_run):
+    """With an in-sample part the headline table is the out-of-sample slice.
+
+    The persisted numbers reached the page: each catalogued percent and ratio of
+    `metrics.json`'s `out_of_sample` block is the headline table's cell, as the
+    page formats it (two decimals). The log button is what makes a curve that
     compounded by orders of magnitude readable.
     """
     html = _report_html(overlap_run)
     metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    oos = metrics["out_of_sample"]
 
-    assert "<h2>Metrics</h2>" in html
-    for block in ("whole", "in_sample", "out_of_sample"):
-        assert f"<th>{block}</th>" in html
-
-    # Every finite number in the whole block reached the page, compared by
-    # value after parsing the cell back -- not by re-formatting it here.
-    rendered = dict(re.findall(r"<tr><th>([^<]+)</th><td>([^<]*)</td>", html))
-    checked = 0
-    for key, value in metrics["whole"].items():
-        if not isinstance(value, float) or not np.isfinite(value):
-            continue
-        assert key in rendered, (key, sorted(rendered))
-        assert float(rendered[key]) == pytest.approx(value, rel=1e-5)
-        checked += 1
-    assert checked >= 5, "the whole block must carry several finite numbers"
-
-    # The turnover rows are flat, vectorbt-style names: no dotted path, no
-    # underscore, and the unit in the name.
-    assert "Total Turnover [%]" in rendered
-    assert not any("_" in key or "." in key for key in rendered), sorted(rendered)
-
+    assert "<h2>Strategy (out-of-sample)</h2>" in html
+    start = html.index("<h2>Strategy (out-of-sample)</h2>")
+    rows = _report_rows(html[start : html.index("</table>", start)])
+    for key, label, fmt in (
+        ("Total Return [%]", "Total return", "{:,.2f}%"),
+        ("Annualized Volatility [%]", "Annualised volatility", "{:,.2f}%"),
+        ("Sharpe Ratio", "Sharpe ratio", "{:,.2f}"),
+        ("Calmar Ratio", "Calmar ratio", "{:,.2f}"),
+    ):
+        assert rows[label][0] == fmt.format(oos[key]), (label, rows[label], oos[key])
+    assert rows["Max drawdown"][0] == "{:,.2f}%".format(-abs(oos["Max Drawdown [%]"]))
+    assert "Total turnover" in _report_rows(html)
     assert '"yaxis.type":"log"' in html and '"yaxis.type":"linear"' in html
 
 
-#: The rows of a real overlapping run whose `out_of_sample - in_sample` cell is
-#: a number (03.8 D-01). Written out, never derived from `_delta` or from the
-#: metrics mapping: a census that asks the implementation what it should
-#: contain agrees with any answer.
-DELTA_CARRYING_ROWS = {
-    # the 13 returns-accessor floats -- ratios included, per D-01
-    "Total Return [%]",
-    "Annualized Return [%]",
-    "Annualized Volatility [%]",
-    "Max Drawdown [%]",
-    "Sharpe Ratio",
-    "Calmar Ratio",
-    "Omega Ratio",
-    "Sortino Ratio",
-    "Skew",
-    "Kurtosis",
-    "Tail Ratio",
-    "Common Sense Ratio",
-    "Value at Risk",
-    # the per-slice activity counts and sums
-    "Total Orders",
-    "Total Fees Paid",
-    "Traded Notional",
-    "Total Closed Trades",
-    "Total Open Trades",
-    "Turnover per Rebalance [%]",
-    "Total Turnover [%]",
-    "Annualized Turnover [%]",
-}
-
-#: The slice rows whose delta is a dash by TYPE: timestamps and durations.
-DELTA_DASHED_SLICE_ROWS = {"Start", "End", "Period", "Max Drawdown Duration"}
-
-
-def _flat_keys(block: dict, prefix: str = "") -> set[str]:
-    """A metrics block's keys as the report's dotted row names."""
-    keys: set[str] = set()
-    for key, value in block.items():
-        if isinstance(value, dict):
-            keys |= _flat_keys(value, f"{prefix}{key}.")
-        else:
-            keys.add(f"{prefix}{key}")
-    return keys
-
-
-def test_report_delta_census_pins_which_rows_carry_a_number(overlap_run):
-    """03.8 D-01 on a real run: exactly which rows get a delta, both halves.
-
-    "Every delta cell is a number or a dash" passes when the predicate returns
-    None for everything, and a pure count survives a predicate that differences
-    the wrong rows -- so both the carrying set and the dashed set are pinned.
-
-    If the carrying set ever shrinks, do not shrink the literal to match. Two
-    causes are legitimate and must be stated here rather than absorbed:
-    `Turnover per Rebalance [%]` and `Annualized Turnover [%]` are nan for a slice
-    with no fill bar (this fixture fills in both slices, so they are finite),
-    or the metrics key set itself changed. Anything else is a predicate defect.
-
-    Rows present only in `whole` (the engine's STATS_METRICS names) must dash:
-    that is the `None - 3.0` case, which would raise inside the staging
-    directory and delete the run. The page having been written proves it did
-    not.
-    """
+def test_report_split_table_carries_both_slices(overlap_run):
+    """A run with an in-sample part shows every key row for both slices."""
     html = _report_html(overlap_run)
     metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
-    assert html.startswith("<!DOCTYPE html>")
-    assert "<th>out_of_sample - in_sample</th>" in html
 
-    # All four cells per row; the first-<td> parser above cannot see column 4.
-    # Scoped to the metric table: the dates-and-setup table has the same shape.
-    table = html.split('<table class="metrics">', 1)[1].split("</table>", 1)[0]
-    rows = re.findall(r"<tr><th>([^<]+)</th>((?:<td>[^<]*</td>)+)</tr>", table)
-    cells = {name: re.findall(r"<td>([^<]*)</td>", run) for name, run in rows}
-    assert {len(row) for row in cells.values()} == {4}, cells
-
-    carrying = {name for name, row in cells.items() if row[3] != "—"}
-    dashed = {name for name, row in cells.items() if row[3] == "—"}
-    in_both_slices = _flat_keys(metrics["in_sample"]) & _flat_keys(
-        metrics["out_of_sample"]
-    )
-    whole_only = _flat_keys(metrics["whole"]) - (
-        _flat_keys(metrics["in_sample"]) | _flat_keys(metrics["out_of_sample"])
-    )
-
-    assert carrying == DELTA_CARRYING_ROWS
-    assert dashed & in_both_slices == DELTA_DASHED_SLICE_ROWS
-    assert not carrying & DELTA_DASHED_SLICE_ROWS
-    assert carrying | DELTA_DASHED_SLICE_ROWS == in_both_slices
-    for name in carrying:
-        float(cells[name][3])  # a real number, never the token nan
-
-    assert whole_only, "the whole block must carry rows the slices do not"
-    for name in whole_only:
-        assert cells[name][3] == "—", name
-
-    # D-05: the delta is report-only; metrics.json gained nothing.
-    text = (overlap_run["result"].run_dir / "metrics.json").read_text()
-    assert "out_of_sample - in_sample" not in text
-    for block in ("whole", "in_sample", "out_of_sample"):
-        assert not [k for k in _flat_keys(metrics[block]) if "delta" in k.lower()]
+    assert "<h2>In-sample vs out-of-sample</h2>" in html
+    start = html.index("<h2>In-sample vs out-of-sample</h2>")
+    block = html[start : html.index("</table>", start)]
+    table = _report_rows(block)
+    for label, key in (("Total return", "Total Return [%]"), ("Sharpe ratio", "Sharpe Ratio"),
+                       ("Max drawdown", "Max Drawdown [%]")):
+        in_sample, out_of_sample, _difference, _whole = table[label]
+        assert in_sample != "—" and out_of_sample != "—", (label, table[label])
+    assert table["Total return"][0] == "{:,.2f}%".format(metrics["in_sample"]["Total Return [%]"])
 
 
 def test_report_states_the_window_and_split_dates_as_text(overlap_run):

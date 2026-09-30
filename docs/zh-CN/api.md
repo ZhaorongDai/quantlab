@@ -462,12 +462,12 @@ ValueError: scores= needs top_n=, the number of names held per side.
 {'Total Return [%]': -2.9055, 'Max Drawdown [%]': 11.0196}
 ```
 
-`plot()` 以 plotly 图形返回库的报告图表：净值、回撤和月度收益；有基准时还有基准曲线和超额收益、超额回撤两行。对它调用 `.show()` 即可显示。
+`plot()` 以 plotly 图形返回库报告中 Performance 标签页的图表：净值、回撤和月度收益，有基准时基准曲线并列其中（报告页面把相对基准的超额单独放在另一个标签页）。对它调用 `.show()` 即可显示。
 
 ```python
 >>> figure = compared.plot()
 >>> sorted({trace.name for trace in figure.data if trace.name})
-['benchmark_drawdown', 'benchmark_equity', 'benchmark_monthly_return', 'deepest_drawdown_end', 'deepest_drawdown_valley', 'drawdown', 'equity', 'excess_drawdown', 'excess_return', 'monthly_return']
+['benchmark_drawdown', 'benchmark_equity', 'benchmark_monthly_return', 'deepest_drawdown_end', 'deepest_drawdown_valley', 'drawdown', 'equity', 'monthly_return']
 ```
 
 ### 保留一次运行

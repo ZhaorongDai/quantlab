@@ -462,12 +462,12 @@ ValueError: scores= needs top_n=, the number of names held per side.
 {'Total Return [%]': -2.9055, 'Max Drawdown [%]': 11.0196}
 ```
 
-`plot()` returns the library's report chart as a plotly figure: equity, drawdown and monthly returns, and with a benchmark its curve and the excess rows. Call `.show()` on it to display it.
+`plot()` returns the Performance chart of the library's report as a plotly figure: equity, drawdown and monthly returns, with the benchmark's beside them when there is one (the report page draws the excess over the benchmark on its own tab). Call `.show()` on it to display it.
 
 ```python
 >>> figure = compared.plot()
 >>> sorted({trace.name for trace in figure.data if trace.name})
-['benchmark_drawdown', 'benchmark_equity', 'benchmark_monthly_return', 'deepest_drawdown_end', 'deepest_drawdown_valley', 'drawdown', 'equity', 'excess_drawdown', 'excess_return', 'monthly_return']
+['benchmark_drawdown', 'benchmark_equity', 'benchmark_monthly_return', 'deepest_drawdown_end', 'deepest_drawdown_valley', 'drawdown', 'equity', 'monthly_return']
 ```
 
 ### Keeping a run

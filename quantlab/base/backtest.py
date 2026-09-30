@@ -2632,6 +2632,11 @@ class BaseBacktester(ABC):
         # often we traded. A run with no fills has no `order` dimension, so
         # use `.sizes.get` rather than a subscript that would raise.
         whole["Total Orders"] = int(simulation.orders.sizes.get("order", 0))
+        timestamps = simulation.value.timestamp.values
+        whole_range = [
+            (self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))
+        ]
+        whole.update(self._win_rates(simulation, whole_range))
         metrics: dict = {
             "whole": whole,
             "execution": {
@@ -2656,16 +2661,13 @@ class BaseBacktester(ABC):
                 {
                     **self._period_returns_stats(simulation, ranges),
                     **self._period_record_stats(simulation, ranges),
+                    **self._win_rates(simulation, ranges),
                 }
                 if ranges
                 else None
             )
 
         if benchmark is not None:
-            timestamps = simulation.value.timestamp.values
-            whole_range = [
-                (self._bar_label(timestamps[0]), self._bar_label(timestamps[-1]))
-            ]
             axis_symbol = self._benchmark_axis_symbol or ""
             metrics["benchmark"] = {
                 "symbol": self._benchmark_display_name(axis_symbol, timestamps[-1]),
@@ -2677,10 +2679,16 @@ class BaseBacktester(ABC):
                 },
             }
             metrics["relative"] = {
-                "whole": self._relative_stats(simulation, benchmark, whole_range),
+                "whole": {
+                    **self._relative_stats(simulation, benchmark, whole_range),
+                    **self._win_rates(simulation, whole_range, benchmark),
+                },
                 **{
                     name: (
-                        self._relative_stats(simulation, benchmark, ranges)
+                        {
+                            **self._relative_stats(simulation, benchmark, ranges),
+                            **self._win_rates(simulation, ranges, benchmark),
+                        }
                         if ranges
                         else None
                     )
@@ -2689,6 +2697,73 @@ class BaseBacktester(ABC):
             }
         metrics.update(split or {})
         return metrics
+
+    def _win_rates(
+        self,
+        simulation: SimulationResult,
+        ranges: list[tuple[str, str]],
+        benchmark: SimulationResult | None = None,
+    ) -> dict:
+        """Return the share of holding periods and of months the strategy won, in percent.
+
+        A *holding period* runs from a bar with fills up to the bar before
+        the next one; the bars before the first fill hold nothing and are
+        left out. A month is a calendar month of the bar labels. Each period's
+        per-bar returns inside ``ranges`` are compounded; the strategy wins a
+        period when its return beats the benchmark's, or, without a
+        benchmark, when it is positive. A bar where either return is NaN, or
+        at or below -100% (a value that reached zero, whose log return does
+        not exist), is left out, and a slice with no period gives NaN.
+
+        Parameters
+        ----------
+        simulation : SimulationResult
+            The strategy's simulation; its fills mark the holding periods.
+        ranges : list[tuple[str, str]]
+            Inclusive bar-label ranges of the slice; bars outside them are
+            left out.
+        benchmark : SimulationResult or None, optional
+            The benchmark's simulation on the same bars. Without it a period
+            is won when its return is positive.
+
+        Returns
+        -------
+        dict
+            ``Rebalance Win Rate [%]`` and ``Monthly Win Rate [%]``, with
+            `` vs Benchmark`` before `` [%]`` when ``benchmark`` is given.
+        """
+        returns = simulation.returns
+        ts = returns.timestamp.values.astype("datetime64[ns]")
+        r = np.asarray(returns.values, dtype=np.float64)
+        b = (
+            np.asarray(benchmark.returns.values, dtype=np.float64)
+            if benchmark is not None
+            else np.zeros_like(r)
+        )
+        fills = (
+            np.unique(simulation.orders["timestamp"].values.astype("datetime64[ns]"))
+            if simulation.orders.sizes.get("order", 0)
+            else np.array([], dtype="datetime64[ns]")
+        )
+        period = np.searchsorted(fills, ts, side="right") - 1
+        with np.errstate(invalid="ignore"):
+            valid = (r > -1.0) & (b > -1.0)
+        keep = self._in_ranges(ts, ranges) & (period >= 0) & valid
+        months = pd.DatetimeIndex(ts).to_period("M").asi8
+
+        def share(keys: np.ndarray) -> float:
+            """Return the percentage of the kept bars' groups under ``keys`` won."""
+            if not keep.any():
+                return float("nan")
+            frame = pd.DataFrame({"r": np.log1p(r[keep]), "b": np.log1p(b[keep]), "k": keys[keep]})
+            sums = frame.groupby("k")[["r", "b"]].sum()
+            return float((sums["r"] > sums["b"]).mean() * 100.0)
+
+        suffix = " vs Benchmark" if benchmark is not None else ""
+        return {
+            f"Rebalance Win Rate{suffix} [%]": share(period),
+            f"Monthly Win Rate{suffix} [%]": share(months),
+        }
 
     def _benchmark_display_name(self, axis_symbol: str, as_of) -> str:
         """Return the benchmark's readable name, its ticker when the store has one.
@@ -2990,9 +3065,12 @@ class BaseBacktester(ABC):
             where = "" if dataset is None else f" ({self._where(dataset)})"
             summary["Benchmark"] = f"{_text(benchmark.get('symbol'))}{where}, buy and hold"
             whole = (block.get("relative") or {}).get("whole") or {}
+            # The cards and tables show the out-of-sample slice when there
+            # is an in-sample one, so these whole-window lines say so.
+            span = " (whole window)" if block.get("in_sample") else ""
             for label, key in (
-                ("Excess return vs benchmark", "Excess Return [%]"),
-                ("Excess max drawdown vs benchmark", "Excess Max Drawdown [%]"),
+                (f"Excess return vs benchmark{span}", "Excess Return [%]"),
+                (f"Excess max drawdown vs benchmark{span}", "Excess Max Drawdown [%]"),
             ):
                 value = whole.get(key)
                 summary[label] = (
@@ -3052,15 +3130,16 @@ class BaseBacktester(ABC):
         null, timestamps become ISO strings) and is written atomically.
 
         ``report.html`` is self-contained: the summary lines from
-        ``_report_summary``, a metric table with the ``whole``,
-        ``in_sample`` and ``out_of_sample`` columns, and equity, drawdown and
-        monthly-return charts on a shared time axis with the in-sample range
-        shaded and the deepest drawdown marked (with a benchmark, its NAV is
-        drawn beside the portfolio's and the excess-return and
-        excess-drawdown rows are added), followed by the notes. The
-        report module derives the table from whatever keys ``metrics``
-        holds; nothing is selected or computed here, so a change in the
-        metric set cannot make the report raise and discard the staged run.
+        ``_report_summary``, headline numbers, the metric tables (the
+        out-of-sample slice when the run has an in-sample part, with an
+        in-sample vs out-of-sample table) and the chart tabs: Performance
+        (equity, drawdown and monthly returns with the in-sample range
+        shaded and the deepest drawdown marked, the benchmark beside the
+        portfolio), Excess (with a benchmark), Rolling and Portfolio
+        (turnover, holdings and exposure per rebalance), followed by the
+        notes. A metric the report does not know is still shown, so a
+        change in the metric set cannot make the report raise and discard
+        the staged run.
 
         Returns
         -------
@@ -3095,6 +3174,7 @@ class BaseBacktester(ABC):
                 ),
                 metrics=metrics,
                 **chart,
+                **self._report_portfolio_inputs(weights, simulation),
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
@@ -3200,6 +3280,34 @@ class BaseBacktester(ABC):
             "init_cash": self.config.init_cash,
             "drawdown_span": self._drawdown_span(simulation),
             **self._benchmark_report_inputs(benchmark, metrics),
+        }
+
+    def _report_portfolio_inputs(
+        self, weights: xr.Dataset, simulation: SimulationResult
+    ) -> dict:
+        """Return the Portfolio and Rolling tab inputs of ``write_backtest_report``.
+
+        Parameters
+        ----------
+        weights : xr.Dataset
+            The run's target weights, with a ``weight`` variable on
+            ``(timestamp, symbol)``.
+        simulation : SimulationResult
+            The run's simulation.
+
+        Returns
+        -------
+        dict
+            ``weights`` (the ``weight`` variable), ``turnover`` (per fill
+            bar, whose mean is the ``Turnover per Rebalance [%]`` metric) and
+            ``bars_per_year`` (the market's bars in a year at the run's bar
+            interval, the rolling window).
+        """
+        interval = pd.Timedelta(simulation.bar_interval)
+        return {
+            "weights": weights["weight"],
+            "turnover": self._turnover(simulation),
+            "bars_per_year": self.MARKET.year_freq(interval) / interval,  # type: ignore[union-attr]
         }
 
     @staticmethod
@@ -3334,6 +3442,7 @@ class BaseBacktester(ABC):
                 init_cash=self.config.init_cash,
                 drawdown_span=drawdown_span,
                 **self._benchmark_report_inputs(benchmark, metrics["stitched"]),
+                **self._report_portfolio_inputs(weights, simulation),
             )
             write_json_atomically(
                 run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2

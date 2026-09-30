@@ -273,7 +273,7 @@ out_of_sample -5.61 -4.27 13
 | `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），带 `count` 和 `bars`。 |
 | `settlements.json` | 退市结算记录。 |
 | `fingerprint.json` | 本次运行读取的价格数据和因子数据的摘要。 |
-| `report.html` | 净值、回撤、月度收益图表，指标表和备注。 |
+| `report.html` | 关键指标、分组的指标表，以及业绩、超额收益、滚动一年统计和组合结构的图表标签页（见[报告页面](#报告页面)）。 |
 | `inputs/` | 仅当价格或基准数据集是保存在内存中的 `FrameDataset` 时写出：它的面板存为 `price_dataset.zarr` 或 `benchmark_dataset.zarr`，`config.json` 以相对运行目录的路径指向它（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。 |
 
 ## 常见任务
@@ -421,7 +421,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 (True, -5.85)
 ```
 
-`report_figure(result)` 以 plotly 图形返回 `report.html` 中嵌入的那张图（净值、回撤、月度收益，设置了基准时还有基准相关的行），因此只在内存中运行的结果也能查看。它接受 `run()` 或 `run_weights()` 的结果。
+`report_figure(result)` 以 plotly 图形返回 `report.html` 中 Performance 标签页的那张图（净值、回撤、月度收益，设置了基准时基准与组合并列），因此只在内存中运行的结果也能查看。它接受 `run()` 或 `run_weights()` 的结果。
 
 ```python
 >>> figure = weights_backtester.report_figure(in_memory)
@@ -451,9 +451,19 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 运行结果多出两个指标块，每块都有 `whole`、`in_sample`、`out_of_sample` 三个切片：
 
 - `benchmark`：基准的 `symbol` 及其自身的收益统计（总收益、年化收益、波动率、Sharpe、最大回撤等）；
-- `relative`：组合相对基准的表现，命名沿用 vectorbt 的风格，所有带 `[%]` 的行都是百分数。*相对净值* = 组合净值 / 基准净值。`Excess Return [%]` 是期末相对净值减 1（即通常所说的超额收益 alpha），`Annualized Excess Return [%]` 为其年化值，`Excess Max Drawdown [%]` 是相对净值从其历史高点的最大回落（*超额回撤*，为负数或 0），另有 `Strategy Total Return [%]`、`Benchmark Total Return [%]`、`Total Return Difference [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`（年化回归截距）和 `Win Rate vs Benchmark [%]`。
+- `relative`：组合相对基准的表现，命名沿用 vectorbt 的风格，所有带 `[%]` 的行都是百分数。*相对净值* = 组合净值 / 基准净值。`Excess Return [%]` 是期末相对净值减 1（即通常所说的超额收益 alpha），`Annualized Excess Return [%]` 为其年化值，`Excess Max Drawdown [%]` 是相对净值从其历史高点的最大回落（*超额回撤*，为负数或 0），另有 `Strategy Total Return [%]`、`Benchmark Total Return [%]`、`Total Return Difference [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`（年化回归截距）和 `Win Rate vs Benchmark [%]`（收益高于基准的 bar 所占比例）、`Rebalance Win Rate vs Benchmark [%]`（复利收益跑赢基准的持有期所占比例，持有期从一个有成交的 bar 到下一个有成交的 bar 之前）和 `Monthly Win Rate vs Benchmark [%]`（按自然月计算的同一比例）。策略自己的各分段还有 `Rebalance Win Rate [%]` 和 `Monthly Win Rate [%]`，即收益为正的比例，有没有基准都会计算。
 
-`report.html` 在组合净值的同一面板上画出基准净值（灰色虚线），其下是超额收益和超额回撤两行，回撤和月度收益面板中并列显示基准，另有“Excess over benchmark”和“Benchmark (buy and hold)”两张表。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
+`report.html` 在 Performance 标签页上把基准（灰色虚线）画在组合旁边（净值、回撤、月度收益），基准出现在 "Strategy vs" 表的第二列，并增加 "Relative to" 表和 Excess 标签页；Rolling 标签页改为超额收益、信息比率和 beta（见[报告页面](#报告页面)）。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
+
+### 报告页面
+
+`report.html` 是一个页面，分三部分：
+
+- **关键指标**：总收益、超额收益、信息比率、胜率、Sharpe、最大回撤、beta 和年化换手，每项下面给出基准的对应值或相关数字。没有基准时是总收益、年化收益、胜率、Sharpe、最大回撤、波动率和换手。胜率是跑赢基准的持有期（从一个有成交的 bar 到下一个有成交的 bar 之前）所占的比例，下面附跑赢基准的自然月比例；没有基准时是收益为正的比例。
+- **表格**（左侧）：日期与设置；"Strategy vs *基准*"，按收益、风险、风险调整后指标分组，策略旁边列出基准和差值（百分比指标的差值用百分点）；"Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）；"Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）；运行带 in-sample 部分时还有 "In-sample vs out-of-sample"，并列样本内、样本外、两者之差和整个窗口。鼠标悬停在指标名上会显示它的定义。页面不认识的指标，无论来自策略、基准还是 relative 块，都列在 "Other" 下。摘要里的超额两行按整个窗口计算；卡片和表格显示样本外时，这两行会注明 "(whole window)"。
+- **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）。
+
+运行带 in-sample 部分时，关键指标和主表取样本外部分，也就是模型没见过的 bar，并且所有图都用灰色标出 in-sample 区间。页面上所有回撤都是负数。超额回撤（相对净值从高点的回落）只画在 Excess 标签页上，不和两条净值自身的回撤放在一起，因为两者的数值不可比。
 
 ### 从配置重建一次运行
 
