@@ -863,8 +863,8 @@ class MeanVarianceConfig(_FrozenConfig):
     ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=252)),
     ...     ic=0.05, risk_aversion=10.0, weight_cap=0.05,
     ... )
-    >>> cfg.direction, cfg.turnover_penalty
-    ('long_only', 0.0)
+    >>> cfg.direction, cfg.calibration, cfg.turnover_penalty, cfg.candidate_top_k
+    ('long_only', 'grinold', 0.0, None)
     """
 
     #: The label whose prediction gives the expected return; its span sets
@@ -872,18 +872,32 @@ class MeanVarianceConfig(_FrozenConfig):
     expected_return_label: str
     #: The risk model estimating the covariance of one-bar returns.
     risk_model: "RiskModel"
-    #: Information coefficient of the Grinold calibration
-    #: ``mu = ic * sigma * z``, for example a CV run's mean IC.
-    ic: float
     #: Risk aversion ``lambda`` of the variance penalty.
     risk_aversion: float
+    #: How the prediction becomes the expected return ``mu``.
+    #: ``"grinold"``: ``mu = ic * sigma * z``, ``z`` the prediction's
+    #: cross-sectional z-score, so any score will do. ``"raw"``: ``mu`` is
+    #: the prediction itself, which must be in the label's own units (the
+    #: predictor reports the label as ``"raw"`` in ``label_scales``).
+    calibration: Literal["grinold", "raw"] = "grinold"
+    #: Information coefficient of the Grinold calibration, for example a CV
+    #: run's mean IC; required by ``"grinold"``, unused by ``"raw"``.
+    ic: float | None = None
     #: Penalty ``kappa`` per unit of one-way turnover against the current
     #: weights; 0 trades freely.
     turnover_penalty: float = 0.0
-    #: Largest weight of one symbol.
+    #: Largest absolute weight of one symbol.
     weight_cap: float = 1.0
-    #: ``"long_only"``: fully invested, non-negative weights.
-    direction: Literal["long_only"] = "long_only"
+    #: ``"long_only"``: fully invested, non-negative weights (``sum(w) =
+    #: 1``). ``"long_short"``: dollar-neutral (``sum(w) = 0``) with gross
+    #: exposure ``|w|_1 <= 1``, a ceiling, not an equality: the optimiser
+    #: may leave part of the book uninvested.
+    direction: Literal["long_only", "long_short"] = "long_only"
+    #: Optimise only over the ``candidate_top_k`` symbols with the largest
+    #: expected return (largest absolute one for ``"long_short"``) plus
+    #: every symbol currently held; the rest get 0.0. ``None`` optimises
+    #: over every eligible symbol.
+    candidate_top_k: int | None = None
 
 
 @dataclass(frozen=True)

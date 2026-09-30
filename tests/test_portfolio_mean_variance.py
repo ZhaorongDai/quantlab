@@ -14,6 +14,13 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
 - `LedoitWolfRiskModel` returns a symmetric positive-definite covariance;
   given volatilities become the square roots of its diagonal.
 - The optimiser and its risk model round-trip through `get_config`.
+- Long-short (#80) weights are dollar-neutral, of gross exposure at most one
+  (a ceiling: a flat book is allowed) and within the cap.
+- With `candidate_top_k` (#80) only the pool (top k by mu, by |mu|
+  long-short, plus every held symbol) gets weight, and a held symbol outside
+  the top k can be closed, its turnover cost priced.
+- `raw` calibration (#80) uses the prediction as mu unchanged, and is
+  refused by `bind` for a label the predictor reports as `standardized`.
 """
 
 import json
@@ -177,7 +184,11 @@ def test_bind_checks_the_label_and_reads_its_span():
 @pytest.mark.parametrize(
     "overrides, match",
     [
-        ({"direction": "long_short"}, "long_only"),
+        ({"direction": "sideways"}, "direction"),
+        ({"calibration": "rank"}, "calibration"),
+        ({"ic": None}, "ic"),
+        ({"candidate_top_k": 0}, "candidate_top_k"),
+        ({"candidate_top_k": 2.5}, "candidate_top_k"),
         ({"weight_cap": 0.0}, "weight_cap"),
         ({"weight_cap": 1.5}, "weight_cap"),
         ({"risk_aversion": -1.0}, "risk_aversion"),
@@ -279,3 +290,92 @@ def test_non_finite_problem_data_is_a_construction_error_not_a_crash():
 
     with pytest.raises(PortfolioConstructionError):
         optimizer.construct(_context())
+
+
+def _scaled_predictor(scale):
+    predictor = _Predictor({"ret_5": SPAN})
+    predictor.label_scales = {"ret_5": scale}
+    return predictor
+
+
+@pytest.mark.parametrize("seed", range(5))
+def test_long_short_weights_are_dollar_neutral_gross_at_most_one_and_capped(seed):
+    weights = _optimizer(direction="long_short", risk_aversion=0.5, weight_cap=0.2).construct(
+        _context(seed=seed)
+    ).values
+
+    assert weights.sum() == pytest.approx(0.0, abs=1e-12)
+    assert np.abs(weights).sum() <= 1.0 + 1e-12
+    assert (np.abs(weights) <= 0.2 + 1e-12).all()
+    assert (weights > 0).any() and (weights < 0).any()
+
+
+def test_long_short_gross_exposure_is_a_ceiling_not_an_equality():
+    # A heavy risk aversion leaves most of the book uninvested.
+    weights = _optimizer(direction="long_short", risk_aversion=1e4).construct(_context(seed=1)).values
+
+    assert weights.sum() == pytest.approx(0.0, abs=1e-12)
+    assert np.abs(weights).sum() < 0.5
+
+
+def test_only_the_candidate_pool_gets_weight():
+    prediction = np.array([0.5, -2.0, 0.1, 1.0, -0.2, 2.0])  # top two by mu: FFF, DDD; by |mu|: BBB, FFF
+    returns = np.random.default_rng(9).normal(0.0, 0.02, size=(LOOKBACK, len(SYMBOLS)))
+
+    long_only = _optimizer(candidate_top_k=2, weight_cap=0.6).construct(
+        _context(prediction=prediction, returns=returns)
+    )
+    long_short = _optimizer(candidate_top_k=2, direction="long_short", risk_aversion=0.1).construct(
+        _context(prediction=prediction, returns=returns)
+    )
+
+    assert sorted(long_only.symbol.values[long_only.values != 0].tolist()) == ["DDD", "FFF"]
+    assert sorted(long_short.symbol.values[long_short.values != 0].tolist()) == ["BBB", "FFF"]
+
+
+def test_a_held_symbol_outside_the_top_k_stays_in_the_pool_and_is_closed_at_its_turnover_cost():
+    prediction = np.array([-3.0, 0.1, 0.2, 1.0, 1.5, 2.0])
+    current = np.array([0.4, 0.0, 0.0, 0.3, 0.0, 0.3])  # AAA is held but ranks last
+    returns = np.random.default_rng(10).normal(0.0, 0.02, size=(LOOKBACK, len(SYMBOLS)))
+    context = _context(prediction=prediction, current=current, returns=returns)
+
+    pooled = _optimizer(candidate_top_k=3, weight_cap=0.5).problem_inputs(context)
+    free = _optimizer(candidate_top_k=3, weight_cap=0.5, turnover_penalty=0.0).construct(context)
+    sticky = _optimizer(candidate_top_k=3, weight_cap=0.5, turnover_penalty=1.0).construct(context)
+
+    assert pooled.symbols.tolist() == ["AAA", "DDD", "EEE", "FFF"]
+    np.testing.assert_array_equal(pooled.current_weights, [0.4, 0.3, 0.0, 0.3])
+    assert free.sel(symbol="AAA") == pytest.approx(0.0, abs=1e-6)  # closed without a cost
+    np.testing.assert_allclose(sticky.values, current, atol=1e-5)  # the cost keeps it held
+
+
+def test_raw_calibration_uses_the_prediction_unchanged():
+    context = _context(seed=11)
+    optimizer = MeanVarianceOptimizer(
+        MeanVarianceConfig(
+            expected_return_label="ret_5",
+            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            calibration="raw",
+            risk_aversion=5.0,
+            weight_cap=0.3,
+        )
+    )
+    optimizer.bind(_scaled_predictor("raw"))
+
+    inputs = optimizer.problem_inputs(context)
+
+    np.testing.assert_array_equal(inputs.expected_return, context.predictions["ret_5"].values)
+
+
+def test_raw_calibration_on_a_standardized_label_is_refused_at_bind_naming_the_label():
+    optimizer = MeanVarianceOptimizer(
+        MeanVarianceConfig(
+            expected_return_label="ret_5",
+            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            calibration="raw",
+            risk_aversion=5.0,
+        )
+    )
+
+    with pytest.raises(ValueError, match="'ret_5'.*standardized"):
+        optimizer.bind(_scaled_predictor("standardized"))

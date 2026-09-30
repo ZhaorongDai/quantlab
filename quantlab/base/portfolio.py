@@ -18,7 +18,12 @@ raises ``PortfolioConstructionError``, and the loop holds it instead.
 
 A *risk model* (``RiskModel``) estimates the covariance of one-bar returns
 at a bar, as a ``CovarianceEstimate``; a rule that prices risk, such as a
-mean-variance optimiser, holds one.
+mean-variance optimiser, holds one. The interface is shaped for a factor
+risk model, which none of the shipped ones is: its estimate is a
+``FactorCovarianceEstimate`` whose ``factor_form()`` lets an optimiser build
+a low-rank risk term, and it declares the ``Factor`` panels it reads (its
+exposures) through ``required_factors()``, which the backtest reads and
+slices into each bar's context.
 
 Shipped rules and risk models live in ``quantlab/portfolio/predefined``; this
 module imports no solver.
@@ -27,12 +32,15 @@ module imports no solver.
 import dataclasses
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 from loguru import logger
+
+if TYPE_CHECKING:
+    from quantlab.base.factor import Factor
 
 _DIMS = ("timestamp", "symbol")
 
@@ -82,6 +90,11 @@ class PortfolioContext:
         ``(timestamp, symbol)``, of the rule's ``lookback_bars`` length (no
         bars for a rule that needs none); NaN where a symbol has no return.
         ``None`` in a context built by hand for a rule that reads none.
+    factors : xr.Dataset or None
+        The values at the bar of the ``Factor`` panels the rule declares in
+        ``required_factors()`` (a factor risk model's exposures, for
+        example): one variable per factor name, on ``symbol``, NaN where a
+        symbol has none. ``None`` when the rule declares none.
 
     Examples
     --------
@@ -102,6 +115,7 @@ class PortfolioContext:
     eligible: xr.DataArray
     current_weights: xr.DataArray
     returns: xr.DataArray | None = None
+    factors: xr.Dataset | None = None
 
     @property
     def symbols(self) -> np.ndarray:
@@ -330,12 +344,28 @@ class CovarianceEstimate:
         """
         return dataclasses.replace(self, covariance=self.covariance * factor)
 
+    def subset(self, rows: np.ndarray) -> Self:
+        """Return the estimate over the symbols at positions ``rows``, in that order.
+
+        Examples
+        --------
+        >>> estimate.subset(np.array([1])).symbols.tolist()
+        ['BBB']
+        """
+        rows = np.asarray(rows, dtype=np.intp)
+        return dataclasses.replace(
+            self,
+            symbols=self.symbols[rows],
+            covariance=self.covariance[np.ix_(rows, rows)],
+        )
+
     def factor_form(self):
         """Return the factor form of the covariance, or ``None`` when it has none.
 
-        A factor risk model returns ``(exposures, factor_covariance,
-        specific_variance)``; a dense estimate such as Ledoit-Wolf returns
-        ``None``.
+        A dense estimate such as Ledoit-Wolf has none. A
+        ``FactorCovarianceEstimate`` returns ``(exposures,
+        factor_covariance, specific_variance)``, from which an optimiser
+        builds a low-rank risk term instead of the dense one.
 
         Examples
         --------
@@ -343,6 +373,120 @@ class CovarianceEstimate:
         True
         """
         return None
+
+
+@dataclass(frozen=True)
+class FactorCovarianceEstimate:
+    """A covariance of returns in factor form: ``B F B' + diag(D)``.
+
+    The estimate a factor risk model returns (reserved: no shipped risk
+    model returns one). With ``n`` symbols and ``k`` factors, ``B`` holds
+    each symbol's exposures, ``F`` the factor returns' covariance and ``D``
+    each symbol's specific (idiosyncratic) variance. ``factor_form()``
+    returns the three, and an optimiser that finds them prices risk as
+    ``|F^(1/2) B' w|^2 + w' diag(D) w``, which costs ``O(n k)`` rather than
+    the ``O(n^2)`` of the dense matrix. It is used wherever a
+    ``CovarianceEstimate`` is: ``covariance`` builds the dense matrix on
+    demand.
+
+    Attributes
+    ----------
+    symbols : np.ndarray
+        The ``n`` symbols the estimate covers, the order of ``exposures``'
+        rows and ``specific_variance``.
+    exposures : np.ndarray
+        ``B``, ``[n, k]``.
+    factor_covariance : np.ndarray
+        ``F``, ``[k, k]``, symmetric positive semi-definite.
+    specific_variance : np.ndarray
+        ``D``, ``[n]``, non-negative.
+
+    Examples
+    --------
+    >>> estimate = FactorCovarianceEstimate(
+    ...     symbols=np.array(["AAA", "BBB"]),
+    ...     exposures=np.array([[1.0], [0.5]]),
+    ...     factor_covariance=np.array([[0.04]]),
+    ...     specific_variance=np.array([0.01, 0.02]),
+    ... )
+    >>> estimate.covariance
+    array([[0.05, 0.02],
+           [0.02, 0.03]])
+    >>> estimate.variance
+    array([0.05, 0.03])
+    >>> [part.shape for part in estimate.factor_form()]
+    [(2, 1), (1, 1), (2,)]
+    """
+
+    symbols: np.ndarray
+    exposures: np.ndarray
+    factor_covariance: np.ndarray
+    specific_variance: np.ndarray
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """The dense ``[n, n]`` covariance ``B F B' + diag(D)``.
+
+        Examples
+        --------
+        >>> estimate.covariance.shape
+        (2, 2)
+        """
+        b = self.exposures
+        return b @ self.factor_covariance @ b.T + np.diag(self.specific_variance)
+
+    @property
+    def variance(self) -> np.ndarray:
+        """Each symbol's variance, ``diag(B F B') + D``, without the dense matrix.
+
+        Examples
+        --------
+        >>> estimate.variance
+        array([0.05, 0.03])
+        """
+        b = self.exposures
+        return np.einsum("ij,jk,ik->i", b, self.factor_covariance, b) + self.specific_variance
+
+    def scaled(self, factor: float) -> Self:
+        """Return the estimate with ``F`` and ``D`` multiplied by ``factor``.
+
+        Examples
+        --------
+        >>> estimate.scaled(5).variance
+        array([0.25, 0.15])
+        """
+        return dataclasses.replace(
+            self,
+            factor_covariance=self.factor_covariance * factor,
+            specific_variance=self.specific_variance * factor,
+        )
+
+    def subset(self, rows: np.ndarray) -> Self:
+        """Return the estimate over the symbols at positions ``rows``, in that order.
+
+        Examples
+        --------
+        >>> estimate.subset(np.array([1])).variance
+        array([0.03])
+        """
+        rows = np.asarray(rows, dtype=np.intp)
+        return dataclasses.replace(
+            self,
+            symbols=self.symbols[rows],
+            exposures=self.exposures[rows],
+            specific_variance=self.specific_variance[rows],
+        )
+
+    def factor_form(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return ``(exposures, factor_covariance, specific_variance)``.
+
+        Examples
+        --------
+        >>> exposures, factor_covariance, specific = estimate.factor_form()
+        >>> specific
+        array([0.01, 0.02])
+        """
+        return self.exposures, self.factor_covariance, self.specific_variance
 
 
 class RiskModel(_Configured, ABC):
@@ -360,6 +504,14 @@ class RiskModel(_Configured, ABC):
     parameters (with a ``lookback_bars`` field when it reads a return
     window) and implement ``estimate``. The estimate is of one-bar returns;
     a rule scales it to its own horizon.
+
+    The interface is reserved for a factor risk model, which is not
+    implemented yet. Such a model declares the ``Factor`` panels it reads,
+    its exposures for example, in ``required_factors()``; the backtest reads
+    them over its window, each warmed up like a model's features, and puts
+    their values at the bar in ``context.factors``. It returns a
+    ``FactorCovarianceEstimate``, whose ``factor_form()`` makes the
+    mean-variance optimiser build a low-rank risk term.
 
     Parameters
     ----------
@@ -388,6 +540,21 @@ class RiskModel(_Configured, ABC):
         """
         return int(getattr(self._config, "lookback_bars", 0))
 
+    def required_factors(self) -> list["Factor"]:
+        """The ``Factor`` panels ``estimate`` reads from ``context.factors``.
+
+        Any ``Factor`` qualifies (KunQuant, Polars, or a plain one such as
+        a one-hot industry exposure). The backtest computes each over its
+        window, the factor's own ``warmup_bars`` before it included, and
+        hands ``estimate`` their values at the bar. Empty by default.
+
+        Examples
+        --------
+        >>> risk.required_factors()
+        []
+        """
+        return []
+
     @abstractmethod
     def estimate(
         self, context: PortfolioContext, volatility: xr.DataArray | None = None
@@ -404,8 +571,9 @@ class RiskModel(_Configured, ABC):
 
         Returns
         -------
-        CovarianceEstimate
-            The covariance over the symbols with enough history.
+        CovarianceEstimate or FactorCovarianceEstimate
+            The covariance over the symbols with enough history; in factor
+            form when the model has one.
 
         Examples
         --------
@@ -457,6 +625,20 @@ class PortfolioConstructor(_Configured, ABC):
         0
         """
         return 0
+
+    def required_factors(self) -> list["Factor"]:
+        """The ``Factor`` panels whose values at each bar the rule reads from ``context.factors``.
+
+        The backtest computes each over its window, warm-up included, and
+        slices it per bar. Empty by default; a rule holding a risk model
+        declares the risk model's.
+
+        Examples
+        --------
+        >>> rule.required_factors()
+        []
+        """
+        return []
 
     def bind(self, predictor) -> None:
         """Check the predictor and read from it what the rule needs.
@@ -524,13 +706,15 @@ class PortfolioConstructor(_Configured, ABC):
         *,
         fill_price: xr.DataArray | None = None,
         valuation_price: xr.DataArray | None = None,
+        factors: xr.Dataset | None = None,
     ) -> xr.Dataset:
         """Build target weights for every bar of a panel.
 
         The default loops ``construct`` over the rebalance bars in time
         order, handing each the context of its own bar only: its
         predictions, its eligibility, the ``lookback_bars`` one-bar returns
-        of ``valuation_price`` ending at it, and the weights currently held.
+        of ``valuation_price`` ending at it, the values at it of the
+        ``factors`` the rule declares, and the weights currently held.
         Those are the weights of the last bar that traded, filled at the
         next bar's fill price and held to this bar's valuation price: each
         symbol grows by ``g = valuation[t] / fill[t0 + 1]``, both prices
@@ -558,6 +742,10 @@ class PortfolioConstructor(_Configured, ABC):
             timestamp of ``predictions`` and, before them, the warm-up the
             return window needs. Given together; required when
             ``lookback_bars`` is positive.
+        factors : xr.Dataset, optional
+            The panels of the rule's ``required_factors()``, one variable
+            per factor name on ``(timestamp, symbol)``, covering every
+            prediction timestamp; required when the rule declares any.
 
         Returns
         -------
@@ -571,7 +759,8 @@ class PortfolioConstructor(_Configured, ABC):
         ValueError
             If ``rebalance`` does not have one entry per timestamp, the
             eligibility panel is on other labels, only one price is given, a
-            price is missing or lacks a prediction timestamp, or
+            price is missing or lacks a prediction timestamp, the factor
+            panels are missing or lack a prediction timestamp, or
             ``construct`` returns weights on other symbols or a row mixing
             NaN and finite values.
 
@@ -597,6 +786,7 @@ class PortfolioConstructor(_Configured, ABC):
         timestamps = predictions.timestamp.values
         symbols = predictions.symbol.values
         history = self._check_prices(fill_price, valuation_price, predictions)
+        factors = self._check_factors(factors, predictions)
         lookback = self.lookback_bars
 
         weights = np.full((len(timestamps), len(symbols)), np.nan)
@@ -637,6 +827,7 @@ class PortfolioConstructor(_Configured, ABC):
                     coords={"symbol": symbols},
                 ),
                 returns=window,
+                factors=None if factors is None else factors.isel(timestamp=t, drop=True),
             )
             try:
                 row = self._checked_row(self.construct(context), symbols, timestamps[t])
@@ -722,6 +913,32 @@ class PortfolioConstructor(_Configured, ABC):
             valuation=valuation_price.ffill("timestamp").values.astype(np.float64),
             positions=positions,
         )
+
+    def _check_factors(self, factors: xr.Dataset | None, predictions: xr.Dataset) -> xr.Dataset | None:
+        """Return the declared factor panels on the predictions' labels, or None.
+
+        A symbol the panels lack gets NaN. Refused: no panels when the rule
+        declares factors, and panels lacking a prediction timestamp.
+        """
+        if factors is None:
+            if self.required_factors():
+                raise ValueError(
+                    f"{type(self).__name__} declares required_factors(); pass "
+                    f"their panels as factors= to construct_panel"
+                )
+            return None
+        factors = factors.transpose(*_DIMS)
+        missing = pd.Index(predictions.timestamp.values).difference(
+            pd.Index(factors.timestamp.values)
+        )
+        if len(missing):
+            raise ValueError(
+                "the factor panels must cover every prediction timestamp; missing "
+                f"{[str(v) for v in missing[:5]]}"
+            )
+        return factors.reindex(
+            timestamp=predictions.timestamp.values, symbol=predictions.symbol.values
+        ).load()
 
     def _checked_row(self, weights: xr.DataArray, symbols: np.ndarray, timestamp) -> np.ndarray:
         """Return one bar's weights on ``symbols``, refusing another axis or a mixed row."""

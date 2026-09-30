@@ -13,6 +13,12 @@ What is locked here, and what turns it red:
 - A `MeanVarianceOptimizer` backtest is fully invested on every rebalance
   bar, and its `config.json` (optimiser and risk model) rebuilds a
   backtester that re-runs identically.
+- A long-short `MeanVarianceOptimizer` backtest (#80) is dollar-neutral with
+  gross exposure at most one on every rebalance bar, and rebuilds from its
+  `config.json`.
+- A risk model declaring a `Factor` in `required_factors()` (#82, a Polars
+  factor here) receives that factor's values at each rebalance bar, and
+  only at it, in `context.factors`, warmed up like a model's features.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -32,7 +38,8 @@ from quantlab.base.portfolio import PortfolioConstructionError, PortfolioConstru
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.utils.module import load_backtester_from_config
-from tests.backtest_fixtures import make_model, make_stock_dataset, write_price_store
+from quantlab.base.config import PolarsFactorConfig
+from tests.backtest_fixtures import FirstFeatureHead, PastReturnFactor, make_model, make_stock_dataset, write_price_store
 
 N_BARS = 90
 LOOKBACK = 20
@@ -95,7 +102,10 @@ def _setup(tmp_path):
 
 
 def _backtester(tmp_path, constructor, *, output_dir=None):
+    """``constructor`` may be a function of the price store's dataset config."""
     dataset_config, model, bars = _setup(tmp_path)
+    if not isinstance(constructor, PortfolioConstructor):
+        constructor = constructor(dataset_config)
     return (
         USEquityCrossectionSelectStockVectorBt(
             CrossSectionBacktestConfig(
@@ -211,17 +221,17 @@ def test_a_failing_bar_holds_is_logged_and_recorded(tmp_path):
     assert (SEEN[2].current_weights.values[:2] > 0).all()
 
 
-def _optimizer():
-    return MeanVarianceOptimizer(
-        MeanVarianceConfig(
-            expected_return_label="fwd_ret_1",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
-            ic=0.05,
-            risk_aversion=5.0,
-            turnover_penalty=0.001,
-            weight_cap=0.4,
-        )
+def _optimizer(**overrides):
+    params = dict(
+        expected_return_label="fwd_ret_1",
+        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        ic=0.05,
+        risk_aversion=5.0,
+        turnover_penalty=0.001,
+        weight_cap=0.4,
     )
+    params.update(overrides)
+    return MeanVarianceOptimizer(MeanVarianceConfig(**params))
 
 
 def test_a_mean_variance_backtest_is_fully_invested_and_rebuilds_identically(tmp_path):
@@ -258,3 +268,116 @@ def test_a_predictor_without_the_expected_return_label_is_refused_at_constructio
     )
     with pytest.raises(ValueError, match="fwd_ret_5"):
         _backtester(tmp_path, optimizer)
+
+
+def test_a_long_short_mean_variance_backtest_is_dollar_neutral_and_rebuilds(tmp_path):
+    optimizer = _optimizer(direction="long_short", risk_aversion=0.5, weight_cap=0.3, candidate_top_k=3)
+    backtester, _, _ = _backtester(tmp_path, optimizer, output_dir=str(tmp_path / "runs"))
+
+    original = backtester.run()
+
+    weights = original.weights["weight"].values
+    rebalance = np.isfinite(weights).all(axis=1)
+    assert rebalance.sum() == len(range(0, WINDOW[1] - WINDOW[0], REBALANCE))
+    np.testing.assert_allclose(weights[rebalance].sum(axis=1), 0.0, atol=1e-12)
+    assert (np.abs(weights[rebalance]).sum(axis=1) <= 1 + 1e-12).all()
+    assert (np.abs(weights[rebalance]) <= 0.3 + 1e-12).all()
+    assert (weights[rebalance] < 0).any()
+    assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
+
+    saved = json.loads((original.run_dir / "config.json").read_text())
+    assert saved["constructor"]["direction"] == "long_short"
+    assert saved["constructor"]["candidate_top_k"] == 3
+    rebuilt = load_backtester_from_config(saved)
+    assert rebuilt.config.constructor == backtester.config.constructor
+    again = rebuilt.run()
+
+    np.testing.assert_array_equal(again.weights["weight"].values, weights)
+    np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)
+
+
+#: `context.factors` seen by every `_DeclaringRisk`, in call order.
+FACTORS_SEEN: list = []
+
+
+class _DeclaringRisk(LedoitWolfRiskModel):
+    """Ledoit-Wolf that declares one factor and records what it is handed."""
+
+    def __init__(self, config, factor):
+        super().__init__(config)
+        self._factor = factor
+
+    def required_factors(self):
+        return [self._factor]
+
+    def estimate(self, context, volatility=None):
+        FACTORS_SEEN.append((context.timestamp, context.factors))
+        return super().estimate(context, volatility)
+
+
+def test_a_declared_factor_reaches_the_risk_model_at_each_bar_only(tmp_path):
+    FACTORS_SEEN.clear()
+
+    def declaring(dataset_config):
+        # A non-KunQuant factor whose first 3 bars are NaN without its warm-up.
+        factor = PastReturnFactor(
+            PolarsFactorConfig(warmup_bars=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 3})
+        )
+        return _optimizer(risk_model=_DeclaringRisk(LedoitWolfConfig(lookback_bars=LOOKBACK), factor))
+
+    backtester, dataset_config, bars = _backtester(tmp_path, declaring)
+
+    backtester.run()
+
+    close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].transpose("timestamp", "symbol")
+    symbols = close.symbol.values
+    assert [ts for ts, _ in FACTORS_SEEN] == [
+        pd.Timestamp(bars[t]) for t in range(WINDOW[0], WINDOW[1], REBALANCE)
+    ]
+    for ts, factors in FACTORS_SEEN:
+        assert list(factors.data_vars) == ["past_ret_3"]
+        assert factors["past_ret_3"].dims == ("symbol",)
+        t = list(close.timestamp.values).index(np.datetime64(ts))
+        expected = close.values[t] / close.values[t - 3] - 1.0
+        got = factors["past_ret_3"].sel(symbol=symbols).values
+        np.testing.assert_allclose(got, expected, rtol=1e-12)
+    assert np.isfinite(FACTORS_SEEN[0][1]["past_ret_3"].values).all()
+
+
+class _RankedTargetHead(FirstFeatureHead):
+    """Fitted on a transformed target, so it reports its label as standardized."""
+
+    def _transform_target(self, y, training):
+        return y, None
+
+
+def test_raw_calibration_on_a_standardized_label_is_refused_when_the_backtest_is_built(tmp_path):
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS, seed=11)
+    bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+    model = make_model(
+        tmp_path / "model",
+        dataset_config,
+        start_date=_day(bars[0]),
+        end_date=_day(bars[39]),
+        train_start=_day(bars[0]),
+        train_end=_day(bars[34]),
+        test_start=_day(bars[35]),
+        test_end=_day(bars[39]),
+        head=_RankedTargetHead,
+    )
+    assert model.label_scales == {"fwd_ret_1": "standardized"}
+    optimizer = _optimizer(calibration="raw", ic=None)
+
+    with pytest.raises(ValueError, match="'fwd_ret_1'.*standardized"):
+        USEquityCrossectionSelectStockVectorBt(
+            CrossSectionBacktestConfig(
+                price_dataset=make_stock_dataset(dataset_config),
+                model=model,
+                model_mode="train",
+                start_date=_day(bars[WINDOW[0]]),
+                end_date=_day(bars[WINDOW[1]]),
+                output_dir=None,
+                rebalance_periods=REBALANCE,
+                constructor=optimizer,
+            )
+        )

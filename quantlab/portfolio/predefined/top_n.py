@@ -170,6 +170,7 @@ class TopNConstructor(PortfolioConstructor):
         *,
         fill_price: xr.DataArray | None = None,
         valuation_price: xr.DataArray | None = None,
+        factors: xr.Dataset | None = None,
     ) -> xr.Dataset:
         """Build top-n target weights for every bar of a panel, vectorised.
 
@@ -188,6 +189,9 @@ class TopNConstructor(PortfolioConstructor):
             One boolean per timestamp, True on rebalance bars.
         fill_price, valuation_price : xr.DataArray, optional
             Prices, checked like the loop checks them and not read.
+        factors : xr.Dataset, optional
+            Factor panels, checked like the loop checks them and not read;
+            top-n declares no ``required_factors()``.
 
         Returns
         -------
@@ -220,6 +224,7 @@ class TopNConstructor(PortfolioConstructor):
         eligible_values = self._check_eligible(eligible, predictions)
         rebalance = self._check_rebalance(rebalance, predictions)
         self._check_prices(fill_price, valuation_price, predictions)
+        self._check_factors(factors, predictions)
         scores = np.asarray(
             predictions[self._score_label(predictions)].values, dtype=np.float64
         )

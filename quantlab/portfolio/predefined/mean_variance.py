@@ -4,14 +4,16 @@
 
     w @ mu - risk_aversion / 2 * w @ Sigma @ w - turnover_penalty * |w - w_current|_1
 
-over long-only, fully invested weights under a per-symbol cap. The expected
+over long-only, fully invested weights, or dollar-neutral long-short
+weights of gross exposure at most one, under a per-symbol cap. The expected
 return ``mu`` is calibrated from a label's prediction (Grinold: ``ic *
-sigma * z``), the covariance ``Sigma`` comes from a risk model, and both are
-on the span of the expected-return label. This is the only quantlab module
-that imports cvxpy.
+sigma * z``) or is the prediction itself (``raw``), the covariance ``Sigma``
+comes from a risk model, and both are on the span of the expected-return
+label. This is the only quantlab module that imports cvxpy.
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import cvxpy as cp
 import numpy as np
@@ -20,11 +22,16 @@ import xarray as xr
 
 from quantlab.base.config import MeanVarianceConfig
 from quantlab.base.portfolio import (
+    CovarianceEstimate,
+    FactorCovarianceEstimate,
     PortfolioConstructionError,
     PortfolioConstructor,
     PortfolioContext,
 )
 from quantlab.utils.ensemble import _cross_sectional_zscore
+
+if TYPE_CHECKING:
+    from quantlab.base.factor import Factor
 
 _SOLVED = (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 
@@ -37,11 +44,12 @@ class MeanVarianceInputs:
     ----------
     symbols : np.ndarray
         The candidates: eligible, with a finite expected-return prediction
-        and covered by the risk model.
+        and covered by the risk model; with ``candidate_top_k``, only the
+        pool.
     expected_return : np.ndarray
         ``mu`` per candidate, on the expected-return label's span.
-    covariance : np.ndarray
-        ``Sigma`` over the candidates, on the same span.
+    estimate : CovarianceEstimate or FactorCovarianceEstimate
+        The risk model's estimate over the candidates, on the same span.
     current_weights : np.ndarray
         The weights currently held on the candidates.
 
@@ -54,8 +62,19 @@ class MeanVarianceInputs:
 
     symbols: np.ndarray
     expected_return: np.ndarray
-    covariance: np.ndarray
+    estimate: CovarianceEstimate | FactorCovarianceEstimate
     current_weights: np.ndarray
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """``Sigma`` over the candidates as a dense matrix.
+
+        Examples
+        --------
+        >>> inputs.covariance.shape
+        (4, 4)
+        """
+        return self.estimate.covariance
 
 
 def _zscore(values: np.ndarray) -> np.ndarray:
@@ -91,8 +110,45 @@ def _project_capped_simplex(values: np.ndarray, cap: float) -> np.ndarray:
     return np.clip(values - high, 0.0, cap)
 
 
+def _clean_long_short(values: np.ndarray, cap: float) -> np.ndarray:
+    """Return ``values`` made exactly dollar-neutral, capped and of gross at most one.
+
+    It removes a solver's round-off: weights are clipped to the cap, the
+    heavier side is scaled down to the lighter one, and the book is scaled
+    down if its gross exposure still exceeds one. Scaling keeps the sign
+    and the cap of every weight.
+    """
+    w = np.clip(values, -cap, cap)
+    long, short = w[w > 0].sum(), -w[w < 0].sum()
+    if long > short:
+        w = np.where(w > 0, w * (short / long), w)
+    elif short > long:
+        w = np.where(w < 0, w * (long / short), w)
+    gross = np.abs(w).sum()
+    return w / gross if gross > 1 else w
+
+
+def _risk_term(w: cp.Variable, estimate) -> cp.Expression:
+    """``w' Sigma w``: low-rank when the estimate has a factor form, else dense.
+
+    With ``Sigma = B F B' + diag(D)`` the term is ``|R B' w|^2 + sum(D
+    w^2)``, ``R' R = F`` from ``F``'s eigen-decomposition (negative
+    eigenvalues from round-off clipped to zero), so the dense ``[n, n]``
+    matrix is never built.
+    """
+    form = estimate.factor_form()
+    if form is None:
+        return cp.quad_form(w, cp.psd_wrap(estimate.covariance))
+    exposures, factor_covariance, specific = form
+    eigenvalues, eigenvectors = np.linalg.eigh(factor_covariance)
+    root = np.sqrt(np.clip(eigenvalues, 0.0, None))[:, None] * eigenvectors.T
+    return cp.sum_squares((root @ exposures.T) @ w) + cp.sum(
+        cp.multiply(np.clip(specific, 0.0, None), cp.square(w))
+    )
+
+
 class MeanVarianceOptimizer(PortfolioConstructor):
-    """Long-only mean-variance weights with a turnover penalty.
+    """Mean-variance weights with a turnover penalty, long-only or long-short.
 
     On each rebalance bar the candidates are the symbols the context marks
     eligible, with a finite prediction of ``expected_return_label`` and
@@ -101,39 +157,66 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
         maximise    w @ mu - risk_aversion / 2 * w @ Sigma @ w
                     - turnover_penalty * |w - w_current|_1
-        subject to  sum(w) = 1,  0 <= w <= weight_cap
 
-    where ``Sigma`` is the risk model's one-bar covariance times the span
-    ``n`` of ``expected_return_label`` (variance is linear in time), and
-    ``mu = ic * sigma * z`` (Grinold): ``sigma`` the square root of
+    subject to, with ``direction="long_only"``,
+
+        sum(w) = 1,  0 <= w <= weight_cap
+
+    and with ``direction="long_short"``,
+
+        sum(w) = 0,  |w|_1 <= 1,  |w| <= weight_cap.
+
+    The long-short gross exposure is a ceiling, not an equality: when the
+    expected returns do not pay for the risk and the turnover, part of the
+    book stays uninvested, down to no position at all.
+
+    ``Sigma`` is the risk model's one-bar covariance times the span ``n`` of
+    ``expected_return_label`` (variance is linear in time). When the risk
+    model's estimate has a factor form (``B F B' + diag(D)``), the risk term
+    is built as ``|F^(1/2) B' w|^2 + w' diag(D) w`` and the dense matrix is
+    never formed. ``mu`` depends on ``calibration``: ``"grinold"`` (the
+    default) gives ``mu = ic * sigma * z``, ``sigma`` the square root of
     ``Sigma``'s diagonal and ``z`` the candidates' cross-sectional z-score
-    (``ddof=1``) of the prediction. So the prediction only ranks, and any
-    model's output can feed the optimiser. ``w_current`` is the context's
-    current weights. The solver's solution is projected onto the feasible
-    set (the nearest weights summing to one within ``[0, weight_cap]``),
-    removing its round-off.
+    (``ddof=1``) of the prediction, so the prediction only ranks and any
+    model's output can feed the optimiser; ``"raw"`` takes the prediction
+    itself as ``mu``, which ``bind`` allows only when the predictor reports
+    the label's scale as ``"raw"``. ``w_current`` is the context's current
+    weights.
 
-    A bar without candidates, or with fewer than ``1 / weight_cap``, is
-    infeasible, and a bar the solver fails on or leaves unsolved raises
-    ``PortfolioConstructionError``: the backtest holds the current position
-    there and records the bar.
+    With ``candidate_top_k`` set, only a pool is optimised: the
+    ``candidate_top_k`` candidates with the largest ``mu`` (largest ``|mu|``
+    long-short) plus every candidate currently held, so a held symbol that
+    fell out of the top can still be closed at its turnover cost. The
+    z-score is taken over every candidate before the pool is cut.
 
-    ``lookback_bars`` is the risk model's. ``bind`` reads the span from the
-    predictor's label, so a backtest binds the optimiser when it is built.
+    The solver's solution is cleaned of its round-off: projected onto the
+    feasible set long-only (the nearest weights summing to one within
+    ``[0, weight_cap]``), clipped and rescaled to dollar neutrality and a
+    gross exposure of at most one long-short.
+
+    A bar without candidates, or long-only with fewer than ``1 /
+    weight_cap``, is infeasible, and a bar the solver fails on or leaves
+    unsolved raises ``PortfolioConstructionError``: the backtest holds the
+    current position there and records the bar.
+
+    ``lookback_bars`` and ``required_factors()`` are the risk model's.
+    ``bind`` reads the span from the predictor's label, so a backtest binds
+    the optimiser when it is built.
 
     Parameters
     ----------
     config : MeanVarianceConfig
-        ``expected_return_label``, ``risk_model``, ``ic``,
-        ``risk_aversion``, ``turnover_penalty``, ``weight_cap`` and
-        ``direction`` (only ``"long_only"``).
+        ``expected_return_label``, ``risk_model``, ``risk_aversion``,
+        ``calibration``, ``ic``, ``turnover_penalty``, ``weight_cap``,
+        ``direction`` and ``candidate_top_k``.
 
     Raises
     ------
     ValueError
-        If ``direction`` is not ``"long_only"``, ``weight_cap`` is not in
-        ``(0, 1]``, or ``risk_aversion`` or ``turnover_penalty`` is
-        negative.
+        If ``direction`` or ``calibration`` is unknown, ``ic`` is missing
+        for ``"grinold"``, ``weight_cap`` is not in ``(0, 1]``,
+        ``risk_aversion`` or ``turnover_penalty`` is negative, or
+        ``candidate_top_k`` is not a positive integer.
 
     Examples
     --------
@@ -156,6 +239,19 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     >>> weights = optimizer.construct(context)
     >>> float(weights.sum().round(6)), bool((weights >= 0).all()), bool((weights <= 0.4).all())
     (1.0, True, True)
+
+    Long-short on the same bar the book is dollar-neutral, and its gross
+    exposure (0.946) stays under the ceiling of one:
+
+    >>> long_short = MeanVarianceOptimizer(MeanVarianceConfig(
+    ...     expected_return_label="ret_5",
+    ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+    ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
+    ... ))
+    >>> long_short.bind(model)
+    >>> weights = long_short.construct(context)
+    >>> weights.values.round(3)
+    array([ 0.4  , -0.212, -0.261,  0.073])
     """
 
     config_cls = MeanVarianceConfig
@@ -163,16 +259,28 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     def __init__(self, config: MeanVarianceConfig):
         """Initialize the optimiser; see the class docstring for parameters."""
         super().__init__(config)
-        if config.direction != "long_only":
+        if config.direction not in ("long_only", "long_short"):
             raise ValueError(
-                f"MeanVarianceOptimizer supports direction='long_only' only, got "
-                f"{config.direction!r}"
+                f"direction must be 'long_only' or 'long_short', got {config.direction!r}"
             )
+        if config.calibration not in ("grinold", "raw"):
+            raise ValueError(
+                f"calibration must be 'grinold' or 'raw', got {config.calibration!r}"
+            )
+        if config.calibration == "grinold" and config.ic is None:
+            raise ValueError("calibration='grinold' needs an ic")
         if not 0 < config.weight_cap <= 1:
             raise ValueError(f"weight_cap must be in (0, 1], got {config.weight_cap}")
         for name in ("risk_aversion", "turnover_penalty"):
             if getattr(config, name) < 0:
                 raise ValueError(f"{name} must be >= 0, got {getattr(config, name)}")
+        top_k = config.candidate_top_k
+        if top_k is not None and (
+            isinstance(top_k, bool) or not isinstance(top_k, (int, np.integer)) or top_k < 1
+        ):
+            raise ValueError(
+                f"candidate_top_k must be a positive integer or None, got {top_k!r}"
+            )
         self._span: int | None = None
 
     @property
@@ -185,6 +293,16 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         60
         """
         return self.config.risk_model.lookback_bars
+
+    def required_factors(self) -> list["Factor"]:
+        """The risk model's ``required_factors()``.
+
+        Examples
+        --------
+        >>> optimizer.required_factors()
+        []
+        """
+        return self.config.risk_model.required_factors()
 
     @property
     def span(self) -> int | None:
@@ -208,8 +326,10 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         Raises
         ------
         ValueError
-            If the predictor does not predict ``expected_return_label``, or
-            the label has no ``span_bars()`` (it is not a ``Forward`` label).
+            If the predictor does not predict ``expected_return_label``, the
+            label has no ``span_bars()`` (it is not a ``Forward`` label), or
+            ``calibration="raw"`` and the predictor does not report the
+            label's scale as ``"raw"``.
 
         Examples
         --------
@@ -233,6 +353,15 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 f"expected_return_label {name!r} is a {type(label).__name__}, which "
                 f"has no span_bars(); the expected return needs a Forward label"
             )
+        if self.config.calibration == "raw":
+            scale = dict(predictor.label_scales).get(name)
+            if scale != "raw":
+                raise ValueError(
+                    f"calibration='raw' reads the prediction of {name!r} as a return, "
+                    f"but the predictor reports its scale as {scale!r}, not 'raw' "
+                    f"(a model fitted on a transformed target, or a label an ensemble "
+                    f"averages); use calibration='grinold'"
+                )
         self._span = int(span_bars())
 
     def problem_inputs(self, context: PortfolioContext) -> MeanVarianceInputs:
@@ -266,14 +395,13 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 "MeanVarianceOptimizer is not bound to a predictor; call bind() "
                 "first (a backtest does when it is built)"
             )
+        config = self.config
         symbols = context.symbols
         prediction = np.asarray(
-            context.predictions[self.config.expected_return_label]
-            .sel(symbol=symbols)
-            .values,
+            context.predictions[config.expected_return_label].sel(symbol=symbols).values,
             dtype=np.float64,
         )
-        estimate = self.config.risk_model.estimate(context).scaled(self._span)
+        estimate = config.risk_model.estimate(context).scaled(self._span)
         position = pd.Index(estimate.symbols).get_indexer(symbols)
         candidate = (
             np.asarray(context.eligible.values, dtype=bool)
@@ -281,17 +409,27 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             & (position >= 0)
         )
         index = np.flatnonzero(candidate)
-        rows = position[index]
-        covariance = estimate.covariance[np.ix_(rows, rows)]
-        sigma = np.sqrt(np.diag(covariance))
-        expected = self.config.ic * sigma * _zscore(prediction[index])
         current = np.asarray(
             context.current_weights.sel(symbol=symbols).values, dtype=np.float64
         )[index]
+        if config.calibration == "raw":
+            expected = prediction[index]
+        else:
+            sigma = np.sqrt(estimate.subset(position[index]).variance)
+            expected = config.ic * sigma * _zscore(prediction[index])
+
+        if config.candidate_top_k is not None and config.candidate_top_k < len(index):
+            strength = expected if config.direction == "long_only" else np.abs(expected)
+            # Stable, so ties keep the context's symbol order.
+            top = np.argsort(-strength, kind="stable")[: config.candidate_top_k]
+            pool = np.zeros(len(index), dtype=bool)
+            pool[top] = True
+            pool |= current != 0
+            index, expected, current = index[pool], expected[pool], current[pool]
         return MeanVarianceInputs(
             symbols=symbols[index],
             expected_return=expected,
-            covariance=covariance,
+            estimate=estimate.subset(position[index]),
             current_weights=current,
         )
 
@@ -306,8 +444,9 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         Returns
         -------
         xr.DataArray
-            One finite weight per symbol of ``context.symbols``, summing to
-            one.
+            One finite weight per symbol of ``context.symbols``: summing to
+            one long-only; summing to zero with gross exposure at most one
+            long-short.
 
         Raises
         ------
@@ -321,9 +460,12 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         array([0.4  , 0.4  , 0.009, 0.191])
         """
         config = self.config
+        long_only = config.direction == "long_only"
         inputs = self.problem_inputs(context)
         n = len(inputs.symbols)
-        if n == 0 or n * config.weight_cap < 1 - 1e-12:
+        if n == 0:
+            raise PortfolioConstructionError("infeasible: no candidate symbol")
+        if long_only and n * config.weight_cap < 1 - 1e-12:
             raise PortfolioConstructionError(
                 f"infeasible: {n} candidate symbol(s) cannot hold a fully invested "
                 f"book under weight_cap={config.weight_cap}"
@@ -331,12 +473,14 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         w = cp.Variable(n)
         objective = (
             inputs.expected_return @ w
-            - config.risk_aversion / 2 * cp.quad_form(w, cp.psd_wrap(inputs.covariance))
+            - config.risk_aversion / 2 * _risk_term(w, inputs.estimate)
             - config.turnover_penalty * cp.norm1(w - inputs.current_weights)
         )
-        problem = cp.Problem(
-            cp.Maximize(objective), [cp.sum(w) == 1, w >= 0, w <= config.weight_cap]
-        )
+        if long_only:
+            constraints = [cp.sum(w) == 1, w >= 0, w <= config.weight_cap]
+        else:
+            constraints = [cp.sum(w) == 0, cp.norm1(w) <= 1, cp.abs(w) <= config.weight_cap]
+        problem = cp.Problem(cp.Maximize(objective), constraints)
         try:
             problem.solve()
         except (cp.error.SolverError, ValueError, ArithmeticError) as exc:
@@ -344,8 +488,11 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             raise PortfolioConstructionError(f"the solver failed: {exc}") from exc
         if problem.status not in _SOLVED or w.value is None:
             raise PortfolioConstructionError(f"no solution: status {problem.status!r}")
-        solution = _project_capped_simplex(
-            np.asarray(w.value, dtype=np.float64), config.weight_cap
+        values = np.asarray(w.value, dtype=np.float64)
+        solution = (
+            _project_capped_simplex(values, config.weight_cap)
+            if long_only
+            else _clean_long_short(values, config.weight_cap)
         )
 
         row = pd.Series(0.0, index=context.symbols)

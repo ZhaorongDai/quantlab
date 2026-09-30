@@ -111,8 +111,9 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         is handed the raw fill and valuation prices from the constructor's
         ``lookback_bars`` bars before the window (``_price_history``), for
         its return window and to drift the current weights the way the
-        simulation values them. Bars the rule failed on are kept for
-        ``_signal_metrics``.
+        simulation values them, and the panels of its ``required_factors()``
+        over the window (``_required_factor_panels``). Bars the rule failed
+        on are kept for ``_signal_metrics``.
         """
         eligible = next_bar_eligible(prices[self.MARKET.fill_price_column])
         mask = rebalance_mask(prices.sizes["timestamp"], self.config.rebalance_periods)
@@ -123,9 +124,26 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
             mask,
             fill_price=history[self.MARKET.fill_price_column],
             valuation_price=history[self.MARKET.valuation_price_column],
+            factors=self._required_factor_panels(prices),
         )
         self._failed_bars = list(weights.attrs.pop("failed_bars", []))
         return weights
+
+    def _required_factor_panels(self, prices: xr.Dataset) -> xr.Dataset | None:
+        """Return the constructor's ``required_factors()`` over the window, or None.
+
+        Each factor is computed from the window's first to its last bar
+        with ``Factor.compute``, which reads the factor's own
+        ``warmup_bars`` before the window like a model's features, and the
+        panels are merged onto the window's symbols. ``None`` when the
+        constructor declares no factor.
+        """
+        factors = self.config.constructor.required_factors()
+        if not factors:
+            return None
+        first, last = prices.timestamp.values[0], prices.timestamp.values[-1]
+        panels = [factor.compute(first, last) for factor in factors]
+        return xr.merge(panels, join="outer").reindex(symbol=prices.symbol.values)
 
     def _price_history(self, prices: xr.Dataset) -> xr.Dataset:
         """Return the raw fill and valuation prices over the window and its warm-up.
