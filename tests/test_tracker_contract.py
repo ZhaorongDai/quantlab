@@ -1,0 +1,318 @@
+"""The tracker seam (spec #99, ticket #100): one contract for every tracker.
+
+The same operations run against the null tracker, the recording tracker of
+the tests and the W&B tracker (offline mode, a temporary directory, no
+network): open a run, log steps, summarise nested metrics, update the config,
+log a table and a file, and finish on exit and on error. Each tracker comes
+with a reader that returns what an outsider can observe of the runs it
+opened; the W&B reader parses the offline run's transaction log. The null
+tracker leaves nothing to read, and its reader asserts exactly that.
+"""
+
+import dataclasses
+import json
+import math
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from quantlab.base.tracking import NullRun, NullTracker, Tracker
+from quantlab.tracking.wandb import WandbTracker
+from quantlab.utils.module import get_cls_from_path
+from tests.tracking_fixtures import RecordingTracker
+
+
+def _read_recorded(tracker, workdir):
+    return [
+        {
+            "project": run.project,
+            "group": run.group,
+            "name": run.name,
+            "config": _merged(run.config, run.config_updates),
+            "steps": run.steps,
+            "summary": run.summary,
+            "tables": sorted(
+                [*run.tables]
+                + [f"{name}_chart" for name, (*_, top) in run.tables.items() if top]
+            ),
+            "files": [path.name for path in run.files],
+            "finished": run.finished,
+            "failed": run.failed,
+        }
+        for run in tracker.runs
+    ]
+
+
+def _merged(config, updates):
+    merged = dict(config)
+    for update in updates:
+        merged.update(update)
+    return merged
+
+
+def _read_wandb(tracker, workdir):
+    from wandb.proto import wandb_internal_pb2 as pb
+    from wandb.sdk.internal import datastore
+
+    runs = []
+    for run_dir in sorted((workdir / "wandb").glob("offline-run-*")):
+        (log,) = run_dir.glob("*.wandb")
+        store = datastore.DataStore()
+        store.open_for_scan(str(log))
+        observed = {"steps": [], "summary": {}, "config": {}, "tables": [], "files": []}
+        history_keys = set()
+        while (data := store.scan_data()) is not None:
+            record = pb.Record()
+            record.ParseFromString(data)
+            kind = record.WhichOneof("record_type")
+            if kind == "run":
+                observed["start"] = record.run.start_time.ToNanoseconds()
+                observed["project"] = record.run.project
+                observed["group"] = record.run.run_group or None
+                observed["name"] = record.run.display_name
+                for item in record.run.config.update:
+                    observed["config"][item.key] = json.loads(item.value_json)
+            elif kind == "config":
+                # Keyless items are W&B's own chart settings, not run config.
+                for item in record.config.update:
+                    if item.key:
+                        observed["config"][item.key] = json.loads(item.value_json)
+            elif kind == "summary":
+                for item in record.summary.update:
+                    if item.key and not item.key.startswith("_"):
+                        observed["summary"][item.key] = json.loads(item.value_json)
+            elif kind == "history":
+                # A media value (table, chart, HTML) arrives as several items
+                # under one nested key; a scalar as one item.
+                values, media = {}, set()
+                for item in record.history.item:
+                    key = item.nested_key[0] if item.nested_key else item.key
+                    if len(item.nested_key) > 1:
+                        media.add(key)
+                    else:
+                        values[key] = json.loads(item.value_json)
+                metrics = {
+                    key: value
+                    for key, value in values.items()
+                    if not key.startswith("_") and key not in media
+                }
+                if metrics:
+                    observed["steps"].append((values["_step"], metrics))
+                history_keys.update(media)
+            elif kind == "files":
+                # Media files back logged tables and HTML; keep saved files.
+                observed["files"].extend(
+                    Path(item.path).name
+                    for item in record.files.files
+                    if not item.path.startswith("media/")
+                )
+            elif kind == "exit":
+                observed["failed"] = record.exit.exit_code != 0
+        observed["finished"] = "failed" in observed
+        # An HTML file is logged as a media panel named after its stem, and a
+        # chart as ``<key>_table``.
+        observed["tables"] = sorted(
+            key.removesuffix("_chart_table") + "_chart" if key.endswith("_chart_table") else key
+            for key in history_keys
+            if key != "report"
+        )
+        observed["files"] = [
+            name for name in observed["files"] if name != "requirements.txt"
+        ] + (["report.html"] if "report" in history_keys else [])
+        observed["config"].pop("_wandb", None)
+        # A summary written by ``log`` echoes the last step; keep what
+        # ``summarize`` wrote, the keys no step carries.
+        stepped = {key for _, metrics in observed["steps"] for key in metrics}
+        observed["summary"] = {
+            key: value
+            for key, value in observed["summary"].items()
+            if key not in stepped and key not in history_keys
+        }
+        runs.append(observed)
+    # Run directories are named to the second plus a random id: order by start.
+    runs.sort(key=lambda run: run.pop("start"))
+    return runs
+
+
+def _read_null(tracker, workdir):
+    assert list(workdir.iterdir()) == [], "the null tracker wrote files"
+    return None
+
+
+TRACKERS = {
+    "null": (lambda: NullTracker(), _read_null),
+    "recording": (lambda: RecordingTracker(), _read_recorded),
+    "wandb": (lambda: WandbTracker(mode="offline"), _read_wandb),
+}
+
+
+@pytest.fixture(params=sorted(TRACKERS))
+def adapter(request, tmp_path, monkeypatch):
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+    monkeypatch.setenv("WANDB_DIR", str(workdir))
+    monkeypatch.setenv("WANDB_SILENT", "true")
+    make, read = TRACKERS[request.param]
+    tracker = make()
+    yield tracker, (lambda: read(tracker, workdir)), tmp_path
+    # wandb reads WANDB_DIR once per process; reset it for the next test.
+    import wandb
+
+    wandb.teardown()
+
+
+def test_a_run_records_steps_summary_config_table_and_file(adapter):
+    tracker, read, tmp_path = adapter
+    report = tmp_path / "report.html"
+    report.write_text("<p>report</p>")
+    notes = tmp_path / "notes.txt"
+    notes.write_text("notes")
+
+    with tracker.start_run(
+        project="XGBoostRegressor",
+        group="XGBoostRegressor_trial_1",
+        name="XGBoostRegressor_total",
+        config={"lr": np.float64(0.1), "start": np.datetime64("2020-01-02")},
+    ) as run:
+        run.log({"train_loss": 1.0, "val_loss": 2.0}, step=0)
+        run.log({"train_loss": 0.5, "val_loss": 1.5}, step=1)
+        run.summarize(
+            {
+                "whole": {"sharpe": 1.25, "trades": np.int64(3), "worst": float("nan")},
+                "test_ic": np.float32(0.5),
+                "note": "text",
+                "flag": True,
+                "inf": math.inf,
+            }
+        )
+        run.update_config({"n_estimators": 42})
+        run.log_table(
+            "importance/gain", ["factor", "importance"], [["a", 2.0], ["b", 1.0]], top_bars=1
+        )
+        run.log_file(report)
+        run.log_file(notes)
+
+    observed = read()
+    if observed is None:
+        return
+    (only,) = observed
+    assert only["project"] == "XGBoostRegressor"
+    assert only["group"] == "XGBoostRegressor_trial_1"
+    assert only["name"] == "XGBoostRegressor_total"
+    assert only["config"] == {"lr": 0.1, "start": "2020-01-02T00:00:00", "n_estimators": 42}
+    assert only["steps"] == [
+        (0, {"train_loss": 1.0, "val_loss": 2.0}),
+        (1, {"train_loss": 0.5, "val_loss": 1.5}),
+    ]
+    assert only["summary"] == {"whole/sharpe": 1.25, "whole/trades": 3, "test_ic": 0.5}
+    assert only["tables"] == ["importance/gain", "importance/gain_chart"]
+    assert sorted(only["files"]) == ["notes.txt", "report.html"]
+    assert only["finished"] and not only["failed"]
+
+
+def test_a_run_is_finished_when_the_body_raises(adapter):
+    tracker, read, _ = adapter
+    with pytest.raises(ZeroDivisionError):
+        with tracker.start_run(project="P", group=None, name="boom", config={}) as run:
+            run.log({"loss": 1.0}, step=0)
+            1 / 0
+    observed = read()
+    if observed is None:
+        return
+    (only,) = observed
+    assert only["name"] == "boom"
+    assert only["group"] is None
+    assert only["finished"] and only["failed"]
+
+
+def test_runs_opened_in_turn_are_kept_apart(adapter):
+    tracker, read, _ = adapter
+    for fold in range(2):
+        with tracker.start_run(
+            project="P", group="P_trial_1", name=f"fold_{fold}", config={"fold": fold}
+        ) as run:
+            run.summarize({"test_ic": float(fold)})
+    observed = read()
+    if observed is None:
+        return
+    assert [(run["name"], run["config"], run["summary"]) for run in observed] == [
+        ("fold_0", {"fold": 0}, {"test_ic": 0.0}),
+        ("fold_1", {"fold": 1}, {"test_ic": 1.0}),
+    ]
+
+
+def test_the_trackers_own_project_overrides_the_callers_default(adapter):
+    tracker, read, _ = adapter
+    # ``replace`` keeps a recording tracker's ``runs`` list, so ``read`` sees it.
+    tracker = dataclasses.replace(tracker, project="research_thread")
+    with tracker.start_run(project="XGBoostRegressor", group="g", name="n", config={}):
+        pass
+    observed = read()
+    if observed is None:
+        return
+    assert [run["project"] for run in observed] == ["research_thread"]
+
+
+def test_logging_a_missing_file_raises(adapter):
+    tracker, _, tmp_path = adapter
+    with pytest.raises(FileNotFoundError):
+        with tracker.start_run(project="P", group=None, name="n", config={}) as run:
+            run.log_file(tmp_path / "absent.html")
+
+
+@pytest.mark.parametrize(
+    "tracker",
+    [NullTracker(), NullTracker(project="p"), WandbTracker(), WandbTracker(
+        project="p", entity="team", mode="disabled"
+    )],
+    ids=repr,
+)
+def test_a_tracker_round_trips_through_its_config(tracker):
+    config = tracker.get_config()
+    assert json.loads(json.dumps(config)) == config
+    rebuilt = get_cls_from_path(config["name"]).from_config(config)
+    assert rebuilt == tracker
+    assert type(rebuilt) is type(tracker)
+
+
+def test_the_wandb_tracker_rejects_an_unknown_mode():
+    with pytest.raises(ValueError, match="mode"):
+        WandbTracker(mode="sometimes")
+
+
+def test_the_null_run_is_usable_outside_any_tracker():
+    run = NullRun()
+    run.log({"loss": 1.0}, step=0)
+    run.summarize({"a": {"b": 1.0}})
+    run.update_config({"x": 1})
+    run.log_table("t", ["a"], [[1]])
+
+
+def test_tracker_is_abstract():
+    with pytest.raises(TypeError):
+        Tracker()
+
+
+class _BrokenFinishRun(NullRun):
+    def _finish(self, *, failed):
+        raise ConnectionError("tracker unreachable")
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class _BrokenFinishTracker(Tracker):
+    def _open(self, *, project, group, name, config):
+        return _BrokenFinishRun()
+
+
+def test_an_error_while_finishing_does_not_replace_the_bodys_exception():
+    with pytest.raises(ZeroDivisionError):
+        with _BrokenFinishTracker().start_run(project="P", group=None, name="n", config={}):
+            1 / 0
+
+
+def test_an_error_while_finishing_a_clean_run_propagates():
+    with pytest.raises(ConnectionError):
+        with _BrokenFinishTracker().start_run(project="P", group=None, name="n", config={}):
+            pass

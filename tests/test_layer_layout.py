@@ -14,6 +14,7 @@ What is locked here, and what turns it red:
   the portfolio layer), so an event-driven engine can depend on the portfolio layer alone;
 - cvxpy is imported by the mean-variance optimiser only, never by the base package or
   the portfolio framework;
+- the tracking root module imports no tracking library (ADR 0015);
 - every `predefined` package's `__init__.py` is empty.
 
 Static checks, plus one subprocess import; offline.
@@ -105,3 +106,16 @@ def test_only_the_mean_variance_optimizer_imports_a_solver():
         if any(_is_or_under(name, "cvxpy") for name in _resolved_imports(path))
     )
     assert importers == ["quantlab/portfolio/predefined/mean_variance.py"]
+
+
+def test_the_tracking_root_module_imports_no_tracking_library():
+    code = (
+        "import sys\n"
+        "import quantlab.base.tracking\n"
+        "print(sorted(name for name in ('wandb', 'mlflow') if name in sys.modules))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO_ROOT
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "[]"
