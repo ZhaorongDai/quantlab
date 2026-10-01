@@ -106,7 +106,8 @@ Some `hyperparameters` keys are reserved: the base classes and the shipped
 heads read them themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`).
 
 - `epochs` (default 100): the cap on a torch head's training epochs. A value
-  that is not a positive integer raises `ValueError` when training starts.
+  that is not a positive integer raises `ValueError` in `collect()` or when
+  training starts.
 - `lr` (default `1e-3`): the learning rate of a torch head's default
   optimizer.
 - `early_stopping` (default `False`) and `early_stopping_patience` (default

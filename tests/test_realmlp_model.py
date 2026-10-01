@@ -457,7 +457,7 @@ def test_train_cv_sequential(tmp_path, recorders):
     results = model.train_cv(train_periods=60)
 
     assert len(results) == 8
-    expected = RealMLPRegressor._cv_folds(timestamps, 60)
+    expected = RealMLPRegressor._cv_folds(timestamps, 60, False, 60 // 5)
     assert [
         {k: r[k] for k in ("fold", "train_start", "train_end", "test_start", "test_end")} for r in results
     ] == expected

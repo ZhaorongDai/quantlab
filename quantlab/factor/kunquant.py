@@ -40,19 +40,12 @@ def shared_executor(num_threads: int) -> kr.Executor:
     thread count creates the executor; later calls return the same object,
     which lives until the interpreter exits.
 
-    The reason is a lost wake-up in KunQuant's executor destructor (kunquant
-    0.1.11). A worker thread reads the ``closing`` flag and then parks on a
-    condition variable without re-checking the flag under the lock, so when
-    the destructor sets the flag and notifies inside that window the worker
-    sleeps forever and the destructor's ``join`` never returns. The destructor
-    runs while Python holds the GIL, so the whole process freezes and nothing
-    at the Python level can time it out. The window is open while workers are
-    starting up or settling after a run: creating an executor, running one
-    graph and dropping it hangs within about a thousand repetitions, while
-    reusing one executor ran 100,000 graphs without a hang, and dropping each
-    executor 2 ms after its run survived 20,000 repetitions. Reusing one
-    executor per thread count removes all but the final destruction, which
-    ``_release_executors`` performs at exit after the workers have settled.
+    KunQuant's executor destructor (kunquant 0.1.11) can miss its wake-up
+    of a worker thread that is starting up or settling after a run; its
+    ``join`` then never returns, and since it holds the GIL the whole process
+    freezes. So no executor is destroyed while the program runs: one per
+    thread count is reused, and ``_release_executors`` destroys them at exit
+    after the workers have settled.
 
     Reuse is safe because ``runGraph`` and ``StreamContext.run`` wait until all
     their work is done before returning, so no work is left on the executor
@@ -88,12 +81,11 @@ def shared_executor(num_threads: int) -> kr.Executor:
 def _release_executors() -> None:
     """Drop the cached executors at exit, once their workers have settled.
 
-    Left to module teardown, the executors would be destroyed at a moment
-    nobody chose, possibly right after a run finished. Waiting a short, fixed
-    time first lets every worker reach its condition-variable wait, where the
-    destructor's wake-up cannot be missed. Releasing them, rather than keeping
-    them forever, also keeps nanobind (KunQuant's binding library) from
-    reporting them as leaked at shutdown.
+    Registered with ``atexit`` by the first ``shared_executor`` call. It
+    waits ``_EXIT_SETTLE_SECONDS`` so that every worker reaches its
+    condition-variable wait, where the destructor's wake-up cannot be missed,
+    then drops the executors, so nanobind (KunQuant's binding library) does
+    not report them as leaked at shutdown.
     """
     time.sleep(_EXIT_SETTLE_SECONDS)
     _EXECUTORS.clear()

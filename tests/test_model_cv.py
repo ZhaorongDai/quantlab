@@ -395,7 +395,7 @@ def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_
     model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
     expected = BaseModel._cv_folds(
-        model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values, 50
+        model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values, 50, False, 50 // 5
     )
 
     results = model.train_cv(train_periods=50)

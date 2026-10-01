@@ -225,7 +225,7 @@ The base classes and the shipped heads read these keys from it themselves (`quan
 
 | Key | Read by | Default |
 |---|---|---|
-| `epochs` | `TorchModel`: the cap on training epochs; a value that is not a positive integer raises `ValueError` when training starts | 100 (`GATsRegressor` 200, `MASTERRegressor` 40) |
+| `epochs` | `TorchModel`: the cap on training epochs; a value that is not a positive integer raises `ValueError` in `collect()` or when training starts | 100 (`GATsRegressor` 200, `MASTERRegressor` 40) |
 | `lr` | `TorchModel`: the learning rate of the default `_init_optim` | `1e-3` (`GATsRegressor` `1e-4`, `MASTERRegressor` `1e-5`) |
 | `early_stopping` | the shipped library heads: turn on the library's native early stopping | `False` |
 | `early_stopping_patience` | the shipped library heads: rounds (or the library's own unit) without improvement | 5 |
@@ -299,7 +299,7 @@ The training target mattered most: on the Nasdaq-100 every `cs_rank` candidate b
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -960,7 +960,7 @@ ValueError: MASTERRegressor: gate_features names every factor; at least one stoc
 ValueError: base_model must be one of ['LSTM', 'GRU'], got 'RNN'
 ```
 
-A torch head whose `epochs` hyperparameter is not a positive integer fails when training starts.
+A torch head whose `epochs` hyperparameter is not a positive integer fails in `collect()`, before any data is read, or when training starts.
 
 ```text
 ValueError: MinimalHead: hyperparameters['epochs'] must be a positive integer, got 0

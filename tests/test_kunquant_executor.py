@@ -3,15 +3,14 @@
 KunQuant's multi-thread executor can deadlock in its destructor: a worker that
 has read the `closing` flag but not yet parked misses the destructor's wake-up,
 and the destructor's `join` then waits forever while holding the GIL. The whole
-process freezes (issue #74: the full test suite hung at a moving point). The
+process freezes. The
 seam is therefore "no executor is destroyed while the program runs": every
 KunQuant run takes its executor from `shared_executor`, which creates one per
 thread count and releases it only at exit, after its workers have settled.
 
 The stress test runs in a subprocess with a time limit, so a regression fails
 the test instead of hanging the suite. Creating and dropping an executor per
-run, the pattern this replaced, hangs that subprocess within a few hundred to
-a thousand runs.
+run hangs that subprocess within a few hundred to a thousand runs.
 """
 
 import ast

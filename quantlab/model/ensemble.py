@@ -78,7 +78,6 @@ import numpy as np
 import pandas as pd
 import wandb
 import xarray as xr
-from loguru import logger
 
 from quantlab.base.model import BaseModel
 from quantlab.utils.atomic import write_json_atomically
@@ -754,26 +753,12 @@ class BaseEnsemble(ABC):
         """
         for member in self.members:
             member._check_hyperparameters()
-        first = self.members[0]
-        test_periods = BaseModel._cv_test_periods(
-            self.class_name, train_periods, test_periods
-        )
-        start_date, end_date = first.config.start_date, first.config.end_date
-        data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-        timestamps = data.sel(timestamp=slice(start_date, end_date)).timestamp.values
-        if len(timestamps) == 0:
-            raise ValueError(f"No data found between {start_date} and {end_date}")
-
-        folds = BaseModel._cv_folds(
-            timestamps, train_periods, expanding=expanding, test_periods=test_periods
-        )
-        lookahead = max(member._purge_bars() for member in self.members)
-        records = [
-            BaseModel._purged_fold(timestamps, fold, lookahead) for fold in folds
-        ]
-        logger.info(
-            f"{self.class_name}: {len(folds)} walk-forward folds from {start_date} "
-            f"to {end_date} with {train_periods} training periods"
+        folds, records = self.members[0]._cv_plan(
+            train_periods,
+            expanding,
+            test_periods,
+            max(member._purge_bars() for member in self.members),
+            self.class_name,
         )
 
         directory = self._new_directory("cv")

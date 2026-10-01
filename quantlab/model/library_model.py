@@ -9,7 +9,7 @@ stopping. Checkpoints are ``.joblib`` files written with joblib. Shipped heads l
 
 from abc import abstractmethod
 from pathlib import Path
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 import joblib
 import numpy as np
@@ -179,24 +179,6 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         """Refuse an invalid ``training_target``."""
         self.training_target
 
-    def collect(self) -> Self:
-        """Validate the hyperparameters, then ``BaseModel.collect``.
-
-        A typo in ``training_target`` fails before any data is read.
-
-        Raises
-        ------
-        ValueError
-            If a hyperparameter this variant reads is invalid.
-
-        Examples
-        --------
-        >>> head.collect() is head
-        True
-        """
-        self._check_hyperparameters()
-        return super().collect()
-
     def _transform_target(self, y: torch.Tensor, training: bool):
         """Apply ``training_target`` to one bar's labels, or keep them raw.
 
@@ -205,12 +187,11 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         transform = TRAINING_TARGETS.get(self.training_target)
         return (y if transform is None else transform(y)), None
 
+    _default_transform_target = _transform_target
+
     def _standardizes_target(self) -> bool:
         """True with a ``training_target`` or a class-level ``_transform_target``."""
-        return (
-            self.training_target is not None
-            or type(self)._transform_target is not LibraryModel._transform_target
-        )
+        return self.training_target is not None or super()._standardizes_target()
 
     @abstractmethod
     def _init_model(

@@ -225,7 +225,7 @@ True
 
 | 键 | 读取方 | 默认值 |
 |---|---|---|
-| `epochs` | `TorchModel`：训练 epoch 数的上限；不是正整数时，训练开始时抛出 `ValueError` | 100（`GATsRegressor` 200，`MASTERRegressor` 40） |
+| `epochs` | `TorchModel`：训练 epoch 数的上限；不是正整数时，在 `collect()` 或训练开始时抛出 `ValueError` | 100（`GATsRegressor` 200，`MASTERRegressor` 40） |
 | `lr` | `TorchModel`：默认 `_init_optim` 的学习率 | `1e-3`（`GATsRegressor` `1e-4`，`MASTERRegressor` `1e-5`） |
 | `early_stopping` | 自带的库模型头：开启库自带的提前停止 | `False` |
 | `early_stopping_patience` | 自带的库模型头：容忍多少轮（或库自己的单位）没有改善 | 5 |
@@ -299,7 +299,7 @@ hyperparameters = {
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -960,7 +960,7 @@ ValueError: MASTERRegressor: gate_features names every factor; at least one stoc
 ValueError: base_model must be one of ['LSTM', 'GRU'], got 'RNN'
 ```
 
-torch 模型头的超参数 `epochs` 不是正整数时，训练一开始就会失败。
+torch 模型头的超参数 `epochs` 不是正整数时，`collect()` 在读取任何数据之前就会失败，训练开始时同样失败。
 
 ```text
 ValueError: MinimalHead: hyperparameters['epochs'] must be a positive integer, got 0

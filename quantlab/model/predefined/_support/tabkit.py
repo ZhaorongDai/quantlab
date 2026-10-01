@@ -38,8 +38,8 @@ class TabkitRegressor(LibraryModel):
     head's ``DEFAULT_PARAMS``, then ``random_state`` from
     ``config.random_seed``, then the keys ``_early_stopping_params`` derives
     from ``hyperparameters["early_stopping"]``, then the user's dict without
-    the keys ``LibraryModel`` reads itself (the early-stopping keys and
-    ``training_target``), which wins and is never modified. An unknown key
+    the keys ``LibraryModel`` reads itself
+    (``LIBRARY_RESERVED_HYPERPARAMETERS``), which wins and is never modified. An unknown key
     raises ``TypeError`` from pytabkit at ``_init_model``. The merged dict is recorded under
     ``resolved_hyperparameters`` in the checkpoint's ``config.json`` and in
     the run config.

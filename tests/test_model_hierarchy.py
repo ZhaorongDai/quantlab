@@ -323,9 +323,14 @@ def test_torch_reads_epochs_and_lr_from_the_hyperparameters(tmp_path):
 def test_epochs_that_is_not_a_positive_integer_fails_when_training_starts(
     tmp_path, monkeypatch, epochs, entry
 ):
-    """Before any W&B run or checkpoint directory is opened."""
+    """At collect, before any data is read; and at training, set after collect,
+    before any W&B run or checkpoint directory is opened."""
     model = OneBarHead(ModelConfig(**_fit_kwargs(tmp_path), hyperparameters={"epochs": epochs}))
+    with pytest.raises(ValueError, match="epochs.*positive integer"):
+        model.collect()
+    model = OneBarHead(ModelConfig(**_fit_kwargs(tmp_path)))
     model.collect()
+    model.config.hyperparameters["epochs"] = epochs
     opened = []
     monkeypatch.setattr(model, "_init_wandb", lambda *a, **k: opened.append(a))
     with pytest.raises(ValueError, match="epochs.*positive integer"):

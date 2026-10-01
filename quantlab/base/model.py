@@ -564,7 +564,8 @@ class BaseModel(ABC):
     ) -> Self:
         """Load features and labels into the model's data backend.
 
-        Each factor and label is asked for its panel from ``start_date`` to
+        The hyperparameters are checked first (``_check_hyperparameters``),
+        so an invalid one fails before any data is read. Each factor and label is asked for its panel from ``start_date`` to
         ``end_date``: ``read(start, end)`` from its store under the
         ``"read"`` strategy, ``compute(start, end)`` from its inputs under
         ``"cal"``. Factor panels start ``warmup_bars`` bars earlier (see
@@ -578,11 +579,17 @@ class BaseModel(ABC):
         Self
             The model itself, for chaining.
 
+        Raises
+        ------
+        ValueError
+            If a hyperparameter this variant reads is invalid.
+
         Examples
         --------
         >>> model.collect().num_times
         40
         """
+        self._check_hyperparameters()
         feature = self._collect_all_features()
         label = self._collect_all_labels()
         with Timer(f"{self.class_name}: collect merge"):
@@ -1486,8 +1493,8 @@ class BaseModel(ABC):
     def _check_hyperparameters(self) -> None:
         """Validate the reserved hyperparameters this variant reads.
 
-        Called first by ``train`` and ``train_cv``, before any W&B run or
-        checkpoint directory is opened. The default checks nothing.
+        Called first by ``collect``, ``train`` and ``train_cv``, before any
+        data is read or any W&B run or checkpoint directory is opened. The default checks nothing.
 
         Raises
         ------
@@ -1587,14 +1594,13 @@ class BaseModel(ABC):
     def _cv_folds(
         timestamps,
         train_periods: int,
-        expanding: bool = False,
-        test_periods: int | None = None,
+        expanding: bool,
+        test_periods: int,
     ) -> list[dict]:
         """Compute the fold boundaries of a walk-forward cross-validation.
 
         This is the only implementation of the fold arithmetic;
-        ``train_cv`` trains exactly the folds it returns. With
-        ``test_periods`` (``train_periods // 5`` when None), fold ``i`` tests on the
+        ``train_cv`` trains exactly the folds it returns. Fold ``i`` tests on the
         ``test_periods`` positions from ``i * test_periods + train_periods``
         on, and its training window ends right before them. The window
         starts at position ``i * test_periods`` (sliding) or at 0 when
@@ -1613,8 +1619,6 @@ class BaseModel(ABC):
             ``np.datetime_as_string`` values and both ends are inclusive.
         """
         total_periods = len(timestamps)
-        if test_periods is None:
-            test_periods = train_periods // 5
         n_splits = max(1, (total_periods - train_periods) // test_periods)
 
         folds: list[dict] = []
@@ -1648,6 +1652,56 @@ class BaseModel(ABC):
                 }
             )
         return folds
+
+    def _cv_plan(
+        self,
+        train_periods: int,
+        expanding: bool,
+        test_periods: int | None,
+        lookahead: int,
+        name: str,
+    ) -> tuple[list[dict], list[dict]]:
+        """Return the walk-forward folds of ``train_cv`` before and after the purge.
+
+        The folds cover the collected timestamps between ``start_date`` and
+        ``end_date``: ``_cv_folds`` cuts them with the test length of
+        ``_cv_test_periods``, and ``_purged_fold`` moves each fold's
+        ``train_end`` back by ``lookahead`` bars. ``name`` prefixes the error
+        messages. An ensemble plans its folds on its first member, with the
+        largest lookahead of all members.
+
+        Returns
+        -------
+        tuple[list[dict], list[dict]]
+            The folds as configured, and the same folds with the purged
+            ``train_end`` actually fitted.
+
+        Raises
+        ------
+        ValueError
+            If the test length is invalid (see ``_cv_test_periods``), no bar
+            lies between ``start_date`` and ``end_date``, or the purge leaves
+            a fold no training bar.
+        """
+        test_periods = self._cv_test_periods(name, train_periods, test_periods)
+        start_date, end_date = self.config.start_date, self.config.end_date
+        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        timestamps = data.sel(timestamp=slice(start_date, end_date)).timestamp.values
+        if len(timestamps) == 0:
+            raise ValueError(f"No data found between {start_date} and {end_date}")
+
+        folds = self._cv_folds(timestamps, train_periods, expanding, test_periods)
+        records = [self._purged_fold(timestamps, fold, lookahead) for fold in folds]
+        logger.info(
+            f"{name}: {len(folds)} walk-forward folds from {start_date} to "
+            f"{end_date} with {train_periods} training periods"
+        )
+        for fold in records:
+            logger.info(
+                f"Fold {fold['fold']}: Train [{fold['train_start']} to "
+                f"{fold['train_end']}], Test [{fold['test_start']} to {fold['test_end']}]"
+            )
+        return folds, records
 
     @staticmethod
     def _purged_fold(timestamps, fold: dict, lookahead: int) -> dict:
@@ -1850,38 +1904,10 @@ class BaseModel(ABC):
         2
         """
         self._check_hyperparameters()
-        test_periods = self._cv_test_periods(self.class_name, train_periods, test_periods)
-        start_date = self.config.start_date
-        end_date = self.config.end_date
-
+        folds, records = self._cv_plan(
+            train_periods, expanding, test_periods, self._purge_bars(), self.class_name
+        )
         project_name = self._new_project_name()
-        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-
-        data_in_range = data.sel(timestamp=slice(start_date, end_date))
-        timestamps = data_in_range.timestamp.values
-
-        if len(timestamps) == 0:
-            raise ValueError(
-                f"No data found between {start_date} and {end_date}"
-            )
-
-        logger.info(
-            f"Starting CV from {start_date} to {end_date} with {train_periods} training periods"
-        )
-
-        folds = self._cv_folds(
-            timestamps, train_periods, expanding=expanding, test_periods=test_periods
-        )
-        lookahead = self._purge_bars()
-        records = [
-            self._purged_fold(timestamps, fold, lookahead) for fold in folds
-        ]
-
-        logger.info(f"Total {len(folds)} folds will be created")
-        for fold in records:
-            logger.info(
-                f"Fold {fold['fold']}: Train [{fold['train_start']} to {fold['train_end']}], Test [{fold['test_start']} to {fold['test_end']}]"
-            )
 
         results = [
             self._train_one_fold(fold, record, project_name)

@@ -37,6 +37,11 @@ class TrainingTargetMixin:
         """
         return y, None
 
+    #: The ``_transform_target`` that leaves the labels as they are. A
+    #: variant that replaces the default with its own unchanged-by-default
+    #: hook points this at that hook.
+    _default_transform_target = _transform_target
+
     @property
     def label_scales(self) -> dict[str, str]:
         """Each label name's prediction scale: ``"raw"`` or ``"standardized"``.
@@ -60,9 +65,9 @@ class TrainingTargetMixin:
     def _standardizes_target(self) -> bool:
         """Whether the training target differs from the raw labels.
 
-        True when the class overrides ``_transform_target``.
+        True when the class overrides the variant's default ``_transform_target``.
         """
-        return type(self)._transform_target is not TrainingTargetMixin._transform_target
+        return type(self)._transform_target is not type(self)._default_transform_target
 
     def _training_panel(self, data: xr.Dataset) -> TrainingPanel:
         """Return the collected panel as a ``TrainingPanel`` with no target yet."""

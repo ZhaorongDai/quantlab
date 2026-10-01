@@ -59,7 +59,7 @@ namespaces = false
 [tool.pytest.ini_options]
 pythonpath = ["."]
 # A test that runs past this many seconds dumps every thread's stack and ends
-# the run, so a deadlock in native code (issue #74) fails instead of hanging.
+# the run, so a deadlock in native code fails instead of hanging.
 # The slowest test takes about 15 s.
 faulthandler_timeout = 300
 faulthandler_exit_on_timeout = true

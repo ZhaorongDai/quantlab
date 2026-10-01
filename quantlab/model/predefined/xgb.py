@@ -513,8 +513,7 @@ class XGBoostRegressor(LibraryModel):
     built-in xgboost objective.
 
     Hyperparameters come from ``config.hyperparameters``, without the keys
-    ``LibraryModel`` reads itself (the early-stopping keys and
-    ``training_target``).
+    ``LibraryModel`` reads itself (``LIBRARY_RESERVED_HYPERPARAMETERS``).
     ``num_boost_round`` (default 1000) is taken out separately; every other key overrides the
     matching entry of ``DEFAULT_PARAMS``, and ``seed`` defaults to
     ``config.random_seed``. Unless ``device`` is given, training runs on

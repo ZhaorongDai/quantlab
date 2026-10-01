@@ -72,22 +72,20 @@ def test_auto_with_workers_keeps_the_panel_in_cpu_memory(tmp_path, gpu_with_free
 
 
 def test_cuda_with_workers_is_refused_before_training(tmp_path):
-    head = _head(tmp_path, panel_device="cuda", num_workers=2)
     with pytest.raises(ValueError, match="num_workers"):
-        head.train()
+        _head(tmp_path, panel_device="cuda", num_workers=2)
     assert not (tmp_path / "ckpt").exists()
 
 
 def test_cuda_without_a_cuda_device_is_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    head = _head(tmp_path, panel_device="cuda")
     with pytest.raises(ValueError, match="CUDA"):
-        head.train()
+        _head(tmp_path, panel_device="cuda")
 
 
 def test_cuda_forces_the_gpu_whatever_the_budget(tmp_path, gpu_with_free_bytes):
-    head = _head(tmp_path, panel_device="cuda")
     gpu_with_free_bytes(10)
+    head = _head(tmp_path, panel_device="cuda")
     assert head._resolve_panel_device(10**9) == "cuda"
 
 
@@ -101,9 +99,8 @@ def test_cpu_forces_cpu_memory(tmp_path, gpu_with_free_bytes):
     "key, value", [("panel_device", "gpu"), ("panel_dtype", "bfloat16"), ("panel_dtype", 16)]
 )
 def test_an_unknown_panel_setting_is_refused_before_training(tmp_path, key, value):
-    head = _head(tmp_path, **{key: value})
     with pytest.raises(ValueError, match=key):
-        head.train()
+        _head(tmp_path, **{key: value})
 
 
 def test_the_panel_budget_counts_every_tensor_at_its_stored_precision(tmp_path):
