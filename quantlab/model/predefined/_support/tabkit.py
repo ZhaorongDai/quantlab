@@ -156,7 +156,7 @@ class TabkitRegressor(LibraryModel):
 # pytabkit offers no callback argument on its estimators: ``XGB_TD_Regressor``
 # calls ``xgboost.train`` inside its split interface, and ``RealMLP_TD_Regressor``
 # builds a Lightning ``Trainer`` with the callbacks its ``TabNNModule`` creates.
-# Both heads therefore register their per-round or per-epoch W&B callback in a
+# Both heads therefore register their per-round or per-epoch tracking callback in a
 # thread-local slot for the duration of ``fit``, and two one-time patches read
 # that slot: one wraps ``xgboost.train`` to append the active xgboost callbacks,
 # the other wraps ``TabNNModule.create_callbacks`` to append the active

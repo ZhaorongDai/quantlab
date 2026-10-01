@@ -17,7 +17,7 @@ What is locked here, and what turns it red:
   ensemble-level IC metrics and `member_correlation` (no error metric),
   each correlation within `[-1, 1]`, and `cv_mean` averages them
   the way `BaseModel` does.
-- W&B: one run per member per fold, `{MemberClass}_fold_{i}_member_{k}`, all
+- Tracking: one run per member per fold, `{MemberClass}_fold_{i}_member_{k}`, all
   in one project named after the CV directory, plus a
   `SeedEnsemble_cv_summary` run carrying the `cv_mean_*` values.
 - `run_cv` with the ensemble as `config.model` replays the CV run end to end:
@@ -46,6 +46,7 @@ from quantlab.base.model import BaseModel
 from quantlab.model.ensemble import BaseEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from tests.tracking_fixtures import RecordingTracker
 from tests.backtest_fixtures import (
     SeededHead,
     make_model,
@@ -249,11 +250,14 @@ def test_fold_config_json_records_the_dates_before_the_purge(cv_run):
 
 
 # --------------------------------------------------------------------------
-# W&B
+# Tracking
 # --------------------------------------------------------------------------
 
 
 class FakeRecorder:
+    """The ensemble's own CV summary run, still opened by ``_init_wandb`` until
+    the ensemble moves to the tracker (#102)."""
+
     def __init__(self, project: str, name: str):
         self.project = project
         self.name = name
@@ -267,46 +271,49 @@ class FakeRecorder:
         self.finished += 1
 
 
-def test_wandb_runs_per_fold_member_and_one_summary(tmp_path, monkeypatch):
+def test_tracking_runs_per_fold_member_and_one_summary(tmp_path, monkeypatch):
     created: list[FakeRecorder] = []
 
     def fake_init_wandb(self, project_name, experiment_name):
         self._wandb_recorder = FakeRecorder(project_name, experiment_name)
         created.append(self._wandb_recorder)
 
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
     monkeypatch.setattr(BaseEnsemble, "_init_wandb", fake_init_wandb)
+    tracker = RecordingTracker()
     dataset_config, bars = _setup(tmp_path)
-    ensemble = SeedEnsemble(_model(tmp_path, dataset_config, bars), SEEDS)
+    member = _model(tmp_path, dataset_config, bars)
+    member.config = dataclasses.replace(member.config, tracker=tracker)
+    ensemble = SeedEnsemble(member, SEEDS)
 
     results = ensemble.collect().train_cv(TRAIN_PERIODS)
 
-    project = _cv_dir(ensemble).name
-    assert {r.project for r in created} == {project}
-    assert [r.name for r in created] == [
+    group = _cv_dir(ensemble).name
+    assert {(r.project, r.group) for r in tracker.runs} == {("SeededHead", group)}
+    assert [r.name for r in tracker.runs] == [
         f"SeededHead_fold_{i}_member_{k}"
         for i in range(N_FOLDS)
         for k in range(len(SEEDS))
-    ] + ["SeedEnsemble_cv_summary"]
-    summary = created[-1]
+    ]
+    assert all(r.finished and not r.failed for r in tracker.runs)
+    (summary,) = created
+    assert summary.project == group
+    assert summary.name == "SeedEnsemble_cv_summary"
     assert summary.finished == 1
     assert summary.summary["cv_n_folds"] == N_FOLDS
     for key, value in BaseModel._cv_mean_metrics(results).items():
         assert summary.summary[key] == pytest.approx(value, nan_ok=True)
 
 
-def test_train_keeps_the_member_run_names(tmp_path, monkeypatch):
-    names: list[str] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        names.append(experiment_name)
-        self._wandb_recorder = FakeRecorder(project_name, experiment_name)
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
+def test_train_keeps_the_member_run_names(tmp_path):
+    tracker = RecordingTracker()
     dataset_config, bars = _setup(tmp_path)
-    SeedEnsemble(_model(tmp_path, dataset_config, bars), SEEDS).collect().train()
+    member = _model(tmp_path, dataset_config, bars)
+    member.config = dataclasses.replace(member.config, tracker=tracker)
+    SeedEnsemble(member, SEEDS).collect().train()
 
-    assert names == [f"SeededHead_member_{k}" for k in range(len(SEEDS))]
+    assert [r.name for r in tracker.runs] == [
+        f"SeededHead_member_{k}" for k in range(len(SEEDS))
+    ]
 
 
 # --------------------------------------------------------------------------

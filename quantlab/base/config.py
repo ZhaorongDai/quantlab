@@ -28,6 +28,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from types import UnionType
 from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
 
+from quantlab.base.tracking import NullTracker, Tracker
 from quantlab.enums.data import (
     BarInterval,
     Frequency,
@@ -1003,19 +1004,27 @@ class ModelConfig(_FrozenConfig):
     test_start: str | None = None
     #: Last date of the test window, inclusive.
     test_end: str | None = None
+    #: Where training runs are tracked (ADR 0015); the default
+    #: ``NullTracker`` sends nothing anywhere.
+    tracker: Tracker = NullTracker()
 
     #: Dotted import path of the model class; filled by the config setter.
     name: str | None = None
 
     def to_dict(self):
-        """Return the config as a plain dict via ``dataclasses.asdict``.
+        """Return the config as a plain dict, the tracker as its ``get_config()``.
 
         Examples
         --------
         >>> cfg.to_dict()["hyperparameters"]
         {'max_depth': 6, 'early_stopping': True}
+        >>> cfg.to_dict()["tracker"]
+        {'project': None, 'name': 'quantlab.base.tracking.NullTracker'}
         """
-        return asdict(self)
+        return {
+            **asdict(replace(self, tracker=NullTracker())),
+            "tracker": self.tracker.get_config(),
+        }
 
 
 @dataclass(kw_only=True)

@@ -40,7 +40,6 @@ from KunQuant.Stage import Function
 from quantlab.base.config import ModelConfig, FactorConfig, ForwardConfig
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.factor.kunquant import FactorKunQuant
-from quantlab.base.model import BaseModel
 from quantlab.model.torch_model import TorchModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.model.torch_data import Batch, SymbolSequenceDataset
@@ -55,6 +54,7 @@ from quantlab.label.forward import Forward
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.torch_heads import MeanContextHead, RecordingHead
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordingTracker
 
 N_TIMES = 40
 TIMES = pd.date_range("2024-01-01", periods=N_TIMES, freq="D").values
@@ -65,31 +65,14 @@ def _day(i: int) -> str:
     return str(np.datetime_as_string(TIMES[i], unit="D"))
 
 
-class FakeRecorder:
-    """Records what the model writes to a W&B run."""
-
-    def __init__(self, name: str):
-        self.name = name
-        self.summary: dict = {}
-        self.logged: list[dict] = []
-
-    def log(self, data, step=None):
-        self.logged.append(dict(data))
-
-    def finish(self):
-        pass
-
-
 @pytest.fixture
-def recorders(monkeypatch) -> list[FakeRecorder]:
-    created: list[FakeRecorder] = []
+def tracker() -> RecordingTracker:
+    return RecordingTracker()
 
-    def fake_init_wandb(self, project_name, experiment_name):
-        created.append(FakeRecorder(experiment_name))
-        self._wandb_recorder = created[-1]
 
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
-    return created
+def _logged(run) -> list[dict]:
+    """The step metrics of a run, one dict per epoch in order."""
+    return [metrics for _, metrics in run.steps]
 
 
 class Calendar:
@@ -187,7 +170,7 @@ def _feature_panel(features, symbols=SYMBOLS) -> xr.Dataset:
 
 
 def test_a_changing_cross_section_trains_and_every_present_symbol_is_predicted(
-    tmp_path, recorders
+    tmp_path
 ):
     features = _features()
     for values in features.values():
@@ -211,7 +194,7 @@ def test_a_changing_cross_section_trains_and_every_present_symbol_is_predicted(
     assert predicted[35:, 6].all()
 
 
-def test_a_missing_label_adds_no_loss_but_its_symbol_is_context(tmp_path, recorders):
+def test_a_missing_label_adds_no_loss_but_its_symbol_is_context(tmp_path):
     features = _features()
     label = _label_of(features)
     label[:, 2] = np.nan  # S2 never has a label
@@ -253,7 +236,7 @@ def test_a_missing_label_adds_no_loss_but_its_symbol_is_context(tmp_path, record
 
 @pytest.mark.parametrize("clip, expected", [(True, 3.0), (False, 10.0)])
 def test_window_rows_before_a_symbols_history_are_zero_and_values_clip(
-    tmp_path, recorders, clip, expected
+    tmp_path, clip, expected
 ):
     features = {"f_a": np.ones((N_TIMES, 2)), "f_b": np.ones((N_TIMES, 2))}
     features["f_a"][:5, 1] = np.nan
@@ -316,7 +299,7 @@ def _kun(cls, dataset, tmp_path, name):
 
 
 @pytest.fixture
-def warm_model(spot_kline_zarr, tmp_path, recorders):
+def warm_model(spot_kline_zarr, tmp_path):
     dataset = SpotKlineDataset(spot_kline_zarr(periods=60))
     factor = _kun(MaDeviation, dataset, tmp_path, "ma_dev")
     label = Forward(ForwardConfig(factor=_kun(OneBarReturn, dataset, tmp_path, "ret"),
@@ -419,7 +402,7 @@ def test_drop_extreme_keeps_nan_labels_and_drops_both_tails():
 
 @pytest.mark.parametrize("kind", ["rank", "zscore"])
 def test_transforms_are_per_bar_so_a_per_bar_rescale_trains_the_same_model(
-    tmp_path, recorders, kind
+    tmp_path, kind
 ):
     features = _features()
     label = _label_of(features)
@@ -438,7 +421,7 @@ def test_transforms_are_per_bar_so_a_per_bar_rescale_trains_the_same_model(
         torch.testing.assert_close(value, _weights(rescaled)[key], rtol=1e-4, atol=1e-5)
 
 
-def test_drop_extreme_removes_symbols_from_the_training_loss_only(tmp_path, recorders):
+def test_drop_extreme_removes_symbols_from_the_training_loss_only(tmp_path):
     """`keep` folds into the mask: a dropped symbol stays in the input."""
     features = _features(n_symbols=10)
     label = _label_of(features)
@@ -464,7 +447,7 @@ def test_drop_extreme_removes_symbols_from_the_training_loss_only(tmp_path, reco
     assert evaluated == [(10, 8)] * 30 + [(10, 10)] * 10
 
 
-def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path, recorders):
+def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path):
     features = _features()
     label = _label_of(features) * 100.0  # far from the z-scored target's scale
     model = _model(tmp_path, features, label)
@@ -499,14 +482,14 @@ def test_train_loss_threshold_stops_at_the_threshold_or_the_cap():
     ],
 )
 def test_a_fit_runs_the_epochs_the_heads_stop_hook_and_config_allow(
-    tmp_path, recorders, stopping, epochs
+    tmp_path, tracker, stopping, epochs
 ):
     model = _model(tmp_path, _features(), _label_of(_features()), epochs=5,
-                   hyperparameters={"stopping": stopping})
+                   hyperparameters={"stopping": stopping}, tracker=tracker)
     model.train()
 
-    (run,) = recorders
-    assert len(run.logged) == epochs
+    (run,) = tracker.runs
+    assert len(_logged(run)) == epochs
 
 
 class DefaultStoppingHead(MeanContextHead):
@@ -526,7 +509,7 @@ class DefaultStoppingHead(MeanContextHead):
         super(MeanContextHead, self)._on_fit_end()
 
 
-def test_the_default_hooks_run_every_epoch_and_keep_the_last_weights(tmp_path, recorders):
+def test_the_default_hooks_run_every_epoch_and_keep_the_last_weights(tmp_path):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=DefaultStoppingHead, epochs=4)
     model.train()
@@ -536,14 +519,14 @@ def test_the_default_hooks_run_every_epoch_and_keep_the_last_weights(tmp_path, r
     assert not _same_weights(model.initial, _weights(model))
 
 
-def test_a_fit_with_val_loss_patience_keeps_its_best_validation_epoch(tmp_path, recorders):
+def test_a_fit_with_val_loss_patience_keeps_its_best_validation_epoch(tmp_path, tracker):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), epochs=15, lr=0.3,
-                   hyperparameters={"stopping": ("patience", 3)})
+                   hyperparameters={"stopping": ("patience", 3)}, tracker=tracker)
     checkpoint = model.train()
 
-    (run,) = recorders
-    best = min(entry["val_loss"] for entry in run.logged)
+    (run,) = tracker.runs
+    best = min(entry["val_loss"] for entry in _logged(run))
     metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
     assert metrics["val_loss"] == pytest.approx(best, rel=1e-6)
 
@@ -554,17 +537,17 @@ def test_a_fit_with_val_loss_patience_keeps_its_best_validation_epoch(tmp_path, 
 
 
 def test_a_dl_train_writes_metrics_json_and_reloads_to_the_same_predictions(
-    tmp_path, recorders
+    tmp_path, tracker
 ):
     features = _features()
     label = _label_of(features)
-    model = _model(tmp_path, features, label)
+    model = _model(tmp_path, features, label, tracker=tracker)
     checkpoint = model.train()
 
     metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
     keys = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "val", "test") for k in keys}
-    assert metrics == recorders[0].summary
+    assert metrics == tracker.runs[0].summary
 
     fresh = MeanContextHead(model.config).load(checkpoint)  # no collect() needed
     xr.testing.assert_allclose(
@@ -590,7 +573,7 @@ class FrozenOptimizerHead(MeanContextHead):
         return torch.optim.SGD(model.parameters(), lr=0.0)
 
 
-def test_a_head_can_supply_its_own_optimizer(tmp_path, recorders):
+def test_a_head_can_supply_its_own_optimizer(tmp_path):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=FrozenOptimizerHead,
                    hyperparameters={"stopping": ("threshold", -1.0, 3)})
@@ -610,16 +593,16 @@ class ConstantStepHead(MeanContextHead):
         return torch.tensor(1.0)
 
 
-def test_a_head_decides_what_a_step_does_and_reports(tmp_path, recorders):
+def test_a_head_decides_what_a_step_does_and_reports(tmp_path, tracker):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=ConstantStepHead,
-                   hyperparameters={"stopping": ("threshold", -1.0, 3)})
+                   hyperparameters={"stopping": ("threshold", -1.0, 3)}, tracker=tracker)
 
     checkpoint = model.train()
 
-    (run,) = recorders
-    assert [entry["train_loss"] for entry in run.logged] == [1.0, 1.0, 1.0]
-    assert [entry["val_loss"] for entry in run.logged] == [1.0, 1.0, 1.0]
+    (run,) = tracker.runs
+    assert [entry["train_loss"] for entry in _logged(run)] == [1.0, 1.0, 1.0]
+    assert [entry["val_loss"] for entry in _logged(run)] == [1.0, 1.0, 1.0]
     metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
     assert metrics["test_loss"] == 1.0
 
@@ -635,7 +618,7 @@ class HookRecordingHead(MeanContextHead):
         self.test_calls.append((epoch, batch.x.shape[0], batch.y.shape[0]))
 
 
-def test_test_hook_runs_on_every_test_bar_after_each_epoch(tmp_path, recorders):
+def test_test_hook_runs_on_every_test_bar_after_each_epoch(tmp_path):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=HookRecordingHead,
                    hyperparameters={"stopping": ("threshold", -1.0, 2)})
@@ -663,22 +646,22 @@ class MinimalHead(TorchModel):
 
 
 def test_a_head_with_only_a_window_a_network_and_a_loss_trains_and_predicts(
-    tmp_path, recorders
+    tmp_path, tracker
 ):
     features = _features()
     label = _label_of(features)
-    model = _model(tmp_path, features, label, cls=MinimalHead, epochs=3)
+    model = _model(tmp_path, features, label, cls=MinimalHead, epochs=3, tracker=tracker)
     checkpoint = model.train()
 
-    (run,) = recorders
-    assert len(run.logged) == 3  # no early stop by default
-    assert run.logged[-1]["train_loss"] < run.logged[0]["train_loss"]
+    (run,) = tracker.runs
+    assert len(_logged(run)) == 3  # no early stop by default
+    assert _logged(run)[-1]["train_loss"] < _logged(run)[0]["train_loss"]
     out = model.predict_panel(_feature_panel(features))
     assert np.isfinite(out["ret"].values).all()
     assert (checkpoint.parent / "metrics.json").is_file()
 
 
-def test_the_loss_hook_sees_a_masked_zero_filled_target_and_the_bar(tmp_path, recorders):
+def test_the_loss_hook_sees_a_masked_zero_filled_target_and_the_bar(tmp_path):
     features = _features()
     label = _label_of(features)
     label[:, 2] = np.nan
@@ -727,7 +710,7 @@ class AuxOutputHead(MinimalHead):
         return self.model(x)[0]
 
 
-def test_forward_maps_a_multi_output_network_to_the_prediction(tmp_path, recorders):
+def test_forward_maps_a_multi_output_network_to_the_prediction(tmp_path):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=AuxOutputHead, epochs=2)
     model.train()
@@ -742,7 +725,7 @@ class ScaledFeatureHead(RecordingHead):
 
 
 def test_transform_feature_replaces_the_default_in_training_and_prediction(
-    tmp_path, recorders
+    tmp_path
 ):
     features = {"f_a": np.ones((N_TIMES, 2)), "f_b": np.full((N_TIMES, 2), 10.0)}
     label = np.random.default_rng(0).standard_normal((N_TIMES, 2))
@@ -757,7 +740,7 @@ def test_transform_feature_replaces_the_default_in_training_and_prediction(
     np.testing.assert_array_equal(model.model.inputs[0][:, 0].numpy(), -2.0)  # before history
 
 
-def test_a_transform_feature_that_leaves_nan_is_refused_naming_the_head(tmp_path, recorders):
+def test_a_transform_feature_that_leaves_nan_is_refused_naming_the_head(tmp_path):
     class LeavesNaN(MinimalHead):
         def _transform_feature(self, x):
             return x
@@ -808,7 +791,7 @@ class CellHead(MinimalHead):
 
 
 def test_a_custom_dataset_trains_and_its_predictions_land_in_their_cells(
-    tmp_path, recorders
+    tmp_path
 ):
     features = _features()
     features["f_a"][:10, 3] = np.nan
@@ -835,7 +818,7 @@ def test_a_custom_dataset_trains_and_its_predictions_land_in_their_cells(
     ids=["skip", "repeat"],
 )
 def test_a_dataset_that_skips_or_repeats_a_present_symbol_raises_naming_the_bar(
-    tmp_path, recorders, edit, what
+    tmp_path, edit, what
 ):
     features = _features()
     model = _model(tmp_path, features, _label_of(features), cls=CellHead, epochs=1)
@@ -855,7 +838,7 @@ class TargetCallsHead(MinimalHead):
 
 
 def test_transform_target_runs_once_per_bar_per_fit_and_trains_only_on_train_bars(
-    tmp_path, recorders
+    tmp_path
 ):
     features = _features()
     label = np.repeat(np.arange(N_TIMES, dtype=float)[:, None], len(SYMBOLS), axis=1)
@@ -882,7 +865,7 @@ class SymbolCountLossHead(MinimalHead):
 
 
 def test_split_loss_weights_every_bar_equally_whatever_its_symbol_count(
-    tmp_path, recorders
+    tmp_path
 ):
     symbols = [f"S{i}" for i in range(20)]
     features = _features(n_symbols=20)
@@ -930,7 +913,7 @@ class ModeRecordingHead(MinimalHead):
         return super()._train_one_batch(epoch, batch)
 
 
-def test_evaluation_runs_without_gradients_in_eval_mode(tmp_path, recorders):
+def test_evaluation_runs_without_gradients_in_eval_mode(tmp_path):
     features = _features()
     ModeRecordingHead.modes = []
     model = _model(tmp_path, features, _label_of(features), cls=ModeRecordingHead, epochs=2)
@@ -943,7 +926,7 @@ def test_evaluation_runs_without_gradients_in_eval_mode(tmp_path, recorders):
     assert not any(grad or training for kind, grad, training in model.modes if kind != "train")
 
 
-def test_a_one_symbol_cross_section_trains_and_predicts(tmp_path, recorders):
+def test_a_one_symbol_cross_section_trains_and_predicts(tmp_path):
     features = _features()
     for values in features.values():
         values[::3, 1:] = np.nan  # every third bar holds S0 alone
@@ -961,7 +944,7 @@ class OrderRecordingHead(MinimalHead):
         return super()._train_one_batch(epoch, batch)
 
 
-def test_training_visits_bars_in_a_seeded_shuffled_order(tmp_path, recorders):
+def test_training_visits_bars_in_a_seeded_shuffled_order(tmp_path):
     features = _features()
     orders = []
     for name in ("a", "b"):
@@ -986,7 +969,7 @@ class WindowedOrderHead(OrderRecordingHead):
         )
 
 
-def test_the_purge_covers_the_label_lookahead_and_never_the_window(tmp_path, recorders):
+def test_the_purge_covers_the_label_lookahead_and_never_the_window(tmp_path):
     features = _features()
     label = _label_of(features)
     WindowedOrderHead.order = []
@@ -1041,16 +1024,16 @@ class TwoNetworkHead(TorchModel):
 
 
 def test_a_module_dict_head_with_two_optimizers_trains_checkpoints_and_reloads(
-    tmp_path, recorders
+    tmp_path, tracker
 ):
     features = _features()
     label = _label_of(features)
-    model = _model(tmp_path, features, label, cls=TwoNetworkHead, epochs=3)
+    model = _model(tmp_path, features, label, cls=TwoNetworkHead, epochs=3, tracker=tracker)
 
     checkpoint = model.train()
 
-    (run,) = recorders
-    assert run.logged[-1]["train_loss"] < run.logged[0]["train_loss"]
+    (run,) = tracker.runs
+    assert _logged(run)[-1]["train_loss"] < _logged(run)[0]["train_loss"]
     state = torch.load(checkpoint)
     assert {k.split(".")[0] for k in state} == {"fast", "slow"}
     fresh = TwoNetworkHead(model.config).load(checkpoint)
@@ -1067,7 +1050,7 @@ class SymbolIndexLossCellHead(CellHead):
         return batch.where[1].float().mean()
 
 
-def test_split_loss_is_per_bar_when_a_bar_spans_many_batches(tmp_path, recorders):
+def test_split_loss_is_per_bar_when_a_bar_spans_many_batches(tmp_path):
     symbols = [f"S{i}" for i in range(20)]
     features = _features(n_symbols=20)
     for values in features.values():
@@ -1094,14 +1077,14 @@ class DroppedRowHead(MinimalHead):
 
 
 @pytest.mark.parametrize("cls", [WrongShapeHead, DroppedRowHead], ids=["labels", "rows"])
-def test_a_forward_tensor_of_the_wrong_shape_raises_naming_the_head(tmp_path, recorders, cls):
+def test_a_forward_tensor_of_the_wrong_shape_raises_naming_the_head(tmp_path, cls):
     features = _features()
     with pytest.raises(ValueError, match=rf"{cls.__name__}._forward must return a tensor "
                                          rf"shaped like the batch's mask plus the labels, \[6, 1\]"):
         _model(tmp_path, features, _label_of(features), cls=cls, epochs=1).train()
 
 
-def test_a_dataset_predicting_outside_the_present_cells_raises(tmp_path, recorders):
+def test_a_dataset_predicting_outside_the_present_cells_raises(tmp_path):
     features = _features()
     for values in features.values():
         values[35, 4] = np.nan  # S4 absent at bar 35
@@ -1150,7 +1133,7 @@ class SequenceGRUHead(TorchModel):
 
 
 def test_a_sequence_head_trains_saves_loads_and_predicts_every_present_cell(
-    tmp_path, recorders
+    tmp_path, tracker
 ):
     features = _features()
     for values in features.values():
@@ -1158,11 +1141,11 @@ def test_a_sequence_head_trains_saves_loads_and_predicts_every_present_cell(
     label = _label_of(features)
     label[12:15, 1] = np.nan  # S1 has no label on bars 12..14
     model = _model(tmp_path, features, label, cls=SequenceGRUHead, epochs=4,
-                   hyperparameters={"batch_size": 16})
+                   hyperparameters={"batch_size": 16}, tracker=tracker)
     checkpoint = model.train()
 
-    (run,) = recorders
-    assert run.logged[-1]["train_loss"] < run.logged[0]["train_loss"]
+    (run,) = tracker.runs
+    assert _logged(run)[-1]["train_loss"] < _logged(run)[0]["train_loss"]
     metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
     assert np.isfinite([metrics["train_loss"], metrics["val_loss"], metrics["test_ic"]]).all()
 
@@ -1175,7 +1158,7 @@ def test_a_sequence_head_trains_saves_loads_and_predicts_every_present_cell(
 
 
 def test_a_mixed_bar_sequence_batch_sees_each_bars_cross_sectional_target(
-    tmp_path, recorders
+    tmp_path
 ):
     features = _features()
     label = _label_of(features)

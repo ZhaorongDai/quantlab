@@ -23,7 +23,7 @@ from quantlab.model.library_model import Rows
 from quantlab.model.predefined._support.devices import resolve_device, xgboost_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
 from quantlab.model.predefined.xgb import (
-    _WandbEvalCallback,
+    _TrackingEvalCallback,
     boosters_on_cpu,
     record_feature_importance,
 )
@@ -101,11 +101,11 @@ class XGBTDRegressor(TabkitRegressor):
     fold selects its own best round and writes its own ``.joblib``. The folds
     train one after another.
 
-    Every W&B run gets, per label, the validation curve of each boosting
-    round (``val-rmse``, or ``val-rmse/<label>`` with several labels, at
-    ``step=round``), the selected round (``best_n_estimators``), the rounds
-    trained (``num_boosted_rounds``) and the per-factor importance with its
-    charts, exactly as ``XGBoostRegressor`` records them. The callback is
+    Every tracking run gets, per label, the validation curve of each
+    boosting round (``val-rmse``, or ``val-rmse/<label>`` with several
+    labels, at ``step=round``), the selected round (``best_n_estimators``),
+    the rounds trained (``num_boosted_rounds``) and the per-factor importance
+    with its tables, exactly as ``XGBoostRegressor`` records them. The callback is
     injected into pytabkit's inner ``xgboost.train`` call (see
     ``quantlab.model.predefined._support.tabkit.active_callbacks``).
 
@@ -205,7 +205,6 @@ class XGBTDRegressor(TabkitRegressor):
 
         for i, estimator in enumerate(self.model):
             suffix = self._key_suffix(names, i)
-            self._last_log_step = None
             with active_callbacks(
                 xgb_callbacks=self._round_callbacks(suffix),
                 xgb_params={"device": self._params["device"]},
@@ -218,10 +217,9 @@ class XGBTDRegressor(TabkitRegressor):
                         train_rows.x, train_rows.y[:, i],
                         X_val=val_rows.x, y_val=val_rows.y[:, i],
                     )
-            if self._wandb_recorder is not None:
-                self._record_booster(estimator, names[i], suffix)
+            self._record_booster(estimator, names[i], suffix)
 
-        if self._wandb_recorder is not None and val_rows is not None:
+        if val_rows is not None:
             best = self._best_n_estimators()
             summary = {
                 f"best_n_estimators/{name}": rounds
@@ -231,7 +229,7 @@ class XGBTDRegressor(TabkitRegressor):
             if best and best[0] is not None:
                 summary["best_n_estimators"] = best[0]
             if summary:
-                self._wandb_recorder.summary.update(summary)
+                self._run.summarize(summary)
 
     @staticmethod
     def _key_suffix(names: list[str], i: int) -> str:
@@ -239,15 +237,13 @@ class XGBTDRegressor(TabkitRegressor):
         return "" if len(names) == 1 else f"/{names[i]}"
 
     def _round_callbacks(self, suffix: str) -> list:
-        """Return the per-round W&B callback to inject, or none without a run.
+        """Return the per-round callback to inject, logging to the open run.
 
         pytabkit evaluates the validation set every round (``val-rmse``);
         the callback logs it at ``step=round`` so the curve of each label
         sits beside the plain ``XGBoostRegressor``'s.
         """
-        if self._wandb_recorder is None:
-            return []
-        return [_WandbEvalCallback(self, suffix=suffix)]
+        return [_TrackingEvalCallback(self._run, suffix=suffix)]
 
     def _record_booster(self, estimator: _XGBTDEstimator, label: str, suffix: str) -> None:
         """Log the fitted Booster's rounds and feature importance for ``label``.
@@ -266,14 +262,13 @@ class XGBTDRegressor(TabkitRegressor):
                 f"rounds and feature importance were not recorded: {exc}"
             )
             return
-        self._wandb_recorder.summary.update(
+        self._run.summarize(
             {f"num_boosted_rounds{suffix}": int(booster.num_boosted_rounds())}
         )
         record_feature_importance(
             booster,
             [str(name) for name in self.get_factor_names()],
-            self._wandb_recorder,
-            getattr(self, "_last_log_step", None),
+            self._run,
             self.class_name,
             suffix=suffix,
         )

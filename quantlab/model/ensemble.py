@@ -653,7 +653,7 @@ class BaseEnsemble(ABC):
         for k, member in enumerate(self.members):
             checkpoint, _ = member._train_into(
                 directory / f"member_{k}",
-                project_name=project_name,
+                group=project_name,
                 experiment_name=f"{member.class_name}{tag}_member_{k}",
             )
             entries.append(

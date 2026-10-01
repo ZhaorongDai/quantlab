@@ -26,12 +26,6 @@ from quantlab.model.torch_data import TrainingPanel
 from tests.test_torch_model import _features, _feature_panel, _label_of, _model
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 @pytest.fixture
 def gpu_with_free_bytes(monkeypatch):
     """Pretend a CUDA device exists with the given free memory."""

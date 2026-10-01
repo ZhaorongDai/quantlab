@@ -53,7 +53,9 @@ from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import BaseModel
 from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
+from quantlab.base.tracking import NullTracker
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordingTracker
 
 # --------------------------------------------------------------------------
 # Synthetic panel geometry
@@ -76,14 +78,6 @@ GOLDEN_N_FOLDS = 8
 #: reached `_init_optim`, in the order the folds trained. A list append is
 #: atomic under the GIL, so the threading branch can share it.
 DL_FOLD_DATES: list[tuple[str, str, str, str]] = []
-
-
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    """`_init_wandb` calls `wandb.init` unconditionally; this is the
-    documented bypass."""
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
 
 
 @pytest.fixture(autouse=True)
@@ -139,8 +133,9 @@ class GoldenTorchHead(OneBarHead):
         return super()._init_model(num_features, num_labels, hyperparameters)
 
 
-def _torch_config(tmp_path: Path, save_dir: str) -> ModelConfig:
+def _torch_config(tmp_path: Path, save_dir: str, tracker=NullTracker()) -> ModelConfig:
     return ModelConfig(
+        tracker=tracker,
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(FakePanel(["ret"], seed=2))],
         model_save_dir=str(tmp_path / save_dir),
@@ -212,7 +207,7 @@ def test_torch_train_cv_fold_geometry_golden_sequential(tmp_path):
 # Everything below exercises the extracted pieces directly: the single fold
 # generator `BaseModel._cv_folds`, the claim that `train_cv`
 # consumes it, the per-fold results `train_cv` now returns, and the
-# `{cls}_cv_summary` W&B run holding the fold means.
+# `{cls}_cv_summary` tracking run holding the fold means.
 
 
 ML_FOLD_DATES: list[tuple[str, str, str, str]] = []
@@ -229,34 +224,9 @@ def _reset_ml_recorded_dates():
     ML_FOLD_DATES.clear()
 
 
-class FakeRecorder:
-    """Records what the model writes to a W&B run."""
-
-    def __init__(self, name: str):
-        self.name = name
-        self.logs: list = []
-        self.summary: dict = {}
-        self.finished = 0
-
-    def log(self, data, step=None):
-        self.logs.append((dict(data), step))
-
-    def finish(self):
-        self.finished += 1
-
-
 @pytest.fixture
-def recorders(monkeypatch) -> list[FakeRecorder]:
-    """Patched on the CLASS, so every instance records."""
-    created: list[FakeRecorder] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        recorder = FakeRecorder(experiment_name)
-        created.append(recorder)
-        self._wandb_recorder = recorder
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
-    return created
+def tracker() -> RecordingTracker:
+    return RecordingTracker()
 
 
 class StubLibraryHead(LibraryModel):
@@ -274,8 +244,9 @@ class StubLibraryHead(LibraryModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-def _library_config(tmp_path: Path, save_dir: str) -> ModelConfig:
+def _library_config(tmp_path: Path, save_dir: str, tracker=NullTracker()) -> ModelConfig:
     return ModelConfig(
+        tracker=tracker,
         factors=[FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(FakePanel(["ret"], seed=2))],
         model_save_dir=str(tmp_path / save_dir),
@@ -298,7 +269,7 @@ def _as_tuples(folds: list[dict]) -> list[tuple[str, str, str, str]]:
 # --------------------------------------------------------------------------
 
 
-def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path, recorders):
+def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path):
     """55 timestamps cannot hold train 50 + test 10, so no fold trains."""
     config = dataclasses.replace(
         _library_config(tmp_path, "ckpt"), end_date=np.datetime_as_string(TIMES[54], unit="D")
@@ -312,7 +283,7 @@ def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path, recorders):
 
 @pytest.mark.parametrize("train_periods", [0, 4])
 def test_train_cv_refuses_a_training_segment_too_short_for_a_test_segment(
-    tmp_path, recorders, train_periods
+    tmp_path, train_periods
 ):
     """The test segment is train_periods // 5 bars, so it needs at least 5."""
     model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
@@ -346,7 +317,7 @@ HANDMADE_FOLDS = [
 ]
 
 
-def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch, recorders):
+def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
     """Replace the generator with two handmade folds (numbered 3 and 5, with
     geometry the real formula never produces): train_cv must train exactly
     those two, on exactly those dates. Turns red if train_cv grows its own
@@ -373,7 +344,7 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch, rec
 
 
 @pytest.mark.parametrize("argument", [{"parallel": True}, {"njobs": 2}])
-def test_train_cv_trains_folds_sequentially_only(tmp_path, recorders, argument):
+def test_train_cv_trains_folds_sequentially_only(tmp_path, argument):
     model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
 
@@ -387,7 +358,7 @@ def test_train_cv_trains_folds_sequentially_only(tmp_path, recorders, argument):
 # --------------------------------------------------------------------------
 
 
-def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path, recorders):
+def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path):
     """`train_periods=50`, no gap, 130 timestamps -> 8 folds. Each result
     carries the fold's dates, its run name, an existing `.joblib` and the
     seven prefixed test metrics; every checkpoint loads into a fresh,
@@ -413,22 +384,22 @@ def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_
         assert fresh.predict(np.zeros((4, N_SYMBOLS, 2))).shape == (4, N_SYMBOLS, 1)
 
 
-def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, recorders):
+def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, tracker):
     """8 fold runs plus ONE `{cls}_cv_summary` run, created last, whose
     summary holds `cv_mean_{train,val,test}_*` (finite-value means of the folds) and
     `cv_n_folds`, and which is finished exactly once. A separate run because
     each fold's `_fit` has already finished its own run by the time the means
     exist."""
-    model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
+    model = StubLibraryHead(_library_config(tmp_path, "ckpt", tracker))
     model.collect()
 
     results = model.train_cv(train_periods=50)
 
-    names = [r.name for r in recorders]
+    names = [r.name for r in tracker.runs]
     assert names[:-1] == [f"StubLibraryHead_cv_fold_{i}" for i in range(8)]
     assert names[-1] == "StubLibraryHead_cv_summary"
-    summary_run = recorders[-1]
-    assert summary_run.finished == 1
+    summary_run = tracker.runs[-1]
+    assert summary_run.finished and not summary_run.failed
     assert summary_run.summary["cv_n_folds"] == 8
     assert set(summary_run.summary) == {
         f"cv_mean_{split}_{k}" for split in SPLITS for k in METRIC_KEYS
@@ -441,11 +412,11 @@ def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, 
             assert summary_run.summary[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
 
 
-def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, recorders):
+def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, tracker):
     """`TorchModel._fit` returns the shared metrics, so a torch fold result is the
     fold's dates, its run name and checkpoint and every split's metrics, and
     the fold means go to a `{cls}_cv_summary` run, as for a library head."""
-    model = GoldenTorchHead(_torch_config(tmp_path, "ckpt"))
+    model = GoldenTorchHead(_torch_config(tmp_path, "ckpt", tracker))
     model.collect()
 
     results = model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
@@ -455,5 +426,5 @@ def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, r
         assert FOLD_KEYS | {"experiment_name", "checkpoint"} <= set(r)
         assert {"train_mse", "val_mse", "test_mse", "test_ic"} <= set(r)
         assert Path(r["checkpoint"]).suffix == ".pth" and Path(r["checkpoint"]).is_file()
-    assert len(recorders) == GOLDEN_N_FOLDS + 1
-    assert recorders[-1].name == "GoldenTorchHead_cv_summary"
+    assert len(tracker.runs) == GOLDEN_N_FOLDS + 1
+    assert tracker.runs[-1].name == "GoldenTorchHead_cv_summary"

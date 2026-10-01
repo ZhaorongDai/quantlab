@@ -59,14 +59,6 @@ FOLD_KEYS = {"fold", "train_start", "train_end", "test_start", "test_end"}
 D30_KEYS = FOLD_KEYS | {"experiment_name", "checkpoint"}
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    """`_init_wandb` calls `wandb.init` unconditionally; this is the
-    documented bypass."""
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 class FakePanel:
     """A stand-in for a factor/label object: only what `collect()` calls."""
 

@@ -51,6 +51,7 @@ from quantlab.model.torch_model import TorchModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordingTracker
 
 N_TIMES = 40
 N_SYMBOLS = 3
@@ -62,12 +63,6 @@ START = np.datetime_as_string(TIMES[0], unit="D")
 END = np.datetime_as_string(TIMES[N_TIMES - 1], unit="D")
 
 PUBLIC_METHODS = frozenset({"train", "train_cv", "load", "predict"})
-
-
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
 
 
 class FakePanel:
@@ -276,7 +271,7 @@ def test_model_config_holds_only_the_shared_fields():
         "factors", "labels", "model_save_dir", "factor_data_strategy",
         "label_data_strategy", "start_date", "end_date", "hyperparameters",
         "val_size", "random_seed", "train_start", "train_end", "test_start",
-        "test_end", "name",
+        "test_end", "tracker", "name",
     }
 
 
@@ -324,18 +319,17 @@ def test_epochs_that_is_not_a_positive_integer_fails_when_training_starts(
     tmp_path, monkeypatch, epochs, entry
 ):
     """At collect, before any data is read; and at training, set after collect,
-    before any W&B run or checkpoint directory is opened."""
+    before any tracking run or checkpoint directory is opened."""
     model = OneBarHead(ModelConfig(**_fit_kwargs(tmp_path), hyperparameters={"epochs": epochs}))
     with pytest.raises(ValueError, match="epochs.*positive integer"):
         model.collect()
-    model = OneBarHead(ModelConfig(**_fit_kwargs(tmp_path)))
+    tracker = RecordingTracker()
+    model = OneBarHead(ModelConfig(**_fit_kwargs(tmp_path), tracker=tracker))
     model.collect()
     model.config.hyperparameters["epochs"] = epochs
-    opened = []
-    monkeypatch.setattr(model, "_init_wandb", lambda *a, **k: opened.append(a))
     with pytest.raises(ValueError, match="epochs.*positive integer"):
         model.train() if entry == "train" else model.train_cv(train_periods=10)
-    assert opened == []
+    assert tracker.runs == []
     assert not (tmp_path / "ckpt").exists()
 
 
@@ -441,7 +435,12 @@ def test_loader_rebuilds_a_library_head(tmp_path, monkeypatch):
     """The loader reads `config_cls` from the class, never a hardcoded config."""
     _patch_factor_loader(monkeypatch)
     saved = StubLibraryHead(ModelConfig(**_kwargs(tmp_path))).get_config()
-    monkeypatch.setattr(module_utils, "get_cls_from_path", lambda path: StubLibraryHead)
+    real = module_utils.get_cls_from_path
+    monkeypatch.setattr(
+        module_utils,
+        "get_cls_from_path",
+        lambda path: StubLibraryHead if path == saved["name"] else real(path),
+    )
 
     model = module_utils.load_model_from_config(saved)
 

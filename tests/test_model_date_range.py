@@ -24,12 +24,6 @@ from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.label.forward import Forward
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 class MaDeviation(FactorKunQuant):
     """Close over its 5-bar average, minus one: warm after 4 earlier bars."""
 

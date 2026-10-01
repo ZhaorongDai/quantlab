@@ -6,7 +6,7 @@ What is locked, and what turns it red:
   cross-sectional IC exceeds 0.5; on a control panel whose label is unrelated
   to every factor, |IC| stays under 0.2;
 - pytabkit's early stopping: on a noise label with a small patience the
-  reported `stop_epoch` is below `n_epochs` and reaches the W&B summary;
+  reported `stop_epoch` is below `n_epochs` and reaches the run summary;
   with no usable validation segment training still succeeds and warns;
 - hyperparameters pass straight through to the estimator, the config's dict
   is never mutated, and the resolved set (defaults, seed, early-stopping
@@ -32,11 +32,11 @@ from pytabkit import RealMLP_TD_Regressor
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import BaseModel
 from quantlab.model.predefined._support.devices import torch_default_device
 from quantlab.model.predefined.realmlp import RealMLPRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordingTracker
 
 N_TIMES = 160
 N_SYMBOLS = 30
@@ -55,12 +55,6 @@ TEST_START, TEST_END = _day(120), _day(N_TIMES - 1)
 
 #: Small and single-threaded so every test fits in a few seconds on CPU.
 FAST = {"n_epochs": 12, "n_threads": 1}
-
-
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
 
 
 class ArrayPanel:
@@ -113,6 +107,7 @@ def _config(
     patience: int = 5,
     hyperparameters: dict | None = None,
     val_size: float = 0.2,
+    tracker: RecordingTracker | None = None,
 ) -> ModelConfig:
     hyper = hyperparameters if hyperparameters is not None else dict(FAST)
     if early_stopping:
@@ -131,44 +126,14 @@ def _config(
         test_end=TEST_END,
         hyperparameters=hyper,
         val_size=val_size,
+        **({} if tracker is None else {"tracker": tracker}),
     )
 
 
-class FakeRunConfig(dict):
-    """Mimics `wandb.Run.config.update(d, allow_val_change=...)`."""
-
-    def update(self, data=(), allow_val_change=False, **kwargs):
-        self.allow_val_change = allow_val_change
-        super().update(data, **kwargs)
-
-
-class FakeRecorder:
-    def __init__(self, name: str):
-        self.name = name
-        self.logs: list[tuple[dict, int | None]] = []
-        self.summary: dict = {}
-        self.config = FakeRunConfig()
-        self.finished = 0
-
-    def log(self, data, step=None):
-        self.logs.append((dict(data), step))
-
-    def finish(self):
-        self.finished += 1
-
-
 @pytest.fixture
-def recorders(monkeypatch) -> list[FakeRecorder]:
-    """Patched on the class so deep-copied CV folds record too."""
-    created: list[FakeRecorder] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        recorder = FakeRecorder(experiment_name)
-        created.append(recorder)
-        self._wandb_recorder = recorder
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
-    return created
+def tracker() -> RecordingTracker:
+    """Put in a config to read the runs a training opens, in opening order."""
+    return RecordingTracker()
 
 
 @pytest.fixture
@@ -207,20 +172,20 @@ def _train(tmp_path, factors, labels, **kwargs) -> RealMLPRegressor:
 # --------------------------------------------------------------------------
 
 
-def test_learns_a_factor_driven_label(tmp_path, recorders):
+def test_learns_a_factor_driven_label(tmp_path, tracker):
     """Label = 0.1*f_signal + 0.05*noise (true correlation ~0.89)."""
     factors, labels = _panels(seed=11)
-    model = _train(tmp_path, factors, labels)
+    model = _train(tmp_path, factors, labels, tracker=tracker)
     test_x, test_y = _test_arrays(model)
 
     pred = model.predict(test_x)
     assert pred.shape == (N_TIMES - 120, N_SYMBOLS, 1)
     metrics = regression_panel_metrics(pred[..., 0], test_y[..., 0])
     assert metrics["ic"] > 0.5
-    assert recorders[0].summary["test_ic"] == pytest.approx(metrics["ic"])
+    assert tracker.runs[0].summary["test_ic"] == pytest.approx(metrics["ic"])
 
 
-def test_unrelated_label_gives_no_ic(tmp_path, recorders):
+def test_unrelated_label_gives_no_ic(tmp_path):
     factors, labels = _panels(seed=12, signal=False)
     model = _train(tmp_path, factors, labels)
     test_x, test_y = _test_arrays(model)
@@ -234,7 +199,7 @@ def test_unrelated_label_gives_no_ic(tmp_path, recorders):
 # --------------------------------------------------------------------------
 
 
-def test_early_stopping_stops_before_n_epochs_and_records_the_epoch(tmp_path, recorders):
+def test_early_stopping_stops_before_n_epochs_and_records_the_epoch(tmp_path, tracker):
     """Noise label, 60 epochs, patience 3: pytabkit stops well short of 60 and
     the stopping epoch reaches the summary."""
     factors, labels = _panels(seed=13, signal=False)
@@ -245,9 +210,10 @@ def test_early_stopping_stops_before_n_epochs_and_records_the_epoch(tmp_path, re
         early_stopping=True,
         patience=3,
         hyperparameters={**FAST, "n_epochs": 60},
+        tracker=tracker,
     )
 
-    stop = recorders[0].summary["stop_epoch"]
+    stop = tracker.runs[0].summary["stop_epoch"]
     assert isinstance(stop, int)
     assert 0 < stop < 60
     assert model.model.fit_params_["stop_epoch"] == {"rmse": stop}
@@ -257,7 +223,7 @@ def test_early_stopping_stops_before_n_epochs_and_records_the_epoch(tmp_path, re
     assert params["early_stopping_multiplicative_patience"] == 1.0
 
 
-def test_early_stopping_off_passes_no_early_stopping_keys(tmp_path, recorders):
+def test_early_stopping_off_passes_no_early_stopping_keys(tmp_path):
     factors, labels = _panels(seed=14, signal=False)
     model = _train(tmp_path, factors, labels)
 
@@ -267,27 +233,27 @@ def test_early_stopping_off_passes_no_early_stopping_keys(tmp_path, recorders):
 
 
 def test_early_stopping_without_a_validation_segment_trains_and_warns(
-    tmp_path, recorders, warnings_log
+    tmp_path, tracker, warnings_log
 ):
     factors, labels = _panels(seed=15, signal=False)
-    model = _train(tmp_path, factors, labels, early_stopping=True, val_size=0.0)
+    model = _train(tmp_path, factors, labels, early_stopping=True, val_size=0.0, tracker=tracker)
 
     assert any("early stopping skipped" in m for m in warnings_log)
-    rec = recorders[0]
+    rec = tracker.runs[0]
     assert "stop_epoch" not in rec.summary
     assert not any(key.startswith("val_") for key in rec.summary)
     test_x, _ = _test_arrays(model)
     assert np.isfinite(model.predict(test_x)).all()
 
 
-def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, recorders, warnings_log):
+def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, tracker, warnings_log):
     factors, labels = _panels(seed=16, signal=False)
     labels._ds["ret_a"].values[96:120] = np.nan
-    _train(tmp_path, factors, labels, early_stopping=True)
+    _train(tmp_path, factors, labels, early_stopping=True, tracker=tracker)
 
     assert any("no cell with a valid training target" in m for m in warnings_log)
     assert any("early stopping skipped" in m for m in warnings_log)
-    assert "stop_epoch" not in recorders[0].summary
+    assert "stop_epoch" not in tracker.runs[0].summary
 
 
 # --------------------------------------------------------------------------
@@ -295,7 +261,7 @@ def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, r
 # --------------------------------------------------------------------------
 
 
-def test_hyperparameters_pass_through_and_the_config_dict_is_not_mutated(tmp_path, recorders):
+def test_hyperparameters_pass_through_and_the_config_dict_is_not_mutated(tmp_path):
     hyper = {**FAST, "hidden_sizes": [64, 64], "lr": 0.05, "n_threads": 1}
     before = json.dumps(hyper, sort_keys=True)
     factors, labels = _panels(seed=17)
@@ -310,7 +276,7 @@ def test_hyperparameters_pass_through_and_the_config_dict_is_not_mutated(tmp_pat
     assert model.config.hyperparameters is hyper
 
 
-def test_default_params_pin_val_fraction_to_zero(tmp_path, recorders):
+def test_default_params_pin_val_fraction_to_zero(tmp_path):
     factors, labels = _panels(seed=18)
     model = _train(tmp_path, factors, labels)
 
@@ -321,7 +287,7 @@ def test_default_params_pin_val_fraction_to_zero(tmp_path, recorders):
     assert fitted["random_state"] == 42
 
 
-def test_unknown_hyperparameter_raises_type_error(tmp_path, recorders):
+def test_unknown_hyperparameter_raises_type_error(tmp_path):
     factors, labels = _panels(seed=19)
     model = RealMLPRegressor(
         _config(tmp_path, factors, labels, hyperparameters={**FAST, "bogus": 1})
@@ -331,10 +297,10 @@ def test_unknown_hyperparameter_raises_type_error(tmp_path, recorders):
         model.train()
 
 
-def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path, recorders):
+def test_resolved_hyperparameters_are_written_to_config_json_and_the_run(tmp_path, tracker):
     hyper = {**FAST, "lr": 0.02}
     factors, labels = _panels(seed=20)
-    _train(tmp_path, factors, labels, hyperparameters=dict(hyper), early_stopping=True, patience=4)
+    _train(tmp_path, factors, labels, hyperparameters=dict(hyper), early_stopping=True, patience=4, tracker=tracker)
 
     saved = json.loads((_only_checkpoint(tmp_path / "ckpt").parent / "config.json").read_text())
     expected = {
@@ -349,9 +315,8 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
     assert saved["resolved_hyperparameters"] == expected
     assert saved["hyperparameters"] == {**hyper, "early_stopping": True, "early_stopping_patience": 4}
 
-    rec = recorders[0]
-    assert rec.config["resolved_hyperparameters"] == expected
-    assert rec.config.allow_val_change is True
+    rec = tracker.runs[0]
+    assert rec.config_updates == [{"resolved_hyperparameters": expected}]
 
 
 # --------------------------------------------------------------------------
@@ -359,7 +324,7 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
 # --------------------------------------------------------------------------
 
 
-def test_multi_label_predicts_every_label(tmp_path, recorders):
+def test_multi_label_predicts_every_label(tmp_path):
     factors, labels = _panels(seed=21, second_label=True)
     model = _train(tmp_path, factors, labels)
     test_x, test_y = _test_arrays(model)
@@ -370,7 +335,7 @@ def test_multi_label_predicts_every_label(tmp_path, recorders):
     assert regression_panel_metrics(pred[..., 1], test_y[..., 1])["ic"] > 0.5
 
 
-def test_nan_labels_and_infinite_features(tmp_path, recorders, monkeypatch):
+def test_nan_labels_and_infinite_features(tmp_path, monkeypatch):
     """10% NaN label cells and a sprinkling of ±inf feature cells: NaN-label
     rows are dropped, non-finite features are imputed to 0 (pytabkit refuses
     NaN), and test predictions are all finite."""
@@ -404,7 +369,7 @@ def test_nan_labels_and_infinite_features(tmp_path, recorders, monkeypatch):
     assert np.isfinite(rows.x).all(), "pytabkit refuses NaN, so features are imputed"
 
 
-def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):
+def test_fresh_instance_loads_and_predicts_identically(tmp_path):
     factors, labels = _panels(seed=23)
     trained = _train(tmp_path, factors, labels)
     test_x, _ = _test_arrays(trained)
@@ -417,7 +382,7 @@ def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):
     assert np.array_equal(fresh.predict(test_x), trained.predict(test_x))
 
 
-def test_same_seed_trains_the_same_model(tmp_path, recorders):
+def test_same_seed_trains_the_same_model(tmp_path):
     first = _train(tmp_path, *_panels(seed=24), save_dir="a")
     second = _train(tmp_path, *_panels(seed=24), save_dir="b")
     test_x, _ = _test_arrays(first)
@@ -442,14 +407,14 @@ def test_contract():
 # --------------------------------------------------------------------------
 
 
-def test_train_cv_sequential(tmp_path, recorders):
+def test_train_cv_sequential(tmp_path, tracker):
     """160 timestamps, train 60 / gap 2 -> 8 folds. Every fold early-stops on
     its own validation segment, writes one `.joblib`, carries a finite
     `test_ic` and loads into a fresh instance; the summary run's
     `cv_mean_test_ic` is the fold mean and reflects the signal."""
     factors, labels = _panels(seed=31)
     model = RealMLPRegressor(
-        _config(tmp_path, factors, labels, save_dir="ckpt_seq", early_stopping=True, patience=4)
+        _config(tmp_path, factors, labels, save_dir="ckpt_seq", early_stopping=True, patience=4, tracker=tracker)
     )
     model.collect()
     timestamps = model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values
@@ -472,11 +437,11 @@ def test_train_cv_sequential(tmp_path, recorders):
         fresh = RealMLPRegressor(_config(tmp_path, *_panels(seed=31), save_dir="unused")).load(ckpt)
         assert fresh.predict(np.zeros((4, N_SYMBOLS, 3), dtype=np.float32)).shape == (4, N_SYMBOLS, 1)
 
-    fold_runs = [rec for rec in recorders if rec.name != "RealMLPRegressor_cv_summary"]
+    fold_runs = [rec for rec in tracker.runs if rec.name != "RealMLPRegressor_cv_summary"]
     assert len(fold_runs) == 8
     assert all("stop_epoch" in rec.summary for rec in fold_runs)
 
-    summary_run = recorders[-1]
+    summary_run = tracker.runs[-1]
     assert summary_run.name == "RealMLPRegressor_cv_summary"
     assert summary_run.summary["cv_n_folds"] == 8
     assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r["test_ic"] for r in results])))
@@ -484,18 +449,18 @@ def test_train_cv_sequential(tmp_path, recorders):
 
 
 # --------------------------------------------------------------------------
-# Per-epoch W&B curves
+# Per-epoch curves
 # --------------------------------------------------------------------------
 
 
-def test_logs_train_loss_and_validation_error_every_epoch(tmp_path, recorders):
+def test_logs_train_loss_and_validation_error_every_epoch(tmp_path, tracker):
     factors, labels = _panels(seed=31)
-    model = RealMLPRegressor(_config(tmp_path, factors, labels, hyperparameters=FAST))
+    model = RealMLPRegressor(_config(tmp_path, factors, labels, hyperparameters=FAST, tracker=tracker))
     model.collect()
     model.train()
-    rec = recorders[0]
+    rec = tracker.runs[0]
 
-    epochs = [(row, step) for row, step in rec.logs if "val-rmse" in row]
+    epochs = [(row, step) for step, row in rec.steps if "val-rmse" in row]
     assert [step for _, step in epochs] == list(range(1, FAST["n_epochs"] + 1))
     assert all("train-loss" in row and np.isfinite(row["train-loss"]) for row, _ in epochs)
     assert all(np.isfinite(row["val-rmse"]) for row, _ in epochs)

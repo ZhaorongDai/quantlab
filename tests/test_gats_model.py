@@ -30,12 +30,6 @@ from tests.test_torch_model import _feature_panel, _features, _label_of, _model
 SMALL = {"window_bars": 3, "hidden_size": 8, "num_layers": 1, "dropout": 0.0}
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 # ---------------------------------------------------------------------------
 # The network against Qlib's GATModel
 # ---------------------------------------------------------------------------

@@ -628,7 +628,7 @@ class TorchModel(TrainingTargetMixin, BaseModel):
         return out.numpy()
 
     def _evaluate(self, epoch: int, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
-        """Return one split's metrics and write them to the wandb summary.
+        """Return one split's metrics and write them to the run summary.
 
         ``{split}_loss`` is the mean ``_val_one_batch`` over the split's
         batches, one per bar with the default dataset; the other keys are
@@ -643,8 +643,7 @@ class TorchModel(TrainingTargetMixin, BaseModel):
             y_raw[bars], pred[bars], split, panel.timestamps[bars]
         ).items():
             metrics[f"{split}_{key}"] = value
-        if self._wandb_recorder is not None:
-            self._wandb_recorder.summary.update(metrics)
+        self._run.summarize(metrics)
         return metrics
 
     def _fit(self, checkpoint: Path) -> dict:
@@ -659,7 +658,7 @@ class TorchModel(TrainingTargetMixin, BaseModel):
         runs ``_train_one_batch`` on the shuffled training loader, then
         ``_val_one_batch`` on the validation loader when there is a
         validation segment, then ``_test_one_batch`` on the test loader.
-        The per-epoch ``train_loss`` / ``val_loss`` are logged to wandb and
+        The per-epoch ``train_loss`` / ``val_loss`` are logged as step metrics and
         passed to ``_should_stop``; ``_on_fit_start`` runs before the first
         epoch and ``_on_fit_end`` after the last, and the loop never runs
         past ``epochs``. Torch is reseeded with ``config.random_seed`` first,
@@ -721,11 +720,10 @@ class TorchModel(TrainingTargetMixin, BaseModel):
             val_loss = self._eval_loss(epoch, val_loader) if val_loader is not None else None
             if test_loader is not None:
                 self._test_epoch(epoch, test_loader)
-            if self._wandb_recorder is not None:
-                logged = {"train_loss": train_loss}
-                if val_loss is not None:
-                    logged["val_loss"] = val_loss
-                self._wandb_recorder.log(logged, step=epoch)
+            logged = {"train_loss": train_loss}
+            if val_loss is not None:
+                logged["val_loss"] = val_loss
+            self._run.log(logged, step=epoch)
             if self._should_stop(epoch, train_loss, val_loss):
                 logger.info(f"{self.class_name}: stopping after epoch {epoch}")
                 break
@@ -738,8 +736,6 @@ class TorchModel(TrainingTargetMixin, BaseModel):
                     metrics.update(self._evaluate(epoch, split, panel, bars))
 
         self._save_model(checkpoint)
-        if self._wandb_recorder is not None:
-            self._wandb_recorder.finish()
         self.optim = None
         return metrics
 

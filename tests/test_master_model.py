@@ -33,12 +33,6 @@ SMALL = {"window_bars": 3, "d_model": 8, "t_nhead": 2, "s_nhead": 2, "dropout": 
          "gate_features": ["f_b"]}
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 def _head(tmp_path, **hyperparameters):
     features = _features()
     return _model(tmp_path, features, _label_of(features), cls=MASTERRegressor,

@@ -3,12 +3,12 @@
 `LibraryModel` is the non-torch variant of the model layer: no epoch loop, one
 `_fit_model` call per fit, native early stopping left to the library. These
 tests drive it through a purely numpy stub head so they lock the ORCHESTRATION
--- what `_fit` hands the hooks, what it writes to W&B and to disk, how `load`
+-- what `_fit` hands the hooks, what it writes to the tracking run and to disk, how `load`
 and `predict` behave -- independently of any real library. The xgboost head is
 covered in `tests/test_xgb_model.py`.
 
-W&B assertions patch `_init_wandb` on the CLASS and collect every recorder the
-model creates.
+Tracking assertions put a `RecordingTracker` in the model config and read the
+runs it recorded.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -28,10 +28,10 @@ from scipy.stats import rankdata
 
 from quantlab.base.config import FactorConfig, ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import BaseModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordingTracker
 
 N_TIMES = 130
 N_SYMBOLS = 4
@@ -47,12 +47,6 @@ N_TRAIN_TIMES = 100
 N_TEST_TIMES = 30
 
 METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
-
-
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
 
 
 class FakePanel:
@@ -94,35 +88,6 @@ class FakePanel:
         return {"name": "FakePanel", "factor_names": list(self.names)}
 
 
-class FakeRecorder:
-    """Records what the model writes to a W&B run."""
-
-    def __init__(self, name: str):
-        self.name = name
-        self.logs: list[tuple[dict, int | None]] = []
-        self.summary: dict = {}
-        self.finished = 0
-
-    def log(self, data, step=None):
-        self.logs.append((dict(data), step))
-
-    def finish(self):
-        self.finished += 1
-
-
-@pytest.fixture
-def recorders(monkeypatch) -> list[FakeRecorder]:
-    created: list[FakeRecorder] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        recorder = FakeRecorder(experiment_name)
-        created.append(recorder)
-        self._wandb_recorder = recorder
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
-    return created
-
-
 class StubLibraryHead(LibraryModel):
     """A numpy head that records what `_fit` hands it.
 
@@ -153,7 +118,14 @@ class StubLibraryHead(LibraryModel):
 
 
 def _config(
-    tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt", hyperparameters=None
+    tmp_path,
+    *,
+    val_size=0.2,
+    factors=None,
+    labels=None,
+    save_dir="ckpt",
+    hyperparameters=None,
+    tracker=None,
 ):
     return ModelConfig(
         factors=factors if factors is not None else [FakePanel(["f_a", "f_b"], seed=1)],
@@ -171,6 +143,7 @@ def _config(
         test_end=TEST_END,
         val_size=val_size,
         hyperparameters=dict(hyperparameters or {}),
+        **({} if tracker is None else {"tracker": tracker}),
     )
 
 
@@ -192,14 +165,14 @@ def _checkpoint(tmp_path, save_dir="ckpt") -> Path:
 # --------------------------------------------------------------------------
 
 
-def test_fit_calls_fit_model_exactly_once(tmp_path, recorders):
+def test_fit_calls_fit_model_exactly_once(tmp_path):
     """No epoch loop: one `train()` is one `_fit_model` call. Turns red if an
     outer loop around the library's own training creeps back in."""
     model = _trained(tmp_path)
     assert len(model.fit_calls) == 1
 
 
-def test_tail_validation_split_keeps_every_training_timestamp(tmp_path, recorders):
+def test_tail_validation_split_keeps_every_training_timestamp(tmp_path):
     """100 training timestamps with `val_size=0.2`: the first 80 train, the
     last 20 validate, and none is dropped. Turns red on a `train_split + 1`
     style off-by-one or a head/tail swap."""
@@ -212,7 +185,7 @@ def test_tail_validation_split_keeps_every_training_timestamp(tmp_path, recorder
     assert sorted(set(val.where[0].tolist())) == list(range(80, 100))
 
 
-def test_zero_val_size_passes_none_for_the_validation_rows(tmp_path, recorders):
+def test_zero_val_size_passes_none_for_the_validation_rows(tmp_path):
     """An empty validation segment is signalled with None, never with
     zero-length rows a library would choke on."""
     call = _trained(tmp_path, val_size=0.0).fit_calls[0]
@@ -220,7 +193,7 @@ def test_zero_val_size_passes_none_for_the_validation_rows(tmp_path, recorders):
     assert set(call["train"].where[0].tolist()) == set(range(N_TRAIN_TIMES))
 
 
-def test_full_val_size_raises_before_fit_model(tmp_path, recorders):
+def test_full_val_size_raises_before_fit_model(tmp_path):
     """`val_size=1.0` leaves nothing to fit on; it must raise before the
     library is ever called rather than hand it empty rows."""
     model = StubLibraryHead(_config(tmp_path, val_size=1.0))
@@ -230,7 +203,7 @@ def test_full_val_size_raises_before_fit_model(tmp_path, recorders):
     assert model.fit_calls == []
 
 
-def test_declared_factor_and_label_order_reaches_fit_model(tmp_path, recorders):
+def test_declared_factor_and_label_order_reaches_fit_model(tmp_path):
     """Both name lists are deliberately non-alphabetical; the constants
     identify which variable landed in which column. Turns red if the last axis
     is ever ordered by name again."""
@@ -280,7 +253,7 @@ def _present_and_labelled(bars):
     return [(t, s) for t in bars for s in range(N_SYMBOLS) if ok[t, s]]
 
 
-def test_rows_hold_only_valid_target_cells_and_keep_nan_features(tmp_path, recorders):
+def test_rows_hold_only_valid_target_cells_and_keep_nan_features(tmp_path):
     """Only cells with a valid training target become rows, in time then
     symbol order, and a NaN feature reaches the library as NaN: the library's
     own missing-value handling decides what it means."""
@@ -293,7 +266,7 @@ def test_rows_hold_only_valid_target_cells_and_keep_nan_features(tmp_path, recor
     assert np.array_equal(train.y, train.y_raw)
 
 
-def test_rows_turn_infinite_features_into_nan(tmp_path, recorders):
+def test_rows_turn_infinite_features_into_nan(tmp_path):
     """The default `_transform_feature` turns inf into NaN, never into a
     number a tree would split on."""
     factor = FakePanel(["f_a", "f_b"], seed=1)
@@ -317,7 +290,7 @@ class RankTargetHead(StubLibraryHead):
         return (ranks / max(len(y) - 1, 1))[:, None], None
 
 
-def test_a_rank_training_target_reaches_the_rows_and_metrics_stay_raw(tmp_path, recorders):
+def test_a_rank_training_target_reaches_the_rows_and_metrics_stay_raw(tmp_path):
     """The rows carry the rank target in `y` and the raw label in `y_raw`,
     and the reported metrics score the prediction against the raw label."""
     model = RankTargetHead(_config(tmp_path))
@@ -352,7 +325,7 @@ def _expected_target(training_target, y_raw):
 
 @pytest.mark.parametrize("training_target", ["cs_rank", "cs_zscore"])
 def test_a_training_target_hyperparameter_reaches_the_rows_and_metrics_stay_raw(
-    tmp_path, recorders, training_target
+    tmp_path, training_target
 ):
     """Train and validation rows carry the transformed target, and the
     written metrics score the prediction against the raw label."""
@@ -380,7 +353,7 @@ def test_a_training_target_hyperparameter_reaches_the_rows_and_metrics_stay_raw(
 
 @pytest.mark.parametrize("training_target", ["cs_rank", "cs_zscore"])
 def test_a_training_target_makes_every_label_standardized_also_after_load(
-    tmp_path, recorders, training_target
+    tmp_path, training_target
 ):
     labels = [FakePanel(["ret_a", "ret_b"], seed=2)]
     hyper = {"training_target": training_target}
@@ -394,7 +367,7 @@ def test_a_training_target_makes_every_label_standardized_also_after_load(
 
 
 def test_without_a_training_target_rows_are_the_raw_label_and_scale_is_raw(
-    tmp_path, recorders
+    tmp_path
 ):
     model = _trained(tmp_path)
     train = model.fit_calls[0]["train"]
@@ -408,7 +381,7 @@ def test_a_hook_override_still_reports_standardized(tmp_path):
 
 @pytest.mark.parametrize("value", ["rank", "drop_extreme", None, 1])
 def test_an_unknown_training_target_raises_before_the_fit(
-    tmp_path, recorders, monkeypatch, value
+    tmp_path, monkeypatch, value
 ):
     """`collect` refuses it before reading any panel; `train` and `train_cv`
     refuse it before `_init_model` or `_fit_model`."""
@@ -434,7 +407,7 @@ def test_an_unknown_training_target_raises_before_the_fit(
 
 
 def test_init_model_receives_the_hyperparameters_without_the_library_keys(
-    tmp_path, recorders
+    tmp_path
 ):
     """The library-model layer strips its own keys once, so no head has to."""
     hyper = {
@@ -451,7 +424,7 @@ def test_init_model_receives_the_hyperparameters_without_the_library_keys(
     assert model.config.hyperparameters == hyper
 
 
-def test_the_target_hook_sees_training_only_on_train_bars_once_per_fit(tmp_path, recorders):
+def test_the_target_hook_sees_training_only_on_train_bars_once_per_fit(tmp_path):
     """80 train bars, 20 validation bars and 30 test bars: one call per bar,
     `training=True` exactly on the 80."""
     model = RankTargetHead(_config(tmp_path))
@@ -470,7 +443,7 @@ class DropFirstHead(StubLibraryHead):
         return y, keep
 
 
-def test_keep_removes_a_symbol_from_the_rows(tmp_path, recorders):
+def test_keep_removes_a_symbol_from_the_rows(tmp_path):
     model = DropFirstHead(_config(tmp_path))
     model.collect()
     model.train()
@@ -487,7 +460,7 @@ class DemeanHead(StubLibraryHead):
 
 
 def test_split_loss_is_the_per_bar_mean_of_the_head_loss_on_the_training_target(
-    tmp_path, recorders
+    tmp_path
 ):
     """Bars hold 2, 3 or 4 labelled symbols; every bar weighs the same in
     `{split}_loss`, and the loss is on the demeaned target, not the raw label."""
@@ -509,7 +482,7 @@ def test_split_loss_is_the_per_bar_mean_of_the_head_loss_on_the_training_target(
         assert metrics[f"{split}_loss"] == pytest.approx(np.mean(per_bar), rel=1e-5), split
 
 
-def test_a_training_segment_without_valid_targets_raises_before_fit_model(tmp_path, recorders):
+def test_a_training_segment_without_valid_targets_raises_before_fit_model(tmp_path):
     label = FakePanel(["ret_a"], seed=2)
     label._ds["ret_a"][:80] = np.nan
     model = StubLibraryHead(_config(tmp_path, labels=[label]))
@@ -519,14 +492,14 @@ def test_a_training_segment_without_valid_targets_raises_before_fit_model(tmp_pa
     assert model.fit_calls == []
 
 
-def test_a_validation_segment_without_valid_targets_passes_none(tmp_path, recorders):
+def test_a_validation_segment_without_valid_targets_passes_none(tmp_path):
     label = FakePanel(["ret_a"], seed=2)
     label._ds["ret_a"][80:100] = np.nan
     model = _trained(tmp_path, labels=[label])
     assert model.fit_calls[0]["val"] is None
 
 
-def test_predict_scores_every_present_cell_and_leaves_absent_ones_nan(tmp_path, recorders):
+def test_predict_scores_every_present_cell_and_leaves_absent_ones_nan(tmp_path):
     model = _trained(tmp_path)
     x = np.random.default_rng(6).standard_normal((3, N_SYMBOLS, 2))
     x[0, 1] = np.nan
@@ -542,14 +515,14 @@ class WrongShapeHead(StubLibraryHead):
         return np.zeros((len(x), 3))
 
 
-def test_a_forward_of_the_wrong_shape_raises(tmp_path, recorders):
+def test_a_forward_of_the_wrong_shape_raises(tmp_path):
     model = WrongShapeHead(_config(tmp_path))
     model.collect()
     with pytest.raises(ValueError, match="_forward"):
         model.train()
 
 
-def test_train_writes_the_metrics_of_every_split(tmp_path, recorders):
+def test_train_writes_the_metrics_of_every_split(tmp_path):
     """Issue #38: `train()` writes the prefixed train/val/test metrics to
     `metrics.json` beside the checkpoint -- the same dict `train_cv` merges
     into each fold's result."""
@@ -562,25 +535,28 @@ def test_train_writes_the_metrics_of_every_split(tmp_path, recorders):
 
 
 # --------------------------------------------------------------------------
-# W&B
+# Tracking
 # --------------------------------------------------------------------------
 
 
-def test_summary_carries_all_split_metrics_and_run_finishes_once(tmp_path, recorders):
+def test_summary_carries_all_split_metrics_and_run_finishes_once(tmp_path):
     """Exactly the 21 `{train,val,test}_{metric}` keys land in the run
-    summary, and the run is finished exactly once."""
-    _trained(tmp_path)
-    assert len(recorders) == 1
-    rec = recorders[0]
+    summary, and the run is finished exactly once (the recording tracker
+    refuses a second finish)."""
+    tracker = RecordingTracker()
+    _trained(tmp_path, tracker=tracker)
+    assert len(tracker.runs) == 1
+    rec = tracker.runs[0]
     assert set(rec.summary) == {
         f"{split}_{k}" for split in ("train", "val", "test") for k in METRIC_KEYS
     }
-    assert rec.finished == 1
+    assert rec.finished and not rec.failed
 
 
-def test_no_val_metrics_without_a_validation_segment(tmp_path, recorders):
-    _trained(tmp_path, val_size=0.0)
-    keys = set(recorders[0].summary)
+def test_no_val_metrics_without_a_validation_segment(tmp_path):
+    tracker = RecordingTracker()
+    _trained(tmp_path, val_size=0.0, tracker=tracker)
+    keys = set(tracker.runs[0].summary)
     assert not any(k.startswith("val_") for k in keys)
     assert {f"train_{k}" for k in METRIC_KEYS} | {f"test_{k}" for k in METRIC_KEYS} == keys
 
@@ -590,7 +566,7 @@ def test_no_val_metrics_without_a_validation_segment(tmp_path, recorders):
 # --------------------------------------------------------------------------
 
 
-def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
+def test_train_writes_one_joblib_and_config_json(tmp_path):
     """The library path persists with joblib as `.joblib`; a `.pth` here
     would mean the torch persistence path ran. `metrics.json` sits beside
     `config.json` (issue #38), with the IC series and the test predictions
@@ -609,7 +585,7 @@ def test_train_writes_one_joblib_and_config_json(tmp_path, recorders):
 
 
 def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
-    tmp_path, recorders, monkeypatch
+    tmp_path, monkeypatch
 ):
     """Code review WR-04: `train()` says what it wrote, and project names never collide.
 
@@ -651,7 +627,7 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
     assert len(sorted((tmp_path / "ckpt").rglob("cv_folds.json"))) == 2
 
 
-def test_fresh_instance_loads_without_init_model_and_predicts_identically(tmp_path, recorders):
+def test_fresh_instance_loads_without_init_model_and_predicts_identically(tmp_path):
     """`LibraryModel.load` must not rebuild the model: the file IS the model, and a
     loaded-but-never-collected instance cannot know its feature count."""
     trained = _trained(tmp_path)
@@ -674,7 +650,7 @@ def test_load_rejects_a_pth_file_before_building_anything(tmp_path):
     assert model.model is None
 
 
-def test_predict_accepts_ndarray_and_tensor(tmp_path, recorders):
+def test_predict_accepts_ndarray_and_tensor(tmp_path):
     model = _trained(tmp_path)
     x = np.random.default_rng(6).standard_normal((7, N_SYMBOLS, 2))
     out_np = model.predict(x)
@@ -683,7 +659,7 @@ def test_predict_accepts_ndarray_and_tensor(tmp_path, recorders):
     assert np.array_equal(out_np, out_t)
 
 
-def test_predict_rejects_other_types(tmp_path, recorders):
+def test_predict_rejects_other_types(tmp_path):
     model = _trained(tmp_path)
     with pytest.raises(TypeError):
         model.predict([[1.0, 2.0]])
@@ -781,7 +757,7 @@ def _pinned_config(tmp_path, factors, labels, times):
     )
 
 
-def test_pinned_factor_names_win_over_every_producible_name(tmp_path, recorders):
+def test_pinned_factor_names_win_over_every_producible_name(tmp_path):
     factor = PinnedPanel(["f_a", "f_b", "f_c"], pinned=["f_c", "f_a"], seed=1)
     label = FakePanel(["ret_a"], seed=2)
 
@@ -792,7 +768,7 @@ def test_pinned_factor_names_win_over_every_producible_name(tmp_path, recorders)
     assert model.fit_calls[0]["train"].x.shape[-1] == 2
 
 
-def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path, recorders):
+def test_alpha158_pinned_to_three_features_trains(spot_kline_zarr, tmp_path):
     dataset_config = spot_kline_zarr(periods=N_TIMES, seed=0)
     factor = Alpha158SpotKline(
         FactorConfig(

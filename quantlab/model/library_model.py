@@ -240,7 +240,7 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
 
         A head that merges user overrides into library defaults in
         ``_init_model`` overrides this to expose the merged result. When not
-        None, ``_fit`` adds it to the wandb run config and ``get_config`` adds
+        None, ``_fit`` adds it to the tracking run's config and ``get_config`` adds
         it to ``config.json`` as ``resolved_hyperparameters``, so a run stays
         reproducible after defaults change. It is a record, not an input:
         ``config.hyperparameters`` is left as the user wrote it, and the
@@ -316,7 +316,7 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         return chosen
 
     def _evaluate(self, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
-        """Evaluate one split and write the prefixed metrics to the wandb summary.
+        """Evaluate one split and write the prefixed metrics to the run summary.
 
         Every present cell of ``bars`` is predicted. ``{split}_loss`` is
         ``_loss`` on each bar's training target, averaged over the bars
@@ -344,12 +344,11 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
             y_raw[bars], pred[bars], split, panel.timestamps[bars]
         ).items():
             metrics[f"{split}_{key}"] = value
-        if self._wandb_recorder is not None:
-            self._wandb_recorder.summary.update(metrics)
+        self._run.summarize(metrics)
         return metrics
 
     def _fit(self, checkpoint: Path) -> dict:
-        """Build the rows, fit once with ``_fit_model``, evaluate, save and finish the run.
+        """Build the rows, fit once with ``_fit_model``, evaluate and save.
 
         The validation segment is the trailing ``val_size`` share of the
         training window, and the purge of ``_fit_segments`` drops the last L
@@ -364,7 +363,7 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         -------
         dict
             The ``train_*``, ``val_*`` and ``test_*`` metrics, with the
-            values ``_evaluate`` wrote to the wandb summary.
+            values ``_evaluate`` wrote to the run summary.
 
         Raises
         ------
@@ -414,13 +413,10 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
             hyperparameters=self.head_hyperparameters(config.hyperparameters),
         )
         resolved = self._resolved_hyperparameters()
-        if resolved is not None and self._wandb_recorder is not None:
-            # The run was opened in `_init_wandb`, before the hyperparameters
-            # were resolved; record them now.
-            self._wandb_recorder.config.update(
-                {"resolved_hyperparameters": dict(resolved)},
-                allow_val_change=True,
-            )
+        if resolved is not None:
+            # The run was opened before the hyperparameters were resolved;
+            # record them now.
+            self._run.update_config({"resolved_hyperparameters": dict(resolved)})
 
         with Timer(f"{self.class_name}: fit_model"):
             self._fit_model(train_rows, val_rows)
@@ -432,8 +428,6 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
                     metrics.update(self._evaluate(split, panel, bars))
 
         self._save_model(checkpoint)
-        if self._wandb_recorder is not None:
-            self._wandb_recorder.finish()
         return metrics
 
     def _predict(self, data: torch.Tensor | np.ndarray) -> np.ndarray:

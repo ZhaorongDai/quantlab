@@ -6,7 +6,7 @@ on the rows the base builds from the factor panel (one per cell with a
 valid training target) and predicts future returns row by row. The Booster is fit on a pooled concordance-correlation loss
 (``pooled_ccc_loss``) through the custom objective ``ccc_objective``, early
 stopping uses xgboost's native callback on the validation RMSE, and
-per-factor feature importance is recorded to Weights and Biases after
+per-factor feature importance is written to the tracking run after
 training.
 
 The module is named ``xgb.py`` rather than ``xgboost.py`` so it does not
@@ -17,11 +17,11 @@ import numpy as np
 import re
 from contextlib import contextmanager
 
-import wandb
 import xgboost as xgb
 from loguru import logger
 
 from quantlab.base.config import ModelConfig
+from quantlab.base.tracking import TrackingRun
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.library_model import Rows
 from quantlab.model.predefined._support.devices import resolve_device, xgboost_default_device
@@ -45,13 +45,14 @@ _PARAM_ALIASES: dict[str, str] = {
 #: training: split count, mean gain per split and total gain.
 _IMPORTANCE_TYPES: tuple[str, ...] = ("weight", "gain", "total_gain")
 
-#: Number of factors drawn in the importance bar chart. The accompanying
-#: table still lists every factor; only the chart is truncated.
+#: Number of factors drawn in the importance bar chart, where the tracker
+#: draws one. The table still lists every factor; only the chart is truncated.
 _IMPORTANCE_CHART_TOP_N = 30
 
-#: Key prefix of the chart objects. It is distinct from the ``importance_``
-#: prefix of the per-factor summary scalars so the two never collide.
-_IMPORTANCE_CHART_PREFIX = "feature_importance"
+#: Name prefix of the importance tables. It is distinct from the
+#: ``importance_`` prefix of the per-factor summary scalars so the two never
+#: collide.
+_IMPORTANCE_TABLE_PREFIX = "feature_importance"
 
 
 @contextmanager
@@ -264,34 +265,27 @@ def ccc_loss_metric(predt: np.ndarray, dtrain: xgb.DMatrix) -> tuple[str, float]
     )
 
 
-class _WandbEvalCallback(xgb.callback.TrainingCallback):
-    """Log every boosting round's eval results to the head's current W&B run.
-
-    The callback holds a reference to the head and reads
-    ``head._wandb_recorder`` on each round, so a deep-copied cross-validation
-    fold logs to its own run.
+class _TrackingEvalCallback(xgb.callback.TrainingCallback):
+    """Log every boosting round's eval results to a tracking run as step metrics.
 
     Keys use xgboost's hyphenated form
     (``train-rmse``, ``val-ccc_loss``) with ``step`` equal to the round
     index, which distinguishes these curves from the underscored final
-    values ``LibraryModel._evaluate`` writes to the summary. The last logged round
-    is stored on the head as ``_last_log_step`` so the feature-importance
-    charts can be logged on the same step.
+    values ``LibraryModel._evaluate`` writes to the summary.
 
     Parameters
     ----------
-    head : XGBoostRegressor
-        The model whose recorder receives the per-round values.
+    run : TrackingRun
+        The run receiving the per-round values, the head's open run.
+    suffix : str, default ""
+        Appended to every key, so a head that fits one Booster per label
+        can keep their curves apart (``val-rmse/ret_5``).
     """
 
-    def __init__(self, head, suffix: str = ""):
-        """Keep a reference to the head whose recorder receives the rows.
-
-        ``suffix`` is appended to every key, so a head that fits one
-        Booster per label can keep their curves apart (``val-rmse/ret_5``).
-        """
+    def __init__(self, run: TrackingRun, suffix: str = ""):
+        """Keep the run that receives the rows and the key suffix."""
         super().__init__()
-        self._head = head
+        self._run = run
         self._suffix = suffix
 
     def after_iteration(self, model, epoch: int, evals_log) -> bool:
@@ -304,7 +298,7 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
         model : xgb.Booster
             The Booster being trained (unused).
         epoch : int
-            Index of the round just finished, used as the W&B step.
+            Index of the round just finished, used as the step.
         evals_log : dict
             xgboost's history, ``{data_name: {metric: [value per round]}}``.
 
@@ -317,18 +311,15 @@ class _WandbEvalCallback(xgb.callback.TrainingCallback):
         --------
         >>> booster = xgb.train(
         ...     params, dtrain, evals=[(dtrain, "train"), (dval, "val")],
-        ...     callbacks=[_WandbEvalCallback(head)],
+        ...     callbacks=[_TrackingEvalCallback(run)],
         ... )
         """
-        recorder = self._head._wandb_recorder
-        if recorder is not None:
-            row = {
-                f"{data_name}-{metric}{self._suffix}": float(values[-1])
-                for data_name, metrics in evals_log.items()
-                for metric, values in metrics.items()
-            }
-            recorder.log(row, step=epoch)
-            self._head._last_log_step = epoch
+        row = {
+            f"{data_name}-{metric}{self._suffix}": float(values[-1])
+            for data_name, metrics in evals_log.items()
+            for metric, values in metrics.items()
+        }
+        self._run.log(row, step=epoch)
         return False
 
 
@@ -350,13 +341,12 @@ def _feature_index(key: str) -> int:
 def record_feature_importance(
     booster: xgb.Booster,
     factor_names: list[str],
-    recorder,
-    step: int | None,
+    run: TrackingRun,
     owner: str,
     booster_type: str = "gbtree",
     suffix: str = "",
 ) -> None:
-    """Write a Booster's per-factor importance to a W&B run.
+    """Write a Booster's per-factor importance to a tracking run.
 
     ``Booster.get_score`` keys features as ``f{i}`` by column index when
     the Booster was trained on an array, and as the column name, which is
@@ -364,15 +354,16 @@ def record_feature_importance(
     columns follow ``factor_names``, so either maps to the ``i``-th factor.
     Factors that were never split on get ``0.0``. For every type in
     ``_IMPORTANCE_TYPES`` the scalars go to the summary as
-    ``importance_{type}{suffix}/{factor}``, and one ``log`` call at ``step``
-    carries a full table sorted by importance plus a bar chart of the top
-    ``_IMPORTANCE_CHART_TOP_N`` factors.
+    ``importance_{type}{suffix}/{factor}``, and a table
+    ``feature_importance{suffix}/{type}`` lists every factor sorted by
+    importance, with a bar chart of the top ``_IMPORTANCE_CHART_TOP_N``
+    where the tracker draws one.
 
     This is reporting only, so a failure here must never lose a checkpoint.
     ``booster_type="gblinear"`` has no split importance and is skipped with
     an info message. A type that raises ``XGBoostError`` or returns
     non-scalar scores is skipped with a warning, and a failure while
-    building or logging the charts is also only a warning.
+    logging a table is also only a warning.
 
     Parameters
     ----------
@@ -380,16 +371,14 @@ def record_feature_importance(
         The fitted Booster.
     factor_names : list[str]
         The feature columns the Booster was trained on, in order.
-    recorder : wandb run
-        The run whose summary and log receive the importance.
-    step : int or None
-        The W&B step the charts are logged at.
+    run : TrackingRun
+        The run whose summary and tables receive the importance.
     owner : str
         Class name quoted in messages.
     booster_type : str, default "gbtree"
         The ``booster`` parameter the Booster was trained with.
     suffix : str, default ""
-        Appended to the summary and chart keys, e.g. ``"/ret_5"``.
+        Appended to the summary keys and table names, e.g. ``"/ret_5"``.
 
     Raises
     ------
@@ -399,9 +388,14 @@ def record_feature_importance(
 
     Examples
     --------
-    >>> record_feature_importance(booster, ["mom_5", "mom_20"], run, 99, "Head")
-    >>> sorted(k for k in run.summary if k.startswith("importance_gain/"))
-    ['importance_gain/mom_20', 'importance_gain/mom_5']
+    With ``booster`` trained on two factor columns, the run's summary gets
+    ``importance_gain/mom_5`` and ``importance_gain/mom_20`` (and the same
+    for ``weight`` and ``total_gain``), and three tables
+    ``feature_importance/{weight,gain,total_gain}``:
+
+    >>> tracker = WandbTracker(project="importance", mode="offline")
+    >>> with tracker.start_run(project="P", group=None, name="n", config={}) as run:
+    ...     record_feature_importance(booster, ["mom_5", "mom_20"], run, "Head")
     """
     if booster_type == "gblinear":
         logger.info(
@@ -411,7 +405,6 @@ def record_feature_importance(
         return
 
     names = [str(name) for name in factor_names]
-    charts: dict = {}
     for importance_type in _IMPORTANCE_TYPES:
         try:
             scores = booster.get_score(importance_type=importance_type)
@@ -442,53 +435,28 @@ def record_feature_importance(
                 f"output); skipped."
             )
             continue
-        recorder.summary.update(
+        run.summarize(
             {
                 f"importance_{importance_type}{suffix}/{name}": value
                 for name, value in values.items()
             }
         )
 
+        # Stable sort: ties keep factor order, so never-split factors at 0.0
+        # end up last in factor order.
+        ordered = sorted(values.items(), key=lambda item: item[1], reverse=True)
         try:
-            # Stable sort: ties keep factor order, so never-split factors
-            # at 0.0 end up last in factor order.
-            ordered = sorted(values.items(), key=lambda item: item[1], reverse=True)
-            full_table = wandb.Table(
-                columns=["factor", "importance"],
-                data=[[name, value] for name, value in ordered],
-            )
-            top = ordered[:_IMPORTANCE_CHART_TOP_N]
-            top_chart = wandb.plot.bar(
-                wandb.Table(
-                    columns=["factor", "importance"],
-                    data=[[name, value] for name, value in top],
-                ),
-                "factor",
-                "importance",
-                title=(
-                    f"feature importance ({importance_type}{suffix}, "
-                    f"top {len(top)} of {len(ordered)})"
-                ),
+            run.log_table(
+                f"{_IMPORTANCE_TABLE_PREFIX}{suffix}/{importance_type}",
+                ["factor", "importance"],
+                [[name, value] for name, value in ordered],
+                top_bars=_IMPORTANCE_CHART_TOP_N,
             )
         except Exception as exc:
             logger.warning(
-                f"{owner}: building the feature importance charts for "
-                f"{importance_type!r} failed; they were skipped (the summary "
-                f"entries are unaffected): {exc}"
-            )
-            continue
-        # Chart and table enter the payload together or not at all.
-        charts[f"{_IMPORTANCE_CHART_PREFIX}{suffix}/{importance_type}"] = top_chart
-        charts[f"{_IMPORTANCE_CHART_PREFIX}_table{suffix}/{importance_type}"] = full_table
-
-    if charts:
-        try:
-            recorder.log(charts, step=step)
-        except Exception as exc:
-            logger.warning(
-                f"{owner}: logging the feature importance charts failed; they "
-                f"were skipped (the summary entries and the checkpoint are "
-                f"unaffected): {exc}"
+                f"{owner}: logging the feature importance table for "
+                f"{importance_type!r} failed; it was skipped (the summary "
+                f"entries and the checkpoint are unaffected): {exc}"
             )
 
 
@@ -600,9 +568,6 @@ class XGBoostRegressor(LibraryModel):
         # Device of the Booster in memory: the training device after a fit,
         # the resolved default after a load.
         self._device: str | None = None
-        # Round index of the last per-round log, reused as the step of the
-        # feature-importance charts.
-        self._last_log_step: int | None = None
 
     @staticmethod
     def _normalize_aliases(hyperparameters: dict) -> dict:
@@ -692,19 +657,13 @@ class XGBoostRegressor(LibraryModel):
         """Train the Booster with ``xgb.train`` and record the run's summary.
 
         NaN features are xgboost's missing values. With early stopping, the
-        best iteration and its score are written to the W&B summary,
+        best iteration and its score are written to the run summary,
         followed by the feature importance.
         """
-        # A deep-copied cross-validation fold would otherwise inherit the
-        # last step of a previously trained head.
-        self._last_log_step = None
         params = dict(self._params)
         if self._uses_ccc_objective and "base_score" not in params:
             params["base_score"] = float(np.mean(train_rows.y, dtype=np.float64))
-            if self._wandb_recorder is not None:
-                self._wandb_recorder.summary.update(
-                    {"base_score": params["base_score"]}
-                )
+            self._run.summarize({"base_score": params["base_score"]})
         dtrain = xgb.DMatrix(train_rows.x, label=train_rows.y)
         evals = [(dtrain, "train")]
 
@@ -717,7 +676,7 @@ class XGBoostRegressor(LibraryModel):
         # circuits its callback list, so a callback placed after EarlyStopping
         # misses the round that triggered the stop.
         callbacks: list[xgb.callback.TrainingCallback] = [
-            _WandbEvalCallback(self)
+            _TrackingEvalCallback(self._run)
         ]
         use_early_stopping = self.early_stopping and dval is not None
         if use_early_stopping:
@@ -747,28 +706,25 @@ class XGBoostRegressor(LibraryModel):
             verbose_eval=False,
         )
 
-        if use_early_stopping and self._wandb_recorder is not None:
-            self._wandb_recorder.summary.update(
+        if use_early_stopping:
+            self._run.summarize(
                 {
                     "best_iteration": int(self.model.best_iteration),
                     "best_score": float(self.model.best_score),
                 }
             )
 
-        if self._wandb_recorder is not None:
-            self._record_feature_importance()
+        self._record_feature_importance()
 
     def _record_feature_importance(self) -> None:
-        """Write per-factor importance to the run summary and log the charts.
+        """Write per-factor importance to the run summary and its tables.
 
-        See ``record_feature_importance``; the charts are logged at
-        ``_last_log_step`` so they sit on the last training round.
+        See ``record_feature_importance``.
         """
         record_feature_importance(
             self.model,  # type: ignore[arg-type]
             [str(name) for name in self.get_factor_names()],
-            self._wandb_recorder,
-            self._last_log_step,
+            self._run,
             self.class_name,
             booster_type=str((self._params or {}).get("booster", "gbtree")),
         )

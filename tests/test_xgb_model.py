@@ -10,7 +10,7 @@ What is locked, and what turns it red:
   `best_iteration + 1` trees, fewer than `num_boost_round` on a noise label;
   with early stopping off it has exactly `num_boost_round`; with no usable
   validation segment it trains every round and warns;
-- the per-round W&B callback sees the round that triggered the stop, which
+- the per-round tracking callback sees the round that triggered the stop, which
   pins it BEFORE `EarlyStopping` in the callback list (measured on xgboost
   3.4.1: placed after, it misses that round);
 - hyperparameters pass straight through (`nthread` included), except
@@ -29,23 +29,24 @@ import joblib
 import numpy as np
 import pytest
 import torch
-import wandb
 import xarray as xr
 import xgboost as xgb
 from loguru import logger
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import BaseModel
+from quantlab.base.tracking import NullTracker, Tracker
 from quantlab.model.predefined._support.devices import xgboost_default_device
 from quantlab.model.predefined.xgb import (
     XGBoostRegressor,
     ccc_loss_metric,
     ccc_objective,
     pooled_ccc_loss,
+    record_feature_importance,
 )
 from quantlab.utils.metrics import regression_panel_metrics
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordedRun, RecordingTracker
 
 N_TIMES = 160
 N_SYMBOLS = 30
@@ -64,12 +65,6 @@ TEST_START, TEST_END = _day(120), _day(N_TIMES - 1)
 N_TRAIN_TIMES = 120
 #: `val_size=0.2` on 120 training timestamps: rows 96..119 validate.
 VAL_START_IDX = 96
-
-
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
 
 
 class ArrayPanel:
@@ -122,6 +117,7 @@ def _config(
     patience: int = 5,
     hyperparameters: dict | None = None,
     val_size: float = 0.2,
+    tracker: Tracker = NullTracker(),
 ) -> ModelConfig:
     hyper = hyperparameters if hyperparameters is not None else {"num_boost_round": 20}
     if early_stopping:
@@ -140,68 +136,29 @@ def _config(
         test_end=TEST_END,
         hyperparameters=hyper,
         val_size=val_size,
+        tracker=tracker,
     )
 
 
-class FakeRunConfig(dict):
-    """Mimics `wandb.Run.config.update(d, allow_val_change=...)`."""
-
-    def update(self, data=(), allow_val_change=False, **kwargs):
-        self.allow_val_change = allow_val_change
-        super().update(data, **kwargs)
+#: Mirrors `quantlab.model.predefined.xgb._IMPORTANCE_TABLE_PREFIX`: every
+#: feature importance table is named with this prefix.
+TABLE_PREFIX = "feature_importance"
 
 
-class FakeRecorder:
-    def __init__(self, name: str):
-        self.name = name
-        self.logs: list[tuple[dict, int | None]] = []
-        self.summary: dict = {}
-        self.config = FakeRunConfig()
-        self.finished = 0
-
-    def log(self, data, step=None):
-        self.logs.append((dict(data), step))
-
-    def finish(self):
-        self.finished += 1
+def _curve_rows(run: RecordedRun) -> list[tuple[dict, int]]:
+    """The per-round eval rows, as `(metrics, step)`."""
+    return [(metrics, step) for step, metrics in run.steps]
 
 
-#: Mirrors `quantlab.model.predefined.xgb._IMPORTANCE_CHART_PREFIX`. Every feature
-#: importance Charts object is logged under a key starting with this, which is
-#: what tells a chart row apart from a per-round curve row.
-CHART_PREFIX = "feature_importance"
-
-
-def _curve_rows(recorder: FakeRecorder) -> list[tuple[dict, int | None]]:
-    """The per-round eval rows: every logged row carrying no chart key."""
-    return [
-        (row, step)
-        for row, step in recorder.logs
-        if not any(key.startswith(CHART_PREFIX) for key in row)
-    ]
-
-
-def _chart_rows(recorder: FakeRecorder) -> list[tuple[dict, int | None]]:
-    """The feature-importance rows: every logged row carrying a chart key."""
-    return [
-        (row, step)
-        for row, step in recorder.logs
-        if any(key.startswith(CHART_PREFIX) for key in row)
-    ]
+def _importance_tables(run: RecordedRun) -> dict:
+    """The feature-importance tables, `{name: (columns, rows, top_bars)}`."""
+    return {name: table for name, table in run.tables.items() if name.startswith(TABLE_PREFIX)}
 
 
 @pytest.fixture
-def recorders(monkeypatch) -> list[FakeRecorder]:
-    """Patched on the class so deep-copied CV folds record too."""
-    created: list[FakeRecorder] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        recorder = FakeRecorder(experiment_name)
-        created.append(recorder)
-        self._wandb_recorder = recorder
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
-    return created
+def tracker() -> RecordingTracker:
+    """Put in the model config; every run a train or train_cv opens lands in `.runs`."""
+    return RecordingTracker()
 
 
 @pytest.fixture
@@ -240,7 +197,7 @@ def _train(tmp_path, factors, labels, **kwargs) -> XGBoostRegressor:
 # --------------------------------------------------------------------------
 
 
-def test_learns_a_factor_driven_label(tmp_path, recorders):
+def test_learns_a_factor_driven_label(tmp_path, tracker):
     """Label = 0.1*f_signal + 0.05*noise (true correlation ~0.89). Turns red if
     features and labels are misaligned (wrong axis order, a shifted split,
     predictions reshaped in the wrong order)."""
@@ -249,6 +206,7 @@ def test_learns_a_factor_driven_label(tmp_path, recorders):
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         patience=20,
         hyperparameters={"num_boost_round": 300, "max_depth": 3, "eta": 0.1},
@@ -259,16 +217,17 @@ def test_learns_a_factor_driven_label(tmp_path, recorders):
 
     assert pred.shape == (N_TIMES - N_TRAIN_TIMES, N_SYMBOLS, 1)
     assert regression_panel_metrics(pred[..., 0], test_y[..., 0])["ic"] > 0.5
-    assert recorders[0].summary["test_ic"] > 0.5
+    assert tracker.runs[0].summary["test_ic"] > 0.5
 
 
-def test_unrelated_label_gives_no_ic(tmp_path, recorders):
+def test_unrelated_label_gives_no_ic(tmp_path, tracker):
     """The control: same pipeline, label independent of every factor."""
     factors, labels = _panels(seed=12, signal=False)
     model = _train(
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         patience=20,
         hyperparameters={"num_boost_round": 300, "max_depth": 3, "eta": 0.1},
@@ -285,7 +244,7 @@ def test_unrelated_label_gives_no_ic(tmp_path, recorders):
 # --------------------------------------------------------------------------
 
 
-def test_early_stopping_saves_a_truncated_booster_and_logs_the_stopping_round(tmp_path, recorders):
+def test_early_stopping_saves_a_truncated_booster_and_logs_the_stopping_round(tmp_path, tracker):
     """Noise label, 500 rounds, patience 10: the Booster ON DISK stops well
     short of 500 and holds exactly `best_iteration + 1` trees.
 
@@ -300,6 +259,7 @@ def test_early_stopping_saves_a_truncated_booster_and_logs_the_stopping_round(tm
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         patience=patience,
         hyperparameters={"num_boost_round": 500},
@@ -310,7 +270,7 @@ def test_early_stopping_saves_a_truncated_booster_and_logs_the_stopping_round(tm
     assert booster.num_boosted_rounds() < 500
     assert booster.num_boosted_rounds() == best + 1
 
-    rec = recorders[0]
+    rec = tracker.runs[0]
     assert rec.summary["best_iteration"] == best
     assert isinstance(rec.summary["best_score"], float)
 
@@ -321,24 +281,25 @@ def test_early_stopping_saves_a_truncated_booster_and_logs_the_stopping_round(tm
     assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in curve)
 
 
-def test_early_stopping_off_trains_every_round(tmp_path, recorders):
+def test_early_stopping_off_trains_every_round(tmp_path, tracker):
     factors, labels = _panels(seed=14, signal=False)
-    _train(tmp_path, factors, labels, early_stopping=False, hyperparameters={"num_boost_round": 25})
+    _train(tmp_path, factors, labels, tracker=tracker, early_stopping=False, hyperparameters={"num_boost_round": 25})
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     assert booster.num_boosted_rounds() == 25
-    assert "best_iteration" not in recorders[0].summary
-    assert len(_curve_rows(recorders[0])) == 25
+    assert "best_iteration" not in tracker.runs[0].summary
+    assert len(_curve_rows(tracker.runs[0])) == 25
 
 
 def test_early_stopping_without_a_validation_segment_trains_every_round_and_warns(
-    tmp_path, recorders, warnings_log
+    tmp_path, tracker, warnings_log
 ):
     factors, labels = _panels(seed=15, signal=False)
     _train(
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         val_size=0.0,
         hyperparameters={"num_boost_round": 15},
@@ -347,13 +308,13 @@ def test_early_stopping_without_a_validation_segment_trains_every_round_and_warn
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     assert booster.num_boosted_rounds() == 15
     assert any("early stopping skipped" in m for m in warnings_log)
-    rec = recorders[0]
-    assert not any(key.startswith("val-") for row, _ in rec.logs for key in row)
+    rec = tracker.runs[0]
+    assert not any(key.startswith("val-") for row, _ in _curve_rows(rec) for key in row)
     assert not any(key.startswith("val_") for key in rec.summary)
     assert "best_iteration" not in rec.summary
 
 
-def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, recorders, warnings_log):
+def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, tracker, warnings_log):
     """The validation segment has timestamps but no finite label: it must not
     be handed to xgboost as an empty DMatrix, and early stopping must not arm
     on it."""
@@ -363,6 +324,7 @@ def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, r
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         hyperparameters={"num_boost_round": 15},
     )
@@ -377,20 +339,20 @@ def test_an_all_nan_validation_label_counts_as_no_validation_segment(tmp_path, r
 # --------------------------------------------------------------------------
 
 
-def test_hyperparameters_pass_through(tmp_path, recorders):
+def test_hyperparameters_pass_through(tmp_path, tracker):
     """User keys reach xgboost verbatim -- `nthread` included -- while
     `num_boost_round` is consumed as the round budget and never becomes a
     param. The config's own dict is left untouched."""
     hyper = {"num_boost_round": 7, "max_depth": 2, "eval_metric": "mae", "nthread": 1}
     factors, labels = _panels(seed=17)
-    model = _train(tmp_path, factors, labels, hyperparameters=dict(hyper))
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters=dict(hyper))
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     saved = json.loads(booster.save_config())
     assert booster.num_boosted_rounds() == 7
     assert saved["learner"]["gradient_booster"]["tree_train_param"]["max_depth"] == "2"
     assert saved["learner"]["generic_param"]["nthread"] == "1"
-    assert set(recorders[0].logs[0][0]) == {
+    assert set(_curve_rows(tracker.runs[0])[0][0]) == {
         "train-mae",
         "val-mae",
         "train-ccc_loss",
@@ -400,12 +362,12 @@ def test_hyperparameters_pass_through(tmp_path, recorders):
     assert model.config.hyperparameters == hyper
 
 
-def test_default_params(tmp_path, recorders):
+def test_default_params(tmp_path, tracker):
     """Unset `seed` follows `config.random_seed`, unset `eval_metric` is
     RMSE, and unset `nthread` is left out entirely so xgboost picks its own
     default."""
     factors, labels = _panels(seed=18)
-    model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 3})
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 3})
     assert model._params["seed"] == model.config.random_seed
     assert model._params["eval_metric"] == "rmse"
     assert "nthread" not in model._params
@@ -423,7 +385,7 @@ def test_num_boost_round_must_be_positive(tmp_path):
 # --------------------------------------------------------------------------
 
 
-def test_multi_label_predicts_every_label(tmp_path, recorders):
+def test_multi_label_predicts_every_label(tmp_path, tracker):
     """Second label = -0.1*f_second + noise: its own column must carry its
     own signal, so a head that only fits label 0 turns red."""
     factors, labels = _panels(seed=20, second_label=True)
@@ -431,6 +393,7 @@ def test_multi_label_predicts_every_label(tmp_path, recorders):
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         patience=20,
         hyperparameters={"num_boost_round": 300, "max_depth": 3, "eta": 0.1},
@@ -443,7 +406,7 @@ def test_multi_label_predicts_every_label(tmp_path, recorders):
     assert regression_panel_metrics(pred[..., 1], test_y[..., 1])["ic"] > 0.5
 
 
-def test_nan_labels_and_infinite_features(tmp_path, recorders, monkeypatch):
+def test_nan_labels_and_infinite_features(tmp_path, tracker, monkeypatch):
     """10% NaN label cells and a sprinkling of ±inf feature cells: training
     survives (xgboost itself raises on inf), NaN-label rows are dropped, and
     test predictions are all finite."""
@@ -464,7 +427,7 @@ def test_nan_labels_and_infinite_features(tmp_path, recorders, monkeypatch):
         return fit_model(self, train_rows, val_rows)
 
     monkeypatch.setattr(XGBoostRegressor, "_fit_model", spy)
-    model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 20})
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 20})
     test_x, _ = _test_arrays(model)
 
     assert np.isfinite(model.predict(test_x)).all()
@@ -488,7 +451,7 @@ class RankTargetXGB(XGBoostRegressor):
 
 
 def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
-    tmp_path, recorders, monkeypatch
+    tmp_path, tracker, monkeypatch
 ):
     """The Booster fits per-bar ranks (in [0, 1], unlike the raw label), still
     learns the signal, and `test_mse` / `test_ic` score its prediction
@@ -527,7 +490,7 @@ def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
 
 
 def test_a_cs_rank_training_target_trains_loads_and_never_reaches_xgb_train(
-    tmp_path, recorders, monkeypatch
+    tmp_path, tracker, monkeypatch
 ):
     """Smoke test of `hyperparameters["training_target"]` (issue #95): train,
     save, load and predict; the scale is standardized, the key stays in
@@ -544,7 +507,7 @@ def test_a_cs_rank_training_target_trains_loads_and_never_reaches_xgb_train(
     monkeypatch.setattr(xgb_module.xgb, "train", spy)
     hyper = {"num_boost_round": 20, "training_target": "cs_rank"}
     factors, labels = _panels(seed=24)
-    trained = _train(tmp_path, factors, labels, hyperparameters=dict(hyper))
+    trained = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters=dict(hyper))
 
     assert len(seen) == 1 and "training_target" not in seen[0]
     checkpoint = _only_checkpoint(tmp_path / "ckpt")
@@ -563,9 +526,9 @@ def test_a_cs_rank_training_target_trains_loads_and_never_reaches_xgb_train(
     assert np.array_equal(fresh.predict(test_x), trained.predict(test_x))
 
 
-def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):
+def test_fresh_instance_loads_and_predicts_identically(tmp_path, tracker):
     factors, labels = _panels(seed=22)
-    trained = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 20})
+    trained = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 20})
     test_x, _ = _test_arrays(trained)
     fresh_factors, fresh_labels = _panels(seed=22)
     fresh = XGBoostRegressor(_config(tmp_path, fresh_factors, fresh_labels, save_dir="unused"))
@@ -588,7 +551,7 @@ def test_contract():
 CV_HYPER = {"num_boost_round": 60, "max_depth": 3, "nthread": 1}
 
 
-def _cv_model(tmp_path, save_dir) -> XGBoostRegressor:
+def _cv_model(tmp_path, save_dir, tracker) -> XGBoostRegressor:
     factors, labels = _panels(seed=31)
     model = XGBoostRegressor(
         _config(
@@ -599,18 +562,19 @@ def _cv_model(tmp_path, save_dir) -> XGBoostRegressor:
             early_stopping=True,
             patience=10,
             hyperparameters=dict(CV_HYPER),
+            tracker=tracker,
         )
     )
     model.collect()
     return model
 
 
-def test_train_cv_sequential(tmp_path, recorders):
+def test_train_cv_sequential(tmp_path, tracker):
     """160 timestamps, train 60 / gap 2 -> 8 folds. Every fold runs native
     early stopping (its Booster holds `best_iteration + 1` trees), carries a
     finite `test_ic`, and loads into a fresh instance; the summary run's
     `cv_mean_test_ic` is the fold mean and reflects the signal."""
-    model = _cv_model(tmp_path, "ckpt_seq")
+    model = _cv_model(tmp_path, "ckpt_seq", tracker)
     timestamps = model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values
 
     results = model.train_cv(train_periods=60)
@@ -633,7 +597,7 @@ def test_train_cv_sequential(tmp_path, recorders):
         fresh = XGBoostRegressor(_config(tmp_path, fresh_factors, fresh_labels, save_dir="unused")).load(ckpt)
         assert fresh.predict(np.zeros((4, N_SYMBOLS, 3), dtype=np.float32)).shape == (4, N_SYMBOLS, 1)
 
-    summary_run = recorders[-1]
+    summary_run = tracker.runs[-1]
     assert summary_run.name == "XGBoostRegressor_cv_summary"
     assert summary_run.summary["cv_n_folds"] == 8
     assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r["test_ic"] for r in results])))
@@ -656,7 +620,7 @@ def _booster_config(tmp_path) -> dict:
     return json.loads(joblib.load(_only_checkpoint(tmp_path / "ckpt")).save_config())["learner"]
 
 
-def test_sklearn_aliases_reach_the_trained_booster(tmp_path, recorders):
+def test_sklearn_aliases_reach_the_trained_booster(tmp_path, tracker):
     """Each alias overrides the matching default or config value: rounds from
     `n_estimators`, `eta` from `learning_rate` (default 0.05), `seed` from
     `random_state` (config.random_seed is 42), `nthread` from `n_jobs`, and
@@ -671,7 +635,7 @@ def test_sklearn_aliases_reach_the_trained_booster(tmp_path, recorders):
         "reg_lambda": 2.0,
     }
     factors, labels = _panels(seed=41)
-    model = _train(tmp_path, factors, labels, hyperparameters=dict(hyper))
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters=dict(hyper))
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     learner = json.loads(booster.save_config())["learner"]
@@ -696,7 +660,7 @@ def test_sklearn_aliases_reach_the_trained_booster(tmp_path, recorders):
         ("reg_lambda", "lambda", 0.1),
     ],
 )
-def test_alias_and_canonical_key_together_raise(tmp_path, recorders, alias, canonical, value):
+def test_alias_and_canonical_key_together_raise(tmp_path, tracker, alias, canonical, value):
     """Both spellings of one parameter is ambiguous; picking one silently is
     exactly the dict-order accident this guards against."""
     hyper = {alias: value, canonical: value}
@@ -714,14 +678,14 @@ def test_alias_and_canonical_key_together_raise(tmp_path, recorders, alias, cano
 # --------------------------------------------------------------------------
 
 
-def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path, recorders):
+def test_resolved_hyperparameters_are_written_to_config_json_and_the_run_config(tmp_path, tracker):
     """The record holds what xgboost actually trained with -- every default,
     the user's overrides, alias-resolved keys and the round count -- so a run
     stays reproducible if `DEFAULT_PARAMS` changes later. The user-level
     `hyperparameters` stays exactly what the user passed."""
     hyper = {"learning_rate": 0.3, "max_depth": 2, "num_boost_round": 4}
     factors, labels = _panels(seed=43)
-    _train(tmp_path, factors, labels, hyperparameters=dict(hyper))
+    _train(tmp_path, factors, labels, tracker=tracker, hyperparameters=dict(hyper))
 
     saved = json.loads((_only_checkpoint(tmp_path / "ckpt").parent / "config.json").read_text())
     resolved = saved["resolved_hyperparameters"]
@@ -738,13 +702,12 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_wandb(tmp_path,
     assert "learning_rate" not in resolved
     assert saved["hyperparameters"] == hyper
 
-    rec = recorders[0]
-    assert rec.config["resolved_hyperparameters"] == expected
-    assert rec.config.allow_val_change is True
+    rec = tracker.runs[0]
+    assert rec.config_updates == [{"resolved_hyperparameters": expected}]
 
 
 # --------------------------------------------------------------------------
-# Feature importance in the W&B summary (03.7-18, G-03.7-9 addition)
+# Feature importance in the run summary (03.7-18, G-03.7-9 addition)
 # --------------------------------------------------------------------------
 #
 # Importance comes from a NAMELESS Booster: `get_score` keys are `f{i}`, where
@@ -770,27 +733,25 @@ def _importance_panels(seed: int):
     return ArrayPanel(factors), ArrayPanel(labels)
 
 
-def _importance_summary(recorder: FakeRecorder) -> dict:
-    return {k: v for k, v in recorder.summary.items() if k.startswith("importance_")}
+def _importance_summary(run: RecordedRun) -> dict:
+    return {k: v for k, v in run.summary.items() if k.startswith("importance_")}
 
 
-def test_importance_is_written_to_the_summary_for_every_factor(tmp_path, recorders):
+def test_importance_is_written_to_the_summary_for_every_factor(tmp_path, tracker):
     """Every declared factor gets `importance_{weight,gain,total_gain}/{name}`,
     zero-filled when it never split. Turns red if importance is missing, keyed
     by `f{i}` instead of the factor name, or mapped to the wrong index (f_const
     would inherit f_signal's gain).
 
-    The last assertion guards the D-02 namespace split, not a ban on logging
-    importance at all: the per-factor SCALARS stay out of the logged rows and
-    live only in the summary, while the Charts objects added on 2026-09-16 ARE
-    logged -- under the disjoint `feature_importance*` prefix, which is exactly
-    why an `importance_` scan over the rows still reads clean.
+    The last assertion guards the D-02 namespace split: the per-factor
+    SCALARS stay out of the per-round rows and live only in the summary, while
+    the tables go under the disjoint `feature_importance*` prefix.
     """
     factors, labels = _importance_panels(seed=51)
-    model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 20, "max_depth": 3})
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 20, "max_depth": 3})
     assert model.get_factor_names() == IMPORTANCE_FACTORS
 
-    importance = _importance_summary(recorders[0])
+    importance = _importance_summary(tracker.runs[0])
 
     assert set(importance) == {f"importance_{t}/{n}" for t in IMPORTANCE_TYPES for n in IMPORTANCE_FACTORS}
     assert all(type(v) is float for v in importance.values()), importance
@@ -799,53 +760,43 @@ def test_importance_is_written_to_the_summary_for_every_factor(tmp_path, recorde
     assert importance["importance_total_gain/f_const"] == 0.0
     assert importance["importance_gain/f_signal"] > 0.0
     assert importance["importance_total_gain/f_signal"] > importance["importance_total_gain/f_second"]
-    assert not any(key.startswith("importance_") for row, _ in recorders[0].logs for key in row)
+    assert not any(
+        key.startswith("importance_") for row, _ in _curve_rows(tracker.runs[0]) for key in row
+    )
 
 
-def test_importance_charts_reach_the_wandb_run_in_one_row_at_the_final_round_step(
-    tmp_path, recorders
-):
-    """D-01 end to end: three bar charts and three full Tables reach the run in
-    ONE logged row, merged into the final boosting round's step.
+def test_importance_tables_reach_the_run_without_opening_a_step(tmp_path, tracker):
+    """D-01 end to end: one full table per importance type, each asking for a
+    bar chart of the top 30, and no step of its own.
 
-    Turns red if the charts open a step of their own (the per-round curve would
-    no longer be `range(12)`), if a type is charted without its table or the
-    reverse, if the table drops the never-split `f_const`, if the rows stop
-    being sorted descending, or if a per-factor summary scalar moved (D-02).
+    Turns red if a table opens a step (the per-round curve would no longer be
+    `range(12)`), if a type has no table, if the table drops the never-split
+    `f_const`, if the rows stop being sorted descending, or if a per-factor
+    summary scalar moved (D-02).
     """
     factors, labels = _importance_panels(seed=57)
     _train(
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=False,
         hyperparameters={"num_boost_round": 12, "max_depth": 3},
     )
 
-    rec = recorders[0]
+    rec = tracker.runs[0]
     assert [step for _, step in _curve_rows(rec)] == list(range(12))
 
-    charts = _chart_rows(rec)
-    assert len(charts) == 1
-    chart_row, chart_step = charts[0]
-    assert chart_step == 11
-    assert set(chart_row) == {f"{CHART_PREFIX}/{t}" for t in IMPORTANCE_TYPES} | {
-        f"{CHART_PREFIX}_table/{t}" for t in IMPORTANCE_TYPES
-    }
-
-    for importance_type in IMPORTANCE_TYPES:
-        assert isinstance(
-            chart_row[f"{CHART_PREFIX}/{importance_type}"],
-            wandb.plot.custom_chart.CustomChart,
-        )
-        table = chart_row[f"{CHART_PREFIX}_table/{importance_type}"]
-        assert isinstance(table, wandb.Table)
-        assert table.columns == ["factor", "importance"]
+    tables = _importance_tables(rec)
+    assert set(tables) == {f"{TABLE_PREFIX}/{t}" for t in IMPORTANCE_TYPES}
+    for columns, rows, top_bars in tables.values():
+        assert columns == ["factor", "importance"]
+        assert top_bars == 30
         # Every factor rides in the table (D-04), the never-split one included.
-        assert {name for name, _ in table.data} == set(IMPORTANCE_FACTORS)
-        values = [value for _, value in table.data]
+        assert {name for name, _ in rows} == set(IMPORTANCE_FACTORS)
+        values = [value for _, value in rows]
         assert values == sorted(values, reverse=True), values
-        assert dict(table.data)["f_const"] == 0.0
+        assert dict(rows)["f_const"] == 0.0
 
     importance = _importance_summary(rec)
     assert set(importance) == {
@@ -854,7 +805,7 @@ def test_importance_charts_reach_the_wandb_run_in_one_row_at_the_final_round_ste
     assert all(importance[f"importance_{t}/f_const"] == 0.0 for t in IMPORTANCE_TYPES)
 
 
-def test_importance_with_early_stopping_uses_the_saved_booster(tmp_path, recorders):
+def test_importance_with_early_stopping_uses_the_saved_booster(tmp_path, tracker):
     """Noise label with native early stopping: importance describes the
     truncated Booster that lands on disk, and the per-round log still runs
     contiguously with the rmse keys in every row."""
@@ -865,13 +816,14 @@ def test_importance_with_early_stopping_uses_the_saved_booster(tmp_path, recorde
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         patience=patience,
         hyperparameters={"num_boost_round": 300},
     )
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
-    rec = recorders[0]
+    rec = tracker.runs[0]
     importance = _importance_summary(rec)
     assert set(importance) == {f"importance_{t}/{n}" for t in IMPORTANCE_TYPES for n in IMPORTANCE_FACTORS}
     for importance_type in IMPORTANCE_TYPES:
@@ -888,37 +840,27 @@ def test_importance_with_early_stopping_uses_the_saved_booster(tmp_path, recorde
     assert steps[-1] == booster.best_iteration + patience
     assert all({"train-rmse", "val-rmse"} <= set(row) for row, _ in curve)
 
-    # The charts ride in ONE extra row merged into the final round's step rather
-    # than opening a step of their own -- proved here on the early-stopping path,
-    # where the final step is `best_iteration + patience` and not `n_rounds - 1`.
-    charts = _chart_rows(rec)
-    assert len(charts) == 1
-    assert charts[0][1] == booster.best_iteration + patience == steps[-1]
+    assert set(_importance_tables(rec)) == {f"{TABLE_PREFIX}/{t}" for t in IMPORTANCE_TYPES}
 
 
-def test_training_without_a_recorder_writes_no_importance(tmp_path, monkeypatch):
-    """W&B off (no recorder at all): training completes and writes its
-    checkpoint; the importance block must not touch a missing recorder."""
-
-    def no_recorder(self, project_name, experiment_name):
-        self._wandb_recorder = None
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", no_recorder)
+def test_training_with_the_default_tracker_writes_its_checkpoint(tmp_path):
+    """Tracking off (the config's default null tracker): training completes,
+    importance included, and writes its checkpoint."""
     factors, labels = _importance_panels(seed=53)
 
     model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 5})
 
-    assert model._wandb_recorder is None
+    assert model.config.tracker == NullTracker()
     assert _only_checkpoint(tmp_path / "ckpt").is_file()
 
 
 @pytest.mark.parametrize("second_label", [False, True], ids=["single-label", "two-label"])
-def test_gblinear_trains_and_writes_its_checkpoint_with_a_recorder(tmp_path, recorders, second_label):
+def test_gblinear_trains_and_writes_its_checkpoint_with_a_tracker(tmp_path, tracker, second_label):
     """REVIEW CR-01: `booster="gblinear"` is a valid configuration, but its
     Booster only has `weight` importance (`gain` raises XGBoostError) and, with
     a `[T, S, L>1]` target, `get_score("weight")` returns one list per factor.
     Importance runs inside `_fit_model`, before `_save_model`, so either case
-    used to raise and lose the trained model: no `.joblib`, no `finish()`.
+    used to raise and lose the trained model: no `.joblib`, a failed run.
     Both ids go red on the pre-fix code."""
     factors, labels = _importance_panels(seed=55)
     if second_label:
@@ -930,19 +872,20 @@ def test_gblinear_trains_and_writes_its_checkpoint_with_a_recorder(tmp_path, rec
             }
         )
 
-    model = _train(tmp_path, factors, labels, hyperparameters={"booster": "gblinear", "num_boost_round": 5})
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"booster": "gblinear", "num_boost_round": 5})
 
     checkpoint = _only_checkpoint(tmp_path / "ckpt")
     assert checkpoint.is_file()
     assert (checkpoint.parent / "config.json").is_file()
-    rec = recorders[0]
-    assert rec.finished == 1
+    rec = tracker.runs[0]
+    assert rec.finished and not rec.failed
     assert _importance_summary(rec) == {}
+    assert _importance_tables(rec) == {}
     test_x, _ = _test_arrays(model)
     assert model.predict(test_x).shape == (N_TIMES - N_TRAIN_TIMES, N_SYMBOLS, 2 if second_label else 1)
 
 
-def test_unavailable_or_non_scalar_importance_is_skipped_not_fatal(tmp_path, recorders, warnings_log, monkeypatch):
+def test_unavailable_or_non_scalar_importance_is_skipped_not_fatal(tmp_path, tracker, warnings_log, monkeypatch):
     """REVIEW CR-01, beyond gblinear: importance is best-effort telemetry. An
     importance type the Booster cannot report (XGBoostError) or reports as a
     per-output list is skipped with a warning; the types that do work are
@@ -960,30 +903,26 @@ def test_unavailable_or_non_scalar_importance_is_skipped_not_fatal(tmp_path, rec
     monkeypatch.setattr(xgb.Booster, "get_score", flaky_get_score)
     factors, labels = _importance_panels(seed=56)
 
-    _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 10, "max_depth": 3})
+    _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 10, "max_depth": 3})
 
     assert _only_checkpoint(tmp_path / "ckpt").is_file()
-    importance = _importance_summary(recorders[0])
+    importance = _importance_summary(tracker.runs[0])
     assert set(importance) == {f"importance_total_gain/{n}" for n in IMPORTANCE_FACTORS}
     assert any("'weight'" in m for m in warnings_log), warnings_log
     assert any("'gain'" in m for m in warnings_log), warnings_log
 
 
-def test_importance_charts_are_sorted_descending_and_capped_at_the_top_30(tmp_path):
-    """35 factors with fixed scores: the table carries all 35 in descending
-    order (D-03, D-04) and the bar chart carries exactly the 30 largest.
+def test_importance_tables_are_sorted_descending_and_chart_the_top_30():
+    """35 factors with fixed scores: each table carries all 35 in descending
+    order (D-03, D-04) and asks for a bar chart of the top 30.
 
-    The scores are CONSTRUCTED rather than trained because 30-of-35 is only an
-    unambiguous assertion when the correct answer is fixed in advance -- a
+    The scores are CONSTRUCTED rather than trained because the order is only
+    an unambiguous assertion when the correct answer is fixed in advance -- a
     trained Booster could tie on values or leave a different number of factors
-    unsplit, and the cut would then be untestable. No training happens at all:
-    `get_factor_names()` and `class_name` read the config, so neither needs
-    `collect()`.
+    unsplit. No training happens at all: `record_feature_importance` is called
+    on a fixed-score Booster inside a recording run.
     """
     names = [f"g{i:02d}" for i in range(35)]
-    shape = (N_TIMES, N_SYMBOLS)
-    factors = ArrayPanel({name: np.zeros(shape) for name in names})
-    labels = ArrayPanel({"ret_a": np.zeros(shape)})
 
     class _FixedScoreBooster:
         """`f0`..`f31` score 100 down to 69; `f32`..`f34` never split."""
@@ -991,34 +930,24 @@ def test_importance_charts_are_sorted_descending_and_capped_at_the_top_30(tmp_pa
         def get_score(self, importance_type="weight"):
             return {f"f{i}": float(100 - i) for i in range(32)}
 
-    head = XGBoostRegressor(_config(tmp_path, factors, labels))
-    head._params = {}  # not gblinear, so the early return is not taken
-    head.model = _FixedScoreBooster()
-    head._wandb_recorder = FakeRecorder("fixed-scores")
-    head._last_log_step = 41  # a step no round count here could coincide with
+    tracker = RecordingTracker()
+    with tracker.start_run(project="P", group=None, name="fixed-scores", config={}) as run:
+        record_feature_importance(_FixedScoreBooster(), names, run, "XGBoostRegressor")
 
-    head._record_feature_importance()
-
-    rec = head._wandb_recorder
-    assert len(rec.logs) == 1
-    chart_row, step = rec.logs[0]
-    assert step == 41  # passed through from the callback, not reinvented
-    assert set(chart_row) == {f"{CHART_PREFIX}/{t}" for t in IMPORTANCE_TYPES} | {
-        f"{CHART_PREFIX}_table/{t}" for t in IMPORTANCE_TYPES
-    }
+    (rec,) = tracker.runs
+    assert rec.steps == []
+    tables = _importance_tables(rec)
+    assert set(tables) == {f"{TABLE_PREFIX}/{t}" for t in IMPORTANCE_TYPES}
 
     # Descending by value; the 0.0-filled never-split factors ride at the bottom
     # in factor order, which is what `sorted` being stable buys.
     expected_full = [[names[i], float(100 - i)] for i in range(32)] + [
         [name, 0.0] for name in names[32:]
     ]
-    for importance_type in IMPORTANCE_TYPES:
-        table = chart_row[f"{CHART_PREFIX}_table/{importance_type}"]
-        assert table.data == expected_full
-        chart = chart_row[f"{CHART_PREFIX}/{importance_type}"]
-        assert chart.table.data == expected_full[:30]
-        assert chart.table.data[0] == ["g00", 100.0]
-        assert chart.table.data[-1] == ["g29", 71.0]
+    for columns, rows, top_bars in tables.values():
+        assert columns == ["factor", "importance"]
+        assert rows == expected_full
+        assert top_bars == 30
 
     importance = _importance_summary(rec)
     assert set(importance) == {
@@ -1032,52 +961,52 @@ def test_importance_charts_are_sorted_descending_and_capped_at_the_top_30(tmp_pa
             )
 
 
-def test_a_chart_that_fails_to_build_is_skipped_and_the_others_still_chart(
-    tmp_path, recorders, warnings_log, monkeypatch
+class _GainTableFailsRun(RecordedRun):
+    """A recording run whose `gain` importance table fails to log."""
+
+    def _log_table(self, name, columns, rows, top_bars):
+        if name.endswith("/gain"):
+            raise RuntimeError("table log failed (test)")
+        super()._log_table(name, columns, rows, top_bars)
+
+
+class _GainTableFailsTracker(RecordingTracker):
+    def _open(self, *, project, group, name, config):
+        run = _GainTableFailsRun(project=project, group=group, name=name, config=config)
+        self.runs.append(run)
+        return run
+
+
+def test_a_table_that_fails_to_log_is_skipped_and_the_others_still_log(
+    tmp_path, warnings_log
 ):
-    """T-gs8-01: chart building is best-effort and PER TYPE. The type that
-    raises contributes neither of its two keys (both-or-neither), the other two
-    types chart normally, every summary scalar is still written, and the trained
-    model still reaches disk -- importance runs before `_save_model`, so a
-    drawing bug must never cost a checkpoint (REVIEW CR-01).
+    """T-gs8-01: table logging is best-effort and PER TYPE. The type that
+    raises is skipped with a warning, the other two types log normally, every
+    summary scalar is still written, and the trained model still reaches disk
+    -- importance runs before `_save_model`, so a reporting failure must never
+    cost a checkpoint (REVIEW CR-01).
     """
-    real_bar = wandb.plot.bar
-    calls: list[object] = []
-
-    def flaky_bar(*args, **kwargs):
-        calls.append(kwargs.get("title"))
-        # Call two is `gain`: `_IMPORTANCE_TYPES` is iterated in its declared
-        # order and each type builds exactly one bar chart. The assertions
-        # below, not this arithmetic, are what carry the proof.
-        if len(calls) == 2:
-            raise RuntimeError("chart build failed (test)")
-        return real_bar(*args, **kwargs)
-
-    monkeypatch.setattr(wandb.plot, "bar", flaky_bar)
+    tracker = _GainTableFailsTracker()
     factors, labels = _importance_panels(seed=58)
 
     _train(
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         hyperparameters={"num_boost_round": 10, "max_depth": 3},
     )
 
     assert _only_checkpoint(tmp_path / "ckpt").is_file()
-    rec = recorders[0]
-    assert rec.finished == 1
-
-    charts = _chart_rows(rec)
-    assert len(charts) == 1
-    assert set(charts[0][0]) == {
-        f"{CHART_PREFIX}/weight",
-        f"{CHART_PREFIX}_table/weight",
-        f"{CHART_PREFIX}/total_gain",
-        f"{CHART_PREFIX}_table/total_gain",
+    rec = tracker.runs[0]
+    assert rec.finished and not rec.failed
+    assert set(_importance_tables(rec)) == {
+        f"{TABLE_PREFIX}/weight",
+        f"{TABLE_PREFIX}/total_gain",
     }
 
-    # The summary is written before any chart is built, so D-02 is untouched
-    # even for the type whose chart blew up.
+    # The summary is written before any table is logged, so D-02 is untouched
+    # even for the type whose table failed.
     assert set(_importance_summary(rec)) == {
         f"importance_{t}/{n}" for t in IMPORTANCE_TYPES for n in IMPORTANCE_FACTORS
     }
@@ -1086,12 +1015,12 @@ def test_a_chart_that_fails_to_build_is_skipped_and_the_others_still_chart(
     assert any("'gain'" in m for m in warnings_log), warnings_log
 
 
-def test_booster_stays_nameless_and_predictions_are_unchanged(tmp_path, recorders):
+def test_booster_stays_nameless_and_predictions_are_unchanged(tmp_path, tracker):
     """Scope lock (user decision 2026-09-15): no `feature_names` reach the
     DMatrix, so the saved Booster is nameless and a fresh instance loads it
     and predicts identically."""
     factors, labels = _importance_panels(seed=54)
-    trained = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 10})
+    trained = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 10})
     test_x, _ = _test_arrays(trained)
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
@@ -1180,7 +1109,7 @@ CRITERION_ROUNDS = 300
 CRITERION_PATIENCE = 10
 
 
-def test_early_stopping_selects_the_round_minimising_val_rmse(tmp_path, recorders):
+def test_early_stopping_selects_the_round_minimising_val_rmse(tmp_path, tracker):
     """`best_iteration` is the argmin of the recorded `val-rmse` series and
     `best_score` is that minimum -- so RMSE, not the last (custom ccc) metric,
     is what `EarlyStopping` watches.
@@ -1195,13 +1124,14 @@ def test_early_stopping_selects_the_round_minimising_val_rmse(tmp_path, recorder
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         early_stopping=True,
         patience=CRITERION_PATIENCE,
         hyperparameters={"num_boost_round": CRITERION_ROUNDS},
     )
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
-    rec = recorders[0]
+    rec = tracker.runs[0]
     curve = _curve_rows(rec)
     ccc_curve = [row["val-ccc_loss"] for row, _ in curve]
     rmse_curve = [row["val-rmse"] for row, _ in curve]
@@ -1212,19 +1142,19 @@ def test_early_stopping_selects_the_round_minimising_val_rmse(tmp_path, recorder
     assert rec.summary["best_score"] == pytest.approx(rmse_curve[booster.best_iteration])
 
 
-def test_every_round_records_both_ccc_curves(tmp_path, recorders):
-    """`train-ccc_loss` / `val-ccc_loss` reach the W&B rows beside the rmse
+def test_every_round_records_both_ccc_curves(tmp_path, tracker):
+    """`train-ccc_loss` / `val-ccc_loss` reach the run's step metrics beside the rmse
     ones, on every round.
 
-    This is the proof that `_WandbEvalCallback` needed ZERO changes: it walks
+    This is the proof that `_TrackingEvalCallback` needed ZERO changes: it walks
     `evals_log` generically, so a custom metric shows up by itself. If this
     ever fails, the callback is what to look at -- and any edit to it belongs
     in a summary with a reason, not a silent fix.
     """
     factors, labels = _panels(seed=61)
-    _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 12})
+    _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 12})
 
-    rec = recorders[0]
+    rec = tracker.runs[0]
     curve = _curve_rows(rec)
     assert len(curve) == 12
     assert all({"train-ccc_loss", "val-ccc_loss"} <= set(row) for row, _ in curve)
@@ -1392,28 +1322,29 @@ def test_ccc_objective_is_zero_on_a_degenerate_column_and_never_warns():
     assert np.array_equal(hess, np.ones(3))
 
 
-def test_training_uses_the_ccc_objective_and_starts_from_the_label_mean(tmp_path, recorders):
+def test_training_uses_the_ccc_objective_and_starts_from_the_label_mean(tmp_path, tracker):
     """The saved Booster starts from the training-label mean, not xgboost's
     0.5, and fitting it drives the train ccc_loss down."""
     factors, labels = _panels(seed=72)
-    model = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 30})
+    model = _train(tmp_path, factors, labels, tracker=tracker, hyperparameters={"num_boost_round": 30})
 
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
     saved = json.loads(booster.save_config())["learner"]
     base_score = float(saved["learner_model_param"]["base_score"].strip("[]"))
-    assert recorders[0].summary["base_score"] == pytest.approx(base_score, rel=1e-5)
+    assert tracker.runs[0].summary["base_score"] == pytest.approx(base_score, rel=1e-5)
     assert abs(base_score) < 0.1
-    curve = [row["train-ccc_loss"] for row, _ in _curve_rows(recorders[0])]
+    curve = [row["train-ccc_loss"] for row, _ in _curve_rows(tracker.runs[0])]
     assert curve[-1] < 0.5 * curve[0]
     assert model._resolved_hyperparameters()["objective"] == "ccc_objective"
 
 
-def test_a_user_objective_replaces_the_ccc_objective(tmp_path, recorders):
+def test_a_user_objective_replaces_the_ccc_objective(tmp_path, tracker):
     factors, labels = _panels(seed=73)
     model = _train(
         tmp_path,
         factors,
         labels,
+        tracker=tracker,
         hyperparameters={"num_boost_round": 5, "objective": "reg:absoluteerror"},
     )
 
@@ -1421,20 +1352,20 @@ def test_a_user_objective_replaces_the_ccc_objective(tmp_path, recorders):
     saved = json.loads(booster.save_config())["learner"]
     assert saved["objective"]["name"] == "reg:absoluteerror"
     assert model._resolved_hyperparameters()["objective"] == "reg:absoluteerror"
-    assert "base_score" not in recorders[0].summary
+    assert "base_score" not in tracker.runs[0].summary
 
 
-def test_early_stopping_adds_rmse_to_a_user_eval_metric(tmp_path, recorders):
+def test_early_stopping_adds_rmse_to_a_user_eval_metric(tmp_path, tracker):
     """A user `eval_metric` without rmse still early-stops on rmse; the
     config's own dict is left untouched."""
     hyper = {"num_boost_round": 40, "eval_metric": "mae"}
     factors, labels = _panels(seed=74, signal=False)
     model = _train(
-        tmp_path, factors, labels, early_stopping=True, patience=3, hyperparameters=dict(hyper)
+        tmp_path, factors, labels, tracker=tracker, early_stopping=True, patience=3, hyperparameters=dict(hyper)
     )
 
     assert model._params["eval_metric"] == ["mae", "rmse"]
     assert model.config.hyperparameters == {**hyper, "early_stopping": True, "early_stopping_patience": 3}
     booster = joblib.load(_only_checkpoint(tmp_path / "ckpt"))
-    rmse_curve = [row["val-rmse"] for row, _ in _curve_rows(recorders[0])]
+    rmse_curve = [row["val-rmse"] for row, _ in _curve_rows(tracker.runs[0])]
     assert booster.best_iteration == int(np.argmin(rmse_curve))

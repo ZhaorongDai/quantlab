@@ -118,7 +118,6 @@ def test_volatility_rebuilds_from_its_factor_config(dataset_config, tmp_path):
 
 
 def test_a_model_trains_on_a_volatility_label(dataset_config, tmp_path, monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
     # The trailing volatility is the natural feature of a volatility model.
     trailing = _TrailingOpenVolatility(_config(dataset_config, tmp_path, 5, name="trailing"))
     model = XGBoostRegressor(

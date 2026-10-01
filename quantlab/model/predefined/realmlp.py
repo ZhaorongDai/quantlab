@@ -7,8 +7,8 @@ trains on the flattened ``(num_times * num_symbols, num_features)`` rows of
 the factor panel and predicts future returns as ``[num_times, num_symbols,
 num_labels]``. A *panel* is an ``xarray.Dataset`` indexed by ``timestamp``
 and ``symbol``. Early stopping is pytabkit's own, driven by the validation
-segment the pipeline holds out, and the stopping epoch is recorded to
-Weights and Biases (W&B, the experiment tracker) after training.
+segment the pipeline holds out, and the stopping epoch is written to the
+tracking run after training.
 
 pytabkit is itself a torch library. On macOS, torch and xgboost bundle
 clashing OpenMP runtimes, so a process that mixes them must set
@@ -22,13 +22,14 @@ from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
+from quantlab.base.tracking import TrackingRun
 from quantlab.model.library_model import Rows
 from quantlab.model.predefined._support.devices import resolve_device, torch_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks
 
 
-class _WandbEpochCallback(Callback):
-    """Log every epoch's training loss and validation error to a W&B run.
+class _TrackingEpochCallback(Callback):
+    """Log every epoch's training loss and validation error to a tracking run.
 
     A Lightning callback that pytabkit's ``TabNNModule`` receives through
     ``quantlab.model.predefined._support.tabkit.active_callbacks``. The training loss is the
@@ -42,20 +43,22 @@ class _WandbEpochCallback(Callback):
     number of epochs trained go to the summary as ``best_val_<metric>`` and
     ``epochs_trained``.
 
-    The callback reads ``head._wandb_recorder`` on each call, so a
-    deep-copied cross-validation fold logs to its own run. Any failure in
-    it is reported once as a warning and never interrupts training.
+    Any failure in it is reported once as a warning and never interrupts
+    training.
 
     Parameters
     ----------
-    head : RealMLPRegressor
-        The model whose recorder receives the rows.
+    run : TrackingRun
+        The run receiving the rows, the head's open run.
+    owner : str
+        Class name quoted in the warning.
     """
 
-    def __init__(self, head: "RealMLPRegressor"):
-        """Keep a reference to the head and reset the running totals."""
+    def __init__(self, run: TrackingRun, owner: str):
+        """Keep the run and the owner's name and reset the running totals."""
         super().__init__()
-        self._head = head
+        self._run = run
+        self._owner = owner
         self._loss_sum = 0.0
         self._loss_count = 0
         self._best: dict[str, float] = {}
@@ -78,8 +81,7 @@ class _WandbEpochCallback(Callback):
 
     def on_validation_end(self, trainer, pl_module) -> None:
         """Log the epoch's mean training loss and validation errors."""
-        recorder = self._head._wandb_recorder
-        if recorder is None or trainer.sanity_checking:
+        if trainer.sanity_checking:
             return
         try:
             epoch = int(pl_module.progress.epoch)  # already advanced past this epoch
@@ -92,20 +94,17 @@ class _WandbEpochCallback(Callback):
                 if error < best:
                     self._best[name] = error
             self._epochs = epoch
-            recorder.log(row, step=epoch)
+            self._run.log(row, step=epoch)
         except Exception as exc:  # reporting only
             self._warn_once(exc)
 
     def on_fit_end(self, trainer, pl_module) -> None:
         """Write the best validation errors and the epochs trained to the summary."""
-        recorder = self._head._wandb_recorder
-        if recorder is None:
-            return
         summary = {f"best_val_{name}": value for name, value in self._best.items()}
         if self._epochs:
             summary["epochs_trained"] = self._epochs
         if summary:
-            recorder.summary.update(summary)
+            self._run.summarize(summary)
 
     @staticmethod
     def _validation_errors(pl_module) -> dict[str, float]:
@@ -133,7 +132,7 @@ class _WandbEpochCallback(Callback):
         if not self._failed:
             self._failed = True
             logger.warning(
-                f"{self._head.class_name}: per-epoch W&B logging failed and is "
+                f"{self._owner}: per-epoch tracking failed and is "
                 f"off for the rest of this fit (training continues): {exc}"
             )
 
@@ -164,7 +163,7 @@ class RealMLPRegressor(TabkitRegressor):
     is already rolled back to the best epoch, so the ``.joblib`` checkpoint
     is the best model. The stopping epoch is written to the run summary as
     ``stop_epoch``. Without a usable validation segment a warning is logged
-    and all ``n_epochs`` are trained. Every W&B run also gets a per-epoch
+    and all ``n_epochs`` are trained. Every tracking run also gets a per-epoch
     curve: the mean training loss (``train-loss``) and the validation
     error pytabkit stops on (``val-rmse``), at ``step=epoch``, plus
     ``best_val_rmse`` and ``epochs_trained`` in the summary, through a
@@ -261,7 +260,7 @@ class RealMLPRegressor(TabkitRegressor):
         The validation rows are passed to pytabkit when there are any.
         """
         self._warn_without_validation(val_rows)
-        callbacks = [] if self._wandb_recorder is None else [_WandbEpochCallback(self)]
+        callbacks = [_TrackingEpochCallback(self._run, self.class_name)]
         with active_callbacks(lightning_callbacks=callbacks):
             if val_rows is None:
                 self.model.fit(train_rows.x, train_rows.y)
@@ -270,10 +269,10 @@ class RealMLPRegressor(TabkitRegressor):
                     train_rows.x, train_rows.y, X_val=val_rows.x, y_val=val_rows.y
                 )
 
-        if self._wandb_recorder is not None and val_rows is not None:
+        if val_rows is not None:
             stop_epoch = self._stop_epoch()
             if stop_epoch is not None:
-                self._wandb_recorder.summary.update({"stop_epoch": stop_epoch})
+                self._run.summarize({"stop_epoch": stop_epoch})
 
     def _stop_epoch(self) -> int | None:
         """Return the epoch pytabkit stopped at, or None if it did not report one.

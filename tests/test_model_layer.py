@@ -17,8 +17,7 @@ remains here:
      array and raised on every read).
 
 Everything here is synthetic, CPU-only and offline. `FakePanel` stands in for
-the whole KunQuant + zarr stack, and the autouse `_offline_wandb` fixture sets
-`WANDB_MODE=disabled`.
+the whole KunQuant + zarr stack, and the default config tracks nowhere.
 """
 
 import numpy as np
@@ -48,15 +47,6 @@ TRAIN_END = np.datetime_as_string(TIMES[99], unit="D")
 TEST_START = np.datetime_as_string(TIMES[100], unit="D")
 TEST_END = np.datetime_as_string(TIMES[N_TIMES - 1], unit="D")
 N_TRAIN_TIMES = 100
-
-
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    """`_init_wandb` calls `wandb.init` unconditionally and `ModelConfig` has no
-    opt-out flag, so the only bypass is the environment variable documented in
-    `example/model.md`."""
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
 
 
 class FakePanel:

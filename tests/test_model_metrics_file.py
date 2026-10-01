@@ -2,14 +2,14 @@
 
 `train()` writes the `train_*` / `val_*` / `test_*` metrics of the first label
 to `metrics.json` beside the checkpoint's `config.json`, so a run's scores
-survive without W&B. `train_cv()` keeps every split's metrics in each fold
+survive without a tracker. `train_cv()` keeps every split's metrics in each fold
 entry of `cv_folds.json` and adds a top-level `cv_mean` block, the fold means
-of every metric, which the `{cls}_cv_summary` W&B run also receives.
+of every metric, which the `{cls}_cv_summary` tracking run also receives.
 
 What turns this file red:
 
-- `metrics.json` is missing, sits elsewhere, or differs from what the W&B
-  summary received;
+- `metrics.json` is missing, sits elsewhere, or differs from what the
+  tracking run's summary received;
 - a run without a validation segment writes `val_*` keys;
 - a fold entry lacks a split, or `cv_mean` is not the fold mean of every
   metric, or differs from the summary run;
@@ -31,6 +31,7 @@ from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
+from tests.tracking_fixtures import RecordingTracker
 
 N_TIMES = 60
 N_SYMBOLS = 4
@@ -43,32 +44,9 @@ METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "ran
 SPLITS = ("train", "val", "test")
 
 
-class FakeRecorder:
-    """Records what the model writes to a W&B run."""
-
-    def __init__(self, name: str):
-        self.name = name
-        self.summary: dict = {}
-        self.finished = 0
-
-    def log(self, data, step=None):
-        pass
-
-    def finish(self):
-        self.finished += 1
-
-
 @pytest.fixture
-def recorders(monkeypatch) -> list[FakeRecorder]:
-    created: list[FakeRecorder] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        recorder = FakeRecorder(experiment_name)
-        created.append(recorder)
-        self._wandb_recorder = recorder
-
-    monkeypatch.setattr(BaseModel, "_init_wandb", fake_init_wandb)
-    return created
+def tracker() -> RecordingTracker:
+    return RecordingTracker()
 
 
 class FakePanel:
@@ -148,20 +126,21 @@ def _strict_json(path: Path):
 
 
 @pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
-def test_train_writes_metrics_json_equal_to_the_wandb_summary(tmp_path, recorders, cls):
-    checkpoint = _model(tmp_path, cls=cls).train()
+def test_train_writes_metrics_json_equal_to_the_run_summary(tmp_path, tracker, cls):
+    checkpoint = _model(tmp_path, cls=cls, tracker=tracker).train()
 
     path = checkpoint.parent / "metrics.json"
     assert (checkpoint.parent / "config.json").is_file()
     metrics = _strict_json(path)
     assert set(metrics) == {f"{s}_{k}" for s in SPLITS for k in METRIC_KEYS}
-    (run,) = recorders
-    assert metrics == to_jsonable(run.summary)
+    (run,) = tracker.runs
+    # The summary keeps finite values only; metrics.json writes the rest as null.
+    assert {k: v for k, v in metrics.items() if v is not None} == to_jsonable(run.summary)
 
 
 @pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
 def test_metrics_json_has_no_val_keys_without_a_validation_segment(
-    tmp_path, recorders, cls
+    tmp_path, cls
 ):
     checkpoint = _model(tmp_path, cls=cls, val_size=0.0).train()
 
@@ -169,7 +148,7 @@ def test_metrics_json_has_no_val_keys_without_a_validation_segment(
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "test") for k in METRIC_KEYS}
 
 
-def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path, recorders):
+def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path):
     checkpoint = _model(tmp_path, cls=NaNMetricLibraryHead).train()
 
     metrics = _strict_json(checkpoint.parent / "metrics.json")
@@ -178,8 +157,8 @@ def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path, recorders):
         assert metrics[f"{split}_finite_metric"] == 1.5
 
 
-def test_cv_manifest_v2_holds_every_split_and_the_cv_mean_block(tmp_path, recorders):
-    model = _model(tmp_path)
+def test_cv_manifest_v2_holds_every_split_and_the_cv_mean_block(tmp_path, tracker):
+    model = _model(tmp_path, tracker=tracker)
 
     results = model.train_cv(train_periods=20)
 
@@ -200,6 +179,8 @@ def test_cv_manifest_v2_holds_every_split_and_the_cv_mean_block(tmp_path, record
             values = [r[key] for r in results if np.isfinite(r[key])]
             assert cv_mean[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
 
-    summary_run = recorders[-1]
+    summary_run = tracker.runs[-1]
     assert summary_run.name == "StubLibraryHead_cv_summary"
-    assert cv_mean == to_jsonable(summary_run.summary)
+    assert {k: v for k, v in cv_mean.items() if v is not None} == to_jsonable(
+        summary_run.summary
+    )

@@ -30,6 +30,8 @@ import os
 import random
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from itertools import chain
 from pathlib import Path
@@ -37,13 +39,12 @@ from typing import Self
 
 import numpy as np
 import pandas as pd
-import wandb
-import wandb.sdk
 import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
+from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
@@ -156,7 +157,9 @@ class BaseModel(ABC):
         self._emitted_load_warnings: set[str] = set()
 
         self.data_backend = XrBackend()
-        self._wandb_recorder: wandb.sdk.wandb_run.Run = None  # type: ignore
+        # The open tracking run while training, a NullRun otherwise, so heads
+        # write to it without checking that one is open.
+        self._run: TrackingRun = NullRun()
         # Per-split (timestamps, ic, rank_ic) series of the current fit, filled
         # by `_compute_metrics` and written by `_write_evaluation_files`.
         self._ic_series: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -705,7 +708,7 @@ class BaseModel(ABC):
         True
         """
         # Imported here: the loaders import model classes by dotted path.
-        from quantlab.utils.module import load_factor_from_config
+        from quantlab.utils.module import get_cls_from_path, load_factor_from_config
 
         config = copy.deepcopy(config)
         # `resolved_hyperparameters` (what the library actually trained with)
@@ -716,6 +719,9 @@ class BaseModel(ABC):
         config.pop(cls.TRAINED_ON_KEY, None)
         config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
         config["labels"] = [load_factor_from_config(f) for f in config["labels"]]
+        config["tracker"] = get_cls_from_path(config["tracker"]["name"]).from_config(
+            config["tracker"]
+        )
         return cls(cls.config_cls(**config))
 
     @property
@@ -1290,7 +1296,7 @@ class BaseModel(ABC):
             f"{self.class_name} does not implement _predict_panel_array"
         )
 
-    def _new_project_name(self) -> str:
+    def _new_trial_name(self) -> str:
         """Return a fresh ``{class}_trial_{%Y%m%d_%H%M%S_%f}`` directory name.
 
         The name is guaranteed not to exist under ``model_save_dir`` yet: if
@@ -1311,7 +1317,7 @@ class BaseModel(ABC):
 
         A new trial directory is created under ``model_save_dir``, and
         ``_train_into`` trains into its ``{class}_total`` subdirectory under a
-        wandb run of that name in a project named after the trial directory.
+        tracking run of that name, grouped by the trial directory's name.
         The metrics ``_fit`` returns are written to
         ``metrics.json`` beside the checkpoint's ``config.json``, with NaN and
         inf as null; a variant that returns no metrics writes no file.
@@ -1338,11 +1344,11 @@ class BaseModel(ABC):
         ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
         """
         self._check_hyperparameters()
-        project_name = self._new_project_name()
+        trial = self._new_trial_name()
         experiment_name = f"{self.class_name}_total"
         checkpoint, _ = self._train_into(
-            Path(self.config.model_save_dir) / project_name / experiment_name,
-            project_name=project_name,
+            Path(self.config.model_save_dir) / trial / experiment_name,
+            group=trial,
             experiment_name=experiment_name,
         )
         return checkpoint
@@ -1350,7 +1356,7 @@ class BaseModel(ABC):
     def _train_into(
         self,
         run_dir: Path | str,
-        project_name: str,
+        group: str,
         experiment_name: str,
         *,
         write_metrics: bool = True,
@@ -1359,8 +1365,9 @@ class BaseModel(ABC):
 
         The random generators are reseeded from ``config.random_seed`` first,
         so models trained one after another in one process do not share
-        random state. A wandb run named ``experiment_name`` is opened in the
-        wandb project ``project_name``, and the variant's ``_fit`` trains,
+        random state. A tracking run named ``experiment_name`` is opened in
+        the group ``group`` (see ``_tracking_run``), and the variant's
+        ``_fit`` trains,
         evaluates and writes the checkpoint ``{experiment_name}{checkpoint_suffix}``
         and its ``config.json`` into ``run_dir``. When ``_fit`` returns
         metrics, ``metrics.json`` (only with ``write_metrics``, NaN and inf as
@@ -1374,10 +1381,10 @@ class BaseModel(ABC):
         run_dir : Path or str
             Directory that receives the checkpoint and the evaluation files.
             It must not exist yet; it is created with its parents.
-        project_name : str
-            wandb project of the run.
+        group : str
+            Tracking group of the run, the trial directory's name.
         experiment_name : str
-            wandb run name, also the checkpoint file's stem.
+            Tracking run name, also the checkpoint file's stem.
         write_metrics : bool, default True
             Write ``metrics.json``; ``train_cv`` folds keep their metrics in
             ``cv_folds.json`` instead.
@@ -1396,20 +1403,19 @@ class BaseModel(ABC):
         checkpoint = (
             Path(run_dir) / f"{experiment_name}{self.checkpoint_suffix}"
         ).absolute()
-        self._init_wandb(
-            project_name=project_name,
-            experiment_name=experiment_name,
-        )
         self._ic_series = {}
-        metrics = self._fit(checkpoint)
-        if metrics is not None:
-            if write_metrics:
-                write_json_atomically(
-                    checkpoint.parent / self.METRICS_FILENAME,
-                    to_jsonable(metrics),
-                    indent=2,
-                )
-            self._write_evaluation_files(checkpoint.parent)
+        with self._tracking_run(group, experiment_name):
+            metrics = self._fit(checkpoint)
+            # Written before the run finishes, so a tracker failing to finish
+            # it cannot cost the files.
+            if metrics is not None:
+                if write_metrics:
+                    write_json_atomically(
+                        checkpoint.parent / self.METRICS_FILENAME,
+                        to_jsonable(metrics),
+                        indent=2,
+                    )
+                self._write_evaluation_files(checkpoint.parent)
         return checkpoint, metrics
 
     #: Name of the per-bar IC series file written beside ``metrics.json``.
@@ -1494,7 +1500,7 @@ class BaseModel(ABC):
         """Validate the reserved hyperparameters this variant reads.
 
         Called first by ``collect``, ``train`` and ``train_cv``, before any
-        data is read or any W&B run or checkpoint directory is opened. The default checks nothing.
+        data is read or any tracking run or checkpoint directory is opened. The default checks nothing.
 
         Raises
         ------
@@ -1727,7 +1733,7 @@ class BaseModel(ABC):
             )
         return {**fold, "train_end": np.datetime_as_string(usable[-1])}
 
-    def _train_one_fold(self, fold: dict, record: dict, project_name: str) -> dict:
+    def _train_one_fold(self, fold: dict, record: dict, trial: str) -> dict:
         """Train one fold on this instance and return its result dict.
 
         ``fold`` holds the dates before the purge, which ``_fit`` purges
@@ -1749,8 +1755,8 @@ class BaseModel(ABC):
 
         experiment_name = f"{self.class_name}_cv_fold_{fold['fold']}"
         checkpoint, metrics = self._train_into(
-            Path(self.config.model_save_dir) / project_name / experiment_name,
-            project_name=project_name,
+            Path(self.config.model_save_dir) / trial / experiment_name,
+            group=trial,
             experiment_name=experiment_name,
             write_metrics=False,
         )
@@ -1835,7 +1841,7 @@ class BaseModel(ABC):
         window loses its last L bars, L being the largest
         ``lookahead_bars()`` among the labels, so no fitted label reads a
         test-period bar. Every fold trains on
-        its own dates, gets its own wandb run and its own checkpoint directory
+        its own dates, gets its own tracking run and its own checkpoint directory
         ``{class}_cv_fold_{i}/`` inside one trial directory. The fold means of
         every ``train_*`` / ``val_*`` / ``test_*`` metric, keyed
         ``cv_mean_{key}``, plus ``cv_n_folds`` are written to the summary of a
@@ -1907,27 +1913,21 @@ class BaseModel(ABC):
         folds, records = self._cv_plan(
             train_periods, expanding, test_periods, self._purge_bars(), self.class_name
         )
-        project_name = self._new_project_name()
+        trial = self._new_trial_name()
 
         results = [
-            self._train_one_fold(fold, record, project_name)
+            self._train_one_fold(fold, record, trial)
             for fold, record in zip(folds, records)
         ]
 
         means = self._cv_mean_metrics(results)
         if means:
-            self._init_wandb(
-                project_name=project_name,
-                experiment_name=f"{self.class_name}_cv_summary",
-            )
-            if self._wandb_recorder is not None:
-                self._wandb_recorder.summary.update(means)
-                self._wandb_recorder.finish()
+            self._track_cv_summary(trial, means)
 
         # The manifest is a converted copy; `results` is returned unchanged.
         write_json_atomically(
             Path(self.config.model_save_dir)
-            / project_name
+            / trial
             / self.CV_FOLDS_FILENAME,
             {
                 "format_version": self.CV_FOLDS_FORMAT_VERSION,
@@ -1961,15 +1961,32 @@ class BaseModel(ABC):
                 f"Train x shape mismatch: [num_times, {num_symbols}, {num_features}] vs {data.shape}"
             )
 
-    def _init_wandb(self, project_name: str, experiment_name: str):
-        """Open a wandb run for this experiment with ``get_config()`` as its config."""
-        self._wandb_recorder = wandb.init(
-            project=project_name, name=experiment_name, config=self.get_config()
-        )
+    @contextmanager
+    def _tracking_run(self, group: str, name: str) -> Iterator[TrackingRun]:
+        """Open a run through ``config.tracker`` and hold it in ``_run`` while open.
+
+        The project is the class name unless the tracker sets its own, and
+        the run's config is ``get_config()``. The run is finished when the
+        block is left, also when it raises, and ``_run`` goes back to a
+        ``NullRun``.
+        """
+        with self.config.tracker.start_run(
+            project=self.class_name, group=group, name=name, config=self.get_config()
+        ) as run:
+            self._run = run
+            try:
+                yield run
+            finally:
+                self._run = NullRun()
+
+    def _track_cv_summary(self, group: str, means: dict) -> None:
+        """Write the mean fold metrics to a ``{class}_cv_summary`` run of the trial."""
+        with self._tracking_run(group, f"{self.class_name}_cv_summary") as run:
+            run.summarize(means)
 
     @abstractmethod
     def _fit(self, checkpoint: Path) -> dict | None:
-        """Train, evaluate and save once, then finish the current wandb run.
+        """Train, evaluate and save once, writing metrics to the open run ``_run``.
 
         The checkpoint is saved to ``checkpoint``, with its ``config.json``
         beside it. Returns the metrics of every evaluated
