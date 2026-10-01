@@ -277,6 +277,26 @@ Traceback (most recent call last):
 ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of ['cs_rank', 'cs_zscore'] or unset, got 'rank'
 ```
 
+#### A tested configuration for the US equity examples
+
+The library defaults (raw label, CCC objective, `max_depth` 6) leave an XGBoost return model on 5-bar US equity returns with almost no signal: early stopping on the validation RMSE of raw returns stops after the first round. A configuration was chosen by a fixed protocol on the Nasdaq-100 (Alpha101 + Alpha158 factors, cross-sectional z-score). Candidates were scored by the stitched out-of-sample rank IC of an expanding walk-forward CV over 2012-2022 (`train_cv(756, expanding=True, test_periods=126)`, 15 folds tested 2015-01 to 2022-07), the span by the information ratio of `run_cv` with the mean-variance constructor, and the chosen configuration was then scored once on a 2023-2024 holdout. The search crossed the training target (`cs_rank`, `cs_zscore`), `max_depth` (3, 5), `min_child_weight` (50, 200), `eta` (0.02, 0.05) and the span (5, 20 bars). It chose:
+
+```python
+hyperparameters = {
+    "training_target": "cs_rank", "objective": "reg:squarederror",
+    "max_depth": 3, "min_child_weight": 200, "eta": 0.05,
+    "num_boost_round": 1000, "early_stopping": True, "early_stopping_patience": 50,
+}
+# with a 20-bar Return label (and a 20-bar Volatility label beside it for a mean-variance portfolio)
+```
+
+| | CV rank IC (2015-2022) | holdout rank IC / ICIR (2023-2024) | holdout mean-variance IR | the defaults' holdout IR |
+|---|---|---|---|---|
+| Nasdaq-100 | 0.018 | 0.016 / 0.10 | -1.50 | -1.64 |
+| S&P 500 | 0.000 | -0.000 / -0.00 | -1.34 | -1.42 |
+
+The training target mattered most: on the Nasdaq-100 every `cs_rank` candidate beat every `cs_zscore` one, and the tree parameters moved the result by less than the noise. On the Nasdaq-100 the signal held on the holdout, so `examples/wrds_us_equity/nasdaq100_xgb.py` uses this configuration. On the S&P 500 the same configuration has no signal in the CV or on the holdout, so the S&P 500 and whole-market examples keep the defaults. Neither result makes the long-only mean-variance portfolio beat its index: with a beta of 0.4 to 0.6 it trailed QQQ and SPY by 10 to 18 points a year over 2023-2024.
+
 ### Cross-validate over walk-forward folds
 
 `train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.

@@ -60,8 +60,9 @@ WORK = DATA_ROOT / "data" / "pipeline" / "wrds_nasdaq100"
 START, END = "2012-01-01", "2024-12-31"
 TRAIN_START, TRAIN_END = "2012-01-01", "2019-12-31"
 TEST_START, TEST_END = "2020-01-01", "2024-12-31"
-#: Label horizon in bars: open-to-open return from t+1 to t+1+HORIZON.
-HORIZON = 5
+#: Label horizon in bars: open-to-open return from t+1 to t+1+HORIZON. 20 is
+#: the span a walk-forward selection on 2012-2022 chose (see docs/model.md).
+HORIZON = 20
 #: Columns the alpha libraries read; ``ret`` is kept for the label's dataset.
 ALPHA_COLUMNS = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
 #: Weights & Biases: "online" (needs ``wandb login``), "offline" or "disabled".
@@ -159,11 +160,17 @@ def build_model() -> XGBoostRegressor:
         test_start=TEST_START, test_end=TEST_END,
         val_size=0.2,
         hyperparameters={
+            # Fit each bar's cross-sectional rank of the label instead of the
+            # raw return, whose outliers stop training after one round; the
+            # metrics still score the raw return.
+            "training_target": "cs_rank",
             # Early stopping on the trailing val_size of the training window;
-            # patience counts boosting rounds. The head reads these two keys itself.
+            # patience counts boosting rounds. The head reads these keys itself.
             "early_stopping": True, "early_stopping_patience": 50,
-            # xgb.train parameters; early-stopped on the validation RMSE.
-            "num_boost_round": 1000, "eta": 0.05, "max_depth": 6, "nthread": 8,
+            # xgb.train parameters: squared error on the rank, shallow trees
+            # with large leaves; early-stopped on the validation RMSE.
+            "objective": "reg:squarederror", "num_boost_round": 1000,
+            "eta": 0.05, "max_depth": 3, "min_child_weight": 200, "nthread": 8,
         },
     ))
 

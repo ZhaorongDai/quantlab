@@ -277,6 +277,26 @@ Traceback (most recent call last):
 ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of ['cs_rank', 'cs_zscore'] or unset, got 'rank'
 ```
 
+#### 美股示例的一套经过检验的配置
+
+库的默认设置（原始标签、CCC 目标、`max_depth` 6）下，XGBoost 收益模型在美股 5 bar 收益上几乎没有信号：提前停止盯的是原始收益的验证 RMSE，第一轮之后就停了。我们按一套固定的协议在纳指 100 上选了一套配置（Alpha101 + Alpha158 因子，截面 z-score）：候选按 2012-2022 扩张式 walk-forward CV 的拼接样本外 rank IC 打分（`train_cv(756, expanding=True, test_periods=126)`，15 折，测试段 2015-01 到 2022-07），span 按 `run_cv` 配合均值方差构造器的信息比率选，选定的配置最后在 2023-2024 的 holdout 上只看一次。搜索范围是训练目标（`cs_rank`、`cs_zscore`）、`max_depth`（3、5）、`min_child_weight`（50、200）、`eta`（0.02、0.05）与 span（5、20 个 bar）的组合。选出的配置是：
+
+```python
+hyperparameters = {
+    "training_target": "cs_rank", "objective": "reg:squarederror",
+    "max_depth": 3, "min_child_weight": 200, "eta": 0.05,
+    "num_boost_round": 1000, "early_stopping": True, "early_stopping_patience": 50,
+}
+# 配 20 bar 的 Return 标签（均值方差组合再配一个 20 bar 的 Volatility 标签）
+```
+
+| | CV rank IC（2015-2022） | holdout rank IC / ICIR（2023-2024） | holdout 均值方差 IR | 默认设置的 holdout IR |
+|---|---|---|---|---|
+| 纳指 100 | 0.018 | 0.016 / 0.10 | -1.50 | -1.64 |
+| S&P 500 | 0.000 | -0.000 / -0.00 | -1.34 | -1.42 |
+
+影响最大的是训练目标：在纳指上每个 `cs_rank` 候选都胜过每个 `cs_zscore` 候选，树参数带来的差别小于噪声。纳指上的信号在 holdout 上保持住了，所以 `examples/wrds_us_equity/nasdaq100_xgb.py` 用这套配置；S&P 500 上同一配置在 CV 和 holdout 上都没有信号，所以 S&P 500 与全市场的示例保留默认设置。两个结果都没能让只做多的均值方差组合跑赢指数：它的 beta 只有 0.4 到 0.6，2023-2024 年每年落后 QQQ 和 SPY 10 到 18 个百分点。
+
 ### walk-forward 交叉验证
 
 `train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。

@@ -14,6 +14,8 @@
 
 `sp500_xgb_mvo.py` 是指数增强 pipeline：训练两个 XGBoost 模型，一个预测 5 根 bar 的 `Return` 标签，一个预测 5 根 bar 的 `Volatility` 标签，组成一个 `ModelEnsemble`，回测时在当天的指数成分股上用 `MeanVarianceOptimizer` 代替 TopN，与 SPY 对比：Grinold 预期收益、预测波动率夹 Ledoit-Wolf 相关性、换手惩罚，候选池 200 个标的；见 [docs/zh-CN/portfolio.md](../../docs/zh-CN/portfolio.md)。
 
+`nasdaq100_xgb.py` 用 20 bar 的标签、`training_target="cs_rank"` 和浅而强正则的树训练：这是在纳指 100 上用 walk-forward 选出、并经 2023-2024 holdout 确认的配置（rank IC 约 0.016）。其他 XGBoost 示例保留库的默认设置：S&P 500 上同一配置没有信号。见 [docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“美股示例的一套经过检验的配置”。
+
 模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）、`RealMLPRegressor`（pytabkit 调优默认参数的 MLP），以及两个在每个 bar 的股票截面上学习的 torch 模型：`GATsRegressor`（Qlib 的 GATs：先用 LSTM 读每只股票最近 20 根 bar，再在当根 bar 的股票之间做注意力）和 `MASTERRegressor`（MASTER：SPY、QQQ、IWM 的市场特征对股票特征做门控，再在每只股票最近 8 根 bar 之内和当根 bar 的股票之间做注意力）；[docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“在截面上训练 GATs”和“用市场特征训练 MASTER”两节分别介绍了它们。每个模型 pipeline 都跑同样的五步：
 
 1. **数据读取**：读取已转换的 CRSP 数据仓库及其成分股面板，写出两个派生仓库（`prices`、`members`）。
