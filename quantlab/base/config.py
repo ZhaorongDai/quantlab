@@ -930,11 +930,17 @@ class ModelConfig(_FrozenConfig):
     ``early_stopping``, ``early_stopping_patience``
         The library's native early stopping in the shipped library heads;
         default off and 5 rounds (or the library's own unit).
+    ``training_target``
+        A ``LibraryModel``'s training target: ``"cs_rank"`` or
+        ``"cs_zscore"``, applied per bar; unset trains on the raw label.
+        Set, ``label_scales`` is ``"standardized"``; metrics still read the
+        raw label.
     ``batch_size``, ``num_workers``, ``panel_device``, ``panel_dtype``
         Reserved for the torch data loader and training panel.
 
-    ``_init_model`` receives the whole dict, reserved keys included, so a
-    head never splats it into a network or a library constructor; it reads
+    A ``LibraryModel``'s ``_init_model`` receives the dict without the
+    library keys above. A ``TorchModel``'s receives the whole dict, reserved
+    keys included, so a torch head never splats it into a network; it reads
     its own keys by name, or drops the reserved ones with
     ``BaseModel.head_hyperparameters``.
 

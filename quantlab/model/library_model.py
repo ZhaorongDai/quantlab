@@ -9,7 +9,7 @@ stopping. Checkpoints are ``.joblib`` files written with joblib. Shipped heads l
 
 from abc import abstractmethod
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
 import joblib
 import numpy as np
@@ -18,8 +18,14 @@ from loguru import logger
 
 from quantlab.base.model import LIBRARY_RESERVED_HYPERPARAMETERS, BaseModel
 from quantlab.model.torch_data import TrainingPanel
+from quantlab.model.torch_training import cs_rank_norm, cs_zscore
 from quantlab.model.training_target import TrainingTargetMixin
 from quantlab.utils.timer import Timer
+
+
+#: The accepted values of ``hyperparameters["training_target"]`` and the
+#: per-bar cross-sectional transform each one applies.
+TRAINING_TARGETS = {"cs_rank": cs_rank_norm, "cs_zscore": cs_zscore}
 
 
 class Rows(NamedTuple):
@@ -75,10 +81,19 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
     missing-value handling decides what they mean. Each row carries its cell
     in ``where`` (see ``Rows``).
 
+    ``hyperparameters["training_target"]`` picks the training target without
+    a subclass: ``"cs_rank"`` (``cs_rank_norm``) or ``"cs_zscore"``
+    (``cs_zscore``), applied on the training, validation and test bars
+    alike, so early stopping watches the validation loss on the training
+    target; unset trains on the raw label. ``label_scales`` then reports
+    ``"standardized"`` for every label. A head that overrides
+    ``_transform_target`` itself ignores the setting.
+
     A head implements three hooks: ``_init_model``, ``_fit_model`` and
     ``_forward``. ``_transform_feature`` (inf to NaN), ``_transform_target``
-    (the raw label), ``_loss`` (MSE), ``_resolved_hyperparameters`` and the
-    inherited ``_compute_metrics`` have defaults that may be overridden.
+    (``training_target``, else the raw label), ``_loss`` (MSE),
+    ``_resolved_hyperparameters`` and the inherited ``_compute_metrics``
+    have defaults that may be overridden.
     ``{split}_loss`` is ``_loss`` on the training target per bar, averaged
     over bars; the other metrics score the raw first label. Checkpoints are
     ``.joblib`` files written with ``joblib.dump``; they are pickles, so only
@@ -135,6 +150,68 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         """
         return int(self.config.hyperparameters.get("early_stopping_patience", 5))
 
+    @property
+    def training_target(self) -> str | None:
+        """``hyperparameters["training_target"]``, None when unset.
+
+        Raises
+        ------
+        ValueError
+            If it is set to anything but ``"cs_rank"`` or ``"cs_zscore"``.
+
+        Examples
+        --------
+        >>> head.training_target is None
+        True
+        """
+        hyperparameters = self.config.hyperparameters
+        if "training_target" not in hyperparameters:
+            return None
+        value = hyperparameters["training_target"]
+        if not isinstance(value, str) or value not in TRAINING_TARGETS:
+            raise ValueError(
+                f"{self.class_name}: hyperparameters['training_target'] must be one "
+                f"of {sorted(TRAINING_TARGETS)} or unset, got {value!r}"
+            )
+        return value
+
+    def _check_hyperparameters(self) -> None:
+        """Refuse an invalid ``training_target``."""
+        self.training_target
+
+    def collect(self) -> Self:
+        """Validate the hyperparameters, then ``BaseModel.collect``.
+
+        A typo in ``training_target`` fails before any data is read.
+
+        Raises
+        ------
+        ValueError
+            If a hyperparameter this variant reads is invalid.
+
+        Examples
+        --------
+        >>> head.collect() is head
+        True
+        """
+        self._check_hyperparameters()
+        return super().collect()
+
+    def _transform_target(self, y: torch.Tensor, training: bool):
+        """Apply ``training_target`` to one bar's labels, or keep them raw.
+
+        The transform runs on every bar, whatever ``training`` says.
+        """
+        transform = TRAINING_TARGETS.get(self.training_target)
+        return (y if transform is None else transform(y)), None
+
+    def _standardizes_target(self) -> bool:
+        """True with a ``training_target`` or a class-level ``_transform_target``."""
+        return (
+            self.training_target is not None
+            or type(self)._transform_target is not LibraryModel._transform_target
+        )
+
     @abstractmethod
     def _init_model(
         self, num_features: int, num_labels: int, hyperparameters: dict
@@ -144,8 +221,10 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         Tree libraries often build the real model only inside ``_fit_model``,
         in which case this may just resolve the hyperparameters and return
         None. ``load()`` does not call it: the checkpoint holds the whole
-        model. ``hyperparameters`` holds the reserved keys too; pass it
-        through ``self.head_hyperparameters`` before handing it to a library.
+        model. ``hyperparameters`` is the head's own share of
+        ``config.hyperparameters``: the keys this variant reads itself
+        (``reserved_hyperparameters``) are already removed, so it can go to
+        the library as it is.
         """
 
     @abstractmethod
@@ -351,7 +430,7 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         self.model = self._init_model(
             num_features=self.num_factors,
             num_labels=self.num_labels,
-            hyperparameters=config.hyperparameters,
+            hyperparameters=self.head_hyperparameters(config.hyperparameters),
         )
         resolved = self._resolved_hyperparameters()
         if resolved is not None and self._wandb_recorder is not None:

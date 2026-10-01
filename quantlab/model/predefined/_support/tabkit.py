@@ -38,9 +38,9 @@ class TabkitRegressor(LibraryModel):
     head's ``DEFAULT_PARAMS``, then ``random_state`` from
     ``config.random_seed``, then the keys ``_early_stopping_params`` derives
     from ``hyperparameters["early_stopping"]``, then the user's dict without
-    the early-stopping keys the base class reads (``head_hyperparameters``),
-    which wins and is never modified. An unknown key raises ``TypeError`` from pytabkit at
-    ``_init_model``. The merged dict is recorded under
+    the keys ``LibraryModel`` reads itself (the early-stopping keys and
+    ``training_target``), which wins and is never modified. An unknown key
+    raises ``TypeError`` from pytabkit at ``_init_model``. The merged dict is recorded under
     ``resolved_hyperparameters`` in the checkpoint's ``config.json`` and in
     the run config.
 
@@ -93,17 +93,17 @@ class TabkitRegressor(LibraryModel):
         return {}
 
     def _resolve_params(self, hyperparameters: dict) -> dict:
-        """Merge defaults, seed, early-stopping keys and user overrides.
+        """Merge defaults, seed, early-stopping keys and the head's hyperparameters.
 
-        The early-stopping keys (``reserved_hyperparameters``) are left out
-        of the user's dict. The result is stored on ``self._params`` and returned;
-        the user's dict is copied, never modified.
+        ``hyperparameters`` is what ``LibraryModel`` hands ``_init_model``,
+        its own keys already removed. The result is stored on
+        ``self._params`` and returned; the dict given is copied, never modified.
         """
         self._params = {
             **self.DEFAULT_PARAMS,
             "random_state": self.config.random_seed,
             **self._early_stopping_params(),
-            **self.head_hyperparameters(hyperparameters),
+            **hyperparameters,
         }
         return dict(self._params)
 

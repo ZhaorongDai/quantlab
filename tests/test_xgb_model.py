@@ -526,6 +526,43 @@ def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
     assert metrics["test_mse"] > 0.1
 
 
+def test_a_cs_rank_training_target_trains_loads_and_never_reaches_xgb_train(
+    tmp_path, recorders, monkeypatch
+):
+    """Smoke test of `hyperparameters["training_target"]` (issue #95): train,
+    save, load and predict; the scale is standardized, the key stays in
+    `config.json` and out of the parameters `xgb.train` receives."""
+    import quantlab.model.predefined.xgb as xgb_module
+
+    seen = []
+    train = xgb_module.xgb.train
+
+    def spy(params, *args, **kwargs):
+        seen.append(dict(params))
+        return train(params, *args, **kwargs)
+
+    monkeypatch.setattr(xgb_module.xgb, "train", spy)
+    hyper = {"num_boost_round": 20, "training_target": "cs_rank"}
+    factors, labels = _panels(seed=24)
+    trained = _train(tmp_path, factors, labels, hyperparameters=dict(hyper))
+
+    assert len(seen) == 1 and "training_target" not in seen[0]
+    checkpoint = _only_checkpoint(tmp_path / "ckpt")
+    saved = json.loads((checkpoint.parent / "config.json").read_text())
+    assert saved["hyperparameters"] == hyper
+    assert "training_target" not in saved["resolved_hyperparameters"]
+    assert trained.label_scales == {"ret_a": "standardized"}
+
+    fresh_factors, fresh_labels = _panels(seed=24)
+    fresh = XGBoostRegressor(
+        _config(tmp_path, fresh_factors, fresh_labels, save_dir="unused", hyperparameters=hyper)
+    )
+    fresh.load(checkpoint)
+    test_x, _ = _test_arrays(trained)
+    assert fresh.label_scales == {"ret_a": "standardized"}
+    assert np.array_equal(fresh.predict(test_x), trained.predict(test_x))
+
+
 def test_fresh_instance_loads_and_predicts_identically(tmp_path, recorders):
     factors, labels = _panels(seed=22)
     trained = _train(tmp_path, factors, labels, hyperparameters={"num_boost_round": 20})

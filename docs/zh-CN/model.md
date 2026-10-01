@@ -177,7 +177,7 @@ IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cr
 {'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
 ```
 
-收益标签，以及模型头按标准化尺度预测的波动率标签（即重写了 `_transform_target` 的模型头），都不会有这两项；IC 系列指标对所有标签照常报告。
+收益标签，以及模型头按标准化尺度预测的波动率标签（设置了 `training_target`，或重写了 `_transform_target` 的模型头），都不会有这两项；IC 系列指标对所有标签照常报告。
 
 ### IC 序列与保存的预测
 
@@ -229,11 +229,12 @@ True
 | `lr` | `TorchModel`：默认 `_init_optim` 的学习率 | `1e-3`（`GATsRegressor` `1e-4`，`MASTERRegressor` `1e-5`） |
 | `early_stopping` | 自带的库模型头：开启库自带的提前停止 | `False` |
 | `early_stopping_patience` | 自带的库模型头：容忍多少轮（或库自己的单位）没有改善 | 5 |
+| `training_target` | `LibraryModel`：库拟合的逐 bar 截面目标，`"cs_rank"` 或 `"cs_zscore"`；其他值在 `collect()` 或训练开始时抛出 `ValueError`，此时还没有读取数据、也没有开始拟合（见“在截面目标上训练”） | 不设置：原始标签 |
 | `batch_size`、`num_workers` | `TorchModel`：默认的 `_dataloader` | `None`（每步一项）、0 |
 | `panel_device` | `TorchModel`：训练面板放在哪里，`"auto"`、`"cuda"` 或 `"cpu"`（见“把训练面板放在 GPU 上”） | `"auto"` |
 | `panel_dtype` | `TorchModel`：特征的存储精度，`"float32"` 或 `"float16"` | `"float32"` |
 
-其余的键都属于模型头自己。`_init_model(num_features, num_labels, hyperparameters)` 拿到的是整个字典，保留键也在其中。不要把它整个展开传给网络或库的构造函数（`nn.GRU(**hyperparameters)`、`Regressor(**hyperparameters)`）：按名字读取模型头需要的键，或者先用模型头的 `head_hyperparameters` 方法去掉它所属变体保留的键。自带的库模型头用的是后一种做法：去掉提前停止的两个键，保留 `lr`，因为 pytabkit 把它当作自己的学习率。
+其余的键都属于模型头自己。`LibraryModel` 模型头的 `_init_model(num_features, num_labels, hyperparameters)` 拿到的字典已去掉库层的键（`early_stopping`、`early_stopping_patience`、`training_target`），可以原样交给库；`lr` 保留，因为 pytabkit 把它当作自己的学习率。`TorchModel` 模型头的 `_init_model` 拿到的是整个字典，保留键也在其中。不要把它整个展开传给网络（`nn.GRU(**hyperparameters)`）：按名字读取模型头需要的键，或者先用模型头的 `head_hyperparameters` 方法去掉它所属变体保留的键。
 
 ## 常见任务
 
@@ -251,6 +252,29 @@ True
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
 (52, 51)
+```
+
+### 在截面目标上训练
+
+库模型头默认拟合原始标签；`hyperparameters["training_target"]` 指定一个逐 bar 的截面变换时则拟合变换后的目标：`"cs_rank"`（Qlib 的 `CSRankNorm`，即 `quantlab.model.torch_training` 中的 `cs_rank_norm`）或 `"cs_zscore"`（`cs_zscore`）。它作用于所有标签，训练段、验证段和测试段的 bar 一视同仁，因此提前停止看的是变换后目标上的验证损失，原始收益里的离群值不会比其他标的分量更重。模型随之在这个标准化尺度上预测，`label_scales` 对每个标签都报告 `"standardized"`，均值方差构造器就不会把预测当成原始收益来读（见组合构建指南）。除 `loss` 外的指标仍在原始标签上计算：rank IC 相差不大，而相对原始收益的 MSE 变大，因为预测处在排名的量纲上。这个键和其他超参数一起记录在 `config.json` 里，所以用它新建的实例 `load` 之后报告同样的尺度；它也不会进入库自己的参数。它适用于 `XGBoostRegressor`、`XGBTDRegressor`、`RealMLPRegressor` 以及任何 `LibraryModel` 模型头；自己覆写了 `_transform_target` 的模型头会忽略它。torch 模型头在自己的钩子里选择训练目标（见“训练 torch 模型”）。
+
+```python
+>>> ranked = XGBoostRegressor(replace(config, hyperparameters={
+...     "num_boost_round": 50, "max_depth": 3, "training_target": "cs_rank",
+... })).collect()
+>>> ranked.label_scales, model.label_scales
+({'ret': 'standardized'}, {'ret': 'raw'})
+>>> ranked_dir = ranked.train().parent
+>>> ranked_metrics = json.loads((ranked_dir / "metrics.json").read_text())
+>>> plain_metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+>>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
+[(0.679, 0.003), (0.674, 0.439)]
+>>> record = json.loads((ranked_dir / "config.json").read_text())
+>>> record["hyperparameters"]["training_target"], "training_target" in record["resolved_hyperparameters"]
+('cs_rank', False)
+>>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
+Traceback (most recent call last):
+ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of ['cs_rank', 'cs_zscore'] or unset, got 'rank'
 ```
 
 ### walk-forward 交叉验证
@@ -457,7 +481,7 @@ True
 
 ### 组合不同的模型
 
-`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。每个成员各自收集数据、各自请求特征，集成对每个标签只在预测它的成员之间合成：多个成员预测的标签取它们逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样；只有一个成员预测的标签直接透传该成员的预测，不做任何改动。因此一个收益模型加一个波动率模型（`quantlab.label.predefined.fret.Volatility`）就组成一个预测器，它的标签是各成员标签的并集，按首次出现的顺序排列。多个成员预测的同名标签在每个成员里的配置必须相同，否则构造时抛出 `ValueError` 并指明是哪个成员。成员的窗口可以不同：集成的训练截止日取最晚的成员，测试窗口取各成员测试窗口的交集（没有交集时构造即报错），所以回测器的样本外区间没有被任何成员见过。`train_cv` 对所有成员使用同一套折划分，并按成员中最大的 lookahead 清洗。`label_scales` 报告每个标签的尺度：平均得到的标签为 `"standardized"`，透传的标签沿用成员自己的尺度；模型当且仅当保留恒等的 `_transform_target` 时报告 `"raw"`。评估文件用预测该标签的成员的真实值给每个标签打分：第一个标签沿用上面的键，其余标签的键为 `{split}_{label}_{metric}`，`member_correlation` 只对至少两个成员预测的标签报告。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
+`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。每个成员各自收集数据、各自请求特征，集成对每个标签只在预测它的成员之间合成：多个成员预测的标签取它们逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样；只有一个成员预测的标签直接透传该成员的预测，不做任何改动。因此一个收益模型加一个波动率模型（`quantlab.label.predefined.fret.Volatility`）就组成一个预测器，它的标签是各成员标签的并集，按首次出现的顺序排列。多个成员预测的同名标签在每个成员里的配置必须相同，否则构造时抛出 `ValueError` 并指明是哪个成员。成员的窗口可以不同：集成的训练截止日取最晚的成员，测试窗口取各成员测试窗口的交集（没有交集时构造即报错），所以回测器的样本外区间没有被任何成员见过。`train_cv` 对所有成员使用同一套折划分，并按成员中最大的 lookahead 清洗。`label_scales` 报告每个标签的尺度：平均得到的标签为 `"standardized"`，透传的标签沿用成员自己的尺度；模型当且仅当直接拟合标签本身时报告 `"raw"`：保留恒等的 `_transform_target`，且（对库模型头）没有设置 `training_target`。因此设置了 `"training_target": "cs_rank"` 的收益成员和原始尺度的波动率成员分别报告 `"standardized"` 和 `"raw"`。评估文件用预测该标签的成员的真实值给每个标签打分：第一个标签沿用上面的键，其余标签的键为 `{split}_{label}_{metric}`，`member_correlation` 只对至少两个成员预测的标签报告。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
 
 ```python
 >>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
@@ -864,7 +888,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 [0.05, -0.02, -0.001]
 ```
 
-覆写 `_transform_target` 只改变库拟合的对象，别的都不变。下面的岭回归拟合的是每个 bar 上标签的截面排名，缩放到 [-0.5, 0.5]。指标仍然在原始标签上计算：rank IC 相差不大，而相对原始收益的 MSE 涨了十倍，因为预测现在处在排名的量纲上。
+覆写 `_transform_target` 只改变库拟合的对象，别的都不变；如果只是排名或 z-score，`training_target` 不写子类也能做到（见“在截面目标上训练”）。下面的岭回归拟合的是每个 bar 上标签的截面排名，缩放到 [-0.5, 0.5]。指标仍然在原始标签上计算：rank IC 相差不大，而相对原始收益的 MSE 涨了十倍，因为预测现在处在排名的量纲上。
 
 ```python
 >>> import torch

@@ -210,6 +210,7 @@ def make_model(
     test_start: str,
     test_end: str,
     head: type[LibraryModel] = FirstFeatureHead,
+    hyperparameters: dict | None = None,
 ) -> LibraryModel:
     """A `head` (by default `FirstFeatureHead`) over one `PastReturnFactor` and one
     `ForwardReturnLabel`."""
@@ -241,6 +242,7 @@ def make_model(
             train_end=train_end,
             test_start=test_start,
             test_end=test_end,
+            hyperparameters=dict(hyperparameters or {}),
         )
     )
 

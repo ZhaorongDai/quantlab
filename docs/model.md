@@ -177,7 +177,7 @@ A prediction of half the realised volatility on every cell predicts a quarter of
 {'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
 ```
 
-A return label, and a volatility label a head predicts on a standardized scale (a head overriding `_transform_target`), get neither key; the IC keys are reported for every label.
+A return label, and a volatility label a head predicts on a standardized scale (a `training_target`, or a head overriding `_transform_target`), get neither key; the IC keys are reported for every label.
 
 ### IC series and saved predictions
 
@@ -229,11 +229,12 @@ The base classes and the shipped heads read these keys from it themselves (`quan
 | `lr` | `TorchModel`: the learning rate of the default `_init_optim` | `1e-3` (`GATsRegressor` `1e-4`, `MASTERRegressor` `1e-5`) |
 | `early_stopping` | the shipped library heads: turn on the library's native early stopping | `False` |
 | `early_stopping_patience` | the shipped library heads: rounds (or the library's own unit) without improvement | 5 |
+| `training_target` | `LibraryModel`: the per-bar cross-sectional target the library fits, `"cs_rank"` or `"cs_zscore"`; any other value raises `ValueError` in `collect()` or when training starts, before any data is read or any fit (see Train on a cross-sectional target) | unset: the raw label |
 | `batch_size`, `num_workers` | `TorchModel`: the default `_dataloader` | `None` (one item per step), 0 |
 | `panel_device` | `TorchModel`: where the training panel lives, `"auto"`, `"cuda"` or `"cpu"` (see Keep the training panel on the GPU) | `"auto"` |
 | `panel_dtype` | `TorchModel`: the precision the features are stored in, `"float32"` or `"float16"` | `"float32"` |
 
-Every other key is the head's own. `_init_model(num_features, num_labels, hyperparameters)` receives the whole dict, reserved keys included. Do not splat it into a network or a library constructor (`nn.GRU(**hyperparameters)`, `Regressor(**hyperparameters)`): read the keys the head needs by name, or pass the dict through the head's `head_hyperparameters` method first, which drops the keys its own variant reserves. The shipped library heads do the latter: they drop the early-stopping keys and keep `lr`, which pytabkit takes as its own learning rate.
+Every other key is the head's own. A `LibraryModel` head's `_init_model(num_features, num_labels, hyperparameters)` receives the dict without the library keys (`early_stopping`, `early_stopping_patience`, `training_target`), so it can hand it to its library as it is; `lr` stays, which pytabkit takes as its own learning rate. A `TorchModel` head's `_init_model` receives the whole dict, reserved keys included. Do not splat it into a network (`nn.GRU(**hyperparameters)`): read the keys the head needs by name, or pass the dict through the head's `head_hyperparameters` method first, which drops the keys its own variant reserves.
 
 ## Common tasks
 
@@ -251,6 +252,29 @@ With `"early_stopping": True` in `hyperparameters`, training stops when the vali
 >>> _ = stopped.train()
 >>> stopped.model.num_boosted_rounds(), stopped.model.best_iteration
 (52, 51)
+```
+
+### Train on a cross-sectional target
+
+A library head fits the raw label unless `hyperparameters["training_target"]` names a per-bar cross-sectional transform: `"cs_rank"` (Qlib's `CSRankNorm`, `cs_rank_norm` in `quantlab.model.torch_training`) or `"cs_zscore"` (`cs_zscore`). It applies to every label, on the training, validation and test bars alike, so early stopping watches the validation loss on the transformed target, where outliers in raw returns weigh no more than any other symbol. The model then predicts on that standardized scale, and `label_scales` reports `"standardized"` for every label, so a mean-variance constructor never reads the prediction as a raw return (see the portfolio guide). The metrics other than `loss` still score the raw label: the rank IC stays close, while the MSE against the raw return grows, because the prediction is on the rank scale. The key is recorded in `config.json` with the other hyperparameters, so a fresh instance built from it reports the same scale after `load`, and it never reaches the library's own parameters. It works for `XGBoostRegressor`, `XGBTDRegressor`, `RealMLPRegressor` and any other `LibraryModel` head; a head that overrides `_transform_target` itself ignores it. The torch heads choose their target in their own hook (see Train a torch model).
+
+```python
+>>> ranked = XGBoostRegressor(replace(config, hyperparameters={
+...     "num_boost_round": 50, "max_depth": 3, "training_target": "cs_rank",
+... })).collect()
+>>> ranked.label_scales, model.label_scales
+({'ret': 'standardized'}, {'ret': 'raw'})
+>>> ranked_dir = ranked.train().parent
+>>> ranked_metrics = json.loads((ranked_dir / "metrics.json").read_text())
+>>> plain_metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+>>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
+[(0.679, 0.003), (0.674, 0.439)]
+>>> record = json.loads((ranked_dir / "config.json").read_text())
+>>> record["hyperparameters"]["training_target"], "training_target" in record["resolved_hyperparameters"]
+('cs_rank', False)
+>>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
+Traceback (most recent call last):
+ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of ['cs_rank', 'cs_zscore'] or unset, got 'rank'
 ```
 
 ### Cross-validate over walk-forward folds
@@ -457,7 +481,7 @@ True
 
 ### Combine different models
 
-`ModelEnsemble(members)` in `quantlab.model.predefined.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. Each member collects its own data and requests its own features, and the ensemble combines each label over the members that predict it: a label several members predict is the equal-weight mean of their per-bar cross-sectional z-scores, as in `SeedEnsemble`; a label only one member predicts is that member's prediction, unchanged. So a return model and a volatility model (`quantlab.label.predefined.fret.Volatility`) make one predictor whose labels are the union of the members' labels, in first-appearance order. A label several members predict must have the same config in each, otherwise the constructor raises `ValueError` naming the member. The members' windows may differ: the ensemble's training end is the latest member's and its test window the intersection of the members' (the constructor raises when they do not overlap), so the backtester's out-of-sample segment was seen by no member. `train_cv` lays out one fold geometry for every member and purges with the largest lookahead among them. `label_scales` reports each label's scale: `"standardized"` for an averaged label, the member's own for a passed-through one; a model reports `"raw"` exactly when it keeps the identity `_transform_target`. The evaluation files score each label against the truth of a member that predicts it: the first label under the keys above, every other label as `{split}_{label}_{metric}`, and `member_correlation` only for labels at least two members predict. `train()`, `train_cv()`, `load()`, the evaluation files and the manifest are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
+`ModelEnsemble(members)` in `quantlab.model.predefined.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. Each member collects its own data and requests its own features, and the ensemble combines each label over the members that predict it: a label several members predict is the equal-weight mean of their per-bar cross-sectional z-scores, as in `SeedEnsemble`; a label only one member predicts is that member's prediction, unchanged. So a return model and a volatility model (`quantlab.label.predefined.fret.Volatility`) make one predictor whose labels are the union of the members' labels, in first-appearance order. A label several members predict must have the same config in each, otherwise the constructor raises `ValueError` naming the member. The members' windows may differ: the ensemble's training end is the latest member's and its test window the intersection of the members' (the constructor raises when they do not overlap), so the backtester's out-of-sample segment was seen by no member. `train_cv` lays out one fold geometry for every member and purges with the largest lookahead among them. `label_scales` reports each label's scale: `"standardized"` for an averaged label, the member's own for a passed-through one; a model reports `"raw"` exactly when it fits the label unchanged: it keeps the identity `_transform_target` and, for a library head, sets no `training_target`. A return member with `"training_target": "cs_rank"` and a raw volatility member therefore report `"standardized"` and `"raw"`. The evaluation files score each label against the truth of a member that predicts it: the first label under the keys above, every other label as `{split}_{label}_{metric}`, and `member_correlation` only for labels at least two members predict. `train()`, `train_cv()`, `load()`, the evaluation files and the manifest are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
 
 ```python
 >>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
@@ -864,7 +888,7 @@ A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows
 [0.05, -0.02, -0.001]
 ```
 
-Overriding `_transform_target` changes what the library fits and nothing else. Below, the ridge fits each bar's cross-sectional rank of the label, scaled to [-0.5, 0.5]. The metrics still score the raw label: the rank IC stays close, while the MSE against the raw return grows tenfold, because the predictions are now on the rank scale.
+Overriding `_transform_target` changes what the library fits and nothing else; for a rank or z-score, `training_target` does the same without a subclass (see Train on a cross-sectional target). Below, the ridge fits each bar's cross-sectional rank of the label, scaled to [-0.5, 0.5]. The metrics still score the raw label: the rank IC stays close, while the MSE against the raw return grows tenfold, because the predictions are now on the rank scale.
 
 ```python
 >>> import torch

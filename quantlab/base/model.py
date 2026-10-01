@@ -69,14 +69,17 @@ TORCH_RESERVED_HYPERPARAMETERS: frozenset[str] = frozenset(
 
 #: Keys of ``ModelConfig.hyperparameters`` a ``LibraryModel`` reads itself:
 #: ``early_stopping`` (default False) and ``early_stopping_patience``
-#: (default 5), the shipped library heads' native early stopping.
+#: (default 5), the shipped library heads' native early stopping, and
+#: ``training_target`` (``"cs_rank"`` or ``"cs_zscore"``; unset trains on the
+#: raw label).
 LIBRARY_RESERVED_HYPERPARAMETERS: frozenset[str] = frozenset(
-    {"early_stopping", "early_stopping_patience"}
+    {"early_stopping", "early_stopping_patience", "training_target"}
 )
 
-#: Every reserved key. ``_init_model`` receives them along with the head's
-#: own keys, so a head never splats the whole dict into a network or a
-#: library constructor; see ``BaseModel.head_hyperparameters``.
+#: Every reserved key. A ``TorchModel``'s ``_init_model`` receives them along
+#: with the head's own keys, so a torch head never splats the whole dict into
+#: a network; a ``LibraryModel``'s receives the dict without its library
+#: keys. See ``BaseModel.head_hyperparameters``.
 RESERVED_HYPERPARAMETERS: frozenset[str] = (
     TORCH_RESERVED_HYPERPARAMETERS | LIBRARY_RESERVED_HYPERPARAMETERS
 )
@@ -169,8 +172,9 @@ class BaseModel(ABC):
     def head_hyperparameters(self, hyperparameters: dict) -> dict:
         """Return ``hyperparameters`` without the keys this variant reads itself.
 
-        A head that forwards its hyperparameters to a network or a library
-        constructor passes them through this first. Only the variant's own
+        A torch head that forwards its hyperparameters to a network passes
+        them through this first; ``LibraryModel`` applies it before calling
+        ``_init_model``, so a library head receives the result. Only the variant's own
         ``reserved_hyperparameters`` are dropped: a library head keeps
         ``lr``, which a torch head reserves, because the library may take it.
         The dict given is not modified.

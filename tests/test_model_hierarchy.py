@@ -284,7 +284,9 @@ def test_the_reserved_hyperparameter_names():
     assert TORCH_RESERVED_HYPERPARAMETERS == {
         "epochs", "lr", "batch_size", "num_workers", "panel_device", "panel_dtype",
     }
-    assert LIBRARY_RESERVED_HYPERPARAMETERS == {"early_stopping", "early_stopping_patience"}
+    assert LIBRARY_RESERVED_HYPERPARAMETERS == {
+        "early_stopping", "early_stopping_patience", "training_target",
+    }
     assert RESERVED_HYPERPARAMETERS == (
         TORCH_RESERVED_HYPERPARAMETERS | LIBRARY_RESERVED_HYPERPARAMETERS
     )

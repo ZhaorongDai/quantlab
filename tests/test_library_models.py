@@ -24,6 +24,7 @@ import pandas as pd
 import pytest
 import torch
 import xarray as xr
+from scipy.stats import rankdata
 
 from quantlab.base.config import FactorConfig, ModelConfig
 from quantlab.model.library_model import LibraryModel
@@ -134,10 +135,12 @@ class StubLibraryHead(LibraryModel):
     def __init__(self, config):
         super().__init__(config)
         self.init_model_calls = 0
+        self.init_hyperparameters: list[dict] = []
         self.fit_calls: list[dict] = []
 
     def _init_model(self, num_features, num_labels, hyperparameters):
         self.init_model_calls += 1
+        self.init_hyperparameters.append(dict(hyperparameters))
         return {"num_labels": num_labels}
 
     def _fit_model(self, train_rows, val_rows):
@@ -149,7 +152,9 @@ class StubLibraryHead(LibraryModel):
         return np.repeat(first, self.model["num_labels"], axis=-1) + self.model["offset"]
 
 
-def _config(tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt"):
+def _config(
+    tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt", hyperparameters=None
+):
     return ModelConfig(
         factors=factors if factors is not None else [FakePanel(["f_a", "f_b"], seed=1)],
         labels=[StubLabel(label) for label in labels]
@@ -165,6 +170,7 @@ def _config(tmp_path, *, val_size=0.2, factors=None, labels=None, save_dir="ckpt
         test_start=TEST_START,
         test_end=TEST_END,
         val_size=val_size,
+        hyperparameters=dict(hyperparameters or {}),
     )
 
 
@@ -329,6 +335,120 @@ def test_a_rank_training_target_reaches_the_rows_and_metrics_stay_raw(tmp_path, 
     y = model.to_array(data, model.get_label_names())[:80]
     pred = model.predict(x)
     assert metrics["train_mse"] == pytest.approx(float(np.mean((pred - y) ** 2)), rel=1e-5)
+
+
+# --------------------------------------------------------------------------
+# hyperparameters["training_target"] (issue #95)
+# --------------------------------------------------------------------------
+
+
+def _expected_target(training_target, y_raw):
+    """One bar's ``[n, 1]`` raw labels as the named cross-sectional target."""
+    y = y_raw[:, 0].astype(np.float64)
+    if training_target == "cs_rank":
+        return (rankdata(y) / len(y) - 0.5) * 3.46
+    return (y - y.mean()) / y.std(ddof=1)
+
+
+@pytest.mark.parametrize("training_target", ["cs_rank", "cs_zscore"])
+def test_a_training_target_hyperparameter_reaches_the_rows_and_metrics_stay_raw(
+    tmp_path, recorders, training_target
+):
+    """Train and validation rows carry the transformed target, and the
+    written metrics score the prediction against the raw label."""
+    model = StubLibraryHead(
+        _config(tmp_path, hyperparameters={"training_target": training_target})
+    )
+    model.collect()
+    checkpoint = model.train()
+    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    call = model.fit_calls[0]
+    for rows, bars in ((call["train"], (0, 41, 79)), (call["val"], (80, 99))):
+        for t in bars:
+            at = rows.where[0] == t
+            expected = _expected_target(training_target, rows.y_raw[at])
+            assert np.allclose(rows.y[at, 0], expected, atol=1e-5)
+
+    data = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+    x = model.to_array(data, model.get_factor_names())
+    y = model.to_array(data, model.get_label_names())
+    pred = model.predict(x)
+    for split, bars in (("train", slice(0, 80)), ("test", slice(100, 130))):
+        mse = float(np.mean((pred[bars] - y[bars]) ** 2))
+        assert metrics[f"{split}_mse"] == pytest.approx(mse, rel=1e-5), split
+
+
+@pytest.mark.parametrize("training_target", ["cs_rank", "cs_zscore"])
+def test_a_training_target_makes_every_label_standardized_also_after_load(
+    tmp_path, recorders, training_target
+):
+    labels = [FakePanel(["ret_a", "ret_b"], seed=2)]
+    hyper = {"training_target": training_target}
+    model = StubLibraryHead(_config(tmp_path, labels=labels, hyperparameters=hyper))
+    assert model.label_scales == {"ret_a": "standardized", "ret_b": "standardized"}
+    model.collect()
+    model.train()
+    fresh = StubLibraryHead(_config(tmp_path, labels=labels, hyperparameters=hyper))
+    fresh.load(_checkpoint(tmp_path))
+    assert fresh.label_scales == {"ret_a": "standardized", "ret_b": "standardized"}
+
+
+def test_without_a_training_target_rows_are_the_raw_label_and_scale_is_raw(
+    tmp_path, recorders
+):
+    model = _trained(tmp_path)
+    train = model.fit_calls[0]["train"]
+    assert np.array_equal(train.y, train.y_raw)
+    assert model.label_scales == {"ret_a": "raw"}
+
+
+def test_a_hook_override_still_reports_standardized(tmp_path):
+    assert RankTargetHead(_config(tmp_path)).label_scales == {"ret_a": "standardized"}
+
+
+@pytest.mark.parametrize("value", ["rank", "drop_extreme", None, 1])
+def test_an_unknown_training_target_raises_before_the_fit(
+    tmp_path, recorders, monkeypatch, value
+):
+    """`collect` refuses it before reading any panel; `train` and `train_cv`
+    refuse it before `_init_model` or `_fit_model`."""
+    model = StubLibraryHead(_config(tmp_path, hyperparameters={"training_target": value}))
+    reads = []
+    compute = FakePanel.compute
+    monkeypatch.setattr(
+        FakePanel, "compute", lambda self, *a: reads.append(1) or compute(self, *a)
+    )
+    with pytest.raises(ValueError, match="training_target"):
+        model.collect()
+    assert reads == []
+    monkeypatch.setattr(FakePanel, "compute", compute)
+    model.config.hyperparameters["training_target"] = "cs_rank"
+    model.collect()
+    model.config.hyperparameters["training_target"] = value
+    with pytest.raises(ValueError, match="training_target"):
+        model.train()
+    with pytest.raises(ValueError, match="training_target"):
+        model.train_cv(train_periods=40)
+    assert model.fit_calls == []
+    assert model.init_model_calls == 0
+
+
+def test_init_model_receives_the_hyperparameters_without_the_library_keys(
+    tmp_path, recorders
+):
+    """The library-model layer strips its own keys once, so no head has to."""
+    hyper = {
+        "training_target": "cs_rank",
+        "early_stopping": True,
+        "early_stopping_patience": 3,
+        "lr": 0.1,
+        "max_depth": 4,
+    }
+    model = StubLibraryHead(_config(tmp_path, hyperparameters=hyper))
+    model.collect()
+    model.train()
+    assert model.init_hyperparameters == [{"lr": 0.1, "max_depth": 4}]
+    assert model.config.hyperparameters == hyper
 
 
 def test_the_target_hook_sees_training_only_on_train_bars_once_per_fit(tmp_path, recorders):

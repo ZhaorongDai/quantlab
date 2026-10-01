@@ -512,8 +512,9 @@ class XGBoostRegressor(LibraryModel):
     Setting ``objective`` in the hyperparameters switches back to that
     built-in xgboost objective.
 
-    Hyperparameters come from ``config.hyperparameters``, without the
-    early-stopping keys the base class reads (``head_hyperparameters``).
+    Hyperparameters come from ``config.hyperparameters``, without the keys
+    ``LibraryModel`` reads itself (the early-stopping keys and
+    ``training_target``).
     ``num_boost_round`` (default 1000) is taken out separately; every other key overrides the
     matching entry of ``DEFAULT_PARAMS``, and ``seed`` defaults to
     ``config.random_seed``. Unless ``device`` is given, training runs on
@@ -631,8 +632,8 @@ class XGBoostRegressor(LibraryModel):
         """Resolve the training parameters and return ``None``.
 
         The Booster itself is built by ``xgb.train`` inside ``_fit_model``.
-        The early-stopping keys (``reserved_hyperparameters``) are dropped and
-        aliases normalised first, then ``num_boost_round`` is split off,
+        ``hyperparameters`` arrives without ``LibraryModel``'s own keys.
+        Aliases are normalised first, then ``num_boost_round`` is split off,
         then the remaining keys override ``DEFAULT_PARAMS`` and the seed.
         An unset ``device`` becomes ``"cuda"`` when xgboost can train on
         CUDA here and ``"cpu"`` otherwise (``xgboost_default_device``).
@@ -644,7 +645,7 @@ class XGBoostRegressor(LibraryModel):
         ValueError
             If ``num_boost_round`` is below 1.
         """
-        user = self._normalize_aliases(self.head_hyperparameters(hyperparameters))
+        user = self._normalize_aliases(hyperparameters)
         num_boost_round = int(
             user.pop("num_boost_round", self.DEFAULT_NUM_BOOST_ROUND)
         )

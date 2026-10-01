@@ -68,7 +68,10 @@ def setup(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
 
-    def member(name, *, head=FirstFeatureHead, n=1, horizon=1, train_end=24, test=(25, 29)):
+    def member(
+        name, *, head=FirstFeatureHead, n=1, horizon=1, train_end=24, test=(25, 29),
+        hyperparameters=None,
+    ):
         return make_model(
             tmp_path / name,
             dataset_config,
@@ -81,6 +84,7 @@ def setup(tmp_path):
             train_end=_day(bars[train_end]),
             test_start=_day(bars[test[0]]),
             test_end=_day(bars[test[1]]),
+            hyperparameters=hyperparameters,
         )
 
     return member, bars, dataset_config
@@ -122,6 +126,17 @@ def test_a_passed_through_label_keeps_its_members_scale(setup):
     ensemble = ModelEnsemble([member("a"), member("b", head=RankTargetHead, horizon=2)])
 
     assert ensemble.label_scales == {"fwd_ret_1": "raw", "fwd_ret_2": "standardized"}
+
+
+def test_a_rank_target_return_member_and_a_raw_volatility_member_keep_their_scales(setup):
+    """The hyperparameter, not a subclass, makes the return member standardized;
+    the other member, without it, stays raw (issue #95)."""
+    member, _, _ = setup
+    ret = member("ret", hyperparameters={"training_target": "cs_rank"})
+    vol = member("vol", horizon=2)
+    ensemble = ModelEnsemble([ret, vol])
+
+    assert ensemble.label_scales == {"fwd_ret_1": "standardized", "fwd_ret_2": "raw"}
 
 
 def test_mixed_overlap_averages_the_shared_label_and_passes_the_other(setup):

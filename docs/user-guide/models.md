@@ -113,6 +113,11 @@ heads read them themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`).
   5): the shipped library heads stop when the validation loss has not
   improved for that many boosting rounds. A torch head decides when to stop
   in its own `_should_stop` hook instead.
+- `training_target` (default unset, the raw label): a library head fits
+  each bar's cross-sectional `"cs_rank"` or `"cs_zscore"` of every label
+  instead, on the training, validation and test bars alike. `label_scales`
+  then reports `"standardized"`; the metrics still score the raw label. Any
+  other value raises `ValueError` in `collect()` or when training starts.
 - `batch_size` (default `None`, one item per step) and `num_workers`
   (default 0): the torch head's default data loader.
 - `panel_device` (default `"auto"`): where a torch head keeps its training
@@ -123,11 +128,13 @@ heads read them themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`).
   half precision, so a large panel fits on the GPU; each batch is cast back
   to float32.
 
-`_init_model` receives the whole dict, reserved keys included, so never
-splat it into a network or a library constructor. Read the keys a head needs
+A library head's `_init_model` receives the dict without the library keys
+(`early_stopping`, `early_stopping_patience`, `training_target`), so it can
+go to the library as it is; it keeps `lr`, which pytabkit takes as its
+learning rate. A torch head's `_init_model` receives the whole dict, reserved
+keys included, so never splat it into a network. Read the keys a head needs
 by name, or drop the ones the head's own variant reserves with its
-`head_hyperparameters` method. A library head keeps `lr`, which pytabkit
-takes as its learning rate. See the `ModelConfig` docstring
+`head_hyperparameters` method. See the `ModelConfig` docstring
 for every field.
 
 The validation segment is always the last part of the training window in time,
