@@ -279,7 +279,7 @@ ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of 
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, expanding=False)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `train_periods // 5` timestamps right after them; the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -322,6 +322,15 @@ With `expanding=True` every fold trains from the first fold's start instead: fol
 True
 >>> [round(r["test_rank_ic"], 3) for r in grown]
 [0.691, 0.658, 0.704, 0.655, 0.695]
+```
+
+`test_periods` sets the test length, and the step from one fold to the next, instead of one fifth of `train_periods`; the fold count is then `(bars - train_periods) // test_periods`. So a first training window of three years can be tested half a year at a time. The fold dates carry it, as they carry the mode.
+
+```python
+>>> paced = XGBoostRegressor(config).collect().train_cv(
+...     train_periods=100, expanding=True, test_periods=30)
+>>> [(r["test_start"][:10], r["test_end"][:10]) for r in paced]
+[('2024-04-10', '2024-05-09'), ('2024-05-10', '2024-06-08'), ('2024-06-09', '2024-07-08')]
 ```
 
 The folds train one after another, on the one collected panel.
@@ -452,7 +461,7 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 The members train one after another, and each reseeds its random generators from its own `random_seed` right before it trains.
 
-`train_cv(train_periods, expanding=False)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own W&B run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
+`train_cv(train_periods, expanding=False, test_periods=None)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, with the same test length, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own W&B run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
 
 `cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family and `{split}_member_correlation`; `cv_mean` averages them. The return value is the fold list. A separate W&B run `SeedEnsemble_cv_summary` in the same project carries the `cv_mean_*` values. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
 
@@ -984,10 +993,10 @@ ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 traini
 ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
-Each fold tests on `train_periods // 5` bars, so `train_cv` refuses a `train_periods` below 5 before it trains anything.
+Without `test_periods` each fold tests on `train_periods // 5` bars, so `train_cv` refuses a `train_periods` below 5 before it trains anything; a `test_periods` below 1 is refused the same way.
 
 ```text
-ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
+ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
 `train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising.

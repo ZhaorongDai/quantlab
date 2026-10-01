@@ -279,7 +279,7 @@ ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of 
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, expanding=False)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `train_periods // 5` 个时间戳上测试；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -322,6 +322,15 @@ ValueError: XGBoostRegressor: hyperparameters['training_target'] must be one of 
 True
 >>> [round(r["test_rank_ic"], 3) for r in grown]
 [0.691, 0.658, 0.704, 0.655, 0.695]
+```
+
+`test_periods` 指定测试段的长度，也就是相邻两折之间的步长，取代默认的 `train_periods` 的五分之一；此时折数为 `(bar 数 - train_periods) // test_periods`。这样第一个训练窗口可以是三年，而每折只测半年。和模式一样，它由各折的日期体现。
+
+```python
+>>> paced = XGBoostRegressor(config).collect().train_cv(
+...     train_periods=100, expanding=True, test_periods=30)
+>>> [(r["test_start"][:10], r["test_end"][:10]) for r in paced]
+[('2024-04-10', '2024-05-09'), ('2024-05-10', '2024-06-08'), ('2024-06-09', '2024-07-08')]
 ```
 
 各折依次训练，共用同一份已收集的面板。
@@ -452,7 +461,7 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 各成员依次训练，每个成员在训练前一刻用自己的 `random_seed` 重设随机数生成器。
 
-`train_cv(train_periods, expanding=False)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的 W&B 运行 `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的 W&B 运行 `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
 
 `cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，即 IC 一族和 `{split}_member_correlation`；`cv_mean` 是它们的均值。返回值就是折列表。同一个项目里另有一个 W&B 运行 `SeedEnsemble_cv_summary`，记录 `cv_mean_*` 的值。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
 
@@ -984,10 +993,10 @@ ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 traini
 ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
-每一折在 `train_periods // 5` 个 bar 上测试，因此 `train_periods` 小于 5 时，`train_cv` 在训练任何一折之前就会拒绝。
+不传 `test_periods` 时每一折在 `train_periods // 5` 个 bar 上测试，因此 `train_periods` 小于 5 时，`train_cv` 在训练任何一折之前就会拒绝；`test_periods` 小于 1 时同样拒绝。
 
 ```text
-ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars.
+ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
 `train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。

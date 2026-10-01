@@ -350,10 +350,11 @@ tests on the bars that follow, slides both forward and repeats. Every test
 bar lies after every bar the model trained on, as it would in live trading.
 Across folds you see how stable the model's quality is over time.
 
-`train_cv(train_periods, expanding=False)` lays the folds out over
-the bars between `config.start_date` and `config.end_date`. Each fold's
-training window is `train_periods` bars and its test segment the next
-`train_periods // 5` bars, and the next fold starts that many bars later.
+`train_cv(train_periods, expanding=False, test_periods=None)` lays the folds
+out over the bars between `config.start_date` and `config.end_date`. Each
+fold's training window is `train_periods` bars and its test segment the next
+`test_periods` bars (`train_periods // 5` by default), and the next fold
+starts that many bars later.
 Each window is split into train and validation and purged as described
 above, so the last bar fitted in each 200-bar window is its 198th:
 

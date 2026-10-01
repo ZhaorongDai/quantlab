@@ -678,7 +678,12 @@ class BaseEnsemble(ABC):
         )
         return manifest, metrics
 
-    def train_cv(self, train_periods: int, expanding: bool = False) -> list[dict]:
+    def train_cv(
+        self,
+        train_periods: int,
+        expanding: bool = False,
+        test_periods: int | None = None,
+    ) -> list[dict]:
         """Run a walk-forward cross-validation of the ensemble and return per-fold results.
 
         The folds are those ``BaseModel.train_cv`` trains for the first
@@ -713,11 +718,13 @@ class BaseEnsemble(ABC):
         ----------
         train_periods : int
             Number of timestamps in the first fold's training segment, and
-            in every fold's when sliding. The test segment is one fifth of
-            it.
+            in every fold's when sliding.
         expanding : bool, default False
             Train every fold from the first fold's start instead of sliding
             a fixed-length window.
+        test_periods : int, optional
+            Number of timestamps in each fold's test segment, and the step
+            from one fold to the next. Defaults to ``train_periods // 5``.
 
         Returns
         -------
@@ -732,7 +739,8 @@ class BaseEnsemble(ABC):
         Raises
         ------
         ValueError
-            If ``train_periods`` is below 5, no timestamp falls inside the
+            If ``test_periods`` is below 1, or is not given and
+            ``train_periods`` is below 5, no timestamp falls inside the
             date range, the purge leaves a fold no training bar, or a
             member's hyperparameters are invalid.
 
@@ -747,19 +755,18 @@ class BaseEnsemble(ABC):
         for member in self.members:
             member._check_hyperparameters()
         first = self.members[0]
-        if train_periods < 5:
-            raise ValueError(
-                f"{self.class_name}: train_cv(train_periods={train_periods}) needs "
-                f"at least 5 training bars, since each fold tests on "
-                f"train_periods // 5 bars."
-            )
+        test_periods = BaseModel._cv_test_periods(
+            self.class_name, train_periods, test_periods
+        )
         start_date, end_date = first.config.start_date, first.config.end_date
         data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"])
         timestamps = data.sel(timestamp=slice(start_date, end_date)).timestamp.values
         if len(timestamps) == 0:
             raise ValueError(f"No data found between {start_date} and {end_date}")
 
-        folds = BaseModel._cv_folds(timestamps, train_periods, expanding=expanding)
+        folds = BaseModel._cv_folds(
+            timestamps, train_periods, expanding=expanding, test_periods=test_periods
+        )
         lookahead = max(member._purge_bars() for member in self.members)
         records = [
             BaseModel._purged_fold(timestamps, fold, lookahead) for fold in folds

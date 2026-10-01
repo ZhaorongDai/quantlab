@@ -1556,14 +1556,45 @@ class BaseModel(ABC):
         )
 
     @staticmethod
+    def _cv_test_periods(
+        name: str, train_periods: int, test_periods: int | None
+    ) -> int:
+        """Return the bars each CV fold tests on: ``test_periods``, else ``train_periods // 5``.
+
+        Raises
+        ------
+        ValueError
+            If ``test_periods`` is given and below 1, or not given and
+            ``train_periods`` is below 5 (the one-fifth test segment would
+            be empty).
+        """
+        if test_periods is not None:
+            if test_periods < 1:
+                raise ValueError(
+                    f"{name}: train_cv(test_periods={test_periods}) needs at "
+                    f"least 1 test bar per fold."
+                )
+            return int(test_periods)
+        if train_periods < 5:
+            raise ValueError(
+                f"{name}: train_cv(train_periods={train_periods}) needs "
+                f"at least 5 training bars, since each fold tests on "
+                f"train_periods // 5 bars; or pass test_periods."
+            )
+        return train_periods // 5
+
+    @staticmethod
     def _cv_folds(
-        timestamps, train_periods: int, expanding: bool = False
+        timestamps,
+        train_periods: int,
+        expanding: bool = False,
+        test_periods: int | None = None,
     ) -> list[dict]:
         """Compute the fold boundaries of a walk-forward cross-validation.
 
         This is the only implementation of the fold arithmetic;
         ``train_cv`` trains exactly the folds it returns. With
-        ``test_periods = train_periods // 5``, fold ``i`` tests on the
+        ``test_periods`` (``train_periods // 5`` when None), fold ``i`` tests on the
         ``test_periods`` positions from ``i * test_periods + train_periods``
         on, and its training window ends right before them. The window
         starts at position ``i * test_periods`` (sliding) or at 0 when
@@ -1582,7 +1613,8 @@ class BaseModel(ABC):
             ``np.datetime_as_string`` values and both ends are inclusive.
         """
         total_periods = len(timestamps)
-        test_periods = train_periods // 5  # Test set is 20% of training set
+        if test_periods is None:
+            test_periods = train_periods // 5
         n_splits = max(1, (total_periods - train_periods) // test_periods)
 
         folds: list[dict] = []
@@ -1733,6 +1765,7 @@ class BaseModel(ABC):
         self,
         train_periods: int,
         expanding: bool = False,
+        test_periods: int | None = None,
     ) -> list[dict]:
         """Run a walk-forward cross-validation and return per-fold results.
 
@@ -1766,14 +1799,17 @@ class BaseModel(ABC):
         ----------
         train_periods : int
             Number of timestamps in the first fold's training segment, and
-            in every fold's when sliding. The test segment is one fifth of
-            it.
+            in every fold's when sliding.
         expanding : bool, default False
             Train every fold from the first fold's start instead of sliding
             a fixed-length window. Test segments, fold count and the purge
             are those of the sliding mode; the validation segment stays the
             last ``val_size`` share of each growing window. The mode is not
             recorded in ``cv_folds.json``: the fold dates carry it.
+        test_periods : int, optional
+            Number of timestamps in each fold's test segment, and the step
+            from one fold to the next. Defaults to ``train_periods // 5``.
+            Like the mode, it is carried by the fold dates.
 
         Returns
         -------
@@ -1785,7 +1821,8 @@ class BaseModel(ABC):
         Raises
         ------
         ValueError
-            If ``train_periods`` is below 5 (the test segment would be
+            If ``test_periods`` is below 1, or is not given and
+            ``train_periods`` is below 5 (the test segment would be
             empty), no timestamps fall inside the config's date range, or
             the purge leaves a fold no training bar, or a reserved
             hyperparameter is invalid (see ``_check_hyperparameters``).
@@ -1806,14 +1843,14 @@ class BaseModel(ABC):
         True
         >>> [r["test_start"] for r in expanding] == [r["test_start"] for r in results]
         True
+
+        ``test_periods`` sets the test length instead of one fifth:
+
+        >>> len(model.train_cv(train_periods=20, test_periods=10))
+        2
         """
         self._check_hyperparameters()
-        if train_periods < 5:
-            raise ValueError(
-                f"{self.class_name}: train_cv(train_periods={train_periods}) needs "
-                f"at least 5 training bars, since each fold tests on "
-                f"train_periods // 5 bars."
-            )
+        test_periods = self._cv_test_periods(self.class_name, train_periods, test_periods)
         start_date = self.config.start_date
         end_date = self.config.end_date
 
@@ -1832,7 +1869,9 @@ class BaseModel(ABC):
             f"Starting CV from {start_date} to {end_date} with {train_periods} training periods"
         )
 
-        folds = self._cv_folds(timestamps, train_periods, expanding=expanding)
+        folds = self._cv_folds(
+            timestamps, train_periods, expanding=expanding, test_periods=test_periods
+        )
         lookahead = self._purge_bars()
         records = [
             self._purged_fold(timestamps, fold, lookahead) for fold in folds

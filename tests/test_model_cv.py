@@ -354,7 +354,7 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch, rec
     monkeypatch.setattr(
         BaseModel,
         "_cv_folds",
-        staticmethod(lambda timestamps, train_periods, expanding: [dict(f) for f in HANDMADE_FOLDS]),
+        staticmethod(lambda timestamps, train_periods, expanding, test_periods: [dict(f) for f in HANDMADE_FOLDS]),
     )
     save_dir = "ckpt_seq"
     model = StubLibraryHead(_library_config(tmp_path, save_dir))
