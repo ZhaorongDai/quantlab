@@ -459,6 +459,35 @@ def test_a_settlement_carries_the_delisting_return_of_the_last_valuation(tmp_pat
     assert float(simulation.value.sel(timestamp=ts[DELIST_BAR])) == pytest.approx(held_value)
 
 
+@pytest.mark.parametrize("sizing_basis", ["fill", "valuation"])
+@pytest.mark.parametrize("first_row", [[1.0, 0.0], [-0.5, 0.5]], ids=["long", "short"])
+def test_a_delisting_at_valuation_zero_settles_the_holding_to_nothing(
+    tmp_path, sizing_basis, first_row
+):
+    """A -100% delisting return (#111): the last valuation is 0.0, so the
+    holding settles fee-free at 0.0 and is recorded, rather than the engine
+    refusing a settlement order priced at 0. A long loses the position, a
+    short keeps its proceeds: the settlement moves no cash."""
+    backtester = _backtester(tmp_path, fees=0.001, slippage=0.001, sizing_basis=sizing_basis)
+    ts, symbols, fill, valuation, weights = _delisting_case()
+    weights["weight"][0] = first_row
+    fill[DELIST_BAR - 1, 0] = NAN
+    valuation[DELIST_BAR - 1, 0] = 0.0  # a -100% delisting return
+
+    simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))
+
+    assert [(r["symbol"], r["settlement_timestamp"], r["price"]) for r in simulation.settlements] == [
+        ("A", ts[DELIST_BAR], 0.0)
+    ]
+    assert type(simulation.settlements[0]["price"]) is float
+    cash = simulation.native.cash().to_numpy()  # no other order fills on DELIST_BAR
+    assert cash[DELIST_BAR] == cash[DELIST_BAR - 1]
+    a_orders = _orders_for(simulation.orders, "A")
+    assert [(o["timestamp"], o["price"], o["fees"]) for o in a_orders[1:]] == [(ts[DELIST_BAR], 0.0, 0.0)]
+    assert sum(o["size"] * (1 if o["side"] == "Buy" else -1) for o in a_orders) == pytest.approx(0.0, abs=1e-9)
+    assert simulation.rejected_orders == []
+
+
 def test_an_order_without_a_fill_price_is_rejected_and_the_holding_kept(tmp_path):
     """B halts on bars 3-4; the bar-2 signal to sell B and buy A is half rejected:
     A is bought with the cash there is, B stays held through the halt, and it

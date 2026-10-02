@@ -20,6 +20,7 @@ import vectorbt as vbt
 import xarray as xr
 from loguru import logger
 from vectorbt.generic.enums import DrawdownStatus
+from vectorbt.portfolio.enums import SizeType
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 
@@ -27,6 +28,11 @@ from quantlab.base.backtest import BaseBacktester, SimulationResult
 #: ``Drawdowns.records``. Read from vectorbt's enum rather than written as a
 #: literal, so a renumbering upstream cannot swap "recovered" and "active".
 DRAWDOWN_RECOVERED = int(DrawdownStatus.Recovered)
+
+#: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt
+#: refuses a price of 0, and at the smallest positive float the trade's cash is
+#: 0.0 exactly. Order records at this price are reported at 0.0.
+_WORTHLESS_PRICE = float(np.finfo(np.float64).tiny)
 
 
 class VectorBtBacktester(BaseBacktester):
@@ -219,11 +225,22 @@ class VectorBtBacktester(BaseBacktester):
         def frame(values):
             return pd.DataFrame(values, index=fill.index, columns=fill.columns)
 
+        # vectorbt refuses an order priced at 0, but a delisting can settle
+        # at a last valuation of 0 (a -100% delisting return, #111). Such a
+        # settlement is sent at the smallest positive float, as a target
+        # *amount* of 0 (a target percent would divide by that price, which
+        # vectorbt rounds to 0): the position closes, its proceeds (or a
+        # short's cover cost) are 0.0 to the last bit, and the order record is
+        # reported at the 0.0 it stands for.
+        worthless = plan["settle"] & (plan["price"] == 0.0)
+        order_price = np.where(worthless, _WORTHLESS_PRICE, plan["price"])
+        size_type = np.where(worthless, SizeType.TargetAmount, SizeType.TargetPercent)
+
         pf = vbt.Portfolio.from_orders(
             close=valuation,
-            price=frame(plan["price"]),
+            price=frame(order_price),
             size=frame(plan["size"]),
-            size_type="targetpercent",
+            size_type=frame(size_type),
             direction="both",
             group_by=True,
             cash_sharing=True,
@@ -257,7 +274,14 @@ class VectorBtBacktester(BaseBacktester):
                 "timestamp": ("order", pd.to_datetime(records["Timestamp"]).to_numpy()),
                 "symbol": ("order", records["Column"].astype(str).to_numpy()),
                 "size": ("order", records["Size"].to_numpy(dtype=np.float64)),
-                "price": ("order", records["Price"].to_numpy(dtype=np.float64)),
+                "price": (
+                    "order",
+                    np.where(
+                        records["Price"].to_numpy(dtype=np.float64) == _WORTHLESS_PRICE,
+                        0.0,
+                        records["Price"].to_numpy(dtype=np.float64),
+                    ),
+                ),
                 "fees": ("order", records["Fees"].to_numpy(dtype=np.float64)),
                 "side": ("order", records["Side"].astype(str).to_numpy()),
             }
