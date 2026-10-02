@@ -220,7 +220,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 模拟之前，两列价格都会做前向填充；随后每根成交 bar 按市场的方式执行（ADR 0014）。订单在成交 bar 上没有原始成交价（标的停牌）时是一笔*被拒订单*：持仓保持不变，订单作废，由下一次调仓重新决策。本会成交的被拒订单列在 `result.simulation.rejected_orders` 和指标的 `execution` 块里，同时给出 `rejected_order_count` 和 `max_target_deviation`，即目标权重与其成交 bar 之后实际持有权重的最大差距（含手续费和现金的影响），持有权重按订单换算股数时所用的价格计值。`sizing_basis="valuation"` 时，标的在信号 bar 上没有估值价、无法换算股数的订单同样被拒。`run()` 和 `run_cv()` 只接受 `sizing_basis="fill"`，因为交给组合规则的持仓是按成交价换算股数回放出来的；估值价基数只用于 `run_weights()`。
 
-价格在窗口内中止的标的，在它最后一根有价格的 bar 上视为退市（`MarketDataset.delisting_bars`；知道停牌信息的数据集可以覆盖它）。下一根 bar 上，对它的持仓按最后的估值价转为现金，不收手续费和滑点，并记为一条*退市结算*。在 CRSP 数据上，最后的复权收盘价已经包含退市收益。`FFF` 从 2024-02-20 起没有价格，并且在第一个组合里，于 2024-02-20 按 2024-02-19 的收盘价结算；上面价格为 61.96 的那笔订单就是这次结算。
+估值价在窗口内中止的标的，在它最后一根有估值的 bar 上视为退市（`MarketDataset.delisting_bars`；知道停牌信息的数据集可以覆盖它）。下一根 bar 上，对它的持仓按最后的估值价转为现金，不收手续费和滑点，并记为一条*退市结算*。在 CRSP 数据上，这根 bar 就是退市行，其复权收盘价已经包含退市收益；如果 CRSP 在该行没有给出收益，则是最后一个有价格的交易日。`FFF` 从 2024-02-20 起没有价格，并且在第一个组合里，于 2024-02-20 按 2024-02-19 的收盘价结算；上面价格为 61.96 的那笔订单就是这次结算。
 
 ```python
 >>> result.simulation.settlements

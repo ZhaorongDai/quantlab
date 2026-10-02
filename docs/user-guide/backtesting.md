@@ -304,13 +304,15 @@ expires, and the next rebalance decides again. Rejected orders that would have
 traded are logged, recorded in `SimulationResult.rejected_orders` and counted
 in the `execution` block of `metrics.json`.
 
-A holding whose prices stop inside the window is treated as delisted on its
-last priced bar (`MarketDataset.delisting_bars`). On the next bar it is
+A holding whose valuation prices stop inside the window is treated as
+delisted on its last valued bar (`MarketDataset.delisting_bars`). On the next bar it is
 settled into cash at its last valuation price, with no fee or slippage,
 whether or not that bar rebalances. This is a *delisting settlement*: it is
 logged, recorded in `SimulationResult.settlements` and written to
-`settlements.json`. On CRSP data the last adjusted close already carries the
-delisting return, so the settlement includes it. The record from the example
+`settlements.json`. On CRSP data that bar is the delisting row, whose
+adjusted close already carries the delisting return, so the settlement
+includes it; when CRSP gives no return there, the last priced day is the last
+valuation. The record from the example
 run:
 
 ```json

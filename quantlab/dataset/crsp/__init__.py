@@ -26,8 +26,13 @@ For each PERMNO, sorted by date, the conversion derives:
   usable close inside the window (the *anchor* row), grown by
   ``prod(1 + dlyret)`` since that row. A null return counts as a factor of
   1, because a CRSP return already spans any gap back to the previous valid
-  price. ``adjOpen``/``adjHigh``/``adjLow`` are scaled by
-  ``adjClose / close``, and ``adjVolume`` by ``dlycumfacshr`` (CRSP's
+  price. ``adjClose`` is NaN on a row without a close, except on a delisting
+  row (``dlydelflg == "Y"``) with a non-null ``dlyret``: there it is the
+  previous ``adjClose`` times ``1 + dlyret``, the delisting return, so the
+  delisting row is the security's last valuation. ``dlyret`` is a total
+  return, so merger cash on that row (in ``divCash``) is counted once. A
+  delisting row without a return keeps ``adjClose`` NaN; none is imputed.
+  ``adjOpen``/``adjHigh``/``adjLow`` are scaled by ``adjClose / close``, and ``adjVolume`` by ``dlycumfacshr`` (CRSP's
   cumulative share-adjustment factor) relative to the anchor row.
 - ``splitFactor = dlycumfacpr[t-1] / dlycumfacpr[t]`` (1.0 on the first row)
   and ``divCash = dlyorddivamt + dlynonorddivamt`` on the ex-date.
@@ -155,6 +160,24 @@ TICKER_SIDECAR_SUFFIX: str = ".crsp_tickers.json"
 
 #: The ``dlydelflg`` value marking the row that carries the delisting return.
 _DELISTING_FLAG = "Y"
+
+
+
+def _is_delisting_row() -> pl.Expr:
+    """Return whether a raw row is a delisting row, ignoring case and spaces.
+
+    A null ``dlydelflg`` is not a delisting row.
+
+    Returns
+    -------
+    pl.Expr
+        A boolean expression over the raw ``dlydelflg`` column.
+    """
+    return (
+        pl.col("dlydelflg").str.strip_chars().str.to_uppercase()
+        == pl.lit(_DELISTING_FLAG)
+    ).fill_null(False)
+
 
 #: ``dlyprcflg`` values whose row has no market price. CRSP writes delisting
 #: rows in two ways. ``DP`` (delisting price) is a real price and is kept.
@@ -584,10 +607,21 @@ class CrspStockDataset(StockDataset):
         self._assert_anchor_usable(derived)
 
         derived = derived.with_columns(
-            # NaN wherever there is no close. The cumulative return exists on
-            # a day without a price (a null return counts as 1), so without
-            # this a price would be reported for a day that had none.
-            pl.when(pl.col("close").is_null())
+            # NaN wherever there is no close, except on a delisting row with a
+            # return. A halt day has no price, so it publishes no adjusted
+            # close, even though the cumulative return exists there (a null
+            # return counts as 1). A delisting-amount row
+            # has no price either, but its `dlyret` is the delisting return,
+            # the last value a holder receives, so its `adjClose` is the
+            # previous one times `1 + dlyret`. A delisting row whose return is
+            # null stays NaN: no delisting return is imputed.
+            pl.when(
+                pl.col("close").is_null()
+                & ~(
+                    _is_delisting_row()
+                    & pl.col("dlyret").is_not_null()
+                )
+            )
             .then(None)
             .otherwise(
                 pl.col("_close_anchor") * pl.col("_G") / pl.col("_G_anchor")
@@ -609,6 +643,7 @@ class CrspStockDataset(StockDataset):
         # first would make the next kept day's adjusted change include a
         # return the panel no longer shows.
         derived = self._apply_security_filter(derived)
+        self._log_delistings_without_return(derived)
         # Built from the kept rows, so the sidecar names exactly the panel's
         # PERMNOs.
         self._ticker_intervals = self._build_ticker_intervals(derived)
@@ -685,6 +720,32 @@ class CrspStockDataset(StockDataset):
                 f"NaN, without raising anywhere downstream. Refusing rather "
                 f"than publishing an infinite adjusted series. Inspect dlyret "
                 f"for these PERMNO(s) in the raw tier."
+            )
+
+    def _log_delistings_without_return(self, derived: pl.DataFrame) -> None:
+        """Warn about no-price delisting rows that have no delisting return.
+
+        Such a row keeps ``adjClose`` NaN (no return is imputed), so a
+        backtest settles the holding at the previous priced day's adjusted
+        close. The count and the PERMNOs are logged so the gap is visible.
+
+        Parameters
+        ----------
+        derived : pl.DataFrame
+            The filtered derivation.
+        """
+        missing = derived.filter(
+            _is_delisting_row()
+            & pl.col("close").is_null()
+            & pl.col("dlyret").is_null()
+        )
+        if missing.height:
+            permnos = missing.get_column("permno").unique().sort().to_list()
+            logger.warning(
+                f"{self.class_name}: {missing.height} no-price delisting row(s) "
+                f"have no delisting return (dlyret null); their adjClose stays "
+                f"NaN and a holding settles at the last priced day. "
+                f"{len(permnos)} PERMNO(s), the first ten: {permnos[:10]}"
             )
 
     # -- the security filter ------------------------------------------------
@@ -910,10 +971,7 @@ class CrspStockDataset(StockDataset):
             predicate.alias("_keep_raw")
         )
         derived = derived.with_columns(
-            pl.when(
-                pl.col("dlydelflg").str.strip_chars().str.to_uppercase()
-                == pl.lit(_DELISTING_FLAG)
-            )
+            pl.when(_is_delisting_row())
             .then(
                 pl.coalesce(
                     pl.col("_keep_raw").shift(1).over("permno"),

@@ -10,8 +10,9 @@ As of 03.11-10 it also gates the PERMNO-axis migration on the written store:
 the `symbol` array's RAW Zarr dtype is integral, `.crsp_symbology_report.json`
 is absent (its six keys were all statements about a ticker axis) and
 `.crsp_tickers.json` is present and covers exactly the panel's own PERMNOs. The
-four cleanliness assertions are stated as INVARIANTS (`adjClose <= 0 == 0`,
-`close == 0 == 0`, both NaN counts `== structural_gaps`) rather than as counts,
+four cleanliness assertions are stated as INVARIANTS (`adjClose <= 0 == 0` on
+priced cells, `close == 0 == 0`, `adj_close_nan + delisting_valued` and
+`adj_volume_nan` `== structural_gaps`) rather than as counts,
 which is why they survive the axis change unmodified; `symbol_count` is the one
 number that may legitimately move, and it is reported rather than pinned.
 
@@ -459,7 +460,12 @@ def test_sp500_2024_rebuild_matches_post_fix_measurements(rebuilt):
     # "there is not ONE surplus NaN": every null in the adjusted series sits on
     # a cell where no bar exists at all, which is the dense panel's cartesian
     # product (D-06) and not a defect.
-    assert metrics["adj_close_nan"] == metrics["structural_gaps"]
+    # A no-price delisting row is a structural gap whose adjClose carries the
+    # delisting return, so it is counted in `delisting_valued`.
+    assert (
+        metrics["adj_close_nan"] + metrics["delisting_valued"]
+        == metrics["structural_gaps"]
+    )
     assert metrics["adj_volume_nan"] == metrics["structural_gaps"]
 
     # `symbol_count` is REPORTED against W0's number, not asserted equal to it.
@@ -675,8 +681,9 @@ def test_the_real_store_reproduces_its_adjusted_columns(rebuilt):
     every later value is a ratio away from it.
 
     **I-5 -- the CR-01 / CR-02 regression numbers did not move.** The four
-    invariants `_measure()` reports (`adj_close_le_zero == 0`,
-    `close_eq_zero == 0`, both adjusted NaN counts `== structural_gaps`) held
+    invariants `_measure()` reports (`adj_close_le_zero == 0` on priced cells,
+    `close_eq_zero == 0`, `adj_close_nan + delisting_valued` and
+    `adj_volume_nan` `== structural_gaps`) held
     under the `.last()` anchor and must hold, at the SAME values, under
     `.first()`. Their job is to prove the anchor switch did not loosen either
     defence; they are read straight off `measurement.metrics` rather than
@@ -722,8 +729,12 @@ def test_the_real_store_reproduces_its_adjusted_columns(rebuilt):
         f"close_eq_zero is {metrics['close_eq_zero']}, not 0. CRSP's "
         f"no-price sentinel is being published as a $0.00 trade."
     )
-    assert metrics["adj_close_nan"] == metrics["structural_gaps"], (
-        f"adj_close_nan {metrics['adj_close_nan']} != structural_gaps "
+    assert (
+        metrics["adj_close_nan"] + metrics["delisting_valued"]
+        == metrics["structural_gaps"]
+    ), (
+        f"adj_close_nan {metrics['adj_close_nan']} + delisting_valued "
+        f"{metrics['delisting_valued']} != structural_gaps "
         f"{metrics['structural_gaps']}: there is a SURPLUS NaN in adjClose, "
         f"i.e. a cell where a bar exists but the adjustment produced nothing."
     )

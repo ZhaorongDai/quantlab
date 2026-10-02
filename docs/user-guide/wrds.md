@@ -256,7 +256,13 @@ quantlab counts it exactly once: the separate delisting-events table is stored
 in `_reference/` for reference but is never added on top. `is_delisting` is
 1.0 on that row. When CRSP records a settlement amount rather than a trading
 price on the delisting row, the row has no market price, so `close` is NaN
-there rather than a fake $0.00 trade.
+there rather than a fake $0.00 trade, while `adjClose` is the previous
+adjusted close times `1 + ret`: the delisting row is the last valuation, and a
+backtest settles a holding at it. `ret` is the total return, so merger cash
+paid on that row (reported in `divCash`) is counted once. When CRSP gives no
+return on such a row, quantlab imputes none: `adjClose` stays NaN, a warning
+counts such rows and names the first ten PERMNOs, and the last priced day is
+the last valuation.
 
 ## Security filters
 

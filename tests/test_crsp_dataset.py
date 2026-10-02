@@ -566,6 +566,123 @@ def test_a_modern_delisting_keeps_a_real_adjusted_level(
     assert _at(panel, "is_delisting", "2024-07-08", WESTROCK_AXIS) == 1.0
 
 
+#: WestRock's adjusted close on 2024-07-08, its no-price delisting row: the
+#: anchor 49.75 carried by 2024-07-05's return and then by CRSP's delisting
+#: return on the row itself.
+WESTROCK_DELISTING_ADJ_CLOSE = 49.75 * 1.035377 * (1.0 - 0.005630)
+
+
+def test_a_no_price_delisting_row_carries_the_delisting_return_in_adj_close(
+    mock_crsp_session, tmp_path
+):
+    """#113: the `DA` row has no price, yet its adjusted close is the
+    previous adjusted close grown by the delisting return CRSP put on it.
+
+    `ret`, not `retx`: `adjClose` is a total-return series everywhere else,
+    and the delisting return is CRSP's total return of the security on that
+    row (merger cash included). Nothing in the panel adds `divCash` on top
+    of `adjClose`, so the cash is counted once.
+    """
+    import numpy as np
+
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+
+    panel = _build(
+        tmp_path, WESTROCK_2024_ROWS, [WESTROCK_PERMNO],
+        start="2024-07-01", end="2024-07-31",
+    )
+
+    assert np.isnan(_at(panel, "close", "2024-07-08", WESTROCK_AXIS))
+    assert _at(panel, "adjClose", "2024-07-08", WESTROCK_AXIS) == pytest.approx(
+        WESTROCK_DELISTING_ADJ_CLOSE, rel=1e-12
+    )
+    assert _at(panel, "adjClose", "2024-07-08", WESTROCK_AXIS) / _at(
+        panel, "adjClose", "2024-07-05", WESTROCK_AXIS
+    ) == pytest.approx(1.0 - 0.005630, rel=1e-12)
+    # No price that day, so nothing derived from one is published either.
+    for name in ("adjOpen", "adjHigh", "adjLow", "adjVolume"):
+        assert np.isnan(_at(panel, name, "2024-07-08", WESTROCK_AXIS)), name
+
+
+def test_a_no_price_delisting_row_without_a_return_keeps_adj_close_nan(
+    mock_crsp_session, tmp_path
+):
+    """#113: CRSP's own delisting return or nothing -- none is imputed.
+
+    A `DA` row whose `dlyret` is null keeps `adjClose` NaN, so the last
+    valuation stays the previous priced day.
+    """
+    import numpy as np
+
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+
+    rows = [dict(row) for row in WESTROCK_2024_ROWS]
+    rows[-1].update(dlyret=None, dlyretx=None, dlyretmissflg="DM")
+    panel = _build(
+        tmp_path, rows, [WESTROCK_PERMNO], start="2024-07-01", end="2024-07-31",
+    )
+
+    assert np.isnan(_at(panel, "adjClose", "2024-07-08", WESTROCK_AXIS))
+    assert np.isfinite(_at(panel, "adjClose", "2024-07-05", WESTROCK_AXIS))
+
+
+@pytest.mark.parametrize(
+    ("delisting_return", "settlement_price"),
+    [("-0.005630", WESTROCK_DELISTING_ADJ_CLOSE), ("-1.000000", 0.0)],
+    ids=["cash_merger", "total_loss"],
+)
+def test_a_backtest_settles_a_no_price_delisting_at_its_delisting_return(
+    mock_crsp_session, tmp_path, delisting_return, settlement_price
+):
+    """#113 end to end: converted store -> `delisting_bars` -> settlement.
+
+    The delisting row itself is the marked bar, and a holding is settled on
+    the next bar at that row's adjusted close, not at the last traded close.
+    Two calendar days are appended after the delisting so the panel has a
+    bar to settle on, as a store with other symbols would. A -100% delisting
+    return settles at a last valuation of 0.0 (#111).
+    """
+    import numpy as np
+    import pandas as pd
+    import xarray as xr
+
+    from quantlab.dataset.crsp import CrspStockDataset
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+    from tests.test_backtest_engine import MARKET, _backtester
+
+    rows = [dict(row) for row in WESTROCK_2024_ROWS]
+    rows[-1].update(dlyret=delisting_return)
+    dataset_config = _build_store(
+        tmp_path, rows, [WESTROCK_PERMNO], start="2024-07-01", end="2024-07-31",
+    )
+    dataset = CrspStockDataset(dataset_config)
+    stored = _panel(dataset_config)
+    timestamps = pd.DatetimeIndex(stored.timestamp.values).append(
+        pd.DatetimeIndex(["2024-07-09", "2024-07-10"])
+    )
+    prices = stored[[MARKET.fill_price_column, MARKET.valuation_price_column]].reindex(
+        timestamp=timestamps
+    )
+
+    marks = dataset.delisting_bars(prices, MARKET.valuation_price_column)
+    westrock_marks = marks.sel(symbol=WESTROCK_AXIS).to_series()
+    assert westrock_marks[westrock_marks].index.tolist() == [pd.Timestamp("2024-07-08")]
+
+    weights = xr.Dataset(
+        {"weight": (("timestamp", "symbol"), np.full((timestamps.size, 1), np.nan))},
+        coords={"timestamp": timestamps, "symbol": [WESTROCK_AXIS]},
+    )
+    weights["weight"][0, 0] = 1.0  # bought at 2024-07-05's open, held
+    backtester = _backtester(tmp_path / "bt", fees=0.0, slippage=0.0)
+    simulation = backtester._simulate(weights, prices, dataset=dataset)
+
+    assert len(simulation.settlements) == 1
+    record = simulation.settlements[0]
+    assert record["delisting_timestamp"] == pd.Timestamp("2024-07-08")
+    assert record["settlement_timestamp"] == pd.Timestamp("2024-07-09")
+    assert record["price"] == pytest.approx(settlement_price, rel=1e-12, abs=0.0)
+
+
 def test_the_delisting_fixture_corpus_covers_both_ciz_shapes():
     """The corpus must never again carry only ONE delisting shape.
 

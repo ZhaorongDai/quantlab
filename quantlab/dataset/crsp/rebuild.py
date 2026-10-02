@@ -136,12 +136,18 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
         )
 
     def _measure(self) -> dict[str, int]:
-        """Return seven quality counts read from the written store.
+        """Return eight quality counts read from the written store.
 
         ``structural_gaps`` counts cells with no bar, using the same rule as
         the cleaning step: every column in ``REQUIRED_COLUMNS`` is null
         there. The list is imported from the cleaning module rather than
-        repeated. ``anomaly_flag_true`` is 0 for a panel with no
+        repeated. ``delisting_valued`` counts cells with an ``adjClose`` but
+        no ``close``: the no-price delisting rows, whose adjusted close
+        carries the delisting return. Such a cell is also a structural gap,
+        so ``adj_close_nan + delisting_valued == structural_gaps`` on a clean
+        store. ``adj_close_le_zero`` counts priced cells only, because a
+        delisting return of -100% gives a delisting row an ``adjClose`` of
+        0.0. ``anomaly_flag_true`` is 0 for a panel with no
         ``anomaly_flag`` variable; that is a valid measurement, not an error.
 
         Returns
@@ -149,7 +155,7 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
         dict of str to int
             The counts ``anomaly_flag_true``, ``adj_close_le_zero``,
             ``close_eq_zero``, ``adj_close_nan``, ``adj_volume_nan``,
-            ``structural_gaps`` and ``symbol_count``.
+            ``delisting_valued``, ``structural_gaps`` and ``symbol_count``.
         """
         panel = xr.open_zarr(self.store_path)
         try:
@@ -170,10 +176,15 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
 
             return {
                 "anomaly_flag_true": anomaly_flag_true,
-                "adj_close_le_zero": int((panel["adjClose"] <= 0).sum()),
+                "adj_close_le_zero": int(
+                    ((panel["adjClose"] <= 0) & panel["close"].notnull()).sum()
+                ),
                 "close_eq_zero": int((panel["close"] == 0).sum()),
                 "adj_close_nan": int(panel["adjClose"].isnull().sum()),
                 "adj_volume_nan": int(panel["adjVolume"].isnull().sum()),
+                "delisting_valued": int(
+                    (panel["adjClose"].notnull() & panel["close"].isnull()).sum()
+                ),
                 "structural_gaps": (
                     0 if structural_mask is None else int(structural_mask.sum())
                 ),

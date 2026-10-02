@@ -133,7 +133,7 @@ timestamp
 [nan, -0.942466, 0.428571, -0.566667, -0.6]
 ```
 
-Some modern delisting rows carry a settlement amount instead of a price (`dlyprcflg = "DA"`, with `dlyprc = 0`). Those rows get a NaN `close`, so a price of zero is never published.
+Some modern delisting rows carry a settlement amount instead of a price (`dlyprcflg = "DA"`, with `dlyprc = 0`). Those rows get a NaN `close`, so a price of zero is never published. Their `adjClose` is still the previous adjusted close times `1 + ret`, CRSP's delisting return on that row (merger cash included, so `divCash` on the row is not added again), which makes the delisting row the last valued bar and the one a backtest settles at. When CRSP gives no return on such a row, none is imputed: `adjClose` stays NaN there, the conversion logs a warning with their count and the first ten PERMNOs, and the last priced day is the last valuation.
 
 ## Common tasks
 

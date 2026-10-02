@@ -1992,8 +1992,9 @@ class MarketDataset(BaseDataset):
         panel or after it; a symbol halted through the end of the panel that
         trades again later is not delisted. On a CRSP store the marked bar
         is the delisting row, whose adjusted close already carries the
-        delisting return. A dataset that knows more (a halt without a later
-        price, say) overrides this.
+        delisting return (or, when CRSP gives no return on a no-price
+        delisting row, the last priced day before it). A dataset that knows
+        more (a halt without a later price, say) overrides this.
 
         Parameters
         ----------

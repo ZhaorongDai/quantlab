@@ -303,15 +303,18 @@ def _crsp_config(root: Path, *, store_name: str = "crsp.zarr") -> CrspDatasetCon
     )
 
 
-def _write_measurable_panel(store: Path, *, with_anomaly_flag: bool = True) -> None:
-    """A 3x2 panel whose seven measurements are all known by construction.
+def _write_measurable_panel(
+    store: Path, *, with_anomaly_flag: bool = True, delisting_adj_close=None
+) -> None:
+    """A 3x2 panel whose eight measurements are all known by construction.
 
     One cell -- `(t2, s1)` -- is a STRUCTURAL gap: null in every one of
     `cleaning.REQUIRED_COLUMNS`, which is the dense panel's cartesian product
     (D-06), not a defect. `adjClose` is null exactly there (so its null count
     equals the structural count) while `adjVolume` carries one EXTRA null at
     `(t1, s0)` -- deliberately different, so a `_measure()` that conflated the
-    two counts could not pass.
+    two counts could not pass. `delisting_adj_close` puts an adjusted close
+    on the structural gap, as a no-price delisting row carries one.
     """
     nan = np.nan
     ohlcv = np.array(
@@ -326,6 +329,8 @@ def _write_measurable_panel(store: Path, *, with_anomaly_flag: bool = True) -> N
         ["timestamp", "symbol"],
         np.array([[10.0, -1.0], [9.0, 12.0], [13.0, nan]]),
     )
+    if delisting_adj_close is not None:
+        variables["adjClose"][1][2, 1] = delisting_adj_close
     variables["adjVolume"] = (
         ["timestamp", "symbol"],
         np.array([[100.0, 200.0], [nan, 300.0], [400.0, nan]]),
@@ -427,7 +432,7 @@ def test_rebuild_refuses_a_missing_raw_tier_before_deleting_anything(
         assert sidecar.exists()
 
 
-def test_measure_reports_the_seven_contract_keys(tmp_path: Path):
+def test_measure_reports_the_eight_contract_keys(tmp_path: Path):
     config = _crsp_config(tmp_path)
     _write_measurable_panel(Path(config.zarr_file_path))
     rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
@@ -440,6 +445,7 @@ def test_measure_reports_the_seven_contract_keys(tmp_path: Path):
         "close_eq_zero",
         "adj_close_nan",
         "adj_volume_nan",
+        "delisting_valued",
         "structural_gaps",
         "symbol_count",
     }
@@ -448,6 +454,7 @@ def test_measure_reports_the_seven_contract_keys(tmp_path: Path):
     assert metrics["close_eq_zero"] == 1
     assert metrics["adj_close_nan"] == 1
     assert metrics["adj_volume_nan"] == 2
+    assert metrics["delisting_valued"] == 0
     assert metrics["structural_gaps"] == 1
     assert metrics["symbol_count"] == 2
 
@@ -469,6 +476,26 @@ def test_measure_counts_structural_gaps_from_cleaning_required_columns(
 
     assert metrics["structural_gaps"] == metrics["adj_close_nan"]
     assert metrics["adj_volume_nan"] > metrics["structural_gaps"]
+
+
+def test_measure_counts_a_valued_delisting_row_apart_from_nan_and_non_positive(
+    tmp_path: Path,
+):
+    """A no-price delisting row with a -100% return has an adjClose of 0.0.
+
+    It is counted in `delisting_valued`, not in `adj_close_le_zero` (priced
+    cells only), and `adj_close_nan + delisting_valued == structural_gaps`.
+    """
+    config = _crsp_config(tmp_path)
+    _write_measurable_panel(Path(config.zarr_file_path), delisting_adj_close=0.0)
+    rebuilder = CrspStoreRebuilder(config, data_root=tmp_path)
+
+    metrics = rebuilder._measure()
+
+    assert metrics["delisting_valued"] == 1
+    assert metrics["adj_close_le_zero"] == 1  # the priced (t0, s1) cell only
+    assert metrics["adj_close_nan"] == 0
+    assert metrics["adj_close_nan"] + metrics["delisting_valued"] == metrics["structural_gaps"]
 
 
 def test_measure_reports_zero_anomalies_when_the_variable_is_absent(
