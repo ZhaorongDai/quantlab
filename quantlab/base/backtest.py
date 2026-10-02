@@ -34,7 +34,6 @@ from typing import ClassVar, Protocol, Self, get_protocol_members
 
 import numpy as np
 import pandas as pd
-import wandb
 import xarray as xr
 from loguru import logger
 
@@ -738,6 +737,7 @@ class BaseBacktester(ABC):
             if self.config.benchmark_dataset is None
             else self.config.benchmark_dataset.get_config()
         )
+        cfg["tracker"] = self.config.tracker.get_config()
         constructor = getattr(self.config, "constructor", None)
         if constructor is not None:
             cfg["constructor"] = constructor.get_config()
@@ -1093,9 +1093,7 @@ class BaseBacktester(ABC):
             metrics,
             benchmark=stitched_benchmark,
         )
-        # wandb is off by default; when enabled it logs the stitched metrics.
-        if self.config.use_wandb:
-            self._log_to_wandb(run_dir, stitched_metrics)
+        self._track(run_dir, stitched_metrics)
 
         return CVBacktestResult(
             run_dir=run_dir,
@@ -1312,7 +1310,7 @@ class BaseBacktester(ABC):
         failure path, since fingerprints may already have been recorded and
         differ when it raises. ``notes`` are appended to the default report
         notes. The run directory is written (unless ``output_dir`` is
-        ``None``) and the metrics go to wandb when enabled.
+        ``None``) and the run is tracked (see ``_track``).
         """
         start_date = self._iso_date(self.config.start_date)
         end_date = self._iso_date(self.config.end_date)
@@ -1333,9 +1331,7 @@ class BaseBacktester(ABC):
         run_dir = self._report_and_persist(
             window.weights, window.simulation, metrics, benchmark=window.benchmark
         )
-        # wandb is off by default; nothing leaves the machine unless enabled.
-        if self.config.use_wandb:
-            self._log_to_wandb(run_dir, metrics)
+        self._track(run_dir, metrics)
 
         return BacktestResult(
             run_dir=run_dir,
@@ -2915,51 +2911,38 @@ class BaseBacktester(ABC):
             "returns are optimistic."
         ]
 
-    @classmethod
-    def _flatten_numeric(cls, prefix: str, value, out: dict) -> None:
-        """Flatten the finite numeric leaves of a nested dict into ``out``.
+    #: Metric blocks a tracking run's summary receives, when present.
+    _TRACKED_BLOCKS = ("whole", "in_sample", "out_of_sample", "benchmark", "relative")
 
-        Booleans, NaN, infinities, timestamps and strings are skipped; the
-        wandb summary only takes comparable numbers.
-        """
-        if isinstance(value, dict):
-            for key, item in value.items():
-                cls._flatten_numeric(f"{prefix}/{key}", item, out)
-            return
-        if isinstance(value, (bool, np.bool_)):
-            return
-        if isinstance(value, (int, float, np.integer, np.floating)):
-            number = float(value) if isinstance(value, (float, np.floating)) else int(value)
-            if np.isfinite(number):
-                out[prefix] = number
+    def _track(self, run_dir: Path | None, metrics: dict) -> None:
+        """Send one finished backtest to a tracking run through ``config.tracker``.
 
-    def _log_to_wandb(self, run_dir: Path | None, metrics: dict) -> None:
-        """Log the metrics and report to a separate wandb run.
-
-        Called only when ``use_wandb`` is set. The project is
-        ``{ClassName}_backtest`` and the run is named after the run
-        directory, apart from the model's training runs. The run config is
+        Opened once the backtest has succeeded, so a backtest that raises
+        leaves no run. The project is ``{ClassName}_backtest`` unless the
+        tracker sets its own, and the run is named after the run directory,
+        apart from the model's training runs. The run config is
         ``get_config()`` (fingerprints included), the summary holds the
-        finite numeric leaves of the ``whole``, ``in_sample`` and
-        ``out_of_sample`` blocks as ``whole/<metric>`` and so on (plus the
-        ``benchmark`` and ``relative`` blocks when a benchmark ran), and
-        ``report`` carries the HTML report. A run kept in memory
-        (``run_dir`` is ``None``) has no report to log and is named like a
-        run directory would be.
+        ``whole``, ``in_sample`` and ``out_of_sample`` blocks as
+        ``whole/<metric>`` and so on (plus ``benchmark`` and ``relative`` when
+        a benchmark ran), and ``report.html`` is attached. A run kept in
+        memory (``run_dir`` is ``None``) has no report to attach and is
+        named like a run directory would be.
         """
-        run = wandb.init(
+        with self.config.tracker.start_run(
             project=f"{self.class_name}_backtest",
+            group=None,
             name=self._run_dir_name() if run_dir is None else run_dir.name,
-            config=to_jsonable(self.get_config()),
-        )
-        summary: dict = {}
-        for block in ("whole", "in_sample", "out_of_sample", "benchmark", "relative"):
-            if metrics.get(block) is not None:
-                self._flatten_numeric(block, metrics[block], summary)
-        run.summary.update(summary)
-        if run_dir is not None:
-            run.log({"report": wandb.Html((run_dir / "report.html").read_text())})
-        run.finish()
+            config=self.get_config(),
+        ) as run:
+            run.summarize(
+                {
+                    block: metrics[block]
+                    for block in self._TRACKED_BLOCKS
+                    if metrics.get(block) is not None
+                }
+            )
+            if run_dir is not None:
+                run.log_file(run_dir / "report.html")
 
     def _run_dir_name(self) -> str:
         """Return ``{ClassName}_{timestamp}``, unique down to the microsecond."""

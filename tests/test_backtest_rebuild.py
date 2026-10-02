@@ -44,6 +44,7 @@ from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNCo
 from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.tracking.wandb import WandbTracker
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -296,11 +297,11 @@ def test_loader_does_not_mutate_its_input(tmp_path):
     assert saved == before
 
 
-@pytest.mark.parametrize("field_name", ["init_cash", "fees", "constructor", "use_wandb"])
+@pytest.mark.parametrize("field_name", ["init_cash", "fees", "constructor", "tracker"])
 def test_rebuild_refuses_a_config_missing_a_field(tmp_path, monkeypatch, field_name):
     """Code review WR-06: a config missing a field is refused, not filled from today's defaults.
 
-    `init_cash` is the executor-reported gap; `fees` and `use_wandb` have
+    `init_cash` is the executor-reported gap; `fees` and `tracker` have
     defaults that could change later, and `constructor` holds the rule. The old loader built
     the config with `**config` and silently took the current default, so an
     older config.json rebuilt into a different backtest. The refusal must
@@ -354,7 +355,7 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
         slippage=0.0003,
         init_cash=250_000.0,
         constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=1, score_label="fwd_ret_1")),
-        use_wandb=True,
+        tracker=WandbTracker(project="rebuilt", mode="disabled"),
         rebalance_periods=3,
     )
     for field in fields(CrossSectionBacktestConfig):

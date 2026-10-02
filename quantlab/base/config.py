@@ -1119,15 +1119,16 @@ class BacktestConfig:
     #: benchmark NAV and the excess-return and excess-drawdown charts).
     benchmark_dataset: "MarketDataset | None" = None
 
-    #: Log the run to Weights & Biases.
-    use_wandb: bool = False
+    #: Where each run's metrics and report are tracked (ADR 0015); the
+    #: default ``NullTracker`` sends nothing anywhere.
+    tracker: Tracker = NullTracker()
 
     #: Dotted import path of the backtester class; filled by the config setter.
     name: str | None = None
 
     #: Fields holding live objects. ``to_dict`` skips them; the backtester's
     #: ``get_config`` nests each one's own config instead.
-    _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset")
+    _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset", "tracker")
 
     def to_dict(self):
         """Return only the scalar fields as a dict.
@@ -1180,7 +1181,13 @@ class CrossSectionBacktestConfig(BacktestConfig):
 
     #: Fields holding live objects. ``to_dict`` skips them; the backtester's
     #: ``get_config`` nests each one's own config instead.
-    _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset", "constructor")
+    _OBJECT_FIELDS = (
+        "price_dataset",
+        "model",
+        "benchmark_dataset",
+        "tracker",
+        "constructor",
+    )
 
 
 @dataclass(kw_only=True)

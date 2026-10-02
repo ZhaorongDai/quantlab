@@ -51,12 +51,10 @@ directory of a run, so a report that hardcoded metric names would raise on the
 day that lands and take the entire run directory with it. That property is
 proved at the leaf level in tests/test_backtest_report.py.
 
-D-28: `use_wandb=False` never calls `wandb.init`; `use_wandb=True` logs the
-flattened numeric metrics and the report to a separate `{class}_backtest` run
-named after the run directory, then finishes it.
+Tracking (the config's `tracker`, ADR 0015) is covered in
+tests/test_backtest_tracking.py.
 
-Everything is synthetic, CPU-only and offline; wandb is disabled and any wandb
-call is asserted through a monkeypatched recorder.
+Everything is synthetic, CPU-only and offline.
 """
 
 import json
@@ -1109,102 +1107,3 @@ def test_metrics_json_carries_one_trade_view_and_no_nested_positions_block(
         ), (key, value)
         if isinstance(value, float):
             assert np.isfinite(value), key
-
-
-# --------------------------------------------------------------------------
-# D-28: optional wandb
-# --------------------------------------------------------------------------
-
-
-class _Summary:
-    def __init__(self):
-        self.data: dict = {}
-
-    def update(self, values: dict):
-        self.data.update(values)
-
-
-class _RecordingRun:
-    def __init__(self):
-        self.summary = _Summary()
-        self.logged: list[dict] = []
-        self.finished = 0
-
-    def log(self, values: dict):
-        self.logged.append(values)
-
-    def finish(self):
-        self.finished += 1
-
-
-class _RecordingHtml:
-    def __init__(self, data):
-        self.data = data
-
-
-def test_wandb_is_never_initialized_when_disabled(tmp_path, monkeypatch):
-    def _refuse(*args, **kwargs):
-        raise AssertionError("wandb.init must not be called when use_wandb is False")
-
-    # Patched only after training: the model layer's own train() legitimately
-    # opens a wandb run; this lock is about the backtester alone.
-    dataset_config, checkpoint = _trained_store(tmp_path)
-    monkeypatch.setattr("wandb.init", _refuse)
-    backtester = _backtester(
-        tmp_path, dataset_config, checkpoint, tag="off", window_start_bar=30, window_end_bar=50
-    )
-    assert backtester.config.use_wandb is False
-    result = backtester.run()
-    assert result.run_dir.exists()
-
-
-def test_wandb_logs_metrics_and_report_to_a_separate_backtest_run(tmp_path, monkeypatch):
-    init_calls: list[dict] = []
-    runs: list[_RecordingRun] = []
-
-    def _init(**kwargs):
-        init_calls.append(kwargs)
-        run = _RecordingRun()
-        runs.append(run)
-        return run
-
-    # Patched only after training: the model layer's own train() opens its own
-    # wandb run, which is not the backtest run under test.
-    dataset_config, checkpoint = _trained_store(tmp_path)
-    monkeypatch.setattr("wandb.init", _init)
-    monkeypatch.setattr("wandb.Html", _RecordingHtml)
-    backtester = _backtester(
-        tmp_path,
-        dataset_config,
-        checkpoint,
-        tag="on",
-        window_start_bar=OVERLAP_START_BAR,
-        window_end_bar=OVERLAP_END_BAR,
-        use_wandb=True,
-    )
-    result = backtester.run()
-
-    assert len(init_calls) == 1
-    call = init_calls[0]
-    assert call["project"] == "USEquityCrossectionSelectStockVectorBt_backtest"
-    assert call["name"] == result.run_dir.name
-    json.dumps(call["config"], allow_nan=False)  # the run config is strict JSON
-
-    (run,) = runs
-    summary = run.summary.data
-    assert summary, "the summary must receive metrics"
-    for key, value in summary.items():
-        assert key.split("/")[0] in {"whole", "in_sample", "out_of_sample"}, key
-        assert isinstance(value, (int, float)) and not isinstance(value, bool), key
-        assert np.isfinite(value), key
-    assert any(key.startswith("in_sample/") for key in summary)
-    assert any(key.startswith("out_of_sample/") for key in summary)
-    assert "whole/Total Turnover [%]" in summary
-    assert summary["whole/Total Return [%]"] == pytest.approx(
-        result.metrics["whole"]["Total Return [%]"]
-    )
-
-    reports = [entry["report"] for entry in run.logged if "report" in entry]
-    assert len(reports) == 1
-    assert reports[0].data == (result.run_dir / "report.html").read_text()
-    assert run.finished == 1

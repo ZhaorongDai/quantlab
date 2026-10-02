@@ -46,6 +46,7 @@ from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.gats import GATsRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.tracking.wandb import WandbTracker
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
@@ -209,7 +210,7 @@ def backtest(checkpoint: Path):
         rebalance_periods=5,
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=10)),
         fees=0.0005, slippage=0.0005, init_cash=1_000_000.0,
-        use_wandb=WANDB_MODE != "disabled", benchmark_dataset=benchmark,
+        tracker=WandbTracker(mode=WANDB_MODE), benchmark_dataset=benchmark,
     ))
     result = backtester.run()
     whole = result.metrics["whole"]

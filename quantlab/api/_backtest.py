@@ -95,7 +95,6 @@ def backtest(
         slippage=slippage,
         init_cash=init_cash,
         benchmark_dataset=benchmark_dataset,
-        use_wandb=False,
         fill_price_column=fill,
         valuation_price_column=valuation,
         trading_days_per_year=days,

@@ -57,6 +57,7 @@ from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
+from quantlab.tracking.wandb import WandbTracker
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
@@ -250,7 +251,7 @@ def backtest(manifest: Path):
         rebalance_periods=HORIZON,
         constructor=optimizer,
         fees=0.0005, slippage=0.0005, init_cash=1_000_000.0,
-        use_wandb=WANDB_MODE != "disabled", benchmark_dataset=benchmark,
+        tracker=WandbTracker(mode=WANDB_MODE), benchmark_dataset=benchmark,
     ))
     result = backtester.run()
     whole = result.metrics["whole"]
