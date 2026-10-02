@@ -616,8 +616,8 @@ class BaseBacktester(ABC):
         ValueError
             If ``model_mode`` (other than ``None``), only one of ``model``
             and ``model_mode`` being set, the load-mode paths,
-            ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``
-            or the date order are invalid.
+            ``rebalance_periods``, ``fees``, ``slippage``, ``init_cash``,
+            ``sizing_basis`` or the date order are invalid.
 
         Examples
         --------
@@ -693,6 +693,11 @@ class BaseBacktester(ABC):
         if config.init_cash <= 0:
             raise ValueError(
                 f"{self.class_name}: init_cash must be > 0, got {config.init_cash}"
+            )
+        if config.sizing_basis not in ("fill", "valuation"):
+            raise ValueError(
+                f"{self.class_name}: sizing_basis must be 'fill' or 'valuation', "
+                f"got {config.sizing_basis!r}"
             )
         if pd.Timestamp(config.start_date) > pd.Timestamp(config.end_date):
             raise ValueError(

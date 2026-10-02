@@ -41,8 +41,13 @@ class VectorBtBacktester(BaseBacktester):
     - A weight row formed at bar ``t`` fills at bar ``t + 1`` at the market's
       fill price (the weights are shifted one bar before they reach
       ``Portfolio.from_orders``).
-    - A target percentage is measured against the portfolio valued at the
-      fill price of the bar it executes on, which is vectorbt's default.
+    - A target percentage is sized against the price ``config.sizing_basis``
+      names. ``"fill"`` (the default, vectorbt's own) measures it against the
+      portfolio valued at the fill price of the bar it executes on and
+      divides by that price. ``"valuation"`` uses the valuation price of the
+      signal bar t instead (vectorbt's ``val_price``): the portfolio valued
+      at t's close, divided by t's close, as an order placed after the close
+      must be sized. Either way the order fills at t + 1's fill price.
     - No borrow or short-financing cost is modelled, so short-side returns
       are optimistic.
 
@@ -213,6 +218,10 @@ class VectorBtBacktester(BaseBacktester):
             group_by=True,
             cash_sharing=True,
             call_seq="auto",
+            # The valuation basis sizes against t's close: vectorbt's -inf
+            # valuation price is the previous bar's `close`, which here is the
+            # forward-filled valuation price of the signal bar.
+            val_price=-np.inf if cfg.sizing_basis == "valuation" else np.inf,
             fees=frame(np.where(plan["settle"], 0.0, cfg.fees)),
             slippage=frame(np.where(plan["settle"], 0.0, cfg.slippage)),
             init_cash=cfg.init_cash,

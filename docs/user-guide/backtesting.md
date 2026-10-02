@@ -329,13 +329,15 @@ rebalance of the whole portfolio, not just the halted or delisted symbol.
 
 ## Costs and assumptions
 
-Three config fields set the trading costs and the starting capital:
+Four config fields set the trading costs, the starting capital and how a weight
+becomes a share count:
 
 | Field | Default | Meaning |
 |---|---|---|
 | `fees` | `0.0005` | Proportional fee on the traded value of each fill (5 basis points). |
 | `slippage` | `0.0005` | Proportional price penalty: buys fill at `price * (1 + slippage)`, sells at `price * (1 - slippage)`. |
 | `init_cash` | `1_000_000.0` | Starting cash of the simulated portfolio. |
+| `sizing_basis` | `"fill"` | The price a target weight is sized against: `"fill"` values the portfolio at the fill bar's fill price and divides by it; `"valuation"` values it at the signal bar's valuation price (its close) and divides by that, as an order placed after the close is sized. The order fills at the next bar's fill price either way. |
 
 Fractional shares are allowed, so target weights are hit exactly. No borrow
 fee or short-financing cost is modelled, so short-side returns are

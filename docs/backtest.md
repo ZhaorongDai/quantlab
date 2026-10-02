@@ -197,7 +197,7 @@ order
 52.82443690819098
 ```
 
-Fees and slippage (`fees` and `slippage`, both 0.0005 by default) are proportional to each trade. A target percentage is measured against the portfolio value at the fill price of the bar it executes on.
+Fees and slippage (`fees` and `slippage`, both 0.0005 by default) are proportional to each trade. `sizing_basis` sets the price a target percentage is sized against. With `"fill"`, the default, it is measured against the portfolio value at the fill price of the bar it executes on, and the share count is that value times the weight over the fill price. With `"valuation"` the portfolio is valued at the signal bar's valuation price (t's close) and the share count is divided by that price, as an order placed after the close must be sized; the order still fills at t + 1's fill price. Example: a book of 500 cash and 50 shares that closed at 15 and opens at 16 asks for 84 percent in that stock. The fill basis buys 0.84 x 1300 / 16 - 50 = 18.25 shares, the valuation basis 0.84 x 1250 / 15 - 50 = 20 shares (`tests/test_backtest_sizing_basis.py`). The basis is recorded in `config.json`.
 
 ### Label delay and fill delay
 

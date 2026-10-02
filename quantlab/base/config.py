@@ -1109,6 +1109,14 @@ class BacktestConfig:
     slippage: float = 0.0005
     #: Starting cash of the simulated portfolio.
     init_cash: float = 1_000_000.0
+    #: The price a target weight is sized against. ``"fill"`` (the default)
+    #: sizes at the fill price of the bar the order executes on, against the
+    #: portfolio valued at those prices: vectorbt's own default. ``"valuation"``
+    #: sizes at the valuation price of the signal bar t (its close), against
+    #: the portfolio valued at t's close, as a broker order placed after the
+    #: close must be sized; the order still fills at t+1's fill price. The
+    #: vectorbt engine reads it.
+    sizing_basis: Literal["fill", "valuation"] = "fill"
 
     #: A market dataset holding exactly one symbol, for example the QQQ store
     #: built by ``CrspDatasetConfig.qqq_benchmark``. It is a
