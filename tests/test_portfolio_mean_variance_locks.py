@@ -19,7 +19,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
-from quantlab.base.portfolio import PortfolioConstructionError, PortfolioContext
+from quantlab.base.portfolio import LabelSpec, PortfolioConstructionError, PortfolioContext
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 
@@ -28,17 +28,7 @@ LOOKBACK = 60
 SPAN = 5
 
 
-class _Label:
-    def get_factor_names(self):
-        return ("ret_5",)
-
-    def span_bars(self):
-        return SPAN
-
-
-class _Predictor:
-    labels = [_Label()]
-    label_scales = {"ret_5": "raw"}
+SPECS = [LabelSpec(name="ret_5", scale="raw", delay=1, span=SPAN)]
 
 
 def _returns(seed=0):
@@ -72,7 +62,7 @@ def _optimizer(**overrides):
     )
     params.update(overrides)
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(**params))
-    optimizer.bind(_Predictor())
+    optimizer.bind(SPECS)
     return optimizer
 
 

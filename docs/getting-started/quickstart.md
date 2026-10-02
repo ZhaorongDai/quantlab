@@ -280,7 +280,7 @@ print("First rebalance:", dict(zip(held.symbol.values.tolist(), held.values.toli
 ```
 
 ```text
-Run directory: ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+Run directory: ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
 Predictions: ['ret_5'] {'timestamp': 140, 'symbol': 16}
 First rebalance: {'S03': 0.25, 'S07': 0.25, 'S08': 0.25, 'S09': 0.25}
 ```

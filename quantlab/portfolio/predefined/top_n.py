@@ -5,13 +5,15 @@ holds the top ``top_n`` with equal weights, or with ``direction="long_short"``
 also shorts the bottom ``top_n``, around the locked positions it must keep.
 """
 
+from collections.abc import Sequence
+
 import numpy as np
 import pandas as pd
 import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import TopNConfig
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PortfolioContext
 
 
 class TopNConstructor(PortfolioConstructor):
@@ -79,10 +81,10 @@ class TopNConstructor(PortfolioConstructor):
         if config.top_n < 1:
             raise ValueError(f"top_n must be >= 1, got {config.top_n}")
 
-    def bind(self, predictor) -> None:
-        """Refuse a predictor without labels, or without ``score_label``.
+    def bind(self, labels: Sequence[LabelSpec]) -> None:
+        """Refuse empty label specs, or specs without ``score_label``.
 
-        Any scale ranks, so ``label_scales`` is not read.
+        Any scale ranks, so a spec's ``scale`` is not read.
 
         Raises
         ------
@@ -92,21 +94,20 @@ class TopNConstructor(PortfolioConstructor):
 
         Examples
         --------
-        With ``model`` a model predicting ``ret_5`` and ``ret_1``:
-
+        >>> from quantlab.base.portfolio import LabelSpec
+        >>> specs = [LabelSpec("ret_5", "raw", 1, 5), LabelSpec("ret_1", "raw", 1, 1)]
         >>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2, score_label="ret_20"))
-        >>> rule.bind(model)
+        >>> rule.bind(specs)
         Traceback (most recent call last):
-        ValueError: score_label 'ret_20' is not one of the predictor's labels ['ret_5', 'ret_1']
+        ValueError: score_label 'ret_20' is not one of the predicted labels ['ret_5', 'ret_1']
         """
-        labels = self._label_names(predictor)
-        if not labels:
-            raise ValueError("the predictor declares no labels to score by")
+        names = [spec.name for spec in labels]
+        if not names:
+            raise ValueError("there are no predicted labels to score by")
         label = self.config.score_label
-        if label is not None and label not in labels:
+        if label is not None and label not in names:
             raise ValueError(
-                f"score_label {label!r} is not one of the predictor's labels "
-                f"{list(labels)}"
+                f"score_label {label!r} is not one of the predicted labels {names}"
             )
 
     def _score_label(self, predictions: xr.Dataset) -> str:

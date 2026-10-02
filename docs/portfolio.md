@@ -87,11 +87,37 @@ The vectorised backtest calls `construct_panel`. It loops `construct` over the r
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
 - A rule's `lookback_bars` is added to the backtest's warm-up, so the first backtest bar already has a full window.
 
-The backtester calls the rule's `bind(predictor)` when it is built, before any data is read or any model trained. This is where a rule checks the labels it needs, so a misconfigured rule fails at once.
+The backtester calls the rule's `bind(labels)` when it is built, before any data is read or any model trained. `labels` holds one `LabelSpec(name, scale, delay, span)` per prediction variable, which the backtester derives from its predictor with `quantlab.base.backtest.label_specs`; `span` is `None` for a label that is not a `Forward` label. The specs are the only thing a rule may know about a prediction: it is never handed the model. This is where a rule checks the labels it needs, so a misconfigured rule fails at once.
 
 A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. The backtest holds the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `tie_at_cutoff` above or `closed_without_risk` below, with its `count` (the symbols it involved over all its bars) and one record per bar.
 
 The run's `config.json` records the rule with all its parameters and its risk model, and `load_backtester_from_config` rebuilds it.
+
+### The rule without the model
+
+A run with a model (`run()` or `run_cv()`) also writes `predictions.zarr`, the predictions the rule read with their label specs, as a `PredictionPanel`. `load_constructor(run_dir)` in `quantlab/portfolio/prediction_panel.py` rebuilds the run's rule from `config.json` and binds it to the panel's specs. It never imports the model, factor, label or backtest layers, so an executor outside the research pipeline, such as an event-driven backtest, can replay the run's decisions from these two files alone:
+
+```python
+>>> import tempfile, json
+>>> from pathlib import Path
+>>> from quantlab.base.portfolio import LabelSpec, PredictionPanel
+>>> from quantlab.portfolio.prediction_panel import load_constructor
+>>> run_dir = Path(tempfile.mkdtemp())
+>>> panel = PredictionPanel(
+...     context.predictions.expand_dims(timestamp=[context.timestamp]),
+...     [LabelSpec(name="ret_5", scale="raw", delay=1, span=5)],
+... )
+>>> _ = panel.write(run_dir / "predictions.zarr")
+>>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+>>> _ = (run_dir / "config.json").write_text(json.dumps({"constructor": rule.get_config()}))
+>>> load_constructor(run_dir) == rule
+True
+>>> PredictionPanel.read(run_dir / "predictions.zarr").labels
+(LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
+
+```
+
+The file holds one variable per label on `(timestamp, symbol)`, and its attributes `format_version` and `labels` (the specs as a JSON list). A `run_weights()` run has no model and writes no panel.
 
 ## Mean-variance optimisation
 
@@ -127,22 +153,17 @@ A held candidate without a prediction gets an expected return of 0.0, so its tur
 
 ### A first optimisation
 
-The optimiser needs to know about the predictor's labels, which a backtest hands it through `bind`. Here a small stand-in plays the predictor: it predicts a 5-bar return `ret_5` and a 5-bar volatility `vol_5`, both in the labels' own units (`"raw"`, see [Calibration](#calibration)).
+The optimiser needs to know the span and scale of the labels it reads, which a backtest hands it through `bind` as label specs. Here the specs describe a 5-bar return `ret_5` and a 5-bar volatility `vol_5`, both predicted in the labels' own units (`"raw"`, see [Calibration](#calibration)).
 
 ```python
 >>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
 >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
->>> class Label:
-...     def __init__(self, name, span):
-...         self.name, self.span = name, span
-...     def get_factor_names(self):
-...         return (self.name,)
-...     def span_bars(self):
-...         return self.span
->>> class Predictor:
-...     labels = [Label("ret_5", 5), Label("vol_5", 5)]
-...     label_scales = {"ret_5": "raw", "vol_5": "raw"}
+>>> from quantlab.base.portfolio import LabelSpec
+>>> specs = [
+...     LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
+...     LabelSpec(name="vol_5", scale="raw", delay=1, span=5),
+... ]
 >>> rng = np.random.default_rng(0)
 >>> window = rng.normal(0.0, 1.0, size=(60, 4)) * [0.010, 0.015, 0.020, 0.025]
 >>> context = PortfolioContext(
@@ -161,7 +182,7 @@ The optimiser needs to know about the predictor's labels, which a backtest hands
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
->>> optimizer.bind(Predictor())
+>>> optimizer.bind(specs)
 >>> optimizer.lookback_bars, optimizer.span
 (60, 5)
 >>> weights = optimizer.construct(context)
@@ -179,25 +200,25 @@ A model's prediction is usually a score, not a return. It ranks symbols, but its
 - `"grinold"` (the default) sets `mu = ic * sigma * z`. Here `z` is the prediction's cross-sectional z-score over the candidates, `sigma` each symbol's volatility over the span (from the covariance's diagonal), and `ic` the model's information coefficient, for example the mean IC of a walk-forward cross-validation run. Any model's output can feed it, and `risk_aversion` keeps its meaning from one model to the next.
 - `"raw"` takes the prediction itself as `mu`. It only makes sense for a model that predicts returns in their own units.
 
-Every predictor reports, per label, whether its prediction is in the label's own units: `label_scales` maps each label to `"raw"` or `"standardized"`. A model is `"raw"` when it was fitted on the label unchanged. An ensemble reports `"standardized"` for a label it averages over several members, because it z-scores each member first. `bind` refuses `"raw"` calibration on a `"standardized"` label:
+Every predictor reports, per label, whether its prediction is in the label's own units: `label_scales` maps each label to `"raw"` or `"standardized"`, and the label's spec carries it as `scale`. A model is `"raw"` when it was fitted on the label unchanged. An ensemble reports `"standardized"` for a label it averages over several members, because it z-scores each member first. `bind` refuses `"raw"` calibration on a `"standardized"` label:
 
 ```python
->>> class RankedPredictor(Predictor):
-...     label_scales = {"ret_5": "standardized", "vol_5": "raw"}
+>>> import dataclasses
+>>> ranked = [dataclasses.replace(specs[0], scale="standardized"), specs[1]]
 >>> MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5", calibration="raw",
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     risk_aversion=5.0,
-... )).bind(RankedPredictor())
+... )).bind(ranked)
 Traceback (most recent call last):
     ...
-ValueError: calibration='raw' reads the prediction of 'ret_5' as a return, but the predictor reports its scale as 'standardized', not 'raw' (a model fitted on a transformed target, or a label an ensemble averages); use calibration='grinold'
+ValueError: calibration='raw' reads the prediction of 'ret_5' as a return, but its label spec reports its scale as 'standardized', not 'raw' (a model fitted on a transformed target, or a label an ensemble averages); use calibration='grinold'
 
 ```
 
 ### Spans
 
-`mu`, `sigma` and `Sigma` are all expressed over the span of `expected_return_label`: 5 bars for `ret_5`. The span is read from the label, never configured. A risk model estimates the covariance of one-bar returns, and the optimiser multiplies it by the span, because variance grows linearly with time:
+`mu`, `sigma` and `Sigma` are all expressed over the span of `expected_return_label`: 5 bars for `ret_5`. The span is read from the label's spec, never configured, and a label without a span (not a `Forward` label) is refused. A risk model estimates the covariance of one-bar returns, and the optimiser multiplies it by the span, because variance grows linearly with time:
 
 ```python
 >>> inputs = optimizer.problem_inputs(context)
@@ -224,7 +245,7 @@ The volatility label, such as `Volatility`, is a span-scale volatility. It must 
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
->>> with_volatility.bind(Predictor())
+>>> with_volatility.bind(specs)
 >>> covariance = with_volatility.problem_inputs(context).covariance
 >>> np.sqrt(np.diag(covariance)).round(4)
 array([0.05, 0.03, 0.04, 0.06])
@@ -247,7 +268,7 @@ With `direction="long_short"` the book is dollar-neutral:
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
 ... ))
->>> long_short.bind(Predictor())
+>>> long_short.bind(specs)
 >>> weights = long_short.construct(context)
 >>> weights.values.round(3)
 array([ 0.4  , -0.212, -0.261,  0.073])
@@ -341,7 +362,7 @@ Subclass `PortfolioConstructor`:
 
 1. Set `config_cls` to a frozen dataclass of the rule's parameters.
 2. Implement `construct`.
-3. Override `lookback_bars` when the rule reads a return window, `required_factors` when it reads factor panels, and `bind` to check the predictor's labels.
+3. Override `lookback_bars` when the rule reads a return window, `required_factors` when it reads factor panels, and `bind` to check the label specs.
 
 `get_config` and `from_config` serialise the rule as its config's fields plus the class's import path. A field holding another component, such as a risk model, is nested, so no extra code is needed to rebuild a run.
 

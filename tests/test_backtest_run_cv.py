@@ -55,7 +55,7 @@ import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
-from quantlab.base.portfolio import PortfolioConstructor
+from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PredictionPanel
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     make_model,
@@ -639,8 +639,19 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         "settlements.json",
         "fingerprint.json",
         "report.html",
+        "predictions.zarr",
         "folds",
     }
+
+    # --- the prediction panel: the concatenated fold predictions, stitched dir only
+    panel = PredictionPanel.read(run_dir / "predictions.zarr")
+    assert panel.labels == (
+        LabelSpec(name=f"fwd_ret_{HORIZON}", scale="raw", delay=1, span=HORIZON),
+    )
+    xr.testing.assert_equal(
+        panel.predictions,
+        xr.concat([record["predictions"] for record in result.folds], dim="timestamp"),
+    )
 
     # --- stitched artifacts --------------------------------------------------
     np.testing.assert_array_equal(

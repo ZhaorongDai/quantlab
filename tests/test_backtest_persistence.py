@@ -1,7 +1,7 @@
 """Locks for a backtest run's persistent record (phase 03.7, plan 09).
 
 D-24: every run writes its own directory `output_dir/{class}_{timestamp}/`
-holding config.json, weights.zarr, equity.zarr (value, returns),
+holding config.json, weights.zarr, equity.zarr (value, returns), predictions.zarr,
 settlements.json, metrics.json, report.html and fingerprint.json. An existing
 directory is never overwritten, and every JSON artifact is strict JSON (NaN and
 inf persisted as null, timestamps as ISO strings).
@@ -97,6 +97,7 @@ D24_ARTIFACTS = [
     "equity.zarr",
     "fingerprint.json",
     "metrics.json",
+    "predictions.zarr",
     "report.html",
     "settlements.json",
     "weights.zarr",

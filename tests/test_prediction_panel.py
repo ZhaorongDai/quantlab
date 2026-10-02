@@ -1,0 +1,253 @@
+"""Label specs and the prediction panel file (#107, ADR 0005 of quantlab-trader).
+
+What is locked here, and what turns it red:
+
+- `PredictionPanel.write`/`read` round-trip the predictions and their label specs
+  through `predictions.zarr` (one variable per label on `(timestamp, symbol)`, attrs
+  `format_version` and JSON `labels`);
+- a panel whose variables are not exactly its specs' names is refused;
+- portfolio constructors bind to `LabelSpec`s: TopN refuses an unknown `score_label`,
+  mean-variance refuses a label without a span;
+- `label_specs(predictor)` derives one spec per label variable from `labels`,
+  `label_delays` and `label_scales`;
+- `run()` and `run_cv()` (stitched directory only) write `predictions.zarr`,
+  `run_weights()` writes none;
+- `load_constructor(run_dir)` rebuilds the run's constructor bound to the panel's specs,
+  and importing and calling it loads no model, factor, label or backtest module, nor
+  torch, xgboost, KunQuant or vectorbt.
+
+Everything is synthetic, CPU-only and offline.
+"""
+
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+import xarray as xr
+
+from quantlab.base.portfolio import LabelSpec
+from quantlab.portfolio.prediction_panel import PredictionPanel
+
+SPECS = (
+    LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
+    LabelSpec(name="rank_1", scale="standardized", delay=1, span=None),
+)
+
+
+def _predictions(symbols) -> xr.Dataset:
+    rng = np.random.default_rng(0)
+    timestamps = pd.date_range("2024-01-02", periods=6, freq="B")
+    shape = (len(timestamps), len(symbols))
+    values = {name: rng.normal(size=shape) for name in ("ret_5", "rank_1")}
+    values["ret_5"][2, 1] = np.nan
+    return xr.Dataset(
+        {name: (("timestamp", "symbol"), value) for name, value in values.items()},
+        coords={"timestamp": timestamps, "symbol": symbols},
+    )
+
+
+@pytest.mark.parametrize(
+    "symbols",
+    [np.array(["AAA", "BBB", "CCC"], dtype=object), np.array([10001, 10002, 10107])],
+    ids=["tickers", "permnos"],
+)
+def test_a_prediction_panel_round_trips_through_its_file(tmp_path, symbols):
+    panel = PredictionPanel(_predictions(symbols), SPECS)
+
+    panel.write(tmp_path / "predictions.zarr")
+    back = PredictionPanel.read(tmp_path / "predictions.zarr")
+
+    assert back.labels == SPECS
+    xr.testing.assert_equal(back.predictions, panel.predictions)
+    assert back.predictions.symbol.values.tolist() == symbols.tolist()
+
+
+def test_the_file_holds_one_variable_per_label_and_json_specs(tmp_path):
+    PredictionPanel(_predictions(np.array(["AAA", "BBB"], dtype=object)), SPECS).write(
+        tmp_path / "predictions.zarr"
+    )
+
+    stored = xr.open_zarr(tmp_path / "predictions.zarr")
+    assert sorted(stored.data_vars) == ["rank_1", "ret_5"]
+    assert all(stored[name].dims == ("timestamp", "symbol") for name in stored.data_vars)
+    assert stored.attrs["format_version"] == 1
+    assert json.loads(stored.attrs["labels"]) == [
+        {"name": "ret_5", "scale": "raw", "delay": 1, "span": 5},
+        {"name": "rank_1", "scale": "standardized", "delay": 1, "span": None},
+    ]
+
+
+def test_a_panel_whose_variables_are_not_its_labels_is_refused():
+    predictions = _predictions(np.array(["AAA", "BBB"], dtype=object))
+    with pytest.raises(ValueError, match="rank_1"):
+        PredictionPanel(predictions[["ret_5"]], SPECS)
+
+
+def test_top_n_binds_to_label_specs_and_refuses_an_unknown_score_label():
+    from quantlab.base.config import TopNConfig
+    from quantlab.portfolio.predefined.top_n import TopNConstructor
+
+    TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="rank_1")).bind(
+        SPECS
+    )
+    rule = TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="ret_20"))
+    with pytest.raises(ValueError, match=r"score_label 'ret_20' is not one of .*\['ret_5', 'rank_1'\]"):
+        rule.bind(SPECS)
+    with pytest.raises(ValueError, match="no predicted labels"):
+        TopNConstructor(TopNConfig(direction="long_only", top_n=1)).bind([])
+
+
+def _optimizer(label: str):
+    from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
+    from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+    from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
+
+    return MeanVarianceOptimizer(
+        MeanVarianceConfig(
+            expected_return_label=label,
+            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+            ic=0.05,
+            risk_aversion=5.0,
+        )
+    )
+
+
+def test_mean_variance_reads_the_span_of_its_label_spec():
+    optimizer = _optimizer("ret_5")
+    optimizer.bind(SPECS)
+    assert optimizer.span == 5
+
+
+def test_mean_variance_refuses_a_label_spec_without_a_span():
+    with pytest.raises(
+        ValueError, match="expected_return_label 'rank_1' has no span; it needs a Forward label"
+    ):
+        _optimizer("rank_1").bind(SPECS)
+
+
+class _Label:
+    def __init__(self, names, span=None):
+        self._names = names
+        if span is not None:
+            self.span_bars = lambda: span
+
+    def get_factor_names(self):
+        return list(self._names)
+
+
+class _Predictor:
+    labels = [_Label(["ret_5"], span=5), _Label(["up_1", "down_1"])]
+    label_delays = (1, 2)
+    label_scales = {"ret_5": "raw", "up_1": "standardized", "down_1": "raw"}
+
+
+def test_label_specs_derives_one_spec_per_label_variable():
+    from quantlab.base.backtest import label_specs
+
+    assert label_specs(_Predictor()) == (
+        LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
+        LabelSpec(name="up_1", scale="standardized", delay=2, span=None),
+        LabelSpec(name="down_1", scale="raw", delay=2, span=None),
+    )
+
+
+# --- run directories ---------------------------------------------------------
+
+
+def _day(ts) -> str:
+    return pd.Timestamp(ts).strftime("%Y-%m-%d")
+
+
+@pytest.fixture(scope="module")
+def model_run(tmp_path_factory):
+    """One load-mode `run()` with a top-2 rule, shared read-only by the tests below."""
+    from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+    from quantlab.backtest.predefined.us_equity import (
+        USEquityCrossectionSelectStockVectorBt,
+    )
+    from quantlab.portfolio.predefined.top_n import TopNConstructor
+    from tests.backtest_fixtures import (
+        make_model,
+        make_stock_dataset,
+        train_checkpoint,
+        write_price_store,
+    )
+
+    root = tmp_path_factory.mktemp("model_run")
+    dataset_config = write_price_store(root, n_bars=60)
+    bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+    dates = dict(
+        start_date=_day(bars[0]),
+        end_date=_day(bars[29]),
+        train_start=_day(bars[0]),
+        train_end=_day(bars[24]),
+        test_start=_day(bars[25]),
+        test_end=_day(bars[29]),
+    )
+    checkpoint = train_checkpoint(make_model(root / "train", dataset_config, **dates))
+    backtester = USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=make_stock_dataset(dataset_config),
+            model=make_model(root / "backtest", dataset_config, **dates),
+            model_mode="load",
+            checkpoint=str(checkpoint),
+            start_date=_day(bars[30]),
+            end_date=_day(bars[50]),
+            output_dir=str(root / "runs"),
+            rebalance_periods=5,
+            constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
+        )
+    )
+    return backtester.run()
+
+
+def test_run_writes_the_window_predictions_and_their_label_specs(model_run):
+    panel = PredictionPanel.read(model_run.run_dir / "predictions.zarr")
+
+    assert panel.labels == (LabelSpec(name="fwd_ret_1", scale="raw", delay=1, span=1),)
+    xr.testing.assert_equal(panel.predictions, model_run.predictions)
+
+
+def test_load_constructor_rebuilds_the_runs_rule_bound_to_the_panels_specs(model_run):
+    from quantlab.base.config import TopNConfig
+    from quantlab.portfolio.prediction_panel import load_constructor
+    from quantlab.portfolio.predefined.top_n import TopNConstructor
+
+    rule = load_constructor(model_run.run_dir)
+
+    assert rule == TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+
+
+def test_load_constructor_refuses_a_run_without_a_prediction_panel(tmp_path, model_run):
+    import shutil
+
+    from quantlab.portfolio.prediction_panel import load_constructor
+
+    shutil.copy(model_run.run_dir / "config.json", tmp_path / "config.json")
+    with pytest.raises(FileNotFoundError, match="predictions.zarr"):
+        load_constructor(tmp_path)
+
+
+def test_load_constructor_loads_no_model_factor_label_or_engine_module(model_run):
+    import subprocess
+    import sys
+
+    from tests.test_backtest_contracts import REPO_ROOT
+
+    code = (
+        "import sys\n"
+        "from quantlab.portfolio.prediction_panel import load_constructor\n"
+        f"rule = load_constructor({str(model_run.run_dir)!r})\n"
+        "print(type(rule).__name__)\n"
+        "banned = ('quantlab.model', 'quantlab.factor', 'quantlab.label',\n"
+        "          'quantlab.backtest', 'quantlab.base.model', 'quantlab.base.factor',\n"
+        "          'quantlab.base.backtest', 'torch', 'xgboost', 'KunQuant', 'vectorbt')\n"
+        "print(sorted(m for m in sys.modules\n"
+        "             if any(m == b or m.startswith(b + '.') for b in banned)))\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO_ROOT
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-2:] == ["TopNConstructor", "[]"]

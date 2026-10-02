@@ -41,6 +41,7 @@ from loguru import logger
 
 from quantlab.base.data import MarketDataset
 from quantlab.base.model import BaseModel
+from quantlab.base.portfolio import LabelSpec, PredictionPanel
 from quantlab.base.tracking import TrackingRun
 from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
@@ -176,6 +177,52 @@ class Predictor(Protocol):
 
     @classmethod
     def from_config(cls, config: dict) -> Self: ...
+
+
+def label_specs(predictor: Predictor) -> tuple[LabelSpec, ...]:
+    """Return the ``LabelSpec`` of every prediction variable of ``predictor``.
+
+    One spec per variable name of each label, in the order of ``labels``:
+    the name, its scale from ``label_scales``, the label's delay from
+    ``label_delays`` and its ``span_bars()``, or ``None`` for a label
+    without one (it is not a ``Forward`` label). These are what a portfolio
+    construction rule is bound to and what a run's ``predictions.zarr``
+    records.
+
+    Parameters
+    ----------
+    predictor : Predictor
+        The model or ensemble whose labels are described.
+
+    Returns
+    -------
+    tuple[LabelSpec, ...]
+        The specs, in the order of the prediction variables.
+
+    Raises
+    ------
+    ValueError
+        If ``label_scales`` has no entry for a label variable.
+
+    Examples
+    --------
+    With ``model`` a model predicting the 5-bar forward return ``ret_5``:
+
+    >>> label_specs(model)
+    (LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
+    """
+    scales = dict(predictor.label_scales)
+    specs = []
+    for label, delay in zip(predictor.labels, predictor.label_delays, strict=True):
+        span_bars = getattr(label, "span_bars", None)
+        span = None if span_bars is None else int(span_bars())
+        for name in label.get_factor_names():
+            if name not in scales:
+                raise ValueError(f"the predictor reports no label_scales entry for {name!r}")
+            specs.append(
+                LabelSpec(name=str(name), scale=scales[name], delay=int(delay), span=span)
+            )
+    return tuple(specs)
 
 
 @dataclass(frozen=True)
@@ -331,7 +378,7 @@ class BacktestResult:
     >>> result = backtester.run()
     >>> sorted(p.name for p in result.run_dir.iterdir())
     ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json',
-     'report.html', 'settlements.json', 'weights.zarr']
+     'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
     >>> sorted(result.metrics)
     ['execution', 'in_sample', 'in_sample_range', 'notes', 'out_of_sample',
      'out_of_sample_ranges', 'portfolio_construction', 'training_window', 'whole']
@@ -1073,10 +1120,10 @@ class BaseBacktester(ABC):
                 f"{self.class_name}: the concatenated fold predictions do not cover "
                 f"exactly the price bars {first_start}..{last_end}"
             )
-        stitched_weights = self._generate_signals(
-            stitched_predictions.reindex(symbol=stitched_prices.symbol.values),
-            stitched_prices,
+        stitched_predictions = stitched_predictions.reindex(
+            symbol=stitched_prices.symbol.values
         )
+        stitched_weights = self._generate_signals(stitched_predictions, stitched_prices)
         self._assert_weights_contract(stitched_weights, stitched_prices)
         stitched_simulation = self._simulate(stitched_weights, stitched_prices)
         stitched_benchmark = (
@@ -1117,6 +1164,7 @@ class BaseBacktester(ABC):
             stitched_simulation,
             metrics,
             benchmark=stitched_benchmark,
+            predictions=stitched_predictions,
         )
 
         return CVBacktestResult(
@@ -1355,7 +1403,11 @@ class BaseBacktester(ABC):
                 metrics["trained_checkpoint"] = self._trained_checkpoint
             metrics["notes"] = self._report_notes() + list(notes)
             run_dir = self._report_and_persist(
-                window.weights, window.simulation, metrics, benchmark=window.benchmark
+                window.weights,
+                window.simulation,
+                metrics,
+                benchmark=window.benchmark,
+                predictions=window.predictions,
             )
             self._track(run, run_dir, metrics)
 
@@ -3140,6 +3192,7 @@ class BaseBacktester(ABC):
         metrics: dict,
         *,
         benchmark: SimulationResult | None = None,
+        predictions: xr.Dataset | None = None,
     ) -> Path | None:
         """Write a new run directory with every artifact of ``run()`` or ``run_weights()``.
 
@@ -3150,8 +3203,9 @@ class BaseBacktester(ABC):
         ``equity.zarr`` (``value`` and ``returns``, plus ``benchmark_value``
         and ``benchmark_returns`` when a benchmark ran), ``settlements.json``,
         ``metrics.json``, ``report.html`` and ``fingerprint.json``, plus
-        ``inputs/`` when a dataset is held in memory (see
-        ``_run_dir_config``). Each
+        ``predictions.zarr`` when ``predictions`` is given (a run with a
+        model; see ``_write_predictions``) and ``inputs/`` when a dataset is
+        held in memory (see ``_run_dir_config``). Each
         JSON file goes through ``to_jsonable`` (NaN and infinities become
         null, timestamps become ISO strings) and is written atomically.
 
@@ -3183,6 +3237,8 @@ class BaseBacktester(ABC):
                 indent=2,
             )
             self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
+            if predictions is not None:
+                self._write_predictions(run_dir, predictions)
             write_json_atomically(
                 run_dir / "settlements.json",
                 to_jsonable(simulation.settlements),
@@ -3359,6 +3415,17 @@ class BaseBacktester(ABC):
             str(directory / "equity.zarr")
         )
 
+    def _write_predictions(self, directory: Path, predictions: xr.Dataset) -> None:
+        """Write the predictions the rule read as ``predictions.zarr`` into ``directory``.
+
+        ``predictions`` are on the price axes (as handed to
+        ``_generate_signals``) and are stored with ``label_specs`` of the
+        model as a ``PredictionPanel``.
+        """
+        PredictionPanel(predictions, label_specs(self.config.model)).write(
+            directory / PredictionPanel.FILE_NAME
+        )
+
     def _stitched_split(
         self, timestamps: np.ndarray, records: list[dict]
     ) -> dict:
@@ -3398,6 +3465,7 @@ class BaseBacktester(ABC):
         metrics: dict,
         *,
         benchmark: SimulationResult | None = None,
+        predictions: xr.Dataset,
     ) -> Path | None:
         """Write a new run directory with every artifact of a ``run_cv()``.
 
@@ -3405,8 +3473,9 @@ class BaseBacktester(ABC):
         ``run()`` directory: ``config.json``, ``weights.zarr``,
         ``equity.zarr``, ``metrics.json`` (``stitched``, ``folds``,
         ``notes``), ``settlements.json`` (``stitched`` plus per-fold
-        ``folds``), ``fingerprint.json`` (the stitched window) and
-        ``report.html``. The report receives ``metrics["stitched"]``, shades
+        ``folds``), ``fingerprint.json`` (the stitched window),
+        ``predictions.zarr`` (the concatenated fold predictions the stitched
+        pass read, see ``_write_predictions``) and ``report.html``. The report receives ``metrics["stitched"]``, shades
         no in-sample range (the several in-sample ranges are listed in the
         summary lines and the notes) and marks the deepest drawdown of the
         stitched simulation. Each fold's own simulation is written under
@@ -3427,6 +3496,7 @@ class BaseBacktester(ABC):
                 indent=2,
             )
             self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
+            self._write_predictions(run_dir, predictions)
             for record in records:
                 fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
                 fold_dir.mkdir(parents=True)

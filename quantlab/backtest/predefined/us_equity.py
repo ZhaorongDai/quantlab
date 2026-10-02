@@ -14,7 +14,7 @@ import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.backtest.selection import rebalance_mask
-from quantlab.base.backtest import MarketSpec
+from quantlab.base.backtest import MarketSpec, label_specs
 from quantlab.base.config import CrossSectionBacktestConfig
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.portfolio import PortfolioConstructor
@@ -77,7 +77,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     >>> result = backtester.run()
     >>> sorted(p.name for p in result.run_dir.iterdir())
     ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json',
-     'report.html', 'settlements.json', 'weights.zarr']
+     'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
     >>> result.weights["weight"].dims
     ('timestamp', 'symbol')
     """
@@ -99,7 +99,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
                 f"got {type(config.constructor).__name__}"
             )
         if config.model is not None:
-            config.constructor.bind(config.model)
+            config.constructor.bind(label_specs(config.model))
 
     def _generate_signals(
         self, predictions: xr.Dataset, prices: xr.Dataset

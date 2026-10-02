@@ -37,7 +37,7 @@ from quantlab.base.config import (
     ModelConfig,
     PolarsFactorConfig,
 )
-from quantlab.base.portfolio import PortfolioContext
+from quantlab.base.portfolio import LabelSpec, PortfolioContext
 from quantlab.label.predefined.fret import Return, Volatility
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
@@ -56,21 +56,12 @@ SPAN = 5
 VOLS = np.array([0.04, 0.06, 0.05, 0.08, 0.03, 0.07])
 
 
-class _Label:
-    def __init__(self, name, span):
-        self.name, self.span = name, span
-
-    def get_factor_names(self):
-        return (self.name,)
-
-    def span_bars(self):
-        return self.span
-
-
-class _Predictor:
-    def __init__(self, spans, scales=None):
-        self.labels = [_Label(name, span) for name, span in spans.items()]
-        self.label_scales = {name: "raw" for name in spans} | (scales or {})
+def _specs(spans, scales=None):
+    scales = scales or {}
+    return [
+        LabelSpec(name=name, scale=scales.get(name, "raw"), delay=1, span=span)
+        for name, span in spans.items()
+    ]
 
 
 def _context(*, seed=0, vol=VOLS, current=None):
@@ -98,7 +89,7 @@ def _context(*, seed=0, vol=VOLS, current=None):
     )
 
 
-def _optimizer(predictor=None, **overrides) -> MeanVarianceOptimizer:
+def _optimizer(specs=None, **overrides) -> MeanVarianceOptimizer:
     params = dict(
         expected_return_label="ret_5",
         volatility_label="vol_5",
@@ -109,7 +100,7 @@ def _optimizer(predictor=None, **overrides) -> MeanVarianceOptimizer:
     )
     params.update(overrides)
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(**params))
-    optimizer.bind(predictor or _Predictor({"ret_5": SPAN, "vol_5": SPAN}))
+    optimizer.bind(specs or _specs({"ret_5": SPAN, "vol_5": SPAN}))
     return optimizer
 
 
@@ -165,19 +156,19 @@ def test_a_symbol_without_a_volatility_prediction_is_not_a_candidate():
 
 def test_a_volatility_label_the_predictor_does_not_predict_is_refused_at_bind():
     with pytest.raises(ValueError, match="volatility_label 'vol_5'.*\\['ret_5'\\]"):
-        _optimizer(_Predictor({"ret_5": SPAN}))
+        _optimizer(_specs({"ret_5": SPAN}))
 
 
 def test_a_volatility_label_of_another_span_is_refused_at_bind():
     with pytest.raises(ValueError, match="span.*'vol_10'.*10.*'ret_5'.*5"):
-        _optimizer(_Predictor({"ret_5": SPAN, "vol_10": 10}), volatility_label="vol_10")
+        _optimizer(_specs({"ret_5": SPAN, "vol_10": 10}), volatility_label="vol_10")
 
 
 def test_a_standardized_volatility_label_is_refused_at_bind():
-    predictor = _Predictor({"ret_5": SPAN, "vol_5": SPAN}, scales={"vol_5": "standardized"})
+    specs = _specs({"ret_5": SPAN, "vol_5": SPAN}, scales={"vol_5": "standardized"})
 
     with pytest.raises(ValueError, match="'vol_5'.*standardized"):
-        _optimizer(predictor)
+        _optimizer(specs)
 
 
 def test_the_volatility_label_round_trips_through_the_config():

@@ -87,11 +87,37 @@ array([0.5, 0.5, 0. , 0. ])
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
 - 规则的 `lookback_bars` 会加到回测的预热期上，所以回测的第一根 bar 就有完整的窗口。
 
-回测器在构造时调用规则的 `bind(predictor)`，这时还没有读任何数据、也没有训练任何模型。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
+回测器在构造时调用规则的 `bind(labels)`，这时还没有读任何数据、也没有训练任何模型。`labels` 为每个预测变量给出一个 `LabelSpec(name, scale, delay, span)`，由回测器用 `quantlab.base.backtest.label_specs` 从预测器推导；不是 `Forward` 标签的 `span` 为 `None`。规则对预测能知道的只有这些规格，永远拿不到模型本身。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
 
 规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。回测在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
 
 运行目录的 `config.json` 记录了规则的全部参数和它的风险模型，`load_backtester_from_config` 能据此重建。
+
+### 不加载模型重建规则
+
+带模型的运行（`run()` 或 `run_cv()`）还会写出 `predictions.zarr`：规则读到的预测及其标签规格，格式是 `PredictionPanel`。`quantlab/portfolio/prediction_panel.py` 中的 `load_constructor(run_dir)` 从 `config.json` 重建该运行的规则，并把它绑定到预测面板的规格上。它从不导入模型、因子、标签或回测层，所以研究流水线之外的执行器（例如事件驱动回测）只凭这两个文件就能重放该运行的决策：
+
+```python
+>>> import tempfile, json
+>>> from pathlib import Path
+>>> from quantlab.base.portfolio import LabelSpec, PredictionPanel
+>>> from quantlab.portfolio.prediction_panel import load_constructor
+>>> run_dir = Path(tempfile.mkdtemp())
+>>> panel = PredictionPanel(
+...     context.predictions.expand_dims(timestamp=[context.timestamp]),
+...     [LabelSpec(name="ret_5", scale="raw", delay=1, span=5)],
+... )
+>>> _ = panel.write(run_dir / "predictions.zarr")
+>>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+>>> _ = (run_dir / "config.json").write_text(json.dumps({"constructor": rule.get_config()}))
+>>> load_constructor(run_dir) == rule
+True
+>>> PredictionPanel.read(run_dir / "predictions.zarr").labels
+(LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
+
+```
+
+该文件的每个标签对应 `(timestamp, symbol)` 上的一个变量，属性 `format_version` 和 `labels`（规格的 JSON 列表）。`run_weights()` 的运行没有模型，不写预测面板。
 
 ## 均值-方差优化
 
@@ -127,22 +153,17 @@ array([0.5, 0.5, 0. , 0. ])
 
 ### 第一次优化
 
-优化器需要了解预测器的标签，回测会通过 `bind` 把预测器交给它。这里用一个小的替身充当预测器：它预测 5 根 bar 的收益 `ret_5` 和 5 根 bar 的波动率 `vol_5`，两者都用标签自身的单位（`"raw"`，见[校准](#校准)）。
+优化器需要知道它读取的标签的 span 和尺度，回测会通过 `bind` 以标签规格的形式交给它。这里的规格描述 5 根 bar 的收益 `ret_5` 和 5 根 bar 的波动率 `vol_5`，两者都以标签自身的单位预测（`"raw"`，见[校准](#校准)）。
 
 ```python
 >>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
 >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
->>> class Label:
-...     def __init__(self, name, span):
-...         self.name, self.span = name, span
-...     def get_factor_names(self):
-...         return (self.name,)
-...     def span_bars(self):
-...         return self.span
->>> class Predictor:
-...     labels = [Label("ret_5", 5), Label("vol_5", 5)]
-...     label_scales = {"ret_5": "raw", "vol_5": "raw"}
+>>> from quantlab.base.portfolio import LabelSpec
+>>> specs = [
+...     LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
+...     LabelSpec(name="vol_5", scale="raw", delay=1, span=5),
+... ]
 >>> rng = np.random.default_rng(0)
 >>> window = rng.normal(0.0, 1.0, size=(60, 4)) * [0.010, 0.015, 0.020, 0.025]
 >>> context = PortfolioContext(
@@ -161,7 +182,7 @@ array([0.5, 0.5, 0. , 0. ])
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
->>> optimizer.bind(Predictor())
+>>> optimizer.bind(specs)
 >>> optimizer.lookback_bars, optimizer.span
 (60, 5)
 >>> weights = optimizer.construct(context)
@@ -179,25 +200,25 @@ array([0.4  , 0.4  , 0.009, 0.191])
 - `"grinold"`（默认）令 `mu = ic * sigma * z`。其中 `z` 是预测在候选标的上的截面 z-score，`sigma` 是每个标的在 span 内的波动率（取自协方差矩阵的对角线），`ic` 是模型的信息系数，例如一次滚动交叉验证的平均 IC。任何模型的输出都能接入，并且换模型时 `risk_aversion` 的含义不变。
 - `"raw"` 直接把预测当作 `mu`，只适合预测值本身就是收益单位的模型。
 
-每个预测器都会按标签报告预测是否用标签自身的单位：`label_scales` 把每个标签映射为 `"raw"` 或 `"standardized"`。模型在未经变换的标签上训练时报告 `"raw"`。ensemble 对多个成员平均的标签报告 `"standardized"`，因为它会先对每个成员做 z-score。`bind` 会拒绝在 `"standardized"` 标签上使用 `"raw"` 校准：
+每个预测器都会按标签报告预测是否用标签自身的单位：`label_scales` 把每个标签映射为 `"raw"` 或 `"standardized"`，标签规格以 `scale` 携带它。模型在未经变换的标签上训练时报告 `"raw"`。ensemble 对多个成员平均的标签报告 `"standardized"`，因为它会先对每个成员做 z-score。`bind` 会拒绝在 `"standardized"` 标签上使用 `"raw"` 校准：
 
 ```python
->>> class RankedPredictor(Predictor):
-...     label_scales = {"ret_5": "standardized", "vol_5": "raw"}
+>>> import dataclasses
+>>> ranked = [dataclasses.replace(specs[0], scale="standardized"), specs[1]]
 >>> MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5", calibration="raw",
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     risk_aversion=5.0,
-... )).bind(RankedPredictor())
+... )).bind(ranked)
 Traceback (most recent call last):
     ...
-ValueError: calibration='raw' reads the prediction of 'ret_5' as a return, but the predictor reports its scale as 'standardized', not 'raw' (a model fitted on a transformed target, or a label an ensemble averages); use calibration='grinold'
+ValueError: calibration='raw' reads the prediction of 'ret_5' as a return, but its label spec reports its scale as 'standardized', not 'raw' (a model fitted on a transformed target, or a label an ensemble averages); use calibration='grinold'
 
 ```
 
 ### Span
 
-`mu`、`sigma` 和 `Sigma` 都以 `expected_return_label` 的 span 为时间尺度：`ret_5` 是 5 根 bar。span 从标签读取，不需要配置。风险模型估计的是单 bar 收益的协方差，优化器把它乘以 span，因为方差随时间线性增长：
+`mu`、`sigma` 和 `Sigma` 都以 `expected_return_label` 的 span 为时间尺度：`ret_5` 是 5 根 bar。span 从标签规格读取，不需要配置；没有 span 的标签（不是 `Forward` 标签）会被拒绝。风险模型估计的是单 bar 收益的协方差，优化器把它乘以 span，因为方差随时间线性增长：
 
 ```python
 >>> inputs = optimizer.problem_inputs(context)
@@ -224,7 +245,7 @@ True
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
->>> with_volatility.bind(Predictor())
+>>> with_volatility.bind(specs)
 >>> covariance = with_volatility.problem_inputs(context).covariance
 >>> np.sqrt(np.diag(covariance)).round(4)
 array([0.05, 0.03, 0.04, 0.06])
@@ -247,7 +268,7 @@ array([0.4  , 0.399, 0.   , 0.201])
 ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
 ... ))
->>> long_short.bind(Predictor())
+>>> long_short.bind(specs)
 >>> weights = long_short.construct(context)
 >>> weights.values.round(3)
 array([ 0.4  , -0.212, -0.261,  0.073])
@@ -341,7 +362,7 @@ array([0.4, 0.4, 0. , 0.2])
 
 1. 把 `config_cls` 设为规则参数的 frozen dataclass。
 2. 实现 `construct`。
-3. 规则读取收益窗口时重写 `lookback_bars`，读取因子面板时重写 `required_factors`，需要检查预测器的标签时重写 `bind`。
+3. 规则读取收益窗口时重写 `lookback_bars`，读取因子面板时重写 `required_factors`，需要检查标签规格时重写 `bind`。
 
 `get_config` 和 `from_config` 把规则序列化为配置的各字段加上类的导入路径。字段里如果是另一个组件（例如风险模型），会嵌套序列化，所以重建一次运行不需要额外代码。
 

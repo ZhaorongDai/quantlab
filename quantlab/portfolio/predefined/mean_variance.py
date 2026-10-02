@@ -13,6 +13,7 @@ label's prediction, and all are on the span of the expected-return label.
 This is the only quantlab module that imports cvxpy.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,7 @@ from quantlab.base.config import MeanVarianceConfig
 from quantlab.base.portfolio import (
     CovarianceEstimate,
     FactorCovarianceEstimate,
+    LabelSpec,
     PortfolioConstructionError,
     PortfolioConstructor,
     PortfolioContext,
@@ -218,8 +220,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     (``ddof=1``) of the prediction over the predicted candidates, so the
     prediction only ranks and any
     model's output can feed the optimiser; ``"raw"`` takes the prediction
-    itself as ``mu``, which ``bind`` allows only when the predictor reports
-    the label's scale as ``"raw"``. ``w_current`` is the context's current
+    itself as ``mu``, which ``bind`` allows only when the label's spec
+    reports its scale as ``"raw"``. ``w_current`` is the context's current
     weights.
 
     With ``volatility_label`` set (a ``Volatility`` label, say), the
@@ -250,8 +252,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     there and records the bar.
 
     ``lookback_bars`` and ``required_factors()`` are the risk model's.
-    ``bind`` reads the span from the predictor's label, so a backtest binds
-    the optimiser when it is built.
+    ``bind`` reads the span from the label's ``LabelSpec``, so a backtest
+    binds the optimiser when it is built.
 
     Parameters
     ----------
@@ -270,7 +272,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
     Examples
     --------
-    ``model`` predicts the 5-bar ``ret_5``; ``context`` is a bar of four
+    ``specs`` holds the spec of a 5-bar ``ret_5`` label
+    (``LabelSpec("ret_5", "raw", 1, 5)``); ``context`` is a bar of four
     symbols ``AAA``..``DDD``, all tradable and none held, with 60 bars of
     one-bar returns of volatility 1%, 1.5%, 2% and 2.5% and ``ret_5``
     predictions 0.8, -0.1, -0.3 and 0.2. With a risk aversion of 5 on so small
@@ -285,7 +288,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     ... ))
     >>> optimizer.lookback_bars
     60
-    >>> optimizer.bind(model)
+    >>> optimizer.bind(specs)
     >>> weights = optimizer.construct(context)
     >>> float(weights.sum().round(6)), bool((weights >= 0).all()), bool((weights <= 0.4).all())
     (1.0, True, True)
@@ -298,7 +301,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
     ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
     ... ))
-    >>> long_short.bind(model)
+    >>> long_short.bind(specs)
     >>> weights = long_short.construct(context)
     >>> weights.values.round(3)
     array([ 0.4  , -0.212, -0.261,  0.073])
@@ -377,74 +380,74 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         """
         return self._span
 
-    def bind(self, predictor) -> None:
-        """Check the predictor predicts the optimiser's labels and read the span.
+    def bind(self, labels: Sequence[LabelSpec]) -> None:
+        """Check the specs hold the optimiser's labels and read the span.
 
         Parameters
         ----------
-        predictor : Predictor
-            The backtest's predictor.
+        labels : Sequence[LabelSpec]
+            The specs of the predicted labels.
 
         Raises
         ------
         ValueError
-            If the predictor does not predict ``expected_return_label`` or
-            ``volatility_label``, either has no ``span_bars()`` (it is not a
-            ``Forward`` label), their spans differ, the predictor does not
-            report ``volatility_label``'s scale as ``"raw"``, or
-            ``calibration="raw"`` and it does not report
-            ``expected_return_label``'s scale as ``"raw"``.
+            If ``expected_return_label`` or ``volatility_label`` is not one
+            of the specs, either has no span (it is not a ``Forward``
+            label), their spans differ, ``volatility_label``'s scale is not
+            ``"raw"``, or ``calibration="raw"`` and
+            ``expected_return_label``'s scale is not ``"raw"``.
 
         Examples
         --------
-        >>> optimizer.bind(model)
+        >>> from quantlab.base.portfolio import LabelSpec
+        >>> optimizer.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])
         >>> optimizer.span
         5
         """
         config = self.config
+        specs = {spec.name: spec for spec in labels}
         name = config.expected_return_label
-        span = self._label_span(predictor, "expected_return_label", name)
-        scales = dict(predictor.label_scales)
-        if config.calibration == "raw" and scales.get(name) != "raw":
+        span = self._label_span(specs, "expected_return_label", name)
+        scale = specs[name].scale
+        if config.calibration == "raw" and scale != "raw":
             raise ValueError(
                 f"calibration='raw' reads the prediction of {name!r} as a return, "
-                f"but the predictor reports its scale as {scales.get(name)!r}, not 'raw' "
+                f"but its label spec reports its scale as {scale!r}, not 'raw' "
                 f"(a model fitted on a transformed target, or a label an ensemble "
                 f"averages); use calibration='grinold'"
             )
         volatility = config.volatility_label
         if volatility is not None:
-            volatility_span = self._label_span(predictor, "volatility_label", volatility)
+            volatility_span = self._label_span(specs, "volatility_label", volatility)
             if volatility_span != span:
                 raise ValueError(
                     f"the span of volatility_label {volatility!r} is {volatility_span} "
                     f"bars, but the span of expected_return_label {name!r} is {span}; "
                     f"the two must match"
                 )
-            if scales.get(volatility) != "raw":
+            volatility_scale = specs[volatility].scale
+            if volatility_scale != "raw":
                 raise ValueError(
                     f"volatility_label {volatility!r} is read as a volatility, but the "
-                    f"predictor reports its scale as {scales.get(volatility)!r}, not "
+                    f"label spec reports its scale as {volatility_scale!r}, not "
                     f"'raw' (a model fitted on a transformed target, or a label an "
                     f"ensemble averages)"
                 )
         self._span = span
 
-    def _label_span(self, predictor, config_field: str, name: str) -> int:
-        """Return the span of the predictor's label ``name``, which ``config_field`` names."""
-        labels = self._label_names(predictor)
-        if name not in labels:
-            raise ValueError(f"{config_field} {name!r} is not one of the predictor's labels {labels}")
-        label = next(
-            label for label in predictor.labels if name in label.get_factor_names()
-        )
-        span_bars = getattr(label, "span_bars", None)
-        if span_bars is None:
+    @staticmethod
+    def _label_span(specs: dict[str, LabelSpec], config_field: str, name: str) -> int:
+        """Return the span of the spec ``name``, which ``config_field`` names."""
+        if name not in specs:
             raise ValueError(
-                f"{config_field} {name!r} is a {type(label).__name__}, which has no "
-                f"span_bars(); it needs a Forward label"
+                f"{config_field} {name!r} is not one of the predicted labels {list(specs)}"
             )
-        return int(span_bars())
+        span = specs[name].span
+        if span is None:
+            raise ValueError(
+                f"{config_field} {name!r} has no span; it needs a Forward label"
+            )
+        return int(span)
 
     def problem_inputs(self, context: PortfolioContext) -> MeanVarianceInputs:
         """Return the candidates of the context's bar and their ``mu``, ``Sigma`` and weights.
@@ -464,7 +467,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         Raises
         ------
         RuntimeError
-            If the optimiser has not been bound to a predictor.
+            If the optimiser has not been bound to label specs.
 
         Examples
         --------
@@ -474,7 +477,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         """
         if self._span is None:
             raise RuntimeError(
-                "MeanVarianceOptimizer is not bound to a predictor; call bind() "
+                "MeanVarianceOptimizer is not bound to label specs; call bind() "
                 "first (a backtest does when it is built)"
             )
         config = self.config

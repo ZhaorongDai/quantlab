@@ -31,7 +31,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
-from quantlab.base.portfolio import PortfolioConstructionError, PortfolioContext
+from quantlab.base.portfolio import LabelSpec, PortfolioConstructionError, PortfolioContext
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 
@@ -40,21 +40,10 @@ LOOKBACK = 40
 SPAN = 5
 
 
-class _Label:
-    def __init__(self, name, span):
-        self.name, self.span = name, span
-
-    def get_factor_names(self):
-        return (self.name,)
-
-    def span_bars(self):
-        return self.span
-
-
-class _Predictor:
-    def __init__(self, spans):
-        self.labels = [_Label(name, span) for name, span in spans.items()]
-        self.label_scales = {name: "raw" for name in spans}
+def _specs(spans, scale="raw"):
+    return [
+        LabelSpec(name=name, scale=scale, delay=1, span=span) for name, span in spans.items()
+    ]
 
 
 def _context(*, seed=0, eligible=None, current=None, prediction=None, returns=None):
@@ -93,7 +82,7 @@ def _optimizer(**overrides) -> MeanVarianceOptimizer:
     )
     params.update(overrides)
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(**params))
-    optimizer.bind(_Predictor({"ret_5": SPAN, "vol_5": SPAN}))
+    optimizer.bind(_specs({"ret_5": SPAN, "vol_5": SPAN}))
     return optimizer
 
 
@@ -175,9 +164,9 @@ def test_bind_checks_the_label_and_reads_its_span():
     with pytest.raises(RuntimeError, match="bind"):
         optimizer.problem_inputs(_context())
     with pytest.raises(ValueError, match="ret_5"):
-        optimizer.bind(_Predictor({"ret_1": 1}))
+        optimizer.bind(_specs({"ret_1": 1}))
 
-    optimizer.bind(_Predictor({"ret_1": 1, "ret_5": 5}))
+    optimizer.bind(_specs({"ret_1": 1, "ret_5": 5}))
     assert optimizer.span == 5
 
 
@@ -293,10 +282,8 @@ def test_non_finite_problem_data_is_a_construction_error_not_a_crash():
         optimizer.construct(_context())
 
 
-def _scaled_predictor(scale):
-    predictor = _Predictor({"ret_5": SPAN})
-    predictor.label_scales = {"ret_5": scale}
-    return predictor
+def _scaled_specs(scale):
+    return _specs({"ret_5": SPAN}, scale=scale)
 
 
 @pytest.mark.parametrize("seed", range(5))
@@ -361,7 +348,7 @@ def test_raw_calibration_uses_the_prediction_unchanged():
             weight_cap=0.3,
         )
     )
-    optimizer.bind(_scaled_predictor("raw"))
+    optimizer.bind(_scaled_specs("raw"))
 
     inputs = optimizer.problem_inputs(context)
 
@@ -379,4 +366,4 @@ def test_raw_calibration_on_a_standardized_label_is_refused_at_bind_naming_the_l
     )
 
     with pytest.raises(ValueError, match="'ret_5'.*standardized"):
-        optimizer.bind(_scaled_predictor("standardized"))
+        optimizer.bind(_scaled_specs("standardized"))

@@ -105,7 +105,7 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260930_002352_615308
   in-sample range     ('2023-09-04', '2023-09-08')
   out-of-sample       [('2023-09-11', '2024-02-23')]
   out-of-sample Sharpe 1.736
-files: ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+files: ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
 first rebalance: {'S08': 0.3333, 'S10': 0.3333, 'S11': 0.3333}
 delisting settlement: S08 delisted 2023-12-15 settled 2023-12-18 at 71.30
 rejected orders: 0
@@ -457,7 +457,7 @@ run directory: USEquityCrossectionSelectStockVectorBt_20260930_002356_032174
   fold 0: 2023-05-22..2023-06-16 return   3.26%
   fold 1: 2023-06-19..2023-07-14 return  -0.24%
   fold 2: 2023-07-17..2023-08-11 return   1.31%
-files: ['config.json', 'equity.zarr', 'fingerprint.json', 'folds', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+files: ['config.json', 'equity.zarr', 'fingerprint.json', 'folds', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 `train_cv` purges the last L bars of every fold's training segment and
@@ -489,6 +489,7 @@ succeeded, so a crashed run leaves no half-written directory behind.
 | `equity.zarr` | Portfolio `value` and per-bar `returns` on `timestamp`. |
 | `metrics.json` | The metric blocks described above. |
 | `settlements.json` | One record per delisting settlement. |
+| `predictions.zarr` | `run()` and `run_cv()` only (a run with a model): the predictions the portfolio construction rule read, with their label specs (a `PredictionPanel`; for `run_cv()` the concatenated fold predictions). `quantlab.portfolio.prediction_panel.load_constructor(run_dir)` rebuilds the run's rule from it and `config.json` without loading the model. |
 | `fingerprint.json` | A content hash and extent of every dataset the run read. |
 | `report.html` | The human-readable report. |
 | `folds/` | `run_cv()` only: per-fold `weights.zarr` and `equity.zarr`. |

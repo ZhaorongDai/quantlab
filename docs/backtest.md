@@ -157,7 +157,7 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 ... ))
 >>> result = backtester.run()
 >>> sorted(p.name for p in result.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 The run directory sits under `output_dir`, and the result holds the predictions, weights, simulation and metrics.
@@ -272,6 +272,7 @@ Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Fi
 | `equity.zarr` | The portfolio `value` and per-bar `returns` on `timestamp`. |
 | `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()`, a `run_cv()` fold and the stitched `run_cv()` pass also record `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them) or the top-n rule's `tie_at_cutoff` (tied symbols a book's cut left out, so the picks were decided by symbol order), with its `count` (symbols over all its bars) and its `bars`, one record per bar that names the symbols or, for `tie_at_cutoff`, counts them. |
 | `settlements.json` | The delisting settlements. |
+| `predictions.zarr` | Only for a run with a model (`run()`, `run_cv()`): the predictions the portfolio construction rule read, on the price axes, with their label specs, as a `PredictionPanel`; `load_constructor(run_dir)` rebuilds the bound rule from it and `config.json` without the model (see [Portfolio construction](portfolio.md#the-rule-without-the-model)). A `run_weights()` run writes none. |
 | `fingerprint.json` | A digest of the price and factor data the run read. |
 | `report.html` | Headline numbers, grouped metric tables, and chart tabs for performance, excess return, rolling one-year statistics and the portfolio's structure (see [The report page](#the-report-page)). |
 | `inputs/` | Only when the price or benchmark dataset is a `FrameDataset` held in memory: its panel as `price_dataset.zarr` or `benchmark_dataset.zarr`, which `config.json` names relative to the run directory (see [Rebuild a run of given weights](#rebuild-a-run-of-given-weights)). |
@@ -328,7 +329,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ['fold_0', 'fold_1']
 ```
 
-The top-level files of the run directory describe the stitched curve, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the purged `train_end` in the manifest. A fold's in-sample window ends L bars after that `train_end`, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
+The top-level files of the run directory describe the stitched curve, its `predictions.zarr` holding the concatenated fold predictions, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the purged `train_end` in the manifest. A fold's in-sample window ends L bars after that `train_end`, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
 
 ```python
 >>> stitched = cv.metrics["stitched"]
@@ -689,7 +690,7 @@ A score label the model does not declare:
 ... ))
 Traceback (most recent call last):
   ...
-ValueError: score_label 'fwd_ret_5' is not one of the predictor's labels ['open_ret_1']
+ValueError: score_label 'fwd_ret_5' is not one of the predicted labels ['open_ret_1']
 ```
 
 `run_cv()` without `cv_project_dir`:

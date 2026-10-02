@@ -157,7 +157,7 @@ def train_cv_project(model, train_periods):
 ... ))
 >>> result = backtester.run()
 >>> sorted(p.name for p in result.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
 ```
 
 运行目录位于 `output_dir` 之下，返回的结果里有预测、权重、模拟结果和指标。
@@ -272,6 +272,7 @@ out_of_sample -5.61 -4.27 13
 | `equity.zarr` | `timestamp` 上的组合 `value` 与每根 bar 的 `returns`。 |
 | `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
 | `settlements.json` | 退市结算记录。 |
+| `predictions.zarr` | 仅带模型的运行（`run()`、`run_cv()`）才有：组合构建规则读到的预测（在价格坐标轴上）及其标签规格，格式为 `PredictionPanel`；`load_constructor(run_dir)` 凭它和 `config.json` 在不加载模型的情况下重建已绑定的规则（见[组合构建](portfolio.md#不加载模型重建规则)）。`run_weights()` 的运行不写。 |
 | `fingerprint.json` | 本次运行读取的价格数据和因子数据的摘要。 |
 | `report.html` | 关键指标、分组的指标表，以及业绩、超额收益、滚动一年统计和组合结构的图表标签页（见[报告页面](#报告页面)）。 |
 | `inputs/` | 仅当价格或基准数据集是保存在内存中的 `FrameDataset` 时写出：它的面板存为 `price_dataset.zarr` 或 `benchmark_dataset.zarr`，`config.json` 以相对运行目录的路径指向它（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。 |
@@ -328,7 +329,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ['fold_0', 'fold_1']
 ```
 
-运行目录顶层的文件描述的是拼接后的曲线，`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗后的 `train_end` 记入清单。一折的样本内窗口结束于该 `train_end` 之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
+运行目录顶层的文件描述的是拼接后的曲线（其中 `predictions.zarr` 是各折预测的拼接），`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗后的 `train_end` 记入清单。一折的样本内窗口结束于该 `train_end` 之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
 
 ```python
 >>> stitched = cv.metrics["stitched"]
@@ -689,7 +690,7 @@ TypeError: USEquityCrossectionSelectStockVectorBt requires a CrossSectionBacktes
 ... ))
 Traceback (most recent call last):
   ...
-ValueError: score_label 'fwd_ret_5' is not one of the predictor's labels ['open_ret_1']
+ValueError: score_label 'fwd_ret_5' is not one of the predicted labels ['open_ret_1']
 ```
 
 没有 `cv_project_dir` 就调用 `run_cv()`：

@@ -22,6 +22,7 @@ from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfi
 from quantlab.base.portfolio import (
     CovarianceEstimate,
     FactorCovarianceEstimate,
+    LabelSpec,
     PortfolioContext,
     RiskModel,
 )
@@ -33,20 +34,7 @@ SYMBOLS = [f"S{i}" for i in range(8)]
 SPAN = 5
 
 
-class _Label:
-    def __init__(self, name, span):
-        self.name, self.span = name, span
-
-    def get_factor_names(self):
-        return (self.name,)
-
-    def span_bars(self):
-        return self.span
-
-
-class _Predictor:
-    labels = [_Label("ret_5", SPAN)]
-    label_scales = {"ret_5": "raw"}
+SPECS = [LabelSpec(name="ret_5", scale="raw", delay=1, span=SPAN)]
 
 
 def _factor_parts(seed=0):
@@ -114,7 +102,7 @@ def _optimizer(*, factor_form, **overrides):
     )
     params.update(overrides)
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(**params))
-    optimizer.bind(_Predictor())
+    optimizer.bind(SPECS)
     return optimizer
 
 

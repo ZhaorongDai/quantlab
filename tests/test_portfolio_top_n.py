@@ -44,7 +44,7 @@ from loguru import logger
 
 from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PortfolioContext
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from tests.backtest_fixtures import FirstFeatureHead, make_model, make_stock_dataset, write_price_store
@@ -95,20 +95,9 @@ def _select(direction, top_n, scores, fill=None, rebalance=None) -> np.ndarray:
     return out["weight"].values
 
 
-class _Label:
-    def __init__(self, name):
-        self.name = name
-
-    def get_factor_names(self):
-        return (self.name,)
-
-
-class _Predictor:
-    """Just the `labels` a rule's `bind` reads."""
-
-    def __init__(self, names):
-        self.labels = [_Label(name) for name in names]
-        self.label_scales = {name: "raw" for name in names}
+def _specs(names):
+    """The label specs a rule's `bind` reads."""
+    return [LabelSpec(name=name, scale="raw", delay=1, span=1) for name in names]
 
 
 @contextlib.contextmanager
@@ -360,7 +349,7 @@ def test_score_label_defaults_to_first_label():
 
     assert first.construct_panel(predictions, tradable, mask)["weight"].values.tolist() == [[0.0, 1.0, 0.0]]
     assert chosen.construct_panel(predictions, tradable, mask)["weight"].values.tolist() == [[1.0, 0.0, 0.0]]
-    chosen.bind(_Predictor(["ret_5", "ret_1"]))
+    chosen.bind(_specs(["ret_5", "ret_1"]))
 
 
 def test_unknown_score_label_raises_listing_known_labels():
@@ -370,13 +359,13 @@ def test_unknown_score_label_raises_listing_known_labels():
     list."""
     rule = TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="ret_20"))
     with pytest.raises(ValueError) as excinfo:
-        rule.bind(_Predictor(["ret_5", "ret_1"]))
+        rule.bind(_specs(["ret_5", "ret_1"]))
     message = str(excinfo.value)
     assert "ret_20" in message
     assert "ret_5" in message and "ret_1" in message
 
     with pytest.raises(ValueError):
-        TopNConstructor(TopNConfig(direction="long_only", top_n=1)).bind(_Predictor([]))
+        TopNConstructor(TopNConfig(direction="long_only", top_n=1)).bind(_specs([]))
 
 
 def test_selector_rejects_bad_parameters():
