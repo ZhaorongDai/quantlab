@@ -225,13 +225,10 @@ class VectorBtBacktester(BaseBacktester):
         def frame(values):
             return pd.DataFrame(values, index=fill.index, columns=fill.columns)
 
-        # vectorbt refuses an order priced at 0, but a delisting can settle
-        # at a last valuation of 0 (a -100% delisting return, #111). Such a
-        # settlement is sent at the smallest positive float, as a target
-        # *amount* of 0 (a target percent would divide by that price, which
-        # vectorbt rounds to 0): the position closes, its proceeds (or a
-        # short's cover cost) are 0.0 to the last bit, and the order record is
-        # reported at the 0.0 it stands for.
+        # vectorbt refuses an order priced at 0, which a settlement at a last
+        # valuation of 0 (a -100% delisting return) is. It is sent at the
+        # smallest positive float as a target amount of 0, since vectorbt
+        # sizes a target percent against a price it rounds to 0.
         worthless = plan["settle"] & (plan["price"] == 0.0)
         order_price = np.where(worthless, _WORTHLESS_PRICE, plan["price"])
         size_type = np.where(worthless, SizeType.TargetAmount, SizeType.TargetPercent)
@@ -269,19 +266,13 @@ class VectorBtBacktester(BaseBacktester):
         )
 
         records = pf.orders.records_readable
+        order_prices = records["Price"].to_numpy(dtype=np.float64)
         orders = xr.Dataset(
             {
                 "timestamp": ("order", pd.to_datetime(records["Timestamp"]).to_numpy()),
                 "symbol": ("order", records["Column"].astype(str).to_numpy()),
                 "size": ("order", records["Size"].to_numpy(dtype=np.float64)),
-                "price": (
-                    "order",
-                    np.where(
-                        records["Price"].to_numpy(dtype=np.float64) == _WORTHLESS_PRICE,
-                        0.0,
-                        records["Price"].to_numpy(dtype=np.float64),
-                    ),
-                ),
+                "price": ("order", np.where(order_prices == _WORTHLESS_PRICE, 0.0, order_prices)),
                 "fees": ("order", records["Fees"].to_numpy(dtype=np.float64)),
                 "side": ("order", records["Side"].astype(str).to_numpy()),
             }
@@ -449,14 +440,20 @@ class VectorBtBacktester(BaseBacktester):
 
         The held weight is the position times the bar's order price over
         the portfolio valued at those prices after the orders. Settled
-        symbols are left out; rejected ones are not.
+        symbols are left out; rejected ones are not, and neither are bars
+        where the portfolio is worth nothing (no weight is defined there).
         """
         compared = np.isfinite(plan["target"]) & ~plan["settle"]
         bars = np.flatnonzero(compared.any(axis=1))
         if bars.size == 0:
             return None
         worth = held[bars] * np.nan_to_num(plan["price"][bars])
-        weights = worth / (cash[bars] + worth.sum(axis=1))[:, None]
+        book = cash[bars] + worth.sum(axis=1)
+        valued = book > 0
+        if not valued.any():
+            return None
+        weights = worth[valued] / book[valued][:, None]
+        bars = bars[valued]
         gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
         return float(gap.max())
 
@@ -470,7 +467,8 @@ class VectorBtBacktester(BaseBacktester):
         bar at the signal bar's valuation price, over the book valued at
         those prices before the bar's orders (the previous bar's cash and
         positions). Without a capped buy it is 0 up to rounding. Settled
-        symbols are left out; rejected ones are not.
+        symbols are left out; rejected ones are not, and neither are bars
+        where the book is worth nothing (no weight is defined there).
         """
         compared = np.isfinite(plan["target"]) & ~plan["settle"]
         bars = np.flatnonzero(compared.any(axis=1))
@@ -481,7 +479,11 @@ class VectorBtBacktester(BaseBacktester):
         held_before[1:] = held[:-1]
         cash_before = np.concatenate(([float(init_cash)], cash[:-1]))[bars]
         book = cash_before + (held_before[bars] * price).sum(axis=1)
-        weights = held[bars] * price / book[:, None]
+        valued = book > 0
+        if not valued.any():
+            return None
+        weights = held[bars][valued] * price[valued] / book[valued][:, None]
+        bars = bars[valued]
         gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
         return float(gap.max())
 

@@ -464,10 +464,11 @@ def test_a_settlement_carries_the_delisting_return_of_the_last_valuation(tmp_pat
 def test_a_delisting_at_valuation_zero_settles_the_holding_to_nothing(
     tmp_path, sizing_basis, first_row
 ):
-    """A -100% delisting return (#111): the last valuation is 0.0, so the
-    holding settles fee-free at 0.0 and is recorded, rather than the engine
-    refusing a settlement order priced at 0. A long loses the position, a
-    short keeps its proceeds: the settlement moves no cash."""
+    """A holding whose last valuation is 0.0 settles fee-free at 0.0 and is recorded.
+
+    A -100% delisting return (#111): a long loses the position, a short keeps
+    its proceeds, and the settlement moves no cash.
+    """
     backtester = _backtester(tmp_path, fees=0.001, slippage=0.001, sizing_basis=sizing_basis)
     ts, symbols, fill, valuation, weights = _delisting_case()
     weights["weight"][0] = first_row
@@ -486,6 +487,7 @@ def test_a_delisting_at_valuation_zero_settles_the_holding_to_nothing(
     assert [(o["timestamp"], o["price"], o["fees"]) for o in a_orders[1:]] == [(ts[DELIST_BAR], 0.0, 0.0)]
     assert sum(o["size"] * (1 if o["side"] == "Buy" else -1) for o in a_orders) == pytest.approx(0.0, abs=1e-9)
     assert simulation.rejected_orders == []
+    assert np.isfinite(simulation.max_target_deviation)
 
 
 def test_an_order_without_a_fill_price_is_rejected_and_the_holding_kept(tmp_path):

@@ -571,6 +571,8 @@ class _Book:
         wanted = np.full(n, np.nan) if targets is None else np.array(targets, dtype=np.float64)
         price = np.where(settle, self.history.valuation[bar - 1] if bar > 0 else np.nan, self.history.fill[bar])
         priced = np.isfinite(price) & (price > 0)
+        # A settlement at a last valuation of 0 closes the position for nothing.
+        self.shares[settle & (price == 0)] = 0.0
         at = np.where(priced, price, 0.0)
         value = self.cash + float(np.sum(self.shares * at))
         accepted = priced & (settle | (np.isfinite(wanted) & np.isfinite(self.history.raw_fill[bar])))

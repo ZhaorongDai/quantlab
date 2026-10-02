@@ -620,9 +620,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             held, inputs.estimate
         )
         if config.turnover_penalty:
-            # Left out at zero, not multiplied by it: a 0 * |w - w_current|_1
-            # term still changes the solver's path, so the weights would
-            # depend on the holdings in their last digits (#112).
+            # Added only for a non-zero penalty: even multiplied by 0 the term
+            # changes the solver's path, and with it the weights' last digits.
             objective = objective - config.turnover_penalty * cp.norm1(
                 w - inputs.current_weights
             )

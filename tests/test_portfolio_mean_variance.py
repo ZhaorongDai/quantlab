@@ -124,8 +124,10 @@ def test_a_larger_turnover_penalty_moves_the_solution_toward_the_current_weights
 
 @pytest.mark.parametrize("direction", ["long_only", "long_short"])
 def test_a_zero_turnover_penalty_leaves_the_weights_independent_of_the_holdings(direction):
-    """#112: with turnover_penalty=0 the problem has no turnover term at all,
-    so the weights are bit-identical whatever is currently held."""
+    """A zero turnover penalty gives bit-identical weights for any holdings.
+
+    The problem then has no turnover term at all (#112).
+    """
     held = [
         None,
         [0.3, 0.3, 0.3, 0.1, 0.0, 0.0],
