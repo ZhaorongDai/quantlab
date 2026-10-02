@@ -31,7 +31,12 @@ For each PERMNO, sorted by date, the conversion derives:
   previous ``adjClose`` times ``1 + dlyret``, the delisting return, so the
   delisting row is the security's last valuation. ``dlyret`` is a total
   return, so merger cash on that row (in ``divCash``) is counted once. A
-  delisting row without a return keeps ``adjClose`` NaN; none is imputed.
+  no-price delisting row without a return keeps ``adjClose`` NaN; none is
+  imputed. A priced delisting row (CRSP's ``dlyprcflg = DP``) without a return gets
+  the return CRSP's own definition gives from its recorded prices,
+  ``(close * dlyfacprc + divCash) / close_prev - 1`` with ``close_prev`` the
+  last earlier close, so the delisting price's loss reaches ``adjClose``;
+  ``ret`` itself stays NaN there.
   ``adjOpen``/``adjHigh``/``adjLow`` are scaled by ``adjClose / close``, and ``adjVolume`` by ``dlycumfacshr`` (CRSP's
   cumulative share-adjustment factor) relative to the anchor row.
 - ``splitFactor = dlycumfacpr[t-1] / dlycumfacpr[t]`` (1.0 on the first row)
@@ -177,6 +182,75 @@ def _is_delisting_row() -> pl.Expr:
         pl.col("dlydelflg").str.strip_chars().str.to_uppercase()
         == pl.lit(_DELISTING_FLAG)
     ).fill_null(False)
+
+
+def _div_cash() -> pl.Expr:
+    """Return the cash distributed per share on the row, 0.0 when none.
+
+    Returns
+    -------
+    pl.Expr
+        ``dlyorddivamt + dlynonorddivamt``, each null counted as 0.0.
+    """
+    return pl.col("dlyorddivamt").fill_null(0.0) + pl.col(
+        "dlynonorddivamt"
+    ).fill_null(0.0)
+
+
+def _priced_delisting_without_return() -> pl.Expr:
+    """Return whether a row is a priced delisting row whose ``dlyret`` is null.
+
+    Needs the derived ``close`` column.
+
+    Returns
+    -------
+    pl.Expr
+        A boolean expression.
+    """
+    return (
+        _is_delisting_row()
+        & pl.col("dlyret").is_null()
+        & (pl.col("close") > 0.0).fill_null(False)
+    )
+
+
+def _chain_return() -> pl.Expr:
+    """Return the per-row return the adjusted close is chained by.
+
+    That is ``dlyret``, except on a priced delisting row whose ``dlyret`` is
+    null (CRSP flags it ``dlyretmissflg = DG``). There the return is derived
+    from CRSP's recorded prices by CRSP's own return definition,
+
+    ``ret_t = (close_t * dlyfacprc_t + divCash_t) / close_prev - 1``,
+
+    where ``close_prev`` is the PERMNO's last earlier positive close (CRSP's
+    ``dlyprevprc``) and a null ``dlyfacprc`` counts as 1. The delisting price
+    is CRSP's, so nothing is imputed. Every other row, including an ordinary
+    priced row with a null return, keeps ``dlyret``. Needs the derived
+    ``close`` column and a frame sorted by ``permno`` and ``timestamp``.
+
+    Returns
+    -------
+    pl.Expr
+        A float expression, null where ``dlyret`` is null and no return can
+        be derived.
+    """
+    close_prev = (
+        pl.when(pl.col("close") > 0.0)
+        .then(pl.col("close"))
+        .otherwise(None)
+        .shift(1)
+        .forward_fill()
+        .over("permno")
+    )
+    derived = (
+        pl.col("close") * pl.col("dlyfacprc").fill_null(1.0) + _div_cash()
+    ) / close_prev - 1.0
+    return (
+        pl.when(_priced_delisting_without_return())
+        .then(derived)
+        .otherwise(pl.col("dlyret"))
+    )
 
 
 #: ``dlyprcflg`` values whose row has no market price. CRSP writes delisting
@@ -581,7 +655,12 @@ class CrspStockDataset(StockDataset):
             .then(None)
             .otherwise(pl.col("dlyprc").abs())
             .alias("close"),
-            (1.0 + pl.col("dlyret").fill_null(0.0))
+        )
+        derived = derived.with_columns(
+            _chain_return().alias("_chain_ret")
+        )
+        derived = derived.with_columns(
+            (1.0 + pl.col("_chain_ret").fill_null(0.0))
             .cum_prod()
             .over("permno")
             .alias("_G"),
@@ -613,8 +692,10 @@ class CrspStockDataset(StockDataset):
             # return counts as 1). A delisting-amount row
             # has no price either, but its `dlyret` is the delisting return,
             # the last value a holder receives, so its `adjClose` is the
-            # previous one times `1 + dlyret`. A delisting row whose return is
-            # null stays NaN: no delisting return is imputed.
+            # previous one times `1 + dlyret`. A no-price delisting row whose
+            # return is null stays NaN: no delisting return is imputed. A
+            # priced delisting row is chained by `_chain_ret`, the return
+            # derived from its price when `dlyret` is null.
             pl.when(
                 pl.col("close").is_null()
                 & ~(
@@ -723,17 +804,29 @@ class CrspStockDataset(StockDataset):
             )
 
     def _log_delistings_without_return(self, derived: pl.DataFrame) -> None:
-        """Warn about no-price delisting rows that have no delisting return.
+        """Log the delisting rows that have no delisting return.
 
-        Such a row keeps ``adjClose`` NaN (no return is imputed), so a
-        backtest settles the holding at the previous priced day's adjusted
-        close. The count and the PERMNOs are logged so the gap is visible.
+        A priced one is chained by the return derived from its price and is
+        counted at info level. A no-price one keeps ``adjClose`` NaN (no
+        return is imputed), so a backtest settles the holding at the previous
+        priced day's adjusted close; its count and PERMNOs are logged as a
+        warning so the gap is visible.
 
         Parameters
         ----------
         derived : pl.DataFrame
             The filtered derivation.
         """
+        priced = derived.filter(
+            _priced_delisting_without_return()
+            & pl.col("_chain_ret").is_not_null()
+        )
+        if priced.height:
+            logger.info(
+                f"{self.class_name}: {priced.height} priced delisting row(s) "
+                f"have no dlyret; their adjClose is chained by the return "
+                f"derived from CRSP's delisting price."
+            )
         missing = derived.filter(
             _is_delisting_row()
             & pl.col("close").is_null()
@@ -1339,10 +1432,7 @@ class CrspStockDataset(StockDataset):
             # Both null gives 0.0, not NaN: a day with no distribution paid a
             # known amount of nothing. Finer detail stays in the reference
             # table `stkdistributions`.
-            (
-                pl.col("dlyorddivamt").fill_null(0.0)
-                + pl.col("dlynonorddivamt").fill_null(0.0)
-            ).alias("divCash"),
+            _div_cash().alias("divCash"),
             # 1.0 on the PERMNO's first row in the window, where there is no
             # previous `dlycumfacpr` to divide by, so a split on the window's
             # first day reads 1.0. `facprc`, CRSP's own daily factor, covers

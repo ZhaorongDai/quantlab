@@ -310,9 +310,10 @@ settled into cash at its last valuation price, with no fee or slippage,
 whether or not that bar rebalances. This is a *delisting settlement*: it is
 logged, recorded in `SimulationResult.settlements` and written to
 `settlements.json`. On CRSP data that bar is the delisting row, whose
-adjusted close already carries the delisting return, so the settlement
-includes it; when CRSP gives no return there, the last priced day is the last
-valuation. The record from the example
+adjusted close already carries the delisting return (on a priced delisting
+row without a CRSP return, the return its delisting price implies), so the
+settlement includes it; when a no-price delisting row has no return, the last
+priced day is the last valuation. The record from the example
 run:
 
 ```json

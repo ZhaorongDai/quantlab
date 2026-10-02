@@ -135,6 +135,8 @@ timestamp
 
 新版数据里有些退市行给的是清算金额而不是价格（`dlyprcflg = "DA"`，`dlyprc = 0`）。这类行的 `close` 是 NaN，因此不会发布价格为零的成交。但它们的 `adjClose` 仍是上一日复权收盘价乘以 `1 + ret`，即 CRSP 写在该行上的退市收益（已含并购现金，因此该行的 `divCash` 不会再加一次），所以退市行是最后一根有估值的 bar，回测也按它结算。如果 CRSP 在这类行上没有给出收益，则不做任何估算：该行 `adjClose` 保持 NaN，转换时会输出一条警告，给出其数量和前十个 PERMNO，最后估值退回到最后一个有价格的交易日。
 
+如果退市行带有真实的退市价格（`dlyprcflg = "DP"`）但 `dlyret` 为空（`dlyretmissflg = "DG"`；CRSP 全市场历史中有 273 行，其中包括 2023-03-13 的 Signature Bank，PERMNO 11786），则按 CRSP 自己的收益定义，用它记录的价格推出收益并连乘进 `adjClose`：`(close * dlyfacprc + divCash) / close_prev - 1`，其中 `close_prev` 是此前最后一个收盘价。因此 Signature Bank 的退市行（39.37 之后为 0.40）让 `adjClose` 变化 -98.98%。该行的 `ret` 仍为 NaN，`stkdelists` 对这些行也没有 `delret`。其他有价格但收益为空的行不受影响。
+
 ## 常见任务
 
 ### 选择保留哪些证券

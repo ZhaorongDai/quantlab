@@ -264,6 +264,16 @@ return on such a row, quantlab imputes none: `adjClose` stays NaN, a warning
 counts such rows and names the first ten PERMNOs, and the last priced day is
 the last valuation.
 
+A delisting row can also carry a real delisting price (`dlyprcflg = "DP"`)
+but no return, for example Signature Bank (PERMNO 11786) on 2023-03-13,
+priced at 0.40 after a last close of 39.37. quantlab derives the return from CRSP's recorded prices with CRSP's own return
+definition, `(close * dlyfacprc + divCash) / close_prev - 1`, where
+`close_prev` is the last earlier close (CRSP's `dlyprevprc`), and chains
+`adjClose` by it: -98.98% for Signature Bank. The price is CRSP's, so nothing
+is imputed; `ret` itself stays NaN on that row, and the conversion logs how
+many rows were chained this way. An ordinary (non-delisting) row with a
+price but no return is unchanged: its missing return still counts as zero.
+
 ## Security filters
 
 CRSP covers every listed security type: common stock, ADRs, units, closed-end

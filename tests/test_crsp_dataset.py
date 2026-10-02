@@ -626,13 +626,114 @@ def test_a_no_price_delisting_row_without_a_return_keeps_adj_close_nan(
     assert np.isfinite(_at(panel, "adjClose", "2024-07-05", WESTROCK_AXIS))
 
 
-@pytest.mark.parametrize(
-    ("delisting_return", "settlement_price"),
-    [("-0.005630", WESTROCK_DELISTING_ADJ_CLOSE), ("-1.000000", 0.0)],
-    ids=["cash_merger", "total_loss"],
+#: The overrides that turn WestRock's `DA` row into a priced delisting row
+#: without a return, the shape of Signature Bank (PERMNO 11786) on
+#: 2023-03-13: a `DP` delisting price, `dlyret` null, `dlyretmissflg` `DG`.
+PRICED_DELISTING_WITHOUT_RETURN = dict(
+    dlyprc="0.400000", dlyprcflg="DP", dlyret=None, dlyretx=None,
+    dlyretmissflg="DG",
 )
-def test_a_backtest_settles_a_no_price_delisting_at_its_delisting_return(
-    mock_crsp_session, tmp_path, delisting_return, settlement_price
+
+
+@pytest.mark.parametrize(
+    ("overrides", "price_relative"),
+    [
+        ({}, 0.4 / 51.51),
+        # CRSP's return applies the day's price factor and adds the cash.
+        ({"dlyfacprc": "2.000000"}, 0.4 * 2.0 / 51.51),
+        (
+            {"dlyorddivamt": "0.100000", "dlynonorddivamt": "0.050000"},
+            (0.4 + 0.15) / 51.51,
+        ),
+    ],
+    ids=["price_only", "price_factor", "distribution"],
+)
+def test_a_priced_delisting_row_without_a_return_carries_its_price_loss(
+    mock_crsp_session, tmp_path, overrides, price_relative
+):
+    """#114: a delisting row with CRSP's delisting price but a null return.
+
+    The return is derived from CRSP's recorded prices by CRSP's own
+    definition, ``(close * dlyfacprc + divCash) / close_prev - 1``, and
+    ``adjClose`` is the previous one times ``1 + ret``. The panel's ``ret``
+    stays CRSP's null.
+    """
+    import numpy as np
+
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+
+    rows = [dict(row) for row in WESTROCK_2024_ROWS]
+    rows[-1].update(PRICED_DELISTING_WITHOUT_RETURN, **overrides)
+    panel = _build(
+        tmp_path, rows, [WESTROCK_PERMNO], start="2024-07-01", end="2024-07-31",
+    )
+
+    assert _at(panel, "close", "2024-07-08", WESTROCK_AXIS) == pytest.approx(0.4)
+    assert _at(panel, "adjClose", "2024-07-08", WESTROCK_AXIS) / _at(
+        panel, "adjClose", "2024-07-05", WESTROCK_AXIS
+    ) == pytest.approx(price_relative, rel=1e-12)
+    assert np.isnan(_at(panel, "ret", "2024-07-08", WESTROCK_AXIS))
+
+
+def test_a_priced_delisting_return_is_taken_from_the_last_earlier_close(
+    mock_crsp_session, tmp_path
+):
+    """#114: ``close_prev`` is the last earlier raw close, as CRSP's
+    ``dlyprevprc``, so a no-price day in between does not break the chain."""
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS, dsf_row
+
+    rows = [dict(row) for row in WESTROCK_2024_ROWS]
+    delisting = rows.pop()
+    rows.append(
+        dsf_row(
+            21186, "2024-07-08", dlyprc=None, dlyprcflg="NS", dlyret=None,
+            dlyretx=None, dlyretmissflg="NP", dlyclose=None, dlyopen=None,
+            dlyvol=None, ticker="WRK",
+        )
+    )
+    delisting.update(
+        PRICED_DELISTING_WITHOUT_RETURN, dlycaldt="2024-07-09", yyyymmdd="20240709"
+    )
+    rows.append(delisting)
+    panel = _build(
+        tmp_path, rows, [WESTROCK_PERMNO], start="2024-07-01", end="2024-07-31",
+    )
+
+    assert _at(panel, "adjClose", "2024-07-09", WESTROCK_AXIS) / _at(
+        panel, "adjClose", "2024-07-05", WESTROCK_AXIS
+    ) == pytest.approx(0.4 / 51.51, rel=1e-12)
+
+
+def test_a_priced_ordinary_row_without_a_return_keeps_a_flat_adj_close(
+    mock_crsp_session, tmp_path
+):
+    """#114 changes delisting rows only: an ordinary priced row whose return
+    is null still counts it as 0, as before."""
+    from tests.crsp_fixtures import WESTROCK_2024_ROWS
+
+    rows = [dict(row) for row in WESTROCK_2024_ROWS]
+    rows[1].update(dlyret=None, dlyretx=None, dlyretmissflg="DG")
+    panel = _build(
+        tmp_path, rows, [WESTROCK_PERMNO], start="2024-07-01", end="2024-07-31",
+    )
+
+    assert _at(panel, "adjClose", "2024-07-05", WESTROCK_AXIS) == pytest.approx(
+        _at(panel, "adjClose", "2024-07-03", WESTROCK_AXIS), rel=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    ("delisting_row", "settlement_price"),
+    [
+        ({"dlyret": "-0.005630"}, WESTROCK_DELISTING_ADJ_CLOSE),
+        ({"dlyret": "-1.000000"}, 0.0),
+        # #114: a priced delisting row without a return settles at its price.
+        (PRICED_DELISTING_WITHOUT_RETURN, 49.75 * 1.035377 * 0.4 / 51.51),
+    ],
+    ids=["cash_merger", "total_loss", "priced_without_return"],
+)
+def test_a_backtest_settles_a_delisting_at_its_last_valuation(
+    mock_crsp_session, tmp_path, delisting_row, settlement_price
 ):
     """#113 end to end: converted store -> `delisting_bars` -> settlement.
 
@@ -640,7 +741,8 @@ def test_a_backtest_settles_a_no_price_delisting_at_its_delisting_return(
     the next bar at that row's adjusted close, not at the last traded close.
     Two calendar days are appended after the delisting so the panel has a
     bar to settle on, as a store with other symbols would. A -100% delisting
-    return settles at a last valuation of 0.0 (#111).
+    return settles at a last valuation of 0.0 (#111). A priced delisting row
+    without a return settles at the value its price implies (#114).
     """
     import numpy as np
     import pandas as pd
@@ -651,7 +753,7 @@ def test_a_backtest_settles_a_no_price_delisting_at_its_delisting_return(
     from tests.test_backtest_engine import MARKET, _backtester
 
     rows = [dict(row) for row in WESTROCK_2024_ROWS]
-    rows[-1].update(dlyret=delisting_return)
+    rows[-1].update(delisting_row)
     dataset_config = _build_store(
         tmp_path, rows, [WESTROCK_PERMNO], start="2024-07-01", end="2024-07-31",
     )

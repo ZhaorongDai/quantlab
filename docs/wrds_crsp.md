@@ -135,6 +135,8 @@ timestamp
 
 Some modern delisting rows carry a settlement amount instead of a price (`dlyprcflg = "DA"`, with `dlyprc = 0`). Those rows get a NaN `close`, so a price of zero is never published. Their `adjClose` is still the previous adjusted close times `1 + ret`, CRSP's delisting return on that row (merger cash included, so `divCash` on the row is not added again), which makes the delisting row the last valued bar and the one a backtest settles at. When CRSP gives no return on such a row, none is imputed: `adjClose` stays NaN there, the conversion logs a warning with their count and the first ten PERMNOs, and the last priced day is the last valuation.
 
+A delisting row with a real delisting price (`dlyprcflg = "DP"`) but a null `dlyret` (`dlyretmissflg = "DG"`; 273 rows in the CRSP market history, Signature Bank, PERMNO 11786, on 2023-03-13 among them) is chained by the return CRSP's own definition gives from its recorded prices: `(close * dlyfacprc + divCash) / close_prev - 1`, with `close_prev` the last earlier close. Signature Bank's delisting row, at 0.40 after 39.37, therefore moves `adjClose` by -98.98%. `ret` stays NaN there, and `stkdelists` has no `delret` for these rows either. Other rows with a price and a null return are unchanged.
+
 ## Common tasks
 
 ### Choose which securities are kept
