@@ -48,6 +48,7 @@ from quantlab.backend import XrBackend
 # converter and polars), which adds about a second of import time.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
+from quantlab.utils import backtest_stats
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import (
     DASH,
@@ -78,12 +79,6 @@ FINGERPRINT_PARTIAL_NOTE = (
     "(under run_cv, a single fold's window) rather than a data change; the "
     "original error follows"
 )
-
-#: Mean length of a calendar year in days. Bars longer than one day span
-#: calendar time (weekly, monthly), so ``MarketSpec.year_freq`` annualizes
-#: them against this number.
-CALENDAR_DAYS_PER_YEAR = 365.25
-
 
 class Predictor(Protocol):
     """What the backtester needs from a model: the whole contract between the two.
@@ -266,14 +261,8 @@ class MarketSpec:
     def year_freq(self, bar_interval) -> pd.Timedelta:
         """Return one year in vectorbt's convention for bars of ``bar_interval``.
 
-        ``year_freq / bar_interval`` is the number of bars per year. Intraday
-        bars use trading days times session minutes divided by the bar's
-        minutes (one-minute bars: 252 x 390). A bar of exactly one day is one
-        trading day, giving ``trading_days_per_year``. A longer bar spans
-        calendar time (a weekly bar is one calendar week whatever the
-        holidays), so bars per year is ``CALENDAR_DAYS_PER_YEAR`` divided by
-        the bar's days, capped at ``trading_days_per_year``. The function is
-        continuous at one day and non-increasing in the interval.
+        ``quantlab.utils.backtest_stats.year_freq`` with this market's
+        trading days and session minutes; its docstring gives the rule.
 
         Parameters
         ----------
@@ -300,21 +289,9 @@ class MarketSpec:
         >>> round(spec.year_freq("7D") / pd.Timedelta("7D"), 2)
         52.18
         """
-        interval = pd.Timedelta(bar_interval)
-        if interval <= pd.Timedelta(0):
-            raise ValueError(f"bar_interval must be positive, got {interval}")
-        one_day = pd.Timedelta(days=1)
-        if interval >= one_day:
-            bars_per_year = min(
-                float(self.trading_days_per_year),
-                CALENDAR_DAYS_PER_YEAR * (one_day / interval),
-            )
-        else:
-            minutes = interval / pd.Timedelta(minutes=1)
-            bars_per_year = (
-                self.trading_days_per_year * self.session_minutes_per_day / minutes
-            )
-        return interval * bars_per_year
+        return backtest_stats.year_freq(
+            bar_interval, self.trading_days_per_year, self.session_minutes_per_day
+        )
 
 
 @dataclass
@@ -330,12 +307,14 @@ class SimulationResult:
     when nothing traded. ``settlements`` records delisted holdings turned
     into cash at their last valuation (``symbol``, ``axis_symbol``,
     ``delisting_timestamp``, ``settlement_timestamp``, ``price``).
-    ``rejected_orders`` records orders that found no fill price
-    (``symbol``, ``axis_symbol``, ``signal_timestamp``, ``fill_timestamp``);
-    the holding was kept. ``max_target_deviation`` is the largest absolute
-    gap between a target weight and the weight held right after its fill
-    bar, rejections, cash and fees included; ``None`` when nothing
-    rebalanced. ``native`` is the engine's own result object and is read
+    ``rejected_orders`` records orders that found no fill price, or no
+    price to size them against (``symbol``, ``axis_symbol``,
+    ``signal_timestamp``, ``fill_timestamp``); the holding was kept.
+    ``max_target_deviation`` is the largest absolute gap between a target
+    weight and the weight held right after its fill bar, rejections, cash
+    and fees included, with the weight valued at the prices the order was
+    sized against (the fill prices, or the signal bar's valuation prices
+    for ``sizing_basis="valuation"``); ``None`` when nothing rebalanced. ``native`` is the engine's own result object and is read
     only by the engine that produced it.
 
     Examples
@@ -448,8 +427,8 @@ class BaseBacktester(ABC):
     The engine varies by inheritance and the market and selection logic by
     composition. The hierarchy is ``BaseBacktester`` (this class), then an
     engine layer such as ``VectorBtBacktester`` that implements
-    ``_simulate``, ``_simulate_benchmark``, ``_engine_stats`` and
-    ``_period_returns_stats`` and sets ``fill_delay_bars``, then a named concrete class that composes a
+    ``_simulate``, ``_simulate_benchmark`` and ``_engine_stats`` and sets
+    ``fill_delay_bars``, then a named concrete class that composes a
     ``MarketSpec`` (the ``MARKET`` class attribute) and a signal generator
     (``_generate_signals``) onto that engine. Concrete classes also set
     ``config_cls``, the config class the ``config`` setter accepts.
@@ -838,17 +817,13 @@ class BaseBacktester(ABC):
         A bar at midnight is written as an ISO date, any other bar as a full
         ISO timestamp, so daily labels stay dates while intraday range
         endpoints keep their time of day. Labels are read back by
-        ``_label_ns`` and compared as exact timestamps, never by day.
+        ``backtest_stats.label_ns`` and compared as exact timestamps, never
+        by day.
         """
         ts = pd.Timestamp(str(value)) if isinstance(value, str) else pd.Timestamp(value)
         if ts == ts.normalize():
             return ts.strftime("%Y-%m-%d")
         return ts.isoformat()
-
-    @staticmethod
-    def _label_ns(label) -> np.datetime64:
-        """Convert a ``_bar_label`` string back to an exact ``datetime64[ns]``."""
-        return np.datetime64(pd.Timestamp(str(label)).to_datetime64(), "ns")
 
     @staticmethod
     def _slice_bound(value):
@@ -1351,8 +1326,8 @@ class BaseBacktester(ABC):
             configured benchmark or the other way round.
         """
         timestamps = result.simulation.value.timestamp.values
-        start = self._label_ns(self._iso_date(self.config.start_date))
-        end = self._label_ns(self._iso_date(self.config.end_date)) + np.timedelta64(1, "D")
+        start = backtest_stats.label_ns(self._iso_date(self.config.start_date))
+        end = backtest_stats.label_ns(self._iso_date(self.config.end_date)) + np.timedelta64(1, "D")
         if timestamps.size and (timestamps[0] < start or timestamps[-1] >= end):
             raise ValueError(
                 f"{self.class_name}: the result covers {self._bar_label(timestamps[0])} "
@@ -1465,21 +1440,32 @@ class BaseBacktester(ABC):
         )
 
     def _require_model(self, entry: str) -> None:
-        """Refuse to run ``entry`` on a config without a model.
+        """Refuse to run ``entry`` on a config without a model, or with the valuation basis.
 
         The config setter already guarantees ``model`` and ``model_mode`` are
-        both set or both ``None``, so checking ``model`` covers both.
+        both set or both ``None``, so checking ``model`` covers both. A model
+        run hands its portfolio rule the holdings ``construct_panel`` replays,
+        and that replay sizes at the fill price, so ``sizing_basis="valuation"``
+        is for ``run_weights()`` only.
 
         Raises
         ------
         ValueError
-            If ``config.model`` is ``None``.
+            If ``config.model`` is ``None`` or ``config.sizing_basis`` is not
+            ``"fill"``.
         """
         if self.config.model is None:
             raise ValueError(
                 f"{self.class_name}: {entry} requires config.model, but it is "
                 f"None; set config.model and config.model_mode, or backtest "
                 f"precomputed weights with run_weights()"
+            )
+        if self.config.sizing_basis != "fill":
+            raise ValueError(
+                f"{self.class_name}: {entry} supports sizing_basis='fill' only, "
+                f"got {self.config.sizing_basis!r}: the holdings handed to the "
+                f"portfolio rule are replayed with fill-price sizing; backtest "
+                f"the weights with run_weights() to size them from the close"
             )
 
     def _align_weights(
@@ -2455,18 +2441,28 @@ class BaseBacktester(ABC):
     def _engine_stats(self, simulation: SimulationResult) -> dict:
         """Return the engine's whole-window statistics keyed by metric name."""
 
-    @abstractmethod
-    def _period_returns_stats(
+    def _return_stats(
         self, simulation: SimulationResult, ranges: list[tuple[str, str]]
     ) -> dict:
-        """Return return-based statistics restricted to the bars inside ``ranges``.
+        """Return the return statistics of ``simulation`` cut to ``ranges``.
 
         A portfolio object cannot be sliced in time and re-simulating a
         sub-period would reset capital and change the path, so the
-        statistics are computed from the return series of the same
-        simulation, cut to ``ranges`` (inclusive pairs of bar labels) and
-        concatenated in time order when there are several.
+        statistics come from the return series of the same simulation, cut
+        to ``ranges`` (inclusive pairs of bar labels) and concatenated in time
+        order: ``backtest_stats.return_stats`` annualized by ``MARKET``.
+
+        Raises
+        ------
+        ValueError
+            If no simulated return falls inside ``ranges``.
         """
+        return backtest_stats.return_stats(
+            simulation.returns,
+            bar_interval=simulation.bar_interval,
+            year_freq=self.MARKET.year_freq(simulation.bar_interval),  # type: ignore[union-attr]
+            ranges=ranges,
+        )
 
     def _window_split(
         self, window_timestamps: np.ndarray, calendar: np.ndarray, train_start, train_end
@@ -2528,90 +2524,24 @@ class BaseBacktester(ABC):
             return None
         return cls._bar_label(pair[0]), cls._bar_label(pair[1])
 
-    @classmethod
-    def _in_ranges(cls, timestamps: np.ndarray, ranges: list[tuple[str, str]]) -> np.ndarray:
-        """Return a mask of the ``timestamps`` inside any of the inclusive label pairs.
-
-        Labels are ``_bar_label`` endpoints and are compared as exact
-        timestamps (a date is midnight), never by day.
-        """
-        ts = np.asarray(timestamps).astype("datetime64[ns]")
-        mask = np.zeros(ts.size, dtype=bool)
-        for start, end in ranges:
-            mask |= (ts >= cls._label_ns(start)) & (ts <= cls._label_ns(end))
-        return mask
-
     def _turnover(self, simulation: SimulationResult) -> xr.DataArray:
-        """Return the turnover of every bar that had fills, on a ``timestamp`` axis.
+        """Return the turnover of every fill bar of ``simulation``.
 
-        Turnover is the one-sided traded notional of the bar (the sum of
-        ``|size| x price`` over its orders) divided by the portfolio value
-        of the previous bar, or ``config.init_cash`` for the first bar of
-        the window. One-sided means a full buy-in from cash is about 1 and
-        replacing the whole book (sell then buy) about 2. Using the value
-        before the fills keeps the bar's own profit or loss out of the
-        ratio. An empty array is returned when there are no orders.
-
-        Raises
-        ------
-        ValueError
-            If an order timestamp is not on the equity axis.
+        ``backtest_stats.turnover`` of its orders and value, from
+        ``config.init_cash``.
         """
-        orders = simulation.orders
-        if orders.sizes.get("order", 0) == 0:
-            return xr.DataArray(
-                np.array([], dtype=np.float64),
-                dims=("timestamp",),
-                coords={"timestamp": np.array([], dtype="datetime64[ns]")},
-            )
-
-        order_ts = orders["timestamp"].values.astype("datetime64[ns]")
-        notional = np.abs(orders["size"].values.astype(np.float64)) * orders[
-            "price"
-        ].values.astype(np.float64)
-        fill_bars, inverse = np.unique(order_ts, return_inverse=True)
-        traded = np.zeros(fill_bars.size, dtype=np.float64)
-        np.add.at(traded, inverse, notional)
-
-        value_ts = simulation.value.timestamp.values.astype("datetime64[ns]")
-        idx = np.searchsorted(value_ts, fill_bars)
-        if (idx >= value_ts.size).any() or not np.array_equal(
-            value_ts[np.minimum(idx, value_ts.size - 1)], fill_bars
-        ):
-            raise ValueError(
-                f"{self.class_name}: an order timestamp is not on the equity "
-                f"timestamp axis"
-            )
-        values = np.asarray(simulation.value.values, dtype=np.float64)
-        previous = np.where(
-            idx > 0, values[np.maximum(idx - 1, 0)], float(self.config.init_cash)
-        )
-        return xr.DataArray(
-            traded / previous, dims=("timestamp",), coords={"timestamp": fill_bars}
+        return backtest_stats.turnover(
+            simulation.orders, simulation.value, self.config.init_cash
         )
 
-    def _turnover_summary(self, turnover: xr.DataArray, bar_interval) -> dict:
-        """Summarize turnover as three percent-valued metric rows.
-
-        ``Turnover per Rebalance [%]`` is the mean over the fill bars,
-        ``Total Turnover [%]`` their sum and ``Annualized Turnover [%]`` the
-        mean times bars per year (``MARKET.year_freq`` divided by
-        ``bar_interval``) divided by ``rebalance_periods``. With no fills
-        the mean and the annualized value are NaN (written as null) and the
-        total is 0. The names follow vectorbt's ``Total Return [%]`` style
-        so the report needs no renaming.
-        """
-        values = np.asarray(turnover.values, dtype=np.float64)
-        interval = pd.Timedelta(bar_interval)
-        bars_per_year = self.MARKET.year_freq(interval) / interval  # type: ignore[union-attr]
-        mean = float(values.mean()) if values.size else float("nan")
-        return {
-            "Turnover per Rebalance [%]": mean * 100.0,
-            "Total Turnover [%]": float(values.sum()) * 100.0,
-            "Annualized Turnover [%]": (
-                mean * bars_per_year / self.config.rebalance_periods * 100.0
-            ),
-        }
+    def _turnover_stats(self, turnover: xr.DataArray, bar_interval) -> dict:
+        """Return ``backtest_stats.turnover_stats`` for this market and rebalance step."""
+        return backtest_stats.turnover_stats(
+            turnover,
+            bar_interval=bar_interval,
+            year_freq=self.MARKET.year_freq(bar_interval),  # type: ignore[union-attr]
+            rebalance_periods=self.config.rebalance_periods,
+        )
 
     def _period_record_stats(
         self, simulation: SimulationResult, ranges: list[tuple[str, str]]
@@ -2623,7 +2553,7 @@ class BaseBacktester(ABC):
         trades with status ``"Closed"`` whose exit falls inside them;
         ``Total Open Trades`` the trades still open at each range's end
         (entered on or before it, and not yet exited or exited after it);
-        the three turnover rows are the ``_turnover_summary`` of the fill
+        the three turnover rows are the ``_turnover_stats`` of the fill
         bars inside the ranges. Several ranges never overlap, so the counts
         add up across them. The names are vectorbt's whole-window names, so
         a slice column and the whole column share a row.
@@ -2634,7 +2564,7 @@ class BaseBacktester(ABC):
         """
         orders = simulation.orders
         if orders.sizes.get("order", 0) > 0:
-            in_range = self._in_ranges(orders["timestamp"].values, ranges)
+            in_range = backtest_stats.in_ranges(orders["timestamp"].values, ranges)
             sizes = np.abs(orders["size"].values.astype(np.float64))[in_range]
             prices = orders["price"].values.astype(np.float64)[in_range]
             fees = orders["fees"].values.astype(np.float64)[in_range]
@@ -2650,20 +2580,20 @@ class BaseBacktester(ABC):
             status = trades["status"].values.astype(str)
             closed = status == "Closed"
             closed_trade_count = int(
-                (closed & self._in_ranges(trades["exit_timestamp"].values, ranges)).sum()
+                (closed & backtest_stats.in_ranges(trades["exit_timestamp"].values, ranges)).sum()
             )
             # Exact timestamps, not days: on intraday data a trade entered
             # later on the range's last day is not "open at the range end".
             entry_ts = trades["entry_timestamp"].values.astype("datetime64[ns]")
             exit_ts = trades["exit_timestamp"].values.astype("datetime64[ns]")
             for _, end in ranges:
-                end_ts = self._label_ns(end)
+                end_ts = backtest_stats.label_ns(end)
                 open_at_end = (entry_ts <= end_ts) & (~closed | (exit_ts > end_ts))
                 open_trade_count += int(open_at_end.sum())
 
         turnover = self._turnover(simulation)
         turnover = turnover.isel(
-            timestamp=self._in_ranges(turnover.timestamp.values, ranges)
+            timestamp=backtest_stats.in_ranges(turnover.timestamp.values, ranges)
         )
         return {
             "Total Orders": order_count,
@@ -2671,7 +2601,7 @@ class BaseBacktester(ABC):
             "Traded Notional": traded_notional,
             "Total Closed Trades": closed_trade_count,
             "Total Open Trades": open_trade_count,
-            **self._turnover_summary(turnover, simulation.bar_interval),
+            **self._turnover_stats(turnover, simulation.bar_interval),
         }
 
     def _compute_metrics(
@@ -2685,12 +2615,12 @@ class BaseBacktester(ABC):
         All three come from the same continuous simulation; nothing here
         simulates a second time. ``whole`` is the engine's whole-window
         statistics plus the three turnover rows and ``Total Orders``.
-        ``in_sample`` and ``out_of_sample`` merge ``_period_returns_stats``
+        ``in_sample`` and ``out_of_sample`` merge ``_return_stats``
         and ``_period_record_stats`` over their ranges and are ``None`` when
         there is no such range. ``benchmark`` and ``relative`` appear only
         when a benchmark was simulated: ``benchmark`` holds the benchmark's
         ``symbol`` (display name) and ``axis_symbol`` plus the same three
-        slices of return statistics (``_period_returns_stats`` over the whole
+        slices of return statistics (``_return_stats`` over the whole
         window and over each slice's ranges), and ``relative`` holds the
         three slices of ``_relative_stats``, the strategy measured against
         the benchmark. ``execution`` holds the simulation's
@@ -2705,7 +2635,7 @@ class BaseBacktester(ABC):
         """
         whole = self._engine_stats(simulation)
         whole.update(
-            self._turnover_summary(self._turnover(simulation), simulation.bar_interval)
+            self._turnover_stats(self._turnover(simulation), simulation.bar_interval)
         )
         # The number of fills: position-level trade counts do not say how
         # often we traded. A run with no fills has no `order` dimension, so
@@ -2738,7 +2668,7 @@ class BaseBacktester(ABC):
         for name, ranges in slices.items():
             metrics[name] = (
                 {
-                    **self._period_returns_stats(simulation, ranges),
+                    **self._return_stats(simulation, ranges),
                     **self._period_record_stats(simulation, ranges),
                     **self._win_rates(simulation, ranges),
                 }
@@ -2751,9 +2681,9 @@ class BaseBacktester(ABC):
             metrics["benchmark"] = {
                 "symbol": self._benchmark_display_name(axis_symbol, timestamps[-1]),
                 "axis_symbol": axis_symbol,
-                "whole": self._period_returns_stats(benchmark, whole_range),
+                "whole": self._return_stats(benchmark, whole_range),
                 **{
-                    name: self._period_returns_stats(benchmark, ranges) if ranges else None
+                    name: self._return_stats(benchmark, ranges) if ranges else None
                     for name, ranges in slices.items()
                 },
             }
@@ -2777,72 +2707,28 @@ class BaseBacktester(ABC):
         metrics.update(split or {})
         return metrics
 
+    @staticmethod
     def _win_rates(
-        self,
         simulation: SimulationResult,
         ranges: list[tuple[str, str]],
         benchmark: SimulationResult | None = None,
     ) -> dict:
-        """Return the share of holding periods and of months the strategy won, in percent.
+        """Return ``backtest_stats.win_rates`` of ``simulation``, its fills marking the periods.
 
-        A *holding period* runs from a bar with fills up to the bar before
-        the next one; the bars before the first fill hold nothing and are
-        left out. A month is a calendar month of the bar labels. Each period's
-        per-bar returns inside ``ranges`` are compounded; the strategy wins a
-        period when its return beats the benchmark's, or, without a
-        benchmark, when it is positive. A bar where either return is NaN, or
-        at or below -100% (a value that reached zero, whose log return does
-        not exist), is left out, and a slice with no period gives NaN.
-
-        Parameters
-        ----------
-        simulation : SimulationResult
-            The strategy's simulation; its fills mark the holding periods.
-        ranges : list[tuple[str, str]]
-            Inclusive bar-label ranges of the slice; bars outside them are
-            left out.
-        benchmark : SimulationResult or None, optional
-            The benchmark's simulation on the same bars. Without it a period
-            is won when its return is positive.
-
-        Returns
-        -------
-        dict
-            ``Rebalance Win Rate [%]`` and ``Monthly Win Rate [%]``, with
-            `` vs Benchmark`` before `` [%]`` when ``benchmark`` is given.
+        Against ``benchmark`` when given, otherwise against zero.
         """
-        returns = simulation.returns
-        ts = returns.timestamp.values.astype("datetime64[ns]")
-        r = np.asarray(returns.values, dtype=np.float64)
-        b = (
-            np.asarray(benchmark.returns.values, dtype=np.float64)
-            if benchmark is not None
-            else np.zeros_like(r)
-        )
+        orders = simulation.orders
         fills = (
-            np.unique(simulation.orders["timestamp"].values.astype("datetime64[ns]"))
-            if simulation.orders.sizes.get("order", 0)
+            orders["timestamp"].values
+            if orders.sizes.get("order", 0)
             else np.array([], dtype="datetime64[ns]")
         )
-        period = np.searchsorted(fills, ts, side="right") - 1
-        with np.errstate(invalid="ignore"):
-            valid = (r > -1.0) & (b > -1.0)
-        keep = self._in_ranges(ts, ranges) & (period >= 0) & valid
-        months = pd.DatetimeIndex(ts).to_period("M").asi8
-
-        def share(keys: np.ndarray) -> float:
-            """Return the percentage of the kept bars' groups under ``keys`` won."""
-            if not keep.any():
-                return float("nan")
-            frame = pd.DataFrame({"r": np.log1p(r[keep]), "b": np.log1p(b[keep]), "k": keys[keep]})
-            sums = frame.groupby("k")[["r", "b"]].sum()
-            return float((sums["r"] > sums["b"]).mean() * 100.0)
-
-        suffix = " vs Benchmark" if benchmark is not None else ""
-        return {
-            f"Rebalance Win Rate{suffix} [%]": share(period),
-            f"Monthly Win Rate{suffix} [%]": share(months),
-        }
+        return backtest_stats.win_rates(
+            simulation.returns,
+            fills,
+            ranges=ranges,
+            benchmark_returns=None if benchmark is None else benchmark.returns,
+        )
 
     def _benchmark_display_name(self, axis_symbol: str, as_of) -> str:
         """Return the benchmark's readable name, its ticker when the store has one.
@@ -2866,122 +2752,23 @@ class BaseBacktester(ABC):
         benchmark: SimulationResult,
         ranges: list[tuple[str, str]],
     ) -> dict:
-        """Return the strategy's statistics relative to the benchmark over ``ranges``.
+        """Return ``backtest_stats.relative_stats`` of the strategy against the benchmark.
 
         Engine-independent: it reads only the two per-bar return series,
-        which share the strategy's bars, cut to ``ranges`` (inclusive bar
-        labels) and concatenated in time order. The *relative NAV* compounds
-        ``(1 + r) / (1 + b)`` bar by bar (``r`` the strategy's return, ``b``
-        the benchmark's); over the whole window it equals the strategy's
-        value divided by the benchmark's, which is the excess-return curve
-        the report draws. Returned keys follow vectorbt's naming, and every
-        key ending in ``[%]`` is in percent:
-
-        - ``Strategy Total Return [%]`` / ``Benchmark Total Return [%]``:
-          compounded returns of each series;
-        - ``Excess Return [%]``: relative NAV at the end minus 1, the
-          geometric excess (alpha in the everyday sense);
-        - ``Annualized Excess Return [%]``: the same compounded to one year;
-        - ``Total Return Difference [%]``: the arithmetic difference of the
-          two total returns;
-        - ``Excess Max Drawdown [%]``: the deepest fall of the relative NAV
-          from its running peak (starting at 1), negative or 0;
-        - ``Tracking Error [%]``: annualized standard deviation of ``r - b``;
-        - ``Information Ratio``: annualized mean of ``r - b`` over the
-          tracking error;
-        - ``Beta`` and ``Correlation`` of ``r`` on ``b``, and
-          ``CAPM Alpha [%]``, the annualized regression intercept
-          ``mean(r) - beta * mean(b)``;
-        - ``Win Rate vs Benchmark [%]``: share of bars with ``r > b``;
-        - ``Bars``: number of bars used.
-
-        A statistic that is undefined (fewer than two bars, a flat
-        benchmark, zero tracking error) is NaN, which persists as null.
+        annualized by ``MARKET``.
 
         Raises
         ------
         ValueError
             If the two return series are not on the same bars.
         """
-        strategy = simulation.returns
-        reference = benchmark.returns
-        ts = strategy.timestamp.values.astype("datetime64[ns]")
-        if not np.array_equal(ts, reference.timestamp.values.astype("datetime64[ns]")):
-            raise ValueError(
-                f"{self.class_name}: the benchmark returns are not on the "
-                f"strategy's bars"
-            )
-        mask = self._in_ranges(ts, ranges)
-        r = np.asarray(strategy.values, dtype=np.float64)[mask]
-        b = np.asarray(reference.values, dtype=np.float64)[mask]
-        finite = np.isfinite(r) & np.isfinite(b)
-        r, b = r[finite], b[finite]
-        n = int(r.size)
-        interval = pd.Timedelta(simulation.bar_interval)
-        bars_per_year = float(self.MARKET.year_freq(interval) / interval)  # type: ignore[union-attr]
-        nan = float("nan")
-
-        stats = {
-            "Strategy Total Return [%]": nan,
-            "Benchmark Total Return [%]": nan,
-            "Excess Return [%]": nan,
-            "Annualized Excess Return [%]": nan,
-            "Total Return Difference [%]": nan,
-            "Excess Max Drawdown [%]": nan,
-            "Tracking Error [%]": nan,
-            "Information Ratio": nan,
-            "Beta": nan,
-            "Correlation": nan,
-            "CAPM Alpha [%]": nan,
-            "Win Rate vs Benchmark [%]": nan,
-            "Bars": n,
-        }
-        if n == 0:
-            return stats
-
-        strategy_total = float(np.prod(1.0 + r) - 1.0)
-        benchmark_total = float(np.prod(1.0 + b) - 1.0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            relative = np.cumprod((1.0 + r) / (1.0 + b))
-            peak = np.maximum.accumulate(np.concatenate(([1.0], relative)))[1:]
-            relative_drawdown = relative / peak - 1.0
-        final = float(relative[-1])
-        excess_max_drawdown = (
-            float(min(np.nanmin(relative_drawdown), 0.0))
-            if np.isfinite(relative_drawdown).any()
-            else nan
+        return backtest_stats.relative_stats(
+            simulation.returns,
+            benchmark.returns,
+            bar_interval=simulation.bar_interval,
+            year_freq=self.MARKET.year_freq(simulation.bar_interval),  # type: ignore[union-attr]
+            ranges=ranges,
         )
-        stats.update({
-            "Strategy Total Return [%]": strategy_total * 100.0,
-            "Benchmark Total Return [%]": benchmark_total * 100.0,
-            "Excess Return [%]": (final - 1.0) * 100.0,
-            "Annualized Excess Return [%]": (
-                float(final ** (bars_per_year / n) - 1.0) * 100.0 if final > 0 else nan
-            ),
-            "Total Return Difference [%]": (strategy_total - benchmark_total) * 100.0,
-            "Excess Max Drawdown [%]": excess_max_drawdown * 100.0,
-            "Win Rate vs Benchmark [%]": float(np.mean(r > b)) * 100.0,
-        })
-        if n < 2:
-            return stats
-
-        active = r - b
-        tracking = float(np.std(active, ddof=1) * np.sqrt(bars_per_year))
-        variance = float(np.var(b, ddof=1))
-        stats["Tracking Error [%]"] = tracking * 100.0
-        if tracking > 0:
-            stats["Information Ratio"] = float(
-                np.mean(active) * bars_per_year / tracking
-            )
-        if variance > 0:
-            beta = float(np.cov(r, b, ddof=1)[0, 1] / variance)
-            stats["Beta"] = beta
-            stats["CAPM Alpha [%]"] = float(
-                (np.mean(r) - beta * np.mean(b)) * bars_per_year * 100.0
-            )
-            if np.std(r) > 0:
-                stats["Correlation"] = float(np.corrcoef(r, b)[0, 1])
-        return stats
 
     def _report_notes(self) -> list[str]:
         """Return the notes attached to the report and to ``metrics.json``.

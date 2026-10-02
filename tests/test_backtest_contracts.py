@@ -112,9 +112,8 @@ def test_abstract_method_sets_are_exact():
             "_simulate",
             "_simulate_benchmark",
             "_engine_stats",
-            # 03.7-08: slice returns statistics need the engine's returns
-            # accessor (D-34, RESEARCH Pitfall 5), so they are an engine hook.
-            "_period_returns_stats",
+            # Slice return statistics were an engine hook until #109 made
+            # them the engine-free `quantlab.utils.backtest_stats.return_stats`.
         }
     )
     assert VectorBtBacktester.__abstractmethods__ == frozenset(

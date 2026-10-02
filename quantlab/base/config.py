@@ -1115,7 +1115,8 @@ class BacktestConfig:
     #: sizes at the valuation price of the signal bar t (its close), against
     #: the portfolio valued at t's close, as a broker order placed after the
     #: close must be sized; the order still fills at t+1's fill price. The
-    #: vectorbt engine reads it.
+    #: vectorbt engine reads it; ``run()`` and ``run_cv()`` accept ``"fill"``
+    #: only, so ``"valuation"`` is for ``run_weights()``.
     sizing_basis: Literal["fill", "valuation"] = "fill"
 
     #: A market dataset holding exactly one symbol, for example the QQQ store

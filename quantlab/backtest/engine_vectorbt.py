@@ -3,7 +3,7 @@
 ``VectorBtBacktester`` implements the engine hooks of ``BaseBacktester`` on
 top of ``vectorbt.Portfolio.from_orders``: target-percent weights, a one-bar
 delay between signal and fill, rejected orders, delisting settlements, and
-the whole-window and sliced statistics a run directory records. It is the
+the whole-window portfolio statistics a run directory records. It is the
 only module in the package that imports vectorbt; concrete backtesters such
 as ``quantlab.backtest.predefined.us_equity`` subclass it and supply the market
 conventions and the signal rule. The module is named ``engine_vectorbt``
@@ -198,12 +198,22 @@ class VectorBtBacktester(BaseBacktester):
             .values,
             dtype=bool,
         )
+        fill_values = np.asarray(fill.to_numpy(), dtype=np.float64)
+        valuation_values = np.asarray(valuation.to_numpy(), dtype=np.float64)
+        if cfg.sizing_basis == "valuation":
+            # Sized at bar t's valuation price: what vectorbt's -inf val_price
+            # (the previous bar's `close`, below) resolves to.
+            sizing = np.full_like(valuation_values, np.nan)
+            sizing[1:] = valuation_values[:-1]
+        else:
+            sizing = fill_values
         plan = self._execution_plan(
             target=np.asarray(w.shift(1).to_numpy(), dtype=np.float64),
             raw_fill=raw_fill,
-            fill=np.asarray(fill.to_numpy(), dtype=np.float64),
-            valuation=np.asarray(valuation.to_numpy(), dtype=np.float64),
+            fill=fill_values,
+            valuation=valuation_values,
             delisted=delisted,
+            sizing=sizing,
         )
 
         def frame(values):
@@ -288,6 +298,11 @@ class VectorBtBacktester(BaseBacktester):
         settlements, rejected = self._execution_records(
             plan, held, orders, timestamps, symbols
         )
+        deviation = (
+            self._max_sizing_deviation(plan, held, cash, cfg.init_cash)
+            if cfg.sizing_basis == "valuation"
+            else self._max_target_deviation(plan, held, cash)
+        )
 
         return SimulationResult(
             value=value_da,
@@ -295,7 +310,7 @@ class VectorBtBacktester(BaseBacktester):
             orders=orders,
             settlements=settlements,
             rejected_orders=rejected,
-            max_target_deviation=self._max_target_deviation(plan, held, cash),
+            max_target_deviation=deviation,
             bar_interval=bar_interval,
             trades=trades,
             native=pf,
@@ -308,26 +323,32 @@ class VectorBtBacktester(BaseBacktester):
         fill: np.ndarray,
         valuation: np.ndarray,
         delisted: np.ndarray,
+        sizing: np.ndarray,
     ) -> dict:
         """Return the orders the market accepts at each fill bar, as ``[T, S]`` arrays.
 
         ``target`` is the weight each bar fills to (the weights shifted one
         bar, NaN where a symbol keeps its holding). An order whose raw fill
-        price is NaN is rejected: its size becomes NaN, so the holding is
-        kept. A symbol delisted on bar ``b`` is settled on bar ``b + 1``: a
-        target of 0.0 priced at its last valuation, which replaces any
-        target the weights gave it there. The plan holds ``size``,
-        ``price``, ``target``, ``rejected`` and ``settle``.
+        price is NaN, or whose ``sizing`` price (the price the target is
+        sized against) is NaN, is rejected: its size becomes NaN, so the
+        holding is kept. A symbol delisted on bar ``b`` is settled on bar
+        ``b + 1``: a target of 0.0 priced at its last valuation, which
+        replaces any target the weights gave it there. The plan holds
+        ``size``, ``price``, ``sizing``, ``target``, ``rejected`` and
+        ``settle``.
         """
         settle = np.zeros_like(delisted)
         settle[1:] = delisted[:-1]
-        rejected = np.isfinite(target) & np.isnan(raw_fill) & ~settle
+        rejected = (
+            np.isfinite(target) & (np.isnan(raw_fill) | np.isnan(sizing)) & ~settle
+        )
         size = np.where(rejected, np.nan, target)
         size[settle] = 0.0
         price = np.where(settle, valuation, fill)
         return {
             "size": size,
             "price": price,
+            "sizing": sizing,
             "target": target,
             "rejected": rejected,
             "settle": settle,
@@ -412,6 +433,31 @@ class VectorBtBacktester(BaseBacktester):
             return None
         worth = held[bars] * np.nan_to_num(plan["price"][bars])
         weights = worth / (cash[bars] + worth.sum(axis=1))[:, None]
+        gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
+        return float(gap.max())
+
+    @staticmethod
+    def _max_sizing_deviation(
+        plan: dict, held: np.ndarray, cash: np.ndarray, init_cash: float
+    ) -> float | None:
+        """Return the largest |target - held weight| of the valuation basis, or None.
+
+        Measured as the valuation basis sizes: the position after the fill
+        bar at the signal bar's valuation price, over the book valued at
+        those prices before the bar's orders (the previous bar's cash and
+        positions). Without a capped buy it is 0 up to rounding. Settled
+        symbols are left out; rejected ones are not.
+        """
+        compared = np.isfinite(plan["target"]) & ~plan["settle"]
+        bars = np.flatnonzero(compared.any(axis=1))
+        if bars.size == 0:
+            return None
+        price = np.nan_to_num(plan["sizing"][bars])
+        held_before = np.zeros_like(held)
+        held_before[1:] = held[:-1]
+        cash_before = np.concatenate(([float(init_cash)], cash[:-1]))[bars]
+        book = cash_before + (held_before[bars] * price).sum(axis=1)
+        weights = held[bars] * price / book[:, None]
         gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
         return float(gap.max())
 
@@ -578,37 +624,3 @@ class VectorBtBacktester(BaseBacktester):
             "longest drawdown and counts from where that drawdown began, so "
             "the two numbers usually differ.",
         ]
-
-    def _period_returns_stats(
-        self, simulation: SimulationResult, ranges: list[tuple[str, str]]
-    ) -> dict:
-        """Return vectorbt return statistics for the bars inside ``ranges``.
-
-        A ``Portfolio`` cannot be sliced by time, so the per-bar returns of the
-        same simulation are sliced instead: each range is selected by its exact
-        bar timestamps (both ends inclusive) and the pieces are concatenated in
-        order. String slicing is avoided because a date used as an end label
-        would take the whole day, which on intraday data would pull in bars
-        past the labelled one. The annualisation frequency matches the
-        whole-window statistics.
-
-        Raises
-        ------
-        ValueError
-            If no simulated return falls inside ``ranges``.
-        """
-        returns = simulation.native.returns()  # type: ignore[union-attr]
-        pieces = [
-            returns.loc[pd.Timestamp(str(start)) : pd.Timestamp(str(end))]
-            for start, end in ranges
-        ]
-        sliced = pd.concat(pieces) if len(pieces) > 1 else pieces[0]
-        if sliced.empty:
-            raise ValueError(
-                f"{self.class_name}: no simulated returns inside {ranges}"
-            )
-        stats = sliced.vbt.returns(
-            freq=pd.Timedelta(simulation.bar_interval),
-            year_freq=self.MARKET.year_freq(simulation.bar_interval),  # type: ignore[union-attr]
-        ).stats(silence_warnings=True)
-        return stats.to_dict()

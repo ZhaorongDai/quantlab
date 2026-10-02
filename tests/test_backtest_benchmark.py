@@ -42,6 +42,7 @@ import quantlab.utils.module as module_utils
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.utils.backtest_report import write_backtest_report
+from quantlab.utils.backtest_stats import win_rates
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     make_model,
@@ -464,15 +465,12 @@ def test_win_rates_per_holding_period_and_per_month(benchmark_run):
             assert "Rebalance Win Rate [%]" in block and "Monthly Win Rate [%]" in block
 
 
-def test_a_bar_at_or_below_minus_100_percent_is_left_out_of_the_win_rates(benchmark_run):
+def test_a_bar_at_or_below_minus_100_percent_is_left_out_of_the_win_rates():
     """A value that reached zero has no log return: the bar is dropped, not counted as a loss."""
-    backtester, _ = benchmark_run
     bars = pd.date_range("2024-01-01", periods=6, freq="D")
     returns = xr.DataArray([0.0, 0.1, -1.0, 0.05, np.nan, 0.02], dims=("timestamp",), coords={"timestamp": bars})
-    orders = xr.Dataset({"timestamp": ("order", bars[[1, 3]].values)})
-    simulation = type("Simulation", (), {"returns": returns, "orders": orders})()
 
-    rates = backtester._win_rates(simulation, [("2024-01-01", "2024-01-06")])
+    rates = win_rates(returns, bars[[1, 3]].values, ranges=[("2024-01-01", "2024-01-06")])
 
     # Two holding periods: bar 1 (+10%) with bar 2 dropped, and bars 3-5 (+5%, NaN, +2%).
     assert rates["Rebalance Win Rate [%]"] == pytest.approx(100.0)

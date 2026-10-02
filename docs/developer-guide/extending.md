@@ -898,7 +898,9 @@ go in `_validate_config`, which runs at the end of the config setter.
 A different simulation engine is a sibling of `VectorBtBacktester`: subclass
 `BaseBacktester`, set `fill_delay_bars` (the bars between the bar a weight
 forms on and the bar it fills on, 1 for vectorbt) and implement `_simulate`,
-`_simulate_benchmark`, `_engine_stats` and `_period_returns_stats`, returning
-the engine-neutral `SimulationResult` described in the docstring of
-`quantlab.base.backtest`. `run()` and `run_cv()` refuse a model whose label
+`_simulate_benchmark` and `_engine_stats`, returning the engine-neutral
+`SimulationResult` described in the docstring of `quantlab.base.backtest`.
+The slice, benchmark, relative and turnover statistics are computed from that
+result by `quantlab.utils.backtest_stats`, so a new engine does not provide
+them. `run()` and `run_cv()` refuse a model whose label
 `delay` differs from `fill_delay_bars`.

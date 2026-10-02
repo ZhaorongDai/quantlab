@@ -368,6 +368,7 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
         fees=0.0007,
         slippage=0.0003,
         init_cash=250_000.0,
+        sizing_basis="valuation",
         constructor=TopNConstructor(TopNConfig(direction="long_short", top_n=1, score_label="fwd_ret_1")),
         tracker=WandbTracker(project="rebuilt", mode="disabled"),
         rebalance_periods=3,

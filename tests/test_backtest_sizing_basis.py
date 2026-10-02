@@ -24,7 +24,9 @@ import xarray as xr
 
 from quantlab.backtest.predefined.weights import WeightsVectorBt
 from quantlab.base.config import WeightsBacktestConfig
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.dataset.memory import FrameDataset
+from tests.test_backtest_run_weights import _config, stores  # noqa: F401
 
 BARS = pd.bdate_range("2024-01-01", periods=5)
 
@@ -92,3 +94,48 @@ def test_the_basis_is_recorded_in_the_run_config():
 def test_an_unknown_basis_is_refused():
     with pytest.raises(ValueError, match="sizing_basis"):
         _backtester(sizing_basis="open")
+
+
+def test_valuation_basis_reports_no_target_deviation_when_no_buy_is_capped():
+    # The held weight is measured as the basis sized it: 70 shares at bar 2's
+    # close 15 over the book of 1250 valued there is exactly the 84% asked for.
+    result = _backtester(sizing_basis="valuation").run_weights(_weights())
+    assert result.simulation.max_target_deviation == pytest.approx(0.0, abs=1e-12)
+
+
+def test_valuation_basis_rejects_an_order_for_a_symbol_without_a_close_at_t():
+    # BBB has no prices on bar 0, so a target formed there cannot be sized from
+    # its close: the order is rejected (and recorded), not silently dropped.
+    # The fill basis sizes it from bar 1's open and trades it.
+    nan_bbb = FrameDataset(pd.DataFrame({
+        "timestamp": np.repeat(BARS, 2),
+        "symbol": ["AAA", "BBB"] * BARS.size,
+        "open": [p for o in AAA_OPEN for p in (o, 20.0)],
+        "close": [p for c in AAA_CLOSE for p in (c, 20.0)],
+    }).assign(
+        open=lambda f: f["open"].where(~((f["symbol"] == "BBB") & (f["timestamp"] == BARS[0]))),
+        close=lambda f: f["close"].where(~((f["symbol"] == "BBB") & (f["timestamp"] == BARS[0]))),
+    ))
+    weights = _weights().copy()
+    weights[0] = [0.5, 0.5]
+
+    by_close = _backtester(sizing_basis="valuation", price_dataset=nan_bbb).run_weights(weights)
+    assert [r["axis_symbol"] for r in by_close.simulation.rejected_orders] == ["BBB"]
+    assert "BBB" not in by_close.simulation.orders["symbol"].values.tolist()
+
+    by_fill = _backtester(price_dataset=nan_bbb).run_weights(weights)
+    assert by_fill.simulation.rejected_orders == []
+    assert "BBB" in by_fill.simulation.orders["symbol"].values.tolist()
+
+
+def test_a_model_run_refuses_the_valuation_basis(stores):  # noqa: F811
+    # A model run's portfolio rule is handed the holdings the driver replays
+    # with fill-price sizing; until that replay knows the valuation basis,
+    # run() and run_cv() refuse it rather than hand the rule wrong holdings.
+    backtester = USEquityCrossectionSelectStockVectorBt(
+        _config(stores, with_model=True, sizing_basis="valuation")
+    )
+    with pytest.raises(ValueError, match="sizing_basis"):
+        backtester.run()
+    with pytest.raises(ValueError, match="sizing_basis"):
+        backtester.run_cv()

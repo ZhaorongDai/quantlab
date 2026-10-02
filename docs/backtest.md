@@ -218,7 +218,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 ### Rejected orders and delisted holdings
 
-Both price columns are forward-filled before the simulation, and each fill bar is then executed the way a market would (ADR 0014). An order whose raw fill price is missing on its fill bar, because the symbol is halted, is a *rejected order*: the holding is kept, the order expires, and the next rebalance decides again. Rejected orders that would have traded are listed in `result.simulation.rejected_orders` and in the `execution` block of the metrics, with `rejected_order_count` and `max_target_deviation`, the largest gap between a target weight and the weight held right after its fill bar (fees and cash included).
+Both price columns are forward-filled before the simulation, and each fill bar is then executed the way a market would (ADR 0014). An order whose raw fill price is missing on its fill bar, because the symbol is halted, is a *rejected order*: the holding is kept, the order expires, and the next rebalance decides again. Rejected orders that would have traded are listed in `result.simulation.rejected_orders` and in the `execution` block of the metrics, with `rejected_order_count` and `max_target_deviation`, the largest gap between a target weight and the weight held right after its fill bar (fees and cash included), valued at the prices the order was sized against. With `sizing_basis="valuation"` an order is also rejected when the symbol has no valuation price on the signal bar to size it from. `run()` and `run_cv()` accept only `sizing_basis="fill"`, because the holdings they hand the portfolio rule are replayed with fill-price sizing; the valuation basis is for `run_weights()`.
 
 A symbol whose prices stop inside the window is delisted on its last priced bar (`MarketDataset.delisting_bars`; a dataset that knows its halts may override it). On the next bar a holding in it is settled into cash at its last valuation price, with no fee or slippage, and the *delisting settlement* is recorded. On a CRSP store the last adjusted close already carries the delisting return. `FFF` has no price from 2024-02-20, is in the first portfolio, and is settled on 2024-02-20 at its 2024-02-19 close; the order at price 61.96 above is that settlement.
 
@@ -537,6 +537,34 @@ The rebuilt `FrameDataset` reads the store into memory; the replay writes its ow
 Traceback (most recent call last):
   ...
 ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', which is relative to the run directory the config was saved in; pass run_dir= (the directory holding config.json) to rebuild it. It is never resolved against the working directory.
+```
+
+### Compute the statistics without a backtester
+
+The returns-based rows and the turnover rows of `metrics.json` are public functions of `quantlab.utils.backtest_stats`, a module that imports numpy, pandas and xarray only: no model or dataset layer, no vectorbt. A tool that simulates a quantlab run elsewhere calls them to report the same numbers under the same names.
+
+| Function | Rows of `metrics.json` |
+|---|---|
+| `return_stats(returns, *, bar_interval, year_freq, ranges=None)` | the return blocks of `in_sample`, `out_of_sample` and `benchmark` (`Total Return [%]` ... `Value at Risk`), equal to the bit to vectorbt's returns statistics |
+| `relative_stats(returns, benchmark_returns, *, bar_interval, year_freq, ranges)` | `relative` |
+| `win_rates(returns, fill_timestamps, *, ranges, benchmark_returns=None)` | `Rebalance Win Rate [%]`, `Monthly Win Rate [%]` (and their `vs Benchmark` forms) |
+| `turnover(orders, value, init_cash)` and `turnover_stats(turnover, *, bar_interval, year_freq, rebalance_periods)` | `Turnover per Rebalance [%]`, `Total Turnover [%]`, `Annualized Turnover [%]` |
+| `year_freq(bar_interval, trading_days_per_year, session_minutes_per_day)` | the year every row is annualized by (`MarketSpec.year_freq`) |
+
+`ranges` are inclusive pairs of bar labels, as `metrics.json` records them (`in_sample_range`, `out_of_sample_ranges`). The strategy's own `whole` block is the exception: its turnover and win-rate rows come from these functions, but its return, ratio, trade, exposure and fee rows come from the engine's portfolio statistics. With `result` the `WeightsVectorBt` run above:
+
+```python
+>>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
+>>> year = year_freq("1D", 252, 390)
+>>> stats = return_stats(
+...     result.simulation.returns, bar_interval="1D", year_freq=year,
+...     ranges=[("2024-01-02", "2024-01-05")],
+... )
+>>> round(stats["Total Return [%]"], 4), stats["Period"]
+(18.1818, Timedelta('4 days 00:00:00'))
+>>> flows = turnover(result.simulation.orders, result.simulation.value, init_cash=1_000_000.0)
+>>> turnover_stats(flows, bar_interval="1D", year_freq=year, rebalance_periods=1)
+{'Turnover per Rebalance [%]': 100.0, 'Total Turnover [%]': 100.0, 'Annualized Turnover [%]': 25200.0}
 ```
 
 ## Extending

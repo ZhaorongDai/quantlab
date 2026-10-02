@@ -51,6 +51,8 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.backtest import SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.utils import backtest_stats
+from quantlab.utils.backtest_stats import in_ranges
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -195,10 +197,10 @@ def test_slice_statistics_compare_exact_bar_timestamps_not_days(tmp_path):
     )
     ranges = [("2024-01-01T21:00:00", "2024-01-02")]
 
-    mask = backtester._in_ranges(index.values, ranges)
+    mask = in_ranges(index.values, ranges)
     assert list(index[mask]) == list(pd.date_range("2024-01-01 21:00", periods=4, freq="h"))
 
-    stats = backtester._period_returns_stats(simulation, ranges)
+    stats = backtester._return_stats(simulation, ranges)
     expected = (np.prod(1.0 + returns.iloc[21:25].values) - 1.0) * 100.0
     assert stats["Total Return [%]"] == pytest.approx(expected, rel=1e-12)
 
@@ -220,7 +222,7 @@ def test_whole_order_count_is_zero_for_an_order_less_simulation(tmp_path, monkey
     Why this test exists at all: the mutation `.sizes.get("order", 0)` ->
     `.sizes["order"]` was run against the whole of this file and ESCAPED, 17
     passed. The neighbouring order-less test above calls `_period_record_stats`
-    and `_period_returns_stats` directly and never reaches `_compute_metrics`,
+    and `_return_stats` directly and never reaches `_compute_metrics`,
     so nothing covered this read. `_engine_stats` is stubbed here rather than
     driven through a real `Portfolio`: what needs proving is the order-record
     read, and a real vectorbt portfolio would only add a way for the test to
@@ -529,7 +531,10 @@ def test_turnover_is_one_for_a_full_entry_and_two_for_a_full_swap(tmp_path):
         coords={"timestamp": timestamps, "symbol": symbols},
     )
 
-    turnover = backtester._turnover(backtester._simulate(weights, prices))
+    simulation = backtester._simulate(weights, prices)
+    turnover = backtest_stats.turnover(
+        simulation.orders, simulation.value, backtester.config.init_cash
+    )
 
     assert turnover.dims == ("timestamp",)
     np.testing.assert_array_equal(
