@@ -151,5 +151,4 @@ def test_the_model_layer_never_checks_whether_a_run_is_open():
         for node in ast.walk(ast.parse(path.read_text()))
         if _guards_a_run(node)
     )
-    # The seed ensemble keeps its own wandb run until it moves to the tracker (#102).
-    assert [o for o in offenders if not o.startswith("quantlab/model/ensemble.py")] == []
+    assert offenders == []

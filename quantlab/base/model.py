@@ -1962,16 +1962,21 @@ class BaseModel(ABC):
             )
 
     @contextmanager
-    def _tracking_run(self, group: str, name: str) -> Iterator[TrackingRun]:
+    def _tracking_run(
+        self, group: str, name: str, config: dict | None = None
+    ) -> Iterator[TrackingRun]:
         """Open a run through ``config.tracker`` and hold it in ``_run`` while open.
 
         The project is the class name unless the tracker sets its own, and
-        the run's config is ``get_config()``. The run is finished when the
-        block is left, also when it raises, and ``_run`` goes back to a
-        ``NullRun``.
+        the run's config is ``config``, by default ``get_config()``. The run
+        is finished when the block is left, also when it raises, and ``_run``
+        goes back to a ``NullRun``.
         """
         with self.config.tracker.start_run(
-            project=self.class_name, group=group, name=name, config=self.get_config()
+            project=self.class_name,
+            group=group,
+            name=name,
+            config=self.get_config() if config is None else config,
         ) as run:
             self._run = run
             try:
@@ -1979,9 +1984,17 @@ class BaseModel(ABC):
             finally:
                 self._run = NullRun()
 
-    def _track_cv_summary(self, group: str, means: dict) -> None:
-        """Write the mean fold metrics to a ``{class}_cv_summary`` run of the trial."""
-        with self._tracking_run(group, f"{self.class_name}_cv_summary") as run:
+    def _track_cv_summary(
+        self, group: str, means: dict, *, name: str | None = None, config: dict | None = None
+    ) -> None:
+        """Write the mean fold metrics to the CV summary run of the trial ``group``.
+
+        The run is ``{class}_cv_summary`` with ``get_config()`` as its config;
+        an ensemble passes its own ``name`` and ``config`` and so shares its
+        members' tracker, project and group.
+        """
+        name = f"{self.class_name}_cv_summary" if name is None else name
+        with self._tracking_run(group, name, config) as run:
             run.summarize(means)
 
     @abstractmethod

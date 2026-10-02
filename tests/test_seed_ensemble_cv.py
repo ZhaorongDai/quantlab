@@ -43,9 +43,9 @@ from loguru import logger
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.model import BaseModel
-from quantlab.model.ensemble import BaseEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.utils.jsonable import to_jsonable
 from tests.tracking_fixtures import RecordingTracker
 from tests.backtest_fixtures import (
     SeededHead,
@@ -254,36 +254,18 @@ def test_fold_config_json_records_the_dates_before_the_purge(cv_run):
 # --------------------------------------------------------------------------
 
 
-class FakeRecorder:
-    """The ensemble's own CV summary run, still opened by ``_init_wandb`` until
-    the ensemble moves to the tracker (#102)."""
-
-    def __init__(self, project: str, name: str):
-        self.project = project
-        self.name = name
-        self.summary: dict = {}
-        self.finished = 0
-
-    def log(self, data, step=None):
-        pass
-
-    def finish(self):
-        self.finished += 1
-
-
-def test_tracking_runs_per_fold_member_and_one_summary(tmp_path, monkeypatch):
-    created: list[FakeRecorder] = []
-
-    def fake_init_wandb(self, project_name, experiment_name):
-        self._wandb_recorder = FakeRecorder(project_name, experiment_name)
-        created.append(self._wandb_recorder)
-
-    monkeypatch.setattr(BaseEnsemble, "_init_wandb", fake_init_wandb)
-    tracker = RecordingTracker()
+def _tracked_member(tmp_path, tracker, head=None):
     dataset_config, bars = _setup(tmp_path)
     member = _model(tmp_path, dataset_config, bars)
+    if head is not None:
+        member = head(member.config)
     member.config = dataclasses.replace(member.config, tracker=tracker)
-    ensemble = SeedEnsemble(member, SEEDS)
+    return member
+
+
+def test_tracking_runs_per_fold_member_and_one_summary(tmp_path):
+    tracker = RecordingTracker()
+    ensemble = SeedEnsemble(_tracked_member(tmp_path, tracker), SEEDS)
 
     results = ensemble.collect().train_cv(TRAIN_PERIODS)
 
@@ -293,26 +275,46 @@ def test_tracking_runs_per_fold_member_and_one_summary(tmp_path, monkeypatch):
         f"SeededHead_fold_{i}_member_{k}"
         for i in range(N_FOLDS)
         for k in range(len(SEEDS))
-    ]
+    ] + ["SeedEnsemble_cv_summary"]
     assert all(r.finished and not r.failed for r in tracker.runs)
-    (summary,) = created
-    assert summary.project == group
-    assert summary.name == "SeedEnsemble_cv_summary"
-    assert summary.finished == 1
+    summary = tracker.runs[-1]
+    assert summary.config == to_jsonable(ensemble.get_config())
     assert summary.summary["cv_n_folds"] == N_FOLDS
-    for key, value in BaseModel._cv_mean_metrics(results).items():
-        assert summary.summary[key] == pytest.approx(value, nan_ok=True)
+    means = BaseModel._cv_mean_metrics(results)
+    assert summary.summary == {
+        key: value for key, value in means.items() if np.isfinite(value)
+    }
 
 
-def test_train_keeps_the_member_run_names(tmp_path):
+class _FailsOnSecondSeed(SeededHead):
+    def _fit_model(self, train_rows, val_rows):
+        if self.config.random_seed == SEEDS[1]:
+            raise RuntimeError("member crashed")
+        super()._fit_model(train_rows, val_rows)
+
+
+def test_every_run_is_finished_when_a_members_training_raises(tmp_path):
     tracker = RecordingTracker()
-    dataset_config, bars = _setup(tmp_path)
-    member = _model(tmp_path, dataset_config, bars)
-    member.config = dataclasses.replace(member.config, tracker=tracker)
-    SeedEnsemble(member, SEEDS).collect().train()
+    ensemble = SeedEnsemble(_tracked_member(tmp_path, tracker, _FailsOnSecondSeed), SEEDS)
 
-    assert [r.name for r in tracker.runs] == [
-        f"SeededHead_member_{k}" for k in range(len(SEEDS))
+    with pytest.raises(RuntimeError, match="member crashed"):
+        ensemble.collect().train_cv(TRAIN_PERIODS)
+
+    assert [(r.name, r.finished, r.failed) for r in tracker.runs] == [
+        ("_FailsOnSecondSeed_fold_0_member_0", True, False),
+        ("_FailsOnSecondSeed_fold_0_member_1", True, True),
+    ]
+
+
+def test_train_keeps_the_member_run_names_in_one_group(tmp_path):
+    tracker = RecordingTracker()
+    ensemble = SeedEnsemble(_tracked_member(tmp_path, tracker), SEEDS)
+
+    manifest = ensemble.collect().train()
+
+    assert [(r.project, r.group, r.name) for r in tracker.runs] == [
+        ("SeededHead", manifest.parent.name, f"SeededHead_member_{k}")
+        for k in range(len(SEEDS))
     ]
 
 

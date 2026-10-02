@@ -76,7 +76,6 @@ from typing import Self
 
 import numpy as np
 import pandas as pd
-import wandb
 import xarray as xr
 
 from quantlab.base.model import BaseModel
@@ -158,7 +157,6 @@ class BaseEnsemble(ABC):
         self._check_members_agree(members)
         self.members = members
         self.test_bounds  # refuses members whose test windows do not overlap
-        self._wandb_recorder = None
 
     def __repr__(self) -> str:
         """Return ``ClassName(members=[...])``."""
@@ -570,8 +568,9 @@ class BaseEnsemble(ABC):
         Every member's hyperparameters are checked first. Then a new
         ``{class}_trial_{timestamp}`` directory is created under
         ``model_save_dir`` and filled by ``_train_into``: member k is
-        trained, in order, into ``member_{k}/`` under a wandb run
-        ``{MemberClass}_member_{k}`` in a project named after the directory;
+        trained, in order, into ``member_{k}/`` under a tracking run
+        ``{MemberClass}_member_{k}`` of its own tracker, grouped by the
+        directory's name;
         each member writes its usual checkpoint, ``config.json``,
         ``metrics.json``, ``ic_series.csv`` and ``test_predictions.zarr``
         there, and reseeds its generators from its own ``random_seed`` right
@@ -603,22 +602,22 @@ class BaseEnsemble(ABC):
         for member in self.members:
             member._check_hyperparameters()
         directory = self._new_directory()
-        manifest, _ = self._train_into(directory, project_name=directory.name)
+        manifest, _ = self._train_into(directory, group=directory.name)
         return manifest
 
     def _train_into(
         self,
         run_dir: Path | str,
-        project_name: str,
+        group: str,
         *,
         run_tag: str | None = None,
         write_metrics: bool = True,
     ) -> tuple[Path, dict]:
         """Train every member, evaluate the combination and write the manifest into ``run_dir``.
 
-        Member k trains into ``run_dir/member_{k}`` under the wandb run
+        Member k trains into ``run_dir/member_{k}`` under the tracking run
         ``{MemberClass}_member_{k}`` (``{MemberClass}_{run_tag}_member_{k}``
-        with a ``run_tag``) in the wandb project ``project_name``.
+        with a ``run_tag``) in the group ``group``.
         Then come the evaluation files of the combined prediction (see
         ``_write_evaluation_files``; ``metrics.json`` only with
         ``write_metrics``), ``config.json`` and last ``ensemble.json``.
@@ -630,11 +629,11 @@ class BaseEnsemble(ABC):
         run_dir : Path or str
             The ensemble directory. It is created with its parents when
             missing; its ``member_{k}`` subdirectories must not exist yet.
-        project_name : str
-            wandb project of the members' runs.
+        group : str
+            Tracking group of the members' runs, the trial directory's name.
         run_tag : str, optional
-            Inserted into every member's wandb run name, so that runs of
-            several ensemble directories in one project stay apart;
+            Inserted into every member's run name, so that runs of several
+            ensemble directories in one group stay apart;
             ``train_cv`` passes ``fold_{i}``.
         write_metrics : bool, default True
             Write the ensemble's ``metrics.json``; a caller that records the
@@ -653,7 +652,7 @@ class BaseEnsemble(ABC):
         for k, member in enumerate(self.members):
             checkpoint, _ = member._train_into(
                 directory / f"member_{k}",
-                group=project_name,
+                group=group,
                 experiment_name=f"{member.class_name}{tag}_member_{k}",
             )
             entries.append(
@@ -698,14 +697,15 @@ class BaseEnsemble(ABC):
         fold's dates before the purge (the members purge them themselves,
         as a single model's fold does), and ``_train_into`` fills
         ``fold_{i}/`` like ``train()`` fills its directory: member k in
-        ``member_{k}/`` under the wandb run ``{MemberClass}_fold_{i}_member_{k}``,
+        ``member_{k}/`` under the tracking run ``{MemberClass}_fold_{i}_member_{k}``,
         the evaluation files of the combined prediction, ``config.json`` and
         ``ensemble.json``. The fold's ensemble metrics go into the manifest
         instead of a ``metrics.json``. Folds train one after another. After
         the last fold the members keep its dates, as a model does after its
         own ``train_cv``. The fold means of the ensemble metrics, keyed
         ``cv_mean_{key}``, and ``cv_n_folds`` go to the summary of a
-        separate ``{class}_cv_summary`` wandb run in the same project.
+        separate ``{class}_cv_summary`` run, opened through the first
+        member's tracker in the members' project and group.
 
         Last, ``cv_folds.json`` is written atomically into the CV directory
         as ``{"format_version": 2, "folds": [...], "cv_mean": {...}}`` (NaN
@@ -774,7 +774,7 @@ class BaseEnsemble(ABC):
                 )
             manifest, metrics = self._train_into(
                 directory / f"fold_{fold['fold']}",
-                project_name=directory.name,
+                group=directory.name,
                 run_tag=f"fold_{fold['fold']}",
                 write_metrics=False,
             )
@@ -782,10 +782,13 @@ class BaseEnsemble(ABC):
 
         means = BaseModel._cv_mean_metrics(results)
         if means:
-            self._init_wandb(directory.name, f"{self.class_name}_cv_summary")
-            if self._wandb_recorder is not None:
-                self._wandb_recorder.summary.update(means)
-                self._wandb_recorder.finish()
+            # Through the first member's tracker, beside the members' runs.
+            self.members[0]._track_cv_summary(
+                directory.name,
+                means,
+                name=f"{self.class_name}_cv_summary",
+                config=self.get_config(),
+            )
 
         write_json_atomically(
             directory / BaseModel.CV_FOLDS_FILENAME,
@@ -797,12 +800,6 @@ class BaseEnsemble(ABC):
             indent=2,
         )
         return results
-
-    def _init_wandb(self, project_name: str, experiment_name: str) -> None:
-        """Open a wandb run with ``get_config()`` as its config."""
-        self._wandb_recorder = wandb.init(
-            project=project_name, name=experiment_name, config=self.get_config()
-        )
 
     def _write_evaluation_files(
         self, run_dir: Path, *, write_metrics: bool = True

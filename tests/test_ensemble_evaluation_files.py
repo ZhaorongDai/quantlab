@@ -241,7 +241,7 @@ def test_train_into_returns_the_manifest_and_the_metrics(tmp_path):
     ensemble = SeedEnsemble(_model(tmp_path), SEEDS).collect()
     run_dir = tmp_path / "cv" / "fold_0"
 
-    manifest, metrics = ensemble._train_into(run_dir, project_name="cv")
+    manifest, metrics = ensemble._train_into(run_dir, group="cv")
 
     assert manifest == (run_dir / "ensemble.json").absolute() and manifest.is_file()
     saved = json.loads((run_dir / "metrics.json").read_text())
@@ -250,7 +250,7 @@ def test_train_into_returns_the_manifest_and_the_metrics(tmp_path):
         assert _close(saved[key], value), key
 
     quiet = tmp_path / "cv" / "fold_1"
-    _, metrics = ensemble._train_into(quiet, project_name="cv", write_metrics=False)
+    _, metrics = ensemble._train_into(quiet, group="cv", write_metrics=False)
     assert not (quiet / "metrics.json").exists()
     assert (quiet / "ic_series.csv").is_file() and (quiet / "ensemble.json").is_file()
     assert sorted(metrics) == sorted(
