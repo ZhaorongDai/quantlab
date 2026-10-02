@@ -226,6 +226,8 @@ Timestamps are joined on the intersection, so the calendar-day rows that have no
 
 Every data variable is masked the same way, boolean flags included: outside the index a flag is undefined, so it becomes NaN.
 
+Mask a training or analysis panel this way, never a backtest's `price_dataset`: a stock that leaves the index is still quoted and can still be sold, so its prices must stay. In a backtest, membership masks the predictions instead: wrap the model in `MembershipMaskedPredictor(model, membership)` from `quantlab.model.predefined.membership_mask`, which sets a prediction to NaN wherever `is_member` is false on that bar's date (see [backtest.md](backtest.md#restrict-the-universe-to-an-indexs-members)).
+
 ### Query the symbol catalog at a date
 
 `UniverseCatalog` reads a parquet table with the columns `symbol`, `category`, `start_date`, `end_date` and `end_date_is_inferred`. The built-in categories are `us_all` and `nasdaq_all` (exchange rosters that include delisted names), `sp500_constituent` and `nasdaq100_constituent`. Building the table downloads Tiingo and Wikipedia sources, so the build call is shown without output:

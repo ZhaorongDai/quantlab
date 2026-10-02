@@ -15,9 +15,10 @@ under the data root (see README.md).
 
 The two models are one predictor: the ensemble passes each label through
 from the member that predicts it, so the backtest sees ``ret_5`` and
-``vol_5``. The backtest prices come from ``members.zarr``, NaN on the days a
-stock is not in the index, so the optimiser only holds members, and a stock
-removed from the index is settled at its last close like a delisting.
+``vol_5``. The backtest prices come from the unmasked index store, and the
+index membership masks the predictions: the optimiser only enters members,
+and a stock removed from the index keeps its prices and is held at an
+expected return of 0 until the optimiser trades it away.
 """
 
 # %% Settings
@@ -53,6 +54,7 @@ from quantlab.enums.constant import Date
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return, Volatility
+from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
@@ -89,6 +91,27 @@ def stock_dataset(store: Path) -> StockDataset:
     return StockDataset(DatasetConfig(
         zarr_file_path=str(store), raw_data_dir_path=str(RAW),
         market="us_equity", frequency="1d",
+    ))
+
+
+def index_dataset() -> CrspStockDataset:
+    """The unmasked index store: every bar of every PERMNO ever a member.
+
+    The backtest's price dataset. Membership masks the predictions, never
+    the prices, so a stock that leaves the index keeps its prices and can
+    still be sold at the next open.
+    """
+    return CrspStockDataset(CrspDatasetConfig(
+        zarr_file_path=str(STORES / "wrds_crsp_sp500_1d.zarr"),
+        raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
+    ))
+
+
+def index_membership() -> CrspSP500ConstituentDataset:
+    """The point-in-time S&P 500 membership (``is_member``) on the PERMNO axis."""
+    return CrspSP500ConstituentDataset(ConstituentDatasetConfig(
+        zarr_file_path=str(STORES / "wrds_crsp_sp500_membership.zarr"),
+        cache_dir=str(REFERENCE),
     ))
 
 
@@ -135,14 +158,7 @@ def prepare_stores() -> None:
     """Write ``prices`` (full history of every member ever) and ``members``
     (the same panel, NaN where the PERMNO was not a member that day).
     """
-    crsp = CrspStockDataset(CrspDatasetConfig(
-        zarr_file_path=str(STORES / "wrds_crsp_sp500_1d.zarr"),
-        raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
-    ))
-    membership = CrspSP500ConstituentDataset(ConstituentDatasetConfig(
-        zarr_file_path=str(STORES / "wrds_crsp_sp500_membership.zarr"),
-        cache_dir=str(REFERENCE),
-    ))
+    crsp, membership = index_dataset(), index_membership()
     for store in (crsp.config.zarr_file_path, membership.config.zarr_file_path):
         if not Path(store).exists():
             raise FileNotFoundError(
@@ -230,8 +246,9 @@ def backtest(manifest: Path):
         expected_return_label=f"ret_{HORIZON}",
         volatility_label=f"vol_{HORIZON}",
         # Correlations from half a year of one-bar returns. The returns come
-        # from members.zarr, so a stock joining the index is covered, and
-        # can be bought, once it has been a member for that long.
+        # from the unmasked index store, so a stock joining the index already
+        # has its history before joining and can be bought from its first
+        # member day.
         risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=126)),
         # mu = ic * sigma * z: the information coefficient of the return
         # model, for example the mean IC of a walk-forward CV run.
@@ -245,8 +262,12 @@ def backtest(manifest: Path):
         candidate_top_k=200,
     ))
     backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
-        price_dataset=stock_dataset(WORK / "members.zarr"),
-        model=build_model(), model_mode="load", checkpoint=str(manifest),
+        # Unmasked prices; index membership masks the predictions instead,
+        # so a stock is selectable only while a member, and one that leaves
+        # the index keeps its prices and can still be sold.
+        price_dataset=index_dataset(),
+        model=MembershipMaskedPredictor(build_model(), index_membership()),
+        model_mode="load", checkpoint=str(manifest),
         start_date=TEST_START, end_date=TEST_END,
         output_dir=str(WORK / "backtests" / "xgb_mvo"),
         # Rebalance every HORIZON bars, the span the optimiser plans over.

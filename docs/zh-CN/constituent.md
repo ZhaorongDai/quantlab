@@ -226,6 +226,8 @@ timestamp
 
 所有数据变量按同样方式遮蔽，布尔标志位也不例外：在指数之外，标志位是未定义的，所以会变成 NaN。
 
+这种遮蔽用于训练或分析面板，绝不用于回测的 `price_dataset`：被剔除出指数的股票仍有报价、仍可卖出，所以它的价格必须保留。回测中，成分改为遮蔽预测：把模型包装成 `quantlab.model.predefined.membership_mask` 中的 `MembershipMaskedPredictor(model, membership)`，它在该 bar 日期的 `is_member` 为假时把预测置为 NaN（见 [backtest.md](backtest.md#限定为指数成分股)）。
+
 ### 按日期查询标的池目录
 
 `UniverseCatalog` 读取一张 parquet 表，字段为 `symbol`、`category`、`start_date`、`end_date` 和 `end_date_is_inferred`。内置的类别有 `us_all` 和 `nasdaq_all`（包含已退市名字的交易所名册）、`sp500_constituent` 和 `nasdaq100_constituent`。构建这张表要下载 Tiingo 和维基百科的数据源，所以构建调用只展示不带输出：

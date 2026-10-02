@@ -285,7 +285,7 @@ array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
       dtype=float32)
 ```
 
-因子、模型和回测各指南（[factor.md](factor.md)、[model.md](model.md)、[backtest.md](backtest.md)）无需改动即可适用。需要时点股票池时，套用成分掩码（[constituent.md](constituent.md)）。
+因子、模型和回测各指南（[factor.md](factor.md)、[model.md](model.md)、[backtest.md](backtest.md)）无需改动即可适用。需要时点股票池时，用成分遮蔽预测而不是价格：在未遮蔽的指数 store 上回测，并把模型包装成 `MembershipMaskedPredictor`（[backtest.md](backtest.md#限定为指数成分股)、[constituent.md](constituent.md)）。
 
 ## 扩展
 

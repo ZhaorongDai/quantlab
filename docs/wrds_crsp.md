@@ -287,7 +287,7 @@ array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
       dtype=float32)
 ```
 
-The factor, model and backtest guides ([factor.md](factor.md), [model.md](model.md), [backtest.md](backtest.md)) apply unchanged. For a point-in-time universe, apply the membership mask ([constituent.md](constituent.md)).
+The factor, model and backtest guides ([factor.md](factor.md), [model.md](model.md), [backtest.md](backtest.md)) apply unchanged. For a point-in-time universe, mask the predictions with the membership, not the prices: backtest over the unmasked index store with the model wrapped in `MembershipMaskedPredictor` ([backtest.md](backtest.md#restrict-the-universe-to-an-indexs-members), [constituent.md](constituent.md)).
 
 ## Extending
 

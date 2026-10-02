@@ -259,6 +259,29 @@ Keep the backtester's `price_dataset` unfiltered: do not apply a universe
 mask to it. Prices of held positions must stay available until they are sold,
 otherwise a held symbol would have no price to trade at.
 
+When the factors are computed on the full history (so their rolling windows
+see no membership gaps), the predictions are not NaN outside the universe and
+the universe has to be applied to them. Wrap the model in
+`MembershipMaskedPredictor` from `quantlab.model.predefined.membership_mask`:
+
+```python
+from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
+
+config = CrossSectionBacktestConfig(
+    price_dataset=crsp_index_dataset,  # unmasked prices
+    model=MembershipMaskedPredictor(model, membership),
+    ...
+)
+```
+
+It sets a prediction to NaN wherever `is_member` of the membership dataset is
+false on that bar's date, forwards everything else to the model, and is
+rebuilt from the run's `config.json` like the model. The run's
+`predictions.zarr` holds the masked predictions. A bar whose date the
+membership panel does not cover is refused, because unknown membership is not
+"not a member". The `sp500_*` and `nasdaq100_*` examples under
+`examples/wrds_us_equity/` work this way.
+
 A symbol that leaves because it delisted, so that its price disappears
 altogether, is handled separately. A held symbol whose prices stop inside the
 window is settled into cash at its last valuation on the next bar, and the

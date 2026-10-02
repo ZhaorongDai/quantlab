@@ -430,6 +430,24 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 'Figure'
 ```
 
+### 限定为指数成分股
+
+指数的 point-in-time 成分是一个股票池：它规定策略在 bar t 可以买入哪些证券。它遮蔽的是预测，从不遮蔽价格。`price_dataset` 保持未遮蔽（CRSP 下即指数 store `wrds_crsp_<index>_1d.zarr` 上的 `CrspStockDataset`），并用 `quantlab.model.predefined.membership_mask` 中的 `MembershipMaskedPredictor` 配合该指数的 `IndexConstituentDataset` 包装模型：
+
+```python
+from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
+
+config = CrossSectionBacktestConfig(
+    price_dataset=crsp_index_dataset,
+    model=MembershipMaskedPredictor(model, membership),
+    ...
+)
+```
+
+包装器满足 `Predictor` 协议。它的 `predict_window` 在该 bar 日期的 `is_member` 为假时把预测置为 NaN（成分面板中没有的标的视为非成分股），其余成员全部转发给模型，因此适用于训练与加载两种模式、`run_cv()` 以及 ensemble。被剔除出指数的股票保留价格，因此仍可交易，也不会被当作退市结算：它的预测变为 NaN，持仓如何处理由规则决定（`TopNConstructor` 在下一个调仓 bar 卖出，`MeanVarianceOptimizer` 按预期收益 0 持有）。`predictions.zarr` 保存遮蔽后的预测，窗口内的成分面板以 `membership` 为键记入指纹，`load_backtester_from_config` 会连同成分数据集一起重建包装器。成分面板未覆盖的 bar 日期会抛出 `ValueError`，因为成分未知不等于“非成分股”。
+
+反过来用成分遮蔽价格（价格面板 `.where(is_member)`）会让被剔除的股票在第一个非成分 bar 变得不可交易，并以最后一个成分日的收盘价结算，而实盘中这笔卖出从未发生。
+
 ### 与基准对比
 
 把 `benchmark_dataset` 设为只含一个标的的市场数据集，例如 `scripts/wrds/etf.py --etf qqq` 写出的 QQQ store（`CrspDatasetConfig.qqq_benchmark`）。它和价格数据集一样是 `(timestamp, symbol)` 面板，放在单独的 store 里，带有相同的 `adjOpen` / `adjClose` 列。直接传入数据集对象：

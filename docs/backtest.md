@@ -430,6 +430,24 @@ With `output_dir=None` a run writes nothing: no run directory, no report. `resul
 'Figure'
 ```
 
+### Restrict the universe to an index's members
+
+An index's point-in-time membership is a universe: it says which securities the strategy may enter at bar t. It masks the predictions, never the prices. Keep `price_dataset` unmasked (for CRSP, a `CrspStockDataset` over the index store `wrds_crsp_<index>_1d.zarr`) and wrap the model in `MembershipMaskedPredictor` from `quantlab.model.predefined.membership_mask`, with the index's `IndexConstituentDataset`:
+
+```python
+from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
+
+config = CrossSectionBacktestConfig(
+    price_dataset=crsp_index_dataset,
+    model=MembershipMaskedPredictor(model, membership),
+    ...
+)
+```
+
+The wrapper satisfies the `Predictor` protocol. Its `predict_window` sets a prediction to NaN wherever `is_member` is false on that bar's date (a symbol missing from the membership panel is not a member) and forwards every other member to the model, so it works in train and load mode, in `run_cv()`, and with an ensemble. A stock that leaves the index keeps its prices, so it stays tradable and is never settled as a delisting: its prediction turns NaN and the rule decides what happens to a holding (`TopNConstructor` sells it at the next rebalance, `MeanVarianceOptimizer` holds it at an expected return of 0). `predictions.zarr` holds the masked predictions, the membership panel over the window is fingerprinted under `membership`, and `load_backtester_from_config` rebuilds the wrapper with its membership dataset. A bar whose date the membership panel does not cover raises `ValueError`, because unknown membership is not "not a member".
+
+Masking the prices with membership instead (a price panel `.where(is_member)`) makes a leaver untradable on its first non-member bar and settles it at its last member close, a sale that never happens live.
+
 ### Compare against a benchmark
 
 Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for example the QQQ store written by `scripts/wrds/etf.py --etf qqq` (`CrspDatasetConfig.qqq_benchmark`). It is a `(timestamp, symbol)` panel like the price dataset, in a store of its own, with the same `adjOpen` / `adjClose` columns. Pass the dataset object itself:

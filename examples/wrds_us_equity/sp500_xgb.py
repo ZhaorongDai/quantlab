@@ -43,6 +43,7 @@ from quantlab.enums.constant import Date
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
+from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
@@ -78,6 +79,27 @@ def stock_dataset(store: Path) -> StockDataset:
     ))
 
 
+def index_dataset() -> CrspStockDataset:
+    """The unmasked index store: every bar of every PERMNO ever a member.
+
+    The backtest's price dataset. Membership masks the predictions, never
+    the prices, so a stock that leaves the index keeps its prices and can
+    still be sold at the next open.
+    """
+    return CrspStockDataset(CrspDatasetConfig(
+        zarr_file_path=str(STORES / "wrds_crsp_sp500_1d.zarr"),
+        raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
+    ))
+
+
+def index_membership() -> CrspSP500ConstituentDataset:
+    """The point-in-time S&P 500 membership (``is_member``) on the PERMNO axis."""
+    return CrspSP500ConstituentDataset(ConstituentDatasetConfig(
+        zarr_file_path=str(STORES / "wrds_crsp_sp500_membership.zarr"),
+        cache_dir=str(REFERENCE),
+    ))
+
+
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects.
 
@@ -108,14 +130,7 @@ def prepare_stores() -> None:
     """Write ``prices`` (full history of every member ever) and ``members``
     (the same panel, NaN where the PERMNO was not a member that day).
     """
-    crsp = CrspStockDataset(CrspDatasetConfig(
-        zarr_file_path=str(STORES / "wrds_crsp_sp500_1d.zarr"),
-        raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
-    ))
-    membership = CrspSP500ConstituentDataset(ConstituentDatasetConfig(
-        zarr_file_path=str(STORES / "wrds_crsp_sp500_membership.zarr"),
-        cache_dir=str(REFERENCE),
-    ))
+    crsp, membership = index_dataset(), index_membership()
     for store in (crsp.config.zarr_file_path, membership.config.zarr_file_path):
         if not Path(store).exists():
             raise FileNotFoundError(
@@ -191,8 +206,12 @@ def backtest(checkpoint: Path):
             f"--etf spy first, or pass benchmark_dataset=None below."
         )
     backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
-        price_dataset=stock_dataset(WORK / "members.zarr"),
-        model=build_model(), model_mode="load", checkpoint=str(checkpoint),
+        # Unmasked prices; index membership masks the predictions instead,
+        # so a stock is selectable only while a member, and one that leaves
+        # the index keeps its prices and can still be sold.
+        price_dataset=index_dataset(),
+        model=MembershipMaskedPredictor(build_model(), index_membership()),
+        model_mode="load", checkpoint=str(checkpoint),
         start_date=TEST_START, end_date=TEST_END,
         output_dir=str(WORK / "backtests" / "xgb"),
         # Rebalance every 5 bars into the top 50 scores; "long_short"

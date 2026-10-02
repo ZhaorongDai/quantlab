@@ -132,7 +132,7 @@ factor/residual_momentum.zarr 残差动量得分及其排名（market_residual_m
 ## 股票池的处理
 
 - **幸存者偏差**：CRSP 成分股名单包含窗口内任何时候是成分股的所有 PERMNO（含已退市的），CRSP 也带有退市收益。
-- **point-in-time 成分**：`members.zarr` 是把非成分股格子置为 NaN 的价格面板。标签读取它，所以训练样本只包含成分股行；回测用它定价，所以只能买入当时的成分股，被剔除出指数的持仓会在下一个 bar 卖出。因子读取 `prices.zarr`，滚动窗口能看到完整历史。
+- **point-in-time 成分只遮蔽预测，从不遮蔽价格**：`members.zarr` 是把非成分股格子置为 NaN 的价格面板，只有标签读取它，所以训练样本只包含成分股行。因子读取 `prices.zarr`，滚动窗口能看到完整历史。回测用未遮蔽的指数仓库定价（`index_dataset()`，即 `wrds_crsp_<index>_1d.zarr` 上的 `CrspStockDataset`，含原始 open/close、`adjClose`、`splitFactor`、`divCash` 与退市记录），并把模型包装成 `MembershipMaskedPredictor(build_model(), index_membership())`：某日 PERMNO 不是成分股时，其预测置为 NaN。因此只能买入成分股；被剔除出指数的股票保留价格、仍可交易，持仓如何处理由规则决定（TopN 在下一个调仓 bar 卖出，均值-方差优化器按预期收益 0 持有）。运行目录中的 `predictions.zarr` 保存的是遮蔽后的预测。成分仓库必须覆盖全部回测日期：未覆盖的日期会被拒绝，而不是当作“非成分股”。
 
 ## 注意事项
 

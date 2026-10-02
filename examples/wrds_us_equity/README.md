@@ -132,7 +132,7 @@ A backtest run directory can be rebuilt and re-run with `quantlab.utils.module.l
 ## How the universe is handled
 
 - **Survivorship**: the CRSP roster contains every PERMNO that was a member at any time in the window, delisted ones included, and CRSP carries delisting returns.
-- **Point-in-time membership**: `members.zarr` is the price panel with non-member cells set to NaN. The label reads it, so training rows are member rows only. The backtest prices from it, so only current members can be bought, and a holding that leaves the index is sold on the next bar. Factors read `prices.zarr`, so their rolling windows see full history.
+- **Point-in-time membership masks predictions, never prices**: `members.zarr` is the price panel with non-member cells set to NaN. Only the label reads it, so training rows are member rows only. Factors read `prices.zarr`, so their rolling windows see full history. The backtest prices from the unmasked index store (`index_dataset()`, a `CrspStockDataset` over `wrds_crsp_<index>_1d.zarr`, with raw open/close, `adjClose`, `splitFactor`, `divCash` and delistings) and wraps the model in `MembershipMaskedPredictor(build_model(), index_membership())`, which sets a prediction to NaN wherever the PERMNO is not a member that day. So only members can be entered; a stock that leaves the index keeps its prices and stays tradable, and the rule decides what happens to a holding (TopN sells it at the next rebalance, the mean-variance optimiser holds it at an expected return of 0). The run's `predictions.zarr` holds the masked predictions. The membership store must cover every backtest date: a date it does not cover is refused rather than read as "not a member".
 
 ## Notes
 
