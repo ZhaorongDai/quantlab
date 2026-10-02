@@ -267,7 +267,7 @@ Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Fi
 
 | File | Content |
 | --- | --- |
-| `config.json` | The configuration, with the price dataset and the model nested, and a data fingerprint. |
+| `config.json` | The configuration, with the price dataset and the model nested, and a data fingerprint. Its `market` block names the market's `fill_price_column` and `valuation_price_column`, so a tool reading the run learns them without importing the backtester class; a rebuild drops it and takes them from the class again. |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. |
 | `equity.zarr` | The portfolio `value` and per-bar `returns` on `timestamp`. |
 | `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()`, a `run_cv()` fold and the stitched `run_cv()` pass also record `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them) or the top-n rule's `tie_at_cutoff` (tied symbols a book's cut left out, so the picks were decided by symbol order), with its `count` (symbols over all its bars) and its `bars`, one record per bar that names the symbols or, for `tie_at_cutoff`, counts them. |

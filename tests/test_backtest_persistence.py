@@ -435,6 +435,21 @@ def test_fingerprint_json_covers_price_and_factor_datasets(overlap_run):
     assert pd.Timestamp(factor["end"]) == pd.Timestamp(price["end"])
 
 
+def test_run_config_json_records_the_market_price_columns(overlap_run):
+    """#106: an executor learns the fill and valuation columns from config.json.
+
+    quantlab-trader reads a run directory without importing the backtester
+    class (which loads vectorbt), so the columns the run filled and valued at
+    are recorded beside the rest of the config.
+    """
+    config = _strict_json(overlap_run["result"].run_dir / "config.json")
+
+    assert config["market"] == {
+        "fill_price_column": "adjOpen",
+        "valuation_price_column": "adjClose",
+    }
+
+
 def test_get_config_carries_the_data_fingerprint_after_a_run(overlap_run):
     assert "data_fingerprint" not in overlap_run["config_before_run"]
     result = overlap_run["result"]

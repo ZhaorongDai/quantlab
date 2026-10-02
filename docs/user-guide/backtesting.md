@@ -484,7 +484,7 @@ succeeded, so a crashed run leaves no half-written directory behind.
 
 | File | Content |
 |---|---|
-| `config.json` | Every config field, the nested price dataset and model configs, and the data fingerprints. Enough to rebuild the run. |
+| `config.json` | Every config field, the nested price dataset and model configs, the data fingerprints, and a `market` block naming the fill and valuation price columns (`fill_price_column`, `valuation_price_column`) for tools that read the run without importing the backtester class. Enough to rebuild the run. |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. |
 | `equity.zarr` | Portfolio `value` and per-bar `returns` on `timestamp`. |
 | `metrics.json` | The metric blocks described above. |

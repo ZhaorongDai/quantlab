@@ -246,6 +246,26 @@ def test_rebuild_from_a_run_config_moves_the_fingerprint_to_expected(tmp_path):
     assert rebuilt.config.checkpoint == str(checkpoint)
 
 
+def test_a_run_config_with_the_market_block_rebuilds(tmp_path):
+    """#106: the `market` block is a record of the class's MARKET, not a config field.
+
+    The rebuilt backtester takes its columns from its class again, and its own
+    config (and so its next run directory) carries the same block.
+    """
+    dataset_config, checkpoint = _trained(tmp_path)
+    result = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+    saved = _read_run_config(result.run_dir)
+    assert saved["market"] == {
+        "fill_price_column": "adjOpen",
+        "valuation_price_column": "adjClose",
+    }
+
+    rebuilt = module_utils.load_backtester_from_config(saved)
+
+    assert rebuilt.MARKET.fill_price_column == "adjOpen"
+    assert _json(rebuilt.get_config())["market"] == saved["market"]
+
+
 def test_backtest_config_path_fields_are_stored_absolute(tmp_path, monkeypatch):
     """Code review WR-03: `checkpoint`, `cv_project_dir` and `output_dir` persist as absolute paths.
 

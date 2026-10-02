@@ -358,6 +358,10 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
     config = json.loads((result.run_dir / "config.json").read_text())
     assert config["model"] is None
     assert sorted(config["data_fingerprint"]) == ["benchmark_dataset", "price_dataset"]
+    assert config["market"] == {
+        "fill_price_column": "adjOpen",
+        "valuation_price_column": "adjClose",
+    }
     persisted = xr.open_zarr(result.run_dir / "weights.zarr").load()
     np.testing.assert_array_equal(
         persisted["weight"].values, run_result.weights["weight"].values

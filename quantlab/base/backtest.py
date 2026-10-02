@@ -709,7 +709,14 @@ class BaseBacktester(ABC):
         are replaced by their own ``get_config()`` output. After a run the
         mapping also carries ``data_fingerprint``, one fingerprint per dataset
         the run read, and after a train-mode run ``trained_checkpoint``, so a
-        saved ``config.json`` can rebuild and replay the same run. A run
+        saved ``config.json`` can rebuild and replay the same run. Every
+        mapping carries ``market``, the ``fill_price_column`` and
+        ``valuation_price_column`` of ``MARKET``, so a tool reading a run
+        directory (an executor such as quantlab-trader) learns the price
+        columns without importing the backtester class. ``market``,
+        ``data_fingerprint`` and ``trained_checkpoint`` are records, not
+        config fields: ``load_backtester_from_config`` drops ``market`` and
+        the rebuilt class supplies its own ``MARKET``. A run
         directory's ``config.json`` differs in one respect: a price or
         benchmark ``FrameDataset`` is recorded reading the copy of its panel
         under ``inputs/``, named relative to the run directory.
@@ -721,6 +728,8 @@ class BaseBacktester(ABC):
         ('mypkg.backtest.MyBacktester', 'load', 5)
         >>> sorted(cfg["data_fingerprint"])  # present once run() has read
         ['factor[0]:PastReturnFactor', 'price_dataset']
+        >>> cfg["market"]
+        {'fill_price_column': 'open', 'valuation_price_column': 'close'}
 
         A config without a model (for ``run_weights()``) records ``None``:
 
@@ -744,6 +753,12 @@ class BaseBacktester(ABC):
         constructor = getattr(self.config, "constructor", None)
         if constructor is not None:
             cfg["constructor"] = constructor.get_config()
+        # A record of the class's MARKET, so a reader of a run directory
+        # learns the price columns without importing the backtester class.
+        cfg["market"] = {
+            "fill_price_column": self.MARKET.fill_price_column,  # type: ignore[union-attr]
+            "valuation_price_column": self.MARKET.valuation_price_column,  # type: ignore[union-attr]
+        }
         if self._fingerprints:
             cfg["data_fingerprint"] = dict(self._fingerprints)
         # After a train-mode run, record the checkpoint it produced so load

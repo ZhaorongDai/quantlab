@@ -234,7 +234,9 @@ def load_backtester_from_config(
     run directory, so the directory can be moved; such a config needs
     ``run_dir``.
 
-    Two keys are records rather than config fields. ``data_fingerprint``
+    Three keys are records rather than config fields. ``market`` names the
+    fill and valuation price columns of the backtester class's ``MARKET`` and
+    is dropped, since the rebuilt class supplies its own. ``data_fingerprint``
     describes the data the original run read (time range, axis sizes and a
     sha256 digest of the values); it is removed and assigned to the rebuilt backtester's
     ``expected_fingerprint`` so the re-run can warn when its data differs.
@@ -316,6 +318,8 @@ def load_backtester_from_config(
     config = copy.deepcopy(config)
     expected = config.pop("data_fingerprint", None)
     config.pop("trained_checkpoint", None)
+    # The market block records the class's MARKET; the rebuilt class supplies it.
+    config.pop("market", None)
 
     cls = get_cls_from_path(config["name"])
     if not (isinstance(cls, type) and issubclass(cls, BaseBacktester)):

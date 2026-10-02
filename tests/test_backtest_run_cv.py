@@ -701,6 +701,10 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
     config = _strict_json(run_dir / "config.json")
     assert config["cv_project_dir"] == str(cv_project.project_dir)
     assert config["data_fingerprint"] == fingerprint
+    assert config["market"] == {
+        "fill_price_column": "adjOpen",
+        "valuation_price_column": "adjClose",
+    }
 
 
 #: Contexts every `_Recorder` saw, in call order.
