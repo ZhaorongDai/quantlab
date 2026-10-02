@@ -777,9 +777,13 @@ copy for a new one:
   wrong name fails before any data is collected, and `_init_model` passes
   the positions to the network.
 
-Every training run opens a Weights & Biases run; set `WANDB_MODE=disabled` in
-the environment to keep it offline. On macOS, set `OMP_NUM_THREADS=1` before
-importing anything when one process uses both torch and xgboost. The
+A head records extra values on the open tracking run through `self._run`
+(`self._run.log(metrics, step)`, `self._run.summarize(metrics)`), which
+records nothing outside training and under the default tracker, so the head
+needs no check. Tracking happens only when the model config names a tracker
+(see [Track experiments](../model.md#track-experiments)). On macOS, set
+`OMP_NUM_THREADS=1` before importing anything when one process uses both
+torch and xgboost. The
 reference heads are `quantlab/model/predefined/xgb.py` and
 `quantlab/model/predefined/realmlp.py` for `LibraryModel`, and
 `quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` for

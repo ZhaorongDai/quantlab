@@ -18,21 +18,18 @@ output shown on this page is real output of that script.
 
 ## Before you import anything
 
-Two environment variables have to be set before PyTorch or XGBoost is imported, so they come
+One environment variable has to be set before PyTorch or XGBoost is imported, so it comes
 first in the script:
 
 ```python
 import os
 import sys
 
-os.environ.setdefault("WANDB_MODE", "disabled")
-os.environ.setdefault("WANDB_SILENT", "true")
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 ```
 
-Every training run opens a Weights & Biases run; `WANDB_MODE=disabled` turns those calls into
-no-ops, which is also what the test suite does. `OMP_NUM_THREADS=1` avoids the macOS OpenMP
+`OMP_NUM_THREADS=1` avoids the macOS OpenMP
 clash between PyTorch and XGBoost described in [installation](installation.md).
 
 ## Step 1: write a price panel
@@ -221,7 +218,8 @@ Checkpoint: models/XGBoostRegressor_trial_20260927_212057_563434/XGBoostRegresso
 Each call to `train()` creates a new timestamped trial directory, so earlier checkpoints are
 never overwritten. Next to the `.joblib` checkpoint sits a `config.json` recording the model,
 its factors and labels, and the hyperparameters XGBoost actually used. The training and test
-metrics go to the Weights & Biases run, which is disabled here. Walk-forward cross-validation
+metrics also go to the config's `tracker`, which by default sends them nowhere
+(see [experiment tracking](installation.md#experiment-tracking)). Walk-forward cross-validation
 through `train_cv()` is covered in [models](../user-guide/models.md).
 
 ## Step 4: backtest the model

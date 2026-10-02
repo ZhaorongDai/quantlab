@@ -77,12 +77,6 @@ from tests.backtest_fixtures import (
 MARKET = USEquityCrossectionSelectStockVectorBt.MARKET
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 def _day(ts) -> str:
     return pd.Timestamp(ts).strftime("%Y-%m-%d")
 
@@ -892,18 +886,13 @@ def rotating_run(tmp_path_factory):
     """One real `run()` of the trimming fixture, shared by the read-only locks.
 
     Module-scoped, so the three assertions below read one simulation instead
-    of paying for three. The autouse wandb fixture is function-scoped and
-    cannot be requested here, so the environment is set the same way
-    tests/test_backtest_persistence.py sets it for its shared runs.
+    of paying for three.
     """
     root = tmp_path_factory.mktemp("rotating")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("WANDB_MODE", "disabled")
-        mp.setenv("WANDB_SILENT", "true")
-        config = _trained_run_config(
-            root, write_price_store(root / "store", n_bars=RUN_BARS)
-        )
-        return RotateOneOutEqualWeight(config).run()
+    config = _trained_run_config(
+        root, write_price_store(root / "store", n_bars=RUN_BARS)
+    )
+    return RotateOneOutEqualWeight(config).run()
 
 
 def test_the_whole_block_carries_the_trade_metrics_with_no_nested_positions_block(

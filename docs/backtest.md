@@ -8,7 +8,7 @@ The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorb
 
 ## Prerequisites
 
-Run the examples from the repository root with `uv run python`. On macOS, set `OMP_NUM_THREADS=1` before torch or xgboost is imported in the same process, and `WANDB_MODE=disabled` to keep experiment tracking off.
+Run the examples from the repository root with `uv run python`. On macOS, set `OMP_NUM_THREADS=1` before torch or xgboost is imported in the same process. Nothing is tracked unless a config names a tracker (see Track a backtest).
 
 A backtest needs a price dataset whose store has the columns `adjOpen` and `adjClose`, and a model with a checkpoint written by `train()` or `train_cv()`. The sessions below use a synthetic setup: six symbols, one factor, one label and a model head with nothing to fit whose score is the past one-bar return. The label is the factor `open_ret_1` wrapped in `Forward` with `span=1` and the default `delay=1`: its value at bar t is the open-to-open return from t+1 to t+2, so its lookahead is 2 bars. The last symbol, `FFF`, stops trading at bar 36. Save this as `demo_parts.py`.
 
@@ -464,6 +464,23 @@ The run then carries two more metric blocks, each with `whole`, `in_sample` and 
 - **Charts**, on the right, in tabs: *Performance* (NAV with the linear/log toggle, drawdown, monthly returns and the year-by-month heatmap); *Excess*, with a benchmark (the cumulative excess return, switchable between log, `Σ log((1+r)/(1+b))`, whose exponential minus 1 is the geometric excess, and arithmetic, `Σ(r − b)`, read like a cumulative IC; and the excess drawdown under it); *Rolling* (one-year excess return, information ratio and beta, or one-year return, volatility and Sharpe ratio without a benchmark); *Portfolio* (turnover per fill bar, the number of holdings and the gross exposure of the target weights, and the net exposure when anything is short).
 
 When the run has an in-sample part, the headline numbers and the main tables are its out-of-sample slice, the bars the model never saw, and every chart shades the in-sample range. Drawdowns are negative everywhere on the page. The excess drawdown, the fall of the relative NAV from its peak, is drawn only on the Excess tab, apart from the two NAVs' own drawdowns, because the numbers are not comparable.
+
+### Track a backtest
+
+A backtest is tracked through its config's `tracker`, as a model is (see Track experiments in the model guide). The default, `NullTracker()`, sends nothing anywhere. `run()`, `run_cv()` and `run_weights()` each open one run in the project `<ClassName>_backtest`, unless the tracker sets `project`, named after the run directory and carrying the backtest's config. Its summary holds the `whole`, `in_sample` and `out_of_sample` blocks as `whole/<metric>` and so on, plus `benchmark` and `relative` when a benchmark ran; for `run_cv()` these are the stitched metrics. On MLflow a character it refuses in a key becomes `_`, so `whole/Total Return [%]` is logged as `whole/Total Return ___`. `report.html` is attached to the run when a run directory exists; a run kept in memory is tracked without it. The run opens before the backtest, so a backtest that raises is recorded as failed. With `model_mode="train"`, the model's training goes through the model config's own tracker. The tracker is written to `config.json` and rebuilt by `load_backtester_from_config`.
+
+```python
+>>> backtester.config.tracker
+NullTracker(project=None)
+>>> from quantlab.tracking.wandb import WandbTracker
+>>> tracked = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config, tracker=WandbTracker(project="momentum_backtests", mode="offline")
+... )).run()
+>>> json.loads((tracked.run_dir / "config.json").read_text())["tracker"]
+{'project': 'momentum_backtests', 'entity': None, 'mode': 'offline', 'name': 'quantlab.tracking.wandb.WandbTracker'}
+```
+
+With `mode="offline"` the run is written under `wandb/` (or `WANDB_DIR`) as the run `USEquityCrossectionSelectStockVectorBt_<timestamp>` of the project `momentum_backtests`, with `whole/Total Return [%]` and the other metrics in its summary and the report as an HTML panel named `report`.
 
 ### Rebuild a run from its config
 

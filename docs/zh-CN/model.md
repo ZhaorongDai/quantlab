@@ -2,14 +2,13 @@
 
 [English](../model.md) | 简体中文
 
-收益模型根据一组因子预测标签（label），标签通常是未来收益或收益排名。因子和标签都是以 `(timestamp, symbol)` 为索引的 `xarray.Dataset` 面板（panel），预测结果与之形状相同，可以直接交给组合优化和回测环节。模型层提供统一的训练流程：数据收集、训练与测试窗口、walk-forward 交叉验证、检查点（checkpoint）、提前停止、评估指标以及 Weights & Biases 日志；具体的模型头（head）只需要实现拟合本身。
+收益模型根据一组因子预测标签（label），标签通常是未来收益或收益排名。因子和标签都是以 `(timestamp, symbol)` 为索引的 `xarray.Dataset` 面板（panel），预测结果与之形状相同，可以直接交给组合优化和回测环节。模型层提供统一的训练流程：数据收集、训练与测试窗口、walk-forward 交叉验证、检查点（checkpoint）、提前停止、评估指标以及实验追踪；具体的模型头（head）只需要实现拟合本身。
 
 ## 前置条件
 
-示例都在 CPU 上运行，不需要联网。每次训练都会调用 Weights & Biases（W&B），本地实验时把它关掉。在 macOS 上还要在导入 `torch` 或 `xgboost` 之前限制 OpenMP 线程数（见注意事项）。
+示例都在 CPU 上运行，不需要联网。除非配置指定了 tracker，否则不追踪任何内容（见实验追踪）。在 macOS 上要在导入 `torch` 或 `xgboost` 之前限制 OpenMP 线程数（见注意事项）。
 
 ```bash
-export WANDB_MODE=disabled
 export OMP_NUM_THREADS=1   # 仅 macOS
 ```
 
@@ -135,7 +134,7 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标，覆盖训练、验证和测试三段；另有 `loss`：模型头在训练目标（经模型头逐 bar 的 `_transform_target` 变换后的标签，见“扩展”）上的损失，逐 bar 计算再对 bar 取平均，因此每个 bar 的权重相同，与它有多少个标的无关。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入 W&B 运行摘要，`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。对库模型头，这个损失是 `_loss`（默认 MSE）；对 torch 模型头，它是 `_val_one_batch`，默认就是它的 `_loss`（见“训练 torch 模型”）。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标，覆盖训练、验证和测试三段；另有 `loss`：模型头在训练目标（经模型头逐 bar 的 `_transform_target` 变换后的标签，见“扩展”）上的损失，逐 bar 计算再对 bar 取平均，因此每个 bar 的权重相同，与它有多少个标的无关。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入追踪 run 的摘要（见实验追踪），`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。对库模型头，这个损失是 `_loss`（默认 MSE）；对 torch 模型头，它是 `_val_one_batch`，默认就是它的 `_loss`（见“训练 torch 模型”）。
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -299,7 +298,7 @@ hyperparameters = {
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的 W&B 运行，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的追踪 run，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -373,7 +372,7 @@ True
 True
 ```
 
-`train()` 新建一个集成目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，按顺序训练各成员，第 k 个成员训练到 `member_{k}/`，并有自己的 W&B run `XGBoostRegressor_member_{k}`；每个成员目录里是常规的检查点、`config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。随后写入平均预测的评估文件（见下文）和 `config.json`，后者记录各成员共有的内容，即训练与测试日期和标签配置（它不是模型配置），最后写入清单 `ensemble.json`。`train()` 返回清单的路径。某个成员或集成评估失败时不写清单，已经写好的文件保留。
+`train()` 新建一个集成目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，按顺序训练各成员，第 k 个成员训练到 `member_{k}/`，并有自己的追踪 run `XGBoostRegressor_member_{k}`，以集成目录名为分组；每个成员目录里是常规的检查点、`config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。随后写入平均预测的评估文件（见下文）和 `config.json`，后者记录各成员共有的内容，即训练与测试日期和标签配置（它不是模型配置），最后写入清单 `ensemble.json`。`train()` 返回清单的路径。某个成员或集成评估失败时不写清单，已经写好的文件保留。
 
 ```python
 >>> manifest = ensemble.train()
@@ -481,9 +480,9 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 各成员依次训练，每个成员在训练前一刻用自己的 `random_seed` 重设随机数生成器。
 
-`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的 W&B 运行 `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的追踪 run `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
 
-`cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，即 IC 一族和 `{split}_member_correlation`；`cv_mean` 是它们的均值。返回值就是折列表。同一个项目里另有一个 W&B 运行 `SeedEnsemble_cv_summary`，记录 `cv_mean_*` 的值。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
+`cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，即 IC 一族和 `{split}_member_correlation`；`cv_mean` 是它们的均值。返回值就是折列表。另有一个追踪 run `SeedEnsemble_cv_summary` 记录 `cv_mean_*` 的值，它通过第一个成员的 tracker 打开，与各成员在同一个项目和分组里。集成没有自己的 tracker，它的 run 都经由成员模型的 tracker。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
 
 ```python
 >>> folds = ensemble.train_cv(train_periods=100)
@@ -878,9 +877,57 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 
 两个训练出的模型在测试段上的预测，整体相关系数和逐 bar 平均相关系数都是 0.986；差别来自训练路径，float16 输入让它略有不同。同一套权重下，用 float16 面板而不是 float32 面板预测测试段，预测值最多变化 7e-5（预测的标准差是 0.21），测试 IC 和 rank IC 在小数点后九位内相同。float32 面板放不进 GPU 空闲显存的一半，所以不用 float16 时，`"auto"` 会把这个面板留在内存里。
 
-### 记录到 Weights & Biases
+### 实验追踪
 
-每次 `train()` 以及 `train_cv()` 的每一折都会打开一个 W&B 运行：运行名是实验名，所在项目名是试验目录名，并附带完整配置。`XGBoostRegressor` 记录每一轮的训练和验证曲线，把最终指标和各因子的重要性写入运行摘要。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的特征重要性图表，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.model.predefined._support.tabkit.active_callbacks`）。`train_cv` 还会额外打开一个 `<类名>_cv_summary` 运行，其摘要就是清单里的 `cv_mean` 块。torch 模型头每个 epoch 记录 `train_loss` 和 `val_loss`，并把最终指标写入运行摘要。`WANDB_MODE=disabled` 会关闭全部记录；`WANDB_MODE=offline` 把运行写到本地的 `wandb/` 目录，之后可以用 `wandb sync` 同步。两者都不设置时，`wandb.init` 需要已登录的账号。
+训练的记录发到哪里，由配置里的 `tracker` 决定。默认的 `NullTracker()` 什么都不发送，所以上面的示例不需要任何设置。有两个 tracker 会把 run 发送到外部服务：
+
+- `quantlab.tracking.wandb.WandbTracker(project=None, entity=None, mode="online")` 发送到 Weights & Biases。`mode` 取 `"online"`、`"offline"`（run 写在 `wandb/` 或 `WANDB_DIR` 下，之后用 `wandb sync` 同步）或 `"disabled"`。
+- `quantlab.tracking.mlflow.MlflowTracker(project=None, tracking_uri=None)` 发送到 MLflow，它是可选依赖（`uv sync --extra mlflow`）。`tracking_uri` 可以是服务器（`http://host:5000`）、数据库或本地 `file:` 目录；为 `None` 时使用 `MLFLOW_TRACKING_URI`。项目对应 MLflow 的 experiment，不存在时自动创建；分组记成 run 上的 `group` 标签；配置展平成 `outer/inner` 形式的 params，同时保存为附件 `run_config.json`；表格是 `tables/` 下的 JSON 附件。params 和 metrics 的键名里 MLflow 不接受的字符会换成 `_`（`whole/Total Return [%]` 记为 `whole/Total Return ___`）。
+
+tracker 与配置的其余部分一起写进 `config.json`，重建时一起恢复。凭证只从环境变量读取：W&B 用 `WANDB_API_KEY`，MLflow 用 `MLFLOW_TRACKING_USERNAME` 和 `MLFLOW_TRACKING_PASSWORD`，或 `MLFLOW_TRACKING_TOKEN`。
+
+同一个模型类的所有试验都进同一个项目，项目名是类名，除非 tracker 设置了 `project`。一次 `train()` 或 `train_cv()` 调用打开的 run 组成一个分组，分组名是试验目录名（`XGBoostRegressor_trial_<timestamp>`）：`train()` 打开 `<类名>_total`；`train_cv()` 每折打开 `<类名>_cv_fold_<i>`，另有一个 `<类名>_cv_summary`，其摘要就是清单里的 `cv_mean` 块。每个 run 都带完整配置，摘要里是 `train_*`、`val_*` 和 `test_*` 指标，非有限值不写入。训练抛错时 run 照样结束，并标记为失败。
+
+各模型头额外记录的内容：`XGBoostRegressor` 把每一轮的训练和验证指标记为逐步指标（`train-rmse`、`val-ccc_loss` 等），把最佳轮数和各因子的重要性（`importance_<type>/<factor>`）写入摘要，并为每种重要性类型记录一张表 `feature_importance/<type>`，W&B 还会据此画出前 30 个因子的柱状图。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的重要性，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.model.predefined._support.tabkit.active_callbacks`）。torch 模型头每个 epoch 记录 `train_loss` 和 `val_loss`。库模型头实际使用的超参数以 `resolved_hyperparameters` 加进 run 的配置。
+
+只换掉配置里的 tracker，模型就会训练到本地的 MLflow 存储里：
+
+```python
+>>> import dataclasses, tempfile
+>>> from mlflow import MlflowClient
+>>> from quantlab.tracking.mlflow import MlflowTracker
+>>> config.tracker
+NullTracker(project=None)
+>>> store = f"file:{tempfile.mkdtemp()}/mlruns"
+>>> tracked = XGBoostRegressor(
+...     dataclasses.replace(config, tracker=MlflowTracker(tracking_uri=store))
+... ).collect()
+>>> checkpoint = tracked.train()
+>>> client = MlflowClient(tracking_uri=store)
+>>> experiment = client.get_experiment_by_name("XGBoostRegressor")
+>>> (run,) = client.search_runs([experiment.experiment_id])
+>>> run.info.run_name, run.info.status
+('XGBoostRegressor_total', 'FINISHED')
+>>> run.data.tags["group"] == checkpoint.parent.parent.name
+True
+>>> sorted(k for k in run.data.metrics if k.startswith("importance_gain/"))
+['importance_gain/f_a', 'importance_gain/f_b']
+>>> json.loads((checkpoint.parent / "config.json").read_text())["tracker"]["name"]
+'quantlab.tracking.mlflow.MlflowTracker'
+```
+
+MLflow 3 打开本地 `file:` 存储时要求设置 `MLFLOW_ALLOW_FILE_STORE=true`；`tracking_uri` 是 `file:` URI 且该变量未设置时，`MlflowTracker` 会为当前进程设置它。W&B 的用法相同，`mode="offline"` 把 run 保存在本地：
+
+```python
+>>> from quantlab.tracking.wandb import WandbTracker
+>>> wandb_config = dataclasses.replace(
+...     config, tracker=WandbTracker(project="momentum", mode="offline")
+... )
+>>> wandb_config.tracker.get_config()
+{'project': 'momentum', 'entity': None, 'mode': 'offline', 'name': 'quantlab.tracking.wandb.WandbTracker'}
+>>> XGBoostRegressor(wandb_config).collect().train().name
+'XGBoostRegressor_total.joblib'
+```
 
 ## 扩展
 

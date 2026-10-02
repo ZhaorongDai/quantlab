@@ -84,12 +84,6 @@ FINGERPRINT_WARNING = "data fingerprint mismatch"
 PARTIAL_WARNING = "comparison is PARTIAL"
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 @pytest.fixture
 def warning_messages():
     """Every loguru WARNING emitted during the test, as plain message text."""

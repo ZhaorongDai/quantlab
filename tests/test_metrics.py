@@ -1,7 +1,7 @@
 """Tests for `quantlab/utils/metrics.py` (quick task 260914-lno).
 
 The metrics module is the one place the model layer turns a `[T, S]`
-prediction panel into numbers written to W&B and returned from `train_cv`, so
+prediction panel into numbers written to the tracking run and returned from `train_cv`, so
 every definition is locked by a hand-computed case:
 
 - the four error metrics count only JOINTLY finite cells;

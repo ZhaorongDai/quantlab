@@ -17,9 +17,8 @@ This example concentrates on the model layer. It
    per-fold scores and the ``cv_folds.json`` manifest with its fold means.
 
 Everything runs offline on the CPU in well under a minute. No credentials
-are needed, Weights & Biases logging is switched off with
-``WANDB_MODE=disabled``, and all files go to a temporary directory that is
-removed at the end.
+are needed, nothing is tracked (no config names a tracker), and all files go
+to a temporary directory that is removed at the end.
 
 Run it from the repository root with::
 
@@ -30,9 +29,7 @@ import os
 import sys
 
 # Set the environment before torch or xgboost is imported (quantlab's model
-# layer imports both). "disabled" turns every wandb call into a no-op.
-os.environ.setdefault("WANDB_MODE", "disabled")
-os.environ.setdefault("WANDB_SILENT", "true")
+# layer imports both).
 # macOS only: torch and xgboost ship different OpenMP runtimes that clash in
 # one process unless OpenMP runs single-threaded.
 if sys.platform == "darwin":

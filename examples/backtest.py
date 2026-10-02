@@ -11,8 +11,8 @@ as small as possible:
 5. rebuild a run from its ``config.json`` and re-run it,
 6. train a walk-forward cross-validation and backtest it with ``run_cv()``.
 
-Nothing touches the network and no credentials are needed. Weights & Biases
-logging is switched off through ``WANDB_MODE=disabled``. Everything is
+Nothing touches the network and no credentials are needed: no config names
+a tracker, so nothing is tracked. Everything is
 written to a temporary directory that is removed at the end.
 
 Run it from the repository root with::
@@ -20,15 +20,9 @@ Run it from the repository root with::
     uv run python examples/backtest.py
 """
 
-import os
-import sys
-
-# Every model training run calls wandb.init(); "disabled" makes it a no-op.
-os.environ.setdefault("WANDB_MODE", "disabled")
-os.environ.setdefault("WANDB_SILENT", "true")
-
 import dataclasses
 import json
+import sys
 import tempfile
 import warnings
 from pathlib import Path

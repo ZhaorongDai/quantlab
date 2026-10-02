@@ -8,7 +8,7 @@
 
 ## 前置条件
 
-在仓库根目录用 `uv run python` 运行示例。在 macOS 上，同一进程导入 torch 或 xgboost 之前要设置 `OMP_NUM_THREADS=1`，并设置 `WANDB_MODE=disabled` 关闭实验跟踪。
+在仓库根目录用 `uv run python` 运行示例。在 macOS 上，同一进程导入 torch 或 xgboost 之前要设置 `OMP_NUM_THREADS=1`。除非配置指定了 tracker，否则不追踪任何内容（见“追踪一次回测”）。
 
 回测需要一份价格数据集，其存储里有 `adjOpen` 和 `adjClose` 两列；还需要一个模型，checkpoint 由 `train()` 或 `train_cv()` 写出。下面的会话使用一套合成数据：六个标的、一个因子、一个标签，以及一个无需拟合的模型，它的分数就是过去一根 bar 的收益率。标签是用 `Forward` 包装的因子 `open_ret_1`，`span=1`，`delay` 取默认值 1：它在 bar t 的值是从 t+1 到 t+2 的开盘价收益率，所以前视（lookahead）为 2 根 bar。最后一个标的 `FFF` 从第 36 根 bar 起不再有价格。把下面的代码保存为 `demo_parts.py`。
 
@@ -464,6 +464,23 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 - **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）。
 
 运行带 in-sample 部分时，关键指标和主表取样本外部分，也就是模型没见过的 bar，并且所有图都用灰色标出 in-sample 区间。页面上所有回撤都是负数。超额回撤（相对净值从高点的回落）只画在 Excess 标签页上，不和两条净值自身的回撤放在一起，因为两者的数值不可比。
+
+### 追踪一次回测
+
+回测通过配置里的 `tracker` 追踪，与模型相同（见模型指南的“实验追踪”）。默认的 `NullTracker()` 什么都不发送。`run()`、`run_cv()` 和 `run_weights()` 每次打开一个 run：项目是 `<类名>_backtest`（tracker 设置了 `project` 时用它），run 名就是运行目录名，并带上回测的配置。摘要里是 `whole`、`in_sample` 和 `out_of_sample` 三个块，键名形如 `whole/<metric>`；跑了基准时另有 `benchmark` 和 `relative`；`run_cv()` 记录的是拼接后的指标。在 MLflow 上，键名里它不接受的字符会换成 `_`，所以 `whole/Total Return [%]` 记为 `whole/Total Return ___`。有运行目录时，`report.html` 作为附件上传；只在内存中运行的回测照样追踪，只是没有报告。run 在回测开始前打开，所以抛错的回测会被记为失败。`model_mode="train"` 时，模型训练走模型配置自己的 tracker。tracker 会写进 `config.json`，由 `load_backtester_from_config` 重建。
+
+```python
+>>> backtester.config.tracker
+NullTracker(project=None)
+>>> from quantlab.tracking.wandb import WandbTracker
+>>> tracked = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
+...     backtester.config, tracker=WandbTracker(project="momentum_backtests", mode="offline")
+... )).run()
+>>> json.loads((tracked.run_dir / "config.json").read_text())["tracker"]
+{'project': 'momentum_backtests', 'entity': None, 'mode': 'offline', 'name': 'quantlab.tracking.wandb.WandbTracker'}
+```
+
+`mode="offline"` 时，这个 run 写在 `wandb/`（或 `WANDB_DIR`）下，属于项目 `momentum_backtests`，名为 `USEquityCrossectionSelectStockVectorBt_<timestamp>`；摘要里有 `whole/Total Return [%]` 等指标，报告是名为 `report` 的 HTML 面板。
 
 ### 从配置重建一次运行
 

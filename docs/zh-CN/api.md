@@ -2,7 +2,7 @@
 
 [English](../api.md) | 简体中文
 
-`quantlab.api` 面向已经把行情数据放在 pandas 或 polars DataFrame 里的用户：只想用 quantlab 的某一项功能，例如 Alpha158 因子、前瞻收益标签、因子报告或对自己信号的回测，而不想写 Zarr store、构造配置对象，也不想先学数据集类。每个函数接收一个 *frame*，即长格式的 DataFrame，每个 `timestamp` 与 `symbol` 一行，返回同一个库的 frame。除非你要求，不写任何文件，也不启动 Weights & Biases。
+`quantlab.api` 面向已经把行情数据放在 pandas 或 polars DataFrame 里的用户：只想用 quantlab 的某一项功能，例如 Alpha158 因子、前瞻收益标签、因子报告或对自己信号的回测，而不想写 Zarr store、构造配置对象，也不想先学数据集类。每个函数接收一个 *frame*，即长格式的 DataFrame，每个 `timestamp` 与 `symbol` 一行，返回同一个库的 frame。除非你要求，不写任何文件，也不向实验追踪器发送任何记录。
 
 | 函数 | 输入 | 返回 |
 |------|------|------|

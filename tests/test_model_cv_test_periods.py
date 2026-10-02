@@ -31,12 +31,6 @@ N_FOLDS = 3
 
 
 @pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
-@pytest.fixture(autouse=True)
 def _reset_fitted():
     FITTED.clear()
     yield

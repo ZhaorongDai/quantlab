@@ -30,12 +30,6 @@ from tests.backtest_fixtures import make_stock_dataset
 from tests.topn_reference import BACKTEST, CASES, REFERENCE, scenario
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 def _backtester(tmp_path, case, *, output_dir=None):
     direction, top_n, _ = CASES[case]
     dataset_config, model, start, end = scenario(tmp_path, case)

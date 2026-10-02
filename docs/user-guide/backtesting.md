@@ -513,9 +513,15 @@ drawdown from its lowest point to its recovery. See
 viewing it needs network access, while the file itself stays at a few hundred
 kilobytes (about 650 KB for five years of daily bars with a benchmark).
 
-Set `use_wandb=True` to also log the metrics and the report to a separate
-Weights & Biases run in the project `{ClassName}_backtest`. It is off by
-default, so nothing leaves the machine unless you ask for it.
+To also send the metrics and the report to an experiment tracker, set the
+config's `tracker`, for example
+`tracker=WandbTracker(project="momentum_backtests", mode="offline")` from
+`quantlab.tracking.wandb`. Each run opens one tracking run in the project
+`{ClassName}_backtest` (or the tracker's `project`), named after the run
+directory, with the `whole`, `in_sample` and `out_of_sample` blocks (and
+`benchmark` and `relative`) in its summary as `whole/<metric>` and so on,
+and `report.html` attached. The default `NullTracker()` sends nothing
+anywhere. See [Track a backtest](../backtest.md#track-a-backtest).
 
 ## Rebuilding and re-running a backtest
 

@@ -66,8 +66,9 @@ TEST_START, TEST_END = "2020-01-01", "2024-12-31"
 HORIZON = 5
 #: Columns the alpha libraries read; ``ret`` is kept for the label's dataset.
 ALPHA_COLUMNS = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
-#: Weights & Biases: "online" (needs ``wandb login``), "offline" or "disabled".
-WANDB_MODE = "online"
+#: Where the model and the backtest track: Weights & Biases, mode "online"
+#: (needs ``wandb login``), "offline" or "disabled".
+TRACKER = WandbTracker(mode="online")
 
 
 def stock_dataset(store: Path) -> StockDataset:
@@ -153,7 +154,7 @@ def build_model() -> XGBTDRegressor:
     """A fresh head reading the stored factors and label."""
     factors, labels = factors_and_label()
     return XGBTDRegressor(ModelConfig(
-        tracker=WandbTracker(mode=WANDB_MODE),
+        tracker=TRACKER,
         factors=factors, labels=labels,
         model_save_dir=str(WORK / "models" / "xgb_td"),
         factor_data_strategy="read", label_data_strategy="read",
@@ -200,7 +201,7 @@ def backtest(checkpoint: Path):
         rebalance_periods=5,
         constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=50)),
         fees=0.0005, slippage=0.0005, init_cash=1_000_000.0,
-        tracker=WandbTracker(mode=WANDB_MODE), benchmark_dataset=benchmark,
+        tracker=TRACKER, benchmark_dataset=benchmark,
     ))
     result = backtester.run()
     whole = result.metrics["whole"]

@@ -185,7 +185,8 @@ command line and never written to a configuration file or a log.
 | `TIINGO_API_KEY` | Tiingo end-of-day US stock prices |
 | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | Alpaca bars, quotes and trades |
 | `WRDS_USERNAME` | WRDS (CRSP and TAQ); the password is read from `~/.pgpass` |
-| `WANDB_API_KEY` | Optional Weights & Biases logging during training |
+| `WANDB_API_KEY` | Optional Weights & Biases tracking, when a config names a `WandbTracker` |
+| `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` | Optional MLflow tracking on a server that asks for credentials, when a config names an `MlflowTracker` (`uv sync --extra mlflow`) |
 | `QUANTLAB_DATA_DIR` | Optional root directory the library's config factories derive data paths from; the WRDS scripts take `--download-dir` and `--zarr-dir` instead |
 
 The download scripts live in `scripts/wrds/` (`index.py`, `market.py`, `etf.py`, `nbbo.py`)

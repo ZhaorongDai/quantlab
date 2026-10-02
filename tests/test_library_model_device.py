@@ -84,12 +84,6 @@ def cuda(monkeypatch):
 
 
 @pytest.fixture
-def recorders_off(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
-@pytest.fixture
 def mps(monkeypatch):
     """Make Apple MPS look available."""
     monkeypatch.setattr(torch.backends.mps, "is_available", lambda: True)
@@ -265,7 +259,7 @@ def test_xgb_td_honours_an_explicit_device(tmp_path, cuda, given):
 
 
 @pytest.mark.skipif(devices.xgboost_cuda_available(), reason="needs a host without CUDA")
-def test_xgb_td_hands_the_device_to_the_inner_xgboost_train(tmp_path, cuda, recorders_off):
+def test_xgb_td_hands_the_device_to_the_inner_xgboost_train(tmp_path, cuda):
     """pytabkit never forwards a device; the head injects it into ``xgboost.train``.
 
     On a host without CUDA, xgboost reports that it moved a ``"cuda"``
@@ -277,7 +271,7 @@ def test_xgb_td_hands_the_device_to_the_inner_xgboost_train(tmp_path, cuda, reco
         head.collect().train()
 
 
-def test_xgb_td_leaves_no_injected_parameter_behind(tmp_path, recorders_off):
+def test_xgb_td_leaves_no_injected_parameter_behind(tmp_path):
     """The parameter slot is cleared after ``fit``, so a later plain ``xgboost.train`` is untouched."""
     from quantlab.model.predefined._support import tabkit
 
@@ -355,7 +349,7 @@ XGB_HEADS = [
 
 @pytest.mark.parametrize("cls, hyper", XGB_HEADS)
 def test_xgb_heads_keep_the_training_device_in_memory_and_save_on_the_cpu(
-    tmp_path, cuda, recorders_off, booster_devices, cls, hyper
+    tmp_path, cuda, booster_devices, cls, hyper
 ):
     """On a host without CUDA xgboost falls back to the CPU itself; the head's
     own calls are what is checked: every live Booster ends on the training
@@ -379,7 +373,7 @@ def test_xgb_heads_keep_the_training_device_in_memory_and_save_on_the_cpu(
     [(True, None, "cuda"), (False, None, "cpu"), (True, "cpu", "cpu")],
 )
 def test_xgb_heads_load_onto_the_default_device(
-    tmp_path, cuda, recorders_off, booster_devices, cls, hyper, available, given, expected
+    tmp_path, cuda, booster_devices, cls, hyper, available, given, expected
 ):
     cuda(False)
     checkpoint = _head(cls, tmp_path, hyper).collect().train()
@@ -395,7 +389,7 @@ def test_xgb_heads_load_onto_the_default_device(
 
 @pytest.mark.parametrize("cls, hyper", XGB_HEADS)
 def test_xgb_predictions_after_a_cpu_save_and_load_match_the_in_memory_ones(
-    tmp_path, recorders_off, cls, hyper
+    tmp_path, cls, hyper
 ):
     head = _head(cls, tmp_path, hyper)
     checkpoint = head.collect().train()
@@ -405,7 +399,7 @@ def test_xgb_predictions_after_a_cpu_save_and_load_match_the_in_memory_ones(
     np.testing.assert_allclose(loaded.predict(x), head.predict(x), rtol=1e-6, atol=1e-7)
 
 
-def test_realmlp_is_written_on_the_cpu_and_moved_back_to_its_device(tmp_path, cuda, recorders_off, monkeypatch):
+def test_realmlp_is_written_on_the_cpu_and_moved_back_to_its_device(tmp_path, cuda, monkeypatch):
     """A network on ``cuda`` goes to the CPU for the write and back afterwards."""
     from pytabkit import RealMLP_TD_Regressor
 
@@ -424,7 +418,7 @@ def test_realmlp_is_written_on_the_cpu_and_moved_back_to_its_device(tmp_path, cu
     assert events == [("to", "cpu"), ("write",), ("to", "cuda")]
 
 
-def test_realmlp_is_not_moved_before_evaluation(tmp_path, cuda, recorders_off, monkeypatch):
+def test_realmlp_is_not_moved_before_evaluation(tmp_path, cuda, monkeypatch):
     """Training and evaluation run on the training device; only the write moves it."""
     from pytabkit import RealMLP_TD_Regressor
 
@@ -459,7 +453,7 @@ def test_realmlp_is_not_moved_before_evaluation(tmp_path, cuda, recorders_off, m
     [(True, None, "cuda"), (False, None, "cpu"), (True, "cpu", "cpu")],
 )
 def test_realmlp_loads_onto_the_default_device(
-    tmp_path, cuda, recorders_off, monkeypatch, available, given, expected
+    tmp_path, cuda, monkeypatch, available, given, expected
 ):
     from pytabkit import RealMLP_TD_Regressor
 

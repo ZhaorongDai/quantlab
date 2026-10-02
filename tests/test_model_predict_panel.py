@@ -66,12 +66,6 @@ PERMNOS = [10107, 7000, 14593]
 SORTED_PERMNOS = [7000, 10107, 14593]
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 class FakePanel:
     """A stand-in for a factor/label object: only what `collect()` calls.
 

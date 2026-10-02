@@ -2,14 +2,13 @@
 
 English | [简体中文](zh-CN/model.md)
 
-A return model learns to predict a label, usually a forward return or a return rank, from a set of factors. Factors and labels are `xarray.Dataset` panels indexed by `(timestamp, symbol)`, and the prediction has the same shape, so the portfolio and backtest stages can consume it directly. The model layer supplies the shared training lifecycle (data collection, train and test windows, walk-forward cross-validation, checkpoints, early stopping, metrics, Weights & Biases logging); a concrete model head only implements the fitting itself.
+A return model learns to predict a label, usually a forward return or a return rank, from a set of factors. Factors and labels are `xarray.Dataset` panels indexed by `(timestamp, symbol)`, and the prediction has the same shape, so the portfolio and backtest stages can consume it directly. The model layer supplies the shared training lifecycle (data collection, train and test windows, walk-forward cross-validation, checkpoints, early stopping, metrics, experiment tracking); a concrete model head only implements the fitting itself.
 
 ## Prerequisites
 
-The examples run on CPU without network access. Weights & Biases (W&B) is called on every training run, so switch it off for local experiments. On macOS, also limit OpenMP threads before importing `torch` or `xgboost` (see Notes).
+The examples run on CPU without network access. Nothing is tracked unless a config names a tracker (see Track experiments). On macOS, limit OpenMP threads before importing `torch` or `xgboost` (see Notes).
 
 ```bash
-export WANDB_MODE=disabled
 export OMP_NUM_THREADS=1   # macOS only
 ```
 
@@ -135,7 +134,7 @@ True
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the W&B run summary as `train_*`, `val_*` and `test_*`, and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
+`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the tracking run's summary as `train_*`, `val_*` and `test_*` (see Track experiments), and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
 
 ```python
 >>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
@@ -299,7 +298,7 @@ The training target mattered most: on the Nasdaq-100 every `cs_rank` candidate b
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own W&B run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own tracking run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
 
 ```python
 >>> results = model.train_cv(train_periods=100)
@@ -373,7 +372,7 @@ The folds train one after another, on the one collected panel.
 True
 ```
 
-`train()` creates one ensemble directory `checkpoints/SeedEnsemble_trial_<timestamp>/` and trains the members in order, member k into `member_{k}/` with its own W&B run `XGBoostRegressor_member_{k}`; each member directory holds the usual checkpoint, `config.json`, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. Then it writes the evaluation files of the averaged prediction (see below), `config.json` with what the members share, the training and test dates and the label configs (it is not a model config), and last `ensemble.json`, the manifest. `train()` returns the manifest's path. If a member or the ensemble evaluation fails, no manifest is written and the files already written stay.
+`train()` creates one ensemble directory `checkpoints/SeedEnsemble_trial_<timestamp>/` and trains the members in order, member k into `member_{k}/` with its own tracking run `XGBoostRegressor_member_{k}`, grouped by the ensemble directory's name; each member directory holds the usual checkpoint, `config.json`, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. Then it writes the evaluation files of the averaged prediction (see below), `config.json` with what the members share, the training and test dates and the label configs (it is not a model config), and last `ensemble.json`, the manifest. `train()` returns the manifest's path. If a member or the ensemble evaluation fails, no manifest is written and the files already written stay.
 
 ```python
 >>> manifest = ensemble.train()
@@ -481,9 +480,9 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 The members train one after another, and each reseeds its random generators from its own `random_seed` right before it trains.
 
-`train_cv(train_periods, expanding=False, test_periods=None)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, with the same test length, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own W&B run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
+`train_cv(train_periods, expanding=False, test_periods=None)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, with the same test length, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own tracking run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
 
-`cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family and `{split}_member_correlation`; `cv_mean` averages them. The return value is the fold list. A separate W&B run `SeedEnsemble_cv_summary` in the same project carries the `cv_mean_*` values. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
+`cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family and `{split}_member_correlation`; `cv_mean` averages them. The return value is the fold list. A separate tracking run `SeedEnsemble_cv_summary`, opened through the first member's tracker in the members' project and group, carries the `cv_mean_*` values. The ensemble has no tracker of its own: its runs go through the member model's. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
 
 ```python
 >>> folds = ensemble.train_cv(train_periods=100)
@@ -878,9 +877,57 @@ Measured once on the training server (RTX 5090 D with 32 GiB, 503 GB RAM) on 202
 
 The two trained models' test predictions correlate at 0.986, both pooled and on average per bar; the difference is the training path, which float16 inputs change slightly. With the same weights, predicting the test segment from a float16 panel instead of a float32 one moves predictions by at most 7e-5 (their standard deviation is 0.21) and leaves the test IC and rank IC equal to nine decimals. The float32 panel does not fit in half of the GPU's free memory, so without float16 `"auto"` keeps this panel in CPU memory.
 
-### Log to Weights & Biases
+### Track experiments
 
-Each `train()` and each fold of `train_cv()` opens a W&B run named after the experiment inside a project named after the trial directory, with the full config attached. `XGBoostRegressor` logs the per-round training and validation curves and writes the final metrics and per-factor importance to the run summary. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance charts, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.model.predefined._support.tabkit.active_callbacks`). `train_cv` opens an extra `<Class>_cv_summary` run whose summary is the manifest's `cv_mean` block. Torch heads log `train_loss` and `val_loss` every epoch and write the final metrics to the run summary. `WANDB_MODE=disabled` turns all of it off; `WANDB_MODE=offline` writes runs to a local `wandb/` directory that can be synced later with `wandb sync`. Without either setting, `wandb.init` needs a logged-in account.
+Where the records of a training go is the config's `tracker`. The default, `NullTracker()`, sends nothing anywhere, so the sessions above needed no setting. Two trackers send runs to a service:
+
+- `quantlab.tracking.wandb.WandbTracker(project=None, entity=None, mode="online")` sends them to Weights & Biases. `mode` is `"online"`, `"offline"` (runs are written under `wandb/`, or under `WANDB_DIR`, for a later `wandb sync`) or `"disabled"`.
+- `quantlab.tracking.mlflow.MlflowTracker(project=None, tracking_uri=None)` sends them to MLflow, an optional extra (`uv sync --extra mlflow`). `tracking_uri` is a server (`http://host:5000`), a database or a local `file:` directory; `None` uses `MLFLOW_TRACKING_URI`. A project is an MLflow experiment, created when missing; the group is a `group` tag on the run; the config becomes params, flattened to `outer/inner` keys, and the artifact `run_config.json`; a table is a JSON artifact under `tables/`. A character MLflow refuses in a param or metric key becomes `_` (`whole/Total Return [%]` is logged as `whole/Total Return ___`).
+
+The tracker is written to `config.json` with the rest of the config and rebuilt with it. Credentials come from environment variables only: `WANDB_API_KEY` for W&B, `MLFLOW_TRACKING_USERNAME` and `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` for MLflow.
+
+All trials of one model class go to one project, named after the class unless the tracker sets `project`. The runs of one `train()` or `train_cv()` call form a group named after the trial directory (`XGBoostRegressor_trial_<timestamp>`): `<Class>_total` for `train()`; `<Class>_cv_fold_<i>` per fold and `<Class>_cv_summary`, whose summary is the manifest's `cv_mean` block, for `train_cv()`. Every run carries the full config, and its summary holds the `train_*`, `val_*` and `test_*` metrics, non-finite values left out. A run is finished also when training raises, and is then marked failed.
+
+What a head adds to its run: `XGBoostRegressor` logs the training and validation metrics of every boosting round as step metrics (`train-rmse`, `val-ccc_loss`, ...), writes the best iteration and the per-factor importance (`importance_<type>/<factor>`) to the summary, and logs one table `feature_importance/<type>` per importance type, of which W&B also draws a bar chart of the top 30 factors. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.model.predefined._support.tabkit.active_callbacks`). Torch heads log `train_loss` and `val_loss` every epoch. A library head's resolved hyperparameters are added to the run config as `resolved_hyperparameters`.
+
+A model trains into a local MLflow store when only the tracker of its config changes:
+
+```python
+>>> import dataclasses, tempfile
+>>> from mlflow import MlflowClient
+>>> from quantlab.tracking.mlflow import MlflowTracker
+>>> config.tracker
+NullTracker(project=None)
+>>> store = f"file:{tempfile.mkdtemp()}/mlruns"
+>>> tracked = XGBoostRegressor(
+...     dataclasses.replace(config, tracker=MlflowTracker(tracking_uri=store))
+... ).collect()
+>>> checkpoint = tracked.train()
+>>> client = MlflowClient(tracking_uri=store)
+>>> experiment = client.get_experiment_by_name("XGBoostRegressor")
+>>> (run,) = client.search_runs([experiment.experiment_id])
+>>> run.info.run_name, run.info.status
+('XGBoostRegressor_total', 'FINISHED')
+>>> run.data.tags["group"] == checkpoint.parent.parent.name
+True
+>>> sorted(k for k in run.data.metrics if k.startswith("importance_gain/"))
+['importance_gain/f_a', 'importance_gain/f_b']
+>>> json.loads((checkpoint.parent / "config.json").read_text())["tracker"]["name"]
+'quantlab.tracking.mlflow.MlflowTracker'
+```
+
+For a local `file:` store, MLflow 3 asks for `MLFLOW_ALLOW_FILE_STORE=true`; `MlflowTracker` sets it for the process when its `tracking_uri` is a `file:` URI and the variable is unset. W&B works the same way; `mode="offline"` keeps the runs on disk:
+
+```python
+>>> from quantlab.tracking.wandb import WandbTracker
+>>> wandb_config = dataclasses.replace(
+...     config, tracker=WandbTracker(project="momentum", mode="offline")
+... )
+>>> wandb_config.tracker.get_config()
+{'project': 'momentum', 'entity': None, 'mode': 'offline', 'name': 'quantlab.tracking.wandb.WandbTracker'}
+>>> XGBoostRegressor(wandb_config).collect().train().name
+'XGBoostRegressor_total.joblib'
+```
 
 ## Extending
 

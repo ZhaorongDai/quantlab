@@ -103,12 +103,6 @@ D24_ARTIFACTS = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 @pytest.fixture
 def warnings_sink():
     """Loguru WARNING-and-above messages emitted during the test."""
@@ -198,23 +192,20 @@ def _picked_at(root: Path, start_bar: int) -> str:
 def overlap_run(tmp_path_factory):
     """One overlapping, liquidating run shared by the read-only artifact locks."""
     root = tmp_path_factory.mktemp("overlap")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("WANDB_MODE", "disabled")
-        mp.setenv("WANDB_SILENT", "true")
-        picked = _picked_at(root, OVERLAP_START_BAR)
-        dataset_config, checkpoint = _trained_store(
-            root, delist_at={picked: DELIST_BAR}
-        )
-        backtester = _backtester(
-            root,
-            dataset_config,
-            checkpoint,
-            tag="overlap",
-            window_start_bar=OVERLAP_START_BAR,
-            window_end_bar=OVERLAP_END_BAR,
-        )
-        config_before_run = backtester.get_config()
-        result = backtester.run()
+    picked = _picked_at(root, OVERLAP_START_BAR)
+    dataset_config, checkpoint = _trained_store(
+        root, delist_at={picked: DELIST_BAR}
+    )
+    backtester = _backtester(
+        root,
+        dataset_config,
+        checkpoint,
+        tag="overlap",
+        window_start_bar=OVERLAP_START_BAR,
+        window_end_bar=OVERLAP_END_BAR,
+    )
+    config_before_run = backtester.get_config()
+    result = backtester.run()
     return {
         "backtester": backtester,
         "result": result,
@@ -675,19 +666,16 @@ def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warning
 def disjoint_run(tmp_path_factory):
     """One run whose window (bars 30..50) lies after the training window."""
     root = tmp_path_factory.mktemp("disjoint")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("WANDB_MODE", "disabled")
-        mp.setenv("WANDB_SILENT", "true")
-        dataset_config, checkpoint = _trained_store(root)
-        backtester = _backtester(
-            root,
-            dataset_config,
-            checkpoint,
-            tag="disjoint",
-            window_start_bar=30,
-            window_end_bar=50,
-        )
-        result = backtester.run()
+    dataset_config, checkpoint = _trained_store(root)
+    backtester = _backtester(
+        root,
+        dataset_config,
+        checkpoint,
+        tag="disjoint",
+        window_start_bar=30,
+        window_end_bar=50,
+    )
+    result = backtester.run()
     return {"backtester": backtester, "result": result}
 
 

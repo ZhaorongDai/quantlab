@@ -4,7 +4,7 @@ This page explains how quantlab trains return models on factor panels. It
 covers the model hierarchy and the available heads, the `ModelConfig`
 configuration object and its reserved hyperparameters, training, prediction, evaluation with IC,
 RankIC and R2, checkpoints, the purge of label lookahead at every split,
-walk-forward cross-validation, and Weights & Biases logging. Read it after
+walk-forward cross-validation, and experiment tracking. Read it after
 [Factors and labels](factors.md). The backtester that consumes a model's
 predictions is described in [Backtesting](backtesting.md).
 
@@ -209,7 +209,8 @@ Beside the checkpoint, `train()` writes `config.json` and `metrics.json`.
 `metrics.json` holds the scores of the first label on its raw values for each
 segment: `train_*`, `val_*` and `test_*`, each of `loss`, `mse`, `rmse`,
 `mae`, `r2`, `ic`, `rank_ic`, `icir` and `rank_icir`. These are the values
-the W&B run summary receives, with NaN and infinity written as null. A run
+the tracking run's summary receives, except that the file writes NaN and
+infinity as null and the summary leaves them out. A run
 with `val_size=0` has no `val_*` keys. Torch heads write the same keys; their
 `loss` is the training objective on the transformed target.
 
@@ -299,7 +300,7 @@ m = regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values)
 Every head, torch or library, computes the same metrics itself during
 `train()` for the `train`, `val` and `test` segments, under keys such as
 `test_ic` and `val_rank_ic`. They are written to `metrics.json`, to the
-Weights & Biases run summary, and per fold to `train_cv`'s results. Torch
+tracking run's summary, and per fold to `train_cv`'s results. Torch
 heads also log `train_loss` and `val_loss` every epoch.
 
 ## Checkpoints and config.json
@@ -398,34 +399,45 @@ folds = model.train_cv(train_periods=200, expanding=True)
 turn, so afterwards they hold the last fold's dates. The folds train one
 after another.
 
-## Weights & Biases logging
+## Experiment tracking
 
-Every training run, including every CV fold, opens a Weights & Biases run with
-the model's configuration. `XGBoostRegressor` logs per-round training and
-validation curves, writes the final `train_*`, `val_*` and `test_*` metrics
-and per-feature importance to the run summary, and adds an importance table
-and bar chart. `train_cv` adds a `{class}_cv_summary` run whose summary is the manifest's
-`cv_mean` block. The project name is the trial directory's name.
+Where a training's records go is the model config's `tracker`. The default,
+`NullTracker()`, sends nothing anywhere, so a script, a test or an example
+needs no setting to stay offline. To track, name a tracker in the config:
 
-The model layer has no switch to skip W&B, so control it with the standard
-environment variables before training starts:
-
-```bash
-WANDB_MODE=disabled uv run python my_training_script.py   # no logging at all
-WANDB_MODE=offline  uv run python my_training_script.py   # log locally, sync later
-```
-
-With `WANDB_MODE=disabled` every W&B call becomes a no-op: nothing is sent,
-no login is needed and no files are written. The test suite and both example
-scripts use this mode, and `WANDB_SILENT=true` also silences W&B's console
-messages. In a script you can set the variables at the top, before the model
-layer is imported:
+- `quantlab.tracking.wandb.WandbTracker(project=None, entity=None,
+  mode="online")` for Weights & Biases; `mode="offline"` keeps the runs
+  under `wandb/` for a later `wandb sync`, `mode="disabled"` records
+  nothing.
+- `quantlab.tracking.mlflow.MlflowTracker(project=None, tracking_uri=None)`
+  for MLflow, an optional extra (`uv sync --extra mlflow`); `tracking_uri`
+  is a server, a database or a local `file:` directory.
 
 ```python
-import os
-os.environ.setdefault("WANDB_MODE", "disabled")
-os.environ.setdefault("WANDB_SILENT", "true")
+import dataclasses
+from quantlab.tracking.wandb import WandbTracker
+
+tracked = XGBoostRegressor(dataclasses.replace(
+    model.config, tracker=WandbTracker(project="momentum", mode="offline"),
+))
 ```
+
+The tracker is written to `config.json` and rebuilt with the model.
+Credentials come from environment variables only (`WANDB_API_KEY`;
+`MLFLOW_TRACKING_USERNAME` and `MLFLOW_TRACKING_PASSWORD`, or
+`MLFLOW_TRACKING_TOKEN`).
+
+All trials of one model class go to one project, named after the class
+unless the tracker sets `project`, and the runs of one `train()` or
+`train_cv()` call are grouped by the trial directory's name. Every training
+run, including every CV fold, carries the model's configuration.
+`XGBoostRegressor` logs per-round training and validation curves, writes the
+final `train_*`, `val_*` and `test_*` metrics and per-feature importance to
+the run summary, and logs an importance table per importance type (W&B also
+draws a bar chart of it). `train_cv` adds a `{class}_cv_summary` run whose
+summary is the manifest's `cv_mean` block. A run is finished also when
+training raises, and is then marked failed. The
+[model reference](../model.md#track-experiments) lists what each head logs.
 
 ## Output of the example
 

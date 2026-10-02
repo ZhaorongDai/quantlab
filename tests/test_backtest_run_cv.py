@@ -81,12 +81,6 @@ OVERLAP_WARNING = "overlaps the model's effective training window"
 _UNSET = object()
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 @pytest.fixture
 def warning_messages():
     """Every loguru WARNING emitted during the test, as plain message text."""
@@ -119,19 +113,16 @@ def cv_project(tmp_path_factory):
     test's own tmp_path, and their checkpoint paths still point here.
     """
     root = tmp_path_factory.mktemp("cv_project")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("WANDB_MODE", "disabled")
-        mp.setenv("WANDB_SILENT", "true")
-        dataset_config = write_price_store(root, n_bars=N_BARS)
-        bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
-        model = make_model(
-            root / "train",
-            dataset_config,
-            n_forward_periods=HORIZON,
-            **_model_dates(bars),
-        )
-        model.collect()
-        model.train_cv(train_periods=TRAIN_PERIODS)
+    dataset_config = write_price_store(root, n_bars=N_BARS)
+    bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+    model = make_model(
+        root / "train",
+        dataset_config,
+        n_forward_periods=HORIZON,
+        **_model_dates(bars),
+    )
+    model.collect()
+    model.train_cv(train_periods=TRAIN_PERIODS)
 
     manifests = sorted((root / "train" / "models").rglob("cv_folds.json"))
     assert len(manifests) == 1, manifests

@@ -36,12 +36,6 @@ def date(i):
     return np.datetime_as_string(TIMES[i], unit="D")
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 class Panel:
     """A factor or label stand-in whose values are the bar index."""
 

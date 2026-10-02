@@ -203,7 +203,8 @@ models) and a `config.json` with the model's full config plus two records: the
 hyperparameters the library actually trained with, and the factor names, label names and
 symbols the model was trained on. `train_cv()` writes one sub-directory per fold and a
 `cv_folds.json` manifest listing each fold's dates and checkpoint, which the backtester reads
-to replay the folds. Training and evaluation metrics go to Weights & Biases.
+to replay the folds. Training and evaluation metrics go to the experiment tracker named in
+the model config (`tracker`); the default sends them nowhere.
 
 ## Backtest run directories
 

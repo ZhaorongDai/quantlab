@@ -51,12 +51,6 @@ SPLITS = ("train", "val", "test")
 TRAIN_PERIODS = 20
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 class Calendar:
     """The one dataset method a model's warm-up calls: `bar_before`."""
 

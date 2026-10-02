@@ -14,8 +14,8 @@ What is locked here, and what turns it red:
   the portfolio layer), so an event-driven engine can depend on the portfolio layer alone;
 - cvxpy is imported by the mean-variance optimiser only, never by the base package or
   the portfolio framework;
-- the tracking root module imports no tracking library, and mlflow is imported by the
-  MLflow tracker only (ADR 0015);
+- the tracking root module imports no tracking library, wandb is imported by the W&B
+  tracker only and mlflow by the MLflow tracker only (ADR 0015);
 - every `predefined` package's `__init__.py` is empty.
 
 Static checks, plus one subprocess import; offline.
@@ -122,10 +122,11 @@ def test_the_tracking_root_module_imports_no_tracking_library():
     assert result.stdout.strip().splitlines()[-1] == "[]"
 
 
-def test_only_the_mlflow_tracker_imports_mlflow():
+@pytest.mark.parametrize("library", ["wandb", "mlflow"])
+def test_only_its_tracker_imports_a_tracking_library(library):
     importers = sorted(
         str(path.relative_to(REPO_ROOT))
         for path in _python_files(REPO_ROOT / "quantlab")
-        if any(_is_or_under(name, "mlflow") for name in _resolved_imports(path))
+        if any(_is_or_under(name, library) for name in _resolved_imports(path))
     )
-    assert importers == ["quantlab/tracking/mlflow.py"]
+    assert importers == [f"quantlab/tracking/{library}.py"]

@@ -55,12 +55,6 @@ WINDOW_START = 30
 WINDOW_END = 55
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 @pytest.fixture
 def warning_messages():
     messages: list[str] = []

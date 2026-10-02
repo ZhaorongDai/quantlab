@@ -24,7 +24,7 @@ The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDReg
 4. **Model**: trained once on the training window.
 5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500 and market) or QQQ (Nasdaq-100), logged to Weights & Biases.
 
-The market scripts skip step 1: the market store already holds only common stock, filtered per day when it was converted, so every step reads it directly through `CrspStockDataset` and no derived stores are written. A factor-analysis pipeline runs the data, factor and label steps and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, `WANDB_MODE`) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `ModelConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
+The market scripts skip step 1: the market store already holds only common stock, filtered per day when it was converted, so every step reads it directly through `CrspStockDataset` and no derived stores are written. A factor-analysis pipeline runs the data, factor and label steps and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, and `TRACKER` in the model pipelines) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `ModelConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
 
 ## Prerequisites
 
@@ -62,7 +62,7 @@ Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crs
 
 KunQuant compiles the factor graphs, so a C++ compiler is required. The model scripts set `OMP_NUM_THREADS=1` on macOS themselves (xgboost and torch in one process). All model pipelines train on a CUDA GPU when one is available (never on Apple MPS by default), and the torch pipelines keep the training panel on it when the panel takes at most half the free GPU memory (`panel_device`, `panel_dtype` in the hyperparameters; see [docs/model.md](../../docs/model.md)).
 
-Weights & Biases logging is on by default (`wandb_mode="online"`): run `wandb login` once, or set `wandb_mode` to `"offline"` (runs are written to `wandb/` and uploaded later with `wandb sync`) or `"disabled"`.
+The model pipelines track to Weights & Biases through `TRACKER = WandbTracker(mode="online")`, named in both the model and the backtest config: run `wandb login` once, or set the mode to `"offline"` (runs are written to `wandb/` and uploaded later with `wandb sync`) or `"disabled"`. Another tracker, such as `MlflowTracker`, or none (`NullTracker()`) is chosen the same way.
 
 ## Run
 
@@ -88,7 +88,7 @@ Everything lives at the top of each script, in this order:
 | `ETFS` | the ETFs whose market features gate the stock features (MASTER pipelines) |
 | `SEEDS` | one ensemble member per seed, at least two, all distinct (`sp500_realmlp_seed_ensemble.py`) |
 | `HORIZON` | label span in bars; the label reads `HORIZON + 1` bars ahead (delay 1) |
-| `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"`: the mode of the `WandbTracker` the model and the backtest track through (model pipelines) |
+| `TRACKER` | The tracker the model and the backtest track through, by default `WandbTracker(mode="online")` (model pipelines) |
 | `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`warmup_bars=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
 | `build_model()` | the `ModelConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, the pytabkit constructor arguments, or the torch head's settings with the reference values as defaults: 200 epochs with patience 10 for GATs, at most 40 epochs until the training loss reaches 0.95 for MASTER) |
 | `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, the `constructor` (`TopNConstructor` with `top_n` 50 for the S&P 500, 10 for the Nasdaq-100 and 100 for the market, and its `direction`; the `MeanVarianceOptimizer` in `sp500_xgb_mvo.py`), costs, and the ETF `benchmark_dataset` |

@@ -57,12 +57,6 @@ ENSEMBLE_FILES = [
 ]
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 def _day(ts) -> str:
     return pd.Timestamp(ts).strftime("%Y-%m-%d")
 

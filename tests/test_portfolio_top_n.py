@@ -633,9 +633,8 @@ def test_a_book_that_picks_nothing_has_no_cut_to_report():
     assert "events" not in weights.attrs
 
 
-def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path, monkeypatch):
+def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path):
     """A model that predicts one value for every symbol ties every bar."""
-    monkeypatch.setenv("WANDB_MODE", "disabled")
 
     class ConstantHead(FirstFeatureHead):
         def _forward(self, x):

@@ -63,12 +63,6 @@ BARS = pd.bdate_range("2024-01-01", periods=N_BARS)
 TRAIN_END_BAR = 24
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 @pytest.fixture
 def warnings_sink():
     """Loguru WARNING-and-above messages emitted during the test."""

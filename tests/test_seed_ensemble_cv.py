@@ -68,12 +68,6 @@ DATE_KEYS = ("fold", "train_start", "train_end", "test_start", "test_end")
 ENSEMBLE_METRICS = {"ic", "rank_ic", "icir", "rank_icir", "member_correlation"}
 
 
-@pytest.fixture(autouse=True)
-def _offline_wandb(monkeypatch):
-    monkeypatch.setenv("WANDB_MODE", "disabled")
-    monkeypatch.setenv("WANDB_SILENT", "true")
-
-
 def _day(ts) -> str:
     return pd.Timestamp(str(ts)).strftime("%Y-%m-%d")
 
@@ -115,12 +109,9 @@ def _dates(results) -> list[tuple]:
 def cv_run(tmp_path_factory):
     """One sliding ensemble CV run, shared read-only by the module."""
     root = tmp_path_factory.mktemp("ensemble_cv")
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setenv("WANDB_MODE", "disabled")
-        mp.setenv("WANDB_SILENT", "true")
-        dataset_config, bars = _setup(root)
-        ensemble = SeedEnsemble(_model(root / "train", dataset_config, bars), SEEDS)
-        results = ensemble.collect().train_cv(train_periods=TRAIN_PERIODS)
+    dataset_config, bars = _setup(root)
+    ensemble = SeedEnsemble(_model(root / "train", dataset_config, bars), SEEDS)
+    results = ensemble.collect().train_cv(train_periods=TRAIN_PERIODS)
     cv_dir = _cv_dir(ensemble)
     return dict(
         root=root,

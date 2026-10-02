@@ -27,7 +27,6 @@ jobs:
           && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]')
           || fromJSON('["ubuntu-latest", "macos-latest"]') }}
     env:
-      WANDB_MODE: disabled
       MPLBACKEND: Agg
     steps:
       - uses: actions/checkout@v4

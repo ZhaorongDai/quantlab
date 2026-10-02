@@ -37,7 +37,7 @@ changes you make to the source are picked up without reinstalling.
 
 The dependency set is large. Besides the numerical stack (NumPy, pandas, Polars, xarray,
 Zarr) it includes PyTorch, XGBoost, KunQuant, vectorbt, NautilusTrader, Weights & Biases and
-the WRDS client, so the first `uv sync` downloads a few gigabytes and takes several minutes.
+the WRDS client (MLflow is an optional extra, see Experiment tracking), so the first `uv sync` downloads a few gigabytes and takes several minutes.
 
 Run every command through `uv run`, which executes it inside the project environment without
 you having to activate `.venv/`:
@@ -145,20 +145,27 @@ applies the same guard in `tests/conftest.py`, and `examples/quickstart.py` does
 Linux is not affected, and you do not need the setting on macOS if a process uses only one of
 the two libraries.
 
-## Weights & Biases
+## Experiment tracking
 
-Every model training run opens a [Weights & Biases](https://wandb.ai/) (W&B) run to record
-its configuration, learning curves and metrics. If you have a W&B account, log in once with
-`uv run wandb login` or set `WANDB_API_KEY`. If you do not want anything logged, set:
+Nothing is tracked unless a model or backtest config names a tracker in its `tracker` field;
+the default sends nothing anywhere, which is what the test suite and the examples rely on.
 
-```bash
-export WANDB_MODE=disabled   # W&B calls become no-ops
-# or
-export WANDB_MODE=offline    # runs are kept locally under ./wandb and can be synced later
-```
+- **Weights & Biases** is installed with the rest of the dependencies. Log in once with
+  `uv run wandb login`, or set `WANDB_API_KEY`, then use
+  `quantlab.tracking.wandb.WandbTracker`. Its `mode="offline"` keeps runs under `./wandb` for
+  a later `wandb sync`, and `mode="disabled"` records nothing.
+- **MLflow** is an optional extra. Install it with
 
-The test suite and the examples use `WANDB_MODE=disabled`. Backtests log to W&B only when
-`use_wandb=True` is set in their config.
+  ```bash
+  uv sync --extra mlflow          # or: pip install 'quantlab[mlflow]'
+  ```
+
+  which installs `mlflow-skinny`, then use `quantlab.tracking.mlflow.MlflowTracker` with a
+  `tracking_uri`: a server, or a local `file:` directory to work offline. A `sqlite:` URI
+  needs the full `mlflow` package. Without the extra, quantlab imports as usual and opening
+  an MLflow run raises an `ImportError` that names the extra.
+
+See [Track experiments](../model.md#track-experiments) for what each run records.
 
 ## Credentials and environment variables
 
@@ -171,6 +178,8 @@ the variables for the vendors you use:
 | `TIINGO_API_KEY` | Tiingo | US-equity daily bars |
 | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | Alpaca | US-equity daily and minute bars, quotes and trades |
 | `WRDS_USERNAME` | WRDS | CRSP daily stock files and TAQ NBBO quotes |
+| `WANDB_API_KEY` | Weights & Biases | Optional experiment tracking through `WandbTracker` |
+| `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` | MLflow | Optional experiment tracking through `MlflowTracker`, on a server that asks for credentials |
 
 For WRDS the password is not an environment variable. The PostgreSQL client library reads it
 from `~/.pgpass` (or the file named by `PGPASSFILE`), which must contain one line of the form

@@ -26,6 +26,7 @@ The prices are random walks, sometimes with a small planted effect so the model 
 to find. The numbers the scripts print show what the output looks like; they say nothing about
 real markets.
 
-The offline examples switch Weights & Biases off by setting `WANDB_MODE=disabled` before anything is
-imported; the WRDS model pipelines log to it by default (`wandb_mode` in their settings). On macOS they also set `OMP_NUM_THREADS=1`, because PyTorch and XGBoost ship
+The offline examples track nothing: no config names a tracker, so the default null tracker is used. The
+WRDS model pipelines name a `WandbTracker` in their model and backtest configs (`TRACKER` at the top of each
+file). On macOS the examples also set `OMP_NUM_THREADS=1`, because PyTorch and XGBoost ship
 conflicting OpenMP runtimes.

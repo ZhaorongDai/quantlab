@@ -8,8 +8,8 @@ This script walks the whole pipeline once, in about a minute on a laptop CPU:
 4. backtest a long-only top-N strategy driven by the model's predictions,
 5. read the metrics and rebuild the backtester from its saved config.json.
 
-Nothing touches the network and no credentials are needed. Weights & Biases
-logging is switched off through ``WANDB_MODE=disabled``. Everything is
+Nothing touches the network and no credentials are needed: no config names
+a tracker, so nothing is tracked. Everything is
 written to a temporary directory that is removed at the end.
 
 Run it from the repository root with::
@@ -21,9 +21,6 @@ import os
 import sys
 
 # The environment must be set before torch or xgboost is imported.
-# W&B: every training run calls wandb.init(); "disabled" makes it a no-op.
-os.environ.setdefault("WANDB_MODE", "disabled")
-os.environ.setdefault("WANDB_SILENT", "true")
 # macOS only: xgboost and torch ship different OpenMP runtimes that clash in
 # one process unless OpenMP runs single-threaded.
 if sys.platform == "darwin":
