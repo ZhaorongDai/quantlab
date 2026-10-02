@@ -616,11 +616,16 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             if len(inputs.risk_locked_weights)
             else w
         )
-        objective = (
-            inputs.expected_return @ w
-            - config.risk_aversion / 2 * _risk_term(held, inputs.estimate)
-            - config.turnover_penalty * cp.norm1(w - inputs.current_weights)
+        objective = inputs.expected_return @ w - config.risk_aversion / 2 * _risk_term(
+            held, inputs.estimate
         )
+        if config.turnover_penalty:
+            # Left out at zero, not multiplied by it: a 0 * |w - w_current|_1
+            # term still changes the solver's path, so the weights would
+            # depend on the holdings in their last digits (#112).
+            objective = objective - config.turnover_penalty * cp.norm1(
+                w - inputs.current_weights
+            )
         if config.direction == "long_only":
             constraints = [cp.sum(w) == total, w >= 0, w <= config.weight_cap]
         else:

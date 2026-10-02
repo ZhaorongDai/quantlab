@@ -122,6 +122,23 @@ def test_a_larger_turnover_penalty_moves_the_solution_toward_the_current_weights
     assert distances[2] == pytest.approx(0.0, abs=1e-6)
 
 
+@pytest.mark.parametrize("direction", ["long_only", "long_short"])
+def test_a_zero_turnover_penalty_leaves_the_weights_independent_of_the_holdings(direction):
+    """#112: with turnover_penalty=0 the problem has no turnover term at all,
+    so the weights are bit-identical whatever is currently held."""
+    held = [
+        None,
+        [0.3, 0.3, 0.3, 0.1, 0.0, 0.0],
+        [0.0, 0.0, 0.1, 0.3, 0.3, 0.3] if direction == "long_only" else [0.3, -0.2, 0.1, -0.1, 0.0, -0.1],
+    ]
+    optimizer = _optimizer(turnover_penalty=0.0, direction=direction)
+
+    rows = [optimizer.construct(_context(seed=3, current=current)).values for current in held]
+
+    for row in rows[1:]:
+        np.testing.assert_array_equal(row, rows[0])
+
+
 def test_the_grinold_expected_return_matches_a_hand_computation():
     context = _context(seed=4)
     optimizer = _optimizer()
