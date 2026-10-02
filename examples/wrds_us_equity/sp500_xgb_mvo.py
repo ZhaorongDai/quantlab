@@ -179,6 +179,7 @@ def build_model() -> ModelEnsemble:
 
     def xgb(label, hyperparameters: dict) -> XGBoostRegressor:
         return XGBoostRegressor(ModelConfig(
+            tracker=WandbTracker(mode=WANDB_MODE),
             factors=factors(), labels=[label],
             model_save_dir=str(WORK / "models" / "xgb_mvo"),
             factor_data_strategy="read", label_data_strategy="read",
@@ -266,7 +267,6 @@ def backtest(manifest: Path):
 
 # %% Run everything
 def main():
-    os.environ["WANDB_MODE"] = WANDB_MODE  # read at every wandb.init()
     prepare_stores()
     compute_factors()
     return backtest(train())

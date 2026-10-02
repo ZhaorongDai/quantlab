@@ -2,7 +2,8 @@
 
 mlflow is an optional extra (``uv sync --extra mlflow`` or
 ``pip install 'quantlab[mlflow]'``) and is imported only when an
-``MlflowTracker`` is built, so the library imports without it.
+``MlflowTracker`` opens a run, so the library imports, and a config naming
+an ``MlflowTracker`` is rebuilt, without it.
 
 A run maps onto MLflow as follows. The project is an experiment, created
 when missing. The group is a ``group`` tag on the run, not a parent run, so
@@ -28,8 +29,10 @@ from the environment, never from the config.
 """
 
 import json
+import os
 import time
 from dataclasses import dataclass
+from urllib.parse import urlparse
 
 from quantlab.base.tracking import Tracker, TrackingRun
 
@@ -88,16 +91,18 @@ class MlflowRun(TrackingRun):
 
     Examples
     --------
-    >>> import os
-    >>> os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
-    >>> tracker = MlflowTracker(tracking_uri="file:/tmp/quantlab-mlruns")
+    >>> import tempfile
+    >>> from pathlib import Path
+    >>> store = Path(tempfile.mkdtemp()) / "mlruns"
+    >>> tracker = MlflowTracker(tracking_uri=f"file:{store}")
     >>> with tracker.start_run(project="P", group="P_trial_1", name="n", config={}) as run:
     ...     isinstance(run, MlflowRun)
     True
     """
 
-    def __init__(self, client, run_id: str, config: dict):
+    def __init__(self, mlflow, client, run_id: str, config: dict):
         """Wrap the run ``run_id`` of ``client``, opened with ``config``."""
+        self._mlflow = mlflow
         self._client = client
         self._run_id = run_id
         self._config = dict(config)
@@ -107,16 +112,16 @@ class MlflowRun(TrackingRun):
         self._client.log_dict(self._run_id, self._config, _CONFIG_ARTIFACT)
 
     def _log_params(self, params: dict[str, str]) -> None:
-        mlflow = _import_mlflow()
-        entries = [mlflow.entities.Param(key, value) for key, value in params.items()]
+        Param = self._mlflow.entities.Param
+        entries = [Param(key, value) for key, value in params.items()]
         for chunk in _chunks(entries, _MAX_PARAMS_PER_BATCH):
             self._client.log_batch(self._run_id, params=chunk)
 
     def _log_metrics(self, metrics: dict, step: int) -> None:
-        mlflow = _import_mlflow()
+        Metric = self._mlflow.entities.Metric
         stamp = int(time.time() * 1000)
         entries = [
-            mlflow.entities.Metric(key, float(value), stamp, step)
+            Metric(key, float(value), stamp, step)
             for key, value in metrics.items()
         ]
         for chunk in _chunks(entries, _MAX_METRICS_PER_BATCH):
@@ -156,8 +161,8 @@ class MlflowRun(TrackingRun):
 class MlflowTracker(Tracker):
     """Send tracking runs to MLflow.
 
-    Building one imports mlflow; see the module docstring for how a run maps
-    onto MLflow.
+    mlflow is imported when a run opens; see the module docstring for how a
+    run maps onto MLflow.
 
     Attributes
     ----------
@@ -167,25 +172,32 @@ class MlflowTracker(Tracker):
     tracking_uri : str, optional
         Where the experiments live: a server (``http://host:5000``), a
         database (``sqlite:///mlflow.db``, which needs the full ``mlflow``
-        package) or a local directory (``file:/path/to/mlruns``, which MLflow
-        3 opens only with ``MLFLOW_ALLOW_FILE_STORE=true`` set). ``None``
-        uses mlflow's own default, ``MLFLOW_TRACKING_URI`` when set.
+        package) or a local directory (``file:/path/to/mlruns``). MLflow 3
+        opens a local directory only with ``MLFLOW_ALLOW_FILE_STORE`` set;
+        naming a ``file:`` URI here sets it to ``true`` for the process
+        unless it is already set. ``None`` uses mlflow's own default,
+        ``MLFLOW_TRACKING_URI`` when set.
 
     Raises
     ------
     ImportError
-        If mlflow is not installed; the message names the extra to install.
+        When a run opens without mlflow installed; the message names the
+        extra to install.
 
     Examples
     --------
-    A model trains into a local MLflow store when only its tracker changes:
+    A model trains into a local MLflow store when only the tracker of its
+    config changes. With ``config`` a ``ModelConfig`` built earlier:
 
-    >>> import os
-    >>> os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
-    >>> tracker = MlflowTracker(tracking_uri="file:/tmp/quantlab-mlruns")
+    >>> import dataclasses, tempfile
+    >>> from pathlib import Path
+    >>> from mlflow import MlflowClient
+    >>> from quantlab.model.predefined.xgb import XGBoostRegressor
+    >>> store = f"file:{Path(tempfile.mkdtemp()) / 'mlruns'}"
+    >>> tracker = MlflowTracker(tracking_uri=store)
     >>> model = XGBoostRegressor(dataclasses.replace(config, tracker=tracker))
     >>> checkpoint = model.collect().train()
-    >>> client = MlflowClient(tracking_uri="file:/tmp/quantlab-mlruns")
+    >>> client = MlflowClient(tracking_uri=store)
     >>> (run,) = client.search_runs(
     ...     [client.get_experiment_by_name("XGBoostRegressor").experiment_id]
     ... )
@@ -197,12 +209,11 @@ class MlflowTracker(Tracker):
 
     tracking_uri: str | None = None
 
-    def __post_init__(self):
-        """Refuse to build the tracker without mlflow."""
-        _import_mlflow()
-
     def _open(self, *, project, group, name, config):
         mlflow = _import_mlflow()
+        if self.tracking_uri is not None and urlparse(self.tracking_uri).scheme in ("", "file"):
+            # Naming a local store is the opt-in MLflow 3 asks for.
+            os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
         client = mlflow.MlflowClient(tracking_uri=self.tracking_uri)
         experiment = client.get_experiment_by_name(project)
         experiment_id = (
@@ -212,4 +223,4 @@ class MlflowTracker(Tracker):
         )
         tags = {} if group is None else {"group": group}
         run = client.create_run(experiment_id, run_name=name, tags=tags)
-        return MlflowRun(client, run.info.run_id, config)
+        return MlflowRun(mlflow, client, run.info.run_id, config)

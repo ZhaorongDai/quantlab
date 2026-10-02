@@ -153,6 +153,7 @@ def build_model() -> RealMLPRegressor:
     """A fresh head reading the stored factors and label."""
     factors, labels = factors_and_label()
     return RealMLPRegressor(ModelConfig(
+        tracker=WandbTracker(mode=WANDB_MODE),
         factors=factors, labels=labels,
         model_save_dir=str(WORK / "models" / "realmlp"),
         factor_data_strategy="read", label_data_strategy="read",
@@ -213,7 +214,6 @@ def backtest(checkpoint: Path):
 
 # %% Run everything
 def main():
-    os.environ["WANDB_MODE"] = WANDB_MODE  # read at every wandb.init()
     prepare_stores()
     compute_factors()
     return backtest(train())

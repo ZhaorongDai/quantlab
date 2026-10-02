@@ -88,7 +88,7 @@ Everything lives at the top of each script, in this order:
 | `ETFS` | the ETFs whose market features gate the stock features (MASTER pipelines) |
 | `SEEDS` | one ensemble member per seed, at least two, all distinct (`sp500_realmlp_seed_ensemble.py`) |
 | `HORIZON` | label span in bars; the label reads `HORIZON + 1` bars ahead (delay 1) |
-| `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"` (model pipelines) |
+| `WANDB_MODE` | `"online"`, `"offline"` or `"disabled"`: the mode of the `WandbTracker` the model and the backtest track through (model pipelines) |
 | `factors_and_label()` | the two `FactorConfig`s of the alpha libraries (`warmup_bars=400`, `njobs=16`, `factor_names` unset = all columns) and the label's |
 | `build_model()` | the `ModelConfig`: early stopping, `val_size` and the head's `hyperparameters` (`xgb.train` parameters, the pytabkit constructor arguments, or the torch head's settings with the reference values as defaults: 200 epochs with patience 10 for GATs, at most 40 epochs until the training loss reaches 0.95 for MASTER) |
 | `backtest()` | the `CrossSectionBacktestConfig`: `rebalance_periods`, the `constructor` (`TopNConstructor` with `top_n` 50 for the S&P 500, 10 for the Nasdaq-100 and 100 for the market, and its `direction`; the `MeanVarianceOptimizer` in `sp500_xgb_mvo.py`), costs, and the ETF `benchmark_dataset` |

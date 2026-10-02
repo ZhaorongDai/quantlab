@@ -154,6 +154,7 @@ def build_model() -> MASTERRegressor:
     """A fresh head reading the stored factors and label."""
     factors, labels = factors_and_label()
     return MASTERRegressor(ModelConfig(
+        tracker=WandbTracker(mode=WANDB_MODE),
         factors=factors, labels=labels,
         model_save_dir=str(WORK / "models" / "master"),
         factor_data_strategy="read", label_data_strategy="read",
@@ -225,7 +226,6 @@ def backtest(checkpoint: Path):
 
 # %% Run everything
 def main():
-    os.environ["WANDB_MODE"] = WANDB_MODE  # read at every wandb.init()
     compute_factors()
     return backtest(train())
 

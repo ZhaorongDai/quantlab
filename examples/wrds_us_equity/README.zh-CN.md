@@ -88,7 +88,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 | `ETFS` | 用市场特征给股票特征做门控的 ETF（MASTER pipeline） |
 | `SEEDS` | 每个种子一个集成成员，至少两个且互不相同（`sp500_realmlp_seed_ensemble.py`） |
 | `HORIZON` | 标签跨度（bar 数）；标签向前读 `HORIZON + 1` 根 bar（delay 为 1） |
-| `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`（模型 pipeline） |
+| `WANDB_MODE` | `"online"`、`"offline"` 或 `"disabled"`：模型和回测所用 `WandbTracker` 的模式（模型 pipeline） |
 | `factors_and_label()` | 两个因子库的 `FactorConfig`（`warmup_bars=400`、`njobs=16`、`factor_names` 不设即全部列）和标签的 `FactorConfig` |
 | `build_model()` | `ModelConfig`：早停、`val_size` 和模型自己的 `hyperparameters`（`xgb.train` 参数、pytabkit 构造参数，或 torch 模型的设置，默认取参考实现的值：GATs 最多 200 个 epoch、耐心 10；MASTER 最多 40 个 epoch，训练损失降到 0.95 即停） |
 | `backtest()` | `CrossSectionBacktestConfig`：`rebalance_periods`、`constructor`（`TopNConstructor`，`top_n` 在 S&P 500 为 50、Nasdaq-100 为 10、全市场为 100，以及它的 `direction`；`sp500_xgb_mvo.py` 用 `MeanVarianceOptimizer`）、成本，以及 ETF `benchmark_dataset` |

@@ -27,6 +27,8 @@ the data has changed.
 
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +41,7 @@ from loguru import logger
 
 from quantlab.base.data import MarketDataset
 from quantlab.base.model import BaseModel
+from quantlab.base.tracking import TrackingRun
 from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
 # converter and polars), which adds about a second of import time.
@@ -957,6 +960,13 @@ class BaseBacktester(ABC):
                 f"existing train_cv run and requires model_mode='load', got "
                 f"{self.config.model_mode!r}"
             )
+        with self._tracking_run() as run:
+            result = self._replay_cv()
+            self._track(run, result.run_dir, result.metrics["stitched"])
+        return result
+
+    def _replay_cv(self) -> CVBacktestResult:
+        """Backtest every fold, simulate the stitched weights and persist; see ``run_cv``."""
         self._check_label_delays()
         self._fingerprints = {}
         # run_cv only loads; never carry a checkpoint trained by an earlier run().
@@ -1093,7 +1103,6 @@ class BaseBacktester(ABC):
             metrics,
             benchmark=stitched_benchmark,
         )
-        self._track(run_dir, stitched_metrics)
 
         return CVBacktestResult(
             run_dir=run_dir,
@@ -1309,29 +1318,31 @@ class BaseBacktester(ABC):
         data fingerprints are compared after the window, and also on its
         failure path, since fingerprints may already have been recorded and
         differ when it raises. ``notes`` are appended to the default report
-        notes. The run directory is written (unless ``output_dir`` is
-        ``None``) and the run is tracked (see ``_track``).
+        notes. The window runs inside its tracking run (see
+        ``_tracking_run``); the run directory is written (unless
+        ``output_dir`` is ``None``) and tracked (see ``_track``).
         """
         start_date = self._iso_date(self.config.start_date)
         end_date = self._iso_date(self.config.end_date)
         self._fingerprints = {}
         self._trained_checkpoint = None
-        try:
-            window = backtest_window(start_date, end_date)
-        except Exception:
-            self._compare_fingerprints_on_failure()
-            raise
-        # Outside the try (and not in a finally) so a clean run compares once.
-        self._compare_fingerprints()
+        with self._tracking_run() as run:
+            try:
+                window = backtest_window(start_date, end_date)
+            except Exception:
+                self._compare_fingerprints_on_failure()
+                raise
+            # Outside the try (and not in a finally) so a clean run compares once.
+            self._compare_fingerprints()
 
-        metrics = window.metrics
-        if self._trained_checkpoint is not None:
-            metrics["trained_checkpoint"] = self._trained_checkpoint
-        metrics["notes"] = self._report_notes() + list(notes)
-        run_dir = self._report_and_persist(
-            window.weights, window.simulation, metrics, benchmark=window.benchmark
-        )
-        self._track(run_dir, metrics)
+            metrics = window.metrics
+            if self._trained_checkpoint is not None:
+                metrics["trained_checkpoint"] = self._trained_checkpoint
+            metrics["notes"] = self._report_notes() + list(notes)
+            run_dir = self._report_and_persist(
+                window.weights, window.simulation, metrics, benchmark=window.benchmark
+            )
+            self._track(run, run_dir, metrics)
 
         return BacktestResult(
             run_dir=run_dir,
@@ -2914,35 +2925,46 @@ class BaseBacktester(ABC):
     #: Metric blocks a tracking run's summary receives, when present.
     _TRACKED_BLOCKS = ("whole", "in_sample", "out_of_sample", "benchmark", "relative")
 
-    def _track(self, run_dir: Path | None, metrics: dict) -> None:
-        """Send one finished backtest to a tracking run through ``config.tracker``.
+    @contextmanager
+    def _tracking_run(self) -> Iterator[TrackingRun]:
+        """Open the tracking run of one backtest through ``config.tracker``.
 
-        Opened once the backtest has succeeded, so a backtest that raises
-        leaves no run. The project is ``{ClassName}_backtest`` unless the
-        tracker sets its own, and the run is named after the run directory,
-        apart from the model's training runs. The run config is
-        ``get_config()`` (fingerprints included), the summary holds the
-        ``whole``, ``in_sample`` and ``out_of_sample`` blocks as
-        ``whole/<metric>`` and so on (plus ``benchmark`` and ``relative`` when
-        a benchmark ran), and ``report.html`` is attached. A run kept in
-        memory (``run_dir`` is ``None``) has no report to attach and is
-        named like a run directory would be.
+        The run name, ``{ClassName}_{timestamp}``, is fixed here and is also
+        the name of the run directory written later, apart from the model's
+        training runs. The project is ``{ClassName}_backtest`` unless the
+        tracker sets its own, and the run config is ``get_config()``. The
+        run is opened before the backtest, so one that raises is finished as
+        failed.
         """
+        self._run_name = self._run_dir_name()
         with self.config.tracker.start_run(
             project=f"{self.class_name}_backtest",
             group=None,
-            name=self._run_dir_name() if run_dir is None else run_dir.name,
+            name=self._run_name,
             config=self.get_config(),
         ) as run:
-            run.summarize(
-                {
-                    block: metrics[block]
-                    for block in self._TRACKED_BLOCKS
-                    if metrics.get(block) is not None
-                }
-            )
-            if run_dir is not None:
-                run.log_file(run_dir / "report.html")
+            yield run
+
+    def _track(self, run: TrackingRun, run_dir: Path | None, metrics: dict) -> None:
+        """Write one finished backtest to its tracking run.
+
+        The run config gains what the backtest resolved (the data
+        fingerprints), the summary holds the ``whole``, ``in_sample`` and
+        ``out_of_sample`` blocks as ``whole/<metric>`` and so on (plus
+        ``benchmark`` and ``relative`` when a benchmark ran), and
+        ``report.html`` is attached. A run kept in memory (``run_dir`` is
+        ``None``) has no report to attach.
+        """
+        run.update_config(self.get_config())
+        run.summarize(
+            {
+                block: metrics[block]
+                for block in self._TRACKED_BLOCKS
+                if metrics.get(block) is not None
+            }
+        )
+        if run_dir is not None:
+            run.log_file(run_dir / "report.html")
 
     def _run_dir_name(self) -> str:
         """Return ``{ClassName}_{timestamp}``, unique down to the microsecond."""
@@ -3220,7 +3242,7 @@ class BaseBacktester(ABC):
 
         if self.config.output_dir is None:
             return None
-        final = Path(self.config.output_dir) / self._run_dir_name()
+        final = Path(self.config.output_dir) / self._run_name
         if final.exists():
             raise RuntimeError(f"{final} already exists")
         staging = final.parent / f".{final.name}.partial"

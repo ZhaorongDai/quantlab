@@ -66,6 +66,10 @@ def test_a_run_is_one_finished_run_with_the_metric_blocks_and_the_report(tmp_pat
     assert run.finished and not run.failed
     json.dumps(run.config, allow_nan=False)
     assert run.config["tracker"] == tracker.get_config()
+    # Opened before the backtest; the fingerprints it read are added after.
+    assert "data_fingerprint" not in run.config
+    saved = json.loads((result.run_dir / "config.json").read_text())
+    assert run.config_updates[-1]["data_fingerprint"] == saved["data_fingerprint"]
     assert run.summary, "the summary must receive metrics"
     for key, value in run.summary.items():
         assert key.split("/")[0] in {"whole", "in_sample", "out_of_sample"}, key
@@ -93,7 +97,7 @@ def test_a_run_kept_in_memory_is_tracked_without_the_report(tmp_path, trained):
     assert run.finished and not run.failed
 
 
-def test_a_failed_backtest_opens_no_run(tmp_path, trained):
+def test_a_failed_backtest_is_finished_as_failed(tmp_path, trained):
     tracker = RecordingTracker()
     dataset_config, _ = trained
     backtester = _tracked(tmp_path, (dataset_config, tmp_path / "missing.joblib"), tracker)
@@ -101,7 +105,10 @@ def test_a_failed_backtest_opens_no_run(tmp_path, trained):
     with pytest.raises(FileNotFoundError):
         backtester.run()
 
-    assert tracker.runs == []
+    (run,) = tracker.runs
+    assert run.name.startswith(f"{PROJECT.removesuffix('_backtest')}_")
+    assert run.finished and run.failed
+    assert run.summary == {} and run.files == []
 
 
 def test_run_cv_tracks_the_stitched_metrics_in_one_run(tmp_path, cv_project):  # noqa: F811

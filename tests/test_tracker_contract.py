@@ -221,8 +221,9 @@ def adapter(request, tmp_path, monkeypatch):
     monkeypatch.chdir(workdir)
     monkeypatch.setenv("WANDB_DIR", str(workdir))
     monkeypatch.setenv("WANDB_SILENT", "true")
-    # MLflow 3 keeps the file store in maintenance mode behind this switch.
-    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    # Unset, so the MLflow tracker must open its `file:` store by itself; the
+    # value it sets is undone after the test.
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
     make, read = TRACKERS[request.param]
     tracker = make(tmp_path / "mlruns")
     yield tracker, (lambda: read(tracker, workdir)), tmp_path
@@ -276,8 +277,9 @@ def test_a_run_records_steps_summary_config_table_and_file(adapter):
         (1, {"train_loss": 0.5, "val_loss": 1.5}),
     ]
     assert only["summary"] == {"whole/sharpe": 1.25, "whole/trades": 3, "test_ic": 0.5}
-    # A bar chart is drawn only by a tracker that can (W&B); MLflow ignores it.
-    assert only["tables"] in (["importance/gain"], ["importance/gain", "importance/gain_chart"])
+    # MLflow draws no bar chart; W&B does, and the recording tracker records the ask.
+    chart = [] if type(tracker).__name__ == "MlflowTracker" else ["importance/gain_chart"]
+    assert only["tables"] == ["importance/gain", *chart]
     assert sorted(only["files"]) == ["notes.txt", "report.html"]
     assert only["finished"] and not only["failed"]
 
@@ -395,7 +397,7 @@ def test_an_error_while_finishing_a_clean_run_propagates():
 
 @pytest.fixture
 def mlflow_tracker(tmp_path, monkeypatch):
-    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
     return _make_mlflow(tmp_path / "mlruns")
 
 
@@ -441,6 +443,13 @@ def test_mlflow_cuts_a_param_value_longer_than_mlflow_takes(mlflow_tracker, tmp_
     assert observed["config"] == {"long": long}
 
 
+def test_an_explicitly_disabled_file_store_is_left_to_mlflow(mlflow_tracker, monkeypatch):
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "false")
+    with pytest.raises(Exception, match="MLFLOW_ALLOW_FILE_STORE"):
+        with mlflow_tracker.start_run(project="P", group=None, name="n", config={}):
+            pass
+
+
 def test_the_mlflow_tracker_round_trips_through_its_config():
     pytest.importorskip("mlflow")
     from quantlab.tracking.mlflow import MlflowTracker
@@ -455,14 +464,16 @@ def test_the_mlflow_tracker_round_trips_through_its_config():
     assert get_cls_from_path(config["name"]).from_config(config) == tracker
 
 
-def test_without_mlflow_the_library_imports_and_the_tracker_names_the_extra():
+def test_without_mlflow_a_config_rebuilds_and_opening_a_run_names_the_extra():
     code = (
         "import sys\n"
         "sys.modules['mlflow'] = None\n"
         "import quantlab.base.model\n"
         "from quantlab.tracking.mlflow import MlflowTracker\n"
+        "tracker = MlflowTracker.from_config(MlflowTracker(project='p').get_config())\n"
         "try:\n"
-        "    MlflowTracker()\n"
+        "    with tracker.start_run(project='P', group=None, name='n', config={}):\n"
+        "        pass\n"
         "except ImportError as exc:\n"
         "    print(exc)\n"
     )
