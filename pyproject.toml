@@ -43,6 +43,14 @@ dependencies = [
     "zarr>=3.3.0",
 ]
 
+[project.optional-dependencies]
+mlflow = [
+    "mlflow-skinny>=3.0",
+    # Without it the one lock resolution moves protobuf (which wandb uses)
+    # back to 6.x for every install, not only for this extra.
+    "protobuf>=7",
+]
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

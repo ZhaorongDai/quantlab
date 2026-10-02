@@ -1,17 +1,21 @@
-"""The tracker seam (spec #99, ticket #100): one contract for every tracker.
+"""The tracker seam (spec #99, tickets #100 and #104): one contract for every tracker.
 
 The same operations run against the null tracker, the recording tracker of
-the tests and the W&B tracker (offline mode, a temporary directory, no
-network): open a run, log steps, summarise nested metrics, update the config,
-log a table and a file, and finish on exit and on error. Each tracker comes
-with a reader that returns what an outsider can observe of the runs it
-opened; the W&B reader parses the offline run's transaction log. The null
+the tests, the W&B tracker (offline mode, a temporary directory) and the
+MLflow tracker (a ``file:`` store in a temporary directory, skipped without
+mlflow), all without network: open a run, log steps, summarise nested
+metrics, update the config, log a table and a file, and finish on exit and
+on error. Each tracker comes with a reader that returns what an outsider can
+observe of the runs it opened; the W&B reader parses the offline run's
+transaction log and the MLflow reader asks an ``MlflowClient``. The null
 tracker leaves nothing to read, and its reader asserts exactly that.
 """
 
 import dataclasses
 import json
 import math
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -20,6 +24,7 @@ import pytest
 from quantlab.base.tracking import NullRun, NullTracker, Tracker
 from quantlab.tracking.wandb import WandbTracker
 from quantlab.utils.module import get_cls_from_path
+from tests.test_backtest_contracts import REPO_ROOT
 from tests.tracking_fixtures import RecordingTracker
 
 
@@ -140,10 +145,72 @@ def _read_null(tracker, workdir):
     return None
 
 
+def _read_mlflow(tracker, workdir):
+    from mlflow import MlflowClient
+
+    client = MlflowClient(tracking_uri=tracker.tracking_uri)
+    runs = []
+    for experiment in client.search_experiments():
+        for run in client.search_runs(
+            [experiment.experiment_id], order_by=["attributes.start_time ASC"]
+        ):
+            run_id = run.info.run_id
+            history = {
+                key: client.get_metric_history(run_id, key) for key in run.data.metrics
+            }
+            # A summary value is logged once; a step metric may be logged
+            # once too, but none of the contract's step metrics is.
+            steps: dict[int, dict] = {}
+            for key, points in history.items():
+                if len(points) > 1:
+                    for point in points:
+                        steps.setdefault(point.step, {})[key] = point.value
+            artifacts = [a.path for a in client.list_artifacts(run_id)]
+            local = Path(client.download_artifacts(run_id, "run_config.json", str(workdir.parent)))
+            runs.append(
+                {
+                    "project": experiment.name,
+                    "group": run.data.tags.get("group"),
+                    "name": run.info.run_name,
+                    "config": json.loads(local.read_text()),
+                    "params": run.data.params,
+                    "steps": sorted(steps.items()),
+                    "summary": {
+                        key: points[0].value
+                        for key, points in history.items()
+                        if len(points) == 1
+                    },
+                    "tables": sorted(_mlflow_tables(client, run_id, "tables")),
+                    "files": [
+                        path for path in artifacts if path not in ("tables", "run_config.json")
+                    ],
+                    "finished": run.info.status in ("FINISHED", "FAILED"),
+                    "failed": run.info.status == "FAILED",
+                }
+            )
+    return runs
+
+
+def _mlflow_tables(client, run_id, folder):
+    for artifact in client.list_artifacts(run_id, folder):
+        if artifact.is_dir:
+            yield from _mlflow_tables(client, run_id, artifact.path)
+        else:
+            yield artifact.path.removeprefix("tables/").removesuffix(".json")
+
+
+def _make_mlflow(store):
+    pytest.importorskip("mlflow")
+    from quantlab.tracking.mlflow import MlflowTracker
+
+    return MlflowTracker(tracking_uri=f"file:{store}")
+
+
 TRACKERS = {
-    "null": (lambda: NullTracker(), _read_null),
-    "recording": (lambda: RecordingTracker(), _read_recorded),
-    "wandb": (lambda: WandbTracker(mode="offline"), _read_wandb),
+    "null": (lambda store: NullTracker(), _read_null),
+    "recording": (lambda store: RecordingTracker(), _read_recorded),
+    "wandb": (lambda store: WandbTracker(mode="offline"), _read_wandb),
+    "mlflow": (_make_mlflow, _read_mlflow),
 }
 
 
@@ -154,8 +221,10 @@ def adapter(request, tmp_path, monkeypatch):
     monkeypatch.chdir(workdir)
     monkeypatch.setenv("WANDB_DIR", str(workdir))
     monkeypatch.setenv("WANDB_SILENT", "true")
+    # MLflow 3 keeps the file store in maintenance mode behind this switch.
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
     make, read = TRACKERS[request.param]
-    tracker = make()
+    tracker = make(tmp_path / "mlruns")
     yield tracker, (lambda: read(tracker, workdir)), tmp_path
     # wandb reads WANDB_DIR once per process; reset it for the next test.
     import wandb
@@ -207,7 +276,8 @@ def test_a_run_records_steps_summary_config_table_and_file(adapter):
         (1, {"train_loss": 0.5, "val_loss": 1.5}),
     ]
     assert only["summary"] == {"whole/sharpe": 1.25, "whole/trades": 3, "test_ic": 0.5}
-    assert only["tables"] == ["importance/gain", "importance/gain_chart"]
+    # A bar chart is drawn only by a tracker that can (W&B); MLflow ignores it.
+    assert only["tables"] in (["importance/gain"], ["importance/gain", "importance/gain_chart"])
     assert sorted(only["files"]) == ["notes.txt", "report.html"]
     assert only["finished"] and not only["failed"]
 
@@ -316,3 +386,89 @@ def test_an_error_while_finishing_a_clean_run_propagates():
     with pytest.raises(ConnectionError):
         with _BrokenFinishTracker().start_run(project="P", group=None, name="n", config={}):
             pass
+
+
+# --------------------------------------------------------------------------
+# MLflow specifics: params, changed config values, the optional extra
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mlflow_tracker(tmp_path, monkeypatch):
+    monkeypatch.setenv("MLFLOW_ALLOW_FILE_STORE", "true")
+    return _make_mlflow(tmp_path / "mlruns")
+
+
+def test_mlflow_params_are_the_flattened_config_as_strings(mlflow_tracker, tmp_path):
+    with mlflow_tracker.start_run(
+        project="P",
+        group="g",
+        name="n",
+        config={
+            "hyperparameters": {"max_depth": 6, "eta": 0.1},
+            "factors": ["a", "b"],
+            "seed": None,
+        },
+    ) as run:
+        run.update_config({"resolved_hyperparameters": {"n_estimators": 42}})
+
+    (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
+    assert observed["params"] == {
+        "hyperparameters/max_depth": "6",
+        "hyperparameters/eta": "0.1",
+        "factors": '["a", "b"]',
+        "seed": "null",
+        "resolved_hyperparameters/n_estimators": "42",
+    }
+
+
+def test_mlflow_keeps_a_changed_config_value_in_the_config_artifact(mlflow_tracker, tmp_path):
+    with mlflow_tracker.start_run(project="P", group=None, name="n", config={"lr": 0.1}) as run:
+        run.update_config({"lr": 0.2})
+
+    (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
+    assert observed["params"] == {"lr": "0.1"}
+    assert observed["config"] == {"lr": 0.2}
+
+
+def test_mlflow_cuts_a_param_value_longer_than_mlflow_takes(mlflow_tracker, tmp_path):
+    long = "x" * 7000
+    with mlflow_tracker.start_run(project="P", group=None, name="n", config={"long": long}):
+        pass
+
+    (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
+    assert len(observed["params"]["long"]) == 6000
+    assert observed["config"] == {"long": long}
+
+
+def test_the_mlflow_tracker_round_trips_through_its_config():
+    pytest.importorskip("mlflow")
+    from quantlab.tracking.mlflow import MlflowTracker
+
+    tracker = MlflowTracker(project="research", tracking_uri="file:/tmp/mlruns")
+    config = tracker.get_config()
+    assert config == {
+        "project": "research",
+        "tracking_uri": "file:/tmp/mlruns",
+        "name": "quantlab.tracking.mlflow.MlflowTracker",
+    }
+    assert get_cls_from_path(config["name"]).from_config(config) == tracker
+
+
+def test_without_mlflow_the_library_imports_and_the_tracker_names_the_extra():
+    code = (
+        "import sys\n"
+        "sys.modules['mlflow'] = None\n"
+        "import quantlab.base.model\n"
+        "from quantlab.tracking.mlflow import MlflowTracker\n"
+        "try:\n"
+        "    MlflowTracker()\n"
+        "except ImportError as exc:\n"
+        "    print(exc)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, cwd=REPO_ROOT
+    )
+    assert result.returncode == 0, result.stderr
+    assert "quantlab[mlflow]" in result.stdout
+    assert "--extra mlflow" in result.stdout
