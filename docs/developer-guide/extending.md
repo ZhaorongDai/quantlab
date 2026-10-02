@@ -886,7 +886,7 @@ different market, subclass `USEquityCrossectionSelectStockVectorBt` and set
 only `MARKET`. To reuse the selection rule with another engine, call
 `TopNConstructor(TopNConfig(direction, top_n)).construct_panel(predictions,
 tradable, rebalance)` from `quantlab.portfolio.predefined.top_n`, or its
-per-bar `construct(context)` from a bar handler; the portfolio layer depends on
+one-bar pair `decide(build_context(...))` from a bar handler; the portfolio layer depends on
 no simulation engine. A new rule from scores to weights subclasses
 `quantlab.base.portfolio.PortfolioConstructor` and implements `construct`; it
 goes in the config's `constructor` (see [portfolio construction](../portfolio.md)

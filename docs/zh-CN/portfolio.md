@@ -81,7 +81,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 ### 在回测中
 
-向量化回测调用 `construct_panel`。它在调仓 bar 上逐根调用 `construct`，并为每根 bar 构造 context：
+向量化回测调用 `construct_panel`。它在调仓 bar 上逐根调用规则的单 bar 决策（`decide`，见[回测之外决定一根 bar](#回测之外决定一根-bar)），并为每根 bar 构造 context：
 
 - 当前权重是之前各次调仓实际留下的持仓，按模拟引擎的成交方式建模，包括被拒订单和退市结算。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
@@ -89,7 +89,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 回测器在构造时调用规则的 `bind(labels)`，这时还没有读任何数据、也没有训练任何模型。`labels` 为每个预测变量给出一个 `LabelSpec(name, scale, delay, span)`，由回测器用 `quantlab.base.backtest.label_specs` 从预测器推导；不是 `Forward` 标签的 `span` 为 `None`。规则对预测能知道的只有这些规格，永远拿不到模型本身。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
 
-规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。回测在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
+规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。`decide` 把它变成在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
 
 运行目录的 `config.json` 记录了规则的全部参数和它的风险模型，`load_backtester_from_config` 能据此重建。
 
@@ -118,6 +118,27 @@ True
 ```
 
 该文件的每个标签对应 `(timestamp, symbol)` 上的一个变量，属性 `format_version` 和 `labels`（规格的 JSON 列表）。`run_weights()` 的运行没有模型，不写预测面板。
+
+### 回测之外决定一根 bar
+
+自己维护账本的执行器（例如事件驱动回测或实盘账户）用规则的两个公开方法决定一根 bar，也就是 `construct_panel` 循环调用的那两个：
+
+- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` 构造这根 bar 的 `PortfolioContext`。`predictions`、`tradable` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有。`valuation_price` 是截止到这根 bar 的原始估值价格，位于 `(timestamp, symbol)` 上，收益窗口和停牌时长（staleness）按回测所用的同一公式由它算出。给定回测读到的价格、并从同一根起始 bar 开始，得到的 context 与回测构造的相同。规则的 `lookback_bars` 为正时必须传入它；规则声明了 `required_factors()` 时同样必须传入 `factors`。
+- `decide(context)` 调用 `construct`，并按权重契约检查这一行。它返回 `Decision(weights, failure, events)`：context 各标的上的权重，全 NaN 表示保持；使这根 bar 保持仓位的 `PortfolioConstructionError` 的消息，或 `None`；以及这一行报告的事件。违反契约的行（NaN 与有限权重混合、改动了锁定仓位、给既不可交易也未持有的标的分配权重）是规则的 bug，抛出 `ValueError`。
+
+```python
+>>> rule = load_constructor(run_dir)
+>>> bar = rule.build_context(
+...     context.timestamp,
+...     panel.predictions.sel(timestamp=context.timestamp),
+...     on_symbols([True, True, True, False]),
+...     xr.DataArray([0.25], dims="symbol", coords={"symbol": ["DDD"]}),
+... )
+>>> decision = rule.decide(bar)
+>>> decision.weights.values, decision.failure, decision.events
+(array([0.375, 0.   , 0.375, 0.25 ]), None, {})
+
+```
 
 ## 均值-方差优化
 
@@ -363,6 +384,8 @@ array([0.4, 0.4, 0. , 0.2])
 1. 把 `config_cls` 设为规则参数的 frozen dataclass。
 2. 实现 `construct`。
 3. 规则读取收益窗口时重写 `lookback_bars`，读取因子面板时重写 `required_factors`，需要检查标签规格时重写 `bind`。
+
+不要重写 `build_context`、`decide` 或 `construct_panel`：它们是回测与执行器共用的唯一决策路径。
 
 `get_config` 和 `from_config` 把规则序列化为配置的各字段加上类的导入路径。字段里如果是另一个组件（例如风险模型），会嵌套序列化，所以重建一次运行不需要额外代码。
 

@@ -81,7 +81,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 ### In a backtest
 
-The vectorised backtest calls `construct_panel`. It loops `construct` over the rebalance bars and builds each bar's context:
+The vectorised backtest calls `construct_panel`. It loops the rule's one-bar decision (`decide`, see [One bar outside a backtest](#one-bar-outside-a-backtest)) over the rebalance bars and builds each bar's context:
 
 - The current weights are the holdings the earlier rebalances really left. They are modelled the way the simulation trades them, including rejected orders and delisting settlements.
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
@@ -89,7 +89,7 @@ The vectorised backtest calls `construct_panel`. It loops `construct` over the r
 
 The backtester calls the rule's `bind(labels)` when it is built, before any data is read or any model trained. `labels` holds one `LabelSpec(name, scale, delay, span)` per prediction variable, which the backtester derives from its predictor with `quantlab.base.backtest.label_specs`; `span` is `None` for a label that is not a `Forward` label. The specs are the only thing a rule may know about a prediction: it is never handed the model. This is where a rule checks the labels it needs, so a misconfigured rule fails at once.
 
-A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. The backtest holds the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `tie_at_cutoff` above or `closed_without_risk` below, with its `count` (the symbols it involved over all its bars) and one record per bar.
+A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. `decide` turns it into a hold of the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `tie_at_cutoff` above or `closed_without_risk` below, with its `count` (the symbols it involved over all its bars) and one record per bar.
 
 The run's `config.json` records the rule with all its parameters and its risk model, and `load_backtester_from_config` rebuilds it.
 
@@ -118,6 +118,27 @@ True
 ```
 
 The file holds one variable per label on `(timestamp, symbol)`, and its attributes `format_version` and `labels` (the specs as a JSON list). A `run_weights()` run has no model and writes no panel.
+
+### One bar outside a backtest
+
+An executor that keeps its own book, such as an event-driven backtest or a live account, decides a bar with two public methods of the rule, the same two `construct_panel` loops:
+
+- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` builds the bar's `PortfolioContext`. `predictions`, `tradable` and `current_weights` are the bar's values on `symbol`; a symbol missing from `current_weights` is not held. `valuation_price` holds the raw valuation prices on `(timestamp, symbol)` ending at the bar, and the return window and staleness come from it by the formula the backtest uses. Given the prices the backtest read, from the same first bar, the context equals the backtest's. It is required when the rule's `lookback_bars` is positive, as `factors` is when the rule declares `required_factors()`.
+- `decide(context)` runs `construct` and checks the row against the weights contract. It returns a `Decision(weights, failure, events)`: the weights on the context's symbols, all NaN for a hold; the message of a `PortfolioConstructionError` that made the bar a hold, or `None`; and the events the row reported. A row that breaks the contract (NaN mixed with finite weights, a moved locked position, weight on a symbol neither tradable nor held) is a bug in the rule and raises `ValueError`.
+
+```python
+>>> rule = load_constructor(run_dir)
+>>> bar = rule.build_context(
+...     context.timestamp,
+...     panel.predictions.sel(timestamp=context.timestamp),
+...     on_symbols([True, True, True, False]),
+...     xr.DataArray([0.25], dims="symbol", coords={"symbol": ["DDD"]}),
+... )
+>>> decision = rule.decide(bar)
+>>> decision.weights.values, decision.failure, decision.events
+(array([0.375, 0.   , 0.375, 0.25 ]), None, {})
+
+```
 
 ## Mean-variance optimisation
 
@@ -363,6 +384,8 @@ Subclass `PortfolioConstructor`:
 1. Set `config_cls` to a frozen dataclass of the rule's parameters.
 2. Implement `construct`.
 3. Override `lookback_bars` when the rule reads a return window, `required_factors` when it reads factor panels, and `bind` to check the label specs.
+
+Do not override `build_context`, `decide` or `construct_panel`: they are the one decision path a backtest and an executor share.
 
 `get_config` and `from_config` serialise the rule as its config's fields plus the class's import path. A field holding another component, such as a risk model, is nested, so no extra code is needed to rebuild a run.
 

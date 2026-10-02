@@ -597,7 +597,7 @@ timestamp
 2024-02-19  0.037  0.647  0.000  0.16  0.0  0.156
 ```
 
-如果想沿用 top-N 规则、只换分数，`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, tradable, rebalance)` 接受任意分数面板（每个标签一个变量的数据集）和一个布尔型可交易面板（例如价格数据集的 `tradable_bars(prices, fill_column)`），并返回同样的 `weight` 数据集；再传入 `fill_price=`、`valuation_price=` 和 `delisted=`，每根 bar 拿到的就是模拟中实际持有的仓位。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
+如果想沿用 top-N 规则、只换分数，`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, tradable, rebalance)` 接受任意分数面板（每个标签一个变量的数据集）和一个布尔型可交易面板（例如价格数据集的 `tradable_bars(prices, fill_column)`），并返回同样的 `weight` 数据集；再传入 `fill_price=`、`valuation_price=` 和 `delisted=`，每根 bar 拿到的就是模拟中实际持有的仓位。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。自己维护账本的执行器用规则的 `build_context` 和 `decide` 决定一根 bar，也就是 `construct_panel` 循环调用的那一对（见[组合构建](portfolio.md#回测之外决定一根-bar)）。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
 
 ### 回测任意预测器
 

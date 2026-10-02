@@ -4,10 +4,14 @@ A *portfolio construction* rule turns the scores of one bar, and the weights
 currently held, into the weights to hold after that bar (ADR 0012). Every
 rule derives from ``PortfolioConstructor``, whose one abstract method,
 ``construct(context)``, is handed a ``PortfolioContext`` holding only what is
-known at that bar. The vectorised backtest calls ``construct_panel``, which
-loops ``construct`` over the rebalance bars, models the holdings between
-them and checks every row; a future event-driven backtest calls
-``construct`` from its bar handler.
+known at that bar. One bar is decided by two public methods:
+``build_context`` assembles the bar's context from its predictions,
+tradability, current holdings and valuation prices, and ``decide`` runs
+``construct``, checks the row and holds a bar the rule cannot solve. The
+vectorised backtest calls ``construct_panel``, which loops ``decide`` over
+the rebalance bars and models the holdings between them; an event-driven
+executor (quantlab-trader) calls ``build_context`` and ``decide`` from its
+bar handler with the holdings it really has.
 
 The output follows the weights contract (D-03): on a rebalance bar every
 symbol gets a finite weight, an unselected one exactly 0.0, with gross
@@ -276,8 +280,9 @@ class PredictionPanel:
 class PortfolioConstructionError(RuntimeError):
     """A rule could not decide a bar: the optimisation failed, was infeasible or had no solution.
 
-    ``PortfolioConstructor.construct_panel`` holds such a bar (an all-NaN
-    row), logs a warning and lists the bar in the result's
+    ``PortfolioConstructor.decide`` holds such a bar (all-NaN weights,
+    the message as the decision's ``failure``) and logs a warning;
+    ``construct_panel`` lists the bar in the result's
     ``attrs["failed_bars"]``.
 
     Examples
@@ -419,6 +424,79 @@ def _align_mask(mask: xr.DataArray, predictions: xr.Dataset) -> np.ndarray:
         timestamp=predictions.timestamp.values, symbol=predictions.symbol.values
     )
     return np.asarray(aligned.values, dtype=bool)
+
+
+def _valuation_history(valuation_price: xr.DataArray) -> tuple[xr.DataArray, np.ndarray, xr.DataArray]:
+    """Return the one-bar returns, staleness and forward-filled prices of raw valuation prices.
+
+    The one formula behind every context's ``returns`` and ``staleness``,
+    whether ``construct_panel`` or ``build_context`` builds it. Each row
+    reads only the rows up to it, so the rows of a history that ends at a
+    bar equal those of a longer history over the same start.
+    """
+    filled = valuation_price.ffill("timestamp")
+    priced = np.isfinite(np.asarray(valuation_price.values, dtype=np.float64))
+    rows = np.arange(priced.shape[0])[:, None]
+    last = np.maximum.accumulate(np.where(priced, rows, -1), axis=0)
+    returns = filled / filled.shift(timestamp=1) - 1.0
+    staleness = np.where(last >= 0, rows - last, np.nan).astype(np.float64)
+    return returns, staleness, filled
+
+
+def _empty_window(symbols: np.ndarray) -> xr.DataArray:
+    """Return a return window of no bars on ``symbols``: the window of a context built without prices."""
+    return xr.DataArray(
+        np.empty((0, len(symbols))),
+        dims=_DIMS,
+        coords={"timestamp": np.array([], dtype="datetime64[ns]"), "symbol": symbols},
+    )
+
+
+def _on_symbol(bar, what: str) -> xr.DataArray | xr.Dataset:
+    """Return one bar's values on ``symbol`` alone, refusing a ``timestamp`` axis or duplicate symbols.
+
+    A scalar ``timestamp`` coordinate (what ``.sel(timestamp=t)`` leaves)
+    is dropped.
+    """
+    if "timestamp" in bar.dims:
+        raise ValueError(f"{what} must be one bar's values on symbol, not a panel over timestamp")
+    if tuple(bar.dims) != ("symbol",):
+        raise ValueError(f"{what} must be on the symbol dimension only; got dims {tuple(bar.dims)}")
+    if pd.Index(bar.symbol.values).has_duplicates:
+        raise ValueError(f"{what} has duplicate symbols")
+    return bar.drop_vars("timestamp", errors="ignore")
+
+
+@dataclass(frozen=True)
+class Decision:
+    """What a rule decided at one bar: ``PortfolioConstructor.decide``'s result.
+
+    Attributes
+    ----------
+    weights : xr.DataArray
+        The weights to hold after the bar, on ``symbol`` in the order of the
+        context's symbols: finite on a traded bar, all NaN to hold the
+        current position.
+    failure : str or None
+        The message of the ``PortfolioConstructionError`` that made the bar
+        a hold, or ``None`` when the rule decided it.
+    events : dict
+        The events the rule's row reported in ``attrs["events"]``, as the
+        rule gave them (``{name: [symbol, ...]}`` or ``{name: count}``);
+        empty after a failure.
+
+    Examples
+    --------
+    >>> decision = Decision(
+    ...     weights=xr.DataArray([0.5, 0.5, 0.0], dims="symbol", coords={"symbol": ["AAA", "BBB", "CCC"]}),
+    ... )
+    >>> decision.failure is None, decision.events
+    (True, {})
+    """
+
+    weights: xr.DataArray
+    failure: str | None = None
+    events: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -913,7 +991,8 @@ class PortfolioConstructor(_Configured, ABC):
     and implement ``construct``; override ``bind`` to check the label specs
     and read what the rule needs from them, ``lookback_bars`` when the rule
     reads a return window, and ``required_factors`` when it reads factor
-    panels. ``construct_panel`` loops ``construct`` and checks its rows.
+    panels. ``build_context`` and ``decide`` make the one-bar decision,
+    and ``construct_panel`` loops them over a panel.
     ``get_config`` and ``from_config`` serialise the rule as its config's
     fields plus the class's import path under ``"name"``, which a
     backtest's ``config.json`` records.
@@ -1014,9 +1093,215 @@ class PortfolioConstructor(_Configured, ABC):
 
         Examples
         --------
-        >>> rule.construct(context).values
-        array([0.5, 0.5, 0. ])
+        >>> rule.construct(context).values  # CCC is locked at 0.6
+        array([0.2, 0.2, 0.6])
         """
+
+    def build_context(
+        self,
+        timestamp,
+        predictions: xr.Dataset,
+        tradable: xr.DataArray,
+        current_weights: xr.DataArray,
+        *,
+        valuation_price: xr.DataArray | None = None,
+        factors: xr.Dataset | None = None,
+    ) -> PortfolioContext:
+        """Build the context of one bar from what is known at it.
+
+        The public half of the one-bar decision: ``construct_panel`` and an
+        event-driven executor such as quantlab-trader hand ``decide`` the
+        same context for the same bar. The ``returns`` window and
+        ``staleness`` come from ``valuation_price`` by the formula the panel
+        loop uses: the one-bar returns of the forward-filled prices, the
+        last ``lookback_bars`` of them ending at the bar, and the bars since
+        each symbol's last real price, counted within the history given (NaN
+        when it holds none). Given the valuation prices the panel loop read,
+        up to the bar, the context equals the one the loop built there.
+
+        Parameters
+        ----------
+        timestamp : pd.Timestamp or datetime-like
+            The bar decided on.
+        predictions : xr.Dataset
+            Every label's prediction at the bar, one variable per label on
+            ``symbol``; its symbols, in their order, are the context's. A
+            scalar ``timestamp`` coordinate is dropped.
+        tradable : xr.DataArray
+            Booleans on ``symbol``: exactly the predictions' symbols, in any
+            order.
+        current_weights : xr.DataArray
+            The weights held, valued at the bar's valuation price, on
+            ``symbol``: finite, 0.0 where nothing is held. A symbol it lacks
+            is not held.
+        valuation_price : xr.DataArray, optional
+            Raw (not forward-filled) valuation prices on ``(timestamp,
+            symbol)`` whose last timestamp is ``timestamp``, from far enough
+            back to seed the forward fill; required when ``lookback_bars``
+            is positive. Without it the window has no bars and
+            ``staleness`` is ``None``.
+        factors : xr.Dataset, optional
+            The values at the bar of the rule's ``required_factors()``, one
+            variable per factor name on ``symbol``; NaN where a symbol has
+            none. Required when the rule declares any.
+
+        Returns
+        -------
+        PortfolioContext
+
+        Raises
+        ------
+        ValueError
+            If an input is not on ``symbol`` alone or repeats a symbol, the
+            tradability is on other symbols than the predictions, a current
+            weight is not finite or sits on a symbol without a prediction,
+            ``tradable`` is not boolean, ``valuation_price`` is missing while
+            the rule reads returns, repeats a symbol or a timestamp, is not
+            in time order or does not end at ``timestamp``, or ``factors``
+            is missing or lacks a name while the rule declares factors.
+
+        Examples
+        --------
+        >>> symbols = ["AAA", "BBB", "CCC"]
+        >>> prices = xr.DataArray(
+        ...     [[10.0, 20.0, np.nan], [11.0, np.nan, 30.0], [12.0, 22.0, 33.0]],
+        ...     dims=("timestamp", "symbol"),
+        ...     coords={"timestamp": pd.bdate_range("2024-01-01", periods=3), "symbol": symbols},
+        ... )
+        >>> bar = rule.build_context(
+        ...     pd.Timestamp("2024-01-03"),
+        ...     xr.Dataset({"ret": ("symbol", [0.3, 0.1, 0.2])}, coords={"symbol": symbols}),
+        ...     xr.DataArray([True, True, True], dims="symbol", coords={"symbol": symbols}),
+        ...     xr.DataArray([0.0, 0.5, 0.0], dims="symbol", coords={"symbol": ["CCC", "BBB", "AAA"]}),
+        ...     valuation_price=prices,
+        ... )
+        >>> bar.current_weights.values, bar.staleness.values
+        (array([0. , 0.5, 0. ]), array([0., 0., 0.]))
+        >>> bar.returns.sizes["timestamp"]  # rule.lookback_bars is 0
+        0
+        """
+        timestamp = pd.Timestamp(timestamp)
+        predictions = _on_symbol(predictions, "predictions")
+        symbols = predictions.symbol.values
+        tradable = _on_symbol(tradable, "tradable")
+        if not pd.Index(tradable.symbol.values).sort_values().equals(pd.Index(symbols).sort_values()):
+            raise ValueError("tradable must be given on exactly the predictions' symbols")
+        if tradable.dtype != bool:
+            raise ValueError(f"tradable must be booleans; got dtype {tradable.dtype}")
+        current_weights = _on_symbol(current_weights, "current_weights")
+        given = np.asarray(current_weights.values, dtype=np.float64)
+        if not np.isfinite(given).all():
+            raise ValueError("current_weights must be finite (0.0 where nothing is held)")
+        outside = ~pd.Index(current_weights.symbol.values).isin(symbols)
+        if (given[outside] != 0).any():
+            shown = [str(v) for v in current_weights.symbol.values[outside][:5]]
+            raise ValueError(f"current_weights holds symbols without a prediction: {shown}")
+        current = np.asarray(
+            current_weights.reindex(symbol=symbols, fill_value=0.0).values, dtype=np.float64
+        )
+
+        lookback = self.lookback_bars
+        if valuation_price is None:
+            if lookback:
+                raise ValueError(
+                    f"{type(self).__name__} reads {lookback} bars of returns; pass "
+                    f"valuation_price= to build_context"
+                )
+            window, staleness = _empty_window(symbols), None
+        else:
+            valuation_price = valuation_price.transpose(*_DIMS)
+            bars = pd.Index(valuation_price.timestamp.values)
+            if not bars.is_monotonic_increasing or bars.has_duplicates:
+                raise ValueError("valuation_price timestamps must be unique and increasing")
+            if pd.Index(valuation_price.symbol.values).has_duplicates:
+                raise ValueError("valuation_price has duplicate symbols")
+            if not len(bars) or pd.Timestamp(bars[-1]) != timestamp:
+                raise ValueError(
+                    f"valuation_price must end at the bar {timestamp}; pass the "
+                    f"prices up to and including it"
+                )
+            returns, stale, _ = _valuation_history(valuation_price.reindex(symbol=symbols))
+            n = returns.sizes["timestamp"]
+            window = returns.isel(timestamp=slice(max(0, n - lookback), n) if lookback else slice(n, n))
+            staleness = xr.DataArray(stale[-1].copy(), dims="symbol", coords={"symbol": symbols})
+
+        if factors is None:
+            if self.required_factors():
+                raise ValueError(
+                    f"{type(self).__name__} declares required_factors(); pass their "
+                    f"values at the bar as factors= to build_context"
+                )
+        else:
+            factors = _on_symbol(factors, "factors")
+            self._check_factor_names(factors)
+            factors = factors.reindex(symbol=symbols).load()
+
+        return PortfolioContext(
+            timestamp=timestamp,
+            predictions=predictions,
+            tradable=xr.DataArray(
+                np.asarray(tradable.sel(symbol=symbols).values, dtype=bool),
+                dims="symbol",
+                coords={"symbol": symbols},
+            ),
+            current_weights=xr.DataArray(current, dims="symbol", coords={"symbol": symbols}),
+            returns=window,
+            factors=factors,
+            staleness=staleness,
+        )
+
+    def decide(self, context: PortfolioContext) -> Decision:
+        """Decide one bar: run ``construct``, check its row and hold a bar it cannot solve.
+
+        The other half of the one-bar decision, shared by ``construct_panel``
+        and event-driven executors. A ``PortfolioConstructionError`` from
+        ``construct`` becomes a hold (all-NaN weights) carrying the error's
+        message, with a warning. A row that breaks the weights contract is a
+        bug in the rule, not a hold, and raises. ``decide`` is not meant to
+        be overridden: a rule implements ``construct``.
+
+        Parameters
+        ----------
+        context : PortfolioContext
+            The bar's context, from ``build_context`` or built by hand.
+
+        Returns
+        -------
+        Decision
+            The weights on ``context.symbols`` (all NaN to hold), the failure
+            message or ``None``, and the row's events.
+
+        Raises
+        ------
+        ValueError
+            If ``construct`` returns weights on other symbols than the
+            context's, a row mixing NaN and finite values, a changed locked
+            position (held, not tradable) or weight on a symbol neither
+            tradable nor held.
+
+        Examples
+        --------
+        >>> decision = rule.decide(context)
+        >>> decision.weights.values, decision.failure, decision.events
+        (array([0.2, 0.2, 0.6]), None, {})
+        """
+        symbols = context.symbols
+        try:
+            decided = self.construct(context)
+        except PortfolioConstructionError as exc:
+            logger.warning(
+                f"{type(self).__name__}: holding the current position at "
+                f"{pd.Timestamp(context.timestamp).isoformat()}: {exc}"
+            )
+            return Decision(
+                weights=xr.DataArray(np.full(len(symbols), np.nan), dims="symbol", coords={"symbol": symbols}),
+                failure=str(exc),
+            )
+        row = self._checked_row(decided, context)
+        return Decision(
+            weights=xr.DataArray(row, dims="symbol", coords={"symbol": symbols}),
+            events=dict(decided.attrs.get("events", {})),
+        )
 
     def construct_panel(
         self,
@@ -1031,8 +1316,11 @@ class PortfolioConstructor(_Configured, ABC):
     ) -> xr.Dataset:
         """Build target weights for every bar of a panel.
 
-        Loops ``construct`` over the rebalance bars in time order, handing
-        each the context of its own bar only: its predictions, its
+        Loops ``decide`` over the rebalance bars in time order, handing
+        each the context ``build_context`` would build for its own bar from
+        the valuation prices up to it (the returns and staleness are
+        computed once for the whole panel by the same formula, since each
+        bar's rows read nothing after it): its predictions, its
         tradability, the ``lookback_bars`` one-bar returns of
         ``valuation_price`` ending at it, the values at it of the
         ``factors`` the rule declares, and the weights currently held.
@@ -1095,8 +1383,8 @@ class PortfolioConstructor(_Configured, ABC):
             If ``rebalance`` does not have one entry per timestamp, the
             tradability panel is on other labels, only one price is given, a
             price is missing or lacks a prediction timestamp, the factor
-            panels are missing or lack a prediction timestamp, or
-            ``construct`` returns weights on other symbols, a row mixing
+            panels are missing or lack a prediction timestamp or a declared
+            factor name, or ``construct`` returns weights on other symbols, a row mixing
             NaN and finite values, a changed locked position or weight on a
             symbol neither tradable nor held.
 
@@ -1133,11 +1421,7 @@ class PortfolioConstructor(_Configured, ABC):
         for t in np.flatnonzero(rebalance):
             if history is None:
                 current = traded
-                window = xr.DataArray(
-                    np.empty((0, len(symbols))),
-                    dims=_DIMS,
-                    coords={"timestamp": timestamps[:0], "symbol": symbols},
-                )
+                window = _empty_window(symbols)
             else:
                 position = int(history.positions[t])
                 current = book.weights_at(position)
@@ -1167,19 +1451,14 @@ class PortfolioConstructor(_Configured, ABC):
                     coords={"symbol": symbols},
                 ),
             )
-            try:
-                decided = self.construct(context)
-                row = self._checked_row(decided, context)
-            except PortfolioConstructionError as exc:
-                label = pd.Timestamp(timestamps[t]).isoformat()
-                logger.warning(
-                    f"{type(self).__name__}: holding the current position at "
-                    f"{label}: {exc}"
-                )
+            decision = self.decide(context)
+            label = pd.Timestamp(timestamps[t]).isoformat()
+            if decision.failure is not None:
                 failed.append(label)
                 continue
-            for name, value in decided.attrs.get("events", {}).items():
-                record = {"bar": pd.Timestamp(timestamps[t]).isoformat()}
+            row = decision.weights.values
+            for name, value in decision.events.items():
+                record = {"bar": label}
                 if isinstance(value, (int, np.integer)):
                     record["count"] = int(value)
                 else:
@@ -1255,13 +1534,10 @@ class PortfolioConstructor(_Configured, ABC):
                 .values,
                 dtype=bool,
             )
-        valuation_filled = valuation_price.ffill("timestamp")
-        priced = np.isfinite(np.asarray(valuation_price.values, dtype=np.float64))
-        rows = np.arange(priced.shape[0])[:, None]
-        last = np.maximum.accumulate(np.where(priced, rows, -1), axis=0)
+        returns, staleness, valuation_filled = _valuation_history(valuation_price)
         return _PriceHistory(
-            returns=valuation_filled / valuation_filled.shift(timestamp=1) - 1.0,
-            staleness=np.where(last >= 0, rows - last, np.nan).astype(np.float64),
+            returns=returns,
+            staleness=staleness,
             raw_fill=fill_price.values.astype(np.float64),
             fill=fill_price.ffill("timestamp").values.astype(np.float64),
             valuation=valuation_filled.values.astype(np.float64),
@@ -1283,6 +1559,7 @@ class PortfolioConstructor(_Configured, ABC):
                 )
             return None
         factors = factors.transpose(*_DIMS)
+        self._check_factor_names(factors)
         missing = pd.Index(predictions.timestamp.values).difference(
             pd.Index(factors.timestamp.values)
         )
@@ -1294,6 +1571,16 @@ class PortfolioConstructor(_Configured, ABC):
         return factors.reindex(
             timestamp=predictions.timestamp.values, symbol=predictions.symbol.values
         ).load()
+
+    def _check_factor_names(self, factors: xr.Dataset) -> None:
+        """Refuse factor values that lack a name of the rule's ``required_factors()``."""
+        declared = [name for factor in self.required_factors() for name in factor.get_factor_names()]
+        missing = [name for name in declared if name not in factors.data_vars]
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__} declares factors {missing} that the given "
+                f"factor values lack"
+            )
 
     def _checked_row(self, weights: xr.DataArray, context: PortfolioContext) -> np.ndarray:
         """Return one bar's weights on the context's symbols, refusing a row that breaks the contract.
