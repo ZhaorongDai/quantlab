@@ -220,7 +220,6 @@ def adapter(request, tmp_path, monkeypatch):
     workdir.mkdir()
     monkeypatch.chdir(workdir)
     monkeypatch.setenv("WANDB_DIR", str(workdir))
-    monkeypatch.setenv("WANDB_SILENT", "true")
     # Unset, so the MLflow tracker must open its `file:` store by itself; the
     # value it sets is undone after the test.
     monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
@@ -441,6 +440,43 @@ def test_mlflow_cuts_a_param_value_longer_than_mlflow_takes(mlflow_tracker, tmp_
     (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
     assert len(observed["params"]["long"]) == 6000
     assert observed["config"] == {"long": long}
+
+
+def test_mlflow_cleans_keys_it_would_refuse(mlflow_tracker, tmp_path):
+    """Backtest summaries and fingerprints carry `[ ] %` and nested `/`."""
+    with mlflow_tracker.start_run(
+        project="P",
+        group=None,
+        name="n",
+        config={"data_fingerprint": {"factor[0]:PastReturn": {"algorithm": "sha256"}}},
+    ) as run:
+        run.log({"val-rmse/ret_5": 1.0}, step=0)
+        run.log({"val-rmse/ret_5": 0.5}, step=1)
+        run.summarize({"whole": {"Total Return [%]": 12.5}, "./odd//key/": 1.0})
+
+    (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
+    assert observed["params"] == {"data_fingerprint/factor_0_:PastReturn/algorithm": "sha256"}
+    assert observed["steps"] == [(0, {"val-rmse/ret_5": 1.0}), (1, {"val-rmse/ret_5": 0.5})]
+    assert observed["summary"] == {"whole/Total Return ___": 12.5, "_/odd/key": 1.0}
+    assert observed["finished"] and not observed["failed"]
+
+
+def test_mlflow_keeps_the_later_of_two_metrics_cleaned_to_one_key(mlflow_tracker, tmp_path):
+    with mlflow_tracker.start_run(project="P", group=None, name="n", config={}) as run:
+        run.summarize({"x[": 5.0, "x]": 1.0})
+
+    (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
+    assert observed["summary"] == {"x_": 1.0}
+
+
+def test_mlflow_keeps_a_long_key_valid_after_cutting_it(mlflow_tracker, tmp_path):
+    name = "a" * 249 + "/b"
+    with mlflow_tracker.start_run(project="P", group=None, name="n", config={name: 1}) as run:
+        run.summarize({name: 2.0})
+
+    (observed,) = _read_mlflow(mlflow_tracker, tmp_path)
+    assert observed["params"] == {"a" * 249: "1"}
+    assert observed["summary"] == {"a" * 249: 2.0}
 
 
 def test_an_explicitly_disabled_file_store_is_left_to_mlflow(mlflow_tracker, monkeypatch):

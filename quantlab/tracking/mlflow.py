@@ -20,6 +20,9 @@ another value is changed only in ``run_config.json``. A table is the JSON
 artifact ``tables/<name>.json`` (``{"columns": [...], "data": [...]}``, the
 format of ``mlflow.log_table``); no bar chart is drawn. A file is an artifact
 at the root of the run. Leaving the run sets it ``FINISHED`` or ``FAILED``.
+Every param and metric key is cleaned of the characters MLflow refuses
+(``whole/Total Return [%]`` is logged as ``whole/Total Return ___``, see
+``_mlflow_key``).
 
 Every call goes through an ``MlflowClient`` bound to the tracker's
 ``tracking_uri``, never through mlflow's global active run, so runs opened one
@@ -30,6 +33,7 @@ from the environment, never from the config.
 
 import json
 import os
+import re
 import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
@@ -45,6 +49,29 @@ _MAX_PARAMS_PER_BATCH = 100
 _MAX_METRICS_PER_BATCH = 1000
 #: Artifact holding the run's whole config, values uncut.
 _CONFIG_ARTIFACT = "run_config.json"
+#: The longest param or metric key MLflow takes.
+_MAX_KEY_LENGTH = 250
+#: Characters MLflow refuses in a param or metric key.
+_BAD_KEY_CHARACTER = re.compile(r"[^/\w.\- :]")
+
+
+def _mlflow_key(name: str) -> str:
+    """Return ``name`` as a param or metric key MLflow takes.
+
+    The name is cut to the length MLflow takes, each refused character
+    becomes ``_``, and the ``/``-separated parts are kept non-empty and other
+    than ``.`` or ``..``, since MLflow also refuses a key that would resolve
+    to another path. Two names cleaned to one key in one call share it, the
+    later value winning.
+
+    Examples
+    --------
+    >>> _mlflow_key("whole/Total Return [%]"), _mlflow_key("./odd//key/")
+    ('whole/Total Return ___', '_/odd/key')
+    """
+    cut = _BAD_KEY_CHARACTER.sub("_", name[:_MAX_KEY_LENGTH])
+    parts = ["_" if part in (".", "..") else part for part in cut.split("/") if part]
+    return "/".join(parts) or "_"
 
 
 def _import_mlflow():
@@ -62,8 +89,8 @@ def _import_mlflow():
 def _flatten_params(config: dict, prefix: str = "") -> dict[str, str]:
     """Flatten nested dicts to ``outer/inner`` keys with JSON string values.
 
-    A string stays as it is; every other value is written as JSON. Values
-    are cut to the length MLflow takes.
+    A string stays as it is; every other value is written as JSON. Keys are
+    cleaned (see ``_mlflow_key``) and values cut to the length MLflow takes.
 
     Examples
     --------
@@ -77,7 +104,7 @@ def _flatten_params(config: dict, prefix: str = "") -> dict[str, str]:
             out.update(_flatten_params(value, f"{name}/"))
         else:
             text = value if isinstance(value, str) else json.dumps(value)
-            out[name] = text[:_MAX_PARAM_LENGTH]
+            out[_mlflow_key(name)] = text[:_MAX_PARAM_LENGTH]
     return out
 
 
@@ -120,10 +147,8 @@ class MlflowRun(TrackingRun):
     def _log_metrics(self, metrics: dict, step: int) -> None:
         Metric = self._mlflow.entities.Metric
         stamp = int(time.time() * 1000)
-        entries = [
-            Metric(key, float(value), stamp, step)
-            for key, value in metrics.items()
-        ]
+        cleaned = {_mlflow_key(key): float(value) for key, value in metrics.items()}
+        entries = [Metric(key, value, stamp, step) for key, value in cleaned.items()]
         for chunk in _chunks(entries, _MAX_METRICS_PER_BATCH):
             self._client.log_batch(self._run_id, metrics=chunk)
 

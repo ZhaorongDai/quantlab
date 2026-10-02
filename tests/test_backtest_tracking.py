@@ -84,6 +84,30 @@ def test_a_run_is_one_finished_run_with_the_metric_blocks_and_the_report(tmp_pat
     assert run.files == [result.run_dir / "report.html"]
 
 
+def test_a_backtest_lands_in_a_local_mlflow_store(tmp_path, trained, monkeypatch):
+    """Summary keys like ``whole/Total Return [%]`` and fingerprint params are
+    cleaned to keys MLflow takes, so the backtest itself never fails on them."""
+    pytest.importorskip("mlflow")
+    from mlflow import MlflowClient
+
+    from quantlab.tracking.mlflow import MlflowTracker
+
+    monkeypatch.delenv("MLFLOW_ALLOW_FILE_STORE", raising=False)
+    store = f"file:{tmp_path / 'mlruns'}"
+
+    result = _tracked(tmp_path, trained, MlflowTracker(tracking_uri=store)).run()
+
+    client = MlflowClient(tracking_uri=store)
+    (run,) = client.search_runs([client.get_experiment_by_name(PROJECT).experiment_id])
+    assert (run.info.run_name, run.info.status) == (result.run_dir.name, "FINISHED")
+    assert run.data.metrics["whole/Total Return ___"] == pytest.approx(
+        result.metrics["whole"]["Total Return [%]"]
+    )
+    assert any(key.startswith("data_fingerprint/") for key in run.data.params)
+    artifacts = {artifact.path for artifact in client.list_artifacts(run.info.run_id)}
+    assert "report.html" in artifacts
+
+
 def test_a_run_kept_in_memory_is_tracked_without_the_report(tmp_path, trained):
     tracker = RecordingTracker()
 
