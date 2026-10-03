@@ -183,9 +183,9 @@ def load_model_from_config(config: dict):
     The class named by ``config["name"]`` is imported and its own
     ``from_config`` rebuilds the model, so a model class decides how its
     config is read back. ``BaseModel.from_config`` rebuilds the factors and
-    labels and drops the two training records a checkpoint's
-    ``config.json`` carries, ``resolved_hyperparameters`` and ``trained_on``;
-    any other unknown key still raises ``TypeError`` from the config class.
+    labels and drops the training record a library model's ``config.json``
+    carries, ``resolved_hyperparameters``; any other unknown key still raises
+    ``TypeError`` from the config class.
     The caller's dict is never modified.
 
     Parameters

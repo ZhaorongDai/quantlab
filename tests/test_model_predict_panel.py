@@ -16,7 +16,7 @@ and what turns it red:
   does not return `[S_t, L]` each fail with an error that names the problem;
 - the torch path and XGBoostRegressor return exactly what their own inference
   path returns;
-- the checkpoint's `trained_on.symbols` record is sorted in the axis's own
+- the run's `trained_on.symbols` record is sorted in the axis's own
   kind (JSON integers on a PERMNO axis), whatever order the backend held.
 
 Everything is synthetic, CPU-only and offline. Test-local stand-ins are copied
@@ -24,7 +24,6 @@ in the style of `tests/test_model_hierarchy.py` rather than imported from it.
 """
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -36,6 +35,7 @@ import quantlab.utils.module as module_utils
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
+from quantlab.utils.trained_run import TrainedRun
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
@@ -346,8 +346,8 @@ def test_int64_checkpoint_records_json_integers(tmp_path):
     because `json.loads` would happily give `['7000']` back."""
     model = OneBarHead(ModelConfig(**_dl_train_kwargs(tmp_path, symbols=PERMNOS)))
     checkpoint = model.collect().train()
-    raw = (checkpoint.parent / "config.json").read_text()
-    recorded = json.loads(raw)["trained_on"]["symbols"]
+    raw = (checkpoint.parent / "run.json").read_text()
+    recorded = TrainedRun.open(checkpoint).trained_on["symbols"]
 
     assert recorded == SORTED_PERMNOS
     assert all(type(value) is int for value in recorded)
@@ -374,8 +374,7 @@ def test_train_on_an_unsorted_backend_records_sorted_symbols(tmp_path):
 
     checkpoint = model.train()
 
-    sidecar = json.loads((checkpoint.parent / "config.json").read_text())
-    assert sidecar["trained_on"]["symbols"] == SYMBOLS
+    assert TrainedRun.open(checkpoint).trained_on["symbols"] == SYMBOLS
     features = _features(model)
     pred = model.predict_panel(features.sel(symbol=["S2", "S0", "S1"]))
     xr.testing.assert_allclose(pred, model.predict_panel(features))
@@ -384,26 +383,22 @@ def test_train_on_an_unsorted_backend_records_sorted_symbols(tmp_path):
 def test_train_cv_on_an_unsorted_backend_records_sorted_symbols_in_every_fold(
     tmp_path,
 ):
-    """30 timestamps with `train_periods=20` give 2 folds; each sidecar must
-    record S0, S1, S2 even though the backend holds S2, S0, S1."""
+    """30 timestamps with `train_periods=20` give 2 folds; each fold's run
+    must record S0, S1, S2 even though the backend holds S2, S0, S1."""
     model = _dl_on_a_backend_filled_without_collect(tmp_path, ["S2", "S0", "S1"])
 
     results = model.train_cv(train_periods=20)
 
     assert len(results) == 2, results
     for result in results:
-        sidecar = json.loads(
-            (Path(result["checkpoint"]).parent / "config.json").read_text()
-        )
-        assert sidecar["trained_on"]["symbols"] == SYMBOLS, result["fold"]
+        recorded = TrainedRun.open(result["checkpoint"]).trained_on["symbols"]
+        assert recorded == SYMBOLS, result["fold"]
 
 
-def test_checkpoint_config_json_with_the_training_record_rebuilds_the_model(tmp_path):
-    """Code review WR-02: the `trained_on` record does not break the config loader.
-
-    `load_model_from_config` refuses unknown keys, so it must drop the record
-    (as it drops `resolved_hyperparameters`) and rebuild a model whose config
-    equals the one that trained.
+def test_checkpoint_config_json_rebuilds_the_model(tmp_path):
+    """The checkpoint's `config.json` rebuilds the model: `load_model_from_config`
+    refuses unknown keys, and the training record `trained_on` lives in
+    `run.json`, not here, so the rebuilt config equals the one that trained.
     """
     from tests.backtest_fixtures import make_model, train_checkpoint, write_price_store
 
@@ -418,8 +413,10 @@ def test_checkpoint_config_json_with_the_training_record_rebuilds_the_model(tmp_
     )
     model = make_model(tmp_path / "train", dataset_config, **dates)
     checkpoint = train_checkpoint(model)
-    saved = json.loads((checkpoint.parent / "config.json").read_text())
-    assert saved["trained_on"]["symbols"] == sorted(model.symbols)
+    run = TrainedRun.open(checkpoint)
+    assert run.trained_on["symbols"] == sorted(model.symbols)
+    saved = run.config
+    assert "trained_on" not in saved
 
     rebuilt = module_utils.load_model_from_config(saved)
 

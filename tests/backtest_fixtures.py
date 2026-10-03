@@ -285,6 +285,10 @@ class DelegatingPredictor:
         return self.inner.test_bounds
 
     @property
+    def fitted_train_bounds(self):
+        return self.inner.fitted_train_bounds
+
+    @property
     def label_delays(self):
         return self.inner.label_delays
 

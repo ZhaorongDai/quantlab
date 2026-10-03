@@ -104,6 +104,7 @@ def test_base_model_satisfies_the_protocol_structurally():
         "labels",
         "train_bounds",
         "test_bounds",
+        "fitted_train_bounds",
         "label_delays",
         "label_scales",
         "predict_window",

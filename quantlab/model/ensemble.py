@@ -93,6 +93,14 @@ def _as_time(value) -> pd.Timestamp:
     return pd.Timestamp(str(value) if isinstance(value, str) else value)
 
 
+def _covering(bounds) -> tuple:
+    """Return the ``(start, end)`` window covering every ``(start, end)`` of ``bounds``."""
+    return (
+        min((b[0] for b in bounds), key=_as_time),
+        max((b[1] for b in bounds), key=_as_time),
+    )
+
+
 def _class_path(obj) -> str:
     """Return the dotted import path of ``obj``'s class."""
     return f"{type(obj).__module__}.{type(obj).__qualname__}"
@@ -286,11 +294,27 @@ class BaseEnsemble(ABC):
         >>> ensemble.train_bounds
         ('2024-01-01', '2024-02-02')
         """
-        bounds = [tuple(member.train_bounds) for member in self.members]
-        return (
-            min((b[0] for b in bounds), key=_as_time),
-            max((b[1] for b in bounds), key=_as_time),
-        )
+        return _covering([member.train_bounds for member in self.members])
+
+    @property
+    def fitted_train_bounds(self) -> tuple:
+        """The training window actually fitted, covering every member's.
+
+        The earliest member start and the latest member end of the members'
+        ``fitted_train_bounds``, so a bar after the end was fitted by no
+        member. Known after ``train()`` or ``load()``.
+
+        Raises
+        ------
+        RuntimeError
+            If the members have been neither trained nor loaded.
+
+        Examples
+        --------
+        >>> ensemble.fitted_train_bounds
+        ('2024-01-01', '2024-01-31T00:00:00.000000000')
+        """
+        return _covering([member.fitted_train_bounds for member in self.members])
 
     @property
     def test_bounds(self) -> tuple:
@@ -570,9 +594,9 @@ class BaseEnsemble(ABC):
         trained, in order, into ``member_{k}/`` under a tracking run
         ``{MemberClass}_member_{k}`` of its own tracker, grouped by the
         directory's name;
-        each member writes its usual checkpoint, ``config.json``,
-        ``metrics.json``, ``ic_series.csv`` and ``test_predictions.zarr``
-        there, and reseeds its generators from its own ``random_seed`` right
+        each member writes its usual trained unit there (checkpoint,
+        ``config.json``, ``ic_series.csv``, ``test_predictions.zarr`` and
+        ``run.json``), and reseeds its generators from its own ``random_seed`` right
         before it trains. The ensemble directory then gets the evaluation
         files of the combined prediction (``metrics.json``,
         ``ic_series.csv``, ``test_predictions.zarr``, see

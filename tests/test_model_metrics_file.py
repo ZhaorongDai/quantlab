@@ -1,15 +1,15 @@
-"""Metrics on disk: `metrics.json` from `train()` and the v2 `cv_folds.json` (issue #38).
+"""Metrics on disk: the metrics of `train()`'s `run.json` and the v2 `cv_folds.json` (issue #38).
 
-`train()` writes the `train_*` / `val_*` / `test_*` metrics of the first label
-to `metrics.json` beside the checkpoint's `config.json`, so a run's scores
-survive without a tracker. `train_cv()` keeps every split's metrics in each fold
+`train()` records the `train_*` / `val_*` / `test_*` metrics of the first label
+in the unit's `run.json` (#122), so a run's scores survive without a
+tracker. `train_cv()` keeps every split's metrics in each fold
 entry of `cv_folds.json` and adds a top-level `cv_mean` block, the fold means
 of every metric, which the `{cls}_cv_summary` tracking run also receives.
 
 What turns this file red:
 
-- `metrics.json` is missing, sits elsewhere, or differs from what the
-  tracking run's summary received;
+- the metrics of `run.json` are missing or differ from what the tracking
+  run's summary received;
 - a run without a validation segment writes `val_*` keys;
 - a fold entry lacks a split, or `cv_mean` is not the fold mean of every
   metric, or differs from the summary run;
@@ -129,12 +129,10 @@ def _strict_json(path: Path):
 def test_train_writes_metrics_json_equal_to_the_run_summary(tmp_path, tracker, cls):
     checkpoint = _model(tmp_path, cls=cls, tracker=tracker).train()
 
-    path = checkpoint.parent / "metrics.json"
-    assert (checkpoint.parent / "config.json").is_file()
-    metrics = _strict_json(path)
+    metrics = _strict_json(checkpoint.parent / "run.json")["metrics"]
     assert set(metrics) == {f"{s}_{k}" for s in SPLITS for k in METRIC_KEYS}
     (run,) = tracker.runs
-    # The summary keeps finite values only; metrics.json writes the rest as null.
+    # The summary keeps finite values only; run.json writes the rest as null.
     assert {k: v for k, v in metrics.items() if v is not None} == to_jsonable(run.summary)
 
 
@@ -144,14 +142,14 @@ def test_metrics_json_has_no_val_keys_without_a_validation_segment(
 ):
     checkpoint = _model(tmp_path, cls=cls, val_size=0.0).train()
 
-    metrics = _strict_json(checkpoint.parent / "metrics.json")
+    metrics = _strict_json(checkpoint.parent / "run.json")["metrics"]
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "test") for k in METRIC_KEYS}
 
 
 def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path):
     checkpoint = _model(tmp_path, cls=NaNMetricLibraryHead).train()
 
-    metrics = _strict_json(checkpoint.parent / "metrics.json")
+    metrics = _strict_json(checkpoint.parent / "run.json")["metrics"]
     for split in SPLITS:
         assert metrics[f"{split}_nan_metric"] is None
         assert metrics[f"{split}_finite_metric"] == 1.5

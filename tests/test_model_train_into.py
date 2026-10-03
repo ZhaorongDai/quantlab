@@ -9,23 +9,20 @@ siblings sees the same random state as one trained alone.
 
 What turns this file red:
 
-- the checkpoint, `config.json`, `metrics.json`, `ic_series.csv` or
-  `test_predictions.zarr` is missing from the given directory, or something
-  is written under `model_save_dir`;
+- the checkpoint, `config.json`, `ic_series.csv`, `test_predictions.zarr` or
+  `run.json` is missing from the given directory, or something is written
+  under `model_save_dir`;
 - the tracking run is not opened under the given group and run names;
-- `write_metrics=False` still writes `metrics.json`, or the returned metrics
-  differ from the file;
+- the returned metrics differ from those `run.json` records;
 - the random state left by earlier work changes what a fit produces.
 
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
-from pathlib import Path
-
 import numpy as np
 import pytest
 
+from quantlab.utils.trained_run import TrainedRun
 from tests.test_model_metrics_file import StubLibraryHead, _model
 from tests.torch_heads import OneBarHead
 from tests.tracking_fixtures import RecordingTracker
@@ -49,29 +46,14 @@ def test_train_into_writes_the_usual_files_into_the_given_directory(
             checkpoint.name,
             "config.json",
             "ic_series.csv",
-            "metrics.json",
+            "run.json",
             "test_predictions.zarr",
         ]
     )
     assert not (tmp_path / "ckpt").exists()
     ((project, group, name),) = [(r.project, r.group, r.name) for r in tracker.runs]
     assert (project, group, name) == (cls.__name__, "my_trial", "Head_member_0")
-    written = json.loads((run_dir / "metrics.json").read_text())
-    assert set(written) == set(metrics)
-
-
-def test_train_into_without_metrics_file_returns_the_metrics(tmp_path):
-    model = _model(tmp_path)
-    run_dir = tmp_path / "fold_0"
-
-    checkpoint, metrics = model._train_into(
-        run_dir, group="p", experiment_name="e", write_metrics=False
-    )
-
-    assert checkpoint.is_file()
-    assert not (run_dir / "metrics.json").exists()
-    assert (run_dir / "ic_series.csv").is_file()
-    assert "test_ic" in metrics
+    assert set(TrainedRun.open(run_dir).metrics) == set(metrics)
 
 
 class RandomWeightHead(StubLibraryHead):
@@ -102,6 +84,6 @@ def test_train_still_creates_one_trial_directory(tmp_path):
 
     (trial,) = list((tmp_path / "ckpt").iterdir())
     assert trial.name.startswith("StubLibraryHead_trial_")
-    assert checkpoint.parent == trial / "StubLibraryHead_total"
+    assert checkpoint.parent == trial
     ((project, group, name),) = [(r.project, r.group, r.name) for r in tracker.runs]
     assert (project, group, name) == ("StubLibraryHead", trial.name, "StubLibraryHead_total")

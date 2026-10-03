@@ -609,30 +609,22 @@ def test_load_uses_the_checkpoints_train_dates_over_stale_config_dates(
     assert len(stale_warnings) == 1, warning_messages
 
 
-def test_load_without_a_checkpoint_config_json_warns_and_trusts_config_model(
-    tmp_path, warning_messages
-):
-    """Code review WR-01: a checkpoint with no config.json beside it cannot be checked.
-
-    That is not necessarily an error (a hand-copied checkpoint), so the run
-    continues with config.model as given, but it must say so. The old code
-    never looked for the record and emitted no warning, so this goes red.
-    """
+def test_load_refuses_a_checkpoint_without_run_json(tmp_path):
+    """A checkpoint whose unit has no run.json records neither its training
+    dates nor its variables, so it is refused with a message to retrain
+    rather than backtested on config.model's dates."""
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     bars = _bars(dataset_config)
     dates = _model_dates(bars, 0, 24, 29)
     model, checkpoint = _loaded_model(tmp_path, dataset_config, dates)
-    (checkpoint.parent / "config.json").unlink()
+    (checkpoint.parent / "run.json").unlink()
 
-    result = _backtester(
+    backtester = _backtester(
         tmp_path, dataset_config, model, bars,
         start_bar=30, end_bar=50, checkpoint=checkpoint,
-    ).run()
-
-    assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[24]))
-    unchecked = [m for m in warning_messages if "has no config.json" in m]
-    assert len(unchecked) == 1, warning_messages
-    assert str(checkpoint) in unchecked[0]
+    )
+    with pytest.raises(ValueError, match="no run.json.*retrain"):
+        backtester.run()
 
 
 def _ns(bar) -> str:
@@ -799,28 +791,3 @@ def test_backtester_delegates_the_variable_check_to_the_model(tmp_path, monkeypa
     assert events.index("check") < events.index("collect"), events
 
 
-def test_torch_load_without_config_json_warns_once_per_concern(tmp_path, warning_messages):
-    """A torch checkpoint with no config.json beside it: the backtester says once
-    that the training dates cannot be checked ("has no config.json"), and the
-    model says once that the variables cannot be checked (G-03.7-9), even
-    though the model check runs both before collection and again inside
-    `load()`. The run completes."""
-    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
-    bars = _bars(dataset_config)
-    trainer, checkpoint = _trained_torch_checkpoint(tmp_path, dataset_config, bars)
-    (checkpoint.parent / "config.json").unlink()
-    fresh = TinyLinearTorchHead(trainer.config)
-
-    result = _backtester(
-        tmp_path, dataset_config, fresh, bars,
-        start_bar=30, end_bar=50, checkpoint=checkpoint,
-    ).run()
-
-    no_sidecar = [m for m in warning_messages if "has no config.json" in m]
-    assert len(no_sidecar) == 1, warning_messages
-    assert str(checkpoint) in no_sidecar[0]
-    unchecked = [m for m in warning_messages if "trained on cannot be checked" in m]
-    assert len(unchecked) == 1, warning_messages
-    assert str(checkpoint) in unchecked[0]
-    first = result.predictions["fwd_ret_1"].isel(timestamp=0)
-    assert np.isfinite(first.values).all(), first.values

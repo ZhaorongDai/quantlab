@@ -237,7 +237,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 ### 样本内与样本外
 
-记 L 为模型各标签 `lookahead_bars()` 的最大值。模型在 `train_start` 到 `train_end` 的 bar 上拟合，但要扣掉清洗（purge）部分，即测试段之前的最后 L 根 bar。最后一根参与拟合的 bar 上的标签还要再往后读 L 根 bar，所以有效训练窗口从 `train_start` 开始，到最后一根拟合 bar 之后第 L 根 bar 为止，按价格日历计数（`quantlab.utils.split.in_sample_window`）。测试段紧接训练段时，这个窗口恰好结束于配置的 `train_end`。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，训练日期取自 checkpoint 旁边的 `config.json`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
+记 L 为模型各标签 `lookahead_bars()` 的最大值。模型在 `train_start` 到 `train_end` 的 bar 上拟合，但要扣掉清洗（purge）部分，即测试段之前的最后 L 根 bar。最后一根参与拟合的 bar 上的标签还要再往后读 L 根 bar，所以有效训练窗口从 `train_start` 开始，到最后一根拟合 bar 之后第 L 根 bar 为止，按价格日历计数（`quantlab.utils.split.in_sample_window`）。测试段紧接训练段时，这个窗口恰好结束于配置的 `train_end`。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，模型采用其 checkpoint 的 `run.json` 记录的训练日期，拟合窗口取自模型的 `fitted_train_bounds`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
 
 ```python
 >>> m = result.metrics
@@ -728,11 +728,12 @@ timestamp
 
 | 成员 | 回测器的用途 |
 |---|---|
-| `labels`、`label_delays` | 标签延迟检查、清除（purge）与样本内划分（`lookahead_bars()`）、预测变量名 |
-| `train_bounds`、`test_bounds` | 配置中的训练窗口和测试窗口 |
+| `labels`、`label_delays` | 标签延迟检查、样本内划分中的有效训练窗口（`lookahead_bars()`）、预测变量名 |
+| `train_bounds`、`test_bounds` | 训练窗口和测试窗口：配置中的，或 `load` 之后检查点记录的 |
+| `fitted_train_bounds` | 清除（purge）之后实际拟合的训练窗口；样本内划分从它出发 |
 | `predict_window(start, end)` | 一个窗口的预测面板；预测器自己请求特征和预热 |
 | `fingerprint_inputs(start, end)`、`training_fingerprint_inputs()` | `(key, 因子或标签, 策略, first, last)` 条目，回测器把它们哈希进 `data_fingerprint` |
-| `collect()`、`train()` | 训练模式；`train` 返回检查点，其旁边的 `config.json` 记录训练日期 |
+| `collect()`、`train()` | 训练模式；`train` 返回检查点 |
 | `check_checkpoint(path)`、`load(path)` | 加载模式；检查在计算任何特征之前运行 |
 | `get_config()`、`from_config(config)` | `config.json`，以及 `load_backtester_from_config` 通过 `"name"` 指明的类进行重建 |
 
@@ -742,10 +743,10 @@ timestamp
 >>> from typing import get_protocol_members
 >>> from quantlab.base.backtest import Predictor
 >>> sorted(get_protocol_members(Predictor))
-['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config', 'get_config', 'label_delays', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
+['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
-`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成目录，并把其中的 `ensemble.json` 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `ensemble.json`，样本内划分所用的训练日期从它旁边的集成级 `config.json` 读取，与单个模型的检查点相同。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
+`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成目录，并把其中的 `ensemble.json` 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `ensemble.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble

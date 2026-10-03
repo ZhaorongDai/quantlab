@@ -37,6 +37,7 @@ from quantlab.model.ensemble import BaseEnsemble
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.metrics import volatility_level_metrics
+from quantlab.utils.trained_run import TrainedRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,
     PastReturnFactor,
@@ -167,7 +168,7 @@ def test_a_raw_volatility_model_reports_the_level_metrics_per_split(tmp_path):
     model = _model(tmp_path, Volatility)
     checkpoint = Path(model.collect().train())
 
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     for split in ("train", "test"):
         for key in LEVEL_KEYS:
             assert f"{split}_{key}" in metrics, (split, key)
@@ -187,7 +188,7 @@ def test_a_raw_volatility_model_reports_the_level_metrics_per_split(tmp_path):
 def test_a_return_label_or_a_standardized_prediction_gets_no_level_metrics(tmp_path, label_cls, head):
     checkpoint = Path(_model(tmp_path, label_cls, head=head).collect().train())
 
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     assert not any(key.endswith(LEVEL_KEYS) for key in metrics), sorted(metrics)
     assert "test_ic" in metrics
 

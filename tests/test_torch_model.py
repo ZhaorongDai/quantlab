@@ -18,14 +18,13 @@ What turns this file red:
 - the stop hooks are not called per fit and per epoch, or the threshold
   helper stops at the wrong epoch;
 - a hook default is missing, or a hook the head overrides is not the one used;
-- a torch `train()` writes no `metrics.json`;
+- a torch `train()` records no metrics in `run.json`;
 - a Qlib-style sequence head does not train, reload and predict, or its
   mixed-bar batches see a target other than each bar's cross-sectional one.
 
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
 from pathlib import Path
 
 import KunQuant.ops as op
@@ -52,6 +51,7 @@ from quantlab.model.torch_training import (
 )
 from quantlab.label.forward import Forward
 from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.trained_run import TrainedRun
 from tests.torch_heads import MeanContextHead, RecordingHead
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
@@ -453,7 +453,7 @@ def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path):
     model = _model(tmp_path, features, label)
     checkpoint = model.train()
 
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     pred = model.predict_panel(_feature_panel(features))["ret"].values[30:]
     expected = regression_panel_metrics(pred, label[30:])
     for key, value in expected.items():
@@ -527,7 +527,7 @@ def test_a_fit_with_val_loss_patience_keeps_its_best_validation_epoch(tmp_path, 
 
     (run,) = tracker.runs
     best = min(entry["val_loss"] for entry in _logged(run))
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     assert metrics["val_loss"] == pytest.approx(best, rel=1e-6)
 
 
@@ -544,7 +544,7 @@ def test_a_dl_train_writes_metrics_json_and_reloads_to_the_same_predictions(
     model = _model(tmp_path, features, label, tracker=tracker)
     checkpoint = model.train()
 
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     keys = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "val", "test") for k in keys}
     assert metrics == tracker.runs[0].summary
@@ -603,7 +603,7 @@ def test_a_head_decides_what_a_step_does_and_reports(tmp_path, tracker):
     (run,) = tracker.runs
     assert [entry["train_loss"] for entry in _logged(run)] == [1.0, 1.0, 1.0]
     assert [entry["val_loss"] for entry in _logged(run)] == [1.0, 1.0, 1.0]
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     assert metrics["test_loss"] == 1.0
 
 
@@ -658,7 +658,7 @@ def test_a_head_with_only_a_window_a_network_and_a_loss_trains_and_predicts(
     assert _logged(run)[-1]["train_loss"] < _logged(run)[0]["train_loss"]
     out = model.predict_panel(_feature_panel(features))
     assert np.isfinite(out["ret"].values).all()
-    assert (checkpoint.parent / "metrics.json").is_file()
+    assert TrainedRun.open(checkpoint).metrics
 
 
 def test_the_loss_hook_sees_a_masked_zero_filled_target_and_the_bar(tmp_path):
@@ -876,7 +876,7 @@ def test_split_loss_weights_every_bar_equally_whatever_its_symbol_count(
                    epochs=1)
     checkpoint = model.train()
 
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     assert metrics["test_loss"] == pytest.approx(11.0)  # (2 + 20) / 2, not 20*20+2*2 / 22
 
 
@@ -1059,7 +1059,7 @@ def test_split_loss_is_per_bar_when_a_bar_spans_many_batches(tmp_path):
                    symbols=symbols, epochs=1)
     checkpoint = model.train()
 
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     # Per bar: mean index 0.5 on even bars, 9.5 on odd bars; the test split
     # (bars 30..39) has five of each, so 5.0. A per-cell mean would give
     # (5 * 1 + 5 * 190) / 110.
@@ -1146,7 +1146,7 @@ def test_a_sequence_head_trains_saves_loads_and_predicts_every_present_cell(
 
     (run,) = tracker.runs
     assert _logged(run)[-1]["train_loss"] < _logged(run)[0]["train_loss"]
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     assert np.isfinite([metrics["train_loss"], metrics["val_loss"], metrics["test_ic"]]).all()
 
     out = model.predict_panel(_feature_panel(features))

@@ -10,9 +10,10 @@ The model layer is a three-level class hierarchy; this module holds its root. ``
 everything that does not depend on the training framework: config
 validation, requesting the factor and label panels over the model's date
 range and collecting them into one dataset, the public ``train`` /
-``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, the
-checkpoint directory layout with its ``config.json`` sidecar file, and the
-fold boundaries of rolling cross-validation. It imports no training
+``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, and
+the directory layout of a training run, whose files are written and read
+through ``quantlab.utils.trained_run``. The fold boundaries of rolling
+cross-validation come from ``quantlab.utils.walk_forward``. It imports no training
 framework. The two variants live in the model layer:
 ``quantlab.model.torch_model.TorchModel`` (PyTorch: one cross-section of
 symbols per training step, each with its own window of past bars, ``.pth``
@@ -25,7 +26,6 @@ the training target of ``quantlab.model.training_target``. Both take one
 
 import copy
 import dataclasses
-import json
 import os
 import random
 import warnings
@@ -56,6 +56,12 @@ from quantlab.utils.metrics import (
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
+from quantlab.utils.trained_run import (
+    TrainedRun,
+    evaluation_paths,
+    write_model_config,
+    write_model_run,
+)
 from quantlab.utils.walk_forward import Fold, walk_forward_folds
 
 from .config import ModelConfig
@@ -106,10 +112,11 @@ class BaseModel(ABC):
     ``train_cv`` use it to name files, and ``load()`` uses it to reject a
     file of the wrong kind before building any model.
 
-    Checkpoints are written under ``config.model_save_dir`` as
-    ``{class}_trial_{timestamp}/{experiment}/{experiment}{suffix}``, with a
-    ``config.json`` sidecar file next to the checkpoint. The sidecar holds
-    the full config and a record of what the head was trained on.
+    ``train`` writes a trained unit (``quantlab.utils.trained_run``) under
+    ``config.model_save_dir`` as ``{class}_trial_{timestamp}/``: the
+    checkpoint ``{class}_total{suffix}``, the ``config.json`` that rebuilds
+    the model, the evaluation files and ``run.json``, which records the
+    windows, the metrics and what the head was trained on.
 
     Parameters
     ----------
@@ -153,9 +160,8 @@ class BaseModel(ABC):
         self._set_random_seed(self.config.random_seed)
 
         self.model = None
-        # The backtester checks the checkpoint before collecting data and
-        # `load()` checks it again; remembering warnings logs each only once.
-        self._emitted_load_warnings: set[str] = set()
+        # The window `train()` fitted or `load()` read; see fitted_train_bounds.
+        self._fitted_window: tuple | None = None
 
         self.data_backend = XrBackend()
         # The open tracking run while training, a NullRun otherwise, so heads
@@ -685,11 +691,10 @@ class BaseModel(ABC):
         """Rebuild a model, with its factors and labels, from a ``get_config()`` dict.
 
         The factors and labels are rebuilt from their own config dicts and
-        the model is constructed with ``cls.config_cls``. Two keys a
-        checkpoint's ``config.json`` carries as training records rather than
-        config fields, ``resolved_hyperparameters`` and ``trained_on``, are
-        dropped first; any other unknown key raises ``TypeError`` from the
-        config class. The caller's dict is never modified.
+        the model is constructed with ``cls.config_cls``. The key a library
+        model's ``config.json`` carries as a training record rather than a
+        config field, ``resolved_hyperparameters``, is dropped first; any
+        other unknown key raises ``TypeError`` from the config class. The caller's dict is never modified.
 
         Parameters
         ----------
@@ -713,11 +718,9 @@ class BaseModel(ABC):
 
         config = copy.deepcopy(config)
         # `resolved_hyperparameters` (what the library actually trained with)
-        # and `trained_on` (factor/label names and training symbols) are
-        # records, not config fields. Drop only those so any other unknown key
-        # still fails.
+        # is a record, not a config field. Drop only it so any other unknown
+        # key still fails.
         config.pop("resolved_hyperparameters", None)
-        config.pop(cls.TRAINED_ON_KEY, None)
         config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
         config["labels"] = [load_factor_from_config(f) for f in config["labels"]]
         config["tracker"] = get_cls_from_path(config["tracker"]["name"]).from_config(
@@ -927,10 +930,6 @@ class BaseModel(ABC):
             .values
         )
 
-    #: Key of the training record inside the checkpoint's ``config.json``. It is
-    #: a record, not a config field; the config loader drops it when rebuilding.
-    TRAINED_ON_KEY = "trained_on"
-
     @staticmethod
     def _jsonable_symbol(symbol):
         """Return ``symbol`` as a value ``json.dump`` accepts, keeping its kind.
@@ -951,10 +950,8 @@ class BaseModel(ABC):
     def _save_model(self, p: Path):
         """Create the checkpoint directory, write ``config.json``, then the checkpoint.
 
-        ``config.json`` holds ``get_config()`` plus a ``trained_on`` record with
-        the feature names, label names and the sorted training symbols. The
-        symbols are recorded in sorted order because ``to_array`` sorts the
-        symbol axis.
+        ``config.json`` holds ``get_config()``; ``_train_into`` records the
+        rest of the run in ``run.json`` once the fit is evaluated.
 
         Raises
         ------
@@ -971,29 +968,81 @@ class BaseModel(ABC):
         else:
             p.parent.mkdir(parents=True)
 
-        symbols = [
-            self._jsonable_symbol(symbol)
-            for symbol in sort_symbol_axis(self.symbols)
-        ]
-        record = {
+        write_model_config(p.parent, self.get_config())
+        self._write_checkpoint(p)
+
+    def _trained_on(self) -> dict:
+        """Return what the model was trained on, for ``run.json``.
+
+        The feature names, label names and the training symbols, sorted
+        because ``to_array`` sorts the symbol axis.
+        """
+        return {
             "factor_names": [str(name) for name in self.get_factor_names()],
             "label_names": [str(name) for name in self.get_label_names()],
-            "symbols": symbols,
+            "symbols": [
+                self._jsonable_symbol(symbol)
+                for symbol in sort_symbol_axis(self.symbols)
+            ],
         }
-        with open(p.parent / Path("config.json"), "w") as f:
-            json.dump({**self.get_config(), self.TRAINED_ON_KEY: record}, f, indent=4)
 
-        self._write_checkpoint(p)
+    def _fitted_train_window(self) -> tuple:
+        """Return the configured training window less the bars the purge drops.
+
+        The collected bars of ``[train_start, train_end]`` and of the test
+        window go through ``purge_segments`` with L = ``_purge_bars()``, so
+        the end becomes the last bar fitted. The configured window is
+        returned when a date is missing or the purge leaves no bar.
+        """
+        config = self.config
+        train = (config.train_start, config.train_end)
+        test = (config.test_start, config.test_end)
+        if None in (*train, *test):
+            return train
+        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        usable, _ = purge_segments(
+            np.sort(data.timestamp.values), [train, test], self._purge_bars()
+        )
+        if len(usable) == 0:
+            return train
+        return config.train_start, str(np.datetime_as_string(usable[-1]))
+
+    @property
+    def fitted_train_bounds(self) -> tuple:
+        """The training window actually fitted, ``(train_start, train_end)``, after the purge.
+
+        After ``train()`` it is the window the fit used; after ``load()``
+        the one the checkpoint's ``run.json`` records.
+
+        Raises
+        ------
+        RuntimeError
+            If neither ``train()`` nor ``load()`` has been called.
+
+        Examples
+        --------
+        >>> model.train_bounds, model.fitted_train_bounds
+        (('2024-01-01', '2024-02-09'), ('2024-01-01', '2024-02-07T00:00:00.000000000'))
+        """
+        if self._fitted_window is None:
+            raise RuntimeError(
+                f"{self.class_name}: fitted_train_bounds is known only after "
+                f"train() or load()"
+            )
+        return self._fitted_window
 
     def load(self, p: Path | str) -> Self:
         """Restore the model from a checkpoint file.
 
         The file suffix is checked first, so a ``.pth`` file is never handed to
         joblib and a ``.joblib`` file never to ``torch.load``. The feature and
-        label variables recorded in the sidecar ``config.json`` must then match
+        label variables recorded in the unit's ``run.json`` must then match
         this model's declared variables, name for name and in order; neither
         torch nor a tree library would notice a permuted or substituted input
-        by itself. Finally the checkpoint is loaded.
+        by itself. Finally the checkpoint is loaded, and the model takes the
+        recorded training and test windows: ``train_bounds``,
+        ``test_bounds`` and ``fitted_train_bounds`` then describe the
+        checkpoint, whatever the config said before.
 
         Parameters
         ----------
@@ -1010,8 +1059,9 @@ class BaseModel(ABC):
         FileNotFoundError
             If ``p`` does not exist.
         ValueError
-            If the suffix is wrong or the recorded variables differ
-            from the model's declared variables.
+            If the suffix is wrong, the checkpoint is not part of a trained
+            run ``quantlab.utils.trained_run.TrainedRun`` can open, or the
+            recorded variables differ from the model's declared variables.
 
         Examples
         --------
@@ -1030,104 +1080,64 @@ class BaseModel(ABC):
                 f"checkpoints use {self.checkpoint_suffix!r} ({p})"
             )
 
-        self.check_checkpoint(p)
+        run = self.check_checkpoint(p)
         self._read_checkpoint(p)
+        self.config = dataclasses.replace(
+            self.config,
+            train_start=run.train_window[0],
+            train_end=run.train_window[1],
+            test_start=run.test_window[0],
+            test_end=run.test_window[1],
+        )
+        self._fitted_window = run.fitted_train_window
         return self
 
-    def _read_checkpoint_sidecar(self, p: Path) -> dict | None:
-        """Parse the ``config.json`` next to checkpoint ``p``; None if absent.
-
-        Raises
-        ------
-        ValueError
-            If the file exists but is not a JSON object. A corrupt
-            sidecar must not be treated as a missing one, since that would
-            silently skip every check that depends on it.
-        """
-        sidecar = p.parent / "config.json"
-        if not sidecar.is_file():
-            return None
-        saved = json.loads(sidecar.read_text(encoding="utf-8"))
-        if not isinstance(saved, dict):
-            raise ValueError(
-                f"{self.class_name}: {sidecar} is not a model config object"
-            )
-        return saved
-
-    def check_checkpoint(self, p: Path | str) -> None:
+    def check_checkpoint(self, p: Path | str) -> TrainedRun:
         """Check a checkpoint's recorded variables against the model's own.
 
         The feature and label names (and their order) the checkpoint was
-        trained on are taken from ``trained_on`` in its ``config.json``. If
-        that record is missing, the older ``factors[]`` / ``labels[]``
-        ``factor_names`` config fields are used instead; because a user can
-        order those freely, they are compared as sets, and a difference in
-        order only logs a warning. When neither is available the checkpoint
-        is loaded as given, with a warning.
-
-        Only ``config.json`` is read, so the check can run before any data is
-        collected; ``load`` runs it too. Each distinct warning is logged once
-        per model instance.
+        trained on are read from ``trained_on`` in its unit's ``run.json``.
+        Only ``run.json`` is read, so the check can run before any data is
+        collected; ``load`` runs it too.
 
         Parameters
         ----------
         p : Path | str
-            Path to a checkpoint file; its ``config.json`` sidecar is read.
+            Path to a checkpoint file.
+
+        Returns
+        -------
+        TrainedRun
+            The checkpoint's trained unit.
 
         Raises
         ------
+        FileNotFoundError
+            If ``p`` does not exist.
         ValueError
-            If the recorded and declared variables differ, naming
-            the checkpoint and both variable lists.
+            If the checkpoint is not part of a trained run ``TrainedRun`` can
+            open, or the recorded and declared variables differ, naming the
+            checkpoint and both variable lists.
 
         Examples
         --------
-        >>> model.check_checkpoint(checkpoint)  # trained on the same variables
+        >>> model.check_checkpoint(checkpoint).kind  # trained on the same variables
+        'model'
         >>> other.check_checkpoint(checkpoint)
         Traceback (most recent call last):
         ValueError: FirstFeatureHead: checkpoint .../FirstFeatureHead_total.joblib
         was trained on factor variables ['past_ret_1'] (trained_on in its
-        config.json), but this model declares ['past_ret_2']; loading it would
+        run.json), but this model declares ['past_ret_2']; loading it would
         feed the model different or permuted inputs
         """
-        p = Path(p)
-        saved = self._read_checkpoint_sidecar(p)
-        record = saved.get(self.TRAINED_ON_KEY) if saved is not None else None
-        legacy: list[tuple[str, list[str]]] = []
-        unrecorded: list[str] = []
-        for kind, key, entries_key, declared in (
-            ("factor", "factor_names", "factors", self.get_factor_names()),
-            ("label", "label_names", "labels", self.get_label_names()),
+        run = TrainedRun.open(p)
+        for kind, key, declared in (
+            ("factor", "factor_names", self.get_factor_names()),
+            ("label", "label_names", self.get_label_names()),
         ):
             current = [str(name) for name in declared]
-            recorded = record.get(key) if isinstance(record, dict) else None
-            if isinstance(recorded, list):
-                recorded = [str(name) for name in recorded]
-                source = "trained_on"
-            else:
-                recorded = (
-                    self._legacy_variable_names(saved.get(entries_key))
-                    if saved is not None
-                    else None
-                )
-                if recorded is None:
-                    unrecorded.append(kind)
-                    continue
-                legacy.append((kind, recorded))
-                source = f"legacy {entries_key}[].factor_names"
+            recorded = [str(name) for name in run.trained_on[key]]
             if recorded == current:
-                continue
-            if source != "trained_on" and sorted(recorded) == sorted(current):
-                # The legacy config field cannot certify the training order,
-                # so a pure reordering is a warning rather than a rejection.
-                self._warn_load_record_once(
-                    f"{self.class_name}: checkpoint {p}: the legacy "
-                    f"{entries_key}[].factor_names record lists {kind} variables "
-                    f"{recorded}, which differ only in order from this model's "
-                    f"declared {current}; that config field cannot certify the "
-                    f"training order, so the {kind} order is unchecked and the "
-                    f"checkpoint is loaded as given"
-                )
                 continue
             consequence = (
                 "feed the model different or permuted inputs"
@@ -1136,56 +1146,10 @@ class BaseModel(ABC):
             )
             raise ValueError(
                 f"{self.class_name}: checkpoint {p} was trained on {kind} "
-                f"variables {recorded} ({source} in its config.json), but this "
+                f"variables {recorded} (trained_on in its run.json), but this "
                 f"model declares {current}; loading it would {consequence}"
             )
-
-        if legacy:
-            kinds = " and ".join(kind for kind, _ in legacy)
-            names = "; ".join(f"{kind} {names}" for kind, names in legacy)
-            self._warn_load_record_once(
-                f"{self.class_name}: checkpoint {p} has no trained_on record for "
-                f"its {kinds} variables, so this model's declared variables were "
-                f"checked against the legacy factors[]/labels[] factor_names "
-                f"config field ({names}), a weaker record than trained_on: the "
-                f"checkpoint was trained before that record existed"
-            )
-        if unrecorded:
-            kinds = " and ".join(unrecorded)
-            where = (
-                "no config.json lies beside it"
-                if saved is None
-                else "its config.json records neither trained_on nor legacy "
-                "factor_names for them"
-            )
-            self._warn_load_record_once(
-                f"{self.class_name}: checkpoint {p}: the {kinds} variables it was "
-                f"trained on cannot be checked against this model's declared "
-                f"variables because {where}; loading it as given"
-            )
-
-    @staticmethod
-    def _legacy_variable_names(entries) -> list[str] | None:
-        """Flatten ``factor_names`` of ``factors[]`` / ``labels[]`` entries in order.
-
-        Returns None when ``entries`` is not a list or any entry lacks
-        ``factor_names``.
-        """
-        if not isinstance(entries, list):
-            return None
-        names: list[str] = []
-        for entry in entries:
-            if not isinstance(entry, dict) or entry.get("factor_names") is None:
-                return None
-            names.extend(str(name) for name in entry["factor_names"])
-        return names
-
-    def _warn_load_record_once(self, message: str) -> None:
-        """Log ``message`` as a warning unless this instance already logged it."""
-        if message in self._emitted_load_warnings:
-            return
-        self._emitted_load_warnings.add(message)
-        logger.warning(message)
+        return run
 
     def predict(self, data):
         """Return ``[T, S, L]`` predictions for a ``[T, S, F]`` input.
@@ -1316,17 +1280,13 @@ class BaseModel(ABC):
     def train(self) -> Path:
         """Train once on the config's ``train_*`` / ``test_*`` dates and save.
 
-        A new trial directory is created under ``model_save_dir``, and
-        ``_train_into`` trains into its ``{class}_total`` subdirectory under a
-        tracking run of that name, grouped by the trial directory's name.
-        The metrics ``_fit`` returns are written to
-        ``metrics.json`` beside the checkpoint's ``config.json``, with NaN and
-        inf as null; a variant that returns no metrics writes no file.
-        Beside it go the per-bar IC series (``ic_series.csv``) and the
-        test-segment predictions (``test_predictions.zarr``), see
-        ``_write_evaluation_files``.
+        A new trial directory is created under ``model_save_dir`` and is the
+        trained unit: ``_train_into`` trains into it under a tracking run
+        ``{class}_total``, grouped by the directory's name, and writes the
+        checkpoint, ``config.json``, the evaluation files and ``run.json``.
         Returning the path lets a caller record exactly which model was
-        trained and reload it later instead of retraining.
+        trained and reload it later instead of retraining; ``TrainedRun.open``
+        reads the rest of the run from it.
 
         Returns
         -------
@@ -1337,20 +1297,19 @@ class BaseModel(ABC):
         Examples
         --------
         >>> checkpoint = model.train()
-        >>> checkpoint.name, checkpoint.parent.name
-        ('MyHead_total.joblib', 'MyHead_total')
-        >>> sorted(json.loads((checkpoint.parent / "metrics.json").read_text()))[:4]
+        >>> checkpoint.name, checkpoint.parent.name.startswith("MyHead_trial_")
+        ('MyHead_total.joblib', True)
+        >>> sorted(TrainedRun.open(checkpoint).metrics)[:4]
         ['test_ic', 'test_icir', 'test_loss', 'test_mae']
         >>> sorted(p.name for p in checkpoint.parent.iterdir())
-        ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
+        ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr']
         """
         self._check_hyperparameters()
         trial = self._new_trial_name()
-        experiment_name = f"{self.class_name}_total"
         checkpoint, _ = self._train_into(
-            Path(self.config.model_save_dir) / trial / experiment_name,
+            Path(self.config.model_save_dir) / trial,
             group=trial,
-            experiment_name=experiment_name,
+            experiment_name=f"{self.class_name}_total",
         )
         return checkpoint
 
@@ -1359,8 +1318,6 @@ class BaseModel(ABC):
         run_dir: Path | str,
         group: str,
         experiment_name: str,
-        *,
-        write_metrics: bool = True,
     ) -> tuple[Path, dict | None]:
         """Train, evaluate and save once into a caller-given run directory.
 
@@ -1371,9 +1328,10 @@ class BaseModel(ABC):
         ``_fit`` trains,
         evaluates and writes the checkpoint ``{experiment_name}{checkpoint_suffix}``
         and its ``config.json`` into ``run_dir``. When ``_fit`` returns
-        metrics, ``metrics.json`` (only with ``write_metrics``, NaN and inf as
-        null), ``ic_series.csv`` and ``test_predictions.zarr`` are written
-        beside it, see ``_write_evaluation_files``. No trial directory is
+        metrics, ``ic_series.csv`` and ``test_predictions.zarr`` are written
+        beside it, see ``_write_evaluation_files``. Last, ``run.json`` makes
+        ``run_dir`` a trained unit (``quantlab.utils.trained_run``), and the
+        fitted window becomes ``fitted_train_bounds``. No trial directory is
         created: ``train`` and every ``train_cv`` fold pass the directory
         they lay out themselves.
 
@@ -1386,9 +1344,6 @@ class BaseModel(ABC):
             Tracking group of the run, the trial directory's name.
         experiment_name : str
             Tracking run name, also the checkpoint file's stem.
-        write_metrics : bool, default True
-            Write ``metrics.json``; ``train_cv`` folds keep their metrics in
-            ``cv_folds.json`` instead.
 
         Returns
         -------
@@ -1410,19 +1365,19 @@ class BaseModel(ABC):
             # Written before the run finishes, so a tracker failing to finish
             # it cannot cost the files.
             if metrics is not None:
-                if write_metrics:
-                    write_json_atomically(
-                        checkpoint.parent / self.METRICS_FILENAME,
-                        to_jsonable(metrics),
-                        indent=2,
-                    )
                 self._write_evaluation_files(checkpoint.parent)
+            fitted = self._fitted_train_window()
+            write_model_run(
+                checkpoint.parent,
+                checkpoint=checkpoint,
+                train_window=self.train_bounds,
+                fitted_train_window=fitted,
+                test_window=self.test_bounds,
+                trained_on=self._trained_on(),
+                metrics=metrics,
+            )
+            self._fitted_window = fitted
         return checkpoint, metrics
-
-    #: Name of the per-bar IC series file written beside ``metrics.json``.
-    IC_SERIES_FILENAME = "ic_series.csv"
-    #: Name of the zarr store holding the test-segment prediction panel.
-    TEST_PREDICTIONS_FILENAME = "test_predictions.zarr"
 
     def _write_evaluation_files(self, run_dir: Path) -> None:
         """Write the per-bar IC series and the test-segment predictions of a fit.
@@ -1446,7 +1401,8 @@ class BaseModel(ABC):
         collected features with ``warmup_bars`` bars before the first test
         bar. No store is written when the test segment has no bars.
         """
-        self._write_ic_series(run_dir / self.IC_SERIES_FILENAME, self._ic_series)
+        ic_series, test_predictions = evaluation_paths(run_dir)
+        self._write_ic_series(ic_series, self._ic_series)
 
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
@@ -1460,7 +1416,7 @@ class BaseModel(ABC):
             timestamp=slice(max(0, int(first) - self.warmup_bars), int(last) + 1)
         )
         predictions = self.predict_panel(features).sel(timestamp=test_stamps)
-        predictions.to_zarr(run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w")
+        predictions.to_zarr(test_predictions, mode="w")
 
     @staticmethod
     def _write_ic_series(path: Path, series: dict) -> None:
@@ -1661,7 +1617,6 @@ class BaseModel(ABC):
             Path(self.config.model_save_dir) / trial / experiment_name,
             group=trial,
             experiment_name=experiment_name,
-            write_metrics=False,
         )
         return {
             **self._fold_record(fold),
@@ -1670,8 +1625,6 @@ class BaseModel(ABC):
             **(metrics or {}),
         }
 
-    #: Name of the metrics file ``train`` writes beside the checkpoint.
-    METRICS_FILENAME = "metrics.json"
     #: Name of the fold manifest ``train_cv`` writes into the trial directory.
     CV_FOLDS_FILENAME = "cv_folds.json"
     #: Format version written into the manifest. Readers reject versions they

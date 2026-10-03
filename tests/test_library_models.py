@@ -17,7 +17,6 @@ from pathlib import Path
 import warnings
 
 import joblib
-import json
 
 import numpy as np
 import pandas as pd
@@ -30,6 +29,7 @@ from quantlab.base.config import FactorConfig, ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
+from quantlab.utils.trained_run import TrainedRun
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 
@@ -296,7 +296,7 @@ def test_a_rank_training_target_reaches_the_rows_and_metrics_stay_raw(tmp_path):
     model = RankTargetHead(_config(tmp_path))
     model.collect()
     checkpoint = model.train()
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     train = model.fit_calls[0]["train"]
     for t in (0, 41, 79):
         at = train.where[0] == t
@@ -334,7 +334,7 @@ def test_a_training_target_hyperparameter_reaches_the_rows_and_metrics_stay_raw(
     )
     model.collect()
     checkpoint = model.train()
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     call = model.fit_calls[0]
     for rows, bars in ((call["train"], (0, 41, 79)), (call["val"], (80, 99))):
         for t in bars:
@@ -467,7 +467,7 @@ def test_split_loss_is_the_per_bar_mean_of_the_head_loss_on_the_training_target(
     model = DemeanHead(_config(tmp_path, factors=[_holey_factor()], labels=[_holey_label()]))
     model.collect()
     checkpoint = model.train()
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
 
     data = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
     x = model.to_array(data, model.get_factor_names())
@@ -523,13 +523,13 @@ def test_a_forward_of_the_wrong_shape_raises(tmp_path):
 
 
 def test_train_writes_the_metrics_of_every_split(tmp_path):
-    """Issue #38: `train()` writes the prefixed train/val/test metrics to
-    `metrics.json` beside the checkpoint -- the same dict `train_cv` merges
+    """Issue #38: `train()` records the prefixed train/val/test metrics in
+    the unit's `run.json` -- the same dict `train_cv` merges
     into each fold's result."""
     model = StubLibraryHead(_config(tmp_path))
     model.collect()
     checkpoint = model.train()
-    out = json.loads((checkpoint.parent / "metrics.json").read_text())
+    out = TrainedRun.open(checkpoint).metrics
     assert set(out) == {f"{s}_{k}" for s in ("train", "val", "test") for k in METRIC_KEYS}
     assert np.isfinite(out["test_loss"]) and np.isfinite(out["test_ic"])
 
@@ -568,15 +568,15 @@ def test_no_val_metrics_without_a_validation_segment(tmp_path):
 
 def test_train_writes_one_joblib_and_config_json(tmp_path):
     """The library path persists with joblib as `.joblib`; a `.pth` here
-    would mean the torch persistence path ran. `metrics.json` sits beside
-    `config.json` (issue #38), with the IC series and the test predictions
+    would mean the torch persistence path ran. `run.json` sits beside
+    `config.json` (#122), with the IC series and the test predictions
     (issue #49)."""
     model = _trained(tmp_path)
     files = {p.name for p in _checkpoint(tmp_path).parent.iterdir()}
     assert files == {
         "StubLibraryHead_total.joblib",
         "config.json",
-        "metrics.json",
+        "run.json",
         "ic_series.csv",
         "test_predictions.zarr",
     }

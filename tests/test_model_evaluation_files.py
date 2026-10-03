@@ -2,7 +2,7 @@
 
 Every model run, from `train()` or from one `train_cv()` fold, reports
 `{split}_icir` and `{split}_rank_icir` beside the other metrics, writes the
-per-bar series behind them to `ic_series.csv` beside `metrics.json`, and saves
+per-bar series behind them to `ic_series.csv`, and saves
 the test-segment prediction panel as `test_predictions.zarr` in the same run
 directory, so a new metric or an ensemble can be computed from disk.
 
@@ -10,7 +10,7 @@ What turns this file red:
 
 - a run lacks `ic_series.csv` or `test_predictions.zarr`, for a torch head, a
   library head or xgboost, after `train` or after any CV fold;
-- the ICIR in `metrics.json` is not the information ratio of the series in
+- the ICIR in `run.json` is not the information ratio of the series in
   the file, or the file's mean IC is not `{split}_ic`;
 - a bar with fewer than two valid symbols appears in the series (as 0 or NaN);
 - a split with fewer than two valid bars writes a number, or a bare NaN,
@@ -208,7 +208,7 @@ def test_train_writes_icir_the_ic_series_and_the_test_predictions(tmp_path, cls)
     checkpoint = model.train()
 
     run_dir = checkpoint.parent
-    metrics = _strict_json(run_dir / "metrics.json")
+    metrics = _strict_json(run_dir / "run.json")["metrics"]
     for split in SPLITS:
         assert f"{split}_icir" in metrics and f"{split}_rank_icir" in metrics
     _assert_run_files(
@@ -254,7 +254,7 @@ def test_a_bar_with_fewer_than_two_valid_symbols_is_left_out(tmp_path):
 
 def test_a_split_with_fewer_than_two_valid_bars_writes_null_icir(tmp_path):
     """Only test bar 30 keeps two finite labels: test IC is that bar's IC,
-    and both test ICIRs are null in `metrics.json`."""
+    and both test ICIRs are null in `run.json`."""
     factors, labels = _panels()
     ret = labels._ds["ret"].values.copy()
     ret[31:, 1:] = np.nan
@@ -263,7 +263,7 @@ def test_a_split_with_fewer_than_two_valid_bars_writes_null_icir(tmp_path):
 
     run_dir = model.train().parent
 
-    metrics = _strict_json(run_dir / "metrics.json")
+    metrics = _strict_json(run_dir / "run.json")["metrics"]
     assert metrics["test_icir"] is None and metrics["test_rank_icir"] is None
     assert metrics["train_icir"] is not None
     frame = _series(run_dir)
@@ -286,7 +286,7 @@ def test_icir_matches_a_hand_computed_reference(tmp_path):
         tmp_path, FirstFactorHead, factors, ArrayPanel({"ret": ret}), val_size=0.0
     )
 
-    metrics = _strict_json(model.train().parent / "metrics.json")
+    metrics = _strict_json(model.train().parent / "run.json")["metrics"]
 
     train = sign[:30]
     assert metrics["train_ic"] == pytest.approx(train.mean())

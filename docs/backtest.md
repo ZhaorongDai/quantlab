@@ -237,7 +237,7 @@ The model's factors need history before `start_date`. The backtester asks each f
 
 ### In-sample and out-of-sample
 
-Let L be the largest `lookahead_bars()` among the model's labels. The model fits on the bars `train_start` to `train_end` less the purge, which drops the last L bars before the test segment. The label on the last fitted bar reads L bars further, so the effective training window runs from `train_start` to the last fitted bar plus L bars on the price calendar (`quantlab.utils.split.in_sample_window`). For a test segment that follows the training segment, this window ends on the configured `train_end`. Window bars inside it are in-sample and the rest are out-of-sample. In load mode the training dates come from the `config.json` stored beside the checkpoint. When the window overlaps the training window the run logs a warning and continues.
+Let L be the largest `lookahead_bars()` among the model's labels. The model fits on the bars `train_start` to `train_end` less the purge, which drops the last L bars before the test segment. The label on the last fitted bar reads L bars further, so the effective training window runs from `train_start` to the last fitted bar plus L bars on the price calendar (`quantlab.utils.split.in_sample_window`). For a test segment that follows the training segment, this window ends on the configured `train_end`. Window bars inside it are in-sample and the rest are out-of-sample. In load mode the model takes the training dates its checkpoint's `run.json` records, and the fitted window comes from the model's `fitted_train_bounds`. When the window overlaps the training window the run logs a warning and continues.
 
 ```python
 >>> m = result.metrics
@@ -728,11 +728,12 @@ To keep the top-N rule with another score, `TopNConstructor(TopNConfig(direction
 
 | Member | What the backtester uses it for |
 |---|---|
-| `labels`, `label_delays` | the label-delay check, the purge and the in-sample split (`lookahead_bars()`), the prediction variable names |
-| `train_bounds`, `test_bounds` | the configured training and test windows |
+| `labels`, `label_delays` | the label-delay check, the effective training window of the in-sample split (`lookahead_bars()`), the prediction variable names |
+| `train_bounds`, `test_bounds` | the training and test windows: configured, or after `load` those the checkpoint records |
+| `fitted_train_bounds` | the training window actually fitted, after the purge; the in-sample split starts from it |
 | `predict_window(start, end)` | the prediction panel of a window; the predictor requests its own features and warm-up |
 | `fingerprint_inputs(start, end)`, `training_fingerprint_inputs()` | `(key, factor or label, strategy, first, last)` entries that the backtester hashes into `data_fingerprint` |
-| `collect()`, `train()` | train mode; `train` returns the checkpoint, whose `config.json` holds the training dates |
+| `collect()`, `train()` | train mode; `train` returns the checkpoint |
 | `check_checkpoint(path)`, `load(path)` | load mode; the check runs before any feature is computed |
 | `get_config()`, `from_config(config)` | `config.json`, and the rebuild in `load_backtester_from_config` through the class named in `"name"` |
 
@@ -742,10 +743,10 @@ The backtester reads no model config and calls no other model method. A config w
 >>> from typing import get_protocol_members
 >>> from quantlab.base.backtest import Predictor
 >>> sorted(get_protocol_members(Predictor))
-['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config', 'get_config', 'label_delays', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
+['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
-A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble directory and records its `ensemble.json` as `trained_checkpoint`; in load mode `checkpoint` is that `ensemble.json`, and the training dates for the in-sample split are read from the ensemble-level `config.json` beside it, as for one model's checkpoint. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
+A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble directory and records its `ensemble.json` as `trained_checkpoint`; in load mode `checkpoint` is that `ensemble.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble

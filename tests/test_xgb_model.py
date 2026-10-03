@@ -46,6 +46,7 @@ from quantlab.model.predefined.xgb import (
 )
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.walk_forward import walk_forward_folds
+from quantlab.utils.trained_run import TrainedRun
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordedRun, RecordingTracker
 
@@ -474,7 +475,7 @@ def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
     )
     model.collect()
     checkpoint = model.train()
-    metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
 
     rows = seen[0]
     at = rows.where[0] == 7
@@ -592,7 +593,7 @@ def test_train_cv_sequential(tmp_path, tracker):
     for r in results:
         ckpt = Path(r["checkpoint"])
         assert {p.name for p in ckpt.parent.iterdir()} == {
-            ckpt.name, "config.json", "ic_series.csv", "test_predictions.zarr"
+            ckpt.name, "config.json", "ic_series.csv", "run.json", "test_predictions.zarr"
         }
         booster = joblib.load(ckpt)
         assert booster.num_boosted_rounds() <= 60

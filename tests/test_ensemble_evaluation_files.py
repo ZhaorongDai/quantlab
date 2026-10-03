@@ -39,6 +39,7 @@ from quantlab.model import ensemble as ensemble_base
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.trained_run import TrainedRun
 from tests.backtest_fixtures import SeededHead, make_model, write_price_store
 
 N_BARS = 60
@@ -135,7 +136,7 @@ def test_metrics_are_the_ic_family_of_the_averaged_prediction(tmp_path, val_size
     assert sorted(expected) == sorted(saved)
     for key, value in expected.items():
         assert _close(saved[key], value), key
-    member = json.loads((manifest.parent / "member_0" / "metrics.json").read_text())
+    member = TrainedRun.open(manifest.parent / "member_0").metrics
     assert saved["test_ic"] != member["test_ic"]
 
 
@@ -202,14 +203,15 @@ def test_member_files_equal_a_model_trained_alone(tmp_path):
     alone = _model(tmp_path / "alone", seed=SEEDS[1])
     checkpoint = alone.collect().train()
 
-    member_dir = manifest.parent / "member_1"
-    for name in ("metrics.json", "ic_series.csv"):
-        assert (member_dir / name).read_text() == (checkpoint.parent / name).read_text()
+    member = TrainedRun.open(manifest.parent / "member_1")
+    single = TrainedRun.open(checkpoint)
+    assert json.dumps(member.metrics) == json.dumps(single.metrics)
+    assert member.ic_series.read_text() == single.ic_series.read_text()
     xr.testing.assert_identical(
-        xr.open_zarr(member_dir / "test_predictions.zarr").load(),
-        xr.open_zarr(checkpoint.parent / "test_predictions.zarr").load(),
+        xr.open_zarr(member.test_predictions).load(),
+        xr.open_zarr(single.test_predictions).load(),
     )
-    assert "test_loss" in json.loads((member_dir / "metrics.json").read_text())
+    assert "test_loss" in member.metrics
 
 
 def test_a_failure_while_writing_the_ensemble_files_leaves_no_manifest(

@@ -60,7 +60,7 @@ from quantlab.utils.backtest_report import (
 )
 from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
-from quantlab.utils.split import in_sample_window, purge_segments, split_ranges
+from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
@@ -96,11 +96,16 @@ class Predictor(Protocol):
     Attributes
     ----------
     labels : list
-        The label objects, whose ``lookahead_bars()`` sets the purge and the
-        in-sample split and whose variable names are the prediction
-        variables.
+        The label objects, whose ``lookahead_bars()`` extends the effective
+        training window of the in-sample split and whose variable names are
+        the prediction variables.
     train_bounds, test_bounds : tuple
-        The configured ``(start, end)`` training and test windows.
+        The ``(start, end)`` training and test windows: as configured, or,
+        after ``load``, as the checkpoint records them.
+    fitted_train_bounds : tuple
+        The ``(start, end)`` training window actually fitted, after the
+        purge; known after ``train`` or ``load``. The in-sample split starts
+        from it.
     label_delays : tuple[int, ...]
         Each label's ``delay`` in bars, in the order of ``labels``; each must
         equal the engine's ``fill_delay_bars``.
@@ -123,8 +128,7 @@ class Predictor(Protocol):
         ``"read"`` and the dataset inputs of ``factor.compute(first, last)``
         otherwise, and records the result under ``key``.
     collect(), train()
-        Train-mode preparation; ``train`` returns the checkpoint it wrote,
-        whose ``config.json`` sidecar holds the training dates.
+        Train-mode preparation; ``train`` returns the checkpoint it wrote.
     load(path), check_checkpoint(path)
         Load-mode preparation; ``check_checkpoint`` validates a checkpoint
         without loading it and runs first.
@@ -152,6 +156,9 @@ class Predictor(Protocol):
     def test_bounds(self) -> tuple: ...
 
     @property
+    def fitted_train_bounds(self) -> tuple: ...
+
+    @property
     def label_delays(self) -> tuple[int, ...]: ...
 
     @property
@@ -169,7 +176,7 @@ class Predictor(Protocol):
 
     def load(self, path): ...
 
-    def check_checkpoint(self, path) -> None: ...
+    def check_checkpoint(self, path): ...
 
     def get_config(self) -> dict: ...
 
@@ -903,19 +910,19 @@ class BaseBacktester(ABC):
             # `_prepare_model` runs inside `_run_window`'s failure guard on
             # purpose: in train mode it records the training-data
             # fingerprints before `model.train()`, which can fail for the
-            # same data reasons. In load mode the training dates come from
-            # the checkpoint's own config.json.
-            train_bounds, test_bounds = self._prepare_model()
+            # same data reasons. In load mode the model takes the training
+            # dates its checkpoint records.
+            configured = self._prepare_model()
             calendar = self._price_calendar(end_date)
             # The comparison with config.model's dates is bar-based, so it
             # needs the calendar.
             if self.config.model_mode == "load":
-                self._warn_if_config_model_dates_differ(calendar, train_bounds)
+                self._warn_if_config_model_dates_differ(calendar, configured)
             return self._backtest_window(
                 start_date,
                 end_date,
                 calendar,
-                *self._fitted_train_bounds(calendar, train_bounds, test_bounds),
+                *self.config.model.fitted_train_bounds,
             )
 
         return self._run_window(_model_window)
@@ -935,10 +942,8 @@ class BaseBacktester(ABC):
         already saw the bars after ``train_end``. ``train_cv`` purges those
         bars from every training window and records the purged ``train_end``,
         so a test bar counts as in-sample only if a label reads further than
-        the purge removed.
-        The checkpoint's own recorded training window is the one before the
-        purge; it is purged the same way before it is compared with the
-        manifest.
+        the purge removed. The loaded checkpoint's ``fitted_train_bounds``
+        is compared with the manifest's purged window.
 
         The fold predictions are then concatenated and turned into weights
         in one pass of ``_generate_signals`` over the prices from the first
@@ -1023,17 +1028,13 @@ class BaseBacktester(ABC):
             # Resolved under the project directory, never the working
             # directory; the resolved path is what the records persist.
             fold["checkpoint"] = self._resolve_fold_checkpoint(fold["checkpoint"])
-            saved = self._load_model_checkpoint(fold["checkpoint"])
-            # The manifest's dates are authoritative. The checkpoint's own
-            # recorded dates are only cross-checked against them, by the bars
-            # they select on the calendar rather than by text. The checkpoint
-            # records the training window before the purge, the manifest the
-            # purged one, so the recorded window is purged first.
-            recorded = self._purged_train_bounds(calendar, saved)
+            self._load_model_checkpoint(fold["checkpoint"])
+            # The manifest's dates are authoritative. The fitted window the
+            # checkpoint records is only cross-checked against them, by the
+            # bars they select on the calendar rather than by text.
+            recorded = self.config.model.fitted_train_bounds
             manifest_bounds = fold["_train_bounds"]
-            if recorded is not None and not self._same_training_bars(
-                calendar, recorded, manifest_bounds
-            ):
+            if not self._same_training_bars(calendar, recorded, manifest_bounds):
                 logger.warning(
                     f"{self.class_name}: fold {fold['fold']} checkpoint "
                     f"{fold['checkpoint']} records training dates "
@@ -1815,25 +1816,21 @@ class BaseBacktester(ABC):
             benchmark=benchmark,
         )
 
-    def _prepare_model(self) -> tuple[tuple, tuple]:
-        """Train or load the model and return its training and test windows.
+    def _prepare_model(self) -> tuple:
+        """Train or load the model and return its configured training window.
 
-        Both windows are ``(start, end)`` pairs as configured, before the
-        model's purge. In train mode the model is collected and trained on
-        the dates in its own config; the backtest window never overwrites
-        them, because it only decides the prediction span and the in-sample
-        split. In load mode the checkpoint is restored and the dates recorded
-        in the ``config.json`` beside it are returned when present, since
-        those are the dates the checkpoint was really trained on; otherwise
-        ``config.model``'s dates are returned.
+        The window is ``config.model``'s ``train_bounds`` before this call.
+        In train mode the model is collected and trained on the dates in its
+        own config; the backtest window never overwrites them, because it
+        only decides the prediction span and the in-sample split. In load
+        mode the checkpoint is restored, and the model takes the dates it
+        records, since those are the dates the checkpoint was really trained
+        on. Either way the model's ``fitted_train_bounds`` is then known.
         """
         model = self.config.model
-        configured = (model.train_bounds, model.test_bounds)
+        configured = model.train_bounds
         if self.config.model_mode == "load":
-            saved = self._load_model_checkpoint(self.config.checkpoint)
-            recorded = self._recorded_train_bounds(saved)
-            if recorded is not None:
-                return recorded, (saved.get("test_start"), saved.get("test_end"))
+            self._load_model_checkpoint(self.config.checkpoint)
             return configured
         model.collect()
         # Fingerprint the training data right after collect() and before
@@ -1843,74 +1840,27 @@ class BaseBacktester(ABC):
         self._trained_checkpoint = str(model.train())
         return configured
 
-    def _warn_if_config_model_dates_differ(self, calendar, train_bounds: tuple) -> None:
+    def _warn_if_config_model_dates_differ(self, calendar, configured: tuple) -> None:
         """Warn when the checkpoint's training dates and ``config.model``'s disagree.
 
-        Used by ``run()`` in load mode only. ``config.model``'s dates may be
-        stale or hand-written; the split uses ``train_bounds`` (the
-        checkpoint's recorded dates) regardless, and this warning names both
-        pairs and the checkpoint path. Two pairs count as equal when they
-        select the same bars on ``calendar``, so a different spelling of the
-        same window does not warn.
+        Used by ``run()`` in load mode only, after the load. ``configured``
+        is ``config.model``'s training window before the load, which may be
+        stale or hand-written; the loaded model's ``train_bounds`` are the
+        checkpoint's recorded dates, and the split uses them regardless. The
+        warning names both pairs and the checkpoint path. Two pairs count as
+        equal when they select the same bars on ``calendar``, so a different
+        spelling of the same window does not warn.
         """
-        configured = self.config.model.train_bounds
-        if self._same_training_bars(calendar, train_bounds, configured):
+        recorded = self.config.model.train_bounds
+        if self._same_training_bars(calendar, recorded, configured):
             return
         logger.warning(
             f"{self.class_name}: checkpoint {self.config.checkpoint} was trained on "
-            f"{train_bounds[0]}..{train_bounds[1]} (its config.json), but config.model "
+            f"{recorded[0]}..{recorded[1]} (its run.json), but config.model "
             f"says train_start={configured[0]!r}, train_end={configured[1]!r}; "
             f"using the checkpoint's dates for the effective training window "
             f"(the split between in-sample and out-of-sample bars)"
         )
-
-    @staticmethod
-    def _recorded_train_bounds(saved: dict | None) -> tuple | None:
-        """Return the ``(train_start, train_end)`` recorded beside a checkpoint.
-
-        Returns ``None`` when ``saved`` is not a mapping or either date is
-        missing. Pure read: no warning and no comparison, which the callers
-        do themselves.
-        """
-        if not isinstance(saved, dict):
-            return None
-        if saved.get("train_start") is None or saved.get("train_end") is None:
-            return None
-        return saved["train_start"], saved["train_end"]
-
-    def _purged_train_bounds(self, calendar, saved: dict | None) -> tuple | None:
-        """Return a checkpoint's recorded training window as the model fitted it.
-
-        ``train_cv`` writes each fold checkpoint's config with the training
-        window before the purge, and the manifest with the purged one, so the
-        recorded window goes through ``_fitted_train_bounds`` before the two
-        are compared.
-        """
-        recorded = self._recorded_train_bounds(saved)
-        if recorded is None:
-            return None
-        return self._fitted_train_bounds(
-            calendar, recorded, (saved.get("test_start"), saved.get("test_end"))
-        )
-
-    def _fitted_train_bounds(self, calendar, train_bounds: tuple, test_bounds: tuple) -> tuple:
-        """Return a configured training window as the model fitted it.
-
-        The window goes through ``purge_segments`` against the test window
-        with the labels' largest ``lookahead_bars()``, so its end becomes the
-        last bar the purge keeps. Falls back to ``train_bounds`` when a date
-        is missing or the purge would leave no bar.
-        """
-        if None in (*train_bounds, *test_bounds):
-            return train_bounds
-        usable, _ = purge_segments(
-            np.sort(np.asarray(calendar).astype("datetime64[ns]")),
-            [train_bounds, test_bounds],
-            self._lookahead_bars(),
-        )
-        if len(usable) == 0:
-            return train_bounds
-        return train_bounds[0], np.datetime_as_string(usable[-1])
 
     def _check_label_delays(self) -> None:
         """Refuse a label whose ``delay`` differs from the engine's ``fill_delay_bars``.
@@ -1982,19 +1932,13 @@ class BaseBacktester(ABC):
                 return False
         return True
 
-    def _load_model_checkpoint(self, checkpoint) -> dict | None:
-        """Load ``checkpoint`` into ``config.model`` and return its ``config.json``.
+    def _load_model_checkpoint(self, checkpoint) -> None:
+        """Load ``checkpoint`` into ``config.model``.
 
         Shared by ``run()`` and each fold of ``run_cv()``. The file's
         existence and the factor/label variable check
         (``model.check_checkpoint``) both run before any feature is
         computed, so a wrong path or a mismatched model fails cheaply.
-
-        Returns
-        -------
-        dict | None
-            The mapping read from the ``config.json`` beside the checkpoint,
-            or ``None`` when there is none.
 
         Raises
         ------
@@ -2007,37 +1951,8 @@ class BaseBacktester(ABC):
             raise FileNotFoundError(
                 f"{self.class_name}: checkpoint {path} does not exist"
             )
-        saved = self._read_checkpoint_config(path)
         model.check_checkpoint(path)
         model.load(path)
-        return saved
-
-    def _read_checkpoint_config(self, path: Path) -> dict | None:
-        """Read the ``config.json`` beside a checkpoint, or warn and return ``None``.
-
-        Without it the training dates cannot be checked and ``config.model``
-        is used as given, which is legitimate for a hand-copied checkpoint,
-        so this only warns. Variable checks are the model layer's job.
-
-        Raises
-        ------
-        ValueError
-            If the file exists but is not a JSON object.
-        """
-        sidecar = path.parent / "config.json"
-        if not sidecar.is_file():
-            logger.warning(
-                f"{self.class_name}: checkpoint {path} has no config.json beside "
-                f"it, so its training dates cannot be checked against "
-                f"config.model; continuing with config.model as given"
-            )
-            return None
-        saved = json.loads(sidecar.read_text(encoding="utf-8"))
-        if not isinstance(saved, dict):
-            raise ValueError(
-                f"{self.class_name}: {sidecar} is not a model config object"
-            )
-        return saved
 
     def _price_calendar(self, end_date: str) -> np.ndarray:
         """Return the price dataset's sorted bar timestamps up to ``end_date``.

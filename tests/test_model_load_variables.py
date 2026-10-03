@@ -1,6 +1,6 @@
 """`BaseModel.load()` checks the checkpoint's variables against the model (phase 03.7, G-03.7-9).
 
-`_save_model` writes a training record `trained_on` beside every checkpoint:
+Every trained unit's `run.json` holds a training record `trained_on`:
 the factor names, label names and symbols, produced by the same
 `get_factor_names()` / `get_label_names()` calls whose order built the training
 arrays. Before G-03.7-9 nothing read the factor and label names back.
@@ -20,12 +20,8 @@ What is locked here, and what turns it red:
 - the check is keyed on `trained_on`, never on the factor config field
   `factors[].factor_names`, which a user can set in another order than the
   names training actually used;
-- old checkpoints: a sidecar without `trained_on` is checked against the legacy
-  config field with one warning, a checkpoint with no usable record warns once
-  and loads, and a caller that checks and then loads sees each warning once;
-- the legacy field cannot certify order (REVIEW WR-01): it is compared as a
-  set, so different variables still raise, while an order-only difference
-  (e.g. a user-ordered config field) loads with an order warning.
+- a checkpoint without a readable `run.json` (written before #122, or
+  corrupt) is refused before anything is loaded.
 
 Everything is synthetic, CPU-only and offline. The stand-ins are local copies
 in the style of `tests/test_xgb_model.py` and `tests/test_model_predict_panel.py`,
@@ -43,6 +39,7 @@ from loguru import logger
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.predefined.xgb import XGBoostRegressor
+from quantlab.utils.trained_run import TrainedRun
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
@@ -158,8 +155,8 @@ def _train(model, suffix: str) -> Path:
     return found[0]
 
 
-def _sidecar(checkpoint: Path) -> Path:
-    return checkpoint.parent / "config.json"
+def _run_json(checkpoint: Path) -> Path:
+    return checkpoint.parent / "run.json"
 
 
 def _model_warnings(messages: list[str]) -> list[str]:
@@ -254,9 +251,9 @@ def test_trained_on_is_authoritative_over_the_factor_config_field(tmp_path, warn
     positive). The model-level check must load it without error or warning."""
     config_names = ["f_noise", "f_signal", "f_second"]
     checkpoint = _train(_library_model(tmp_path / "train", config_names=config_names), ".joblib")
-    saved = json.loads(_sidecar(checkpoint).read_text())
-    assert saved["factors"][0]["factor_names"] == config_names
-    assert saved["trained_on"]["factor_names"] == FACTORS
+    run = TrainedRun.open(checkpoint)
+    assert run.config["factors"][0]["factor_names"] == config_names
+    assert run.trained_on["factor_names"] == FACTORS
 
     fresh = _library_model(tmp_path / "fresh", config_names=config_names)
     fresh.load(checkpoint)
@@ -266,171 +263,34 @@ def test_trained_on_is_authoritative_over_the_factor_config_field(tmp_path, warn
 
 
 # --------------------------------------------------------------------------
-# Task 2: legacy and no-record checkpoints, warning dedup
+# Task 2: a checkpoint without a readable run.json
 # --------------------------------------------------------------------------
 
 
-def _strip_trained_on(checkpoint: Path, *, drop_config_names: bool = False) -> None:
-    """Rewrite a sidecar the way a checkpoint trained before `trained_on` looks.
-
-    With `drop_config_names`, the legacy config field is removed from every
-    factor and label entry too, so the sidecar records no variable names at all.
-    """
-    path = _sidecar(checkpoint)
-    saved = json.loads(path.read_text())
-    del saved["trained_on"]
-    if drop_config_names:
-        for entry in saved["factors"] + saved["labels"]:
-            entry.pop("factor_names")
-    path.write_text(json.dumps(saved, indent=4))
-
-
-@pytest.mark.parametrize(
-    ("fresh_kwargs", "entries_key"),
-    [
-        pytest.param({}, None, id="identical-warns-once"),
-        pytest.param(dict(factor_names=["f_signal", "f_second"]), "factors", id="different-factors-raise"),
-        pytest.param(dict(label_names=["ret_a"]), "labels", id="different-labels-raise"),
-    ],
-)
-def test_legacy_record_is_checked_with_one_warning(tmp_path, warning_messages, fresh_kwargs, entries_key):
-    """A sidecar written before `trained_on` existed still carries the legacy
-    config field `factors[].factor_names` / `labels[].factor_names`. It is a
-    weaker record (see Test M), but it is the best one such a checkpoint has:
-    the identical model loads with exactly ONE warning naming both kinds, and a
-    model declaring DIFFERENT variables is still refused. The legacy field
-    cannot certify order (REVIEW WR-01), so it is compared as a set; order-only
-    differences are covered by the two tests below."""
+def test_a_checkpoint_without_run_json_is_refused_before_loading(tmp_path):
+    """A checkpoint trained before run.json existed has nothing to check its
+    variables against; it is refused with a message to retrain, not loaded
+    unchecked."""
     checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
-    _strip_trained_on(checkpoint)
-    fresh = _library_model(tmp_path / "fresh", **fresh_kwargs)
-
-    if fresh_kwargs:
-        with pytest.raises(ValueError, match="was trained on") as excinfo:
-            fresh.load(checkpoint)
-        assert f"legacy {entries_key}[].factor_names" in str(excinfo.value)
-        assert str(checkpoint) in str(excinfo.value)
-        assert fresh.model is None
-        return
-
-    fresh.load(checkpoint)
-    legacy = _model_warnings(warning_messages)
-    assert len(legacy) == 1, warning_messages
-    assert "legacy" in legacy[0] and "weaker" in legacy[0], legacy[0]
-    assert "factor" in legacy[0] and "label" in legacy[0], legacy[0]
-    assert str(checkpoint) in legacy[0]
-    assert fresh.model is not None
-
-
-def _order_warnings(messages: list[str]) -> list[str]:
-    return [m for m in _model_warnings(messages) if "cannot certify" in m]
-
-
-def test_legacy_record_with_a_permuted_config_field_loads_with_an_order_warning(tmp_path, warning_messages):
-    """REVIEW WR-01: the model's OWN pre-`trained_on` checkpoint. The factor's
-    config field says [f_noise, f_signal, f_second]; training used the derived
-    order [f_signal, f_second, f_noise]. The legacy field was compared by
-    order and this checkpoint was refused as "trained on factor variables
-    [f_noise, ...]" although it matches exactly -- the false refusal plan 17
-    said it had removed. It must load, predict exactly like the trained model,
-    and emit one order warning naming both lists and the path. Red on the
-    pre-fix code ("was trained on" ValueError)."""
-    config_names = ["f_noise", "f_signal", "f_second"]
-    trained = _library_model(tmp_path / "train", config_names=config_names)
-    checkpoint = _train(trained, ".joblib")
-    _strip_trained_on(checkpoint)
-    assert json.loads(_sidecar(checkpoint).read_text())["factors"][0]["factor_names"] == config_names
-    fresh = _library_model(tmp_path / "fresh", config_names=config_names)
-
-    fresh.load(checkpoint)
-
-    order = _order_warnings(warning_messages)
-    assert len(order) == 1, warning_messages
-    assert str(checkpoint) in order[0]
-    assert str(config_names) in order[0] and str(FACTORS) in order[0], order[0]
-    assert "factor variables" in order[0], order[0]
-    assert any("weaker" in m for m in _model_warnings(warning_messages)), warning_messages
-    features = fresh.config.factors[0]._ds
-    xr.testing.assert_allclose(fresh.predict_panel(features), trained.predict_panel(features))
-
-
-def test_legacy_record_cannot_certify_order_so_a_reordered_model_only_warns(tmp_path, warning_messages):
-    """The accepted cost of REVIEW WR-01, locked so it stays visible: with only
-    the legacy field, a checkpoint trained in the derived order and a model
-    that declares the same factors in another order are indistinguishable from
-    the permuted-config case above. The load is allowed, with the order
-    warning; checkpoints that carry `trained_on` still refuse this (see
-    `test_ml_load_refuses_reordered_factors_and_labels`)."""
-    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
-    _strip_trained_on(checkpoint)
-    reordered = ["f_noise", "f_second", "f_signal"]
-    fresh = _library_model(tmp_path / "fresh", factor_names=reordered)
-
-    fresh.load(checkpoint)
-
-    order = _order_warnings(warning_messages)
-    assert len(order) == 1, warning_messages
-    assert str(FACTORS) in order[0] and str(reordered) in order[0], order[0]
-    assert fresh.model is not None
-
-
-@pytest.mark.parametrize("case", ["no-sidecar", "no-names"])
-def test_no_record_warns_once_and_loads(tmp_path, warning_messages, case):
-    """No record at all: a checkpoint copied without its config.json, or a
-    sidecar that has neither `trained_on` nor the legacy names. The variables
-    cannot be checked, so exactly one model-level warning says so and the model
-    loads and predicts. The wording must not contain the backtester's own
-    "has no config.json" phrase, which `tests/test_backtest_dates.py` counts."""
-    trained = _library_model(tmp_path / "train")
-    checkpoint = _train(trained, ".joblib")
-    if case == "no-sidecar":
-        _sidecar(checkpoint).unlink()
-    else:
-        _strip_trained_on(checkpoint, drop_config_names=True)
+    _run_json(checkpoint).unlink()
     fresh = _library_model(tmp_path / "fresh")
 
-    fresh.load(checkpoint)
-
-    unchecked = _model_warnings(warning_messages)
-    assert len(unchecked) == 1, warning_messages
-    assert str(checkpoint) in unchecked[0]
-    assert "cannot be checked" in unchecked[0], unchecked[0]
-    assert not any("has no config.json" in m for m in warning_messages), warning_messages
-    features = fresh.config.factors[0]._ds
-    xr.testing.assert_allclose(fresh.predict_panel(features), trained.predict_panel(features))
+    with pytest.raises(ValueError, match="no run.json.*retrain"):
+        fresh.check_checkpoint(checkpoint)
+    with pytest.raises(ValueError, match="no run.json.*retrain"):
+        fresh.load(checkpoint)
+    assert fresh.model is None
 
 
-def test_check_then_load_warns_once(tmp_path, warning_messages):
-    """The backtester runs the check before feature collection, then `load()`
-    runs it again. Each model-level warning is emitted once per model instance
-    and message; a different checkpoint still warns."""
+def test_a_run_json_that_is_not_an_object_is_refused(tmp_path):
+    """Corruption is not absence: valid JSON that is not a run record is
+    refused, naming the file, and nothing is loaded."""
     checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
-    _sidecar(checkpoint).unlink()
+    _run_json(checkpoint).write_text(json.dumps(["not", "a", "run"]))
     fresh = _library_model(tmp_path / "fresh")
 
-    fresh.check_checkpoint(checkpoint)
-    fresh.load(checkpoint)
-
-    assert len(_model_warnings(warning_messages)) == 1, warning_messages
-
-    other = _train(_library_model(tmp_path / "train_other"), ".joblib")
-    _sidecar(other).unlink()
-    fresh.load(other)
-
-    unchecked = _model_warnings(warning_messages)
-    assert len(unchecked) == 2, warning_messages
-    assert str(other) in unchecked[1]
-
-
-def test_a_sidecar_that_is_not_an_object_raises(tmp_path):
-    """Corruption is not absence: valid JSON that is not an object must not be
-    read as "no record" and silently skip the check."""
-    checkpoint = _train(_library_model(tmp_path / "train"), ".joblib")
-    _sidecar(checkpoint).write_text(json.dumps(["not", "a", "config"]))
-    fresh = _library_model(tmp_path / "fresh")
-
-    with pytest.raises(ValueError, match="is not a model config object") as excinfo:
+    with pytest.raises(ValueError, match="format_version None") as excinfo:
         fresh.load(checkpoint)
 
-    assert str(_sidecar(checkpoint)) in str(excinfo.value)
+    assert str(_run_json(checkpoint)) in str(excinfo.value)
     assert fresh.model is None

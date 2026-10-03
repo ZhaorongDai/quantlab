@@ -199,6 +199,17 @@ class MembershipMaskedPredictor:
         return self.predictor.test_bounds
 
     @property
+    def fitted_train_bounds(self) -> tuple:
+        """The wrapped predictor's fitted ``(start, end)`` training window.
+
+        Examples
+        --------
+        >>> masked.fitted_train_bounds == model.fitted_train_bounds
+        True
+        """
+        return self.predictor.fitted_train_bounds
+
+    @property
     def label_delays(self) -> tuple[int, ...]:
         """The wrapped predictor's label delays; masking moves no bar.
 

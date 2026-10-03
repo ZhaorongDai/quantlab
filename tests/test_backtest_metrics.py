@@ -34,7 +34,6 @@ Everything is synthetic, CPU-only and offline. Configs are built directly,
 never through `quantlab/config/__init__.py` (D-32).
 """
 
-import dataclasses
 import json
 import math
 import types
@@ -342,15 +341,17 @@ def test_disjoint_window_does_not_warn_and_has_no_in_sample_range(
     assert not any("overlap" in message for message in warnings_sink), warnings_sink
 
 
-def test_model_without_train_dates_warns_and_records_null(tmp_path, warnings_sink):
+def test_model_without_train_dates_warns_and_records_null(
+    tmp_path, warnings_sink, monkeypatch
+):
+    """A predictor that reports no fitted training window: every bar is
+    out-of-sample, with a warning. A trained run always records its window,
+    so the predictor's report is replaced here."""
     backtester = _run_backtester(tmp_path, window_start_bar=20, window_end_bar=45)
     model = backtester.config.model
-    model.config = dataclasses.replace(model.config, train_start=None)
-    # Code review WR-01: in load mode the checkpoint's own config.json records
-    # the dates it really trained on and takes precedence over config.model.
-    # The "no training dates at all" arm is therefore reached only when no such
-    # record exists, so the record is removed here.
-    (Path(backtester.config.checkpoint).parent / "config.json").unlink()
+    monkeypatch.setattr(
+        type(model), "fitted_train_bounds", property(lambda self: (None, None))
+    )
 
     result = backtester.run()
 

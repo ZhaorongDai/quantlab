@@ -435,7 +435,7 @@ def test_train_cv_sequential(tmp_path, tracker):
         ckpt = Path(r["checkpoint"])
         assert ckpt.suffix == ".joblib"
         assert {p.name for p in ckpt.parent.iterdir()} == {
-            ckpt.name, "config.json", "ic_series.csv", "test_predictions.zarr"
+            ckpt.name, "config.json", "ic_series.csv", "run.json", "test_predictions.zarr"
         }
         assert isinstance(joblib.load(ckpt), RealMLP_TD_Regressor)
         assert np.isfinite(r["test_ic"])

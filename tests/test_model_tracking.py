@@ -41,7 +41,7 @@ def test_a_training_is_one_finished_run_in_the_class_project_grouped_by_trial(tm
     checkpoint = _model(tmp_path, cls=cls, tracker=tracker).train()
 
     (run,) = tracker.runs
-    trial = checkpoint.parent.parent.name
+    trial = checkpoint.parent.name
     assert (run.project, run.group, run.name) == (cls.__name__, trial, f"{cls.__name__}_total")
     assert run.config["tracker"] == tracker.get_config()
     assert run.finished and not run.failed

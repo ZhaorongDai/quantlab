@@ -180,7 +180,7 @@ def _assert_golden_fold_dirs(root: Path, cls_name: str, suffix: str) -> None:
     for name in fold_dirs:
         contents = {p.name for p in (projects[0] / name).iterdir()}
         assert contents == {
-            f"{name}{suffix}", "config.json", "ic_series.csv", "test_predictions.zarr"
+            f"{name}{suffix}", "config.json", "ic_series.csv", "run.json", "test_predictions.zarr"
         }, contents
 
 

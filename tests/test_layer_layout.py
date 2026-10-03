@@ -17,6 +17,9 @@ What is locked here, and what turns it red:
 - the tracking root module imports no tracking library, wandb is imported by the W&B
   tracker only and mlflow by the MLflow tracker only (ADR 0015);
 - every `predefined` package's `__init__.py` is empty.
+- the walk-forward and trained-run modules (`quantlab/utils/walk_forward.py`,
+  `quantlab/utils/trained_run.py`), which the base layer imports, import no quantlab
+  module outside `quantlab.utils`.
 
 Static checks, plus one subprocess import; offline.
 """
@@ -130,3 +133,14 @@ def test_only_its_tracker_imports_a_tracking_library(library):
         if any(_is_or_under(name, library) for name in _resolved_imports(path))
     )
     assert importers == [f"quantlab/tracking/{library}.py"]
+
+
+@pytest.mark.parametrize("module", ["walk_forward", "trained_run"])
+def test_the_utils_modules_the_base_layer_uses_stay_in_utils(module):
+    path = REPO_ROOT / "quantlab/utils" / f"{module}.py"
+    outside = sorted(
+        name
+        for name in _resolved_imports(path)
+        if name.startswith("quantlab") and not name.startswith("quantlab.utils")
+    )
+    assert outside == [], outside

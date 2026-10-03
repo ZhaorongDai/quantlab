@@ -9,8 +9,8 @@ What is locked here, and what turns it red:
   from the seeded generator, and `predict_window` is `average_predictions`
   of the members' predictions.
 - `train()` writes `SeedEnsemble_trial_*/` holding `member_{k}/` (each with
-  the usual checkpoint, config.json, metrics.json, ic_series.csv and
-  test_predictions.zarr), the ensemble-level evaluation files (see
+  the usual checkpoint, config.json, ic_series.csv, test_predictions.zarr
+  and run.json), the ensemble-level evaluation files (see
   test_ensemble_evaluation_files.py), an ensemble-level `config.json` with
   the shared dates and label configs, and `ensemble.json` listing every member's class,
   relative checkpoint and seed; it returns the path of `ensemble.json`.
@@ -56,7 +56,7 @@ SEEDS = [0, 1, 2]
 MEMBER_FILES = [
     "config.json",
     "ic_series.csv",
-    "metrics.json",
+    "run.json",
     "test_predictions.zarr",
 ]
 
