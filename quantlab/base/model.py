@@ -56,6 +56,7 @@ from quantlab.utils.metrics import (
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
+from quantlab.utils.walk_forward import Fold, walk_forward_folds
 
 from .config import ModelConfig
 
@@ -1568,192 +1569,94 @@ class BaseModel(ABC):
             data.sel(timestamp=test),
         )
 
-    @staticmethod
-    def _cv_test_periods(
-        name: str, train_periods: int, test_periods: int | None
-    ) -> int:
-        """Return the bars each CV fold tests on: ``test_periods``, else ``train_periods // 5``.
-
-        Raises
-        ------
-        ValueError
-            If ``test_periods`` is given and below 1, or not given and
-            ``train_periods`` is below 5 (the one-fifth test segment would
-            be empty).
-        """
-        if test_periods is not None:
-            if test_periods < 1:
-                raise ValueError(
-                    f"{name}: train_cv(test_periods={test_periods}) needs at "
-                    f"least 1 test bar per fold."
-                )
-            return int(test_periods)
-        if train_periods < 5:
-            raise ValueError(
-                f"{name}: train_cv(train_periods={train_periods}) needs "
-                f"at least 5 training bars, since each fold tests on "
-                f"train_periods // 5 bars; or pass test_periods."
-            )
-        return train_periods // 5
-
-    @staticmethod
-    def _cv_folds(
-        timestamps,
-        train_periods: int,
-        expanding: bool,
-        test_periods: int,
-    ) -> list[dict]:
-        """Compute the fold boundaries of a walk-forward cross-validation.
-
-        This is the only implementation of the fold arithmetic;
-        ``train_cv`` trains exactly the folds it returns. Fold ``i`` tests on the
-        ``test_periods`` positions from ``i * test_periods + train_periods``
-        on, and its training window ends right before them. The window
-        starts at position ``i * test_periods`` (sliding) or at 0 when
-        ``expanding`` is True, so both modes test on the same positions.
-        These are the windows before the purge: ``_fit`` drops the last L
-        bars of the training window. The number of folds is
-        ``max(1, (len(timestamps) - train_periods) // test_periods)``;
-        a fold whose test segment runs past the end is logged and skipped, so
-        the result can be empty.
-
-        Returns
-        -------
-        list[dict]
-            One dict per fold with keys ``fold``, ``train_start``,
-            ``train_end``, ``test_start`` and ``test_end``. Dates are
-            ``np.datetime_as_string`` values and both ends are inclusive.
-        """
-        total_periods = len(timestamps)
-        n_splits = max(1, (total_periods - train_periods) // test_periods)
-
-        folds: list[dict] = []
-        for i in range(n_splits):
-            train_end_idx = i * test_periods + train_periods
-            train_start_idx = 0 if expanding else i * test_periods
-            test_start_idx = train_end_idx
-            test_end_idx = test_start_idx + test_periods
-
-            if test_end_idx > total_periods:
-                logger.warning(
-                    f"Skipping fold {i}: test set exceeds data range"
-                )
-                continue
-
-            folds.append(
-                {
-                    "fold": i,
-                    "train_start": np.datetime_as_string(
-                        timestamps[train_start_idx]
-                    ),
-                    "train_end": np.datetime_as_string(
-                        timestamps[train_end_idx - 1]
-                    ),
-                    "test_start": np.datetime_as_string(
-                        timestamps[test_start_idx]
-                    ),
-                    "test_end": np.datetime_as_string(
-                        timestamps[test_end_idx - 1]
-                    ),
-                }
-            )
-        return folds
-
-    def _cv_plan(
+    def _walk_forward_folds(
         self,
         train_periods: int,
         expanding: bool,
         test_periods: int | None,
-        lookahead: int,
+        purge_bars: int,
         name: str,
-    ) -> tuple[list[dict], list[dict]]:
-        """Return the walk-forward folds of ``train_cv`` before and after the purge.
+    ) -> tuple[Fold, ...]:
+        """Return the walk-forward folds of ``train_cv`` over the collected bars.
 
-        The folds cover the collected timestamps between ``start_date`` and
-        ``end_date``: ``_cv_folds`` cuts them with the test length of
-        ``_cv_test_periods``, and ``_purged_fold`` moves each fold's
-        ``train_end`` back by ``lookahead`` bars. ``name`` prefixes the error
-        messages. An ensemble plans its folds on its first member, with the
-        largest lookahead of all members.
-
-        Returns
-        -------
-        tuple[list[dict], list[dict]]
-            The folds as configured, and the same folds with the purged
-            ``train_end`` actually fitted.
+        The bars between ``start_date`` and ``end_date`` go through
+        ``walk_forward_folds`` with ``purge_bars``, which an ensemble sets to
+        the largest lookahead of all its members. ``name`` prefixes the
+        error messages and the log lines.
 
         Raises
         ------
         ValueError
-            If the test length is invalid (see ``_cv_test_periods``), no bar
-            lies between ``start_date`` and ``end_date``, or the purge leaves
-            a fold no training bar.
+            If ``walk_forward_folds`` refuses the settings, checked first, or
+            no bar lies between ``start_date`` and ``end_date``.
         """
-        test_periods = self._cv_test_periods(name, train_periods, test_periods)
         start_date, end_date = self.config.start_date, self.config.end_date
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
         timestamps = data.sel(timestamp=slice(start_date, end_date)).timestamp.values
+        try:
+            folds = walk_forward_folds(
+                timestamps,
+                train_periods,
+                test_periods=test_periods,
+                expanding=expanding,
+                purge_bars=purge_bars,
+            )
+        except ValueError as error:
+            raise ValueError(f"{name}: train_cv: {error}") from None
         if len(timestamps) == 0:
             raise ValueError(f"No data found between {start_date} and {end_date}")
-
-        folds = self._cv_folds(timestamps, train_periods, expanding, test_periods)
-        records = [self._purged_fold(timestamps, fold, lookahead) for fold in folds]
         logger.info(
             f"{name}: {len(folds)} walk-forward folds from {start_date} to "
             f"{end_date} with {train_periods} training periods"
         )
-        for fold in records:
+        for fold in folds:
             logger.info(
-                f"Fold {fold['fold']}: Train [{fold['train_start']} to "
-                f"{fold['train_end']}], Test [{fold['test_start']} to {fold['test_end']}]"
+                f"Fold {fold.index}: Train [{fold.fitted_train_window[0]} to "
+                f"{fold.fitted_train_window[1]}], Test [{fold.test_window[0]} "
+                f"to {fold.test_window[1]}]"
             )
-        return folds, records
+        return folds
 
     @staticmethod
-    def _purged_fold(timestamps, fold: dict, lookahead: int) -> dict:
-        """The fold as fitted: its ``train_end`` moved to the last bar the purge keeps.
+    def _with_fold_dates(config, fold: Fold):
+        """Return ``config`` with the fold's training window before the purge and its test window.
 
-        Raises
-        ------
-        ValueError
-            If the purge leaves the fold no training bar.
+        A model given these dates purges the training window itself.
         """
-        usable, _ = purge_segments(
-            timestamps,
-            [
-                (fold["train_start"], fold["train_end"]),
-                (fold["test_start"], fold["test_end"]),
-            ],
-            lookahead,
+        return dataclasses.replace(
+            config,
+            train_start=fold.train_window[0],
+            train_end=fold.train_window[1],
+            test_start=fold.test_window[0],
+            test_end=fold.test_window[1],
         )
-        if len(usable) == 0:
-            raise ValueError(
-                f"Fold {fold['fold']}: purging the last {lookahead} bars "
-                f"leaves no training bar; raise train_periods."
-            )
-        return {**fold, "train_end": np.datetime_as_string(usable[-1])}
 
-    def _train_one_fold(self, fold: dict, record: dict, trial: str) -> dict:
+    @staticmethod
+    def _fold_record(fold: Fold) -> dict:
+        """Return the fold's entry in the results: its index and the dates actually fitted."""
+        return {
+            "fold": fold.index,
+            "train_start": fold.fitted_train_window[0],
+            "train_end": fold.fitted_train_window[1],
+            "test_start": fold.test_window[0],
+            "test_end": fold.test_window[1],
+        }
+
+    def _train_one_fold(self, fold: Fold, trial: str) -> dict:
         """Train one fold on this instance and return its result dict.
 
-        ``fold`` holds the dates before the purge, which ``_fit`` purges
-        itself; ``record`` holds the purged dates actually fitted. The result
-        is ``record`` plus ``experiment_name``, ``checkpoint`` (the absolute
-        path of the fold's checkpoint, since the manifest may be read from
-        another working directory) and whatever ``train_*`` / ``val_*`` /
-        ``test_*`` metrics ``_fit`` returned. When there are metrics, the
-        fold's checkpoint directory also gets ``ic_series.csv`` and
-        ``test_predictions.zarr`` (see ``_write_evaluation_files``).
+        The config gets the fold's dates before the purge, which ``_fit``
+        purges itself. The result is ``_fold_record(fold)`` (the dates
+        actually fitted) plus ``experiment_name``, ``checkpoint`` (the
+        absolute path of the fold's checkpoint, since the manifest may be
+        read from another working directory) and whatever ``train_*`` /
+        ``val_*`` / ``test_*`` metrics ``_fit`` returned. When there are
+        metrics, the fold's checkpoint directory also gets ``ic_series.csv``
+        and ``test_predictions.zarr`` (see ``_write_evaluation_files``).
         """
-        self.config = dataclasses.replace(
-            self.config,
-            train_start=fold["train_start"],
-            train_end=fold["train_end"],
-            test_start=fold["test_start"],
-            test_end=fold["test_end"],
-        )
+        self.config = self._with_fold_dates(self.config, fold)
 
-        experiment_name = f"{self.class_name}_cv_fold_{fold['fold']}"
+        experiment_name = f"{self.class_name}_cv_fold_{fold.index}"
         checkpoint, metrics = self._train_into(
             Path(self.config.model_save_dir) / trial / experiment_name,
             group=trial,
@@ -1761,7 +1664,7 @@ class BaseModel(ABC):
             write_metrics=False,
         )
         return {
-            **record,
+            **self._fold_record(fold),
             "experiment_name": experiment_name,
             "checkpoint": str(checkpoint),
             **(metrics or {}),
@@ -1836,7 +1739,7 @@ class BaseModel(ABC):
         default) or, with ``expanding=True``, keeps the first fold's start
         and grows to all history before the test period. Both modes test on
         the same periods, so their results compare bar for bar. Folds are
-        laid out by ``_cv_folds`` over the timestamps between
+        laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the timestamps between
         ``config.start_date`` and ``config.end_date``. Each fold's training
         window loses its last L bars, L being the largest
         ``lookahead_bars()`` among the labels, so no fitted label reads a
@@ -1910,15 +1813,12 @@ class BaseModel(ABC):
         2
         """
         self._check_hyperparameters()
-        folds, records = self._cv_plan(
+        folds = self._walk_forward_folds(
             train_periods, expanding, test_periods, self._purge_bars(), self.class_name
         )
         trial = self._new_trial_name()
 
-        results = [
-            self._train_one_fold(fold, record, trial)
-            for fold, record in zip(folds, records)
-        ]
+        results = [self._train_one_fold(fold, trial) for fold in folds]
 
         means = self._cv_mean_metrics(results)
         if means:

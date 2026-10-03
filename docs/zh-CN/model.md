@@ -1057,13 +1057,13 @@ ValueError: Training and testing start and end dates must be specified.
 
 ```text
 ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 training timestamps for fitting.
-ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
+ValueError: XGBoostRegressor: train_cv: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
 不传 `test_periods` 时每一折在 `train_periods // 5` 个 bar 上测试，因此 `train_periods` 小于 5 时，`train_cv` 在训练任何一折之前就会拒绝；`test_periods` 小于 1 时同样拒绝。
 
 ```text
-ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
+ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
 `train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。

@@ -54,6 +54,7 @@ from quantlab.base.model import BaseModel
 from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
 from quantlab.base.tracking import NullTracker
+from quantlab.utils.walk_forward import Fold, walk_forward_folds
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 
@@ -205,7 +206,7 @@ def test_torch_train_cv_fold_geometry_golden_sequential(tmp_path):
 # ==========================================================================
 #
 # Everything below exercises the extracted pieces directly: the single fold
-# generator `BaseModel._cv_folds`, the claim that `train_cv`
+# generator `walk_forward_folds`, the claim that `train_cv`
 # consumes it, the per-fold results `train_cv` now returns, and the
 # `{cls}_cv_summary` tracking run holding the fold means.
 
@@ -257,13 +258,6 @@ def _library_config(tmp_path: Path, save_dir: str, tracker=NullTracker()) -> Mod
     )
 
 
-def _as_tuples(folds: list[dict]) -> list[tuple[str, str, str, str]]:
-    return [
-        (f["train_start"], f["train_end"], f["test_start"], f["test_end"])
-        for f in folds
-    ]
-
-
 # --------------------------------------------------------------------------
 # Too little data
 # --------------------------------------------------------------------------
@@ -299,22 +293,15 @@ def test_train_cv_refuses_a_training_segment_too_short_for_a_test_segment(
 # --------------------------------------------------------------------------
 
 
-HANDMADE_FOLDS = [
-    {
-        "fold": 3,
-        "train_start": np.datetime_as_string(TIMES[5], unit="D"),
-        "train_end": np.datetime_as_string(TIMES[40], unit="D"),
-        "test_start": np.datetime_as_string(TIMES[45], unit="D"),
-        "test_end": np.datetime_as_string(TIMES[60], unit="D"),
-    },
-    {
-        "fold": 5,
-        "train_start": np.datetime_as_string(TIMES[20], unit="D"),
-        "train_end": np.datetime_as_string(TIMES[70], unit="D"),
-        "test_start": np.datetime_as_string(TIMES[71], unit="D"),
-        "test_end": np.datetime_as_string(TIMES[90], unit="D"),
-    },
-]
+def _day(i: int) -> str:
+    """The date of ``TIMES[i]``."""
+    return np.datetime_as_string(TIMES[i], unit="D")
+
+
+HANDMADE_FOLDS = (
+    Fold(3, (_day(5), _day(40)), (_day(5), _day(40)), (_day(45), _day(60))),
+    Fold(5, (_day(20), _day(70)), (_day(20), _day(70)), (_day(71), _day(90))),
+)
 
 
 def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
@@ -323,9 +310,7 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
     those two, on exactly those dates. Turns red if train_cv grows its own
     copy of the fold arithmetic again."""
     monkeypatch.setattr(
-        BaseModel,
-        "_cv_folds",
-        staticmethod(lambda timestamps, train_periods, expanding, test_periods: [dict(f) for f in HANDMADE_FOLDS]),
+        "quantlab.base.model.walk_forward_folds", lambda timestamps, train_periods, **_: HANDMADE_FOLDS
     )
     save_dir = "ckpt_seq"
     model = StubLibraryHead(_library_config(tmp_path, save_dir))
@@ -333,7 +318,7 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
 
     results = model.train_cv(train_periods=50)
 
-    assert sorted(ML_FOLD_DATES) == sorted(_as_tuples(HANDMADE_FOLDS))
+    assert sorted(ML_FOLD_DATES) == sorted((*f.train_window, *f.test_window) for f in HANDMADE_FOLDS)
     assert sorted(r["fold"] for r in results) == [3, 5]
     projects = list((tmp_path / save_dir).iterdir())
     assert len(projects) == 1
@@ -365,9 +350,12 @@ def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_
     never-collected instance that predicts `[T, S, L]`."""
     model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
-    expected = BaseModel._cv_folds(
-        model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values, 50, False, 50 // 5
-    )
+    timestamps = model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values
+    expected = [
+        {"fold": f.index, "train_start": f.fitted_train_window[0], "train_end": f.fitted_train_window[1],
+         "test_start": f.test_window[0], "test_end": f.test_window[1]}
+        for f in walk_forward_folds(timestamps, 50)
+    ]
 
     results = model.train_cv(train_periods=50)
 

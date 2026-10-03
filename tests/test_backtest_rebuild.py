@@ -64,7 +64,7 @@ REBALANCE_PERIODS = 2
 TOP_N = 2
 INIT_CASH = 1_000_000.0
 
-#: run_cv geometry, as in tests/test_backtest_run_cv.py: `_cv_folds` with
+#: run_cv geometry, as in tests/test_backtest_run_cv.py: `walk_forward_folds` with
 #: train_periods=30 over 80 bars gives 8 folds of 6 test bars, bars 30..77.
 CV_N_BARS = 80
 CV_BARS = pd.bdate_range("2024-01-01", periods=CV_N_BARS)

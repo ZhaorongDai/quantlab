@@ -35,6 +35,7 @@ from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined._support.devices import torch_default_device
 from quantlab.model.predefined.realmlp import RealMLPRegressor
 from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.walk_forward import walk_forward_folds
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 
@@ -422,7 +423,11 @@ def test_train_cv_sequential(tmp_path, tracker):
     results = model.train_cv(train_periods=60)
 
     assert len(results) == 8
-    expected = RealMLPRegressor._cv_folds(timestamps, 60, False, 60 // 5)
+    expected = [
+        {"fold": f.index, "train_start": f.fitted_train_window[0], "train_end": f.fitted_train_window[1],
+         "test_start": f.test_window[0], "test_end": f.test_window[1]}
+        for f in walk_forward_folds(timestamps, 60)
+    ]
     assert [
         {k: r[k] for k in ("fold", "train_start", "train_end", "test_start", "test_end")} for r in results
     ] == expected

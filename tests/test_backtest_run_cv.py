@@ -65,7 +65,7 @@ from tests.backtest_fixtures import (
 
 N_BARS = 80
 TRAIN_PERIODS = 30
-#: `_cv_folds`: test_periods = 30 // 5 = 6, (80 - 30) // 6 = 8 folds, whose
+#: `walk_forward_folds`: test_periods = 30 // 5 = 6, (80 - 30) // 6 = 8 folds, whose
 #: test segments cover bars 30..77 with no gap between them.
 TEST_PERIODS = 6
 N_FOLDS = 8

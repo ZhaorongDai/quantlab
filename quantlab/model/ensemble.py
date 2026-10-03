@@ -66,7 +66,6 @@ path, its checkpoint relative to the manifest's directory, and its seed
 specific to one kind of ensemble.
 """
 
-import dataclasses
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
@@ -685,7 +684,7 @@ class BaseEnsemble(ABC):
         """Run a walk-forward cross-validation of the ensemble and return per-fold results.
 
         The folds are those ``BaseModel.train_cv`` trains for the first
-        member: laid out by ``BaseModel._cv_folds`` over the first member's
+        member: laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the first member's
         collected timestamps between its ``start_date`` and ``end_date``,
         sliding or, with ``expanding=True``, growing from the first fold's
         start, and each training window loses its last L bars, L being the
@@ -753,7 +752,7 @@ class BaseEnsemble(ABC):
         """
         for member in self.members:
             member._check_hyperparameters()
-        folds, records = self.members[0]._cv_plan(
+        folds = self.members[0]._walk_forward_folds(
             train_periods,
             expanding,
             test_periods,
@@ -763,22 +762,18 @@ class BaseEnsemble(ABC):
 
         directory = self._new_directory("cv")
         results = []
-        for fold, record in zip(folds, records):
+        for fold in folds:
             for member in self.members:
-                member.config = dataclasses.replace(
-                    member.config,
-                    train_start=fold["train_start"],
-                    train_end=fold["train_end"],
-                    test_start=fold["test_start"],
-                    test_end=fold["test_end"],
-                )
+                member.config = BaseModel._with_fold_dates(member.config, fold)
             manifest, metrics = self._train_into(
-                directory / f"fold_{fold['fold']}",
+                directory / f"fold_{fold.index}",
                 group=directory.name,
-                run_tag=f"fold_{fold['fold']}",
+                run_tag=f"fold_{fold.index}",
                 write_metrics=False,
             )
-            results.append({**record, "checkpoint": str(manifest), **metrics})
+            results.append(
+                {**BaseModel._fold_record(fold), "checkpoint": str(manifest), **metrics}
+            )
 
         means = BaseModel._cv_mean_metrics(results)
         if means:

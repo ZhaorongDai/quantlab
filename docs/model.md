@@ -1057,13 +1057,13 @@ The purge must leave training bars. `train` raises when the train segment has no
 
 ```text
 ValueError: Empty training segment: purging the last 2 bars leaves 0 of 2 training timestamps for fitting.
-ValueError: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
+ValueError: XGBoostRegressor: train_cv: Fold 0: purging the last 10 bars leaves no training bar; raise train_periods.
 ```
 
 Without `test_periods` each fold tests on `train_periods // 5` bars, so `train_cv` refuses a `train_periods` below 5 before it trains anything; a `test_periods` below 1 is refused the same way.
 
 ```text
-ValueError: XGBoostRegressor: train_cv(train_periods=4) needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
+ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
 `train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising.

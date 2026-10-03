@@ -36,7 +36,6 @@ import xarray as xr
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import BaseModel
 from quantlab.model.torch_model import TorchModel
 from quantlab.utils.jsonable import to_jsonable
 from tests.torch_heads import OneBarHead
@@ -249,11 +248,7 @@ def test_empty_fold_list_still_writes_a_manifest(tmp_path, monkeypatch):
     """With no folds the manifest is still written, with `folds: []`, so
     run_cv can say "this CV run produced no folds" instead of "not a CV
     project directory"."""
-    monkeypatch.setattr(
-        BaseModel,
-        "_cv_folds",
-        staticmethod(lambda timestamps, train_periods, expanding, test_periods: []),
-    )
+    monkeypatch.setattr("quantlab.base.model.walk_forward_folds", lambda timestamps, train_periods, **_: ())
     model = _library(tmp_path, "ckpt")
 
     results = model.train_cv(train_periods=TRAIN_PERIODS)
