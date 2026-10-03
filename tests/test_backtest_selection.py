@@ -1,7 +1,8 @@
-"""Locks for `quantlab/backtest/selection.py`: when the backtest rebalances and what it may fill.
+"""When the backtest rebalances (`rebalance_mask` of `quantlab/portfolio/decision_inputs.py`) and what it may fill.
 
-When to rebalance is the backtester's decision (the rule of what to hold is
-the portfolio layer's, locked in `test_portfolio_top_n.py`):
+The schedule is assembled with the other decision inputs (`DecisionInputs`,
+locked in `test_decision_inputs.py`); what to hold is the rule's, locked in
+`test_portfolio_top_n.py`:
 
 - **D-18 schedule.** `rebalance_mask` anchors at the first bar and steps by
   `rebalance_periods`; the last bar never rebalances, since its signal has no
@@ -15,7 +16,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.backtest.selection import rebalance_mask
+from quantlab.portfolio.decision_inputs import rebalance_mask
 
 
 def test_rebalance_mask_anchors_at_first_bar_and_steps_by_period():

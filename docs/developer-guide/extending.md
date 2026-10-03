@@ -795,7 +795,8 @@ A backtester is `VectorBtBacktester` (`quantlab.backtest.engine_vectorbt`)
 plus three members: `config_cls`, the config class it accepts; `MARKET`, a
 `MarketSpec` naming the fill and valuation price columns and the year length
 used for annualizing; and `_generate_signals`, which turns the model's
-prediction panel and the prices into target weights. The weights must follow
+prediction panel and the prices (and the window's delisting marks, the
+ones the engine settles) into target weights. The weights must follow
 the contract described in
 [Backtesting](../user-guide/backtesting.md#target-weights-the-signal-format):
 a finite weight is a target, NaN keeps a holding, and the targets of a row
@@ -811,7 +812,7 @@ import numpy as np
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import rebalance_mask
+from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.base.backtest import MarketSpec
 from quantlab.base.config import BacktestConfig
 
@@ -830,7 +831,7 @@ class PositiveScoreEqualWeight(VectorBtBacktester):
     config_cls = BacktestConfig
     MARKET = ROUND_THE_CLOCK
 
-    def _generate_signals(self, predictions, prices):
+    def _generate_signals(self, predictions, prices, delisted):
         label = list(predictions.data_vars)[0]  # the model's first label
         scores = predictions[label].transpose("timestamp", "symbol").values
         # Tradable at the bar: a fill price there, nothing later (ADR 0014).
@@ -884,9 +885,9 @@ decision is recorded in ADR 0008.
 Two smaller variations need even less code. To reuse top-N selection on a
 different market, subclass `USEquityCrossectionSelectStockVectorBt` and set
 only `MARKET`. To reuse the selection rule with another engine, call
-`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(predictions,
-tradable, rebalance)` from `quantlab.portfolio.predefined.top_n`, or its
-one-bar pair `decide(build_context(...))` from a bar handler; the portfolio layer depends on
+`DecisionInputs(dataset, TopNConstructor(TopNConfig(direction, top_n)), ...).weights(predictions)`
+from `quantlab.portfolio.decision_inputs`, or its one-bar pair
+`rule.decide(inputs.context(t, ...))` from a bar handler; the portfolio layer depends on
 no simulation engine. A new rule from scores to weights subclasses
 `quantlab.base.portfolio.PortfolioConstructor` and implements `construct`; it
 goes in the config's `constructor` (see [portfolio construction](../portfolio.md)

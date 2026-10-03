@@ -81,9 +81,11 @@ array([0.5, 0.5, 0. , 0. ])
 
 ### 在回测中
 
-向量化回测调用 `construct_panel`。它在调仓 bar 上逐根调用规则的单 bar 决策（`decide`，见[回测之外决定一根 bar](#回测之外决定一根-bar)），并为每根 bar 构造 context：
+规则只负责决策。它的*决策输入*，即在一根 bar 上能读到的除持仓以外的一切，由同一个模块组装：`quantlab/portfolio/decision_inputs.py` 中的 `DecisionInputs`，回测和执行器都用它。它由价格数据集、成交价列和估值价列、已绑定的规则、调仓周期、*锚点*（预测面板的第一根 bar，调仓日程从它开始计数）以及执行设置构造。向量化回测调用它的 `weights(predictions, delisted=...)`，它在调仓 bar 上逐根调用规则的单 bar 决策（`decide`，见[回测之外决定一根 bar](#回测之外决定一根-bar)），并为每根 bar 构造 context：
 
-- 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.utils.execution`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。`construct_panel(..., execution=ExecutionSettings(sizing_basis, fees, slippage))` 接收这些设置，回测器传入自己 config 中的设置；不传时按成交价定仓位、不计成本。
+- 可交易性取自价格数据集的 `tradable_bars`；因子值是规则的 `required_factors()` 在窗口上计算的结果，各带自己的预热期。
+- 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.utils.execution`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。回测器传入自己 config 中的 `execution` 设置，以及交给引擎的同一份退市标记；不传设置时按成交价定仓位、不计成本。
+- 调仓 bar 是从锚点起每 `rebalance_periods` 根中的一根；最后一根 bar 从不调仓，因为在那里决定的订单没有下一根 bar 可以成交（同一模块中的 `rebalance_mask`）。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
 - 每根 bar 只读截至（含）它的最近 `history_bars` 个原始估值价格（默认 `lookback_bars + 1`；Ledoit-Wolf 为 `lookback_bars + 1 + max_stale_bars`；均值方差取其风险模型的值），所以决策与价格历史从哪里开始无关。回测的预热期包含第一根 bar 之前的 `history_bars - 1` 根 bar，所以第一根 bar 就有完整的窗口。
 
@@ -121,19 +123,38 @@ True
 
 ### 回测之外决定一根 bar
 
-自己维护账本的执行器（例如事件驱动回测或实盘账户）用规则的两个公开方法决定一根 bar，也就是 `construct_panel` 循环调用的那两个：
+自己维护账本的执行器（例如事件驱动回测或实盘账户）用同一个 `DecisionInputs` 和规则的 `decide` 决定一根 bar：
 
-- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` 构造这根 bar 的 `PortfolioContext`。`predictions`、`tradable` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有。`valuation_price` 是截止到这根 bar 的原始估值价格，位于 `(timestamp, symbol)` 上，收益窗口和停牌时长（staleness）按回测所用的同一公式由它最近 `history_bars` 个价格算出。只要给定截至这根 bar 的至少 `history_bars` 个价格，无论从哪根 bar 开始，得到的 context 都与回测构造的相同。规则的 `lookback_bars` 为正时必须传入它；规则声明了 `required_factors()` 时同样必须传入 `factors`。
+- `rebalances(t)` 回答 bar `t` 是否是日程中的调仓 bar；构造时传入 `end=` 可以让回放的最后一根 bar 不调仓。
+- `context(t, predictions, current_weights)` 构造这根 bar 的 `PortfolioContext`。`predictions` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有，没有预测的持仓标的以 NaN 预测加入这根 bar。可交易性、截至 `t` 的最近 `history_bars` 个估值价格得出的收益窗口和停牌时长（staleness），以及 `t` 上的因子值，都从数据集读取，所以执行器最多只需保留 `history_bars` 根 bar 的价格。给定回测重放出的持仓，得到的 context 与回测构造的相同。
 - `decide(context)` 调用 `construct`，并按权重契约检查这一行。它返回 `Decision(weights, failure, events)`：context 各标的上的权重，全 NaN 表示保持；使这根 bar 保持仓位的 `PortfolioConstructionError` 的消息，或 `None`；以及这一行报告的事件。违反契约的行（NaN 与有限权重混合、改动了锁定仓位、给既不可交易也未持有的标的分配权重）是规则的 bug，抛出 `ValueError`。
 
 ```python
+>>> from quantlab.dataset.memory import FrameDataset
+>>> from quantlab.portfolio.decision_inputs import DecisionInputs
+>>> bars = pd.bdate_range(end=context.timestamp, periods=3)
+>>> close = xr.DataArray(
+...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
+... )
 >>> rule = load_constructor(run_dir)
->>> bar = rule.build_context(
+>>> inputs = DecisionInputs(
+...     FrameDataset(xr.Dataset({"open": close, "close": close})),
+...     rule,
+...     fill_column="open",
+...     valuation_column="close",
+...     rebalance_periods=1,
+...     anchor=bars[0],
+... )
+>>> inputs.rebalances(context.timestamp)
+True
+>>> bar = inputs.context(
 ...     context.timestamp,
 ...     panel.predictions.sel(timestamp=context.timestamp),
-...     on_symbols([True, True, True, False]),
 ...     xr.DataArray([0.25], dims="symbol", coords={"symbol": ["DDD"]}),
 ... )
+>>> bar.locked.values
+array([False, False, False,  True])
 >>> decision = rule.decide(bar)
 >>> decision.weights.values, decision.failure, decision.events
 (array([0.375, 0.   , 0.375, 0.25 ]), None, {})
@@ -385,7 +406,7 @@ array([0.4, 0.4, 0. , 0.2])
 2. 实现 `construct`。
 3. 规则读取收益窗口时重写 `lookback_bars`（需要多于 `lookback_bars + 1` 个原始价格时再重写 `history_bars`），读取因子面板时重写 `required_factors`，需要检查标签规格时重写 `bind`。
 
-不要重写 `build_context`、`decide` 或 `construct_panel`：它们是回测与执行器共用的唯一决策路径。
+不要重写 `decide`：它是回测与执行器共用的唯一决策路径。规则不含组装代码，它的 context 由 `DecisionInputs` 构造。
 
 `get_config` 和 `from_config` 把规则序列化为配置的各字段加上类的导入路径。字段里如果是另一个组件（例如风险模型），会嵌套序列化，所以重建一次运行不需要额外代码。
 

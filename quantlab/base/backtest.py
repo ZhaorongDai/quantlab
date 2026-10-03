@@ -481,7 +481,7 @@ class BaseBacktester(ABC):
             config_cls = BacktestConfig
             MARKET = MarketSpec("open", "close", 252, 390)
 
-            def _generate_signals(self, predictions, prices):
+            def _generate_signals(self, predictions, prices, delisted):
                 ...  # return a ``weight`` panel on (timestamp, symbol)
 
     >>> backtester = EqualWeightBacktester(config)
@@ -563,7 +563,7 @@ class BaseBacktester(ABC):
         >>> class MyBacktester(VectorBtBacktester):
         ...     config_cls = BacktestConfig
         ...     MARKET = MarketSpec("open", "close", 252, 390)
-        ...     def _generate_signals(self, predictions, prices): ...
+        ...     def _generate_signals(self, predictions, prices, delisted): ...
         """
 
     @property
@@ -1085,9 +1085,14 @@ class BaseBacktester(ABC):
         stitched_predictions = stitched_predictions.reindex(
             symbol=stitched_prices.symbol.values
         )
-        stitched_weights = self._generate_signals(stitched_predictions, stitched_prices)
+        stitched_delisted = self._delisting_marks(stitched_prices)
+        stitched_weights = self._generate_signals(
+            stitched_predictions, stitched_prices, stitched_delisted
+        )
         self._assert_weights_contract(stitched_weights, stitched_prices)
-        stitched_simulation = self._simulate(stitched_weights, stitched_prices)
+        stitched_simulation = self._simulate(
+            stitched_weights, stitched_prices, delisted=stitched_delisted
+        )
         stitched_benchmark = (
             None
             if stitched_benchmark_prices is None
@@ -1708,11 +1713,12 @@ class BaseBacktester(ABC):
             prices.timestamp.values, calendar, train_start, train_end
         )
 
-        weights = self._generate_signals(predictions, prices)
+        delisted = self._delisting_marks(prices)
+        weights = self._generate_signals(predictions, prices, delisted)
         self._assert_weights_contract(weights, prices)
 
         with Timer(f"{self.class_name}: simulate"):
-            simulation = self._simulate(weights, prices)
+            simulation = self._simulate(weights, prices, delisted=delisted)
         benchmark = (
             None
             if benchmark_prices is None
@@ -2212,13 +2218,25 @@ class BaseBacktester(ABC):
                 f"has gross exposure {gross[idx]} > 1"
             )
 
+    def _delisting_marks(self, prices: xr.Dataset) -> xr.DataArray:
+        """Return the price dataset's ``delisting_bars`` of ``prices``.
+
+        Computed once per backtest window and handed to both
+        ``_generate_signals`` and ``_simulate``, so the holdings a rule is
+        handed and the simulation settle the same delistings.
+        """
+        return self.config.price_dataset.delisting_bars(
+            prices, self.MARKET.valuation_price_column
+        )
+
     @abstractmethod
     def _generate_signals(
-        self, predictions: xr.Dataset, prices: xr.Dataset
+        self, predictions: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray
     ) -> xr.Dataset:
         """Turn predictions and prices into target weights satisfying the contract.
 
-        Both inputs share the price axes. The result must pass
+        Both inputs share the price axes; ``delisted`` holds the window's
+        delisting marks, the ones ``_simulate`` settles with. The result must pass
         ``_assert_weights_contract``: a ``weight`` variable on
         ``(timestamp, symbol)``, NaN where a symbol keeps its holding, with
         the gross exposure of each row's targets at most 1.
@@ -2235,12 +2253,14 @@ class BaseBacktester(ABC):
 
     @abstractmethod
     def _simulate(
-        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None
+        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None, *, delisted=None
     ) -> SimulationResult:
         """Simulate the portfolio; a signal at bar t fills at bar t+1's fill price.
 
-        ``dataset`` is the market dataset ``prices`` came from, which marks
-        its delistings; ``config.price_dataset`` when omitted.
+        ``delisted`` holds the delisting marks to settle, on the prices'
+        labels; when omitted they are read from ``dataset``, the market
+        dataset ``prices`` came from (``config.price_dataset`` when
+        omitted).
         """
 
     @abstractmethod

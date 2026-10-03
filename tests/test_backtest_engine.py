@@ -57,7 +57,7 @@ from vectorbt.generic.enums import DrawdownStatus
 
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import rebalance_mask
+from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
@@ -796,7 +796,7 @@ class EqualWeightEveryone(VectorBtBacktester):
     config_cls = CrossSectionBacktestConfig
     MARKET = US_EQUITY_MARKET
 
-    def _generate_signals(self, predictions: xr.Dataset, prices: xr.Dataset) -> xr.Dataset:
+    def _generate_signals(self, predictions: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray) -> xr.Dataset:
         n_bars = prices.sizes["timestamp"]
         n_symbols = prices.sizes["symbol"]
         weights = np.full((n_bars, n_symbols), np.nan)
@@ -896,7 +896,7 @@ class RotateOneOutEqualWeight(VectorBtBacktester):
     config_cls = CrossSectionBacktestConfig
     MARKET = US_EQUITY_MARKET
 
-    def _generate_signals(self, predictions: xr.Dataset, prices: xr.Dataset) -> xr.Dataset:
+    def _generate_signals(self, predictions: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray) -> xr.Dataset:
         n_bars = prices.sizes["timestamp"]
         n_symbols = prices.sizes["symbol"]
         weights = np.full((n_bars, n_symbols), np.nan)
@@ -1292,7 +1292,7 @@ def _with_delay_zero_label(backtester):
 
 
 def _refuse_simulation(monkeypatch, backtester):
-    def _simulate(self, weights, prices):
+    def _simulate(self, weights, prices, dataset=None, *, delisted=None):
         raise AssertionError("simulated despite a label/engine delay mismatch")
 
     monkeypatch.setattr(type(backtester), "_simulate", _simulate)

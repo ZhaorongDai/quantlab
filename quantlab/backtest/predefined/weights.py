@@ -157,7 +157,7 @@ class WeightsVectorBt(VectorBtBacktester):
         self.MARKET = self._market_of(config)
 
     def _generate_signals(
-        self, predictions: xr.Dataset, prices: xr.Dataset
+        self, predictions: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray
     ) -> xr.Dataset:
         """Refuse: this backtester has no signal rule; weights come to ``run_weights``.
 

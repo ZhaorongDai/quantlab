@@ -215,8 +215,8 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 The portfolio rebalances on the first bar of the window and every
 `rebalance_periods` bars after it; the other bars are hold rows. The last bar
 of the window never rebalances, because a signal formed there has no next bar
-inside the window to fill on. `quantlab.backtest.selection.rebalance_mask`
-computes this schedule.
+inside the window to fill on. `quantlab.portfolio.decision_inputs.rebalance_mask`
+computes this schedule, and `DecisionInputs` follows it.
 
 On each rebalance bar, the config's `constructor`, a portfolio construction
 rule, turns that bar's predictions into weights. `TopNConstructor` (config

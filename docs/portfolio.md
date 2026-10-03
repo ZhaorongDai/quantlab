@@ -81,9 +81,11 @@ array([0.5, 0.5, 0. , 0. ])
 
 ### In a backtest
 
-The vectorised backtest calls `construct_panel`. It loops the rule's one-bar decision (`decide`, see [One bar outside a backtest](#one-bar-outside-a-backtest)) over the rebalance bars and builds each bar's context:
+A rule only decides. Its *decision inputs*, everything it may read at a bar except the holdings, are assembled by one module, `DecisionInputs` in `quantlab/portfolio/decision_inputs.py`, for the backtest and for an executor alike. It is built from the price dataset, the fill and valuation columns, the bound rule, the rebalance period, the *anchor* (the first bar of the prediction panel, from which the rebalance schedule counts) and the execution settings. The vectorised backtest calls its `weights(predictions, delisted=...)`, which loops the rule's one-bar decision (`decide`, see [One bar outside a backtest](#one-bar-outside-a-backtest)) over the rebalance bars and builds each bar's context:
 
-- The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.utils.execution`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. `construct_panel(..., execution=ExecutionSettings(sizing_basis, fees, slippage))` takes those settings, and the backtester passes its config's; without them the replay sizes at the fill price and charges no costs.
+- The tradability is the price dataset's `tradable_bars`, and the factor values are the rule's `required_factors()` computed over the window with their own warm-up.
+- The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.utils.execution`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. The backtester passes its config's `execution` settings and the delisting marks it hands the engine; without settings the replay sizes at the fill price and charges no costs.
+- The rebalance bars are every `rebalance_periods`-th bar from the anchor; the last bar never rebalances, since an order decided there has no next bar to fill on (`rebalance_mask` in the same module).
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
 - Each bar reads only the last `history_bars` raw valuation prices up to and including it (`lookback_bars + 1` by default; Ledoit-Wolf `lookback_bars + 1 + max_stale_bars`; mean-variance its risk model's), so a decision does not depend on where the price history starts. The backtest's warm-up holds the `history_bars - 1` bars before its first bar, so that bar already has a full window.
 
@@ -121,19 +123,38 @@ The file holds one variable per label on `(timestamp, symbol)`, and its attribut
 
 ### One bar outside a backtest
 
-An executor that keeps its own book, such as an event-driven backtest or a live account, decides a bar with two public methods of the rule, the same two `construct_panel` loops:
+An executor that keeps its own book, such as an event-driven backtest or a live account, decides a bar with the same `DecisionInputs` and the rule's `decide`:
 
-- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` builds the bar's `PortfolioContext`. `predictions`, `tradable` and `current_weights` are the bar's values on `symbol`; a symbol missing from `current_weights` is not held. `valuation_price` holds the raw valuation prices on `(timestamp, symbol)` ending at the bar, and the return window and staleness come from its last `history_bars` prices by the formula the backtest uses. Given at least `history_bars` prices ending at the bar, from any first bar, the context equals the backtest's. It is required when the rule's `lookback_bars` is positive, as `factors` is when the rule declares `required_factors()`.
+- `rebalances(t)` says whether bar `t` is a rebalance bar of the schedule; pass `end=` to the constructor to keep a replay's last bar from rebalancing.
+- `context(t, predictions, current_weights)` builds the bar's `PortfolioContext`. `predictions` and `current_weights` are the bar's values on `symbol`; a symbol missing from `current_weights` is not held, and a held symbol without a prediction joins the bar with NaN predictions. The tradability, the return window and staleness of the last `history_bars` valuation prices up to `t`, and the factor values at `t` are read from the dataset, so an executor keeps at most `history_bars` bars of prices. Given the holdings the backtest replayed, the context equals the backtest's.
 - `decide(context)` runs `construct` and checks the row against the weights contract. It returns a `Decision(weights, failure, events)`: the weights on the context's symbols, all NaN for a hold; the message of a `PortfolioConstructionError` that made the bar a hold, or `None`; and the events the row reported. A row that breaks the contract (NaN mixed with finite weights, a moved locked position, weight on a symbol neither tradable nor held) is a bug in the rule and raises `ValueError`.
 
 ```python
+>>> from quantlab.dataset.memory import FrameDataset
+>>> from quantlab.portfolio.decision_inputs import DecisionInputs
+>>> bars = pd.bdate_range(end=context.timestamp, periods=3)
+>>> close = xr.DataArray(
+...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
+... )
 >>> rule = load_constructor(run_dir)
->>> bar = rule.build_context(
+>>> inputs = DecisionInputs(
+...     FrameDataset(xr.Dataset({"open": close, "close": close})),
+...     rule,
+...     fill_column="open",
+...     valuation_column="close",
+...     rebalance_periods=1,
+...     anchor=bars[0],
+... )
+>>> inputs.rebalances(context.timestamp)
+True
+>>> bar = inputs.context(
 ...     context.timestamp,
 ...     panel.predictions.sel(timestamp=context.timestamp),
-...     on_symbols([True, True, True, False]),
 ...     xr.DataArray([0.25], dims="symbol", coords={"symbol": ["DDD"]}),
 ... )
+>>> bar.locked.values
+array([False, False, False,  True])
 >>> decision = rule.decide(bar)
 >>> decision.weights.values, decision.failure, decision.events
 (array([0.375, 0.   , 0.375, 0.25 ]), None, {})
@@ -385,7 +406,7 @@ Subclass `PortfolioConstructor`:
 2. Implement `construct`.
 3. Override `lookback_bars` when the rule reads a return window (and `history_bars` when it needs more raw prices than `lookback_bars + 1`), `required_factors` when it reads factor panels, and `bind` to check the label specs.
 
-Do not override `build_context`, `decide` or `construct_panel`: they are the one decision path a backtest and an executor share.
+Do not override `decide`: it is the one decision path a backtest and an executor share. A rule holds no assembly code; `DecisionInputs` builds its contexts.
 
 `get_config` and `from_config` serialise the rule as its config's fields plus the class's import path. A field holding another component, such as a risk model, is nested, so no extra code is needed to rebuild a run.
 

@@ -8,16 +8,13 @@ inherited from ``VectorBtBacktester``. A saved run's ``config.json`` rebuilds it
 ``quantlab.utils.module.load_backtester_from_config``.
 """
 
-import warnings
-
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import rebalance_mask
 from quantlab.base.backtest import MarketSpec, label_specs
 from quantlab.base.config import CrossSectionBacktestConfig
-from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.portfolio import PortfolioConstructor
+from quantlab.portfolio.decision_inputs import DecisionInputs
 
 #: Price conventions for US equities. Orders fill at the split- and
 #: dividend-adjusted open and the portfolio is valued at the adjusted close;
@@ -102,89 +99,30 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
             config.constructor.bind(label_specs(config.model))
 
     def _generate_signals(
-        self, predictions: xr.Dataset, prices: xr.Dataset
+        self, predictions: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray
     ) -> xr.Dataset:
-        """Turn the model's predictions into target weights through the constructor.
+        """Turn the model's predictions into target weights through ``DecisionInputs``.
 
-        Tradability at each bar comes from the price dataset's
-        ``tradable_bars`` on the raw, not forward-filled, window panel; the
-        rule also skips symbols without a finite prediction of the label it
-        reads. The rule is handed the raw fill and valuation prices from the
-        bars its first window needs before the window (``_price_history``),
-        for its return windows and staleness and to model the
-        holdings the way the simulation trades them, with the run's sizing
-        basis, fees and slippage, the dataset's
-        ``delisting_bars`` of the window (the same marks the simulation
-        settles), and the panels of its ``required_factors()`` over the
-        window (``_required_factor_panels``). Bars the rule failed on are
-        kept for ``_signal_metrics``.
+        The decision inputs (tradability, the price windows and their
+        warm-up, the rule's factor panels, the holdings replayed with the
+        run's sizing basis, fees and slippage) are assembled by
+        ``quantlab.portfolio.decision_inputs.DecisionInputs``, anchored on
+        the predictions' first bar and handed ``delisted``, the marks the
+        simulation settles. Bars the rule failed on are kept for
+        ``_signal_metrics``.
         """
-        dataset = self.config.price_dataset
-        tradable = dataset.tradable_bars(prices, self.MARKET.fill_price_column)
-        mask = rebalance_mask(prices.sizes["timestamp"], self.config.rebalance_periods)
-        history = self._price_history(prices)
-        weights = self.config.constructor.construct_panel(
-            predictions,
-            tradable,
-            mask,
-            fill_price=history[self.MARKET.fill_price_column],
-            valuation_price=history[self.MARKET.valuation_price_column],
-            delisted=dataset.delisting_bars(prices, self.MARKET.valuation_price_column),
-            factors=self._required_factor_panels(prices),
+        weights = DecisionInputs(
+            self.config.price_dataset,
+            self.config.constructor,
+            fill_column=self.MARKET.fill_price_column,
+            valuation_column=self.MARKET.valuation_price_column,
+            rebalance_periods=self.config.rebalance_periods,
+            anchor=predictions.timestamp.values[0],
             execution=self.config.execution,
-        )
+        ).weights(predictions, delisted=delisted)
         self._failed_bars = list(weights.attrs.pop("failed_bars", []))
         self._events = dict(weights.attrs.pop("events", {}))
         return weights
-
-    def _required_factor_panels(self, prices: xr.Dataset) -> xr.Dataset | None:
-        """Return the constructor's ``required_factors()`` over the window, or None.
-
-        Each factor is computed from the window's first to its last bar
-        with ``Factor.compute``, which reads the factor's own
-        ``warmup_bars`` before the window like a model's features, and the
-        panels are merged onto the window's symbols. ``None`` when the
-        constructor declares no factor.
-        """
-        factors = self.config.constructor.required_factors()
-        if not factors:
-            return None
-        first, last = prices.timestamp.values[0], prices.timestamp.values[-1]
-        panels = [factor.compute(first, last) for factor in factors]
-        return xr.merge(panels, join="outer").reindex(symbol=prices.symbol.values)
-
-    def _price_history(self, prices: xr.Dataset) -> xr.Dataset:
-        """Return the raw fill and valuation prices over the window and its warm-up.
-
-        The warm-up is the bars before the window's first bar that complete
-        its ``history_bars`` window (``history_bars - 1``, the first bar
-        being the window's last), counted on the price dataset's calendar,
-        so the first bar already reads a full window of raw prices; when the
-        dataset holds fewer, a warning names the shortfall and the first
-        windows are short. The panel is on the window's symbols.
-        """
-        dataset = self.config.price_dataset
-        columns = [self.MARKET.fill_price_column, self.MARKET.valuation_price_column]
-        first, last = prices.timestamp.values[0], prices.timestamp.values[-1]
-        warmup = self.config.constructor.history_bars - 1
-        try:
-            start = dataset.bar_before(first, warmup)
-        except InsufficientHistoryError as exc:
-            warnings.warn(
-                f"{self.class_name}: {type(self.config.constructor).__name__} reads "
-                f"{warmup} bar(s) of prices before the window but the price "
-                f"dataset holds only {exc.available}; the first price windows are "
-                f"short by {warmup - exc.available} bar(s).",
-                UserWarning,
-                stacklevel=2,
-            )
-            start = dataset.bar_before(first, exc.available)
-        return (
-            dataset.panel(start, last)[columns]
-            .reindex(symbol=prices.symbol.values)
-            .transpose("timestamp", "symbol")
-            .load()
-        )
 
     def _signal_metrics(self) -> dict:
         """Report the bars the constructor could not decide, and its events.

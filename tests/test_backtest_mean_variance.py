@@ -10,6 +10,8 @@ What is locked here, and what turns it red:
   simulation carries at that bar's close: the last traded weights filled at
   the next bar's open and marked to this bar's close, across a halt, on
   either sizing basis.
+- A run reads the price dataset's delisting marks once, for the decision
+  replay and the engine alike.
 - A bar whose construction raises `PortfolioConstructionError` holds (an
   all-NaN row), is logged, and is listed in `metrics.json`.
 - A `MeanVarianceOptimizer` backtest is fully invested on every rebalance
@@ -161,6 +163,23 @@ def test_the_warm_up_is_the_constructors_history_bars(tmp_path):
 
     with pytest.warns(UserWarning, match=r"reads 99 bar\(s\) of prices before the window but the price dataset holds only 40; the first price windows are short by 59"):
         backtester.run()
+
+
+def test_a_run_reads_the_delisting_marks_once(tmp_path, monkeypatch):
+    """The marks the decision replay settles are the ones the engine settles."""
+    backtester, _, _ = _backtester(tmp_path, Recorder(RecorderConfig()))
+    dataset_cls = type(backtester.config.price_dataset)
+    calls = []
+    original = dataset_cls.delisting_bars
+
+    def counting(self, prices, column):
+        calls.append(prices.sizes["timestamp"])
+        return original(self, prices, column)
+
+    monkeypatch.setattr(dataset_cls, "delisting_bars", counting)
+    backtester.run()
+
+    assert calls == [WINDOW[1] - WINDOW[0] + 1]
 
 
 def _halt(dataset_config, symbol, bars):

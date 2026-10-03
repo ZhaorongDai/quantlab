@@ -4,7 +4,7 @@
 
 回测拿一个训练好的收益模型和一份价格数据集，展示模型的预测如果拿来交易会得到什么结果。模型对每个标的、每根 bar 给出一个分数，选股规则把分数变成目标权重，模拟引擎按这些权重成交并记录净值曲线。每次运行都会写出一个运行目录，里面有权重、净值曲线、指标、HTML 报告，以及重建这次运行所需的配置。
 
-主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、调仓时点（`quantlab/backtest/selection.py`）、配置里 `constructor` 持有的组合构建规则（继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`：这里用 `TopNConstructor`，也可以用[组合构建](portfolio.md)里的均值-方差优化器），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
+主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、决策输入与调仓时点（`quantlab/portfolio/decision_inputs.py` 中的 `DecisionInputs` 和 `rebalance_mask`）、配置里 `constructor` 持有的组合构建规则（继承 `quantlab/base/portfolio.py` 中的 `PortfolioConstructor`：这里用 `TopNConstructor`，也可以用[组合构建](portfolio.md)里的均值-方差优化器），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
 
 ## 前置条件
 
@@ -612,7 +612,7 @@ ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_d
 
 ### 不用回测器回放 Execution 规则
 
-vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quantlab.utils.execution`，它只导入 numpy。这些规则包括：订单按成交价成交；没有原始成交价的订单被拒绝；退市持仓按最后估值结算；按所选 sizing basis 定仓位；先卖后买，每笔买单受剩余现金限制；收取手续费和滑点。引擎用 `plan_orders` 生成订单计划。`replay` 返回这些订单在每个 bar 之后留下的股数和现金，与 vectorbt 实际执行的结果一致，差别只在浮点舍入；它还报告引擎记录的拒单和退市结算（`tests/test_execution.py`）。`ExecutionBook` 一个 bar 一个 bar 地维护同一本账，适合那种做完每次调仓的决策后才知道权重的驱动：它 `submit` 一个 bar 的权重，再按时间顺序逐个 `trade` 各个 bar。组合构建的 `construct_panel` 就是这样重放交给规则的持仓，带上运行的 sizing basis、手续费和滑点，所以规则据以决策的持仓就是引擎随后模拟的持仓。
+vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quantlab.utils.execution`，它只导入 numpy。这些规则包括：订单按成交价成交；没有原始成交价的订单被拒绝；退市持仓按最后估值结算；按所选 sizing basis 定仓位；先卖后买，每笔买单受剩余现金限制；收取手续费和滑点。引擎用 `plan_orders` 生成订单计划。`replay` 返回这些订单在每个 bar 之后留下的股数和现金，与 vectorbt 实际执行的结果一致，差别只在浮点舍入；它还报告引擎记录的拒单和退市结算（`tests/test_execution.py`）。`ExecutionBook` 一个 bar 一个 bar 地维护同一本账，适合那种做完每次调仓的决策后才知道权重的驱动：它 `submit` 一个 bar 的权重，再按时间顺序逐个 `trade` 各个 bar。`DecisionInputs.weights` 就是这样重放交给规则的持仓，带上运行的 sizing basis、手续费和滑点，所以规则据以决策的持仓就是引擎随后模拟的持仓。
 
 ```python
 >>> import numpy as np
@@ -664,7 +664,7 @@ True
 
 ## 扩展
 
-新的选股规则是 `VectorBtBacktester` 的子类，需要三个成员：`config_cls`、`MARKET` 和 `_generate_signals(predictions, prices)`。该方法返回一个数据集，其 `weight` 变量满足上面的契约。`predictions` 与 `prices` 共用同一套 `(timestamp, symbol)` 坐标轴。下面的规则让每个可交易标的的权重与其正分数成比例，没有正分数时空仓。它复用了 `rebalance_mask` 和 `US_EQUITY_MARKET` 的价格约定。保存为 `score_weighted.py`。
+新的选股规则是 `VectorBtBacktester` 的子类，需要三个成员：`config_cls`、`MARKET` 和 `_generate_signals(predictions, prices, delisted)`。该方法返回一个数据集，其 `weight` 变量满足上面的契约。`predictions` 与 `prices` 共用同一套 `(timestamp, symbol)` 坐标轴，`delisted` 是窗口内的退市标记，也就是引擎结算所用的那一份。下面的规则让每个可交易标的的权重与其正分数成比例，没有正分数时空仓。它复用了 `rebalance_mask` 和 `US_EQUITY_MARKET` 的价格约定。保存为 `score_weighted.py`。
 
 ```python
 """一条新的选股规则：多头权重与正分数成比例。"""
@@ -672,7 +672,7 @@ True
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import rebalance_mask
+from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
 from quantlab.base.config import BacktestConfig
 
@@ -681,7 +681,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
     config_cls = BacktestConfig
     MARKET = US_EQUITY_MARKET
 
-    def _generate_signals(self, predictions, prices):
+    def _generate_signals(self, predictions, prices, delisted):
         label = list(predictions.data_vars)[0]  # 模型的第一个标签
         scores = predictions[label].transpose("timestamp", "symbol")
         # 在这根 bar 上没有成交价的标的不能交易，不参与选择（ADR 0014）。
@@ -720,7 +720,7 @@ timestamp
 2024-02-19  0.037  0.647  0.000  0.16  0.0  0.156
 ```
 
-如果想沿用 top-N 规则、只换分数，`TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, tradable, rebalance)` 接受任意分数面板（每个标签一个变量的数据集）和一个布尔型可交易面板（例如价格数据集的 `tradable_bars(prices, fill_column)`），并返回同样的 `weight` 数据集；再传入 `fill_price=`、`valuation_price=` 和 `delisted=`，每根 bar 拿到的就是模拟中实际持有的仓位。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。自己维护账本的执行器用规则的 `build_context` 和 `decide` 决定一根 bar，也就是 `construct_panel` 循环调用的那一对（见[组合构建](portfolio.md#回测之外决定一根-bar)）。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
+如果想沿用 top-N 规则、只换分数，`DecisionInputs(dataset, TopNConstructor(TopNConfig(direction, top_n)), fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...).weights(scores)`（`quantlab.portfolio.decision_inputs`）接受任意分数面板（每个标签一个变量的数据集），并返回同样的 `weight` 数据集；每根 bar 拿到的是价格数据集给出的可交易性和模拟中实际持有的仓位。它的逐 bar 方法 `construct(context)` 根据一个 `PortfolioContext` 决定一根 bar 的权重，自定义规则就是这样写的：继承 `quantlab.base.portfolio` 中的 `PortfolioConstructor` 并实现 `construct`。自己维护账本的执行器用 `DecisionInputs.context` 和规则的 `decide` 决定一根 bar，也就是 `weights` 循环调用的那一对（见[组合构建](portfolio.md#回测之外决定一根-bar)）。换一个市场就是换一个 `MarketSpec`，其中有自己的成交价列、估值价列和年化常数。
 
 ### 回测任意预测器
 

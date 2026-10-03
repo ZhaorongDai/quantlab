@@ -5,11 +5,11 @@ What is locked here, and what turns it red (hand-built panels, no vectorbt):
 - A rule declares ``history_bars``: ``lookback_bars + 1`` by default,
   ``lookback_bars + 1 + max_stale_bars`` for Ledoit-Wolf, the risk model's
   for mean-variance.
-- A context's ``returns`` and ``staleness`` at t are identical whatever
-  history start the caller passes, as long as it holds at least
-  ``history_bars`` bars: through ``build_context`` and through
-  ``construct_panel``, on a panel with halts, a delisting and a late listing;
-  and the two give the same window and staleness on every bar.
+- A context's ``returns`` and ``staleness`` at t are identical wherever the
+  price dataset's history starts, as long as it holds at least
+  ``history_bars`` bars: through ``DecisionInputs.context`` and through
+  ``DecisionInputs.weights``, on a panel with halts, a delisting and a late
+  listing; and the two give the same window and staleness on every bar.
 - A symbol unpriced for more than ``history_bars`` bars has NaN staleness,
   and Ledoit-Wolf leaves it uncovered.
 """
@@ -21,6 +21,8 @@ import xarray as xr
 
 from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
 from quantlab.base.portfolio import LabelSpec, PortfolioConstructor
+from quantlab.dataset.memory import FrameDataset
+from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -66,14 +68,23 @@ def _rule():
     return _Watch(LedoitWolfConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
 
 
-def _build(rule, prices, t, start):
-    at = prices.timestamp.values[t]
-    preds = xr.Dataset({"ret": ("symbol", np.ones(len(SYMBOLS)))}, coords={"symbol": SYMBOLS})
-    tradable = xr.DataArray(np.ones(len(SYMBOLS), bool), dims="symbol", coords={"symbol": SYMBOLS})
-    held = xr.zeros_like(tradable, dtype=float)
-    return rule.build_context(
-        at, preds, tradable, held, valuation_price=prices.isel(timestamp=slice(start, t + 1))
+def _inputs(rule, prices, start):
+    """``DecisionInputs`` over a dataset whose history starts at bar ``start``."""
+    window = prices.isel(timestamp=slice(start, None))
+    return DecisionInputs(
+        FrameDataset(xr.Dataset({"open": window, "close": window})),
+        rule,
+        fill_column="open",
+        valuation_column="close",
+        rebalance_periods=1,
+        anchor=prices.timestamp.values[30],
     )
+
+
+def _build(rule, prices, t, start):
+    preds = xr.Dataset({"ret": ("symbol", np.ones(len(SYMBOLS)))}, coords={"symbol": SYMBOLS})
+    held = xr.DataArray(np.zeros(len(SYMBOLS)), dims="symbol", coords={"symbol": SYMBOLS})
+    return _inputs(rule, prices, start).context(prices.timestamp.values[t], preds, held)
 
 
 def test_history_bars_is_declared_by_the_rule():
@@ -86,7 +97,7 @@ def test_history_bars_is_declared_by_the_rule():
 
 
 @pytest.mark.parametrize("t", [30, 42, 46, 47, 50, 56, 60, 79])
-def test_build_context_ignores_where_the_history_starts(t):
+def test_context_ignores_where_the_history_starts(t):
     prices, rule = _prices(), _rule()
     shortest = t + 1 - rule.history_bars
     contexts = [_build(rule, prices, t, start) for start in (0, shortest // 2, shortest)]
@@ -98,22 +109,17 @@ def test_build_context_ignores_where_the_history_starts(t):
 
 def _panel(prices, start):
     _Watch.seen = []
-    window = prices.isel(timestamp=slice(start, None))
-    bars = prices.isel(timestamp=slice(30, None))
-    predictions = xr.Dataset({"ret": xr.ones_like(bars)})
-    rebalance = np.ones(bars.sizes["timestamp"], dtype=bool)
-    _rule().construct_panel(
-        predictions, xr.ones_like(bars, dtype=bool), rebalance, fill_price=window, valuation_price=window
-    )
+    predictions = xr.Dataset({"ret": xr.ones_like(prices.isel(timestamp=slice(30, None)))})
+    _inputs(_rule(), prices, start).weights(predictions)
     return list(_Watch.seen)
 
 
-def test_construct_panel_ignores_where_the_history_starts():
+def test_weights_ignore_where_the_history_starts():
     prices = _prices()
     shortest = 30 - _rule().history_bars + 1
     full, cut = _panel(prices, 0), _panel(prices, shortest)
 
-    assert len(full) == len(cut) == N - 30
+    assert len(full) == len(cut) == N - 30 - 1  # the last bar never rebalances
     rule = _rule()
     for looped, cut_looped in zip(full, cut):
         xr.testing.assert_identical(looped.returns, cut_looped.returns)

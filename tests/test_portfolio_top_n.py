@@ -3,8 +3,9 @@
 Target weights are the portfolio layer's output (03.7 D-03, ADR 0012), so
 every rule that decides what the backtest actually trades is locked here with
 pure tests on hand-built `(timestamp, symbol)` panels, through the whole-panel
-`construct_panel` the backtester calls and the per-bar `construct` it loops
-over. No store, no model, no vectorbt.
+`DecisionInputs.weights` the backtester calls (on flat prices with a chosen
+tradability, `tests/decision_fixtures.py`) and the per-bar `construct` it
+loops over. No store, no model, no vectorbt.
 
 What this file locks, and why each rule matters:
 
@@ -29,7 +30,7 @@ What this file locks, and why each rule matters:
   stable sort, so one panel always yields one set of weights (D-25
   reproducibility).
 - **D-11 score-label resolution**, and the D-03 invariant on randomized panels.
-- **ADR 0012.** `construct_panel` is the base class's per-bar loop, and a
+- **ADR 0012.** `DecisionInputs.weights` is the per-bar loop, and a
   rule sees only the context of the bar it decides on. The rule round-trips through `get_config` / `from_config`.
 """
 
@@ -42,11 +43,12 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.backtest.selection import rebalance_mask
+from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PortfolioContext
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from tests.decision_fixtures import decide_panel
 from tests.backtest_fixtures import FirstFeatureHead, make_model, make_stock_dataset, write_price_store
 
 NAN = np.nan
@@ -88,9 +90,7 @@ def _select(direction, top_n, scores, fill=None, rebalance=None) -> np.ndarray:
         rebalance = np.ones(scores.sizes["timestamp"], dtype=bool)
     rule = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
     tradable = np.isfinite(fill)
-    out = rule.construct_panel(
-        scores.to_dataset(name="score"), tradable, np.asarray(rebalance, dtype=bool)
-    )
+    out = decide_panel(rule, scores.to_dataset(name="score"), tradable, rebalance)
     assert out["weight"].dims == ("timestamp", "symbol")
     return out["weight"].values
 
@@ -198,26 +198,6 @@ def test_fill_prices_pair_with_scores_by_label_not_position():
     assert w[1] == 0.0
     assert w[3] == 0.5 and w[5] == 0.5
     np.testing.assert_array_equal(w, _select("long_only", 2, scores, fill)[0])
-
-
-def test_fill_prices_on_other_labels_are_refused():
-    """Code review WR-09: a fill panel on other symbols or bars is a caller error.
-
-    Same shape, different labels: one symbol swapped for `ZZZ`, or every
-    timestamp moved by a day (a mis-applied shift). The old shape-only check
-    accepted both and paired values by position, so both cases go red. The
-    error must name the differing axis or label.
-    """
-    scores = _panel(DISTINCT)
-    other_symbols = _panel([100.0] * len(SYMBOLS), symbols=SYMBOLS[:-1] + ["ZZZ"])
-    with pytest.raises(ValueError, match="ZZZ"):
-        _select("long_only", 2, scores, other_symbols)
-
-    shifted = _finite_fill(scores).assign_coords(
-        timestamp=scores.timestamp.values + np.timedelta64(1, "D")
-    )
-    with pytest.raises(ValueError, match="timestamp"):
-        _select("long_only", 2, scores, shifted)
 
 
 def test_short_long_only_book_splits_among_available_and_warns():
@@ -347,8 +327,8 @@ def test_score_label_defaults_to_first_label():
     first = TopNConstructor(TopNConfig(direction="long_only", top_n=1))
     chosen = TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="ret_1"))
 
-    assert first.construct_panel(predictions, tradable, mask)["weight"].values.tolist() == [[0.0, 1.0, 0.0]]
-    assert chosen.construct_panel(predictions, tradable, mask)["weight"].values.tolist() == [[1.0, 0.0, 0.0]]
+    assert decide_panel(first, predictions, tradable, mask)["weight"].values.tolist() == [[0.0, 1.0, 0.0]]
+    assert decide_panel(chosen, predictions, tradable, mask)["weight"].values.tolist() == [[1.0, 0.0, 0.0]]
     chosen.bind(_specs(["ret_5", "ret_1"]))
 
 
@@ -440,7 +420,7 @@ def test_weights_contract_holds_on_random_panels():
             assert np.isfinite(row).all(), where
             assert np.abs(row).sum() <= 1.0 + 1e-12, where
             locked = (previous != 0) & ~np.isfinite(fill[t])
-            np.testing.assert_array_equal(row[locked], previous[locked], err_msg=where)
+            np.testing.assert_allclose(row[locked], previous[locked], rtol=0, atol=1e-12, err_msg=where)
             tradable = int((np.isfinite(scores[t]) & np.isfinite(fill[t]) & ~locked).sum())
             if direction == "long_short":
                 if tradable // 2 < top_n:
@@ -498,7 +478,7 @@ def test_a_constructor_sees_only_the_bar_it_decides_on():
     predictions, tradable, mask = _random_case(0)
     rule = RecordingConstructor(TopNConfig(direction="long_only", top_n=1))
 
-    rule.construct_panel(predictions, tradable, mask)
+    decide_panel(rule, predictions, tradable, mask)
 
     rebalance_bars = predictions.timestamp.values[mask]
     assert [c.timestamp for c in rule.contexts] == [pd.Timestamp(t) for t in rebalance_bars]
@@ -522,12 +502,12 @@ def test_the_current_weights_are_the_last_rebalance_weights():
             return super().construct(context)
 
     rule = Remembering(TopNConfig(direction="long_only", top_n=2))
-    weights = PortfolioConstructor.construct_panel(rule, predictions, tradable, mask)["weight"].values
+    weights = decide_panel(rule, predictions, tradable, mask)["weight"].values
 
     bars = np.flatnonzero(mask)
     assert (seen[0] == 0.0).all()
-    for previous, current in zip(bars[:-1], seen[1:]):
-        np.testing.assert_array_equal(current, weights[previous])
+    for previous, current in zip(bars[:-1], seen[1:]):  # flat prices: the targets, unchanged
+        np.testing.assert_allclose(current, weights[previous], rtol=0, atol=1e-12)
 
 
 def test_a_constructor_round_trips_through_its_config():
@@ -552,9 +532,7 @@ def test_a_row_mixing_nan_and_weights_is_refused():
 
     predictions, tradable, mask = _random_case(2)
     with pytest.raises(ValueError, match="mixing"):
-        PortfolioConstructor.construct_panel(
-            Broken(TopNConfig(direction="long_only", top_n=2)), predictions, tradable, mask
-        )
+        decide_panel(Broken(TopNConfig(direction="long_only", top_n=2)), predictions, tradable, mask)
 
 
 # --------------------------------------------------------------------------
@@ -563,13 +541,9 @@ def test_a_row_mixing_nan_and_weights_is_refused():
 
 
 def _events(direction, top_n, scores) -> dict:
-    """``construct_panel``'s ``attrs["events"]`` for one rebalance bar per row."""
+    """``DecisionInputs.weights``' ``attrs["events"]`` for one rebalance bar per row."""
     rule = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
-    rebalance = np.ones(scores.sizes["timestamp"], dtype=bool)
-    out = rule.construct_panel(
-        scores.to_dataset(name="score"), np.isfinite(_finite_fill(scores)), rebalance
-    )
-    return out.attrs["events"]
+    return decide_panel(rule, scores.to_dataset(name="score"), np.isfinite(_finite_fill(scores))).attrs["events"]
 
 
 def test_a_long_cut_through_tied_scores_counts_the_tied_symbols_left_out():

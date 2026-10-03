@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the rebalance schedule (`quantlab/backtest/selection.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/base/portfolio.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the decision inputs and rebalance schedule (`DecisionInputs` and `rebalance_mask` in `quantlab/portfolio/decision_inputs.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/base/portfolio.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -612,7 +612,7 @@ A round trip is a position from flat to flat in one symbol: adding to or trimmin
 
 ### Replay the Execution rules without a backtester
 
-The rules the vectorbt engine executes a fill bar by (an order at the fill price, rejected without a raw fill price, a delisted holding settled at its last valuation, sizing on the chosen basis, sells before buys, each buy capped by the cash left, fees and slippage) are the public module `quantlab.utils.execution`, which imports numpy only. The engine plans its orders with `plan_orders`, and `replay` returns the shares and cash those orders leave after every bar, equal to what vectorbt executes to floating-point rounding, with the rejected orders and delisting settlements the engine records (`tests/test_execution.py`). `ExecutionBook` holds the same book one bar at a time, for a driver that learns each rebalance's weights only after deciding them: it `submit`s a bar's weights and `trade`s the bars in order. Portfolio construction's `construct_panel` replays the holdings it hands a rule this way, with the run's sizing basis, fees and slippage, so a rule decides on the holdings the engine then simulates.
+The rules the vectorbt engine executes a fill bar by (an order at the fill price, rejected without a raw fill price, a delisted holding settled at its last valuation, sizing on the chosen basis, sells before buys, each buy capped by the cash left, fees and slippage) are the public module `quantlab.utils.execution`, which imports numpy only. The engine plans its orders with `plan_orders`, and `replay` returns the shares and cash those orders leave after every bar, equal to what vectorbt executes to floating-point rounding, with the rejected orders and delisting settlements the engine records (`tests/test_execution.py`). `ExecutionBook` holds the same book one bar at a time, for a driver that learns each rebalance's weights only after deciding them: it `submit`s a bar's weights and `trade`s the bars in order. `DecisionInputs.weights` replays the holdings it hands a rule this way, with the run's sizing basis, fees and slippage, so a rule decides on the holdings the engine then simulates.
 
 ```python
 >>> import numpy as np
@@ -664,7 +664,7 @@ True
 
 ## Extending
 
-A new selection rule is a subclass of `VectorBtBacktester` with three members: `config_cls`, `MARKET` and `_generate_signals(predictions, prices)`. The method returns a dataset whose `weight` variable satisfies the contract above. `predictions` and `prices` share the same `(timestamp, symbol)` axes. The rule below weights each tradable symbol in proportion to its positive score and stays flat when no score is positive. It reuses `rebalance_mask` and the `US_EQUITY_MARKET` price conventions. Save it as `score_weighted.py`.
+A new selection rule is a subclass of `VectorBtBacktester` with three members: `config_cls`, `MARKET` and `_generate_signals(predictions, prices, delisted)`. The method returns a dataset whose `weight` variable satisfies the contract above. `predictions` and `prices` share the same `(timestamp, symbol)` axes, and `delisted` holds the window's delisting marks, the ones the engine settles. The rule below weights each tradable symbol in proportion to its positive score and stays flat when no score is positive. It reuses `rebalance_mask` and the `US_EQUITY_MARKET` price conventions. Save it as `score_weighted.py`.
 
 ```python
 """A new selection rule: long-only weights proportional to positive scores."""
@@ -672,7 +672,7 @@ A new selection rule is a subclass of `VectorBtBacktester` with three members: `
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.backtest.selection import rebalance_mask
+from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
 from quantlab.base.config import BacktestConfig
 
@@ -681,7 +681,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
     config_cls = BacktestConfig
     MARKET = US_EQUITY_MARKET
 
-    def _generate_signals(self, predictions, prices):
+    def _generate_signals(self, predictions, prices, delisted):
         label = list(predictions.data_vars)[0]  # the model's first label
         scores = predictions[label].transpose("timestamp", "symbol")
         # A symbol without a fill price at the bar cannot be traded there (ADR 0014).
@@ -720,7 +720,7 @@ timestamp
 2024-02-19  0.037  0.647  0.000  0.16  0.0  0.156
 ```
 
-To keep the top-N rule with another score, `TopNConstructor(TopNConfig(direction, top_n)).construct_panel(scores, tradable, rebalance)` accepts any score panel (a dataset with one variable per label) with a boolean tradability panel, such as a price dataset's `tradable_bars(prices, fill_column)`, and returns the same `weight` dataset; pass `fill_price=`, `valuation_price=` and `delisted=` as well to hand each bar the holdings the simulation would carry. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.base.portfolio`) and implement `construct`. An executor with its own book decides one bar with the rule's `build_context` and `decide`, the pair `construct_panel` loops (see [Portfolio construction](portfolio.md#one-bar-outside-a-backtest)). Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
+To keep the top-N rule with another score, `DecisionInputs(dataset, TopNConstructor(TopNConfig(direction, top_n)), fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...).weights(scores)` (`quantlab.portfolio.decision_inputs`) accepts any score panel (a dataset with one variable per label) and returns the same `weight` dataset, each bar handed the tradability of the price dataset and the holdings the simulation would carry. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.base.portfolio`) and implement `construct`. An executor with its own book decides one bar with `DecisionInputs.context` and the rule's `decide`, the pair `weights` loops (see [Portfolio construction](portfolio.md#one-bar-outside-a-backtest)). Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
 
 ### Backtest any predictor
 

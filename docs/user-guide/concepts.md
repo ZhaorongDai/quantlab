@@ -273,9 +273,11 @@ quantlab/
                      torch_training.py (target transforms, losses, stopping rules)
         predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
                          model_ensemble.py
-    backtest/        engine_vectorbt.py (VectorBtBacktester), selection.py (rebalance schedule)
+    backtest/        engine_vectorbt.py (VectorBtBacktester)
         predefined/      us_equity.py: the US-equity backtester
-    portfolio/       portfolio construction: the rule from one bar's scores to weights
+    portfolio/       portfolio construction: the rule from one bar's scores to weights;
+                     decision_inputs.py (DecisionInputs: the decision inputs and the
+                     rebalance schedule)
         predefined/      top_n.py: TopNConstructor
     my_ops/          custom KunQuant operators
     utils/           config loaders (module.py), metrics, progress, chunking, download ledgers,

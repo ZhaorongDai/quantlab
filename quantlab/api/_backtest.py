@@ -76,14 +76,6 @@ def backtest(
         )
 
     price_dataset = FrameDataset(panel)
-    if weights is not None:
-        weight = _weights_on(panel, zone, weights, columns)
-    else:
-        weight = _selected(
-            price_dataset, panel, zone, scores, columns, fill, valuation, top_n,
-            direction, rebalance_periods, fees, slippage,
-        )
-
     timestamps = pd.DatetimeIndex(panel["timestamp"].values)
     config = WeightsBacktestConfig(
         price_dataset=price_dataset,
@@ -102,6 +94,10 @@ def backtest(
         direction=None if scores is None else direction,
         top_n=top_n,
     )
+    if weights is not None:
+        weight = _weights_on(panel, zone, weights, columns)
+    else:
+        weight = _selected(panel, zone, scores, columns, config)
     backtester = WeightsVectorBt(config)
     result = backtester.run_weights(weight)
     return BacktestReport(result, backtester, library)
@@ -236,32 +232,30 @@ def _weights_on(panel: xr.Dataset, prices_zone, weights, columns) -> xr.DataArra
     return values.where(given, xr.where(bar_given, 0.0, np.nan))
 
 
-def _selected(
-    dataset, panel, prices_zone, scores, columns, fill, valuation, top_n, direction,
-    rebalance_periods, fees, slippage,
-):
+def _selected(panel, prices_zone, scores, columns, config):
     """Return top-N weights selected from ``scores`` on the price axes.
 
-    Exactly as in the library's backtester: a symbol is selectable where it has a
-    score and is tradable (a fill price at that bar), and a held symbol that is not
-    tradable keeps its current weight, the holdings replayed from the prices with
-    the run's fees and slippage.
+    Exactly as in the library's backtester, through ``DecisionInputs``: the top-N rule
+    is bound to the scores as one standardized label, a symbol is selectable where it
+    has a score and is tradable (a fill price at that bar), and a held symbol that is
+    not tradable keeps its current weight, the holdings replayed from the prices with
+    ``config``'s sizing basis, fees and slippage on its rebalance schedule.
     """
-    from quantlab.backtest.selection import rebalance_mask
     from quantlab.base.config import TopNConfig
+    from quantlab.base.portfolio import LabelSpec
+    from quantlab.portfolio.decision_inputs import DecisionInputs
     from quantlab.portfolio.predefined.top_n import TopNConstructor
-    from quantlab.utils.execution import ExecutionSettings
 
     field = to_field_panel(scores, "score", columns=columns, purpose="scores")
     values, _ = _onto_price_axes(panel, prices_zone, "scores", field)
-    constructor = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
-    mask = rebalance_mask(panel.sizes["timestamp"], rebalance_periods)
-    return constructor.construct_panel(
-        values.to_dataset(name="score"),
-        dataset.tradable_bars(panel, fill),
-        mask,
-        fill_price=panel[fill],
-        valuation_price=panel[valuation],
-        delisted=dataset.delisting_bars(panel, valuation),
-        execution=ExecutionSettings(fees=fees, slippage=slippage),
-    )["weight"]
+    constructor = TopNConstructor(TopNConfig(direction=config.direction, top_n=config.top_n))
+    constructor.bind([LabelSpec(name="score", scale="standardized", delay=1, span=None)])
+    return DecisionInputs(
+        config.price_dataset,
+        constructor,
+        fill_column=config.fill_price_column,
+        valuation_column=config.valuation_price_column,
+        rebalance_periods=config.rebalance_periods,
+        anchor=panel["timestamp"].values[0],
+        execution=config.execution,
+    ).weights(values.to_dataset(name="score"))["weight"]

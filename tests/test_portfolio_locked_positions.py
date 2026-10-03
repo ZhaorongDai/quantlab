@@ -22,6 +22,8 @@ import xarray as xr
 
 from quantlab.base.config import TopNConfig
 from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.dataset.memory import FrameDataset
+from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE"]
@@ -97,6 +99,19 @@ def _panel(values):
     )
 
 
+def _weights(rule, prices, periods, delisted=None):
+    """``DecisionInputs.weights`` of ``rule`` on ``prices`` as both fill and valuation price."""
+    predictions = xr.Dataset({"ret": prices.fillna(0) * 0 + 1.0})
+    return DecisionInputs(
+        FrameDataset(xr.Dataset({"open": prices, "close": prices})),
+        rule,
+        fill_column="open",
+        valuation_column="close",
+        rebalance_periods=periods,
+        anchor=prices.timestamp.values[0],
+    ).weights(predictions, delisted=delisted)
+
+
 def test_the_driver_refuses_a_rule_that_moves_a_locked_position():
     # Bar 0 buys AAA and BBB half each; BBB is halted on bar 2, a rebalance bar.
     class _Half(PortfolioConstructor):
@@ -110,19 +125,13 @@ def test_the_driver_refuses_a_rule_that_moves_a_locked_position():
             return row
 
     prices = _panel([[10, 20], [10, 20], [10, np.nan], [10, 20]])
-    predictions = xr.Dataset({"ret": prices * 0 + 1.0})
-    tradable = prices.notnull()
 
     with pytest.raises(ValueError, match=r"_Half.*BBB.*2024-01-03"):
-        _Half(TopNConfig(direction="long_only", top_n=1)).construct_panel(
-            predictions, tradable, np.array([True, False, True, False]),
-            fill_price=prices, valuation_price=prices,
-        )
+        _weights(_Half(TopNConfig(direction="long_only", top_n=1)), prices, 2)
 
 
 def test_the_driver_refuses_weight_on_a_symbol_neither_tradable_nor_held():
     prices = _panel([[10, np.nan], [10, 20]])
-    predictions = xr.Dataset({"ret": prices.fillna(0) * 0 + 1.0})
 
     class _Blind(PortfolioConstructor):
         config_cls = TopNConfig
@@ -131,9 +140,7 @@ def test_the_driver_refuses_weight_on_a_symbol_neither_tradable_nor_held():
             return xr.full_like(context.current_weights, 0.5)
 
     with pytest.raises(ValueError, match=r"_Blind.*BBB.*2024-01-01"):
-        _Blind(TopNConfig(direction="long_only", top_n=1)).construct_panel(
-            predictions, prices.notnull(), np.array([True, False]), fill_price=prices, valuation_price=prices
-        )
+        _weights(_Blind(TopNConfig(direction="long_only", top_n=1)), prices, 2)
 
 
 class _Recorder(PortfolioConstructor):
@@ -156,12 +163,8 @@ def test_the_current_weights_model_a_rejected_order():
     no price at bar 3, so the order is rejected and BBB is still held at bar 4."""
     _Recorder.seen = []
     fill = _panel([[10, 20], [10, 20], [10, 20], [10, np.nan], [10, 40], [10, 40]])
-    predictions = xr.Dataset({"ret": fill.fillna(0) * 0 + 1.0})
 
-    _Recorder(TopNConfig(direction="long_only", top_n=1)).construct_panel(
-        predictions, fill.notnull(), np.array([True, False, True, False, True, False]),
-        fill_price=fill, valuation_price=fill,
-    )
+    _weights(_Recorder(TopNConfig(direction="long_only", top_n=1)), fill, 2)
 
     at_bar_4 = _Recorder.seen[2].current_weights.values
     # AAA: 0.5 of 1.0 stays 0.5 (flat price); BBB doubled from 20 to 40.
@@ -173,14 +176,10 @@ def test_a_delisted_holding_is_cash_after_its_settlement():
     held (and not locked) although it has no price."""
     _Recorder.seen = []
     fill = _panel([[10, 20], [10, 20], [10, np.nan], [10, np.nan], [10, np.nan]])
-    predictions = xr.Dataset({"ret": fill.fillna(0) * 0 + 1.0})
     delisted = xr.zeros_like(fill, dtype=bool)
     delisted[1, 1] = True
 
-    _Recorder(TopNConfig(direction="long_only", top_n=1)).construct_panel(
-        predictions, fill.notnull(), np.array([True, False, False, True, False]),
-        fill_price=fill, valuation_price=fill, delisted=delisted,
-    )
+    _weights(_Recorder(TopNConfig(direction="long_only", top_n=1)), fill, 3, delisted)
 
     later = _Recorder.seen[1]
     np.testing.assert_allclose(later.current_weights.values, [0.5, 0.0])

@@ -1,6 +1,6 @@
-"""The holdings ``construct_panel`` hands a rule are the engine's, costs included (#118).
+"""The holdings ``DecisionInputs.weights`` hands a rule are the engine's, costs included (#118).
 
-``construct_panel`` replays each rebalance's weights through the Execution
+``DecisionInputs.weights`` replays each rebalance's weights through the Execution
 module with the settings it is given (``execution=``), so the current weights
 a rule receives at a rebalance bar equal what the vectorbt engine holds at
 that bar's close when it simulates the same weights with the same settings.
@@ -24,6 +24,7 @@ from quantlab.backtest.predefined.weights import WeightsVectorBt
 from quantlab.base.config import WeightsBacktestConfig
 from quantlab.base.portfolio import PortfolioConstructor
 from quantlab.dataset.memory import FrameDataset
+from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.utils.execution import ExecutionSettings
 
 NAN = np.nan
@@ -100,19 +101,15 @@ def _panel(values, name=None):
 def _construct(direction, execution=None):
     open_, close, scores = _market()
     dataset = _prices(open_, close)
-    panel = dataset.panel(str(BARS[0].date()), str(BARS[-1].date()))
-    mask = np.arange(N_BARS) % REBALANCE == 0
-    mask[-1] = False
-    kwargs = {} if execution is None else {"execution": execution}
-    weights = Proportional(ProportionalConfig(direction)).construct_panel(
-        _panel(scores).to_dataset(name="score"),
-        dataset.tradable_bars(panel, "open"),
-        mask,
-        fill_price=panel["open"],
-        valuation_price=panel["close"],
-        delisted=dataset.delisting_bars(panel, "close"),
-        **kwargs,
-    )
+    weights = DecisionInputs(
+        dataset,
+        Proportional(ProportionalConfig(direction)),
+        fill_column="open",
+        valuation_column="close",
+        rebalance_periods=REBALANCE,
+        anchor=BARS[0],
+        execution=execution,
+    ).weights(_panel(scores).to_dataset(name="score"))
     return dataset, weights["weight"], close
 
 

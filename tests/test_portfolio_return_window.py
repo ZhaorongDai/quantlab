@@ -22,6 +22,8 @@ import xarray as xr
 
 from quantlab.base.config import LedoitWolfConfig
 from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.dataset.memory import FrameDataset
+from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 
 SYMBOLS = ["AAA", "BBB"]
@@ -50,14 +52,18 @@ def _prices(values):
 
 
 def _run(prices, lookback, rebalance_at):
-    _Watch.seen = []
-    rebalance = np.zeros(prices.sizes["timestamp"], dtype=bool)
-    rebalance[list(rebalance_at)] = True
-    predictions = xr.Dataset({"ret": xr.ones_like(prices).fillna(1.0)})
-    _Watch(LedoitWolfConfig(lookback_bars=lookback)).construct_panel(
-        predictions, prices.notnull(), rebalance, fill_price=prices, valuation_price=prices
+    """The contexts ``DecisionInputs.context`` builds at ``rebalance_at``, holding nothing."""
+    inputs = DecisionInputs(
+        FrameDataset(xr.Dataset({"open": prices, "close": prices})),
+        _Watch(LedoitWolfConfig(lookback_bars=lookback)),
+        fill_column="open",
+        valuation_column="close",
+        rebalance_periods=1,
+        anchor=prices.timestamp.values[0],
     )
-    return _Watch.seen
+    flat = xr.DataArray(np.zeros(len(SYMBOLS)), dims="symbol", coords={"symbol": SYMBOLS})
+    predictions = xr.Dataset({"ret": ("symbol", np.ones(len(SYMBOLS)))}, coords={"symbol": SYMBOLS})
+    return [inputs.context(prices.timestamp.values[t], predictions, flat) for t in rebalance_at]
 
 
 PRICES = [[10, 20], [11, 21], [12, np.nan], [13, np.nan], [14, 25], [15, 26]]

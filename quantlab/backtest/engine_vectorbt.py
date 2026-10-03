@@ -99,7 +99,7 @@ class VectorBtBacktester(BaseBacktester):
                 session_minutes_per_day=390,
             )
 
-            def _generate_signals(self, predictions, prices):
+            def _generate_signals(self, predictions, prices, delisted):
                 ...  # a Dataset with ``weight`` on (timestamp, symbol)
 
         result = MyBacktester(config).run()
@@ -145,7 +145,7 @@ class VectorBtBacktester(BaseBacktester):
     )
 
     def _simulate(
-        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None
+        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None, *, delisted=None
     ) -> SimulationResult:
         """Simulate ``weights`` on ``prices`` with ``Portfolio.from_orders``.
 
@@ -155,7 +155,8 @@ class VectorBtBacktester(BaseBacktester):
         at bar ``t + 1``, rejections and delisting settlements included), and
         vectorbt's results are mapped back onto the engine-neutral
         ``SimulationResult``. The bar interval is the most common difference
-        between consecutive timestamps.
+        between consecutive timestamps. ``delisted`` holds the delisting
+        marks to settle; the price dataset's ``delisting_bars`` when omitted.
 
         Raises
         ------
@@ -188,12 +189,18 @@ class VectorBtBacktester(BaseBacktester):
             .to_pandas()
             .ffill()
         )
-        dataset = cfg.price_dataset if dataset is None else dataset
-        delisted = np.asarray(
-            dataset.delisting_bars(
+        if delisted is None:
+            dataset = cfg.price_dataset if dataset is None else dataset
+            delisted = dataset.delisting_bars(
                 prices, market.valuation_price_column  # type: ignore[union-attr]
             )
-            .transpose("timestamp", "symbol")
+        delisted = np.asarray(
+            delisted.transpose("timestamp", "symbol")
+            .reindex(
+                timestamp=prices.timestamp.values,
+                symbol=prices.symbol.values,
+                fill_value=False,
+            )
             .values,
             dtype=bool,
         )
