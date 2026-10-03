@@ -19,15 +19,10 @@ import pandas as pd
 import vectorbt as vbt
 import xarray as xr
 from loguru import logger
-from vectorbt.generic.enums import DrawdownStatus
 from vectorbt.portfolio.enums import SizeType
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
-
-#: The integer ``status`` of a recovered drawdown in vectorbt's raw
-#: ``Drawdowns.records``. Read from vectorbt's enum rather than written as a
-#: literal, so a renumbering upstream cannot swap "recovered" and "active".
-DRAWDOWN_RECOVERED = int(DrawdownStatus.Recovered)
+from quantlab.utils import backtest_stats
 
 #: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt
 #: refuses a price of 0, and at the smallest positive float the trade's cash is
@@ -578,52 +573,17 @@ class VectorBtBacktester(BaseBacktester):
     def _drawdown_span(self, simulation: SimulationResult) -> dict | None:
         """Return the deepest drawdown as a span from its valley to its recovery.
 
-        The record is chosen by depth (``valley_val / peak_val - 1``), never by
-        duration: the deepest drawdown and the longest one are often different
-        records. The returned dict has ``valley`` and ``end`` (bar labels),
+        ``backtest_stats.drawdown_span`` of the simulated value: the deepest
+        of vectorbt's drawdown records by ``valley_val / peak_val - 1``,
+        never the longest, with ``valley`` and ``end`` (bar labels),
         ``bars`` (``end_idx - valley_idx``, a bar count rather than calendar
         days), ``depth`` (a negative float) and ``recovered``. Because it is
-        measured from the valley rather than from the drawdown's start, and on
-        the deepest episode rather than the longest, ``bars`` is usually
-        smaller than vectorbt's ``Max Drawdown Duration`` and is not comparable
-        with it.
-
-        Returns ``None`` when there are no drawdown records, no record has a
-        finite depth, or an index falls outside the value axis. Nothing here is
-        wrapped in a broad ``except``: a real change in vectorbt's record
-        layout should surface in ``_engine_stats``, which runs earlier, rather
-        than be swallowed while writing the report.
+        measured from the valley rather than from the drawdown's start, and
+        on the deepest episode rather than the longest, ``bars`` is usually
+        smaller than vectorbt's ``Max Drawdown Duration`` and is not
+        comparable with it. ``None`` when no drawdown has a finite depth.
         """
-        records = simulation.native.drawdowns.records  # type: ignore[union-attr]
-        if len(records) == 0:
-            return None
-
-        peak = records["peak_val"].to_numpy(dtype=np.float64)
-        valley = records["valley_val"].to_numpy(dtype=np.float64)
-        # A non-positive peak has no meaningful percentage depth. Dividing by
-        # NaN gives NaN without a division warning.
-        depth = valley / np.where(peak > 0.0, peak, np.nan) - 1.0
-        if not np.isfinite(depth).any():
-            return None
-
-        row = int(np.nanargmin(depth))
-        # Read each column as an array: `.iloc[row]` would upcast the mixed
-        # int/float row to float64, and a float cannot index timestamps.
-        valley_idx = int(records["valley_idx"].to_numpy()[row])
-        end = int(records["end_idx"].to_numpy()[row])
-        status = int(records["status"].to_numpy()[row])
-
-        timestamps = simulation.value.timestamp.values
-        if not (0 <= valley_idx < timestamps.size and 0 <= end < timestamps.size):
-            return None
-
-        return {
-            "valley": self._bar_label(timestamps[valley_idx]),
-            "end": self._bar_label(timestamps[end]),
-            "bars": end - valley_idx,
-            "depth": float(depth[row]),
-            "recovered": status == DRAWDOWN_RECOVERED,
-        }
+        return backtest_stats.drawdown_span(simulation.value)
 
     def _report_notes(self) -> list[str]:
         """Return the base notes plus the trade-view and drawdown-marker notes.

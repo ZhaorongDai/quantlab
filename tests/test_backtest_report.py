@@ -156,7 +156,12 @@ def test_the_report_is_one_self_contained_file_loading_plotly_from_the_cdn(tmp_p
 
 
 def test_the_module_is_a_leaf():
-    """No `quantlab.*` import may appear in the report module."""
+    """The only `quantlab.*` import of the report module is `backtest_stats`.
+
+    `backtest_stats` is itself a leaf (numpy, pandas, xarray), so the report
+    module still drags in no quantlab layer (#115: its public builders label
+    bars and compute turnover through it).
+    """
     import pathlib
 
     import quantlab.utils.backtest_report as module
@@ -166,6 +171,7 @@ def test_the_module_is_a_leaf():
         line
         for line in source.splitlines()
         if line.startswith(("from quantlab", "import quantlab"))
+        and line != "from quantlab.utils import backtest_stats"
     ]
     assert offenders == []
 

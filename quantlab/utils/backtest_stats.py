@@ -1,9 +1,12 @@
-"""Return, relative, win-rate and turnover statistics of a backtest, as public functions.
+"""Return, relative, win-rate, turnover and trade statistics of a backtest, as public functions.
 
 These are the returns-based rows and the turnover rows of a backtest run's
 ``metrics.json``: the ``in_sample``, ``out_of_sample`` and ``benchmark``
 return blocks, the ``relative`` block, the win rates and the three turnover
-rows. ``quantlab.base.backtest`` computes them through this module for every
+rows; and the round-trip trade rows and ``Max Gross Exposure [%]`` of its
+``whole`` block, from fill records (``round_trips``, ``round_trip_stats``,
+``exposure_stats``), with the deepest drawdown the report marks
+(``drawdown_span``). ``quantlab.base.backtest`` computes them through this module for every
 engine, and a tool that simulates a run elsewhere
 (an event-driven replay of a quantlab run) calls the same functions to report
 comparable numbers.
@@ -106,6 +109,37 @@ def label_ns(label) -> np.datetime64:
     np.datetime64('2024-01-02T00:00:00.000000000')
     """
     return np.datetime64(pd.Timestamp(str(label)).to_datetime64(), "ns")
+
+
+def bar_label(value) -> str:
+    """Return the label ``metrics.json`` and the report write for a bar.
+
+    A bar at midnight is written as an ISO date, any other bar as a full
+    ISO timestamp, so daily labels stay dates while intraday labels keep
+    their time of day; ``label_ns`` reads either back.
+
+    Parameters
+    ----------
+    value
+        A bar: a ``numpy.datetime64``, a ``pd.Timestamp`` or a string
+        ``pd.Timestamp`` accepts.
+
+    Returns
+    -------
+    str
+        The label.
+
+    Examples
+    --------
+    >>> bar_label(np.datetime64("2024-01-02T00:00"))
+    '2024-01-02'
+    >>> bar_label(pd.Timestamp("2024-01-02 15:30"))
+    '2024-01-02T15:30:00'
+    """
+    ts = pd.Timestamp(str(value)) if isinstance(value, str) else pd.Timestamp(value)
+    if ts == ts.normalize():
+        return ts.strftime("%Y-%m-%d")
+    return ts.isoformat()
 
 
 def in_ranges(timestamps, ranges: Sequence[tuple[str, str]]) -> np.ndarray:
@@ -730,4 +764,591 @@ def turnover_stats(
         "Turnover per Rebalance [%]": mean * 100.0,
         "Total Turnover [%]": float(values.sum()) * 100.0,
         "Annualized Turnover [%]": mean * bars_per_year / rebalance_periods * 100.0,
+    }
+
+
+#: vectorbt's tolerances for "the same quantity" (``vectorbt.utils.math_``).
+_REL_TOL = 1e-9
+_ABS_TOL = 1e-12
+
+
+def _is_close(a: float, b: float) -> bool:
+    """vectorbt's ``is_close_nb``: equal up to its relative and absolute tolerance."""
+    if np.isnan(a) or np.isnan(b) or np.isinf(a) or np.isinf(b):
+        return False
+    if a == b:
+        return True
+    return abs(a - b) <= max(_REL_TOL * max(abs(a), abs(b)), _ABS_TOL)
+
+
+def _add(a: float, b: float) -> float:
+    """vectorbt's ``add_nb``: ``a + b``, exactly 0 when the two cancel up to tolerance."""
+    zero = _is_close(abs(a), abs(b)) if np.sign(a) != np.sign(b) else _is_close(a + b, 0.0)
+    return 0.0 if zero else a + b
+
+
+def _loop_sum(values) -> float:
+    """Sum in order, starting from 0, as a compiled loop does."""
+    total = 0.0
+    for value in values:
+        total += value
+    return float(total)
+
+
+def _pnl_and_return(
+    size: float, entry_price: float, entry_fees: float, exit_price: float, exit_fees: float, short: bool
+) -> tuple[float, float]:
+    """vectorbt's ``get_trade_stats_nb``: the PnL and return of one trade."""
+    entry_value = size * entry_price
+    difference = _add(size * exit_price, -entry_value)
+    if difference != 0 and short:
+        difference *= -1
+    pnl = difference - entry_fees - exit_fees
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ret = float(np.float64(pnl) / np.float64(entry_value))
+    return pnl, ret
+
+
+def _symbol_exit_trades(sizes, prices, fees, bars, last_bar: int, last_price: float) -> list[dict]:
+    """vectorbt's ``get_exit_trades_nb`` for one symbol's fills, in time order.
+
+    Every reduction of a position (a sell in a long one, a buy in a short
+    one) is one exit trade carrying its share of the entry price and fees,
+    and ``trip`` numbers the flat-to-flat position it belongs to. A fill
+    that crosses zero closes the position and opens the opposite one. A
+    position not flat after the last fill is one open trade marked at
+    ``last_price`` on ``last_bar``.
+    """
+    trades: list[dict] = []
+    in_position, trip = False, -1
+    for size, price, fee, bar in zip(sizes, prices, fees, bars):
+        quantity = abs(size)
+        buy = size > 0
+        if not in_position:
+            in_position, trip = True, trip + 1
+            entry_bar, short = bar, not buy
+            entry_size = entry_gross = entry_fees = 0.0
+        if buy != short:
+            entry_size += quantity
+            entry_gross += quantity * price
+            entry_fees += fee
+        elif _is_close(quantity, entry_size) or quantity < entry_size:
+            exit_size = entry_size if _is_close(quantity, entry_size) else quantity
+            trades.append(dict(
+                trip=trip, size=exit_size, entry_bar=entry_bar, entry_price=entry_gross / entry_size,
+                entry_fees=exit_size / entry_size * entry_fees, exit_bar=bar, exit_price=price,
+                exit_fees=fee, short=short, open=False,
+            ))
+            if _is_close(quantity, entry_size):
+                in_position = False
+            else:
+                fraction = (entry_size - quantity) / entry_size
+                entry_size *= fraction
+                entry_gross *= fraction
+                entry_fees *= fraction
+        else:
+            closed_fees = entry_size / quantity * fee
+            trades.append(dict(
+                trip=trip, size=entry_size, entry_bar=entry_bar, entry_price=entry_gross / entry_size,
+                entry_fees=entry_fees, exit_bar=bar, exit_price=price,
+                exit_fees=closed_fees, short=short, open=False,
+            ))
+            entry_size = quantity - entry_size
+            entry_gross = entry_size * price
+            entry_fees = fee - closed_fees
+            entry_bar, short, trip = bar, not short, trip + 1
+    if in_position and not _is_close(-entry_size, 0.0) and -entry_size < 0:
+        trades.append(dict(
+            trip=trip, size=entry_size, entry_bar=entry_bar, entry_price=entry_gross / entry_size,
+            entry_fees=entry_fees, exit_bar=last_bar, exit_price=last_price,
+            exit_fees=0.0, short=short, open=True,
+        ))
+    for trade in trades:
+        trade["pnl"], trade["return"] = _pnl_and_return(
+            trade["size"], trade["entry_price"], trade["entry_fees"],
+            trade["exit_price"], trade["exit_fees"], trade["short"],
+        )
+    return trades
+
+
+def _position(trades: list[dict]) -> dict:
+    """vectorbt's ``fill_position_record_nb``: one round trip from its exit trades.
+
+    A round trip with a single exit trade is that trade, as vectorbt copies
+    it rather than re-aggregating (which could round differently).
+    """
+    if len(trades) == 1:
+        return dict(trades[0])
+    size = _loop_sum(t["size"] for t in trades)
+    entry_price = _loop_sum(t["size"] * t["entry_price"] for t in trades) / size
+    exit_price = _loop_sum(t["size"] * t["exit_price"] for t in trades) / size
+    entry_fees = _loop_sum(t["entry_fees"] for t in trades)
+    exit_fees = _loop_sum(t["exit_fees"] for t in trades)
+    last = trades[-1]
+    pnl, ret = _pnl_and_return(size, entry_price, entry_fees, exit_price, exit_fees, last["short"])
+    return dict(
+        trip=last["trip"], size=size, entry_bar=trades[0]["entry_bar"], entry_price=entry_price,
+        entry_fees=entry_fees, exit_bar=last["exit_bar"], exit_price=exit_price,
+        exit_fees=exit_fees, short=last["short"], open=last["open"], pnl=pnl,
+        **{"return": ret},
+    )
+
+
+def _close_axes(close: xr.DataArray) -> tuple[np.ndarray, list[str], np.ndarray]:
+    """Return the bars, the symbols and the forward-filled prices of ``close``."""
+    timestamps = close.timestamp.values.astype("datetime64[ns]")
+    symbols = [str(s) for s in close.symbol.values]
+    marks = close.transpose("timestamp", "symbol").to_pandas().ffill().to_numpy(dtype=np.float64)
+    return timestamps, symbols, marks
+
+
+def _locate(
+    records: xr.Dataset, timestamps: np.ndarray, symbols: list[str], what: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the bar and the symbol index on ``close``'s axes of every entry of ``records``.
+
+    Raises
+    ------
+    ValueError
+        If an entry's ``timestamp`` is not one of ``timestamps`` or its
+        ``symbol`` not one of ``symbols``; ``what`` names the entry.
+    """
+    ts = np.asarray(records["timestamp"].values).astype("datetime64[ns]")
+    bar = np.searchsorted(timestamps, ts)
+    on_axis = (bar < timestamps.size) & (timestamps[np.minimum(bar, timestamps.size - 1)] == ts)
+    if not on_axis.all():
+        raise ValueError(f"a {what} at {ts[~on_axis][0]} is not a bar of close")
+    column_of = {symbol: i for i, symbol in enumerate(symbols)}
+    names = [str(s) for s in np.asarray(records["symbol"].values)]
+    unknown = [name for name in names if name not in column_of]
+    if unknown:
+        raise ValueError(f"a {what} of {unknown[0]!r} is not a symbol of close")
+    return bar, np.array([column_of[name] for name in names], dtype=np.int64)
+
+
+def _entries(records: xr.Dataset | None) -> int:
+    """The number of entries of a fill or cash-flow dataset; 0 for ``None`` or an empty one."""
+    if records is None or "timestamp" not in records:
+        return 0
+    return int(records["timestamp"].size)
+
+
+def round_trips(
+    fills: xr.Dataset, close: xr.DataArray, *, cash_flows: xr.Dataset | None = None
+) -> xr.Dataset:
+    """Return the position round trips of a run's fills, one per flat-to-flat holding.
+
+    A round trip of a symbol starts with the fill that opens a position from
+    flat and ends with the fill that brings it back to flat; adding to or
+    trimming the position does not end it, and a fill that crosses zero
+    ends it and opens the opposite one. This is vectorbt's position trade
+    view (``trades_type="positions"``), computed with vectorbt's arithmetic
+    and tolerances, so on a vectorbt run's own fills every number equals
+    vectorbt's. The entry price is the size-weighted average of the fills
+    that built the position and the exit price that of the fills that
+    reduced it, each fill's fee split pro rata. A position still held after
+    the last fill is an open round trip, marked at its last valuation
+    price, ending on the last bar without an exit fee.
+
+    The PnL of a round trip is its exit value minus its entry value (the
+    other way round for a short) minus its fees, plus the ``cash_flows`` it
+    received while open, and its return is that PnL over its entry value.
+    A cash flow is timestamped with the bar a position had to be held into
+    to earn it (for a dividend, its ex-date bar): it belongs to the round
+    trip of its symbol held at the end of the previous bar, that is entered
+    before the flow's bar and exited on it or later (or still open). A
+    position bought on the ex-date bar does not earn it, and on a bar where
+    one round trip ends and the next begins it belongs to the one that
+    ends. Splits are not an input: give the fills and ``close`` on one
+    adjustment basis, so a split neither ends a round trip nor turns its
+    exit into a reversal.
+
+    Parameters
+    ----------
+    fills : xarray.Dataset
+        One fill per entry of a single dimension, with the variables
+        ``timestamp`` (a bar of ``close``), ``symbol``, ``size`` (signed:
+        positive buys, negative sells), ``price`` and ``fees`` (the fee paid,
+        in cash). Fills of one symbol are taken in time order, and two fills
+        of one bar in the order given. Quantities and prices must be on one
+        adjustment basis, so a split is not a fill. A dataset without
+        entries means no fills.
+    close : xarray.DataArray
+        Valuation prices on ``(timestamp, symbol)``: the bar axis (round
+        trip lengths are counted in its bars) and, forward-filled, the
+        price an open round trip is marked at. Round trips are listed in
+        the order of its ``symbol`` axis, then in time order.
+    cash_flows : xarray.Dataset, optional
+        Cash a position received while open (a dividend or distribution, or
+        a negative amount paid on a short), one per entry of a single
+        dimension, with ``timestamp`` (the bar the position had to be held
+        into, see above), ``symbol`` and ``amount``.
+
+    Returns
+    -------
+    xarray.Dataset
+        On a ``trade`` dimension: ``symbol``, ``direction`` (``"Long"`` or
+        ``"Short"``), ``status`` (``"Open"`` or ``"Closed"``),
+        ``entry_timestamp``, ``exit_timestamp`` (the last bar for an open
+        round trip), ``bars`` (exit bar minus entry bar, on the ``close``
+        axis), ``size``, ``entry_price``, ``exit_price``, ``fees``,
+        ``cash_flow``, ``pnl`` and ``return``.
+
+    Raises
+    ------
+    ValueError
+        If a fill's or cash flow's bar is not on the ``close`` axis, its
+        symbol is not on it either, or no round trip of a cash flow's symbol
+        was held into its bar.
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=4)
+    >>> close = xr.DataArray(
+    ...     [[10.0], [11.0], [12.0], [13.0]], dims=("timestamp", "symbol"),
+    ...     coords={"timestamp": bars, "symbol": ["AAA"]},
+    ... )
+    >>> fills = xr.Dataset({
+    ...     "timestamp": ("fill", bars[[0, 1, 2]].values),
+    ...     "symbol": ("fill", ["AAA"] * 3),
+    ...     "size": ("fill", [10.0, -4.0, -6.0]),
+    ...     "price": ("fill", [10.0, 11.0, 12.0]),
+    ...     "fees": ("fill", [0.0, 0.0, 0.0]),
+    ... })
+    >>> flows = xr.Dataset({
+    ...     "timestamp": ("flow", bars[[1]].values),
+    ...     "symbol": ("flow", ["AAA"]),
+    ...     "amount": ("flow", [5.0]),
+    ... })
+    >>> trips = round_trips(fills, close, cash_flows=flows)
+    >>> trips["status"].values.tolist(), trips["bars"].values.tolist()
+    (['Closed'], [2])
+    >>> float(trips["pnl"][0]), float(trips["return"][0])
+    (21.0, 0.21)
+    """
+    timestamps, symbols, marks = _close_axes(close)
+    n_fills = _entries(fills)
+    trips: list[dict] = []
+    if n_fills:
+        bar, column = _locate(fills, timestamps, symbols, "fill")
+        sizes = np.asarray(fills["size"].values, dtype=np.float64)
+        prices = np.asarray(fills["price"].values, dtype=np.float64)
+        fees = np.asarray(fills["fees"].values, dtype=np.float64)
+        order = np.lexsort((np.arange(n_fills), bar, column))
+        for col in range(len(symbols)):
+            rows = order[column[order] == col]
+            rows = rows[sizes[rows] != 0]
+            if rows.size == 0:
+                continue
+            exits = _symbol_exit_trades(
+                sizes[rows], prices[rows], fees[rows], bar[rows],
+                timestamps.size - 1, float(marks[-1, col]),
+            )
+            for trip in sorted({t["trip"] for t in exits}):
+                trips.append({**_position([t for t in exits if t["trip"] == trip]), "column": col})
+
+    flow_sum = np.zeros(len(trips), dtype=np.float64)
+    if _entries(cash_flows):
+        flow_bar, flow_column = _locate(cash_flows, timestamps, symbols, "cash flow")
+        amounts = np.asarray(cash_flows["amount"].values, dtype=np.float64)
+        for b, col, amount in zip(flow_bar, flow_column, amounts):
+            owner = next(
+                (i for i, t in enumerate(trips)
+                 if t["column"] == col and t["entry_bar"] < b
+                 and (t["open"] or b <= t["exit_bar"])),
+                None,
+            )
+            if owner is None:
+                raise ValueError(
+                    f"a cash flow of {symbols[col]!r} at {timestamps[b]} falls on a bar "
+                    f"no position was held into: the symbol was flat at the previous close"
+                )
+            flow_sum[owner] += amount
+
+    pnl = np.array([t["pnl"] for t in trips], dtype=np.float64)
+    ret = np.array([t["return"] for t in trips], dtype=np.float64)
+    entry_value = np.array([t["size"] * t["entry_price"] for t in trips], dtype=np.float64)
+    flowed = flow_sum != 0
+    pnl[flowed] += flow_sum[flowed]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ret[flowed] = pnl[flowed] / entry_value[flowed]
+
+    def _column(key: str, dtype) -> np.ndarray:
+        return np.array([t[key] for t in trips], dtype=dtype)
+
+    return xr.Dataset(
+        {
+            "symbol": ("trade", np.array([symbols[t["column"]] for t in trips], dtype=object).astype(str)
+                       if trips else np.array([], dtype=str)),
+            "direction": ("trade", np.array(["Short" if t["short"] else "Long" for t in trips], dtype=str)),
+            "status": ("trade", np.array(["Open" if t["open"] else "Closed" for t in trips], dtype=str)),
+            "entry_timestamp": ("trade", timestamps[_column("entry_bar", np.int64)]),
+            "exit_timestamp": ("trade", timestamps[_column("exit_bar", np.int64)]),
+            "bars": ("trade", _column("exit_bar", np.int64) - _column("entry_bar", np.int64)),
+            "size": ("trade", _column("size", np.float64)),
+            "entry_price": ("trade", _column("entry_price", np.float64)),
+            "exit_price": ("trade", _column("exit_price", np.float64)),
+            "fees": ("trade", _column("entry_fees", np.float64) + _column("exit_fees", np.float64)),
+            "cash_flow": ("trade", flow_sum),
+            "pnl": ("trade", pnl),
+            "return": ("trade", ret),
+        }
+    )
+
+
+def round_trip_stats(trips: xr.Dataset, *, bar_interval) -> dict:
+    """Summarize round trips as the trade rows of a run's ``whole`` block.
+
+    The rows, in this order, are what vectorbt's ``Portfolio.stats`` reports
+    in the position trade view, and on ``round_trips`` of a vectorbt run's
+    own fills they are equal to the bit: ``Total Trades``, ``Total Closed
+    Trades`` and ``Total Open Trades`` (counts), ``Open Trade PnL`` (the
+    summed PnL of the open round trips, 0 without one), then over the
+    closed round trips only: ``Win Rate [%]`` (PnL above zero), ``Best
+    Trade [%]`` and ``Worst Trade [%]`` (returns), ``Avg Winning Trade
+    [%]`` and ``Avg Losing Trade [%]``, ``Avg Winning Trade Duration`` and
+    ``Avg Losing Trade Duration`` (mean ``bars`` times ``bar_interval``),
+    ``Profit Factor`` (summed winning PnL over the absolute summed losing
+    PnL) and ``Expectancy`` (``win rate x mean win - (1 - win rate) x
+    |mean loss|``). A row with nothing to average is NaN (``NaT`` for a
+    duration).
+
+    Parameters
+    ----------
+    trips : xarray.Dataset
+        ``round_trips``'s output, or any dataset with its ``status``,
+        ``bars``, ``pnl`` and ``return`` on a ``trade`` dimension.
+    bar_interval
+        One bar, anything ``pd.Timedelta`` accepts.
+
+    Returns
+    -------
+    dict
+        The thirteen rows.
+
+    Examples
+    --------
+    >>> trips = xr.Dataset({
+    ...     "status": ("trade", ["Closed", "Closed", "Closed", "Open"]),
+    ...     "bars": ("trade", [2, 4, 3, 1]),
+    ...     "pnl": ("trade", [30.0, -10.0, 20.0, 5.0]),
+    ...     "return": ("trade", [0.3, -0.1, 0.2, 0.05]),
+    ... })
+    >>> stats = round_trip_stats(trips, bar_interval="1D")
+    >>> stats["Total Trades"], stats["Open Trade PnL"], round(stats["Win Rate [%]"], 4)
+    (4, 5.0, 66.6667)
+    >>> stats["Avg Winning Trade Duration"], stats["Profit Factor"]
+    (Timedelta('2 days 12:00:00'), 5.0)
+    """
+    status = np.asarray(trips["status"].values).astype(str) if "status" in trips else np.array([], dtype=str)
+    closed = status == "Closed"
+    is_open = status == "Open"
+    pnl = np.asarray(trips["pnl"].values, dtype=np.float64) if closed.size else np.array([])
+    ret = np.asarray(trips["return"].values, dtype=np.float64) if closed.size else np.array([])
+    bars = np.asarray(trips["bars"].values, dtype=np.int64) if closed.size else np.array([], dtype=np.int64)
+    interval = pd.Timedelta(bar_interval)
+
+    def _mean(values: np.ndarray) -> float:
+        kept = values[~np.isnan(values)]
+        return _loop_sum(kept) / kept.size if kept.size else float("nan")
+
+    def _sum(values: np.ndarray) -> float:
+        return _loop_sum(values[~np.isnan(values)]) if values.size else float("nan")
+
+    c_pnl, c_ret, c_bars = pnl[closed], ret[closed], bars[closed]
+    winning, losing = c_pnl > 0.0, c_pnl < 0.0
+    count = int(closed.sum())
+    with np.errstate(divide="ignore", invalid="ignore"):
+        win_rate = float(np.float64(int(winning.sum())) / np.float64(count))
+    total_win, total_loss = _sum(c_pnl[winning]), _sum(c_pnl[losing])
+    avg_win, avg_loss = _mean(c_pnl[winning]), _mean(c_pnl[losing])
+    if count:
+        total_win = 0.0 if np.isnan(total_win) else total_win
+        total_loss = 0.0 if np.isnan(total_loss) else total_loss
+        avg_win = 0.0 if np.isnan(avg_win) else avg_win
+        avg_loss = 0.0 if np.isnan(avg_loss) else avg_loss
+    with np.errstate(divide="ignore", invalid="ignore"):
+        profit_factor = float(np.float64(total_win) / np.float64(abs(total_loss)))
+
+    def _duration(mask: np.ndarray):
+        mean = _mean(c_bars[mask].astype(np.float64))
+        return pd.NaT if np.isnan(mean) else mean * interval
+
+    return {
+        "Total Trades": int(status.size),
+        "Total Closed Trades": count,
+        "Total Open Trades": int(is_open.sum()),
+        "Open Trade PnL": _loop_sum(pnl[is_open]),
+        "Win Rate [%]": win_rate * 100,
+        "Best Trade [%]": float(np.max(c_ret)) * 100 if count else float("nan"),
+        "Worst Trade [%]": float(np.min(c_ret)) * 100 if count else float("nan"),
+        "Avg Winning Trade [%]": _mean(c_ret[winning]) * 100,
+        "Avg Losing Trade [%]": _mean(c_ret[losing]) * 100,
+        "Avg Winning Trade Duration": _duration(winning),
+        "Avg Losing Trade Duration": _duration(losing),
+        "Profit Factor": profit_factor,
+        "Expectancy": win_rate * avg_win - (1 - win_rate) * abs(avg_loss),
+    }
+
+
+def exposure_stats(fills: xr.Dataset, close: xr.DataArray, cash: xr.DataArray) -> dict:
+    """Return the ``Max Gross Exposure [%]`` row of a run's ``whole`` block.
+
+    Gross exposure on a bar is the summed absolute value of the positions
+    held after it (each position marked at its forward-filled ``close``)
+    over that sum plus the *free* cash, and the row is its maximum over the
+    bars, in percent (0 on a bar where the denominator is 0). Free cash is
+    vectorbt's: the cash balance minus twice the short debt, the debt being
+    what the open shorts were sold for (a cover repays its share of it at
+    the average short price). Without shorts it is the cash, so the row is
+    the largest share of the portfolio's value held in positions. On a
+    vectorbt run's own fills and cash the row equals vectorbt's to rounding.
+
+    Parameters
+    ----------
+    fills : xarray.Dataset
+        The fills, as for ``round_trips`` (``timestamp``, ``symbol``,
+        signed ``size`` and ``price``).
+    close : xarray.DataArray
+        Valuation prices on ``(timestamp, symbol)``.
+    cash : xarray.DataArray
+        The cash balance after each bar, on the ``timestamp`` axis of
+        ``close``, holding the proceeds of every short sale (vectorbt's
+        convention), so that cash plus the signed position values is the
+        portfolio's value.
+
+    Returns
+    -------
+    dict
+        The one row.
+
+    Raises
+    ------
+    ValueError
+        If a fill's bar or symbol is not on the ``close`` axes.
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=3)
+    >>> close = xr.DataArray(
+    ...     [[10.0], [12.0], [12.0]], dims=("timestamp", "symbol"),
+    ...     coords={"timestamp": bars, "symbol": ["AAA"]},
+    ... )
+    >>> fills = xr.Dataset({
+    ...     "timestamp": ("fill", bars[[0]].values), "symbol": ("fill", ["AAA"]),
+    ...     "size": ("fill", [50.0]), "price": ("fill", [10.0]),
+    ... })
+    >>> cash = xr.DataArray([500.0, 500.0, 500.0], dims="timestamp", coords={"timestamp": bars})
+    >>> {key: round(value, 4) for key, value in exposure_stats(fills, close, cash).items()}
+    {'Max Gross Exposure [%]': 54.5455}
+    """
+    timestamps, symbols, marks = _close_axes(close)
+    position_change = np.zeros(marks.shape, dtype=np.float64)
+    debt_change = np.zeros(marks.shape, dtype=np.float64)
+    if _entries(fills):
+        bar, column = _locate(fills, timestamps, symbols, "fill")
+        ts = np.asarray(fills["timestamp"].values)
+        sizes = np.asarray(fills["size"].values, dtype=np.float64)
+        prices = np.asarray(fills["price"].values, dtype=np.float64)
+        position = np.zeros(len(symbols))
+        debt = np.zeros(len(symbols))
+        for i in np.lexsort((np.arange(ts.size), bar, column)):
+            col, size = column[i], sizes[i]
+            before = position[col]
+            after = _add(before, size)
+            if size > 0 and before < 0:
+                covered = size if after < 0 else abs(before)
+                repaid = covered * (debt[col] / abs(before))
+                debt[col] = _add(debt[col], -repaid)
+                debt_change[bar[i], col] -= repaid
+            elif size < 0 and after < 0:
+                shorted = -size if before < 0 else abs(after)
+                debt[col] += shorted * prices[i]
+                debt_change[bar[i], col] += shorted * prices[i]
+            position[col] = after
+            position_change[bar[i], col] += size
+    held = np.cumsum(position_change, axis=0)
+    gross = np.zeros(timestamps.size)
+    for col in range(len(symbols)):
+        gross += np.abs(np.nan_to_num(held[:, col] * marks[:, col]))
+    free = np.asarray(cash.values, dtype=np.float64) - 2 * np.cumsum(debt_change, axis=0).sum(axis=1)
+    exposure = np.zeros(timestamps.size)
+    for i in range(timestamps.size):
+        denominator = _add(gross[i], free[i])
+        exposure[i] = 0.0 if denominator == 0 else gross[i] / denominator
+    return {"Max Gross Exposure [%]": float(np.nanmax(exposure)) * 100 if exposure.size else float("nan")}
+
+
+def drawdown_span(value: xr.DataArray) -> dict | None:
+    """Return the deepest drawdown of a value curve, from its valley to its recovery.
+
+    The drawdowns are vectorbt's records of the curve (a drawdown starts
+    after a peak and ends on the bar that regains it, or, still running, on
+    the last bar; NaN bars are skipped) and the one returned is the deepest
+    by ``valley / peak - 1``, never the longest. This is the span the
+    report marks on the equity curve and names in its "Setup" table.
+
+    Parameters
+    ----------
+    value : xarray.DataArray
+        Portfolio value on a ``timestamp`` axis.
+
+    Returns
+    -------
+    dict or None
+        ``valley`` and ``end`` (``bar_label`` strings of the deepest bar and
+        of the bar it recovered on, or the last bar), ``bars`` (bars from
+        the valley to the end, not calendar days), ``depth`` (a negative
+        fraction) and ``recovered``; ``None`` when the curve has no
+        drawdown with a finite depth.
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=6)
+    >>> value = xr.DataArray([100.0, 90.0, 80.0, 95.0, 101.0, 99.0],
+    ...                      dims="timestamp", coords={"timestamp": bars})
+    >>> drawdown_span(value)
+    {'valley': '2024-01-03', 'end': '2024-01-05', 'bars': 2, 'depth': -0.19999999999999996, 'recovered': True}
+    """
+    values = np.asarray(value.values, dtype=np.float64)
+    if values.size == 0:
+        return None
+    records: list[tuple[float, float, int, int, bool]] = []
+    running = False
+    peak_val, valley_val, valley_idx = values[0], values[0], -1
+    last = values.size - 1
+    for i, current in enumerate(values):
+        if np.isnan(current):
+            continue
+        stored = None
+        if np.isnan(peak_val) or current >= peak_val:
+            if not running:
+                peak_val = current
+            else:
+                running, stored = False, True
+        elif not running:
+            running, valley_val, valley_idx = True, current, i
+        elif current < valley_val:
+            valley_val, valley_idx = current, i
+        if i == last and running:
+            running, stored = False, False
+        if stored is not None:
+            records.append((peak_val, valley_val, valley_idx, i, stored))
+            peak_val, valley_val = current, current
+    if not records:
+        return None
+    peak = np.array([r[0] for r in records])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        depth = np.array([r[1] for r in records]) / np.where(peak > 0.0, peak, np.nan) - 1.0
+    if not np.isfinite(depth).any():
+        return None
+    row = int(np.nanargmin(depth))
+    _, _, valley_idx, end, recovered = records[row]
+    timestamps = value.timestamp.values
+    return {
+        "valley": bar_label(timestamps[valley_idx]),
+        "end": bar_label(timestamps[end]),
+        "bars": end - valley_idx,
+        "depth": float(depth[row]),
+        "recovered": recovered,
     }

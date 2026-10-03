@@ -10,6 +10,9 @@ the model layer, the dataset layer or vectorbt. What is locked here:
   the bit, on ordinary, flat, rising, short and gapped series;
 - a backtest's ``metrics.json`` rows are the functions' output on its
   simulation;
+- ``drawdown_span`` picks the deepest of vectorbt's drawdown records of a
+  value curve, as the vectorbt engine's report does (#115), and
+  ``bar_label`` writes a bar as ``metrics.json`` does;
 - importing the module loads none of quantlab's model or dataset layers,
   vectorbt or torch (checked in a fresh interpreter).
 """
@@ -26,6 +29,8 @@ import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.utils.backtest_stats import (
+    bar_label,
+    drawdown_span,
     in_ranges,
     relative_stats,
     return_stats,
@@ -151,3 +156,43 @@ def test_the_module_imports_no_quantlab_layer_or_heavy_library():
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().splitlines()[-1] == "[]"
+
+
+_DRAWDOWN_CURVES = {
+    "recovered": [100.0, 110.0, 99.0, 95.0, 104.0, 112.0, 108.0, 111.0],
+    "not_recovered": [100.0, 105.0, 90.0, 93.0, 88.0, 92.0],
+    "two_equal_depths": [100.0, 90.0, 100.0, 120.0, 108.0, 130.0],
+    "with_nan": [100.0, np.nan, 95.0, 97.0, np.nan, 101.0, 99.0],
+    "rising": [100.0, 101.0, 102.0, 103.0],
+    "random": list(1000.0 * np.exp(np.cumsum(np.random.default_rng(5).normal(0, 0.02, 200)))),
+}
+
+
+def _vectorbt_deepest(value: xr.DataArray) -> dict | None:
+    """The deepest of vectorbt's drawdown records of ``value``, read off the records."""
+    records = value.to_pandas().vbt.drawdowns.records
+    if len(records) == 0:
+        return None
+    depth = records["valley_val"].to_numpy() / records["peak_val"].to_numpy() - 1.0
+    row = int(np.nanargmin(depth))
+    timestamps = value.timestamp.values
+    valley, end = int(records["valley_idx"].iloc[row]), int(records["end_idx"].iloc[row])
+    return {
+        "valley": bar_label(timestamps[valley]),
+        "end": bar_label(timestamps[end]),
+        "bars": end - valley,
+        "depth": float(depth[row]),
+        "recovered": int(records["status"].iloc[row]) == 1,
+    }
+
+
+@pytest.mark.parametrize("name", sorted(_DRAWDOWN_CURVES))
+def test_drawdown_span_is_the_deepest_of_vectorbts_drawdown_records(name):
+    value = _series(_DRAWDOWN_CURVES[name])
+    assert drawdown_span(value) == _vectorbt_deepest(value)
+
+
+def test_bar_label_is_a_date_at_midnight_and_a_timestamp_otherwise():
+    assert bar_label(np.datetime64("2024-01-02T00:00")) == "2024-01-02"
+    assert bar_label(pd.Timestamp("2024-01-02 15:30")) == "2024-01-02T15:30:00"
+    assert bar_label("2024-01-02") == "2024-01-02"

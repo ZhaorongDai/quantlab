@@ -24,8 +24,17 @@ where an exception would discard the whole run rather than just the page.
 For the same reason every string that comes from the run passes through
 ``html.escape`` before it reaches the page, and plotly.js is loaded from its
 CDN so a run directory stays a few kilobytes (viewing the page needs network
-access). This module imports only the standard library, pandas, xarray and
-plotly.
+access).
+
+The inputs of the page have public builders taking plain data, so an
+executor that simulates elsewhere (an event-driven replay of a quantlab run)
+writes a page in exactly this format: ``report_summary`` (the "Setup"
+lines, from a run's config mapping), ``report_windows`` (the timeline),
+``report_chart_inputs`` (the chart and benchmark arguments) and
+``report_portfolio_inputs`` (the Portfolio and Rolling tabs).
+``quantlab.base.backtest`` builds its own pages through them. This module
+imports only the standard library, numpy, pandas, xarray, plotly and
+``quantlab.utils.backtest_stats``.
 """
 
 import html
@@ -33,12 +42,22 @@ import math
 import numbers
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import xarray as xr
 from plotly.subplots import make_subplots
 
-__all__ = ["backtest_report_figure", "write_backtest_report"]
+from quantlab.utils import backtest_stats
+
+__all__ = [
+    "backtest_report_figure",
+    "report_chart_inputs",
+    "report_portfolio_inputs",
+    "report_summary",
+    "report_windows",
+    "write_backtest_report",
+]
 
 #: Shown in place of a value the run does not have. An em dash rather than a
 #: hyphen so it cannot be read as the minus sign of a negative number.
@@ -110,6 +129,7 @@ def write_backtest_report(
     turnover: xr.DataArray | None = None,
     bars_per_year: float | None = None,
     windows: dict | None = None,
+    extra_tables: dict[str, dict] | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -202,6 +222,13 @@ def write_backtest_report(
         (the bars it traded) and ``in_sample`` (the traded bars inside its
         training window), each pair or ``None``. A pair that does not parse
         is left out of the drawing.
+    extra_tables : dict[str, dict] | None
+        More tables after the metric tables, one per entry: the key is the
+        table's heading and the value an ordered mapping of row label to
+        value, each value shown as an unknown metric is (a number by its
+        magnitude, a percent when the label ends in ``[%]``, a string as
+        it is). quantlab passes none; an executor adds the statistics only
+        it has, such as an event-driven replay's commissions.
 
     Examples
     --------
@@ -252,9 +279,319 @@ def write_backtest_report(
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
     Path(path).write_text(
-        _document(title, summary, metrics, tabs, notes, benchmark_name=name, windows=windows),
+        _document(title, summary, metrics, tabs, notes, benchmark_name=name, windows=windows,
+                  extra_tables=extra_tables),
         encoding="utf-8",
     )
+
+
+def _text(value) -> str:
+    """Render ``value`` as text, with a dash for ``None``."""
+    return DASH if value is None else str(value)
+
+
+def _component_repr(config: dict) -> str:
+    """The ``repr`` of a portfolio component, from its ``get_config()`` mapping.
+
+    ``ClassName(field=value, ...)`` in the mapping's order, a nested
+    component (a mapping with a ``name``) written the same way.
+    """
+    fields = ", ".join(
+        f"{key}={_component_repr(value) if isinstance(value, dict) and 'name' in value else repr(value)}"
+        for key, value in config.items()
+        if key != "name"
+    )
+    return f"{str(config.get('name', '')).rsplit('.', 1)[-1]}({fields})"
+
+
+def report_summary(
+    config: dict,
+    block: dict,
+    *,
+    bar_interval,
+    drawdown_span: dict | None = None,
+    benchmark_source: str | None = None,
+) -> dict[str, str]:
+    """Return the "Setup" lines of a run's page, the ``summary`` of ``write_backtest_report``.
+
+    Pure presentation: an ordered mapping of label to text, read from the
+    run's config mapping and metric block, computing nothing. The lines,
+    in order: ``Bar interval``; ``Benchmark`` when ``block`` has a
+    ``benchmark`` record; ``Deepest drawdown (valley to recovery)`` with a
+    ``drawdown_span``; ``Model mode``, or ``Signal`` for a run without a
+    model (a ``block`` without ``out_of_sample_ranges``); ``Rebalance
+    every``; ``Portfolio construction`` (the rule's ``repr``) when the
+    config names a constructor, else ``Top N`` and ``Direction``; ``Fees``;
+    ``Trained checkpoint`` when ``block`` records one. Every key is read
+    with ``.get()`` and a missing value is a dash, so a renamed key degrades
+    the page instead of raising. A caller replaces a line by assigning to
+    its key, which keeps the order (an executor states its own fee model
+    under ``Fees``), and appends its own lines after them.
+
+    Parameters
+    ----------
+    config : dict
+        The run's config mapping, as ``BaseBacktester.get_config()`` returns
+        it or a run directory's ``config.json`` holds it: ``model_mode``,
+        ``rebalance_periods``, ``constructor`` (the rule's ``get_config()``)
+        or ``top_n`` and ``direction``, and ``fees``. Read back from JSON a
+        tuple in the rule's config is a list, and its ``repr`` says so.
+    block : dict
+        The metric level carrying the split keys: a run's metrics, or the
+        ``stitched`` metrics of a ``run_cv()`` run.
+    bar_interval
+        The bar spacing, anything ``pd.Timedelta`` accepts.
+    drawdown_span : dict, optional
+        ``backtest_stats.drawdown_span`` of the run's value.
+    benchmark_source : str, optional
+        Where the benchmark was read from, shown after its name.
+
+    Returns
+    -------
+    dict[str, str]
+        The lines.
+
+    Examples
+    --------
+    >>> config = {"model_mode": "load", "rebalance_periods": 5, "fees": 0.001,
+    ...           "constructor": {"direction": "long_only", "top_n": 2, "score_label": None,
+    ...                           "name": "quantlab.portfolio.predefined.top_n.TopNConstructor"}}
+    >>> summary = report_summary(config, {"out_of_sample_ranges": []}, bar_interval="1D")
+    >>> for label, text in summary.items():
+    ...     print(f"{label}: {text}")
+    Bar interval: 1 days 00:00:00
+    Model mode: load
+    Rebalance every: 5 bars
+    Portfolio construction: TopNConstructor(direction='long_only', top_n=2, score_label=None)
+    Fees: 0.001
+    """
+    summary = {"Bar interval": str(pd.Timedelta(bar_interval))}
+    benchmark = block.get("benchmark")
+    if isinstance(benchmark, dict):
+        where = f" ({benchmark_source})" if benchmark_source else ""
+        summary["Benchmark"] = f"{_text(benchmark.get('symbol'))}{where}, buy and hold"
+    if drawdown_span:
+        bars = drawdown_span.get("bars")
+        summary["Deepest drawdown (valley to recovery)"] = (
+            f"{_text(drawdown_span.get('valley'))} .. "
+            f"{_text(drawdown_span.get('end'))}, "
+            f"{DASH if bars is None else f'{bars} trading days'}, "
+            f"{'recovered' if drawdown_span.get('recovered') else 'not recovered by the last bar'}"
+        )
+    if "out_of_sample_ranges" in block:
+        summary["Model mode"] = _text(config.get("model_mode"))
+    else:
+        summary["Signal"] = "precomputed weights (run_weights), no model"
+    summary["Rebalance every"] = f"{config.get('rebalance_periods')} bars"
+    # A cross-sectional config names its portfolio construction rule; a
+    # weights config records the selection its weights came from, if any.
+    constructor = config.get("constructor")
+    if isinstance(constructor, dict):
+        summary["Portfolio construction"] = _component_repr(constructor)
+    else:
+        summary["Top N"] = _text(config.get("top_n"))
+        summary["Direction"] = _text(config.get("direction"))
+    summary["Fees"] = _text(config.get("fees"))
+    if block.get("trained_checkpoint") is not None:
+        summary["Trained checkpoint"] = _text(block["trained_checkpoint"])
+    return summary
+
+
+def report_windows(timestamps, block: dict, folds: list[dict] | None = None) -> dict:
+    """Return the timeline of a run's page, the ``windows`` of ``write_backtest_report``.
+
+    Parameters
+    ----------
+    timestamps : array_like of datetime64
+        The run's bars; the first and last are the backtest window.
+    block : dict
+        The metric level carrying the split keys, as for ``report_summary``:
+        ``in_sample_range`` or ``in_sample_ranges``,
+        ``out_of_sample_ranges`` and, for a model backtest,
+        ``training_window``.
+    folds : list[dict], optional
+        One row per fold of a ``run_cv()`` run, in fold order, each with
+        ``fold`` (its number), ``training_window``, ``traded`` (its first
+        and last traded bar, as ``backtest_stats.bar_label`` strings) and
+        ``in_sample_range``. From a run directory's ``metrics.json`` the
+        row of ``fold`` in ``metrics["folds"]`` is ``fold["fold"]``,
+        ``fold["metrics"]["training_window"]``,
+        ``fold["metrics"]["in_sample_range"]`` and the ``bar_label`` of
+        ``fold["metrics"]["whole"]["Start"]`` and ``["End"]``. Without
+        folds, a block with a ``training_window`` is one "model" row and a
+        block without (a ``run_weights()`` run) none.
+
+    Returns
+    -------
+    dict
+        ``backtest``, ``bars``, ``in_sample``, ``out_of_sample`` and
+        ``folds``, with the labels ``metrics.json`` carries.
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=5).values
+    >>> windows = report_windows(bars, {
+    ...     "training_window": ("2023-01-02", "2023-12-29"), "in_sample_range": None,
+    ...     "out_of_sample_ranges": [("2024-01-01", "2024-01-05")],
+    ... })
+    >>> windows["backtest"], windows["bars"], [row["label"] for row in windows["folds"]]
+    (('2024-01-01', '2024-01-05'), 5, ['model'])
+    """
+    timestamps = np.asarray(timestamps)
+    traded = (backtest_stats.bar_label(timestamps[0]), backtest_stats.bar_label(timestamps[-1]))
+    in_sample = list(block.get("in_sample_ranges") or [])
+    if block.get("in_sample_range"):
+        in_sample.append(block["in_sample_range"])
+    if folds is not None:
+        rows = [
+            {
+                "label": f"fold {fold['fold']}",
+                "training": fold.get("training_window"),
+                "traded": fold.get("traded"),
+                "in_sample": fold.get("in_sample_range"),
+            }
+            for fold in folds
+        ]
+    elif "training_window" in block:
+        rows = [
+            {
+                "label": "model",
+                "training": block.get("training_window"),
+                "traded": traded,
+                "in_sample": block.get("in_sample_range"),
+            }
+        ]
+    else:
+        rows = []
+    return {
+        "backtest": traded,
+        "bars": int(timestamps.size),
+        "in_sample": in_sample,
+        "out_of_sample": list(block.get("out_of_sample_ranges") or []),
+        "folds": rows,
+    }
+
+
+def report_chart_inputs(
+    block: dict,
+    notes: list[str],
+    *,
+    returns: xr.DataArray,
+    init_cash: float,
+    drawdown_span: dict | None = None,
+    benchmark_value: xr.DataArray | None = None,
+    benchmark_returns: xr.DataArray | None = None,
+) -> dict:
+    """Return the chart keyword arguments of ``write_backtest_report`` and ``backtest_report_figure``.
+
+    The run's value is passed to those functions positionally, beside these.
+
+    Parameters
+    ----------
+    block : dict
+        The metric level carrying the split keys: its ``in_sample_range``
+        is shaded (a ``run_cv()`` block has none) and its ``benchmark``
+        record names the benchmark.
+    notes : list[str]
+        The run's notes.
+    returns : xarray.DataArray
+        The run's per-bar returns.
+    init_cash : float
+        The starting capital.
+    drawdown_span : dict, optional
+        ``backtest_stats.drawdown_span`` of the run's value, marked on the
+        equity curve.
+    benchmark_value, benchmark_returns : xarray.DataArray, optional
+        The benchmark's value and returns; without a value no benchmark
+        argument is returned and the page has no benchmark.
+
+    Returns
+    -------
+    dict
+        ``in_sample_range``, ``notes``, ``returns``, ``init_cash`` and
+        ``drawdown_span``, plus ``benchmark_value``, ``benchmark_returns``
+        and ``benchmark_name`` (the block's benchmark ``symbol``, else
+        ``"benchmark"``) with a benchmark.
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=3)
+    >>> returns = xr.DataArray([0.0, 0.01, -0.02], dims="timestamp", coords={"timestamp": bars})
+    >>> sorted(report_chart_inputs({}, ["a note"], returns=returns, init_cash=1e6))
+    ['drawdown_span', 'in_sample_range', 'init_cash', 'notes', 'returns']
+    """
+    inputs = {
+        "in_sample_range": block.get("in_sample_range"),
+        "notes": notes,
+        "returns": returns,
+        "init_cash": init_cash,
+        "drawdown_span": drawdown_span,
+    }
+    if benchmark_value is not None:
+        info = block.get("benchmark") or {}
+        inputs.update(
+            benchmark_value=benchmark_value,
+            benchmark_returns=benchmark_returns,
+            benchmark_name=info.get("symbol") or "benchmark",
+        )
+    return inputs
+
+
+def report_portfolio_inputs(
+    weights: xr.DataArray,
+    orders: xr.Dataset,
+    value: xr.DataArray,
+    *,
+    init_cash: float,
+    bar_interval,
+    trading_days_per_year: int,
+    session_minutes_per_day: int,
+) -> dict:
+    """Return the Portfolio and Rolling tab arguments of ``write_backtest_report``.
+
+    Parameters
+    ----------
+    weights : xarray.DataArray
+        Weights on ``(timestamp, symbol)`` drawn as holdings and exposure: a
+        quantlab run's target weights, or an executor's actual holdings.
+    orders : xarray.Dataset
+        The fills, as ``backtest_stats.turnover`` takes them.
+    value : xarray.DataArray
+        The run's value after each bar.
+    init_cash : float
+        The value before the first bar.
+    bar_interval
+        The bar spacing, anything ``pd.Timedelta`` accepts.
+    trading_days_per_year, session_minutes_per_day : int
+        The market's calendar, as ``backtest_stats.year_freq`` takes it.
+
+    Returns
+    -------
+    dict
+        ``weights``, ``turnover`` (``backtest_stats.turnover`` per fill bar,
+        whose mean is the ``Turnover per Rebalance [%]`` row) and
+        ``bars_per_year`` (the Rolling tab's window).
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=3)
+    >>> value = xr.DataArray([1000.0, 1000.0, 1000.0], dims="timestamp", coords={"timestamp": bars})
+    >>> orders = xr.Dataset({"timestamp": ("order", bars[[1]].values),
+    ...                      "size": ("order", [50.0]), "price": ("order", [10.0])})
+    >>> weights = xr.DataArray([[1.0], [0.5], [0.5]], dims=("timestamp", "symbol"),
+    ...                        coords={"timestamp": bars, "symbol": ["AAA"]})
+    >>> inputs = report_portfolio_inputs(weights, orders, value, init_cash=1000.0, bar_interval="1D",
+    ...                                  trading_days_per_year=252, session_minutes_per_day=390)
+    >>> inputs["turnover"].values.tolist(), inputs["bars_per_year"]
+    ([0.5], 252.0)
+    """
+    interval = pd.Timedelta(bar_interval)
+    year = backtest_stats.year_freq(interval, trading_days_per_year, session_minutes_per_day)
+    return {
+        "weights": weights,
+        "turnover": backtest_stats.turnover(orders, value, init_cash),
+        "bars_per_year": year / interval,
+    }
 
 
 def backtest_report_figure(
@@ -1682,6 +2019,17 @@ def _notes_section(notes: list[str] | None) -> str:
     )
 
 
+def _extra_section(extra_tables: dict[str, dict] | None) -> str:
+    """Render each extra table under its heading, values formatted as unknown metrics."""
+    return "".join(
+        _table(heading, ["", "Value"], [
+            _row(label, "", [_format(value, _guess_unit(label, value))])
+            for label, value in rows.items()
+        ])
+        for heading, rows in (extra_tables or {}).items()
+    )
+
+
 def _heatmap_block(heatmap: str) -> str:
     """The heatmap under its caption, or nothing when there is no heatmap."""
     return f"\n  <h2>{_escape(HEATMAP_CAPTION)}</h2>\n{heatmap}\n" if heatmap else ""
@@ -1696,6 +2044,7 @@ def _document(
     *,
     benchmark_name: str | None = None,
     windows: dict | None = None,
+    extra_tables: dict[str, dict] | None = None,
 ) -> str:
     """Assemble the page: headline cards, the tables beside the chart tabs, the notes.
 
@@ -1712,6 +2061,7 @@ def _document(
             + _trading_section(metrics)
             + _split_section(metrics, benchmark_name)
         )
+    tables += _extra_section(extra_tables)
     buttons = "".join(
         f'<button class="tab{" on" if i == 0 else ""}" data-tab="tab{i}">{_escape(label)}</button>'
         for i, (label, _) in enumerate(tabs)

@@ -568,8 +568,11 @@ ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_d
 | `win_rates(returns, fill_timestamps, *, ranges, benchmark_returns=None)` | `Rebalance Win Rate [%]`、`Monthly Win Rate [%]`（及其 `vs Benchmark` 形式） |
 | `turnover(orders, value, init_cash)` 与 `turnover_stats(turnover, *, bar_interval, year_freq, rebalance_periods)` | `Turnover per Rebalance [%]`、`Total Turnover [%]`、`Annualized Turnover [%]` |
 | `year_freq(bar_interval, trading_days_per_year, session_minutes_per_day)` | 各行年化所用的一年长度（`MarketSpec.year_freq`） |
+| `round_trips(fills, close, *, cash_flows=None)` 与 `round_trip_stats(trips, *, bar_interval)` | `whole` 的交易各行（`Total Trades` ... `Expectancy`），在 vectorbt 自己的成交上与其持仓交易视图逐位相等 |
+| `exposure_stats(fills, close, cash)` | `whole` 的 `Max Gross Exposure [%]`，与 vectorbt 的值在舍入误差内相等 |
+| `drawdown_span(value)` 与 `bar_label(value)` | 报告标出的最深回撤，以及 `metrics.json` 为一根 bar 写的标签 |
 
-`ranges` 是闭区间的 bar 标签对，与 `metrics.json` 记录的形式相同（`in_sample_range`、`out_of_sample_ranges`）。策略自身的 `whole` 块是例外：其中换手率和胜率各行来自这些函数，而收益、比率、交易、敞口和费用各行来自引擎的组合统计。以上文 `WeightsVectorBt` 的运行结果 `result` 为例：
+`ranges` 是闭区间的 bar 标签对，与 `metrics.json` 记录的形式相同（`in_sample_range`、`out_of_sample_ranges`）。策略自身的 `whole` 块是例外：其中换手率和胜率各行来自这些函数，而收益、比率、交易、敞口和费用各行来自引擎的组合统计；其中交易和敞口各行等于对其成交调用 `round_trip_stats` 和 `exposure_stats` 的结果。以上文 `WeightsVectorBt` 的运行结果 `result` 为例：
 
 ```python
 >>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
@@ -583,6 +586,62 @@ ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_d
 >>> flows = turnover(result.simulation.orders, result.simulation.value, init_cash=1_000_000.0)
 >>> turnover_stats(flows, bar_interval="1D", year_freq=year, rebalance_periods=1)
 {'Turnover per Rebalance [%]': 100.0, 'Total Turnover [%]': 100.0, 'Annualized Turnover [%]': 25200.0}
+```
+
+一个往返交易（round trip）是某个标的从空仓到空仓的一段持仓：加仓或减仓不会结束它，穿过零的成交结束它并开出反向持仓，最后一根 bar 仍持有的仓位是未平仓的，按其最后的估值价标记。`round_trips` 接收成交（`timestamp`、`symbol`、带符号的 `size`、`price`、`fees`）和估值价格，后者给出计算往返长度所用的 bar 轴；`cash_flows`（`timestamp`、`symbol`、`amount`）把持仓期间收到的股息或分配计入该往返的盈亏和收益率；现金流的时间戳是持仓必须持有进入的那根 bar（股息的除息日 bar）。拆股不是输入：成交和价格须在同一复权口径上给出。以上文的运行为例，其订单的 `size` 不带符号，方向在 `side` 中：
+
+```python
+>>> from quantlab.utils.backtest_stats import round_trip_stats, round_trips
+>>> orders = result.simulation.orders
+>>> fills = orders.assign(size=orders["size"] * xr.where(orders["side"] == "Buy", 1.0, -1.0))
+>>> close = xr.DataArray(
+...     [[10.5, 20.0], [11.5, 20.5], [12.0, 21.5], [12.5, 22.0], [13.0, 22.5]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
+... )
+>>> trips = round_trips(fills, close)
+>>> trips["symbol"].values.tolist(), trips["status"].values.tolist(), trips["bars"].values.tolist()
+(['AAA'], ['Open'], [3])
+>>> stats = round_trip_stats(trips, bar_interval="1D")
+>>> stats["Total Trades"], stats["Total Open Trades"], round(stats["Open Trade PnL"], 2)
+(1, 1, 181818.18)
+>>> {key: result.metrics["whole"][key] for key in ("Total Trades", "Total Open Trades")}
+{'Total Trades': 1, 'Total Open Trades': 1}
+>>> round(result.metrics["whole"]["Open Trade PnL"], 2)
+181818.18
+```
+
+### 以 quantlab 的格式写报告
+
+`report.html` 的输入在 `quantlab.utils.backtest_report` 中有接收普通数据的公开构建函数，因此在别处模拟的执行器能写出与 quantlab 格式完全一致的页面。quantlab 自己的页面也经由它们构建。
+
+| 函数 | 对应 `write_backtest_report` 的参数 |
+|---|---|
+| `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`，即 "Setup" 各行，来自运行的配置映射（`get_config()` 或 `config.json`）及其指标块 |
+| `report_windows(timestamps, block, folds=None)` | `windows`，即时间线；`folds` 是 `run_cv()` 运行的各折行（`fold`、`training_window`、`traded`、`in_sample_range`） |
+| `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | 图表与基准参数 |
+| `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`、`turnover` 和 `bars_per_year`，即 Portfolio 与 Rolling 标签页 |
+
+给 summary 的某个键赋值即可替换该行且位置不变；`write_backtest_report(..., extra_tables={标题: {行名: 值}})` 在指标表之后追加带标题的表格，用于只有执行器才有的统计量。接上文：
+
+```python
+>>> from quantlab.utils.backtest_report import report_summary, report_windows, write_backtest_report
+>>> summary = report_summary(backtester.get_config(), result.metrics, bar_interval="1D")
+>>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
+>>> list(summary)
+['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+>>> report_windows(result.simulation.value.timestamp.values, result.metrics)["backtest"]
+('2024-01-01', '2024-01-05')
+>>> from quantlab.utils.backtest_report import report_chart_inputs
+>>> write_backtest_report(
+...     result.simulation.value, "report.html", title="replay", summary=summary,
+...     windows=report_windows(result.simulation.value.timestamp.values, result.metrics),
+...     metrics=result.metrics,
+...     **report_chart_inputs(result.metrics, ["Fills from the event-driven replay."],
+...                           returns=result.simulation.returns, init_cash=1_000_000.0),
+...     extra_tables={"Execution (event-driven)": {"Commissions": 12.5, "Dividends": 3}},
+... )
+>>> "<h2>Execution (event-driven)</h2>" in open("report.html").read()
+True
 ```
 
 ## 扩展

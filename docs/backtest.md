@@ -568,8 +568,11 @@ The returns-based rows and the turnover rows of `metrics.json` are public functi
 | `win_rates(returns, fill_timestamps, *, ranges, benchmark_returns=None)` | `Rebalance Win Rate [%]`, `Monthly Win Rate [%]` (and their `vs Benchmark` forms) |
 | `turnover(orders, value, init_cash)` and `turnover_stats(turnover, *, bar_interval, year_freq, rebalance_periods)` | `Turnover per Rebalance [%]`, `Total Turnover [%]`, `Annualized Turnover [%]` |
 | `year_freq(bar_interval, trading_days_per_year, session_minutes_per_day)` | the year every row is annualized by (`MarketSpec.year_freq`) |
+| `round_trips(fills, close, *, cash_flows=None)` and `round_trip_stats(trips, *, bar_interval)` | the trade rows of `whole` (`Total Trades` ... `Expectancy`), equal to the bit to vectorbt's position trade view on its own fills |
+| `exposure_stats(fills, close, cash)` | `Max Gross Exposure [%]` of `whole`, equal to vectorbt's to rounding |
+| `drawdown_span(value)` and `bar_label(value)` | the deepest drawdown the report marks, and the label `metrics.json` writes for a bar |
 
-`ranges` are inclusive pairs of bar labels, as `metrics.json` records them (`in_sample_range`, `out_of_sample_ranges`). The strategy's own `whole` block is the exception: its turnover and win-rate rows come from these functions, but its return, ratio, trade, exposure and fee rows come from the engine's portfolio statistics. With `result` the `WeightsVectorBt` run above:
+`ranges` are inclusive pairs of bar labels, as `metrics.json` records them (`in_sample_range`, `out_of_sample_ranges`). The strategy's own `whole` block is the exception: its turnover and win-rate rows come from these functions, but its return, ratio, trade, exposure and fee rows come from the engine's portfolio statistics; the trade and exposure rows equal `round_trip_stats` and `exposure_stats` of its fills. With `result` the `WeightsVectorBt` run above:
 
 ```python
 >>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
@@ -583,6 +586,62 @@ The returns-based rows and the turnover rows of `metrics.json` are public functi
 >>> flows = turnover(result.simulation.orders, result.simulation.value, init_cash=1_000_000.0)
 >>> turnover_stats(flows, bar_interval="1D", year_freq=year, rebalance_periods=1)
 {'Turnover per Rebalance [%]': 100.0, 'Total Turnover [%]': 100.0, 'Annualized Turnover [%]': 25200.0}
+```
+
+A round trip is a position from flat to flat in one symbol: adding to or trimming it does not end it, a fill that crosses zero ends it and opens the opposite one, and a position still held at the last bar is open, marked at its last valuation price. `round_trips` takes the fills (`timestamp`, `symbol`, signed `size`, `price`, `fees`) and the valuation prices, which give the bar axis that trip lengths are counted on; `cash_flows` (`timestamp`, `symbol`, `amount`) adds the dividends or distributions a position received while open to its PnL and return; a flow is timestamped with the bar the position had to be held into (a dividend's ex-date bar). Splits are not an input: give the fills and prices on one adjustment basis. On the run above, whose orders carry an unsigned `size` and a `side`:
+
+```python
+>>> from quantlab.utils.backtest_stats import round_trip_stats, round_trips
+>>> orders = result.simulation.orders
+>>> fills = orders.assign(size=orders["size"] * xr.where(orders["side"] == "Buy", 1.0, -1.0))
+>>> close = xr.DataArray(
+...     [[10.5, 20.0], [11.5, 20.5], [12.0, 21.5], [12.5, 22.0], [13.0, 22.5]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
+... )
+>>> trips = round_trips(fills, close)
+>>> trips["symbol"].values.tolist(), trips["status"].values.tolist(), trips["bars"].values.tolist()
+(['AAA'], ['Open'], [3])
+>>> stats = round_trip_stats(trips, bar_interval="1D")
+>>> stats["Total Trades"], stats["Total Open Trades"], round(stats["Open Trade PnL"], 2)
+(1, 1, 181818.18)
+>>> {key: result.metrics["whole"][key] for key in ("Total Trades", "Total Open Trades")}
+{'Total Trades': 1, 'Total Open Trades': 1}
+>>> round(result.metrics["whole"]["Open Trade PnL"], 2)
+181818.18
+```
+
+### Write a report in quantlab's format
+
+The inputs of `report.html` have public builders in `quantlab.utils.backtest_report`, taking plain data, so an executor that simulates elsewhere writes a page in exactly quantlab's format. quantlab's own pages are built through them.
+
+| Function | Argument of `write_backtest_report` |
+|---|---|
+| `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`, the "Setup" lines, from the run's config mapping (`get_config()` or `config.json`) and its metric block |
+| `report_windows(timestamps, block, folds=None)` | `windows`, the timeline; `folds` are a `run_cv()` run's rows (`fold`, `training_window`, `traded`, `in_sample_range`) |
+| `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | the chart and benchmark arguments |
+| `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`, `turnover` and `bars_per_year`, the Portfolio and Rolling tabs |
+
+A line of the summary is replaced by assigning to its key, which keeps its place, and `write_backtest_report(..., extra_tables={heading: {label: value}})` adds titled tables after the metric tables, for statistics only the executor has. Continuing the session:
+
+```python
+>>> from quantlab.utils.backtest_report import report_summary, report_windows, write_backtest_report
+>>> summary = report_summary(backtester.get_config(), result.metrics, bar_interval="1D")
+>>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
+>>> list(summary)
+['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+>>> report_windows(result.simulation.value.timestamp.values, result.metrics)["backtest"]
+('2024-01-01', '2024-01-05')
+>>> from quantlab.utils.backtest_report import report_chart_inputs
+>>> write_backtest_report(
+...     result.simulation.value, "report.html", title="replay", summary=summary,
+...     windows=report_windows(result.simulation.value.timestamp.values, result.metrics),
+...     metrics=result.metrics,
+...     **report_chart_inputs(result.metrics, ["Fills from the event-driven replay."],
+...                           returns=result.simulation.returns, init_cash=1_000_000.0),
+...     extra_tables={"Execution (event-driven)": {"Commissions": 12.5, "Dividends": 3}},
+... )
+>>> "<h2>Execution (event-driven)</h2>" in open("report.html").read()
+True
 ```
 
 ## Extending
