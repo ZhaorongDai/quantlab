@@ -150,6 +150,7 @@ def _backtester(
     checkpoint=None,
     start_bar: int = FIRST_TEST_BAR,
     end_bar: int = LAST_TEST_BAR,
+    sizing_basis: str = "fill",
 ) -> USEquityCrossectionSelectStockVectorBt:
     project_dir = cv.project_dir if cv_project_dir is _UNSET else cv_project_dir
     return USEquityCrossectionSelectStockVectorBt(
@@ -172,6 +173,7 @@ def _backtester(
             fees=0.0,
             slippage=0.0,
             init_cash=INIT_CASH,
+            sizing_basis=sizing_basis,
         )
     )
 
@@ -601,6 +603,22 @@ def test_stitched_weights_equal_the_concatenated_fold_weights(tmp_path, cv_proje
 
     expected = xr.concat([record["weights"] for record in result.folds], dim="timestamp")
     xr.testing.assert_identical(result.weights, expected)
+
+
+def test_run_cv_stitches_its_folds_on_the_valuation_basis(tmp_path, cv_project):
+    """#119: run_cv() accepts the valuation basis and stitches as under the
+    fill basis: the stitched weights are the folds' weights, the stitched
+    curve is the weights backtest of those weights on the valuation basis, and
+    it is not the fill basis's curve."""
+    backtester = _backtester(tmp_path, cv_project, sizing_basis="valuation")
+    result = backtester.run_cv()
+
+    expected = xr.concat([record["weights"] for record in result.folds], dim="timestamp")
+    xr.testing.assert_identical(result.weights, expected)
+    replayed = backtester.run_weights(result.weights)
+    np.testing.assert_array_equal(replayed.simulation.value.values, result.simulation.value.values)
+    by_open = _backtester(tmp_path, cv_project).run_cv()
+    assert not np.allclose(by_open.simulation.value.values, result.simulation.value.values)
 
 
 def test_the_stitched_block_carries_order_count_and_the_positions_view(

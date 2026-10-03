@@ -1440,32 +1440,21 @@ class BaseBacktester(ABC):
         )
 
     def _require_model(self, entry: str) -> None:
-        """Refuse to run ``entry`` on a config without a model, or with the valuation basis.
+        """Refuse to run ``entry`` on a config without a model.
 
         The config setter already guarantees ``model`` and ``model_mode`` are
-        both set or both ``None``, so checking ``model`` covers both. A model
-        run hands its portfolio rule the holdings ``construct_panel`` replays,
-        and that replay sizes at the fill price, so ``sizing_basis="valuation"``
-        is for ``run_weights()`` only.
+        both set or both ``None``, so checking ``model`` covers both.
 
         Raises
         ------
         ValueError
-            If ``config.model`` is ``None`` or ``config.sizing_basis`` is not
-            ``"fill"``.
+            If ``config.model`` is ``None``.
         """
         if self.config.model is None:
             raise ValueError(
                 f"{self.class_name}: {entry} requires config.model, but it is "
                 f"None; set config.model and config.model_mode, or backtest "
                 f"precomputed weights with run_weights()"
-            )
-        if self.config.sizing_basis != "fill":
-            raise ValueError(
-                f"{self.class_name}: {entry} supports sizing_basis='fill' only, "
-                f"got {self.config.sizing_basis!r}: the holdings handed to the "
-                f"portfolio rule are replayed with fill-price sizing; backtest "
-                f"the weights with run_weights() to size them from the close"
             )
 
     def _align_weights(

@@ -7,7 +7,8 @@ What is locked here, and what turns it red:
   valuation returns ending at that bar.
 - The current weights a constructor is handed are the holdings the
   simulation carries at that bar's close: the last traded weights filled at
-  the next bar's open and marked to this bar's close, across a halt.
+  the next bar's open and marked to this bar's close, across a halt, on
+  either sizing basis.
 - A bar whose construction raises `PortfolioConstructionError` holds (an
   all-NaN row), is logged, and is listed in `metrics.json`.
 - A `MeanVarianceOptimizer` backtest is fully invested on every rebalance
@@ -98,7 +99,7 @@ def _setup(tmp_path):
     return dataset_config, model, bars
 
 
-def _backtester(tmp_path, constructor, *, output_dir=None, fees=0.0, slippage=0.0):
+def _backtester(tmp_path, constructor, *, output_dir=None, fees=0.0, slippage=0.0, sizing_basis="fill"):
     """``constructor`` may be a function of the price store's dataset config."""
     dataset_config, model, bars = _setup(tmp_path)
     if not isinstance(constructor, PortfolioConstructor):
@@ -116,6 +117,7 @@ def _backtester(tmp_path, constructor, *, output_dir=None, fees=0.0, slippage=0.
                 constructor=constructor,
                 fees=fees,
                 slippage=slippage,
+                sizing_basis=sizing_basis,
             )
         ),
         dataset_config,
@@ -171,15 +173,17 @@ def _engine_weights_at_close(result, close, bar) -> np.ndarray:
     return shares * close / value
 
 
+@pytest.mark.parametrize("sizing_basis", ["fill", "valuation"])
 @pytest.mark.parametrize("fees, slippage", [(0.0, 0.0), (0.002, 0.001)])
-def test_the_current_weights_are_the_holdings_the_simulation_carries(tmp_path, fees, slippage):
+def test_the_current_weights_are_the_holdings_the_simulation_carries(tmp_path, fees, slippage, sizing_basis):
     """The drifted weights handed to the rule at a rebalance bar equal the
     simulation's own holdings at that bar's close, the run's fees and
-    slippage included: filled at the next bar's open (no overnight move from
-    the signal bar's close), carried across BBB's two-bar halt at its last
-    price, then marked to the close once it trades again."""
+    slippage included, on either sizing basis (#119): filled at the next
+    bar's open (no overnight move from the signal bar's close), carried
+    across BBB's two-bar halt at its last price, then marked to the close
+    once it trades again."""
     backtester, dataset_config, bars = _backtester(
-        tmp_path, Recorder(RecorderConfig()), fees=fees, slippage=slippage
+        tmp_path, Recorder(RecorderConfig()), fees=fees, slippage=slippage, sizing_basis=sizing_basis
     )
     # A halt strictly inside the first holding period, after the fill bar.
     _halt(dataset_config, "BBB", [WINDOW[0] + 2, WINDOW[0] + 3])

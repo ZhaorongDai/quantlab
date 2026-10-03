@@ -9,7 +9,9 @@ locked here, on a hand-computed two-symbol book through ``run_weights``:
 
 - the fill basis sizes against t+1's open and the valuation basis against t's
   close, giving the literal share counts worked out below;
-- the basis is recorded in the run's ``config.json`` and refused when unknown.
+- the basis is recorded in the run's ``config.json`` and refused when unknown;
+- a model run (``run()``) accepts the valuation basis, and its curve is the
+  weights backtest of its own weights on that basis (#119).
 
 The default's bit-identity with earlier runs is locked by the TopN regression
 anchor (``tests/test_backtest_topn_reference.py``), not here.
@@ -128,14 +130,21 @@ def test_valuation_basis_rejects_an_order_for_a_symbol_without_a_close_at_t():
     assert "BBB" in by_fill.simulation.orders["symbol"].values.tolist()
 
 
-def test_a_model_run_refuses_the_valuation_basis(stores):  # noqa: F811
-    # A model run's portfolio rule is handed the holdings the driver replays
-    # with fill-price sizing; until that replay knows the valuation basis,
-    # run() and run_cv() refuse it rather than hand the rule wrong holdings.
-    backtester = USEquityCrossectionSelectStockVectorBt(
+def test_a_model_run_sizes_on_the_valuation_basis(stores):  # noqa: F811
+    # The holdings handed to the portfolio rule are replayed on the run's own
+    # basis (#118), so run() accepts the valuation basis (#119): its curve is
+    # the weights backtest of its weights on that basis, and differs from the
+    # fill basis's.
+    by_close = USEquityCrossectionSelectStockVectorBt(
         _config(stores, with_model=True, sizing_basis="valuation")
-    )
-    with pytest.raises(ValueError, match="sizing_basis"):
-        backtester.run()
-    with pytest.raises(ValueError, match="sizing_basis"):
-        backtester.run_cv()
+    ).run()
+    replayed = USEquityCrossectionSelectStockVectorBt(
+        _config(stores, with_model=False, sizing_basis="valuation", output_dir=None)
+    ).run_weights(by_close.weights)
+    by_open = USEquityCrossectionSelectStockVectorBt(
+        _config(stores, with_model=True, output_dir=None)
+    ).run()
+
+    xr.testing.assert_identical(replayed.weights, by_close.weights)
+    np.testing.assert_array_equal(replayed.simulation.value.values, by_close.simulation.value.values)
+    assert not np.allclose(by_open.simulation.value.values, by_close.simulation.value.values)
