@@ -95,25 +95,38 @@ array([0.5, 0.5, 0. , 0. ])
 
 运行目录的 `config.json` 记录了规则的全部参数和它的风险模型，`load_backtester_from_config` 能据此重建。
 
-### 不加载模型重建规则
+### 不加载模型重建一次运行的决策输入
 
-带模型的运行（`run()` 或 `run_cv()`）还会写出 `predictions.zarr`：规则读到的预测及其标签规格，格式是 `PredictionPanel`。`quantlab/portfolio/prediction_panel.py` 中的 `load_constructor(run_dir)` 从 `config.json` 重建该运行的规则，并把它绑定到预测面板的规格上。它从不导入模型、因子、标签或回测层，所以研究流水线之外的执行器（例如事件驱动回测）只凭这两个文件就能重放该运行的决策：
+带模型的运行（`run()` 或 `run_cv()`）还会写出 `predictions.zarr`：规则读到的预测及其标签规格，格式是 `PredictionPanel`。`DecisionInputs.from_run(run_dir)` 从该运行的 `config.json` 重建规则（绑定到预测面板的规格上）、价格数据集（内存数据集从运行目录下的副本读取）、市场价格列、执行设置和调仓周期，并取预测面板的第一根 bar 作为锚点。它从不导入模型、因子、标签或回测层，所以研究流水线之外的执行器（例如事件驱动回测）只凭运行目录就能重放该运行的决策；在预测面板的预测上调用 `weights` 会复现该运行的权重。下面手写一个运行目录，只包含 `from_run` 读取的内容：
 
 ```python
 >>> import tempfile, json
 >>> from pathlib import Path
 >>> from quantlab.base.portfolio import LabelSpec, PredictionPanel
->>> from quantlab.portfolio.prediction_panel import load_constructor
+>>> from quantlab.dataset.memory import FrameDataset
+>>> from quantlab.portfolio.decision_inputs import DecisionInputs
 >>> run_dir = Path(tempfile.mkdtemp())
 >>> panel = PredictionPanel(
 ...     context.predictions.expand_dims(timestamp=[context.timestamp]),
 ...     [LabelSpec(name="ret_5", scale="raw", delay=1, span=5)],
 ... )
 >>> _ = panel.write(run_dir / "predictions.zarr")
+>>> bars = pd.bdate_range(end=context.timestamp, periods=3)
+>>> close = xr.DataArray(
+...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
+... )
+>>> prices = FrameDataset(xr.Dataset({"open": close, "close": close})).to_zarr(run_dir / "prices.zarr")
 >>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
->>> _ = (run_dir / "config.json").write_text(json.dumps({"constructor": rule.get_config()}))
->>> load_constructor(run_dir) == rule
-True
+>>> _ = (run_dir / "config.json").write_text(json.dumps({
+...     "constructor": rule.get_config(),
+...     "price_dataset": prices.get_config(),
+...     "market": {"fill_price_column": "open", "valuation_price_column": "close"},
+...     "rebalance_periods": 1, "sizing_basis": "fill", "fees": 0.0, "slippage": 0.0,
+... }))
+>>> inputs = DecisionInputs.from_run(run_dir)
+>>> inputs.constructor == rule, inputs.anchor == context.timestamp
+(True, True)
 >>> PredictionPanel.read(run_dir / "predictions.zarr").labels
 (LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
 
@@ -129,25 +142,11 @@ True
 - `context(t, predictions, current_weights)` 构造这根 bar 的 `PortfolioContext`。`predictions` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有，没有预测的持仓标的以 NaN 预测加入这根 bar。可交易性、截至 `t` 的最近 `history_bars` 个估值价格得出的收益窗口和停牌时长（staleness），以及 `t` 上的因子值，都从数据集读取，所以执行器最多只需保留 `history_bars` 根 bar 的价格。给定回测重放出的持仓，得到的 context 与回测构造的相同。
 - `decide(context)` 调用 `construct`，并按权重契约检查这一行。它返回 `Decision(weights, failure, events)`：context 各标的上的权重，全 NaN 表示保持；使这根 bar 保持仓位的 `PortfolioConstructionError` 的消息，或 `None`；以及这一行报告的事件。违反契约的行（NaN 与有限权重混合、改动了锁定仓位、给既不可交易也未持有的标的分配权重）是规则的 bug，抛出 `ValueError`。
 
+用上面从运行目录重建的 `inputs`（也可以用 `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)` 直接构造）：
+
 ```python
->>> from quantlab.dataset.memory import FrameDataset
->>> from quantlab.portfolio.decision_inputs import DecisionInputs
->>> bars = pd.bdate_range(end=context.timestamp, periods=3)
->>> close = xr.DataArray(
-...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
-...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
-... )
->>> rule = load_constructor(run_dir)
->>> inputs = DecisionInputs(
-...     FrameDataset(xr.Dataset({"open": close, "close": close})),
-...     rule,
-...     fill_column="open",
-...     valuation_column="close",
-...     rebalance_periods=1,
-...     anchor=bars[0],
-... )
->>> inputs.rebalances(context.timestamp)
-True
+>>> inputs.rebalances(context.timestamp)  # the run's last bar: an order there has no next bar to fill on
+False
 >>> bar = inputs.context(
 ...     context.timestamp,
 ...     panel.predictions.sel(timestamp=context.timestamp),

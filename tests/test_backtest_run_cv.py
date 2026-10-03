@@ -616,6 +616,11 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         panel.predictions,
         xr.concat([record["predictions"] for record in result.folds], dim="timestamp"),
     )
+    # ... from which DecisionInputs.from_run reproduces the stitched weights.
+    from quantlab.portfolio.decision_inputs import DecisionInputs
+
+    replayed = DecisionInputs.from_run(run_dir).weights(panel.predictions)["weight"]
+    xr.testing.assert_equal(replayed, result.weights["weight"].sel(symbol=replayed.symbol.values))
 
     # --- stitched artifacts --------------------------------------------------
     np.testing.assert_array_equal(

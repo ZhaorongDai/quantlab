@@ -220,7 +220,7 @@ after the backtester class and the time. Its contents are:
 | `equity.zarr` | the simulated portfolio value and per-bar returns |
 | `metrics.json` | performance statistics for the whole window, the in-sample part and the out-of-sample part, with their date ranges and explanatory notes |
 | `settlements.json` | holdings turned into cash because their symbol delisted |
-| `predictions.zarr` | the predictions the portfolio construction rule read, with their label specs; `load_constructor(run_dir)` rebuilds the bound rule from it without the model |
+| `predictions.zarr` | the predictions the portfolio construction rule read, with their label specs; `DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs from it without the model |
 | `fingerprint.json` | a SHA-256 digest, date range and shape of each input the run read |
 | `report.html` | an interactive plotly report of the equity curve and summary statistics |
 

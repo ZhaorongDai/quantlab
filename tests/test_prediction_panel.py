@@ -12,9 +12,11 @@ What is locked here, and what turns it red:
   `label_delays` and `label_scales`;
 - `run()` and `run_cv()` (stitched directory only) write `predictions.zarr`,
   `run_weights()` writes none;
-- `load_constructor(run_dir)` rebuilds the run's constructor bound to the panel's specs,
-  and importing and calling it loads no model, factor, label or backtest module, nor
-  torch, xgboost, KunQuant or vectorbt.
+- `DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs (the rule bound
+  to the panel's specs, the price dataset, an in-memory one from the run directory, the
+  market columns, the execution settings, the rebalance period and the anchor), whose
+  `weights()` reproduce the run's weights; importing and calling it loads no model,
+  factor, label or backtest module, nor torch, xgboost, KunQuant or vectorbt.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -26,8 +28,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.portfolio import LabelSpec
-from quantlab.portfolio.prediction_panel import PredictionPanel
+from quantlab.base.portfolio import LabelSpec, PredictionPanel
 
 SPECS = (
     LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
@@ -159,9 +160,9 @@ def _day(ts) -> str:
     return pd.Timestamp(ts).strftime("%Y-%m-%d")
 
 
-@pytest.fixture(scope="module")
-def model_run(tmp_path_factory):
-    """One load-mode `run()` with a top-2 rule, shared read-only by the tests below."""
+def _model_run(root, *, frame=False):
+    """One load-mode `run()` with a top-2 rule over a store-backed price dataset, or with
+    ``frame`` over an in-memory copy of it with fees and valuation sizing."""
     from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
     from quantlab.backtest.predefined.us_equity import (
         USEquityCrossectionSelectStockVectorBt,
@@ -174,7 +175,8 @@ def model_run(tmp_path_factory):
         write_price_store,
     )
 
-    root = tmp_path_factory.mktemp("model_run")
+    from quantlab.dataset.memory import FrameDataset
+
     dataset_config = write_price_store(root, n_bars=60)
     bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
     dates = dict(
@@ -188,7 +190,11 @@ def model_run(tmp_path_factory):
     checkpoint = train_checkpoint(make_model(root / "train", dataset_config, **dates))
     backtester = USEquityCrossectionSelectStockVectorBt(
         CrossSectionBacktestConfig(
-            price_dataset=make_stock_dataset(dataset_config),
+            price_dataset=(
+                FrameDataset(xr.open_zarr(dataset_config.zarr_file_path).load())
+                if frame
+                else make_stock_dataset(dataset_config)
+            ),
             model=make_model(root / "backtest", dataset_config, **dates),
             model_mode="load",
             checkpoint=str(checkpoint),
@@ -197,9 +203,22 @@ def model_run(tmp_path_factory):
             output_dir=str(root / "runs"),
             rebalance_periods=5,
             constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
+            **(dict(fees=0.001, slippage=0.0005, sizing_basis="valuation") if frame else {}),
         )
     )
     return backtester.run()
+
+
+@pytest.fixture(scope="module")
+def model_run(tmp_path_factory):
+    """The store-backed run, shared read-only by the tests below."""
+    return _model_run(tmp_path_factory.mktemp("model_run"))
+
+
+@pytest.fixture(scope="module")
+def frame_run(tmp_path_factory):
+    """The in-memory run, shared read-only by the tests below."""
+    return _model_run(tmp_path_factory.mktemp("frame_run"), frame=True)
 
 
 def test_run_writes_the_window_predictions_and_their_label_specs(model_run):
@@ -209,27 +228,46 @@ def test_run_writes_the_window_predictions_and_their_label_specs(model_run):
     xr.testing.assert_equal(panel.predictions, model_run.predictions)
 
 
-def test_load_constructor_rebuilds_the_runs_rule_bound_to_the_panels_specs(model_run):
-    from quantlab.base.config import TopNConfig
-    from quantlab.portfolio.prediction_panel import load_constructor
+@pytest.mark.parametrize("run", ["model_run", "frame_run"])
+def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
+    from quantlab.base.config import BacktestConfig, TopNConfig
+    from quantlab.portfolio.decision_inputs import DecisionInputs
     from quantlab.portfolio.predefined.top_n import TopNConstructor
+    from quantlab.utils.execution import ExecutionSettings
 
-    rule = load_constructor(model_run.run_dir)
+    result = request.getfixturevalue(run)
+    inputs = DecisionInputs.from_run(result.run_dir)
 
-    assert rule == TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+    assert inputs.constructor == TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+    assert (inputs.fill_column, inputs.valuation_column) == ("adjOpen", "adjClose")
+    assert inputs.rebalance_periods == 5
+    assert inputs.anchor == pd.Timestamp(result.predictions.timestamp.values[0])
+    assert inputs.end == pd.Timestamp(result.predictions.timestamp.values[-1])
+    decided = np.isfinite(result.weights["weight"].values).all(axis=1)
+    asked = [inputs.rebalances(t) for t in result.weights.timestamp.values]
+    assert not (decided & ~np.array(asked)).any() and not asked[-1]
+    assert inputs.execution == (
+        ExecutionSettings("valuation", 0.001, 0.0005)
+        if run == "frame_run"
+        else ExecutionSettings("fill", BacktestConfig.fees, BacktestConfig.slippage)
+    )
+    predictions = PredictionPanel.read(result.run_dir / "predictions.zarr").predictions
+    weights = inputs.weights(predictions)["weight"]
+    xr.testing.assert_equal(weights, result.weights["weight"].sel(symbol=weights.symbol.values))
+    assert np.isfinite(weights.values).any()
 
 
-def test_load_constructor_refuses_a_run_without_a_prediction_panel(tmp_path, model_run):
+def test_from_run_refuses_a_run_without_a_prediction_panel(tmp_path, model_run):
     import shutil
 
-    from quantlab.portfolio.prediction_panel import load_constructor
+    from quantlab.portfolio.decision_inputs import DecisionInputs
 
     shutil.copy(model_run.run_dir / "config.json", tmp_path / "config.json")
     with pytest.raises(FileNotFoundError, match="predictions.zarr"):
-        load_constructor(tmp_path)
+        DecisionInputs.from_run(tmp_path)
 
 
-def test_load_constructor_loads_no_model_factor_label_or_engine_module(model_run):
+def test_from_run_loads_no_model_factor_label_or_engine_module(model_run):
     import subprocess
     import sys
 
@@ -237,9 +275,9 @@ def test_load_constructor_loads_no_model_factor_label_or_engine_module(model_run
 
     code = (
         "import sys\n"
-        "from quantlab.portfolio.prediction_panel import load_constructor\n"
-        f"rule = load_constructor({str(model_run.run_dir)!r})\n"
-        "print(type(rule).__name__)\n"
+        "from quantlab.portfolio.decision_inputs import DecisionInputs\n"
+        f"inputs = DecisionInputs.from_run({str(model_run.run_dir)!r})\n"
+        "print(type(inputs.constructor).__name__)\n"
         "banned = ('quantlab.model', 'quantlab.factor', 'quantlab.label',\n"
         "          'quantlab.backtest', 'quantlab.base.model', 'quantlab.base.factor',\n"
         "          'quantlab.base.backtest', 'torch', 'xgboost', 'KunQuant', 'vectorbt')\n"

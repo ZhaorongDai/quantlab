@@ -234,6 +234,8 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 模型的因子需要 `start_date` 之前的历史。回测器按日期范围向每个因子请求窗口：`"cal"` 策略下调用 `compute(start_date, end_date)`，`"read"` 策略下调用 `read(start_date, end_date)`。计算型因子会在 `start_date` 之前读取自身的 `warmup_bars` 根 bar，按其数据集自己的日历计数，而不是按日历天数。因此回测与对同一窗口单独调用 `compute` 得到的因子值相同。数据集中的 bar 不够时，因子从第一根 bar 开始计算，并发出一条给出 bar 缺口数的 `UserWarning`。回测不修改任何数据集、因子或标签的 config，所以价格数据集可以与某个因子的数据集是同一个对象。预测恰好覆盖窗口内的 bar；没有预测的价格标的分数为 NaN，不会被选中。
 
+组合构建规则也有自己的预热：每根 bar 读取最近 `history_bars` 个原始估值价格（见[组合构建](portfolio.md#在回测中)），所以 `DecisionInputs` 会在 `start_date` 之前读取 `history_bars - 1` 根价格 bar，按价格数据集的日历计数；数据集中的 bar 不够时同样发出 `UserWarning`。规则的 `required_factors()` 在窗口上计算，与模型的因子一样各带自己的 `warmup_bars`。
+
 ### 样本内与样本外
 
 记 L 为模型各标签 `lookahead_bars()` 的最大值。模型在 `train_start` 到 `train_end` 的 bar 上拟合，但要扣掉清洗（purge）部分，即测试段之前的最后 L 根 bar。最后一根参与拟合的 bar 上的标签还要再往后读 L 根 bar，所以有效训练窗口从 `train_start` 开始，到最后一根拟合 bar 之后第 L 根 bar 为止，按价格日历计数（`quantlab.utils.split.in_sample_window`）。测试段紧接训练段时，这个窗口恰好结束于配置的 `train_end`。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，模型采用其 checkpoint 的 `run.json` 记录的训练日期，拟合窗口取自模型的 `fitted_train_bounds`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
@@ -271,7 +273,7 @@ out_of_sample -5.61 -4.27 13
 | `equity.zarr` | `timestamp` 上的组合 `value` 与每根 bar 的 `returns`。 |
 | `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
 | `settlements.json` | 退市结算记录。 |
-| `predictions.zarr` | 仅带模型的运行（`run()`、`run_cv()`）才有：组合构建规则读到的预测（在价格坐标轴上）及其标签规格，格式为 `PredictionPanel`；`load_constructor(run_dir)` 凭它和 `config.json` 在不加载模型的情况下重建已绑定的规则（见[组合构建](portfolio.md#不加载模型重建规则)）。`run_weights()` 的运行不写。 |
+| `predictions.zarr` | 仅带模型的运行（`run()`、`run_cv()`）才有：组合构建规则读到的预测（在价格坐标轴上）及其标签规格，格式为 `PredictionPanel`；`DecisionInputs.from_run(run_dir)` 凭它和 `config.json` 在不加载模型的情况下重建该运行的决策输入，包括已绑定的规则（见[组合构建](portfolio.md#不加载模型重建一次运行的决策输入)）。`run_weights()` 的运行不写。 |
 | `fingerprint.json` | 本次运行读取的价格数据和因子数据的摘要。 |
 | `report.html` | 关键指标、分组的指标表，以及业绩、超额收益、滚动一年统计和组合结构的图表标签页（见[报告页面](#报告页面)）。 |
 | `inputs/` | 仅当价格或基准数据集是保存在内存中的 `FrameDataset` 时写出：它的面板存为 `price_dataset.zarr` 或 `benchmark_dataset.zarr`，`config.json` 以相对运行目录的路径指向它（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。 |

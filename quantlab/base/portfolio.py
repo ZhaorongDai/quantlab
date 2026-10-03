@@ -62,7 +62,7 @@ class LabelSpec:
     A rule is bound to the specs of the labels it is handed predictions of
     (``PortfolioConstructor.bind``), never to the model that predicted them,
     so a rule can be rebuilt from a run directory without its model
-    (``quantlab.portfolio.prediction_panel.load_constructor``). The
+    (``quantlab.portfolio.decision_inputs.DecisionInputs.from_run``). The
     backtester derives the specs of its predictor with
     ``quantlab.base.backtest.label_specs``.
 
@@ -101,8 +101,9 @@ class PredictionPanel:
     into ``predictions.zarr`` (``FILE_NAME``) in its run directory: one
     variable per label on ``(timestamp, symbol)``, the store's ``attrs``
     holding ``format_version`` (``FORMAT_VERSION``) and ``labels``, a JSON
-    list of the specs' fields. An executor rebuilds the run's rule from it
-    with ``quantlab.portfolio.prediction_panel.load_constructor``.
+    list of the specs' fields. An executor rebuilds the run's decision
+    inputs, the rule bound to these specs included, with
+    ``quantlab.portfolio.decision_inputs.DecisionInputs.from_run``.
 
     Parameters
     ----------
@@ -916,7 +917,7 @@ class PortfolioConstructor(_Configured, ABC):
 
         Called once when a backtest is constructed, before any data is read
         or model trained, with the specs of the predictor's labels; and by
-        ``load_constructor`` with the specs a run's prediction panel
+        ``DecisionInputs.from_run`` with the specs a run's prediction panel
         records. A rule reading a label's span resolves it here. The specs
         are the only metadata a rule may read about a prediction. The
         default accepts any specs.

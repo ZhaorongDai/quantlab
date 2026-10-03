@@ -279,6 +279,12 @@ far enough, the factor starts at the first available bar and a `UserWarning`
 says how many bars short it is. Under the `"read"` strategy the factor values
 come from the factor store, which needs no warm-up.
 
+The portfolio construction rule reads prices before the window too: each bar
+reads its last `history_bars` raw valuation prices (`lookback_bars + 1` by
+default), so the `history_bars - 1` price bars before `start_date` are read,
+with the same warning when the data is short. A top-n rule reads one bar and
+needs none.
+
 None of this changes a config: prices, benchmark prices and factor panels are
 all date-range requests, so the price dataset may be the very object a factor
 reads.
@@ -494,7 +500,7 @@ succeeded, so a crashed run leaves no half-written directory behind.
 | `equity.zarr` | Portfolio `value` and per-bar `returns` on `timestamp`. |
 | `metrics.json` | The metric blocks described above. |
 | `settlements.json` | One record per delisting settlement. |
-| `predictions.zarr` | `run()` and `run_cv()` only (a run with a model): the predictions the portfolio construction rule read, with their label specs (a `PredictionPanel`; for `run_cv()` the concatenated fold predictions). `quantlab.portfolio.prediction_panel.load_constructor(run_dir)` rebuilds the run's rule from it and `config.json` without loading the model. |
+| `predictions.zarr` | `run()` and `run_cv()` only (a run with a model): the predictions the portfolio construction rule read, with their label specs (a `PredictionPanel`; for `run_cv()` the concatenated fold predictions). `quantlab.portfolio.decision_inputs.DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs (the bound rule, the price dataset, the market columns, the execution settings, the rebalance period and the anchor) from it and `config.json` without loading the model. |
 | `fingerprint.json` | A content hash and extent of every dataset the run read. |
 | `report.html` | The human-readable report. |
 | `folds/` | `run_cv()` only: per-fold `weights.zarr` and `equity.zarr`. |
