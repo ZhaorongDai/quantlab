@@ -246,6 +246,8 @@ def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
     decided = np.isfinite(result.weights["weight"].values).all(axis=1)
     asked = [inputs.rebalances(t) for t in result.weights.timestamp.values]
     assert not (decided & ~np.array(asked)).any() and not asked[-1]
+    narrowed = DecisionInputs.from_run(result.run_dir, end=result.weights.timestamp.values[5])
+    assert narrowed.end == pd.Timestamp(result.weights.timestamp.values[5])
     assert inputs.execution == (
         ExecutionSettings("valuation", 0.001, 0.0005)
         if run == "frame_run"
