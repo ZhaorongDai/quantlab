@@ -112,7 +112,8 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         reads. The rule is handed the raw fill and valuation prices from the
         constructor's ``lookback_bars`` bars before the window
         (``_price_history``), for its return window and to model the
-        holdings the way the simulation trades them, the dataset's
+        holdings the way the simulation trades them, with the run's sizing
+        basis, fees and slippage, the dataset's
         ``delisting_bars`` of the window (the same marks the simulation
         settles), and the panels of its ``required_factors()`` over the
         window (``_required_factor_panels``). Bars the rule failed on are
@@ -130,6 +131,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
             valuation_price=history[self.MARKET.valuation_price_column],
             delisted=dataset.delisting_bars(prices, self.MARKET.valuation_price_column),
             factors=self._required_factor_panels(prices),
+            execution=self.config.execution,
         )
         self._failed_bars = list(weights.attrs.pop("failed_bars", []))
         self._events = dict(weights.attrs.pop("events", {}))

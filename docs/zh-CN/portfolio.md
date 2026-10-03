@@ -83,7 +83,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 向量化回测调用 `construct_panel`。它在调仓 bar 上逐根调用规则的单 bar 决策（`decide`，见[回测之外决定一根 bar](#回测之外决定一根-bar)），并为每根 bar 构造 context：
 
-- 当前权重是之前各次调仓实际留下的持仓，按模拟引擎的成交方式建模，包括被拒订单和退市结算。
+- 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.utils.execution`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。`construct_panel(..., execution=ExecutionSettings(sizing_basis, fees, slippage))` 接收这些设置，回测器传入自己 config 中的设置；不传时按成交价定仓位、不计成本。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
 - 规则的 `lookback_bars` 会加到回测的预热期上，所以回测的第一根 bar 就有完整的窗口。
 

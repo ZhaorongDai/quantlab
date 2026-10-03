@@ -50,6 +50,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
+from quantlab.utils.execution import ExecutionBook, ExecutionSettings
 
 if TYPE_CHECKING:
     from quantlab.base.factor import Factor
@@ -505,88 +506,47 @@ class _PriceHistory:
 
     ``returns`` holds the one-bar returns of the forward-filled valuation
     price and ``staleness`` the bars since each symbol's last real valuation
-    price; ``raw_fill`` the fill prices as given, ``fill`` and ``valuation``
-    the forward-filled prices, and ``delisted`` the delisting marks, as
-    ``[T, S]`` arrays; and ``positions`` each prediction bar's row in them.
+    price; ``raw_fill`` and ``raw_valuation`` the prices as given, ``valuation``
+    the forward-filled valuation prices, and ``delisted`` the delisting
+    marks, as ``[T, S]`` arrays; and ``positions`` each prediction bar's row
+    in them.
     """
 
     returns: xr.DataArray
     staleness: np.ndarray
     raw_fill: np.ndarray
-    fill: np.ndarray
+    raw_valuation: np.ndarray
     valuation: np.ndarray
     delisted: np.ndarray
     positions: np.ndarray
 
 
 class _Book:
-    """The holdings the driver models between rebalances: shares and cash.
+    """The holdings the driver models between rebalances.
 
-    It replays what the simulation does with each rebalance's targets, so
-    the current weights handed to a rule are the ones really held, up to
-    fees and slippage. The portfolio starts as 1.0 of cash. On each bar the
-    orders are the queued targets, if any fill there, and the settlements of
-    holdings delisted on the bar before, which close at that bar's
-    predecessor's valuation whatever the targets say. An order without a raw
-    fill price is rejected and leaves its holding alone. The book is valued
-    at the order prices, then sells run first and buys in ascending order of
-    value, each capped by the cash left.
+    It queues each rebalance's targets for the next bar and leaves every
+    trade and valuation to the Execution module's ``ExecutionBook``, with
+    the settings it is given, so the current weights handed to a rule are
+    the ones the simulation holds. The portfolio starts as 1.0 of cash.
     """
 
-    def __init__(self, history: _PriceHistory):
+    def __init__(self, history: _PriceHistory, settings: ExecutionSettings):
         """Start flat on the given price history."""
-        self.history = history
-        self.shares = np.zeros(history.fill.shape[1])
-        self.cash = 1.0
-        self.applied_to = -1  # the last price row whose orders are applied
-        self.queued: tuple[int, np.ndarray] | None = None  # (fill row, targets)
+        self.valuation = history.valuation
+        self.book = ExecutionBook(history.raw_fill, history.raw_valuation, history.delisted, settings)
+        self.traded_to = -1  # the last price row whose orders are traded
 
     def weights_at(self, row: int) -> np.ndarray:
-        """Apply every order up to ``row`` and return the weights valued there."""
-        for bar in range(self.applied_to + 1, row + 1):
-            targets = None
-            if self.queued is not None and self.queued[0] == bar:
-                targets = self.queued[1]
-                self.queued = None
-            self._trade(bar, targets)
-        self.applied_to = max(self.applied_to, row)
-        worth = self.shares * np.nan_to_num(self.history.valuation[row])
-        return worth / (self.cash + worth.sum())
+        """Trade every bar up to ``row`` and return the weights valued at its close."""
+        for bar in range(self.traded_to + 1, row + 1):
+            self.book.trade(bar)
+        self.traded_to = max(self.traded_to, row)
+        worth = self.book.shares * np.nan_to_num(self.valuation[row])
+        return worth / (self.book.cash + worth.sum())
 
     def queue(self, row: int, targets: np.ndarray) -> None:
-        """Queue ``targets``, decided at ``row``, to fill on ``row + 1``."""
-        if row + 1 < self.history.fill.shape[0]:
-            self.queued = (row + 1, targets)
-
-    def _trade(self, bar: int, targets: np.ndarray | None) -> None:
-        """Run ``bar``'s orders: the targets that fill there and the settlements."""
-        n = self.shares.size
-        settle = (
-            self.history.delisted[bar - 1] & (self.shares != 0)
-            if bar > 0
-            else np.zeros(n, dtype=bool)
-        )
-        if targets is None and not settle.any():
-            return
-        wanted = np.full(n, np.nan) if targets is None else np.array(targets, dtype=np.float64)
-        price = np.where(settle, self.history.valuation[bar - 1] if bar > 0 else np.nan, self.history.fill[bar])
-        priced = np.isfinite(price) & (price > 0)
-        # A settlement at a last valuation of 0 closes the position for nothing.
-        self.shares[settle & (price == 0)] = 0.0
-        at = np.where(priced, price, 0.0)
-        value = self.cash + float(np.sum(self.shares * at))
-        accepted = priced & (settle | (np.isfinite(wanted) & np.isfinite(self.history.raw_fill[bar])))
-        wanted[settle] = 0.0
-        delta = np.zeros(n)
-        delta[accepted] = wanted[accepted] * value / price[accepted] - self.shares[accepted]
-        trade_value = delta * at
-        for j in np.flatnonzero(trade_value < 0):
-            self.shares[j] += delta[j]
-            self.cash -= trade_value[j]
-        for j in sorted(np.flatnonzero(trade_value > 0), key=lambda j: trade_value[j]):
-            spend = min(trade_value[j], max(self.cash, 0.0))
-            self.shares[j] += spend / price[j]
-            self.cash -= spend
+        """Queue ``targets``, decided at ``row``, to fill on the next bar."""
+        self.book.submit(row, targets)
 
 
 class _Configured:
@@ -1315,6 +1275,7 @@ class PortfolioConstructor(_Configured, ABC):
         valuation_price: xr.DataArray | None = None,
         delisted: xr.DataArray | None = None,
         factors: xr.Dataset | None = None,
+        execution: ExecutionSettings | None = None,
     ) -> xr.Dataset:
         """Build target weights for every bar of a panel.
 
@@ -1327,14 +1288,15 @@ class PortfolioConstructor(_Configured, ABC):
         ``valuation_price`` ending at it, the values at it of the
         ``factors`` the rule declares, and the weights currently held.
         With prices, those are the holdings the earlier targets left,
-        modelled the way the simulation trades them: filled at the next
-        bar's forward-filled fill price, sells before buys and each buy
-        capped by the cash left, an order without a raw fill price rejected
-        (the holding kept), a holding marked in ``delisted`` closed at its
-        last valuation on the next bar, and the book valued at this bar's
-        forward-filled valuation price. Fees and slippage are not modelled.
-        Without prices the current weights are the last traded row. They
-        are all 0.0 before the first rebalance.
+        replayed by the Execution module (``quantlab.utils.execution``)
+        under ``execution``, exactly as the simulation trades them: filled
+        at the next bar's fill price, rejected without a raw fill or sizing
+        price (the holding kept), a holding marked in ``delisted`` settled
+        at its last valuation on the next bar, sells before buys and each
+        buy capped by the cash left, with fees and slippage; the book is
+        then valued at this bar's forward-filled valuation price. Without
+        prices the current weights are the last traded row. They are all
+        0.0 before the first rebalance.
 
         A bar that returns all NaN holds. A bar whose ``construct`` raises
         ``PortfolioConstructionError`` holds too, with a warning, and is
@@ -1370,6 +1332,10 @@ class PortfolioConstructor(_Configured, ABC):
             The panels of the rule's ``required_factors()``, one variable
             per factor name on ``(timestamp, symbol)``, covering every
             prediction timestamp; required when the rule declares any.
+        execution : ExecutionSettings, optional
+            The sizing basis, fees and slippage the holdings are replayed
+            with; read only with prices. Default: sizing at the fill price,
+            no costs.
 
         Returns
         -------
@@ -1414,7 +1380,7 @@ class PortfolioConstructor(_Configured, ABC):
         history = self._check_prices(fill_price, valuation_price, delisted, predictions)
         factors = self._check_factors(factors, predictions)
         lookback = self.lookback_bars
-        book = None if history is None else _Book(history)
+        book = None if history is None else _Book(history, execution or ExecutionSettings())
 
         weights = np.full((len(timestamps), len(symbols)), np.nan)
         traded = np.zeros(len(symbols))  # the last traded row, without prices
@@ -1497,9 +1463,9 @@ class PortfolioConstructor(_Configured, ABC):
 
         The history holds the one-bar returns of the forward-filled valuation
         price and the staleness (the context's window and staleness), the
-        raw and forward-filled fill prices, the forward-filled
-        valuation prices and the delisting marks (the modelled holdings),
-        and each prediction bar's position in them.
+        raw fill and valuation prices and the delisting marks (the replayed
+        holdings), the forward-filled valuation prices (the holdings'
+        weights), and each prediction bar's position in them.
         """
         if fill_price is None and valuation_price is None:
             if self.lookback_bars:
@@ -1541,7 +1507,7 @@ class PortfolioConstructor(_Configured, ABC):
             returns=returns,
             staleness=staleness,
             raw_fill=fill_price.values.astype(np.float64),
-            fill=fill_price.ffill("timestamp").values.astype(np.float64),
+            raw_valuation=valuation_price.values.astype(np.float64),
             valuation=valuation_filled.values.astype(np.float64),
             delisted=marks,
             positions=positions,

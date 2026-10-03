@@ -29,6 +29,7 @@ from types import UnionType
 from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
 
 from quantlab.base.tracking import NullTracker, Tracker
+from quantlab.utils.execution import ExecutionSettings
 from quantlab.enums.data import (
     BarInterval,
     Frequency,
@@ -1138,6 +1139,17 @@ class BacktestConfig:
     #: Fields holding live objects. ``to_dict`` skips them; the backtester's
     #: ``get_config`` nests each one's own config instead.
     _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset", "tracker")
+
+    @property
+    def execution(self) -> ExecutionSettings:
+        """The run's execution settings: its sizing basis, fees and slippage.
+
+        Examples
+        --------
+        >>> cfg.execution == ExecutionSettings(cfg.sizing_basis, cfg.fees, cfg.slippage)
+        True
+        """
+        return ExecutionSettings(self.sizing_basis, self.fees, self.slippage)
 
     def to_dict(self):
         """Return only the scalar fields as a dict.

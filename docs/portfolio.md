@@ -83,7 +83,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 The vectorised backtest calls `construct_panel`. It loops the rule's one-bar decision (`decide`, see [One bar outside a backtest](#one-bar-outside-a-backtest)) over the rebalance bars and builds each bar's context:
 
-- The current weights are the holdings the earlier rebalances really left. They are modelled the way the simulation trades them, including rejected orders and delisting settlements.
+- The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.utils.execution`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. `construct_panel(..., execution=ExecutionSettings(sizing_basis, fees, slippage))` takes those settings, and the backtester passes its config's; without them the replay sizes at the fill price and charges no costs.
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
 - A rule's `lookback_bars` is added to the backtest's warm-up, so the first backtest bar already has a full window.
 

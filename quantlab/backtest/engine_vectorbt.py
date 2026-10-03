@@ -23,7 +23,7 @@ from vectorbt.portfolio.enums import SizeType
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 from quantlab.utils import backtest_stats
-from quantlab.utils.execution import FILL_DELAY_BARS, ExecutionSettings, OrderPlan, plan_orders
+from quantlab.utils.execution import FILL_DELAY_BARS, OrderPlan, plan_orders
 
 #: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt
 #: refuses a price of 0, and at the smallest positive float the trade's cash is
@@ -202,7 +202,7 @@ class VectorBtBacktester(BaseBacktester):
             raw_fill,
             np.asarray(valuation.to_numpy(), dtype=np.float64),
             delisted,
-            ExecutionSettings(cfg.sizing_basis, cfg.fees, cfg.slippage),
+            cfg.execution,
         )
 
         def frame(values):

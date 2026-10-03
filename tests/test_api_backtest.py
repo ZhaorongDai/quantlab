@@ -25,9 +25,10 @@ from loguru import logger
 import quantlab.api as qa
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.selection import rebalance_mask
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import BacktestConfig, CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.utils.execution import ExecutionSettings
 from tests.backtest_fixtures import SYMBOLS, write_price_store
 
 N_BARS = 40
@@ -113,7 +114,7 @@ def _scores(seed: int = 3) -> xr.DataArray:
 
 def _selected_weights(stores, *, direction="long_only", top_n=2, periods=5) -> xr.Dataset:
     """Top-N weights selected by the library's top-n rule on the store's own prices,
-    as the library backtester drives it."""
+    as the library backtester drives it, the holdings replayed with the default costs."""
     prices = xr.open_zarr(stores["prices"].zarr_file_path).load()
     dataset = StockDataset(stores["prices"])
     constructor = TopNConstructor(TopNConfig(direction=direction, top_n=top_n))
@@ -124,6 +125,7 @@ def _selected_weights(stores, *, direction="long_only", top_n=2, periods=5) -> x
         fill_price=prices["adjOpen"],
         valuation_price=prices["adjClose"],
         delisted=dataset.delisting_bars(prices, "adjClose"),
+        execution=ExecutionSettings(fees=BacktestConfig.fees, slippage=BacktestConfig.slippage),
     )
 
 

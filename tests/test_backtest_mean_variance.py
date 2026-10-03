@@ -98,7 +98,7 @@ def _setup(tmp_path):
     return dataset_config, model, bars
 
 
-def _backtester(tmp_path, constructor, *, output_dir=None):
+def _backtester(tmp_path, constructor, *, output_dir=None, fees=0.0, slippage=0.0):
     """``constructor`` may be a function of the price store's dataset config."""
     dataset_config, model, bars = _setup(tmp_path)
     if not isinstance(constructor, PortfolioConstructor):
@@ -114,8 +114,8 @@ def _backtester(tmp_path, constructor, *, output_dir=None):
                 output_dir=output_dir,
                 rebalance_periods=REBALANCE,
                 constructor=constructor,
-                fees=0.0,
-                slippage=0.0,
+                fees=fees,
+                slippage=slippage,
             )
         ),
         dataset_config,
@@ -171,13 +171,16 @@ def _engine_weights_at_close(result, close, bar) -> np.ndarray:
     return shares * close / value
 
 
-def test_the_current_weights_are_the_holdings_the_simulation_carries(tmp_path):
-    """With no fees, the drifted weights handed to the rule at a rebalance bar
-    equal the simulation's own holdings at that bar's close: filled at the
-    next bar's open (no overnight move from the signal bar's close), carried
-    across BBB's two-bar halt at its last price, then marked to the close
-    once it trades again."""
-    backtester, dataset_config, bars = _backtester(tmp_path, Recorder(RecorderConfig()))
+@pytest.mark.parametrize("fees, slippage", [(0.0, 0.0), (0.002, 0.001)])
+def test_the_current_weights_are_the_holdings_the_simulation_carries(tmp_path, fees, slippage):
+    """The drifted weights handed to the rule at a rebalance bar equal the
+    simulation's own holdings at that bar's close, the run's fees and
+    slippage included: filled at the next bar's open (no overnight move from
+    the signal bar's close), carried across BBB's two-bar halt at its last
+    price, then marked to the close once it trades again."""
+    backtester, dataset_config, bars = _backtester(
+        tmp_path, Recorder(RecorderConfig()), fees=fees, slippage=slippage
+    )
     # A halt strictly inside the first holding period, after the fill bar.
     _halt(dataset_config, "BBB", [WINDOW[0] + 2, WINDOW[0] + 3])
 

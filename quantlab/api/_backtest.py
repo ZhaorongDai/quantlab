@@ -81,7 +81,7 @@ def backtest(
     else:
         weight = _selected(
             price_dataset, panel, zone, scores, columns, fill, valuation, top_n,
-            direction, rebalance_periods,
+            direction, rebalance_periods, fees, slippage,
         )
 
     timestamps = pd.DatetimeIndex(panel["timestamp"].values)
@@ -238,17 +238,19 @@ def _weights_on(panel: xr.Dataset, prices_zone, weights, columns) -> xr.DataArra
 
 def _selected(
     dataset, panel, prices_zone, scores, columns, fill, valuation, top_n, direction,
-    rebalance_periods,
+    rebalance_periods, fees, slippage,
 ):
     """Return top-N weights selected from ``scores`` on the price axes.
 
     Exactly as in the library's backtester: a symbol is selectable where it has a
     score and is tradable (a fill price at that bar), and a held symbol that is not
-    tradable keeps its current weight, the holdings modelled from the prices.
+    tradable keeps its current weight, the holdings replayed from the prices with
+    the run's fees and slippage.
     """
     from quantlab.backtest.selection import rebalance_mask
     from quantlab.base.config import TopNConfig
     from quantlab.portfolio.predefined.top_n import TopNConstructor
+    from quantlab.utils.execution import ExecutionSettings
 
     field = to_field_panel(scores, "score", columns=columns, purpose="scores")
     values, _ = _onto_price_axes(panel, prices_zone, "scores", field)
@@ -261,4 +263,5 @@ def _selected(
         fill_price=panel[fill],
         valuation_price=panel[valuation],
         delisted=dataset.delisting_bars(panel, valuation),
+        execution=ExecutionSettings(fees=fees, slippage=slippage),
     )["weight"]
