@@ -21,7 +21,6 @@ What turns this file red:
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -200,11 +199,11 @@ def test_an_ensemble_scores_the_level_of_its_one_raw_volatility_member(tmp_path)
     returns = _model(tmp_path, Return, name="ret")
     volatility = _model(tmp_path, Volatility, name="vol")
     ensemble = ModelEnsemble([returns, volatility])
-    manifest = ensemble.collect().train()
+    checkpoint = ensemble.collect().train()
 
-    metrics = json.loads((manifest.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     label = f"vol_{HORIZON}"
-    expected = _expected_test_metrics(manifest.parent, ensemble.members[1], label)
+    expected = _expected_test_metrics(checkpoint.parent, ensemble.members[1], label)
     for key in LEVEL_KEYS:
         assert metrics[f"test_{label}_{key}"] == pytest.approx(expected[key], rel=1e-9)
     assert not any(key.endswith(LEVEL_KEYS) and label not in key for key in metrics), sorted(metrics)
@@ -212,9 +211,9 @@ def test_an_ensemble_scores_the_level_of_its_one_raw_volatility_member(tmp_path)
 
 def test_a_volatility_label_averaged_over_members_gets_no_level_metrics(tmp_path):
     ensemble = SeedEnsemble(_model(tmp_path, Volatility), [0, 1])
-    manifest = ensemble.collect().train()
+    checkpoint = ensemble.collect().train()
 
-    metrics = json.loads((manifest.parent / "metrics.json").read_text())
+    metrics = TrainedRun.open(checkpoint).metrics
     assert ensemble.label_scales == {f"vol_{HORIZON}": "standardized"}
     assert not any(key.endswith(LEVEL_KEYS) for key in metrics), sorted(metrics)
     assert "test_ic" in metrics

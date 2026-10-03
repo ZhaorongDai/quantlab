@@ -600,7 +600,7 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
     """
     import datetime as datetime_module
 
-    import quantlab.base.model as model_module
+    import quantlab.utils.trained_run as trained_run_module
 
     frozen = datetime_module.datetime(2026, 9, 15, 12, 0, 0, 123456)
 
@@ -609,14 +609,13 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
         def now(cls, tz=None):
             return frozen
 
-    monkeypatch.setattr(model_module, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(trained_run_module, "datetime", _FrozenDatetime)
     model = StubLibraryHead(_config(tmp_path))
     model.collect()
 
     first = model.train()
     second = model.train()
-    model.train_cv(train_periods=50)
-    model.train_cv(train_periods=50)
+    cvs = [model.train_cv(train_periods=50), model.train_cv(train_periods=50)]
 
     assert first is not None and second is not None and first != second
     for checkpoint in (first, second):
@@ -624,7 +623,8 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
         assert Path(checkpoint).is_file(), checkpoint
     projects = sorted(p for p in (tmp_path / "ckpt").iterdir() if p.is_dir())
     assert len(projects) == 4, projects
-    assert len(sorted((tmp_path / "ckpt").rglob("cv_folds.json"))) == 2
+    assert cvs[0].path != cvs[1].path
+    assert all(cv.kind == "walk_forward" for cv in cvs)
 
 
 def test_fresh_instance_loads_without_init_model_and_predicts_identically(tmp_path):

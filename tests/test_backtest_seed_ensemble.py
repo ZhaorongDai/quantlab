@@ -3,12 +3,12 @@
 What is locked here, and what turns it red:
 
 - `run()` in train mode trains every seed into one ensemble directory,
-  records its `ensemble.json` as the trained checkpoint, and backtests the
+  records the unit's `run.json` as the trained checkpoint, and backtests the
   average of the members' predictions.
-- `run()` in load mode with `checkpoint` = `ensemble.json` replays that
-  ensemble, reading the training dates from the ensemble-level `config.json`
-  beside the manifest (a stale training window on the ensemble's own model is
-  overridden by the recorded one).
+- `run()` in load mode with `checkpoint` = that `run.json` replays the
+  ensemble with the training dates its members' records hold (a stale
+  training window on the ensemble's own model is overridden by the recorded
+  one).
 - The data fingerprints of an ensemble run carry the same keys as a single
   model's: the members read identical inputs, which are hashed once.
 - `load_backtester_from_config` rebuilds a load-mode and a train-mode
@@ -31,6 +31,7 @@ from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils import module as module_utils
 from quantlab.utils.ensemble import average_predictions
+from quantlab.utils.trained_run import TrainedRun
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SeededHead,
@@ -107,12 +108,13 @@ def test_train_mode_trains_every_seed_and_backtests_the_average(tmp_path):
 
     result = _backtester(tmp_path, dataset_config, ensemble, bars, name="train").run()
 
-    manifest = Path(result.metrics["trained_checkpoint"])
-    assert manifest.name == "ensemble.json" and manifest.is_file()
-    saved = json.loads(manifest.read_text())
-    assert [m["seed"] for m in saved["members"]] == SEEDS
-    assert all((manifest.parent / m["checkpoint"]).is_file() for m in saved["members"])
-    assert _saved_config(result)["trained_checkpoint"] == str(manifest)
+    checkpoint = Path(result.metrics["trained_checkpoint"])
+    assert checkpoint.name == "run.json" and checkpoint.is_file()
+    saved = TrainedRun.open(checkpoint)
+    assert saved.kind == "ensemble"
+    assert [m.seed for m in saved.members] == SEEDS
+    assert all(m.checkpoint.is_file() for m in saved.members)
+    assert _saved_config(result)["trained_checkpoint"] == str(checkpoint)
 
     start, end = _day(bars[WINDOW[0]]), _day(bars[WINDOW[1]])
     members = [m.predict_window(start, end) for m in ensemble.members]
@@ -126,15 +128,15 @@ def test_train_mode_trains_every_seed_and_backtests_the_average(tmp_path):
     assert np.isfinite(result.predictions["fwd_ret_1"].values).any()
 
 
-def test_load_mode_replays_the_manifest_with_its_recorded_dates(tmp_path):
+def test_load_mode_replays_the_trained_unit_with_its_recorded_dates(tmp_path):
     dataset_config, bars = _setup(tmp_path)
     trained = _ensemble(tmp_path / "trained", dataset_config, bars)
-    manifest = trained.collect().train()
+    checkpoint = trained.collect().train()
     # The ensemble given to the backtest carries a stale training window.
     stale = _ensemble(tmp_path / "stale", dataset_config, bars, train_end_bar=10)
 
     result = _backtester(
-        tmp_path, dataset_config, stale, bars, name="load", checkpoint=manifest
+        tmp_path, dataset_config, stale, bars, name="load", checkpoint=checkpoint
     ).run()
 
     assert tuple(result.metrics["training_window"]) == (_day(bars[0]), _day(bars[24]))
@@ -148,13 +150,13 @@ def test_load_mode_replays_the_manifest_with_its_recorded_dates(tmp_path):
 def test_ensemble_fingerprints_have_the_keys_of_a_single_model(tmp_path):
     dataset_config, bars = _setup(tmp_path)
     ensemble = _ensemble(tmp_path / "ens", dataset_config, bars)
-    manifest = ensemble.collect().train()
+    ensemble_checkpoint = ensemble.collect().train()
     single = make_model(tmp_path / "single", dataset_config, head=SeededHead, **_dates(bars))
     checkpoint = single.collect().train()
 
     ens_result = _backtester(
         tmp_path, dataset_config, _ensemble(tmp_path / "e2", dataset_config, bars),
-        bars, name="ens", checkpoint=manifest,
+        bars, name="ens", checkpoint=ensemble_checkpoint,
     ).run()
     single_result = _backtester(
         tmp_path, dataset_config,
@@ -170,10 +172,10 @@ def test_ensemble_fingerprints_have_the_keys_of_a_single_model(tmp_path):
 
 def test_load_mode_rebuild_reproduces_the_run(tmp_path):
     dataset_config, bars = _setup(tmp_path)
-    manifest = _ensemble(tmp_path / "trained", dataset_config, bars).collect().train()
+    checkpoint = _ensemble(tmp_path / "trained", dataset_config, bars).collect().train()
     first = _backtester(
         tmp_path, dataset_config, _ensemble(tmp_path / "ens", dataset_config, bars),
-        bars, name="load", checkpoint=manifest,
+        bars, name="load", checkpoint=checkpoint,
     ).run()
 
     rebuilt = module_utils.load_backtester_from_config(_saved_config(first))

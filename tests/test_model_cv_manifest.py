@@ -1,33 +1,36 @@
-"""The `cv_folds.json` manifest `BaseModel.train_cv` persists (phase 03.7, D-30 / D-36).
+"""The walk-forward unit `BaseModel.train_cv` persists (#123; was `cv_folds.json`, D-30 / D-36).
 
-`train_cv` writes `{model_save_dir}/{project_name}/cv_folds.json` holding
-`{"format_version": 2, "folds": [...], "cv_mean": {...}}`, where `folds` is the JSON form of
-exactly the list `train_cv` returns.
+`train_cv` writes `{model_save_dir}/{Class}_trial_{timestamp}/`, a
+"walk_forward" trained unit: one "model" unit per fold in `fold_{i}/` and,
+last, `run.json` holding `{"format_version": 1, "kind": "walk_forward",
+"folds": [...], "cv_mean": {...}}`. It returns that unit as a `TrainedRun`.
 
-Why the manifest exists: `run_cv` (plan 03.7-10) backtests every fold's
-out-of-sample segment, and it can only replay the folds a training run actually
-used if that geometry is on disk and equal to what training returned. Why it is
-versioned (D-36): CV backtests of OLD training runs read it, so the on-disk
-shape is a persisted format; `format_version` is the migration seam and
-`run_cv` rejects a version it does not know.
+Why the record exists: `run_cv` backtests every fold's out-of-sample segment,
+and it can only replay the folds a training run actually used if that
+geometry is on disk and equal to what training returned. Why it is versioned:
+CV backtests of OLD training runs read it, so the on-disk shape is a persisted
+format, and `TrainedRun.open` rejects a version it does not know.
 
 What turns this file red:
 
-- the manifest is missing, or its `folds` differ from the returned list, for
-  a library or a torch head;
-- a fold entry loses one of D-30's keys, or points at a checkpoint that is not
-  on disk;
-- manifest keys leak into the returned fold dicts (the return value is D-30's
-  "unchanged" contract);
-- an empty fold list writes no manifest (run_cv could then not tell "no folds"
+- the record is missing, or its folds differ from the returned unit's, for a
+  library or a torch head;
+- a fold entry loses a key, or its fold unit has no checkpoint on disk;
+- fold paths are not relative to the unit, so a relative `model_save_dir` or
+  a copied trial directory breaks reading;
+- an empty fold list writes no record (run_cv could then not tell "no folds"
   from "not a CV project");
 - a non-finite metric is dumped as a bare `NaN` token, which strict JSON
   parsers reject (03.7-RESEARCH.md Pitfall 10).
+
+The former test that the returned fold dicts carried no manifest keys is gone:
+`train_cv` returns the unit itself, not a list of dicts.
 
 Everything is synthetic, CPU-only and offline.
 """
 
 import json
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -37,7 +40,7 @@ import xarray as xr
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.torch_model import TorchModel
-from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.trained_run import TrainedRun
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
@@ -54,8 +57,9 @@ END = np.datetime_as_string(TIMES[N_TIMES - 1], unit="D")
 TRAIN_PERIODS = 20
 N_FOLDS = 5
 
-FOLD_KEYS = {"fold", "train_start", "train_end", "test_start", "test_end"}
-D30_KEYS = FOLD_KEYS | {"experiment_name", "checkpoint"}
+FOLD_ENTRY_KEYS = {
+    "fold", "directory", "kind", "train_window", "fitted_train_window", "test_window", "metrics"
+}
 
 
 class FakePanel:
@@ -140,10 +144,10 @@ def _project_dir(save_root: Path) -> Path:
     return projects[0]
 
 
-def _read_manifest(save_root: Path) -> dict:
-    """Parse the manifest STRICTLY: a bare NaN/Infinity token raises."""
-    path = _project_dir(save_root) / "cv_folds.json"
-    assert path.is_file(), f"train_cv wrote no manifest at {path}"
+def _read_record(save_root: Path) -> dict:
+    """Parse the walk-forward unit's run.json STRICTLY: a bare NaN/Infinity token raises."""
+    path = _project_dir(save_root) / "run.json"
+    assert path.is_file(), f"train_cv wrote no run.json at {path}"
 
     def _reject(token):
         raise ValueError(f"non-standard JSON token {token!r} in {path}")
@@ -151,124 +155,134 @@ def _read_manifest(save_root: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject)
 
 
-def test_sequential_ml_manifest_equals_returned_folds(tmp_path):
-    """The sequential branch: `folds` is the JSON form of the returned list,
-    and the wrapper carries `format_version` 2, the folds and `cv_mean`."""
+def _fold_tuple(fold: TrainedRun) -> tuple:
+    return (fold.index, fold.train_window, fold.fitted_train_window, fold.test_window)
+
+
+def test_sequential_ml_record_equals_returned_folds(tmp_path):
+    """The record's folds are the returned unit's folds, and the wrapper
+    carries `format_version` 1, the kind, the folds and `cv_mean`."""
     model = _library(tmp_path, "ckpt")
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert set(manifest) == {"format_version", "folds", "cv_mean"}
-    assert manifest["format_version"] == 2
-    assert manifest["folds"] == to_jsonable(results)
-    assert len(results) == N_FOLDS
+    record = _read_record(tmp_path / "ckpt")
+    assert set(record) == {"format_version", "kind", "folds", "cv_mean"}
+    assert record["format_version"] == 1 and record["kind"] == "walk_forward"
+    assert len(cv.folds) == N_FOLDS
+    assert [
+        (e["fold"], tuple(e["train_window"]), tuple(e["fitted_train_window"]),
+         tuple(e["test_window"]))
+        for e in record["folds"]
+    ] == [_fold_tuple(f) for f in cv.folds]
+    assert [e["metrics"] for e in record["folds"]] == [f.metrics for f in cv.folds]
+    assert record["cv_mean"] == cv.cv_mean
+    assert TrainedRun.open(cv.path) == cv
 
 
-def test_torch_manifest_equals_returned_folds(tmp_path):
-    """A torch fold entry carries the fold's dates, its run name, its
-    checkpoint and every split's metrics, like a library fold."""
+def test_torch_record_equals_returned_folds(tmp_path):
+    """A torch fold unit carries its windows, its checkpoint and every split's
+    metrics, like a library fold."""
     model = _torch(tmp_path, "ckpt")
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert manifest["format_version"] == 2
-    assert manifest["folds"] == to_jsonable(results)
-    assert len(manifest["folds"]) == N_FOLDS
-    for entry in manifest["folds"]:
-        assert D30_KEYS <= set(entry)
-        assert {"train_mse", "val_mse", "test_mse", "test_rank_ic"} <= set(entry)
-        assert entry["checkpoint"].endswith(".pth")
-    assert manifest["cv_mean"]["cv_n_folds"] == N_FOLDS
+    record = _read_record(tmp_path / "ckpt")
+    assert len(record["folds"]) == len(cv.folds) == N_FOLDS
+    for entry, fold in zip(record["folds"], cv.folds):
+        assert set(entry) == FOLD_ENTRY_KEYS
+        assert {"train_mse", "val_mse", "test_mse", "test_rank_ic"} <= set(entry["metrics"])
+        assert fold.checkpoint.suffix == ".pth" and fold.checkpoint.is_file()
+    assert cv.cv_mean["cv_n_folds"] == N_FOLDS
 
 
-def test_manifest_fold_entries_carry_the_d30_keys_and_real_checkpoints(tmp_path):
-    """D-30's per-fold entry: fold, the four dates, experiment_name and
-    checkpoint, plus the test metrics a library head produces. Every checkpoint
-    named must exist, because run_cv deserializes exactly that path."""
+def test_fold_entries_carry_their_keys_and_real_checkpoints(tmp_path):
+    """Each fold entry: index, relative directory, kind, the three windows and
+    the metrics. Every fold unit's checkpoint must exist, because run_cv
+    deserializes exactly that path."""
     model = _library(tmp_path, "ckpt")
 
-    model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert [entry["fold"] for entry in manifest["folds"]] == list(range(N_FOLDS))
-    for entry in manifest["folds"]:
-        assert D30_KEYS <= set(entry), sorted(entry)
-        assert any(key.startswith("test_") and key not in FOLD_KEYS for key in entry)
-        assert entry["experiment_name"] == f"StubLibraryHead_cv_fold_{entry['fold']}"
-        assert Path(entry["checkpoint"]).is_file(), entry["checkpoint"]
+    record = _read_record(tmp_path / "ckpt")
+    assert [entry["fold"] for entry in record["folds"]] == list(range(N_FOLDS))
+    for entry, fold in zip(record["folds"], cv.folds):
+        assert set(entry) == FOLD_ENTRY_KEYS, sorted(entry)
+        assert entry["directory"] == f"fold_{entry['fold']}"
+        assert entry["kind"] == "model"
+        assert any(key.startswith("test_") for key in entry["metrics"])
+        assert fold.checkpoint.name == f"StubLibraryHead_cv_fold_{entry['fold']}.joblib"
+        assert fold.checkpoint.is_file(), fold.checkpoint
 
 
-def test_manifest_checkpoints_are_absolute_with_a_relative_save_dir(tmp_path, monkeypatch):
-    """Code review WR-03: a relative `model_save_dir` still yields absolute checkpoints.
-
-    The manifest is read later, by `run_cv`, from whatever directory that
-    process runs in. A relative entry written from the training cwd resolves
-    against the reader's cwd: from another directory it is missing, or worse, it
-    names another run's checkpoint. Training runs from `tmp_path` with
-    `model_save_dir="ckpt"`, and the entries are checked from a different
-    directory. The old code wrote `ckpt/...` verbatim and goes red here.
-    """
+def test_a_relative_save_dir_still_reads_from_another_directory(tmp_path, monkeypatch):
+    """Code review WR-03: a run trained with a relative `model_save_dir` is
+    read later from whatever directory `run_cv` runs in. Paths in the record
+    are relative to the unit, so opening the unit by an absolute path from
+    elsewhere finds every fold checkpoint inside it, never via the cwd."""
     monkeypatch.chdir(tmp_path)
     kwargs = _common(tmp_path, "unused")
     kwargs["model_save_dir"] = "ckpt"
     model = StubLibraryHead(ModelConfig(**kwargs))
     model.collect()
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    manifest = _read_manifest(tmp_path / "ckpt")
+    unit = (tmp_path / "ckpt" / cv.path.name).absolute()
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
-    assert len(manifest["folds"]) == len(results) == N_FOLDS
-    for result, entry in zip(results, manifest["folds"]):
-        assert Path(entry["checkpoint"]).is_absolute(), entry["checkpoint"]
-        assert Path(entry["checkpoint"]).is_file(), entry["checkpoint"]
-        assert entry["checkpoint"] == result["checkpoint"]
+    reopened = TrainedRun.open(unit)
+    assert len(reopened.folds) == N_FOLDS
+    for fold in reopened.folds:
+        assert fold.checkpoint.is_absolute() and fold.checkpoint.is_file()
+        assert fold.checkpoint.parent.parent == unit
 
 
-def test_return_value_carries_no_manifest_keys(tmp_path):
-    """D-30: the returned value is unchanged by the manifest write. No fold
-    dict gains the wrapper's keys, and the manifest holds exactly as many
-    folds as were returned."""
+def test_a_copied_trial_directory_opens_at_its_new_location(tmp_path):
     model = _library(tmp_path, "ckpt")
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    moved = tmp_path / "moved" / cv.path.name
+    shutil.copytree(cv.path, moved)
+    shutil.rmtree(cv.path)
+    copied = TrainedRun.open(moved)
 
-    for result in results:
-        assert "format_version" not in result
-        assert "folds" not in result
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert len(manifest["folds"]) == len(results)
+    assert [_fold_tuple(f) for f in copied.folds] == [_fold_tuple(f) for f in cv.folds]
+    assert [f.metrics for f in copied.folds] == [f.metrics for f in cv.folds]
+    for fold in copied.folds:
+        assert fold.checkpoint.is_file() and fold.checkpoint.parent.parent == moved
 
 
-def test_empty_fold_list_still_writes_a_manifest(tmp_path, monkeypatch):
-    """With no folds the manifest is still written, with `folds: []`, so
+def test_empty_fold_list_still_writes_a_record(tmp_path, monkeypatch):
+    """With no folds the record is still written, with `folds: []`, so
     run_cv can say "this CV run produced no folds" instead of "not a CV
     project directory"."""
     monkeypatch.setattr("quantlab.base.model.walk_forward_folds", lambda timestamps, train_periods, **_: ())
     model = _library(tmp_path, "ckpt")
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    assert results == []
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert manifest == {"format_version": 2, "folds": [], "cv_mean": {}}
+    assert cv.folds == () and cv.cv_mean == {}
+    record = _read_record(tmp_path / "ckpt")
+    assert record == {"format_version": 1, "kind": "walk_forward", "folds": [], "cv_mean": {}}
 
 
-def test_manifest_is_strict_json_with_null_for_non_finite_metrics(tmp_path):
-    """A NaN numpy metric must reach the file as `null`: `json.dump`'s
-    default writes a bare `NaN` token, which strict parsers reject. The
-    returned list still carries the NaN -- only the file is converted."""
+def test_record_is_strict_json_with_null_for_non_finite_metrics(tmp_path):
+    """A NaN numpy metric must reach the files as `null`: `json.dump`'s
+    default writes a bare `NaN` token, which strict parsers reject. The fold
+    units read back carry None."""
     model = _library(tmp_path, "ckpt", cls=NaNMetricLibraryHead)
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    manifest = _read_manifest(tmp_path / "ckpt")
-    assert len(manifest["folds"]) == N_FOLDS
-    for entry, result in zip(manifest["folds"], results):
-        assert entry["test_nan_metric"] is None
-        assert entry["test_finite_metric"] == 1.5
-        assert np.isnan(result["test_nan_metric"])
+    record = _read_record(tmp_path / "ckpt")
+    assert len(record["folds"]) == N_FOLDS
+    for entry, fold in zip(record["folds"], cv.folds):
+        assert entry["metrics"]["test_nan_metric"] is None
+        assert entry["metrics"]["test_finite_metric"] == 1.5
+        assert fold.metrics["test_nan_metric"] is None
+    assert cv.cv_mean["cv_mean_test_finite_metric"] == 1.5
+    # A metric undefined in every fold still has its mean, recorded as null.
+    assert record["cv_mean"]["cv_mean_test_nan_metric"] is None
+    assert cv.cv_mean["cv_mean_test_nan_metric"] is None

@@ -3,8 +3,8 @@
 ``BaseEnsemble`` holds what does not depend on where an ensemble's members
 come from: the ``Predictor`` members derived from the members (labels,
 label delays and scales, training and test windows), prediction by
-combining the members' predictions, the ensemble directory ``train()``
-writes, and the ``ensemble.json`` manifest that ``load`` and
+combining the members' predictions, and the ``"ensemble"`` trained unit
+(``quantlab.utils.trained_run``) that ``train()`` writes and ``load`` and
 ``check_checkpoint`` read.
 
 Each label is combined over the members that predict it (ADR 0013): the
@@ -31,7 +31,7 @@ of different classes over different factors. Optional hooks:
   default; an ensemble whose members read the same data shares it.
 - ``fingerprint_inputs``, ``training_fingerprint_inputs``: which data it
   reports reading.
-- ``_member_seed``: the seed recorded for each member in the manifest.
+- ``_member_seed``: the seed recorded for each member in ``run.json``.
 
 Shipped ensembles are in ``quantlab/model/predefined`` (``SeedEnsemble``,
 ``ModelEnsemble``).
@@ -39,37 +39,31 @@ Shipped ensembles are in ``quantlab/model/predefined`` (``SeedEnsemble``,
 The ensemble composes models and inherits none: each member is a complete
 model (a ``BaseModel``) with its own checkpoint.
 
-On disk ``train()`` writes::
+On disk ``train()`` writes an ``"ensemble"`` unit::
 
     {model_save_dir}/{EnsembleClass}_trial_{timestamp}/
-        member_0/            one member's usual run directory
+        member_0/            one member's ``"model"`` unit
         member_1/
         ...
-        metrics.json         IC metrics of the combined prediction, member correlation
         ic_series.csv        the first label's per-bar series, in the single-model layout
         test_predictions.zarr  the combined test-segment prediction
-        config.json          the ensemble's dates and labels
-        ensemble.json        the manifest, written last
+        run.json             members and seeds, windows, metrics; written last
 
-``train_cv`` writes one ensemble directory per walk-forward fold::
+``train_cv`` writes a ``"walk_forward"`` unit whose folds are such units::
 
-    {model_save_dir}/{EnsembleClass}_cv_{timestamp}/
-        cv_folds.json        the fold manifest ``run_cv`` replays
-        fold_0/              an ensemble directory as above, without metrics.json
+    {model_save_dir}/{EnsembleClass}_trial_{timestamp}/
+        fold_0/              an ensemble unit as above
         fold_1/
         ...
+        run.json             the folds and the fold means ``cv_mean``
 
-``ensemble.json`` is ``{"format_version": 1, "members": [{"name": ...,
-"checkpoint": ..., "seed": ...}, ...]}``: each member's class as a dotted
-path, its checkpoint relative to the manifest's directory, and its seed
-(null when the ensemble does not vary seeds). The format names nothing
-specific to one kind of ensemble.
+The record names each member's directory and seed (null when the ensemble
+does not vary seeds) and nothing specific to one kind of ensemble; each
+member's class is in its own ``config.json``.
 """
 
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import datetime
 from pathlib import Path
 from typing import Self
 
@@ -78,13 +72,19 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.base.model import BaseModel
-from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.ensemble import average_predictions, member_correlation
-from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import (
     ic_panel_metrics,
     scores_volatility_level,
     volatility_level_metrics,
+)
+from quantlab.utils.trained_run import (
+    TrainedRun,
+    evaluation_paths,
+    fold_directory,
+    member_directory,
+    new_trial_directory,
+    write_ensemble_run,
 )
 
 
@@ -123,7 +123,7 @@ class BaseEnsemble(ABC):
     Attributes
     ----------
     members : list
-        The member models, in manifest order.
+        The member models, in member order.
 
     Raises
     ------
@@ -140,19 +140,6 @@ class BaseEnsemble(ABC):
         >>> len(ensemble.members), ensemble.label_delays
         (3, (1,))
     """
-
-    #: Name of the manifest ``train()`` writes last and ``load()`` reads.
-    MANIFEST_FILENAME = "ensemble.json"
-    #: Name of the file holding what every member shares.
-    CONFIG_FILENAME = "config.json"
-    #: The manifest format this class writes and reads.
-    MANIFEST_FORMAT_VERSION = 1
-    #: Name of the IC metrics file of the combined prediction.
-    METRICS_FILENAME = "metrics.json"
-    #: Name of the per-bar IC series file of the combined prediction.
-    IC_SERIES_FILENAME = "ic_series.csv"
-    #: Name of the zarr store holding the combined test-segment prediction.
-    TEST_PREDICTIONS_FILENAME = "test_predictions.zarr"
 
     def __init__(self, members: Sequence):
         """Initialize the ensemble; see the class docstring for parameters."""
@@ -368,7 +355,7 @@ class BaseEnsemble(ABC):
         return Path(self.members[0].config.model_save_dir)
 
     def _member_seed(self, k: int) -> int | None:
-        """The seed recorded for member ``k`` in the manifest; None by default."""
+        """The seed recorded for member ``k`` in ``run.json``; None by default."""
         return None
 
     def collect(self) -> Self:
@@ -552,160 +539,101 @@ class BaseEnsemble(ABC):
     # Training and the ensemble directory
     # ------------------------------------------------------------------
 
-    def _new_directory(self, kind: str = "trial") -> Path:
-        """Create and return a fresh ``{class}_{kind}_{%Y%m%d_%H%M%S_%f}`` directory.
-
-        The directory is created under ``model_save_dir``; when the name is
-        taken, ``_1``, ``_2``, ... are appended. ``train`` passes ``"trial"``
-        and ``train_cv`` passes ``"cv"``.
-        """
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        base = f"{self.class_name}_{kind}_{stamp}"
-        root = self.model_save_dir.absolute()
-        root.mkdir(parents=True, exist_ok=True)
-        name, suffix = base, 1
-        while True:
-            try:
-                (root / name).mkdir()
-            except FileExistsError:
-                name = f"{base}_{suffix}"
-                suffix += 1
-                continue
-            return root / name
-
-    def _shared_config(self) -> dict:
-        """Return the ensemble's dates and labels, for the ensemble-level ``config.json``."""
-        train_start, train_end = self.train_bounds
-        test_start, test_end = self.test_bounds
-        return {
-            "train_start": train_start,
-            "train_end": train_end,
-            "test_start": test_start,
-            "test_end": test_end,
-            "labels": [label.get_config() for label in self.labels],
-        }
-
     def train(self) -> Path:
-        """Train every member into one ensemble directory and write its manifest.
+        """Train every member into one ensemble unit and return its ``run.json``.
 
         Every member's hyperparameters are checked first. Then a new
-        ``{class}_trial_{timestamp}`` directory is created under
-        ``model_save_dir`` and filled by ``_train_into``: member k is
-        trained, in order, into ``member_{k}/`` under a tracking run
+        ``{class}_trial_{timestamp}`` directory under ``model_save_dir`` is
+        filled by ``_train_into``: member k is trained, in order, into the
+        ``"model"`` unit ``member_{k}/`` under a tracking run
         ``{MemberClass}_member_{k}`` of its own tracker, grouped by the
-        directory's name;
-        each member writes its usual trained unit there (checkpoint,
-        ``config.json``, ``ic_series.csv``, ``test_predictions.zarr`` and
-        ``run.json``), and reseeds its generators from its own ``random_seed`` right
-        before it trains. The ensemble directory then gets the evaluation
-        files of the combined prediction (``metrics.json``,
-        ``ic_series.csv``, ``test_predictions.zarr``, see
-        ``_write_evaluation_files``), ``config.json`` with the shared
-        training and test dates and label configs (it is not a model
-        config), and last, atomically, ``ensemble.json``. If a member or the
-        ensemble evaluation fails, the error propagates, no manifest is
-        written and the files already written stay. Call ``collect()``
-        first.
+        directory's name, and reseeds its generators from its own
+        ``random_seed`` right before it trains. The directory then gets the
+        evaluation files of the combined prediction (``ic_series.csv``,
+        ``test_predictions.zarr``, see ``_write_evaluation_files``) and
+        last, atomically, ``run.json``, which makes it an ``"ensemble"``
+        unit (``quantlab.utils.trained_run``) recording the members, the
+        windows and the metrics. If a member or the ensemble evaluation
+        fails, the error propagates, no ``run.json`` is written and the
+        files already written stay. Call ``collect()`` first.
 
         Returns
         -------
         Path
-            Absolute path of the ``ensemble.json`` written.
+            Absolute path of the unit's ``run.json``, the ensemble's
+            load-mode checkpoint.
 
         Examples
         --------
-        >>> manifest = ensemble.collect().train()
-        >>> manifest.name, manifest.parent.name.startswith("SeedEnsemble_trial_")
-        ('ensemble.json', True)
-        >>> sorted(p.name for p in manifest.parent.iterdir())
-        ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
-        >>> sorted(json.loads((manifest.parent / "metrics.json").read_text()))
+        >>> checkpoint = ensemble.collect().train()
+        >>> checkpoint.name, checkpoint.parent.name.startswith("SeedEnsemble_trial_")
+        ('run.json', True)
+        >>> sorted(p.name for p in checkpoint.parent.iterdir())
+        ['ic_series.csv', 'member_0', 'member_1', 'member_2', 'run.json', 'test_predictions.zarr']
+        >>> sorted(TrainedRun.open(checkpoint).metrics)
         ['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir']
         """
         for member in self.members:
             member._check_hyperparameters()
-        directory = self._new_directory()
-        manifest, _ = self._train_into(directory, group=directory.name)
-        return manifest
+        directory = new_trial_directory(self.model_save_dir, self.class_name)
+        return self._train_into(directory, group=directory.name)
 
     def _train_into(
-        self,
-        run_dir: Path | str,
-        group: str,
-        *,
-        run_tag: str | None = None,
-        write_metrics: bool = True,
-    ) -> tuple[Path, dict]:
-        """Train every member, evaluate the combination and write the manifest into ``run_dir``.
+        self, run_dir: Path | str, group: str, *, run_tag: str | None = None
+    ) -> Path:
+        """Train every member, evaluate the combination and write the unit into ``run_dir``.
 
-        Member k trains into ``run_dir/member_{k}`` under the tracking run
-        ``{MemberClass}_member_{k}`` (``{MemberClass}_{run_tag}_member_{k}``
-        with a ``run_tag``) in the group ``group``.
-        Then come the evaluation files of the combined prediction (see
-        ``_write_evaluation_files``; ``metrics.json`` only with
-        ``write_metrics``), ``config.json`` and last ``ensemble.json``.
+        Member k trains into ``member_{k}/`` of ``run_dir`` under the
+        tracking run ``{MemberClass}_member_{k}``
+        (``{MemberClass}_{run_tag}_member_{k}`` with a ``run_tag``) in the
+        group ``group``. Then come the evaluation files of the combined
+        prediction (see ``_write_evaluation_files``) and last ``run.json``.
         Hyperparameters are not checked here: ``train`` checks them first,
         and ``train_cv`` once before its folds.
 
         Parameters
         ----------
         run_dir : Path or str
-            The ensemble directory. It is created with its parents when
-            missing; its ``member_{k}`` subdirectories must not exist yet.
+            The unit's directory. It is created with its parents when
+            missing; its member directories must not exist yet.
         group : str
             Tracking group of the members' runs, the trial directory's name.
         run_tag : str, optional
             Inserted into every member's run name, so that runs of several
-            ensemble directories in one group stay apart;
-            ``train_cv`` passes ``fold_{i}``.
-        write_metrics : bool, default True
-            Write the ensemble's ``metrics.json``; a caller that records the
-            metrics elsewhere passes False.
+            ensemble units in one group stay apart; ``train_cv`` passes
+            ``fold_{i}``.
 
         Returns
         -------
-        tuple[Path, dict]
-            The absolute ``ensemble.json`` path and the ensemble metrics,
-            with NaN where a metric is undefined.
+        Path
+            The absolute path of the unit's ``run.json``.
         """
         directory = Path(run_dir).absolute()
         directory.mkdir(parents=True, exist_ok=True)
-        entries = []
         tag = "" if run_tag is None else f"_{run_tag}"
         for k, member in enumerate(self.members):
-            checkpoint, _ = member._train_into(
-                directory / f"member_{k}",
+            member._train_into(
+                member_directory(directory, k),
                 group=group,
                 experiment_name=f"{member.class_name}{tag}_member_{k}",
             )
-            entries.append(
-                {
-                    "name": _class_path(member),
-                    "checkpoint": checkpoint.relative_to(directory).as_posix(),
-                    "seed": self._member_seed(k),
-                }
-            )
-        metrics = self._write_evaluation_files(directory, write_metrics=write_metrics)
-        write_json_atomically(
-            directory / self.CONFIG_FILENAME,
-            to_jsonable(self._shared_config()),
-            indent=2,
+        metrics = self._write_evaluation_files(directory)
+        return write_ensemble_run(
+            directory,
+            seeds=[self._member_seed(k) for k in range(len(self.members))],
+            train_window=self.train_bounds,
+            fitted_train_window=self.fitted_train_bounds,
+            test_window=self.test_bounds,
+            metrics=metrics,
         )
-        manifest = directory / self.MANIFEST_FILENAME
-        write_json_atomically(
-            manifest,
-            {"format_version": self.MANIFEST_FORMAT_VERSION, "members": entries},
-            indent=2,
-        )
-        return manifest, metrics
 
     def train_cv(
         self,
         train_periods: int,
         expanding: bool = False,
         test_periods: int | None = None,
-    ) -> list[dict]:
-        """Run a walk-forward cross-validation of the ensemble and return per-fold results.
+    ) -> TrainedRun:
+        """Run a walk-forward cross-validation of the ensemble and return the walk-forward unit.
 
         The folds are those ``BaseModel.train_cv`` trains for the first
         member: laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the first member's
@@ -715,26 +643,21 @@ class BaseEnsemble(ABC):
         largest ``lookahead_bars()`` among every member's labels. Every member's
         hyperparameters are checked once, before any directory is created.
 
-        A new ``{class}_cv_{timestamp}`` directory is created under
-        ``model_save_dir``. For fold i, every member's config gets the
-        fold's dates before the purge (the members purge them themselves,
-        as a single model's fold does), and ``_train_into`` fills
-        ``fold_{i}/`` like ``train()`` fills its directory: member k in
-        ``member_{k}/`` under the tracking run ``{MemberClass}_fold_{i}_member_{k}``,
-        the evaluation files of the combined prediction, ``config.json`` and
-        ``ensemble.json``. The fold's ensemble metrics go into the manifest
-        instead of a ``metrics.json``. Folds train one after another. After
-        the last fold the members keep its dates, as a model does after its
-        own ``train_cv``. The fold means of the ensemble metrics, keyed
-        ``cv_mean_{key}``, and ``cv_n_folds`` go to the summary of a
-        separate ``{class}_cv_summary`` run, opened through the first
-        member's tracker in the members' project and group.
-
-        Last, ``cv_folds.json`` is written atomically into the CV directory
-        as ``{"format_version": 2, "folds": [...], "cv_mean": {...}}`` (NaN
-        and inf as null), the format ``BaseModel.train_cv`` writes, so a
-        backtester's ``run_cv`` replays it with the ensemble as its model.
-        Call ``collect()`` first.
+        A new ``{class}_trial_{timestamp}`` directory under
+        ``model_save_dir`` becomes a ``"walk_forward"`` unit, laid out as a
+        model's. For fold i, every member's config gets the fold's dates
+        before the purge (the members purge them themselves, as a single
+        model's fold does), and ``_train_into`` writes the ``"ensemble"``
+        unit ``fold_{i}/`` as ``train()`` writes its directory, member k
+        under the tracking run ``{MemberClass}_fold_{i}_member_{k}``. Folds
+        train one after another. After the last fold the members keep its
+        dates, as a model does after its own ``train_cv``. The fold means of
+        the ensemble metrics, keyed ``cv_mean_{key}``, and ``cv_n_folds`` go
+        to the summary of a separate ``{class}_cv_summary`` run, opened
+        through the first member's tracker in the members' project and
+        group, and into the unit's ``run.json``, which a backtester's
+        ``run_cv`` replays with the ensemble as its model. Call
+        ``collect()`` first.
 
         Parameters
         ----------
@@ -750,12 +673,10 @@ class BaseEnsemble(ABC):
 
         Returns
         -------
-        list[dict]
-            One dict per fold: ``fold``, the purged ``train_start``,
-            ``train_end``, ``test_start`` and ``test_end``, the absolute
-            ``checkpoint`` path of the fold's ``ensemble.json`` and the
-            fold's ensemble metrics (``{split}_ic``, ``{split}_rank_ic``,
-            ``{split}_icir``, ``{split}_rank_icir``,
+        TrainedRun
+            The ``"walk_forward"`` unit, whose ``folds`` are ``"ensemble"``
+            units with the fold's ensemble metrics (``{split}_ic``,
+            ``{split}_rank_ic``, ``{split}_icir``, ``{split}_rank_icir``,
             ``{split}_member_correlation``).
 
         Raises
@@ -768,15 +689,16 @@ class BaseEnsemble(ABC):
 
         Examples
         --------
-        >>> results = ensemble.collect().train_cv(train_periods=30)
-        >>> len(results), sorted(results[0])[:6]
-        (8, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_member_correlation'])
-        >>> Path(results[0]["checkpoint"]).relative_to(ensemble.model_save_dir).parts[1:]
-        ('fold_0', 'ensemble.json')
+        >>> cv = ensemble.collect().train_cv(train_periods=30)
+        >>> cv.kind, len(cv.folds), cv.folds[0].kind
+        ('walk_forward', 8, 'ensemble')
+        >>> [member.seed for member in cv.folds[0].members]
+        [0, 1, 2]
         """
         for member in self.members:
             member._check_hyperparameters()
-        folds = self.members[0]._walk_forward_folds(
+        first = self.members[0]
+        folds = first._walk_forward_folds(
             train_periods,
             expanding,
             test_periods,
@@ -784,45 +706,24 @@ class BaseEnsemble(ABC):
             self.class_name,
         )
 
-        directory = self._new_directory("cv")
-        results = []
+        trial = new_trial_directory(self.model_save_dir, self.class_name)
         for fold in folds:
             for member in self.members:
                 member.config = BaseModel._with_fold_dates(member.config, fold)
-            manifest, metrics = self._train_into(
-                directory / f"fold_{fold.index}",
-                group=directory.name,
+            self._train_into(
+                fold_directory(trial, fold.index),
+                group=trial.name,
                 run_tag=f"fold_{fold.index}",
-                write_metrics=False,
             )
-            results.append(
-                {**BaseModel._fold_record(fold), "checkpoint": str(manifest), **metrics}
-            )
-
-        means = BaseModel._cv_mean_metrics(results)
-        if means:
-            # Through the first member's tracker, beside the members' runs.
-            self.members[0]._track_cv_summary(
-                directory.name,
-                means,
-                name=f"{self.class_name}_cv_summary",
-                config=self.get_config(),
-            )
-
-        write_json_atomically(
-            directory / BaseModel.CV_FOLDS_FILENAME,
-            {
-                "format_version": BaseModel.CV_FOLDS_FORMAT_VERSION,
-                "folds": to_jsonable(results),
-                "cv_mean": to_jsonable(means),
-            },
-            indent=2,
+        # Through the first member's tracker, beside the members' runs.
+        return first._finish_walk_forward(
+            trial,
+            folds,
+            name=f"{self.class_name}_cv_summary",
+            config=self.get_config(),
         )
-        return results
 
-    def _write_evaluation_files(
-        self, run_dir: Path, *, write_metrics: bool = True
-    ) -> dict:
+    def _write_evaluation_files(self, run_dir: Path) -> dict:
         """Evaluate the combined prediction of the trained members and write its files.
 
         Every member predicts its whole collected panel
@@ -843,16 +744,17 @@ class BaseEnsemble(ABC):
         gets the ``volatility_level_metrics`` ``qlike`` and
         ``variance_ratio``.
 
+        The metrics, which ``run.json`` records, are for the first label
+        ``{split}_ic``, ``{split}_rank_ic``, ``{split}_icir``,
+        ``{split}_rank_icir`` and, when shared, ``{split}_member_correlation``
+        (the mean over bars of the mean pairwise Pearson correlation of the
+        members' predictions over their common finite symbols), and
+        ``{split}_qlike`` / ``{split}_variance_ratio`` for a raw volatility
+        label; for every other label the same keys as
+        ``{split}_{label}_{metric}``.
+
         Written into ``run_dir``:
 
-        - ``metrics.json`` (only with ``write_metrics``): for the first
-          label ``{split}_ic``, ``{split}_rank_ic``, ``{split}_icir``,
-          ``{split}_rank_icir`` and, when shared, ``{split}_member_correlation``
-          (the mean over bars of the mean pairwise Pearson correlation of the
-          members' predictions over their common finite symbols), and
-          ``{split}_qlike`` / ``{split}_variance_ratio`` for a raw volatility
-          label; for every other label the same keys as
-          ``{split}_{label}_{metric}``. NaN and inf as null.
         - ``ic_series.csv``: the first label's per-bar series behind them, in
           the layout of a single model's file (``BaseModel._write_ic_series``).
         - ``test_predictions.zarr``: the combined prediction, one variable
@@ -907,12 +809,9 @@ class BaseEnsemble(ABC):
                 if i == 0:
                     series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
 
-        if write_metrics:
-            write_json_atomically(
-                run_dir / self.METRICS_FILENAME, to_jsonable(metrics), indent=2
-            )
+        ic_series_path, test_predictions_path = evaluation_paths(run_dir)
         first = self.members[0]
-        first._write_ic_series(run_dir / self.IC_SERIES_FILENAME, series)
+        first._write_ic_series(ic_series_path, series)
         data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
         )
@@ -924,122 +823,92 @@ class BaseEnsemble(ABC):
         ]
         if len(test_stamps):
             combined.reindex(timestamp=test_stamps).to_zarr(
-                run_dir / self.TEST_PREDICTIONS_FILENAME, mode="w"
+                test_predictions_path, mode="w"
             )
         return metrics
 
     # ------------------------------------------------------------------
-    # The manifest: check and load
+    # The trained unit: check and load
     # ------------------------------------------------------------------
 
-    def _member_checkpoints(self, path: Path | str) -> list[Path]:
-        """Read and validate a manifest; return each member's checkpoint path.
+    def _open_unit(self, path: Path | str) -> TrainedRun:
+        """Open an ``"ensemble"`` unit whose members match this ensemble's.
 
         Raises
         ------
         FileNotFoundError
-            If the manifest or a member checkpoint does not exist.
+            If ``path`` does not exist.
         ValueError
-            If the manifest is not a JSON object of the known format, lists a
-            different number of members, names a different member class or
-            records a different seed than this ensemble's member.
+            If ``path`` is not an ``"ensemble"`` unit ``TrainedRun`` can
+            open, or it holds a different number of members, a member of a
+            different class or a member trained with a different seed than
+            this ensemble's.
         """
-        path = Path(path)
-        if not path.is_file():
-            raise FileNotFoundError(f"{self.class_name}: manifest {path} not found")
-        try:
-            saved = json.loads(path.read_text(encoding="utf-8"))
-        except ValueError as exc:
+        run = TrainedRun.open(path)
+        if run.kind != "ensemble":
             raise ValueError(
-                f"{self.class_name}: {path} is not a JSON {self.MANIFEST_FILENAME} "
-                f"manifest ({exc})"
-            ) from None
-        if not isinstance(saved, dict) or not isinstance(saved.get("members"), list):
-            raise ValueError(
-                f"{self.class_name}: {path} is not an {self.MANIFEST_FILENAME} "
-                f"manifest: expected an object with a 'members' list"
+                f"{self.class_name}: {path} is a {run.kind!r} trained run, not an "
+                f"ensemble"
             )
-        version = saved.get("format_version")
-        if version != self.MANIFEST_FORMAT_VERSION:
+        if len(run.members) != len(self.members):
             raise ValueError(
-                f"{self.class_name}: {path} has format_version {version!r}; this "
-                f"version reads format_version {self.MANIFEST_FORMAT_VERSION}"
-            )
-        entries = saved["members"]
-        if len(entries) != len(self.members):
-            raise ValueError(
-                f"{self.class_name}: {path} lists {len(entries)} members, but "
+                f"{self.class_name}: {path} holds {len(run.members)} members, but "
                 f"this ensemble has {len(self.members)}"
             )
-        checkpoints = []
-        for k, (entry, member) in enumerate(zip(entries, self.members)):
-            if not isinstance(entry, dict):
+        for k, (saved, member) in enumerate(zip(run.members, self.members)):
+            name = saved.config.get("name")
+            if name != _class_path(member):
                 raise ValueError(
-                    f"{self.class_name}: {path} member {k} is not an object"
+                    f"{self.class_name}: {path} member {k} is a {name}, but this "
+                    f"ensemble's member {k} is a {_class_path(member)}"
                 )
-            for key in ("name", "checkpoint", "seed"):
-                if key not in entry:
-                    raise ValueError(
-                        f"{self.class_name}: {path} member {k} has no {key!r}"
-                    )
-            if not isinstance(entry["checkpoint"], str):
-                raise ValueError(
-                    f"{self.class_name}: {path} member {k} 'checkpoint' must be a "
-                    f"path string, got {entry['checkpoint']!r}"
-                )
-            if entry["name"] != _class_path(member):
-                raise ValueError(
-                    f"{self.class_name}: {path} member {k} is a {entry['name']}, "
-                    f"but this ensemble's member {k} is a {_class_path(member)}"
-                )
-            if entry["seed"] != self._member_seed(k):
+            if saved.seed != self._member_seed(k):
                 raise ValueError(
                     f"{self.class_name}: {path} member {k} was trained with seed "
-                    f"{entry['seed']!r}, but this ensemble's member {k} has seed "
+                    f"{saved.seed!r}, but this ensemble's member {k} has seed "
                     f"{self._member_seed(k)!r}"
                 )
-            checkpoint = path.parent / entry["checkpoint"]
-            if not checkpoint.is_file():
-                raise FileNotFoundError(
-                    f"{self.class_name}: {path} member {k} checkpoint "
-                    f"{checkpoint} not found"
-                )
-            checkpoints.append(checkpoint)
-        return checkpoints
+        return run
 
-    def check_checkpoint(self, path: Path | str) -> None:
-        """Check an ``ensemble.json`` and every member checkpoint it lists, loading nothing.
+    def check_checkpoint(self, path: Path | str) -> TrainedRun:
+        """Check an ensemble unit and every member checkpoint in it, loading nothing.
 
-        The manifest must be a JSON object of format version 1 listing as
-        many members as the ensemble has, each with this ensemble's member
-        class and seed; every member checkpoint, resolved relative to the
-        manifest's directory, must exist and pass that member's
+        The unit, read through ``TrainedRun``, must hold as many members as
+        the ensemble has, each with this ensemble's member class and seed,
+        and every member checkpoint must pass that member's
         ``check_checkpoint``.
 
         Parameters
         ----------
         path : Path or str
-            The ``ensemble.json`` that ``train()`` returned.
+            The unit's ``run.json`` that ``train()`` returned, or its
+            directory.
+
+        Returns
+        -------
+        TrainedRun
+            The ensemble unit.
 
         Raises
         ------
         FileNotFoundError
-            If the manifest or a member checkpoint does not exist.
+            If ``path`` does not exist.
         ValueError
-            If the manifest is malformed, of an unknown ``format_version``,
-            or does not match this ensemble's members, or a member's own
-            check fails.
+            If the unit cannot be opened or does not match this ensemble's
+            members, or a member's own check fails.
 
         Examples
         --------
-        >>> ensemble.check_checkpoint(manifest) is None
-        True
+        >>> ensemble.check_checkpoint(checkpoint).kind
+        'ensemble'
         """
-        for member, checkpoint in zip(self.members, self._member_checkpoints(path)):
-            member.check_checkpoint(checkpoint)
+        run = self._open_unit(path)
+        for member, saved in zip(self.members, run.members):
+            member.check_checkpoint(saved.checkpoint)
+        return run
 
     def load(self, path: Path | str) -> Self:
-        """Restore every member from an ``ensemble.json``.
+        """Restore every member from an ensemble unit.
 
         Every member checkpoint is checked (see ``check_checkpoint``) before
         any is loaded.
@@ -1047,7 +916,8 @@ class BaseEnsemble(ABC):
         Parameters
         ----------
         path : Path or str
-            The ``ensemble.json`` that ``train()`` returned.
+            The unit's ``run.json`` that ``train()`` returned, or its
+            directory.
 
         Returns
         -------
@@ -1057,20 +927,18 @@ class BaseEnsemble(ABC):
         Raises
         ------
         FileNotFoundError
-            If the manifest or a member checkpoint does not exist.
+            If ``path`` does not exist.
         ValueError
             As ``check_checkpoint``.
 
         Examples
         --------
-        >>> SeedEnsemble(model, [0, 1, 2]).load(manifest).members[0].model is not None
+        >>> SeedEnsemble(model, [0, 1, 2]).load(checkpoint).members[0].model is not None
         True
         """
-        checkpoints = self._member_checkpoints(path)
-        for member, checkpoint in zip(self.members, checkpoints):
-            member.check_checkpoint(checkpoint)
-        for member, checkpoint in zip(self.members, checkpoints):
-            member.load(checkpoint)
+        run = self.check_checkpoint(path)
+        for member, saved in zip(self.members, run.members):
+            member.load(saved.checkpoint)
         return self
 
     # ------------------------------------------------------------------

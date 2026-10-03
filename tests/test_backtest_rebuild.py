@@ -174,8 +174,7 @@ def _fingerprint_warnings(messages: list[str]) -> list[str]:
 def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
     """The run_cv setup: a CV-sized store, a `train_cv` project, and a backtester over it.
 
-    Writes `CV_N_BARS` bars, trains one `train_cv` project (asserting it wrote
-    exactly one `cv_folds.json`), and returns a backtester pointed at that
+    Writes `CV_N_BARS` bars, trains one `train_cv` project (its walk-forward unit), and returns a backtester pointed at that
     project over the `CV_FIRST_TEST_BAR..CV_LAST_TEST_BAR` window. Shared by the
     rebuild lock and the failure-path lock so neither duplicates the setup.
     """
@@ -190,16 +189,14 @@ def _cv_original(tmp_path: Path) -> USEquityCrossectionSelectStockVectorBt:
     )
     trainer = make_model(tmp_path / "train", dataset_config, **model_dates)
     trainer.collect()
-    trainer.train_cv(train_periods=CV_TRAIN_PERIODS)
-    manifests = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
-    assert len(manifests) == 1, manifests
+    cv = trainer.train_cv(train_periods=CV_TRAIN_PERIODS)
 
     return USEquityCrossectionSelectStockVectorBt(
         CrossSectionBacktestConfig(
             price_dataset=make_stock_dataset(dataset_config),
             model=make_model(tmp_path / "backtest", dataset_config, **model_dates),
             model_mode="load",
-            cv_project_dir=str(manifests[0].parent),
+            cv_project_dir=str(cv.path),
             start_date=_day(CV_BARS[CV_FIRST_TEST_BAR]),
             end_date=_day(CV_BARS[CV_LAST_TEST_BAR]),
             output_dir=str(tmp_path / "runs"),

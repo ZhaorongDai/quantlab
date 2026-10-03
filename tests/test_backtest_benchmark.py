@@ -376,14 +376,13 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path, expanding):
     )
     model = make_model(tmp_path / "train", dataset_config, **dates)
     model.collect()
-    model.train_cv(train_periods=train_periods, expanding=expanding)
-    (manifest,) = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
+    cv = model.train_cv(train_periods=train_periods, expanding=expanding)
 
     config = CrossSectionBacktestConfig(
         price_dataset=make_stock_dataset(dataset_config),
         model=make_model(tmp_path / "backtest", dataset_config, **dates),
         model_mode="load",
-        cv_project_dir=str(manifest.parent),
+        cv_project_dir=str(cv.path),
         start_date=_day(bars[train_periods]),
         end_date=_day(bars[-1]),
         output_dir=str(tmp_path / "runs"),

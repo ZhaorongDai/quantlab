@@ -39,6 +39,11 @@ branch test) therefore exclude exactly that one file name and assert that it
 exists. No golden value changed: the fold names, the trained dates and the
 per-fold directory contents are asserted exactly as captured, and the fold
 geometry goldens still hold as captured before the refactor.
+
+2026-10-03, issue #123: `train_cv` writes a walk-forward trained unit. Each
+fold is the unit `fold_{i}/` holding `{cls}_cv_fold_{i}{suffix}`, and the
+trial's `run.json` replaced `cv_folds.json`. The directory listings follow
+that layout; the fold geometry and trained dates are unchanged.
 """
 
 import dataclasses
@@ -50,7 +55,7 @@ import xarray as xr
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import BaseModel
+from quantlab.utils.trained_run import TrainedRun
 from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
 from quantlab.base.tracking import NullTracker
@@ -168,19 +173,14 @@ def _golden_fold_dates(model) -> list[tuple[str, str, str, str]]:
 def _assert_golden_fold_dirs(root: Path, cls_name: str, suffix: str) -> None:
     projects = [p for p in root.iterdir() if p.is_dir()]
     assert len(projects) == 1, f"expected one CV project dir, got {projects}"
-    assert (projects[0] / BaseModel.CV_FOLDS_FILENAME).is_file()
-    fold_dirs = sorted(
-        p.name
-        for p in projects[0].iterdir()
-        if p.name != BaseModel.CV_FOLDS_FILENAME
-    )
-    assert fold_dirs == sorted(
-        f"{cls_name}_cv_fold_{i}" for i in range(GOLDEN_N_FOLDS)
-    )
-    for name in fold_dirs:
-        contents = {p.name for p in (projects[0] / name).iterdir()}
+    assert TrainedRun.open(projects[0]).kind == "walk_forward"
+    fold_dirs = sorted(p.name for p in projects[0].iterdir() if p.name != "run.json")
+    assert fold_dirs == sorted(f"fold_{i}" for i in range(GOLDEN_N_FOLDS))
+    for i in range(GOLDEN_N_FOLDS):
+        contents = {p.name for p in (projects[0] / f"fold_{i}").iterdir()}
         assert contents == {
-            f"{name}{suffix}", "config.json", "ic_series.csv", "run.json", "test_predictions.zarr"
+            f"{cls_name}_cv_fold_{i}{suffix}", "config.json", "ic_series.csv", "run.json",
+            "test_predictions.zarr",
         }, contents
 
 
@@ -215,7 +215,6 @@ ML_FOLD_DATES: list[tuple[str, str, str, str]] = []
 
 METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
 SPLITS = ("train", "val", "test")
-FOLD_KEYS = {"fold", "train_start", "train_end", "test_start", "test_end"}
 
 
 @pytest.fixture(autouse=True)
@@ -271,7 +270,7 @@ def test_train_cv_trains_no_fold_when_data_is_too_short(tmp_path):
     model = StubLibraryHead(config)
     model.collect()
 
-    assert model.train_cv(train_periods=50) == []
+    assert model.train_cv(train_periods=50).folds == ()
     assert ML_FOLD_DATES == []
 
 
@@ -316,16 +315,16 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
     model = StubLibraryHead(_library_config(tmp_path, save_dir))
     model.collect()
 
-    results = model.train_cv(train_periods=50)
+    cv = model.train_cv(train_periods=50)
 
     assert sorted(ML_FOLD_DATES) == sorted((*f.train_window, *f.test_window) for f in HANDMADE_FOLDS)
-    assert sorted(r["fold"] for r in results) == [3, 5]
+    assert [fold.index for fold in cv.folds] == [3, 5]
+    assert [fold.checkpoint.name for fold in cv.folds] == [
+        "StubLibraryHead_cv_fold_3.joblib", "StubLibraryHead_cv_fold_5.joblib"
+    ]
     projects = list((tmp_path / save_dir).iterdir())
-    assert len(projects) == 1
-    assert (projects[0] / BaseModel.CV_FOLDS_FILENAME).is_file()
-    assert sorted(
-        p.name for p in projects[0].iterdir() if p.name != BaseModel.CV_FOLDS_FILENAME
-    ) == ["StubLibraryHead_cv_fold_3", "StubLibraryHead_cv_fold_5"]
+    assert projects == [cv.path]
+    assert sorted(p.name for p in cv.path.iterdir()) == ["fold_3", "fold_5", "run.json"]
 
 
 @pytest.mark.parametrize("argument", [{"parallel": True}, {"njobs": 2}])
@@ -344,30 +343,30 @@ def test_train_cv_trains_folds_sequentially_only(tmp_path, argument):
 
 
 def test_library_train_cv_returns_per_fold_results_and_loadable_checkpoints(tmp_path):
-    """`train_periods=50`, no gap, 130 timestamps -> 8 folds. Each result
-    carries the fold's dates, its run name, an existing `.joblib` and the
-    seven prefixed test metrics; every checkpoint loads into a fresh,
+    """`train_periods=50`, no gap, 130 timestamps -> 8 folds. Each fold unit
+    carries the fold's windows, an existing `.joblib` named after its run and
+    every split's metrics; every checkpoint loads into a fresh,
     never-collected instance that predicts `[T, S, L]`."""
     model = StubLibraryHead(_library_config(tmp_path, "ckpt"))
     model.collect()
     timestamps = model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values
     expected = [
-        {"fold": f.index, "train_start": f.fitted_train_window[0], "train_end": f.fitted_train_window[1],
-         "test_start": f.test_window[0], "test_end": f.test_window[1]}
+        (f.index, f.train_window, f.fitted_train_window, f.test_window)
         for f in walk_forward_folds(timestamps, 50)
     ]
 
-    results = model.train_cv(train_periods=50)
+    cv = model.train_cv(train_periods=50)
 
-    assert len(results) == 8
-    assert [{k: r[k] for k in FOLD_KEYS} for r in results] == expected
-    for r in results:
-        assert set(r) == FOLD_KEYS | {"experiment_name", "checkpoint"} | {
-            f"{split}_{k}" for split in SPLITS for k in METRIC_KEYS
-        }
-        assert r["experiment_name"] == f"StubLibraryHead_cv_fold_{r['fold']}"
-        ckpt = Path(r["checkpoint"])
-        assert ckpt.suffix == ".joblib" and ckpt.is_file()
+    assert len(cv.folds) == 8
+    assert [
+        (f.index, f.train_window, f.fitted_train_window, f.test_window) for f in cv.folds
+    ] == expected
+    for fold in cv.folds:
+        assert fold.kind == "model"
+        assert set(fold.metrics) == {f"{split}_{k}" for split in SPLITS for k in METRIC_KEYS}
+        ckpt = fold.checkpoint
+        assert ckpt.name == f"StubLibraryHead_cv_fold_{fold.index}.joblib"
+        assert ckpt.is_file()
         fresh = StubLibraryHead(_library_config(tmp_path, "unused")).load(ckpt)
         assert fresh.predict(np.zeros((4, N_SYMBOLS, 2))).shape == (4, N_SYMBOLS, 1)
 
@@ -381,7 +380,7 @@ def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, 
     model = StubLibraryHead(_library_config(tmp_path, "ckpt", tracker))
     model.collect()
 
-    results = model.train_cv(train_periods=50)
+    cv = model.train_cv(train_periods=50)
 
     names = [r.name for r in tracker.runs]
     assert names[:-1] == [f"StubLibraryHead_cv_fold_{i}" for i in range(8)]
@@ -395,24 +394,25 @@ def test_library_train_cv_writes_fold_means_to_a_separate_summary_run(tmp_path, 
     for split in SPLITS:
         for k in METRIC_KEYS:
             key = f"{split}_{k}"
-            values = [r[key] for r in results if np.isfinite(r[key])]
+            values = [f.metrics[key] for f in cv.folds if f.metrics[key] is not None]
             assert values, key
             assert summary_run.summary[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
+            assert cv.cv_mean[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
+    assert cv.cv_mean["cv_n_folds"] == 8
 
 
 def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, tracker):
-    """`TorchModel._fit` returns the shared metrics, so a torch fold result is the
-    fold's dates, its run name and checkpoint and every split's metrics, and
-    the fold means go to a `{cls}_cv_summary` run, as for a library head."""
+    """`TorchModel._fit` returns the shared metrics, so a torch fold unit records
+    every split's metrics beside its checkpoint, and the fold means go to a
+    `{cls}_cv_summary` run, as for a library head."""
     model = GoldenTorchHead(_torch_config(tmp_path, "ckpt", tracker))
     model.collect()
 
-    results = model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=GOLDEN_TRAIN_PERIODS)
 
-    assert len(results) == GOLDEN_N_FOLDS
-    for r in results:
-        assert FOLD_KEYS | {"experiment_name", "checkpoint"} <= set(r)
-        assert {"train_mse", "val_mse", "test_mse", "test_ic"} <= set(r)
-        assert Path(r["checkpoint"]).suffix == ".pth" and Path(r["checkpoint"]).is_file()
+    assert len(cv.folds) == GOLDEN_N_FOLDS
+    for fold in cv.folds:
+        assert {"train_mse", "val_mse", "test_mse", "test_ic"} <= set(fold.metrics)
+        assert fold.checkpoint.suffix == ".pth" and fold.checkpoint.is_file()
     assert len(tracker.runs) == GOLDEN_N_FOLDS + 1
     assert tracker.runs[-1].name == "GoldenTorchHead_cv_summary"

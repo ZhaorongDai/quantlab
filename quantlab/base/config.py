@@ -1098,10 +1098,12 @@ class BacktestConfig:
     #: ``run_cv()``). Required by ``run()`` and ``run_cv()``, like ``model``.
     model_mode: Literal["train", "load"] | None = None
 
-    #: Checkpoint to restore in ``"load"`` mode for ``run()``.
+    #: Checkpoint to restore in ``"load"`` mode for ``run()``: the file the
+    #: model's ``train()`` returned (a model's checkpoint, an ensemble's
+    #: ``run.json``).
     checkpoint: str | None = None
-    #: Directory of a ``train_cv`` run, read by ``run_cv()`` to replay each
-    #: fold with its own checkpoint.
+    #: The walk-forward unit a ``train_cv`` run wrote, read by ``run_cv()``
+    #: to replay each fold with its own checkpoint.
     cv_project_dir: str | None = None
 
     #: Proportional fee per trade.

@@ -204,9 +204,9 @@ def backtest():
     window TopN against buy-and-hold SPY.
 
     The members are trained into one ensemble directory under the model's
-    ``model_save_dir``; its ``ensemble.json`` is the run's
+    ``model_save_dir``; its ``run.json`` is the run's
     ``trained_checkpoint``. To backtest it again without training, pass
-    ``model_mode="load", checkpoint=<that ensemble.json>`` below.
+    ``model_mode="load", checkpoint=<that run.json>`` below.
     """
     benchmark = CrspStockDataset(CrspDatasetConfig.etf_benchmark(
         permno=SPY_PERMNO, zarr_file_path=str(STORES / "wrds_crsp_spy_1d.zarr"),

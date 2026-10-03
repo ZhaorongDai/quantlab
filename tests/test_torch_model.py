@@ -350,13 +350,13 @@ def test_the_warm_up_makes_a_short_request_predict_like_a_long_panel(warm_model)
 def test_train_cv_runs_a_windowed_head_and_folds_start_after_the_warm_up(warm_model):
     model = warm_model().collect()
 
-    results = model.train_cv(train_periods=15)
+    results = model.train_cv(train_periods=15).folds
 
     assert len(results) == 7
-    assert results[0]["train_start"][:10] == "2024-01-20"
+    assert results[0].fitted_train_window[0][:10] == "2024-01-20"
     for result in results:
-        assert Path(result["checkpoint"]).is_file()
-        assert np.isfinite(result["test_mse"])
+        assert result.checkpoint.is_file()
+        assert np.isfinite(result.metrics["test_mse"])
 
 
 def test_a_short_history_before_the_start_warns(warm_model):

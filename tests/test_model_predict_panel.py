@@ -387,12 +387,12 @@ def test_train_cv_on_an_unsorted_backend_records_sorted_symbols_in_every_fold(
     must record S0, S1, S2 even though the backend holds S2, S0, S1."""
     model = _dl_on_a_backend_filled_without_collect(tmp_path, ["S2", "S0", "S1"])
 
-    results = model.train_cv(train_periods=20)
+    cv = model.train_cv(train_periods=20)
 
-    assert len(results) == 2, results
-    for result in results:
-        recorded = TrainedRun.open(result["checkpoint"]).trained_on["symbols"]
-        assert recorded == SYMBOLS, result["fold"]
+    assert len(cv.folds) == 2, cv.folds
+    for fold in cv.folds:
+        assert fold.trained_on["symbols"] == SYMBOLS, fold.index
+        assert TrainedRun.open(fold.checkpoint).trained_on["symbols"] == SYMBOLS
 
 
 def test_checkpoint_config_json_rebuilds_the_model(tmp_path):

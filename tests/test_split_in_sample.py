@@ -70,7 +70,7 @@ def test_intraday_in_sample_window_ends_lookahead_bars_into_the_next_session():
     ids=["iso", "fold-style-ns", "timestamp", "datetime64"],
 )
 def test_in_sample_window_honours_a_time_of_day_train_end(train_end):
-    """``cv_folds.json`` stores nanosecond strings; they are not cut to a date."""
+    """A trained run's ``run.json`` stores nanosecond strings; they are not cut to a date."""
     window = in_sample_window(
         _sessions(SESSION_DAYS), "2024-01-01", train_end, lookahead=2
     )

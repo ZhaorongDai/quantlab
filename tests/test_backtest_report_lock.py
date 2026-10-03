@@ -154,9 +154,8 @@ def cv_project(tmp_path_factory):
     bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
     model = make_model(root / "train", dataset_config, n_forward_periods=2, **_cv_dates(bars))
     model.collect()
-    model.train_cv(train_periods=CV_TRAIN_PERIODS)
-    (manifest,) = sorted((root / "train" / "models").rglob("cv_folds.json"))
-    return root, dataset_config, bars, manifest.parent
+    cv = model.train_cv(train_periods=CV_TRAIN_PERIODS)
+    return root, dataset_config, bars, cv.path
 
 
 def _cv_dates(bars) -> dict:
@@ -227,7 +226,10 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
     return out
 
 
-#: SHA-256 of each normalized file, captured on the code before #115.
+#: SHA-256 of each normalized file, captured on the code before #115. #123
+#: moved fold checkpoints from `{Cls}_cv_fold_{i}/` to `fold_{i}/`, which the
+#: run_cv metrics.json record; its two hashes were re-captured then, after
+#: checking that undoing just that path change gives the old hashes back.
 EXPECTED: dict[str, str] = {
     "run_long_only_benchmark/report.html": "49b9eeac6b1e48fc2d868febb095da30c2c7d056cd0c5dc7937abe384619aa9b",
     "run_long_only_benchmark/metrics.json": "5f58a352a7ad34937257e292565347f450f0f5c67796fd766cf7e6dcd8e0d24e",
@@ -238,9 +240,9 @@ EXPECTED: dict[str, str] = {
     "run_weights/report.html": "84d467db277f582b77cad390c0dfb783ccc0a38f9456ca1aaf070348ca4bdf7c",
     "run_weights/metrics.json": "69176432c0ee292a60ad339b16ee2968f0603283eb6827cc8221228cd78436e1",
     "run_cv_benchmark/report.html": "dc48544040c406ad98cc55f137dd367308efd4f951b9285e9b020bc074db0395",
-    "run_cv_benchmark/metrics.json": "411cbd7c72992a3b4052afddcf1620b10385b467085e2db8e75dd121ca914d2f",
+    "run_cv_benchmark/metrics.json": "bccb09d16045ffd1d3245d66c7096c1b1df9f383093bc5152f851bb1a86452bb",
     "run_cv/report.html": "1f2ac8b188dd35d0b8823b397f73415a2ab542ec13cd145262cf93bab3e212d6",
-    "run_cv/metrics.json": "c907ee5e678440b9415c82a0aca1f9aba834d1666b7ed98bf78c3686d5909cd5",
+    "run_cv/metrics.json": "125857644e2c4f5489df86196b82edcd6b2f7b397610b63d89704d3df59ca824",
 }
 
 

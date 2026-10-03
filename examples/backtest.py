@@ -315,8 +315,7 @@ def main() -> None:
             test_start=day(100), test_end=day(119),
         )
         cv_model.collect()
-        folds = cv_model.train_cv(train_periods=100)
-        cv_project_dir = Path(folds[0]["checkpoint"]).parent.parent
+        cv_project_dir = cv_model.train_cv(train_periods=100).path
         cv_backtester = USEquityCrossectionSelectStockVectorBt(
             CrossSectionBacktestConfig(
                 price_dataset=fresh_dataset(prices),

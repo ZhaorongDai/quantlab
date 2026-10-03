@@ -25,7 +25,6 @@ data a run read, stored so that a later rebuild of the run can tell whether
 the data has changed.
 """
 
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -40,7 +39,6 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.data import MarketDataset
-from quantlab.base.model import BaseModel
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
 from quantlab.base.tracking import TrackingRun
 from quantlab.backend import XrBackend
@@ -62,6 +60,7 @@ from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
+from quantlab.utils.trained_run import TrainedRun
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
 
@@ -403,8 +402,8 @@ class CVBacktestResult:
     """Return value of ``BaseBacktester.run_cv()``.
 
     ``run_dir`` is ``None`` when ``config.output_dir`` is ``None``.
-    ``folds`` holds one record per replayed fold: the manifest fields
-    (``fold``, the four dates, ``checkpoint``) plus that fold's own
+    ``folds`` holds one record per replayed fold: the fold's index
+    ``fold``, its fitted training and test dates and ``checkpoint`` plus that fold's own
     ``predictions``, ``weights``, ``simulation`` and ``metrics`` from an
     independent per-fold simulation. ``weights`` are built in one pass over
     the concatenated fold predictions, as one account whose holdings carry
@@ -816,7 +815,7 @@ class BaseBacktester(ABC):
         through here: the config setters only normalize dates when a whole
         config is assigned, and downstream date comparisons are string
         comparisons. ``str(value)`` comes first because ``pd.Timestamp``
-        rejects ``numpy.str_``, which is what fold manifests hold.
+        rejects ``numpy.str_``.
         """
         return pd.Timestamp(str(value)).strftime("%Y-%m-%d")
 
@@ -930,8 +929,9 @@ class BaseBacktester(ABC):
     def run_cv(self) -> CVBacktestResult:
         """Replay a ``train_cv`` run fold by fold and simulate the stitched weights.
 
-        Subclasses do not override this method. It reads the
-        ``cv_folds.json`` manifest under ``config.cv_project_dir``, keeps the
+        Subclasses do not override this method. It opens the walk-forward
+        unit ``config.cv_project_dir`` with
+        ``quantlab.utils.trained_run.TrainedRun``, keeps the
         folds whose test segment lies inside the backtest window, and checks
         on the price calendar that those test segments are contiguous and
         non-overlapping before any model is loaded (a stitched curve with a
@@ -940,10 +940,9 @@ class BaseBacktester(ABC):
         its in-sample split uses that fold's training dates. A label looks a
         few bars ahead (its *lookahead*), so the training labels of a fold
         already saw the bars after ``train_end``. ``train_cv`` purges those
-        bars from every training window and records the purged ``train_end``,
-        so a test bar counts as in-sample only if a label reads further than
-        the purge removed. The loaded checkpoint's ``fitted_train_bounds``
-        is compared with the manifest's purged window.
+        bars from every training window and each fold records its fitted
+        window, so a test bar counts as in-sample only if a label reads
+        further than the purge removed.
 
         The fold predictions are then concatenated and turned into weights
         in one pass of ``_generate_signals`` over the prices from the first
@@ -953,9 +952,7 @@ class BaseBacktester(ABC):
         simulated once, with capital carried across as well, and the
         ``stitched`` metrics record the pass's ``portfolio_construction``.
         Per-fold metrics still come from the independent per-fold backtests. Fingerprints cover the
-        whole stitched window. The manifest's fold dates are authoritative;
-        a checkpoint whose recorded training dates select different bars
-        only logs a warning.
+        whole stitched window.
 
         Returns
         -------
@@ -968,11 +965,12 @@ class BaseBacktester(ABC):
         ValueError
             If ``config.model`` is ``None``, ``config.cv_project_dir`` is
             unset, ``model_mode`` is not ``"load"``, a label's ``delay`` differs from
-            ``fill_delay_bars``, the manifest is malformed, no fold falls
+            ``fill_delay_bars``, ``cv_project_dir`` is not a walk-forward unit
+            ``TrainedRun`` can open or has no fold, no fold falls
             inside the window, or the fold test segments are not
             contiguous.
         FileNotFoundError
-            If the manifest or a fold checkpoint is missing.
+            If ``cv_project_dir`` or a fold checkpoint is missing.
 
         Examples
         --------
@@ -998,8 +996,7 @@ class BaseBacktester(ABC):
         if self.config.cv_project_dir is None:
             raise ValueError(
                 f"{self.class_name}: run_cv() requires config.cv_project_dir, the "
-                f"train_cv project directory holding "
-                f"{BaseModel.CV_FOLDS_FILENAME}"
+                f"walk-forward unit a train_cv run wrote"
             )
         if self.config.model_mode != "load":
             raise ValueError(
@@ -1025,23 +1022,7 @@ class BaseBacktester(ABC):
 
         records: list[dict] = []
         for fold in folds:
-            # Resolved under the project directory, never the working
-            # directory; the resolved path is what the records persist.
-            fold["checkpoint"] = self._resolve_fold_checkpoint(fold["checkpoint"])
             self._load_model_checkpoint(fold["checkpoint"])
-            # The manifest's dates are authoritative. The fitted window the
-            # checkpoint records is only cross-checked against them, by the
-            # bars they select on the calendar rather than by text.
-            recorded = self.config.model.fitted_train_bounds
-            manifest_bounds = fold["_train_bounds"]
-            if not self._same_training_bars(calendar, recorded, manifest_bounds):
-                logger.warning(
-                    f"{self.class_name}: fold {fold['fold']} checkpoint "
-                    f"{fold['checkpoint']} records training dates "
-                    f"{recorded[0]}..{recorded[1]}, but the manifest says "
-                    f"{manifest_bounds[0]}..{manifest_bounds[1]}; using the "
-                    f"manifest's dates"
-                )
             # Only the fold window records fingerprints, so only its failure
             # triggers the partial comparison; checkpoint errors above do not.
             try:
@@ -1056,7 +1037,7 @@ class BaseBacktester(ABC):
                 raise
             records.append(
                 {
-                    **{key: fold[key] for key in self._CV_RECORD_KEYS},
+                    **self._fold_summary(fold),
                     "predictions": window.predictions,
                     "weights": window.weights,
                     "simulation": window.simulation,
@@ -1131,11 +1112,8 @@ class BaseBacktester(ABC):
         metrics = {
             "stitched": stitched_metrics,
             "folds": [
-                {
-                    **{key: record[key] for key in self._CV_RECORD_KEYS},
-                    "metrics": record["metrics"],
-                }
-                for record in records
+                {**self._fold_summary(fold), "metrics": record["metrics"]}
+                for fold, record in zip(folds, records)
             ],
             "notes": notes,
         }
@@ -1528,133 +1506,69 @@ class BaseBacktester(ABC):
                 f"{duplicated} duplicated"
             )
 
-    #: Manifest fields shared by each fold record and the per-fold entries of
-    #: metrics.json.
-    _CV_RECORD_KEYS = (
-        "fold",
-        "train_start",
-        "train_end",
-        "test_start",
-        "test_end",
-        "checkpoint",
-    )
-
     def _read_cv_folds(self) -> list[dict]:
-        """Read and validate the fold manifest under ``cv_project_dir``.
+        """Read the folds of the walk-forward unit at ``cv_project_dir``.
 
-        The manifest is a persisted format, so an absent or unsupported
-        ``format_version`` is refused rather than guessed at. Each fold must
-        carry every ``_CV_RECORD_KEYS`` field and a test segment that does
-        not end before it starts. The four dates are normalized with
-        ``_iso_date`` on a copy of each entry, and the raw training endpoints
-        are kept under ``_train_bounds`` for ``_window_split``, which
-        slices the model layer's way and needs them at full resolution.
+        The unit is opened with ``TrainedRun.open``, which refuses a run of
+        another format and resolves every fold inside the unit. Each fold
+        becomes a dict of ``fold`` (its index), the fitted ``train_start``
+        and ``train_end``, ``test_start``, ``test_end`` (all normalized
+        with ``_iso_date``) and ``checkpoint`` (the file ``load`` reads);
+        the fitted training endpoints are also kept at full resolution
+        under ``_train_bounds`` for ``_window_split``, which slices the
+        model layer's way.
 
         Returns
         -------
         list[dict]
-            The folds sorted by ``fold``.
+            The folds in fold order.
 
         Raises
         ------
         FileNotFoundError
-            If the manifest does not exist.
+            If ``cv_project_dir`` does not exist.
         ValueError
-            If the format version is unsupported, ``folds`` is
-            not a non-empty list, or a fold entry is invalid.
+            If it is not a walk-forward unit ``TrainedRun`` can open, or the
+            unit has no folds.
         """
-        path = Path(self.config.cv_project_dir) / BaseModel.CV_FOLDS_FILENAME  # type: ignore[arg-type]
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"{self.class_name}: CV fold manifest {path} does not exist; "
-                f"cv_project_dir must be the project directory a train_cv run "
-                f"wrote"
-            )
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        supported = BaseModel.CV_FOLDS_FORMAT_VERSION
-        if not isinstance(payload, dict) or "format_version" not in payload:
+        path = Path(self.config.cv_project_dir)  # type: ignore[arg-type]
+        run = TrainedRun.open(path)
+        if run.kind != "walk_forward":
             raise ValueError(
-                f"{self.class_name}: {path} has no format_version (supported: "
-                f"{supported}); it is not a cv_folds manifest this reader "
-                f"understands"
+                f"{self.class_name}: cv_project_dir {path} is a {run.kind!r} "
+                f"trained run; run_cv() replays the walk-forward unit a "
+                f"train_cv run wrote"
             )
-        version = payload["format_version"]
-        if isinstance(version, bool) or version != supported:
+        if not run.folds:
             raise ValueError(
-                f"{self.class_name}: {path} format_version {version!r} is not "
-                f"supported (supported: {supported}); older manifests are not "
-                f"migrated, so rerun train_cv to write a current one"
-            )
-        raw_folds = payload.get("folds")
-        if not isinstance(raw_folds, list):
-            raise ValueError(
-                f"{self.class_name}: {path} 'folds' must be a list, got "
-                f"{type(raw_folds).__name__}"
-            )
-        if not raw_folds:
-            raise ValueError(
-                f"{self.class_name}: {path} lists no folds; the train_cv run "
+                f"{self.class_name}: {path} holds no folds; the train_cv run "
                 f"produced no fold to backtest"
             )
-
         folds = []
-        for entry in raw_folds:
-            missing = [
-                key
-                for key in self._CV_RECORD_KEYS
-                if not isinstance(entry, dict) or key not in entry
-            ]
-            if missing:
-                raise ValueError(
-                    f"{self.class_name}: {path} fold entry "
-                    f"{entry.get('fold') if isinstance(entry, dict) else entry!r} "
-                    f"is missing {missing}"
-                )
-            fold = dict(entry)
-            # Keep the training endpoints as written (nanosecond strings) for
-            # `_window_split`: truncating them to dates would make the
-            # whole train_end day count as training on intraday data.
-            fold["_train_bounds"] = (entry["train_start"], entry["train_end"])
-            for key in ("train_start", "train_end", "test_start", "test_end"):
-                fold[key] = self._iso_date(fold[key])
-            if fold["test_start"] > fold["test_end"]:
-                raise ValueError(
-                    f"{self.class_name}: {path} fold {fold['fold']} test segment "
-                    f"starts {fold['test_start']} after it ends {fold['test_end']}"
-                )
-            folds.append(fold)
-        return sorted(folds, key=lambda fold: fold["fold"])
+        for fold in run.folds:
+            train_start, train_end = fold.fitted_train_window
+            test_start, test_end = fold.test_window
+            folds.append(
+                {
+                    "fold": fold.index,
+                    "train_start": self._iso_date(train_start),
+                    "train_end": self._iso_date(train_end),
+                    "test_start": self._iso_date(test_start),
+                    "test_end": self._iso_date(test_end),
+                    "checkpoint": str(fold.checkpoint),
+                    # Kept as written (nanosecond strings) for
+                    # `_window_split`: truncating them to dates would make
+                    # the whole train_end day count as training on
+                    # intraday data.
+                    "_train_bounds": (train_start, train_end),
+                }
+            )
+        return folds
 
-    def _resolve_fold_checkpoint(self, recorded) -> str:
-        """Resolve a manifest checkpoint entry to the file to load.
-
-        ``train_cv`` lays checkpoints out as
-        ``{cv_project_dir}/{experiment}/{model}``, so the entry's last two
-        path components are first looked up under ``cv_project_dir``; this
-        survives moving the project directory and relative manifest entries
-        alike. Failing that, an absolute entry that exists is accepted.
-        Relative entries are never resolved against the working directory,
-        which could silently load a same-named checkpoint of another run.
-
-        Raises
-        ------
-        FileNotFoundError
-            If neither candidate exists; the message
-            names both.
-        """
-        project_dir = Path(self.config.cv_project_dir)  # type: ignore[arg-type]
-        recorded_path = Path(str(recorded))
-        in_project = project_dir / recorded_path.parent.name / recorded_path.name
-        if in_project.is_file():
-            return str(in_project)
-        if recorded_path.is_absolute() and recorded_path.is_file():
-            return str(recorded_path)
-        raise FileNotFoundError(
-            f"{self.class_name}: fold checkpoint {recorded!r} was found neither "
-            f"inside cv_project_dir as {in_project} nor as an existing absolute "
-            f"path; relative manifest entries are never resolved against the "
-            f"working directory"
-        )
+    @staticmethod
+    def _fold_summary(fold: dict) -> dict:
+        """Return the fields of ``fold`` its record and ``metrics.json`` carry: all but ``_``-prefixed ones."""
+        return {key: value for key, value in fold.items() if not key.startswith("_")}
 
     def _select_folds(self, folds: list[dict]) -> list[dict]:
         """Keep the folds whose whole test segment lies inside the backtest window.
@@ -1666,7 +1580,7 @@ class BaseBacktester(ABC):
         ------
         ValueError
             If no fold remains; the message gives the window and
-            the span of the manifest's test segments.
+            the span of the walk-forward unit's test segments.
         """
         start = self._iso_date(self.config.start_date)
         end = self._iso_date(self.config.end_date)
@@ -1678,7 +1592,7 @@ class BaseBacktester(ABC):
         if not selected:
             raise ValueError(
                 f"{self.class_name}: no fold's test segment lies within the "
-                f"backtest window {start}..{end}; the manifest's test segments "
+                f"backtest window {start}..{end}; the walk-forward unit's test segments "
                 f"span {folds[0]['test_start']}..{folds[-1]['test_end']}"
             )
         if len(selected) < len(folds):
@@ -3071,7 +2985,7 @@ class BaseBacktester(ABC):
         summary lines and the notes) and marks the deepest drawdown of the
         stitched simulation. Each fold's own simulation is written under
         ``folds/fold_{i}/`` as ``weights.zarr`` and ``equity.zarr``, where
-        ``i`` is the manifest's fold number.
+        ``i`` is the fold's index.
 
         Returns
         -------

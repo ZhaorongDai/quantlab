@@ -14,8 +14,16 @@ last, ``run.json``. ``TrainedRun.open`` reads it back from the directory, from
   ``fitted_train_bounds``, and a loaded model's windows are its record's;
 - an unknown version, a missing ``run.json``, and a file that is not the
   unit's checkpoint are refused.
+
+Since #123 the same holds for the ``"ensemble"`` and ``"walk_forward"``
+kinds, through a real ``train`` of a seed ensemble and a real ``train_cv`` of
+a model and of a seed ensemble: every unit and every child (member, fold)
+opens on its own with the windows and metrics training returned, a copied
+trial directory opens at its new location, and no ``cv_folds.json``,
+``ensemble.json`` or ``metrics.json`` is written.
 """
 
+import dataclasses
 import json
 import shutil
 
@@ -23,8 +31,9 @@ import pandas as pd
 import pytest
 import xarray as xr
 
+from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.trained_run import TrainedRun
-from tests.backtest_fixtures import make_model, write_price_store
+from tests.backtest_fixtures import SeededHead, make_model, write_price_store
 
 N_BARS = 40
 
@@ -161,3 +170,119 @@ def test_a_file_that_is_not_the_units_checkpoint_is_refused(setup):
 def test_a_missing_path_is_refused(tmp_path):
     with pytest.raises(FileNotFoundError):
         TrainedRun.open(tmp_path / "nowhere")
+
+
+# ---------------------------------------------------------------- ensemble and walk-forward units
+
+OLD_RECORDS = ("cv_folds.json", "ensemble.json", "metrics.json")
+
+
+def _assert_opens_alone(child: TrainedRun) -> None:
+    """A child unit read through its parent equals the unit opened on its own."""
+    alone = TrainedRun.open(child.path)
+    assert alone == dataclasses.replace(child, index=None, seed=None)
+    if child.checkpoint is not None:
+        assert TrainedRun.open(child.checkpoint) == alone
+
+
+def _assert_no_old_records(root) -> None:
+    for name in OLD_RECORDS:
+        assert list(root.rglob(name)) == [], name
+
+
+def _ensemble(setup, name):
+    tmp_path, dataset_config, _, dates = setup
+    model = make_model(tmp_path / name, dataset_config, head=SeededHead, **dates)
+    return SeedEnsemble(model, [0, 1])
+
+
+def test_a_seed_ensemble_unit_round_trips(setup):
+    ensemble = _ensemble(setup, "ensemble")
+    checkpoint = ensemble.collect().train()
+
+    run = TrainedRun.open(checkpoint)
+
+    assert TrainedRun.open(checkpoint.parent) == run
+    assert run.kind == "ensemble" and run.checkpoint == checkpoint
+    assert run.train_window == ensemble.train_bounds
+    assert run.fitted_train_window == ensemble.fitted_train_bounds
+    assert run.test_window == ensemble.test_bounds
+    assert {"test_ic", "test_member_correlation"} <= set(run.metrics)
+    assert run.ic_series.is_file() and run.test_predictions.is_dir()
+    assert [member.seed for member in run.members] == [0, 1]
+    for member, model in zip(run.members, ensemble.members):
+        _assert_opens_alone(member)
+        assert member.kind == "model"
+        assert member.fitted_train_window == model.fitted_train_bounds
+    _assert_no_old_records(setup[0] / "ensemble")
+
+
+def test_a_model_walk_forward_unit_round_trips_and_survives_a_copy(setup):
+    tmp_path, dataset_config, _, dates = setup
+    model = make_model(tmp_path / "cv", dataset_config, **dates).collect()
+
+    run = model.train_cv(train_periods=20)
+
+    assert run == TrainedRun.open(run.path) == TrainedRun.open(run.path / "run.json")
+    assert run.kind == "walk_forward" and run.checkpoint is None
+    assert run.train_window is None and run.metrics == {}
+    assert [fold.index for fold in run.folds] == list(range(len(run.folds))) and run.folds
+    for fold in run.folds:
+        _assert_opens_alone(fold)
+        assert fold.kind == "model" and fold.path == run.path / f"fold_{fold.index}"
+        assert "test_ic" in fold.metrics
+    assert run.cv_mean["cv_n_folds"] == len(run.folds)
+    _assert_no_old_records(tmp_path / "cv")
+
+    moved = tmp_path / "copied" / run.path.name
+    shutil.copytree(run.path, moved)
+    copy = TrainedRun.open(moved)
+    assert copy.path == moved
+    assert [f.checkpoint for f in copy.folds] == [
+        moved / f.checkpoint.relative_to(run.path) for f in run.folds
+    ]
+    assert [(f.train_window, f.fitted_train_window, f.test_window, f.metrics) for f in copy.folds] == [
+        (f.train_window, f.fitted_train_window, f.test_window, f.metrics) for f in run.folds
+    ]
+    assert copy.cv_mean == run.cv_mean
+
+
+def test_a_seed_ensemble_walk_forward_unit_round_trips(setup):
+    ensemble = _ensemble(setup, "ensemble_cv").collect()
+
+    run = ensemble.train_cv(train_periods=20)
+
+    assert run == TrainedRun.open(run.path)
+    assert run.folds and all(fold.kind == "ensemble" for fold in run.folds)
+    for fold in run.folds:
+        _assert_opens_alone(fold)
+        assert [member.seed for member in fold.members] == [0, 1]
+        for member in fold.members:
+            _assert_opens_alone(member)
+            assert member.test_window == fold.test_window
+    _assert_no_old_records(setup[0] / "ensemble_cv")
+
+
+def test_a_walk_forward_unit_with_a_fold_in_an_old_layout_is_refused(setup):
+    tmp_path, dataset_config, _, dates = setup
+    run = make_model(tmp_path / "old", dataset_config, **dates).collect().train_cv(
+        train_periods=20
+    )
+    (run.path / "fold_1" / "run.json").unlink()
+
+    with pytest.raises(ValueError, match="fold_1 has no run.json.*retrain"):
+        TrainedRun.open(run.path)
+
+
+def test_a_walk_forward_record_that_disagrees_with_a_fold_is_refused(setup):
+    tmp_path, dataset_config, _, dates = setup
+    run = make_model(tmp_path / "drift", dataset_config, **dates).collect().train_cv(
+        train_periods=20
+    )
+    path = run.path / "fold_0" / "run.json"
+    record = json.loads(path.read_text())
+    record["test_window"][1] = record["test_window"][0]
+    path.write_text(json.dumps(record))
+
+    with pytest.raises(ValueError, match="fold 0 differently.*retrain"):
+        TrainedRun.open(run.path)

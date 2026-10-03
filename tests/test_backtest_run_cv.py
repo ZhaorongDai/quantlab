@@ -1,20 +1,22 @@
 """`BaseBacktester.run_cv()`, the model-CV backtest (phase 03.7, plan 10).
 
 `run_cv` answers "how well does the model's cross-validation actually trade".
-It reads the `cv_folds.json` manifest a `train_cv` run wrote into its project
-directory, backtests every fold's out-of-sample test segment with that fold's
-own checkpoint, and stitches the segments into one out-of-sample curve.
+It opens the walk-forward unit a `train_cv` run wrote (through `TrainedRun`,
+#123), backtests every fold's out-of-sample test segment with that fold's own
+checkpoint, and stitches the segments into one out-of-sample curve.
 
 What is locked here, and what turns it red:
 
-- **D-36, the manifest is a versioned persisted format.** A missing file, a
-  missing `format_version`, a version other than 2 and an empty fold list are
-  each refused with a message naming the problem. A reader that guesses at an
-  unknown version would silently misread an old or future training run.
-- **D-16, one checkpoint and one test segment per fold.** Each fold loads the
-  checkpoint the manifest names for it, in fold order, and its weights cover
-  exactly its own test bars. A fold that trades bars outside its test segment
-  trades data its model was trained on.
+- **The walk-forward unit is a versioned persisted format.** A missing
+  directory, an old layout without `run.json`, an unknown `format_version`, a
+  unit of another kind and an empty fold list are each refused with a message
+  naming the problem. A reader that guesses at an unknown version would
+  silently misread an old or future training run.
+- **D-16, one checkpoint and one test segment per fold.** Each fold loads its
+  own checkpoint, in fold order, and its weights cover exactly its own test
+  bars. A fold that trades bars outside its test segment trades data its
+  model was trained on. A trial directory copied elsewhere backtests from its
+  new location, never from the working directory.
 - **D-17 per fold.** In/out-of-sample is decided with THAT fold's train dates.
   `train_cv` purges the last 2 bars of every training window for the 2-bar
   label (issue #34), so the last fitted label reads up to the bar before the
@@ -42,6 +44,7 @@ directly, never through the factories in `quantlab/config/__init__.py` (D-32).
 
 import dataclasses
 import json
+import shutil
 import types
 from pathlib import Path
 
@@ -109,8 +112,8 @@ def _model_dates(bars) -> dict:
 def cv_project(tmp_path_factory):
     """One real `train_cv` run, shared read-only by every test in the module.
 
-    Tests never write into this directory: edited manifests are copies in the
-    test's own tmp_path, and their checkpoint paths still point here.
+    Tests never write into this directory: an edited unit is a copy in the
+    test's own tmp_path.
     """
     root = tmp_path_factory.mktemp("cv_project")
     dataset_config = write_price_store(root, n_bars=N_BARS)
@@ -122,18 +125,16 @@ def cv_project(tmp_path_factory):
         **_model_dates(bars),
     )
     model.collect()
-    model.train_cv(train_periods=TRAIN_PERIODS)
+    run = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    manifests = sorted((root / "train" / "models").rglob("cv_folds.json"))
-    assert len(manifests) == 1, manifests
-    manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
-    assert len(manifest["folds"]) == N_FOLDS
+    assert len(run.folds) == N_FOLDS
     return types.SimpleNamespace(
         root=root,
         dataset_config=dataset_config,
         bars=bars,
-        project_dir=manifests[0].parent,
-        manifest=manifest,
+        project_dir=run.path,
+        run=run,
+        checkpoints=[str(fold.checkpoint) for fold in run.folds],
     )
 
 
@@ -178,10 +179,14 @@ def _backtester(
     )
 
 
-def _edited_project(tmp_path: Path, payload: dict) -> Path:
+def _edited_project(tmp_path: Path, cv, edit) -> Path:
+    """Copy the walk-forward unit into tmp_path and ``edit`` its ``run.json``."""
     project = tmp_path / "edited_project"
-    project.mkdir()
-    (project / "cv_folds.json").write_text(json.dumps(payload), encoding="utf-8")
+    shutil.copytree(cv.project_dir, project)
+    path = project / "run.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    edit(payload)
+    path.write_text(json.dumps(payload), encoding="utf-8")
     return project
 
 
@@ -215,56 +220,50 @@ def _spy_from_orders(monkeypatch) -> list[pd.Index]:
 
 
 # --------------------------------------------------------------------------
-# D-36: the manifest reader refuses bad input
+# The walk-forward unit reader refuses bad input
 # --------------------------------------------------------------------------
 
 
-def test_run_cv_refuses_a_missing_manifest(tmp_path, cv_project):
-    empty = tmp_path / "not_a_cv_project"
-    empty.mkdir()
-    backtester = _backtester(tmp_path, cv_project, cv_project_dir=empty)
+def test_run_cv_refuses_a_missing_project_dir(tmp_path, cv_project):
+    missing = tmp_path / "not_a_cv_project"
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=missing)
 
     with pytest.raises(FileNotFoundError) as excinfo:
         backtester.run_cv()
-    assert str(empty / "cv_folds.json") in str(excinfo.value)
+    assert str(missing) in str(excinfo.value)
+
+
+def test_run_cv_refuses_an_old_layout_and_says_to_retrain(tmp_path, cv_project):
+    """A pre-#123 trial directory has cv_folds.json and no run.json."""
+    old = tmp_path / "old_project"
+    old.mkdir()
+    (old / "cv_folds.json").write_text(json.dumps({"format_version": 2, "folds": []}))
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=old)
+
+    with pytest.raises(ValueError, match=r"no run.json.*retrain"):
+        backtester.run_cv()
 
 
 def test_run_cv_refuses_an_unknown_format_version(tmp_path, cv_project):
-    project = _edited_project(tmp_path, {**cv_project.manifest, "format_version": 3})
+    project = _edited_project(
+        tmp_path, cv_project, lambda payload: payload.update(format_version=3)
+    )
     backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
 
-    with pytest.raises(
-        ValueError, match=r"format_version 3 is not supported \(supported: 2\)"
-    ):
+    with pytest.raises(ValueError, match=r"format_version 3.*retrain"):
         backtester.run_cv()
 
 
-def test_run_cv_refuses_a_version_1_manifest_and_says_to_rerun_train_cv(
-    tmp_path, cv_project
-):
-    """Issue #38: v1 manifests are not migrated; the error names the fix."""
-    assert cv_project.manifest["format_version"] == 2
-    project = _edited_project(tmp_path, {**cv_project.manifest, "format_version": 1})
-    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
+def test_run_cv_refuses_a_unit_that_is_not_a_walk_forward_run(tmp_path, cv_project):
+    fold_unit = cv_project.project_dir / "fold_0"
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=fold_unit)
 
-    with pytest.raises(
-        ValueError, match=r"format_version 1 is not supported \(supported: 2\)"
-    ) as excinfo:
-        backtester.run_cv()
-    assert "train_cv" in str(excinfo.value)
-
-
-def test_run_cv_refuses_a_missing_format_version(tmp_path, cv_project):
-    payload = {"folds": cv_project.manifest["folds"]}
-    project = _edited_project(tmp_path, payload)
-    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
-
-    with pytest.raises(ValueError, match=r"no format_version"):
+    with pytest.raises(ValueError, match=r"'model' trained run.*walk-forward"):
         backtester.run_cv()
 
 
 def test_run_cv_refuses_an_empty_fold_list(tmp_path, cv_project):
-    project = _edited_project(tmp_path, {"format_version": 2, "folds": []})
+    project = _edited_project(tmp_path, cv_project, lambda payload: payload.update(folds=[]))
     backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
 
     with pytest.raises(ValueError, match=r"no folds"):
@@ -280,7 +279,7 @@ def test_run_requires_a_checkpoint_and_run_cv_requires_a_project_dir(
     with pytest.raises(ValueError, match=r"run\(\).*checkpoint"):
         only_project.run()
 
-    checkpoint = cv_project.manifest["folds"][0]["checkpoint"]
+    checkpoint = cv_project.checkpoints[0]
     only_checkpoint = _backtester(
         tmp_path / "b", cv_project, cv_project_dir=None, checkpoint=checkpoint
     )
@@ -304,7 +303,7 @@ def test_each_fold_loads_its_own_checkpoint_and_trades_only_its_test_segment(
 
     result = backtester.run_cv()
 
-    assert loaded == [fold["checkpoint"] for fold in cv_project.manifest["folds"]]
+    assert loaded == cv_project.checkpoints
     assert [record["fold"] for record in result.folds] == list(range(N_FOLDS))
     for record in result.folds:
         fold = record["fold"]
@@ -312,58 +311,33 @@ def test_each_fold_loads_its_own_checkpoint_and_trades_only_its_test_segment(
             record["weights"].timestamp.values.astype("datetime64[ns]"),
             _test_bars(cv_project, fold),
         )
-        assert record["checkpoint"] == cv_project.manifest["folds"][fold]["checkpoint"]
+        assert record["checkpoint"] == cv_project.checkpoints[fold]
 
 
-@pytest.mark.parametrize("recorded", ["stale-absolute", "relative"])
-def test_run_cv_resolves_fold_checkpoints_inside_the_project_dir_not_the_cwd(
-    tmp_path, cv_project, monkeypatch, recorded
+def test_a_copied_trial_directory_backtests_from_its_new_location(
+    tmp_path, cv_project, monkeypatch
 ):
-    """Code review WR-03: fold checkpoints are found in `cv_project_dir`, never via the cwd.
-
-    The project directory is copied elsewhere, as when a project is moved, and
-    its manifest is rewritten two ways:
-
-    - `stale-absolute`: every entry points at the project's OLD location, which
-      no longer exists. The old `Path(checkpoint)` raised FileNotFoundError.
-    - `relative`: every entry is the relative path a relative `model_save_dir`
-      writes, and the process runs from another directory holding a same-named
-      DECOY checkpoint at each of those relative paths. The old code resolved
-      against the cwd and silently loaded the decoys: another training run's
-      model.
-
-    Both go red on the old code. The fix resolves `{experiment}/{file}`
-    inside `cv_project_dir`, and the resolved paths are what gets recorded.
-    """
-    import shutil
-
+    """A trial directory copied elsewhere (as from the training server) opens and
+    backtests from its new location, and the working directory plays no part:
+    the original is renamed away and the process runs from an unrelated
+    directory."""
     moved = tmp_path / "moved" / cv_project.project_dir.name
     shutil.copytree(cv_project.project_dir, moved)
-    payload = json.loads((moved / "cv_folds.json").read_text(encoding="utf-8"))
     cwd = tmp_path / "elsewhere"
     cwd.mkdir()
-    for entry in payload["folds"]:
-        original = Path(entry["checkpoint"])
-        tail = (
-            Path("models") / cv_project.project_dir.name / original.parent.name / original.name
-        )
-        if recorded == "stale-absolute":
-            entry["checkpoint"] = str(tmp_path / "gone" / tail)
-        else:
-            entry["checkpoint"] = str(tail)
-            decoy = cwd / tail
-            decoy.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy(cv_project.manifest["folds"][0]["checkpoint"], decoy)
-    (moved / "cv_folds.json").write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.chdir(cwd)
-
-    backtester = _backtester(tmp_path, cv_project, cv_project_dir=moved)
-    loaded = _spy_load(monkeypatch, backtester)
-    result = backtester.run_cv()
+    hidden = cv_project.project_dir.with_name(cv_project.project_dir.name + "_hidden")
+    cv_project.project_dir.rename(hidden)
+    try:
+        backtester = _backtester(tmp_path, cv_project, cv_project_dir=moved)
+        loaded = _spy_load(monkeypatch, backtester)
+        result = backtester.run_cv()
+    finally:
+        hidden.rename(cv_project.project_dir)
 
     expected = [
-        str(moved / Path(entry["checkpoint"]).parent.name / Path(entry["checkpoint"]).name)
-        for entry in payload["folds"]
+        str(moved / Path(path).relative_to(cv_project.project_dir))
+        for path in cv_project.checkpoints
     ]
     assert loaded == expected
     assert [record["checkpoint"] for record in result.folds] == expected
@@ -421,50 +395,17 @@ def test_per_fold_split_uses_the_folds_own_train_dates(
 
 
 CHECKPOINT_DATES_WARNING = "using the checkpoint's dates"
-MANIFEST_DATES_WARNING = "using the manifest's dates"
 
 
 def test_a_normal_run_cv_logs_no_checkpoint_date_warning(
     tmp_path, cv_project, warning_messages
 ):
-    """UAT gap G-03.7-7: checkpoints and manifest from one train_cv agree, so nothing warns.
-
-    Every fold used to be compared with config.model's single training window.
-    Folds 1..7 legitimately train on other windows, and fold 0's identical
-    instants were written as nanosecond strings against config.model's plain
-    dates, so a normal run logged one "using the checkpoint's dates" warning
-    per fold (8 here) although run_cv uses the manifest's dates. run_cv's only
-    date check is now each fold checkpoint's record against the manifest.
-    """
+    """UAT gap G-03.7-7: every fold trains on its own window, so comparing each
+    fold with config.model's single training window used to log one "using the
+    checkpoint's dates" warning per fold. Each fold's window comes from its own
+    record, so nothing warns."""
     _backtester(tmp_path, cv_project).run_cv()
 
-    checkpoint_dates = [m for m in warning_messages if CHECKPOINT_DATES_WARNING in m]
-    manifest_dates = [m for m in warning_messages if MANIFEST_DATES_WARNING in m]
-    assert checkpoint_dates == []
-    assert manifest_dates == []
-
-
-def test_a_fold_checkpoint_that_disagrees_with_the_manifest_still_warns(
-    tmp_path, cv_project, warning_messages
-):
-    """G-03.7-7: the genuine checkpoint-vs-manifest mismatch keeps its one warning.
-
-    Fold 3's manifest `train_end` is moved one bar earlier, written in the same
-    nanosecond text shape train_cv writes. Its checkpoint still records the
-    original date, so exactly that fold warns, and none warns about config.model.
-    """
-    folds = [dict(fold) for fold in cv_project.manifest["folds"]]
-    bars = cv_project.bars.astype("datetime64[ns]")
-    recorded_end = np.datetime64(pd.Timestamp(folds[3]["train_end"]).to_datetime64(), "ns")
-    (end_idx,) = np.flatnonzero(bars == recorded_end)
-    folds[3]["train_end"] = np.datetime_as_string(bars[end_idx - 1])
-    project = _edited_project(tmp_path, {**cv_project.manifest, "folds": folds})
-
-    _backtester(tmp_path, cv_project, cv_project_dir=project).run_cv()
-
-    manifest_dates = [m for m in warning_messages if MANIFEST_DATES_WARNING in m]
-    assert len(manifest_dates) == 1, warning_messages
-    assert "fold 3 " in manifest_dates[0]
     checkpoint_dates = [m for m in warning_messages if CHECKPOINT_DATES_WARNING in m]
     assert checkpoint_dates == []
 
@@ -477,11 +418,11 @@ def test_a_fold_checkpoint_that_disagrees_with_the_manifest_still_warns(
 def test_non_contiguous_folds_are_refused_before_any_simulation(
     tmp_path, cv_project, monkeypatch
 ):
-    folds = cv_project.manifest["folds"]
-    payload = {"format_version": 2, "folds": folds[:3] + folds[4:]}
-    backtester = _backtester(
-        tmp_path, cv_project, cv_project_dir=_edited_project(tmp_path, payload)
+    folds = cv_project.run.folds
+    project = _edited_project(
+        tmp_path, cv_project, lambda payload: payload["folds"].pop(3)
     )
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
     calls = _spy_from_orders(monkeypatch)
     loaded = _spy_load(monkeypatch, backtester)
 
@@ -489,28 +430,35 @@ def test_non_contiguous_folds_are_refused_before_any_simulation(
         backtester.run_cv()
 
     message = str(excinfo.value)
-    assert _day(folds[2]["test_end"]) in message
-    assert _day(folds[4]["test_start"]) in message
+    assert _day(folds[2].test_window[1]) in message
+    assert _day(folds[4].test_window[0]) in message
     assert calls == []
     assert loaded == []
 
 
 def test_overlapping_folds_are_refused(tmp_path, cv_project, monkeypatch):
-    folds = [dict(fold) for fold in cv_project.manifest["folds"]]
+    folds = cv_project.run.folds
     moved_end = FIRST_TEST_BAR + 3 * TEST_PERIODS  # one bar past fold 2's end
-    folds[2]["test_end"] = np.datetime_as_string(cv_project.bars[moved_end])
-    payload = {"format_version": 2, "folds": folds}
-    backtester = _backtester(
-        tmp_path, cv_project, cv_project_dir=_edited_project(tmp_path, payload)
+    new_end = np.datetime_as_string(cv_project.bars[moved_end])
+    project = _edited_project(
+        tmp_path,
+        cv_project,
+        lambda payload: payload["folds"][2]["test_window"].__setitem__(1, new_end),
     )
+    # The fold's own record must agree with the walk-forward record's copy.
+    fold_record = project / "fold_2" / "run.json"
+    payload = json.loads(fold_record.read_text(encoding="utf-8"))
+    payload["test_window"][1] = new_end
+    fold_record.write_text(json.dumps(payload), encoding="utf-8")
+    backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
     calls = _spy_from_orders(monkeypatch)
 
     with pytest.raises(ValueError, match=r"overlap") as excinfo:
         backtester.run_cv()
 
     message = str(excinfo.value)
-    assert _day(folds[2]["test_end"]) in message
-    assert _day(folds[3]["test_start"]) in message
+    assert _day(new_end) in message
+    assert _day(folds[3].test_window[0]) in message
     assert calls == []
 
 
@@ -528,9 +476,8 @@ def test_folds_outside_the_config_window_are_skipped(
 
     result = backtester.run_cv()
 
-    kept = cv_project.manifest["folds"][first_kept:]
-    assert [record["fold"] for record in result.folds] == [f["fold"] for f in kept]
-    assert loaded == [fold["checkpoint"] for fold in kept]
+    assert [record["fold"] for record in result.folds] == list(range(first_kept, N_FOLDS))
+    assert loaded == cv_project.checkpoints[first_kept:]
 
 
 # --------------------------------------------------------------------------
@@ -646,7 +593,6 @@ def test_the_stitched_block_carries_order_count_and_the_positions_view(
 def test_run_cv_run_directory_contents(tmp_path, cv_project):
     result = _backtester(tmp_path, cv_project).run_cv()
     run_dir = result.run_dir
-    folds = cv_project.manifest["folds"]
 
     assert run_dir.parent == tmp_path / "runs"
     assert {p.name for p in run_dir.iterdir()} == {
@@ -707,7 +653,7 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         bars = _test_bars(cv_project, entry["fold"])
         assert entry["test_start"] == _day(bars[0])
         assert entry["test_end"] == _day(bars[-1])
-        assert entry["checkpoint"] == folds[entry["fold"]]["checkpoint"]
+        assert entry["checkpoint"] == cv_project.checkpoints[entry["fold"]]
         assert entry["metrics"]["in_sample_range"] is None
         assert "Total Return [%]" in entry["metrics"]["whole"]
     assert metrics["stitched"]["in_sample_ranges"] == []

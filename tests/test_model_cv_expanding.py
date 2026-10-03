@@ -1,15 +1,13 @@
 """Expanding-window walk-forward CV: ``train_cv(..., expanding=True)``.
 
 Every fold trains from the first fold's start up to its test segment. The
-test segments, the fold count, the purge and the ``cv_folds.json`` format are
-those of the sliding mode, so the two modes compare on the same bars.
+test segments, the fold count, the purge and the walk-forward unit's
+``run.json`` format are those of the sliding mode, so the two modes compare on the same bars.
 
 The factor and label values are the bar index, so the rows a head receives
 in ``_fit_model`` name the bars it was fitted on. Everything is synthetic,
 CPU-only and offline.
 """
-
-import json
 
 import numpy as np
 import pandas as pd
@@ -20,6 +18,7 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.utils.trained_run import TrainedRun
 from tests.backtest_fixtures import make_model, make_stock_dataset, write_price_store
 from tests.label_stubs import StubLabel
 
@@ -29,7 +28,6 @@ TIMES = np.datetime64("2024-01-01") + np.arange(N_TIMES).astype("timedelta64[D]"
 #: 20 bars, train_periods 10: test segments of 2 bars, 5 folds.
 TRAIN_PERIODS = 10
 N_FOLDS = 5
-DATE_KEYS = ("train_start", "train_end", "test_start", "test_end")
 
 
 def date(i):
@@ -106,25 +104,23 @@ def _model(tmp_path, name, lookahead=0, val_size=0.0):
     )
 
 
-def _manifest(tmp_path, name) -> dict:
-    (manifest,) = sorted((tmp_path / name).rglob("cv_folds.json"))
-    return json.loads(manifest.read_text())
-
-
-def _days(record) -> tuple:
-    return tuple(np.datetime64(record[k], "D") for k in DATE_KEYS)
+def _days(fold) -> tuple:
+    """A fold unit's fitted training window and test window, as days."""
+    return tuple(
+        np.datetime64(value, "D") for value in (*fold.fitted_train_window, *fold.test_window)
+    )
 
 
 def test_every_expanding_fold_starts_where_the_first_fold_starts(tmp_path):
     model = _model(tmp_path, "expanding")
     model.collect()
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
 
-    assert len(results) == N_FOLDS
-    assert {np.datetime64(r["train_start"], "D") for r in results} == {TIMES[0]}
+    assert len(cv.folds) == N_FOLDS
+    assert {np.datetime64(f.train_window[0], "D") for f in cv.folds} == {TIMES[0]}
     # Fold i trains on bars 0 .. 2i + 9 and tests on 2i + 10 .. 2i + 11.
-    assert [_days(r) for r in results] == [
+    assert [_days(f) for f in cv.folds] == [
         (TIMES[0], TIMES[2 * i + 9], TIMES[2 * i + 10], TIMES[2 * i + 11])
         for i in range(N_FOLDS)
     ]
@@ -136,34 +132,33 @@ def test_every_expanding_fold_starts_where_the_first_fold_starts(tmp_path):
 def test_expanding_and_sliding_test_on_the_same_bars(tmp_path):
     sliding = _model(tmp_path, "sliding")
     sliding.collect()
-    sliding_results = sliding.train_cv(train_periods=TRAIN_PERIODS)
+    sliding_cv = sliding.train_cv(train_periods=TRAIN_PERIODS)
     expanding = _model(tmp_path, "expanding")
     expanding.collect()
-    expanding_results = expanding.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
+    expanding_cv = expanding.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
 
-    def tests(results):
-        return [(r["fold"], r["test_start"], r["test_end"]) for r in results]
+    def tests(cv):
+        return [(f.index, f.test_window) for f in cv.folds]
 
-    assert tests(expanding_results) == tests(sliding_results)
-    assert [r["train_end"] for r in expanding_results] == [
-        r["train_end"] for r in sliding_results
+    assert tests(expanding_cv) == tests(sliding_cv)
+    assert [f.fitted_train_window[1] for f in expanding_cv.folds] == [
+        f.fitted_train_window[1] for f in sliding_cv.folds
     ]
     # The sliding run keeps a fixed-length window; the expanding one does not.
-    assert len({r["train_start"] for r in sliding_results}) == N_FOLDS
+    assert len({f.train_window[0] for f in sliding_cv.folds}) == N_FOLDS
 
 
 def test_the_purge_ends_every_expanding_window_lookahead_bars_before_its_test(tmp_path):
-    # L = 2: fold i fits on 0 .. 2i + 7, and the manifest records that end.
+    # L = 2: fold i fits on 0 .. 2i + 7, and its record states that end.
     model = _model(tmp_path, "models", lookahead=2)
     model.collect()
-    model.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS, expanding=True)
 
     assert [fitted for _, fitted, _ in FITTED] == [
         list(range(0, 2 * i + 8)) for i in range(N_FOLDS)
     ]
-    manifest = _manifest(tmp_path, "models")
-    assert manifest["format_version"] == 2
-    assert [_days(f) for f in manifest["folds"]] == [
+    reread = TrainedRun.open(cv.path)
+    assert [_days(f) for f in reread.folds] == [
         (TIMES[0], TIMES[2 * i + 7], TIMES[2 * i + 10], TIMES[2 * i + 11])
         for i in range(N_FOLDS)
     ]
@@ -185,7 +180,7 @@ def test_the_validation_segment_grows_with_the_expanding_window(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# An expanding run's manifest replays with run_cv
+# An expanding walk-forward unit replays with run_cv
 # --------------------------------------------------------------------------
 
 N_BARS = 80
@@ -210,18 +205,16 @@ def _model_dates(bars_) -> dict:
     )
 
 
-def test_an_expanding_manifest_replays_with_run_cv(tmp_path):
+def test_an_expanding_walk_forward_unit_replays_with_run_cv(tmp_path):
     dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
     stamps = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
     model = make_model(
         tmp_path / "train", dataset_config, n_forward_periods=HORIZON, **_model_dates(stamps)
     )
     model.collect()
-    model.train_cv(train_periods=BT_TRAIN_PERIODS, expanding=True)
-    (manifest_path,) = sorted((tmp_path / "train" / "models").rglob("cv_folds.json"))
-    manifest = json.loads(manifest_path.read_text())
-    assert len(manifest["folds"]) == BT_N_FOLDS
-    assert {_day(f["train_start"]) for f in manifest["folds"]} == {_day(stamps[0])}
+    cv = model.train_cv(train_periods=BT_TRAIN_PERIODS, expanding=True)
+    assert len(cv.folds) == BT_N_FOLDS
+    assert {_day(f.fitted_train_window[0]) for f in cv.folds} == {_day(stamps[0])}
 
     backtester = USEquityCrossectionSelectStockVectorBt(
         CrossSectionBacktestConfig(
@@ -233,7 +226,7 @@ def test_an_expanding_manifest_replays_with_run_cv(tmp_path):
                 **_model_dates(stamps),
             ),
             model_mode="load",
-            cv_project_dir=str(manifest_path.parent),
+            cv_project_dir=str(cv.path),
             start_date=_day(stamps[BT_TRAIN_PERIODS]),
             end_date=_day(stamps[BT_TRAIN_PERIODS + BT_N_FOLDS * BT_TEST_PERIODS - 1]),
             output_dir=str(tmp_path / "runs"),
@@ -253,6 +246,6 @@ def test_an_expanding_manifest_replays_with_run_cv(tmp_path):
             record["weights"].timestamp.values.astype("datetime64[ns]"),
             stamps[first : first + BT_TEST_PERIODS].astype("datetime64[ns]"),
         )
-        assert record["checkpoint"] == manifest["folds"][record["fold"]]["checkpoint"]
+        assert record["checkpoint"] == str(cv.folds[record["fold"]].checkpoint)
         assert record["metrics"]["in_sample_range"] is None
         assert tuple(record["metrics"]["training_window"])[0] == _day(stamps[0])

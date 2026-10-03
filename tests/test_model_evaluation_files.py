@@ -223,14 +223,20 @@ def test_train_writes_icir_the_ic_series_and_the_test_predictions(tmp_path, cls)
 def test_every_cv_fold_writes_the_ic_series_and_the_test_predictions(tmp_path, cls):
     model = _model(tmp_path, cls)
 
-    results = model.train_cv(train_periods=TRAIN_PERIODS)
+    cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
-    assert len(results) == 5
-    for fold in results:
+    assert len(cv.folds) == 5
+    for fold in cv.folds:
         for split in SPLITS:
-            assert f"{split}_icir" in fold and f"{split}_rank_icir" in fold
-        run_dir = Path(fold["checkpoint"]).parent
-        _assert_run_files(model, run_dir, fold, _test_timestamps(model, fold))
+            assert f"{split}_icir" in fold.metrics and f"{split}_rank_icir" in fold.metrics
+        assert fold.ic_series.is_file() and fold.test_predictions.is_dir()
+        test_start, test_end = fold.test_window
+        _assert_run_files(
+            model,
+            fold.path,
+            fold.metrics,
+            _test_timestamps(model, {"test_start": test_start, "test_end": test_end}),
+        )
 
 
 def test_a_bar_with_fewer_than_two_valid_symbols_is_left_out(tmp_path):

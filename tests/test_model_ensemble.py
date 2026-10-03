@@ -7,11 +7,11 @@ What is locked here, and what turns it red:
   members whose test windows differ test on their intersection.
 - Its prediction is `average_predictions` of each member's own prediction,
   every member requesting its own features.
-- `train()` writes a manifest listing each member's class with a null seed,
+- `train()` writes an ensemble unit recording each member's class and a null seed,
   and a rebuilt ensemble (`from_config` of `get_config`) loads it and
   predicts the same values.
 - `_combine` is the one combination rule: a subclass overriding it changes
-  `predict_window`, `metrics.json` and `test_predictions.zarr` together.
+  `predict_window`, the recorded metrics and `test_predictions.zarr` together.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -29,6 +29,7 @@ from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import ic_panel_metrics
+from quantlab.utils.trained_run import TrainedRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,
     SeededHead,
@@ -103,22 +104,22 @@ def test_prediction_is_the_average_of_each_members_own_prediction(tmp_path):
     xr.testing.assert_allclose(out, expected.sel(timestamp=slice(start, end)))
 
 
-def test_manifest_round_trips_through_config(tmp_path):
+def test_the_trained_unit_round_trips_through_config(tmp_path):
     members, bars = _members(tmp_path)
     ensemble = ModelEnsemble(members)
-    manifest = ensemble.collect().train()
+    checkpoint = ensemble.collect().train()
     start, end = _day(bars[25]), _day(bars[29])
 
-    entries = json.loads(Path(manifest).read_text())["members"]
-    assert [e["name"] for e in entries] == [
+    saved = TrainedRun.open(checkpoint).members
+    assert [m.config["name"] for m in saved] == [
         "tests.backtest_fixtures.FirstFeatureHead",
         "tests.backtest_fixtures.SeededHead",
     ]
-    assert [e["seed"] for e in entries] == [None, None]
+    assert [m.seed for m in saved] == [None, None]
 
     config = json.loads(json.dumps(to_jsonable(ensemble.get_config())))
     assert config["name"] == "quantlab.model.predefined.model_ensemble.ModelEnsemble"
-    rebuilt = ModelEnsemble.from_config(config).load(manifest)
+    rebuilt = ModelEnsemble.from_config(config).load(checkpoint)
     assert [type(m) for m in rebuilt.members] == [FirstFeatureHead, SeededHead]
     xr.testing.assert_allclose(
         rebuilt.predict_window(start, end), ensemble.predict_window(start, end)
@@ -128,8 +129,8 @@ def test_manifest_round_trips_through_config(tmp_path):
 def test_combine_drives_prediction_and_evaluation_files(tmp_path):
     members, bars = _members(tmp_path)
     ensemble = FirstMemberEnsemble(members)
-    manifest = ensemble.collect().train()
-    run_dir = Path(manifest).parent
+    checkpoint = ensemble.collect().train()
+    run_dir = Path(checkpoint).parent
     start, end = _day(bars[25]), _day(bars[29])
 
     xr.testing.assert_allclose(
@@ -152,5 +153,5 @@ def test_combine_drives_prediction_and_evaluation_files(tmp_path):
         data["fwd_ret_1"].sel(timestamp=stamps).values,
         return_series=True,
     )
-    metrics = json.loads((run_dir / "metrics.json").read_text())
+    metrics = TrainedRun.open(run_dir).metrics
     assert metrics["test_ic"] == pytest.approx(expected["ic"])

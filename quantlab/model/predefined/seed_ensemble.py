@@ -29,9 +29,9 @@ class SeedEnsemble(BaseEnsemble):
     held once. ``predict_window`` requests features once, through the first
     member (its warm-up included), and hands them to every member's
     ``predict_panel``. ``train()``, ``load()`` and ``check_checkpoint()``
-    work on an ``ensemble.json`` manifest (see ``BaseEnsemble``) that
-    records each member's seed; ``train_cv()`` writes one such directory
-    per walk-forward fold and a ``cv_folds.json`` that a backtester's
+    work on an ensemble unit (see ``BaseEnsemble``) whose ``run.json``
+    records each member's seed; ``train_cv()`` writes one such unit per
+    walk-forward fold, inside a walk-forward unit that a backtester's
     ``run_cv`` replays.
 
     Parameters
@@ -65,7 +65,7 @@ class SeedEnsemble(BaseEnsemble):
         >>> ensemble = SeedEnsemble(model, [0, 1, 2])
         >>> [member.config.random_seed for member in ensemble.members]
         [0, 1, 2]
-        >>> manifest = ensemble.collect().train()
+        >>> checkpoint = ensemble.collect().train()
         >>> out = ensemble.predict_window("2024-02-12", "2024-03-11")
         >>> list(out.data_vars), out.sizes["timestamp"]
         (['fwd_ret_1'], 21)
@@ -102,7 +102,7 @@ class SeedEnsemble(BaseEnsemble):
         return tuple(seeds)
 
     def _member_seed(self, k: int) -> int:
-        """The seed of member ``k``, recorded in the manifest."""
+        """The seed of member ``k``, recorded in ``run.json``."""
         return self.seeds[k]
 
     def collect(self) -> Self:
@@ -220,7 +220,7 @@ class SeedEnsemble(BaseEnsemble):
         Returns
         -------
         Self
-            An untrained ensemble; call ``load`` to restore a manifest.
+            An untrained ensemble; call ``load`` to restore a trained unit.
 
         Examples
         --------

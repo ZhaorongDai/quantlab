@@ -1,10 +1,11 @@
-"""Metrics on disk: the metrics of `train()`'s `run.json` and the v2 `cv_folds.json` (issue #38).
+"""Metrics on disk: the metrics of `train()`'s `run.json` and of a walk-forward unit (issue #38, #123).
 
 `train()` records the `train_*` / `val_*` / `test_*` metrics of the first label
 in the unit's `run.json` (#122), so a run's scores survive without a
 tracker. `train_cv()` keeps every split's metrics in each fold
-entry of `cv_folds.json` and adds a top-level `cv_mean` block, the fold means
-of every metric, which the `{cls}_cv_summary` tracking run also receives.
+entry of the walk-forward unit's `run.json` (and in each fold unit's own) and
+adds a top-level `cv_mean` block, the fold means of every metric, which the
+`{cls}_cv_summary` tracking run also receives.
 
 What turns this file red:
 
@@ -27,7 +28,6 @@ import xarray as xr
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
@@ -155,26 +155,28 @@ def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path):
         assert metrics[f"{split}_finite_metric"] == 1.5
 
 
-def test_cv_manifest_v2_holds_every_split_and_the_cv_mean_block(tmp_path, tracker):
+def test_walk_forward_record_holds_every_split_and_the_cv_mean_block(tmp_path, tracker):
     model = _model(tmp_path, tracker=tracker)
 
-    results = model.train_cv(train_periods=20)
+    cv = model.train_cv(train_periods=20)
 
     (project,) = [p for p in (tmp_path / "ckpt").iterdir() if p.is_dir()]
-    manifest = _strict_json(project / "cv_folds.json")
-    assert manifest["format_version"] == 2
-    assert manifest["folds"] == to_jsonable(results)
-    for entry in manifest["folds"]:
+    record = _strict_json(project / "run.json")
+    assert record["format_version"] == 1 and record["kind"] == "walk_forward"
+    assert [entry["metrics"] for entry in record["folds"]] == [f.metrics for f in cv.folds]
+    for entry, fold in zip(record["folds"], cv.folds):
+        assert _strict_json(fold.path / "run.json")["metrics"] == entry["metrics"]
         for split in SPLITS:
             for k in METRIC_KEYS:
-                assert f"{split}_{k}" in entry, (entry["fold"], split, k)
+                assert f"{split}_{k}" in entry["metrics"], (entry["fold"], split, k)
 
-    cv_mean = manifest["cv_mean"]
-    assert cv_mean["cv_n_folds"] == len(results)
+    cv_mean = record["cv_mean"]
+    assert cv_mean == cv.cv_mean
+    assert cv_mean["cv_n_folds"] == len(cv.folds)
     for split in SPLITS:
         for k in METRIC_KEYS:
             key = f"{split}_{k}"
-            values = [r[key] for r in results if np.isfinite(r[key])]
+            values = [f.metrics[key] for f in cv.folds if f.metrics[key] is not None]
             assert cv_mean[f"cv_mean_{key}"] == pytest.approx(float(np.mean(values)))
 
     summary_run = tracker.runs[-1]

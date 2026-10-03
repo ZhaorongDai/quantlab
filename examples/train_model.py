@@ -8,13 +8,13 @@ This example concentrates on the model layer. It
    from the 5-day average) and computes it with a one-day forward-return
    label,
 3. trains an ``XGBoostRegressor`` with early stopping, saves a checkpoint
-   and reads the run's scores back from ``metrics.json``,
+   and reads the run's scores back through ``TrainedRun``,
 4. predicts the test window with ``predict_panel`` and scores the prediction
    with IC, RankIC and R2,
 5. rebuilds the model from the checkpoint's ``config.json`` and checks that
    the reloaded model predicts exactly the same values,
 6. runs a walk-forward cross-validation with ``train_cv`` and prints the
-   per-fold scores and the ``cv_folds.json`` manifest with its fold means.
+   per-fold scores and the fold means of the walk-forward run it returns.
 
 Everything runs offline on the CPU in well under a minute. No credentials
 are needed, nothing is tracked (no config names a tracker), and all files go
@@ -35,7 +35,6 @@ import sys
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
-import json
 import tempfile
 from pathlib import Path
 
@@ -55,6 +54,7 @@ from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.module import load_model_from_config
+from quantlab.utils.trained_run import TrainedRun
 
 # Only warnings and errors from the library, so the printed results stand out.
 logger.remove()
@@ -209,9 +209,9 @@ def main() -> None:
         checkpoint = model.train()
         print("checkpoint:", checkpoint.relative_to(root))
         print("trees kept by early stopping:", model.model.num_boosted_rounds())
-        # train() writes the train/val/test scores of the run beside the checkpoint.
-        scores = json.loads((checkpoint.parent / "metrics.json").read_text())
-        show("metrics.json val", {k[4:]: v for k, v in scores.items() if k.startswith("val_")})
+        # train() records the train/val/test scores of the run in its run.json.
+        run = TrainedRun.open(checkpoint)
+        show("recorded val", {k[4:]: v for k, v in run.metrics.items() if k.startswith("val_")})
 
         # 2. Predict the test window and score it --------------------------
         panel = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])
@@ -221,8 +221,8 @@ def main() -> None:
         show("test window", regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values))
 
         # 3. Rebuild the model from config.json and reload the checkpoint --
-        saved = json.loads((checkpoint.parent / "config.json").read_text())
-        print("trained_on symbols:", len(saved["trained_on"]["symbols"]),
+        saved = run.config
+        print("trained_on symbols:", len(run.trained_on["symbols"]),
               "resolved eta:", saved["resolved_hyperparameters"]["eta"])
         reloaded = load_model_from_config(saved).load(checkpoint)
         again = reloaded.predict_panel(test[model.get_factor_names()])
@@ -234,18 +234,18 @@ def main() -> None:
         # 200 // 5 = 40 bars. The window then slides by 40. The last bars of
         # each training window, as many as the label looks ahead, are purged
         # so no fitted label reads a test-period price.
-        folds = model.train_cv(train_periods=200)
-        for fold in folds:
-            print(f"fold {fold['fold']}: train {fold['train_start'][:10]}..{fold['train_end'][:10]}"
-                  f"  test {fold['test_start'][:10]}..{fold['test_end'][:10]}"
-                  f"  IC={fold['test_ic']:+.3f}  RankIC={fold['test_rank_ic']:+.3f}")
+        cv = model.train_cv(train_periods=200)
+        for fold in cv.folds:
+            (train_start, train_end), (test_start, test_end) = (
+                fold.fitted_train_window, fold.test_window
+            )
+            print(f"fold {fold.index}: train {train_start[:10]}..{train_end[:10]}"
+                  f"  test {test_start[:10]}..{test_end[:10]}"
+                  f"  IC={fold.metrics['test_ic']:+.3f}"
+                  f"  RankIC={fold.metrics['test_rank_ic']:+.3f}")
 
-        manifest_path = Path(folds[0]["checkpoint"]).parents[1] / "cv_folds.json"
-        manifest = json.loads(manifest_path.read_text())
-        print("cv_folds.json: format_version", manifest["format_version"],
-              "with", len(manifest["folds"]), "folds")
-        print("keys of one fold:", sorted(manifest["folds"][0]))
-        cv_mean = manifest["cv_mean"]
+        print("walk-forward run:", cv.path.relative_to(root), "with", len(cv.folds), "folds")
+        cv_mean = cv.cv_mean
         print("mean over folds: train IC", round(cv_mean["cv_mean_train_ic"], 3),
               "val IC", round(cv_mean["cv_mean_val_ic"], 3),
               "test IC", round(cv_mean["cv_mean_test_ic"], 3))

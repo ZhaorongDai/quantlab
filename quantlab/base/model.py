@@ -46,8 +46,6 @@ from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
-from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import (
     regression_panel_metrics,
     scores_volatility_level,
@@ -59,8 +57,11 @@ from quantlab.utils.timer import Timer
 from quantlab.utils.trained_run import (
     TrainedRun,
     evaluation_paths,
+    fold_directory,
+    new_trial_directory,
     write_model_config,
     write_model_run,
+    write_walk_forward_run,
 )
 from quantlab.utils.walk_forward import Fold, walk_forward_folds
 
@@ -1261,22 +1262,6 @@ class BaseModel(ABC):
             f"{self.class_name} does not implement _predict_panel_array"
         )
 
-    def _new_trial_name(self) -> str:
-        """Return a fresh ``{class}_trial_{%Y%m%d_%H%M%S_%f}`` directory name.
-
-        The name is guaranteed not to exist under ``model_save_dir`` yet: if
-        it does, ``_1``, ``_2``, ... are appended. Both ``train`` and
-        ``train_cv`` go through here.
-        """
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        base = f"{self.class_name}_trial_{stamp}"
-        root = Path(self.config.model_save_dir)
-        name, suffix = base, 1
-        while (root / name).exists():
-            name = f"{base}_{suffix}"
-            suffix += 1
-        return name
-
     def train(self) -> Path:
         """Train once on the config's ``train_*`` / ``test_*`` dates and save.
 
@@ -1305,11 +1290,9 @@ class BaseModel(ABC):
         ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr']
         """
         self._check_hyperparameters()
-        trial = self._new_trial_name()
+        trial = new_trial_directory(self.config.model_save_dir, self.class_name)
         checkpoint, _ = self._train_into(
-            Path(self.config.model_save_dir) / trial,
-            group=trial,
-            experiment_name=f"{self.class_name}_total",
+            trial, group=trial.name, experiment_name=f"{self.class_name}_total"
         )
         return checkpoint
 
@@ -1587,56 +1570,19 @@ class BaseModel(ABC):
             test_end=fold.test_window[1],
         )
 
-    @staticmethod
-    def _fold_record(fold: Fold) -> dict:
-        """Return the fold's entry in the results: its index and the dates actually fitted."""
-        return {
-            "fold": fold.index,
-            "train_start": fold.fitted_train_window[0],
-            "train_end": fold.fitted_train_window[1],
-            "test_start": fold.test_window[0],
-            "test_end": fold.test_window[1],
-        }
-
-    def _train_one_fold(self, fold: Fold, trial: str) -> dict:
-        """Train one fold on this instance and return its result dict.
+    def _train_one_fold(self, fold: Fold, trial: Path) -> None:
+        """Train fold ``fold`` into its unit ``fold_{i}/`` of the walk-forward unit ``trial``.
 
         The config gets the fold's dates before the purge, which ``_fit``
-        purges itself. The result is ``_fold_record(fold)`` (the dates
-        actually fitted) plus ``experiment_name``, ``checkpoint`` (the
-        absolute path of the fold's checkpoint, since the manifest may be
-        read from another working directory) and whatever ``train_*`` /
-        ``val_*`` / ``test_*`` metrics ``_fit`` returned. When there are
-        metrics, the fold's checkpoint directory also gets ``ic_series.csv``
-        and ``test_predictions.zarr`` (see ``_write_evaluation_files``).
+        purges itself. The fold's checkpoint is ``{class}_cv_fold_{i}``,
+        also the name of its tracking run.
         """
         self.config = self._with_fold_dates(self.config, fold)
-
-        experiment_name = f"{self.class_name}_cv_fold_{fold.index}"
-        checkpoint, metrics = self._train_into(
-            Path(self.config.model_save_dir) / trial / experiment_name,
-            group=trial,
-            experiment_name=experiment_name,
+        self._train_into(
+            fold_directory(trial, fold.index),
+            group=trial.name,
+            experiment_name=f"{self.class_name}_cv_fold_{fold.index}",
         )
-        return {
-            **self._fold_record(fold),
-            "experiment_name": experiment_name,
-            "checkpoint": str(checkpoint),
-            **(metrics or {}),
-        }
-
-    #: Name of the fold manifest ``train_cv`` writes into the trial directory.
-    CV_FOLDS_FILENAME = "cv_folds.json"
-    #: Format version written into the manifest. Readers reject versions they
-    #: do not know, so bump this whenever the manifest structure changes.
-    #: Version 2 added the ``train_*`` / ``val_*`` fold metrics and ``cv_mean``.
-    CV_FOLDS_FORMAT_VERSION = 2
-
-    #: Keys every fold dict carries. The four dates start with ``train_`` or
-    #: ``test_`` but are not metrics, and are excluded from CV means.
-    _CV_FOLD_KEYS = frozenset(
-        {"fold", "train_start", "train_end", "test_start", "test_end"}
-    )
 
     #: Prefixes of the metric keys ``_fit`` returns, one per split.
     _METRIC_PREFIXES = ("train_", "val_", "test_")
@@ -1645,21 +1591,21 @@ class BaseModel(ABC):
     def _cv_mean_metrics(results: list[dict]) -> dict:
         """Average every ``train_*`` / ``val_*`` / ``test_*`` metric over folds.
 
-        Each mean is keyed ``cv_mean_{key}``. Only finite numeric values
-        count; a metric with no finite value in any fold averages to NaN.
-        ``cv_n_folds`` is added. Returns an empty dict when no fold carries a
-        metric, in which case ``train_cv`` opens no summary run.
+        ``results`` holds each fold's metrics. Each mean is keyed
+        ``cv_mean_{key}``. Only finite numeric values count (a recorded
+        null is skipped); a metric with no finite value in any fold averages
+        to NaN. ``cv_n_folds`` is added. Returns an empty dict when no fold
+        carries a metric, in which case ``train_cv`` opens no summary run.
         """
         keys: list[str] = []
         for result in results:
             for key, value in result.items():
-                if (
-                    key.startswith(BaseModel._METRIC_PREFIXES)
-                    and key not in BaseModel._CV_FOLD_KEYS
-                    and isinstance(value, (int, float, np.integer, np.floating))
+                # None is a metric recorded as null, undefined in that fold.
+                numeric = value is None or (
+                    isinstance(value, (int, float, np.integer, np.floating))
                     and not isinstance(value, bool)
-                    and key not in keys
-                ):
+                )
+                if key.startswith(BaseModel._METRIC_PREFIXES) and numeric and key not in keys:
                     keys.append(key)
         if not keys:
             return {}
@@ -1669,7 +1615,7 @@ class BaseModel(ABC):
             finite = [
                 float(r[key])
                 for r in results
-                if key in r and np.isfinite(float(r[key]))
+                if r.get(key) is not None and np.isfinite(float(r[key]))
             ]
             means[f"cv_mean_{key}"] = (
                 sum(finite) / len(finite) if finite else float("nan")
@@ -1682,8 +1628,8 @@ class BaseModel(ABC):
         train_periods: int,
         expanding: bool = False,
         test_periods: int | None = None,
-    ) -> list[dict]:
-        """Run a walk-forward cross-validation and return per-fold results.
+    ) -> TrainedRun:
+        """Run a walk-forward cross-validation and return the walk-forward unit.
 
         Walk-forward cross-validation trains on a window of past data and
         tests on the period right after it, then moves the test period
@@ -1696,20 +1642,18 @@ class BaseModel(ABC):
         ``config.start_date`` and ``config.end_date``. Each fold's training
         window loses its last L bars, L being the largest
         ``lookahead_bars()`` among the labels, so no fitted label reads a
-        test-period bar. Every fold trains on
-        its own dates, gets its own tracking run and its own checkpoint directory
-        ``{class}_cv_fold_{i}/`` inside one trial directory. The fold means of
-        every ``train_*`` / ``val_*`` / ``test_*`` metric, keyed
-        ``cv_mean_{key}``, plus ``cv_n_folds`` are written to the summary of a
-        separate ``{class}_cv_summary`` run.
+        test-period bar.
 
-        Before returning, the manifest ``cv_folds.json`` is written atomically
-        into the trial directory as ``{"format_version": 2, "folds": [...],
-        "cv_mean": {...}}``, where ``folds`` is the JSON form of the returned
-        list and ``cv_mean`` the summary run's means (NaN and inf become
-        null; ``cv_mean`` is empty when no fold has metrics). Its
-        ``train_end`` is the last bar the purge keeps. Backtesters replay a
-        CV run from that file.
+        A new trial directory ``{class}_trial_{timestamp}/`` is created under
+        ``model_save_dir`` and becomes a ``"walk_forward"`` unit
+        (``quantlab.utils.trained_run``). Every fold trains on its own dates
+        into its own ``"model"`` unit ``fold_{i}/``, with the checkpoint
+        ``{class}_cv_fold_{i}{suffix}`` and a tracking run of that name. The
+        fold means of every ``train_*`` / ``val_*`` / ``test_*`` metric,
+        keyed ``cv_mean_{key}``, plus ``cv_n_folds`` are written to the
+        summary of a separate ``{class}_cv_summary`` run. Last, the trial's
+        ``run.json`` records the folds and those means. A backtester's
+        ``run_cv`` replays the unit.
 
         Parameters
         ----------
@@ -1721,18 +1665,19 @@ class BaseModel(ABC):
             a fixed-length window. Test segments, fold count and the purge
             are those of the sliding mode; the validation segment stays the
             last ``val_size`` share of each growing window. The mode is not
-            recorded in ``cv_folds.json``: the fold dates carry it.
+            recorded: the fold windows carry it.
         test_periods : int, optional
             Number of timestamps in each fold's test segment, and the step
             from one fold to the next. Defaults to ``train_periods // 5``.
-            Like the mode, it is carried by the fold dates.
+            Like the mode, it is carried by the fold windows.
 
         Returns
         -------
-        list[dict]
-            One dict per fold: the purged fold boundaries, ``experiment_name``, the
-            absolute ``checkpoint`` path and the fold's ``train_*``, ``val_*``
-            (when the fold has a validation segment) and ``test_*`` metrics.
+        TrainedRun
+            The ``"walk_forward"`` unit: ``folds`` holds each fold's unit
+            (index, configured and fitted training window, test window,
+            metrics, checkpoint) and ``cv_mean`` the fold means (empty when
+            no fold has metrics).
 
         Raises
         ------
@@ -1745,52 +1690,56 @@ class BaseModel(ABC):
 
         Examples
         --------
-        >>> results = model.train_cv(train_periods=20)
-        >>> len(results)
-        4
-        >>> results[0]["fold"], results[0]["checkpoint"].endswith("fold_0.joblib")
-        (0, True)
+        >>> cv = model.train_cv(train_periods=20)
+        >>> cv.kind, len(cv.folds)
+        ('walk_forward', 4)
+        >>> cv.folds[0].index, cv.folds[0].checkpoint.name
+        (0, 'MyHead_cv_fold_0.joblib')
 
         An expanding run tests on the same bars, and every fold trains from
         the first fold's start:
 
         >>> expanding = model.train_cv(train_periods=20, expanding=True)
-        >>> {r["train_start"] for r in expanding} == {expanding[0]["train_start"]}
-        True
-        >>> [r["test_start"] for r in expanding] == [r["test_start"] for r in results]
+        >>> len({fold.train_window[0] for fold in expanding.folds})
+        1
+        >>> [f.test_window for f in expanding.folds] == [f.test_window for f in cv.folds]
         True
 
         ``test_periods`` sets the test length instead of one fifth:
 
-        >>> len(model.train_cv(train_periods=20, test_periods=10))
+        >>> len(model.train_cv(train_periods=20, test_periods=10).folds)
         2
         """
         self._check_hyperparameters()
         folds = self._walk_forward_folds(
             train_periods, expanding, test_periods, self._purge_bars(), self.class_name
         )
-        trial = self._new_trial_name()
+        trial = new_trial_directory(self.config.model_save_dir, self.class_name)
+        for fold in folds:
+            self._train_one_fold(fold, trial)
+        return self._finish_walk_forward(trial, folds)
 
-        results = [self._train_one_fold(fold, trial) for fold in folds]
+    def _finish_walk_forward(
+        self,
+        trial: Path,
+        folds,
+        *,
+        name: str | None = None,
+        config: dict | None = None,
+    ) -> TrainedRun:
+        """Write the walk-forward unit ``trial`` over its trained folds and track the CV means.
 
-        means = self._cv_mean_metrics(results)
+        The fold means of the folds' recorded metrics (``_cv_mean_metrics``)
+        go to the summary run ``name`` (``{class}_cv_summary`` by default,
+        see ``_track_cv_summary``) when there are any, and into the unit's
+        ``run.json``. An ensemble passes its own ``name`` and ``config``.
+        """
+        indices = [fold.index for fold in folds]
+        fold_runs = [TrainedRun.open(fold_directory(trial, i)) for i in indices]
+        means = self._cv_mean_metrics([run.metrics for run in fold_runs])
         if means:
-            self._track_cv_summary(trial, means)
-
-        # The manifest is a converted copy; `results` is returned unchanged.
-        write_json_atomically(
-            Path(self.config.model_save_dir)
-            / trial
-            / self.CV_FOLDS_FILENAME,
-            {
-                "format_version": self.CV_FOLDS_FORMAT_VERSION,
-                "folds": to_jsonable(results),
-                "cv_mean": to_jsonable(means),
-            },
-            indent=2,
-        )
-
-        return results
+            self._track_cv_summary(trial.name, means, name=name, config=config)
+        return write_walk_forward_run(trial, folds=indices, cv_mean=means)
 
     def _assert_shape_match_y(self, data):
         """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_labels]``."""

@@ -2,8 +2,8 @@
 
 `to_jsonable` serializes every JSON artifact a backtest or a CV run persists:
 `metrics.json`, `config.json`, `fingerprint.json`, `settlements.json` and
-`cv_folds.json`. The fold dicts in `cv_folds.json` carry whatever a model's
-`_fit` returns. Before the fix the function was strict only syntactically:
+a trained run's `run.json`. The metrics in `run.json` carry whatever a
+model's `_fit` returns. Before the fix the function was strict only syntactically:
 
 - **Arrays were silently truncated.** Anything without a special case fell
   through to `str(value)`, so `np.arange(2000.0)` persisted as numpy's

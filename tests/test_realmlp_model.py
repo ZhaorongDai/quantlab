@@ -420,25 +420,21 @@ def test_train_cv_sequential(tmp_path, tracker):
     model.collect()
     timestamps = model.data_backend.get_xarray_dataset(["timestamp", "symbol"]).timestamp.values
 
-    results = model.train_cv(train_periods=60)
+    results = model.train_cv(train_periods=60).folds
 
     assert len(results) == 8
     expected = [
-        {"fold": f.index, "train_start": f.fitted_train_window[0], "train_end": f.fitted_train_window[1],
-         "test_start": f.test_window[0], "test_end": f.test_window[1]}
-        for f in walk_forward_folds(timestamps, 60)
+        (f.index, f.fitted_train_window, f.test_window) for f in walk_forward_folds(timestamps, 60)
     ]
-    assert [
-        {k: r[k] for k in ("fold", "train_start", "train_end", "test_start", "test_end")} for r in results
-    ] == expected
+    assert [(r.index, r.fitted_train_window, r.test_window) for r in results] == expected
     for r in results:
-        ckpt = Path(r["checkpoint"])
+        ckpt = r.checkpoint
         assert ckpt.suffix == ".joblib"
         assert {p.name for p in ckpt.parent.iterdir()} == {
             ckpt.name, "config.json", "ic_series.csv", "run.json", "test_predictions.zarr"
         }
         assert isinstance(joblib.load(ckpt), RealMLP_TD_Regressor)
-        assert np.isfinite(r["test_ic"])
+        assert np.isfinite(r.metrics["test_ic"])
         fresh = RealMLPRegressor(_config(tmp_path, *_panels(seed=31), save_dir="unused")).load(ckpt)
         assert fresh.predict(np.zeros((4, N_SYMBOLS, 3), dtype=np.float32)).shape == (4, N_SYMBOLS, 1)
 
@@ -449,7 +445,7 @@ def test_train_cv_sequential(tmp_path, tracker):
     summary_run = tracker.runs[-1]
     assert summary_run.name == "RealMLPRegressor_cv_summary"
     assert summary_run.summary["cv_n_folds"] == 8
-    assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r["test_ic"] for r in results])))
+    assert summary_run.summary["cv_mean_test_ic"] == pytest.approx(float(np.mean([r.metrics["test_ic"] for r in results])))
     assert summary_run.summary["cv_mean_test_ic"] > 0.3
 
 

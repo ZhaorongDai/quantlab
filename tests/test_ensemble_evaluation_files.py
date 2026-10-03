@@ -1,12 +1,12 @@
 """Ensemble-level evaluation files of the averaged prediction (issue #59).
 
-After every member trains, the ensemble directory gets `metrics.json`,
-`ic_series.csv` and `test_predictions.zarr` for the averaged prediction, in
-the single-model layout, before `ensemble.json` is written.
+After every member trains, the ensemble directory gets `ic_series.csv` and
+`test_predictions.zarr` for the averaged prediction, in the single-model
+layout, and then `run.json`, which records the metrics (#123).
 
 What turns this file red:
 
-- the ensemble `metrics.json` holds a key outside the IC family (`ic`,
+- the ensemble metrics hold a key outside the IC family (`ic`,
   `rank_ic`, `icir`, `rank_icir` per split) and `member_correlation`, or
   `val_*` keys without a validation segment, or misses them with one;
 - `{split}_member_correlation` is not `member_correlation` of the members'
@@ -19,9 +19,8 @@ What turns this file red:
 - `test_predictions.zarr` is not the average of the members' own
   `test_predictions.zarr`;
 - a member's files differ from those of the same model trained alone;
-- a failure while writing the ensemble files leaves an `ensemble.json`;
-- `BaseEnsemble._train_into` does not return the manifest and the metrics,
-  or writes `metrics.json` when told not to.
+- a failure while writing the ensemble files leaves an ensemble `run.json`;
+- `BaseEnsemble._train_into` does not return the unit's `run.json`.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -47,13 +46,11 @@ SEEDS = [0, 1, 2]
 IC_KEYS = ("ic", "rank_ic", "icir", "rank_icir")
 METRIC_KEYS = (*IC_KEYS, "member_correlation")
 ENSEMBLE_FILES = [
-    "config.json",
-    "ensemble.json",
     "ic_series.csv",
     "member_0",
     "member_1",
     "member_2",
-    "metrics.json",
+    "run.json",
     "test_predictions.zarr",
 ]
 
@@ -129,7 +126,7 @@ def _close(saved, expected):
 def test_metrics_are_the_ic_family_of_the_averaged_prediction(tmp_path, val_size, splits):
     ensemble, manifest = _trained(tmp_path, val_size=val_size)
 
-    saved = json.loads((manifest.parent / "metrics.json").read_text())
+    saved = TrainedRun.open(manifest).metrics
     expected, _ = _expected(ensemble)
 
     assert sorted(saved) == sorted(f"{s}_{k}" for s in splits for k in METRIC_KEYS)
@@ -144,7 +141,7 @@ def test_metrics_are_the_ic_family_of_the_averaged_prediction(tmp_path, val_size
 def test_member_correlation_is_recorded_per_split_within_bounds(tmp_path, val_size):
     _, manifest = _trained(tmp_path, val_size=val_size)
 
-    saved = json.loads((manifest.parent / "metrics.json").read_text())
+    saved = TrainedRun.open(manifest).metrics
     splits = ("train", "val", "test") if val_size else ("train", "test")
 
     for split in splits:
@@ -214,7 +211,7 @@ def test_member_files_equal_a_model_trained_alone(tmp_path):
     assert "test_loss" in member.metrics
 
 
-def test_a_failure_while_writing_the_ensemble_files_leaves_no_manifest(
+def test_a_failure_while_writing_the_ensemble_files_leaves_no_record(
     tmp_path, monkeypatch
 ):
     ensemble = SeedEnsemble(_model(tmp_path), SEEDS)
@@ -228,28 +225,20 @@ def test_a_failure_while_writing_the_ensemble_files_leaves_no_manifest(
         ensemble.collect().train()
 
     root = Path(ensemble.members[0].config.model_save_dir)
-    assert list(root.rglob("ensemble.json")) == []
     (directory,) = root.glob("SeedEnsemble_trial_*")
+    assert not (directory / "run.json").exists()
     assert (directory / "member_2" / "SeededHead_member_2.joblib").is_file()
 
 
-def test_train_into_returns_the_manifest_and_the_metrics(tmp_path):
+def test_train_into_returns_the_units_run_json(tmp_path):
     ensemble = SeedEnsemble(_model(tmp_path), SEEDS).collect()
     run_dir = tmp_path / "cv" / "fold_0"
 
-    manifest, metrics = ensemble._train_into(run_dir, group="cv")
+    record = ensemble._train_into(run_dir, group="cv")
 
-    assert manifest == (run_dir / "ensemble.json").absolute() and manifest.is_file()
-    saved = json.loads((run_dir / "metrics.json").read_text())
-    assert sorted(saved) == sorted(metrics)
-    for key, value in metrics.items():
-        assert _close(saved[key], value), key
-
-    quiet = tmp_path / "cv" / "fold_1"
-    _, metrics = ensemble._train_into(quiet, group="cv", write_metrics=False)
-    assert not (quiet / "metrics.json").exists()
-    assert (quiet / "ic_series.csv").is_file() and (quiet / "ensemble.json").is_file()
-    assert sorted(metrics) == sorted(
+    assert record == (run_dir / "run.json").absolute() and record.is_file()
+    assert (run_dir / "ic_series.csv").is_file()
+    assert sorted(TrainedRun.open(record).metrics) == sorted(
         f"{s}_{k}" for s in ("train", "test") for k in METRIC_KEYS
     )
 

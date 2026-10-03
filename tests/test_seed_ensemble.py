@@ -11,14 +11,16 @@ What is locked here, and what turns it red:
 - `train()` writes `SeedEnsemble_trial_*/` holding `member_{k}/` (each with
   the usual checkpoint, config.json, ic_series.csv, test_predictions.zarr
   and run.json), the ensemble-level evaluation files (see
-  test_ensemble_evaluation_files.py), an ensemble-level `config.json` with
-  the shared dates and label configs, and `ensemble.json` listing every member's class,
-  relative checkpoint and seed; it returns the path of `ensemble.json`.
-- A member failing mid-training leaves no `ensemble.json`, and the member
-  directories already written stay.
-- `load(ensemble.json)` restores every member; `check_checkpoint` refuses a
-  missing file, a malformed manifest, an unknown `format_version`, a member
-  class, count or seed that does not match, and a missing member checkpoint.
+  test_ensemble_evaluation_files.py) and, last, `run.json`, which makes the
+  directory an "ensemble" trained unit recording every member's directory
+  and seed and the windows (#123); it returns the path of that `run.json`.
+- A member failing mid-training leaves no ensemble `run.json`, and the
+  member directories already written stay.
+- `load(run.json)` restores every member; `check_checkpoint` refuses a
+  missing file, an unknown `format_version`, a unit of another kind, a member
+  class, count or seed that does not match, a missing member checkpoint and
+  a member without `run.json`; an old `ensemble.json` layout is refused with
+  a message to retrain.
 - `get_config()` / `from_config()` round-trip the wrapped model's config and
   the seeds.
 - Layout: `quantlab/model/` has empty `__init__.py` files, no other
@@ -27,6 +29,7 @@ What is locked here, and what turns it red:
 Everything is synthetic, CPU-only and offline.
 """
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -38,6 +41,7 @@ import xarray as xr
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.trained_run import TrainedRun
 from tests.test_backtest_contracts import (
     REPO_ROOT,
     _is_or_under,
@@ -89,8 +93,8 @@ def _model(tmp_path, dataset_config, bars, *, head=SeededHead, name="models"):
 def _trained(tmp_path, seeds=SEEDS):
     dataset_config, bars = _setup(tmp_path)
     ensemble = SeedEnsemble(_model(tmp_path, dataset_config, bars), list(seeds))
-    manifest = ensemble.collect().train()
-    return ensemble, manifest, dataset_config, bars
+    checkpoint = ensemble.collect().train()
+    return ensemble, checkpoint, dataset_config, bars
 
 
 # --------------------------------------------------------------------------
@@ -156,50 +160,39 @@ def test_seeds_give_different_members_and_the_prediction_is_their_average(tmp_pa
 # --------------------------------------------------------------------------
 
 
-def test_train_writes_members_ensemble_config_and_manifest(tmp_path):
-    ensemble, manifest, _, bars = _trained(tmp_path)
-    directory = manifest.parent
+def test_train_writes_an_ensemble_unit_of_member_units(tmp_path):
+    ensemble, checkpoint, _, bars = _trained(tmp_path)
+    directory = checkpoint.parent
 
-    assert manifest.is_absolute() and manifest.name == "ensemble.json"
+    assert checkpoint.is_absolute() and checkpoint.name == "run.json"
     assert directory.parent == Path(ensemble.members[0].config.model_save_dir).absolute()
     assert directory.name.startswith("SeedEnsemble_trial_")
     assert sorted(p.name for p in directory.iterdir()) == [
-        "config.json",
-        "ensemble.json",
         "ic_series.csv",
         "member_0",
         "member_1",
         "member_2",
-        "metrics.json",
+        "run.json",
         "test_predictions.zarr",
     ]
 
-    saved = json.loads(manifest.read_text())
-    assert saved["format_version"] == 1
-    assert saved["members"] == [
-        {
-            "name": "tests.backtest_fixtures.SeededHead",
-            "checkpoint": f"member_{k}/SeededHead_member_{k}.joblib",
-            "seed": seed,
-        }
-        for k, seed in enumerate(SEEDS)
-    ]
-    for k, seed in enumerate(SEEDS):
-        member_dir = directory / f"member_{k}"
-        assert sorted(p.name for p in member_dir.iterdir()) == sorted(
+    run = TrainedRun.open(checkpoint)
+    assert run.kind == "ensemble" and run.checkpoint == checkpoint
+    dates = _dates(bars)
+    assert run.train_window == (dates["train_start"], dates["train_end"])
+    assert run.test_window == (dates["test_start"], dates["test_end"])
+    assert run.fitted_train_window == ensemble.fitted_train_bounds
+    assert [member.seed for member in run.members] == list(SEEDS)
+    for k, (member, seed) in enumerate(zip(run.members, SEEDS)):
+        assert member.kind == "model"
+        assert member.path == directory / f"member_{k}"
+        assert member.checkpoint.name == f"SeededHead_member_{k}.joblib"
+        assert sorted(p.name for p in member.path.iterdir()) == sorted(
             [f"SeededHead_member_{k}.joblib", *MEMBER_FILES]
         )
-        member_config = json.loads((member_dir / "config.json").read_text())
-        assert member_config["random_seed"] == seed
-
-    shared = json.loads((directory / "config.json").read_text())
-    dates = _dates(bars)
-    for key in ("train_start", "train_end", "test_start", "test_end"):
-        assert shared[key] == dates[key]
-    assert shared["labels"] == json.loads(
-        json.dumps(to_jsonable([label.get_config() for label in ensemble.labels]))
-    )
-    assert "factors" not in shared and "random_seed" not in shared
+        assert member.config["name"] == "tests.backtest_fixtures.SeededHead"
+        assert member.config["random_seed"] == seed
+        assert TrainedRun.open(member.path) == dataclasses.replace(member, seed=None)
 
 
 def test_two_trainings_get_two_directories(tmp_path):
@@ -209,7 +202,7 @@ def test_two_trainings_get_two_directories(tmp_path):
     assert first.is_file() and second.is_file()
 
 
-def test_a_member_failing_leaves_no_manifest(tmp_path, monkeypatch):
+def test_a_member_failing_leaves_no_ensemble_record(tmp_path, monkeypatch):
     dataset_config, bars = _setup(tmp_path)
     ensemble = SeedEnsemble(_model(tmp_path, dataset_config, bars), SEEDS)
     fit = SeededHead._fit_model
@@ -225,10 +218,9 @@ def test_a_member_failing_leaves_no_manifest(tmp_path, monkeypatch):
         ensemble.collect().train()
 
     root = Path(ensemble.members[0].config.model_save_dir)
-    assert list(root.rglob("ensemble.json")) == []
     (directory,) = root.glob("SeedEnsemble_trial_*")
     assert (directory / "member_0" / "SeededHead_member_0.joblib").is_file()
-    assert not (directory / "config.json").exists()
+    assert not (directory / "run.json").exists()
 
 
 # --------------------------------------------------------------------------
@@ -237,11 +229,11 @@ def test_a_member_failing_leaves_no_manifest(tmp_path, monkeypatch):
 
 
 def test_load_restores_every_member(tmp_path):
-    trained, manifest, dataset_config, bars = _trained(tmp_path)
+    trained, checkpoint, dataset_config, bars = _trained(tmp_path)
     fresh = SeedEnsemble(_model(tmp_path, dataset_config, bars, name="other"), SEEDS)
 
-    assert fresh.load(manifest) is fresh
-    assert fresh.load(str(manifest)) is fresh
+    assert fresh.load(checkpoint) is fresh
+    assert fresh.load(str(checkpoint)) is fresh
 
     start, end = _day(bars[30]), _day(bars[50])
     xr.testing.assert_identical(
@@ -249,64 +241,69 @@ def test_load_restores_every_member(tmp_path):
     )
 
 
-def test_check_checkpoint_accepts_the_manifest_it_wrote(tmp_path):
-    ensemble, manifest, _, _ = _trained(tmp_path)
-    assert ensemble.check_checkpoint(manifest) is None
+def test_check_checkpoint_accepts_the_unit_it_wrote(tmp_path):
+    ensemble, checkpoint, _, _ = _trained(tmp_path)
+    assert ensemble.check_checkpoint(checkpoint) == TrainedRun.open(checkpoint)
+    assert ensemble.check_checkpoint(checkpoint.parent).kind == "ensemble"
 
 
-def _rewrite(manifest: Path, edit) -> Path:
-    saved = json.loads(manifest.read_text())
+def _rewrite(record: Path, edit) -> Path:
+    saved = json.loads(record.read_text())
     edit(saved)
-    manifest.write_text(json.dumps(saved))
-    return manifest
+    record.write_text(json.dumps(saved))
+    return record
 
 
-def test_check_checkpoint_refuses_bad_manifests(tmp_path):
-    ensemble, manifest, dataset_config, bars = _trained(tmp_path)
-    original = manifest.read_text()
+def test_check_checkpoint_refuses_bad_units(tmp_path):
+    ensemble, checkpoint, dataset_config, bars = _trained(tmp_path)
+    original = checkpoint.read_text()
 
     with pytest.raises(FileNotFoundError):
-        ensemble.check_checkpoint(manifest.parent / "missing.json")
+        ensemble.check_checkpoint(checkpoint.parent / "missing.json")
 
-    manifest.write_text("{not json")
-    with pytest.raises(ValueError, match="ensemble.json"):
-        ensemble.check_checkpoint(manifest)
+    _rewrite(checkpoint, lambda saved: saved.update(format_version=2))
+    with pytest.raises(ValueError, match="format_version 2.*retrain"):
+        ensemble.check_checkpoint(checkpoint)
 
-    manifest.write_text(json.dumps([1, 2]))
-    with pytest.raises(ValueError, match="ensemble.json"):
-        ensemble.check_checkpoint(manifest)
-
-    manifest.write_text(original)
-    _rewrite(manifest, lambda saved: saved.update(format_version=2))
-    with pytest.raises(ValueError, match="format_version"):
-        ensemble.check_checkpoint(manifest)
-
-    manifest.write_text(original)
-    _rewrite(manifest, lambda saved: saved["members"][0].pop("checkpoint"))
-    with pytest.raises(ValueError, match="checkpoint"):
-        ensemble.check_checkpoint(manifest)
-
-    manifest.write_text(original)
-    _rewrite(manifest, lambda saved: saved["members"][2].update(seed=9))
+    checkpoint.write_text(original)
+    _rewrite(checkpoint, lambda saved: saved["members"][2].update(seed=9))
     with pytest.raises(ValueError, match="seed"):
-        ensemble.check_checkpoint(manifest)
+        ensemble.check_checkpoint(checkpoint)
 
-    manifest.write_text(original)
+    checkpoint.write_text(original)
+    member_run = checkpoint.parent / "member_0" / "run.json"
+    with pytest.raises(ValueError, match="'model' trained run, not an ensemble"):
+        ensemble.check_checkpoint(member_run)
+
     two = SeedEnsemble(_model(tmp_path, dataset_config, bars, name="two"), [0, 1])
     with pytest.raises(ValueError, match="3 members"):
-        two.check_checkpoint(manifest)
+        two.check_checkpoint(checkpoint)
 
     other_class = SeedEnsemble(
         _model(tmp_path, dataset_config, bars, head=FirstFeatureHead, name="ffh"), SEEDS
     )
     with pytest.raises(ValueError, match="SeededHead"):
-        other_class.check_checkpoint(manifest)
+        other_class.check_checkpoint(checkpoint)
 
-    (manifest.parent / "member_1" / "SeededHead_member_1.joblib").unlink()
+    (checkpoint.parent / "member_1" / "SeededHead_member_1.joblib").unlink()
     with pytest.raises(FileNotFoundError, match="member_1"):
-        ensemble.check_checkpoint(manifest)
+        ensemble.check_checkpoint(checkpoint)
     with pytest.raises(FileNotFoundError, match="member_1"):
-        ensemble.load(manifest)
+        ensemble.load(checkpoint)
+
+    (checkpoint.parent / "member_2" / "run.json").unlink()
+    with pytest.raises(ValueError, match="member_2 has no run.json.*retrain"):
+        ensemble.check_checkpoint(checkpoint)
+
+
+def test_an_old_ensemble_layout_is_refused_with_a_retrain_message(tmp_path):
+    ensemble, checkpoint, _, _ = _trained(tmp_path)
+    old = checkpoint.parent / "ensemble.json"
+    old.write_text(json.dumps({"format_version": 1, "members": []}))
+    checkpoint.unlink()
+
+    with pytest.raises(ValueError, match="no run.json.*retrain"):
+        ensemble.load(old)
 
 
 # --------------------------------------------------------------------------

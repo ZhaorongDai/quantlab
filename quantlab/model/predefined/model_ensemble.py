@@ -24,8 +24,8 @@ class ModelEnsemble(BaseEnsemble):
     Every hook keeps ``BaseEnsemble``'s default: each member collects, predicts
     and is fingerprinted on its own, and the predictions are combined label by
     label (averaged when shared, passed through otherwise). Subclass it and override ``_combine`` for another
-    combination rule. ``train()`` writes an ``ensemble.json`` manifest with a
-    null seed per member; ``train_cv()`` writes one such directory per
+    combination rule. ``train()`` writes an ensemble unit whose ``run.json``
+    records a null seed per member; ``train_cv()`` writes one such unit per
     walk-forward fold.
 
     Parameters
@@ -52,7 +52,7 @@ class ModelEnsemble(BaseEnsemble):
     forward-return label::
 
         >>> ensemble = ModelEnsemble([xgb, gats])
-        >>> manifest = ensemble.collect().train()
+        >>> checkpoint = ensemble.collect().train()
         >>> out = ensemble.predict_window("2024-02-12", "2024-03-11")
         >>> list(out.data_vars)
         ['fwd_ret_1']
@@ -92,7 +92,7 @@ class ModelEnsemble(BaseEnsemble):
         Returns
         -------
         Self
-            An untrained ensemble; call ``load`` to restore a manifest.
+            An untrained ensemble; call ``load`` to restore a trained unit.
 
         Examples
         --------

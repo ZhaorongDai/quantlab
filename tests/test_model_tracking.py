@@ -72,17 +72,18 @@ def test_every_run_of_a_train_cv_call_is_grouped_by_its_trial_directory(tmp_path
     tracker = RecordingTracker()
     model = _model(tmp_path, tracker=tracker)
 
-    results = model.train_cv(train_periods=20)
+    cv = model.train_cv(train_periods=20)
 
     (trial,) = [p.name for p in (tmp_path / "ckpt").iterdir()]
+    assert trial == cv.path.name
     assert {(run.project, run.group) for run in tracker.runs} == {("StubLibraryHead", trial)}
     assert [run.name for run in tracker.runs] == [
-        r["experiment_name"] for r in results
+        f"StubLibraryHead_cv_fold_{fold.index}" for fold in cv.folds
     ] + ["StubLibraryHead_cv_summary"]
     summary = tracker.runs[-1].summary
-    assert summary["cv_n_folds"] == len(results)
+    assert summary["cv_n_folds"] == len(cv.folds)
     assert summary["cv_mean_test_ic"] == pytest.approx(
-        sum(r["test_ic"] for r in results) / len(results)
+        sum(fold.metrics["test_ic"] for fold in cv.folds) / len(cv.folds)
     )
     assert all(run.finished and not run.failed for run in tracker.runs)
 

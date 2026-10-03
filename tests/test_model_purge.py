@@ -171,29 +171,28 @@ class FoldRecordingLibraryHead(RecordingLibraryHead):
         FoldRecordingLibraryHead.folds.append(bars(train_rows.y))
 
 
-def cv_manifest(tmp_path) -> dict:
-    (project,) = [p for p in (tmp_path / "models").iterdir() if p.is_dir()]
-    return json.loads((project / "cv_folds.json").read_text())
-
-
 def test_walk_forward_folds_purge_and_record_the_purged_training_end(tmp_path):
     # 20 bars, train_periods 10: test 2 bars, 5 folds. Fold i trains on
     # 2i..2i+9 and tests on 2i+10..2i+11; L = 2 leaves 2i..2i+7 to fit.
     FoldRecordingLibraryHead.folds = []
     model = FoldRecordingLibraryHead(ModelConfig(**common(tmp_path, 2), val_size=0.0))
     model.collect()
-    model.train_cv(train_periods=10)
+    cv = model.train_cv(train_periods=10)
 
     assert FoldRecordingLibraryHead.folds == [
         list(range(2 * i, 2 * i + 8)) for i in range(5)
     ]
-    folds = cv_manifest(tmp_path)["folds"]
-    keys = ("train_start", "train_end", "test_start", "test_end")
-    assert [tuple(np.datetime64(f[k], "D") for k in keys) for f in folds] == [
+    windows = [(*f.fitted_train_window, *f.test_window) for f in cv.folds]
+    assert [tuple(np.datetime64(w, "D") for w in window) for window in windows] == [
         (TIMES[2 * i], TIMES[2 * i + 7], TIMES[2 * i + 10], TIMES[2 * i + 11])
         for i in range(5)
     ]
-    assert all("gap_periods" not in f for f in folds)
+    # The configured window keeps the bars the purge dropped.
+    assert [np.datetime64(f.train_window[1], "D") for f in cv.folds] == [
+        TIMES[2 * i + 9] for i in range(5)
+    ]
+    record = json.loads((cv.path / "run.json").read_text())
+    assert all("gap_periods" not in f for f in record["folds"])
 
 
 def test_train_cv_takes_no_gap(tmp_path):

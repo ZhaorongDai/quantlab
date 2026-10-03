@@ -4,26 +4,25 @@ What is locked here, and what turns it red:
 
 - Sliding and expanding ensemble CV lay out, purge and train exactly the
   folds `BaseModel.train_cv` does on the wrapped model with the same data:
-  the returned fold dates are equal, and every member of a fold trains on
+  the returned fold windows are equal, and every member of a fold trains on
   that fold's dates.
-- Layout: `{model_save_dir}/SeedEnsemble_cv_{timestamp}/` holds
-  `cv_folds.json` and one `fold_{i}/` per fold, each a complete ensemble
-  directory (`ensemble.json`, `config.json`, `member_{k}/`, `ic_series.csv`,
-  `test_predictions.zarr`) that `SeedEnsemble.load` restores. Like a single
-  model's fold, a fold writes no ensemble-level `metrics.json`: its metrics
-  live in `cv_folds.json`.
-- `cv_folds.json` is format version 2: each fold record holds the purged
-  fold dates, the absolute path of the fold's `ensemble.json` and the
-  ensemble-level IC metrics and `member_correlation` (no error metric),
-  each correlation within `[-1, 1]`, and `cv_mean` averages them
-  the way `BaseModel` does.
+- Layout (#123): `train_cv` returns the walk-forward unit
+  `{model_save_dir}/SeedEnsemble_trial_{timestamp}/`, laid out as a model's:
+  its `run.json` and one `fold_{i}/` per fold, each an ensemble unit
+  (`run.json`, `member_{k}/`, `ic_series.csv`, `test_predictions.zarr`) that
+  `SeedEnsemble.load` restores. No `cv_folds.json`, `ensemble.json`,
+  `metrics.json` or ensemble-level `config.json` is written.
+- Round trip: every unit (the walk-forward run, each fold, each member)
+  opens on its own through `TrainedRun`, with the windows and metrics the
+  returned run holds; a fold's ensemble metrics are the IC family and
+  `member_correlation` (no error metric), each correlation within
+  `[-1, 1]`, and `cv_mean` averages them the way `BaseModel` does.
 - Tracking: one run per member per fold, `{MemberClass}_fold_{i}_member_{k}`, all
   in one project named after the CV directory, plus a
   `SeedEnsemble_cv_summary` run carrying the `cv_mean_*` values.
 - `run_cv` with the ensemble as `config.model` replays the CV run end to end:
-  each fold loads its own `ensemble.json`, its predictions are that fold
-  ensemble's average, the checkpoint's recorded training dates agree with
-  the manifest, and the stitched curve covers every test bar.
+  each fold loads its own `run.json`, its predictions are that fold
+  ensemble's average, and the stitched curve covers every test bar.
 - `train_periods` below 5 raises, and member hyperparameters are checked
   before any directory is created.
 
@@ -31,14 +30,11 @@ Everything is synthetic, CPU-only and offline.
 """
 
 import dataclasses
-import json
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 import xarray as xr
-from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
@@ -46,6 +42,7 @@ from quantlab.base.model import BaseModel
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.trained_run import TrainedRun
 from tests.tracking_fixtures import RecordingTracker
 from tests.backtest_fixtures import (
     SeededHead,
@@ -64,7 +61,6 @@ LAST_TEST_BAR = TRAIN_PERIODS + N_FOLDS * TEST_PERIODS - 1
 #: A 2-bar forward label: lookahead 3, so every fold's training window is purged.
 HORIZON = 2
 SEEDS = [0, 1, 2]
-DATE_KEYS = ("fold", "train_start", "train_end", "test_start", "test_end")
 ENSEMBLE_METRICS = {"ic", "rank_ic", "icir", "rank_icir", "member_correlation"}
 
 
@@ -96,13 +92,11 @@ def _setup(tmp_path):
     return dataset_config, bars
 
 
-def _cv_dir(ensemble) -> Path:
-    (found,) = sorted(ensemble.model_save_dir.glob("SeedEnsemble_cv_*"))
-    return found
-
-
-def _dates(results) -> list[tuple]:
-    return [tuple(r[key] for key in DATE_KEYS) for r in results]
+def _windows(run: TrainedRun) -> list[tuple]:
+    return [
+        (fold.index, fold.train_window, fold.fitted_train_window, fold.test_window)
+        for fold in run.folds
+    ]
 
 
 @pytest.fixture(scope="module")
@@ -111,16 +105,14 @@ def cv_run(tmp_path_factory):
     root = tmp_path_factory.mktemp("ensemble_cv")
     dataset_config, bars = _setup(root)
     ensemble = SeedEnsemble(_model(root / "train", dataset_config, bars), SEEDS)
-    results = ensemble.collect().train_cv(train_periods=TRAIN_PERIODS)
-    cv_dir = _cv_dir(ensemble)
+    run = ensemble.collect().train_cv(train_periods=TRAIN_PERIODS)
     return dict(
         root=root,
         dataset_config=dataset_config,
         bars=bars,
         ensemble=ensemble,
-        results=results,
-        cv_dir=cv_dir,
-        manifest=json.loads((cv_dir / "cv_folds.json").read_text()),
+        run=run,
+        cv_dir=run.path,
     )
 
 
@@ -147,97 +139,102 @@ def test_fold_dates_equal_the_model_bases_train_cv(tmp_path, expanding, monkeypa
     fitted.clear()
 
     ensemble = SeedEnsemble(_model(tmp_path / "ens", dataset_config, bars), SEEDS)
-    results = ensemble.collect().train_cv(TRAIN_PERIODS, expanding=expanding)
+    run = ensemble.collect().train_cv(TRAIN_PERIODS, expanding=expanding)
 
-    assert len(results) == N_FOLDS
-    assert _dates(results) == _dates(single)
-    # The purge moved every fold's train_end before the test segment.
-    assert all(r["train_end"] < r["test_start"] for r in results)
+    assert len(run.folds) == N_FOLDS
+    assert _windows(run) == _windows(single)
+    # The purge moved every fold's fitted end before its configured end.
+    assert all(
+        pd.Timestamp(f.fitted_train_window[1]) < pd.Timestamp(f.train_window[1])
+        for f in run.folds
+    )
     # Every member of every fold fitted the dates the single model fitted.
     expected = [
         (seed, *dates[1:]) for dates in single_fits for seed in SEEDS
     ]
     assert fitted == expected
     if expanding:
-        assert {r["train_start"] for r in results} == {results[0]["train_start"]}
+        assert len({f.train_window[0] for f in run.folds}) == 1
 
 
 def test_train_cv_leaves_the_members_on_the_last_folds_dates(cv_run):
     """As `BaseModel.train_cv` leaves its config on the last fold's dates."""
-    last = cv_run["manifest"]["folds"][-1]
+    last = cv_run["run"].folds[-1]
     for member in cv_run["ensemble"].members:
-        assert member.config.test_start == last["test_start"]
-        assert member.config.test_end == last["test_end"]
+        assert (member.config.test_start, member.config.test_end) == last.test_window
 
 
 # --------------------------------------------------------------------------
-# Layout and the manifest
+# Layout and the trained units
 # --------------------------------------------------------------------------
 
 
-def test_every_fold_is_a_complete_loadable_ensemble_directory(cv_run, tmp_path):
+def test_every_fold_is_a_complete_loadable_ensemble_unit(cv_run, tmp_path):
     cv_dir = cv_run["cv_dir"]
+    assert cv_dir.name.startswith("SeedEnsemble_trial_")
     assert sorted(p.name for p in cv_dir.iterdir()) == sorted(
-        ["cv_folds.json"] + [f"fold_{i}" for i in range(N_FOLDS)]
+        ["run.json"] + [f"fold_{i}" for i in range(N_FOLDS)]
     )
     for i in range(N_FOLDS):
         fold_dir = cv_dir / f"fold_{i}"
         assert sorted(p.name for p in fold_dir.iterdir()) == [
-            "config.json",
-            "ensemble.json",
             "ic_series.csv",
             "member_0",
             "member_1",
             "member_2",
+            "run.json",
             "test_predictions.zarr",
         ]
         for k in range(len(SEEDS)):
             assert (fold_dir / f"member_{k}" / f"SeededHead_fold_{i}_member_{k}.joblib").is_file()
+    for name in ("cv_folds.json", "ensemble.json", "metrics.json"):
+        assert list(cv_run["root"].rglob(name)) == []
 
     fresh = SeedEnsemble(
         _model(tmp_path, cv_run["dataset_config"], cv_run["bars"]), SEEDS
     )
-    fresh.load(cv_dir / "fold_3" / "ensemble.json")
+    fresh.load(cv_run["run"].folds[3].checkpoint)
     assert all(member.model is not None for member in fresh.members)
 
 
-def test_cv_folds_json_is_v2_with_ensemble_metrics_and_cv_mean(cv_run):
-    manifest, results, cv_dir = cv_run["manifest"], cv_run["results"], cv_run["cv_dir"]
+def test_every_unit_of_the_run_opens_on_its_own(cv_run):
+    run, cv_dir = cv_run["run"], cv_run["cv_dir"]
 
-    assert manifest["format_version"] == BaseModel.CV_FOLDS_FORMAT_VERSION == 2
-    assert [f["fold"] for f in manifest["folds"]] == list(range(N_FOLDS))
-    for i, (entry, result) in enumerate(zip(manifest["folds"], results)):
-        checkpoint = Path(entry["checkpoint"])
-        assert checkpoint.is_absolute()
-        assert checkpoint == cv_dir / f"fold_{i}" / "ensemble.json"
-        assert result["checkpoint"] == entry["checkpoint"]
-        metrics = set(entry) - set(DATE_KEYS) - {"checkpoint"}
-        assert metrics == {f"{s}_{m}" for s in ("train", "test") for m in ENSEMBLE_METRICS}
+    assert TrainedRun.open(cv_dir) == run
+    assert run.kind == "walk_forward" and run.checkpoint is None
+    assert [f.index for f in run.folds] == list(range(N_FOLDS))
+    for i, fold in enumerate(run.folds):
+        alone = TrainedRun.open(cv_dir / f"fold_{i}")
+        assert alone == dataclasses.replace(fold, index=None)
+        assert fold.kind == "ensemble"
+        assert fold.checkpoint == cv_dir / f"fold_{i}" / "run.json"
+        assert set(fold.metrics) == {
+            f"{s}_{m}" for s in ("train", "test") for m in ENSEMBLE_METRICS
+        }
         for split in ("train", "test"):
-            assert -1.0 <= entry[f"{split}_member_correlation"] <= 1.0
-        assert tuple(entry[k] for k in DATE_KEYS) == tuple(result[k] for k in DATE_KEYS)
+            assert -1.0 <= fold.metrics[f"{split}_member_correlation"] <= 1.0
+        assert [m.seed for m in fold.members] == SEEDS
+        for k, member in enumerate(fold.members):
+            assert TrainedRun.open(member.checkpoint) == dataclasses.replace(member, seed=None)
+            assert member.test_window == fold.test_window
+            assert member.fitted_train_window == fold.fitted_train_window
 
-    assert manifest["cv_mean"]["cv_n_folds"] == N_FOLDS
-    expected = BaseModel._cv_mean_metrics(results)
-    assert set(manifest["cv_mean"]) == set(expected)
+    assert run.cv_mean["cv_n_folds"] == N_FOLDS
+    expected = BaseModel._cv_mean_metrics([fold.metrics for fold in run.folds])
+    assert set(run.cv_mean) == set(expected)
     assert "cv_mean_test_member_correlation" in expected
     for key, value in expected.items():
-        assert manifest["cv_mean"][key] == pytest.approx(value)
+        assert run.cv_mean[key] == pytest.approx(value)
 
 
-def test_fold_config_json_records_the_dates_before_the_purge(cv_run):
-    """Like a single model's fold checkpoint, which `run_cv` purges itself."""
-    folds = cv_run["manifest"]["folds"]
+def test_a_fold_records_its_window_before_and_after_the_purge(cv_run):
+    """The configured training window ends right before the test segment; the
+    fitted one ends where the purge stopped it."""
     bars = [_day(b) for b in cv_run["bars"]]
-    for entry in folds:
-        saved = json.loads(
-            (cv_run["cv_dir"] / f"fold_{entry['fold']}" / "config.json").read_text()
-        )
-        assert saved["test_start"] == entry["test_start"]
-        # The recorded train_end is the bar right before the test segment.
-        assert bars.index(_day(saved["train_end"])) == bars.index(
-            _day(entry["test_start"])
-        ) - 1
+    for fold in cv_run["run"].folds:
+        test_start = bars.index(_day(fold.test_window[0]))
+        assert bars.index(_day(fold.train_window[1])) == test_start - 1
+        assert bars.index(_day(fold.fitted_train_window[1])) < test_start - 1
 
 
 # --------------------------------------------------------------------------
@@ -258,9 +255,9 @@ def test_tracking_runs_per_fold_member_and_one_summary(tmp_path):
     tracker = RecordingTracker()
     ensemble = SeedEnsemble(_tracked_member(tmp_path, tracker), SEEDS)
 
-    results = ensemble.collect().train_cv(TRAIN_PERIODS)
+    run = ensemble.collect().train_cv(TRAIN_PERIODS)
 
-    group = _cv_dir(ensemble).name
+    group = run.path.name
     assert {(r.project, r.group) for r in tracker.runs} == {("SeededHead", group)}
     assert [r.name for r in tracker.runs] == [
         f"SeededHead_fold_{i}_member_{k}"
@@ -271,7 +268,7 @@ def test_tracking_runs_per_fold_member_and_one_summary(tmp_path):
     summary = tracker.runs[-1]
     assert summary.config == to_jsonable(ensemble.get_config())
     assert summary.summary["cv_n_folds"] == N_FOLDS
-    means = BaseModel._cv_mean_metrics(results)
+    means = BaseModel._cv_mean_metrics([fold.metrics for fold in run.folds])
     assert summary.summary == {
         key: value for key, value in means.items() if np.isfinite(value)
     }
@@ -301,10 +298,10 @@ def test_train_keeps_the_member_run_names_in_one_group(tmp_path):
     tracker = RecordingTracker()
     ensemble = SeedEnsemble(_tracked_member(tmp_path, tracker), SEEDS)
 
-    manifest = ensemble.collect().train()
+    checkpoint = ensemble.collect().train()
 
     assert [(r.project, r.group, r.name) for r in tracker.runs] == [
-        ("SeededHead", manifest.parent.name, f"SeededHead_member_{k}")
+        ("SeededHead", checkpoint.parent.name, f"SeededHead_member_{k}")
         for k in range(len(SEEDS))
     ]
 
@@ -381,15 +378,10 @@ def test_run_cv_replays_the_ensemble_cv_run(cv_run, tmp_path, monkeypatch):
     loaded: list[str] = []
     real_load = ensemble.load
     monkeypatch.setattr(ensemble, "load", lambda p: loaded.append(str(p)) or real_load(p))
-    warnings: list[str] = []
-    handler = logger.add(warnings.append, level="WARNING", format="{message}")
-    try:
-        result = backtester.run_cv()
-    finally:
-        logger.remove(handler)
 
-    assert loaded == [f["checkpoint"] for f in cv_run["manifest"]["folds"]]
-    assert not [w for w in warnings if "records training dates" in w]
+    result = backtester.run_cv()
+
+    assert loaded == [str(f.checkpoint) for f in cv_run["run"].folds]
     assert [r["fold"] for r in result.folds] == list(range(N_FOLDS))
     np.testing.assert_array_equal(
         result.weights.timestamp.values.astype("datetime64[ns]"),
@@ -398,10 +390,10 @@ def test_run_cv_replays_the_ensemble_cv_run(cv_run, tmp_path, monkeypatch):
     assert result.metrics["stitched"]["in_sample_ranges"] == []
 
     # Fold 2 traded the average of fold 2's own members.
-    fold = cv_run["manifest"]["folds"][2]
+    fold = cv_run["run"].folds[2]
     replay = SeedEnsemble(_model(tmp_path / "replay", dataset_config, bars), SEEDS)
-    replay.load(fold["checkpoint"])
-    expected = replay.predict_window(fold["test_start"], fold["test_end"])
+    replay.load(fold.checkpoint)
+    expected = replay.predict_window(*fold.test_window)
     xr.testing.assert_allclose(
         result.folds[2]["predictions"].transpose(*expected.dims), expected
     )

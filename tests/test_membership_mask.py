@@ -229,8 +229,7 @@ def test_run_cv_masks_every_fold_and_the_stitched_predictions(tmp_path):
     )
     trainer = make_model(tmp_path / "train", dataset_config, **dates)
     trainer.collect()
-    trainer.train_cv(train_periods=30)
-    (project,) = {p.parent for p in (tmp_path / "train").rglob("cv_folds.json")}
+    project = trainer.train_cv(train_periods=30).path
 
     outsider = "AAA"
     membership = _membership(

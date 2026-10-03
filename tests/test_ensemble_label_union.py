@@ -12,7 +12,10 @@ What is locked here, and what turns it red:
   naming the member.
 - The training end is the latest member's, the test window the intersection
   of the members'.
-- `train_cv` purges with the largest lookahead among the members.
+- `train_cv` lays out its folds with the largest lookahead among the
+  members, every member purges its own window by its own lookahead, and a
+  fold unit records what each member fitted and, for the ensemble, the
+  window covering them (#123).
 - The evaluation files score each label against the truth of a member that
   predicts it; `member_correlation` is reported only for labels with at least
   two members.
@@ -21,8 +24,6 @@ Everything is synthetic, CPU-only and offline.
 """
 
 import dataclasses
-import json
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ from quantlab.base.config import PolarsFactorConfig
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.metrics import ic_panel_metrics
+from quantlab.utils.trained_run import TrainedRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,
     ForwardReturnLabel,
@@ -188,24 +190,31 @@ def test_disjoint_test_windows_are_refused(setup):
         ModelEnsemble([member("a", train_end=10, test=(11, 14)), member("b", test=(25, 29))])
 
 
-def test_train_cv_purges_with_the_largest_member_lookahead(setup):
+def test_train_cv_folds_record_what_each_member_fitted(setup):
     member, bars, _ = setup
     short = member("short")  # lookahead 2
     long = member("long", n=2, horizon=3)  # lookahead 4
     calendar = [pd.Timestamp(b) for b in bars]
 
-    results = ModelEnsemble([short, long]).collect().train_cv(train_periods=10)
-
-    assert results
-    for fold in results:
-        gap = calendar.index(pd.Timestamp(str(fold["test_start"]))) - calendar.index(
-            pd.Timestamp(str(fold["train_end"]))
+    def gap(window, test_window):
+        return calendar.index(pd.Timestamp(str(test_window[0]))) - calendar.index(
+            pd.Timestamp(str(window[1]))
         )
-        assert gap == 1 + 4
+
+    run = ModelEnsemble([short, long]).collect().train_cv(train_periods=10)
+
+    assert run.folds
+    for fold in run.folds:
+        short_fit, long_fit = (m.fitted_train_window for m in fold.members)
+        assert gap(short_fit, fold.test_window) == 1 + 2
+        assert gap(long_fit, fold.test_window) == 1 + 4
+        # The ensemble's fitted window covers its members': no member
+        # fitted a bar after its end.
+        assert gap(fold.fitted_train_window, fold.test_window) == 1 + 2
 
 
-def _metrics(manifest) -> dict:
-    return json.loads((Path(manifest).parent / "metrics.json").read_text())
+def _metrics(checkpoint) -> dict:
+    return TrainedRun.open(checkpoint).metrics
 
 
 def _expected_ic(model, name, stamps) -> float:
@@ -224,9 +233,9 @@ def test_evaluation_scores_each_label_against_its_own_truth(setup):
     ret, vol = member("ret"), member("vol", n=3, horizon=2)
     ensemble = ModelEnsemble([ret, vol])
 
-    manifest = ensemble.collect().train()
-    metrics = _metrics(manifest)
-    saved = xr.open_zarr(Path(manifest).parent / "test_predictions.zarr").load()
+    checkpoint = ensemble.collect().train()
+    metrics = _metrics(checkpoint)
+    saved = xr.open_zarr(TrainedRun.open(checkpoint).test_predictions).load()
 
     assert set(saved.data_vars) == {"fwd_ret_1", "fwd_ret_2"}
     assert not any("member_correlation" in key for key in metrics)

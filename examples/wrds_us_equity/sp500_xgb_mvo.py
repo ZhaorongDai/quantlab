@@ -224,10 +224,10 @@ def build_model() -> ModelEnsemble:
 
 
 def train() -> Path:
-    """Train both models on the training window; returns the ``ensemble.json``."""
-    manifest = build_model().collect().train()
-    logger.info(f"ensemble manifest: {manifest}")
-    return manifest
+    """Train both models on the training window; returns the ensemble's ``run.json``."""
+    checkpoint = build_model().collect().train()
+    logger.info(f"ensemble checkpoint: {checkpoint}")
+    return checkpoint
 
 
 # %% 5. Backtest
