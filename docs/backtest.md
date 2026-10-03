@@ -610,6 +610,24 @@ A round trip is a position from flat to flat in one symbol: adding to or trimmin
 181818.18
 ```
 
+### Replay the Execution rules without a backtester
+
+The rules the vectorbt engine executes a fill bar by (an order at the fill price, rejected without a raw fill price, a delisted holding settled at its last valuation, sizing on the chosen basis, sells before buys, each buy capped by the cash left, fees and slippage) are the public module `quantlab.utils.execution`, which imports numpy only. The engine plans its orders with `plan_orders`, and `replay` returns the shares and cash those orders leave after every bar, equal to what vectorbt executes to floating-point rounding, with the rejected orders and delisting settlements the engine records (`tests/test_execution.py`). `ExecutionBook` holds the same book one bar at a time, for a driver that learns each rebalance's weights only after deciding them: it `submit`s a bar's weights and `trade`s the bars in order.
+
+```python
+>>> import numpy as np
+>>> from quantlab.utils.execution import ExecutionSettings, replay
+>>> prices = np.array([[10.0], [10.0]])
+>>> result = replay(
+...     np.array([[1.0], [np.nan]]), prices, prices, np.zeros((2, 1), dtype=bool),
+...     ExecutionSettings(fees=0.01),
+... )
+>>> round(float(result.shares[1, 0]), 10), float(result.cash[1])
+(0.099009901, 0.0)
+```
+
+The whole book in one stock at 10 with a 1% fee costs more than the cash, so the buy is cut until cost and fee equal it.
+
 ### Write a report in quantlab's format
 
 The inputs of `report.html` have public builders in `quantlab.utils.backtest_report`, taking plain data, so an executor that simulates elsewhere writes a page in exactly quantlab's format. quantlab's own pages are built through them.

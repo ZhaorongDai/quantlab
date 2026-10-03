@@ -23,6 +23,7 @@ from vectorbt.portfolio.enums import SizeType
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 from quantlab.utils import backtest_stats
+from quantlab.utils.execution import FILL_DELAY_BARS, ExecutionSettings, OrderPlan, plan_orders
 
 #: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt
 #: refuses a price of 0, and at the smallest positive float the trade's cash is
@@ -105,8 +106,9 @@ class VectorBtBacktester(BaseBacktester):
         result.simulation.orders  # one record per fill
     """
 
-    #: A weight formed at bar t fills at bar t + 1; labels must use this delay.
-    fill_delay_bars = 1
+    #: A weight formed at bar t fills at bar t + 1 (the Execution rules'
+    #: ``FILL_DELAY_BARS``); labels must use this delay.
+    fill_delay_bars = FILL_DELAY_BARS
 
     #: The ``Portfolio.stats`` metric names reported for the whole window.
     #: ``benchmark_return`` is left out: vectorbt would compare against the
@@ -148,10 +150,12 @@ class VectorBtBacktester(BaseBacktester):
         """Simulate ``weights`` on ``prices`` with ``Portfolio.from_orders``.
 
         This is the only method that builds pandas objects: the weight and
-        price panels are converted, the weights are shifted one bar so a signal
-        at bar ``t`` fills at bar ``t + 1``, and vectorbt's results are mapped
-        back onto the engine-neutral ``SimulationResult``. The bar interval is
-        the most common difference between consecutive timestamps.
+        price panels are converted, the orders come from the Execution rules
+        (``quantlab.utils.execution.plan_orders``: a signal at bar ``t`` fills
+        at bar ``t + 1``, rejections and delisting settlements included), and
+        vectorbt's results are mapped back onto the engine-neutral
+        ``SimulationResult``. The bar interval is the most common difference
+        between consecutive timestamps.
 
         Raises
         ------
@@ -178,12 +182,6 @@ class VectorBtBacktester(BaseBacktester):
             .values,
             dtype=np.float64,
         )
-        fill = (
-            prices[market.fill_price_column]  # type: ignore[union-attr]
-            .transpose("timestamp", "symbol")
-            .to_pandas()
-            .ffill()
-        )
         valuation = (
             prices[market.valuation_price_column]  # type: ignore[union-attr]
             .transpose("timestamp", "symbol")
@@ -199,39 +197,29 @@ class VectorBtBacktester(BaseBacktester):
             .values,
             dtype=bool,
         )
-        fill_values = np.asarray(fill.to_numpy(), dtype=np.float64)
-        valuation_values = np.asarray(valuation.to_numpy(), dtype=np.float64)
-        if cfg.sizing_basis == "valuation":
-            # Sized at bar t's valuation price: what vectorbt's -inf val_price
-            # (the previous bar's `close`, below) resolves to.
-            sizing = np.full_like(valuation_values, np.nan)
-            sizing[1:] = valuation_values[:-1]
-        else:
-            sizing = fill_values
-        plan = self._execution_plan(
-            target=np.asarray(w.shift(1).to_numpy(), dtype=np.float64),
-            raw_fill=raw_fill,
-            fill=fill_values,
-            valuation=valuation_values,
-            delisted=delisted,
-            sizing=sizing,
+        plan = plan_orders(
+            np.asarray(w.to_numpy(), dtype=np.float64),
+            raw_fill,
+            np.asarray(valuation.to_numpy(), dtype=np.float64),
+            delisted,
+            ExecutionSettings(cfg.sizing_basis, cfg.fees, cfg.slippage),
         )
 
         def frame(values):
-            return pd.DataFrame(values, index=fill.index, columns=fill.columns)
+            return pd.DataFrame(values, index=valuation.index, columns=valuation.columns)
 
         # vectorbt refuses an order priced at 0, which a settlement at a last
         # valuation of 0 (a -100% delisting return) is. It is sent at the
         # smallest positive float as a target amount of 0, since vectorbt
         # sizes a target percent against a price it rounds to 0.
-        worthless = plan["settle"] & (plan["price"] == 0.0)
-        order_price = np.where(worthless, _WORTHLESS_PRICE, plan["price"])
+        worthless = plan.settle & (plan.price == 0.0)
+        order_price = np.where(worthless, _WORTHLESS_PRICE, plan.price)
         size_type = np.where(worthless, SizeType.TargetAmount, SizeType.TargetPercent)
 
         pf = vbt.Portfolio.from_orders(
             close=valuation,
             price=frame(order_price),
-            size=frame(plan["size"]),
+            size=frame(plan.size),
             size_type=frame(size_type),
             direction="both",
             group_by=True,
@@ -241,8 +229,8 @@ class VectorBtBacktester(BaseBacktester):
             # valuation price is the previous bar's `close`, which here is the
             # forward-filled valuation price of the signal bar.
             val_price=-np.inf if cfg.sizing_basis == "valuation" else np.inf,
-            fees=frame(np.where(plan["settle"], 0.0, cfg.fees)),
-            slippage=frame(np.where(plan["settle"], 0.0, cfg.slippage)),
+            fees=frame(plan.fees),
+            slippage=frame(plan.slippage),
             init_cash=cfg.init_cash,
             freq=pd.Timedelta(bar_interval),
         )
@@ -300,7 +288,7 @@ class VectorBtBacktester(BaseBacktester):
                 }
             )
 
-        symbols = np.asarray(fill.columns)
+        symbols = np.asarray(valuation.columns)
         held = self._signed_order_sizes(orders, timestamps, symbols).values
         cash = np.asarray(pf.cash().to_numpy(), dtype=np.float64).reshape(
             timestamps.size, -1
@@ -326,47 +314,9 @@ class VectorBtBacktester(BaseBacktester):
             native=pf,
         )
 
-    @staticmethod
-    def _execution_plan(
-        target: np.ndarray,
-        raw_fill: np.ndarray,
-        fill: np.ndarray,
-        valuation: np.ndarray,
-        delisted: np.ndarray,
-        sizing: np.ndarray,
-    ) -> dict:
-        """Return the orders the market accepts at each fill bar, as ``[T, S]`` arrays.
-
-        ``target`` is the weight each bar fills to (the weights shifted one
-        bar, NaN where a symbol keeps its holding). An order whose raw fill
-        price is NaN, or whose ``sizing`` price (the price the target is
-        sized against) is NaN, is rejected: its size becomes NaN, so the
-        holding is kept. A symbol delisted on bar ``b`` is settled on bar
-        ``b + 1``: a target of 0.0 priced at its last valuation, which
-        replaces any target the weights gave it there. The plan holds
-        ``size``, ``price``, ``sizing``, ``target``, ``rejected`` and
-        ``settle``.
-        """
-        settle = np.zeros_like(delisted)
-        settle[1:] = delisted[:-1]
-        rejected = (
-            np.isfinite(target) & (np.isnan(raw_fill) | np.isnan(sizing)) & ~settle
-        )
-        size = np.where(rejected, np.nan, target)
-        size[settle] = 0.0
-        price = np.where(settle, valuation, fill)
-        return {
-            "size": size,
-            "price": price,
-            "sizing": sizing,
-            "target": target,
-            "rejected": rejected,
-            "settle": settle,
-        }
-
     def _execution_records(
         self,
-        plan: dict,
+        plan: OrderPlan,
         held: np.ndarray,
         orders: xr.Dataset,
         timestamps: np.ndarray,
@@ -389,9 +339,9 @@ class VectorBtBacktester(BaseBacktester):
 
         settlements, rejected = [], []
         for b in range(1, timestamps.size):
-            settled = np.flatnonzero(plan["settle"][b] & was_held[b])
+            settled = np.flatnonzero(plan.settle[b] & was_held[b])
             refused = np.flatnonzero(
-                plan["rejected"][b] & ((plan["target"][b] != 0.0) | was_held[b])
+                plan.rejected[b] & ((plan.target[b] != 0.0) | was_held[b])
             )
             if settled.size == 0 and refused.size == 0:
                 continue
@@ -405,7 +355,7 @@ class VectorBtBacktester(BaseBacktester):
                     "axis_symbol": str(symbols[j]),
                     "delisting_timestamp": pd.Timestamp(timestamps[b - 1]),
                     "settlement_timestamp": pd.Timestamp(timestamps[b]),
-                    "price": float(plan["price"][b, j]),
+                    "price": float(plan.price[b, j]),
                 }
                 logger.info(
                     f"{self.class_name}: delisting settlement of {record['symbol']}: "
@@ -430,7 +380,7 @@ class VectorBtBacktester(BaseBacktester):
         return settlements, rejected
 
     @staticmethod
-    def _max_target_deviation(plan: dict, held: np.ndarray, cash: np.ndarray) -> float | None:
+    def _max_target_deviation(plan: OrderPlan, held: np.ndarray, cash: np.ndarray) -> float | None:
         """Return the largest |target - held weight| right after a fill bar, or None.
 
         The held weight is the position times the bar's order price over
@@ -438,23 +388,23 @@ class VectorBtBacktester(BaseBacktester):
         symbols are left out; rejected ones are not, and neither are bars
         where the portfolio is worth nothing (no weight is defined there).
         """
-        compared = np.isfinite(plan["target"]) & ~plan["settle"]
+        compared = np.isfinite(plan.target) & ~plan.settle
         bars = np.flatnonzero(compared.any(axis=1))
         if bars.size == 0:
             return None
-        worth = held[bars] * np.nan_to_num(plan["price"][bars])
+        worth = held[bars] * np.nan_to_num(plan.price[bars])
         book = cash[bars] + worth.sum(axis=1)
         valued = book > 0
         if not valued.any():
             return None
         weights = worth[valued] / book[valued][:, None]
         bars = bars[valued]
-        gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
+        gap = np.abs(np.where(compared[bars], plan.target[bars] - weights, 0.0))
         return float(gap.max())
 
     @staticmethod
     def _max_sizing_deviation(
-        plan: dict, held: np.ndarray, cash: np.ndarray, init_cash: float
+        plan: OrderPlan, held: np.ndarray, cash: np.ndarray, init_cash: float
     ) -> float | None:
         """Return the largest |target - held weight| of the valuation basis, or None.
 
@@ -465,11 +415,11 @@ class VectorBtBacktester(BaseBacktester):
         symbols are left out; rejected ones are not, and neither are bars
         where the book is worth nothing (no weight is defined there).
         """
-        compared = np.isfinite(plan["target"]) & ~plan["settle"]
+        compared = np.isfinite(plan.target) & ~plan.settle
         bars = np.flatnonzero(compared.any(axis=1))
         if bars.size == 0:
             return None
-        price = np.nan_to_num(plan["sizing"][bars])
+        price = np.nan_to_num(plan.sizing[bars])
         held_before = np.zeros_like(held)
         held_before[1:] = held[:-1]
         cash_before = np.concatenate(([float(init_cash)], cash[:-1]))[bars]
@@ -479,7 +429,7 @@ class VectorBtBacktester(BaseBacktester):
             return None
         weights = held[bars][valued] * price[valued] / book[valued][:, None]
         bars = bars[valued]
-        gap = np.abs(np.where(compared[bars], plan["target"][bars] - weights, 0.0))
+        gap = np.abs(np.where(compared[bars], plan.target[bars] - weights, 0.0))
         return float(gap.max())
 
     @staticmethod

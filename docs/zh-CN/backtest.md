@@ -610,6 +610,24 @@ ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_d
 181818.18
 ```
 
+### 不用回测器回放 Execution 规则
+
+vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quantlab.utils.execution`，它只导入 numpy。这些规则包括：订单按成交价成交；没有原始成交价的订单被拒绝；退市持仓按最后估值结算；按所选 sizing basis 定仓位；先卖后买，每笔买单受剩余现金限制；收取手续费和滑点。引擎用 `plan_orders` 生成订单计划。`replay` 返回这些订单在每个 bar 之后留下的股数和现金，与 vectorbt 实际执行的结果一致，差别只在浮点舍入；它还报告引擎记录的拒单和退市结算（`tests/test_execution.py`）。`ExecutionBook` 一个 bar 一个 bar 地维护同一本账，适合那种做完每次调仓的决策后才知道权重的驱动：它 `submit` 一个 bar 的权重，再按时间顺序逐个 `trade` 各个 bar。
+
+```python
+>>> import numpy as np
+>>> from quantlab.utils.execution import ExecutionSettings, replay
+>>> prices = np.array([[10.0], [10.0]])
+>>> result = replay(
+...     np.array([[1.0], [np.nan]]), prices, prices, np.zeros((2, 1), dtype=bool),
+...     ExecutionSettings(fees=0.01),
+... )
+>>> round(float(result.shares[1, 0]), 10), float(result.cash[1])
+(0.099009901, 0.0)
+```
+
+以 10 的价格把全部资金买入一只股票，加上 1% 的手续费会超过现有现金，所以这笔买单被削减，直到成本加手续费正好等于现金。
+
 ### 以 quantlab 的格式写报告
 
 `report.html` 的输入在 `quantlab.utils.backtest_report` 中有接收普通数据的公开构建函数，因此在别处模拟的执行器能写出与 quantlab 格式完全一致的页面。quantlab 自己的页面也经由它们构建。
