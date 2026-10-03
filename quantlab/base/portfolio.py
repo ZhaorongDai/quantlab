@@ -323,14 +323,17 @@ class PortfolioContext:
     returns : xr.DataArray or None
         The trailing window of one-bar returns ending at the bar, on
         ``(timestamp, symbol)``, of the rule's ``lookback_bars`` length (no
-        bars for a rule that needs none). Each return is computed from the
-        last valuation price known at its bar, so a halt shows as zero
-        returns and then the whole gap on the bar the symbol trades again;
-        NaN before a symbol's first price and on its first bar. ``None`` in a
+        bars for a rule that needs none), read from the rule's last
+        ``history_bars`` raw valuation prices up to and including the bar.
+        Each return is computed from the last valuation price known at its
+        bar within those, so a halt shows as zero returns and then the whole
+        gap on the bar the symbol trades again; NaN before a symbol's first
+        price in them and on that price's bar. ``None`` in a
         context built by hand for a rule that reads none.
     staleness : xr.DataArray or None
-        Bars since each symbol's last real valuation price, on ``symbol``:
-        0 when it has one at the bar, NaN before its first. ``None`` without
+        Bars since each symbol's last real valuation price within the
+        rule's last ``history_bars`` bars, on ``symbol``: 0 when it has one
+        at the bar, NaN when it has none in those bars. ``None`` without
         prices.
     factors : xr.Dataset or None
         The values at the bar of the ``Factor`` panels the rule declares in
@@ -427,21 +430,30 @@ def _align_mask(mask: xr.DataArray, predictions: xr.Dataset) -> np.ndarray:
     return np.asarray(aligned.values, dtype=bool)
 
 
-def _valuation_history(valuation_price: xr.DataArray) -> tuple[xr.DataArray, np.ndarray, xr.DataArray]:
-    """Return the one-bar returns, staleness and forward-filled prices of raw valuation prices.
+def _price_window(
+    valuation_price: xr.DataArray, history_bars: int, lookback_bars: int
+) -> tuple[xr.DataArray, xr.DataArray]:
+    """Return one bar's return window and staleness from its raw valuation prices.
 
     The one formula behind every context's ``returns`` and ``staleness``,
-    whether ``construct_panel`` or ``build_context`` builds it. Each row
-    reads only the rows up to it, so the rows of a history that ends at a
-    bar equal those of a longer history over the same start.
+    whether ``construct_panel`` or ``build_context`` builds it. Only the
+    last ``history_bars`` raw prices of ``valuation_price`` (on ``(timestamp,
+    symbol)``, ending at the bar) are read: they are forward-filled within
+    that window alone, the window's last ``lookback_bars`` one-bar returns
+    are kept, and the staleness is the bars since each symbol's last real
+    price in the window, NaN when it has none there. So the result does not
+    depend on where a longer history starts.
     """
-    filled = valuation_price.ffill("timestamp")
-    priced = np.isfinite(np.asarray(valuation_price.values, dtype=np.float64))
-    rows = np.arange(priced.shape[0])[:, None]
-    last = np.maximum.accumulate(np.where(priced, rows, -1), axis=0)
+    n = valuation_price.sizes["timestamp"]
+    window = valuation_price.isel(timestamp=slice(max(0, n - history_bars), n))
+    filled = window.ffill("timestamp")
     returns = filled / filled.shift(timestamp=1) - 1.0
-    staleness = np.where(last >= 0, rows - last, np.nan).astype(np.float64)
-    return returns, staleness, filled
+    m = returns.sizes["timestamp"]
+    returns = returns.isel(timestamp=slice(m - min(lookback_bars, m), m))
+    priced = np.isfinite(np.asarray(window.values, dtype=np.float64))[::-1]
+    since = np.where(priced.any(axis=0), priced.argmax(axis=0), np.nan).astype(np.float64)
+    staleness = xr.DataArray(since, dims="symbol", coords={"symbol": window.symbol.values})
+    return returns, staleness
 
 
 def _empty_window(symbols: np.ndarray) -> xr.DataArray:
@@ -504,16 +516,15 @@ class Decision:
 class _PriceHistory:
     """The prices ``construct_panel`` reads, on the prediction symbols.
 
-    ``returns`` holds the one-bar returns of the forward-filled valuation
-    price and ``staleness`` the bars since each symbol's last real valuation
-    price; ``raw_fill`` and ``raw_valuation`` the prices as given, ``valuation``
-    the forward-filled valuation prices, and ``delisted`` the delisting
+    ``valuation_price`` holds the raw valuation prices each bar's window is
+    cut from; ``raw_fill`` and ``raw_valuation`` the prices as given,
+    ``valuation`` the forward-filled valuation prices (the replayed
+    holdings' weights, not a decision input), and ``delisted`` the delisting
     marks, as ``[T, S]`` arrays; and ``positions`` each prediction bar's row
     in them.
     """
 
-    returns: xr.DataArray
-    staleness: np.ndarray
+    valuation_price: xr.DataArray
     raw_fill: np.ndarray
     raw_valuation: np.ndarray
     valuation: np.ndarray
@@ -904,6 +915,21 @@ class RiskModel(_Configured, ABC):
         """
         return int(getattr(self._config, "lookback_bars", 0))
 
+    @property
+    def history_bars(self) -> int:
+        """Raw valuation prices up to and including a bar that the model reads there.
+
+        ``lookback_bars + 1`` by default: the last price before the window
+        seeds its first return. A model whose coverage reads staleness
+        reaches further back (see ``LedoitWolfRiskModel``).
+
+        Examples
+        --------
+        >>> risk.history_bars
+        66
+        """
+        return self.lookback_bars + 1
+
     def required_factors(self) -> list["Factor"]:
         """The ``Factor`` panels ``estimate`` reads from ``context.factors``.
 
@@ -992,6 +1018,26 @@ class PortfolioConstructor(_Configured, ABC):
         """
         return 0
 
+    @property
+    def history_bars(self) -> int:
+        """Raw valuation prices up to and including a bar that each context there is built from.
+
+        A context's ``returns`` and ``staleness`` read only these: the
+        prices are forward-filled within this window alone, and a symbol
+        without a real price in it has NaN staleness, so a decision does not
+        depend on the first bar of the caller's history, however far back it
+        goes. The backtester
+        adds the bars before the window to its warm-up.
+        ``lookback_bars + 1`` by default (the window's first return needs
+        the price before it).
+
+        Examples
+        --------
+        >>> rule.history_bars
+        1
+        """
+        return self.lookback_bars + 1
+
     def required_factors(self) -> list["Factor"]:
         """The ``Factor`` panels whose values at each bar the rule reads from ``context.factors``.
 
@@ -1075,11 +1121,12 @@ class PortfolioConstructor(_Configured, ABC):
         event-driven executor such as quantlab-trader hand ``decide`` the
         same context for the same bar. The ``returns`` window and
         ``staleness`` come from ``valuation_price`` by the formula the panel
-        loop uses: the one-bar returns of the forward-filled prices, the
-        last ``lookback_bars`` of them ending at the bar, and the bars since
-        each symbol's last real price, counted within the history given (NaN
-        when it holds none). Given the valuation prices the panel loop read,
-        up to the bar, the context equals the one the loop built there.
+        loop uses, reading only the last ``history_bars`` prices: the
+        one-bar returns of those prices forward-filled within them, the last
+        ``lookback_bars`` of them ending at the bar, and the bars since each
+        symbol's last real price among them (NaN when it has none there).
+        Given at least ``history_bars`` valuation prices ending at the bar,
+        from any first bar, the context equals the one the loop built there.
 
         Parameters
         ----------
@@ -1098,10 +1145,10 @@ class PortfolioConstructor(_Configured, ABC):
             is not held.
         valuation_price : xr.DataArray, optional
             Raw (not forward-filled) valuation prices on ``(timestamp,
-            symbol)`` whose last timestamp is ``timestamp``, from far enough
-            back to seed the forward fill; required when ``lookback_bars``
-            is positive. Without it the window has no bars and
-            ``staleness`` is ``None``.
+            symbol)`` whose last timestamp is ``timestamp``; only the last
+            ``history_bars`` are read, and a shorter history gives short
+            windows. Required when ``lookback_bars`` is positive. Without
+            it the window has no bars and ``staleness`` is ``None``.
         factors : xr.Dataset, optional
             The values at the bar of the rule's ``required_factors()``, one
             variable per factor name on ``symbol``; NaN where a symbol has
@@ -1162,14 +1209,12 @@ class PortfolioConstructor(_Configured, ABC):
             current_weights.reindex(symbol=symbols, fill_value=0.0).values, dtype=np.float64
         )
 
-        lookback = self.lookback_bars
         if valuation_price is None:
-            if lookback:
+            if self.lookback_bars:
                 raise ValueError(
-                    f"{type(self).__name__} reads {lookback} bars of returns; pass "
+                    f"{type(self).__name__} reads {self.lookback_bars} bars of returns; pass "
                     f"valuation_price= to build_context"
                 )
-            window, staleness = _empty_window(symbols), None
         else:
             valuation_price = valuation_price.transpose(*_DIMS)
             bars = pd.Index(valuation_price.timestamp.values)
@@ -1182,10 +1227,9 @@ class PortfolioConstructor(_Configured, ABC):
                     f"valuation_price must end at the bar {timestamp}; pass the "
                     f"prices up to and including it"
                 )
-            returns, stale, _ = _valuation_history(valuation_price.reindex(symbol=symbols))
-            n = returns.sizes["timestamp"]
-            window = returns.isel(timestamp=slice(max(0, n - lookback), n) if lookback else slice(n, n))
-            staleness = xr.DataArray(stale[-1].copy(), dims="symbol", coords={"symbol": symbols})
+            valuation_price = valuation_price.isel(
+                timestamp=slice(-self.history_bars, None)
+            ).reindex(symbol=symbols)
 
         if factors is None:
             if self.required_factors():
@@ -1198,15 +1242,43 @@ class PortfolioConstructor(_Configured, ABC):
             self._check_factor_names(factors)
             factors = factors.reindex(symbol=symbols).load()
 
+        return self._context(
+            timestamp,
+            predictions,
+            np.asarray(tradable.sel(symbol=symbols).values, dtype=bool),
+            current,
+            valuation_price,
+            factors,
+        )
+
+    def _context(
+        self,
+        timestamp: pd.Timestamp,
+        predictions: xr.Dataset,
+        tradable: np.ndarray,
+        current: np.ndarray,
+        valuation_price: xr.DataArray | None,
+        factors: xr.Dataset | None,
+    ) -> PortfolioContext:
+        """Build a context from checked inputs: the one builder of ``build_context`` and ``construct_panel``.
+
+        ``tradable`` and ``current`` are arrays in the order of the
+        predictions' symbols; ``valuation_price`` holds raw prices on those
+        symbols ending at the bar (at least ``history_bars`` of them when
+        the history allows), or is ``None`` for a context without prices.
+        """
+        symbols = predictions.symbol.values
+        if valuation_price is None:
+            window, staleness = _empty_window(symbols), None
+        else:
+            window, staleness = _price_window(valuation_price, self.history_bars, self.lookback_bars)
         return PortfolioContext(
             timestamp=timestamp,
             predictions=predictions,
-            tradable=xr.DataArray(
-                np.asarray(tradable.sel(symbol=symbols).values, dtype=bool),
-                dims="symbol",
-                coords={"symbol": symbols},
+            tradable=xr.DataArray(tradable.copy(), dims="symbol", coords={"symbol": symbols}),
+            current_weights=xr.DataArray(
+                np.array(current, dtype=np.float64), dims="symbol", coords={"symbol": symbols}
             ),
-            current_weights=xr.DataArray(current, dims="symbol", coords={"symbol": symbols}),
             returns=window,
             factors=factors,
             staleness=staleness,
@@ -1281,11 +1353,10 @@ class PortfolioConstructor(_Configured, ABC):
 
         Loops ``decide`` over the rebalance bars in time order, handing
         each the context ``build_context`` would build for its own bar from
-        the valuation prices up to it (the returns and staleness are
-        computed once for the whole panel by the same formula, since each
-        bar's rows read nothing after it): its predictions, its
-        tradability, the ``lookback_bars`` one-bar returns of
-        ``valuation_price`` ending at it, the values at it of the
+        the last ``history_bars`` valuation prices up to it, through the
+        same private builder: its predictions, its tradability, the
+        ``lookback_bars`` one-bar returns and the staleness of that price
+        window, the values at it of the
         ``factors`` the rule declares, and the weights currently held.
         With prices, those are the holdings the earlier targets left,
         replayed by the Execution module (``quantlab.utils.execution``)
@@ -1321,8 +1392,9 @@ class PortfolioConstructor(_Configured, ABC):
             One boolean per timestamp, True on rebalance bars.
         fill_price, valuation_price : xr.DataArray, optional
             Raw (not forward-filled) prices on ``(timestamp, symbol)``: every
-            timestamp of ``predictions`` and, before them, the warm-up the
-            return window needs. Given together; required when
+            timestamp of ``predictions`` and, before them, the
+            ``history_bars - 1`` bars the first window needs (fewer give
+            short first windows). Given together; required when
             ``lookback_bars`` is positive.
         delisted : xr.DataArray, optional
             Booleans marking each delisted symbol's last priced bar (the
@@ -1379,7 +1451,6 @@ class PortfolioConstructor(_Configured, ABC):
         symbols = predictions.symbol.values
         history = self._check_prices(fill_price, valuation_price, delisted, predictions)
         factors = self._check_factors(factors, predictions)
-        lookback = self.lookback_bars
         book = None if history is None else _Book(history, execution or ExecutionSettings())
 
         weights = np.full((len(timestamps), len(symbols)), np.nan)
@@ -1388,36 +1459,20 @@ class PortfolioConstructor(_Configured, ABC):
         events: dict[str, list[dict]] = {}
         for t in np.flatnonzero(rebalance):
             if history is None:
-                current = traded
-                window = _empty_window(symbols)
+                current, window = traded, None
             else:
                 position = int(history.positions[t])
                 current = book.weights_at(position)
-                window = history.returns.isel(
-                    timestamp=slice(max(0, position - lookback + 1), position + 1)
-                    if lookback
-                    else slice(position + 1, position + 1)
+                window = history.valuation_price.isel(
+                    timestamp=slice(max(0, position + 1 - self.history_bars), position + 1)
                 )
-            context = PortfolioContext(
-                timestamp=pd.Timestamp(timestamps[t]),
-                predictions=predictions.isel(timestamp=t, drop=True),
-                tradable=xr.DataArray(
-                    tradable_values[t].copy(), dims="symbol", coords={"symbol": symbols}
-                ),
-                current_weights=xr.DataArray(
-                    np.array(current, dtype=np.float64),
-                    dims="symbol",
-                    coords={"symbol": symbols},
-                ),
-                returns=window,
-                factors=None if factors is None else factors.isel(timestamp=t, drop=True),
-                staleness=None
-                if history is None
-                else xr.DataArray(
-                    history.staleness[position].copy(),
-                    dims="symbol",
-                    coords={"symbol": symbols},
-                ),
+            context = self._context(
+                pd.Timestamp(timestamps[t]),
+                predictions.isel(timestamp=t, drop=True),
+                tradable_values[t],
+                current,
+                window,
+                None if factors is None else factors.isel(timestamp=t, drop=True),
             )
             decision = self.decide(context)
             label = pd.Timestamp(timestamps[t]).isoformat()
@@ -1461,11 +1516,11 @@ class PortfolioConstructor(_Configured, ABC):
     def _check_prices(self, fill_price, valuation_price, delisted, predictions: xr.Dataset):
         """Return the price history the loop reads, or None without prices.
 
-        The history holds the one-bar returns of the forward-filled valuation
-        price and the staleness (the context's window and staleness), the
-        raw fill and valuation prices and the delisting marks (the replayed
-        holdings), the forward-filled valuation prices (the holdings'
-        weights), and each prediction bar's position in them.
+        The history holds the raw valuation prices each bar's window is cut
+        from (the context's returns and staleness), the raw fill and
+        valuation prices and the delisting marks (the replayed holdings),
+        the forward-filled valuation prices (the holdings' weights), and
+        each prediction bar's position in them.
         """
         if fill_price is None and valuation_price is None:
             if self.lookback_bars:
@@ -1502,13 +1557,11 @@ class PortfolioConstructor(_Configured, ABC):
                 .values,
                 dtype=bool,
             )
-        returns, staleness, valuation_filled = _valuation_history(valuation_price)
         return _PriceHistory(
-            returns=returns,
-            staleness=staleness,
+            valuation_price=valuation_price,
             raw_fill=fill_price.values.astype(np.float64),
             raw_valuation=valuation_price.values.astype(np.float64),
-            valuation=valuation_filled.values.astype(np.float64),
+            valuation=valuation_price.ffill("timestamp").values.astype(np.float64),
             delisted=marks,
             positions=positions,
         )

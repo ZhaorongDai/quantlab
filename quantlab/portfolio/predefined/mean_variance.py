@@ -251,7 +251,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     ``PortfolioConstructionError``: the backtest holds the current position
     there and records the bar.
 
-    ``lookback_bars`` and ``required_factors()`` are the risk model's.
+    ``lookback_bars``, ``history_bars`` and ``required_factors()`` are the risk model's.
     ``bind`` reads the span from the label's ``LabelSpec``, so a backtest
     binds the optimiser when it is built.
 
@@ -358,6 +358,17 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         60
         """
         return self.config.risk_model.lookback_bars
+
+    @property
+    def history_bars(self) -> int:
+        """The risk model's ``history_bars``.
+
+        Examples
+        --------
+        >>> optimizer.history_bars  # 60 + 1 + 5
+        66
+        """
+        return self.config.risk_model.history_bars
 
     def required_factors(self) -> list["Factor"]:
         """The risk model's ``required_factors()``.

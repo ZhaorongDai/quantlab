@@ -5,7 +5,8 @@ What is locked here, and what turns it red (hand-built panels, no vectorbt):
 - One-bar returns come from the last known valuation price: a halt shows as
   zero returns, then the whole gap on the bar the symbol trades again.
 - Staleness counts the bars since a symbol's last real valuation price,
-  resets when prices return, and is NaN before the first price.
+  resets when prices return, and is NaN before the first price (and, see
+  test_portfolio_history_window.py, beyond the rule's ``history_bars``).
 - The window and staleness at a bar are the same whether the panel ends at
   that bar or later (nothing after the bar is read).
 - Ledoit-Wolf leaves out a symbol staler than `max_stale_bars` and keeps one
@@ -71,7 +72,7 @@ def test_a_halt_shows_as_zero_returns_then_the_whole_gap():
 
 def test_staleness_counts_bars_since_the_last_real_price_and_resets():
     values = [[np.nan, 20], [10, np.nan], [11, np.nan], [12, 22]]
-    seen = _run(_prices(values), lookback=1, rebalance_at=[0, 1, 2, 3])
+    seen = _run(_prices(values), lookback=2, rebalance_at=[0, 1, 2, 3])  # history_bars 3
 
     staleness = [context.staleness.values.tolist() for context in seen]
     assert np.isnan(staleness[0][0]) and staleness[0][1] == 0

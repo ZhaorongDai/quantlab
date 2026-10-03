@@ -2,7 +2,8 @@
 
 What is locked here, and what turns it red:
 
-- The constructor's `lookback_bars` extends the price warm-up: the first
+- The constructor's `history_bars` sets the price warm-up (`history_bars - 1`
+  bars before the window, a warning when the store holds fewer): the first
   backtest bar's context already holds a full, finite window of one-bar
   valuation returns ending at that bar.
 - The current weights a constructor is handed are the holdings the
@@ -145,6 +146,21 @@ def test_the_first_backtest_bar_has_a_full_return_window(tmp_path):
     np.testing.assert_allclose(
         first.returns.values, close[t - LOOKBACK + 1 : t + 1] / close[t - LOOKBACK : t] - 1
     )
+
+
+class _LongHistoryRecorder(Recorder):
+    """A recorder reading 100 raw prices per bar, more than the store holds before the window."""
+
+    @property
+    def history_bars(self):
+        return 100
+
+
+def test_the_warm_up_is_the_constructors_history_bars(tmp_path):
+    backtester, _, bars = _backtester(tmp_path, _LongHistoryRecorder(RecorderConfig()))
+
+    with pytest.warns(UserWarning, match=r"reads 99 bar\(s\) of prices before the window but the price dataset holds only 40; the first price windows are short by 59"):
+        backtester.run()
 
 
 def _halt(dataset_config, symbol, bars):

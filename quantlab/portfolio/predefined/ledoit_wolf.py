@@ -92,6 +92,22 @@ class LedoitWolfRiskModel(RiskModel):
                 f"max_stale_bars must be >= 0, got {config.max_stale_bars}"
             )
 
+    @property
+    def history_bars(self) -> int:
+        """``lookback_bars + 1 + max_stale_bars``: the window plus its seed, reaching past the longest tolerated halt.
+
+        A symbol is covered with a staleness of at most ``max_stale_bars``,
+        so its last real price before such a halt still falls in the bars
+        read, and its return window is forward-filled as with an unbounded
+        history.
+
+        Examples
+        --------
+        >>> risk.history_bars  # 60 + 1 + 5
+        66
+        """
+        return self.config.lookback_bars + 1 + self.config.max_stale_bars
+
     def estimate(
         self, context: PortfolioContext, volatility: xr.DataArray | None = None
     ) -> CovarianceEstimate:

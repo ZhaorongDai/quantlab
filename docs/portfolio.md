@@ -27,8 +27,8 @@ A rule has one method to implement, `construct(context)`. The `PortfolioContext`
 | `predictions` | Every label's prediction at the bar, one variable per label, on `symbol`. |
 | `tradable` | Whether each symbol can be traded at the bar: by default, whether it has a real fill price there. |
 | `current_weights` | The weights held now, valued at the bar. They are all 0.0 before the first rebalance. |
-| `returns` | The last `lookback_bars` one-bar returns, ending at the bar. It is empty for a rule with `lookback_bars` of 0. |
-| `staleness` | Bars since each symbol's last real price. |
+| `returns` | The last `lookback_bars` one-bar returns, ending at the bar, from the rule's last `history_bars` raw valuation prices forward-filled within that window. It is empty for a rule with `lookback_bars` of 0. |
+| `staleness` | Bars since each symbol's last real price within the last `history_bars` bars; NaN when it has none there. |
 | `factors` | The values at the bar of the factors the rule declares in `required_factors()`, or `None`. |
 
 A rule returns one weight per symbol:
@@ -85,7 +85,7 @@ The vectorised backtest calls `construct_panel`. It loops the rule's one-bar dec
 
 - The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.utils.execution`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. `construct_panel(..., execution=ExecutionSettings(sizing_basis, fees, slippage))` takes those settings, and the backtester passes its config's; without them the replay sizes at the fill price and charges no costs.
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
-- A rule's `lookback_bars` is added to the backtest's warm-up, so the first backtest bar already has a full window.
+- Each bar reads only the last `history_bars` raw valuation prices up to and including it (`lookback_bars + 1` by default; Ledoit-Wolf `lookback_bars + 1 + max_stale_bars`; mean-variance its risk model's), so a decision does not depend on where the price history starts. The backtest's warm-up holds the `history_bars - 1` bars before its first bar, so that bar already has a full window.
 
 The backtester calls the rule's `bind(labels)` when it is built, before any data is read or any model trained. `labels` holds one `LabelSpec(name, scale, delay, span)` per prediction variable, which the backtester derives from its predictor with `quantlab.base.backtest.label_specs`; `span` is `None` for a label that is not a `Forward` label. The specs are the only thing a rule may know about a prediction: it is never handed the model. This is where a rule checks the labels it needs, so a misconfigured rule fails at once.
 
@@ -123,7 +123,7 @@ The file holds one variable per label on `(timestamp, symbol)`, and its attribut
 
 An executor that keeps its own book, such as an event-driven backtest or a live account, decides a bar with two public methods of the rule, the same two `construct_panel` loops:
 
-- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` builds the bar's `PortfolioContext`. `predictions`, `tradable` and `current_weights` are the bar's values on `symbol`; a symbol missing from `current_weights` is not held. `valuation_price` holds the raw valuation prices on `(timestamp, symbol)` ending at the bar, and the return window and staleness come from it by the formula the backtest uses. Given the prices the backtest read, from the same first bar, the context equals the backtest's. It is required when the rule's `lookback_bars` is positive, as `factors` is when the rule declares `required_factors()`.
+- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` builds the bar's `PortfolioContext`. `predictions`, `tradable` and `current_weights` are the bar's values on `symbol`; a symbol missing from `current_weights` is not held. `valuation_price` holds the raw valuation prices on `(timestamp, symbol)` ending at the bar, and the return window and staleness come from its last `history_bars` prices by the formula the backtest uses. Given at least `history_bars` prices ending at the bar, from any first bar, the context equals the backtest's. It is required when the rule's `lookback_bars` is positive, as `factors` is when the rule declares `required_factors()`.
 - `decide(context)` runs `construct` and checks the row against the weights contract. It returns a `Decision(weights, failure, events)`: the weights on the context's symbols, all NaN for a hold; the message of a `PortfolioConstructionError` that made the bar a hold, or `None`; and the events the row reported. A row that breaks the contract (NaN mixed with finite weights, a moved locked position, weight on a symbol neither tradable nor held) is a bug in the rule and raises `ValueError`.
 
 ```python
@@ -383,7 +383,7 @@ Subclass `PortfolioConstructor`:
 
 1. Set `config_cls` to a frozen dataclass of the rule's parameters.
 2. Implement `construct`.
-3. Override `lookback_bars` when the rule reads a return window, `required_factors` when it reads factor panels, and `bind` to check the label specs.
+3. Override `lookback_bars` when the rule reads a return window (and `history_bars` when it needs more raw prices than `lookback_bars + 1`), `required_factors` when it reads factor panels, and `bind` to check the label specs.
 
 Do not override `build_context`, `decide` or `construct_panel`: they are the one decision path a backtest and an executor share.
 

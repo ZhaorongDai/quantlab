@@ -27,8 +27,8 @@
 | `predictions` | 这根 bar 上每个标签的预测，每个标签一个变量，维度为 `symbol`。 |
 | `tradable` | 每个标的在这根 bar 上能否交易：默认看它在这根 bar 上有没有真实成交价。 |
 | `current_weights` | 当前持有的权重，按这根 bar 估值。第一次调仓之前全为 0.0。 |
-| `returns` | 截至这根 bar 的最近 `lookback_bars` 个单 bar 收益。`lookback_bars` 为 0 的规则拿到的是空窗口。 |
-| `staleness` | 每个标的距上一个真实价格已过了多少根 bar。 |
+| `returns` | 截至这根 bar 的最近 `lookback_bars` 个单 bar 收益，由规则最近 `history_bars` 个原始估值价格在该窗口内前向填充后算出。`lookback_bars` 为 0 的规则拿到的是空窗口。 |
+| `staleness` | 每个标的在最近 `history_bars` 根 bar 内距上一个真实价格已过了多少根 bar；窗口内没有真实价格时为 NaN。 |
 | `factors` | 规则在 `required_factors()` 中声明的因子在这根 bar 上的值；没有声明时为 `None`。 |
 
 规则为每个标的返回一个权重：
@@ -85,7 +85,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 - 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.utils.execution`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。`construct_panel(..., execution=ExecutionSettings(sizing_basis, fees, slippage))` 接收这些设置，回测器传入自己 config 中的设置；不传时按成交价定仓位、不计成本。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
-- 规则的 `lookback_bars` 会加到回测的预热期上，所以回测的第一根 bar 就有完整的窗口。
+- 每根 bar 只读截至（含）它的最近 `history_bars` 个原始估值价格（默认 `lookback_bars + 1`；Ledoit-Wolf 为 `lookback_bars + 1 + max_stale_bars`；均值方差取其风险模型的值），所以决策与价格历史从哪里开始无关。回测的预热期包含第一根 bar 之前的 `history_bars - 1` 根 bar，所以第一根 bar 就有完整的窗口。
 
 回测器在构造时调用规则的 `bind(labels)`，这时还没有读任何数据、也没有训练任何模型。`labels` 为每个预测变量给出一个 `LabelSpec(name, scale, delay, span)`，由回测器用 `quantlab.base.backtest.label_specs` 从预测器推导；不是 `Forward` 标签的 `span` 为 `None`。规则对预测能知道的只有这些规格，永远拿不到模型本身。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
 
@@ -123,7 +123,7 @@ True
 
 自己维护账本的执行器（例如事件驱动回测或实盘账户）用规则的两个公开方法决定一根 bar，也就是 `construct_panel` 循环调用的那两个：
 
-- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` 构造这根 bar 的 `PortfolioContext`。`predictions`、`tradable` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有。`valuation_price` 是截止到这根 bar 的原始估值价格，位于 `(timestamp, symbol)` 上，收益窗口和停牌时长（staleness）按回测所用的同一公式由它算出。给定回测读到的价格、并从同一根起始 bar 开始，得到的 context 与回测构造的相同。规则的 `lookback_bars` 为正时必须传入它；规则声明了 `required_factors()` 时同样必须传入 `factors`。
+- `build_context(timestamp, predictions, tradable, current_weights, *, valuation_price=None, factors=None)` 构造这根 bar 的 `PortfolioContext`。`predictions`、`tradable` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有。`valuation_price` 是截止到这根 bar 的原始估值价格，位于 `(timestamp, symbol)` 上，收益窗口和停牌时长（staleness）按回测所用的同一公式由它最近 `history_bars` 个价格算出。只要给定截至这根 bar 的至少 `history_bars` 个价格，无论从哪根 bar 开始，得到的 context 都与回测构造的相同。规则的 `lookback_bars` 为正时必须传入它；规则声明了 `required_factors()` 时同样必须传入 `factors`。
 - `decide(context)` 调用 `construct`，并按权重契约检查这一行。它返回 `Decision(weights, failure, events)`：context 各标的上的权重，全 NaN 表示保持；使这根 bar 保持仓位的 `PortfolioConstructionError` 的消息，或 `None`；以及这一行报告的事件。违反契约的行（NaN 与有限权重混合、改动了锁定仓位、给既不可交易也未持有的标的分配权重）是规则的 bug，抛出 `ValueError`。
 
 ```python
@@ -383,7 +383,7 @@ array([0.4, 0.4, 0. , 0.2])
 
 1. 把 `config_cls` 设为规则参数的 frozen dataclass。
 2. 实现 `construct`。
-3. 规则读取收益窗口时重写 `lookback_bars`，读取因子面板时重写 `required_factors`，需要检查标签规格时重写 `bind`。
+3. 规则读取收益窗口时重写 `lookback_bars`（需要多于 `lookback_bars + 1` 个原始价格时再重写 `history_bars`），读取因子面板时重写 `required_factors`，需要检查标签规格时重写 `bind`。
 
 不要重写 `build_context`、`decide` 或 `construct_panel`：它们是回测与执行器共用的唯一决策路径。
 

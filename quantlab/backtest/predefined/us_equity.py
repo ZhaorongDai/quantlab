@@ -110,8 +110,8 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
         ``tradable_bars`` on the raw, not forward-filled, window panel; the
         rule also skips symbols without a finite prediction of the label it
         reads. The rule is handed the raw fill and valuation prices from the
-        constructor's ``lookback_bars`` bars before the window
-        (``_price_history``), for its return window and to model the
+        bars its first window needs before the window (``_price_history``),
+        for its return windows and staleness and to model the
         holdings the way the simulation trades them, with the run's sizing
         basis, fees and slippage, the dataset's
         ``delisting_bars`` of the window (the same marks the simulation
@@ -156,25 +156,25 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     def _price_history(self, prices: xr.Dataset) -> xr.Dataset:
         """Return the raw fill and valuation prices over the window and its warm-up.
 
-        The warm-up is the constructor's ``lookback_bars`` bars before the
-        window's first bar, counted on the price dataset's calendar, so the
-        first bar already has a full window of one-bar returns (the first
-        return needs the bar before it, which the warm-up supplies); when
-        the dataset holds fewer, a warning names the shortfall and the first
+        The warm-up is the bars before the window's first bar that complete
+        its ``history_bars`` window (``history_bars - 1``, the first bar
+        being the window's last), counted on the price dataset's calendar,
+        so the first bar already reads a full window of raw prices; when the
+        dataset holds fewer, a warning names the shortfall and the first
         windows are short. The panel is on the window's symbols.
         """
         dataset = self.config.price_dataset
         columns = [self.MARKET.fill_price_column, self.MARKET.valuation_price_column]
         first, last = prices.timestamp.values[0], prices.timestamp.values[-1]
-        lookback = self.config.constructor.lookback_bars
+        warmup = self.config.constructor.history_bars - 1
         try:
-            start = dataset.bar_before(first, lookback)
+            start = dataset.bar_before(first, warmup)
         except InsufficientHistoryError as exc:
             warnings.warn(
                 f"{self.class_name}: {type(self.config.constructor).__name__} reads "
-                f"{lookback} bar(s) of returns before the window but the price "
-                f"dataset holds only {exc.available}; the first return windows are "
-                f"short by {lookback - exc.available} bar(s).",
+                f"{warmup} bar(s) of prices before the window but the price "
+                f"dataset holds only {exc.available}; the first price windows are "
+                f"short by {warmup - exc.available} bar(s).",
                 UserWarning,
                 stacklevel=2,
             )
