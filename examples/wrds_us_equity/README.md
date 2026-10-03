@@ -102,7 +102,7 @@ Everything is written under `<data root>/data/pipeline/wrds_<universe>/`:
 prices.zarr, members.zarr     derived price stores (step 1; index scripts only)
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 factor/market_features.zarr   SPY/QQQ/IWM market features (MASTER pipelines)
-models/<model>/...            checkpoints, config.json
+models/<model>/...            trained runs: checkpoint, config.json, run.json
 backtests/<model>/...         weights, equity, metrics.json, report.html
 analysis/alpha101/, analysis/alpha158/, analysis/residual_momentum/
                               summary.json and .csv, ic.csv, monthly_ic.csv,

@@ -35,6 +35,7 @@ The sessions below use a small in-memory stand-in for the factor and label objec
 ...         data = {k: (("timestamp", "symbol"), v) for k, v in variables.items()}
 ...         self.ds = xr.Dataset(data, coords=coords)
 ...     def _get_factor_names(self): return list(self.ds.data_vars)
+...     def get_factor_names(self): return self._get_factor_names()
 ...     def read(self, start, end): return self.ds.sel(timestamp=slice(start, end))
 ...     def get_config(self): return {"factor_names": self._get_factor_names()}
 >>> class LabelPanel(Panel):
@@ -67,15 +68,23 @@ The config carries the factor and label objects, where checkpoints go, and four 
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/XGBoostRegressor_total/`, holding the checkpoint, a `config.json` sidecar, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. The sidecar stores the full config plus a `trained_on` record: the feature names, label names and symbols the model saw. `metrics.json` holds the scores of the run (see Metrics below), and the other two files hold the per-bar IC series and the test-segment predictions (see IC series and saved predictions below).
+`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/`, a *trained unit* holding the checkpoint, `config.json`, `ic_series.csv`, `test_predictions.zarr` and, written last, `run.json`. `config.json` holds what rebuilds the model: `get_config()`, plus the resolved hyperparameters of a library head. `run.json` describes the unit: the training window as configured and as fitted after the purge (see Purging the label lookahead below), the test window, a `trained_on` record (the feature names, label names and symbols the model saw) and the scores of the run (see Metrics below). The other two files hold the per-bar IC series and the test-segment predictions (see IC series and saved predictions below).
+
+A run is read back through `TrainedRun` in `quantlab.utils.trained_run`, not by opening its files: only that module reads and writes them (ADR 0018). `TrainedRun.open` takes the unit's directory, its `run.json` or the checkpoint, and returns the unit's `kind`, its windows, `metrics`, `trained_on`, `checkpoint`, `config` and the paths of its evaluation files. Paths inside `run.json` are relative to the unit, so a trial directory copied from another machine still opens. A directory without `run.json`, or written in another `format_version`, is refused with a message to retrain it.
 
 ```python
->>> sorted(p.name for p in checkpoint.parent.iterdir())
-['XGBoostRegressor_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
->>> import json
->>> record = json.loads((checkpoint.parent / "config.json").read_text())
->>> record["trained_on"]["factor_names"], record["trained_on"]["label_names"], len(record["trained_on"]["symbols"])
+>>> from quantlab.utils.trained_run import TrainedRun
+>>> run = TrainedRun.open(checkpoint)
+>>> run.kind, run.path.name.startswith("XGBoostRegressor_trial_"), run.checkpoint == checkpoint
+('model', True, True)
+>>> sorted(p.name for p in run.path.iterdir())
+['XGBoostRegressor_total.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr']
+>>> run.trained_on["factor_names"], run.trained_on["label_names"], len(run.trained_on["symbols"])
 (['f_a', 'f_b'], ['ret'], 20)
+>>> run.train_window, run.fitted_train_window, run.test_window
+(('2024-01-01', '2024-05-31'), ('2024-01-01', '2024-05-29T00:00:00'), ('2024-06-01', '2024-07-18'))
+>>> run.config["name"]
+'quantlab.model.predefined.xgb.XGBoostRegressor'
 ```
 
 ### Purging the label lookahead
@@ -113,7 +122,7 @@ Data variables:
 (5, 20, 1)
 ```
 
-`load()` restores a checkpoint into a model built from the same factors and labels. It first checks the file suffix, then compares the variable names recorded in `config.json` with the model's own.
+`load()` restores a checkpoint into a model built from the same factors and labels. It first checks the file suffix, then compares the variable names `trained_on` records in the unit's `run.json` with the model's own, and adopts the training and test windows the record states.
 
 ```python
 >>> restored = XGBoostRegressor(config).load(checkpoint)
@@ -121,23 +130,26 @@ Data variables:
 True
 ```
 
-`check_checkpoint(path)` runs the same variable check without loading anything; it returns `None` or raises `ValueError`. `predict_window(start, end)` requests the features itself, with the head's warm-up before `start`, and returns the predictions cut to `start`..`end`. The backtester uses these two, together with `train_bounds`, `test_bounds`, `labels`, `label_delays` and the fingerprint entries, through the `Predictor` protocol (see the backtest guide), and rebuilds a model from its config with the class method `from_config`.
+`check_checkpoint(path)` runs the same variable check without loading anything; it returns the checkpoint's `TrainedRun` or raises `ValueError`. `predict_window(start, end)` requests the features itself, with the head's warm-up before `start`, and returns the predictions cut to `start`..`end`. `fitted_train_bounds` is the training window actually fitted, after the purge: the one the model fitted after `train()`, the one its record states after `load()`. The backtester uses these, together with `train_bounds`, `test_bounds`, `labels`, `label_delays` and the fingerprint entries, through the `Predictor` protocol (see the backtest guide), and rebuilds a model from its config with the class method `from_config`.
 
 ```python
->>> XGBoostRegressor(config).check_checkpoint(checkpoint)
+>>> XGBoostRegressor(config).check_checkpoint(checkpoint).kind
+'model'
 >>> window = restored.predict_window("2024-06-01", "2024-07-18")
 >>> window.sizes["timestamp"], list(window.data_vars)
 (48, ['ret'])
 >>> restored.train_bounds, restored.test_bounds
 (('2024-01-01', '2024-05-31'), ('2024-06-01', '2024-07-18'))
+>>> restored.fitted_train_bounds
+('2024-01-01', '2024-05-29T00:00:00')
 ```
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the tracking run's summary as `train_*`, `val_*` and `test_*` (see Track experiments), and `train()` writes the same dict to `metrics.json` beside `config.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
+`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the tracking run's summary as `train_*`, `val_*` and `test_*` (see Track experiments), and `train()` records the same dict as the `metrics` of its `run.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
 
 ```python
->>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+>>> metrics = run.metrics
 >>> sorted(metrics)[:9]
 ['test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse']
 >>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("rank_ic")}
@@ -180,14 +192,16 @@ A return label, and a volatility label a head predicts on a standardized scale (
 
 ### IC series and saved predictions
 
-Every run also writes two files beside `metrics.json`, so a new metric or an ensemble can be computed from disk without predicting again:
+Every run also writes two files beside `run.json`, so a new metric or an ensemble can be computed from disk without predicting again:
 
-- `ic_series.csv` has the columns `split`, `timestamp`, `ic` and `rank_ic`: one row per bar of each evaluated segment (`train`, `val`, `test`, each in time order), holding the IC and RankIC of that bar on the raw primary label. They come from the same predictions as `metrics.json`: the mean of a segment's `ic` column is its `<split>_ic`, and its ICIR is `<split>_icir`. A bar without an IC (fewer than two valid symbols, or a constant cross-section) has no row. A cell is empty only when one of the two values exists and the other does not.
+- `ic_series.csv` has the columns `split`, `timestamp`, `ic` and `rank_ic`: one row per bar of each evaluated segment (`train`, `val`, `test`, each in time order), holding the IC and RankIC of that bar on the raw primary label. They come from the same predictions as the recorded metrics: the mean of a segment's `ic` column is its `<split>_ic`, and its ICIR is `<split>_icir`. A bar without an IC (fewer than two valid symbols, or a constant cross-section) has no row. A cell is empty only when one of the two values exists and the other does not.
 - `test_predictions.zarr` is the prediction panel of the test segment: `predict_panel` on the collected features, over the test bars and every collected symbol, with one variable per label. There is no store when the test segment has no bars.
+
+`TrainedRun` gives their paths as `ic_series` and `test_predictions`, `None` for a file that was not written.
 
 ```python
 >>> import pandas as pd
->>> series = pd.read_csv(checkpoint.parent / "ic_series.csv", parse_dates=["timestamp"])
+>>> series = pd.read_csv(run.ic_series, parse_dates=["timestamp"])
 >>> series.head(3)
    split  timestamp        ic   rank_ic
 0  train 2024-01-01  0.662219  0.690226
@@ -198,7 +212,7 @@ Every run also writes two files beside `metrics.json`, so a new metric or an ens
 >>> test_ic = series[series["split"] == "test"]["ic"]
 >>> round(float(test_ic.mean() / test_ic.std()), 3), round(metrics["test_icir"], 3)
 (5.524, 5.524)
->>> saved = xr.open_zarr(checkpoint.parent / "test_predictions.zarr").load()
+>>> saved = xr.open_zarr(run.test_predictions).load()
 >>> dict(saved.sizes), list(saved.data_vars)
 ({'timestamp': 48, 'symbol': 20}, ['ret'])
 >>> bool((saved["ret"] == predictions["ret"].sel(timestamp=saved.timestamp)).all())
@@ -263,12 +277,10 @@ A library head fits the raw label unless `hyperparameters["training_target"]` na
 ... })).collect()
 >>> ranked.label_scales, model.label_scales
 ({'ret': 'standardized'}, {'ret': 'raw'})
->>> ranked_dir = ranked.train().parent
->>> ranked_metrics = json.loads((ranked_dir / "metrics.json").read_text())
->>> plain_metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
->>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
+>>> ranked_run = TrainedRun.open(ranked.train())
+>>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
 [(0.679, 0.003), (0.674, 0.439)]
->>> record = json.loads((ranked_dir / "config.json").read_text())
+>>> record = ranked_run.config
 >>> record["hyperparameters"]["training_target"], "training_target" in record["resolved_hyperparameters"]
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
@@ -298,57 +310,59 @@ The training target mattered most: on the Nasdaq-100 every `cs_rank` candidate b
 
 ### Cross-validate over walk-forward folds
 
-`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own tracking run, and its checkpoint directory also holds the fold's `ic_series.csv` and `test_predictions.zarr` (the fold's metrics themselves go to `cv_folds.json`, below). The return value has one dict per fold with its dates (both ends inclusive), checkpoint path and `train_*`, `val_*` and `test_*` metrics. Its `train_end` is the last bar fitted, after the purge.
+`train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own tracking run.
+
+The folds are laid out by `walk_forward_folds(timestamps, train_periods, test_periods=None, expanding=False, purge_bars=0)` in `quantlab.utils.walk_forward`, which a model's and an ensemble's `train_cv` both call. It needs no model, so the split can be checked before an expensive run. Each `Fold` carries its `index`, the training window as configured (`train_window`), the training window actually fitted after the purge (`fitted_train_window`) and the `test_window`, all inclusive. `purge_bars` is L; the model passes the largest `lookahead_bars()` among its labels.
 
 ```python
->>> results = model.train_cv(train_periods=100)
->>> len(results)
-5
->>> [(r["train_start"][:10], r["train_end"][:10], r["test_start"][:10], r["test_end"][:10]) for r in results]
+>>> from quantlab.utils.walk_forward import walk_forward_folds
+>>> planned = walk_forward_folds(coords["timestamp"], 100, purge_bars=label.lookahead_bars())
+>>> len(planned), planned[0]
+(5, Fold(index=0, train_window=('2024-01-01', '2024-04-09'), fitted_train_window=('2024-01-01', '2024-04-07'), test_window=('2024-04-10', '2024-04-29')))
+```
+
+`train_cv` returns the run as a `TrainedRun` of kind `"walk_forward"`. Its trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/` holds one `fold_{i}/` per fold and `run.json`, which lists the folds and records `cv_mean`: the mean over folds of every `train_*`, `val_*` and `test_*` metric as `cv_mean_<metric>`, plus `cv_n_folds`. Non-finite fold values are left out of a mean, and NaN and infinity are written as null. Each `fold_{i}/` is a `"model"` unit like the directory of `train()`, with the checkpoint `XGBoostRegressor_cv_fold_{i}.joblib`. `folds` holds them as `TrainedRun` objects in fold order, each with its `index`, its three windows and its metrics. A backtester replays the run from its directory (see the backtest guide).
+
+```python
+>>> cv = model.train_cv(train_periods=100)
+>>> cv.kind, len(cv.folds)
+('walk_forward', 5)
+>>> [(f.train_window[0][:10], f.fitted_train_window[1][:10], f.test_window[0][:10], f.test_window[1][:10]) for f in cv.folds]
 [('2024-01-01', '2024-04-07', '2024-04-10', '2024-04-29'), ('2024-01-21', '2024-04-27', '2024-04-30', '2024-05-19'), ('2024-02-10', '2024-05-17', '2024-05-20', '2024-06-08'), ('2024-03-01', '2024-06-06', '2024-06-09', '2024-06-28'), ('2024-03-21', '2024-06-26', '2024-06-29', '2024-07-18')]
->>> [round(r["test_rank_ic"], 3) for r in results]
+>>> days = lambda f: [w[0][:10] + ".." + w[1][:10] for w in (f.train_window, f.fitted_train_window, f.test_window)]
+>>> [days(f) for f in cv.folds] == [days(f) for f in planned]
+True
+>>> [round(f.metrics["test_rank_ic"], 3) for f in cv.folds]
 [0.691, 0.649, 0.695, 0.656, 0.697]
->>> [round(r["test_icir"], 3) for r in results]
+>>> [round(f.metrics["test_icir"], 3) for f in cv.folds]
 [6.943, 5.013, 7.982, 5.508, 5.464]
->>> from pathlib import Path
->>> sorted(p.name for p in Path(results[0]["checkpoint"]).parent.iterdir())
-['XGBoostRegressor_cv_fold_0.joblib', 'config.json', 'ic_series.csv', 'test_predictions.zarr']
-```
-
-All folds share one trial directory. Besides one sub-directory per fold it contains `cv_folds.json`, a manifest with `format_version` (2), the fold list as returned, purged `train_end` included, and a `cv_mean` block: the mean over folds of every `train_*`, `val_*` and `test_*` metric as `cv_mean_<metric>`, plus `cv_n_folds`. Non-finite fold values are left out of a mean, and NaN and infinity are written as null. A backtester replays a cross-validation run from this file; it refuses a version 1 manifest, written before the `cv_mean` block, so rerun `train_cv` for an old project. Each fold's `config.json` records the dates the fold was configured with, before the purge, so its `train_end` lies L bars after the manifest's.
-
-```python
->>> trial = Path(results[0]["checkpoint"]).parent.parent
->>> sorted(p.name for p in trial.iterdir())
-['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']
->>> manifest = json.loads((trial / "cv_folds.json").read_text())
->>> manifest["format_version"], len(manifest["folds"])
-(2, 5)
->>> {k: round(v, 3) for k, v in manifest["cv_mean"].items() if k.endswith("rank_ic")}
+>>> {k: round(v, 3) for k, v in cv.cv_mean.items() if k.endswith("rank_ic")}
 {'cv_mean_train_rank_ic': 0.709, 'cv_mean_val_rank_ic': 0.687, 'cv_mean_test_rank_ic': 0.677}
->>> fold_0 = json.loads((Path(results[0]["checkpoint"]).parent / "config.json").read_text())
->>> fold_0["train_end"], manifest["folds"][0]["train_end"]
-('2024-04-09T00:00:00', '2024-04-07T00:00:00')
+>>> sorted(p.name for p in cv.path.iterdir())
+['fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4', 'run.json']
+>>> fold_0 = cv.folds[0]
+>>> fold_0.kind, fold_0.checkpoint.name, sorted(p.name for p in fold_0.path.iterdir())
+('model', 'XGBoostRegressor_cv_fold_0.joblib', ['XGBoostRegressor_cv_fold_0.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr'])
 ```
 
-With `expanding=True` every fold trains from the first fold's start instead: fold i's training window runs from the first bar to where the sliding fold's window ends, so `train_periods` is the first fold's training length and later folds train on all the history before their test segment. The test segments, the fold count and the purge are the sliding ones, so the two modes compare on the same test bars. The validation segment stays the last `val_size` share of each window and grows with it. `cv_folds.json` has the same format and does not record the mode; the fold dates carry it, and `run_cv` replays it like a sliding run.
+With `expanding=True` every fold trains from the first fold's start instead: fold i's training window runs from the first bar to where the sliding fold's window ends, so `train_periods` is the first fold's training length and later folds train on all the history before their test segment. The test segments, the fold count and the purge are the sliding ones, so the two modes compare on the same test bars. The validation segment stays the last `val_size` share of each window and grows with it. The run does not record the mode; the fold windows carry it, and `run_cv` replays it like a sliding run.
 
 ```python
 >>> grown = XGBoostRegressor(config).collect().train_cv(train_periods=100, expanding=True)
->>> [(r["train_start"][:10], r["train_end"][:10]) for r in grown]
+>>> [(f.train_window[0][:10], f.fitted_train_window[1][:10]) for f in grown.folds]
 [('2024-01-01', '2024-04-07'), ('2024-01-01', '2024-04-27'), ('2024-01-01', '2024-05-17'), ('2024-01-01', '2024-06-06'), ('2024-01-01', '2024-06-26')]
->>> [r["test_start"] for r in grown] == [r["test_start"] for r in results]
+>>> [f.test_window for f in grown.folds] == [f.test_window for f in cv.folds]
 True
->>> [round(r["test_rank_ic"], 3) for r in grown]
+>>> [round(f.metrics["test_rank_ic"], 3) for f in grown.folds]
 [0.691, 0.658, 0.704, 0.655, 0.695]
 ```
 
-`test_periods` sets the test length, and the step from one fold to the next, instead of one fifth of `train_periods`; the fold count is then `(bars - train_periods) // test_periods`. So a first training window of three years can be tested half a year at a time. The fold dates carry it, as they carry the mode.
+`test_periods` sets the test length, and the step from one fold to the next, instead of one fifth of `train_periods`; the fold count is then `(bars - train_periods) // test_periods`. So a first training window of three years can be tested half a year at a time. The fold windows carry it, as they carry the mode.
 
 ```python
 >>> paced = XGBoostRegressor(config).collect().train_cv(
 ...     train_periods=100, expanding=True, test_periods=30)
->>> [(r["test_start"][:10], r["test_end"][:10]) for r in paced]
+>>> [(f.test_window[0][:10], f.test_window[1][:10]) for f in paced.folds]
 [('2024-04-10', '2024-05-09'), ('2024-05-10', '2024-06-08'), ('2024-06-09', '2024-07-08')]
 ```
 
@@ -372,24 +386,22 @@ The folds train one after another, on the one collected panel.
 True
 ```
 
-`train()` creates one ensemble directory `checkpoints/SeedEnsemble_trial_<timestamp>/` and trains the members in order, member k into `member_{k}/` with its own tracking run `XGBoostRegressor_member_{k}`, grouped by the ensemble directory's name; each member directory holds the usual checkpoint, `config.json`, `metrics.json`, `ic_series.csv` and `test_predictions.zarr`. Then it writes the evaluation files of the averaged prediction (see below), `config.json` with what the members share, the training and test dates and the label configs (it is not a model config), and last `ensemble.json`, the manifest. `train()` returns the manifest's path. If a member or the ensemble evaluation fails, no manifest is written and the files already written stay.
+`train()` creates one trial directory `checkpoints/SeedEnsemble_trial_<timestamp>/`, an `"ensemble"` unit, and trains the members in order, member k into the `"model"` unit `member_{k}/` with its own tracking run `XGBoostRegressor_member_{k}`, grouped by the trial directory's name; each member unit holds the usual checkpoint, `config.json`, `ic_series.csv`, `test_predictions.zarr` and `run.json`. Then it writes the evaluation files of the averaged prediction (see below) and last the ensemble's `run.json`, which lists the members (directory and seed) and records the ensemble's windows and metrics. That `run.json` is the ensemble's checkpoint: `train()` returns its path, and `load` reads it. If a member or the ensemble evaluation fails, no `run.json` is written and the files already written stay.
 
 ```python
->>> manifest = ensemble.train()
->>> manifest.name
-'ensemble.json'
->>> sorted(p.name for p in manifest.parent.iterdir())
-['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
->>> sorted(p.name for p in (manifest.parent / "member_0").iterdir())
-['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
->>> saved = json.loads(manifest.read_text())
->>> saved["format_version"], saved["members"][1]
-(1, {'name': 'quantlab.model.predefined.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
->>> sorted(json.loads((manifest.parent / "config.json").read_text()))
-['labels', 'test_end', 'test_start', 'train_end', 'train_start']
+>>> checkpoint = ensemble.train()
+>>> trained = TrainedRun.open(checkpoint)
+>>> trained.kind, trained.checkpoint == checkpoint, trained.path.name.startswith("SeedEnsemble_trial_")
+('ensemble', True, True)
+>>> sorted(p.name for p in trained.path.iterdir())
+['ic_series.csv', 'member_0', 'member_1', 'member_2', 'run.json', 'test_predictions.zarr']
+>>> [(m.path.name, m.seed, m.checkpoint.name) for m in trained.members]
+[('member_0', 0, 'XGBoostRegressor_member_0.joblib'), ('member_1', 1, 'XGBoostRegressor_member_1.joblib'), ('member_2', 2, 'XGBoostRegressor_member_2.joblib')]
+>>> trained.members[1].config["name"]
+'quantlab.model.predefined.xgb.XGBoostRegressor'
 ```
 
-The manifest lists every member as its class (dotted path), its checkpoint relative to the manifest's directory and its seed, and names nothing specific to seeds beyond that field, so an ensemble of different models can write the same format.
+A member is a `"model"` unit of its own, whose `config.json` names its class; the ensemble's record names nothing specific to seeds beyond the seed field (`None` when the ensemble does not vary seeds), so an ensemble of different models writes the same format.
 
 The ensemble's prediction is `average_predictions` (in `quantlab.utils.ensemble`) of its members' predictions. Each member's panel is z-scored over symbols on each bar, `(x - mean) / std` with `ddof=1` as `CrossSectionalZScore` does, and the z-scores are averaged over members with equal weights, ignoring NaN. A member whose bar has fewer than two finite values or a constant cross-section is left out on that bar; a cell only some members predict is the mean of those members, and a cell no member predicts is NaN. The panels' coordinates are outer-joined, and panels with different variable sets raise `ValueError`. The result is in z-score units, not returns: each bar has mean 0.
 
@@ -409,19 +421,19 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-The ensemble directory also holds the evaluation files of the averaged prediction, written after the last member and before `ensemble.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). `metrics.json` holds `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`), and `{split}_member_correlation`, how much the members agree (below). There is no loss, MSE, MAE or R2, because the average is in z-score units. A volatility label only one member predicts, on the label's own scale, keeps that scale and also gets `{split}_qlike` and `{split}_variance_ratio` (see Volatility labels above; for a label other than the first, `{split}_{label}_qlike`); a volatility label averaged over several members is in z-score units and gets neither. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
+The ensemble unit also holds the evaluation files of the averaged prediction, written after the last member and before its `run.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored on the same purged train, validation and test segments a single model uses (those of the first member). The unit's metrics hold `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label with the panel metrics a single model uses (`quantlab.utils.metrics.ic_panel_metrics`), and `{split}_member_correlation`, how much the members agree (below). There is no loss, MSE, MAE or R2, because the average is in z-score units. A volatility label only one member predicts, on the label's own scale, keeps that scale and also gets `{split}_qlike` and `{split}_variance_ratio` (see Volatility labels above; for a label other than the first, `{split}_{label}_qlike`); a volatility label averaged over several members is in z-score units and gets neither. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
 
 ```python
->>> metrics = json.loads((manifest.parent / "metrics.json").read_text())
+>>> metrics = trained.metrics
 >>> sorted(metrics)
 ['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir']
->>> [round(json.loads((manifest.parent / f"member_{k}" / "metrics.json").read_text())["test_rank_ic"], 3) for k in range(3)], round(metrics["test_rank_ic"], 3)
+>>> [round(m.metrics["test_rank_ic"], 3) for m in trained.members], round(metrics["test_rank_ic"], 3)
 ([0.682, 0.687, 0.689], 0.688)
 >>> import pandas as pd
->>> pd.read_csv(manifest.parent / "ic_series.csv").groupby("split", sort=False).size().to_dict()
+>>> pd.read_csv(trained.ic_series).groupby("split", sort=False).size().to_dict()
 {'train': 119, 'val': 29, 'test': 48}
->>> saved = xr.open_zarr(manifest.parent / "test_predictions.zarr").load()
->>> tests = [xr.open_zarr(manifest.parent / f"member_{k}" / "test_predictions.zarr").load() for k in range(3)]
+>>> saved = xr.open_zarr(trained.test_predictions).load()
+>>> tests = [xr.open_zarr(m.test_predictions).load() for m in trained.members]
 >>> dict(saved.sizes), bool(np.allclose(saved["ret"], average_predictions(tests)["ret"]))
 ({'timestamp': 48, 'symbol': 20}, True)
 ```
@@ -461,12 +473,13 @@ With `ρ` near 1 the members are copies of one another and the ensemble IC stays
 (250,)
 ```
 
-`load(manifest)` restores every member from the checkpoints the manifest lists, and `check_checkpoint(manifest)` checks them without loading: the manifest must be of format version 1 and list as many members as the ensemble has, each with the ensemble's member class and seed, and every member checkpoint must exist and pass the member's own `check_checkpoint`. `get_config()` returns the wrapped model's config and the seeds, and `SeedEnsemble.from_config` rebuilds the ensemble from it. A `SeedEnsemble` satisfies the backtester's `Predictor` protocol, so it is backtested like one model (see the backtest guide).
+`load(checkpoint)` restores every member from its member unit, and `check_checkpoint(checkpoint)` checks them without loading and returns the ensemble's `TrainedRun`: the unit must be an `"ensemble"` unit `TrainedRun` can open, with as many members as the ensemble has, each with the ensemble's member class and seed, and every member checkpoint must pass the member's own `check_checkpoint`. Both take the ensemble's `run.json` or its directory. `get_config()` returns the wrapped model's config and the seeds, and `SeedEnsemble.from_config` rebuilds the ensemble from it. A `SeedEnsemble` satisfies the backtester's `Predictor` protocol, so it is backtested like one model (see the backtest guide).
 
 ```python
 >>> restored = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2])
->>> restored.check_checkpoint(manifest)
->>> restored = restored.load(manifest)
+>>> restored.check_checkpoint(checkpoint).kind
+'ensemble'
+>>> restored = restored.load(checkpoint)
 >>> bool(np.allclose(restored.predict_window("2024-06-01", "2024-07-18")["ret"], window["ret"]))
 True
 >>> cfg = ensemble.get_config()
@@ -480,50 +493,51 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 The members train one after another, and each reseeds its random generators from its own `random_seed` right before it trains.
 
-`train_cv(train_periods, expanding=False, test_periods=None)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: the same fold dates, sliding or expanding, with the same test length, over the first member's collected panel, with the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a directory `checkpoints/SeedEnsemble_cv_<timestamp>/` holding `cv_folds.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own tracking run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, `config.json` and `ensemble.json`. As for a single model's fold, the fold's ensemble metrics go to `cv_folds.json` instead of a `metrics.json`, and the fold's `config.json` records the dates before the purge. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
+`train_cv(train_periods, expanding=False, test_periods=None)` cross-validates the ensemble over the walk-forward folds a single model's `train_cv` uses: `walk_forward_folds` over the first member's collected panel, sliding or expanding, with the same test length and the same purge. Every member's hyperparameters are checked once, before any directory is created. The run gets a trial directory `checkpoints/SeedEnsemble_trial_<timestamp>/`, a `"walk_forward"` unit like a single model's, holding `run.json` and one `fold_{i}/` per fold. Each `fold_{i}/` is an `"ensemble"` unit filled like the directory of `train()`, with the members configured on that fold's dates: `member_{k}/` trained under its own tracking run `XGBoostRegressor_fold_{i}_member_{k}` (also the checkpoint's name), the averaged prediction's `ic_series.csv` and `test_predictions.zarr`, and the fold's `run.json`, its checkpoint. The folds train one after another, and afterwards the members keep the last fold's dates, as a model does after its own `train_cv`.
 
-`cv_folds.json` has the format a single model's `train_cv` writes (format version 2): each fold record holds the purged dates, `checkpoint`, the absolute path of the fold's `ensemble.json`, and the fold's ensemble metrics, which are the IC family and `{split}_member_correlation`; `cv_mean` averages them. The return value is the fold list. A separate tracking run `SeedEnsemble_cv_summary`, opened through the first member's tracker in the members' project and group, carries the `cv_mean_*` values. The ensemble has no tracker of its own: its runs go through the member model's. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
+`train_cv` returns the walk-forward `TrainedRun`. Its folds' metrics are the IC family and `{split}_member_correlation`, and `cv_mean` averages them. A separate tracking run `SeedEnsemble_cv_summary`, opened through the first member's tracker in the members' project and group, carries the `cv_mean_*` values. The ensemble has no tracker of its own: its runs go through the member model's. A backtester's `run_cv()` replays the directory with the ensemble as its model (see the backtest guide).
 
 ```python
->>> folds = ensemble.train_cv(train_periods=100)
->>> [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in folds] == [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in results]
+>>> ensemble_cv = ensemble.train_cv(train_periods=100)
+>>> [(f.train_window, f.fitted_train_window, f.test_window) for f in ensemble_cv.folds] == [(f.train_window, f.fitted_train_window, f.test_window) for f in cv.folds]
 True
->>> cv_dir = Path(folds[0]["checkpoint"]).parent.parent
->>> cv_dir.name.startswith("SeedEnsemble_cv_"), sorted(p.name for p in cv_dir.iterdir())
-(True, ['cv_folds.json', 'fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4'])
->>> sorted(p.name for p in (cv_dir / "fold_0").iterdir())
-['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'test_predictions.zarr']
->>> sorted(p.name for p in (cv_dir / "fold_0" / "member_0").iterdir())
-['XGBoostRegressor_fold_0_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
->>> cv_manifest = json.loads((cv_dir / "cv_folds.json").read_text())
->>> cv_manifest["format_version"], sorted(cv_manifest["folds"][0])
-(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir'])
->>> [round(r["test_rank_ic"], 3) for r in folds]
+>>> ensemble_cv.path.name.startswith("SeedEnsemble_trial_"), sorted(p.name for p in ensemble_cv.path.iterdir())
+(True, ['fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4', 'run.json'])
+>>> fold_0 = ensemble_cv.folds[0]
+>>> fold_0.kind, sorted(p.name for p in fold_0.path.iterdir())
+('ensemble', ['ic_series.csv', 'member_0', 'member_1', 'member_2', 'run.json', 'test_predictions.zarr'])
+>>> fold_0.members[0].checkpoint.name
+'XGBoostRegressor_fold_0_member_0.joblib'
+>>> sorted(fold_0.metrics)[:5]
+['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir']
+>>> [round(f.metrics["test_rank_ic"], 3) for f in ensemble_cv.folds]
 [0.69, 0.651, 0.709, 0.672, 0.698]
->>> {k: round(v, 3) for k, v in cv_manifest["cv_mean"].items() if k.endswith("rank_ic")}
+>>> {k: round(v, 3) for k, v in ensemble_cv.cv_mean.items() if k.endswith("rank_ic")}
 {'cv_mean_train_rank_ic': 0.712, 'cv_mean_val_rank_ic': 0.697, 'cv_mean_test_rank_ic': 0.684}
->>> fold_0 = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2]).load(folds[0]["checkpoint"])
->>> [m.model is not None for m in fold_0.members]
+>>> restored_fold = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2]).load(fold_0.checkpoint)
+>>> [m.model is not None for m in restored_fold.members]
 [True, True, True]
 ```
 
 ### Combine different models
 
-`ModelEnsemble(members)` in `quantlab.model.predefined.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. Each member collects its own data and requests its own features, and the ensemble combines each label over the members that predict it: a label several members predict is the equal-weight mean of their per-bar cross-sectional z-scores, as in `SeedEnsemble`; a label only one member predicts is that member's prediction, unchanged. So a return model and a volatility model (`quantlab.label.predefined.fret.Volatility`) make one predictor whose labels are the union of the members' labels, in first-appearance order. A label several members predict must have the same config in each, otherwise the constructor raises `ValueError` naming the member. The members' windows may differ: the ensemble's training end is the latest member's and its test window the intersection of the members' (the constructor raises when they do not overlap), so the backtester's out-of-sample segment was seen by no member. `train_cv` lays out one fold geometry for every member and purges with the largest lookahead among them. `label_scales` reports each label's scale: `"standardized"` for an averaged label, the member's own for a passed-through one; a model reports `"raw"` exactly when it fits the label unchanged: it keeps the identity `_transform_target` and, for a library head, sets no `training_target`. A return member with `"training_target": "cs_rank"` and a raw volatility member therefore report `"standardized"` and `"raw"`. The evaluation files score each label against the truth of a member that predicts it: the first label under the keys above, every other label as `{split}_{label}_{metric}`, and `member_correlation` only for labels at least two members predict. `train()`, `train_cv()`, `load()`, the evaluation files and the manifest are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
+`ModelEnsemble(members)` in `quantlab.model.predefined.model_ensemble` takes the member models as given: models of different classes over different factors, for example an XGBoost regressor over one factor set and a GATs network over another. Each member collects its own data and requests its own features, and the ensemble combines each label over the members that predict it: a label several members predict is the equal-weight mean of their per-bar cross-sectional z-scores, as in `SeedEnsemble`; a label only one member predicts is that member's prediction, unchanged. So a return model and a volatility model (`quantlab.label.predefined.fret.Volatility`) make one predictor whose labels are the union of the members' labels, in first-appearance order. A label several members predict must have the same config in each, otherwise the constructor raises `ValueError` naming the member. The members' windows may differ: the ensemble's training end is the latest member's and its test window the intersection of the members' (the constructor raises when they do not overlap), so the backtester's out-of-sample segment was seen by no member. `train_cv` lays out one fold geometry for every member and purges with the largest lookahead among them. `label_scales` reports each label's scale: `"standardized"` for an averaged label, the member's own for a passed-through one; a model reports `"raw"` exactly when it fits the label unchanged: it keeps the identity `_transform_target` and, for a library head, sets no `training_target`. A return member with `"training_target": "cs_rank"` and a raw volatility member therefore report `"standardized"` and `"raw"`. The evaluation files score each label against the truth of a member that predicts it: the first label under the keys above, every other label as `{split}_{label}_{metric}`, and `member_correlation` only for labels at least two members predict. `train()`, `train_cv()`, `load()`, the evaluation files and the unit's `run.json` are those of `SeedEnsemble`, with a null seed per member. `get_config()` returns every member's config, and `ModelEnsemble.from_config` rebuilds each member from its own.
 
 ```python
 >>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
->>> ensemble = ModelEnsemble([xgb, gats])  # same label and dates, different factors
->>> config = ensemble.get_config()
->>> [m["name"] for m in config["members"]]
-['quantlab.model.predefined.xgb.XGBoostRegressor', 'quantlab.model.predefined.gats.GATsRegressor']
->>> manifest = ensemble.collect().train()
->>> restored = ModelEnsemble.from_config(config).load(manifest)
->>> [type(m).__name__ for m in restored.members]
-['XGBoostRegressor', 'GATsRegressor']
+>>> def members():  # same label and dates, different factors
+...     return [XGBoostRegressor(replace(config, factors=[Panel(f_a=f_a)])),
+...             XGBoostRegressor(replace(config, factors=[Panel(f_b=f_b)]))]
+>>> mixed = ModelEnsemble(members())
+>>> [m["factors"] for m in mixed.get_config()["members"]]
+[[{'factor_names': ['f_a']}], [{'factor_names': ['f_b']}]]
+>>> mixed_checkpoint = mixed.collect().train()
+>>> restored = ModelEnsemble(members()).load(mixed_checkpoint)
+>>> [m.get_factor_names() for m in restored.members], [m.seed for m in TrainedRun.open(mixed_checkpoint).members]
+([['f_a'], ['f_b']], [None, None])
 ```
 
-The combination rule is the hook `_combine(predictions)`: it receives one prediction panel per member, in member order, and returns the ensemble's panel. `predict_window` and the ensemble-level `metrics.json`, `ic_series.csv` and `test_predictions.zarr` all go through it, so what is evaluated is what is backtested. Overriding it in a subclass changes the rule, for example to an average of percentile ranks:
+The combination rule is the hook `_combine(predictions)`: it receives one prediction panel per member, in member order, and returns the ensemble's panel. `predict_window` and the ensemble-level metrics, `ic_series.csv` and `test_predictions.zarr` all go through it, so what is evaluated is what is backtested. Overriding it in a subclass changes the rule, for example to an average of percentile ranks:
 
 ```python
 >>> import xarray as xr
@@ -532,10 +546,10 @@ The combination rule is the hook `_combine(predictions)`: it receives one predic
 ...     def _combine(self, predictions):
 ...         aligned = xr.align(*predictions, join="outer")
 ...         return sum(p.rank("symbol", pct=True) for p in aligned) / len(aligned)
->>> ranked = RankAverage([xgb, gats])
->>> manifest = ranked.collect().train()
->>> sorted(p.name for p in manifest.parent.iterdir())
-['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'metrics.json', 'test_predictions.zarr']
+>>> ranked = RankAverage(members())
+>>> ranked_unit = TrainedRun.open(ranked.collect().train())
+>>> sorted(p.name for p in ranked_unit.path.iterdir())
+['ic_series.csv', 'member_0', 'member_1', 'run.json', 'test_predictions.zarr']
 ```
 
 `_combine` sees only the predictions. A rule whose parameters are learned during training, such as weights fitted on the validation segment, is not supported yet.
@@ -601,7 +615,7 @@ The smallest head is a window, a network and a loss:
 >>> minimal_checkpoint = minimal.train()
 >>> minimal_checkpoint.name
 'MinimalHead_total.pth'
->>> torch_metrics = json.loads((minimal_checkpoint.parent / "metrics.json").read_text())
+>>> torch_metrics = TrainedRun.open(minimal_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in torch_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.697, 'val_rank_ic': 0.693, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
@@ -637,7 +651,7 @@ This head chooses its own optimizer, loss and stopping rule. It z-scores the tar
 ...     def _on_fit_end(self):
 ...         self.model.load_state_dict(self.best_state)
 >>> corr = CorrHead(replace(torch_config, hyperparameters={"epochs": 50})).collect()
->>> corr_metrics = json.loads((corr.train().parent / "metrics.json").read_text())
+>>> corr_metrics = TrainedRun.open(corr.train()).metrics
 >>> {k: round(v, 3) for k, v in corr_metrics.items() if k in ("val_loss", "test_rank_ic")}
 {'val_loss': -0.721, 'test_rank_ic': 0.691}
 ```
@@ -684,7 +698,7 @@ The head below is Qlib's GRU on this dataset: `_dataset` returns the sequence da
 ...     hyperparameters={"epochs": 30, "lr": 1e-2, "hidden_size": 16},
 ... )).collect()
 >>> gru_checkpoint = gru.train()
->>> gru_metrics = json.loads((gru_checkpoint.parent / "metrics.json").read_text())
+>>> gru_metrics = TrainedRun.open(gru_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in gru_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.701, 'val_rank_ic': 0.693, 'test_rank_ic': 0.696}
 >>> reloaded = GRUHead(gru.config).load(gru_checkpoint)
@@ -724,7 +738,7 @@ The session below trains a small GATs on the stand-in factor with a calendar, `s
 >>> logger.remove(sink)
 >>> stops[0].strip()
 'GATsRegressor: stopping after epoch 9'
->>> gats_metrics = json.loads((gats_checkpoint.parent / "metrics.json").read_text())
+>>> gats_metrics = TrainedRun.open(gats_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in gats_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.707, 'val_rank_ic': 0.696, 'test_rank_ic': 0.693}
 ```
@@ -790,7 +804,7 @@ The session below adds a stand-in for the market factor, two series that are equ
 >>> logger.remove(sink)
 >>> stops[0].strip()
 'MASTERRegressor: stopping after epoch 5'
->>> master_metrics = json.loads((master_checkpoint.parent / "metrics.json").read_text())
+>>> master_metrics = TrainedRun.open(master_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in master_metrics.items() if k in ("val_loss", "test_rank_ic")}
 {'val_loss': 0.466, 'test_rank_ic': 0.687}
 >>> weights = master.model.gate(torch.zeros(1, 2))
@@ -831,7 +845,7 @@ A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"c
 ... )
 >>> def trained_device(head):
 ...     """Train ``head``; return its recorded device and whether the caller gave one."""
-...     record = json.loads((head.collect().train().parent / "config.json").read_text())
+...     record = TrainedRun.open(head.collect().train()).config
 ...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
 >>> trained_device(XGBoostRegressor(device_config))
 ('cpu', False)
@@ -859,7 +873,7 @@ The default loader pins memory only for a CPU panel read by workers of a model o
 >>> half = MinimalHead(replace(torch_config, hyperparameters={
 ...     "epochs": 20, "lr": 1e-2, "panel_dtype": "float16",
 ... })).collect()
->>> half_metrics = json.loads((half.train().parent / "metrics.json").read_text())
+>>> half_metrics = TrainedRun.open(half.train()).metrics
 >>> round(half_metrics["test_rank_ic"], 3), round(torch_metrics["test_rank_ic"], 3)
 (0.691, 0.69)
 >>> gap = half.predict_panel(factor.ds)["ret"] - minimal.predict_panel(factor.ds)["ret"]
@@ -886,7 +900,7 @@ Where the records of a training go is the config's `tracker`. The default, `Null
 
 The tracker is written to `config.json` with the rest of the config and rebuilt with it. Credentials come from environment variables only: `WANDB_API_KEY` for W&B, `MLFLOW_TRACKING_USERNAME` and `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` for MLflow.
 
-All trials of one model class go to one project, named after the class unless the tracker sets `project`. The runs of one `train()` or `train_cv()` call form a group named after the trial directory (`XGBoostRegressor_trial_<timestamp>`): `<Class>_total` for `train()`; `<Class>_cv_fold_<i>` per fold and `<Class>_cv_summary`, whose summary is the manifest's `cv_mean` block, for `train_cv()`. Every run carries the full config, and its summary holds the `train_*`, `val_*` and `test_*` metrics, non-finite values left out. A run is finished also when training raises, and is then marked failed.
+All trials of one model class go to one project, named after the class unless the tracker sets `project`. The runs of one `train()` or `train_cv()` call form a group named after the trial directory (`XGBoostRegressor_trial_<timestamp>`): `<Class>_total` for `train()`; `<Class>_cv_fold_<i>` per fold and `<Class>_cv_summary`, whose summary is the walk-forward run's `cv_mean`, for `train_cv()`. Every run carries the full config, and its summary holds the `train_*`, `val_*` and `test_*` metrics, non-finite values left out. A run is finished also when training raises, and is then marked failed.
 
 What a head adds to its run: `XGBoostRegressor` logs the training and validation metrics of every boosting round as step metrics (`train-rmse`, `val-ccc_loss`, ...), writes the best iteration and the per-factor importance (`importance_<type>/<factor>`) to the summary, and logs one table `feature_importance/<type>` per importance type, of which W&B also draws a bar chart of the top 30 factors. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.model.predefined._support.tabkit.active_callbacks`). Torch heads log `train_loss` and `val_loss` every epoch. A library head's resolved hyperparameters are added to the run config as `resolved_hyperparameters`.
 
@@ -908,11 +922,11 @@ NullTracker(project=None)
 >>> (run,) = client.search_runs([experiment.experiment_id])
 >>> run.info.run_name, run.info.status
 ('XGBoostRegressor_total', 'FINISHED')
->>> run.data.tags["group"] == checkpoint.parent.parent.name
+>>> run.data.tags["group"] == TrainedRun.open(checkpoint).path.name
 True
 >>> sorted(k for k in run.data.metrics if k.startswith("importance_gain/"))
 ['importance_gain/f_a', 'importance_gain/f_b']
->>> json.loads((checkpoint.parent / "config.json").read_text())["tracker"]["name"]
+>>> TrainedRun.open(checkpoint).config["tracker"]["name"]
 'quantlab.tracking.mlflow.MlflowTracker'
 ```
 
@@ -957,8 +971,8 @@ A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows
 ...     def _forward(self, x):
 ...         return np.c_[np.nan_to_num(x), np.ones(len(x))] @ self.model
 >>> ridge = RidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
->>> ridge_results = ridge.train_cv(train_periods=100)
->>> [round(r["test_rank_ic"], 3) for r in ridge_results]
+>>> ridge_cv = ridge.train_cv(train_periods=100)
+>>> [round(f.metrics["test_rank_ic"], 3) for f in ridge_cv.folds]
 [0.685, 0.667, 0.707, 0.672, 0.716]
 >>> ridge.model.round(3).ravel().tolist()
 [0.05, -0.02, -0.001]
@@ -973,15 +987,15 @@ Overriding `_transform_target` changes what the library fits and nothing else; f
 ...         ranks = torch.argsort(torch.argsort(y[:, 0])).float()  # this label has no NaN
 ...         return (ranks / (len(y) - 1) - 0.5)[:, None], None
 >>> ranked = RankRidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
->>> ranked_metrics = json.loads((ranked.train().parent / "metrics.json").read_text())
->>> plain_metrics = json.loads((ridge.train().parent / "metrics.json").read_text())
+>>> ranked_metrics = TrainedRun.open(ranked.train()).metrics
+>>> plain_metrics = TrainedRun.open(ridge.train()).metrics
 >>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
 [(0.716, 0.003), (0.69, 0.027)]
 ```
 
 A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
 
-A new ensemble subclasses `quantlab.model.ensemble.BaseEnsemble`, passes its members (at least two models; a label several members predict must have one config) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest's `config.json` can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded in the manifest). `ModelEnsemble` is the smallest complete example.
+A new ensemble subclasses `quantlab.model.ensemble.BaseEnsemble`, passes its members (at least two models; a label several members predict must have one config) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest's `config.json` can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded for member k in the ensemble's `run.json`). `ModelEnsemble` is the smallest complete example.
 
 ## Notes
 
@@ -1031,7 +1045,7 @@ ValueError: Model not initialized, please call load() or train() first
 ```text
 FileNotFoundError: checkpoints/missing.joblib not found
 ValueError: Unsupported file type: '.pth'; XGBoostRegressor checkpoints use '.joblib' (...)
-ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its config.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
+ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its run.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
 ```
 
 `predict_panel` needs every factor variable, and a torch head's `_forward` must return one row per sample of the batch (per symbol of the cross-section) and one column per label.
@@ -1066,9 +1080,9 @@ Without `test_periods` each fold tests on `train_periods // 5` bars, so `train_c
 ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
-`train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns an empty list (`[]`) without raising.
+`train_cv` overwrites the four `train_*` and `test_*` dates of the config with those of the last fold, so build a fresh config for a later `train()`. If `train_periods` leaves no room for a test segment, it logs `Skipping fold 0: test set exceeds data range` and returns a walk-forward run without folds, without raising.
 
-`train()` returns only the checkpoint path; the metrics of the run are in `metrics.json` beside it. `train_cv` returns them directly, for torch and library heads alike.
+`train()` returns only the checkpoint path; `TrainedRun.open(checkpoint).metrics` holds the metrics of the run. `train_cv` returns the walk-forward `TrainedRun`, whose folds hold theirs, for torch and library heads alike.
 
 Checkpoints are pickles (`joblib` for `LibraryModel` heads, `torch.load` for `TorchModel` heads). Load only files you produced or trust.
 
@@ -1078,4 +1092,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a `cv_folds.json` manifest feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`) and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`), `quantlab/utils/walk_forward.py` (`walk_forward_folds`), `quantlab/utils/trained_run.py` (`TrainedRun`) and `quantlab/utils/metrics.py`.

@@ -1282,11 +1282,12 @@ class BaseModel(ABC):
         Examples
         --------
         >>> checkpoint = model.train()
-        >>> checkpoint.name, checkpoint.parent.name.startswith("MyHead_trial_")
+        >>> run = TrainedRun.open(checkpoint)
+        >>> checkpoint.name, run.path.name.startswith("MyHead_trial_")
         ('MyHead_total.joblib', True)
-        >>> sorted(TrainedRun.open(checkpoint).metrics)[:4]
+        >>> sorted(run.metrics)[:4]
         ['test_ic', 'test_icir', 'test_loss', 'test_mae']
-        >>> sorted(p.name for p in checkpoint.parent.iterdir())
+        >>> sorted(p.name for p in run.path.iterdir())
         ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr']
         """
         self._check_hyperparameters()
@@ -1339,19 +1340,18 @@ class BaseModel(ABC):
             If ``run_dir`` already exists (see ``_save_model``).
         """
         self._set_random_seed(self.config.random_seed)
-        checkpoint = (
-            Path(run_dir) / f"{experiment_name}{self.checkpoint_suffix}"
-        ).absolute()
+        run_dir = Path(run_dir).absolute()
+        checkpoint = run_dir / f"{experiment_name}{self.checkpoint_suffix}"
         self._ic_series = {}
         with self._tracking_run(group, experiment_name):
             metrics = self._fit(checkpoint)
             # Written before the run finishes, so a tracker failing to finish
             # it cannot cost the files.
             if metrics is not None:
-                self._write_evaluation_files(checkpoint.parent)
+                self._write_evaluation_files(run_dir)
             fitted = self._fitted_train_window()
             write_model_run(
-                checkpoint.parent,
+                run_dir,
                 checkpoint=checkpoint,
                 train_window=self.train_bounds,
                 fitted_train_window=fitted,
@@ -1807,7 +1807,7 @@ class BaseModel(ABC):
         beside it. Returns the metrics of every evaluated
         split as one dict keyed ``{split}_{metric}`` with split ``train``,
         ``val`` (only when there is a validation segment) and ``test``
-        (``train`` writes it to ``metrics.json``, ``train_cv`` averages it),
+        (``train`` records it in ``run.json``, ``train_cv`` averages it),
         or None when the variant produces no metrics.
         """
 
@@ -1820,7 +1820,8 @@ class BaseModel(ABC):
         ``timestamps`` are the ``T`` bars of ``y`` in order. The per-bar IC
         and rank IC series behind ``ic`` / ``icir`` and ``rank_ic`` /
         ``rank_icir`` are kept under ``split`` for ``_write_evaluation_files``,
-        so the file and ``metrics.json`` come from the same predictions.
+        so the file and the metrics ``run.json`` records come from the same
+        predictions.
         When ``scores_volatility_level`` holds for the first label (a
         volatility label the model predicts on its own scale), the
         ``volatility_level_metrics`` ``qlike`` and ``variance_ratio`` are

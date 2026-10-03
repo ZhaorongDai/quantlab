@@ -594,7 +594,7 @@ as `Return` and `BinaryReturn` in `quantlab/label/predefined/fret.py` do.
 A model head is the part of a return model that is specific to one learning
 algorithm. `BaseModel` (`quantlab.base.model`) owns everything shared:
 collecting features and labels, the train/validation/test split and
-walk-forward cross-validation (both purged by the labels' lookahead), checkpoints with a `config.json` beside them, and
+walk-forward cross-validation (both purged by the labels' lookahead), checkpoints in a trained-run directory read through `TrainedRun`, and
 `predict_panel`. Two variants add the framework-specific loop.
 
 `LibraryModel` is for numpy-based libraries such as tree models. Its three hooks
@@ -691,8 +691,8 @@ by name rather than splatting the dict into the network. `quantlab.model.torch_t
 base class builds the training panel, computes the training target once per
 fit, moves batches to the device, runs the epoch loop, evaluates under
 `no_grad` in eval mode, scatters predictions back through `where` (refusing a
-dataset that misses or repeats a present cell), and writes the same
-`metrics.json` as `LibraryModel`. The model
+dataset that misses or repeats a present cell), and records the same
+metrics in its `run.json` as `LibraryModel`. The model
 requests `window_bars - 1` extra bars of each factor before its start date.
 A GRU per symbol followed by attention across the bar's symbols:
 

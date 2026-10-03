@@ -197,13 +197,15 @@ the path in the file is updated.
 ## Model checkpoint directories
 
 `train()` creates a new trial directory under the model's `model_save_dir`, named after the
-class and the time, for example `XGBoostRegressor_trial_20260925_174617_906613/`. Inside,
-`XGBoostRegressor_total/` holds the checkpoint (`.joblib` for tree models, `.pth` for torch
-models) and a `config.json` with the model's full config plus two records: the
-hyperparameters the library actually trained with, and the factor names, label names and
-symbols the model was trained on. `train_cv()` writes one sub-directory per fold and a
-`cv_folds.json` manifest listing each fold's dates and checkpoint, which the backtester reads
-to replay the folds. Training and evaluation metrics go to the experiment tracker named in
+class and the time, for example `XGBoostRegressor_trial_20260925_174617_906613/`. It is a
+*trained unit*: it holds the checkpoint (`.joblib` for tree models, `.pth` for torch models),
+a `config.json` with the model's full config and the hyperparameters the library actually
+trained with, and, written last, a `run.json` recording the training and test windows, the
+factor names, label names and symbols the model was trained on, and the metrics.
+`train_cv()` writes one unit per fold under `fold_{i}/` and a `run.json` listing the folds,
+which the backtester reads to replay them. A run is read back through
+`quantlab.utils.trained_run.TrainedRun`, the only code that reads or writes these files
+(ADR 0018). Training and evaluation metrics go to the experiment tracker named in
 the model config (`tracker`); the default sends them nowhere.
 
 ## Backtest run directories

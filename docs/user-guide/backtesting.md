@@ -371,10 +371,10 @@ bars after it, so those bars influenced training as well. The model's
 fitted bar plus L bars, counted on the price calendar
 (`quantlab.utils.split.in_sample_window`). When the test segment follows the
 training segment, the purge and the lookahead cancel and the window ends on
-the configured `train_end`. In load mode the dates recorded in the
-`config.json` next to the checkpoint are used, since those are the dates the
-checkpoint was really trained on; a warning is logged if `config.model` says
-otherwise.
+the configured `train_end`. In load mode the windows the
+checkpoint's `run.json` records are used (the model reports the fitted one as
+`fitted_train_bounds`), since those are the dates the checkpoint was really
+trained on; a warning is logged if `config.model` says otherwise.
 
 In the example the model's `train_end` is 2023-09-08 and its label has a
 lookahead of 6 bars (`delay=1`, `span=5`). The purge ends the fitted bars on
@@ -415,14 +415,14 @@ buy something else) is about 200%, which is why the example's
 *Walk-forward cross-validation* trains a model on a rolling sequence of
 windows: fold 0 trains on the first stretch of history and is tested on the
 bars right after it, fold 1 shifts forward, and so on (see
-[Models](models.md)). `BaseModel.train_cv` saves one checkpoint per fold and a
-manifest, `cv_folds.json`, in the trial directory. `run_cv()` reads that
-manifest and backtests the whole sequence:
+[Models](models.md)). `BaseModel.train_cv` trains one unit per fold, each
+with its own checkpoint, into one trial directory and returns it as a
+`TrainedRun`. `run_cv()` reads that directory through `TrainedRun` and
+backtests the whole sequence:
 
 ```python
 cv_model.collect()
-folds = cv_model.train_cv(train_periods=100)
-cv_project_dir = Path(folds[0]["checkpoint"]).parent.parent
+cv_project_dir = cv_model.train_cv(train_periods=100).path
 
 cv_backtester = USEquityCrossectionSelectStockVectorBt(
     CrossSectionBacktestConfig(
@@ -466,8 +466,8 @@ files: ['config.json', 'equity.zarr', 'fingerprint.json', 'folds', 'metrics.json
 ```
 
 `train_cv` purges the last L bars of every fold's training segment and
-records the purged `train_end` in `cv_folds.json`. A fold's effective training
-window ends L bars after that date, on the bar before its test segment, so
+records the fitted window, after the purge, in the fold's `run.json`. A
+fold's effective training window ends L bars after the fitted window's end, on the bar before its test segment, so
 the stitched curve is out-of-sample throughout; in the example run
 `in_sample_ranges` is `[]` and `out_of_sample_ranges` is
 `[('2023-05-22', '2024-02-23')]`. `metrics.json` holds a

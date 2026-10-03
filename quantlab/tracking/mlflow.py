@@ -226,7 +226,9 @@ class MlflowTracker(Tracker):
     >>> (run,) = client.search_runs(
     ...     [client.get_experiment_by_name("XGBoostRegressor").experiment_id]
     ... )
-    >>> run.info.run_name, run.info.status, run.data.tags["group"] == checkpoint.parent.parent.name
+    >>> from quantlab.utils.trained_run import TrainedRun
+    >>> group = TrainedRun.open(checkpoint).path.name
+    >>> run.info.run_name, run.info.status, run.data.tags["group"] == group
     ('XGBoostRegressor_total', 'FINISHED', True)
     >>> "test_ic" in run.data.metrics
     True

@@ -102,7 +102,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 prices.zarr, members.zarr     派生价格仓库（第 1 步；仅指数脚本）
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 factor/market_features.zarr   SPY/QQQ/IWM 市场特征（MASTER pipeline）
-models/<model>/...            checkpoint、config.json
+models/<model>/...            训练单元：checkpoint、config.json、run.json
 backtests/<model>/...         权重、净值、metrics.json、report.html
 analysis/alpha101/, analysis/alpha158/, analysis/residual_momentum/
                               summary.json 和 .csv、ic.csv、monthly_ic.csv、

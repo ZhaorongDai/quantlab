@@ -35,6 +35,7 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 ...         data = {k: (("timestamp", "symbol"), v) for k, v in variables.items()}
 ...         self.ds = xr.Dataset(data, coords=coords)
 ...     def _get_factor_names(self): return list(self.ds.data_vars)
+...     def get_factor_names(self): return self._get_factor_names()
 ...     def read(self, start, end): return self.ds.sel(timestamp=slice(start, end))
 ...     def get_config(self): return {"factor_names": self._get_factor_names()}
 >>> class LabelPanel(Panel):
@@ -67,15 +68,23 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/XGBoostRegressor_total/`，里面有检查点文件、旁边的 `config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。`config.json` 保存完整配置，以及一份 `trained_on` 记录：模型训练时见过的特征名、标签名和标的。`metrics.json` 保存这次运行的评分（见下文“评估指标”），另外两个文件保存逐 bar 的 IC 序列和测试段的预测（见下文“IC 序列与保存的预测”）。
+`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/`，它是一个*训练单元*（trained unit），里面有检查点文件、`config.json`、`ic_series.csv`、`test_predictions.zarr`，以及最后写入的 `run.json`。`config.json` 保存重建模型所需的内容：`get_config()`，库模型头另加解析后的超参数。`run.json` 描述这个单元：配置的训练窗口和清除之后实际拟合的训练窗口（见下文“清除标签的前视”）、测试窗口、一份 `trained_on` 记录（模型训练时见过的特征名、标签名和标的），以及这次运行的评分（见下文“评估指标”）。另外两个文件保存逐 bar 的 IC 序列和测试段的预测（见下文“IC 序列与保存的预测”）。
+
+读回一次运行要通过 `quantlab.utils.trained_run` 中的 `TrainedRun`，而不是直接打开它的文件：只有这个模块读写这些文件（ADR 0018）。`TrainedRun.open` 接受单元目录、它的 `run.json` 或检查点，返回单元的 `kind`、各个窗口、`metrics`、`trained_on`、`checkpoint`、`config` 以及评估文件的路径。`run.json` 里的路径都相对于单元，所以从另一台机器拷来的试验目录照样能打开。没有 `run.json`，或用别的 `format_version` 写的目录会被拒绝，并提示重新训练。
 
 ```python
->>> sorted(p.name for p in checkpoint.parent.iterdir())
-['XGBoostRegressor_total.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
->>> import json
->>> record = json.loads((checkpoint.parent / "config.json").read_text())
->>> record["trained_on"]["factor_names"], record["trained_on"]["label_names"], len(record["trained_on"]["symbols"])
+>>> from quantlab.utils.trained_run import TrainedRun
+>>> run = TrainedRun.open(checkpoint)
+>>> run.kind, run.path.name.startswith("XGBoostRegressor_trial_"), run.checkpoint == checkpoint
+('model', True, True)
+>>> sorted(p.name for p in run.path.iterdir())
+['XGBoostRegressor_total.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr']
+>>> run.trained_on["factor_names"], run.trained_on["label_names"], len(run.trained_on["symbols"])
 (['f_a', 'f_b'], ['ret'], 20)
+>>> run.train_window, run.fitted_train_window, run.test_window
+(('2024-01-01', '2024-05-31'), ('2024-01-01', '2024-05-29T00:00:00'), ('2024-06-01', '2024-07-18'))
+>>> run.config["name"]
+'quantlab.model.predefined.xgb.XGBoostRegressor'
 ```
 
 ### 清除标签前瞻
@@ -113,7 +122,7 @@ Data variables:
 (5, 20, 1)
 ```
 
-`load()` 把检查点恢复到一个用相同因子和标签构造的模型中。它先检查文件后缀，再把 `config.json` 里记录的变量名与模型自己声明的变量名做比较。
+`load()` 把检查点恢复到一个用相同因子和标签构造的模型中。它先检查文件后缀，再把单元 `run.json` 里 `trained_on` 记录的变量名与模型自己声明的变量名做比较，并采用记录中的训练窗口和测试窗口。
 
 ```python
 >>> restored = XGBoostRegressor(config).load(checkpoint)
@@ -121,23 +130,26 @@ Data variables:
 True
 ```
 
-`check_checkpoint(path)` 只做同样的变量检查，不加载任何东西；它返回 `None` 或抛出 `ValueError`。`predict_window(start, end)` 自己请求特征（在 `start` 之前带上模型头的预热），返回截到 `start`..`end` 的预测。回测器通过 `Predictor` 协议使用这两个方法，以及 `train_bounds`、`test_bounds`、`labels`、`label_delays` 和指纹条目（见回测指南），并用类方法 `from_config` 从配置重建模型。
+`check_checkpoint(path)` 只做同样的变量检查，不加载任何东西；它返回检查点的 `TrainedRun` 或抛出 `ValueError`。`predict_window(start, end)` 自己请求特征（在 `start` 之前带上模型头的预热），返回截到 `start`..`end` 的预测。`fitted_train_bounds` 是清除之后实际拟合的训练窗口：`train()` 之后是模型拟合的窗口，`load()` 之后是记录中写的窗口。回测器通过 `Predictor` 协议使用这些方法，以及 `train_bounds`、`test_bounds`、`labels`、`label_delays` 和指纹条目（见回测指南），并用类方法 `from_config` 从配置重建模型。
 
 ```python
->>> XGBoostRegressor(config).check_checkpoint(checkpoint)
+>>> XGBoostRegressor(config).check_checkpoint(checkpoint).kind
+'model'
 >>> window = restored.predict_window("2024-06-01", "2024-07-18")
 >>> window.sizes["timestamp"], list(window.data_vars)
 (48, ['ret'])
 >>> restored.train_bounds, restored.test_bounds
 (('2024-01-01', '2024-05-31'), ('2024-06-01', '2024-07-18'))
+>>> restored.fitted_train_bounds
+('2024-01-01', '2024-05-29T00:00:00')
 ```
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标，覆盖训练、验证和测试三段；另有 `loss`：模型头在训练目标（经模型头逐 bar 的 `_transform_target` 变换后的标签，见“扩展”）上的损失，逐 bar 计算再对 bar 取平均，因此每个 bar 的权重相同，与它有多少个标的无关。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入追踪 run 的摘要（见实验追踪），`train()` 还把同一个字典写到 `config.json` 旁边的 `metrics.json`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。对库模型头，这个损失是 `_loss`（默认 MSE）；对 torch 模型头，它是 `_val_one_batch`，默认就是它的 `_loss`（见“训练 torch 模型”）。
+`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。每个模型头都在主标签（第一个标签）的原始值上计算全部八个指标，覆盖训练、验证和测试三段；另有 `loss`：模型头在训练目标（经模型头逐 bar 的 `_transform_target` 变换后的标签，见“扩展”）上的损失，逐 bar 计算再对 bar 取平均，因此每个 bar 的权重相同，与它有多少个标的无关。这些指标以 `train_*`、`val_*`、`test_*` 的名字写入追踪 run 的摘要（见实验追踪），`train()` 还把同一个字典记录为 `run.json` 的 `metrics`，NaN 和无穷大写成 null。没有验证段时（`val_size=0`）不会有 `val_*` 键。对库模型头，这个损失是 `_loss`（默认 MSE）；对 torch 模型头，它是 `_val_one_batch`，默认就是它的 `_loss`（见“训练 torch 模型”）。
 
 ```python
->>> metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
+>>> metrics = run.metrics
 >>> sorted(metrics)[:9]
 ['test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse']
 >>> {k: round(v, 3) for k, v in metrics.items() if k.endswith("rank_ic")}
@@ -180,14 +192,16 @@ IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cr
 
 ### IC 序列与保存的预测
 
-每次运行还会在 `metrics.json` 旁边写两个文件，之后要算新指标或做集成时可以直接从磁盘读取，不必重新预测：
+每次运行还会在 `run.json` 旁边写两个文件，之后要算新指标或做集成时可以直接从磁盘读取，不必重新预测：
 
-- `ic_series.csv` 有 `split`、`timestamp`、`ic` 和 `rank_ic` 四列：每个参与评估的段（`train`、`val`、`test`，各段内按时间排序）的每个 bar 一行，记录该 bar 在主标签原始值上的 IC 和 RankIC。它们和 `metrics.json` 来自同一份预测：某段 `ic` 列的均值就是 `<split>_ic`，其 ICIR 就是 `<split>_icir`。没有 IC 的 bar（有效标的少于两个，或截面为常数）不写行。只有当两个值一个存在、另一个不存在时，才会出现空单元格。
+- `ic_series.csv` 有 `split`、`timestamp`、`ic` 和 `rank_ic` 四列：每个参与评估的段（`train`、`val`、`test`，各段内按时间排序）的每个 bar 一行，记录该 bar 在主标签原始值上的 IC 和 RankIC。它们和记录的指标来自同一份预测：某段 `ic` 列的均值就是 `<split>_ic`，其 ICIR 就是 `<split>_icir`。没有 IC 的 bar（有效标的少于两个，或截面为常数）不写行。只有当两个值一个存在、另一个不存在时，才会出现空单元格。
 - `test_predictions.zarr` 是测试段的预测面板：在收集到的特征上调用 `predict_panel`，覆盖测试段的所有 bar 和收集到的所有标的，每个标签一个变量。测试段没有 bar 时不写这个存储。
+
+`TrainedRun` 以 `ic_series` 和 `test_predictions` 给出它们的路径，没写的文件为 `None`。
 
 ```python
 >>> import pandas as pd
->>> series = pd.read_csv(checkpoint.parent / "ic_series.csv", parse_dates=["timestamp"])
+>>> series = pd.read_csv(run.ic_series, parse_dates=["timestamp"])
 >>> series.head(3)
    split  timestamp        ic   rank_ic
 0  train 2024-01-01  0.662219  0.690226
@@ -198,7 +212,7 @@ IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cr
 >>> test_ic = series[series["split"] == "test"]["ic"]
 >>> round(float(test_ic.mean() / test_ic.std()), 3), round(metrics["test_icir"], 3)
 (5.524, 5.524)
->>> saved = xr.open_zarr(checkpoint.parent / "test_predictions.zarr").load()
+>>> saved = xr.open_zarr(run.test_predictions).load()
 >>> dict(saved.sizes), list(saved.data_vars)
 ({'timestamp': 48, 'symbol': 20}, ['ret'])
 >>> bool((saved["ret"] == predictions["ret"].sel(timestamp=saved.timestamp)).all())
@@ -263,12 +277,10 @@ True
 ... })).collect()
 >>> ranked.label_scales, model.label_scales
 ({'ret': 'standardized'}, {'ret': 'raw'})
->>> ranked_dir = ranked.train().parent
->>> ranked_metrics = json.loads((ranked_dir / "metrics.json").read_text())
->>> plain_metrics = json.loads((checkpoint.parent / "metrics.json").read_text())
->>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
+>>> ranked_run = TrainedRun.open(ranked.train())
+>>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
 [(0.679, 0.003), (0.674, 0.439)]
->>> record = json.loads((ranked_dir / "config.json").read_text())
+>>> record = ranked_run.config
 >>> record["hyperparameters"]["training_target"], "training_target" in record["resolved_hyperparameters"]
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
@@ -298,57 +310,59 @@ hyperparameters = {
 
 ### walk-forward 交叉验证
 
-`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的追踪 run，检查点目录里还有该折的 `ic_series.csv` 和 `test_predictions.zarr`（该折的指标本身写在下文的 `cv_folds.json` 里）。返回值是每折一个字典，包含该折的日期（两端都包含）、检查点路径以及 `train_*`、`val_*` 和 `test_*` 指标。其中 `train_end` 是清除之后实际拟合的最后一个 bar。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的追踪 run。
+
+各折由 `quantlab.utils.walk_forward` 中的 `walk_forward_folds(timestamps, train_periods, test_periods=None, expanding=False, purge_bars=0)` 切分，模型和集成的 `train_cv` 都调用它。它不需要模型，所以可以在昂贵的训练之前先检查切分。每个 `Fold` 带有 `index`、配置的训练窗口（`train_window`）、清除之后实际拟合的训练窗口（`fitted_train_window`）和测试窗口 `test_window`，两端都包含。`purge_bars` 就是 L；模型传入自己各标签 `lookahead_bars()` 的最大值。
 
 ```python
->>> results = model.train_cv(train_periods=100)
->>> len(results)
-5
->>> [(r["train_start"][:10], r["train_end"][:10], r["test_start"][:10], r["test_end"][:10]) for r in results]
+>>> from quantlab.utils.walk_forward import walk_forward_folds
+>>> planned = walk_forward_folds(coords["timestamp"], 100, purge_bars=label.lookahead_bars())
+>>> len(planned), planned[0]
+(5, Fold(index=0, train_window=('2024-01-01', '2024-04-09'), fitted_train_window=('2024-01-01', '2024-04-07'), test_window=('2024-04-10', '2024-04-29')))
+```
+
+`train_cv` 把这次运行作为 `"walk_forward"` 类型的 `TrainedRun` 返回。它的试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/` 里每折一个 `fold_{i}/`，另有 `run.json`，列出各折并记录 `cv_mean`：每个 `train_*`、`val_*`、`test_*` 指标在各折上的均值，记为 `cv_mean_<指标>`，另有 `cv_n_folds`。非有限的折值不参与平均，NaN 和无穷大写成 null。每个 `fold_{i}/` 都是一个 `"model"` 单元，和 `train()` 的目录一样，检查点为 `XGBoostRegressor_cv_fold_{i}.joblib`。`folds` 按折的顺序以 `TrainedRun` 对象给出它们，每个都带 `index`、三个窗口和指标。回测器从这个目录回放这次运行（见回测指南）。
+
+```python
+>>> cv = model.train_cv(train_periods=100)
+>>> cv.kind, len(cv.folds)
+('walk_forward', 5)
+>>> [(f.train_window[0][:10], f.fitted_train_window[1][:10], f.test_window[0][:10], f.test_window[1][:10]) for f in cv.folds]
 [('2024-01-01', '2024-04-07', '2024-04-10', '2024-04-29'), ('2024-01-21', '2024-04-27', '2024-04-30', '2024-05-19'), ('2024-02-10', '2024-05-17', '2024-05-20', '2024-06-08'), ('2024-03-01', '2024-06-06', '2024-06-09', '2024-06-28'), ('2024-03-21', '2024-06-26', '2024-06-29', '2024-07-18')]
->>> [round(r["test_rank_ic"], 3) for r in results]
+>>> days = lambda f: [w[0][:10] + ".." + w[1][:10] for w in (f.train_window, f.fitted_train_window, f.test_window)]
+>>> [days(f) for f in cv.folds] == [days(f) for f in planned]
+True
+>>> [round(f.metrics["test_rank_ic"], 3) for f in cv.folds]
 [0.691, 0.649, 0.695, 0.656, 0.697]
->>> [round(r["test_icir"], 3) for r in results]
+>>> [round(f.metrics["test_icir"], 3) for f in cv.folds]
 [6.943, 5.013, 7.982, 5.508, 5.464]
->>> from pathlib import Path
->>> sorted(p.name for p in Path(results[0]["checkpoint"]).parent.iterdir())
-['XGBoostRegressor_cv_fold_0.joblib', 'config.json', 'ic_series.csv', 'test_predictions.zarr']
-```
-
-所有折共用一个试验目录。除了每折一个子目录，目录里还有 `cv_folds.json`，即清单文件，包含 `format_version`（2）、与返回值相同的折列表（含清除后的 `train_end`），以及 `cv_mean` 块：每个 `train_*`、`val_*`、`test_*` 指标在各折上的均值，记为 `cv_mean_<指标>`，另有 `cv_n_folds`。非有限的折值不参与平均，NaN 和无穷大写成 null。回测器根据这个文件回放一次交叉验证；它拒绝读取第 1 版清单（出现 `cv_mean` 块之前写的），旧项目请重新运行 `train_cv`。每折的 `config.json` 记录的是该折配置时的日期，即清除之前的日期，所以它的 `train_end` 比清单里的晚 L 个 bar。
-
-```python
->>> trial = Path(results[0]["checkpoint"]).parent.parent
->>> sorted(p.name for p in trial.iterdir())
-['XGBoostRegressor_cv_fold_0', 'XGBoostRegressor_cv_fold_1', 'XGBoostRegressor_cv_fold_2', 'XGBoostRegressor_cv_fold_3', 'XGBoostRegressor_cv_fold_4', 'cv_folds.json']
->>> manifest = json.loads((trial / "cv_folds.json").read_text())
->>> manifest["format_version"], len(manifest["folds"])
-(2, 5)
->>> {k: round(v, 3) for k, v in manifest["cv_mean"].items() if k.endswith("rank_ic")}
+>>> {k: round(v, 3) for k, v in cv.cv_mean.items() if k.endswith("rank_ic")}
 {'cv_mean_train_rank_ic': 0.709, 'cv_mean_val_rank_ic': 0.687, 'cv_mean_test_rank_ic': 0.677}
->>> fold_0 = json.loads((Path(results[0]["checkpoint"]).parent / "config.json").read_text())
->>> fold_0["train_end"], manifest["folds"][0]["train_end"]
-('2024-04-09T00:00:00', '2024-04-07T00:00:00')
+>>> sorted(p.name for p in cv.path.iterdir())
+['fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4', 'run.json']
+>>> fold_0 = cv.folds[0]
+>>> fold_0.kind, fold_0.checkpoint.name, sorted(p.name for p in fold_0.path.iterdir())
+('model', 'XGBoostRegressor_cv_fold_0.joblib', ['XGBoostRegressor_cv_fold_0.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr'])
 ```
 
-`expanding=True` 时，每一折都从第一折的起点开始训练：第 i 折的训练窗口从第一个 bar 一直延伸到滑动模式下该折训练窗口的终点，因此 `train_periods` 是第一折的训练长度，之后各折在测试段之前的全部历史上训练。测试段、折数和清除都与滑动模式相同，两种模式在同样的测试 bar 上比较。验证段仍是每个窗口最后 `val_size` 的比例，随窗口一起变长。`cv_folds.json` 格式不变，也不记录模式；模式由各折的日期体现，`run_cv` 像回放滑动模式一样回放它。
+`expanding=True` 时，每一折都从第一折的起点开始训练：第 i 折的训练窗口从第一个 bar 一直延伸到滑动模式下该折训练窗口的终点，因此 `train_periods` 是第一折的训练长度，之后各折在测试段之前的全部历史上训练。测试段、折数和清除都与滑动模式相同，两种模式在同样的测试 bar 上比较。验证段仍是每个窗口最后 `val_size` 的比例，随窗口一起变长。这次运行不记录模式；模式由各折的窗口体现，`run_cv` 像回放滑动模式一样回放它。
 
 ```python
 >>> grown = XGBoostRegressor(config).collect().train_cv(train_periods=100, expanding=True)
->>> [(r["train_start"][:10], r["train_end"][:10]) for r in grown]
+>>> [(f.train_window[0][:10], f.fitted_train_window[1][:10]) for f in grown.folds]
 [('2024-01-01', '2024-04-07'), ('2024-01-01', '2024-04-27'), ('2024-01-01', '2024-05-17'), ('2024-01-01', '2024-06-06'), ('2024-01-01', '2024-06-26')]
->>> [r["test_start"] for r in grown] == [r["test_start"] for r in results]
+>>> [f.test_window for f in grown.folds] == [f.test_window for f in cv.folds]
 True
->>> [round(r["test_rank_ic"], 3) for r in grown]
+>>> [round(f.metrics["test_rank_ic"], 3) for f in grown.folds]
 [0.691, 0.658, 0.704, 0.655, 0.695]
 ```
 
-`test_periods` 指定测试段的长度，也就是相邻两折之间的步长，取代默认的 `train_periods` 的五分之一；此时折数为 `(bar 数 - train_periods) // test_periods`。这样第一个训练窗口可以是三年，而每折只测半年。和模式一样，它由各折的日期体现。
+`test_periods` 指定测试段的长度，也就是相邻两折之间的步长，取代默认的 `train_periods` 的五分之一；此时折数为 `(bar 数 - train_periods) // test_periods`。这样第一个训练窗口可以是三年，而每折只测半年。和模式一样，它由各折的窗口体现。
 
 ```python
 >>> paced = XGBoostRegressor(config).collect().train_cv(
 ...     train_periods=100, expanding=True, test_periods=30)
->>> [(r["test_start"][:10], r["test_end"][:10]) for r in paced]
+>>> [(f.test_window[0][:10], f.test_window[1][:10]) for f in paced.folds]
 [('2024-04-10', '2024-05-09'), ('2024-05-10', '2024-06-08'), ('2024-06-09', '2024-07-08')]
 ```
 
@@ -372,24 +386,22 @@ True
 True
 ```
 
-`train()` 新建一个集成目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，按顺序训练各成员，第 k 个成员训练到 `member_{k}/`，并有自己的追踪 run `XGBoostRegressor_member_{k}`，以集成目录名为分组；每个成员目录里是常规的检查点、`config.json`、`metrics.json`、`ic_series.csv` 和 `test_predictions.zarr`。随后写入平均预测的评估文件（见下文）和 `config.json`，后者记录各成员共有的内容，即训练与测试日期和标签配置（它不是模型配置），最后写入清单 `ensemble.json`。`train()` 返回清单的路径。某个成员或集成评估失败时不写清单，已经写好的文件保留。
+`train()` 新建一个试验目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，它是一个 `"ensemble"` 单元；按顺序训练各成员，第 k 个成员训练到 `"model"` 单元 `member_{k}/`，并有自己的追踪 run `XGBoostRegressor_member_{k}`，以试验目录名为分组；每个成员单元里是常规的检查点、`config.json`、`ic_series.csv`、`test_predictions.zarr` 和 `run.json`。随后写入平均预测的评估文件（见下文），最后写入集成自己的 `run.json`，列出各成员（目录和种子）并记录集成的窗口和指标。这个 `run.json` 就是集成的检查点：`train()` 返回它的路径，`load` 读取它。某个成员或集成评估失败时不写 `run.json`，已经写好的文件保留。
 
 ```python
->>> manifest = ensemble.train()
->>> manifest.name
-'ensemble.json'
->>> sorted(p.name for p in manifest.parent.iterdir())
-['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr']
->>> sorted(p.name for p in (manifest.parent / "member_0").iterdir())
-['XGBoostRegressor_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
->>> saved = json.loads(manifest.read_text())
->>> saved["format_version"], saved["members"][1]
-(1, {'name': 'quantlab.model.predefined.xgb.XGBoostRegressor', 'checkpoint': 'member_1/XGBoostRegressor_member_1.joblib', 'seed': 1})
->>> sorted(json.loads((manifest.parent / "config.json").read_text()))
-['labels', 'test_end', 'test_start', 'train_end', 'train_start']
+>>> checkpoint = ensemble.train()
+>>> trained = TrainedRun.open(checkpoint)
+>>> trained.kind, trained.checkpoint == checkpoint, trained.path.name.startswith("SeedEnsemble_trial_")
+('ensemble', True, True)
+>>> sorted(p.name for p in trained.path.iterdir())
+['ic_series.csv', 'member_0', 'member_1', 'member_2', 'run.json', 'test_predictions.zarr']
+>>> [(m.path.name, m.seed, m.checkpoint.name) for m in trained.members]
+[('member_0', 0, 'XGBoostRegressor_member_0.joblib'), ('member_1', 1, 'XGBoostRegressor_member_1.joblib'), ('member_2', 2, 'XGBoostRegressor_member_2.joblib')]
+>>> trained.members[1].config["name"]
+'quantlab.model.predefined.xgb.XGBoostRegressor'
 ```
 
-清单为每个成员记录它的类（点分路径）、相对清单所在目录的检查点路径和种子；除种子字段外不含任何种子集成专有的内容，所以由不同模型组成的集成也可以写同样的格式。
+每个成员都是一个独立的 `"model"` 单元，它的 `config.json` 写明它的类；集成的记录除种子字段外（集成不改变种子时为 `None`）不含任何种子集成专有的内容，所以由不同模型组成的集成写的是同样的格式。
 
 集成的预测是其成员预测的 `average_predictions`（位于 `quantlab.utils.ensemble`）。每个成员的面板在每个 bar 上按标的做 z-score，即 `(x - mean) / std`，与 `CrossSectionalZScore` 一样取 `ddof=1`；再对各成员的 z-score 等权平均，忽略 NaN。某个成员在某个 bar 上的有限值少于两个，或截面为常数时，该成员在这个 bar 上不参与平均；只有部分成员有预测的格子取这些成员的平均，没有任何成员预测的格子为 NaN。各面板的坐标做外连接，变量集合不同的面板抛出 `ValueError`。结果的单位是 z-score，而非收益：每个 bar 的均值为 0。
 
@@ -409,19 +421,19 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-集成目录里还有平均预测的评估文件，在最后一个成员训练完之后、`ensemble.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。`metrics.json` 含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的波动率标签保留这个尺度，也会有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的波动率标签是 z 分数单位，两项都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
+集成单元里还有平均预测的评估文件，在最后一个成员训练完之后、它的 `run.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。单元的指标含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的波动率标签保留这个尺度，也会有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的波动率标签是 z 分数单位，两项都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
 
 ```python
->>> metrics = json.loads((manifest.parent / "metrics.json").read_text())
+>>> metrics = trained.metrics
 >>> sorted(metrics)
 ['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir']
->>> [round(json.loads((manifest.parent / f"member_{k}" / "metrics.json").read_text())["test_rank_ic"], 3) for k in range(3)], round(metrics["test_rank_ic"], 3)
+>>> [round(m.metrics["test_rank_ic"], 3) for m in trained.members], round(metrics["test_rank_ic"], 3)
 ([0.682, 0.687, 0.689], 0.688)
 >>> import pandas as pd
->>> pd.read_csv(manifest.parent / "ic_series.csv").groupby("split", sort=False).size().to_dict()
+>>> pd.read_csv(trained.ic_series).groupby("split", sort=False).size().to_dict()
 {'train': 119, 'val': 29, 'test': 48}
->>> saved = xr.open_zarr(manifest.parent / "test_predictions.zarr").load()
->>> tests = [xr.open_zarr(manifest.parent / f"member_{k}" / "test_predictions.zarr").load() for k in range(3)]
+>>> saved = xr.open_zarr(trained.test_predictions).load()
+>>> tests = [xr.open_zarr(m.test_predictions).load() for m in trained.members]
 >>> dict(saved.sizes), bool(np.allclose(saved["ret"], average_predictions(tests)["ret"]))
 ({'timestamp': 48, 'symbol': 20}, True)
 ```
@@ -461,12 +473,13 @@ IC_ens ≈ mean IC_i × sqrt(k / (1 + (k - 1) ρ))
 (250,)
 ```
 
-`load(manifest)` 从清单列出的检查点恢复每个成员，`check_checkpoint(manifest)` 只检查不加载：清单的格式版本必须是 1，成员数与集成相同，每个成员的类和种子与集成的成员一致，每个成员检查点都必须存在并通过该成员自己的 `check_checkpoint`。`get_config()` 返回被包装模型的配置和种子，`SeedEnsemble.from_config` 据此重建集成。`SeedEnsemble` 满足回测器的 `Predictor` 协议，所以像单个模型一样回测（见 backtest 指南）。
+`load(checkpoint)` 从各成员单元恢复每个成员，`check_checkpoint(checkpoint)` 只检查不加载，并返回集成的 `TrainedRun`：这个单元必须是 `TrainedRun` 能打开的 `"ensemble"` 单元，成员数与集成相同，每个成员的类和种子与集成的成员一致，每个成员检查点都必须通过该成员自己的 `check_checkpoint`。两者都接受集成的 `run.json` 或它的目录。`get_config()` 返回被包装模型的配置和种子，`SeedEnsemble.from_config` 据此重建集成。`SeedEnsemble` 满足回测器的 `Predictor` 协议，所以像单个模型一样回测（见 backtest 指南）。
 
 ```python
 >>> restored = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2])
->>> restored.check_checkpoint(manifest)
->>> restored = restored.load(manifest)
+>>> restored.check_checkpoint(checkpoint).kind
+'ensemble'
+>>> restored = restored.load(checkpoint)
 >>> bool(np.allclose(restored.predict_window("2024-06-01", "2024-07-18")["ret"], window["ret"]))
 True
 >>> cfg = ensemble.get_config()
@@ -480,50 +493,51 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 各成员依次训练，每个成员在训练前一刻用自己的 `random_seed` 重设随机数生成器。
 
-`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上得到相同的折日期（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个目录 `checkpoints/SeedEnsemble_cv_<timestamp>/`，里面是 `cv_folds.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的追踪 run `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`、`config.json` 和 `ensemble.json`。与单个模型的折一样，该折的集成指标写进 `cv_folds.json`，不写 `metrics.json`，该折的 `config.json` 记录清除之前的日期。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上调用 `walk_forward_folds`（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个试验目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，它和单个模型的一样是 `"walk_forward"` 单元，里面是 `run.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都是一个 `"ensemble"` 单元，像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的追踪 run `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`，以及该折的 `run.json`，即它的检查点。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
 
-`cv_folds.json` 的格式与单个模型的 `train_cv` 写的相同（格式版本 2）：每条折记录包含清除后的日期、`checkpoint`（该折 `ensemble.json` 的绝对路径）以及该折的集成指标，即 IC 一族和 `{split}_member_correlation`；`cv_mean` 是它们的均值。返回值就是折列表。另有一个追踪 run `SeedEnsemble_cv_summary` 记录 `cv_mean_*` 的值，它通过第一个成员的 tracker 打开，与各成员在同一个项目和分组里。集成没有自己的 tracker，它的 run 都经由成员模型的 tracker。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
+`train_cv` 返回 walk-forward 的 `TrainedRun`。各折的指标是 IC 一族和 `{split}_member_correlation`，`cv_mean` 是它们的均值。另有一个追踪 run `SeedEnsemble_cv_summary` 记录 `cv_mean_*` 的值，它通过第一个成员的 tracker 打开，与各成员在同一个项目和分组里。集成没有自己的 tracker，它的 run 都经由成员模型的 tracker。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
 
 ```python
->>> folds = ensemble.train_cv(train_periods=100)
->>> [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in folds] == [(r["train_start"], r["train_end"], r["test_start"], r["test_end"]) for r in results]
+>>> ensemble_cv = ensemble.train_cv(train_periods=100)
+>>> [(f.train_window, f.fitted_train_window, f.test_window) for f in ensemble_cv.folds] == [(f.train_window, f.fitted_train_window, f.test_window) for f in cv.folds]
 True
->>> cv_dir = Path(folds[0]["checkpoint"]).parent.parent
->>> cv_dir.name.startswith("SeedEnsemble_cv_"), sorted(p.name for p in cv_dir.iterdir())
-(True, ['cv_folds.json', 'fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4'])
->>> sorted(p.name for p in (cv_dir / "fold_0").iterdir())
-['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'test_predictions.zarr']
->>> sorted(p.name for p in (cv_dir / "fold_0" / "member_0").iterdir())
-['XGBoostRegressor_fold_0_member_0.joblib', 'config.json', 'ic_series.csv', 'metrics.json', 'test_predictions.zarr']
->>> cv_manifest = json.loads((cv_dir / "cv_folds.json").read_text())
->>> cv_manifest["format_version"], sorted(cv_manifest["folds"][0])
-(2, ['checkpoint', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir', 'train_start', 'val_ic', 'val_icir', 'val_member_correlation', 'val_rank_ic', 'val_rank_icir'])
->>> [round(r["test_rank_ic"], 3) for r in folds]
+>>> ensemble_cv.path.name.startswith("SeedEnsemble_trial_"), sorted(p.name for p in ensemble_cv.path.iterdir())
+(True, ['fold_0', 'fold_1', 'fold_2', 'fold_3', 'fold_4', 'run.json'])
+>>> fold_0 = ensemble_cv.folds[0]
+>>> fold_0.kind, sorted(p.name for p in fold_0.path.iterdir())
+('ensemble', ['ic_series.csv', 'member_0', 'member_1', 'member_2', 'run.json', 'test_predictions.zarr'])
+>>> fold_0.members[0].checkpoint.name
+'XGBoostRegressor_fold_0_member_0.joblib'
+>>> sorted(fold_0.metrics)[:5]
+['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir']
+>>> [round(f.metrics["test_rank_ic"], 3) for f in ensemble_cv.folds]
 [0.69, 0.651, 0.709, 0.672, 0.698]
->>> {k: round(v, 3) for k, v in cv_manifest["cv_mean"].items() if k.endswith("rank_ic")}
+>>> {k: round(v, 3) for k, v in ensemble_cv.cv_mean.items() if k.endswith("rank_ic")}
 {'cv_mean_train_rank_ic': 0.712, 'cv_mean_val_rank_ic': 0.697, 'cv_mean_test_rank_ic': 0.684}
->>> fold_0 = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2]).load(folds[0]["checkpoint"])
->>> [m.model is not None for m in fold_0.members]
+>>> restored_fold = SeedEnsemble(XGBoostRegressor(sampled), seeds=[0, 1, 2]).load(fold_0.checkpoint)
+>>> [m.model is not None for m in restored_fold.members]
 [True, True, True]
 ```
 
 ### 组合不同的模型
 
-`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。每个成员各自收集数据、各自请求特征，集成对每个标签只在预测它的成员之间合成：多个成员预测的标签取它们逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样；只有一个成员预测的标签直接透传该成员的预测，不做任何改动。因此一个收益模型加一个波动率模型（`quantlab.label.predefined.fret.Volatility`）就组成一个预测器，它的标签是各成员标签的并集，按首次出现的顺序排列。多个成员预测的同名标签在每个成员里的配置必须相同，否则构造时抛出 `ValueError` 并指明是哪个成员。成员的窗口可以不同：集成的训练截止日取最晚的成员，测试窗口取各成员测试窗口的交集（没有交集时构造即报错），所以回测器的样本外区间没有被任何成员见过。`train_cv` 对所有成员使用同一套折划分，并按成员中最大的 lookahead 清洗。`label_scales` 报告每个标签的尺度：平均得到的标签为 `"standardized"`，透传的标签沿用成员自己的尺度；模型当且仅当直接拟合标签本身时报告 `"raw"`：保留恒等的 `_transform_target`，且（对库模型头）没有设置 `training_target`。因此设置了 `"training_target": "cs_rank"` 的收益成员和原始尺度的波动率成员分别报告 `"standardized"` 和 `"raw"`。评估文件用预测该标签的成员的真实值给每个标签打分：第一个标签沿用上面的键，其余标签的键为 `{split}_{label}_{metric}`，`member_correlation` 只对至少两个成员预测的标签报告。`train()`、`train_cv()`、`load()`、评估文件和清单都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
+`quantlab.model.predefined.model_ensemble` 中的 `ModelEnsemble(members)` 直接接收给定的成员模型：成员可以是不同的类、用不同的因子，例如一个用某组因子的 XGBoost 回归器加一个用另一组因子的 GATs 网络。每个成员各自收集数据、各自请求特征，集成对每个标签只在预测它的成员之间合成：多个成员预测的标签取它们逐 bar 截面 z-score 的等权平均，和 `SeedEnsemble` 一样；只有一个成员预测的标签直接透传该成员的预测，不做任何改动。因此一个收益模型加一个波动率模型（`quantlab.label.predefined.fret.Volatility`）就组成一个预测器，它的标签是各成员标签的并集，按首次出现的顺序排列。多个成员预测的同名标签在每个成员里的配置必须相同，否则构造时抛出 `ValueError` 并指明是哪个成员。成员的窗口可以不同：集成的训练截止日取最晚的成员，测试窗口取各成员测试窗口的交集（没有交集时构造即报错），所以回测器的样本外区间没有被任何成员见过。`train_cv` 对所有成员使用同一套折划分，并按成员中最大的 lookahead 清洗。`label_scales` 报告每个标签的尺度：平均得到的标签为 `"standardized"`，透传的标签沿用成员自己的尺度；模型当且仅当直接拟合标签本身时报告 `"raw"`：保留恒等的 `_transform_target`，且（对库模型头）没有设置 `training_target`。因此设置了 `"training_target": "cs_rank"` 的收益成员和原始尺度的波动率成员分别报告 `"standardized"` 和 `"raw"`。评估文件用预测该标签的成员的真实值给每个标签打分：第一个标签沿用上面的键，其余标签的键为 `{split}_{label}_{metric}`，`member_correlation` 只对至少两个成员预测的标签报告。`train()`、`train_cv()`、`load()`、评估文件和单元的 `run.json` 都与 `SeedEnsemble` 相同，只是每个成员的种子为 null。`get_config()` 返回每个成员的配置，`ModelEnsemble.from_config` 用各自的配置重建每个成员。
 
 ```python
 >>> from quantlab.model.predefined.model_ensemble import ModelEnsemble
->>> ensemble = ModelEnsemble([xgb, gats])  # 标签和日期相同，因子不同
->>> config = ensemble.get_config()
->>> [m["name"] for m in config["members"]]
-['quantlab.model.predefined.xgb.XGBoostRegressor', 'quantlab.model.predefined.gats.GATsRegressor']
->>> manifest = ensemble.collect().train()
->>> restored = ModelEnsemble.from_config(config).load(manifest)
->>> [type(m).__name__ for m in restored.members]
-['XGBoostRegressor', 'GATsRegressor']
+>>> def members():  # 标签和日期相同，因子不同
+...     return [XGBoostRegressor(replace(config, factors=[Panel(f_a=f_a)])),
+...             XGBoostRegressor(replace(config, factors=[Panel(f_b=f_b)]))]
+>>> mixed = ModelEnsemble(members())
+>>> [m["factors"] for m in mixed.get_config()["members"]]
+[[{'factor_names': ['f_a']}], [{'factor_names': ['f_b']}]]
+>>> mixed_checkpoint = mixed.collect().train()
+>>> restored = ModelEnsemble(members()).load(mixed_checkpoint)
+>>> [m.get_factor_names() for m in restored.members], [m.seed for m in TrainedRun.open(mixed_checkpoint).members]
+([['f_a'], ['f_b']], [None, None])
 ```
 
-合成规则是钩子 `_combine(predictions)`：它按成员顺序收到每个成员的预测面板，返回集成的面板。`predict_window` 以及集成层的 `metrics.json`、`ic_series.csv`、`test_predictions.zarr` 都经过它，所以评估的就是回测的那份预测。在子类里重写它即可换规则，例如改成百分位排名的平均：
+合成规则是钩子 `_combine(predictions)`：它按成员顺序收到每个成员的预测面板，返回集成的面板。`predict_window` 以及集成层的指标、`ic_series.csv`、`test_predictions.zarr` 都经过它，所以评估的就是回测的那份预测。在子类里重写它即可换规则，例如改成百分位排名的平均：
 
 ```python
 >>> import xarray as xr
@@ -532,10 +546,10 @@ True
 ...     def _combine(self, predictions):
 ...         aligned = xr.align(*predictions, join="outer")
 ...         return sum(p.rank("symbol", pct=True) for p in aligned) / len(aligned)
->>> ranked = RankAverage([xgb, gats])
->>> manifest = ranked.collect().train()
->>> sorted(p.name for p in manifest.parent.iterdir())
-['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'metrics.json', 'test_predictions.zarr']
+>>> ranked = RankAverage(members())
+>>> ranked_unit = TrainedRun.open(ranked.collect().train())
+>>> sorted(p.name for p in ranked_unit.path.iterdir())
+['ic_series.csv', 'member_0', 'member_1', 'run.json', 'test_predictions.zarr']
 ```
 
 `_combine` 只看得到预测。需要在训练中学习参数的规则（例如在验证段上拟合权重）目前还不支持。
@@ -601,7 +615,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 >>> minimal_checkpoint = minimal.train()
 >>> minimal_checkpoint.name
 'MinimalHead_total.pth'
->>> torch_metrics = json.loads((minimal_checkpoint.parent / "metrics.json").read_text())
+>>> torch_metrics = TrainedRun.open(minimal_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in torch_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.697, 'val_rank_ic': 0.693, 'test_rank_ic': 0.69}
 >>> one_more = factor.ds.isel(symbol=[0]).assign_coords(symbol=["S99"])
@@ -637,7 +651,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 ...     def _on_fit_end(self):
 ...         self.model.load_state_dict(self.best_state)
 >>> corr = CorrHead(replace(torch_config, hyperparameters={"epochs": 50})).collect()
->>> corr_metrics = json.loads((corr.train().parent / "metrics.json").read_text())
+>>> corr_metrics = TrainedRun.open(corr.train()).metrics
 >>> {k: round(v, 3) for k, v in corr_metrics.items() if k in ("val_loss", "test_rank_ic")}
 {'val_loss': -0.721, 'test_rank_ic': 0.691}
 ```
@@ -684,7 +698,7 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 ...     hyperparameters={"epochs": 30, "lr": 1e-2, "hidden_size": 16},
 ... )).collect()
 >>> gru_checkpoint = gru.train()
->>> gru_metrics = json.loads((gru_checkpoint.parent / "metrics.json").read_text())
+>>> gru_metrics = TrainedRun.open(gru_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in gru_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.701, 'val_rank_ic': 0.693, 'test_rank_ic': 0.696}
 >>> reloaded = GRUHead(gru.config).load(gru_checkpoint)
@@ -724,7 +738,7 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 >>> logger.remove(sink)
 >>> stops[0].strip()
 'GATsRegressor: stopping after epoch 9'
->>> gats_metrics = json.loads((gats_checkpoint.parent / "metrics.json").read_text())
+>>> gats_metrics = TrainedRun.open(gats_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in gats_metrics.items() if k.endswith("rank_ic")}
 {'train_rank_ic': 0.707, 'val_rank_ic': 0.696, 'test_rank_ic': 0.693}
 ```
@@ -790,7 +804,7 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 >>> logger.remove(sink)
 >>> stops[0].strip()
 'MASTERRegressor: stopping after epoch 5'
->>> master_metrics = json.loads((master_checkpoint.parent / "metrics.json").read_text())
+>>> master_metrics = TrainedRun.open(master_checkpoint).metrics
 >>> {k: round(v, 3) for k, v in master_metrics.items() if k in ("val_loss", "test_rank_ic")}
 {'val_loss': 0.466, 'test_rank_ic': 0.687}
 >>> weights = master.model.gate(torch.zeros(1, 2))
@@ -831,7 +845,7 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 ... )
 >>> def trained_device(head):
 ...     """Train ``head``; return its recorded device and whether the caller gave one."""
-...     record = json.loads((head.collect().train().parent / "config.json").read_text())
+...     record = TrainedRun.open(head.collect().train()).config
 ...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
 >>> trained_device(XGBoostRegressor(device_config))
 ('cpu', False)
@@ -859,7 +873,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 >>> half = MinimalHead(replace(torch_config, hyperparameters={
 ...     "epochs": 20, "lr": 1e-2, "panel_dtype": "float16",
 ... })).collect()
->>> half_metrics = json.loads((half.train().parent / "metrics.json").read_text())
+>>> half_metrics = TrainedRun.open(half.train()).metrics
 >>> round(half_metrics["test_rank_ic"], 3), round(torch_metrics["test_rank_ic"], 3)
 (0.691, 0.69)
 >>> gap = half.predict_panel(factor.ds)["ret"] - minimal.predict_panel(factor.ds)["ret"]
@@ -886,7 +900,7 @@ torch 模型头把收集到的整个面板（特征、训练目标、掩码和�
 
 tracker 与配置的其余部分一起写进 `config.json`，重建时一起恢复。凭证只从环境变量读取：W&B 用 `WANDB_API_KEY`，MLflow 用 `MLFLOW_TRACKING_USERNAME` 和 `MLFLOW_TRACKING_PASSWORD`，或 `MLFLOW_TRACKING_TOKEN`。
 
-同一个模型类的所有试验都进同一个项目，项目名是类名，除非 tracker 设置了 `project`。一次 `train()` 或 `train_cv()` 调用打开的 run 组成一个分组，分组名是试验目录名（`XGBoostRegressor_trial_<timestamp>`）：`train()` 打开 `<类名>_total`；`train_cv()` 每折打开 `<类名>_cv_fold_<i>`，另有一个 `<类名>_cv_summary`，其摘要就是清单里的 `cv_mean` 块。每个 run 都带完整配置，摘要里是 `train_*`、`val_*` 和 `test_*` 指标，非有限值不写入。训练抛错时 run 照样结束，并标记为失败。
+同一个模型类的所有试验都进同一个项目，项目名是类名，除非 tracker 设置了 `project`。一次 `train()` 或 `train_cv()` 调用打开的 run 组成一个分组，分组名是试验目录名（`XGBoostRegressor_trial_<timestamp>`）：`train()` 打开 `<类名>_total`；`train_cv()` 每折打开 `<类名>_cv_fold_<i>`，另有一个 `<类名>_cv_summary`，其摘要就是 walk-forward 运行的 `cv_mean`。每个 run 都带完整配置，摘要里是 `train_*`、`val_*` 和 `test_*` 指标，非有限值不写入。训练抛错时 run 照样结束，并标记为失败。
 
 各模型头额外记录的内容：`XGBoostRegressor` 把每一轮的训练和验证指标记为逐步指标（`train-rmse`、`val-ccc_loss` 等），把最佳轮数和各因子的重要性（`importance_<type>/<factor>`）写入摘要，并为每种重要性类型记录一张表 `feature_importance/<type>`，W&B 还会据此画出前 30 个因子的柱状图。`XGBTDRegressor` 记录每一轮的验证曲线（`val-rmse`，多标签时为 `val-rmse/<label>`）、选中的轮数和实际训练的轮数，以及同样的重要性，靠一个注入 pytabkit 内部 `xgboost.train` 调用的回调实现。`RealMLPRegressor` 记录每个 epoch 的平均训练损失（`train-loss`）和验证误差（`val-rmse`），以 epoch 为 `step`，摘要里另有 `best_val_rmse`、`epochs_trained` 和停止 epoch，靠一个注入 pytabkit trainer 的 Lightning 回调实现（`quantlab.model.predefined._support.tabkit.active_callbacks`）。torch 模型头每个 epoch 记录 `train_loss` 和 `val_loss`。库模型头实际使用的超参数以 `resolved_hyperparameters` 加进 run 的配置。
 
@@ -908,11 +922,11 @@ NullTracker(project=None)
 >>> (run,) = client.search_runs([experiment.experiment_id])
 >>> run.info.run_name, run.info.status
 ('XGBoostRegressor_total', 'FINISHED')
->>> run.data.tags["group"] == checkpoint.parent.parent.name
+>>> run.data.tags["group"] == TrainedRun.open(checkpoint).path.name
 True
 >>> sorted(k for k in run.data.metrics if k.startswith("importance_gain/"))
 ['importance_gain/f_a', 'importance_gain/f_b']
->>> json.loads((checkpoint.parent / "config.json").read_text())["tracker"]["name"]
+>>> TrainedRun.open(checkpoint).config["tracker"]["name"]
 'quantlab.tracking.mlflow.MlflowTracker'
 ```
 
@@ -957,8 +971,8 @@ MLflow 3 打开本地 `file:` 存储时要求设置 `MLFLOW_ALLOW_FILE_STORE=tru
 ...     def _forward(self, x):
 ...         return np.c_[np.nan_to_num(x), np.ones(len(x))] @ self.model
 >>> ridge = RidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
->>> ridge_results = ridge.train_cv(train_periods=100)
->>> [round(r["test_rank_ic"], 3) for r in ridge_results]
+>>> ridge_cv = ridge.train_cv(train_periods=100)
+>>> [round(f.metrics["test_rank_ic"], 3) for f in ridge_cv.folds]
 [0.685, 0.667, 0.707, 0.672, 0.716]
 >>> ridge.model.round(3).ravel().tolist()
 [0.05, -0.02, -0.001]
@@ -973,15 +987,15 @@ MLflow 3 打开本地 `file:` 存储时要求设置 `MLFLOW_ALLOW_FILE_STORE=tru
 ...         ranks = torch.argsort(torch.argsort(y[:, 0])).float()  # 这个标签没有 NaN
 ...         return (ranks / (len(y) - 1) - 0.5)[:, None], None
 >>> ranked = RankRidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
->>> ranked_metrics = json.loads((ranked.train().parent / "metrics.json").read_text())
->>> plain_metrics = json.loads((ridge.train().parent / "metrics.json").read_text())
+>>> ranked_metrics = TrainedRun.open(ranked.train()).metrics
+>>> plain_metrics = TrainedRun.open(ridge.train()).metrics
 >>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
 [(0.716, 0.003), (0.69, 0.027)]
 ```
 
 `TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/predefined/gats.py` 和 `quantlab/model/predefined/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
-新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（清单里记录的种子）。`ModelEnsemble` 是最小的完整示例。
+新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（集成 `run.json` 里为第 k 个成员记录的种子）。`ModelEnsemble` 是最小的完整示例。
 
 ## 注意事项
 
@@ -1031,7 +1045,7 @@ ValueError: Model not initialized, please call load() or train() first
 ```text
 FileNotFoundError: checkpoints/missing.joblib not found
 ValueError: Unsupported file type: '.pth'; XGBoostRegressor checkpoints use '.joblib' (...)
-ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its config.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
+ValueError: XGBoostRegressor: checkpoint ... was trained on factor variables ['f_a', 'f_b'] (trained_on in its run.json), but this model declares ['f_z', 'f_b']; loading it would feed the model different or permuted inputs (...)
 ```
 
 `predict_panel` 需要全部因子变量；torch 模型头的 `_forward` 必须为 batch 里的每个样本（截面里的每个标的）返回一行、为每个标签返回一列。
@@ -1066,9 +1080,9 @@ ValueError: XGBoostRegressor: train_cv: Fold 0: purging the last 10 bars leaves 
 ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
-`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回空列表（`[]`），不会抛出异常。
+`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回一个没有折的 walk-forward 运行，不会抛出异常。
 
-`train()` 只返回检查点路径，这次运行的指标在旁边的 `metrics.json` 里。`train_cv` 则直接返回这些指标，torch 模型头和库模型头都一样。
+`train()` 只返回检查点路径，这次运行的指标由 `TrainedRun.open(checkpoint).metrics` 给出。`train_cv` 返回 walk-forward 的 `TrainedRun`，各折带着自己的指标，torch 模型头和库模型头都一样。
 
 检查点是 pickle 文件（`LibraryModel` 用 `joblib`，`TorchModel` 用 `torch.load`）。只加载自己生成或可信的文件。
 
@@ -1078,4 +1092,4 @@ ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 `cv_folds.json` 清单如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 walk-forward 运行如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）、`quantlab/utils/walk_forward.py`（`walk_forward_folds`）、`quantlab/utils/trained_run.py`（`TrainedRun`）和 `quantlab/utils/metrics.py` 的 docstring。

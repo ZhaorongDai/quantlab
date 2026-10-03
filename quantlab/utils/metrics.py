@@ -460,7 +460,7 @@ def volatility_level_metrics(pred, target) -> dict[str, float]:
     perfect prediction, and it penalises an under-prediction of variance
     more than an over-prediction of the same size; a prediction close to
     zero where the target is not makes it very large, and infinite (written
-    as null in ``metrics.json``) once ``q`` overflows, which flags a model
+    as null in a run's ``run.json``) once ``q`` overflows, which flags a model
     predicting next to no risk. ``variance_ratio`` is ``mean(target**2) /
     mean(pred**2)``, pooled over cells, so the most volatile symbols weigh
     most: 1 when the predicted variance is unbiased, above 1 when risk is

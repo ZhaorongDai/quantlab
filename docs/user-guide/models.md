@@ -202,20 +202,25 @@ checkpoint = model.train()
 `train()` fits the head on the training window, evaluates it and writes a
 checkpoint. It returns the checkpoint's absolute path. With early stopping on,
 `XGBoostRegressor` stops after 20 boosting rounds without improvement on the
-validation segment and keeps only the trees up to the best round. Here 20 of
+validation segment and keeps only the trees up to the best round. Here 17 of
 the 300 allowed trees were kept.
 
-Beside the checkpoint, `train()` writes `config.json` and `metrics.json`.
-`metrics.json` holds the scores of the first label on its raw values for each
-segment: `train_*`, `val_*` and `test_*`, each of `loss`, `mse`, `rmse`,
-`mae`, `r2`, `ic`, `rank_ic`, `icir` and `rank_icir`. These are the values
-the tracking run's summary receives, except that the file writes NaN and
-infinity as null and the summary leaves them out. A run
-with `val_size=0` has no `val_*` keys. Torch heads write the same keys; their
-`loss` is the training objective on the transformed target.
+Beside the checkpoint, `train()` writes `config.json`, which rebuilds the
+model, and last `run.json`, which describes the run: its training window as
+configured and as fitted after the purge, its test window, what it was
+trained on and its metrics. A run is read back through
+`quantlab.utils.trained_run.TrainedRun`, never by opening its files (ADR
+0018): `TrainedRun.open(checkpoint).metrics` holds the scores of the first
+label on its raw values for each segment: `train_*`, `val_*` and `test_*`,
+each of `loss`, `mse`, `rmse`, `mae`, `r2`, `ic`, `rank_ic`, `icir` and
+`rank_icir`. These are the values the tracking run's summary receives, except
+that the record holds NaN and infinity as null and the summary leaves them
+out. A run with `val_size=0` has no `val_*` keys. Torch heads record the same
+keys; their `loss` is the training objective on the transformed target.
 
 Two more files sit beside them, so that a new metric or an ensemble can be
-computed later without predicting again:
+computed later without predicting again (`TrainedRun` gives their paths as
+`ic_series` and `test_predictions`):
 
 - `ic_series.csv`, with the columns `split`, `timestamp`, `ic` and `rank_ic`:
   the IC and RankIC of every bar of every segment, the series that `ic`,
@@ -224,13 +229,12 @@ computed later without predicting again:
 - `test_predictions.zarr`, the test segment's prediction panel as
   `predict_panel` returns it, one variable per label.
 
-Every fold of `train_cv` writes the same two files into its own checkpoint
-directory.
+Every fold of `train_cv` writes the same files into its own unit directory.
 
 ```python
-import json
+from quantlab.utils.trained_run import TrainedRun
 
-scores = json.loads((checkpoint.parent / "metrics.json").read_text())
+scores = TrainedRun.open(checkpoint).metrics
 scores["val_ic"], scores["test_ic"]
 ```
 
@@ -299,47 +303,52 @@ m = regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values)
 
 Every head, torch or library, computes the same metrics itself during
 `train()` for the `train`, `val` and `test` segments, under keys such as
-`test_ic` and `val_rank_ic`. They are written to `metrics.json`, to the
-tracking run's summary, and per fold to `train_cv`'s results. Torch
+`test_ic` and `val_rank_ic`. They are recorded in the run's `run.json`, sent
+to the tracking run's summary, and recorded per fold in `train_cv`'s run. Torch
 heads also log `train_loss` and `val_loss` every epoch.
 
-## Checkpoints and config.json
+## Checkpoints and trained runs
 
-`train()` writes into a new trial directory under `model_save_dir`:
+`train()` writes into a new trial directory under `model_save_dir`, a
+*trained unit*:
 
 ```text
 models/
   XGBoostRegressor_trial_20260925_175317_715310/
-    XGBoostRegressor_total/
-      config.json
-      ic_series.csv
-      metrics.json
-      test_predictions.zarr/
-      XGBoostRegressor_total.joblib
+    config.json
+    ic_series.csv
+    run.json
+    test_predictions.zarr/
+    XGBoostRegressor_total.joblib
 ```
 
 The trial directory is named after the class and the time of the run, so
-repeated runs never overwrite each other. `config.json` sits next to the
-checkpoint. It holds the model's full configuration, including the nested
-configurations of every factor, label and dataset. It also carries a
-`trained_on` record with the feature names, label names and sorted training
-symbols, and, for heads that merge your settings into library defaults, the
-`resolved_hyperparameters` actually used.
+repeated runs never overwrite each other. `config.json` holds the model's
+full configuration, including the nested configurations of every factor,
+label and dataset, and, for heads that merge your settings into library
+defaults, the `resolved_hyperparameters` actually used. `run.json`, written
+last, describes the unit: the training window as configured and as fitted
+after the purge, the test window, a `trained_on` record with the feature
+names, label names and sorted training symbols, and the metrics. Paths in it
+are relative, so a trial directory copied from a training server opens on
+another machine. `TrainedRun.open` reads a unit from its directory, its
+`run.json` or its checkpoint; a directory without `run.json` or of another
+`format_version` is refused with a message to retrain it.
 
-To use a trained model later, rebuild it from `config.json` and load the
+To use a trained model later, rebuild it from its config and load the
 weights:
 
 ```python
-import json
 from quantlab.utils.module import load_model_from_config
 
-saved = json.loads((checkpoint.parent / "config.json").read_text())
-reloaded = load_model_from_config(saved).load(checkpoint)
+run = TrainedRun.open(checkpoint)
+reloaded = load_model_from_config(run.config).load(checkpoint)
 ```
 
 `load()` first checks that the file suffix matches the head (`.joblib` or
-`.pth`). It then checks that the feature and label names recorded in
-`config.json` equal the model's own, name for name and in order. Neither
+`.pth`). It then checks that the feature and label names `trained_on`
+records equal the model's own, name for name and in order, and adopts the
+recorded training and test windows. Neither
 torch nor xgboost would notice permuted inputs by itself. A mismatch raises
 `ValueError`. `.joblib` checkpoints are pickles, so load only files you
 trust.
@@ -353,7 +362,9 @@ bar lies after every bar the model trained on, as it would in live trading.
 Across folds you see how stable the model's quality is over time.
 
 `train_cv(train_periods, expanding=False, test_periods=None)` lays the folds
-out over the bars between `config.start_date` and `config.end_date`. Each
+out over the bars between `config.start_date` and `config.end_date`, through
+`quantlab.utils.walk_forward.walk_forward_folds`, which you can also call on a
+timestamp axis to check the folds before training. Each
 fold's training window is `train_periods` bars and its test segment the next
 `test_periods` bars (`train_periods // 5` by default), and the next fold
 starts that many bars later.
@@ -361,38 +372,36 @@ Each window is split into train and validation and purged as described
 above, so the last bar fitted in each 200-bar window is its 198th:
 
 ```python
-folds = model.train_cv(train_periods=200)
+cv = model.train_cv(train_periods=200)
 ```
 
-Each fold trains a fresh model with its own early stopping and writes its own
-checkpoint directory, `XGBoostRegressor_cv_fold_{i}/`, inside one trial
-directory. `train_cv` returns one dict per fold with the fold's dates,
-experiment name, checkpoint path and the `train_*`, `val_*` and `test_*`
-metrics. The fold's `train_end` is the last bar fitted,
-after the purge. The same list is written as `cv_folds.json` in the trial
-directory, together with `"format_version": 2` and a `cv_mean` block: the
-mean over folds of every metric, keyed `cv_mean_train_ic`,
-`cv_mean_test_rank_ic` and so on, plus `cv_n_folds`. Folds whose value is
-not finite are left out of a mean. Each fold's `config.json` holds the dates
-the fold was configured with, before the purge, so its `train_end` lies L
-bars later: 2022-10-07 against the manifest's 2022-10-05 for fold 0 of the
-example. `BaseBacktester.run_cv()` reads `cv_folds.json` to backtest each
-fold with its own checkpoint on its own test period (see
+Each fold trains a fresh model with its own early stopping into its own unit
+directory, `fold_{i}/`, inside one trial directory, with the checkpoint
+`XGBoostRegressor_cv_fold_{i}.joblib`. `train_cv` returns the run as a
+`TrainedRun` of kind `"walk_forward"`: `cv.folds` holds each fold's unit,
+with its `index`, its training window as configured (`train_window`) and as
+fitted after the purge (`fitted_train_window`), its `test_window`, its
+`checkpoint` and its `train_*`, `val_*` and `test_*` metrics. For fold 0 of
+the example the configured window ends on 2022-10-07 and the fitted one on
+2022-10-05. `cv.cv_mean` holds the mean over folds of every metric, keyed
+`cv_mean_train_ic`, `cv_mean_test_rank_ic` and so on, plus `cv_n_folds`;
+folds whose value is not finite are left out of a mean. The trial
+directory's `run.json` records the folds and those means.
+`BaseBacktester.run_cv()` reads the trial directory, `cv.path`, to backtest
+each fold with its own checkpoint on its own test period (see
 [Backtesting](backtesting.md)). A fold whose test period would run past the
-end of the data is skipped with a warning. `run_cv` refuses a manifest of
-format version 1, written before the `cv_mean` block existed; rerun
-`train_cv` to replace it.
+end of the data is skipped with a warning.
 
 `expanding=True` keeps every fold's training window starting at the first
 fold's first bar, so each fold trains on all the history before its test
 segment and `train_periods` is the length of the first fold's window. The
 test segments, the fold count and the purge are those of the sliding mode,
 so the two modes compare on the same test bars. The validation segment
-stays the last `val_size` share of each growing window. `cv_folds.json` has
-the same format in both modes and `run_cv` replays either:
+stays the last `val_size` share of each growing window. The run has the
+same layout in both modes and `run_cv` replays either:
 
 ```python
-folds = model.train_cv(train_periods=200, expanding=True)
+grown = model.train_cv(train_periods=200, expanding=True)
 ```
 
 `train_cv` sets the model's `train_*` and `test_*` dates to each fold in
@@ -435,7 +444,7 @@ run, including every CV fold, carries the model's configuration.
 final `train_*`, `val_*` and `test_*` metrics and per-feature importance to
 the run summary, and logs an importance table per importance type (W&B also
 draws a bar chart of it). `train_cv` adds a `{class}_cv_summary` run whose
-summary is the manifest's `cv_mean` block. A run is finished also when
+summary is the walk-forward run's `cv_mean`. A run is finished also when
 training raises, and is then marked failed. The
 [model reference](../model.md#track-experiments) lists what each head logs.
 
@@ -444,26 +453,25 @@ training raises, and is then marked failed. The
 This is the output of `uv run python examples/train_model.py` (a Zarr
 warning printed on standard error is left out). The panel has a planted
 one-day reversal, which the model finds, so the test IC is about 0.25 and
-stable across folds. The line `metrics.json val` reads the validation scores
-of the single run back from its `metrics.json`. Between each fold's `train_end` and `test_start` lie
-the two purged bars.
+stable across folds. The line `recorded val` reads the validation scores
+of the single run back through `TrainedRun`. Between the end of each fold's
+fitted window and its test start lie the two purged bars.
 
 ```text
 features: ['past_ret_1', 'ma_dev_5'] label: ['ret_1']
-checkpoint: models/XGBoostRegressor_trial_20260928_084754_029062/XGBoostRegressor_total/XGBoostRegressor_total.joblib
-trees kept by early stopping: 20
-metrics.json val       IC=+0.285  RankIC=+0.259  R2=+0.084
+checkpoint: models/XGBoostRegressor_trial_20261003_155943_702145/XGBoostRegressor_total.joblib
+trees kept by early stopping: 17
+recorded val           IC=+0.281  RankIC=+0.252  R2=+0.080
 prediction panel: {'timestamp': 80, 'symbol': 16} ['ret_1']
-test window            IC=+0.263  RankIC=+0.248  R2=+0.068
+test window            IC=+0.263  RankIC=+0.241  R2=+0.068
 trained_on symbols: 16 resolved eta: 0.05
 reloaded model predicts the same values: True
-fold 0: train 2022-01-03..2022-10-05  test 2022-10-10..2022-12-02  IC=+0.242  RankIC=+0.226
+fold 0: train 2022-01-03..2022-10-05  test 2022-10-10..2022-12-02  IC=+0.239  RankIC=+0.227
 fold 1: train 2022-02-28..2022-11-30  test 2022-12-05..2023-01-27  IC=+0.277  RankIC=+0.262
 fold 2: train 2022-04-25..2023-01-25  test 2023-01-30..2023-03-24  IC=+0.254  RankIC=+0.223
 fold 3: train 2022-06-20..2023-03-22  test 2023-03-27..2023-05-19  IC=+0.264  RankIC=+0.237
-cv_folds.json: format_version 2 with 4 folds
-keys of one fold: ['checkpoint', 'experiment_name', 'fold', 'test_end', 'test_ic', 'test_icir', 'test_loss', 'test_mae', 'test_mse', 'test_r2', 'test_rank_ic', 'test_rank_icir', 'test_rmse', 'test_start', 'train_end', 'train_ic', 'train_icir', 'train_loss', 'train_mae', 'train_mse', 'train_r2', 'train_rank_ic', 'train_rank_icir', 'train_rmse', 'train_start', 'val_ic', 'val_icir', 'val_loss', 'val_mae', 'val_mse', 'val_r2', 'val_rank_ic', 'val_rank_icir', 'val_rmse']
-mean over folds: train IC 0.31 val IC 0.25 test IC 0.259
+walk-forward run: models/XGBoostRegressor_trial_20261003_155943_817284 with 4 folds
+mean over folds: train IC 0.31 val IC 0.249 test IC 0.259
 ```
 
 ## Use the shipped torch heads
@@ -475,7 +483,7 @@ joined the universe after training, and a symbol whose label is missing
 stays in the input as context but adds nothing to the loss. Each head
 declares its own training target and stopping rule, following its
 reference implementation, and fills every hyperparameter you leave out
-from its `DEFAULTS` class attribute. The metrics in `metrics.json` are
+from its `DEFAULTS` class attribute. The metrics a run records are
 always computed on the raw label, whatever the training target.
 
 `GATsRegressor` (`quantlab.model.predefined.gats`) is Qlib's GATs: an LSTM
@@ -606,7 +614,7 @@ head = WindowMLPHead(ModelConfig(
     hyperparameters={"epochs": 30, "lr": 1e-3},
 ))
 checkpoint = head.collect().train()
-scores = json.loads((checkpoint.parent / "metrics.json").read_text())
+scores = TrainedRun.open(checkpoint).metrics
 print(checkpoint.name, round(scores["val_ic"], 3), round(scores["test_ic"], 3))
 ```
 

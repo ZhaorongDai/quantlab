@@ -117,8 +117,7 @@ def train_checkpoint(model):
 
 def train_cv_project(model, train_periods):
     model.collect()
-    model.train_cv(train_periods=train_periods)
-    return next(Path(model.config.model_save_dir).rglob("cv_folds.json")).parent
+    return model.train_cv(train_periods=train_periods).path
 ```
 
 </details>
@@ -304,14 +303,15 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### Replay a cross-validation run
 
-`train_cv` writes one checkpoint per walk-forward fold and a `cv_folds.json` manifest into its project directory. `run_cv()` reads the manifest, backtests each fold's test segment with the fold's own checkpoint, then turns the concatenated fold predictions into weights in one pass, so the holdings carry across fold boundaries as in one account, and simulates them once. `cv_project_dir` points at the project directory and `model_mode` must be `"load"`. Only folds whose test segment lies inside the window are used, and those segments must follow each other bar for bar.
+`train_cv` writes a walk-forward run: a trial directory holding one trained unit per fold, each with its own checkpoint, and a `run.json` listing the folds (see the model guide). `run_cv()` reads it through `TrainedRun`, backtests each fold's test segment with the fold's own checkpoint, then turns the concatenated fold predictions into weights in one pass, so the holdings carry across fold boundaries as in one account, and simulates them once. `cv_project_dir` points at the trial directory, `train_cv().path`, and `model_mode` must be `"load"`. Only folds whose test segment lies inside the window are used, and those segments must follow each other bar for bar.
 
 ```python
 >>> cfg2 = write_price_store(root / "cv", n_bars=80)
 >>> days2 = pd.bdate_range("2024-01-01", periods=80)
 >>> project_dir = train_cv_project(make_model(root / "cv_train", cfg2, days2, train_end=29), 30)
->>> manifest = json.loads((project_dir / "cv_folds.json").read_text())
->>> len(manifest["folds"]), manifest["folds"][0]["test_start"][:10], manifest["folds"][-1]["test_end"][:10]
+>>> from quantlab.utils.trained_run import TrainedRun
+>>> walk = TrainedRun.open(project_dir)
+>>> len(walk.folds), walk.folds[0].test_window[0][:10], walk.folds[-1].test_window[1][:10]
 (8, '2024-02-12', '2024-04-17')
 >>> cv_config = dataclasses.replace(
 ...     backtester.config,
@@ -329,7 +329,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ['fold_0', 'fold_1']
 ```
 
-The top-level files of the run directory describe the stitched curve, its `predictions.zarr` holding the concatenated fold predictions, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the purged `train_end` in the manifest. A fold's in-sample window ends L bars after that `train_end`, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
+The top-level files of the run directory describe the stitched curve, its `predictions.zarr` holding the concatenated fold predictions, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the fitted window, after the purge, in the fold's `run.json`. A fold's in-sample window ends L bars after the fitted window's end, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
 
 ```python
 >>> stitched = cv.metrics["stitched"]
@@ -746,7 +746,7 @@ The backtester reads no model config and calls no other model method. A config w
 ['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
-A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble directory and records its `ensemble.json` as `trained_checkpoint`; in load mode `checkpoint` is that `ensemble.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
+A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble unit and records its `run.json`, the ensemble's checkpoint, as `trained_checkpoint`; in load mode `checkpoint` is that `run.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -754,13 +754,13 @@ A `SeedEnsemble` (see Average several seeds in the model guide) is such a predic
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,
 ... )).run()
->>> manifest = Path(trained.metrics["trained_checkpoint"])
->>> manifest.name, sorted(p.name for p in manifest.parent.iterdir())
-('ensemble.json', ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr'])
+>>> unit = TrainedRun.open(trained.metrics["trained_checkpoint"])
+>>> unit.kind, [m.seed for m in unit.members]
+('ensemble', [0, 1, 2])
 >>> replayed = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config,
 ...     model=SeedEnsemble(make_model(root / "replay", cfg, days, train_end=20), seeds=[0, 1, 2]),
-...     checkpoint=str(manifest),
+...     checkpoint=str(unit.checkpoint),
 ... )).run()
 >>> replayed.metrics["training_window"]
 ('2024-01-01', '2024-02-23')
@@ -771,19 +771,18 @@ True
 ([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
 ```
 
-`run_cv()` replays an ensemble's cross-validation the same way. `SeedEnsemble.train_cv` (see Average several seeds in the model guide) writes a `cv_folds.json` in the format of a single model's `train_cv`, whose `checkpoint` entries are the `ensemble.json` of each `fold_{i}/`. With an ensemble as `model` and that directory as `cv_project_dir`, each fold loads its own ensemble, and the training dates of its in-sample split are cross-checked against the fold's ensemble-level `config.json`, as for a single model's fold. The backtester needs no change for it. With `MomentumHead` the seeds agree again, so the stitched weights equal those of the single model's cross-validation above.
+`run_cv()` replays an ensemble's cross-validation the same way. `SeedEnsemble.train_cv` (see Average several seeds in the model guide) writes a walk-forward run laid out as a single model's, whose folds are ensemble units, each with its `run.json` as its checkpoint. With an ensemble as `model` and that directory as `cv_project_dir`, each fold loads its own ensemble, and its in-sample split starts from the fitted window the fold's record states, as for a single model's fold. The backtester needs no change for it. With `MomentumHead` the seeds agree again, so the stitched weights equal those of the single model's cross-validation above.
 
 ```python
 >>> cv_ensemble = SeedEnsemble(make_model(root / "ensemble_cv", cfg2, days2, train_end=29), seeds=[0, 1, 2])
->>> folds = cv_ensemble.collect().train_cv(train_periods=30)
->>> ensemble_cv_dir = Path(folds[0]["checkpoint"]).parent.parent
+>>> ensemble_cv_dir = cv_ensemble.collect().train_cv(train_periods=30).path
 >>> ensemble_cv = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     cv_config,
 ...     model=SeedEnsemble(make_model(root / "ensemble_cv_backtest", cfg2, days2, train_end=29), seeds=[0, 1, 2]),
 ...     cv_project_dir=str(ensemble_cv_dir),
 ... )).run_cv()
 >>> len(ensemble_cv.folds), Path(ensemble_cv.folds[0]["checkpoint"]).relative_to(ensemble_cv_dir).as_posix()
-(8, 'fold_0/ensemble.json')
+(8, 'fold_0/run.json')
 >>> bool((ensemble_cv.weights["weight"].fillna(0) == cv.weights["weight"].fillna(0)).all())
 True
 >>> ensemble_cv.metrics["stitched"]["in_sample_ranges"]
@@ -823,7 +822,7 @@ ValueError: score_label 'fwd_ret_5' is not one of the predicted labels ['open_re
 >>> backtester.run_cv()
 Traceback (most recent call last):
   ...
-ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_project_dir, the train_cv project directory holding cv_folds.json
+ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_project_dir, the walk-forward unit a train_cv run wrote
 ```
 
 A stored config with a missing field is refused instead of being filled from current defaults:
@@ -836,12 +835,12 @@ Traceback (most recent call last):
 ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
-If a fold is missing from the middle of `cv_folds.json`, `run_cv()` refuses to stitch across the gap with `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`. Restore the manifest, or narrow `start_date` and `end_date` to a contiguous range of folds.
+If a fold is missing from the middle of the walk-forward run's `run.json`, `run_cv()` refuses to stitch across the gap with `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`. Retrain the run, or narrow `start_date` and `end_date` to a contiguous range of folds.
 
 ## See also
 
 - [portfolio](portfolio.md) for the rules from predictions to weights: top-n, the mean-variance optimiser and its risk models.
-- [model](model.md) for `train`, `train_cv`, `cv_folds.json` and `predict_panel`.
+- [model](model.md) for `train`, `train_cv`, `TrainedRun` and `predict_panel`.
 - [dataset](dataset.md) for the price dataset and [factor](factor.md) for the factors and labels a model consumes.
 - [backend](backend.md) for the Zarr stores the weights and equity curve are written to.
 - `BaseBacktester`, `BacktestResult`, `CVBacktestResult` and `MarketSpec` in `quantlab/base/backtest.py`; `BacktestConfig` and `CrossSectionBacktestConfig` in `quantlab/base/config.py`; `load_backtester_from_config` in `quantlab/utils/module.py`.

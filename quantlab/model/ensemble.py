@@ -566,11 +566,12 @@ class BaseEnsemble(ABC):
         Examples
         --------
         >>> checkpoint = ensemble.collect().train()
-        >>> checkpoint.name, checkpoint.parent.name.startswith("SeedEnsemble_trial_")
-        ('run.json', True)
-        >>> sorted(p.name for p in checkpoint.parent.iterdir())
+        >>> run = TrainedRun.open(checkpoint)
+        >>> run.checkpoint == checkpoint, run.path.name.startswith("SeedEnsemble_trial_")
+        (True, True)
+        >>> sorted(p.name for p in run.path.iterdir())
         ['ic_series.csv', 'member_0', 'member_1', 'member_2', 'run.json', 'test_predictions.zarr']
-        >>> sorted(TrainedRun.open(checkpoint).metrics)
+        >>> sorted(run.metrics)
         ['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir']
         """
         for member in self.members:

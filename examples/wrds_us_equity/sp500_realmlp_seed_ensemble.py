@@ -51,6 +51,7 @@ from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.realmlp import RealMLPRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
+from quantlab.utils.trained_run import TrainedRun
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
@@ -235,7 +236,11 @@ def backtest():
     ))
     result = backtester.run()
     whole = result.metrics["whole"]
-    logger.info(f"ensemble manifest: {result.metrics['trained_checkpoint']}")
+    trained = TrainedRun.open(result.metrics["trained_checkpoint"])
+    logger.info(
+        f"ensemble {trained.path.name}: seeds {[m.seed for m in trained.members]}, "
+        f"test RankIC {trained.metrics.get('test_rank_ic')}"
+    )
     logger.info(
         f"total return {whole.get('Total Return [%]')}%, Sharpe "
         f"{whole.get('Sharpe Ratio')}, max drawdown {whole.get('Max Drawdown [%]')}%; "

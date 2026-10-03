@@ -231,7 +231,7 @@ def train() -> Path:
 
 
 # %% 5. Backtest
-def backtest(manifest: Path):
+def backtest(checkpoint: Path):
     """Mean-variance backtest of the test window against buy-and-hold SPY."""
     benchmark = CrspStockDataset(CrspDatasetConfig.etf_benchmark(
         permno=SPY_PERMNO, zarr_file_path=str(STORES / "wrds_crsp_spy_1d.zarr"),
@@ -267,7 +267,7 @@ def backtest(manifest: Path):
         # the index keeps its prices and can still be sold.
         price_dataset=index_dataset(),
         model=MembershipMaskedPredictor(build_model(), index_membership()),
-        model_mode="load", checkpoint=str(manifest),
+        model_mode="load", checkpoint=str(checkpoint),
         start_date=TEST_START, end_date=TEST_END,
         output_dir=str(WORK / "backtests" / "xgb_mvo"),
         # Rebalance every HORIZON bars, the span the optimiser plans over.

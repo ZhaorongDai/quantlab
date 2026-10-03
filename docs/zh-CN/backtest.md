@@ -117,8 +117,7 @@ def train_checkpoint(model):
 
 def train_cv_project(model, train_periods):
     model.collect()
-    model.train_cv(train_periods=train_periods)
-    return next(Path(model.config.model_save_dir).rglob("cv_folds.json")).parent
+    return model.train_cv(train_periods=train_periods).path
 ```
 
 </details>
@@ -304,14 +303,15 @@ Name: 2024-02-12 00:00:00, dtype: float64
 
 ### 回放一次交叉验证
 
-`train_cv` 会为每个滚动折写一个 checkpoint，并在项目目录里写一个 `cv_folds.json` 清单。`run_cv()` 读取清单，用各折自己的 checkpoint 回测该折的测试段，再把拼接后的各折预测一次性转换为权重，使持仓像一个账户那样跨折延续，并整体模拟一次。`cv_project_dir` 指向项目目录，`model_mode` 必须是 `"load"`。只使用测试段落在窗口内的折，这些测试段必须逐 bar 首尾相接。
+`train_cv` 写出一次 walk-forward 运行：一个试验目录，每折一个训练单元，各有自己的 checkpoint，另有一个列出各折的 `run.json`（见 model 指南）。`run_cv()` 通过 `TrainedRun` 读取它，用各折自己的 checkpoint 回测该折的测试段，再把拼接后的各折预测一次性转换为权重，使持仓像一个账户那样跨折延续，并整体模拟一次。`cv_project_dir` 指向试验目录，即 `train_cv().path`，`model_mode` 必须是 `"load"`。只使用测试段落在窗口内的折，这些测试段必须逐 bar 首尾相接。
 
 ```python
 >>> cfg2 = write_price_store(root / "cv", n_bars=80)
 >>> days2 = pd.bdate_range("2024-01-01", periods=80)
 >>> project_dir = train_cv_project(make_model(root / "cv_train", cfg2, days2, train_end=29), 30)
->>> manifest = json.loads((project_dir / "cv_folds.json").read_text())
->>> len(manifest["folds"]), manifest["folds"][0]["test_start"][:10], manifest["folds"][-1]["test_end"][:10]
+>>> from quantlab.utils.trained_run import TrainedRun
+>>> walk = TrainedRun.open(project_dir)
+>>> len(walk.folds), walk.folds[0].test_window[0][:10], walk.folds[-1].test_window[1][:10]
 (8, '2024-02-12', '2024-04-17')
 >>> cv_config = dataclasses.replace(
 ...     backtester.config,
@@ -329,7 +329,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ['fold_0', 'fold_1']
 ```
 
-运行目录顶层的文件描述的是拼接后的曲线（其中 `predictions.zarr` 是各折预测的拼接），`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗后的 `train_end` 记入清单。一折的样本内窗口结束于该 `train_end` 之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
+运行目录顶层的文件描述的是拼接后的曲线（其中 `predictions.zarr` 是各折预测的拼接），`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗之后实际拟合的窗口记入该折的 `run.json`。一折的样本内窗口结束于拟合窗口终点之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
 
 ```python
 >>> stitched = cv.metrics["stitched"]
@@ -746,7 +746,7 @@ timestamp
 ['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
-`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成目录，并把其中的 `ensemble.json` 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `ensemble.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
+`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成单元，并把它的 `run.json`（即集成的 checkpoint）记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `run.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -754,13 +754,13 @@ timestamp
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, model=ensemble, model_mode="train", checkpoint=None,
 ... )).run()
->>> manifest = Path(trained.metrics["trained_checkpoint"])
->>> manifest.name, sorted(p.name for p in manifest.parent.iterdir())
-('ensemble.json', ['config.json', 'ensemble.json', 'ic_series.csv', 'member_0', 'member_1', 'member_2', 'metrics.json', 'test_predictions.zarr'])
+>>> unit = TrainedRun.open(trained.metrics["trained_checkpoint"])
+>>> unit.kind, [m.seed for m in unit.members]
+('ensemble', [0, 1, 2])
 >>> replayed = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config,
 ...     model=SeedEnsemble(make_model(root / "replay", cfg, days, train_end=20), seeds=[0, 1, 2]),
-...     checkpoint=str(manifest),
+...     checkpoint=str(unit.checkpoint),
 ... )).run()
 >>> replayed.metrics["training_window"]
 ('2024-01-01', '2024-02-23')
@@ -771,19 +771,18 @@ True
 ([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
 ```
 
-`run_cv()` 以同样的方式回放集成的交叉验证。`SeedEnsemble.train_cv`（见 model 指南的“平均多个种子”）写出的 `cv_folds.json` 与单个模型的 `train_cv` 格式相同，其中的 `checkpoint` 是每个 `fold_{i}/` 的 `ensemble.json`。以集成为 `model`、以这个目录为 `cv_project_dir` 时，每一折加载自己的集成，该折集成级 `config.json` 记录的训练日期与清单中的日期相互核对，与单个模型的折相同。回测器为此无需任何改动。`MomentumHead` 的各个种子结果仍然一致，所以拼接后的权重与上文单个模型交叉验证的权重相同。
+`run_cv()` 以同样的方式回放集成的交叉验证。`SeedEnsemble.train_cv`（见 model 指南的“平均多个种子”）写出的 walk-forward 运行与单个模型的布局相同，只是各折是集成单元，各自以 `run.json` 为 checkpoint。以集成为 `model`、以这个目录为 `cv_project_dir` 时，每一折加载自己的集成，样本内划分从该折记录中写明的拟合窗口出发，与单个模型的折相同。回测器为此无需任何改动。`MomentumHead` 的各个种子结果仍然一致，所以拼接后的权重与上文单个模型交叉验证的权重相同。
 
 ```python
 >>> cv_ensemble = SeedEnsemble(make_model(root / "ensemble_cv", cfg2, days2, train_end=29), seeds=[0, 1, 2])
->>> folds = cv_ensemble.collect().train_cv(train_periods=30)
->>> ensemble_cv_dir = Path(folds[0]["checkpoint"]).parent.parent
+>>> ensemble_cv_dir = cv_ensemble.collect().train_cv(train_periods=30).path
 >>> ensemble_cv = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     cv_config,
 ...     model=SeedEnsemble(make_model(root / "ensemble_cv_backtest", cfg2, days2, train_end=29), seeds=[0, 1, 2]),
 ...     cv_project_dir=str(ensemble_cv_dir),
 ... )).run_cv()
 >>> len(ensemble_cv.folds), Path(ensemble_cv.folds[0]["checkpoint"]).relative_to(ensemble_cv_dir).as_posix()
-(8, 'fold_0/ensemble.json')
+(8, 'fold_0/run.json')
 >>> bool((ensemble_cv.weights["weight"].fillna(0) == cv.weights["weight"].fillna(0)).all())
 True
 >>> ensemble_cv.metrics["stitched"]["in_sample_ranges"]
@@ -823,7 +822,7 @@ ValueError: score_label 'fwd_ret_5' is not one of the predicted labels ['open_re
 >>> backtester.run_cv()
 Traceback (most recent call last):
   ...
-ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_project_dir, the train_cv project directory holding cv_folds.json
+ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_project_dir, the walk-forward unit a train_cv run wrote
 ```
 
 保存的配置缺少字段时，会被拒绝，而不是用当前默认值补上：
@@ -836,12 +835,12 @@ Traceback (most recent call last):
 ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
 ```
 
-如果 `cv_folds.json` 中间缺了一折，`run_cv()` 拒绝跨缺口拼接，报错信息包含 `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`。恢复清单，或者把 `start_date` 与 `end_date` 收窄到一段连续的折。
+如果 walk-forward 运行的 `run.json` 中间缺了一折，`run_cv()` 拒绝跨缺口拼接，报错信息包含 `fold test segments are not contiguous: gap between fold 2 ending 2024-03-06 and fold 4 starting 2024-03-15; 6 price bar(s) in between belong to no fold, so a stitched out-of-sample curve would silently skip them`。重新训练这次运行，或者把 `start_date` 与 `end_date` 收窄到一段连续的折。
 
 ## 另请参阅
 
 - [portfolio](portfolio.md)：从预测到权重的规则，包括 top-n、均值-方差优化器及其风险模型。
-- [model](model.md)：`train`、`train_cv`、`cv_folds.json` 与 `predict_panel`。
+- [model](model.md)：`train`、`train_cv`、`TrainedRun` 与 `predict_panel`。
 - [dataset](dataset.md)：价格数据集；[factor](factor.md)：模型使用的因子和标签。
 - [backend](backend.md)：权重和净值曲线所写入的 Zarr 存储。
 - `quantlab/base/backtest.py` 中的 `BaseBacktester`、`BacktestResult`、`CVBacktestResult`、`MarketSpec`；`quantlab/base/config.py` 中的 `BacktestConfig` 与 `CrossSectionBacktestConfig`；`quantlab/utils/module.py` 中的 `load_backtester_from_config`。

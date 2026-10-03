@@ -212,12 +212,13 @@ print("Checkpoint:", checkpoint.relative_to(root))
 
 ```text
 Collected panel: {'timestamp': 300, 'symbol': 16} 170 variables
-Checkpoint: models/XGBoostRegressor_trial_20260927_212057_563434/XGBoostRegressor_total/XGBoostRegressor_total.joblib
+Checkpoint: models/XGBoostRegressor_trial_20260927_212057_563434/XGBoostRegressor_total.joblib
 ```
 
 Each call to `train()` creates a new timestamped trial directory, so earlier checkpoints are
-never overwritten. Next to the `.joblib` checkpoint sits a `config.json` recording the model,
-its factors and labels, and the hyperparameters XGBoost actually used. The training and test
+never overwritten. Next to the `.joblib` checkpoint sit a `config.json` recording the model,
+its factors and labels, and the hyperparameters XGBoost actually used, and a `run.json` with
+the training windows and metrics, which `quantlab.utils.trained_run.TrainedRun` reads back. The training and test
 metrics also go to the config's `tracker`, which by default sends them nowhere
 (see [experiment tracking](installation.md#experiment-tracking)). Walk-forward cross-validation
 through `train_cv()` is covered in [models](../user-guide/models.md).
