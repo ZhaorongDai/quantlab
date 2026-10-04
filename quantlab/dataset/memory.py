@@ -24,6 +24,7 @@ from quantlab.backend import XrBackend
 from quantlab.base.config import FrameDatasetConfig
 from quantlab.base.data import MarketDataset
 from quantlab.utils.date_range import as_label, check_range
+from quantlab.utils.fingerprint import record_read
 from quantlab.utils.frame import to_panel
 
 class FrameDataset(MarketDataset):
@@ -448,8 +449,12 @@ class FrameDataset(MarketDataset):
         start: "str | pd.Timestamp",
         end: "str | pd.Timestamp",
         symbols: Sequence | None = None,
+        variables: Sequence[str] | None = None,
     ) -> xr.Dataset:
         """Return the held panel from ``start`` to ``end``, both inclusive.
+
+        A read seam like ``BaseDataset.panel``: inside an open ``DataRecorder`` the
+        request is logged, and the held panel is what gets fingerprinted.
 
         Parameters
         ----------
@@ -457,6 +462,8 @@ class FrameDataset(MarketDataset):
             The range to return. A date-only ``end`` includes every bar of that day.
         symbols : sequence, optional
             Symbols to keep, in the order given. ``None`` keeps every symbol.
+        variables : sequence of str, optional
+            Variables to keep, in the order given. ``None`` keeps every variable.
 
         Returns
         -------
@@ -468,7 +475,7 @@ class FrameDataset(MarketDataset):
         ValueError
             If ``start`` is after ``end``.
         KeyError
-            If a requested symbol is not held.
+            If a requested symbol or variable is not held.
 
         Examples
         --------
@@ -485,7 +492,14 @@ class FrameDataset(MarketDataset):
         data = self._held().sel(timestamp=slice(as_label(start), as_label(end)))
         if symbols is not None:
             data = data.sel(symbol=list(symbols))
-        return XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
+        if variables is not None:
+            data = data[list(variables)]
+        panel = XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
+        record_read(
+            self, start, end, symbols=symbols, variables=variables,
+            reread=lambda: self.panel(start, end, symbols, variables),
+        )
+        return panel
 
     def _calendar(self) -> pd.DatetimeIndex:
         """Return the held panel's timestamps."""

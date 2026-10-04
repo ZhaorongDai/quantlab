@@ -46,6 +46,7 @@ from quantlab.utils.date_range import (
     range_text,
     resample_padding,
 )
+from quantlab.utils.fingerprint import record_read
 from quantlab.utils.resample import (
     assert_coarser,
     resample_store_path,
@@ -268,6 +269,10 @@ class Factor(Component, ABC):
         factor reads its own store when one has been built, otherwise it
         resamples the part of the source factor's store the range needs.
 
+        This is the factor read seam: inside an open
+        ``quantlab.utils.fingerprint.DataRecorder`` the request is logged
+        and fingerprinted, over every variable, when the recorder closes.
+
         Parameters
         ----------
         start, end : str, datetime.date or pd.Timestamp
@@ -307,7 +312,9 @@ class Factor(Component, ABC):
                 timestamp=slice(first - pad, last + pad)
             )
             data = self._resample_panel(source).sel(timestamp=window)
-        return _on_panel_axes(data)
+        panel = _on_panel_axes(data)
+        record_read(self, start, end, reread=lambda: self.read(start, end))
+        return panel
 
     @property
     def warmup_bars(self) -> int:

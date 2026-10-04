@@ -99,6 +99,7 @@ class MergedDataset(MarketDataset):
         start,
         end,
         symbols: "Sequence | None" = None,
+        variables: "Sequence[str] | None" = None,
     ) -> xr.Dataset:
         """Return the merged panel from ``start`` to ``end``, both inclusive.
 
@@ -108,6 +109,9 @@ class MergedDataset(MarketDataset):
         has no value. Unlike a single dataset's panel it is loaded into
         memory, because finding a cell held twice reads every value.
 
+        The view records nothing in an open ``DataRecorder``: each input does,
+        asked only for its own names of ``variables``.
+
         Parameters
         ----------
         start, end : str, datetime.date or pd.Timestamp
@@ -116,6 +120,10 @@ class MergedDataset(MarketDataset):
         symbols : sequence, optional
             Symbol labels to keep, in the order given. ``None`` keeps every
             symbol of every input.
+        variables : sequence of str, optional
+            Shared variable names to keep, in the order given. Each input reads
+            only those it holds, and an input holding none is not read.
+            ``None`` keeps every variable.
 
         Returns
         -------
@@ -129,7 +137,7 @@ class MergedDataset(MarketDataset):
             spacing, or a cell holds a value in more than one input; the
             message names the variable and both inputs.
         KeyError
-            If a requested symbol is in no input.
+            If a requested symbol or variable is in no input.
 
         Examples
         --------
@@ -141,28 +149,38 @@ class MergedDataset(MarketDataset):
         """
         check_range(start, end, f"{self.class_name}.panel()")
         self._check_spacing()
-        panels = []
+        read, panels = [], []
         for dataset in self.datasets:
-            data = dataset.panel(start, end)
+            own = _own_names(dataset, variables)
+            if own == []:
+                continue  # holds none of the requested variables: not read
+            data = dataset.panel(start, end, variables=own)
             if symbols is not None:
                 held = set(data["symbol"].values.tolist())
                 data = data.sel(symbol=[s for s in symbols if s in held])
+            read.append(dataset)
             panels.append(_shared_names(dataset, data))
-        merged = self._merge(panels)
+        if not panels:
+            raise KeyError(f"{self.class_name}: no input holds any of {list(variables)}.")
+        merged = self._merge(read, panels)
         if symbols is not None:
             merged = merged.sel(symbol=list(symbols))
+        if variables is not None:
+            merged = merged[list(variables)]
         return XrBackend().to_internal(merged).get_xarray_dataset(
             ["timestamp", "symbol"]
         )
 
-    def _merge(self, panels: list[xr.Dataset]) -> xr.Dataset:
-        """Outer-join ``panels``, raising on a cell held by two of them."""
+    def _merge(
+        self, datasets: list[BaseDataset], panels: list[xr.Dataset]
+    ) -> xr.Dataset:
+        """Outer-join ``panels`` of ``datasets``, raising on a cell held by two of them."""
         aligned = xr.align(*panels, join="outer")
         names = dict.fromkeys(name for p in aligned for name in p.data_vars)
         for name in names:
             holders = [
                 (dataset, panel[name].notnull())
-                for dataset, panel in zip(self.datasets, aligned)
+                for dataset, panel in zip(datasets, aligned)
                 if name in panel.data_vars
             ]
             for (first, a), (second, b) in combinations(holders, 2):
@@ -389,6 +407,26 @@ def _shared_names(dataset: BaseDataset, panel: xr.Dataset) -> xr.Dataset:
     if isinstance(dataset, MarketDataset):
         return dataset.to_shared_names(panel)
     return panel
+
+
+def _own_names(dataset: BaseDataset, variables) -> "list[str] | None":
+    """Return the input's own names of the shared ``variables`` it holds.
+
+    ``None`` (every variable) stays ``None``. The input's names are read from
+    its store schema, not its values.
+    """
+    if variables is None:
+        return None
+    names = dataset.head(0).collect_schema().names()
+    shared, wanted = _shared_map(dataset, names), set(variables)
+    return [name for name in names if shared.get(name, name) in wanted]
+
+
+def _shared_map(dataset: BaseDataset, names) -> dict[str, str]:
+    """Return the input's renaming onto the shared names, if it has one."""
+    if isinstance(dataset, MarketDataset):
+        return dataset.shared_name_map(names)
+    return {}
 
 
 def _describe(dataset: BaseDataset) -> str:

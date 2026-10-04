@@ -46,6 +46,7 @@ from quantlab.backend import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data
 from quantlab.enums.constant import Date
 from quantlab.utils.date_range import as_label, check_range, resample_padding
+from quantlab.utils.fingerprint import record_read
 from quantlab.utils.resample import (
     assert_coarser,
     clock_labels,
@@ -670,6 +671,7 @@ class BaseDataset(Component, ABC):
         start: "str | datetime.date | pd.Timestamp",
         end: "str | datetime.date | pd.Timestamp",
         symbols: "Sequence | None" = None,
+        variables: "Sequence[str] | None" = None,
     ) -> xr.Dataset:
         """Return the stored panel from ``start`` to ``end``, both inclusive.
 
@@ -677,6 +679,11 @@ class BaseDataset(Component, ABC):
         until it is used, and the dataset holds nothing afterwards, so one
         dataset object can answer several requests with different ranges
         and serve several consumers at once. The config is not changed.
+
+        This is the dataset read seam: inside an open
+        ``quantlab.utils.fingerprint.DataRecorder`` the request is logged
+        and fingerprinted when the recorder closes; outside one nothing is
+        recorded.
 
         A date-only ``end`` such as ``"2024-01-05"`` includes every bar of
         that day. A resampled dataset answers on its resampled bars: from
@@ -694,6 +701,9 @@ class BaseDataset(Component, ABC):
             Symbol labels to keep, in the order given, of the store's own
             label type (integer PERMNOs on CRSP and NBBO stores). ``None``
             keeps every symbol of the store.
+        variables : sequence of str, optional
+            Variables to keep, in the order given; only those are read.
+            ``None`` keeps every variable.
 
         Returns
         -------
@@ -705,7 +715,7 @@ class BaseDataset(Component, ABC):
         ValueError
             If ``start`` is after ``end``.
         KeyError
-            If a requested symbol is not in the store.
+            If a requested symbol or variable is not in the store.
         FileNotFoundError
             If the store does not exist.
 
@@ -716,6 +726,8 @@ class BaseDataset(Component, ABC):
         {'timestamp': 2, 'symbol': 1}
         >>> dict(ds.panel("2024-01-02", "2024-01-05").sizes)  # same object
         {'timestamp': 4, 'symbol': 3}
+        >>> list(ds.panel("2024-01-02", "2024-01-05", variables=["close"]).data_vars)
+        ['close']
         """
         first, last = check_range(start, end, f"{self.class_name}.panel()")
         window = slice(as_label(start), as_label(end))
@@ -726,14 +738,31 @@ class BaseDataset(Component, ABC):
             )
             if symbols is not None:
                 source = source.sel(symbol=list(symbols))
+            # resample_how names every source variable, so narrow afterwards.
             data = self._resample_panel(source).sel(timestamp=window)
+            if variables is not None:
+                source = source[list(variables)]
+            # The view records nothing itself: the source store is the read.
+            record_read(
+                self, first - pad, last + pad, symbols=symbols,
+                variables=variables, store=self.config.zarr_file_path,
+                reread=lambda: source,
+            )
         else:
             data = self._open_store(self.store_path).sel(timestamp=window)
             if symbols is not None:
                 data = data.sel(symbol=list(symbols))
-        return XrBackend().to_internal(data).get_xarray_dataset(
+        if variables is not None:
+            data = data[list(variables)]
+        panel = XrBackend().to_internal(data).get_xarray_dataset(
             ["timestamp", "symbol"]
         )
+        if not self._reads_source_store():
+            record_read(
+                self, start, end, symbols=symbols, variables=variables,
+                reread=lambda: self.panel(start, end, symbols, variables),
+            )
+        return panel
 
     def bar_before(
         self, date: "str | datetime.date | pd.Timestamp", n: int
