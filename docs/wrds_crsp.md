@@ -16,7 +16,70 @@ export WRDS_USERNAME=<your-wrds-username>
 
 The Nasdaq-100 universe additionally needs the Compustat and CRSP/Compustat Merged (CCM) schemas. Converting, reading and rebuilding a store need no account and no network.
 
-The sessions on this page ran against a tiny synthetic raw tier laid out as described below, so the numbers are small but observed output.
+The sessions on this page ran against a tiny synthetic raw tier laid out as described below, so the numbers are small but observed output. The tier is written by the test suite's fake WRDS session and fixture writers, through the `crsp_demo.py` file below; run the sessions from the repository root.
+
+<details><summary>crsp_demo.py</summary>
+
+```python
+"""Write the synthetic CRSP raw and reference tiers used by docs/wrds_crsp.md."""
+
+from pathlib import Path
+from unittest import mock
+
+import numpy as np
+import pandas as pd
+
+from tests.crsp_fixtures import (
+    AAPL_AUG_2020_ROWS, LEHMAN_2008_ROWS, FakeCrspSession, dsf_row,
+    run_crsp_pull, write_reference_tables,
+)
+
+# PERMNO -> CRSP type columns that differ from an ordinary US common share.
+SECURITIES = {
+    10107: {},                                            # a US stock
+    99001: {"sharetype": "AD"},                           # an ADR
+    99002: {"usincflg": "N"},                             # a non-US issuer
+    86755: {"securitytype": "FUND", "securitysubtype": "ETF",
+            "issuertype": "ACOR"},                        # a fund
+}
+
+
+def synthetic_rows(permno, overrides, days, seed):
+    rng = np.random.default_rng(seed)
+    close = 100.0
+    rows = []
+    for day in days:
+        ret = rng.normal(0, 0.01)
+        prev, close = close, close * (1 + ret)
+        rows.append(dsf_row(
+            permno, day.date(), dlyprc=f"{close:.6f}", dlyret=f"{ret:.6f}",
+            dlyretx=f"{ret:.6f}", dlyopen=f"{prev:.6f}",
+            dlyhigh=f"{max(prev, close) * 1.005:.6f}",
+            dlylow=f"{min(prev, close) * 0.995:.6f}",
+            dlyvol=str(int(rng.integers(500_000, 2_000_000))), **overrides))
+    return rows
+
+
+def build(root="data"):
+    """Pull the synthetic rows through the fake WRDS session into `root`."""
+    days = pd.bdate_range("2020-06-01", "2020-08-31")
+    FakeCrspSession.reset()
+    FakeCrspSession.daily_rows = list(AAPL_AUG_2020_ROWS) + list(LEHMAN_2008_ROWS)
+    for seed, (permno, overrides) in enumerate(SECURITIES.items()):
+        FakeCrspSession.daily_rows += synthetic_rows(permno, overrides, days, seed)
+    for permno in (13407, 83443):  # Meta and Berkshire B, for the ticker lookup
+        FakeCrspSession.daily_rows += synthetic_rows(
+            permno, {}, pd.bdate_range("2022-06-08", "2022-06-09"), permno)
+    with mock.patch("quantlab.acquisition.wrds.taq.WrdsSession", FakeCrspSession), \
+            mock.patch.dict("os.environ", {"WRDS_USERNAME": "demo"}):
+        run_crsp_pull(root, [10107, 14593, 86755, 99001, 99002],
+                      "2020-06-01", "2020-08-31")
+        run_crsp_pull(root, [80599], "2008-09-12", "2008-09-18")
+        run_crsp_pull(root, [13407, 83443], "2022-06-08", "2022-06-09")
+    write_reference_tables(Path(root) / "downloads/us_equity/1d/wrds_crsp/_reference")
+```
+
+</details>
 
 ## The basics
 
@@ -58,6 +121,8 @@ The acquisition classes are documented in `quantlab.acquisition.wrds.crsp` and `
 A `CrspDatasetConfig` names the raw tier, the reference tier and the store. The default security filter is `equity_common`, and `permnos=None` means every PERMNO in the raw tier.
 
 ```python
+>>> import crsp_demo
+>>> crsp_demo.build()
 >>> from quantlab.base.config import CrspDatasetConfig
 >>> from quantlab.dataset.crsp import CrspStockDataset
 >>> config = CrspDatasetConfig(
@@ -120,7 +185,11 @@ The day-over-day change of `adjClose` equals `ret`. A missing return counts as z
 CRSP writes a delisting return on the delisting day's own daily row, flagged by `dlydelflg = "Y"`. quantlab compounds that row like any other and exposes it as `is_delisting`. Nothing adds the `stkdelists` return on top, which would apply the loss twice. Lehman Brothers (PERMNO 80599) in September 2008:
 
 ```python
->>> leh = panel.sel(symbol=80599).to_pandas()
+>>> from dataclasses import replace
+>>> lehman = replace(config, zarr_file_path="data/lehman.zarr", permnos=("80599",),
+...                  start_date="2008-09-12", end_date="2008-09-18")
+>>> CrspStockDataset(lehman).from_raw_data().save()
+>>> leh = CrspStockDataset(lehman).panel(lehman.start_date, lehman.end_date).sel(symbol=80599).to_pandas()
 >>> leh[["close", "adjClose", "ret", "is_delisting"]]
             close  adjClose       ret  is_delisting
 timestamp                                          
@@ -190,7 +259,10 @@ The conversion writes `<store>.crsp_tickers.json`, a table of `{PERMNO: [{ticker
 ```python
 >>> from datetime import date
 >>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
->>> lookup = CrspTickerLookup.beside_store(config.zarr_file_path)
+>>> named = replace(config, zarr_file_path="data/named.zarr", permnos=("13407", "83443"),
+...                 start_date="2022-06-08", end_date="2022-06-09")
+>>> CrspStockDataset(named).from_raw_data().save()
+>>> lookup = CrspTickerLookup.beside_store(named.zarr_file_path)
 >>> lookup.as_of(13407, date(2022, 6, 8)), lookup.as_of(13407, date(2022, 6, 9))
 ('FB', 'META')
 >>> lookup.as_of(83443, date(2022, 6, 9))
@@ -269,12 +341,15 @@ A store is derived from the raw and reference tiers, so changed conversion code 
 
 ### Use the panel where Tiingo is used
 
-`CrspStockDataset` subclasses `StockDataset` and carries all twelve Tiingo variables, so a factor that reads `adjClose` or `adjVolume` accepts either dataset. The differences are the integer `symbol` axis and the refusal of the ticker-side selection field `symbols` on the dataset config, which raises `ValueError`; use `permnos` instead. A factor takes the dataset as it is and selects no symbols of its own. Here an Alpha101 factor runs over a CRSP store of eight synthetic securities:
+`CrspStockDataset` subclasses `StockDataset` and carries all twelve Tiingo variables, so a factor that reads `adjClose` or `adjVolume` accepts either dataset. The differences are the integer `symbol` axis and the refusal of the ticker-side selection field `symbols` on the dataset config, which raises `ValueError`; use `permnos` instead. A factor takes the dataset as it is and selects no symbols of its own. Here an Alpha101 factor runs over the synthetic store, converted from 2020-06-01 so that the 20-bar warm-up has history; AAPL, with four rows, gets NaN:
 
 ```python
 >>> from quantlab.base.config import FactorConfig
 >>> from quantlab.factor.predefined.alpha101 import Alpha101Stock
->>> dataset = CrspStockDataset(config)
+>>> since_june = replace(config, zarr_file_path="data/data/us_equity/1d/crsp_since_june.zarr",
+...                      start_date="2020-06-01")
+>>> CrspStockDataset(since_june).from_raw_data().save()
+>>> dataset = CrspStockDataset(since_june)
 >>> factor = Alpha101Stock(FactorConfig(
 ...     warmup_bars=20,
 ...     dataset=dataset,
@@ -285,8 +360,7 @@ A store is derived from the raw and reference tiers, so changed conversion code 
 ... ))
 >>> features = factor.compute(config.start_date, config.end_date)
 >>> features["alpha001"].isel(timestamp=-1).values.round(3)
-array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
-      dtype=float32)
+array([ 0.707,    nan, -0.707], dtype=float32)
 ```
 
 The factor, model and backtest guides ([factor.md](factor.md), [model.md](model.md), [backtest.md](backtest.md)) apply unchanged. For a point-in-time universe, mask the predictions with the membership, not the prices: backtest over the unmasked index store with the model wrapped in `MembershipMaskedPredictor` ([backtest.md](backtest.md#restrict-the-universe-to-an-indexs-members), [constituent.md](constituent.md)).

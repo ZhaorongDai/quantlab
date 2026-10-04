@@ -16,7 +16,70 @@ export WRDS_USERNAME=<your-wrds-username>
 
 Nasdaq-100 股票池还需要 Compustat 和 CRSP/Compustat Merged（CCM）两个 schema 的权限。转换、读取和重建 store 不需要账号，也不需要网络。
 
-本页的会话都是在一份很小的合成原始层上运行的，目录布局见下文，所以数字很小，但都是实际观察到的输出。
+本页的会话都是在一份很小的合成原始层上运行的，目录布局见下文，所以数字很小，但都是实际观察到的输出。这份数据由测试套件的伪 WRDS 会话和 fixture 写入函数生成，见下面的 `crsp_demo.py` 文件；请在仓库根目录下运行这些会话。
+
+<details><summary>crsp_demo.py</summary>
+
+```python
+"""Write the synthetic CRSP raw and reference tiers used by docs/wrds_crsp.md."""
+
+from pathlib import Path
+from unittest import mock
+
+import numpy as np
+import pandas as pd
+
+from tests.crsp_fixtures import (
+    AAPL_AUG_2020_ROWS, LEHMAN_2008_ROWS, FakeCrspSession, dsf_row,
+    run_crsp_pull, write_reference_tables,
+)
+
+# PERMNO -> CRSP type columns that differ from an ordinary US common share.
+SECURITIES = {
+    10107: {},                                            # a US stock
+    99001: {"sharetype": "AD"},                           # an ADR
+    99002: {"usincflg": "N"},                             # a non-US issuer
+    86755: {"securitytype": "FUND", "securitysubtype": "ETF",
+            "issuertype": "ACOR"},                        # a fund
+}
+
+
+def synthetic_rows(permno, overrides, days, seed):
+    rng = np.random.default_rng(seed)
+    close = 100.0
+    rows = []
+    for day in days:
+        ret = rng.normal(0, 0.01)
+        prev, close = close, close * (1 + ret)
+        rows.append(dsf_row(
+            permno, day.date(), dlyprc=f"{close:.6f}", dlyret=f"{ret:.6f}",
+            dlyretx=f"{ret:.6f}", dlyopen=f"{prev:.6f}",
+            dlyhigh=f"{max(prev, close) * 1.005:.6f}",
+            dlylow=f"{min(prev, close) * 0.995:.6f}",
+            dlyvol=str(int(rng.integers(500_000, 2_000_000))), **overrides))
+    return rows
+
+
+def build(root="data"):
+    """Pull the synthetic rows through the fake WRDS session into `root`."""
+    days = pd.bdate_range("2020-06-01", "2020-08-31")
+    FakeCrspSession.reset()
+    FakeCrspSession.daily_rows = list(AAPL_AUG_2020_ROWS) + list(LEHMAN_2008_ROWS)
+    for seed, (permno, overrides) in enumerate(SECURITIES.items()):
+        FakeCrspSession.daily_rows += synthetic_rows(permno, overrides, days, seed)
+    for permno in (13407, 83443):  # Meta and Berkshire B, for the ticker lookup
+        FakeCrspSession.daily_rows += synthetic_rows(
+            permno, {}, pd.bdate_range("2022-06-08", "2022-06-09"), permno)
+    with mock.patch("quantlab.acquisition.wrds.taq.WrdsSession", FakeCrspSession), \
+            mock.patch.dict("os.environ", {"WRDS_USERNAME": "demo"}):
+        run_crsp_pull(root, [10107, 14593, 86755, 99001, 99002],
+                      "2020-06-01", "2020-08-31")
+        run_crsp_pull(root, [80599], "2008-09-12", "2008-09-18")
+        run_crsp_pull(root, [13407, 83443], "2022-06-08", "2022-06-09")
+    write_reference_tables(Path(root) / "downloads/us_equity/1d/wrds_crsp/_reference")
+```
+
+</details>
 
 ## 基础
 
@@ -58,6 +121,8 @@ uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2
 `CrspDatasetConfig` 指明原始层、参考层和 store。默认的证券过滤器是 `equity_common`，`permnos=None` 表示原始层里的所有 PERMNO。
 
 ```python
+>>> import crsp_demo
+>>> crsp_demo.build()
 >>> from quantlab.base.config import CrspDatasetConfig
 >>> from quantlab.dataset.crsp import CrspStockDataset
 >>> config = CrspDatasetConfig(
@@ -120,7 +185,11 @@ timestamp
 CRSP 把退市收益写在退市当天自己的那一行上，用 `dlydelflg = "Y"` 标记。quantlab 像对待其他行一样把它连乘进去，并通过 `is_delisting` 暴露出来。不会再把 `stkdelists` 里的退市收益叠加一次，否则同一笔损失会被计算两次。以 2008 年 9 月的雷曼兄弟（PERMNO 80599）为例：
 
 ```python
->>> leh = panel.sel(symbol=80599).to_pandas()
+>>> from dataclasses import replace
+>>> lehman = replace(config, zarr_file_path="data/lehman.zarr", permnos=("80599",),
+...                  start_date="2008-09-12", end_date="2008-09-18")
+>>> CrspStockDataset(lehman).from_raw_data().save()
+>>> leh = CrspStockDataset(lehman).panel(lehman.start_date, lehman.end_date).sel(symbol=80599).to_pandas()
 >>> leh[["close", "adjClose", "ret", "is_delisting"]]
             close  adjClose       ret  is_delisting
 timestamp                                          
@@ -190,7 +259,10 @@ timestamp
 ```python
 >>> from datetime import date
 >>> from quantlab.dataset.crsp.tickers import CrspTickerLookup
->>> lookup = CrspTickerLookup.beside_store(config.zarr_file_path)
+>>> named = replace(config, zarr_file_path="data/named.zarr", permnos=("13407", "83443"),
+...                 start_date="2022-06-08", end_date="2022-06-09")
+>>> CrspStockDataset(named).from_raw_data().save()
+>>> lookup = CrspTickerLookup.beside_store(named.zarr_file_path)
 >>> lookup.as_of(13407, date(2022, 6, 8)), lookup.as_of(13407, date(2022, 6, 9))
 ('FB', 'META')
 >>> lookup.as_of(83443, date(2022, 6, 9))
@@ -267,12 +339,15 @@ store 是由原始层和参考层派生出来的，所以转换代码或过滤�
 
 ### 在使用 Tiingo 的地方换用 CRSP 面板
 
-`CrspStockDataset` 继承自 `StockDataset`，带有 Tiingo 的全部十二个变量，所以读取 `adjClose` 或 `adjVolume` 的因子可以接受任一数据集。区别在于整数的 `symbol` 轴，以及对数据集 config 上 ticker 侧选择字段 `symbols` 的拒绝，它会抛出 `ValueError`；应改用 `permnos`。因子按数据集原样使用它，自身不选择标的。下面是在一个含八只合成证券的 CRSP store 上运行 Alpha101 因子：
+`CrspStockDataset` 继承自 `StockDataset`，带有 Tiingo 的全部十二个变量，所以读取 `adjClose` 或 `adjVolume` 的因子可以接受任一数据集。区别在于整数的 `symbol` 轴，以及对数据集 config 上 ticker 侧选择字段 `symbols` 的拒绝，它会抛出 `ValueError`；应改用 `permnos`。因子按数据集原样使用它，自身不选择标的。下面在合成 store 上运行 Alpha101 因子，store 从 2020-06-01 起转换，使 20 根 bar 的预热有历史可用；AAPL 只有四行，结果为 NaN：
 
 ```python
 >>> from quantlab.base.config import FactorConfig
 >>> from quantlab.factor.predefined.alpha101 import Alpha101Stock
->>> dataset = CrspStockDataset(config)
+>>> since_june = replace(config, zarr_file_path="data/data/us_equity/1d/crsp_since_june.zarr",
+...                      start_date="2020-06-01")
+>>> CrspStockDataset(since_june).from_raw_data().save()
+>>> dataset = CrspStockDataset(since_june)
 >>> factor = Alpha101Stock(FactorConfig(
 ...     warmup_bars=20,
 ...     dataset=dataset,
@@ -283,8 +358,7 @@ store 是由原始层和参考层派生出来的，所以转换代码或过滤�
 ... ))
 >>> features = factor.compute(config.start_date, config.end_date)
 >>> features["alpha001"].isel(timestamp=-1).values.round(3)
-array([0.875, 0.625, 0.25 , 0.875, 0.25 , 0.875, 0.25 , 0.5  ],
-      dtype=float32)
+array([ 0.707,    nan, -0.707], dtype=float32)
 ```
 
 因子、模型和回测各指南（[factor.md](factor.md)、[model.md](model.md)、[backtest.md](backtest.md)）无需改动即可适用。需要时点股票池时，用成分遮蔽预测而不是价格：在未遮蔽的指数 store 上回测，并把模型包装成 `MembershipMaskedPredictor`（[backtest.md](backtest.md#限定为指数成分股)、[constituent.md](constituent.md)）。
