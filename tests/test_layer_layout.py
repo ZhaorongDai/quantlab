@@ -1,33 +1,24 @@
-"""The layer layout: `base/` holds the root base classes, each layer's top level holds its
-extension framework, and `<layer>/predefined/` holds the shipped implementations.
+"""The layer order (ADR 0022) and the layout rules inside a layer.
 
 What is locked here, and what turns it red:
 
+- every ``quantlab`` import, a function-level one included, follows the layer order
+  ``LAYER_ORDER``: a module imports only modules of its own layer or of a layer before it.
+  Each module's layer is ``MODULE_LAYERS`` (longest dotted prefix wins); modules still on
+  their way to their layer (``quantlab/base``, the domain modules in ``quantlab/utils``) are
+  mapped to the layer they move to. While the move (#146) is under way, the violations
+  that remain are listed in ``PENDING_VIOLATIONS``: the test fails on a violation not in
+  the list and on a listed one that no longer exists, so the list only shrinks;
 - importing any `quantlab/base` module loads no torch (the training target of both model
   variants lives in `quantlab/model/training_target.py`, not on `BaseModel`);
-- no `quantlab/base` module imports the factor, label, model, backtest or portfolio layers;
 - no layer's framework module (a top-level file of `quantlab/factor`, `quantlab/label`,
   `quantlab/model`, `quantlab/backtest`, `quantlab/portfolio`) imports that layer's
   `predefined` package, so a user's own factor, label, model, backtester or portfolio
   construction rule needs nothing from the shipped ones;
-- the portfolio layer never imports the backtest layer (the backtest layer may import
-  the portfolio layer), so an event-driven engine can depend on the portfolio layer alone;
-- cvxpy is imported by the mean-variance optimiser only, never by the base package or
-  the portfolio framework;
+- cvxpy is imported by the mean-variance optimiser only;
 - the tracking root module imports no tracking library, wandb is imported by the W&B
   tracker only and mlflow by the MLflow tracker only (ADR 0015);
-- every `predefined` package's `__init__.py` is empty.
-- the walk-forward module (`quantlab/utils/walk_forward.py`), which the base layer
-  imports, imports no quantlab module outside `quantlab.utils`;
-- the evaluation module (`quantlab/utils/evaluation.py`) and the walk-forward training
-  module (`quantlab/utils/walk_forward_training.py`), which the base layer imports,
-  import no quantlab module outside `quantlab.utils` and the trained-run module;
-- the run layer (`quantlab/runs`) imports only `quantlab.utils`, itself, the storage
-  backend (`quantlab.backend`) and the base root modules it names
-  (`RUNS_BASE_MODULES`), never the model, factor, label,
-  backtest or portfolio layers; its `__init__.py` is empty; and the trained-run
-  module imports no quantlab module outside `quantlab.utils` and the run-directory
-  mechanism, so the base layer may import it.
+- every `predefined` package's `__init__.py` is empty, and so is `quantlab/runs/__init__.py`.
 
 Static checks, plus one subprocess import; offline.
 """
@@ -64,18 +55,6 @@ def test_importing_the_base_layer_loads_no_torch():
     assert result.stdout.strip().splitlines()[-1] == "False"
 
 
-def test_base_never_imports_the_layers_above_it():
-    offenders = {
-        path.name: sorted(
-            name
-            for name in _resolved_imports(path)
-            if any(_is_or_under(name, f"quantlab.{layer}") for layer in LAYERS)
-        )
-        for path in _python_files(BASE)
-    }
-    assert {name: found for name, found in offenders.items() if found} == {}
-
-
 @pytest.mark.parametrize("layer", LAYERS)
 def test_framework_modules_never_import_their_predefined_package(layer):
     root = REPO_ROOT / "quantlab" / layer
@@ -95,20 +74,6 @@ def test_framework_modules_never_import_their_predefined_package(layer):
 def test_predefined_init_files_are_empty(layer):
     for init in (REPO_ROOT / "quantlab" / layer / "predefined").rglob("__init__.py"):
         assert init.stat().st_size == 0, init
-
-
-def test_the_portfolio_layer_never_imports_the_backtest_layer():
-    root = REPO_ROOT / "quantlab/portfolio"
-    files = _python_files(root)
-    # Positive control: the shipped rules are seen.
-    assert any(path.name == "top_n.py" for path in files)
-    offenders = {
-        path.name: sorted(
-            name for name in _resolved_imports(path) if _is_or_under(name, "quantlab.backtest")
-        )
-        for path in files
-    }
-    assert {name: found for name, found in offenders.items() if found} == {}
 
 
 def test_only_the_mean_variance_optimizer_imports_a_solver():
@@ -143,59 +108,171 @@ def test_only_its_tracker_imports_a_tracking_library(library):
     assert importers == [f"quantlab/tracking/{library}.py"]
 
 
-def test_the_walk_forward_module_stays_in_utils():
-    path = REPO_ROOT / "quantlab/utils/walk_forward.py"
-    outside = sorted(
-        name
-        for name in _resolved_imports(path)
-        if name.startswith("quantlab") and not name.startswith("quantlab.utils")
-    )
-    assert outside == [], outside
+def test_the_run_layer_init_is_empty():
+    assert (REPO_ROOT / "quantlab/runs/__init__.py").stat().st_size == 0
 
 
-@pytest.mark.parametrize("module", ["evaluation", "walk_forward_training"])
-def test_the_evaluation_and_walk_forward_training_modules_stay_below_the_base_layer(module):
-    path = REPO_ROOT / f"quantlab/utils/{module}.py"
-    allowed = ("quantlab.utils", "quantlab.runs.trained_run")
-    outside = sorted(
-        name
-        for name in _resolved_imports(path)
-        if name.startswith("quantlab") and not any(_is_or_under(name, a) for a in allowed)
-    )
-    assert outside == [], outside
+#: The layers, bottom first (ADR 0022). A module may import its own layer or one before it.
+LAYER_ORDER = (
+    "utils",
+    "core",
+    "backend",
+    "tracking",
+    "execution",
+    "runs",
+    "universe",
+    "dataset",
+    "config",
+    "acquisition",
+    "analysis",
+    "factor",
+    "label",
+    "model",
+    "portfolio",
+    "backtest",
+    "api",
+)
+
+#: Dotted prefix -> layer; the longest matching prefix wins. The entries under
+#: ``quantlab.base`` and the domain modules under ``quantlab.utils`` name the layer the
+#: module moves to under #146, and are deleted as each module moves.
+MODULE_LAYERS = {
+    "quantlab.enums": "utils",
+    "quantlab.utils": "utils",
+    "quantlab.utils.module": "core",
+    "quantlab.utils.execution": "execution",
+    "quantlab.utils.fingerprint": "runs",
+    "quantlab.utils.code_record": "runs",
+    "quantlab.utils.chunking": "dataset",
+    "quantlab.utils.pageledger": "dataset",
+    "quantlab.utils.frame": "dataset",
+    "quantlab.utils.file": "dataset",
+    "quantlab.utils.coverage": "acquisition",
+    "quantlab.utils.split": "model",
+    "quantlab.utils.walk_forward": "model",
+    "quantlab.utils.walk_forward_training": "model",
+    "quantlab.utils.evaluation": "model",
+    "quantlab.utils.metrics": "model",
+    "quantlab.utils.ensemble": "model",
+    "quantlab.utils.backtest_stats": "backtest",
+    "quantlab.utils.backtest_report": "backtest",
+    "quantlab.utils.cli": "api",
+    "quantlab.core": "core",
+    "quantlab.base.component": "core",
+    "quantlab.base.config": "core",
+    "quantlab.backend": "backend",
+    "quantlab.base.backend": "backend",
+    "quantlab.tracking": "tracking",
+    "quantlab.base.tracking": "tracking",
+    "quantlab.execution": "execution",
+    "quantlab.runs": "runs",
+    "quantlab.universe": "universe",
+    "quantlab.dataset": "dataset",
+    "quantlab.base.data": "dataset",
+    "quantlab.base.constituent": "dataset",
+    "quantlab.base.rebuild": "dataset",
+    "quantlab.config": "config",
+    "quantlab.acquisition": "acquisition",
+    "quantlab.registry": "acquisition",
+    "quantlab.base.acquisition": "acquisition",
+    "quantlab.analysis": "analysis",
+    "quantlab.factor": "factor",
+    "quantlab.my_ops": "factor",
+    "quantlab.base.factor": "factor",
+    "quantlab.label": "label",
+    "quantlab.model": "model",
+    "quantlab.base.model": "model",
+    "quantlab.portfolio": "portfolio",
+    "quantlab.base.portfolio": "portfolio",
+    "quantlab.backtest": "backtest",
+    "quantlab.base.backtest": "backtest",
+    "quantlab.api": "api",
+}
+
+#: Imports that still go against the order while #146 is under way: (importing file,
+#: imported module). Only shrinks; deleted by the last ticket of #146.
+PENDING_VIOLATIONS = {
+    ("quantlab/base/component.py", "quantlab.utils.code_record"),
+    ("quantlab/base/config.py", "quantlab.base.data"),
+    ("quantlab/base/config.py", "quantlab.base.factor"),
+    ("quantlab/base/config.py", "quantlab.base.model"),
+    ("quantlab/base/config.py", "quantlab.base.portfolio"),
+    ("quantlab/base/config.py", "quantlab.base.tracking"),
+    ("quantlab/base/config.py", "quantlab.utils.execution"),
+    ("quantlab/dataset/crsp/rebuild.py", "quantlab.acquisition.wrds"),
+    ("quantlab/dataset/crsp/rebuild.py", "quantlab.registry"),
+    ("quantlab/runs/backtest_run.py", "quantlab.base.portfolio"),
+    ("quantlab/runs/backtest_run.py", "quantlab.utils.backtest_stats"),
+    ("quantlab/utils/module.py", "quantlab.base.backtest"),
+}
 
 
-RUNS = REPO_ROOT / "quantlab/runs"
-#: The base root modules the run layer may import: the component rule (rebuilds,
-#: the component tree) and the prediction panel a backtest run reads.
-RUNS_BASE_MODULES = ("quantlab.base.component", "quantlab.base.portfolio")
+def _layer_of(name: str) -> str | None:
+    matches = [prefix for prefix in MODULE_LAYERS if _is_or_under(name, prefix)]
+    return MODULE_LAYERS[max(matches, key=len)] if matches else None
 
 
-def test_the_run_layer_imports_only_utils_and_named_base_modules():
-    files = _python_files(RUNS)
-    # Positive control: the mechanism and the trained run are seen.
-    assert {"directory.py", "trained_run.py", "backtest_run.py"} <= {
-        path.name for path in files
+def _module_name(path) -> str:
+    return ".".join(path.relative_to(REPO_ROOT).with_suffix("").parts).removesuffix(".__init__")
+
+
+def _as_module(name: str) -> str:
+    """``name`` cut back to the module it names (``from a.b import C`` gives ``a.b.C``)."""
+    parts = name.split(".")
+    while len(parts) > 1:
+        base = REPO_ROOT.joinpath(*parts)
+        if base.with_suffix(".py").is_file() or (base / "__init__.py").is_file():
+            break
+        parts.pop()
+    return ".".join(parts)
+
+
+def _violations(relpath: str, module: str, imports) -> set[tuple[str, str]]:
+    """The imports of one file (``relpath``, dotted ``module``) that go against the order."""
+    rank = {layer: index for index, layer in enumerate(LAYER_ORDER)}
+    importer = _layer_of(module)
+    if importer is None:
+        return set()
+    return {
+        (relpath, _as_module(name))
+        for name in imports
+        if (imported := _layer_of(name)) is not None and rank[imported] > rank[importer]
     }
-    allowed = ("quantlab.utils", "quantlab.runs", "quantlab.backend", *RUNS_BASE_MODULES)
-    offenders = {
-        path.name: sorted(
-            name
-            for name in _resolved_imports(path)
-            if name.startswith("quantlab")
-            and not any(_is_or_under(name, root) for root in allowed)
-        )
-        for path in files
-    }
-    assert {name: found for name, found in offenders.items() if found} == {}
-    assert (RUNS / "__init__.py").stat().st_size == 0
 
 
-def test_the_trained_run_module_imports_no_quantlab_layer():
-    allowed = ("quantlab.utils", "quantlab.runs.directory")
-    outside = sorted(
-        name
-        for name in _resolved_imports(RUNS / "trained_run.py")
-        if name.startswith("quantlab") and not any(_is_or_under(name, a) for a in allowed)
+def _order_violations() -> set[tuple[str, str]]:
+    found = set()
+    for path in _python_files(REPO_ROOT / "quantlab"):
+        relpath = str(path.relative_to(REPO_ROOT))
+        found |= _violations(relpath, _module_name(path), _resolved_imports(path))
+    return found
+
+
+def test_every_module_has_a_layer():
+    unmapped = sorted(
+        _module_name(path)
+        for path in _python_files(REPO_ROOT / "quantlab")
+        if _layer_of(_module_name(path)) is None
     )
-    assert outside == [], outside
+    # Only the two namespace packages themselves (empty ``__init__`` files) have no layer.
+    assert unmapped == ["quantlab", "quantlab.base"]
+
+
+def test_every_mapped_layer_is_in_the_order():
+    assert set(MODULE_LAYERS.values()) <= set(LAYER_ORDER)
+
+
+def test_imports_follow_the_layer_order():
+    found = _order_violations()
+    assert sorted(found - PENDING_VIOLATIONS) == [], "new imports against the layer order"
+    assert sorted(PENDING_VIOLATIONS - found) == [], "resolved: delete these pending entries"
+
+
+def test_an_upward_import_is_caught():
+    # Positive control: an import of a later layer is a violation, of the same or an
+    # earlier layer is not (``_resolved_imports`` already includes function-level imports).
+    assert _violations(
+        "quantlab/utils/timer.py",
+        "quantlab.utils.timer",
+        {"quantlab.backtest.engine_vectorbt", "quantlab.utils.atomic"},
+    ) == {("quantlab/utils/timer.py", "quantlab.backtest.engine_vectorbt")}
