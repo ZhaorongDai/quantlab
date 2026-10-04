@@ -263,6 +263,9 @@ class DecisionInputs:
         self.anchor = pd.Timestamp(anchor)
         self.execution = execution or ExecutionSettings()
         self.end = None if end is None else pd.Timestamp(end)
+        # The dataset's bars from the anchor, read up to its last bar when
+        # rebalances() is first asked and again only past it (a live dataset grows).
+        self._calendar = pd.DatetimeIndex([])
 
     @classmethod
     def from_run(cls, run_dir: str | PathLike, *, end=None) -> Self:
@@ -344,7 +347,9 @@ class DecisionInputs:
 
         Every ``rebalance_periods``-th bar of the dataset's calendar from
         the anchor rebalances, except ``end``. A bar before the anchor, after
-        ``end`` or off the calendar never does.
+        ``end`` or off the calendar never does. The calendar's timestamps
+        (never its prices) are read once up to the dataset's last bar, and
+        again only for a bar past it.
 
         Parameters
         ----------
@@ -363,10 +368,11 @@ class DecisionInputs:
         t = pd.Timestamp(t)
         if t < self.anchor or (self.end is not None and t >= self.end):
             return False
-        bars = self.dataset.panel(self.anchor, t).timestamp.values
-        if not len(bars) or pd.Timestamp(bars[-1]) != t:
-            return False
-        return (len(bars) - 1) % self.rebalance_periods == 0
+        if not len(self._calendar) or t > self._calendar[-1]:
+            last = self.dataset.bar_after(t, np.iinfo(np.int64).max)
+            self._calendar = pd.DatetimeIndex(self.dataset.panel(self.anchor, last).timestamp.values)
+        position = int(self._calendar.get_indexer([t])[0])
+        return position >= 0 and position % self.rebalance_periods == 0
 
     def weights(self, predictions: xr.Dataset, *, delisted: xr.DataArray | None = None) -> xr.Dataset:
         """Decide every rebalance bar of a prediction panel and return the target weights.

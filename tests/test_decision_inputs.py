@@ -9,7 +9,8 @@ halt, a late listing and a delisting; no vectorbt):
   ``decide`` on it returns the panel's row.
 - ``context()`` puts a held symbol without a prediction on the bar's symbols,
   locked where it cannot trade.
-- ``rebalances(t)`` is the schedule ``weights()`` follows: every
+- ``rebalances(t)`` reads the dataset's calendar once over a replay, and is
+  the schedule ``weights()`` follows: every
   ``rebalance_periods`` bars from the anchor, never the last bar or ``end``,
   counted on the dataset's calendar when the panel starts after the anchor.
 - ``weights()`` warns once when the dataset holds fewer bars than the first
@@ -199,6 +200,24 @@ def test_rebalances_is_the_schedule_weights_follows():
     assert not (decided & ~asked).any()
     assert not inputs.rebalances(TS[WARMUP - 1])  # before the anchor
     assert not _inputs(rule, end=TS[WARMUP + 3]).rebalances(TS[WARMUP + 3])
+
+
+def test_rebalances_reads_the_calendar_once_over_a_replay(monkeypatch):
+    dataset = _dataset()
+    reads = []
+    original = type(dataset).panel
+
+    def counting(self, start, end, symbols=None):
+        reads.append((start, end))
+        return original(self, start, end, symbols)
+
+    monkeypatch.setattr(type(dataset), "panel", counting)
+    inputs = _inputs(_rule("top_n"), dataset)
+
+    asked = [inputs.rebalances(t) for t in TS[WARMUP:]]
+
+    assert len(reads) == 1
+    np.testing.assert_array_equal(asked[:-1], rebalance_mask(BARS, PERIODS)[:-1])
 
 
 def test_a_panel_starting_after_the_anchor_keeps_the_anchors_schedule():
