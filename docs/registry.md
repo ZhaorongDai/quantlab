@@ -218,6 +218,7 @@ A failure in one batch does not raise. It is recorded in `result.failures` as `{
 A new source is one `SourceDescriptor` passed to `register_source()`, written next to the `Acquisition` subclass it describes. The subclass needs a `VENDOR` token, a `RAW_COLUMNS` tuple and a `_fetch_page()` method that returns `(DataFrame, next_page_token)`; a `None` token means the last page. This is the complete `demo_source.py` used above. It fabricates one flat bar per symbol per day and writes daily-bar columns, so the existing `StockDataset` converts it.
 
 ```python
+# demo_source.py
 """A tiny offline data source that shows the whole registration."""
 
 import functools
@@ -336,7 +337,7 @@ For WRDS the same call raises `RuntimeError: WRDS_USERNAME environment variable 
 >>> convert(alpaca, tick_cfg, data_type="quotes")
 Traceback (most recent call last):
   ...
-ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ('us_equity', 'tick', 'quotes'). This capability's raw tier is a stream of individually-timestamped events on an irregular event axis, ...
+ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ('us_equity', 'tick', 'quotes'). This capability's raw data is a stream of individually timestamped events at irregular times (an irregular event axis), ...
 ```
 
 The raw parquet shards of such a capability are the deliverable and can be read with polars directly.

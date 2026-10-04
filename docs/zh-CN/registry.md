@@ -218,6 +218,7 @@ shape: (2, 3)
 新增一个数据源，就是把一个 `SourceDescriptor` 交给 `register_source()`，写在它所描述的 `Acquisition` 子类旁边。子类需要一个 `VENDOR` 标记、一个 `RAW_COLUMNS` 元组和一个返回 `(DataFrame, 下一页令牌)` 的 `_fetch_page()` 方法；令牌为 `None` 表示最后一页。下面是上文用到的完整 `demo_source.py`。它为每个标的每天生成一根价格恒定的 bar，写出日线列，所以现有的 `StockDataset` 就能转换它。
 
 ```python
+# demo_source.py
 """一个很小的离线数据源，演示完整的注册过程。"""
 
 import functools
@@ -336,7 +337,7 @@ RuntimeError: TIINGO_API_KEY environment variable is not set. Export it before r
 >>> convert(alpaca, tick_cfg, data_type="quotes")
 Traceback (most recent call last):
   ...
-ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ('us_equity', 'tick', 'quotes'). This capability's raw tier is a stream of individually-timestamped events on an irregular event axis, ...
+ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ('us_equity', 'tick', 'quotes'). This capability's raw data is a stream of individually timestamped events at irregular times (an irregular event axis), ...
 ```
 
 这类 capability 的原始 parquet 分片本身就是交付物，可以直接用 polars 读取。

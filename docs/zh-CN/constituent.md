@@ -162,9 +162,11 @@ SP500ConstituentDataset(config).from_raw_data().save()
 
 ### 用 CRSP 构建以 PERMNO 为键的面板
 
-CRSP 系列的类读取 CRSP 下载写出的参考目录（见 `wrds_crsp` 指南）。标的轴是 PERMNO，也就是 CRSP 价格面板各列使用的标识符，所以面板不需要任何代码映射就能和价格对齐。下面的会话基于一个很小的合成参考目录运行。
+CRSP 系列的类读取 CRSP 下载写出的参考目录（见 `wrds_crsp` 指南）。标的轴是 PERMNO，也就是 CRSP 价格面板各列使用的标识符，所以面板不需要任何代码映射就能和价格对齐。下面的会话基于一个很小的合成参考目录运行，它由测试套件的 `write_reference_tables` 用 CRSP 自带的样例行（Apple 当前的 S&P 500 成分记录）写出；请在仓库根目录运行。
 
 ```python
+>>> from tests.crsp_fixtures import write_reference_tables
+>>> _ = write_reference_tables("data/reference")
 >>> from quantlab.base.config import ConstituentDatasetConfig
 >>> from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 >>> config = ConstituentDatasetConfig(
@@ -301,7 +303,7 @@ UniverseCatalog(config).build().save()
 >>> catalog.get_symbols_as_of("sp500_constituent", "1970-01-01")
 Traceback (most recent call last):
   ...
-ValueError: Cannot answer sp500_constituent membership before 1976-07-01 -- as_of_date='1970-01-01' precedes it. The Wikipedia-sourced change log is left-censored at that date and this query cannot be answered correctly, rather than silently defaulting to an incomplete/wrong answer.
+ValueError: Cannot answer sp500_constituent membership before 1976-07-01 -- as_of_date='1970-01-01' precedes it. The Wikipedia change log starts at that date, so earlier membership is unknown; the query is refused rather than answered with an incomplete list.
 ```
 
 面板和目录对这个边界的处理有意不同。面板会把自己的左边界抬到起点，因为框架的默认起始日期不是任何人真正提出的问题；目录查询是一个明确的提问，超出覆盖范围的日期会被拒绝。
@@ -362,7 +364,7 @@ array([2, 2, 2, 3, 3, 2, 2, 2])
 >>> demo_catalog.get_symbols_as_of("demo_constituent", "2019-12-31")
 Traceback (most recent call last):
   ...
-ValueError: Cannot answer demo_constituent membership before 2020-01-01 -- as_of_date='2019-12-31' precedes it. The Wikipedia-sourced change log is left-censored at that date and this query cannot be answered correctly, rather than silently defaulting to an incomplete/wrong answer.
+ValueError: Cannot answer demo_constituent membership before 2020-01-01 -- as_of_date='2019-12-31' precedes it. The Wikipedia change log starts at that date, so earlier membership is unknown; the query is refused rather than answered with an incomplete list.
 ```
 
 基类通过顺序重放变更日志并与锚点（今天的成分股，决定谁现在是成分）对账来重建区间。对账处理三种不一致，每种都会记录 warning：有剔除但没有更早纳入记录的标的，起点取覆盖起点；开区间的标的不在锚点里，则在日志的最后一个日期处关闭，并把 `end_date_is_inferred` 置为 `True`；日志里最后一个事件是剔除、锚点却仍列为成分的标的，从剔除日起重新打开。上面会话里关于 `BBB` 的 warning 就是第一种情形。
@@ -412,7 +414,7 @@ ValueError: Unknown universe category 'sp500'; known categories are ['nasdaq100_
 >>> catalog.get_symbols_as_of("us_all", "2020/01/02")
 Traceback (most recent call last):
   ...
-ValueError: as_of_date must be an ISO YYYY-MM-DD string, got '2020/01/02'. The table stores ISO date strings and compares them LEXICOGRAPHICALLY, so a non-ISO value does not merely fail to match -- it compares wrong and returns a plausible, silently incorrect roster.
+ValueError: as_of_date must be an ISO YYYY-MM-DD string, got '2020/01/02'. The table stores ISO date strings and compares them as text, so a non-ISO value does not just fail to match: it compares wrong and returns a plausible but incorrect roster.
 >>> catalog.get_symbols_as_of("us_all", "20200102")
 ['AAPL', 'MSFT']
 ```

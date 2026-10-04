@@ -122,7 +122,7 @@ shape: (2, 3)
 >>> PlBackend().read("data/table.parquet").get_xarray_dataset()
 Traceback (most recent call last):
   ...
-ValueError: PlBackend.get_xarray_dataset: `indexes` is required. A LazyFrame has no dimensions to fall back on -- name the columns that should become the dataset's index, e.g. ["timestamp", "symbol"].
+ValueError: PlBackend.get_xarray_dataset: `indexes` is required. A LazyFrame has no dimensions to fall back on; name the columns that should become the dataset's index, e.g. ["timestamp", "symbol"].
 ```
 
 ### Grow a Zarr store one window at a time
@@ -150,11 +150,11 @@ XrBackend()
 >>> XrBackend().to_internal(window(["2024-01-05"], ["AAA", "BBB"])).append("data/grow.zarr")
 Traceback (most recent call last):
   ...
-ValueError: XrBackend.append: refusing to append to data/grow.zarr -- the incoming 'timestamp' window starts at 2024-01-05T00:00:00 but the store already ends at 2024-01-05T00:00:00. Zarr would extend the axis without complaint and leave 'timestamp' no longer STRICTLY increasing -- duplicate labels, out-of-order labels, or both -- which breaks every downstream reader that assumes a unique, ordered index. append() EXTENDS a store; to recompute a range it already holds, replace the store with save(mode="w") instead.
+ValueError: XrBackend.append: refusing to append to data/grow.zarr -- the incoming 'timestamp' window starts at 2024-01-05T00:00:00 but the store already ends at 2024-01-05T00:00:00. Zarr would extend the axis without complaint and leave 'timestamp' no longer strictly increasing -- duplicate labels, out-of-order labels, or both -- which breaks every downstream reader that assumes a unique, ordered index. append() only extends a store; to recompute a range it already holds, replace the store with save(mode="w") instead.
 >>> XrBackend().to_internal(window(["2024-01-08"], ["AAA", "CCC"])).append("data/grow.zarr")
 Traceback (most recent call last):
   ...
-ValueError: XrBackend.append: refusing to append to data/grow.zarr -- the 'symbol' coordinate does not match the store (2 incoming label(s) vs 2 stored). Zarr would OVERWRITE the stored labels without complaint, silently re-attributing every previously written row. Pin the 'symbol' axis over the whole range before the first window, the way BaseDataset.from_raw_data_chunked() does.
+ValueError: XrBackend.append: refusing to append to data/grow.zarr -- the 'symbol' coordinate does not match the store (2 incoming label(s) vs 2 stored). Zarr would overwrite the stored labels without complaint, silently assigning every previously written row to a different label. Fix the 'symbol' axis over the whole range before the first window, as BaseDataset.from_raw_data_chunked() does.
 ```
 
 ### Add a symbol or a variable to an existing store
@@ -231,13 +231,14 @@ XrBackend()
 
 ## Extending
 
-A new backend subclasses `DataBackend` and implements the eight abstract methods. The module below stores a panel as one long-format CSV file. Save it as `csv_backend.py`.
+A new backend subclasses `DataBackend` and implements the nine abstract methods. The module below stores a panel as one long-format CSV file. Save it as `csv_backend.py`.
 
 ```python
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Self
 
+import pandas as pd
 import polars as pl
 import xarray as xr
 
@@ -288,6 +289,19 @@ class CsvBackend(DataBackend):
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
         return pl.scan_csv(path, try_parse_dates=True).head(n)
+
+    def resample(self, labels: pd.Series, how: dict[str, str]) -> Self:
+        # labels maps each timestamp to its bar; how names one method per column.
+        bars = pl.DataFrame({"timestamp": labels.index.to_numpy(), "bar": labels.to_numpy()})
+        aggregations = [getattr(pl.col(name), method)().alias(name) for name, method in how.items()]
+        self.data = (
+            self.data.join(bars.lazy(), on="timestamp")
+            .group_by(["bar", "symbol"])
+            .agg(aggregations)
+            .rename({"bar": "timestamp"})
+            .sort(["timestamp", "symbol"])
+        )
+        return self
 ```
 
 The class is used like the built-in backends. A subclass that omits an abstract method cannot be instantiated.
@@ -329,7 +343,7 @@ shape: (2, 3)
 >>> Incomplete()
 Traceback (most recent call last):
   ...
-TypeError: Can't instantiate abstract class Incomplete without an implementation for abstract methods 'filter_by_date', 'filter_by_symbol', 'get_lazyframe', 'get_xarray_dataset', 'head', 'to_internal', 'write'
+TypeError: Can't instantiate abstract class Incomplete without an implementation for abstract methods 'filter_by_date', 'filter_by_symbol', 'get_lazyframe', 'get_xarray_dataset', 'head', 'resample', 'to_internal', 'write'
 ```
 
 A dataset, factor or model picks its backend in `__init__` by assigning `self.data_backend`; a subclass can assign its own backend after calling `super().__init__`. Chunked ingestion additionally calls `append` on the backend, which is not part of `DataBackend`, so a backend used for that needs its own `append`. Parts of the dataset and factor base classes still assume a Zarr store, so a new backend is best tried on the read and write paths first.
@@ -357,12 +371,12 @@ ValueError: XrBackend.append: refusing to append to data/ints.zarr -- variable '
 >>> XrBackend().to_internal(extra).append("data/ints.zarr")
 Traceback (most recent call last):
   ...
-ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the incoming panel carries data variable(s) ['extra'] that the store does not hold. Zarr would write them over the incoming window ONLY, leaving them shorter along 'timestamp' than every stored variable, and the store afterwards cannot be OPENED at all (measured 2026-09-07: conflicting sizes for dimension 'timestamp'). A panel that legitimately grew a column says so explicitly: materialise the new variable(s) over the store's EXISTING extent first with widen_data_vars(), which backfills history rather than truncating it, or call widen_and_append(), which does that as part of reconciling every axis.
+ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the incoming panel carries data variable(s) ['extra'] that the store does not hold. Zarr would write them over the incoming window only, leaving them shorter along 'timestamp' than every stored variable, and the store could no longer be opened (xarray reports conflicting sizes for dimension 'timestamp'). If the panel really gained a column, first add the new variable(s) over the store's existing history with widen_data_vars(), or call widen_and_append(), which does that while reconciling every axis.
 >>> missing = ints.assign(timestamp=pd.to_datetime(["2024-01-03"])).drop_vars("close")
 >>> XrBackend().to_internal(missing).append("data/ints.zarr")
 Traceback (most recent call last):
   ...
-ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store holds data variable(s) ['close'] that the incoming panel does not. Zarr extends exactly the variables it is handed, so the absent one(s) would stay STUCK at their stored length while every other variable grows, and the store afterwards cannot be OPENED at all (measured 2026-09-07: conflicting sizes for dimension 'timestamp'). What it loses was valid before this call. This direction has no opt-in and is not given one: backfilling the absent variable across the incoming window would write NaN into recent dates of a variable that was COMPLETE, and afterwards the store is indistinguishable from one where those values were genuinely missing. Recompute this window over the store's FULL variable set, or replace the store with save(mode="w").
+ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store holds data variable(s) ['close'] that the incoming panel does not. Zarr extends exactly the variables it is handed, so the absent one(s) would stay at their stored length while every other variable grows, and the store could no longer be opened (xarray reports conflicting sizes for dimension 'timestamp'). There is no option to allow this: filling the absent variable with NaN over the incoming window would make a complete variable look as if recent values were genuinely missing. Recompute this window over the store's full variable set, or replace the store with save(mode="w").
 ```
 
 The overlap and symbol-mismatch messages appear in the append session above. The fixes, in order: an overlapping window is dropped or the store rewritten with `write`; a changed symbol set goes through `widen_and_append`; a dtype mismatch is fixed by casting the incoming variable to the stored dtype; a new variable goes through `widen_and_append`; a variable missing from the incoming window is recomputed, because there is no opt-in for it. The messages that mention `save(mode="w")` refer to `write`.

@@ -162,9 +162,11 @@ The Nasdaq-100 counts more than one hundred members on a given day because some 
 
 ### Build a PERMNO-keyed panel from CRSP
 
-The CRSP classes read the CRSP reference directory written by the CRSP download (see the `wrds_crsp` guide). The symbol axis is the PERMNO, the identifier the CRSP price panel uses for its columns, so the panel needs no ticker mapping to line up with prices. The session below runs against a small synthetic reference directory.
+The CRSP classes read the CRSP reference directory written by the CRSP download (see the `wrds_crsp` guide). The symbol axis is the PERMNO, the identifier the CRSP price panel uses for its columns, so the panel needs no ticker mapping to line up with prices. The session below runs against a small synthetic reference directory, written by the test suite's `write_reference_tables` from CRSP's own sample rows (Apple's open S&P 500 membership); run it from the repository root.
 
 ```python
+>>> from tests.crsp_fixtures import write_reference_tables
+>>> _ = write_reference_tables("data/reference")
 >>> from quantlab.base.config import ConstituentDatasetConfig
 >>> from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 >>> config = ConstituentDatasetConfig(
@@ -301,7 +303,7 @@ For an index category, a query date earlier than the index's coverage start rais
 >>> catalog.get_symbols_as_of("sp500_constituent", "1970-01-01")
 Traceback (most recent call last):
   ...
-ValueError: Cannot answer sp500_constituent membership before 1976-07-01 -- as_of_date='1970-01-01' precedes it. The Wikipedia-sourced change log is left-censored at that date and this query cannot be answered correctly, rather than silently defaulting to an incomplete/wrong answer.
+ValueError: Cannot answer sp500_constituent membership before 1976-07-01 -- as_of_date='1970-01-01' precedes it. The Wikipedia change log starts at that date, so earlier membership is unknown; the query is refused rather than answered with an incomplete list.
 ```
 
 The panel and the catalog treat the boundary differently on purpose. A panel raises its own left edge, because the framework's default start date was never a question anyone asked. A catalog query is an explicit question, so a date outside the coverage is refused.
@@ -362,7 +364,7 @@ array([2, 2, 2, 3, 3, 2, 2, 2])
 >>> demo_catalog.get_symbols_as_of("demo_constituent", "2019-12-31")
 Traceback (most recent call last):
   ...
-ValueError: Cannot answer demo_constituent membership before 2020-01-01 -- as_of_date='2019-12-31' precedes it. The Wikipedia-sourced change log is left-censored at that date and this query cannot be answered correctly, rather than silently defaulting to an incomplete/wrong answer.
+ValueError: Cannot answer demo_constituent membership before 2020-01-01 -- as_of_date='2019-12-31' precedes it. The Wikipedia change log starts at that date, so earlier membership is unknown; the query is refused rather than answered with an incomplete list.
 ```
 
 The base class rebuilds intervals by replaying the change log forward and reconciling the result with the anchor (today's constituents), which is authoritative for who is a member now. Three disagreements are reconciled, and each logs a warning: a removal with no earlier addition starts at the coverage start, an open interval whose symbol is missing from the anchor is closed at the last date in the log with `end_date_is_inferred` set to `True`, and a symbol whose last event is a removal but which the anchor still lists is re-opened from that removal date. The `BBB` warning in the session above is the first case.
@@ -412,7 +414,7 @@ ValueError: Unknown universe category 'sp500'; known categories are ['nasdaq100_
 >>> catalog.get_symbols_as_of("us_all", "2020/01/02")
 Traceback (most recent call last):
   ...
-ValueError: as_of_date must be an ISO YYYY-MM-DD string, got '2020/01/02'. The table stores ISO date strings and compares them LEXICOGRAPHICALLY, so a non-ISO value does not merely fail to match -- it compares wrong and returns a plausible, silently incorrect roster.
+ValueError: as_of_date must be an ISO YYYY-MM-DD string, got '2020/01/02'. The table stores ISO date strings and compares them as text, so a non-ISO value does not just fail to match: it compares wrong and returns a plausible but incorrect roster.
 >>> catalog.get_symbols_as_of("us_all", "20200102")
 ['AAPL', 'MSFT']
 ```
