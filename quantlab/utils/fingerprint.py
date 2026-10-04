@@ -61,14 +61,31 @@ def _iso(value) -> str:
     return pd.Timestamp(value).isoformat()
 
 
+def _canonical(values) -> np.ndarray:
+    """Return ``values`` in their own dtype, NaN and ``-0.0`` made canonical for floats."""
+    values = np.asarray(values)
+    if values.dtype.kind == "f":
+        values = values.copy()
+        values[np.isnan(values)] = np.nan  # one NaN bit pattern
+        values += values.dtype.type(0.0)  # -0.0 becomes 0.0
+    elif values.dtype.kind in "mM":
+        values = values.view("int64")
+    elif values.dtype.kind == "O":  # object bytes are pointers: hash the text
+        values = values.astype(str)
+    return values
+
+
 def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
     """Fingerprint ``variables`` of a ``(timestamp, symbol)`` dataset.
 
     The dataset is sorted by timestamp and symbol first, so the digest does not
     depend on axis order. The hash covers, in order: the int64 nanosecond
     timestamps, the NUL-joined symbol names, then for each variable in sorted
-    order its name and its float64 values on ``(timestamp, symbol)`` after NaN
-    and signed-zero canonicalisation.
+    order its name, its dtype and its values on ``(timestamp, symbol)`` in the
+    dtype they are stored in, never up-cast: a float variable after NaN and
+    signed-zero canonicalisation in its own precision, a datetime one as its
+    int64 ticks, an object one as its text, any other as it is. A variable whose dtype changed therefore
+    has another digest.
 
     Parameters
     ----------
@@ -103,18 +120,16 @@ def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
             f"(data variables: {sorted(ds.data_vars)})"
         )
 
-    ds = ds.sortby(["timestamp", "symbol"])
+    if not all(ds.indexes[dim].is_monotonic_increasing for dim in ("timestamp", "symbol")):
+        ds = ds.sortby(["timestamp", "symbol"])  # a store is sorted already: no copy then
     timestamps = ds["timestamp"].values.astype("datetime64[ns]")
     digest = hashlib.sha256()
     digest.update(np.ascontiguousarray(timestamps.astype("int64")).tobytes())
     digest.update("\x00".join(map(str, ds["symbol"].values.tolist())).encode())
     for name in names:
-        values = np.asarray(
-            ds[name].transpose("timestamp", "symbol").values, dtype=np.float64
-        )
-        values = np.where(np.isnan(values), np.nan, values)  # one NaN bit pattern
-        values = values + 0.0  # -0.0 becomes 0.0
+        values = _canonical(ds[name].transpose("timestamp", "symbol").values)
         digest.update(name.encode())
+        digest.update(values.dtype.str.encode())
         digest.update(np.ascontiguousarray(values).tobytes())
 
     return {

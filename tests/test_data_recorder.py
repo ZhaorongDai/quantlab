@@ -394,3 +394,32 @@ def test_unrecorded_reads_reach_no_recorder_and_are_not_hashed(prices, hashes):
     assert outer.records == {}
     assert list(inner.records) == ["inner"]
     assert len(hashes) == 1
+
+
+def _one_variable(values, dtype) -> xr.Dataset:
+    """A 2 x 2 panel holding ``values`` as ``close`` in ``dtype``."""
+    return xr.Dataset(
+        {"close": (["timestamp", "symbol"], np.asarray(values, dtype=dtype))},
+        coords={"timestamp": pd.bdate_range("2024-01-01", periods=2), "symbol": ["A", "B"]},
+    )
+
+
+def test_a_variable_is_hashed_in_its_stored_dtype():
+    """No up-cast: the dtype is part of the digest, NaN and -0.0 are canonical in it."""
+    values = [[1.5, np.nan], [-0.0, 2.0]]
+    as32 = fingerprint.dataset_fingerprint(_one_variable(values, np.float32), ["close"])
+    as64 = fingerprint.dataset_fingerprint(_one_variable(values, np.float64), ["close"])
+    assert as32["digest"] != as64["digest"]
+
+    other_nan = np.frombuffer(np.uint32(0x7FC00001).tobytes(), dtype=np.float32)[0]
+    other_bits = _one_variable([[1.5, other_nan], [0.0, 2.0]], np.float32)
+    assert fingerprint.dataset_fingerprint(other_bits, ["close"])["digest"] == as32["digest"]
+
+
+def test_integer_and_boolean_variables_are_hashed_as_stored():
+    ints = fingerprint.dataset_fingerprint(_one_variable([[1, 2], [3, 4]], np.int64), ["close"])
+    flags = fingerprint.dataset_fingerprint(_one_variable([[True, False], [False, True]], bool), ["close"])
+    assert len(ints["digest"]) == len(flags["digest"]) == 64
+    assert ints["digest"] != fingerprint.dataset_fingerprint(
+        _one_variable([[1, 2], [3, 5]], np.int64), ["close"]
+    )["digest"]
