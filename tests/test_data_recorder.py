@@ -423,3 +423,161 @@ def test_integer_and_boolean_variables_are_hashed_as_stored():
     assert ints["digest"] != fingerprint.dataset_fingerprint(
         _one_variable([[1, 2], [3, 5]], np.int64), ["close"]
     )["digest"]
+
+
+def _wide_panel(n_timestamps=50, n_symbols=7, seed=0) -> xr.Dataset:
+    """A panel of three float32 variables with NaNs, plus an int and a bool one."""
+    rng = np.random.default_rng(seed)
+    shape = (n_timestamps, n_symbols)
+    floats = {
+        name: rng.standard_normal(shape).astype(np.float32)
+        for name in ("alpha", "beta", "gamma")
+    }
+    floats["beta"][rng.random(shape) < 0.3] = np.nan
+    return xr.Dataset(
+        {
+            **{name: (["timestamp", "symbol"], values) for name, values in floats.items()},
+            "count": (["timestamp", "symbol"], rng.integers(0, 9, shape)),
+            "flag": (["timestamp", "symbol"], rng.random(shape) < 0.5),
+        },
+        coords={
+            "timestamp": pd.date_range("2024-01-01", periods=n_timestamps, freq="h"),
+            "symbol": [f"S{i}" for i in range(n_symbols)],
+        },
+    )
+
+
+@pytest.mark.parametrize("workers", [1, 2, 8])
+@pytest.mark.parametrize("block_rows", [1, 3, 50, None])
+def test_the_digest_does_not_depend_on_threads_or_blocks(workers, block_rows):
+    panel = _wide_panel()
+    names = list(panel.data_vars)
+    serial = fingerprint.dataset_fingerprint(panel, names, workers=1, block_rows=None)
+
+    record = fingerprint.dataset_fingerprint(
+        panel, names, workers=workers, block_rows=block_rows
+    )
+
+    assert record["digest"] == serial["digest"]
+    assert record["variable_digests"] == serial["variable_digests"]
+
+
+def test_each_variable_has_its_own_digest_and_dtype():
+    panel = _wide_panel()
+    before = fingerprint.dataset_fingerprint(panel, ["alpha", "count", "flag"])
+    changed = panel.copy(deep=True)
+    changed["alpha"][3, 2] += 1
+
+    after = fingerprint.dataset_fingerprint(changed, ["flag", "alpha", "count"])
+
+    assert sorted(before["variable_digests"]) == ["alpha", "count", "flag"]
+    assert before["variable_dtypes"] == {"alpha": "<f4", "count": "<i8", "flag": "|b1"}
+    assert after["digest"] != before["digest"]
+    assert after["variable_digests"]["alpha"] != before["variable_digests"]["alpha"]
+    assert after["variable_digests"]["count"] == before["variable_digests"]["count"]
+
+
+def test_relabelled_axes_change_the_digest_but_no_variable_digest():
+    panel = _wide_panel()
+    before = fingerprint.dataset_fingerprint(panel, ["alpha"])
+    shifted = panel.assign_coords(timestamp=panel["timestamp"] + pd.Timedelta("1min"))
+
+    after = fingerprint.dataset_fingerprint(shifted, ["alpha"])
+
+    assert after["digest"] != before["digest"]
+    assert after["variable_digests"] == before["variable_digests"]
+
+
+def test_a_lazily_read_variable_is_hashed_a_block_at_a_time(tmp_path, monkeypatch):
+    import tracemalloc
+
+    panel = _wide_panel(n_timestamps=20000, n_symbols=100)[["alpha"]].astype(np.float64)
+    panel.to_zarr(tmp_path / "wide.zarr", encoding={"alpha": {"chunks": (100, 100)}})
+    whole = panel["alpha"].nbytes  # 16 MB
+    monkeypatch.setattr(fingerprint, "_BLOCK_BYTES", 150 * 100 * 8)  # 150 bars, rounded up to 200
+
+    def peak(**kwargs):
+        lazy = xr.open_zarr(tmp_path / "wide.zarr")
+        tracemalloc.start()
+        try:
+            record = fingerprint.dataset_fingerprint(lazy, ["alpha"], **kwargs)
+            return record, tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+
+    blocked, blocked_peak = peak()
+    eager, eager_peak = peak(block_rows=20000)
+
+    assert blocked["digest"] == eager["digest"]
+    assert eager_peak > whole
+    assert blocked_peak < whole / 8
+
+
+def _records_of(panel, variables=None):
+    """``DataRecorder.records`` of one whole-panel request of ``panel`` under ``data``."""
+    names = variables or sorted(panel.data_vars)
+    request = {"start": "2024-01-01", "end": "2024-01-03", "symbols": None, "variables": variables}
+    return {"data": [{"request": request, **fingerprint.dataset_fingerprint(panel, names)}]}
+
+
+def _mismatch(expected_panel, actual_panel, warnings_logged, variables=None):
+    fingerprint.compare_records(
+        _records_of(expected_panel, variables), _records_of(actual_panel, variables),
+        owner="run",
+    )
+    (message,) = warnings_logged
+    assert "digest differs" in message
+    return message
+
+
+def test_a_mismatch_names_the_variables_whose_values_changed(warnings_logged):
+    panel = _wide_panel()
+    changed = panel.copy(deep=True)
+    changed["beta"][0, 0] = 7.0
+    changed["count"][1, 1] += 1
+
+    message = _mismatch(panel, changed, warnings_logged)
+
+    assert "values of ['beta', 'count'] changed" in message
+    assert "alpha" not in message
+
+
+def test_a_mismatch_names_variables_added_to_and_missing_from_the_store(warnings_logged):
+    panel = _wide_panel()
+    grown = panel.assign(delta=panel["alpha"] * 2).drop_vars("gamma")
+
+    message = _mismatch(panel, grown, warnings_logged)
+
+    assert "variables added ['delta']" in message
+    assert "variables missing ['gamma']" in message
+    assert "values of" not in message
+
+
+def test_a_mismatch_of_identical_values_blames_the_labels(warnings_logged):
+    panel = _wide_panel()
+    renamed = panel.assign_coords(symbol=[f"T{i}" for i in range(panel.sizes["symbol"])])
+
+    message = _mismatch(panel, renamed, warnings_logged, variables=["alpha"])
+
+    assert "the bar or symbol labels changed" in message
+    assert "values of" not in message
+
+
+def test_a_mismatch_with_another_extent_blames_the_extent_not_the_values(warnings_logged):
+    panel = _wide_panel()
+
+    message = _mismatch(panel, panel.isel(timestamp=slice(0, -1)), warnings_logged)
+
+    assert "the bars or symbols changed" in message
+    assert "50 timestamps" in message and "49 timestamps" in message
+    assert "values of" not in message
+
+
+def test_a_mismatch_names_a_changed_dtype(warnings_logged):
+    panel = _wide_panel()
+    narrowed = panel.assign(count=panel["count"].astype(np.int32))
+
+    message = _mismatch(panel, narrowed, warnings_logged, variables=["alpha", "count"])
+
+    assert "dtype of 'count' <i8 -> <i4" in message
+    assert "values of" not in message

@@ -416,6 +416,8 @@ def test_the_run_records_fingerprints_of_the_price_and_factor_datasets(overlap_r
         "algorithm",
         "digest",
         "variables",
+        "variable_digests",
+        "variable_dtypes",
         "start",
         "end",
         "n_timestamps",

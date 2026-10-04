@@ -47,7 +47,7 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.jsonable import to_jsonable
 
 #: The ``run.json`` structure every run type writes and reads.
-FORMAT_VERSION = 4
+FORMAT_VERSION = 5
 
 RUN_FILE = "run.json"
 

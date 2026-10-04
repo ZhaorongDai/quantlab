@@ -22,12 +22,15 @@ when one is given. This module has no project-internal imports.
 
 import contextvars
 import hashlib
+import math
+import os
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from joblib import Parallel, delayed
 from loguru import logger
 
 __all__ = [
@@ -49,6 +52,15 @@ PARTIAL_NOTE = (
     "change; the original error follows"
 )
 
+#: Most threads that hash the variables of one request at once. A variable is
+#: hashed by one thread; a request smaller than one block is hashed serially.
+_HASH_WORKERS = 8
+
+#: Bytes of one block: a variable is read and hashed this many bytes of whole
+#: bars at a time, rounded up to whole store chunks along ``timestamp``, so the
+#: memory a variable takes while hashed does not grow with its length.
+_BLOCK_BYTES = 64 * 2**20
+
 #: The innermost open recorder, or ``None`` outside every recorder (and while
 #: a closing recorder re-reads its requests).
 _ACTIVE: contextvars.ContextVar["DataRecorder | None"] = contextvars.ContextVar(
@@ -61,8 +73,15 @@ def _iso(value) -> str:
     return pd.Timestamp(value).isoformat()
 
 
-def _canonical(values) -> np.ndarray:
-    """Return ``values`` in their own dtype, NaN and ``-0.0`` made canonical for floats."""
+def _canonical_buffer(values) -> "bytes | np.ndarray":
+    """Return the buffer hashed for ``values``, in their own dtype.
+
+    Floats get one NaN bit pattern and ``-0.0`` becomes ``0.0`` in their own
+    precision, datetimes are their int64 ticks, objects (whose bytes are
+    pointers) their text, each element NUL-terminated. The bytes of
+    consecutive row blocks concatenate to the bytes of the whole array, so a
+    variable's digest does not depend on how it is cut into blocks.
+    """
     values = np.asarray(values)
     if values.dtype.kind == "f":
         values = values.copy()
@@ -70,22 +89,55 @@ def _canonical(values) -> np.ndarray:
         values += values.dtype.type(0.0)  # -0.0 becomes 0.0
     elif values.dtype.kind in "mM":
         values = values.view("int64")
-    elif values.dtype.kind == "O":  # object bytes are pointers: hash the text
-        values = values.astype(str)
-    return values
+    elif values.dtype.kind == "O":
+        return "".join(f"{value}\x00" for value in values.ravel()).encode()
+    return np.ascontiguousarray(values)  # hashed as a buffer: no bytes copy
 
 
-def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
+def _block_rows(variable: xr.DataArray) -> int:
+    """Return how many bars of ``variable`` one block holds (see ``_BLOCK_BYTES``)."""
+    row_bytes = max(1, variable.sizes["symbol"] * variable.dtype.itemsize)
+    rows = max(1, _BLOCK_BYTES // row_bytes)
+    chunk = variable.encoding.get("preferred_chunks", {}).get("timestamp")
+    if chunk:  # a whole number of the store's chunks: fewer chunks decoded twice
+        rows = math.ceil(rows / chunk) * chunk
+    return rows
+
+
+def _variable_digest(variable: xr.DataArray, block_rows: int | None) -> str:
+    """Return the sha256 of one ``(timestamp, symbol)`` variable, read block by block."""
+    variable = variable.transpose("timestamp", "symbol")
+    rows = block_rows or _block_rows(variable)
+    digest = hashlib.sha256()
+    for first in range(0, variable.sizes["timestamp"], rows):
+        block = variable.isel(timestamp=slice(first, first + rows)).values
+        digest.update(_canonical_buffer(block))
+    return digest.hexdigest()
+
+
+def dataset_fingerprint(
+    ds: xr.Dataset,
+    variables: list[str],
+    *,
+    workers: int | None = None,
+    block_rows: int | None = None,
+) -> dict:
     """Fingerprint ``variables`` of a ``(timestamp, symbol)`` dataset.
 
     The dataset is sorted by timestamp and symbol first, so the digest does not
-    depend on axis order. The hash covers, in order: the int64 nanosecond
-    timestamps, the NUL-joined symbol names, then for each variable in sorted
-    order its name, its dtype and its values on ``(timestamp, symbol)`` in the
-    dtype they are stored in, never up-cast: a float variable after NaN and
-    signed-zero canonicalisation in its own precision, a datetime one as its
-    int64 ticks, an object one as its text, any other as it is. A variable whose dtype changed therefore
-    has another digest.
+    depend on axis order. Each variable has its own sha256 over its values on
+    ``(timestamp, symbol)`` in the dtype they are stored in, never up-cast: a
+    float variable after NaN and signed-zero canonicalisation in its own
+    precision, a datetime one as its int64 ticks, an object one as its text,
+    any other as it is. The digest is the sha256 of, in order: the int64
+    nanosecond timestamps, the NUL-joined symbol names, then for each variable
+    in sorted order its name, its dtype and its own digest. A variable whose
+    dtype changed therefore has another digest; relabelled axes change the
+    digest but no variable's.
+
+    Variables are hashed in parallel threads, each read and hashed in blocks
+    of whole bars (``_BLOCK_BYTES``), so a lazily read store never sits in
+    memory whole. Neither changes the digest.
 
     Parameters
     ----------
@@ -93,13 +145,22 @@ def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
         A panel indexed by ``timestamp`` and ``symbol``.
     variables : list[str]
         Names of the data variables to include.
+    workers : int, optional
+        Threads to hash with; by default one per variable up to
+        ``_HASH_WORKERS`` and the CPU count, one when the request is smaller
+        than a block. The digest does not depend on it.
+    block_rows : int, optional
+        Bars per block; by default ``_BLOCK_BYTES`` worth. The digest does not
+        depend on it.
 
     Returns
     -------
     dict
         A dict with keys ``algorithm`` (``"sha256"``), ``digest``, ``variables``
-        (sorted), ``start`` and ``end`` (ISO strings, ``None`` when the
-        timestamp axis is empty), ``n_timestamps`` and ``n_symbols``.
+        (sorted), ``variable_digests`` and ``variable_dtypes`` (by name; the
+        dtype as stored, e.g. ``"<f4"``), ``start`` and ``end`` (ISO strings,
+        ``None`` when the timestamp axis is empty), ``n_timestamps`` and
+        ``n_symbols``.
 
     Raises
     ------
@@ -122,20 +183,33 @@ def dataset_fingerprint(ds: xr.Dataset, variables: list[str]) -> dict:
 
     if not all(ds.indexes[dim].is_monotonic_increasing for dim in ("timestamp", "symbol")):
         ds = ds.sortby(["timestamp", "symbol"])  # a store is sorted already: no copy then
+    if workers is None:
+        small = sum(ds[name].nbytes for name in names) < _BLOCK_BYTES
+        workers = 1 if small else min(len(names), os.cpu_count() or 1, _HASH_WORKERS)
+    if workers > 1 and len(names) > 1:
+        digests = Parallel(n_jobs=workers, backend="threading")(
+            delayed(_variable_digest)(ds[name], block_rows) for name in names
+        )
+    else:
+        digests = [_variable_digest(ds[name], block_rows) for name in names]
+    variable_digests = dict(zip(names, digests))
+    variable_dtypes = {name: ds[name].dtype.str for name in names}
+
     timestamps = ds["timestamp"].values.astype("datetime64[ns]")
     digest = hashlib.sha256()
     digest.update(np.ascontiguousarray(timestamps.astype("int64")).tobytes())
     digest.update("\x00".join(map(str, ds["symbol"].values.tolist())).encode())
     for name in names:
-        values = _canonical(ds[name].transpose("timestamp", "symbol").values)
         digest.update(name.encode())
-        digest.update(values.dtype.str.encode())
-        digest.update(np.ascontiguousarray(values).tobytes())
+        digest.update(variable_dtypes[name].encode())
+        digest.update(bytes.fromhex(variable_digests[name]))
 
     return {
         "algorithm": "sha256",
         "digest": digest.hexdigest(),
         "variables": names,
+        "variable_digests": variable_digests,
+        "variable_dtypes": variable_dtypes,
         "start": _iso(timestamps[0]) if timestamps.size else None,
         "end": _iso(timestamps[-1]) if timestamps.size else None,
         "n_timestamps": int(ds.sizes["timestamp"]),
@@ -263,6 +337,44 @@ def _extent(entry: dict) -> str:
     )
 
 
+def _mismatch_causes(old: dict, new: dict) -> str:
+    """Return what differs between two entries of one request whose digests differ.
+
+    Parameters
+    ----------
+    old, new : dict
+        The expected and the actual ``dataset_fingerprint`` record.
+
+    Returns
+    -------
+    str
+        The causes, ``"; "``-joined: variables added or missing (a request of
+        every variable) and changed dtypes, then either another extent (a
+        different bar range or size changes every variable, so values are not
+        blamed), changed values, or, when every variable is the same, changed
+        bar or symbol labels.
+    """
+    old_digests, new_digests = old["variable_digests"], new["variable_digests"]
+    old_dtypes, new_dtypes = old["variable_dtypes"], new["variable_dtypes"]
+    shared = sorted(set(old_digests) & set(new_digests))
+    causes = []
+    if added := sorted(set(new_digests) - set(old_digests)):
+        causes.append(f"variables added {added}")
+    if missing := sorted(set(old_digests) - set(new_digests)):
+        causes.append(f"variables missing {missing}")
+    retyped = {n: (old_dtypes[n], new_dtypes[n]) for n in shared if old_dtypes[n] != new_dtypes[n]}
+    causes += [f"dtype of {n!r} {was} -> {now}" for n, (was, now) in retyped.items()]
+    if _extent(old) != _extent(new):
+        causes.append("the bars or symbols changed")
+    elif changed := [
+        n for n in shared if n not in retyped and old_digests[n] != new_digests[n]
+    ]:
+        causes.append(f"values of {changed} changed")
+    elif not causes:
+        causes.append("the bar or symbol labels changed")
+    return "; ".join(causes)
+
+
 def _request_id(request: dict) -> tuple:
     """Return the hashable identity of a request."""
     return (
@@ -336,7 +448,8 @@ class DataRecorder:
             restated.panel("2024-01-02", "2024-01-31", variables=["adjClose"])
 
         DataRecorder: data fingerprint mismatch for 'price_dataset', request
-        2024-01-02..2024-01-31, variables ['adjClose']: digest differs (expected
+        2024-01-02..2024-01-31, variables ['adjClose']: digest differs: values of
+        ['adjClose'] changed (expected
         2024-01-02T00:00:00 to 2024-01-31T00:00:00, 22 timestamps x 6 symbols, got
         ...). The data changed since the expected run; continuing
     """
@@ -435,8 +548,10 @@ def compare_records(
     The comparison a ``DataRecorder`` runs on close, for records kept apart
     from a recorder: a trained unit's training reads against the unit it is
     rebuilt from. Per key and request: a key or request on one side only, or
-    a differing digest, logs a warning showing the ranges and sizes as
-    explanation. Nothing is raised.
+    a differing digest, logs a warning. Only the digest decides; the warning
+    explains a differing one from the per-variable digests and dtypes
+    (variables added or missing, a changed dtype, changed values, else the
+    bars or symbols) and shows both ranges and sizes. Nothing is raised.
 
     Parameters
     ----------
@@ -495,6 +610,7 @@ def compare_records(
             if old.get("digest") != new.get("digest"):
                 warn(
                     key, new["request"],
-                    f"digest differs (expected {_extent(old)}, got {_extent(new)}). "
+                    f"digest differs: {_mismatch_causes(old, new)} "
+                    f"(expected {_extent(old)}, got {_extent(new)}). "
                     f"The data changed since the expected run",
                 )

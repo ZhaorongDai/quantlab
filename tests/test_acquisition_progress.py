@@ -1338,10 +1338,11 @@ def test_no_task_isolation_was_added() -> None:
     blocking a TUI is the console's job (a thread/process pool or a job queue
     THERE). What quantlab owes it in exchange is exactly what 03.4-05 ships --
     a cancel token it can set and progress events it can render -- and NOT a
-    second fan-out mechanism. The fan-outs in this repository are both
-    `joblib.Parallel`: `_run_once`'s threading call over CV folds and, since
-    2026-09-26, `FactorAnalysis._render_to`'s loky call that draws a factor
-    report's figures; neither isolates a long task from a caller.
+    second fan-out mechanism. The fan-outs in this repository are all
+    `joblib.Parallel`: `Acquisition._run_once`'s threading call over download
+    batches, `FactorAnalysis._render_to`'s loky call that draws a factor
+    report's figures, and `dataset_fingerprint`'s threading call over a
+    request's variables; none isolates a long task from a caller.
 
     Asserted from the AST rather than by counting substrings. `inspect
     .getsource(...).count("Parallel(")` -- the obvious form -- is 3 against

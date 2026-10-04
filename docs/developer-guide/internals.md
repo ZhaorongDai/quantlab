@@ -179,15 +179,26 @@ rename, as described above.
 A run is reproducible only if the data under it has not changed, and data
 does change: stores are appended to, and adjusted prices are restated after
 splits and dividends. `quantlab.utils.fingerprint.dataset_fingerprint`
-records, for one panel and a list of variables, a SHA-256 digest over the
-timestamps, the symbol names and each variable's dtype and values, plus the
-first and last timestamp and the axis sizes. Values are hashed in the dtype
-they are stored in, never up-cast, so a float32 store is hashed as float32
-and a variable whose dtype changed has another digest. An unsorted panel is
-sorted first so axis order does not matter (a store is sorted already and is
-not copied), and every NaN is rewritten to one canonical bit pattern and every
-`-0.0` to `0.0` in its own precision, because otherwise two reads of identical
-data could hash differently.
+records, for one panel and a list of variables, a SHA-256 digest of each
+variable's values, then a SHA-256 digest over the timestamps, the symbol
+names and each variable's name, dtype and digest, plus the first and last
+timestamp and the axis sizes. The per-variable digests and dtypes are kept in
+the record (`variable_digests`, `variable_dtypes`), so a mismatch warning can
+say which variables changed. Values are hashed in the dtype they are stored
+in, never up-cast, so a float32 store is hashed as float32 and a variable
+whose dtype changed has another digest. An unsorted panel is sorted first so
+axis order does not matter (a store is sorted already and is not copied), and
+every NaN is rewritten to one canonical bit pattern and every `-0.0` to `0.0`
+in its own precision, because otherwise two reads of identical data could
+hash differently.
+
+Variables are hashed in parallel threads, one variable per thread, up to
+eight and the CPU count; a request smaller than one block is hashed in one
+thread. Each variable is read and hashed in blocks of whole bars, about 64 MB
+each and rounded up to whole store chunks along `timestamp`, so a lazily read
+store is never in memory whole, and only one block is copied to make its NaN
+canonical. The blocks of a variable are fed to its digest in order, so
+neither the thread count nor the block size changes a digest.
 
 Nothing decides what to fingerprint. The data is recorded where it is read
 (ADR 0021). A run opens a `DataRecorder`, and the two read seams log every

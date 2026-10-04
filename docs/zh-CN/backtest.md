@@ -277,7 +277,7 @@ out_of_sample -5.61 -4.27 13
 | `execution`、`rebalance_periods` | 来自运行配置的 `ExecutionSettings`（`sizing_basis`、`fees`、`slippage`）与调仓间隔 bar 数。 |
 | `annualization`、`init_cash` | 统计年化所用的每年交易日数与每日交易分钟数，以及模拟的初始资金。 |
 | `backtester_class`、`benchmark_source`、`recipe()` | 回测器类的导入路径；基准的来源（其 store，或内存中持有的数据集；没有基准时为 `None`）；重建配方本身，即 `report_summary` 读取的配置映射。 |
-| `data_fingerprint` | 本次运行读了什么，在读取处记录：每个数据集或因子 store 按其组件路径（`price_dataset`、`model.factors.0.dataset`、`benchmark_dataset`）为键，每个不同的请求一条摘要和范围。覆盖价格列、退市判断向后读取的部分、规则在窗口之前读取的价格历史、每个因子的输入以及合并数据集的各个输入。`run_cv()` 运行记录的是拼接段，每一折记录自己的读取。训练读取记录在训练单元上（`trained_run().data_fingerprint`）。 |
+| `data_fingerprint` | 本次运行读了什么，在读取处记录：每个数据集或因子 store 按其组件路径（`price_dataset`、`model.factors.0.dataset`、`benchmark_dataset`）为键，每个不同的请求一条摘要和范围，并带有每个变量的摘要和 dtype，供不一致告警指出哪里变了。覆盖价格列、退市判断向后读取的部分、规则在窗口之前读取的价格历史、每个因子的输入以及合并数据集的各个输入。`run_cv()` 运行记录的是拼接段，每一折记录自己的读取。训练读取记录在训练单元上（`trained_run().data_fingerprint`）。 |
 | `code` | 运行所用的代码：quantlab 的 git commit 以及已跟踪文件是否有改动，回测器组件树中每个定义了类的模块的 SHA-256（区分框架模块与组件模块，并列出使用它的组件路径），以及 numpy、pandas、xarray、polars、xgboost、torch、vectorbt、KunQuant 和 cvxpy 的版本。 |
 | `trained_run()` | 回测所用的训练单元，即一个 `TrainedRun`：train 模式下是训练出的单元，load 模式下是 checkpoint 所在的单元，`run_cv()` 是 walk-forward 单元，一折则是该折自己的单元；`run_weights()` 为 `None`。 |
 | `weights()`、`equity()` | `(timestamp, symbol)` 上的目标权重；`timestamp` 上的组合 `value` 与每根 bar 的 `returns`，跑了基准时另有 `benchmark_value` 和 `benchmark_returns`。 |

@@ -585,8 +585,11 @@ the training data is recorded on the trained unit.
 `rebuild_backtester()` sets them as the rebuilt backtester's
 `expected_fingerprint`, which compares by digest alone and logs a warning such as
 `data fingerprint mismatch for 'price_dataset', request 2024-02-12..2024-03-22,
-variables ['adjClose', 'adjOpen']: digest differs (expected ..., got ...)`
-for each difference. The run also records its code (`BacktestRun.code`), and a
+variables ['adjClose', 'adjOpen']: digest differs: values of ['adjClose'] changed
+(expected ..., got ...)` for each difference. The warning names what changed:
+the variables whose values changed, a changed dtype, variables added to or
+missing from the store, another range or number of bars or symbols, or,
+when every variable is the same, changed bar or symbol labels. The run also records its code (`BacktestRun.code`), and a
 rebuild warns when a component's module or a library version changed. It does not refuse to run, because a backtest on updated
 data is often exactly what you want; the warning makes sure it is not a
 surprise.
