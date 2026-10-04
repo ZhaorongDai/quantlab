@@ -4,8 +4,9 @@ This page describes the machinery that keeps quantlab's long-running jobs
 safe to interrupt and its results safe to trust: how downloads and
 conversions resume where they stopped, how a store is rebuilt without losing
 the old one, why three package `__init__.py` files stay empty, how files are
-written atomically, and how data fingerprints and code records tie a
-run to the data it read and the code it ran. It is written for contributors who change these
+written atomically, how data fingerprints and code records tie a
+run to the data it read and the code it ran, and how a model and an ensemble
+share one Evaluation and one Walk-forward training. It is written for contributors who change these
 parts of the code or add a component that has to cooperate with them. Users
 only need the behaviour, which [Data sources](../user-guide/data-sources.md),
 [Datasets](../user-guide/datasets.md) and
@@ -281,3 +282,75 @@ component paths, and once per changed library version.
 `rebuild_backtester()` compares the rebuilt tree with the run at once. A
 train-mode rebuild also compares the retrained unit with the unit the run
 used (`expected_training_code`).
+
+## Evaluation and walk-forward training
+
+A model and an ensemble are two different kinds of trained unit: an ensemble
+composes models and inherits from none of them (ADR 0013, 0017). They still
+score and cross-validate the same way, because each of the two procedures is
+one module in `quantlab/utils/`, used by both. The modules sit in `utils`
+rather than in the model layer because the base layer imports them and may
+not import the model layer (ADR 0010); `tests/test_layer_layout.py` locks
+that they import nothing above `quantlab.utils` except the trained-run
+module.
+
+### Evaluation
+
+`quantlab.utils.evaluation.evaluate` scores a trained unit after training.
+It takes the unit's prediction panel, the labels' raw values, the label
+objects with their `label_scales`, the unit's train, validation and test
+segments (`Segments`), its test bounds and a directory. It returns the
+metrics and writes `ic_series.csv` and `test_predictions.zarr` into the
+directory, so all three come from one set of predictions. It needs no model.
+
+- A model (`BaseModel._evaluate`, called by `train_into` after the variant's
+  `_fit`) predicts its whole collected panel with `predict_panel` and passes
+  its own `evaluation_segments()`. The variant's `_fit` returns only
+  `{split}_loss`; `train_into` merges it with the evaluation metrics and
+  writes the dict once to the tracking run's summary and to `run.json`.
+- An ensemble (`BaseEnsemble._evaluate`) combines its members' panel
+  predictions with `_combine` and passes, per label, the collected panel and
+  `evaluation_segments()` of the first member predicting it, plus each
+  label's member predictions; a label with at least two gets
+  `{split}_member_correlation`.
+
+The rules (every label scored; the IC family always; error metrics only for
+a `"raw"` label; `qlike` and `variance_ratio` for a raw volatility label)
+live in that one function, so a model and an ensemble can be compared key
+for key. A model head supplies its loss only and never scores. No instance
+state carries a series between methods: `evaluate` writes the IC series it
+computed.
+
+### Walk-forward training
+
+`quantlab.utils.walk_forward_training.train_walk_forward(unit,
+train_periods, expanding, test_periods)` runs every `train_cv` call. It needs
+only the public protocol `WalkForwardTrainable` defined beside it:
+
+| Member | `BaseModel` | `BaseEnsemble` |
+|---|---|---|
+| `class_name`, `get_config()` | its class, its config | its class, its config |
+| `model_save_dir` | `config.model_save_dir` | the first member's |
+| `walk_forward_bars()` | the collected bars between `start_date` and `end_date` | the first member's |
+| `purge_bars` | the largest `lookahead_bars()` of its labels | the largest over its members |
+| `check_hyperparameters()` | the variant's check | every member's, in order |
+| `train_fold(fold, run_dir, group)` | `train_into` on `fold_config(config, fold)`, then the old config back | every member on the fold's dates, `_train_into` of the ensemble unit, then every member's config back |
+| `tracker`, `tracking_project` | `config.tracker`, its class name | the first member's |
+| `provenance()` | `training_record` and `code_of(self)` | the same for the ensemble |
+
+The module owns the order: check the hyperparameters before any directory
+exists; lay the folds out with `walk_forward_folds` (unchanged) over
+`walk_forward_bars()` with `purge_bars`, refusing bad settings first and an
+empty date range next; create the trial directory; train fold i in order into
+`fold_{i}/`; read the folds' trained runs; average their metrics
+(`cv_mean_metrics`); open `{class}_cv_summary` through `tracker` in the
+trial's group; write the walk-forward `run.json` with `provenance()`. A fold
+records no provenance; the top unit records it (ADR 0021).
+
+`train_fold` restores the unit's own config in a `finally`, so after
+`train_cv`, also a failed one, a model and every ensemble member hold the
+dates they were configured with. A new kind of trained unit, such as an
+ensemble of different model variants, gets cross-validation by implementing
+the protocol publicly; it calls no private method of its members.
+`tests/test_walk_forward_training.py` drives the module with a stub that
+trains nothing.

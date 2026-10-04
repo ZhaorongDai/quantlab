@@ -146,7 +146,16 @@ True
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC. Every head computes all eight on the raw values of the primary label (the first one) for the train, validation and test segments, plus `loss`: the head's loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. They go to the tracking run's summary as `train_*`, `val_*` and `test_*` (see Track experiments), and `train()` records the same dict as the `metrics` of its `run.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`). For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model).
+`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC.
+
+A trained model is scored after training, by the Evaluation in `quantlab.utils.evaluation` (`evaluate`), which an ensemble uses too. The model predicts its whole collected panel once with `predict_panel`, so a windowed head's first bars get their warm-up, and every label is scored against its raw values on the train, validation and test segments of `evaluation_segments()` (the purged segments above). The same predictions give the metrics, `ic_series.csv` and `test_predictions.zarr`. The rules, one set for a model and an ensemble:
+
+- Every label is scored. The first label's keys are `{split}_{metric}`, every other label's `{split}_{label}_{metric}`.
+- The IC family (`ic`, `rank_ic`, `icir`, `rank_icir`) always.
+- `mse`, `rmse`, `mae` and `r2` only for a label the model predicts on its own scale, `label_scales` `"raw"`: a head fitting a rank or a z-score (a `training_target`, or its own `_transform_target`) predicts in other units than the label, so it reports the IC family only.
+- `qlike` and `variance_ratio` for a volatility label predicted on its own scale (see Volatility labels below).
+
+The head adds `loss`: its loss on the training target (the label after the head's per-bar `_transform_target`, see Extending), computed per bar and averaged over bars, so every bar weighs the same whatever its number of symbols. For a library head that loss is `_loss` (MSE by default); for a torch head it is `_val_one_batch`, by default its `_loss` (see Train a torch model). The loss and the evaluation metrics, merged, go once to the tracking run's summary as `train_*`, `val_*` and `test_*` (see Track experiments), and `train()` records the same dict as the `metrics` of its `run.json`, with NaN and infinity as null. There are no `val_*` keys when the run has no validation segment (`val_size=0`), and no `test_*` keys when the test segment has no bars.
 
 ```python
 >>> metrics = run.metrics
@@ -158,7 +167,7 @@ True
 {'train_icir': 6.897, 'train_rank_icir': 6.202, 'val_icir': 6.144, 'val_rank_icir': 5.323, 'test_icir': 5.524, 'test_rank_icir': 4.813}
 ```
 
-`regression_panel_metrics` computes the same scores for any panel:
+`evaluate` needs no model, so predictions can be scored without training anything; `regression_panel_metrics` computes the scores of one label on any panel:
 
 ```python
 >>> from quantlab.utils.metrics import regression_panel_metrics
@@ -175,7 +184,7 @@ The per-timestamp values behind IC and RankIC are `cross_sectional_ic_series` an
 
 ### Volatility labels
 
-For a label that is not a return, the IC measures how well the prediction ranks the label, not alpha. A volatility model's IC says whether it orders the symbols by risk, but a mean-variance optimiser also uses the predicted level: the covariance's diagonal and the Grinold sigma are the predicted volatility, so a model that ranks well and under-predicts variance by half halves the optimiser's effective risk aversion. A label declares what it measures in its class attribute `kind`: `"return"` for `Forward` and every return label, `"volatility"` for `Volatility`. When the primary label's `kind` is `"volatility"` and the model predicts it on its own scale (`label_scales` is `"raw"`), the metrics gain two level metrics per segment, computed by `volatility_level_metrics` on the cells where both prediction and label are finite and positive:
+For a label that is not a return, the IC measures how well the prediction ranks the label, not alpha. A volatility model's IC says whether it orders the symbols by risk, but a mean-variance optimiser also uses the predicted level: the covariance's diagonal and the Grinold sigma are the predicted volatility, so a model that ranks well and under-predicts variance by half halves the optimiser's effective risk aversion. A label declares what it measures in its class attribute `kind`: `"return"` for `Forward` and every return label, `"volatility"` for `Volatility`. When a label's `kind` is `"volatility"` and the model predicts it on its own scale (`label_scales` is `"raw"`), the metrics gain two level metrics per segment (prefixed with the label's name when it is not the first label), computed by `volatility_level_metrics` on the cells where both prediction and label are finite and positive:
 
 - `{split}_qlike`: the mean of `q - log(q) - 1` with `q = realised**2 / predicted**2`. It is 0 for a perfect prediction and penalises under-predicted variance more than over-predicted variance of the same size.
 - `{split}_variance_ratio`: `mean(realised**2) / mean(predicted**2)`. It is 1 when the predicted variance is unbiased and above 1 when risk is under-predicted.
@@ -195,7 +204,7 @@ A return label, and a volatility label a head predicts on a standardized scale (
 Every run also writes two files beside `run.json`, so a new metric or an ensemble can be computed from disk without predicting again:
 
 - `ic_series.csv` has the columns `split`, `timestamp`, `ic` and `rank_ic`: one row per bar of each evaluated segment (`train`, `val`, `test`, each in time order), holding the IC and RankIC of that bar on the raw primary label. They come from the same predictions as the recorded metrics: the mean of a segment's `ic` column is its `<split>_ic`, and its ICIR is `<split>_icir`. A bar without an IC (fewer than two valid symbols, or a constant cross-section) has no row. A cell is empty only when one of the two values exists and the other does not.
-- `test_predictions.zarr` is the prediction panel of the test segment: `predict_panel` on the collected features, over the test bars and every collected symbol, with one variable per label. There is no store when the test segment has no bars.
+- `test_predictions.zarr` is the prediction panel of the test segment: the `predict_panel` predictions the metrics come from, over the test bars inside `test_bounds` and every collected symbol, with one variable per label. There is no store when the test segment has no bars.
 
 `TrainedRun` gives their paths as `ic_series` and `test_predictions`, `None` for a file that was not written.
 
@@ -269,7 +278,7 @@ With `"early_stopping": True` in `hyperparameters`, training stops when the vali
 
 ### Train on a cross-sectional target
 
-A library head fits the raw label unless `hyperparameters["training_target"]` names a per-bar cross-sectional transform: `"cs_rank"` (Qlib's `CSRankNorm`, `cs_rank_norm` in `quantlab.model.torch_training`) or `"cs_zscore"` (`cs_zscore`). It applies to every label, on the training, validation and test bars alike, so early stopping watches the validation loss on the transformed target, where outliers in raw returns weigh no more than any other symbol. The model then predicts on that standardized scale, and `label_scales` reports `"standardized"` for every label, so a mean-variance constructor never reads the prediction as a raw return (see the portfolio guide). The metrics other than `loss` still score the raw label: the rank IC stays close, while the MSE against the raw return grows, because the prediction is on the rank scale. The key is recorded in `config.json` with the other hyperparameters, so a fresh instance built from it reports the same scale after `load`, and it never reaches the library's own parameters. It works for `XGBoostRegressor`, `XGBTDRegressor`, `RealMLPRegressor` and any other `LibraryModel` head; a head that overrides `_transform_target` itself ignores it. The torch heads choose their target in their own hook (see Train a torch model).
+A library head fits the raw label unless `hyperparameters["training_target"]` names a per-bar cross-sectional transform: `"cs_rank"` (Qlib's `CSRankNorm`, `cs_rank_norm` in `quantlab.model.torch_training`) or `"cs_zscore"` (`cs_zscore`). It applies to every label, on the training, validation and test bars alike, so early stopping watches the validation loss on the transformed target, where outliers in raw returns weigh no more than any other symbol. The model then predicts on that standardized scale, and `label_scales` reports `"standardized"` for every label, so a mean-variance constructor never reads the prediction as a raw return (see the portfolio guide). The metrics other than `loss` still score the raw label: the rank IC stays close. Because the prediction is on the rank scale, the run reports the IC family only, with no MSE, RMSE, MAE or R2 against the raw return (see Metrics). The key is recorded in `config.json` with the other hyperparameters, so a fresh instance built from it reports the same scale after `load`, and it never reaches the library's own parameters. It works for `XGBoostRegressor`, `XGBTDRegressor`, `RealMLPRegressor` and any other `LibraryModel` head; a head that overrides `_transform_target` itself ignores it. The torch heads choose their target in their own hook (see Train a torch model).
 
 ```python
 >>> ranked = XGBoostRegressor(replace(config, hyperparameters={
@@ -278,8 +287,10 @@ A library head fits the raw label unless `hyperparameters["training_target"]` na
 >>> ranked.label_scales, model.label_scales
 ({'ret': 'standardized'}, {'ret': 'raw'})
 >>> ranked_run = TrainedRun.open(ranked.train())
->>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
-[(0.679, 0.003), (0.674, 0.439)]
+>>> [round(m["test_rank_ic"], 3) for m in (run.metrics, ranked_run.metrics)]
+[0.679, 0.674]
+>>> "test_mse" in run.metrics, "test_mse" in ranked_run.metrics
+(True, False)
 >>> ranked.config.hyperparameters["training_target"], "training_target" in ranked_run.resolved_hyperparameters
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
@@ -365,7 +376,14 @@ True
 [('2024-04-10', '2024-05-09'), ('2024-05-10', '2024-06-08'), ('2024-06-09', '2024-07-08')]
 ```
 
-The folds train one after another, on the one collected panel.
+The folds train one after another, on the one collected panel. Each fold trains with the fold's dates on the config, and afterwards the model has the dates it was configured with again, so a later `train()` or `predict_window` uses the configured windows, not the last fold's.
+
+```python
+>>> cv.folds[-1].test_window[0][:10], model.config.test_start
+('2024-06-29', '2024-06-01')
+```
+
+The procedure is `train_walk_forward` in `quantlab.utils.walk_forward_training`, which an ensemble's `train_cv` runs too: it checks the hyperparameters before any directory exists, lays out the folds, trains each into `fold_{i}/`, averages the folds' metrics and writes the summary run and `run.json`. It trains anything that satisfies its protocol `WalkForwardTrainable` (see the developer internals).
 
 ### Average several seeds
 
@@ -899,7 +917,7 @@ Where the records of a training go is the config's `tracker`. The default, `Null
 
 The tracker is written to `config.json` with the rest of the config and rebuilt with it. Credentials come from environment variables only: `WANDB_API_KEY` for W&B, `MLFLOW_TRACKING_USERNAME` and `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` for MLflow.
 
-All trials of one model class go to one project, named after the class unless the tracker sets `project`. The runs of one `train()` or `train_cv()` call form a group named after the trial directory (`XGBoostRegressor_trial_<timestamp>`): `<Class>_total` for `train()`; `<Class>_cv_fold_<i>` per fold and `<Class>_cv_summary`, whose summary is the walk-forward run's `cv_mean`, for `train_cv()`. Every run carries the full config, and its summary holds the `train_*`, `val_*` and `test_*` metrics, non-finite values left out. A run is finished also when training raises, and is then marked failed.
+All trials of one model class go to one project, named after the class unless the tracker sets `project`. The runs of one `train()` or `train_cv()` call form a group named after the trial directory (`XGBoostRegressor_trial_<timestamp>`): `<Class>_total` for `train()`; `<Class>_cv_fold_<i>` per fold and `<Class>_cv_summary`, whose summary is the walk-forward run's `cv_mean`, for `train_cv()`. A model's `tracker` and `tracking_project` (its class name) are what its runs are opened through; an ensemble has none of its own, and its `tracker` and `tracking_project` are its first member's. Every run carries the full config, and its summary holds the `train_*`, `val_*` and `test_*` metrics, non-finite values left out. A run is finished also when training raises, and is then marked failed.
 
 What a head adds to its run: `XGBoostRegressor` logs the training and validation metrics of every boosting round as step metrics (`train-rmse`, `val-ccc_loss`, ...), writes the best iteration and the per-factor importance (`importance_<type>/<factor>`) to the summary, and logs one table `feature_importance/<type>` per importance type, of which W&B also draws a bar chart of the top 30 factors. `XGBTDRegressor` logs the validation curve of every round (`val-rmse`, or `val-rmse/<label>` with several labels), the selected and trained round counts and the same importance, through a callback injected into pytabkit's inner `xgboost.train` call. `RealMLPRegressor` logs every epoch's mean training loss (`train-loss`) and validation error (`val-rmse`) at `step=epoch`, plus `best_val_rmse`, `epochs_trained` and the stopping epoch, through a Lightning callback injected into pytabkit's trainer (`quantlab.model.predefined._support.tabkit.active_callbacks`). Torch heads log `train_loss` and `val_loss` every epoch. A library head's resolved hyperparameters are added to the run config as `resolved_hyperparameters`.
 
@@ -977,7 +995,7 @@ A `LibraryModel` head is fed rows, which the base builds. `_fit_model(train_rows
 [0.05, -0.02, -0.001]
 ```
 
-Overriding `_transform_target` changes what the library fits and nothing else; for a rank or z-score, `training_target` does the same without a subclass (see Train on a cross-sectional target). Below, the ridge fits each bar's cross-sectional rank of the label, scaled to [-0.5, 0.5]. The metrics still score the raw label: the rank IC stays close, while the MSE against the raw return grows tenfold, because the predictions are now on the rank scale.
+Overriding `_transform_target` changes what the library fits and nothing else; for a rank or z-score, `training_target` does the same without a subclass (see Train on a cross-sectional target). Below, the ridge fits each bar's cross-sectional rank of the label, scaled to [-0.5, 0.5]. The metrics still score the raw label: the rank IC stays close. The predictions are now on the rank scale, so the model reports `label_scales` `"standardized"` and no error metric: an MSE against the raw return would measure the change of units, not the model.
 
 ```python
 >>> import torch
@@ -988,11 +1006,13 @@ Overriding `_transform_target` changes what the library fits and nothing else; f
 >>> ranked = RankRidgeHead(replace(config, hyperparameters={"alpha": 1.0})).collect()
 >>> ranked_metrics = TrainedRun.open(ranked.train()).metrics
 >>> plain_metrics = TrainedRun.open(ridge.train()).metrics
->>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (plain_metrics, ranked_metrics)]
-[(0.716, 0.003), (0.69, 0.027)]
+>>> [round(m["test_rank_ic"], 3) for m in (plain_metrics, ranked_metrics)]
+[0.69, 0.69]
+>>> ranked.label_scales, "test_mse" in plain_metrics, "test_mse" in ranked_metrics
+({'ret': 'standardized'}, True, False)
 ```
 
-A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
+A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the checkpoints and, after training, the evaluation: a head supplies its loss, never a scoring loop.
 
 A new ensemble subclasses `quantlab.model.ensemble.BaseEnsemble`, passes its members (at least two models; a label several members predict must have one config) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest run's recipe can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `_collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does; `collect()` records what `_collect()` reads, on the ensemble's unit) and `_member_seed(k)` (the seed recorded for member k in the ensemble's `run.json`). `ModelEnsemble` is the smallest complete example.
 
@@ -1091,4 +1111,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`), `quantlab/utils/walk_forward.py` (`walk_forward_folds`), `quantlab/runs/trained_run.py` (`TrainedRun`) and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`), `quantlab/utils/walk_forward.py` (`walk_forward_folds`), `quantlab/utils/walk_forward_training.py` (`train_walk_forward`), `quantlab/utils/evaluation.py` (`evaluate`), `quantlab/runs/trained_run.py` (`TrainedRun`) and `quantlab/utils/metrics.py`.
