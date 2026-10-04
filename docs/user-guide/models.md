@@ -405,9 +405,9 @@ same layout in both modes and `run_cv` replays either:
 grown = model.train_cv(train_periods=200, expanding=True)
 ```
 
-`train_cv` sets the model's `train_*` and `test_*` dates to each fold in
-turn, so afterwards they hold the last fold's dates. The folds train one
-after another.
+`train_cv` trains each fold on that fold's `train_*` and `test_*` dates, one
+fold after another, and afterwards restores the dates the model was
+configured with.
 
 ## Experiment tracking
 

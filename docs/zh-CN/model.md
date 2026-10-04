@@ -492,7 +492,7 @@ ValueError: SeedEnsemble seeds must be distinct, got [0, 0]
 
 各成员依次训练，每个成员在训练前一刻用自己的 `random_seed` 重设随机数生成器。
 
-`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上调用 `walk_forward_folds`（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个试验目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，它和单个模型的一样是 `"walk_forward"` 单元，里面是 `run.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都是一个 `"ensemble"` 单元，像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的追踪 run `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`，以及该折的 `run.json`，即它的检查点。各折依次训练，结束后成员保留最后一折的日期，与模型在自己的 `train_cv` 之后相同。
+`train_cv(train_periods, expanding=False, test_periods=None)` 在单个模型的 `train_cv` 所用的 walk-forward 折上对集成做交叉验证：在第一个成员收集的面板上调用 `walk_forward_folds`（滑动或扩张，测试段长度相同），并做相同的清除。每个成员的超参数在创建任何目录之前检查一次。这次运行得到一个试验目录 `checkpoints/SeedEnsemble_trial_<timestamp>/`，它和单个模型的一样是 `"walk_forward"` 单元，里面是 `run.json` 和每折一个 `fold_{i}/`。每个 `fold_{i}/` 都是一个 `"ensemble"` 单元，像 `train()` 的目录一样填写，只是各成员配置在该折的日期上：`member_{k}/` 在自己的追踪 run `XGBoostRegressor_fold_{i}_member_{k}` 下训练（检查点也以此命名），然后是平均预测的 `ic_series.csv` 和 `test_predictions.zarr`，以及该折的 `run.json`，即它的检查点。各折依次训练，结束后每个成员恢复原先配置的日期，与模型在自己的 `train_cv` 之后相同。
 
 `train_cv` 返回 walk-forward 的 `TrainedRun`。各折的指标是 IC 一族和 `{split}_member_correlation`，`cv_mean` 是它们的均值。另有一个追踪 run `SeedEnsemble_cv_summary` 记录 `cv_mean_*` 的值，它通过第一个成员的 tracker 打开，与各成员在同一个项目和分组里。集成没有自己的 tracker，它的 run 都经由成员模型的 tracker。回测器的 `run_cv()` 以集成为模型回放这个目录（见 backtest 指南）。
 
@@ -1079,7 +1079,7 @@ ValueError: XGBoostRegressor: train_cv: Fold 0: purging the last 10 bars leaves 
 ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 training bars, since each fold tests on train_periods // 5 bars; or pass test_periods.
 ```
 
-`train_cv` 会用最后一折的日期覆盖配置里的四个 `train_*` 和 `test_*` 日期，之后再调用 `train()` 时请新建配置。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回一个没有折的 walk-forward 运行，不会抛出异常。
+`train_cv` 在每一折的 `train_*` 和 `test_*` 日期上训练该折，结束后恢复配置原有的日期，所以之后调用 `train()` 训练的仍是配置的窗口。如果 `train_periods` 太长、放不下测试段，它会记录一条 `Skipping fold 0: test set exceeds data range` 的日志，并返回一个没有折的 walk-forward 运行，不会抛出异常。
 
 `train()` 只返回检查点路径，这次运行的指标由 `TrainedRun.open(checkpoint).metrics` 给出。`train_cv` 返回 walk-forward 的 `TrainedRun`，各折带着自己的指标，torch 模型头和库模型头都一样。
 

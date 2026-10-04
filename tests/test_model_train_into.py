@@ -1,6 +1,6 @@
 """Training into a caller-given run directory (issue #57).
 
-`BaseModel._train_into` trains, evaluates and saves one model into a run
+`BaseModel.train_into` trains, evaluates and saves one model into a run
 directory the caller chooses, under tracking run names the caller chooses, and creates
 no `{class}_trial_{timestamp}` directory. `train()` and every `train_cv()`
 fold go through it; an ensemble trains each member into `member_{k}/` with
@@ -39,7 +39,7 @@ def test_train_into_writes_the_usual_files_into_the_given_directory(
     model = _model(tmp_path, cls=cls, tracker=tracker)
     run_dir = tmp_path / "ensemble" / "member_0"
 
-    checkpoint, metrics = model._train_into(
+    checkpoint, metrics = model.train_into(
         run_dir, group="my_trial", experiment_name="Head_member_0"
     )
 
@@ -68,14 +68,14 @@ class RandomWeightHead(StubLibraryHead):
 
 def test_train_into_reseeds_so_earlier_random_draws_do_not_leak(tmp_path):
     first = _model(tmp_path, cls=RandomWeightHead, random_seed=7)
-    first._train_into(tmp_path / "a", group="p", experiment_name="a")
+    first.train_into(tmp_path / "a", group="p", experiment_name="a")
 
     np.random.rand(100)
     sibling = _model(tmp_path, cls=RandomWeightHead, random_seed=8)
-    sibling._train_into(tmp_path / "b", group="p", experiment_name="b")
+    sibling.train_into(tmp_path / "b", group="p", experiment_name="b")
     second = _model(tmp_path, cls=RandomWeightHead, random_seed=7)
     np.random.rand(100)
-    second._train_into(tmp_path / "c", group="p", experiment_name="c")
+    second.train_into(tmp_path / "c", group="p", experiment_name="c")
 
     assert first.model["weight"] == second.model["weight"]
     assert sibling.model["weight"] != first.model["weight"]

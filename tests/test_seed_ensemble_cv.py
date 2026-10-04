@@ -16,7 +16,8 @@ What is locked here, and what turns it red:
   opens on its own through `TrainedRun`, with the windows and metrics the
   returned run holds; a fold's ensemble metrics are the IC family and
   `member_correlation` (no error metric), each correlation within
-  `[-1, 1]`, and `cv_mean` averages them the way `BaseModel` does.
+  `[-1, 1]`, and `cv_mean` averages them by `cv_mean_metrics`, as a model's.
+- After `train_cv` every member keeps the dates it was configured with.
 - Tracking: one run per member per fold, `{MemberClass}_fold_{i}_member_{k}`, all
   in one project named after the CV directory, plus a
   `SeedEnsemble_cv_summary` run carrying the `cv_mean_*` values.
@@ -41,11 +42,11 @@ import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
-from quantlab.base.model import BaseModel
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.runs.trained_run import TrainedRun
+from quantlab.utils.walk_forward_training import WalkForwardTrainable, cv_mean_metrics
 from tests.tracking_fixtures import RecordingTracker
 from tests.backtest_fixtures import (
     SeededHead,
@@ -102,14 +103,21 @@ def _windows(run: TrainedRun) -> list[tuple]:
     ]
 
 
+def _dates(model) -> tuple:
+    c = model.config
+    return c.start_date, c.end_date, c.train_start, c.train_end, c.test_start, c.test_end
+
+
 @pytest.fixture(scope="module")
 def cv_run(tmp_path_factory):
     """One sliding ensemble CV run, shared read-only by the module."""
     root = tmp_path_factory.mktemp("ensemble_cv")
     dataset_config, bars = _setup(root)
     ensemble = SeedEnsemble(_model(root / "train", dataset_config, bars), SEEDS)
+    dates = [_dates(member) for member in ensemble.members]
     run = ensemble.collect().train_cv(train_periods=TRAIN_PERIODS)
     return dict(
+        dates=dates,
         root=root,
         dataset_config=dataset_config,
         bars=bars,
@@ -160,11 +168,11 @@ def test_fold_dates_equal_the_model_bases_train_cv(tmp_path, expanding, monkeypa
         assert len({f.train_window[0] for f in run.folds}) == 1
 
 
-def test_train_cv_leaves_the_members_on_the_last_folds_dates(cv_run):
-    """As `BaseModel.train_cv` leaves its config on the last fold's dates."""
-    last = cv_run["run"].folds[-1]
-    for member in cv_run["ensemble"].members:
-        assert (member.config.test_start, member.config.test_end) == last.test_window
+def test_train_cv_keeps_the_members_own_dates(cv_run):
+    """Every member keeps the dates it was configured with, not the last fold's."""
+    assert isinstance(cv_run["ensemble"], WalkForwardTrainable)
+    for member, dates in zip(cv_run["ensemble"].members, cv_run["dates"]):
+        assert _dates(member) == dates
 
 
 # --------------------------------------------------------------------------
@@ -223,7 +231,7 @@ def test_every_unit_of_the_run_opens_on_its_own(cv_run):
             assert member.fitted_train_window == fold.fitted_train_window
 
     assert run.cv_mean["cv_n_folds"] == N_FOLDS
-    expected = BaseModel._cv_mean_metrics([fold.metrics for fold in run.folds])
+    expected = cv_mean_metrics([fold.metrics for fold in run.folds])
     assert set(run.cv_mean) == set(expected)
     assert "cv_mean_test_member_correlation" in expected
     for key, value in expected.items():
@@ -271,7 +279,7 @@ def test_tracking_runs_per_fold_member_and_one_summary(tmp_path):
     summary = tracker.runs[-1]
     assert summary.config == to_jsonable(ensemble.get_config())
     assert summary.summary["cv_n_folds"] == N_FOLDS
-    means = BaseModel._cv_mean_metrics([fold.metrics for fold in run.folds])
+    means = cv_mean_metrics([fold.metrics for fold in run.folds])
     assert summary.summary == {
         key: value for key, value in means.items() if np.isfinite(value)
     }
@@ -333,7 +341,7 @@ def test_hyperparameters_are_checked_before_any_directory(tmp_path, monkeypatch)
         if self.config.random_seed == 2:
             raise ValueError("bad hyperparameter")
 
-    monkeypatch.setattr(SeededHead, "_check_hyperparameters", refuse)
+    monkeypatch.setattr(SeededHead, "check_hyperparameters", refuse)
     with pytest.raises(ValueError, match="bad hyperparameter"):
         ensemble.train_cv(TRAIN_PERIODS)
     assert checked == SEEDS

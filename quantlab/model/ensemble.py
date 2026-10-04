@@ -66,20 +66,23 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 
 from quantlab.base.component import Component, code_of
-from quantlab.base.model import BaseModel, record_training_reads
+from quantlab.base.model import record_training_reads
+from quantlab.base.tracking import Tracker
 from quantlab.runs.trained_run import (
     TrainedRun,
-    fold_directory,
     member_directory,
     new_trial_directory,
     write_ensemble_run,
 )
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.evaluation import evaluate
+from quantlab.utils.walk_forward import Fold
+from quantlab.utils.walk_forward_training import fold_config, train_walk_forward
 
 
 def _as_time(value) -> pd.Timestamp:
@@ -361,8 +364,7 @@ class BaseEnsemble(Component, ABC):
         >>> sorted(ensemble.training_record)[:1]
         ['model.factors.0.dataset']
         """
-        for member in self.members:
-            member._check_hyperparameters()
+        self.check_hyperparameters()
         self._training_record = record_training_reads(self)
         return self
 
@@ -377,8 +379,14 @@ class BaseEnsemble(Component, ABC):
         """
         return dict(self._training_record)
 
-    def _provenance(self) -> dict:
-        """What the ensemble's top unit records: ``training_record`` and the code record."""
+    def provenance(self) -> dict:
+        """What the ensemble's top unit records: ``training_record`` and the code record.
+
+        Examples
+        --------
+        >>> sorted(ensemble.collect().provenance())
+        ['code', 'data_fingerprint']
+        """
         return {"data_fingerprint": self.training_record, "code": code_of(self)}
 
     def _collect(self) -> None:
@@ -536,11 +544,10 @@ class BaseEnsemble(Component, ABC):
         >>> sorted(run.metrics)
         ['test_ic', 'test_icir', 'test_member_correlation', 'test_rank_ic', 'test_rank_icir', 'train_ic', 'train_icir', 'train_member_correlation', 'train_rank_ic', 'train_rank_icir']
         """
-        for member in self.members:
-            member._check_hyperparameters()
+        self.check_hyperparameters()
         directory = new_trial_directory(self.model_save_dir, self.class_name)
         return self._train_into(
-            directory, group=directory.name, provenance=self._provenance()
+            directory, group=directory.name, provenance=self.provenance()
         )
 
     def _train_into(
@@ -573,7 +580,7 @@ class BaseEnsemble(Component, ABC):
             ensemble units in one group stay apart; ``train_cv`` passes
             ``fold_{i}``.
         provenance : dict, optional
-            ``_provenance()``, for the top unit (``train``); a fold records
+            ``provenance()``, for the top unit (``train``); a fold records
             none.
 
         Returns
@@ -585,7 +592,7 @@ class BaseEnsemble(Component, ABC):
         directory.mkdir(parents=True, exist_ok=True)
         tag = "" if run_tag is None else f"_{run_tag}"
         for k, member in enumerate(self.members):
-            member._train_into(
+            member.train_into(
                 member_directory(directory, k),
                 group=group,
                 experiment_name=f"{member.class_name}{tag}_member_{k}",
@@ -609,29 +616,28 @@ class BaseEnsemble(Component, ABC):
     ) -> TrainedRun:
         """Run a walk-forward cross-validation of the ensemble and return the walk-forward unit.
 
-        The folds are those ``BaseModel.train_cv`` trains for the first
-        member: laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the first member's
-        collected timestamps between its ``start_date`` and ``end_date``,
-        sliding or, with ``expanding=True``, growing from the first fold's
-        start, and each training window loses its last L bars, L being the
-        largest ``lookahead_bars()`` among every member's labels. Every member's
-        hyperparameters are checked once, before any directory is created.
+        The procedure is a model's, ``train_walk_forward`` (in
+        ``quantlab.utils.walk_forward_training``), with the ensemble as the
+        trained unit: the
+        folds are laid out over ``walk_forward_bars`` (the first member's),
+        sliding or, with ``expanding=True``, growing
+        from the first fold's start, and each training window loses its last
+        L bars, L being ``purge_bars``, the largest among the members. Every
+        member's hyperparameters are checked once, before any directory is
+        created.
 
         A new ``{class}_trial_{timestamp}`` directory under
         ``model_save_dir`` becomes a ``"walk_forward"`` unit, laid out as a
-        model's. For fold i, every member's config gets the fold's dates
-        before the purge (the members purge them themselves, as a single
-        model's fold does), and ``_train_into`` writes the ``"ensemble"``
-        unit ``fold_{i}/`` as ``train()`` writes its directory, member k
+        model's. Fold i is trained by ``train_fold`` into the ``"ensemble"``
+        unit ``fold_{i}/``, as ``train()`` writes its directory, member k
         under the tracking run ``{MemberClass}_fold_{i}_member_{k}``. Folds
-        train one after another. After the last fold the members keep its
-        dates, as a model does after its own ``train_cv``. The fold means of
-        the ensemble metrics, keyed ``cv_mean_{key}``, and ``cv_n_folds`` go
-        to the summary of a separate ``{class}_cv_summary`` run, opened
-        through the first member's tracker in the members' project and
-        group, and into the unit's ``run.json``, which a backtester's
-        ``run_cv`` replays with the ensemble as its model. Call
-        ``collect()`` first.
+        train one after another, and afterwards every member keeps the dates
+        it was configured with. The fold means of the ensemble metrics, keyed
+        ``cv_mean_{key}``, and ``cv_n_folds`` go to the summary of a separate
+        ``{class}_cv_summary`` run, opened through ``tracker`` (the first
+        member's) in the members' project and group, and into the unit's
+        ``run.json``, which a backtester's ``run_cv`` replays with the
+        ensemble as its model. Call ``collect()`` first.
 
         Parameters
         ----------
@@ -669,34 +675,108 @@ class BaseEnsemble(Component, ABC):
         >>> [member.seed for member in cv.folds[0].members]
         [0, 1, 2]
         """
-        for member in self.members:
-            member._check_hyperparameters()
-        first = self.members[0]
-        folds = first._walk_forward_folds(
-            train_periods,
-            expanding,
-            test_periods,
-            max(member._purge_bars() for member in self.members),
-            self.class_name,
-        )
+        return train_walk_forward(self, train_periods, expanding, test_periods)
 
-        trial = new_trial_directory(self.model_save_dir, self.class_name)
-        for fold in folds:
+    # ------------------------------------------------------------------
+    # WalkForwardTrainable: what train_walk_forward needs
+    # ------------------------------------------------------------------
+
+    def check_hyperparameters(self) -> None:
+        """Check every member's hyperparameters, in member order.
+
+        Raises
+        ------
+        ValueError
+            From the first member whose hyperparameters are invalid.
+
+        Examples
+        --------
+        >>> ensemble.check_hyperparameters()  # valid members return None
+        """
+        for member in self.members:
+            member.check_hyperparameters()
+
+    @property
+    def purge_bars(self) -> int:
+        """The largest ``purge_bars`` among the members.
+
+        ``train_cv`` lays its folds out with it, so no member's fitted label
+        reads a test bar; each member still purges its own window by its own.
+
+        Examples
+        --------
+        >>> ensemble.purge_bars
+        2
+        """
+        return max(member.purge_bars for member in self.members)
+
+    @property
+    def tracker(self) -> Tracker:
+        """The first member's tracker, through which the CV summary run is opened.
+
+        The ensemble has no tracker of its own; its members' runs go through
+        their own trackers.
+
+        Examples
+        --------
+        >>> ensemble.tracker is ensemble.members[0].tracker
+        True
+        """
+        return self.members[0].tracker
+
+    @property
+    def tracking_project(self) -> str:
+        """The first member's ``tracking_project``, so the summary sits beside the members' runs.
+
+        Examples
+        --------
+        >>> ensemble.tracking_project
+        'SeededHead'
+        """
+        return self.members[0].tracking_project
+
+    def walk_forward_bars(self) -> np.ndarray:
+        """The first member's ``walk_forward_bars``: one fold geometry for every member.
+
+        Examples
+        --------
+        >>> len(ensemble.collect().walk_forward_bars())
+        30
+        """
+        return self.members[0].walk_forward_bars()
+
+    def train_fold(self, fold: Fold, run_dir: Path | str, group: str) -> None:
+        """Train one walk-forward fold of every member into ``run_dir``, then restore their dates.
+
+        Every member's config gets the fold's dates before the purge
+        (``fold_config``; each member purges them itself), and
+        ``_train_into`` writes the ``"ensemble"`` unit, member k under the
+        tracking run ``{MemberClass}_fold_{i}_member_{k}``. Every member's
+        own config is put back afterwards, also when training raises.
+
+        Parameters
+        ----------
+        fold : Fold
+            The fold to train.
+        run_dir : Path or str
+            The fold's unit directory, ``fold_{i}/`` of the trial.
+        group : str
+            Tracking group of the members' runs, the trial directory's name.
+
+        Examples
+        --------
+        >>> ensemble.collect().train_fold(fold, tmp / "fold_0", group="trial")
+        >>> TrainedRun.open(tmp / "fold_0").kind
+        'ensemble'
+        """
+        own = [member.config for member in self.members]
+        try:
             for member in self.members:
-                member.config = BaseModel._with_fold_dates(member.config, fold)
-            self._train_into(
-                fold_directory(trial, fold.index),
-                group=trial.name,
-                run_tag=f"fold_{fold.index}",
-            )
-        # Through the first member's tracker, beside the members' runs.
-        return first._finish_walk_forward(
-            trial,
-            folds,
-            name=f"{self.class_name}_cv_summary",
-            config=self.get_config(),
-            provenance=self._provenance(),
-        )
+                member.config = fold_config(member.config, fold)
+            self._train_into(run_dir, group=group, run_tag=f"fold_{fold.index}")
+        finally:
+            for member, config in zip(self.members, own):
+                member.config = config
 
     def _evaluate(self, run_dir: Path) -> dict:
         """Score the combined prediction of the trained members and write its files.

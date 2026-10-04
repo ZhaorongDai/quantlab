@@ -299,8 +299,18 @@ class TorchModel(TrainingTargetMixin, BaseModel):
     def _on_fit_end(self) -> None:
         """Choose the weights to keep, after the last epoch; the default keeps the last."""
 
-    def _check_hyperparameters(self) -> None:
-        """Refuse an invalid ``epochs``, ``panel_device`` or ``panel_dtype``."""
+    def check_hyperparameters(self) -> None:
+        """Refuse an invalid ``epochs``, ``panel_device`` or ``panel_dtype``.
+
+        Raises
+        ------
+        ValueError
+            If one of them is invalid.
+
+        Examples
+        --------
+        >>> model.check_hyperparameters()  # the defaults are valid
+        """
         self.epochs
         self._panel_settings()
 

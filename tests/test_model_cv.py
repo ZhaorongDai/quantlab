@@ -63,6 +63,7 @@ from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
 from quantlab.base.tracking import NullTracker
 from quantlab.utils.walk_forward import Fold, walk_forward_folds
+from quantlab.utils.walk_forward_training import WalkForwardTrainable
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 
@@ -312,7 +313,7 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
     those two, on exactly those dates. Turns red if train_cv grows its own
     copy of the fold arithmetic again."""
     monkeypatch.setattr(
-        "quantlab.base.model.walk_forward_folds", lambda timestamps, train_periods, **_: HANDMADE_FOLDS
+        "quantlab.utils.walk_forward_training.walk_forward_folds", lambda timestamps, train_periods, **_: HANDMADE_FOLDS
     )
     save_dir = "ckpt_seq"
     model = StubLibraryHead(_library_config(tmp_path, save_dir))
@@ -419,3 +420,30 @@ def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, t
         assert fold.checkpoint.suffix == ".pth" and fold.checkpoint.is_file()
     assert len(tracker.runs) == GOLDEN_N_FOLDS + 1
     assert tracker.runs[-1].name == "GoldenTorchHead_cv_summary"
+
+
+def test_train_cv_keeps_the_models_own_dates(tmp_path):
+    """After `train_cv` the config holds the dates it had before, not the last fold's (#144)."""
+    model = StubLibraryHead(_library_config(tmp_path, "dates"))
+    model.collect()
+    before = model.config
+
+    cv = model.train_cv(train_periods=50)
+
+    assert isinstance(model, WalkForwardTrainable)
+    assert cv.folds[-1].test_window[0] != before.test_start
+    assert model.config == before
+
+
+def test_a_fold_that_raises_still_restores_the_models_dates(tmp_path, monkeypatch):
+    model = StubLibraryHead(_library_config(tmp_path, "raises"))
+    model.collect()
+    before = model.config
+
+    def crash(self, *args, **kwargs):
+        raise RuntimeError("fold crashed")
+
+    monkeypatch.setattr(StubLibraryHead, "train_into", crash)
+    with pytest.raises(RuntimeError, match="fold crashed"):
+        model.train_cv(train_periods=50)
+    assert model.config == before

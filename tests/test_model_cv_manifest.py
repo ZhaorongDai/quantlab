@@ -263,7 +263,7 @@ def test_empty_fold_list_still_writes_a_record(tmp_path, monkeypatch):
     """With no folds the record is still written, with `folds: []`, so
     run_cv can say "this CV run produced no folds" instead of "not a CV
     project directory"."""
-    monkeypatch.setattr("quantlab.base.model.walk_forward_folds", lambda timestamps, train_periods, **_: ())
+    monkeypatch.setattr("quantlab.utils.walk_forward_training.walk_forward_folds", lambda timestamps, train_periods, **_: ())
     model = _library(tmp_path, "ckpt")
 
     cv = model.train_cv(train_periods=TRAIN_PERIODS)

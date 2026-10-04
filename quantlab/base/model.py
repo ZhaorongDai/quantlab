@@ -38,27 +38,25 @@ from typing import Self
 import numpy as np
 import pandas as pd
 import xarray as xr
-from loguru import logger
 
 from quantlab.backend import XrBackend
 from quantlab.base.component import Component, code_of, walk_components
 from quantlab.base.data import InsufficientHistoryError
-from quantlab.base.tracking import NullRun, TrackingRun
+from quantlab.base.tracking import NullRun, Tracker, TrackingRun
 from quantlab.enums.constant import Date
 from quantlab.runs.trained_run import (
     TrainedRun,
-    fold_directory,
     new_trial_directory,
     write_model_config,
     write_model_run,
-    write_walk_forward_run,
 )
 from quantlab.utils.evaluation import Segments, evaluate
 from quantlab.utils.fingerprint import DataRecorder
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
-from quantlab.utils.walk_forward import Fold, walk_forward_folds
+from quantlab.utils.walk_forward import Fold
+from quantlab.utils.walk_forward_training import fold_config, train_walk_forward
 
 from .config import ModelConfig
 
@@ -574,7 +572,7 @@ class BaseModel(Component, ABC):
     ) -> Self:
         """Load features and labels into the model's data backend.
 
-        The hyperparameters are checked first (``_check_hyperparameters``),
+        The hyperparameters are checked first (``check_hyperparameters``),
         so an invalid one fails before any data is read. Each factor and label is asked for its panel from ``start_date`` to
         ``end_date``: ``read(start, end)`` from its store under the
         ``"read"`` strategy, ``compute(start, end)`` from its inputs under
@@ -604,7 +602,7 @@ class BaseModel(Component, ABC):
         >>> model.collect().num_times
         40
         """
-        self._check_hyperparameters()
+        self.check_hyperparameters()
         self._training_record = record_training_reads(self)
         return self
 
@@ -623,12 +621,17 @@ class BaseModel(Component, ABC):
         """
         return dict(self._training_record)
 
-    def _provenance(self) -> dict:
+    def provenance(self) -> dict:
         """What the top unit records about its data and its code.
 
         ``data_fingerprint`` is ``training_record``; ``code`` the code record
         of this model's tree (``quantlab.base.component.code_of``), taken
         when the unit is written.
+
+        Examples
+        --------
+        >>> sorted(model.collect().provenance())
+        ['code', 'data_fingerprint']
         """
         return {"data_fingerprint": self.training_record, "code": code_of(self)}
 
@@ -848,7 +851,7 @@ class BaseModel(Component, ABC):
     def _save_model(self, p: Path):
         """Create the checkpoint directory, write ``config.json``, then the checkpoint.
 
-        ``config.json`` holds ``get_config()``; ``_train_into`` records the
+        ``config.json`` holds ``get_config()``; ``train_into`` records the
         rest of the run in ``run.json`` once the fit is evaluated.
 
         Raises
@@ -873,7 +876,7 @@ class BaseModel(Component, ABC):
         """Return the hyperparameters actually in effect, or None to record nothing.
 
         A head that merges user overrides into library defaults overrides
-        this to expose the merged result. When not None, ``_train_into``
+        this to expose the merged result. When not None, ``train_into``
         records it in the trained unit's ``run.json``
         (``TrainedRun.resolved_hyperparameters``), so a run stays
         reproducible after defaults change. It is a record, not an input:
@@ -901,7 +904,7 @@ class BaseModel(Component, ABC):
         """Return the configured training window less the bars the purge drops.
 
         The collected bars of ``[train_start, train_end]`` and of the test
-        window go through ``purge_segments`` with L = ``_purge_bars()``, so
+        window go through ``purge_segments`` with L = ``purge_bars``, so
         the end becomes the last bar fitted. The configured window is
         returned when a date is missing or the purge leaves no bar.
         """
@@ -912,7 +915,7 @@ class BaseModel(Component, ABC):
             return train
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
         usable, _ = purge_segments(
-            np.sort(data.timestamp.values), [train, test], self._purge_bars()
+            np.sort(data.timestamp.values), [train, test], self.purge_bars
         )
         if len(usable) == 0:
             return train
@@ -1176,7 +1179,7 @@ class BaseModel(Component, ABC):
         """Train once on the config's ``train_*`` / ``test_*`` dates and save.
 
         A new trial directory is created under ``model_save_dir`` and is the
-        trained unit: ``_train_into`` trains into it under a tracking run
+        trained unit: ``train_into`` trains into it under a tracking run
         ``{class}_total``, grouped by the directory's name, and writes the
         checkpoint, ``config.json``, the evaluation files and ``run.json``.
         Returning the path lets a caller record exactly which model was
@@ -1200,17 +1203,17 @@ class BaseModel(Component, ABC):
         >>> sorted(p.name for p in run.path.iterdir())
         ['MyHead_total.joblib', 'config.json', 'ic_series.csv', 'run.json', 'test_predictions.zarr']
         """
-        self._check_hyperparameters()
-        trial = new_trial_directory(self.config.model_save_dir, self.class_name)
-        checkpoint, _ = self._train_into(
+        self.check_hyperparameters()
+        trial = new_trial_directory(self.model_save_dir, self.class_name)
+        checkpoint, _ = self.train_into(
             trial,
             group=trial.name,
             experiment_name=f"{self.class_name}_total",
-            provenance=self._provenance(),
+            provenance=self.provenance(),
         )
         return checkpoint
 
-    def _train_into(
+    def train_into(
         self,
         run_dir: Path | str,
         group: str,
@@ -1245,7 +1248,7 @@ class BaseModel(Component, ABC):
         experiment_name : str
             Tracking run name, also the checkpoint file's stem.
         provenance : dict, optional
-            ``_provenance()``, for the top unit (``train``); a fold or a
+            ``provenance()``, for the top unit (``train``); a fold or a
             member records none.
 
         Returns
@@ -1259,6 +1262,14 @@ class BaseModel(Component, ABC):
         ------
         RuntimeError
             If ``run_dir`` already exists (see ``_save_model``).
+
+        Examples
+        --------
+        >>> checkpoint, metrics = model.collect().train_into(
+        ...     tmp / "member_0", group="trial", experiment_name="MyHead_member_0"
+        ... )
+        >>> checkpoint.name, sorted(metrics)[:1]
+        ('MyHead_member_0.joblib', ['test_ic'])
         """
         self._set_random_seed(self.config.random_seed)
         run_dir = Path(run_dir).absolute()
@@ -1346,7 +1357,7 @@ class BaseModel(Component, ABC):
         train, val, test = (part.timestamp.values for part in self._fit_segments(data))
         return Segments(train=train, val=val, test=test)
 
-    def _check_hyperparameters(self) -> None:
+    def check_hyperparameters(self) -> None:
         """Validate the reserved hyperparameters this variant reads.
 
         Called first by ``collect``, ``train`` and ``train_cv``, before any
@@ -1356,10 +1367,24 @@ class BaseModel(Component, ABC):
         ------
         ValueError
             If a reserved hyperparameter is invalid.
+
+        Examples
+        --------
+        >>> model.check_hyperparameters()  # a valid setting returns None
         """
 
-    def _purge_bars(self) -> int:
-        """L, the largest ``lookahead_bars()`` among the model's labels."""
+    @property
+    def purge_bars(self) -> int:
+        """L, the largest ``lookahead_bars()`` among the model's labels.
+
+        Each segment followed by another loses its last L bars, so no fitted
+        label reads a bar of the next segment.
+
+        Examples
+        --------
+        >>> model.purge_bars  # one forward-return label over 1 bar, delay 1
+        2
+        """
         return max(
             (label.lookahead_bars() for label in self.config.labels), default=0
         )
@@ -1372,7 +1397,7 @@ class BaseModel(Component, ABC):
         The training window ``[train_start, train_end]`` is cut by position:
         its first ``1 - val_size`` share of bars trains, the rest validates.
         The train, validation and test segments then go through
-        ``purge_segments`` with L = ``_purge_bars()``, so each segment
+        ``purge_segments`` with L = ``purge_bars``, so each segment
         followed by another loses its last L bars and no fitted label reads
         a bar of the next segment.
 
@@ -1403,7 +1428,7 @@ class BaseModel(Component, ABC):
             segments.append((window[split], window[-1]))
         segments.append((config.test_start, config.test_end))
 
-        lookahead = self._purge_bars()
+        lookahead = self.purge_bars
         parts = purge_segments(timestamps, segments, lookahead)
         if len(parts[0]) == 0:
             raise ValueError(
@@ -1418,120 +1443,90 @@ class BaseModel(Component, ABC):
             data.sel(timestamp=test),
         )
 
-    def _walk_forward_folds(
-        self,
-        train_periods: int,
-        expanding: bool,
-        test_periods: int | None,
-        purge_bars: int,
-        name: str,
-    ) -> tuple[Fold, ...]:
-        """Return the walk-forward folds of ``train_cv`` over the collected bars.
+    @property
+    def model_save_dir(self) -> Path:
+        """The directory ``train`` and ``train_cv`` create trial directories in.
 
-        The bars between ``start_date`` and ``end_date`` go through
-        ``walk_forward_folds`` with ``purge_bars``, which an ensemble sets to
-        the largest lookahead of all its members. ``name`` prefixes the
-        error messages and the log lines.
+        Examples
+        --------
+        >>> model.model_save_dir.name
+        'checkpoints'
+        """
+        return Path(self.config.model_save_dir)
 
-        Raises
-        ------
-        ValueError
-            If ``walk_forward_folds`` refuses the settings, checked first, or
-            no bar lies between ``start_date`` and ``end_date``.
+    @property
+    def tracker(self) -> Tracker:
+        """The tracker every run of the model is opened through, ``config.tracker``.
+
+        Examples
+        --------
+        >>> type(model.tracker).__name__
+        'NullTracker'
+        """
+        return self.config.tracker
+
+    @property
+    def tracking_project(self) -> str:
+        """The default project of the model's tracking runs: its class name.
+
+        A tracker's own ``project`` replaces it.
+
+        Examples
+        --------
+        >>> model.tracking_project
+        'MyHead'
+        """
+        return self.class_name
+
+    def walk_forward_bars(self) -> np.ndarray:
+        """The collected bars between ``config.start_date`` and ``config.end_date``.
+
+        ``train_cv`` lays its folds out over them. Call ``collect()`` first.
+
+        Examples
+        --------
+        >>> len(model.collect().walk_forward_bars())
+        30
         """
         start_date, end_date = self.config.start_date, self.config.end_date
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
-        timestamps = data.sel(timestamp=slice(start_date, end_date)).timestamp.values
+        return data.sel(timestamp=slice(start_date, end_date)).timestamp.values
+
+    def train_fold(self, fold: Fold, run_dir: Path | str, group: str) -> None:
+        """Train one walk-forward fold into ``run_dir``, then restore the model's own dates.
+
+        The config gets the fold's training window before the purge and its
+        test window (``fold_config``); ``train_into`` purges, trains and
+        writes the ``"model"`` unit with the checkpoint and tracking run
+        ``{class}_cv_fold_{i}``. The config the model had before is put back
+        afterwards, also when training raises.
+
+        Parameters
+        ----------
+        fold : Fold
+            The fold to train.
+        run_dir : Path or str
+            The fold's unit directory, ``fold_{i}/`` of the trial.
+        group : str
+            Tracking group, the trial directory's name.
+
+        Examples
+        --------
+        >>> before = model.config
+        >>> model.collect().train_fold(fold, tmp / "fold_0", group="trial")
+        >>> model.config == before, TrainedRun.open(tmp / "fold_0").kind
+        (True, 'model')
+        """
+        own = self.config
+        self.config = fold_config(own, fold)
         try:
-            folds = walk_forward_folds(
-                timestamps,
-                train_periods,
-                test_periods=test_periods,
-                expanding=expanding,
-                purge_bars=purge_bars,
+            self.train_into(
+                run_dir,
+                group=group,
+                experiment_name=f"{self.class_name}_cv_fold_{fold.index}",
             )
-        except ValueError as error:
-            raise ValueError(f"{name}: train_cv: {error}") from None
-        if len(timestamps) == 0:
-            raise ValueError(f"No data found between {start_date} and {end_date}")
-        logger.info(
-            f"{name}: {len(folds)} walk-forward folds from {start_date} to "
-            f"{end_date} with {train_periods} training periods"
-        )
-        for fold in folds:
-            logger.info(
-                f"Fold {fold.index}: Train [{fold.fitted_train_window[0]} to "
-                f"{fold.fitted_train_window[1]}], Test [{fold.test_window[0]} "
-                f"to {fold.test_window[1]}]"
-            )
-        return folds
-
-    @staticmethod
-    def _with_fold_dates(config, fold: Fold):
-        """Return ``config`` with the fold's training window before the purge and its test window.
-
-        A model given these dates purges the training window itself.
-        """
-        return dataclasses.replace(
-            config,
-            train_start=fold.train_window[0],
-            train_end=fold.train_window[1],
-            test_start=fold.test_window[0],
-            test_end=fold.test_window[1],
-        )
-
-    def _train_one_fold(self, fold: Fold, trial: Path) -> None:
-        """Train fold ``fold`` into its unit ``fold_{i}/`` of the walk-forward unit ``trial``.
-
-        The config gets the fold's dates before the purge, which ``_fit``
-        purges itself. The fold's checkpoint is ``{class}_cv_fold_{i}``,
-        also the name of its tracking run.
-        """
-        self.config = self._with_fold_dates(self.config, fold)
-        self._train_into(
-            fold_directory(trial, fold.index),
-            group=trial.name,
-            experiment_name=f"{self.class_name}_cv_fold_{fold.index}",
-        )
-
-    #: Prefixes of the metric keys ``_fit`` returns, one per split.
-    _METRIC_PREFIXES = ("train_", "val_", "test_")
-
-    @staticmethod
-    def _cv_mean_metrics(results: list[dict]) -> dict:
-        """Average every ``train_*`` / ``val_*`` / ``test_*`` metric over folds.
-
-        ``results`` holds each fold's metrics. Each mean is keyed
-        ``cv_mean_{key}``. Only finite numeric values count (a recorded
-        null is skipped); a metric with no finite value in any fold averages
-        to NaN. ``cv_n_folds`` is added. Returns an empty dict when no fold
-        carries a metric, in which case ``train_cv`` opens no summary run.
-        """
-        keys: list[str] = []
-        for result in results:
-            for key, value in result.items():
-                # None is a metric recorded as null, undefined in that fold.
-                numeric = value is None or (
-                    isinstance(value, (int, float, np.integer, np.floating))
-                    and not isinstance(value, bool)
-                )
-                if key.startswith(BaseModel._METRIC_PREFIXES) and numeric and key not in keys:
-                    keys.append(key)
-        if not keys:
-            return {}
-
-        means: dict = {}
-        for key in keys:
-            finite = [
-                float(r[key])
-                for r in results
-                if r.get(key) is not None and np.isfinite(float(r[key]))
-            ]
-            means[f"cv_mean_{key}"] = (
-                sum(finite) / len(finite) if finite else float("nan")
-            )
-        means["cv_n_folds"] = len(results)
-        return means
+        finally:
+            self.config = own
 
     def train_cv(
         self,
@@ -1548,8 +1543,8 @@ class BaseModel(Component, ABC):
         default) or, with ``expanding=True``, keeps the first fold's start
         and grows to all history before the test period. Both modes test on
         the same periods, so their results compare bar for bar. Folds are
-        laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the timestamps between
-        ``config.start_date`` and ``config.end_date``. Each fold's training
+        laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the
+        timestamps between ``config.start_date`` and ``config.end_date``. Each fold's training
         window loses its last L bars, L being the largest
         ``lookahead_bars()`` among the labels, so no fitted label reads a
         test-period bar.
@@ -1563,7 +1558,10 @@ class BaseModel(Component, ABC):
         keyed ``cv_mean_{key}``, plus ``cv_n_folds`` are written to the
         summary of a separate ``{class}_cv_summary`` run. Last, the trial's
         ``run.json`` records the folds and those means. A backtester's
-        ``run_cv`` replays the unit.
+        ``run_cv`` replays the unit. The procedure is
+        ``quantlab.utils.walk_forward_training.train_walk_forward``, the one
+        an ensemble's ``train_cv`` runs too. Afterwards the model keeps the
+        dates it was configured with, not the last fold's.
 
         Parameters
         ----------
@@ -1596,7 +1594,7 @@ class BaseModel(Component, ABC):
             ``train_periods`` is below 5 (the test segment would be
             empty), no timestamps fall inside the config's date range, or
             the purge leaves a fold no training bar, or a reserved
-            hyperparameter is invalid (see ``_check_hyperparameters``).
+            hyperparameter is invalid (see ``check_hyperparameters``).
 
         Examples
         --------
@@ -1620,40 +1618,7 @@ class BaseModel(Component, ABC):
         >>> len(model.train_cv(train_periods=20, test_periods=10).folds)
         2
         """
-        self._check_hyperparameters()
-        folds = self._walk_forward_folds(
-            train_periods, expanding, test_periods, self._purge_bars(), self.class_name
-        )
-        trial = new_trial_directory(self.config.model_save_dir, self.class_name)
-        for fold in folds:
-            self._train_one_fold(fold, trial)
-        return self._finish_walk_forward(trial, folds, provenance=self._provenance())
-
-    def _finish_walk_forward(
-        self,
-        trial: Path,
-        folds,
-        *,
-        name: str | None = None,
-        config: dict | None = None,
-        provenance: dict | None = None,
-    ) -> TrainedRun:
-        """Write the walk-forward unit ``trial`` over its trained folds and track the CV means.
-
-        The fold means of the folds' recorded metrics (``_cv_mean_metrics``)
-        go to the summary run ``name`` (``{class}_cv_summary`` by default,
-        see ``_track_cv_summary``) when there are any, and into the unit's
-        ``run.json`` with ``provenance`` (see ``_provenance``). An ensemble
-        passes its own ``name``, ``config`` and provenance.
-        """
-        indices = [fold.index for fold in folds]
-        fold_runs = [TrainedRun.open(fold_directory(trial, i)) for i in indices]
-        means = self._cv_mean_metrics([run.metrics for run in fold_runs])
-        if means:
-            self._track_cv_summary(trial.name, means, name=name, config=config)
-        return write_walk_forward_run(
-            trial, folds=indices, cv_mean=means, provenance=provenance
-        )
+        return train_walk_forward(self, train_periods, expanding, test_periods)
 
     def _assert_shape_match_y(self, data):
         """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_labels]``."""
@@ -1678,40 +1643,25 @@ class BaseModel(Component, ABC):
             )
 
     @contextmanager
-    def _tracking_run(
-        self, group: str, name: str, config: dict | None = None
-    ) -> Iterator[TrackingRun]:
-        """Open a run through ``config.tracker`` and hold it in ``_run`` while open.
+    def _tracking_run(self, group: str, name: str) -> Iterator[TrackingRun]:
+        """Open a run through ``tracker`` and hold it in ``_run`` while open.
 
-        The project is the class name unless the tracker sets its own, and
-        the run's config is ``config``, by default ``get_config()``. The run
-        is finished when the block is left, also when it raises, and ``_run``
-        goes back to a ``NullRun``.
+        The project is ``tracking_project`` unless the tracker sets its own,
+        and the run's config is ``get_config()``. The run is finished when
+        the block is left, also when it raises, and ``_run`` goes back to a
+        ``NullRun``.
         """
-        with self.config.tracker.start_run(
-            project=self.class_name,
+        with self.tracker.start_run(
+            project=self.tracking_project,
             group=group,
             name=name,
-            config=self.get_config() if config is None else config,
+            config=self.get_config(),
         ) as run:
             self._run = run
             try:
                 yield run
             finally:
                 self._run = NullRun()
-
-    def _track_cv_summary(
-        self, group: str, means: dict, *, name: str | None = None, config: dict | None = None
-    ) -> None:
-        """Write the mean fold metrics to the CV summary run of the trial ``group``.
-
-        The run is ``{class}_cv_summary`` with ``get_config()`` as its config;
-        an ensemble passes its own ``name`` and ``config`` and so shares its
-        members' tracker, project and group.
-        """
-        name = f"{self.class_name}_cv_summary" if name is None else name
-        with self._tracking_run(group, name, config) as run:
-            run.summarize(means)
 
     @abstractmethod
     def _fit(self, checkpoint: Path) -> dict | None:
@@ -1722,7 +1672,7 @@ class BaseModel(Component, ABC):
         ``{split}_loss``, with split ``train``, ``val`` (only when there is
         a validation segment) and ``test`` (only when it has bars), or None
         when the variant produces no metrics, which skips evaluation. The
-        other metrics are not the variant's: ``_train_into`` scores the
+        other metrics are not the variant's: ``train_into`` scores the
         trained model with ``_evaluate``.
         """
 

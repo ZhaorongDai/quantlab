@@ -271,7 +271,7 @@ class _TrackingEvalCallback(xgb.callback.TrainingCallback):
     Keys use xgboost's hyphenated form
     (``train-rmse``, ``val-ccc_loss``) with ``step`` equal to the round
     index, which distinguishes these curves from the underscored final
-    values (losses and evaluation metrics) ``BaseModel._train_into``
+    values (losses and evaluation metrics) ``BaseModel.train_into``
     writes to the summary once training is done.
 
     Parameters

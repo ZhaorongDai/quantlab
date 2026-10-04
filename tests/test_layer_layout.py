@@ -19,8 +19,9 @@ What is locked here, and what turns it red:
 - every `predefined` package's `__init__.py` is empty.
 - the walk-forward module (`quantlab/utils/walk_forward.py`), which the base layer
   imports, imports no quantlab module outside `quantlab.utils`;
-- the evaluation module (`quantlab/utils/evaluation.py`), which the base layer imports,
-  imports no quantlab module outside `quantlab.utils` and the trained-run module;
+- the evaluation module (`quantlab/utils/evaluation.py`) and the walk-forward training
+  module (`quantlab/utils/walk_forward_training.py`), which the base layer imports,
+  import no quantlab module outside `quantlab.utils` and the trained-run module;
 - the run layer (`quantlab/runs`) imports only `quantlab.utils`, itself, the storage
   backend (`quantlab.backend`) and the base root modules it names
   (`RUNS_BASE_MODULES`), never the model, factor, label,
@@ -152,8 +153,9 @@ def test_the_walk_forward_module_stays_in_utils():
     assert outside == [], outside
 
 
-def test_the_evaluation_module_stays_below_the_base_layer():
-    path = REPO_ROOT / "quantlab/utils/evaluation.py"
+@pytest.mark.parametrize("module", ["evaluation", "walk_forward_training"])
+def test_the_evaluation_and_walk_forward_training_modules_stay_below_the_base_layer(module):
+    path = REPO_ROOT / f"quantlab/utils/{module}.py"
     allowed = ("quantlab.utils", "quantlab.runs.trained_run")
     outside = sorted(
         name

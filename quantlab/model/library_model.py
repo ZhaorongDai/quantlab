@@ -176,8 +176,18 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
             )
         return value
 
-    def _check_hyperparameters(self) -> None:
-        """Refuse an invalid ``training_target``."""
+    def check_hyperparameters(self) -> None:
+        """Refuse an invalid ``training_target``.
+
+        Raises
+        ------
+        ValueError
+            If ``training_target`` is not a known transform.
+
+        Examples
+        --------
+        >>> model.check_hyperparameters()  # no training_target set
+        """
         self.training_target
 
     def _transform_target(self, y: torch.Tensor, training: bool):
