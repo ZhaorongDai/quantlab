@@ -145,8 +145,8 @@ array([0.5, 0.5, 0. , 0. ])
 用上面从运行目录重建的 `inputs`（也可以用 `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)` 直接构造）：
 
 ```python
->>> inputs.rebalances(context.timestamp)  # the run's last bar: an order there has no next bar to fill on
-False
+>>> inputs.rebalances(context.timestamp)
+True
 >>> bar = inputs.context(
 ...     context.timestamp,
 ...     panel.predictions.sel(timestamp=context.timestamp),

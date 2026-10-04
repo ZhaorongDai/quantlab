@@ -242,12 +242,16 @@ def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
     assert (inputs.fill_column, inputs.valuation_column) == ("adjOpen", "adjClose")
     assert inputs.rebalance_periods == 5
     assert inputs.anchor == pd.Timestamp(result.predictions.timestamp.values[0])
-    assert inputs.end == pd.Timestamp(result.predictions.timestamp.values[-1])
+    # Open-ended by default (a live run keeps counting past the run's end); a replay
+    # passes its last bar, which then never rebalances.
+    assert inputs.end is None
+    bars = result.weights.timestamp.values
+    replay = DecisionInputs.from_run(result.run_dir, end=bars[-1])
     decided = np.isfinite(result.weights["weight"].values).all(axis=1)
-    asked = [inputs.rebalances(t) for t in result.weights.timestamp.values]
-    assert not (decided & ~np.array(asked)).any() and not asked[-1]
-    narrowed = DecisionInputs.from_run(result.run_dir, end=result.weights.timestamp.values[5])
-    assert narrowed.end == pd.Timestamp(result.weights.timestamp.values[5])
+    asked = np.array([replay.rebalances(t) for t in bars])
+    np.testing.assert_array_equal(decided & asked, decided)
+    assert not asked[-1]
+    assert [inputs.rebalances(t) for t in bars[:-1]] == asked[:-1].tolist()
     assert inputs.execution == (
         ExecutionSettings("valuation", 0.001, 0.0005)
         if run == "frame_run"

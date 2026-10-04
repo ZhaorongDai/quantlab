@@ -273,9 +273,10 @@ class DecisionInputs:
         in-memory one reading the copy under the run directory), the market
         columns (``market``), the execution settings (``sizing_basis``,
         ``fees``, ``slippage``) and ``rebalance_periods``; from its
-        ``predictions.zarr``: the label specs the rule is bound to, the
-        anchor (the panel's first bar) and, unless given, ``end`` (its last,
-        on which the run never rebalanced). The predictions themselves are not
+        ``predictions.zarr``: the label specs the rule is bound to and the
+        anchor (the panel's first bar). Without ``end`` the schedule is
+        open-ended, as a live run's is: it keeps counting past the run's
+        last bar. The predictions themselves are not
         read, and neither the model nor the factor, label or backtest layers
         are imported (a rule declaring factors imports its factors' layer).
         ``weights`` on the run's predictions reproduces the run's weights.
@@ -285,8 +286,9 @@ class DecisionInputs:
         run_dir : str or os.PathLike
             A run directory written by ``run()`` or ``run_cv()``.
         end : pd.Timestamp or datetime-like, optional
-            The last bar of a replay narrower than the run, which then never
-            rebalances; default the run's last bar.
+            The last bar of a replay (the run's own last bar to replay it
+            whole), on which ``rebalances`` is False; ``None`` for an
+            open-ended run.
 
         Returns
         -------
@@ -325,7 +327,7 @@ class DecisionInputs:
         constructor = get_cls_from_path(recorded["name"]).from_config(recorded)
         constructor.bind(PredictionPanel.read_labels(path))
         with xr.open_zarr(path) as panel:
-            anchor, last = panel.timestamp.values[0], panel.timestamp.values[-1]
+            anchor = panel.timestamp.values[0]
         return cls(
             load_dataset_from_config(config["price_dataset"], run_dir=run_dir),
             constructor,
@@ -334,7 +336,7 @@ class DecisionInputs:
             rebalance_periods=config["rebalance_periods"],
             anchor=anchor,
             execution=ExecutionSettings(config["sizing_basis"], config["fees"], config["slippage"]),
-            end=last if end is None else end,
+            end=end,
         )
 
     def rebalances(self, t) -> bool:

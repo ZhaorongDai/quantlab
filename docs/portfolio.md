@@ -145,8 +145,8 @@ An executor that keeps its own book, such as an event-driven backtest or a live 
 With `inputs` rebuilt from the run above (`DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)` builds them directly):
 
 ```python
->>> inputs.rebalances(context.timestamp)  # the run's last bar: an order there has no next bar to fill on
-False
+>>> inputs.rebalances(context.timestamp)
+True
 >>> bar = inputs.context(
 ...     context.timestamp,
 ...     panel.predictions.sel(timestamp=context.timestamp),
