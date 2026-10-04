@@ -10,11 +10,17 @@ delisting and no benchmark), ``run_weights()`` with and without a benchmark,
 and ``run_cv()`` with and without a benchmark each write a ``report.html``
 and a ``metrics.json`` whose SHA-256, after replacing the three things that
 differ between two identical runs (the temporary directory, the run
-directory's timestamped name and plotly's random div ids), is the one
-recorded below, captured on the code before #115.
+directory's timestamped name and plotly's random div ids) and rounding every
+decimal number to 10 significant digits, is the one recorded below, captured
+on the code before #115.
 
-The bytes depend on the installed plotly, numpy and vectorbt and were
-captured on macOS; a version bump that changes them shows up here first.
+The rounding is there because the last digits of a float differ between
+CPUs: numpy sums in another order on another SIMD width, so a Sharpe ratio
+printed on macOS as ``-3.9547411421850533`` prints as ``-3.9547411421850547``
+on a Linux runner, from the 13th significant digit on. Ten digits keep every
+change a reader of the report could see. The bytes still depend on the
+installed plotly, numpy and vectorbt; a version bump that changes them shows
+up here first.
 Beside the hashes, the recipe ``report_windows`` documents for building
 ``run_cv()`` fold rows from ``metrics.json`` is checked against the bars each
 fold traded.
@@ -62,6 +68,8 @@ CV_LAST_TEST_BAR = 77
 
 _UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _RUN_NAME = re.compile(r"\b(\w+?)_\d{8}_\d{6}_\d{6}\b")
+#: A decimal number on its own: not part of a word, a version or a longer number.
+_DECIMAL = re.compile(r"(?<![\w.])-?\d+(?:\.\d+(?:[eE][-+]?\d+)?|[eE][-+]?\d+)(?![\w.])")
 
 
 def _day(ts) -> str:
@@ -197,11 +205,13 @@ def _run_cv(root: Path, cv_project, *, benchmark: bool) -> Path:
 
 
 def normalized(text: str, roots: list[Path]) -> str:
-    """``text`` with temporary directories, run names and plotly div ids replaced."""
+    """``text`` with temporary directories, run names and plotly div ids replaced
+    and decimal numbers rounded to 10 significant digits."""
     for root in roots:
         text = text.replace(str(root), "<ROOT>")
     text = _UUID.sub("<UUID>", text)
-    return _RUN_NAME.sub(r"\1_<STAMP>", text)
+    text = _RUN_NAME.sub(r"\1_<STAMP>", text)
+    return _DECIMAL.sub(lambda match: format(float(match.group()), ".10g"), text)
 
 
 def run_files(run_dir: Path, roots: list[Path]) -> dict[str, str]:
@@ -234,19 +244,22 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: moved fold checkpoints from `{Cls}_cv_fold_{i}/` to `fold_{i}/`, which the
 #: run_cv metrics.json record; its two hashes were re-captured then, after
 #: checking that undoing just that path change gives the old hashes back.
+#: All twelve were re-captured when decimals began to be rounded, after
+#: checking that the same code at full precision gives the old hashes back
+#: and that a Linux runner's output, rounded, gives the new ones.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "49b9eeac6b1e48fc2d868febb095da30c2c7d056cd0c5dc7937abe384619aa9b",
-    "run_long_only_benchmark/metrics.json": "5f58a352a7ad34937257e292565347f450f0f5c67796fd766cf7e6dcd8e0d24e",
-    "run_long_short_delisting/report.html": "231ecc93fbeea3142aa90e5e11c3c804b632525d7e9325914d1fb390e233fc1b",
-    "run_long_short_delisting/metrics.json": "547ac168229cfd2ece147b773478f4c024726edd88bd8ad9f06de8fc6a37febc",
-    "run_weights_benchmark/report.html": "20a39e3a6aee280fdaa44b777b2f6d5e74bd21e59c2507bf20856617fdbd3333",
-    "run_weights_benchmark/metrics.json": "c36c3017470634549e6caa5b325c60c327db0c070ff08b275b6e218c273d404b",
-    "run_weights/report.html": "84d467db277f582b77cad390c0dfb783ccc0a38f9456ca1aaf070348ca4bdf7c",
-    "run_weights/metrics.json": "69176432c0ee292a60ad339b16ee2968f0603283eb6827cc8221228cd78436e1",
-    "run_cv_benchmark/report.html": "dc48544040c406ad98cc55f137dd367308efd4f951b9285e9b020bc074db0395",
-    "run_cv_benchmark/metrics.json": "bccb09d16045ffd1d3245d66c7096c1b1df9f383093bc5152f851bb1a86452bb",
-    "run_cv/report.html": "1f2ac8b188dd35d0b8823b397f73415a2ab542ec13cd145262cf93bab3e212d6",
-    "run_cv/metrics.json": "125857644e2c4f5489df86196b82edcd6b2f7b397610b63d89704d3df59ca824",
+    "run_long_only_benchmark/report.html": "8c82484b36edf093ee91cfe049a3bdf8554878d12c73a808c10b7163b767f4e5",
+    "run_long_only_benchmark/metrics.json": "67e754641b89a5a99007ca69e64093e4f555a87a70b7539b27902da99a05f965",
+    "run_long_short_delisting/report.html": "1464d6a0d110496680a0c11d3fbd35ed23113df22f5c5185d2f0d8da15634ac7",
+    "run_long_short_delisting/metrics.json": "d1aecc507332b6616dd96e31bc716c648a56e4158a0988d144c1fa8378b1625b",
+    "run_weights_benchmark/report.html": "82e171cf20ce3dda4dc452b975b59c783faeaff9219539d32b81bbf982717d16",
+    "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
+    "run_weights/report.html": "7bdd8d285ebca72ef91b02867c22750a8ea4f7e7d668826bcff316c7d5d8894f",
+    "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
+    "run_cv_benchmark/report.html": "6fffabe43720bb37f6617c8499b9732c0b6410da58ea5c480c97dfd5e1bf74b9",
+    "run_cv_benchmark/metrics.json": "d6889ddaf7373f430bdcbcae882ca4764d86c17baf457ee15dc34737972375b1",
+    "run_cv/report.html": "020d6aeca7f2cd2b83d91a07aba3568e56a6c47be24c26c47a2898772cc7ac71",
+    "run_cv/metrics.json": "52bea0786c6385d0230d6bd5e9fdce1679805645de9c67620de53537cdea2721",
 }
 
 
