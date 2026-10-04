@@ -20,6 +20,11 @@ three kinds:
   in ``fold_{i}/``. ``run.json`` holds the folds (directory, index, three
   windows, metrics) and the fold means of the metrics, ``cv_mean``.
 
+Every unit's ``run.json`` also holds ``data_fingerprint``: what the unit's
+``collect()`` read, as its ``DataRecorder`` recorded it, keyed by component
+path within the model. Only the unit that read records it: the trained model,
+or the ensemble or walk-forward unit; its members and folds hold none.
+
 ``train`` writes a unit at ``{model_save_dir}/{Class}_trial_{timestamp}/``,
 ``train_cv`` a ``"walk_forward"`` unit there. Paths inside ``run.json`` are
 relative to the unit, so a unit copied elsewhere still opens.
@@ -51,7 +56,7 @@ A walk-forward run opens the same way; its folds are units of their own:
 
 import dataclasses
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -117,6 +122,10 @@ class TrainedRun:
         The hyperparameters a ``"model"`` unit's library actually trained
         with, library defaults merged in; None when the model reports none.
         A record of the fit, not part of the rebuild recipe ``config``.
+    data_fingerprint : dict
+        What the unit's ``collect()`` read, by component path within the
+        model (``factors.0.dataset``); empty for a member or a fold, whose
+        data their ensemble or walk-forward unit read.
     members : tuple of TrainedRun
         An ``"ensemble"`` unit's members, in member order; empty otherwise.
     folds : tuple of TrainedRun
@@ -152,6 +161,7 @@ class TrainedRun:
     ic_series: Path | None
     test_predictions: Path | None
     resolved_hyperparameters: dict | None = None
+    data_fingerprint: dict = dataclasses.field(default_factory=dict)
     members: tuple = ()
     folds: tuple = ()
     cv_mean: dict | None = None
@@ -213,6 +223,7 @@ class TrainedRun:
             ic_series=recorded_path(directory, record.get("ic_series")),
             test_predictions=recorded_path(directory, record.get("test_predictions")),
             resolved_hyperparameters=record.get("resolved_hyperparameters"),
+            data_fingerprint=dict(record.get("data_fingerprint") or {}),
             members=tuple(
                 dataclasses.replace(
                     cls.open(recorded_path(directory, entry["directory"])), seed=entry["seed"]
@@ -360,6 +371,7 @@ def write_model_run(
     trained_on: dict,
     metrics: dict | None,
     resolved_hyperparameters: dict | None = None,
+    data_fingerprint: Mapping | None = None,
 ) -> None:
     """Write the ``run.json`` of a ``"model"`` unit, atomically, as its last file.
 
@@ -381,6 +393,9 @@ def write_model_run(
     resolved_hyperparameters : dict, optional
         The hyperparameters the library actually trained with; None to
         record nothing.
+    data_fingerprint : mapping, optional
+        What the unit's ``collect()`` read; None (a fold, a member) records
+        an empty one.
 
     Examples
     --------
@@ -407,6 +422,7 @@ def write_model_run(
             "resolved_hyperparameters": (
                 None if resolved_hyperparameters is None else dict(resolved_hyperparameters)
             ),
+            "data_fingerprint": dict(data_fingerprint or {}),
             **_evaluation_names(directory),
         },
     )
@@ -420,6 +436,7 @@ def write_ensemble_run(
     fitted_train_window: tuple,
     test_window: tuple,
     metrics: dict,
+    data_fingerprint: Mapping | None = None,
 ) -> Path:
     """Write the ``run.json`` of an ``"ensemble"`` unit, atomically, as its last file.
 
@@ -436,6 +453,9 @@ def write_ensemble_run(
         ``(start, end)`` pairs of the ensemble, see ``TrainedRun``.
     metrics : dict
         The metrics of the combined prediction.
+    data_fingerprint : mapping, optional
+        What the ensemble's ``collect()`` read; None (a fold) records an
+        empty one.
 
     Returns
     -------
@@ -468,13 +488,18 @@ def write_ensemble_run(
             "fitted_train_window": list(fitted_train_window),
             "test_window": list(test_window),
             "metrics": metrics,
+            "data_fingerprint": dict(data_fingerprint or {}),
             **_evaluation_names(directory),
         },
     )
 
 
 def write_walk_forward_run(
-    directory: Path | str, *, folds: Sequence[int], cv_mean: dict
+    directory: Path | str,
+    *,
+    folds: Sequence[int],
+    cv_mean: dict,
+    data_fingerprint: Mapping | None = None,
 ) -> TrainedRun:
     """Write the ``run.json`` of a ``"walk_forward"`` unit and return the unit.
 
@@ -490,6 +515,8 @@ def write_walk_forward_run(
         The fold indices, in fold order.
     cv_mean : dict
         The fold means of the metrics; NaN and inf become null.
+    data_fingerprint : mapping, optional
+        What the ``collect()`` the folds trained on read.
 
     Returns
     -------
@@ -517,5 +544,13 @@ def write_walk_forward_run(
                 "metrics": fold.metrics,
             }
         )
-    write_record(directory, "walk_forward", {"folds": entries, "cv_mean": cv_mean})
+    write_record(
+        directory,
+        "walk_forward",
+        {
+            "folds": entries,
+            "cv_mean": cv_mean,
+            "data_fingerprint": dict(data_fingerprint or {}),
+        },
+    )
     return TrainedRun.open(directory)

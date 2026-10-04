@@ -42,7 +42,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
-from quantlab.base.component import Component
+from quantlab.base.component import Component, walk_components
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
@@ -55,6 +55,7 @@ from quantlab.runs.trained_run import (
     write_model_run,
     write_walk_forward_run,
 )
+from quantlab.utils.fingerprint import DataRecorder
 from quantlab.utils.metrics import (
     regression_panel_metrics,
     scores_volatility_level,
@@ -92,6 +93,25 @@ LIBRARY_RESERVED_HYPERPARAMETERS: frozenset[str] = frozenset(
 RESERVED_HYPERPARAMETERS: frozenset[str] = (
     TORCH_RESERVED_HYPERPARAMETERS | LIBRARY_RESERVED_HYPERPARAMETERS
 )
+
+
+def record_training_reads(model) -> dict:
+    """Run ``model._collect()`` inside a ``DataRecorder`` and return its records.
+
+    Keyed by component path within ``model``. Shared by ``BaseModel.collect``
+    and the ensembles' ``collect``, so a model and an ensemble record alike.
+
+    Examples
+    --------
+    >>> sorted(record_training_reads(model))
+    ['factors.0.dataset', 'labels.0.factor.dataset']
+    """
+    with DataRecorder(
+        keys=[(item, path) for path, item in walk_components(model)],
+        owner=f"{model.class_name} training",
+    ) as recorder:
+        model._collect()
+    return recorder.records
 
 
 class BaseModel(Component, ABC):
@@ -171,6 +191,9 @@ class BaseModel(Component, ABC):
         # Per-split (timestamps, ic, rank_ic) series of the current fit, filled
         # by `_compute_metrics` and written by `_write_evaluation_files`.
         self._ic_series: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        # What the last collect() read, recorded on the unit train() or
+        # train_cv() writes; see training_record.
+        self._training_record: dict = {}
 
     #: The config class every model accepts; the config loader reads it from
     #: the class to rebuild a model from ``config.json``.
@@ -570,6 +593,11 @@ class BaseModel(Component, ABC):
         ``(timestamp, symbol)`` coordinates, sorted on both axes, and stored
         in ``self.data_backend``. Call this before ``train()`` or ``train_cv()``.
 
+        What it reads is recorded by a ``DataRecorder`` keyed by component
+        path within the model (``factors.0.dataset``), and written into the
+        ``run.json`` of the unit ``train()`` or ``train_cv()`` writes next
+        (see ``training_record``).
+
         Returns
         -------
         Self
@@ -586,6 +614,30 @@ class BaseModel(Component, ABC):
         40
         """
         self._check_hyperparameters()
+        self._training_record = record_training_reads(self)
+        return self
+
+    @property
+    def training_record(self) -> dict:
+        """What the last ``collect()`` read, by component path; empty before it.
+
+        ``train()`` and ``train_cv()`` write it as it is: a config changed
+        after ``collect()`` is not re-read, so collect again after changing
+        what is read.
+
+        Examples
+        --------
+        >>> sorted(model.collect().training_record)
+        ['factors.0.dataset', 'labels.0.factor.dataset']
+        """
+        return dict(self._training_record)
+
+    def _collect(self) -> None:
+        """Read the features and labels into ``data_backend``; see ``collect``.
+
+        Records nothing itself: ``collect`` opens the recorder, and an
+        ensemble collecting its members opens its own.
+        """
         feature = self._collect_all_features()
         label = self._collect_all_labels()
         with Timer(f"{self.class_name}: collect merge"):
@@ -593,7 +645,6 @@ class BaseModel(Component, ABC):
             d = xr.combine_by_coords([feature, label], join="outer")
             d = d.sortby(["timestamp", "symbol"])
         self.data_backend.to_internal(d)  # type: ignore
-        return self
 
     @staticmethod
     def _variable_names(obj) -> tuple[str, ...]:
@@ -1152,7 +1203,10 @@ class BaseModel(Component, ABC):
         self._check_hyperparameters()
         trial = new_trial_directory(self.config.model_save_dir, self.class_name)
         checkpoint, _ = self._train_into(
-            trial, group=trial.name, experiment_name=f"{self.class_name}_total"
+            trial,
+            group=trial.name,
+            experiment_name=f"{self.class_name}_total",
+            data_fingerprint=self._training_record,
         )
         return checkpoint
 
@@ -1161,6 +1215,7 @@ class BaseModel(Component, ABC):
         run_dir: Path | str,
         group: str,
         experiment_name: str,
+        data_fingerprint: dict | None = None,
     ) -> tuple[Path, dict | None]:
         """Train, evaluate and save once into a caller-given run directory.
 
@@ -1187,6 +1242,9 @@ class BaseModel(Component, ABC):
             Tracking group of the run, the trial directory's name.
         experiment_name : str
             Tracking run name, also the checkpoint file's stem.
+        data_fingerprint : dict, optional
+            The record of the ``collect()`` the unit trains on, for the unit
+            that read the data (``train``); a fold or a member records none.
 
         Returns
         -------
@@ -1218,6 +1276,7 @@ class BaseModel(Component, ABC):
                 trained_on=self._trained_on(),
                 metrics=metrics,
                 resolved_hyperparameters=self._resolved_hyperparameters(),
+                data_fingerprint=data_fingerprint,
             )
             self._fitted_window = fitted
         return checkpoint, metrics
@@ -1577,7 +1636,7 @@ class BaseModel(Component, ABC):
         trial = new_trial_directory(self.config.model_save_dir, self.class_name)
         for fold in folds:
             self._train_one_fold(fold, trial)
-        return self._finish_walk_forward(trial, folds)
+        return self._finish_walk_forward(trial, folds, data_fingerprint=self._training_record)
 
     def _finish_walk_forward(
         self,
@@ -1586,20 +1645,24 @@ class BaseModel(Component, ABC):
         *,
         name: str | None = None,
         config: dict | None = None,
+        data_fingerprint: dict | None = None,
     ) -> TrainedRun:
         """Write the walk-forward unit ``trial`` over its trained folds and track the CV means.
 
         The fold means of the folds' recorded metrics (``_cv_mean_metrics``)
         go to the summary run ``name`` (``{class}_cv_summary`` by default,
         see ``_track_cv_summary``) when there are any, and into the unit's
-        ``run.json``. An ensemble passes its own ``name`` and ``config``.
+        ``run.json`` with ``data_fingerprint``, what the folds' data read.
+        An ensemble passes its own ``name``, ``config`` and record.
         """
         indices = [fold.index for fold in folds]
         fold_runs = [TrainedRun.open(fold_directory(trial, i)) for i in indices]
         means = self._cv_mean_metrics([run.metrics for run in fold_runs])
         if means:
             self._track_cv_summary(trial.name, means, name=name, config=config)
-        return write_walk_forward_run(trial, folds=indices, cv_mean=means)
+        return write_walk_forward_run(
+            trial, folds=indices, cv_mean=means, data_fingerprint=data_fingerprint
+        )
 
     def _assert_shape_match_y(self, data):
         """Raise ``ValueError`` unless ``data`` is ``[T, num_symbols, num_labels]``."""

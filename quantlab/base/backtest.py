@@ -67,7 +67,7 @@ from quantlab.utils.backtest_report import (
     report_windows,
     write_backtest_report,
 )
-from quantlab.utils.fingerprint import DataRecorder, unrecorded
+from quantlab.utils.fingerprint import DataRecorder, compare_records, unrecorded
 from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
@@ -457,6 +457,12 @@ class BaseBacktester(Component, ABC):
         The data fingerprint of each fold of a previous ``run_cv`` run, by
         fold index; each fold of ``run_cv`` compares with its own and the
         warning names the fold. Filled in by ``rebuild_backtester`` too.
+    expected_training_fingerprint : dict or None
+        The training data record of the trained unit a previous train-mode
+        run used. When set, a train-mode ``run()`` compares the record of
+        the unit it trains with it and warns on a difference. Filled in by
+        ``rebuild_backtester`` for a train-mode run; load mode trains
+        nothing and compares no training data.
 
     Examples
     --------
@@ -482,6 +488,7 @@ class BaseBacktester(Component, ABC):
         # validation hook may read them.
         self.expected_fingerprint: dict | None = None
         self.expected_fold_fingerprints: dict[int, dict] | None = None
+        self.expected_training_fingerprint: dict | None = None
         # The records of the last run's recorder (the stitched pass of
         # run_cv); each fold's records travel with its fold record.
         self._fingerprints: dict = {}
@@ -1754,7 +1761,14 @@ class BaseBacktester(Component, ABC):
             model.collect()
             # The checkpoint train() wrote is recorded in metrics, its unit in run.json.
             self._trained_checkpoint = str(model.train())
-        self._trained_unit = TrainedRun.open(self._trained_checkpoint).path
+        unit = TrainedRun.open(self._trained_checkpoint)
+        self._trained_unit = unit.path
+        if self.expected_training_fingerprint is not None:
+            compare_records(
+                self.expected_training_fingerprint,
+                unit.data_fingerprint,
+                owner=f"{self.class_name} training",
+            )
         return configured
 
     def _warn_if_config_model_dates_differ(self, calendar, configured: tuple) -> None:

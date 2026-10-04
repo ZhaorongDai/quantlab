@@ -26,9 +26,10 @@ of different classes over different factors. Optional hooks:
   through from its only member. Both ``predict_window`` and the
   ensemble-level evaluation files use it. An override should keep
   ``label_scales`` true, overriding it too when needed.
-- ``collect``, ``_member_predictions``, ``_member_panel_predictions``: how
+- ``_collect``, ``_member_predictions``, ``_member_panel_predictions``: how
   members collect their data and features, each member on its own by
   default; an ensemble whose members read the same data shares it.
+  ``collect`` records what ``_collect`` reads, on the ensemble's unit.
 - ``_member_seed``: the seed recorded for each member in ``run.json``.
 
 Shipped ensembles are in ``quantlab/model/predefined`` (``SeedEnsemble``,
@@ -70,7 +71,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.base.component import Component
-from quantlab.base.model import BaseModel
+from quantlab.base.model import BaseModel, record_training_reads
 from quantlab.runs.trained_run import (
     TrainedRun,
     evaluation_paths,
@@ -147,6 +148,8 @@ class BaseEnsemble(Component, ABC):
         self._check_members_agree(members)
         self.members = members
         self.test_bounds  # refuses members whose test windows do not overlap
+        # What the last collect() read; see training_record.
+        self._training_record: dict = {}
 
     def __repr__(self) -> str:
         """Return ``ClassName(members=[...])``."""
@@ -346,8 +349,11 @@ class BaseEnsemble(Component, ABC):
     def collect(self) -> Self:
         """Load every member's features and labels into its data backend.
 
-        Each member collects its own data. An ensemble whose members read the
-        same data overrides this to collect once.
+        The members' reads (``_collect``) are recorded once, by a
+        ``DataRecorder`` keyed by component path within the ensemble, and
+        written into the ``run.json`` of the ensemble or walk-forward unit
+        ``train()`` or ``train_cv()`` writes next; its members and folds
+        record none.
 
         Returns
         -------
@@ -358,10 +364,33 @@ class BaseEnsemble(Component, ABC):
         --------
         >>> ensemble.collect() is ensemble
         True
+        >>> sorted(ensemble.training_record)[:1]
+        ['model.factors.0.dataset']
         """
         for member in self.members:
-            member.collect()
+            member._check_hyperparameters()
+        self._training_record = record_training_reads(self)
         return self
+
+    @property
+    def training_record(self) -> dict:
+        """What the last ``collect()`` read, by component path; empty before it.
+
+        Examples
+        --------
+        >>> sorted(ensemble.collect().training_record)[:1]
+        ['model.factors.0.dataset']
+        """
+        return dict(self._training_record)
+
+    def _collect(self) -> None:
+        """Collect every member's own data; see ``BaseModel._collect``.
+
+        An ensemble whose members read the same data overrides this to
+        collect once.
+        """
+        for member in self.members:
+            member._collect()
 
     def _member_predictions(self, start, end) -> list[xr.Dataset]:
         """Return each member's predictions from ``start`` to ``end``.
@@ -512,10 +541,17 @@ class BaseEnsemble(Component, ABC):
         for member in self.members:
             member._check_hyperparameters()
         directory = new_trial_directory(self.model_save_dir, self.class_name)
-        return self._train_into(directory, group=directory.name)
+        return self._train_into(
+            directory, group=directory.name, data_fingerprint=self.training_record
+        )
 
     def _train_into(
-        self, run_dir: Path | str, group: str, *, run_tag: str | None = None
+        self,
+        run_dir: Path | str,
+        group: str,
+        *,
+        run_tag: str | None = None,
+        data_fingerprint: dict | None = None,
     ) -> Path:
         """Train every member, evaluate the combination and write the unit into ``run_dir``.
 
@@ -538,6 +574,9 @@ class BaseEnsemble(Component, ABC):
             Inserted into every member's run name, so that runs of several
             ensemble units in one group stay apart; ``train_cv`` passes
             ``fold_{i}``.
+        data_fingerprint : dict, optional
+            What ``collect()`` read, for the unit that read it (``train``);
+            a fold records none.
 
         Returns
         -------
@@ -561,6 +600,7 @@ class BaseEnsemble(Component, ABC):
             fitted_train_window=self.fitted_train_bounds,
             test_window=self.test_bounds,
             metrics=metrics,
+            data_fingerprint=data_fingerprint,
         )
 
     def train_cv(
@@ -657,6 +697,7 @@ class BaseEnsemble(Component, ABC):
             folds,
             name=f"{self.class_name}_cv_summary",
             config=self.get_config(),
+            data_fingerprint=self.training_record,
         )
 
     def _write_evaluation_files(self, run_dir: Path) -> dict:

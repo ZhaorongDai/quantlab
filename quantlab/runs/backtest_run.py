@@ -50,6 +50,7 @@ from pathlib import Path
 from typing import Any
 
 import xarray as xr
+from loguru import logger
 
 from quantlab.backend import XrBackend
 from quantlab.base.component import rebuild as rebuild_component
@@ -540,7 +541,11 @@ class BacktestRun:
         the run directory read from it, and the run's data fingerprint is
         set as the backtester's ``expected_fingerprint`` (and each fold's as
         ``expected_fold_fingerprints``), so a re-run warns when its data
-        differs, naming the fold.
+        differs, naming the fold. A train-mode run also sets its trained
+        unit's training record as ``expected_training_fingerprint``, so the
+        retrained unit is compared with the one the run used; not when an
+        override replaces ``model`` or ``model_mode``, since the unit then
+        describes another model.
 
         Parameters
         ----------
@@ -576,8 +581,24 @@ class BacktestRun:
                 f"{self.path}: the run's config has no field(s) {unknown}; "
                 f"known: {sorted(set(config) - {'name'})}"
             )
-        backtester = rebuild_component({**config, **overrides}, self._recipe_dir)
+        recipe = {**config, **overrides}
+        backtester = rebuild_component(recipe, self._recipe_dir)
         backtester.expected_fingerprint = self.data_fingerprint
+        retrains_same_model = config.get("model_mode") == "train" and not (
+            {"model", "model_mode"} & set(overrides)
+        )
+        if retrains_same_model and self._trained_run is not None:
+            try:
+                trained = self.trained_run()
+            except (FileNotFoundError, ValueError) as error:
+                # The retrain needs no earlier unit; only the comparison does.
+                logger.warning(
+                    f"{self.path}: the trained unit {self._trained_run} cannot be "
+                    f"opened ({error}); the retrained unit's training data is not "
+                    f"compared"
+                )
+            else:
+                backtester.expected_training_fingerprint = trained.data_fingerprint
         backtester.expected_fold_fingerprints = {
             fold.index: fold.data_fingerprint for fold in self.folds
         }

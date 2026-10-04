@@ -34,6 +34,7 @@ __all__ = [
     "PARTIAL_NOTE",
     "DataRecorder",
     "active_recorder",
+    "compare_records",
     "dataset_fingerprint",
     "record_read",
     "unrecorded",
@@ -398,56 +399,79 @@ class DataRecorder:
         if self.expected is not None:
             self._compare(partial=partial)
 
-    def _warn(self, key: str, request: dict | None, problem: str, tail: str) -> None:
-        """Log one mismatch warning."""
+    def _compare(self, *, partial: bool) -> None:
+        """Compare ``records`` with ``expected``; see ``compare_records``."""
+        compare_records(self.expected or {}, self.records, owner=self.owner, partial=partial)
+
+
+def compare_records(
+    expected: Mapping, actual: Mapping, *, owner: str, partial: bool = False
+) -> None:
+    """Compare two records by ``digest`` alone, logging one warning per difference.
+
+    The comparison a ``DataRecorder`` runs on close, for records kept apart
+    from a recorder: a trained unit's training reads against the unit it is
+    rebuilt from. Per key and request: a key or request on one side only, or
+    a differing digest, logs a warning showing the ranges and sizes as
+    explanation. Nothing is raised.
+
+    Parameters
+    ----------
+    expected, actual : mapping
+        ``DataRecorder.records`` of the earlier and of this run.
+    owner : str
+        The name that opens every warning.
+    partial : bool
+        The failure-path comparison: a key or request expected but not read
+        yet is skipped, since "not read yet" is not "not read", and every
+        warning ends with ``PARTIAL_NOTE`` instead of "continuing".
+
+    Examples
+    --------
+    ``used`` is the trained unit a run used and ``retrained`` the unit a
+    rebuild trained, both ``TrainedRun``; unchanged data logs nothing::
+
+        compare_records(used.data_fingerprint, retrained.data_fingerprint,
+                        owner="FirstFeatureHead training")
+    """
+    tail = PARTIAL_NOTE if partial else "continuing"
+
+    def warn(key: str, request: dict | None, problem: str) -> None:
         where = f"{key!r}" if request is None else (
             f"{key!r}, request {_describe_request(request)}"
         )
-        logger.warning(
-            f"{self.owner}: data fingerprint mismatch for {where}: {problem}; {tail}"
-        )
+        logger.warning(f"{owner}: data fingerprint mismatch for {where}: {problem}; {tail}")
 
-    def _compare(self, *, partial: bool) -> None:
-        """Compare ``records`` with ``expected`` by digest, warning per difference.
-
-        On the failure path (``partial``) a key or request expected but not
-        read yet is skipped, since "not read yet" is not "not read".
-        """
-        tail = PARTIAL_NOTE if partial else "continuing"
-        expected, actual = self.expected or {}, self.records
-        for key in list(dict.fromkeys([*expected, *actual])):
-            if key not in actual:
+    for key in list(dict.fromkeys([*expected, *actual])):
+        if key not in actual:
+            if not partial:
+                warn(key, None, "in the expected record but not read by this run")
+            continue
+        if key not in expected:
+            warn(key, None, "read by this run but absent from the expected record")
+            continue
+        wanted = {_request_id(e["request"]): e for e in expected[key]}
+        got = {_request_id(e["request"]): e for e in actual[key]}
+        for request_id in list(dict.fromkeys([*wanted, *got])):
+            if request_id not in got:
                 if not partial:
-                    self._warn(key, None, "in the expected record but not read by this run", tail)
-                continue
-            if key not in expected:
-                self._warn(key, None, "read by this run but absent from the expected record", tail)
-                continue
-            wanted = {_request_id(e["request"]): e for e in expected[key]}
-            got = {_request_id(e["request"]): e for e in actual[key]}
-            for request_id in list(dict.fromkeys([*wanted, *got])):
-                if request_id not in got:
-                    if not partial:
-                        entry = wanted[request_id]
-                        self._warn(
-                            key, entry["request"],
-                            f"in the expected record ({_extent(entry)}) but not "
-                            f"read by this run", tail,
-                        )
-                    continue
-                if request_id not in wanted:
-                    entry = got[request_id]
-                    self._warn(
+                    entry = wanted[request_id]
+                    warn(
                         key, entry["request"],
-                        f"read by this run ({_extent(entry)}) but absent from "
-                        f"the expected record", tail,
+                        f"in the expected record ({_extent(entry)}) but not read by this run",
                     )
-                    continue
-                old, new = wanted[request_id], got[request_id]
-                if old.get("digest") != new.get("digest"):
-                    self._warn(
-                        key, new["request"],
-                        f"digest differs (expected {_extent(old)}, got "
-                        f"{_extent(new)}). The data changed since the expected run",
-                        tail,
-                    )
+                continue
+            if request_id not in wanted:
+                entry = got[request_id]
+                warn(
+                    key, entry["request"],
+                    f"read by this run ({_extent(entry)}) but absent from the expected record",
+                )
+                continue
+            old, new = wanted[request_id], got[request_id]
+            if old.get("digest") != new.get("digest"):
+                warn(
+                    key, new["request"],
+                    f"digest differs (expected {_extent(old)}, got {_extent(new)}). "
+                    f"The data changed since the expected run",
+                )

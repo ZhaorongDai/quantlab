@@ -127,29 +127,22 @@ class SeedEnsemble(BaseEnsemble):
         """The seed of member ``k``, recorded in ``run.json``."""
         return self.seeds[k]
 
-    def collect(self) -> Self:
+    def _collect(self) -> None:
         """Collect the panel once and share it with every member.
 
-        The first member collects (see ``BaseModel.collect``); every other
-        member's ``data_backend`` becomes that same object.
-
-        Returns
-        -------
-        Self
-            The ensemble itself, for chaining.
+        The first member reads (see ``BaseModel._collect``); every other
+        member's ``data_backend`` becomes that same object, so the record
+        ``collect()`` writes holds one read.
 
         Examples
         --------
-        >>> ensemble.collect() is ensemble
-        True
-        >>> ensemble.members[1].data_backend is ensemble.members[0].data_backend
+        >>> ensemble.collect().members[1].data_backend is ensemble.members[0].data_backend
         True
         """
         first = self.members[0]
-        first.collect()
+        first._collect()
         for member in self.members[1:]:
             member.data_backend = first.data_backend
-        return self
 
     def _member_predictions(self, start, end) -> list[xr.Dataset]:
         """Request the features once and predict them with every member."""

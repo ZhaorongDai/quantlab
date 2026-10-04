@@ -3,7 +3,8 @@
 `train_cv` writes `{model_save_dir}/{Class}_trial_{timestamp}/`, a
 "walk_forward" trained unit: one "model" unit per fold in `fold_{i}/` and,
 last, `run.json` holding the run header (`format_version`, `kind`
-"walk_forward", `written_at`), `"folds": [...]` and `"cv_mean": {...}`. It returns that unit as a `TrainedRun`.
+"walk_forward", `written_at`), `"folds": [...]`, `"cv_mean": {...}` and
+`"data_fingerprint"`, what its `collect()` read. It returns that unit as a `TrainedRun`.
 
 Why the record exists: `run_cv` backtests every fold's out-of-sample segment,
 and it can only replay the folds a training run actually used if that
@@ -168,7 +169,9 @@ def test_sequential_ml_record_equals_returned_folds(tmp_path):
     cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
     record = _read_record(tmp_path / "ckpt")
-    assert set(record) == {"format_version", "kind", "written_at", "folds", "cv_mean"}
+    assert set(record) == {
+        "format_version", "kind", "written_at", "folds", "cv_mean", "data_fingerprint"
+    }
     assert record["format_version"] == FORMAT_VERSION and record["kind"] == "walk_forward"
     assert len(cv.folds) == N_FOLDS
     assert [
@@ -268,7 +271,8 @@ def test_empty_fold_list_still_writes_a_record(tmp_path, monkeypatch):
     record = _read_record(tmp_path / "ckpt")
     assert record.pop("written_at")
     assert record == {
-        "format_version": FORMAT_VERSION, "kind": "walk_forward", "folds": [], "cv_mean": {}
+        "format_version": FORMAT_VERSION, "kind": "walk_forward", "folds": [], "cv_mean": {},
+        "data_fingerprint": record["data_fingerprint"],
     }
 
 
