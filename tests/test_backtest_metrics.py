@@ -46,6 +46,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.backtest.engine_vectorbt as engine_module
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.backtest import SimulationResult
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
@@ -320,7 +321,7 @@ def test_overlapping_window_warns_naming_both_ranges_and_continues(
         (_day(BARS[window_start + 1]), backtest[1])
     ]
 
-    persisted = _strict_json(result.run_dir / "metrics.json")
+    persisted = BacktestRun.open(result.run_dir).metrics()
     assert persisted["in_sample_range"] == [backtest[0], backtest[0]]
     assert persisted["training_window"] == list(training)
 
@@ -362,7 +363,7 @@ def test_model_without_train_dates_warns_and_records_null(
         (_day(BARS[20]), _day(BARS[45]))
     ]
     assert any("train_start" in message for message in warnings_sink), warnings_sink
-    assert _strict_json(result.run_dir / "metrics.json")["training_window"] is None
+    assert BacktestRun.open(result.run_dir).metrics()["training_window"] is None
 
 
 # --------------------------------------------------------------------------
@@ -505,8 +506,8 @@ def test_slice_order_counts_partition_the_whole_run(tmp_path):
 
 
 def backtester_init_cash(result) -> float:
-    """The run's init_cash, read back from its persisted config."""
-    return float(_strict_json(result.run_dir / "config.json")["init_cash"])
+    """The run's init_cash, read back from its rebuilt backtester."""
+    return float(BacktestRun.open(result.run_dir).rebuild_backtester().config.init_cash)
 
 
 def test_turnover_is_one_for_a_full_entry_and_two_for_a_full_swap(tmp_path):
@@ -586,7 +587,7 @@ def test_metrics_blocks_have_the_d22_d34_keys(tmp_path):
         assert not any(isinstance(value, dict) for value in block.values())
 
     assert math.isnan(metrics["in_sample"]["Annualized Volatility [%]"])
-    persisted = _strict_json(result.run_dir / "metrics.json")
+    persisted = BacktestRun.open(result.run_dir).metrics()
     assert persisted["in_sample"]["Annualized Volatility [%]"] is None
     for key in turnover_keys:
         assert key in persisted["out_of_sample"], key

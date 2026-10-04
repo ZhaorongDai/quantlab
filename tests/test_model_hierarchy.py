@@ -22,7 +22,7 @@ What is locked here, and what turns it red:
 - the retired names stay retired (`hasattr`, not "no longer raises": a bypassed
   guard still answers `hasattr`), and `LibraryModel` references no `deepcopy`;
 - `load_model_from_config` rebuilds a trained model of either variant from
-  its `config.json` alone;
+  its trained unit's config (`TrainedRun.config`) alone;
 - `TorchModel.predict` accepts a float64 ndarray.
 
 Everything is synthetic, CPU-only and offline.
@@ -402,16 +402,14 @@ def _fit_kwargs(tmp_path):
     ],
     ids=["torch", "library"],
 )
-def test_a_trained_model_is_rebuilt_and_loaded_from_config_json_alone(
+def test_a_trained_model_is_rebuilt_and_loaded_from_its_config_alone(
     tmp_path, monkeypatch, cls, hyper
 ):
-    """Train, then rebuild from the written `config.json` with nothing else
-    and load the checkpoint beside it: the same predictions come back."""
-    import json
-
+    """Train, then rebuild from the trained unit's config (`TrainedRun.config`)
+    with nothing else and load its checkpoint: the same predictions come back."""
     model = cls(ModelConfig(**_fit_kwargs(tmp_path), hyperparameters=dict(hyper)))
     checkpoint = model.collect().train()
-    saved = json.loads((checkpoint.parent / "config.json").read_text())
+    saved = TrainedRun.open(checkpoint).config
     assert saved["hyperparameters"] == hyper
 
     rebuilt = module_utils.load_model_from_config(saved).load(checkpoint)
@@ -495,15 +493,11 @@ def test_torch_config_json_has_no_resolved_hyperparameters_key(tmp_path):
     )
     model = OneBarHead(cfg)
     model.collect()
-    model.train()
+    run = TrainedRun.open(model.train())
 
-    written = sorted((tmp_path / "ckpt").rglob("config.json"))
-    assert len(written) == 1
-    import json
-
-    assert "resolved_hyperparameters" not in json.loads(written[0].read_text())
+    assert "resolved_hyperparameters" not in run.config
     assert "resolved_hyperparameters" not in model.get_config()
-    assert TrainedRun.open(written[0].parent).resolved_hyperparameters is None
+    assert run.resolved_hyperparameters is None
 
 
 # --------------------------------------------------------------------------

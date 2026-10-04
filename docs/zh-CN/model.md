@@ -83,8 +83,8 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 (['f_a', 'f_b'], ['ret'], 20)
 >>> run.train_window, run.fitted_train_window, run.test_window
 (('2024-01-01', '2024-05-31'), ('2024-01-01', '2024-05-29T00:00:00'), ('2024-06-01', '2024-07-18'))
->>> run.config["name"]
-'quantlab.model.predefined.xgb.XGBoostRegressor'
+>>> sorted(run.trained_on)
+['factor_names', 'label_names', 'symbols']
 ```
 
 ### 清除标签前瞻
@@ -280,7 +280,7 @@ True
 >>> ranked_run = TrainedRun.open(ranked.train())
 >>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
 [(0.679, 0.003), (0.674, 0.439)]
->>> ranked_run.config["hyperparameters"]["training_target"], "training_target" in ranked_run.resolved_hyperparameters
+>>> ranked.config.hyperparameters["training_target"], "training_target" in ranked_run.resolved_hyperparameters
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
 Traceback (most recent call last):
@@ -925,7 +925,7 @@ NullTracker(project=None)
 True
 >>> sorted(k for k in run.data.metrics if k.startswith("importance_gain/"))
 ['importance_gain/f_a', 'importance_gain/f_b']
->>> TrainedRun.open(checkpoint).config["tracker"]["name"]
+>>> tracked.config.tracker.import_path
 'quantlab.tracking.mlflow.MlflowTracker'
 ```
 
@@ -994,7 +994,7 @@ MLflow 3 打开本地 `file:` 存储时要求设置 `MLFLOW_ALLOW_FILE_STORE=tru
 
 `TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/predefined/gats.py` 和 `quantlab/model/predefined/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
-新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测的 `config.json` 才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（集成 `run.json` 里为第 k 个成员记录的种子）。`ModelEnsemble` 是最小的完整示例。
+新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测运行的配方才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（集成 `run.json` 里为第 k 个成员记录的种子）。`ModelEnsemble` 是最小的完整示例。
 
 ## 注意事项
 

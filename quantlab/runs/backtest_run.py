@@ -73,6 +73,8 @@ _METRICS_FILE = "metrics.json"
 _SETTLEMENTS_FILE = "settlements.json"
 _REPORT_FILE = "report.html"
 _FOLDS_DIR = "folds"
+_INPUTS_DIR = "inputs"
+_PREDICTIONS_FILE = "predictions.zarr"
 
 
 @dataclass(frozen=True)
@@ -189,7 +191,7 @@ def write_backtest_run(
         )
         _write_simulation(staging, weights, equity, settlements, metrics)
         if predictions is not None:
-            predictions.write(staging / PredictionPanel.FILE_NAME)
+            predictions.write(staging / _PREDICTIONS_FILE)
         write_report(staging / _REPORT_FILE)
         children = []
         for fold in folds:
@@ -238,7 +240,7 @@ def _recipe(backtester: Any, directory: Path) -> dict:
         if id(item) in asked or not hasattr(item, "persist_with_run"):
             continue
         asked.add(id(item))
-        config = item.persist_with_run(directory, path)
+        config = item.persist_with_run(directory, f"{_INPUTS_DIR}/{path}.zarr")
         if config is not None:
             recorded[id(item)] = config
     with recorded_configs(recorded):
@@ -516,7 +518,7 @@ class BacktestRun:
         >>> [spec.name for spec in BacktestRun.open(run_dir).predictions().labels]
         ['fwd_ret_1']
         """
-        path = self.path / PredictionPanel.FILE_NAME
+        path = self.path / _PREDICTIONS_FILE
         return PredictionPanel.read(path) if path.exists() else None
 
     def metrics(self) -> dict:
@@ -538,6 +540,32 @@ class BacktestRun:
         []
         """
         return json.loads((self.path / _SETTLEMENTS_FILE).read_text(encoding="utf-8"))
+
+    def report(self) -> str:
+        """The run's self-contained HTML report, as text.
+
+        Examples
+        --------
+        >>> "<html" in BacktestRun.open(run_dir).report()
+        True
+        """
+        return (self.path / _REPORT_FILE).read_text(encoding="utf-8")
+
+    def log_report(self, tracking_run: Any) -> None:
+        """Attach the run's HTML report to ``tracking_run`` (its ``log_file``).
+
+        Parameters
+        ----------
+        tracking_run : quantlab.base.tracking.TrackingRun
+            The open tracking run of the backtest.
+
+        Examples
+        --------
+        A backtester attaches its report to the tracking run it opened::
+
+            BacktestRun.open(result.run_dir).log_report(tracking_run)
+        """
+        tracking_run.log_file(self.path / _REPORT_FILE)
 
     def trained_run(self) -> TrainedRun | None:
         """The trained unit the backtest used, or None for a ``run_weights`` run.

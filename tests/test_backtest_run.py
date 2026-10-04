@@ -19,8 +19,11 @@ What is locked, and what turns it red:
   recomputed here straight from the Zarr store -- reversed ranking or a
   raw-vs-adjusted column mix-up (D-04) changes them;
 - the first order fills on window bar 1 at that bar's adjusted open (D-05);
-- metrics.json is strict JSON with no benchmark row (D-08), and config.json
-  names the backtester, model and price dataset by dotted path.
+- the run's metrics carry no benchmark row (D-08), and its recipe rebuilds
+  the backtester, model and price dataset classes it ran with. Results are
+  read through `BacktestRun`; file names appear only in the directory listing,
+  which is the subject of that check (strict JSON is locked in
+  tests/test_backtest_persistence.py).
 
 What this tracer does NOT lock (mutation-verified to stay green here, owned by
 later plans):
@@ -36,9 +39,6 @@ later plans):
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -47,6 +47,7 @@ import xarray as xr
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -65,13 +66,6 @@ INIT_CASH = 1_000_000.0
 
 def _day(ts) -> str:
     return pd.Timestamp(ts).strftime("%Y-%m-%d")
-
-
-def _strict_json(path: Path) -> dict:
-    def _reject(token):
-        raise ValueError(f"non-standard JSON constant {token!r} in {path}")
-
-    return json.loads(path.read_text(), parse_constant=_reject)
 
 
 def test_run_load_mode_end_to_end_long_only(tmp_path):
@@ -175,19 +169,15 @@ def test_run_load_mode_end_to_end_long_only(tmp_path):
     value = result.simulation.value
     assert value.sizes["timestamp"] == n_window
     assert float(value.values[0]) == pytest.approx(INIT_CASH)
-    persisted_equity = xr.open_zarr(result.run_dir / "equity.zarr")
-    assert persisted_equity["value"].sizes["timestamp"] == n_window
+    run = BacktestRun.open(result.run_dir)
+    assert run.equity()["value"].sizes["timestamp"] == n_window
 
-    # --- metrics.json (D-08, Pitfall 10) ------------------------------------
-    metrics = _strict_json(result.run_dir / "metrics.json")
+    # --- metrics (D-08, Pitfall 10) ------------------------------------------
+    metrics = run.metrics()
     assert "Total Return [%]" in metrics["whole"]
     assert "Benchmark Return [%]" not in metrics["whole"]
 
-    # --- config.json ---------------------------------------------------------
-    config = _strict_json(result.run_dir / "config.json")
-    assert (
-        config["name"]
-        == "quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt"
-    )
-    assert config["model"]["name"] == "tests.backtest_fixtures.FirstFeatureHead"
-    assert config["price_dataset"]["name"].endswith("StockDataset")
+    # --- the recipe ----------------------------------------------------------
+    assert type(run.rebuild_backtester()) is USEquityCrossectionSelectStockVectorBt
+    assert type(run.rebuild("model")).__qualname__ == "FirstFeatureHead"
+    assert type(run.rebuild("price_dataset")).__name__ == "StockDataset"

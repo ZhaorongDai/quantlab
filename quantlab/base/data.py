@@ -921,14 +921,14 @@ class BaseDataset(Component, ABC):
         run_dir = None if run_dir is None else Path(run_dir)
         return super().from_config(cls.resolve_run_config(config, run_dir), run_dir)
 
-    def persist_with_run(self, run_dir: Path, name: str) -> dict | None:
+    def persist_with_run(self, run_dir: Path, store: str) -> dict | None:
         """Write what a backtest run directory needs to rebuild this dataset.
 
         A backtest run directory is written calling this once per dataset
-        found anywhere in the backtester's component tree, with ``name`` the
-        dataset's component path (``"price_dataset"``,
-        ``"model.factors.0.dataset"``); a dataset found again is not asked
-        again. The return value is the config ``config.json``
+        found anywhere in the backtester's component tree, with ``store`` the
+        path, relative to ``run_dir``, where the run keeps a copy of it
+        (named by the dataset's component path); a dataset found again is
+        not asked again. The return value is the config ``config.json``
         records for the dataset, or ``None`` to record ``get_config()`` as it
         is. A dataset read from a project store needs nothing written: the
         store outlives the run, so the default writes nothing and returns
@@ -939,8 +939,8 @@ class BaseDataset(Component, ABC):
         ----------
         run_dir : Path
             The run directory being written.
-        name : str
-            The dataset's component path in the backtester.
+        store : str
+            Where the run would keep a copy, relative to ``run_dir``.
 
         Returns
         -------
@@ -959,7 +959,7 @@ class BaseDataset(Component, ABC):
         ...     market="us_equity", frequency="1d", vendor="tiingo",
         ... ))
         >>> run_dir = Path(tempfile.mkdtemp())
-        >>> ds.persist_with_run(run_dir, "price_dataset") is None
+        >>> ds.persist_with_run(run_dir, "copies/prices.zarr") is None
         True
         >>> list(run_dir.iterdir())
         []

@@ -7,6 +7,8 @@ equivalent Zarr store give the same equity, orders and metrics, and `scores` + `
 equals selecting with `TopNConstructor` first and backtesting the weights. The
 weight-frame rules (long or wide, a symbol missing on a given bar is 0, a bar missing
 entirely is a hold) are tested here too, since the conversion has no tests of its own.
+A kept run is read through `BacktestRun`; its file names appear only in the directory
+listing (`RUN_DIR_ARTIFACTS`), whose subject is the layout.
 
 Everything is synthetic, CPU-only and offline.
 """

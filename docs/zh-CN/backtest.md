@@ -131,7 +131,7 @@ def train_cv_project(model, train_periods):
 第一个会话先训练一个 checkpoint，然后回测一条规则：持有分数最高的两个标的，每五根 bar 调仓一次。日志输出到 stderr，这里没有显示。
 
 ```python
->>> import dataclasses, json, tempfile
+>>> import dataclasses, tempfile
 >>> from pathlib import Path
 >>> import pandas as pd
 >>> import xarray as xr
@@ -155,11 +155,13 @@ def train_cv_project(model, train_periods):
 ...     constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
 ... ))
 >>> result = backtester.run()
->>> sorted(p.name for p in result.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
+>>> from quantlab.runs.backtest_run import BacktestRun
+>>> run = BacktestRun.open(result.run_dir)
+>>> run.kind, run.window, run.rebalance_periods
+('run', ('2024-02-12', '2024-03-22'), 5)
 ```
 
-运行目录位于 `output_dir` 之下，返回的结果里有预测、权重、模拟结果和指标。
+运行目录位于 `output_dir` 之下，通过 `BacktestRun` 读回（见[运行目录](#运行目录)）；返回的结果里有预测、权重、模拟结果和指标。
 
 ### 目标权重契约
 
@@ -196,7 +198,7 @@ order
 52.82443690819098
 ```
 
-手续费和滑点（`fees` 与 `slippage`，默认都是 0.0005）按每笔成交额的比例收取。`sizing_basis` 决定目标百分比按哪个价格换算成股数。默认的 `"fill"` 以其执行那根 bar 的成交价所对应的组合价值为基数，股数等于该价值乘以权重再除以成交价。`"valuation"` 则以信号 bar t 的估值价（t 的收盘价）计算组合价值并以该价格换算股数，与收盘后下单时券商侧的计算一致；订单仍在 t + 1 的成交价成交。例：持有 500 现金和 50 股、收盘 15、次日开盘 16 的组合要把该股调到 84%，成交价基数买入 0.84 x 1300 / 16 - 50 = 18.25 股，估值价基数买入 0.84 x 1250 / 15 - 50 = 20 股（`tests/test_backtest_sizing_basis.py`）。所用基数记录在 `config.json` 中。
+手续费和滑点（`fees` 与 `slippage`，默认都是 0.0005）按每笔成交额的比例收取。`sizing_basis` 决定目标百分比按哪个价格换算成股数。默认的 `"fill"` 以其执行那根 bar 的成交价所对应的组合价值为基数，股数等于该价值乘以权重再除以成交价。`"valuation"` 则以信号 bar t 的估值价（t 的收盘价）计算组合价值并以该价格换算股数，与收盘后下单时券商侧的计算一致；订单仍在 t + 1 的成交价成交。例：持有 500 现金和 50 股、收盘 15、次日开盘 16 的组合要把该股调到 84%，成交价基数买入 0.84 x 1300 / 16 - 50 = 18.25 股，估值价基数买入 0.84 x 1250 / 15 - 50 = 20 股（`tests/test_backtest_sizing_basis.py`）。所用基数是配置的一部分，可从运行的 `BacktestRun(...).execution` 读回。
 
 ### 标签延迟与成交延迟
 
@@ -264,25 +266,44 @@ out_of_sample -5.61 -4.27 13
 
 ### 运行目录
 
-每次运行在 `output_dir` 下写一个新目录 `{ClassName}_{timestamp}`。文件先写入一个隐藏的暂存目录，全部写完后才改名，所以 `output_dir` 里只会有完整的运行。`output_dir=None` 时什么都不写（见[只在内存中运行](#只在内存中运行)）。
+每次运行在 `output_dir` 下写一个新目录 `{ClassName}_{timestamp}`。文件先写入一个隐藏的暂存目录，全部写完后才改名，记录文件 `run.json` 最后写入，所以 `output_dir` 里只会有完整的运行。`output_dir=None` 时什么都不写（见[只在内存中运行](#只在内存中运行)）。
 
-| 文件 | 内容 |
+运行目录通过 `BacktestRun`（`quantlab.runs.backtest_run`）读取，或者通过 `quantlab.runs.directory.open_run`：它能打开任何运行目录（包括训练单元）并返回对应的类型。只有运行层知道文件名；读取方向运行对象要它保存的内容：
+
+| `BacktestRun` | 内容 |
 | --- | --- |
-| `config.json` | 配置，嵌套着价格数据集和模型，以及数据指纹。其中的 `market` 块写明市场的 `fill_price_column` 和 `valuation_price_column`，读取运行目录的工具不必导入回测器类就能知道这两列；重建时丢弃该块，两列仍由类本身给出。 |
-| `weights.zarr` | `(timestamp, symbol)` 上的目标权重。 |
-| `equity.zarr` | `timestamp` 上的组合 `value` 与每根 bar 的 `returns`。 |
-| `metrics.json` | 与 `result.metrics` 相同的映射；NaN 和无穷大写成 null。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
-| `settlements.json` | 退市结算记录。 |
-| `predictions.zarr` | 仅带模型的运行（`run()`、`run_cv()`）才有：组合构建规则读到的预测（在价格坐标轴上）及其标签规格，格式为 `PredictionPanel`；`DecisionInputs.from_run(run_dir)` 凭它和 `config.json` 在不加载模型的情况下重建该运行的决策输入，包括已绑定的规则（见[组合构建](portfolio.md#不加载模型重建一次运行的决策输入)）。`run_weights()` 的运行不写。 |
-| `fingerprint.json` | 本次运行读取的价格数据和因子数据的摘要。 |
-| `report.html` | 关键指标、分组的指标表，以及业绩、超额收益、滚动一年统计和组合结构的图表标签页（见[报告页面](#报告页面)）。 |
-| `inputs/` | 仅当价格或基准数据集是保存在内存中的 `FrameDataset` 时写出：它的面板存为 `price_dataset.zarr` 或 `benchmark_dataset.zarr`，`config.json` 以相对运行目录的路径指向它（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。 |
+| `kind`、`window` | `"run"`、`"run_cv"`、`"run_weights"`，`run_cv()` 运行的一折则是 `"fold"`；模拟的第一根和最后一根 bar。 |
+| `market` | 回测器类的 `fill_price_column` 和 `valuation_price_column`，读取运行的工具不必导入该类就能知道这两列。 |
+| `execution`、`rebalance_periods` | 来自运行配置的 `ExecutionSettings`（`sizing_basis`、`fees`、`slippage`）与调仓间隔 bar 数。 |
+| `data_fingerprint` | 本次运行读取的每个数据集的摘要和范围：价格、每个因子的输入、基准，train 模式下还有训练数据。 |
+| `trained_run()` | 回测所用的训练单元，即一个 `TrainedRun`：train 模式下是训练出的单元，load 模式下是 checkpoint 所在的单元，`run_cv()` 是 walk-forward 单元，一折则是该折自己的单元；`run_weights()` 为 `None`。 |
+| `weights()`、`equity()` | `(timestamp, symbol)` 上的目标权重；`timestamp` 上的组合 `value` 与每根 bar 的 `returns`，跑了基准时另有 `benchmark_value` 和 `benchmark_returns`。 |
+| `metrics()` | 与 `result.metrics` 相同的映射，按 JSON 保存的形式：NaN 和无穷大变为 `None`，元组变为列表。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
+| `settlements()` | 退市结算记录。 |
+| `predictions()` | 仅带模型的运行（`run()`、`run_cv()`）才有：组合构建规则读到的预测（在价格坐标轴上）及其标签规格，格式为 `PredictionPanel`；`DecisionInputs.from_run(run_dir)` 凭它在不加载模型的情况下重建该运行的决策输入，包括已绑定的规则（见[组合构建](portfolio.md#不加载模型重建一次运行的决策输入)）。`run_weights()` 的运行为 `None`。 |
+| `folds` | `run_cv()` 运行的各折，每折是一个 kind 为 `"fold"` 的 `BacktestRun`。 |
+| `rebuild(field)`、`rebuild_backtester(**overrides)` | 某个配置字段持有的组件，以及回测器本身（见[重建一次运行](#重建一次运行)）。 |
+
+运行的配置（重建时读取的配方）只保存回测器的 `get_config()`；运行的记录（市场、指纹、训练单元）都在 `run.json` 里。保存在内存中的数据集（`FrameDataset`）没有自己的 store，所以运行会保存一份它的面板副本，按数据集的组件路径命名（`price_dataset`、`model.factors.0.dataset`），同一个对象无论被多少个字段持有都只写一次，配方以相对运行目录的路径指向这份副本（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。`report.html` 包含关键指标、分组的指标表，以及业绩、超额收益、滚动一年统计和组合结构的图表标签页（见[报告页面](#报告页面)）。用别的格式版本写出、或者缺少 `run.json` 的运行目录会被拒绝，并提示重新运行。
+
+```python
+>>> run.market
+Market(fill_price_column='adjOpen', valuation_price_column='adjClose')
+>>> run.execution
+ExecutionSettings(sizing_basis='fill', fees=0.0005, slippage=0.0005)
+>>> sorted(run.data_fingerprint), run.trained_run().kind
+(['factor[0]:PastReturn', 'price_dataset'], 'model')
+>>> sorted(run.metrics()) == sorted(result.metrics), run.metrics()["out_of_sample_ranges"]
+(True, [['2024-02-26', '2024-03-22']])
+>>> [spec.name for spec in run.predictions().labels], sorted(run.equity().data_vars)
+(['open_ret_1'], ['returns', 'value'])
+```
 
 ## 常见任务
 
 ### 在回测中训练模型
 
-`model_mode="train"` 时，模型先按自己配置的日期训练，不需要 `checkpoint`。回测窗口不会改变训练日期。本次运行写出的 checkpoint 记录在 `metrics["trained_checkpoint"]` 中。这个会话同时换成了每侧一个标的的多空组合。
+`model_mode="train"` 时，模型先按自己配置的日期训练，不需要 `checkpoint`。回测窗口不会改变训练日期。本次运行写出的 checkpoint 记录在 `metrics["trained_checkpoint"]` 中，它所在的单元就是运行的 `trained_run()`。这个会话同时换成了每侧一个标的的多空组合。
 
 ```python
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
@@ -292,6 +313,8 @@ out_of_sample -5.61 -4.27 13
 ... )).run()
 >>> Path(trained.metrics["trained_checkpoint"]).name
 'MomentumHead_total.joblib'
+>>> BacktestRun.open(trained.run_dir).trained_run().checkpoint == Path(trained.metrics["trained_checkpoint"])
+True
 >>> trained.weights["weight"].to_pandas().iloc[0]
 symbol
 AAA    0.0
@@ -327,11 +350,15 @@ Name: 2024-02-12 00:00:00, dtype: float64
 >>> cv = USEquityCrossectionSelectStockVectorBt(cv_config).run_cv()
 >>> len(cv.folds), dict(cv.weights.sizes), sorted(cv.metrics)
 (8, {'timestamp': 48, 'symbol': 6}, ['folds', 'notes', 'stitched'])
->>> sorted(p.name for p in (cv.run_dir / "folds").iterdir())[:2]
-['fold_0', 'fold_1']
+>>> cv_run = BacktestRun.open(cv.run_dir)
+>>> cv_run.kind, [fold.index for fold in cv_run.folds][:2], cv_run.trained_run() == walk
+('run_cv', [0, 1], True)
+>>> first_fold = cv_run.folds[0]
+>>> first_fold.kind, first_fold.window, first_fold.trained_run().path == walk.folds[0].path
+('fold', ('2024-02-12', '2024-02-19'), True)
 ```
 
-运行目录顶层的文件描述的是拼接后的曲线（其中 `predictions.zarr` 是各折预测的拼接），`folds/fold_{i}/` 存放每一折自己的权重和净值。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗之后实际拟合的窗口记入该折的 `run.json`。一折的样本内窗口结束于拟合窗口终点之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
+运行描述的是拼接后的曲线：它的权重、净值曲线、结算和指标都来自拼接过程，预测面板是各折预测的拼接。每一折是一个 kind 为 `"fold"` 的子运行，在 `cv_run.folds` 中，有自己的权重、净值曲线、结算、指标以及该折的训练单元。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗之后实际拟合的窗口记入该折的 `run.json`。一折的样本内窗口结束于拟合窗口终点之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
 
 ```python
 >>> stitched = cv.metrics["stitched"]
@@ -353,8 +380,9 @@ Name: 2024-02-12 00:00:00, dtype: float64
 (['execution', 'notes', 'whole'], True)
 >>> replay.metrics["whole"] == result.metrics["whole"]
 True
->>> sorted(p.name for p in replay.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+>>> replay_run = BacktestRun.open(replay.run_dir)
+>>> replay_run.kind, replay_run.trained_run(), replay_run.predictions()
+('run_weights', None, None)
 ```
 
 `run()` 和 `run_cv()` 仍然需要模型：
@@ -446,7 +474,7 @@ config = CrossSectionBacktestConfig(
 )
 ```
 
-包装器满足 `Predictor` 协议。它的 `predict_window` 在该 bar 日期的 `is_member` 为假时把预测置为 NaN（成分面板中没有的标的视为非成分股），其余成员全部转发给模型，因此适用于训练与加载两种模式、`run_cv()` 以及 ensemble。被剔除出指数的股票保留价格，因此仍可交易，也不会被当作退市结算：它的预测变为 NaN，持仓如何处理由规则决定（`TopNConstructor` 在下一个调仓 bar 卖出，`MeanVarianceOptimizer` 按预期收益 0 持有）。`predictions.zarr` 保存遮蔽后的预测，窗口内的成分面板以 `membership` 为键记入指纹，`load_backtester_from_config` 会连同成分数据集一起重建包装器。成分面板未覆盖的 bar 日期会抛出 `ValueError`，因为成分未知不等于“非成分股”。
+包装器满足 `Predictor` 协议。它的 `predict_window` 在该 bar 日期的 `is_member` 为假时把预测置为 NaN（成分面板中没有的标的视为非成分股），其余成员全部转发给模型，因此适用于训练与加载两种模式、`run_cv()` 以及 ensemble。被剔除出指数的股票保留价格，因此仍可交易，也不会被当作退市结算：它的预测变为 NaN，持仓如何处理由规则决定（`TopNConstructor` 在下一个调仓 bar 卖出，`MeanVarianceOptimizer` 按预期收益 0 持有）。运行的预测面板保存遮蔽后的预测，窗口内的成分面板以 `membership` 为键记入指纹，`rebuild_backtester()` 会连同成分数据集一起重建包装器。成分面板未覆盖的 bar 日期会抛出 `ValueError`，因为成分未知不等于“非成分股”。
 
 反过来用成分遮蔽价格（价格面板 `.where(is_member)`）会让被剔除的股票在第一个非成分 bar 变得不可交易，并以最后一个成分日的收盘价结算，而实盘中这笔卖出从未发生。
 
@@ -474,7 +502,7 @@ config = CrossSectionBacktestConfig(
 - `benchmark`：基准的 `symbol` 及其自身的收益统计（总收益、年化收益、波动率、Sharpe、最大回撤等）；
 - `relative`：组合相对基准的表现，命名沿用 vectorbt 的风格，所有带 `[%]` 的行都是百分数。*相对净值* = 组合净值 / 基准净值。`Excess Return [%]` 是期末相对净值减 1（即通常所说的超额收益 alpha），`Annualized Excess Return [%]` 为其年化值，`Excess Max Drawdown [%]` 是相对净值从其历史高点的最大回落（*超额回撤*，为负数或 0），另有 `Strategy Total Return [%]`、`Benchmark Total Return [%]`、`Total Return Difference [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`（年化回归截距）和 `Win Rate vs Benchmark [%]`（收益高于基准的 bar 所占比例）、`Rebalance Win Rate vs Benchmark [%]`（复利收益跑赢基准的持有期所占比例，持有期从一个有成交的 bar 到下一个有成交的 bar 之前）和 `Monthly Win Rate vs Benchmark [%]`（按自然月计算的同一比例）。策略自己的各分段还有 `Rebalance Win Rate [%]` 和 `Monthly Win Rate [%]`，即收益为正的比例，有没有基准都会计算。
 
-`report.html` 在 Performance 标签页上把基准（灰色虚线）画在组合旁边（净值、回撤、月度收益），基准出现在 "Strategy vs" 表的第二列，并增加 "Relative to" 表和 Excess 标签页；Rolling 标签页改为超额收益、信息比率和 beta（见[报告页面](#报告页面)）。`equity.zarr` 额外保存 `benchmark_value` 和 `benchmark_returns`，`fingerprint.json` 在 `benchmark_dataset` 下记录基准数据指纹，`config.json` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
+`report.html` 在 Performance 标签页上把基准（灰色虚线）画在组合旁边（净值、回撤、月度收益），基准出现在 "Strategy vs" 表的第二列，并增加 "Relative to" 表和 Excess 标签页；Rolling 标签页改为超额收益、信息比率和 beta（见[报告页面](#报告页面)）。运行的 `equity()` 额外包含 `benchmark_value` 和 `benchmark_returns`，它的 `data_fingerprint` 在 `benchmark_dataset` 下记录基准数据指纹，`rebuild_backtester()` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
 
 ### 报告页面
 
@@ -488,7 +516,7 @@ config = CrossSectionBacktestConfig(
 
 ### 追踪一次回测
 
-回测通过配置里的 `tracker` 追踪，与模型相同（见模型指南的“实验追踪”）。默认的 `NullTracker()` 什么都不发送。`run()`、`run_cv()` 和 `run_weights()` 每次打开一个 run：项目是 `<类名>_backtest`（tracker 设置了 `project` 时用它），run 名就是运行目录名，并带上回测的配置。摘要里是 `whole`、`in_sample` 和 `out_of_sample` 三个块，键名形如 `whole/<metric>`；跑了基准时另有 `benchmark` 和 `relative`；`run_cv()` 记录的是拼接后的指标。在 MLflow 上，键名里它不接受的字符会换成 `_`，所以 `whole/Total Return [%]` 记为 `whole/Total Return ___`。有运行目录时，`report.html` 作为附件上传；只在内存中运行的回测照样追踪，只是没有报告。run 在回测开始前打开，所以抛错的回测会被记为失败。`model_mode="train"` 时，模型训练走模型配置自己的 tracker。tracker 会写进 `config.json`，由 `load_backtester_from_config` 重建。
+回测通过配置里的 `tracker` 追踪，与模型相同（见模型指南的“实验追踪”）。默认的 `NullTracker()` 什么都不发送。`run()`、`run_cv()` 和 `run_weights()` 每次打开一个 run：项目是 `<类名>_backtest`（tracker 设置了 `project` 时用它），run 名就是运行目录名，并带上回测的配置以及运行的 `market` 和 `data_fingerprint`。摘要里是 `whole`、`in_sample` 和 `out_of_sample` 三个块，键名形如 `whole/<metric>`；跑了基准时另有 `benchmark` 和 `relative`；`run_cv()` 记录的是拼接后的指标。在 MLflow 上，键名里它不接受的字符会换成 `_`，所以 `whole/Total Return [%]` 记为 `whole/Total Return ___`。有运行目录时，`report.html` 作为附件上传；只在内存中运行的回测照样追踪，只是没有报告。run 在回测开始前打开，所以抛错的回测会被记为失败。`model_mode="train"` 时，模型训练走模型配置自己的 tracker。tracker 是运行配置的一部分，用 `rebuild("tracker")` 重建。
 
 ```python
 >>> backtester.config.tracker
@@ -497,67 +525,72 @@ NullTracker(project=None)
 >>> tracked = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, tracker=WandbTracker(project="momentum_backtests", mode="offline")
 ... )).run()
->>> json.loads((tracked.run_dir / "config.json").read_text())["tracker"]
-{'project': 'momentum_backtests', 'entity': None, 'mode': 'offline', 'name': 'quantlab.tracking.wandb.WandbTracker'}
+>>> BacktestRun.open(tracked.run_dir).rebuild("tracker")
+WandbTracker(project='momentum_backtests', entity=None, mode='offline')
 ```
 
 `mode="offline"` 时，这个 run 写在 `wandb/`（或 `WANDB_DIR`）下，属于项目 `momentum_backtests`，名为 `USEquityCrossectionSelectStockVectorBt_<timestamp>`；摘要里有 `whole/Total Return [%]` 等指标，报告是名为 `report` 的 HTML 面板。
 
-### 从配置重建一次运行
+### 重建一次运行
 
-`config.json` 用点分导入路径记录每个类，所以 `load_backtester_from_config` 能重建出相同的回测器，包括它的价格数据集和模型，`run()` 会把这次回测重做一遍，写入新目录。如果自原始运行以来数据发生了变化，重建的运行会对每个变化的数据集记录一条警告并继续。
+运行的配置用点分导入路径记录每个类，所以 `rebuild_backtester()` 能重建出相同的回测器，包括它的价格数据集和模型，`run()` 会把这次回测重做一遍，写入新目录。运行的数据指纹成为重建后回测器的 `expected_fingerprint`：如果自原始运行以来数据发生了变化，重建的运行会对每个变化的数据集记录一条警告并继续。`rebuild(field)` 单独重建一个组件字段。
 
 ```python
->>> from quantlab.utils.module import load_backtester_from_config
->>> config = json.loads((result.run_dir / "config.json").read_text())
->>> config["name"], config["constructor"]
-('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', {'direction': 'long_only', 'top_n': 2, 'score_label': None, 'name': 'quantlab.portfolio.predefined.top_n.TopNConstructor'})
->>> again = load_backtester_from_config(config).run()
->>> again.metrics["whole"] == result.metrics["whole"]
-True
->>> again.run_dir == result.run_dir
-False
+>>> run = BacktestRun.open(result.run_dir)
+>>> run.rebuild("constructor")
+TopNConstructor(direction='long_only', top_n=2, score_label=None)
+>>> again = run.rebuild_backtester().run()
+>>> again.metrics["whole"] == result.metrics["whole"], again.run_dir == result.run_dir
+(True, False)
 ```
 
-这些类必须能按点分路径导入。定义在脚本里的类名为 `__main__.X`，换一个进程就找不到，所以数据集、因子、模型和回测器应放在模块里。train 模式写出的配置在重建时会重新训练；要重放同一个模型，请把 `model_mode` 设为 `"load"`，并把 `checkpoint` 设为记录下来的 `trained_checkpoint`。
+关键字参数按名字替换配置字段（组件字段传对象，其余传普通值），这样就能把记录下来的运行改成变体重跑；不是配置字段的名字会被拒绝：
+
+```python
+>>> run.rebuild_backtester(rebalance_periods=10).config.rebalance_periods
+10
+>>> run.rebuild_backtester(rebalance=10)
+Traceback (most recent call last):
+  ...
+ValueError: ...: the run's config has no field(s) ['rebalance']; known: ['benchmark_dataset', 'checkpoint', 'constructor', 'cv_project_dir', 'end_date', 'fees', 'init_cash', 'model', 'model_mode', 'output_dir', 'price_dataset', 'rebalance_periods', 'sizing_basis', 'slippage', 'start_date', 'tracker']
+```
+
+这些类必须能按点分路径导入。定义在脚本里的类名为 `__main__.X`，换一个进程就找不到，所以数据集、因子、模型和回测器应放在模块里。train 模式的运行原样重建时会重新训练；要重放同一个模型，加载它训练出的单元：
+
+```python
+>>> trained_run = BacktestRun.open(trained.run_dir)
+>>> replayed_train = trained_run.rebuild_backtester(
+...     model_mode="load", checkpoint=str(trained_run.trained_run().checkpoint)
+... ).run()
+>>> bool((replayed_train.weights["weight"].fillna(0) == trained.weights["weight"].fillna(0)).all())
+True
+```
 
 ### 重建一次给定权重的运行
 
-`run_weights()` 的运行没有模型可以重新预测权重，所以要用它保存下来的权重重放：用 `XrBackend().read(path).data` 读取运行目录里的 `weights.zarr`，把这个面板传给 `run_weights()`。当价格或基准数据集是 `FrameDataset` 时（每次 `quantlab.api.backtest` 运行，以及上面的 `WeightsVectorBt` 会话），它的面板没有自己的 store，因此由数据集自己（它的 `persist_with_run`）把面板写到 `inputs/` 下，`config.json` 以相对运行目录的路径指向这个 store。把读取配置所在的目录作为 `run_dir` 传入；运行目录可以移动。从项目 store 读取的数据集什么都不写，路径保持不变。接着 `WeightsVectorBt` 的会话：
+`run_weights()` 的运行没有模型可以重新预测权重，所以要用它保存下来的权重重放：把运行的 `weights()` 传给 `run_weights()`。当数据集是 `FrameDataset` 时（每次 `quantlab.api.backtest` 运行，以及上面的 `WeightsVectorBt` 会话），它的面板没有自己的 store，所以运行保存一份副本（数据集的 `persist_with_run`），配方以相对运行目录的路径指向它，因此运行目录是自包含的，可以移动；重建时副本按运行目录解析，永远不按当前工作目录解析。从项目 store 读取的数据集什么都不写，路径保持不变。接着 `WeightsVectorBt` 的会话：
 
 ```python
->>> import dataclasses, json, shutil, tempfile
->>> from pathlib import Path
->>> from quantlab.backend import XrBackend
->>> from quantlab.utils.module import load_backtester_from_config
+>>> import dataclasses, shutil, tempfile
+>>> from quantlab.runs.backtest_run import BacktestRun
 >>> kept = WeightsVectorBt(
 ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
 ... ).run_weights(weights)
->>> sorted(p.name for p in kept.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
->>> config = json.loads((kept.run_dir / "config.json").read_text())
->>> config["price_dataset"]["zarr_file_path"]
-'inputs/price_dataset.zarr'
->>> run_dir = Path(shutil.move(kept.run_dir, tempfile.mkdtemp()))
->>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
->>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+>>> kept_run = BacktestRun.open(kept.run_dir)
+>>> kept_run.kind, type(kept_run.rebuild("price_dataset")).__name__
+('run_weights', 'FrameDataset')
+>>> moved = BacktestRun.open(shutil.move(kept.run_dir, tempfile.mkdtemp()))
+>>> rebuilt = moved.rebuild_backtester()
+>>> replay = rebuilt.run_weights(moved.weights())
 >>> replay.simulation.value.values.round(2).tolist()
 [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
->>> json.loads((replay.run_dir / "metrics.json").read_text()) == json.loads(
-...     (run_dir / "metrics.json").read_text())
+>>> BacktestRun.open(replay.run_dir).metrics() == moved.metrics()
 True
->>> json.loads((replay.run_dir / "fingerprint.json").read_text()) == rebuilt.expected_fingerprint
+>>> BacktestRun.open(replay.run_dir).data_fingerprint == rebuilt.expected_fingerprint
 True
 ```
 
-重建出的 `FrameDataset` 把 store 读进内存；重放会再次写出自己的 `inputs/`，所以它的目录同样可以独立重建。它的标的按原样显示：`FrameDataset` 不指定任何用于查找 CRSP ticker 附属文件的 store（`ticker_store()` 为 `None`），即使它是从 `inputs/` 读回来的。相对的 store 路径永远不会按当前工作目录解析：
-
-```python
->>> load_backtester_from_config(config)
-Traceback (most recent call last):
-  ...
-ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', which is relative to the run directory the config was saved in; pass run_dir= (the directory holding config.json) to rebuild it. It is never resolved against the working directory.
-```
+重建出的 `FrameDataset` 把副本读进内存；重放会再保存一份自己的副本，所以它的目录同样可以独立重建。它的标的按原样显示：`FrameDataset` 不指定任何用于查找 CRSP ticker 附属文件的 store（`ticker_store()` 为 `None`），即使它是从运行的副本读回来的。
 
 ### 不用回测器计算统计量
 
@@ -636,7 +669,7 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 
 | 函数 | 对应 `write_backtest_report` 的参数 |
 |---|---|
-| `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`，即 "Setup" 各行，来自运行的配置映射（`get_config()` 或 `config.json`）及其指标块 |
+| `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`，即 "Setup" 各行，来自回测器的配置映射（`get_config()`）及其指标块 |
 | `report_windows(timestamps, block, folds=None)` | `windows`，即时间线；`folds` 是 `run_cv()` 运行的各折行（`fold`、`training_window`、`traded`、`in_sample_range`） |
 | `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | 图表与基准参数 |
 | `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`、`turnover` 和 `bars_per_year`，即 Portfolio 与 Rolling 标签页 |
@@ -648,19 +681,19 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 >>> summary = report_summary(backtester.get_config(), result.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
-['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+['Bar interval', 'Signal', 'Rebalance every', 'Portfolio construction', 'Fees']
 >>> report_windows(result.simulation.value.timestamp.values, result.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
 >>> from quantlab.utils.backtest_report import report_chart_inputs
 >>> write_backtest_report(
-...     result.simulation.value, "report.html", title="replay", summary=summary,
+...     result.simulation.value, "replay.html", title="replay", summary=summary,
 ...     windows=report_windows(result.simulation.value.timestamp.values, result.metrics),
 ...     metrics=result.metrics,
 ...     **report_chart_inputs(result.metrics, ["Fills from the event-driven replay."],
 ...                           returns=result.simulation.returns, init_cash=1_000_000.0),
 ...     extra_tables={"Execution (event-driven)": {"Commissions": 12.5, "Dividends": 3}},
 ... )
->>> "<h2>Execution (event-driven)</h2>" in open("report.html").read()
+>>> "<h2>Execution (event-driven)</h2>" in open("replay.html").read()
 True
 ```
 
@@ -737,7 +770,7 @@ timestamp
 | `fingerprint_inputs(start, end)`、`training_fingerprint_inputs()` | `(key, 因子或标签, 策略, first, last)` 条目，回测器把它们哈希进 `data_fingerprint` |
 | `collect()`、`train()` | 训练模式；`train` 返回检查点 |
 | `check_checkpoint(path)`、`load(path)` | 加载模式；检查在计算任何特征之前运行 |
-| `get_config()`、`from_config(config)` | `config.json`，以及 `load_backtester_from_config` 通过 `"name"` 指明的类进行重建 |
+| `get_config()`、`from_config(config)` | 运行的配置，以及通过 `"name"` 指明的类对它的重建（`rebuild_backtester`） |
 
 回测器不读取模型配置，也不调用模型的其他方法。`model` 缺少成员的配置在构造时被拒绝，抛出 `TypeError` 并列出缺少的成员。
 
@@ -748,7 +781,7 @@ timestamp
 ['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
-`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成单元，并把它的 `run.json`（即集成的 checkpoint）记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `run.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`load_backtester_from_config` 用运行目录 `config.json` 中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
+`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成单元（即运行的 `trained_run()`），并把集成的 checkpoint 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `run.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`rebuild("model")` 用运行配置中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -768,9 +801,11 @@ timestamp
 ('2024-01-01', '2024-02-23')
 >>> bool((replayed.weights["weight"].fillna(0) == result.weights["weight"].fillna(0)).all())
 True
->>> saved = json.loads((replayed.run_dir / "config.json").read_text())
->>> saved["model"]["seeds"], sorted(saved["data_fingerprint"])
-([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
+>>> replayed_run = BacktestRun.open(replayed.run_dir)
+>>> replayed_run.rebuild("model").seeds, sorted(replayed_run.data_fingerprint)
+((0, 1, 2), ['factor[0]:PastReturn', 'price_dataset'])
+>>> replayed_run.trained_run() == unit
+True
 ```
 
 `run_cv()` 以同样的方式回放集成的交叉验证。`SeedEnsemble.train_cv`（见 model 指南的“平均多个种子”）写出的 walk-forward 运行与单个模型的布局相同，只是各折是集成单元，各自以 `run.json` 为 checkpoint。以集成为 `model`、以这个目录为 `cv_project_dir` 时，每一折加载自己的集成，样本内划分从该折记录中写明的拟合窗口出发，与单个模型的折相同。回测器为此无需任何改动。`MomentumHead` 的各个种子结果仍然一致，所以拼接后的权重与上文单个模型交叉验证的权重相同。
@@ -827,11 +862,13 @@ Traceback (most recent call last):
 ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_project_dir, the walk-forward unit a train_cv run wrote
 ```
 
-保存的配置缺少字段时，会被拒绝，而不是用当前默认值补上：
+配方缺少字段时，会被拒绝，而不是用当前默认值补上：
 
 ```python
->>> del config["constructor"]
->>> load_backtester_from_config(config)
+>>> from quantlab.utils.module import load_backtester_from_config
+>>> recipe = backtester.get_config()
+>>> del recipe["constructor"]
+>>> load_backtester_from_config(recipe)
 Traceback (most recent call last):
   ...
 ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
@@ -845,4 +882,4 @@ ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStoc
 - [model](model.md)：`train`、`train_cv`、`TrainedRun` 与 `predict_panel`。
 - [dataset](dataset.md)：价格数据集；[factor](factor.md)：模型使用的因子和标签。
 - [backend](backend.md)：权重和净值曲线所写入的 Zarr 存储。
-- `quantlab/base/backtest.py` 中的 `BaseBacktester`、`BacktestResult`、`CVBacktestResult`、`MarketSpec`；`quantlab/base/config.py` 中的 `BacktestConfig` 与 `CrossSectionBacktestConfig`；`quantlab/utils/module.py` 中的 `load_backtester_from_config`。
+- `quantlab/base/backtest.py` 中的 `BaseBacktester`、`BacktestResult`、`CVBacktestResult`、`MarketSpec`；`quantlab/base/config.py` 中的 `BacktestConfig` 与 `CrossSectionBacktestConfig`；`quantlab/runs/backtest_run.py` 中的 `BacktestRun` 与 `quantlab/runs/directory.py` 中的 `open_run`。

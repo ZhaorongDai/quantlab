@@ -11,6 +11,9 @@ Tracking assertions put a `RecordingTracker` in the model config and read the
 runs it recorded.
 
 Everything is synthetic, CPU-only and offline.
+
+The unit's file names appear here only in the directory-listing lock of its layout;
+results are read through `TrainedRun`.
 """
 
 from pathlib import Path

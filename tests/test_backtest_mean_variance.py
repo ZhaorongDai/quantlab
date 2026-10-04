@@ -27,7 +27,6 @@ What is locked here, and what turns it red:
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -36,12 +35,12 @@ import pytest
 import xarray as xr
 from loguru import logger
 
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, LedoitWolfConfig, MeanVarianceConfig
 from quantlab.base.portfolio import PortfolioConstructionError, PortfolioConstructor
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
-from quantlab.utils.module import load_backtester_from_config
 from quantlab.base.config import PolarsFactorConfig
 from tests.backtest_fixtures import FirstFeatureHead, PastReturnFactor, make_model, make_stock_dataset, write_price_store
 
@@ -251,7 +250,7 @@ def test_a_failing_bar_holds_is_logged_and_recorded(tmp_path):
     weights = result.weights["weight"].sel(timestamp=failed_bar).values
     assert np.isnan(weights).all()
     assert any("solver gave up" in m and pd.Timestamp(failed_bar).isoformat() in m for m in messages)
-    saved = json.loads((result.run_dir / "metrics.json").read_text())
+    saved = BacktestRun.open(result.run_dir).metrics()
     assert saved["portfolio_construction"] == {
         "failed_bar_count": 1,
         "failed_bars": [pd.Timestamp(failed_bar).isoformat()],
@@ -285,10 +284,11 @@ def test_a_mean_variance_backtest_is_fully_invested_and_rebuilds_identically(tmp
     assert (weights[rebalance] >= 0).all() and (weights[rebalance] <= 0.4 + 1e-9).all()
     assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
 
-    saved = json.loads((original.run_dir / "config.json").read_text())
-    assert saved["constructor"]["name"] == "quantlab.portfolio.predefined.mean_variance.MeanVarianceOptimizer"
-    assert saved["constructor"]["risk_model"]["lookback_bars"] == LOOKBACK
-    rebuilt = load_backtester_from_config(saved)
+    run = BacktestRun.open(original.run_dir)
+    recorded = run.rebuild("constructor")
+    assert isinstance(recorded, MeanVarianceOptimizer)
+    assert recorded.config.risk_model.config.lookback_bars == LOOKBACK
+    rebuilt = run.rebuild_backtester()
     assert rebuilt.config.constructor == backtester.config.constructor
     again = rebuilt.run()
 
@@ -324,10 +324,11 @@ def test_a_long_short_mean_variance_backtest_is_dollar_neutral_and_rebuilds(tmp_
     assert (weights[rebalance] < 0).any()
     assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
 
-    saved = json.loads((original.run_dir / "config.json").read_text())
-    assert saved["constructor"]["direction"] == "long_short"
-    assert saved["constructor"]["candidate_top_k"] == 3
-    rebuilt = load_backtester_from_config(saved)
+    run = BacktestRun.open(original.run_dir)
+    recorded = run.rebuild("constructor")
+    assert recorded.config.direction == "long_short"
+    assert recorded.config.candidate_top_k == 3
+    rebuilt = run.rebuild_backtester()
     assert rebuilt.config.constructor == backtester.config.constructor
     again = rebuilt.run()
 
@@ -489,8 +490,7 @@ def test_a_mean_variance_backtest_keeps_a_halted_holding_locked_and_rebuilds(tmp
     assert float(row.sel(symbol=top)) > 0
     assert float(row.sum()) == pytest.approx(1.0, abs=1e-9)
     assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
-    saved = json.loads((original.run_dir / "config.json").read_text())
-    again = load_backtester_from_config(saved).run()
+    again = BacktestRun.open(original.run_dir).rebuild_backtester().run()
     np.testing.assert_array_equal(again.weights["weight"].values, original.weights["weight"].values)
 
 
@@ -516,7 +516,7 @@ def test_a_constructors_events_reach_metrics_json(tmp_path):
 
     result = backtester.run()
 
-    block = json.loads((result.run_dir / "metrics.json").read_text())["portfolio_construction"]
+    block = BacktestRun.open(result.run_dir).metrics()["portfolio_construction"]
     rebalances = [pd.Timestamp(bars[t]).isoformat() for t in range(WINDOW[0], WINDOW[1], REBALANCE)]
     assert block["closed_without_risk"] == {
         "count": len(rebalances),

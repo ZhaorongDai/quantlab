@@ -3,15 +3,15 @@
 What is locked here, and what turns it red:
 
 - `PredictionPanel.write`/`read` round-trip the predictions and their label specs
-  through `predictions.zarr` (one variable per label on `(timestamp, symbol)`, attrs
+  through a Zarr store (one variable per label on `(timestamp, symbol)`, attrs
   `format_version` and JSON `labels`);
 - a panel whose variables are not exactly its specs' names is refused;
 - portfolio constructors bind to `LabelSpec`s: TopN refuses an unknown `score_label`,
   mean-variance refuses a label without a span;
 - `label_specs(predictor)` derives one spec per label variable from `labels`,
   `label_delays` and `label_scales`;
-- `run()` and `run_cv()` (stitched directory only) write `predictions.zarr`,
-  `run_weights()` writes none;
+- `run()` and `run_cv()` (stitched run only) write a prediction panel, read back
+  through `BacktestRun.predictions()`; `run_weights()` writes none;
 - `DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs (the rule bound
   to the panel's specs, the price dataset, an in-memory one from the run directory, the
   market columns, the execution settings, the rebalance period and the anchor), whose
@@ -29,6 +29,7 @@ import pytest
 import xarray as xr
 
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
+from quantlab.runs.backtest_run import BacktestRun
 
 SPECS = (
     LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
@@ -56,8 +57,8 @@ def _predictions(symbols) -> xr.Dataset:
 def test_a_prediction_panel_round_trips_through_its_file(tmp_path, symbols):
     panel = PredictionPanel(_predictions(symbols), SPECS)
 
-    panel.write(tmp_path / "predictions.zarr")
-    back = PredictionPanel.read(tmp_path / "predictions.zarr")
+    panel.write(tmp_path / "panel.zarr")
+    back = PredictionPanel.read(tmp_path / "panel.zarr")
 
     assert back.labels == SPECS
     xr.testing.assert_equal(back.predictions, panel.predictions)
@@ -66,10 +67,10 @@ def test_a_prediction_panel_round_trips_through_its_file(tmp_path, symbols):
 
 def test_the_file_holds_one_variable_per_label_and_json_specs(tmp_path):
     PredictionPanel(_predictions(np.array(["AAA", "BBB"], dtype=object)), SPECS).write(
-        tmp_path / "predictions.zarr"
+        tmp_path / "panel.zarr"
     )
 
-    stored = xr.open_zarr(tmp_path / "predictions.zarr")
+    stored = xr.open_zarr(tmp_path / "panel.zarr")
     assert sorted(stored.data_vars) == ["rank_1", "ret_5"]
     assert all(stored[name].dims == ("timestamp", "symbol") for name in stored.data_vars)
     assert stored.attrs["format_version"] == 1
@@ -222,7 +223,7 @@ def frame_run(tmp_path_factory):
 
 
 def test_run_writes_the_window_predictions_and_their_label_specs(model_run):
-    panel = PredictionPanel.read(model_run.run_dir / "predictions.zarr")
+    panel = BacktestRun.open(model_run.run_dir).predictions()
 
     assert panel.labels == (LabelSpec(name="fwd_ret_1", scale="raw", delay=1, span=1),)
     xr.testing.assert_equal(panel.predictions, model_run.predictions)
@@ -257,22 +258,21 @@ def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
         if run == "frame_run"
         else ExecutionSettings("fill", BacktestConfig.fees, BacktestConfig.slippage)
     )
-    predictions = PredictionPanel.read(result.run_dir / "predictions.zarr").predictions
+    predictions = BacktestRun.open(result.run_dir).predictions().predictions
     weights = inputs.weights(predictions)["weight"]
     xr.testing.assert_equal(weights, result.weights["weight"].sel(symbol=weights.symbol.values))
     assert np.isfinite(weights.values).any()
 
 
 def test_from_run_refuses_a_run_without_a_prediction_panel(tmp_path, model_run):
-    import shutil
-
     from quantlab.portfolio.decision_inputs import DecisionInputs
 
-    from quantlab.base.portfolio import PredictionPanel
-
-    run_dir = tmp_path / model_run.run_dir.name
-    shutil.copytree(model_run.run_dir, run_dir)
-    shutil.rmtree(run_dir / PredictionPanel.FILE_NAME)
+    # A run_weights run has no model, so no prediction panel.
+    weights_only = BacktestRun.open(model_run.run_dir).rebuild_backtester(
+        model=None, model_mode=None, checkpoint=None, output_dir=str(tmp_path)
+    )
+    run_dir = weights_only.run_weights(model_run.weights).run_dir
+    assert BacktestRun.open(run_dir).predictions() is None
     with pytest.raises(FileNotFoundError, match="no prediction panel"):
         DecisionInputs.from_run(run_dir)
 

@@ -18,11 +18,11 @@ against it. What is locked here:
   whole-window `Excess Return [%]` is exactly `value / benchmark_value - 1` at
   the last bar, in percent, and `Excess Max Drawdown [%]` is the deepest fall
   of that ratio.
-- **Persistence and report.** `equity.zarr` carries both curves,
-  the run's data fingerprint (`BacktestRun.data_fingerprint`) the benchmark's
-  data, `config.json` rebuilds the
-  benchmark, and `report.html` draws the benchmark NAV with the portfolio's
-  and adds the excess-return and excess-drawdown rows and tables.
+- **Persistence and report.** Read through `BacktestRun`, the run's equity
+  curve carries both curves, its data fingerprint the benchmark's data, and
+  `rebuild_backtester()` rebuilds the benchmark; the HTML report
+  (`BacktestRun.report()`) draws the benchmark NAV with the
+  portfolio's and adds the excess-return and excess-drawdown rows and tables.
 - **run_cv.** The stitched curve and every fold are compared with the
   benchmark over their own bars.
 
@@ -39,7 +39,6 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-import quantlab.utils.module as module_utils
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.utils.backtest_report import write_backtest_report
@@ -250,7 +249,7 @@ def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
     result = USEquityCrossectionSelectStockVectorBt(config).run()
     assert result.benchmark is None
     assert "benchmark" not in result.metrics and "relative" not in result.metrics
-    assert set(xr.open_zarr(result.run_dir / "equity.zarr").data_vars) == {"value", "returns"}
+    assert set(BacktestRun.open(result.run_dir).equity().data_vars) == {"value", "returns"}
 
 
 # --------------------------------------------------------------------------
@@ -260,8 +259,8 @@ def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
 
 def test_run_directory_carries_the_benchmark(benchmark_run):
     _, result = benchmark_run
-    run_dir = result.run_dir
-    equity = xr.open_zarr(run_dir / "equity.zarr").load()
+    run = BacktestRun.open(result.run_dir)
+    equity = run.equity()
     assert set(equity.data_vars) == {
         "value",
         "returns",
@@ -271,17 +270,16 @@ def test_run_directory_carries_the_benchmark(benchmark_run):
     np.testing.assert_allclose(
         equity["benchmark_value"].values, result.benchmark.value.values
     )
-    assert "benchmark_dataset" in BacktestRun.open(run_dir).data_fingerprint
-    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert "benchmark_dataset" in run.data_fingerprint
+    metrics = run.metrics()
     assert metrics["relative"]["whole"]["Excess Return [%]"] == pytest.approx(
         result.metrics["relative"]["whole"]["Excess Return [%]"]
     )
 
 
-def test_config_json_rebuilds_the_benchmark(benchmark_run):
+def test_the_run_rebuilds_the_benchmark(benchmark_run):
     backtester, result = benchmark_run
-    saved = json.loads((result.run_dir / "config.json").read_text())
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = BacktestRun.open(result.run_dir).rebuild_backtester()
     assert (
         rebuilt.config.benchmark_dataset.config.zarr_file_path
         == backtester.config.benchmark_dataset.config.zarr_file_path
@@ -292,7 +290,7 @@ def test_config_json_rebuilds_the_benchmark(benchmark_run):
 
 def test_report_draws_benchmark_nav_and_the_excess_tab(benchmark_run):
     _, result = benchmark_run
-    page = (result.run_dir / "report.html").read_text(encoding="utf-8")
+    page = BacktestRun.open(result.run_dir).report()
     for name in (
         "equity",
         "benchmark_equity",
@@ -408,7 +406,7 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path, expanding):
     for fold in run.folds:
         assert "benchmark_value" in fold.equity().data_vars
     assert "benchmark_dataset" in run.data_fingerprint
-    page = (Path(cv.run_dir) / "report.html").read_text(encoding="utf-8")
+    page = BacktestRun.open(cv.run_dir).report()
     assert '"name":"excess_drawdown"' in page
     # The windows timeline draws one row per fold, each with the training
     # window and the traded bars metrics.json records for it.

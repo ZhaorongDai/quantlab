@@ -20,6 +20,9 @@ What is locked, and what turns it red:
   `cv_mean_test_ic`.
 
 Everything is synthetic, CPU-only and offline.
+
+The unit's file names appear here only in the directory-listing lock of its layout;
+results are read through `TrainedRun`.
 """
 
 import json
@@ -880,7 +883,7 @@ def test_gblinear_trains_and_writes_its_checkpoint_with_a_tracker(tmp_path, trac
 
     checkpoint = _only_checkpoint(tmp_path / "ckpt")
     assert checkpoint.is_file()
-    assert (checkpoint.parent / "config.json").is_file()
+    assert TrainedRun.open(checkpoint).config["name"] == model.import_path
     rec = tracker.runs[0]
     assert rec.finished and not rec.failed
     assert _importance_summary(rec) == {}

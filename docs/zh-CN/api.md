@@ -472,37 +472,31 @@ ValueError: scores= needs top_n=, the number of names held per side.
 
 ### 保留一次运行
 
-默认不写任何文件。`output_dir=` 在该目录下写出库的运行目录，名为 `WeightsVectorBt_<timestamp>`；`report.save(directory)` 在事后写出同样的目录。运行目录包含 `config.json`、`weights.zarr`、`equity.zarr`、`metrics.json`、`settlements.json`、`fingerprint.json` 和 `report.html`，`inputs/` 下是价格和基准面板，`config.json` 以相对于运行目录的路径指向它们。运行目录可以移动；下面先移动它，再用两行代码从中重建这次运行：
+默认不写任何文件。`output_dir=` 在该目录下写出库的运行目录，名为 `WeightsVectorBt_<timestamp>`；`report.save(directory)` 在事后写出同样的目录。运行目录包含重建配方、权重、净值曲线、指标、结算、报告，以及价格和基准面板的副本，配方以相对于运行目录的路径指向这些副本；最后写入的 `run.json` 记录市场价格列、数据指纹和所用的训练单元（这里没有）。运行目录通过 `quantlab.runs.backtest_run.BacktestRun` 读取。运行目录可以移动；下面先移动它，再从中重建这次运行：
 
 ```python
->>> import json
 >>> import shutil
->>> from pathlib import Path
->>> from quantlab.backend import XrBackend
->>> from quantlab.utils.module import load_backtester_from_config
+>>> from quantlab.runs.backtest_run import BacktestRun
 >>> kept = qa.backtest(prices, weights=weights, benchmark=index, output_dir=tempfile.mkdtemp())
 >>> kept.raw.run_dir.name.startswith("WeightsVectorBt_")
 True
->>> run_dir = Path(shutil.move(kept.raw.run_dir, tempfile.mkdtemp()))
->>> sorted(path.name for path in run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
->>> sorted(path.name for path in (run_dir / "inputs").iterdir())
-['benchmark_dataset.zarr', 'price_dataset.zarr']
->>> rebuilt = load_backtester_from_config(json.loads((run_dir / "config.json").read_text()), run_dir=run_dir)
->>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+>>> run = BacktestRun.open(shutil.move(kept.raw.run_dir, tempfile.mkdtemp()))
+>>> run.kind, sorted(run.data_fingerprint)
+('run_weights', ['benchmark_dataset', 'price_dataset'])
+>>> type(run.rebuild("price_dataset")).__name__
+'FrameDataset'
+>>> replay = run.rebuild_backtester().run_weights(run.weights())
 >>> bool((replay.simulation.value == kept.raw.simulation.value).all())
 True
->>> replay.run_dir.parent == run_dir.parent, replay.run_dir != run_dir
+>>> replay.run_dir.parent == run.path.parent, replay.run_dir != run.path
 (False, True)
 ```
 
 重放会写出自己的运行目录，因为重建出的配置保留了 `output_dir`。对没有传 `output_dir` 的报告，`save(directory)` 用同样的权重再模拟一次，写出运行目录并返回它：
 
 ```python
->>> saved = held.save(tempfile.mkdtemp())
->>> sorted(path.name for path in (saved / "inputs").iterdir())
-['price_dataset.zarr']
->>> json.loads((saved / "metrics.json").read_text())["whole"]["Total Return [%]"] == held.metrics["whole"]["Total Return [%]"]
+>>> saved = BacktestRun.open(held.save(tempfile.mkdtemp()))
+>>> saved.metrics()["whole"]["Total Return [%]"] == held.metrics["whole"]["Total Return [%]"]
 True
 ```
 

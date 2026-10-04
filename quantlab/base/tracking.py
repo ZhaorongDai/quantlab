@@ -203,7 +203,7 @@ class TrackingRun(ABC):
         Examples
         --------
         >>> import tempfile
-        >>> report = Path(tempfile.mkdtemp()) / "report.html"
+        >>> report = Path(tempfile.mkdtemp()) / "notes.html"
         >>> _ = report.write_text("<p>report</p>")
         >>> NullRun().log_file(report)
         """

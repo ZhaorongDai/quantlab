@@ -47,7 +47,12 @@ from quantlab.base.tracking import TrackingRun
 # converter and polars), which adds about a second of import time.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
-from quantlab.runs.backtest_run import FoldArtifacts, Market, write_backtest_run
+from quantlab.runs.backtest_run import (
+    BacktestRun,
+    FoldArtifacts,
+    Market,
+    write_backtest_run,
+)
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils import backtest_stats
 from quantlab.utils.backtest_report import (
@@ -2657,7 +2662,7 @@ class BaseBacktester(Component, ABC):
             }
         )
         if run_dir is not None:
-            run.log_file(run_dir / "report.html")
+            BacktestRun.open(run_dir).log_report(run)
 
     def _run_dir_name(self) -> str:
         """Return ``{ClassName}_{timestamp}``, unique down to the microsecond."""

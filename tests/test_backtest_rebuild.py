@@ -158,15 +158,12 @@ def _rebuilt(run_dir: Path, **overrides) -> USEquityCrossectionSelectStockVector
 
 
 def _assert_same_run_artifacts(first_dir: Path, second_dir: Path) -> None:
-    """Identical weights.zarr and exactly equal equity values on disk."""
+    """Identical persisted weights and exactly equal persisted equity values."""
     assert first_dir != second_dir
-    xr.testing.assert_identical(
-        xr.open_zarr(first_dir / "weights.zarr").load(),
-        xr.open_zarr(second_dir / "weights.zarr").load(),
-    )
+    first, second = BacktestRun.open(first_dir), BacktestRun.open(second_dir)
+    xr.testing.assert_identical(first.weights(), second.weights())
     np.testing.assert_array_equal(
-        xr.open_zarr(first_dir / "equity.zarr")["value"].values,
-        xr.open_zarr(second_dir / "equity.zarr")["value"].values,
+        first.equity()["value"].values, second.equity()["value"].values
     )
 
 

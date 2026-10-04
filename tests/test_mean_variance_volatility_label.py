@@ -20,6 +20,7 @@ What is locked here, and what turns it red:
 Everything is synthetic, CPU-only and offline.
 """
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -42,7 +43,7 @@ from quantlab.label.predefined.fret import Return, Volatility
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
-from quantlab.utils.module import load_backtester_from_config
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,
     PastReturnFactor,
@@ -277,10 +278,10 @@ def test_an_ensemble_of_a_return_and_a_volatility_model_backtests_and_rebuilds(t
     assert (weights[rebalance] >= 0).all() and (weights[rebalance] <= 0.4 + 1e-9).all()
     assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
 
-    saved = json.loads((original.run_dir / "config.json").read_text())
-    assert saved["constructor"]["volatility_label"] == f"vol_{HORIZON}"
-    assert saved["model"]["name"] == "quantlab.model.predefined.model_ensemble.ModelEnsemble"
-    rebuilt = load_backtester_from_config(saved)
+    run = BacktestRun.open(original.run_dir)
+    assert run.rebuild("constructor").config.volatility_label == f"vol_{HORIZON}"
+    assert type(run.rebuild("model")) is ModelEnsemble
+    rebuilt = run.rebuild_backtester()
     assert rebuilt.config.constructor == backtester.config.constructor
     again = rebuilt.run()
 
@@ -288,8 +289,10 @@ def test_an_ensemble_of_a_return_and_a_volatility_model_backtests_and_rebuilds(t
     np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)
 
     # The predicted volatilities, not the historical ones, set the weights.
-    historical = load_backtester_from_config(
-        {**saved, "constructor": {**saved["constructor"], "volatility_label": None}, "output_dir": None}
+    recorded = run.rebuild("constructor")
+    historical = run.rebuild_backtester(
+        constructor=type(recorded)(dataclasses.replace(recorded.config, volatility_label=None)),
+        output_dir=None,
     ).run()
     assert not np.allclose(historical.weights["weight"].values[rebalance], weights[rebalance])
 

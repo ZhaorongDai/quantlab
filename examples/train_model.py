@@ -11,7 +11,7 @@ This example concentrates on the model layer. It
    and reads the run's scores back through ``TrainedRun``,
 4. predicts the test window with ``predict_panel`` and scores the prediction
    with IC, RankIC and R2,
-5. rebuilds the model from the checkpoint's ``config.json`` and checks that
+5. rebuilds the model from its trained unit (``TrainedRun``) and checks that
    the reloaded model predicts exactly the same values,
 6. runs a walk-forward cross-validation with ``train_cv`` and prints the
    per-fold scores and the fold means of the walk-forward run it returns.
@@ -220,11 +220,10 @@ def main() -> None:
         print("prediction panel:", dict(pred.sizes), list(pred.data_vars))
         show("test window", regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values))
 
-        # 3. Rebuild the model from config.json and reload the checkpoint --
-        saved = run.config
+        # 3. Rebuild the model from its trained unit and reload the checkpoint
         print("trained_on symbols:", len(run.trained_on["symbols"]),
-              "resolved eta:", saved["resolved_hyperparameters"]["eta"])
-        reloaded = load_model_from_config(saved).load(checkpoint)
+              "resolved eta:", run.resolved_hyperparameters["eta"])
+        reloaded = load_model_from_config(run.config).load(checkpoint)
         again = reloaded.predict_panel(test[model.get_factor_names()])
         print("reloaded model predicts the same values:",
               bool(np.allclose(again["ret_1"].values, pred["ret_1"].values, equal_nan=True)))

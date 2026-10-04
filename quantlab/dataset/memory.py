@@ -26,11 +26,6 @@ from quantlab.base.data import MarketDataset
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.utils.frame import to_panel
 
-#: Directory of a backtest run directory that ``persist_with_run`` writes the held
-#: panels into, one ``<component path>.zarr`` store each.
-RUN_INPUTS_DIRNAME = "inputs"
-
-
 class FrameDataset(MarketDataset):
     """A market dataset whose panel is held in memory.
 
@@ -225,7 +220,7 @@ class FrameDataset(MarketDataset):
 
         The panel is written as held: a resampled dataset writes its resampled bars,
         and the returned dataset's config carries no resample fields. This dataset is
-        not changed. A backtest run directory's ``inputs/`` stores are written this way.
+        not changed. A backtest run directory's copies of held panels are written this way.
 
         Parameters
         ----------
@@ -277,21 +272,20 @@ class FrameDataset(MarketDataset):
             )
         )
 
-    def persist_with_run(self, run_dir: Path, name: str) -> dict:
+    def persist_with_run(self, run_dir: Path, store: str) -> dict:
         """Write the held panel into ``run_dir`` and return a config reading it.
 
         The panel belongs to no project store, so a backtest run directory keeps a
-        copy: ``inputs/<name>.zarr``, written by ``to_zarr``. The returned config names
-        it relative to the run directory, so the directory can be moved;
+        copy at ``store``, written by ``to_zarr``. The returned config names it
+        relative to the run directory, so the directory can be moved;
         ``resolve_run_config`` resolves it again when the run is rebuilt.
 
         Parameters
         ----------
         run_dir : Path
             The run directory being written.
-        name : str
-            The dataset's component path in the backtester (``"price_dataset"``,
-            ``"model.factors.0.dataset"``).
+        store : str
+            Where the run keeps the copy, relative to ``run_dir``.
 
         Returns
         -------
@@ -314,14 +308,15 @@ class FrameDataset(MarketDataset):
         ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
         ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
         >>> run_dir = Path(tempfile.mkdtemp())
-        >>> FrameDataset(frame).persist_with_run(run_dir, "price_dataset")["zarr_file_path"]
-        'inputs/price_dataset.zarr'
-        >>> [p.name for p in (run_dir / "inputs").iterdir()]
-        ['price_dataset.zarr']
+        >>> FrameDataset(frame).persist_with_run(run_dir, "copies/prices.zarr")["zarr_file_path"]
+        'copies/prices.zarr'
+        >>> FrameDataset.resolve_run_config(
+        ...     {"zarr_file_path": "copies/prices.zarr"}, run_dir)["zarr_file_path"] == str(
+        ...     run_dir / "copies" / "prices.zarr")
+        True
         """
-        relative = Path(RUN_INPUTS_DIRNAME) / f"{name}.zarr"
-        config = self.to_zarr(Path(run_dir) / relative).get_config()
-        config["zarr_file_path"] = relative.as_posix()
+        config = self.to_zarr(Path(run_dir) / store).get_config()
+        config["zarr_file_path"] = store
         return config
 
     @classmethod
@@ -353,13 +348,13 @@ class FrameDataset(MarketDataset):
         --------
         >>> from quantlab.dataset.memory import FrameDataset
         >>> FrameDataset.resolve_run_config(
-        ...     {"zarr_file_path": "inputs/price_dataset.zarr"}, "/runs/WeightsVectorBt_1"
+        ...     {"zarr_file_path": "copies/prices.zarr"}, "/runs/WeightsVectorBt_1"
         ... )
-        {'zarr_file_path': '/runs/WeightsVectorBt_1/inputs/price_dataset.zarr'}
+        {'zarr_file_path': '/runs/WeightsVectorBt_1/copies/prices.zarr'}
         >>> FrameDataset.resolve_run_config(
-        ...     {"zarr_file_path": "inputs/price_dataset.zarr"}, None)
+        ...     {"zarr_file_path": "copies/prices.zarr"}, None)
         Traceback (most recent call last):
-        ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', ...
+        ValueError: quantlab.dataset.memory.FrameDataset reads the store 'copies/prices.zarr', ...
         """
         path = config.get("zarr_file_path")
         if path is None or Path(path).is_absolute():
@@ -378,7 +373,7 @@ class FrameDataset(MarketDataset):
         """Return ``None``: a caller's symbols are shown as they are.
 
         The panel came from a caller, not from a CRSP store, so no ticker sidecar
-        applies, even when it was read back from a run directory's ``inputs/``.
+        applies, even when it was read back from a run directory's copy.
 
         Examples
         --------

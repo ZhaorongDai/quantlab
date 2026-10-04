@@ -17,6 +17,9 @@ What turns this file red:
 - the random state left by earlier work changes what a fit produces.
 
 Everything is synthetic, CPU-only and offline.
+
+The unit's file names appear here only in the directory-listing lock of its layout;
+results are read through `TrainedRun`.
 """
 
 import numpy as np

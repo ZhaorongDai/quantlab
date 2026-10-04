@@ -93,46 +93,30 @@ array([0.5, 0.5, 0. , 0. ])
 
 规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。`decide` 把它变成在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
 
-运行目录的 `config.json` 记录了规则的全部参数和它的风险模型，`load_backtester_from_config` 能据此重建。
+运行的配方记录了规则的全部参数和它的风险模型；`BacktestRun.rebuild("constructor")` 重建规则，`rebuild_backtester()` 重建整个回测器（见回测指南）。
 
 ### 不加载模型重建一次运行的决策输入
 
-带模型的运行（`run()` 或 `run_cv()`）还会写出 `predictions.zarr`：规则读到的预测及其标签规格，格式是 `PredictionPanel`。`DecisionInputs.from_run(run_dir)` 从该运行的 `config.json` 重建规则（绑定到预测面板的规格上）、价格数据集（内存数据集从运行目录下的副本读取）、市场价格列、执行设置和调仓周期，并取预测面板的第一根 bar 作为锚点。它从不导入模型、因子、标签或回测层，所以研究流水线之外的执行器（例如事件驱动回测）只凭运行目录就能重放该运行的决策；在预测面板的预测上调用 `weights` 会复现该运行的权重。下面手写一个运行目录，只包含 `from_run` 读取的内容：
+带模型的运行（`run()` 或 `run_cv()`）还会保存规则读到的预测及其标签规格，格式是 `PredictionPanel`，由 `BacktestRun.predictions()` 返回。`DecisionInputs.from_run(run_dir)` 通过 `BacktestRun` 读取该运行：重建规则（绑定到预测面板的规格上）和价格数据集（内存数据集从运行目录下的副本读取），取市场价格列、执行设置和调仓周期，并取预测面板的第一根 bar 作为锚点。它从不导入模型、因子、标签或回测层，所以研究流水线之外的执行器（例如事件驱动回测）只凭运行目录就能重放该运行的决策；在预测面板的预测上调用 `weights` 会复现该运行的权重。设 `result` 是[回测指南](backtest.md#一次运行做了什么)第一个会话的 `run()`，规则持有前 2 名、每五根 bar 调仓一次：
 
 ```python
->>> import tempfile, json
->>> from pathlib import Path
->>> from quantlab.base.portfolio import LabelSpec, PredictionPanel
->>> from quantlab.dataset.memory import FrameDataset
 >>> from quantlab.portfolio.decision_inputs import DecisionInputs
->>> run_dir = Path(tempfile.mkdtemp())
->>> panel = PredictionPanel(
-...     context.predictions.expand_dims(timestamp=[context.timestamp]),
-...     [LabelSpec(name="ret_5", scale="raw", delay=1, span=5)],
-... )
->>> _ = panel.write(run_dir / "predictions.zarr")
->>> bars = pd.bdate_range(end=context.timestamp, periods=3)
->>> close = xr.DataArray(
-...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
-...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
-... )
->>> prices = FrameDataset(xr.Dataset({"open": close, "close": close})).to_zarr(run_dir / "prices.zarr")
->>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
->>> _ = (run_dir / "config.json").write_text(json.dumps({
-...     "constructor": rule.get_config(),
-...     "price_dataset": prices.get_config(),
-...     "market": {"fill_price_column": "open", "valuation_price_column": "close"},
-...     "rebalance_periods": 1, "sizing_basis": "fill", "fees": 0.0, "slippage": 0.0,
-... }))
->>> inputs = DecisionInputs.from_run(run_dir)
->>> inputs.constructor == rule, inputs.anchor == context.timestamp
-(True, True)
->>> PredictionPanel.read(run_dir / "predictions.zarr").labels
-(LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
+>>> from quantlab.runs.backtest_run import BacktestRun
+>>> run = BacktestRun.open(result.run_dir)
+>>> run_inputs = DecisionInputs.from_run(run.path)
+>>> run_inputs.constructor == run.rebuild("constructor"), run_inputs.rebalance_periods
+(True, 5)
+>>> panel = run.predictions()
+>>> panel.labels
+(LabelSpec(name='open_ret_1', scale='raw', delay=1, span=1),)
+>>> run_inputs.anchor == panel.predictions.timestamp.values[0]
+True
+>>> run_inputs.weights(panel.predictions).equals(run.weights())
+True
 
 ```
 
-该文件的每个标签对应 `(timestamp, symbol)` 上的一个变量，属性 `format_version` 和 `labels`（规格的 JSON 列表）。`run_weights()` 的运行没有模型，不写预测面板。
+预测面板的每个标签对应 `(timestamp, symbol)` 上的一个变量，与其规格一起保存。`run_weights()` 的运行没有模型，也没有预测面板：它的 `predictions()` 是 `None`。
 
 ### 回测之外决定一根 bar
 
@@ -142,14 +126,28 @@ array([0.5, 0.5, 0. , 0. ])
 - `context(t, predictions, current_weights)` 构造这根 bar 的 `PortfolioContext`。`predictions` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有，没有预测的持仓标的以 NaN 预测加入这根 bar。可交易性、截至 `t` 的最近 `history_bars` 个估值价格得出的收益窗口和停牌时长（staleness），以及 `t` 上的因子值，都从数据集读取，所以执行器最多只需保留 `history_bars` 根 bar 的价格。给定回测重放出的持仓，得到的 context 与回测构造的相同。
 - `decide(context)` 调用 `construct`，并按权重契约检查这一行。它返回 `Decision(weights, failure, events)`：context 各标的上的权重，全 NaN 表示保持；使这根 bar 保持仓位的 `PortfolioConstructionError` 的消息，或 `None`；以及这一行报告的事件。违反契约的行（NaN 与有限权重混合、改动了锁定仓位、给既不可交易也未持有的标的分配权重）是规则的 bug，抛出 `ValueError`。
 
-用上面从运行目录重建的 `inputs`（也可以用 `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)` 直接构造）：
+这里直接构造 `inputs`，即 `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)`，价格只有三根 bar，`DDD` 在 `context.timestamp` 上没有价格（`from_run` 从一次运行构造同样的输入）：
 
 ```python
+>>> from quantlab.base.portfolio import LabelSpec
+>>> from quantlab.dataset.memory import FrameDataset
+>>> bars = pd.bdate_range(end=context.timestamp, periods=3)
+>>> close = xr.DataArray(
+...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
+... )
+>>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+>>> rule.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])
+>>> inputs = DecisionInputs(
+...     FrameDataset(xr.Dataset({"open": close, "close": close})), rule,
+...     fill_column="open", valuation_column="close", rebalance_periods=1,
+...     anchor=context.timestamp,
+... )
 >>> inputs.rebalances(context.timestamp)
 True
 >>> bar = inputs.context(
 ...     context.timestamp,
-...     panel.predictions.sel(timestamp=context.timestamp),
+...     context.predictions,
 ...     xr.DataArray([0.25], dims="symbol", coords={"symbol": ["DDD"]}),
 ... )
 >>> bar.locked.values

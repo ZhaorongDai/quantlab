@@ -44,6 +44,9 @@ geometry goldens still hold as captured before the refactor.
 fold is the unit `fold_{i}/` holding `{cls}_cv_fold_{i}{suffix}`, and the
 trial's `run.json` replaced `cv_folds.json`. The directory listings follow
 that layout; the fold geometry and trained dates are unchanged.
+
+The unit's file names appear here only in the directory-listing lock of its layout;
+results are read through `TrainedRun`.
 """
 
 import dataclasses

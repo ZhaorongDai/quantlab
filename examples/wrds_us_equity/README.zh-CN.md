@@ -127,7 +127,7 @@ factor/residual_momentum.zarr 残差动量得分及其排名（market_residual_m
 
 `report.html` 会在组合净值旁画出基准净值，并增加超额收益和超额回撤两行。pipeline 的日志行会打印核心数字。在 `backtest()` 里传 `benchmark_dataset=None` 可跳过对比。
 
-回测的运行目录可以用 `quantlab.utils.module.load_backtester_from_config` 重建并重跑，见 [docs/zh-CN/backtest.md](../../docs/zh-CN/backtest.md)。
+回测的运行目录通过 `quantlab.runs.backtest_run.BacktestRun` 读取，`BacktestRun.open(run_dir).rebuild_backtester()` 可重建它以便重跑，见 [docs/zh-CN/backtest.md](../../docs/zh-CN/backtest.md)。
 
 ## 股票池的处理
 

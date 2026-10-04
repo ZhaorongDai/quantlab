@@ -131,7 +131,7 @@ def train_cv_project(model, train_periods):
 The first session trains a checkpoint and backtests a rule that holds the two highest-scoring symbols and rebalances every five bars. Log lines go to stderr and are not shown.
 
 ```python
->>> import dataclasses, json, tempfile
+>>> import dataclasses, tempfile
 >>> from pathlib import Path
 >>> import pandas as pd
 >>> import xarray as xr
@@ -155,11 +155,13 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 ...     constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
 ... ))
 >>> result = backtester.run()
->>> sorted(p.name for p in result.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
+>>> from quantlab.runs.backtest_run import BacktestRun
+>>> run = BacktestRun.open(result.run_dir)
+>>> run.kind, run.window, run.rebalance_periods
+('run', ('2024-02-12', '2024-03-22'), 5)
 ```
 
-The run directory sits under `output_dir`, and the result holds the predictions, weights, simulation and metrics.
+The run directory sits under `output_dir` and is read back through `BacktestRun` (see [The run directory](#the-run-directory)); the result holds the predictions, weights, simulation and metrics.
 
 ### The target-weight contract
 
@@ -196,7 +198,7 @@ order
 52.82443690819098
 ```
 
-Fees and slippage (`fees` and `slippage`, both 0.0005 by default) are proportional to each trade. `sizing_basis` sets the price a target percentage is sized against. With `"fill"`, the default, it is measured against the portfolio value at the fill price of the bar it executes on, and the share count is that value times the weight over the fill price. With `"valuation"` the portfolio is valued at the signal bar's valuation price (t's close) and the share count is divided by that price, as an order placed after the close must be sized; the order still fills at t + 1's fill price. Example: a book of 500 cash and 50 shares that closed at 15 and opens at 16 asks for 84 percent in that stock. The fill basis buys 0.84 x 1300 / 16 - 50 = 18.25 shares, the valuation basis 0.84 x 1250 / 15 - 50 = 20 shares (`tests/test_backtest_sizing_basis.py`). The basis is recorded in `config.json`.
+Fees and slippage (`fees` and `slippage`, both 0.0005 by default) are proportional to each trade. `sizing_basis` sets the price a target percentage is sized against. With `"fill"`, the default, it is measured against the portfolio value at the fill price of the bar it executes on, and the share count is that value times the weight over the fill price. With `"valuation"` the portfolio is valued at the signal bar's valuation price (t's close) and the share count is divided by that price, as an order placed after the close must be sized; the order still fills at t + 1's fill price. Example: a book of 500 cash and 50 shares that closed at 15 and opens at 16 asks for 84 percent in that stock. The fill basis buys 0.84 x 1300 / 16 - 50 = 18.25 shares, the valuation basis 0.84 x 1250 / 15 - 50 = 20 shares (`tests/test_backtest_sizing_basis.py`). The basis is part of the config and is read back from a run as `BacktestRun(...).execution`.
 
 ### Label delay and fill delay
 
@@ -264,25 +266,44 @@ Turnover is the one-sided traded value of a bar divided by the portfolio value b
 
 ### The run directory
 
-Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Files go to a hidden staging directory that is renamed when every file has been written, so `output_dir` only holds complete runs. With `output_dir=None` nothing is written (see [Keep a run in memory](#keep-a-run-in-memory)).
+Each run writes a new directory `{ClassName}_{timestamp}` under `output_dir`. Files go to a hidden staging directory that is renamed when every file has been written, and the record `run.json` is written last, so `output_dir` only holds complete runs. With `output_dir=None` nothing is written (see [Keep a run in memory](#keep-a-run-in-memory)).
 
-| File | Content |
+A run directory is read through `BacktestRun` (`quantlab.runs.backtest_run`), or through `quantlab.runs.directory.open_run`, which opens any run directory, a trained unit included, and returns its type. Only the run layer names the files; a reader asks the run for what it holds:
+
+| `BacktestRun` | Content |
 | --- | --- |
-| `config.json` | The configuration, with the price dataset and the model nested, and a data fingerprint. Its `market` block names the market's `fill_price_column` and `valuation_price_column`, so a tool reading the run learns them without importing the backtester class; a rebuild drops it and takes them from the class again. |
-| `weights.zarr` | The target weights on `(timestamp, symbol)`. |
-| `equity.zarr` | The portfolio `value` and per-bar `returns` on `timestamp`. |
-| `metrics.json` | The same mapping as `result.metrics`; NaN and infinity are written as null. Every run records `execution` (rejected orders and the largest target deviation). A `run()`, a `run_cv()` fold and the stitched `run_cv()` pass also record `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them) or the top-n rule's `tie_at_cutoff` (tied symbols a book's cut left out, so the picks were decided by symbol order), with its `count` (symbols over all its bars) and its `bars`, one record per bar that names the symbols or, for `tie_at_cutoff`, counts them. |
-| `settlements.json` | The delisting settlements. |
-| `predictions.zarr` | Only for a run with a model (`run()`, `run_cv()`): the predictions the portfolio construction rule read, on the price axes, with their label specs, as a `PredictionPanel`; `DecisionInputs.from_run(run_dir)` rebuilds from it and `config.json` the run's decision inputs, the bound rule included, without the model (see [Portfolio construction](portfolio.md#a-runs-decision-inputs-without-the-model)). A `run_weights()` run writes none. |
-| `fingerprint.json` | A digest of the price and factor data the run read. |
-| `report.html` | Headline numbers, grouped metric tables, and chart tabs for performance, excess return, rolling one-year statistics and the portfolio's structure (see [The report page](#the-report-page)). |
-| `inputs/` | Only when the price or benchmark dataset is a `FrameDataset` held in memory: its panel as `price_dataset.zarr` or `benchmark_dataset.zarr`, which `config.json` names relative to the run directory (see [Rebuild a run of given weights](#rebuild-a-run-of-given-weights)). |
+| `kind`, `window` | `"run"`, `"run_cv"`, `"run_weights"`, or `"fold"` for a fold of a `run_cv()` run; the first and last bar simulated. |
+| `market` | The backtester class's `fill_price_column` and `valuation_price_column`, so a tool reading the run learns them without importing the class. |
+| `execution`, `rebalance_periods` | The `ExecutionSettings` (`sizing_basis`, `fees`, `slippage`) and the bars between rebalances, from the run's config. |
+| `data_fingerprint` | A digest and extent of every dataset the run read: the prices, each factor's input, the benchmark, and in train mode the training data. |
+| `trained_run()` | The trained unit the backtest used, as a `TrainedRun`: the unit trained in train mode, the checkpoint's unit in load mode, the walk-forward unit for `run_cv()`, the fold's own unit for a fold; `None` for `run_weights()`. |
+| `weights()`, `equity()` | The target weights on `(timestamp, symbol)`; the portfolio `value` and per-bar `returns` on `timestamp`, plus `benchmark_value` and `benchmark_returns` when a benchmark ran. |
+| `metrics()` | The same mapping as `result.metrics`, as JSON holds it: NaN and infinity become `None`, tuples lists. Every run records `execution` (rejected orders and the largest target deviation). A `run()`, a `run_cv()` fold and the stitched `run_cv()` pass also record `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them) or the top-n rule's `tie_at_cutoff` (tied symbols a book's cut left out, so the picks were decided by symbol order), with its `count` (symbols over all its bars) and its `bars`, one record per bar that names the symbols or, for `tie_at_cutoff`, counts them. |
+| `settlements()` | The delisting settlements. |
+| `predictions()` | Only for a run with a model (`run()`, `run_cv()`): the predictions the portfolio construction rule read, on the price axes, with their label specs, as a `PredictionPanel`; `DecisionInputs.from_run(run_dir)` rebuilds from it the run's decision inputs, the bound rule included, without the model (see [Portfolio construction](portfolio.md#a-runs-decision-inputs-without-the-model)). `None` for a `run_weights()` run. |
+| `folds` | A `run_cv()` run's folds, each a `BacktestRun` of kind `"fold"`. |
+| `rebuild(field)`, `rebuild_backtester(**overrides)` | The component a config field holds, and the backtester itself (see [Rebuild a run](#rebuild-a-run)). |
+
+The run's config, the recipe a rebuild reads, holds the backtester's `get_config()` and nothing else; the records of the run (the market, the fingerprints, the trained unit) are in `run.json`. A dataset held in memory (`FrameDataset`) has no store of its own, so the run keeps a copy of its panel, named by the dataset's component path (`price_dataset`, `model.factors.0.dataset`) and written once however many fields hold the same object, and the recipe names that copy relative to the run directory (see [Rebuild a run of given weights](#rebuild-a-run-of-given-weights)). `report.html` holds headline numbers, grouped metric tables, and chart tabs for performance, excess return, rolling one-year statistics and the portfolio's structure (see [The report page](#the-report-page)). A run directory written in another format version, or without its `run.json`, is refused with a message to re-run it.
+
+```python
+>>> run.market
+Market(fill_price_column='adjOpen', valuation_price_column='adjClose')
+>>> run.execution
+ExecutionSettings(sizing_basis='fill', fees=0.0005, slippage=0.0005)
+>>> sorted(run.data_fingerprint), run.trained_run().kind
+(['factor[0]:PastReturn', 'price_dataset'], 'model')
+>>> sorted(run.metrics()) == sorted(result.metrics), run.metrics()["out_of_sample_ranges"]
+(True, [['2024-02-26', '2024-03-22']])
+>>> [spec.name for spec in run.predictions().labels], sorted(run.equity().data_vars)
+(['open_ret_1'], ['returns', 'value'])
+```
 
 ## Common tasks
 
 ### Train the model inside the backtest
 
-With `model_mode="train"` the model is trained on its own configured dates first, and `checkpoint` is not needed. The window never changes the training dates. The checkpoint the run wrote is recorded in `metrics["trained_checkpoint"]`. This session also switches to a long-short book with one name per side.
+With `model_mode="train"` the model is trained on its own configured dates first, and `checkpoint` is not needed. The window never changes the training dates. The checkpoint the run wrote is recorded in `metrics["trained_checkpoint"]`, and its unit is the run's `trained_run()`. This session also switches to a long-short book with one name per side.
 
 ```python
 >>> trained = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
@@ -292,6 +313,8 @@ With `model_mode="train"` the model is trained on its own configured dates first
 ... )).run()
 >>> Path(trained.metrics["trained_checkpoint"]).name
 'MomentumHead_total.joblib'
+>>> BacktestRun.open(trained.run_dir).trained_run().checkpoint == Path(trained.metrics["trained_checkpoint"])
+True
 >>> trained.weights["weight"].to_pandas().iloc[0]
 symbol
 AAA    0.0
@@ -327,11 +350,15 @@ Name: 2024-02-12 00:00:00, dtype: float64
 >>> cv = USEquityCrossectionSelectStockVectorBt(cv_config).run_cv()
 >>> len(cv.folds), dict(cv.weights.sizes), sorted(cv.metrics)
 (8, {'timestamp': 48, 'symbol': 6}, ['folds', 'notes', 'stitched'])
->>> sorted(p.name for p in (cv.run_dir / "folds").iterdir())[:2]
-['fold_0', 'fold_1']
+>>> cv_run = BacktestRun.open(cv.run_dir)
+>>> cv_run.kind, [fold.index for fold in cv_run.folds][:2], cv_run.trained_run() == walk
+('run_cv', [0, 1], True)
+>>> first_fold = cv_run.folds[0]
+>>> first_fold.kind, first_fold.window, first_fold.trained_run().path == walk.folds[0].path
+('fold', ('2024-02-12', '2024-02-19'), True)
 ```
 
-The top-level files of the run directory describe the stitched curve, its `predictions.zarr` holding the concatenated fold predictions, and `folds/fold_{i}/` holds each fold's own weights and equity. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the fitted window, after the purge, in the fold's `run.json`. A fold's in-sample window ends L bars after the fitted window's end, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
+The run describes the stitched curve: its weights, equity curve, settlements and metrics are the stitched pass's, and its prediction panel holds the concatenated fold predictions. Each fold is a child run of kind `"fold"`, in `cv_run.folds`, with its own weights, equity curve, settlements and metrics and the fold's trained unit. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the fitted window, after the purge, in the fold's `run.json`. A fold's in-sample window ends L bars after the fitted window's end, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
 
 ```python
 >>> stitched = cv.metrics["stitched"]
@@ -353,8 +380,9 @@ The top-level files of the run directory describe the stitched curve, its `predi
 (['execution', 'notes', 'whole'], True)
 >>> replay.metrics["whole"] == result.metrics["whole"]
 True
->>> sorted(p.name for p in replay.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
+>>> replay_run = BacktestRun.open(replay.run_dir)
+>>> replay_run.kind, replay_run.trained_run(), replay_run.predictions()
+('run_weights', None, None)
 ```
 
 `run()` and `run_cv()` still need a model:
@@ -446,7 +474,7 @@ config = CrossSectionBacktestConfig(
 )
 ```
 
-The wrapper satisfies the `Predictor` protocol. Its `predict_window` sets a prediction to NaN wherever `is_member` is false on that bar's date (a symbol missing from the membership panel is not a member) and forwards every other member to the model, so it works in train and load mode, in `run_cv()`, and with an ensemble. A stock that leaves the index keeps its prices, so it stays tradable and is never settled as a delisting: its prediction turns NaN and the rule decides what happens to a holding (`TopNConstructor` sells it at the next rebalance, `MeanVarianceOptimizer` holds it at an expected return of 0). `predictions.zarr` holds the masked predictions, the membership panel over the window is fingerprinted under `membership`, and `load_backtester_from_config` rebuilds the wrapper with its membership dataset. A bar whose date the membership panel does not cover raises `ValueError`, because unknown membership is not "not a member".
+The wrapper satisfies the `Predictor` protocol. Its `predict_window` sets a prediction to NaN wherever `is_member` is false on that bar's date (a symbol missing from the membership panel is not a member) and forwards every other member to the model, so it works in train and load mode, in `run_cv()`, and with an ensemble. A stock that leaves the index keeps its prices, so it stays tradable and is never settled as a delisting: its prediction turns NaN and the rule decides what happens to a holding (`TopNConstructor` sells it at the next rebalance, `MeanVarianceOptimizer` holds it at an expected return of 0). The run's prediction panel holds the masked predictions, the membership panel over the window is fingerprinted under `membership`, and `rebuild_backtester()` rebuilds the wrapper with its membership dataset. A bar whose date the membership panel does not cover raises `ValueError`, because unknown membership is not "not a member".
 
 Masking the prices with membership instead (a price panel `.where(is_member)`) makes a leaver untradable on its first non-member bar and settles it at its last member close, a sale that never happens live.
 
@@ -474,7 +502,7 @@ The run then carries two more metric blocks, each with `whole`, `in_sample` and 
 - `benchmark`: the benchmark's `symbol` and its own return statistics (total and annualized return, volatility, Sharpe, max drawdown, ...);
 - `relative`: the portfolio against the benchmark, named like vectorbt's statistics, with every `[%]` row in percent. The *relative NAV* is portfolio value divided by benchmark value. `Excess Return [%]` is that NAV minus 1 at the end (the alpha in the everyday sense), `Annualized Excess Return [%]` the same over one year, `Excess Max Drawdown [%]` the deepest fall of the relative NAV from its running peak (the *excess drawdown*, negative or 0), plus `Strategy Total Return [%]`, `Benchmark Total Return [%]`, `Total Return Difference [%]`, `Tracking Error [%]`, `Information Ratio`, `Beta`, `Correlation`, `CAPM Alpha [%]` (the annualized regression intercept), `Win Rate vs Benchmark [%]` (the share of bars with a higher return than the benchmark's), `Rebalance Win Rate vs Benchmark [%]` (the share of holding periods, from a bar with fills to the bar before the next, whose compounded return beats the benchmark's) and `Monthly Win Rate vs Benchmark [%]` (the same per calendar month). The strategy's own slices carry `Rebalance Win Rate [%]` and `Monthly Win Rate [%]`, the shares with a gain, with or without a benchmark.
 
-`report.html` draws the benchmark (dashed grey) beside the portfolio on the Performance tab (NAV, drawdown and monthly returns), puts the benchmark in the second column of the "Strategy vs" table, adds the "Relative to" table and the Excess tab, and turns the Rolling tab to excess return, information ratio and beta (see [The report page](#the-report-page)). `equity.zarr` also stores `benchmark_value` and `benchmark_returns`, `fingerprint.json` records the benchmark data under `benchmark_dataset`, and `config.json` rebuilds it. `run_cv()` compares the stitched curve and every fold the same way.
+`report.html` draws the benchmark (dashed grey) beside the portfolio on the Performance tab (NAV, drawdown and monthly returns), puts the benchmark in the second column of the "Strategy vs" table, adds the "Relative to" table and the Excess tab, and turns the Rolling tab to excess return, information ratio and beta (see [The report page](#the-report-page)). The run's `equity()` also holds `benchmark_value` and `benchmark_returns`, its `data_fingerprint` records the benchmark data under `benchmark_dataset`, and `rebuild_backtester()` rebuilds it. `run_cv()` compares the stitched curve and every fold the same way.
 
 ### The report page
 
@@ -488,7 +516,7 @@ When the run has an in-sample part, the headline numbers and the main tables are
 
 ### Track a backtest
 
-A backtest is tracked through its config's `tracker`, as a model is (see Track experiments in the model guide). The default, `NullTracker()`, sends nothing anywhere. `run()`, `run_cv()` and `run_weights()` each open one run in the project `<ClassName>_backtest`, unless the tracker sets `project`, named after the run directory and carrying the backtest's config. Its summary holds the `whole`, `in_sample` and `out_of_sample` blocks as `whole/<metric>` and so on, plus `benchmark` and `relative` when a benchmark ran; for `run_cv()` these are the stitched metrics. On MLflow a character it refuses in a key becomes `_`, so `whole/Total Return [%]` is logged as `whole/Total Return ___`. `report.html` is attached to the run when a run directory exists; a run kept in memory is tracked without it. The run opens before the backtest, so a backtest that raises is recorded as failed. With `model_mode="train"`, the model's training goes through the model config's own tracker. The tracker is written to `config.json` and rebuilt by `load_backtester_from_config`.
+A backtest is tracked through its config's `tracker`, as a model is (see Track experiments in the model guide). The default, `NullTracker()`, sends nothing anywhere. `run()`, `run_cv()` and `run_weights()` each open one run in the project `<ClassName>_backtest`, unless the tracker sets `project`, named after the run directory and carrying the backtest's config with the run's `market` and `data_fingerprint`. Its summary holds the `whole`, `in_sample` and `out_of_sample` blocks as `whole/<metric>` and so on, plus `benchmark` and `relative` when a benchmark ran; for `run_cv()` these are the stitched metrics. On MLflow a character it refuses in a key becomes `_`, so `whole/Total Return [%]` is logged as `whole/Total Return ___`. `report.html` is attached to the run when a run directory exists; a run kept in memory is tracked without it. The run opens before the backtest, so a backtest that raises is recorded as failed. With `model_mode="train"`, the model's training goes through the model config's own tracker. The tracker is part of the run's config; `rebuild("tracker")` rebuilds it.
 
 ```python
 >>> backtester.config.tracker
@@ -497,67 +525,72 @@ NullTracker(project=None)
 >>> tracked = USEquityCrossectionSelectStockVectorBt(dataclasses.replace(
 ...     backtester.config, tracker=WandbTracker(project="momentum_backtests", mode="offline")
 ... )).run()
->>> json.loads((tracked.run_dir / "config.json").read_text())["tracker"]
-{'project': 'momentum_backtests', 'entity': None, 'mode': 'offline', 'name': 'quantlab.tracking.wandb.WandbTracker'}
+>>> BacktestRun.open(tracked.run_dir).rebuild("tracker")
+WandbTracker(project='momentum_backtests', entity=None, mode='offline')
 ```
 
 With `mode="offline"` the run is written under `wandb/` (or `WANDB_DIR`) as the run `USEquityCrossectionSelectStockVectorBt_<timestamp>` of the project `momentum_backtests`, with `whole/Total Return [%]` and the other metrics in its summary and the report as an HTML panel named `report`.
 
-### Rebuild a run from its config
+### Rebuild a run
 
-`config.json` names every class by its dotted import path, so `load_backtester_from_config` builds the same backtester, including its price dataset and model, and `run()` repeats the backtest into a new directory. When the data changed since the original run, the rebuilt run logs a warning per changed dataset and continues.
+The run's config names every class by its dotted import path, so `rebuild_backtester()` builds the same backtester, including its price dataset and model, and `run()` repeats the backtest into a new directory. The run's data fingerprint becomes the rebuilt backtester's `expected_fingerprint`: when the data changed since the original run, the rebuilt run logs a warning per changed dataset and continues. `rebuild(field)` rebuilds one component field alone.
 
 ```python
->>> from quantlab.utils.module import load_backtester_from_config
->>> config = json.loads((result.run_dir / "config.json").read_text())
->>> config["name"], config["constructor"]
-('quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt', {'direction': 'long_only', 'top_n': 2, 'score_label': None, 'name': 'quantlab.portfolio.predefined.top_n.TopNConstructor'})
->>> again = load_backtester_from_config(config).run()
->>> again.metrics["whole"] == result.metrics["whole"]
-True
->>> again.run_dir == result.run_dir
-False
+>>> run = BacktestRun.open(result.run_dir)
+>>> run.rebuild("constructor")
+TopNConstructor(direction='long_only', top_n=2, score_label=None)
+>>> again = run.rebuild_backtester().run()
+>>> again.metrics["whole"] == result.metrics["whole"], again.run_dir == result.run_dir
+(True, False)
 ```
 
-The classes must be importable by dotted path. A class defined in a script is named `__main__.X` and cannot be found from another process, so the dataset, factors, model and backtester belong in modules. A config written by a train-mode run retrains when it is rebuilt; set `model_mode` to `"load"` and `checkpoint` to the recorded `trained_checkpoint` to replay the same model.
+Keyword arguments replace config fields by name, objects for component fields and plain values otherwise, so a recorded run is re-run as a variant; a name that is no config field is refused:
+
+```python
+>>> run.rebuild_backtester(rebalance_periods=10).config.rebalance_periods
+10
+>>> run.rebuild_backtester(rebalance=10)
+Traceback (most recent call last):
+  ...
+ValueError: ...: the run's config has no field(s) ['rebalance']; known: ['benchmark_dataset', 'checkpoint', 'constructor', 'cv_project_dir', 'end_date', 'fees', 'init_cash', 'model', 'model_mode', 'output_dir', 'price_dataset', 'rebalance_periods', 'sizing_basis', 'slippage', 'start_date', 'tracker']
+```
+
+The classes must be importable by dotted path. A class defined in a script is named `__main__.X` and cannot be found from another process, so the dataset, factors, model and backtester belong in modules. A train-mode run retrains when it is rebuilt as it is; to replay the same model, load the unit it trained:
+
+```python
+>>> trained_run = BacktestRun.open(trained.run_dir)
+>>> replayed_train = trained_run.rebuild_backtester(
+...     model_mode="load", checkpoint=str(trained_run.trained_run().checkpoint)
+... ).run()
+>>> bool((replayed_train.weights["weight"].fillna(0) == trained.weights["weight"].fillna(0)).all())
+True
+```
 
 ### Rebuild a run of given weights
 
-A `run_weights()` run has no model to predict its weights again, so it is replayed from the weights it saved: read the run directory's `weights.zarr` with `XrBackend().read(path).data` and pass the panel to `run_weights()`. When the price or benchmark dataset is a `FrameDataset` (every `quantlab.api.backtest` run, and the `WeightsVectorBt` session above), its panel has no store of its own, so the dataset writes it under `inputs/` (its `persist_with_run`) and `config.json` names that store relative to the run directory. Pass the directory the config was read from as `run_dir`; the run directory can be moved. A dataset read from a project store writes nothing and keeps its path. Continuing the `WeightsVectorBt` session:
+A `run_weights()` run has no model to predict its weights again, so it is replayed from the weights it saved: pass the run's `weights()` to `run_weights()`. When a dataset is a `FrameDataset` (every `quantlab.api.backtest` run, and the `WeightsVectorBt` session above), its panel has no store of its own, so the run keeps a copy (the dataset's `persist_with_run`) and the recipe names it relative to the run directory, which is therefore self-contained and can be moved; the rebuild resolves the copy against the directory, never against the working directory. A dataset read from a project store writes nothing and keeps its path. Continuing the `WeightsVectorBt` session:
 
 ```python
->>> import dataclasses, json, shutil, tempfile
->>> from pathlib import Path
->>> from quantlab.backend import XrBackend
->>> from quantlab.utils.module import load_backtester_from_config
+>>> import dataclasses, shutil, tempfile
+>>> from quantlab.runs.backtest_run import BacktestRun
 >>> kept = WeightsVectorBt(
 ...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
 ... ).run_weights(weights)
->>> sorted(p.name for p in kept.run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
->>> config = json.loads((kept.run_dir / "config.json").read_text())
->>> config["price_dataset"]["zarr_file_path"]
-'inputs/price_dataset.zarr'
->>> run_dir = Path(shutil.move(kept.run_dir, tempfile.mkdtemp()))
->>> rebuilt = load_backtester_from_config(config, run_dir=run_dir)
->>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+>>> kept_run = BacktestRun.open(kept.run_dir)
+>>> kept_run.kind, type(kept_run.rebuild("price_dataset")).__name__
+('run_weights', 'FrameDataset')
+>>> moved = BacktestRun.open(shutil.move(kept.run_dir, tempfile.mkdtemp()))
+>>> rebuilt = moved.rebuild_backtester()
+>>> replay = rebuilt.run_weights(moved.weights())
 >>> replay.simulation.value.values.round(2).tolist()
 [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
->>> json.loads((replay.run_dir / "metrics.json").read_text()) == json.loads(
-...     (run_dir / "metrics.json").read_text())
+>>> BacktestRun.open(replay.run_dir).metrics() == moved.metrics()
 True
->>> json.loads((replay.run_dir / "fingerprint.json").read_text()) == rebuilt.expected_fingerprint
+>>> BacktestRun.open(replay.run_dir).data_fingerprint == rebuilt.expected_fingerprint
 True
 ```
 
-The rebuilt `FrameDataset` reads the store into memory; the replay writes its own `inputs/` again, so its directory rebuilds on its own too. Its symbols are shown as they are: a `FrameDataset` names no store for a CRSP ticker sidecar (`ticker_store()` is `None`), even when read back from `inputs/`. A relative store path is never resolved against the working directory:
-
-```python
->>> load_backtester_from_config(config)
-Traceback (most recent call last):
-  ...
-ValueError: quantlab.dataset.memory.FrameDataset reads the store 'inputs/price_dataset.zarr', which is relative to the run directory the config was saved in; pass run_dir= (the directory holding config.json) to rebuild it. It is never resolved against the working directory.
-```
+The rebuilt `FrameDataset` reads the copy into memory; the replay keeps its own copy again, so its directory rebuilds on its own too. Its symbols are shown as they are: a `FrameDataset` names no store for a CRSP ticker sidecar (`ticker_store()` is `None`), even when read back from a run's copy.
 
 ### Compute the statistics without a backtester
 
@@ -636,7 +669,7 @@ The inputs of `report.html` have public builders in `quantlab.utils.backtest_rep
 
 | Function | Argument of `write_backtest_report` |
 |---|---|
-| `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`, the "Setup" lines, from the run's config mapping (`get_config()` or `config.json`) and its metric block |
+| `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`, the "Setup" lines, from the backtester's config mapping (`get_config()`) and its metric block |
 | `report_windows(timestamps, block, folds=None)` | `windows`, the timeline; `folds` are a `run_cv()` run's rows (`fold`, `training_window`, `traded`, `in_sample_range`) |
 | `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | the chart and benchmark arguments |
 | `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`, `turnover` and `bars_per_year`, the Portfolio and Rolling tabs |
@@ -648,19 +681,19 @@ A line of the summary is replaced by assigning to its key, which keeps its place
 >>> summary = report_summary(backtester.get_config(), result.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
-['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+['Bar interval', 'Signal', 'Rebalance every', 'Portfolio construction', 'Fees']
 >>> report_windows(result.simulation.value.timestamp.values, result.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
 >>> from quantlab.utils.backtest_report import report_chart_inputs
 >>> write_backtest_report(
-...     result.simulation.value, "report.html", title="replay", summary=summary,
+...     result.simulation.value, "replay.html", title="replay", summary=summary,
 ...     windows=report_windows(result.simulation.value.timestamp.values, result.metrics),
 ...     metrics=result.metrics,
 ...     **report_chart_inputs(result.metrics, ["Fills from the event-driven replay."],
 ...                           returns=result.simulation.returns, init_cash=1_000_000.0),
 ...     extra_tables={"Execution (event-driven)": {"Commissions": 12.5, "Dividends": 3}},
 ... )
->>> "<h2>Execution (event-driven)</h2>" in open("report.html").read()
+>>> "<h2>Execution (event-driven)</h2>" in open("replay.html").read()
 True
 ```
 
@@ -737,7 +770,7 @@ To keep the top-N rule with another score, `DecisionInputs(dataset, TopNConstruc
 | `fingerprint_inputs(start, end)`, `training_fingerprint_inputs()` | `(key, factor or label, strategy, first, last)` entries that the backtester hashes into `data_fingerprint` |
 | `collect()`, `train()` | train mode; `train` returns the checkpoint |
 | `check_checkpoint(path)`, `load(path)` | load mode; the check runs before any feature is computed |
-| `get_config()`, `from_config(config)` | `config.json`, and the rebuild in `load_backtester_from_config` through the class named in `"name"` |
+| `get_config()`, `from_config(config)` | the run's config, and its rebuild (`rebuild_backtester`) through the class named in `"name"` |
 
 The backtester reads no model config and calls no other model method. A config whose `model` lacks a member is refused at construction with a `TypeError` naming the missing members.
 
@@ -748,7 +781,7 @@ The backtester reads no model config and calls no other model method. A config w
 ['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
 ```
 
-A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble unit and records its `run.json`, the ensemble's checkpoint, as `trained_checkpoint`; in load mode `checkpoint` is that `run.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `load_backtester_from_config` rebuilds the ensemble from its `get_config()` in the run's `config.json`. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
+A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble unit, the run's `trained_run()`, and records the ensemble's checkpoint as `trained_checkpoint`; in load mode `checkpoint` is that `run.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `rebuild("model")` rebuilds the ensemble from its `get_config()` in the run's config. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -768,9 +801,11 @@ A `SeedEnsemble` (see Average several seeds in the model guide) is such a predic
 ('2024-01-01', '2024-02-23')
 >>> bool((replayed.weights["weight"].fillna(0) == result.weights["weight"].fillna(0)).all())
 True
->>> saved = json.loads((replayed.run_dir / "config.json").read_text())
->>> saved["model"]["seeds"], sorted(saved["data_fingerprint"])
-([0, 1, 2], ['factor[0]:PastReturn', 'price_dataset'])
+>>> replayed_run = BacktestRun.open(replayed.run_dir)
+>>> replayed_run.rebuild("model").seeds, sorted(replayed_run.data_fingerprint)
+((0, 1, 2), ['factor[0]:PastReturn', 'price_dataset'])
+>>> replayed_run.trained_run() == unit
+True
 ```
 
 `run_cv()` replays an ensemble's cross-validation the same way. `SeedEnsemble.train_cv` (see Average several seeds in the model guide) writes a walk-forward run laid out as a single model's, whose folds are ensemble units, each with its `run.json` as its checkpoint. With an ensemble as `model` and that directory as `cv_project_dir`, each fold loads its own ensemble, and its in-sample split starts from the fitted window the fold's record states, as for a single model's fold. The backtester needs no change for it. With `MomentumHead` the seeds agree again, so the stitched weights equal those of the single model's cross-validation above.
@@ -827,11 +862,13 @@ Traceback (most recent call last):
 ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_project_dir, the walk-forward unit a train_cv run wrote
 ```
 
-A stored config with a missing field is refused instead of being filled from current defaults:
+A recipe with a missing field is refused instead of being filled from current defaults:
 
 ```python
->>> del config["constructor"]
->>> load_backtester_from_config(config)
+>>> from quantlab.utils.module import load_backtester_from_config
+>>> recipe = backtester.get_config()
+>>> del recipe["constructor"]
+>>> load_backtester_from_config(recipe)
 Traceback (most recent call last):
   ...
 ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with
@@ -845,4 +882,4 @@ If a fold is missing from the middle of the walk-forward run's `run.json`, `run_
 - [model](model.md) for `train`, `train_cv`, `TrainedRun` and `predict_panel`.
 - [dataset](dataset.md) for the price dataset and [factor](factor.md) for the factors and labels a model consumes.
 - [backend](backend.md) for the Zarr stores the weights and equity curve are written to.
-- `BaseBacktester`, `BacktestResult`, `CVBacktestResult` and `MarketSpec` in `quantlab/base/backtest.py`; `BacktestConfig` and `CrossSectionBacktestConfig` in `quantlab/base/config.py`; `load_backtester_from_config` in `quantlab/utils/module.py`.
+- `BaseBacktester`, `BacktestResult`, `CVBacktestResult` and `MarketSpec` in `quantlab/base/backtest.py`; `BacktestConfig` and `CrossSectionBacktestConfig` in `quantlab/base/config.py`; `BacktestRun` in `quantlab/runs/backtest_run.py` and `open_run` in `quantlab/runs/directory.py`.

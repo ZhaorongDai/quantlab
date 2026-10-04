@@ -193,10 +193,11 @@ one per factor and label over the training data. The model says what it reads:
 `fingerprint_inputs(start, end)` and `training_fingerprint_inputs()` return
 `(key, factor or label, strategy, first, last)` entries, warm-up included,
 and the backtester only hashes them, so a predictor that composes several
-models reports the union of its members' inputs. They are written to
-`fingerprint.json` and into `config.json` as `data_fingerprint`. A backtester
-rebuilt by `load_backtester_from_config` compares its own fingerprints with
-the stored ones and logs a warning for every key that differs or is missing.
+models reports the union of its members' inputs. They are recorded in the run
+directory's `run.json` (`BacktestRun.data_fingerprint`). A backtester rebuilt
+by `BacktestRun.rebuild_backtester()` takes them as its
+`expected_fingerprint`, compares its own fingerprints with them and logs a
+warning for every key that differs or is missing.
 It never raises, because changed data can still be worth backtesting. If the
 run fails partway, a partial comparison runs before the error propagates, with
 a note that an interrupted read may explain the difference; that diagnostic

@@ -270,10 +270,13 @@ vectorbt, so the model learns the return the backtest trades.
 
 `run()` returns a `BacktestResult` holding the predictions, the target weights, the
 simulation and the metrics, and it writes all of them to a new run directory under
-`output_dir`:
+`output_dir`, which `BacktestRun` reads back:
 
 ```python
-print("Run directory:", sorted(p.name for p in result.run_dir.iterdir()))
+from quantlab.runs.backtest_run import BacktestRun
+
+run = BacktestRun.open(result.run_dir)
+print("Run:", run.kind, run.window, run.market)
 print("Predictions:", list(result.predictions.data_vars), dict(result.predictions.sizes))
 first_row = result.weights["weight"].isel(timestamp=0)
 held = first_row.where(first_row > 0, drop=True)
@@ -281,7 +284,7 @@ print("First rebalance:", dict(zip(held.symbol.values.tolist(), held.values.toli
 ```
 
 ```text
-Run directory: ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json', 'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
+Run: run ('2023-01-02', '2023-07-14') Market(fill_price_column='adjOpen', valuation_price_column='adjClose')
 Predictions: ['ret_5'] {'timestamp': 140, 'symbol': 16}
 First rebalance: {'S03': 0.25, 'S07': 0.25, 'S08': 0.25, 'S09': 0.25}
 ```
@@ -289,7 +292,8 @@ First rebalance: {'S03': 0.25, 'S07': 0.25, 'S08': 0.25, 'S09': 0.25}
 The predictions are themselves a panel, one variable per label. The weights panel holds the
 target fraction of the portfolio for every symbol on rebalance bars (here the four chosen
 symbols get 25 % each and the rest 0) and NaN on the bars in between, meaning "no change".
-`report.html` is an interactive equity-curve report you can open in a browser.
+The run directory also holds `report.html`, an interactive equity-curve report you can open in
+a browser.
 
 The metrics come in groups: `whole` for the whole window, `in_sample` and `out_of_sample` for
 the parts that do and do not overlap the model's training data, plus the date ranges of each
@@ -316,28 +320,23 @@ Out-of-sample ranges: [('2023-01-02', '2023-07-14')]
 Do not read anything into these numbers: the prices are a random walk, so any profit is luck.
 The point is the shape of the output.
 
-## Step 6: reproduce the run from its config
+## Step 6: reproduce the run from its directory
 
-Every object in the run was built from a config dataclass, and the run directory's
-`config.json` records all of them, nested: the backtester's parameters, the price dataset,
-the model with its factors and labels, and the checkpoint. Each entry names the class that
-built it by its dotted import path. `load_backtester_from_config` reads that file back and
-reconstructs the backtester, so the run can be repeated without the script that created it:
+Every object in the run was built from a config dataclass, and the run directory keeps them
+all as its recipe, nested: the backtester's parameters, the price dataset, the model with its
+factors and labels, and the checkpoint. Each entry names the class that built it by its dotted
+import path. `rebuild_backtester()` reconstructs the backtester from the recipe, so the run can
+be repeated without the script that created it:
 
 ```python
-import json
-
-from quantlab.utils.module import load_backtester_from_config
-
-saved = json.loads((result.run_dir / "config.json").read_text())
-rebuilt = load_backtester_from_config(saved)
+rebuilt = run.rebuild_backtester()
 again = rebuilt.run()
 same = np.allclose(again.simulation.value.values, result.simulation.value.values)
-print("Rebuilt from config.json, same equity curve:", same)
+print("Rebuilt from its run directory, same equity curve:", same)
 ```
 
 ```text
-Rebuilt from config.json, same equity curve: True
+Rebuilt from its run directory, same equity curve: True
 ```
 
 The re-run also compares the data it reads against the fingerprints recorded in the first

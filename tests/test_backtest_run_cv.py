@@ -37,7 +37,10 @@ What is locked here, and what turns it red:
   also gets its own backtest that starts flat from `init_cash`.
 - **D-24 / D-35, the run directory.** The top-level artifacts describe the
   stitched curve, and each fold is a child run of kind `fold` (`BacktestRun.folds`,
-  #133) holding its own weights, equity, settlements and metrics.
+  #133) holding its own weights, equity, settlements and metrics. Results are
+  read through `BacktestRun`; run file names appear only where the subject is
+  the layout itself (the directory listing) or a record is edited to check a
+  refusal (`_edited_project`).
 
 Everything is synthetic, CPU-only and offline. Configs are constructed
 directly, never through the factories in `quantlab/config/__init__.py` (D-32).
@@ -59,7 +62,7 @@ import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
-from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PredictionPanel
+from quantlab.base.portfolio import LabelSpec, PortfolioConstructor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun, Market
 from tests.backtest_fixtures import (
@@ -487,13 +490,6 @@ def test_folds_outside_the_config_window_are_skipped(
 # --------------------------------------------------------------------------
 
 
-def _strict_json(path: Path):
-    def _reject(token):
-        raise ValueError(f"non-standard JSON constant {token!r} in {path}")
-
-    return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject)
-
-
 def test_stitched_curve_is_one_continuous_simulation(
     tmp_path, cv_project, monkeypatch
 ):
@@ -609,8 +605,10 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         "folds",
     }
 
-    # --- the prediction panel: the concatenated fold predictions, stitched dir only
-    panel = PredictionPanel.read(run_dir / "predictions.zarr")
+    run = BacktestRun.open(run_dir)
+
+    # --- the prediction panel: the concatenated fold predictions, stitched run only
+    panel = run.predictions()
     assert panel.labels == (
         LabelSpec(name=f"fwd_ret_{HORIZON}", scale="raw", delay=1, span=HORIZON),
     )
@@ -626,17 +624,15 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
 
     # --- stitched artifacts --------------------------------------------------
     np.testing.assert_array_equal(
-        xr.open_zarr(run_dir / "weights.zarr")["weight"].values,
-        result.weights["weight"].values,
+        run.weights()["weight"].values, result.weights["weight"].values
     )
     np.testing.assert_array_equal(
-        xr.open_zarr(run_dir / "equity.zarr")["value"].values,
-        result.simulation.value.values,
+        run.equity()["value"].values, result.simulation.value.values
     )
 
     # --- per-fold child runs ------------------------------------------------
-    run = BacktestRun.open(run_dir)
     assert run.kind == "run_cv"
+    assert all(fold.predictions() is None for fold in run.folds)
     assert [fold.index for fold in run.folds] == [record["fold"] for record in result.folds]
     for fold, record in zip(run.folds, result.folds):
         assert fold.kind == "fold"
@@ -648,8 +644,8 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         )
         assert len(fold.settlements()) == len(record["simulation"].settlements)
 
-    # --- metrics.json --------------------------------------------------------
-    metrics = _strict_json(run_dir / "metrics.json")
+    # --- metrics -------------------------------------------------------------
+    metrics = run.metrics()
     assert set(metrics) == {"stitched", "folds", "notes"}
     assert "Total Return [%]" in metrics["stitched"]["whole"]
     assert metrics["notes"]
@@ -676,9 +672,7 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
     assert _day(factor["start"]) < first_day, "the factor range must include warm-up"
     assert _day(factor["end"]) == last_day
 
-    config = _strict_json(run_dir / "config.json")
-    assert config["cv_project_dir"] == str(cv_project.project_dir)
-    assert "data_fingerprint" not in config and "market" not in config
+    assert run.rebuild_backtester().config.cv_project_dir == str(cv_project.project_dir)
     assert run.market == Market(fill_price_column="adjOpen", valuation_price_column="adjClose")
     assert run.trained_run().path == cv_project.project_dir
 

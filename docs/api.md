@@ -472,37 +472,31 @@ ValueError: scores= needs top_n=, the number of names held per side.
 
 ### Keeping a run
 
-By default nothing is written. `output_dir=` writes the library's run directory, named `WeightsVectorBt_<timestamp>`, under that directory; `report.save(directory)` writes the same directory after the fact. The run directory holds `config.json`, `weights.zarr`, `equity.zarr`, `metrics.json`, `settlements.json`, `fingerprint.json` and `report.html`, and under `inputs/` the price and benchmark panels, which `config.json` names relative to the run directory. The directory can be moved; here it is moved before the run is rebuilt from it in two lines:
+By default nothing is written. `output_dir=` writes the library's run directory, named `WeightsVectorBt_<timestamp>`, under that directory; `report.save(directory)` writes the same directory after the fact. The run directory holds the rebuild recipe, the weights, the equity curve, the metrics, the settlements, the report and a copy of the price and benchmark panels, which the recipe names relative to the run directory; `run.json`, written last, records the market columns, the data fingerprints and the trained run used (none here). It is read through `quantlab.runs.backtest_run.BacktestRun`. The directory can be moved; here it is moved before the run is rebuilt from it:
 
 ```python
->>> import json
 >>> import shutil
->>> from pathlib import Path
->>> from quantlab.backend import XrBackend
->>> from quantlab.utils.module import load_backtester_from_config
+>>> from quantlab.runs.backtest_run import BacktestRun
 >>> kept = qa.backtest(prices, weights=weights, benchmark=index, output_dir=tempfile.mkdtemp())
 >>> kept.raw.run_dir.name.startswith("WeightsVectorBt_")
 True
->>> run_dir = Path(shutil.move(kept.raw.run_dir, tempfile.mkdtemp()))
->>> sorted(path.name for path in run_dir.iterdir())
-['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
->>> sorted(path.name for path in (run_dir / "inputs").iterdir())
-['benchmark_dataset.zarr', 'price_dataset.zarr']
->>> rebuilt = load_backtester_from_config(json.loads((run_dir / "config.json").read_text()), run_dir=run_dir)
->>> replay = rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+>>> run = BacktestRun.open(shutil.move(kept.raw.run_dir, tempfile.mkdtemp()))
+>>> run.kind, sorted(run.data_fingerprint)
+('run_weights', ['benchmark_dataset', 'price_dataset'])
+>>> type(run.rebuild("price_dataset")).__name__
+'FrameDataset'
+>>> replay = run.rebuild_backtester().run_weights(run.weights())
 >>> bool((replay.simulation.value == kept.raw.simulation.value).all())
 True
->>> replay.run_dir.parent == run_dir.parent, replay.run_dir != run_dir
+>>> replay.run_dir.parent == run.path.parent, replay.run_dir != run.path
 (False, True)
 ```
 
 The replay writes a run directory of its own, since the rebuilt config keeps `output_dir`. `save(directory)` writes the run directory of a report built without `output_dir`, by simulating the same weights again, and returns it:
 
 ```python
->>> saved = held.save(tempfile.mkdtemp())
->>> sorted(path.name for path in (saved / "inputs").iterdir())
-['price_dataset.zarr']
->>> json.loads((saved / "metrics.json").read_text())["whole"]["Total Return [%]"] == held.metrics["whole"]["Total Return [%]"]
+>>> saved = BacktestRun.open(held.save(tempfile.mkdtemp()))
+>>> saved.metrics()["whole"]["Total Return [%]"] == held.metrics["whole"]["Total Return [%]"]
 True
 ```
 

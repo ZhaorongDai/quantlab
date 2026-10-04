@@ -6,7 +6,7 @@ This script walks the whole pipeline once, in about a minute on a laptop CPU:
 2. compute the Alpha158 factor set and a forward-return label with KunQuant,
 3. train an XGBoost return model on the factors,
 4. backtest a long-only top-N strategy driven by the model's predictions,
-5. read the metrics and rebuild the backtester from its saved config.json.
+5. read the metrics and rebuild the backtester from its run directory.
 
 Nothing touches the network and no credentials are needed: no config names
 a tracker, so nothing is tracked. Everything is
@@ -27,7 +27,6 @@ if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import dataclasses
-import json
 import tempfile
 import warnings
 from pathlib import Path
@@ -49,7 +48,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.xgb import XGBoostRegressor
-from quantlab.utils.module import load_backtester_from_config
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 # Zarr 3 warns that consolidated metadata is not part of its spec; harmless.
@@ -210,7 +209,8 @@ def main() -> None:
         result = backtester.run()
 
         # 5. Results ----------------------------------------------------------
-        print("Run directory:", sorted(p.name for p in result.run_dir.iterdir()))
+        run = BacktestRun.open(result.run_dir)
+        print("Run:", run.kind, run.window, run.market)
         print("Predictions:", list(result.predictions.data_vars), dict(result.predictions.sizes))
         first_row = result.weights["weight"].isel(timestamp=0)
         held = first_row.where(first_row > 0, drop=True)
@@ -222,13 +222,12 @@ def main() -> None:
         print("In-sample range:", result.metrics["in_sample_range"])
         print("Out-of-sample ranges:", result.metrics["out_of_sample_ranges"])
 
-        # Rebuild the same backtester from the config.json of the run and
-        # run it again; the equity curve is reproduced exactly.
-        saved = json.loads((result.run_dir / "config.json").read_text())
-        rebuilt = load_backtester_from_config(saved)
+        # Rebuild the same backtester from its run directory and run it
+        # again; the equity curve is reproduced exactly.
+        rebuilt = run.rebuild_backtester()
         again = rebuilt.run()
         same = np.allclose(again.simulation.value.values, result.simulation.value.values)
-        print("Rebuilt from config.json, same equity curve:", same)
+        print("Rebuilt from its run directory, same equity curve:", same)
 
 
 if __name__ == "__main__":

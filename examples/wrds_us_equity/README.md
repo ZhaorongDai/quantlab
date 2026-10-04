@@ -127,7 +127,7 @@ With a benchmark (the default), the backtest also buys and holds the ETF from th
 
 `report.html` draws the benchmark NAV beside the portfolio's and adds excess-return and excess-drawdown rows; The pipeline log line prints the headline numbers. Pass `benchmark_dataset=None` in `backtest()` to skip the comparison.
 
-A backtest run directory can be rebuilt and re-run with `quantlab.utils.module.load_backtester_from_config`; see [docs/backtest.md](../../docs/backtest.md).
+A backtest run directory is read through `quantlab.runs.backtest_run.BacktestRun`, and `BacktestRun.open(run_dir).rebuild_backtester()` rebuilds it for a re-run; see [docs/backtest.md](../../docs/backtest.md).
 
 ## How the universe is handled
 

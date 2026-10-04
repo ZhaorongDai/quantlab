@@ -83,8 +83,8 @@ A run is read back through `TrainedRun` in `quantlab.runs.trained_run`, not by o
 (['f_a', 'f_b'], ['ret'], 20)
 >>> run.train_window, run.fitted_train_window, run.test_window
 (('2024-01-01', '2024-05-31'), ('2024-01-01', '2024-05-29T00:00:00'), ('2024-06-01', '2024-07-18'))
->>> run.config["name"]
-'quantlab.model.predefined.xgb.XGBoostRegressor'
+>>> sorted(run.trained_on)
+['factor_names', 'label_names', 'symbols']
 ```
 
 ### Purging the label lookahead
@@ -280,7 +280,7 @@ A library head fits the raw label unless `hyperparameters["training_target"]` na
 >>> ranked_run = TrainedRun.open(ranked.train())
 >>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
 [(0.679, 0.003), (0.674, 0.439)]
->>> ranked_run.config["hyperparameters"]["training_target"], "training_target" in ranked_run.resolved_hyperparameters
+>>> ranked.config.hyperparameters["training_target"], "training_target" in ranked_run.resolved_hyperparameters
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
 Traceback (most recent call last):
@@ -925,7 +925,7 @@ NullTracker(project=None)
 True
 >>> sorted(k for k in run.data.metrics if k.startswith("importance_gain/"))
 ['importance_gain/f_a', 'importance_gain/f_b']
->>> TrainedRun.open(checkpoint).config["tracker"]["name"]
+>>> tracked.config.tracker.import_path
 'quantlab.tracking.mlflow.MlflowTracker'
 ```
 
@@ -994,7 +994,7 @@ Overriding `_transform_target` changes what the library fits and nothing else; f
 
 A `TorchModel` head is a window, a network and a loss, plus whichever optional hooks it overrides; `MinimalHead` under Train a torch model is a complete one, and `CorrHead` shows the optional hooks. `quantlab/model/predefined/gats.py` and `quantlab/model/predefined/master.py` are complete heads that reproduce published models: they show a network built from hyperparameters with defaults, a target transform, the two stopping rules and, in MASTER, a hyperparameter checked against the factor names at construction. The base class owns the training panel, the warm-up, the training target and its mask, the loaders' seeding, the epoch loop, evaluation, the placement of predictions through `where`, the metrics and the checkpoints.
 
-A new ensemble subclasses `quantlab.model.ensemble.BaseEnsemble`, passes its members (at least two models; a label several members predict must have one config) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest's `config.json` can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded for member k in the ensemble's `run.json`). `ModelEnsemble` is the smallest complete example.
+A new ensemble subclasses `quantlab.model.ensemble.BaseEnsemble`, passes its members (at least two models; a label several members predict must have one config) to `BaseEnsemble.__init__`, and implements `get_config` and `from_config`; `get_config` must name the class in `"name"` so a backtest run's recipe can rebuild it. Everything else has a default that works for members of any classes. The optional hooks are `_combine(predictions)` (the combination rule, see Combine different models), `collect()`, `_member_predictions(start, end)` and `_member_panel_predictions()` (share one panel or one feature request when the members read the same data, as `SeedEnsemble` does), `fingerprint_inputs` / `training_fingerprint_inputs` (the data it reports reading) and `_member_seed(k)` (the seed recorded for member k in the ensemble's `run.json`). `ModelEnsemble` is the smallest complete example.
 
 ## Notes
 

@@ -8,7 +8,7 @@ as small as possible:
    least-squares model head,
 3. backtest a long-only top-N strategy with ``run()`` in train mode,
 4. replay the trained checkpoint as a long/short strategy in load mode,
-5. rebuild a run from its ``config.json`` and re-run it,
+5. rebuild a run from its run directory and re-run it,
 6. train a walk-forward cross-validation and backtest it with ``run_cv()``.
 
 Nothing touches the network and no credentials are needed: no config names
@@ -21,7 +21,6 @@ Run it from the repository root with::
 """
 
 import dataclasses
-import json
 import sys
 import tempfile
 import warnings
@@ -46,7 +45,7 @@ from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
-from quantlab.utils.module import load_backtester_from_config
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 # zarr warns on every write that consolidated metadata is not part of the
@@ -116,7 +115,7 @@ def fresh_dataset(config: DatasetConfig) -> StockDataset:
     """Return a dataset over a copy of ``config``.
 
     Reading never changes a dataset, so one object could be shared; a fresh
-    one per consumer keeps each config independent in its ``config.json``.
+    one per consumer keeps each config independent in its recipe.
     """
     return StockDataset(dataclasses.replace(config))
 
@@ -296,15 +295,14 @@ def main() -> None:
         print("  gross exposure", round(float(first.abs().sum()), 6),
               "net exposure", round(float(first.sum()), 6))
 
-        # --- 5. rebuild from config.json and re-run ---------------------------
+        # --- 5. rebuild from the run directory and re-run --------------------
         # The classes above live in this script (`__main__`), which the loader
         # can import only because it is the running script; in a project they
         # would live in an importable module.
-        saved = json.loads((ls_result.run_dir / "config.json").read_text())
-        rebuilt = load_backtester_from_config(saved)
+        rebuilt = BacktestRun.open(ls_result.run_dir).rebuild_backtester()
         again = rebuilt.run()
         same = np.allclose(again.simulation.value.values, ls_result.simulation.value.values)
-        print("\nrebuilt from config.json, identical equity curve:", same)
+        print("\nrebuilt from its run directory, identical equity curve:", same)
 
         # --- 6. walk-forward CV and run_cv() ---------------------------------
         # 100-bar training segments, 20-bar test segments, stepping 20 bars.

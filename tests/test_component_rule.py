@@ -180,14 +180,14 @@ def _recorded_frame_factor(stock, run_dir: Path) -> dict:
     held = FrameDataset(xr.open_zarr(stock.config.zarr_file_path).load())
     label = Forward(ForwardConfig(factor=_past_return(held), span=2))
     saved = _json(label.get_config())
-    saved["factor"]["dataset"] = held.persist_with_run(run_dir, "factor_dataset")
+    saved["factor"]["dataset"] = held.persist_with_run(run_dir, "copies/factor.zarr")
     return saved
 
 
 def test_a_nested_frame_dataset_rebuilds_against_run_dir(stock, tmp_path):
     run_dir = tmp_path / "run"
     saved = _recorded_frame_factor(stock, run_dir)
-    assert saved["factor"]["dataset"]["zarr_file_path"] == "inputs/factor_dataset.zarr"
+    assert saved["factor"]["dataset"]["zarr_file_path"] == "copies/factor.zarr"
 
     moved = tmp_path / "moved"
     run_dir.rename(moved)
@@ -195,7 +195,7 @@ def test_a_nested_frame_dataset_rebuilds_against_run_dir(stock, tmp_path):
 
     dataset = rebuilt.config.factor.config.dataset
     assert type(dataset) is FrameDataset
-    assert dataset.config.zarr_file_path == str(moved / "inputs/factor_dataset.zarr")
+    assert dataset.config.zarr_file_path == str(moved / "copies/factor.zarr")
     xr.testing.assert_equal(
         dataset.panel("2024-01-01", "2024-03-29"),
         stock.panel("2024-01-01", "2024-03-29"),
@@ -398,7 +398,7 @@ def test_a_model_whose_factor_reads_a_recorded_frame_dataset_rebuilds_against_ru
     run_dir = tmp_path / "run"
     saved = _json(_model(stock, tmp_path).get_config())
     held = FrameDataset(xr.open_zarr(stock.config.zarr_file_path).load())
-    saved["factors"][0]["dataset"] = held.persist_with_run(run_dir, "factor_dataset")
+    saved["factors"][0]["dataset"] = held.persist_with_run(run_dir, "copies/factor.zarr")
 
     rebuilt = rebuild(saved, run_dir=run_dir)
 

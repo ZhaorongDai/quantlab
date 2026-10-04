@@ -17,7 +17,6 @@ run's `config.json` must re-run it identically, bit for bit, on one machine.
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
 
 import numpy as np
 import pytest
@@ -25,7 +24,7 @@ import pytest
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.utils.module import load_backtester_from_config
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import make_stock_dataset
 from tests.topn_reference import BACKTEST, CASES, REFERENCE, scenario
 
@@ -63,9 +62,10 @@ def test_top_n_backtests_reproduce_the_pre_migration_reference(tmp_path, case):
     )
 
 
-def test_the_constructor_round_trips_through_config_json_and_reruns_identically(tmp_path):
-    original = _backtester(tmp_path, "long_short", output_dir=str(tmp_path / "runs")).run()
-    saved = json.loads((original.run_dir / "config.json").read_text())
+def test_the_constructor_round_trips_through_the_run_and_reruns_identically(tmp_path):
+    backtester = _backtester(tmp_path, "long_short", output_dir=str(tmp_path / "runs"))
+    original = backtester.run()
+    saved = backtester.get_config()
 
     assert saved["constructor"] == {
         "direction": "long_short",
@@ -75,7 +75,7 @@ def test_the_constructor_round_trips_through_config_json_and_reruns_identically(
     }
     assert not {"direction", "top_n", "score_label"} & set(saved)
 
-    rebuilt = load_backtester_from_config(saved)
+    rebuilt = BacktestRun.open(original.run_dir).rebuild_backtester()
     assert rebuilt.config.constructor == TopNConstructor(
         TopNConfig(direction="long_short", top_n=2)
     )

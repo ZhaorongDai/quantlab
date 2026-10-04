@@ -99,8 +99,8 @@ class PredictionPanel:
     """A run's predictions together with the specs of the labels they predict.
 
     Every backtest run with a model writes the predictions its rule read
-    into ``predictions.zarr`` (``FILE_NAME``) in its run directory: one
-    variable per label on ``(timestamp, symbol)``, the store's ``attrs``
+    as a prediction panel (``quantlab.runs.backtest_run.BacktestRun.predictions``):
+    one variable per label on ``(timestamp, symbol)``, the store's ``attrs``
     holding ``format_version`` (``FORMAT_VERSION``) and ``labels``, a JSON
     list of the specs' fields. An executor rebuilds the run's decision
     inputs, the rule bound to these specs included, with
@@ -136,11 +136,8 @@ class PredictionPanel:
     (LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
     """
 
-    #: The version of the ``predictions.zarr`` layout ``write`` writes and ``read`` reads.
+    #: The version of the store layout ``write`` writes and ``read`` reads.
     FORMAT_VERSION: ClassVar[int] = 1
-
-    #: The file name of the prediction panel inside a run directory.
-    FILE_NAME: ClassVar[str] = "predictions.zarr"
 
     predictions: xr.Dataset
     labels: tuple[LabelSpec, ...]
@@ -186,7 +183,7 @@ class PredictionPanel:
         Examples
         --------
         >>> import tempfile
-        >>> path = panel.write(Path(tempfile.mkdtemp()) / "predictions.zarr")
+        >>> path = panel.write(Path(tempfile.mkdtemp()) / "panel.zarr")
         >>> PredictionPanel.read(path).labels == panel.labels
         True
         """

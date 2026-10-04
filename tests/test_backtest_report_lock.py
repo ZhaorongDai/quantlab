@@ -19,6 +19,9 @@ Beside the hashes, the recipe ``report_windows`` documents for building
 ``run_cv()`` fold rows from ``metrics.json`` is checked against the bars each
 fold traded.
 
+The hashes lock bytes on disk, so they read ``report.html`` and ``metrics.json``
+by name; the fold-row check reads the run through ``BacktestRun`` (#134).
+
 A change that is meant to alter the page or the metrics updates the hashes;
 the failure message names the scenario and file, and the normalized text is
 written next to the run so it can be diffed.
@@ -39,6 +42,7 @@ import xarray as xr
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.utils.backtest_stats import bar_label
 from tests.backtest_fixtures import (
     make_model,
@@ -265,10 +269,11 @@ def test_report_and_metrics_are_byte_identical_to_before_the_public_builders(
 
 def test_fold_rows_built_from_metrics_json_are_the_bars_each_fold_traded(tmp_path, cv_project):
     run_dir = _run_cv(tmp_path, cv_project, benchmark=False)
-    metrics = json.loads((run_dir / "metrics.json").read_text(encoding="utf-8"))
-    for fold in metrics["folds"]:
+    run = BacktestRun.open(run_dir)
+    folds = {fold.index: fold for fold in run.folds}
+    for fold in run.metrics()["folds"]:
         whole = fold["metrics"]["whole"]
-        traded = xr.open_zarr(run_dir / "folds" / f"fold_{fold['fold']}" / "equity.zarr").timestamp.values
+        traded = folds[fold["fold"]].equity().timestamp.values
         assert (bar_label(whole["Start"]), bar_label(whole["End"])) == (
             bar_label(traded[0]), bar_label(traded[-1])
         )

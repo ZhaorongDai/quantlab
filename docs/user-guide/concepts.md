@@ -2,7 +2,7 @@
 
 This page describes how quantlab is put together: the stages of the research pipeline and
 what each one consumes and produces, the panel format every stage exchanges, the config
-dataclasses that drive every object, how a saved `config.json` is turned back into live
+dataclasses that drive every object, how a saved config is turned back into live
 objects, what a backtest run directory contains, and where each piece lives in the package.
 Read it after the [quickstart](../getting-started/quickstart.md), or whenever you want to know
 where a new piece of code belongs. The task-oriented pages of the user guide assume the
@@ -147,7 +147,7 @@ its dates to its factors and labels per request and a backtester does the same w
 window, so the dates you set on the outermost object win, and one dataset or factor object
 can serve several consumers.
 
-## Rebuilding objects from config.json
+## Rebuilding objects from their configs
 
 `get_config()` on any dataset, factor, model or backtester returns its config as a plain,
 JSON-friendly dict, with nested objects replaced by their own config dicts. The `name` entry
@@ -182,11 +182,12 @@ StockDataset Frozen({'timestamp': 25, 'symbol': 3})
 There is one loader per layer: `load_dataset_from_config`, `load_factor_from_config`,
 `load_model_from_config` and `load_backtester_from_config`. A model is rebuilt by the
 `from_config` class method of the class its config names, so the backtester loader rebuilds any
-predictor the same way. The backtester loader is the one
-you will use most, on the `config.json` of a run directory, as the last step of the quickstart
-shows. It insists that every config field is present in the file instead of filling gaps from
-current defaults, because a default that changed since the run would silently produce a
-different backtest.
+predictor the same way. A run directory is rebuilt through its reader, as the last step of the
+quickstart shows: `BacktestRun.open(run_dir).rebuild_backtester()` for a backtest,
+`TrainedRun.open(path).config` for a trained model's recipe (see below). The backtester rebuild
+insists that every config field is present in the recipe instead of filling gaps from current
+defaults, because a default that changed since the run would silently produce a different
+backtest.
 
 A rebuilt object refers to the same files as the original: the same Zarr stores, the same
 checkpoint. Rebuilding therefore reproduces a run as long as those files are unchanged, and
@@ -204,25 +205,32 @@ training and test windows, the factor names, label names and symbols the model w
 on, the metrics and the hyperparameters the library actually trained with.
 `train_cv()` writes one unit per fold under `fold_{i}/` and a `run.json` listing the folds,
 which the backtester reads to replay them. A run is read back through
-`quantlab.runs.trained_run.TrainedRun`, the only code that reads or writes these files
-(ADR 0018). Training and evaluation metrics go to the experiment tracker named in
+`quantlab.runs.trained_run.TrainedRun`; only the run layer, `quantlab/runs/`, reads or
+writes these files (ADR 0018, ADR 0020). Training and evaluation metrics go to the experiment tracker named in
 the model config (`tracker`); the default sends them nowhere.
 
 ## Backtest run directories
 
-Each call to `run()` writes a new directory under the backtest config's `output_dir`, named
-after the backtester class and the time. Its contents are:
+Each call to `run()`, `run_cv()` or `run_weights()` writes a new directory under the backtest
+config's `output_dir`, named after the backtester class and the time. It is staged and renamed
+into place when complete, so it is complete or absent, and it is read back through
+`quantlab.runs.backtest_run.BacktestRun` (or `quantlab.runs.directory.open_run`, which opens a
+trained run as well); only the run layer names its files. What it holds, by reader:
 
-| File | Contents |
-|------|----------|
-| `config.json` | the full nested config of the backtester, the price dataset and the model, plus the data fingerprints; input to `load_backtester_from_config` |
-| `weights.zarr` | the target-weight panel, one `weight` per `(timestamp, symbol)` |
-| `equity.zarr` | the simulated portfolio value and per-bar returns |
-| `metrics.json` | performance statistics for the whole window, the in-sample part and the out-of-sample part, with their date ranges and explanatory notes |
-| `settlements.json` | holdings turned into cash because their symbol delisted |
-| `predictions.zarr` | the predictions the portfolio construction rule read, with their label specs; `DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs from it without the model |
-| `fingerprint.json` | a SHA-256 digest, date range and shape of each input the run read |
-| `report.html` | an interactive plotly report of the equity curve and summary statistics |
+| Reader | Contents |
+|--------|----------|
+| `rebuild(field)`, `rebuild_backtester(**overrides)` | the rebuild recipe: the backtester's config with its nested datasets, model, rule and tracker; a dataset held in memory is copied into the run directory, named by its component path |
+| `kind`, `window`, `market`, `data_fingerprint`, `trained_run()` | the run's record, `run.json`, written last: the entry point that ran, the bars simulated, the fill and valuation price columns, a SHA-256 digest, date range and shape of each input the run read, and the trained unit the backtest used |
+| `execution`, `rebalance_periods` | the execution settings and the rebalance period of the recipe |
+| `weights()` | the target-weight panel, one `weight` per `(timestamp, symbol)` |
+| `equity()` | the simulated portfolio value and per-bar returns |
+| `metrics()` | performance statistics for the whole window, the in-sample part and the out-of-sample part, with their date ranges and explanatory notes |
+| `settlements()` | holdings turned into cash because their symbol delisted |
+| `predictions()` | the predictions the portfolio construction rule read, with their label specs; `DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs from it without the model |
+
+The directory also holds `report.html`, an interactive plotly report of the equity curve and
+summary statistics. A directory written in another format version, or without its `run.json`,
+is refused with a message to re-run it.
 
 The in-sample part of the window is the stretch of bars that overlaps the data the model was
 trained on (including the bars its labels looked ahead to); results there are optimistic by
@@ -230,13 +238,13 @@ construction. The out-of-sample part is everything else. Both are reported separ
 backtest that accidentally overlaps its training data is visible rather than silently
 flattering.
 
-The fingerprints make re-runs checkable. When a run is rebuilt from its `config.json`, the
+The fingerprints make re-runs checkable. When a run is rebuilt with `rebuild_backtester()`, the
 new run computes the same digests and logs a warning for every input whose data differs from
 what the original run read, for example because a store was updated with newer prices.
 
-A cross-validated backtest (`run_cv()`) writes the same files for the stitched curve across all
-folds and adds a `folds/` directory with each fold's own weights and equity. See
-[backtesting](backtesting.md).
+A cross-validated backtest (`run_cv()`) holds the same for the stitched curve across all folds,
+and each fold is a child run of kind `"fold"` (`BacktestRun.folds`) with its own weights,
+equity, settlements and metrics and its own trained unit. See [backtesting](backtesting.md).
 
 ## Package layout
 

@@ -32,6 +32,8 @@ What this file locks, and why each rule matters:
 - **D-11 score-label resolution**, and the D-03 invariant on randomized panels.
 - **ADR 0012.** `DecisionInputs.weights` is the per-bar loop, and a
   rule sees only the context of the bar it decides on. The rule round-trips through `get_config` / `from_config`.
+
+One test reads a run's HTML report, through `BacktestRun.report()`.
 """
 
 import contextlib
@@ -48,6 +50,7 @@ from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PortfolioContext
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.runs.backtest_run import BacktestRun
 from tests.decision_fixtures import decide_panel
 from tests.backtest_fixtures import FirstFeatureHead, make_model, make_stock_dataset, write_price_store
 
@@ -621,5 +624,5 @@ def test_a_tied_backtest_reports_the_event_in_metrics_and_the_report(tmp_path):
     # Six symbols, two picked: four tied out on each of the five rebalances.
     assert [record["count"] for record in block["bars"]] == [4] * 5
     assert block["count"] == 20
-    page = (result.run_dir / "report.html").read_text(encoding="utf-8")
+    page = BacktestRun.open(result.run_dir).report()
     assert ">Constructor event: tie_at_cutoff</th><td>20 on 5 bar(s)</td>" in page

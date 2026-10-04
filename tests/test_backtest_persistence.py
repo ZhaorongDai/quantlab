@@ -7,6 +7,12 @@ fingerprints and the market (read through `BacktestRun`, #133). An existing
 directory is never overwritten, and every JSON artifact is strict JSON (NaN and
 inf persisted as null, timestamps as ISO strings).
 
+The run's results are read back through `BacktestRun` (#134). File names stay
+literal only where the on-disk layout is the subject: the directory listing of
+D-24, the strict-JSON check over every JSON file, the existing directory that is
+never overwritten, and the recipe holding no run record (its `config.json` read
+directly). The report's HTML is read with `BacktestRun.report()`.
+
 D-27: the run records a data fingerprint for every dataset it read -- the price
 dataset over the fill and valuation columns, each factor's dataset over the
 columns it consumes, including the warm-up bars -- and a rebuild that supplies
@@ -228,15 +234,15 @@ def test_run_directory_holds_every_d24_artifact(overlap_run):
     assert not list(run_dir.rglob("*.tmp"))
 
 
-def test_weights_zarr_round_trips_identically(overlap_run):
+def test_the_weights_round_trip_identically(overlap_run):
     result = overlap_run["result"]
-    persisted = xr.open_zarr(result.run_dir / "weights.zarr").load()
+    persisted = BacktestRun.open(result.run_dir).weights()
     xr.testing.assert_identical(persisted, result.weights)
 
 
-def test_equity_zarr_has_value_and_returns_on_timestamp(overlap_run):
+def test_the_equity_curve_has_value_and_returns_on_timestamp(overlap_run):
     result = overlap_run["result"]
-    equity = xr.open_zarr(result.run_dir / "equity.zarr").load()
+    equity = BacktestRun.open(result.run_dir).equity()
     assert set(equity.data_vars) == {"value", "returns"}
     for name in ("value", "returns"):
         assert equity[name].dims == ("timestamp",)
@@ -693,9 +699,7 @@ def disjoint_run(tmp_path_factory):
 
 
 def _report_html(run: dict) -> str:
-    path = run["result"].run_dir / "report.html"
-    assert path.is_file(), sorted(p.name for p in path.parent.iterdir())
-    return path.read_text()
+    return BacktestRun.open(run["result"].run_dir).report()
 
 
 def _report_traces(html: str) -> dict[str, dict]:
@@ -711,7 +715,7 @@ def _report_traces(html: str) -> dict[str, dict]:
 
 def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_run):
     html = _report_html(overlap_run)
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
     in_sample_range = metrics["in_sample_range"]
     assert in_sample_range is not None, "the fixture window must overlap training"
 
@@ -736,7 +740,7 @@ def test_report_has_equity_and_drawdown_and_shades_the_in_sample_range(overlap_r
         "deepest_drawdown_valley",
         "deepest_drawdown_end",
     }
-    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"].values
+    value = BacktestRun.open(overlap_run["result"].run_dir).equity()["value"].values
     np.testing.assert_allclose(traces["equity"]["y"], value, rtol=1e-12)
     expected_drawdown = value / np.maximum.accumulate(value) - 1.0
     assert expected_drawdown.min() < 0, "the fixture run must draw down"
@@ -786,7 +790,7 @@ def test_report_carries_the_monthly_heatmap_in_a_second_div(overlap_run):
     assert heatmap["type"] == "heatmap"
     assert heatmap["x"] == [f"{month:02d}" for month in range(1, 13)]
 
-    timestamps = pd.DatetimeIndex(xr.open_zarr(run_dir / "equity.zarr")["timestamp"].values)
+    timestamps = pd.DatetimeIndex(BacktestRun.open(run_dir).equity()["timestamp"].values)
     years = sorted({str(year) for year in timestamps.year})
     assert heatmap["y"] == years
     assert len(heatmap["z"]) == len(years)
@@ -820,7 +824,7 @@ def test_report_carries_the_out_of_sample_numbers_and_the_axis_toggle(overlap_ru
     compounded by orders of magnitude readable.
     """
     html = _report_html(overlap_run)
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
     oos = metrics["out_of_sample"]
 
     assert "<h2>Strategy (out-of-sample)</h2>" in html
@@ -841,7 +845,7 @@ def test_report_carries_the_out_of_sample_numbers_and_the_axis_toggle(overlap_ru
 def test_report_split_table_carries_both_slices(overlap_run):
     """A run with an in-sample part shows every key row for both slices."""
     html = _report_html(overlap_run)
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
 
     assert "<h2>In-sample vs out-of-sample</h2>" in html
     start = html.index("<h2>In-sample vs out-of-sample</h2>")
@@ -865,8 +869,8 @@ def test_report_states_the_window_and_split_dates_as_text(overlap_run):
     timestamps, so the page and the metrics cannot drift apart.
     """
     html = _report_html(overlap_run)
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
-    value = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")["value"]
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
+    value = BacktestRun.open(overlap_run["result"].run_dir).equity()["value"]
 
     n_bars = value.sizes["timestamp"]
     first = _day(value.timestamp.values[0])
@@ -915,7 +919,7 @@ def test_report_marks_the_deepest_drawdown_on_the_persisted_equity_curve(overlap
     """
     html = _report_html(overlap_run)
     traces = _report_traces(html)
-    equity = xr.open_zarr(overlap_run["result"].run_dir / "equity.zarr")
+    equity = BacktestRun.open(overlap_run["result"].run_dir).equity()
     value = equity["value"].values
 
     valley = traces["deepest_drawdown_valley"]
@@ -982,7 +986,7 @@ def test_the_settling_run_draws_no_chart_markers_and_keeps_the_json(overlap_run)
     assert "liquidation" not in traces
 
     # ...and the artifact still carries every record, field for field.
-    persisted = _strict_json(result.run_dir / "settlements.json")
+    persisted = BacktestRun.open(result.run_dir).settlements()
     assert len(persisted) == len(result.simulation.settlements)
     for stored, live in zip(persisted, result.simulation.settlements):
         assert set(stored) == {
@@ -1005,12 +1009,12 @@ def test_report_and_metrics_carry_no_benchmark(overlap_run):
     html = _report_html(overlap_run)
     assert '"name":"equity"' in html
     assert '"name":"benchmark"' not in html
-    assert "benchmark" not in _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    assert "benchmark" not in BacktestRun.open(overlap_run["result"].run_dir).metrics()
     assert "benchmark" not in overlap_run["result"].metrics
 
 
 def test_metrics_json_carries_the_short_side_note(overlap_run):
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
     assert "notes" in metrics, sorted(metrics)
     notes = metrics["notes"]
     assert notes == overlap_run["backtester"]._report_notes()
@@ -1058,7 +1062,7 @@ def test_report_and_metrics_carry_the_one_trade_view_note(overlap_run):
     rather than left to whoever edits it next.
     """
     html = _report_html(overlap_run)
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
     notes = overlap_run["backtester"]._report_notes()
 
     assert len(notes) >= 2, notes
@@ -1086,7 +1090,7 @@ def test_metrics_json_carries_one_trade_view_and_no_nested_positions_block(
     on the page any more, and the surviving metric-table test already covers
     the top-level rows these numbers are now rendered as.
     """
-    metrics = _strict_json(overlap_run["result"].run_dir / "metrics.json")
+    metrics = BacktestRun.open(overlap_run["result"].run_dir).metrics()
     whole = metrics["whole"]
 
     assert "positions" not in whole, sorted(whole)

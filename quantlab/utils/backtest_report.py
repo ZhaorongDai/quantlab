@@ -238,7 +238,7 @@ def write_backtest_report(
     ...                      dims=("timestamp",), coords={"timestamp": ts})
     >>> write_backtest_report(
     ...     value,
-    ...     "report.html",
+    ...     "demo.html",
     ...     in_sample_range=("2024-01-01", "2024-01-02"),
     ...     notes=["No borrow cost is modelled."],
     ...     title="demo_run",
@@ -247,7 +247,7 @@ def write_backtest_report(
     ...              "out_of_sample": {"Total Return [%]": 6.0}},
     ...     init_cash=100.0,
     ... )
-    >>> "<h1>demo_run</h1>" in open("report.html").read()
+    >>> "<h1>demo_run</h1>" in open("demo.html").read()
     True
     """
     # The page lists the notes in its own section; inside the figure they

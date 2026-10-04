@@ -1,9 +1,10 @@
 """Backtests track through the config's tracker (ticket #103, ADR 0015).
 
 Every test puts a tracker in the backtest config and calls a public entry
-point (``run``, ``run_cv``, ``quantlab.api.backtest``,
-``load_backtester_from_config``); it asserts what an outsider sees: the run
-the tracker opened, its summary, its files and how it ended.
+point (``run``, ``run_cv``, ``quantlab.api.backtest``, a rebuild through
+``BacktestRun``); it asserts what an outsider sees: the run the tracker
+opened, its summary, its files and how it ended. The report's file name
+appears where the attached file is the subject.
 """
 
 import dataclasses
@@ -18,7 +19,6 @@ from quantlab.base.config import BacktestConfig
 from quantlab.base.tracking import NullTracker
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.tracking.wandb import WandbTracker
-from quantlab.utils.module import load_backtester_from_config
 from tests.test_backtest_contracts import REPO_ROOT
 from tests.test_backtest_persistence import (
     OVERLAP_END_BAR,
@@ -155,13 +155,13 @@ def test_run_cv_tracks_the_stitched_metrics_in_one_run(tmp_path, cv_project):  #
     assert run.finished and not run.failed
 
 
-def test_the_tracker_round_trips_through_config_json(tmp_path, trained):
+def test_the_tracker_round_trips_through_the_run(tmp_path, trained):
     tracker = WandbTracker(project="research", entity="team", mode="disabled")
     result = _tracked(tmp_path, trained, tracker).run()
 
-    saved = json.loads((result.run_dir / "config.json").read_text())
-    assert saved["tracker"] == tracker.get_config()
-    assert load_backtester_from_config(saved).config.tracker == tracker
+    run = BacktestRun.open(result.run_dir)
+    assert run.rebuild("tracker") == tracker
+    assert run.rebuild_backtester().config.tracker == tracker
 
 
 def test_a_backtest_under_the_default_config_imports_no_tracking_library(tmp_path):

@@ -24,6 +24,9 @@ What is locked, and what turns it red:
   sequential `train_cv`.
 
 Everything is synthetic, CPU-only and offline.
+
+The unit's file names appear here only in the directory-listing lock of its layout;
+results are read through `TrainedRun`.
 """
 
 import json

@@ -160,13 +160,12 @@ def load_model_from_config(config: dict):
 
     Examples
     --------
-    Given the ``config.json`` written beside a checkpoint:
+    Given a trained unit:
 
-    >>> import json
-    >>> with open("/data/models/xgb/config.json") as f:
-    ...     config = json.load(f)
-    >>> model = load_model_from_config(config)
-    >>> model = model.load("/data/models/xgb/best.joblib")
+    >>> from quantlab.runs.trained_run import TrainedRun
+    >>> unit = TrainedRun.open("/data/models/XGBoostRegressor_trial_20240601_120000_000000")
+    >>> model = load_model_from_config(unit.config)
+    >>> model = model.load(unit.checkpoint)
     """
     from quantlab.base.component import rebuild
 

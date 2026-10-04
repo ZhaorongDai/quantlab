@@ -2,12 +2,11 @@
 
 Every test puts a tracker in the model config and calls a public entry point
 (``train``, ``train_cv``, ``load_model_from_config``); what it asserts is what
-an outsider sees: the runs the tracker opened, how they ended and what was
-written to ``config.json``.
+an outsider sees: the runs the tracker opened, how they ended and what the
+trained unit records (read through ``TrainedRun``).
 """
 
 import ast
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -18,6 +17,7 @@ from quantlab.base.config import ModelConfig
 from quantlab.base.tracking import NullTracker
 from quantlab.tracking.wandb import WandbTracker
 from quantlab.utils.module import load_model_from_config
+from quantlab.runs.trained_run import TrainedRun
 from tests.test_backtest_contracts import REPO_ROOT, _python_files
 from tests.test_model_metrics_file import StubLibraryHead, _model
 from tests.torch_heads import OneBarHead
@@ -99,12 +99,12 @@ def test_two_train_calls_are_two_groups_in_one_project(tmp_path):
     assert first.group != second.group
 
 
-def test_the_tracker_round_trips_through_the_checkpoints_config_json(tmp_path):
+def test_the_tracker_round_trips_through_the_trained_units_config(tmp_path):
     tracker = WandbTracker(project="research", entity="team", mode="disabled")
 
     checkpoint = _model(tmp_path, tracker=tracker).train()
 
-    saved = json.loads((checkpoint.parent / "config.json").read_text())
+    saved = TrainedRun.open(checkpoint).config
     assert saved["tracker"] == {
         "project": "research",
         "entity": "team",

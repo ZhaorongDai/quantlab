@@ -7,11 +7,11 @@ What is locked here, and what turns it red:
   selected after it left, and the holding it had is sold at the next open
   (an order, not a delisting settlement);
 - a security that is never a member in the window is never selected;
-- the run's ``predictions.zarr`` carries the masked predictions;
+- the run's prediction panel (``BacktestRun.predictions``) carries the masked predictions;
 - the masked run equals the unmasked one up to the leaving date;
 - the membership panel is fingerprinted, and the run's
   ``BacktestRun.rebuild_backtester`` rebuilds the wrapper and replays the run;
-- ``run_cv`` masks every fold and the stitched ``predictions.zarr``;
+- ``run_cv`` masks every fold and the stitched prediction panel;
 - predicting a bar the membership panel does not cover is refused (unknown
   membership is not "not a member").
 
@@ -27,7 +27,6 @@ import xarray as xr
 
 from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
-from quantlab.base.portfolio import PredictionPanel
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import make_model, train_checkpoint
@@ -163,12 +162,12 @@ def test_a_leaver_is_not_selected_after_leaving_and_is_sold(scenario):
     assert not (orders["symbol"] == outsider).any()
 
 
-def test_predictions_zarr_carries_the_masked_predictions(scenario):
+def test_the_prediction_panel_carries_the_masked_predictions(scenario):
     result = scenario["masked_backtester"]("masked").run()
     leaver, outsider, first_held = (
         scenario["leaver"], scenario["outsider"], scenario["first_held"]
     )
-    stored = PredictionPanel.read(result.run_dir / PredictionPanel.FILE_NAME).predictions
+    stored = BacktestRun.open(result.run_dir).predictions().predictions
     (name,) = stored.data_vars
     panel = stored[name].to_pandas()
 
@@ -253,7 +252,7 @@ def test_run_cv_masks_every_fold_and_the_stitched_predictions(tmp_path):
     assert len(result.folds) > 1
     for fold in result.folds:
         assert fold["predictions"].sel(symbol=outsider).to_array().isnull().all()
-    stored = PredictionPanel.read(result.run_dir / PredictionPanel.FILE_NAME).predictions
+    stored = BacktestRun.open(result.run_dir).predictions().predictions
     assert stored.sel(symbol=outsider).to_array().isnull().all()
     assert stored.drop_sel(symbol=outsider).to_array().notnull().any()
     assert (result.weights["weight"].sel(symbol=outsider).fillna(0) == 0).all()

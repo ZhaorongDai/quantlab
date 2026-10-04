@@ -29,6 +29,11 @@ run-directory mechanism: every kind opens through ``open_run`` as the same
 ``written_at``), so a unit of the previous format version is refused; and a
 library model's ``resolved_hyperparameters`` is recorded in the unit's
 ``run.json``, never in ``config.json``.
+
+The unit's file names appear here only in the directory-listing lock of its layout,
+in opening a unit from its ``run.json`` (one of the paths ``open`` takes) and in
+rewriting or removing a record to check a refusal; results are read through
+``TrainedRun``.
 """
 
 import dataclasses

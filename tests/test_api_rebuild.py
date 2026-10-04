@@ -7,6 +7,10 @@ the run's weights through `run_weights` writes the same metrics, weights, equity
 data fingerprints, without a warning, even after the directory has moved. A run on a
 Zarr-backed dataset writes no `inputs/` and keeps its store paths.
 
+Results are read through `BacktestRun`. The recipe's `config.json` and the `inputs/`
+stores are named only where they are the subject: the relative store paths the recipe
+records, and the refusal of a relative path without `run_dir` (`_config`).
+
 Everything is synthetic, CPU-only and offline.
 """
 
@@ -25,7 +29,6 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.module import load_backtester_from_config
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
@@ -169,9 +172,7 @@ def test_a_run_on_a_zarr_backed_dataset_writes_no_inputs(tmp_path):
     run_dir = USEquityCrossectionSelectStockVectorBt(config).run_weights(weights).run_dir
 
     assert not (run_dir / "inputs").exists()
-    assert _config(run_dir)["price_dataset"] == json.loads(
-        json.dumps(to_jsonable(prices.get_config()))
-    )
+    assert BacktestRun.open(run_dir).rebuild("price_dataset") == prices
 
 
 # --------------------------------------------------------------------------- rebuild
@@ -218,7 +219,7 @@ def test_a_rebuilt_run_writes_a_self_contained_directory_again(tmp_path):
 
 def test_the_rebuilt_config_round_trips_through_the_loader(tmp_path):
     run_dir = _report(tmp_path / "runs").raw.run_dir
-    rebuilt = load_backtester_from_config(_config(run_dir), run_dir=run_dir)
+    rebuilt = BacktestRun.open(run_dir).rebuild_backtester()
 
     again = load_backtester_from_config(rebuilt.get_config())
 

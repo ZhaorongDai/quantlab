@@ -93,46 +93,30 @@ The backtester calls the rule's `bind(labels)` when it is built, before any data
 
 A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. `decide` turns it into a hold of the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `tie_at_cutoff` above or `closed_without_risk` below, with its `count` (the symbols it involved over all its bars) and one record per bar.
 
-The run's `config.json` records the rule with all its parameters and its risk model, and `load_backtester_from_config` rebuilds it.
+The run's recipe records the rule with all its parameters and its risk model; `BacktestRun.rebuild("constructor")` rebuilds the rule and `rebuild_backtester()` the whole backtester (see the backtest guide).
 
 ### A run's decision inputs without the model
 
-A run with a model (`run()` or `run_cv()`) also writes `predictions.zarr`, the predictions the rule read with their label specs, as a `PredictionPanel`. `DecisionInputs.from_run(run_dir)` rebuilds from the run's `config.json` the rule (bound to the panel's specs), the price dataset (an in-memory one from its copy under the run directory), the market columns, the execution settings and the rebalance period, and takes the anchor from the panel's first bar. It never imports the model, factor, label or backtest layers, so an executor outside the research pipeline, such as an event-driven backtest, can replay the run's decisions from the run directory alone; `weights` on the panel's predictions reproduces the run's weights. Here a run directory is written by hand with only what `from_run` reads:
+A run with a model (`run()` or `run_cv()`) also keeps the predictions the rule read with their label specs, as a `PredictionPanel` that `BacktestRun.predictions()` returns. `DecisionInputs.from_run(run_dir)` reads the run through `BacktestRun`: it rebuilds the rule (bound to the panel's specs) and the price dataset (an in-memory one from its copy under the run directory), takes the market columns, the execution settings and the rebalance period, and takes the anchor from the panel's first bar. It never imports the model, factor, label or backtest layers, so an executor outside the research pipeline, such as an event-driven backtest, can replay the run's decisions from the run directory alone; `weights` on the panel's predictions reproduces the run's weights. With `result` the `run()` of the first session of the [backtest guide](backtest.md#what-a-run-does), a top-2 rule rebalancing every five bars:
 
 ```python
->>> import tempfile, json
->>> from pathlib import Path
->>> from quantlab.base.portfolio import LabelSpec, PredictionPanel
->>> from quantlab.dataset.memory import FrameDataset
 >>> from quantlab.portfolio.decision_inputs import DecisionInputs
->>> run_dir = Path(tempfile.mkdtemp())
->>> panel = PredictionPanel(
-...     context.predictions.expand_dims(timestamp=[context.timestamp]),
-...     [LabelSpec(name="ret_5", scale="raw", delay=1, span=5)],
-... )
->>> _ = panel.write(run_dir / "predictions.zarr")
->>> bars = pd.bdate_range(end=context.timestamp, periods=3)
->>> close = xr.DataArray(
-...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
-...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
-... )
->>> prices = FrameDataset(xr.Dataset({"open": close, "close": close})).to_zarr(run_dir / "prices.zarr")
->>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
->>> _ = (run_dir / "config.json").write_text(json.dumps({
-...     "constructor": rule.get_config(),
-...     "price_dataset": prices.get_config(),
-...     "market": {"fill_price_column": "open", "valuation_price_column": "close"},
-...     "rebalance_periods": 1, "sizing_basis": "fill", "fees": 0.0, "slippage": 0.0,
-... }))
->>> inputs = DecisionInputs.from_run(run_dir)
->>> inputs.constructor == rule, inputs.anchor == context.timestamp
-(True, True)
->>> PredictionPanel.read(run_dir / "predictions.zarr").labels
-(LabelSpec(name='ret_5', scale='raw', delay=1, span=5),)
+>>> from quantlab.runs.backtest_run import BacktestRun
+>>> run = BacktestRun.open(result.run_dir)
+>>> run_inputs = DecisionInputs.from_run(run.path)
+>>> run_inputs.constructor == run.rebuild("constructor"), run_inputs.rebalance_periods
+(True, 5)
+>>> panel = run.predictions()
+>>> panel.labels
+(LabelSpec(name='open_ret_1', scale='raw', delay=1, span=1),)
+>>> run_inputs.anchor == panel.predictions.timestamp.values[0]
+True
+>>> run_inputs.weights(panel.predictions).equals(run.weights())
+True
 
 ```
 
-The file holds one variable per label on `(timestamp, symbol)`, and its attributes `format_version` and `labels` (the specs as a JSON list). A `run_weights()` run has no model and writes no panel.
+The panel holds one variable per label on `(timestamp, symbol)`, stored with its specs. A `run_weights()` run has no model and keeps no panel: its `predictions()` is `None`.
 
 ### One bar outside a backtest
 
@@ -142,14 +126,28 @@ An executor that keeps its own book, such as an event-driven backtest or a live 
 - `context(t, predictions, current_weights)` builds the bar's `PortfolioContext`. `predictions` and `current_weights` are the bar's values on `symbol`; a symbol missing from `current_weights` is not held, and a held symbol without a prediction joins the bar with NaN predictions. The tradability, the return window and staleness of the last `history_bars` valuation prices up to `t`, and the factor values at `t` are read from the dataset, so an executor keeps at most `history_bars` bars of prices. Given the holdings the backtest replayed, the context equals the backtest's.
 - `decide(context)` runs `construct` and checks the row against the weights contract. It returns a `Decision(weights, failure, events)`: the weights on the context's symbols, all NaN for a hold; the message of a `PortfolioConstructionError` that made the bar a hold, or `None`; and the events the row reported. A row that breaks the contract (NaN mixed with finite weights, a moved locked position, weight on a symbol neither tradable nor held) is a bug in the rule and raises `ValueError`.
 
-With `inputs` rebuilt from the run above (`DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)` builds them directly):
+Here `inputs` is built directly, `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)`, over three bars of prices on which `DDD` has no price at `context.timestamp` (`from_run` builds the same from a run):
 
 ```python
+>>> from quantlab.base.portfolio import LabelSpec
+>>> from quantlab.dataset.memory import FrameDataset
+>>> bars = pd.bdate_range(end=context.timestamp, periods=3)
+>>> close = xr.DataArray(
+...     [[10.0, 20.0, 30.0, 40.0], [10.5, 20.5, 30.5, 40.0], [11.0, 21.0, 31.0, np.nan]],
+...     dims=("timestamp", "symbol"), coords={"timestamp": bars, "symbol": symbols},
+... )
+>>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+>>> rule.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])
+>>> inputs = DecisionInputs(
+...     FrameDataset(xr.Dataset({"open": close, "close": close})), rule,
+...     fill_column="open", valuation_column="close", rebalance_periods=1,
+...     anchor=context.timestamp,
+... )
 >>> inputs.rebalances(context.timestamp)
 True
 >>> bar = inputs.context(
 ...     context.timestamp,
-...     panel.predictions.sel(timestamp=context.timestamp),
+...     context.predictions,
 ...     xr.DataArray([0.25], dims="symbol", coords={"symbol": ["DDD"]}),
 ... )
 >>> bar.locked.values

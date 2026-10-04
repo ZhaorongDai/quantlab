@@ -56,6 +56,7 @@ import xarray as xr
 from vectorbt.generic.enums import DrawdownStatus
 
 import quantlab.backtest.engine_vectorbt as engine_module
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.backtest.predefined.us_equity import (
@@ -653,11 +654,9 @@ def test_end_to_end_delisting_run_records_the_settlement(tmp_path):
     last_close = probe[MARKET.valuation_price_column].sel(symbol=picked).values[delist_bar - 1]
     assert first["price"] == pytest.approx(float(last_close), rel=1e-12)
 
-    import json
-
-    assert json.loads((result.run_dir / "settlements.json").read_text())[0]["axis_symbol"] == picked
+    assert BacktestRun.open(result.run_dir).settlements()[0]["axis_symbol"] == picked
     assert not (result.run_dir / "liquidations.json").exists()
-    execution = json.loads((result.run_dir / "metrics.json").read_text())["execution"]
+    execution = BacktestRun.open(result.run_dir).metrics()["execution"]
     assert set(execution) == {"rejected_order_count", "rejected_orders", "max_target_deviation"}
     assert execution["rejected_order_count"] == len(execution["rejected_orders"])
 

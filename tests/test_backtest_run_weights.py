@@ -18,6 +18,8 @@ only, since there is no training window to split against. What is locked here:
   `run_weights`, and the result's `run_dir` is `None`.
 - **Persistence.** With an output directory, `run_weights` writes the usual
   run-directory artifacts and its metrics carry no in/out-of-sample blocks.
+  Results, the HTML report included, are read through `BacktestRun`; file
+  names appear only in the directory listing (its subject).
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -190,7 +192,7 @@ def test_the_report_timeline_of_given_weights_is_one_row_of_traded_bars(stores):
         stores, run_result.weights, output_dir=str(stores["root"] / "weights_runs")
     )
 
-    page = (result.run_dir / "report.html").read_text(encoding="utf-8")
+    page = BacktestRun.open(result.run_dir).report()
     timeline = page[page.index("<h2>Windows</h2>") : page.index("</svg>")]
     timestamps = result.simulation.value.timestamp.values
     assert re.findall(r"<title>([^<]+)</title>", timeline) == [
@@ -351,12 +353,12 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
 
     assert result.run_dir.parent == stores["root"] / "runs"
     assert sorted(p.name for p in result.run_dir.iterdir()) == RUN_DIR_ARTIFACTS
-    metrics = json.loads((result.run_dir / "metrics.json").read_text())
+    run = BacktestRun.open(result.run_dir)
+    metrics = run.metrics()
     assert sorted(metrics) == ["benchmark", "execution", "notes", "relative", "whole"]
     assert sorted(metrics["benchmark"]) == ["axis_symbol", "symbol", "whole"]
     assert sorted(metrics["relative"]) == ["whole"]
     assert sorted(result.metrics) == sorted(metrics)
-    run = BacktestRun.open(result.run_dir)
     assert run.kind == "run_weights" and run.trained_run() is None
     assert run.rebuild("model") is None
     assert sorted(run.data_fingerprint) == ["benchmark_dataset", "price_dataset"]
@@ -364,7 +366,7 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
     np.testing.assert_array_equal(
         run.weights()["weight"].values, run_result.weights["weight"].values
     )
-    report = (result.run_dir / "report.html").read_text()
+    report = BacktestRun.open(result.run_dir).report()
     assert "In-sample" not in report
     assert "precomputed weights" in report
 

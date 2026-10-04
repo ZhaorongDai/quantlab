@@ -27,6 +27,10 @@ What is locked here, and what turns it red:
   quantlab module imports it, and it imports no backtest module.
 
 Everything is synthetic, CPU-only and offline.
+
+The unit's file names appear here only in the directory-listing lock of its layout
+and in rewriting or removing a record to check a refusal; results are read through
+`TrainedRun`.
 """
 
 import dataclasses

@@ -509,8 +509,8 @@ class FrameDatasetConfig(BaseDatasetConfig):
     >>> cfg = FrameDatasetConfig()
     >>> cfg.zarr_file_path is None
     True
-    >>> FrameDatasetConfig(zarr_file_path="inputs/price_dataset.zarr").zarr_file_path
-    'inputs/price_dataset.zarr'
+    >>> FrameDatasetConfig(zarr_file_path="copies/prices.zarr").zarr_file_path
+    'copies/prices.zarr'
     """
 
     #: Path of a Zarr store holding the panel, read at construction; ``None`` for a
