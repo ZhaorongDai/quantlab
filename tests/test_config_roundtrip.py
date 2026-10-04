@@ -171,7 +171,6 @@ def test_loaders_do_not_mutate_their_input(
 
     # The stand-in panels of tests/test_model_hierarchy.py rebuild themselves.
     model_saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
-    model_saved["resolved_hyperparameters"] = {"eta": 0.3}
     before = copy.deepcopy(model_saved)
     module_utils.load_model_from_config(model_saved)
     assert model_saved == before

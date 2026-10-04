@@ -36,7 +36,7 @@ from quantlab.model.ensemble import BaseEnsemble
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.metrics import volatility_level_metrics
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,
     PastReturnFactor,

@@ -12,7 +12,7 @@ validation, requesting the factor and label panels over the model's date
 range and collecting them into one dataset, the public ``train`` /
 ``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, and
 the directory layout of a training run, whose files are written and read
-through ``quantlab.utils.trained_run``. The fold boundaries of rolling
+through ``quantlab.runs.trained_run``. The fold boundaries of rolling
 cross-validation come from ``quantlab.utils.walk_forward``. It imports no training
 framework. The two variants live in the model layer:
 ``quantlab.model.torch_model.TorchModel`` (PyTorch: one cross-section of
@@ -46,15 +46,7 @@ from quantlab.base.component import Component
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
-from quantlab.utils.metrics import (
-    regression_panel_metrics,
-    scores_volatility_level,
-    volatility_level_metrics,
-)
-from quantlab.utils.symbol_axis import sort_symbol_axis
-from quantlab.utils.split import purge_segments
-from quantlab.utils.timer import Timer
-from quantlab.utils.trained_run import (
+from quantlab.runs.trained_run import (
     TrainedRun,
     evaluation_paths,
     fold_directory,
@@ -63,6 +55,14 @@ from quantlab.utils.trained_run import (
     write_model_run,
     write_walk_forward_run,
 )
+from quantlab.utils.metrics import (
+    regression_panel_metrics,
+    scores_volatility_level,
+    volatility_level_metrics,
+)
+from quantlab.utils.symbol_axis import sort_symbol_axis
+from quantlab.utils.split import purge_segments
+from quantlab.utils.timer import Timer
 from quantlab.utils.walk_forward import Fold, walk_forward_folds
 
 from .config import ModelConfig
@@ -113,7 +113,7 @@ class BaseModel(Component, ABC):
     ``train_cv`` use it to name files, and ``load()`` uses it to reject a
     file of the wrong kind before building any model.
 
-    ``train`` writes a trained unit (``quantlab.utils.trained_run``) under
+    ``train`` writes a trained unit (``quantlab.runs.trained_run``) under
     ``config.model_save_dir`` as ``{class}_trial_{timestamp}/``: the
     checkpoint ``{class}_total{suffix}``, the ``config.json`` that rebuilds
     the model, the evaluation files and ``run.json``, which records the
@@ -658,47 +658,6 @@ class BaseModel(Component, ABC):
         cfg.update(extra_kv)
         return cfg
 
-    @classmethod
-    def from_config(cls, config: dict, run_dir: "str | os.PathLike | None" = None) -> Self:
-        """Rebuild a model, with its factors, labels and tracker, from a ``get_config()`` dict.
-
-        The component rule (``quantlab.base.component``) rebuilds the
-        declared factor, label and tracker fields, passing ``run_dir`` down to
-        every dataset, and constructs the model with ``cls.config_cls``. The
-        key a library model's ``config.json`` carries as a training record
-        rather than a config field, ``resolved_hyperparameters``, is dropped
-        first; any other unknown key is refused. The caller's dict is never
-        modified.
-
-        Parameters
-        ----------
-        config : dict
-            The dict ``get_config()`` returned, or the ``config.json`` written
-            beside a checkpoint.
-        run_dir : str or os.PathLike, optional
-            The run directory the config was read from.
-
-        Returns
-        -------
-        Self
-            An untrained model; call ``load`` to restore a checkpoint.
-
-        Raises
-        ------
-        ValueError
-            If ``config`` holds a key ``config_cls`` does not have.
-
-        Examples
-        --------
-        >>> rebuilt = FirstFeatureHead.from_config(model.get_config())
-        >>> rebuilt.get_config() == model.get_config()
-        True
-        """
-        # `resolved_hyperparameters` (what the library actually trained with)
-        # is a record, not a config field.
-        config = {k: v for k, v in config.items() if k != "resolved_hyperparameters"}
-        return super().from_config(config, run_dir)
-
     @property
     def labels(self) -> list:
         """The label objects the model is trained on, in config order.
@@ -942,6 +901,19 @@ class BaseModel(Component, ABC):
         write_model_config(p.parent, self.get_config())
         self._write_checkpoint(p)
 
+    def _resolved_hyperparameters(self) -> dict | None:
+        """Return the hyperparameters actually in effect, or None to record nothing.
+
+        A head that merges user overrides into library defaults overrides
+        this to expose the merged result. When not None, ``_train_into``
+        records it in the trained unit's ``run.json``
+        (``TrainedRun.resolved_hyperparameters``), so a run stays
+        reproducible after defaults change. It is a record, not an input:
+        ``config.hyperparameters`` is left as the user wrote it, and
+        ``config.json`` never holds it.
+        """
+        return None
+
     def _trained_on(self) -> dict:
         """Return what the model was trained on, for ``run.json``.
 
@@ -1031,7 +1003,7 @@ class BaseModel(Component, ABC):
             If ``p`` does not exist.
         ValueError
             If the suffix is wrong, the checkpoint is not part of a trained
-            run ``quantlab.utils.trained_run.TrainedRun`` can open, or the
+            run ``quantlab.runs.trained_run.TrainedRun`` can open, or the
             recorded variables differ from the model's declared variables.
 
         Examples
@@ -1284,7 +1256,7 @@ class BaseModel(Component, ABC):
         and its ``config.json`` into ``run_dir``. When ``_fit`` returns
         metrics, ``ic_series.csv`` and ``test_predictions.zarr`` are written
         beside it, see ``_write_evaluation_files``. Last, ``run.json`` makes
-        ``run_dir`` a trained unit (``quantlab.utils.trained_run``), and the
+        ``run_dir`` a trained unit (``quantlab.runs.trained_run``), and the
         fitted window becomes ``fitted_train_bounds``. No trial directory is
         created: ``train`` and every ``train_cv`` fold pass the directory
         they lay out themselves.
@@ -1328,6 +1300,7 @@ class BaseModel(Component, ABC):
                 test_window=self.test_bounds,
                 trained_on=self._trained_on(),
                 metrics=metrics,
+                resolved_hyperparameters=self._resolved_hyperparameters(),
             )
             self._fitted_window = fitted
         return checkpoint, metrics
@@ -1616,7 +1589,7 @@ class BaseModel(Component, ABC):
 
         A new trial directory ``{class}_trial_{timestamp}/`` is created under
         ``model_save_dir`` and becomes a ``"walk_forward"`` unit
-        (``quantlab.utils.trained_run``). Every fold trains on its own dates
+        (``quantlab.runs.trained_run``). Every fold trains on its own dates
         into its own ``"model"`` unit ``fold_{i}/``, with the checkpoint
         ``{class}_cv_fold_{i}{suffix}`` and a tracking run of that name. The
         fold means of every ``train_*`` / ``val_*`` / ``test_*`` metric,

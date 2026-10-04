@@ -491,8 +491,8 @@ class XGBoostRegressor(LibraryModel):
     ``learning_rate`` or ``n_estimators`` are rewritten to the native names
     first; giving both an alias and its native name raises ``ValueError``.
     The user's dict is never modified, and the parameters actually used are
-    recorded under ``resolved_hyperparameters`` in the checkpoint's
-    ``config.json`` and in the run config.
+    recorded under ``resolved_hyperparameters`` in the trained unit's
+    ``run.json`` and in the run config.
 
     With ``hyperparameters["early_stopping"]`` set and validation rows, ``xgb.callback.EarlyStopping`` watches the
     validation ``rmse``; ``rmse`` is appended to a user ``eval_metric`` that

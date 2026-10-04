@@ -146,10 +146,8 @@ def load_model_from_config(config: dict):
     A thin wrapper over the component rule,
     ``quantlab.base.component.rebuild``: the class named by
     ``config["name"]`` rebuilds itself through its own ``from_config``, so
-    any predictor (a model, an ensemble) is read back. ``BaseModel.from_config``
-    drops the training record a library model's ``config.json`` carries,
-    ``resolved_hyperparameters``; any other unknown key is refused with
-    ``ValueError``. The caller's dict is never modified.
+    any predictor (a model, an ensemble) is read back. An unknown key is
+    refused with ``ValueError``. The caller's dict is never modified.
 
     Parameters
     ----------

@@ -1,5 +1,6 @@
 """ADR 0018: a training run's files are written and read only through
-`quantlab/utils/trained_run.py`.
+the run layer: `quantlab/runs/trained_run.py` and, for the `run.json` every run
+type shares, the run-directory mechanism `quantlab/runs/directory.py` (#132).
 
 What is locked here, and what turns it red, in the library, the examples and the
 Python sessions (`>>>` / `...` lines) of the docs, docstrings included:
@@ -22,7 +23,10 @@ import re
 
 from tests.test_backtest_contracts import REPO_ROOT
 
-OWNER = REPO_ROOT / "quantlab/utils/trained_run.py"
+OWNERS = (
+    REPO_ROOT / "quantlab/runs/trained_run.py",
+    REPO_ROOT / "quantlab/runs/directory.py",
+)
 
 _RECORD_FILES = (
     "run.json", "cv_folds.json", "ensemble.json", "ic_series.csv", "test_predictions.zarr"
@@ -63,7 +67,7 @@ def _python_sources():
     """Yield each library and example file with its code lines; a docstring keeps only its session code."""
     for root in ("quantlab", "examples"):
         for path in sorted((REPO_ROOT / root).rglob("*.py")):
-            if path == OWNER or "__pycache__" in path.parts:
+            if path in OWNERS or "__pycache__" in path.parts:
                 continue
             text = path.read_text(encoding="utf-8")
             docstrings = _docstring_lines(ast.parse(text, filename=str(path)))

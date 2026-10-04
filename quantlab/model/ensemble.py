@@ -4,7 +4,7 @@
 come from: the ``Predictor`` members derived from the members (labels,
 label delays and scales, training and test windows), prediction by
 combining the members' predictions, and the ``"ensemble"`` trained unit
-(``quantlab.utils.trained_run``) that ``train()`` writes and ``load`` and
+(``quantlab.runs.trained_run``) that ``train()`` writes and ``load`` and
 ``check_checkpoint`` read.
 
 Each label is combined over the members that predict it (ADR 0013): the
@@ -73,19 +73,19 @@ import xarray as xr
 
 from quantlab.base.component import Component
 from quantlab.base.model import BaseModel
-from quantlab.utils.ensemble import average_predictions, member_correlation
-from quantlab.utils.metrics import (
-    ic_panel_metrics,
-    scores_volatility_level,
-    volatility_level_metrics,
-)
-from quantlab.utils.trained_run import (
+from quantlab.runs.trained_run import (
     TrainedRun,
     evaluation_paths,
     fold_directory,
     member_directory,
     new_trial_directory,
     write_ensemble_run,
+)
+from quantlab.utils.ensemble import average_predictions, member_correlation
+from quantlab.utils.metrics import (
+    ic_panel_metrics,
+    scores_volatility_level,
+    volatility_level_metrics,
 )
 
 
@@ -539,7 +539,7 @@ class BaseEnsemble(Component, ABC):
         evaluation files of the combined prediction (``ic_series.csv``,
         ``test_predictions.zarr``, see ``_write_evaluation_files``) and
         last, atomically, ``run.json``, which makes it an ``"ensemble"``
-        unit (``quantlab.utils.trained_run``) recording the members, the
+        unit (``quantlab.runs.trained_run``) recording the members, the
         windows and the metrics. If a member or the ensemble evaluation
         fails, the error propagates, no ``run.json`` is written and the
         files already written stay. Call ``collect()`` first.

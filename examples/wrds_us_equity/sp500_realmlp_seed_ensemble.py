@@ -51,7 +51,7 @@ from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.realmlp import RealMLPRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.

@@ -29,7 +29,7 @@ from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.metrics import ic_panel_metrics
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,
     SeededHead,

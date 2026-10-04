@@ -17,9 +17,13 @@ What is locked here, and what turns it red:
 - the tracking root module imports no tracking library, wandb is imported by the W&B
   tracker only and mlflow by the MLflow tracker only (ADR 0015);
 - every `predefined` package's `__init__.py` is empty.
-- the walk-forward and trained-run modules (`quantlab/utils/walk_forward.py`,
-  `quantlab/utils/trained_run.py`), which the base layer imports, import no quantlab
-  module outside `quantlab.utils`.
+- the walk-forward module (`quantlab/utils/walk_forward.py`), which the base layer
+  imports, imports no quantlab module outside `quantlab.utils`;
+- the run layer (`quantlab/runs`) imports only `quantlab.utils`, itself and the
+  base root modules it names (`RUNS_BASE_MODULES`), never the model, factor, label,
+  backtest or portfolio layers; its `__init__.py` is empty; and the trained-run
+  module imports no quantlab module outside `quantlab.utils` and the run-directory
+  mechanism, so the base layer may import it.
 
 Static checks, plus one subprocess import; offline.
 """
@@ -135,12 +139,44 @@ def test_only_its_tracker_imports_a_tracking_library(library):
     assert importers == [f"quantlab/tracking/{library}.py"]
 
 
-@pytest.mark.parametrize("module", ["walk_forward", "trained_run"])
-def test_the_utils_modules_the_base_layer_uses_stay_in_utils(module):
-    path = REPO_ROOT / "quantlab/utils" / f"{module}.py"
+def test_the_walk_forward_module_stays_in_utils():
+    path = REPO_ROOT / "quantlab/utils/walk_forward.py"
     outside = sorted(
         name
         for name in _resolved_imports(path)
         if name.startswith("quantlab") and not name.startswith("quantlab.utils")
+    )
+    assert outside == [], outside
+
+
+RUNS = REPO_ROOT / "quantlab/runs"
+#: The base root modules the run layer may import.
+RUNS_BASE_MODULES = ()
+
+
+def test_the_run_layer_imports_only_utils_and_named_base_modules():
+    files = _python_files(RUNS)
+    # Positive control: the mechanism and the trained run are seen.
+    assert {"directory.py", "trained_run.py"} <= {path.name for path in files}
+    allowed = ("quantlab.utils", "quantlab.runs", *RUNS_BASE_MODULES)
+    offenders = {
+        path.name: sorted(
+            name
+            for name in _resolved_imports(path)
+            if name.startswith("quantlab")
+            and not any(_is_or_under(name, root) for root in allowed)
+        )
+        for path in files
+    }
+    assert {name: found for name, found in offenders.items() if found} == {}
+    assert (RUNS / "__init__.py").stat().st_size == 0
+
+
+def test_the_trained_run_module_imports_no_quantlab_layer():
+    allowed = ("quantlab.utils", "quantlab.runs.directory")
+    outside = sorted(
+        name
+        for name in _resolved_imports(RUNS / "trained_run.py")
+        if name.startswith("quantlab") and not any(_is_or_under(name, a) for a in allowed)
     )
     assert outside == [], outside

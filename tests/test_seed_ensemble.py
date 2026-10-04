@@ -41,7 +41,7 @@ import xarray as xr
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.test_backtest_contracts import (
     REPO_ROOT,
     _is_or_under,
@@ -261,8 +261,8 @@ def test_check_checkpoint_refuses_bad_units(tmp_path):
     with pytest.raises(FileNotFoundError):
         ensemble.check_checkpoint(checkpoint.parent / "missing.json")
 
-    _rewrite(checkpoint, lambda saved: saved.update(format_version=2))
-    with pytest.raises(ValueError, match="format_version 2.*retrain"):
+    _rewrite(checkpoint, lambda saved: saved.update(format_version=99))
+    with pytest.raises(ValueError, match="format_version 99.*retrain"):
         ensemble.check_checkpoint(checkpoint)
 
     checkpoint.write_text(original)

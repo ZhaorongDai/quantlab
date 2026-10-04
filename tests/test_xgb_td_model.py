@@ -41,6 +41,7 @@ from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined._support.devices import xgboost_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor
 from quantlab.model.predefined.xgb_td import XGBTDRegressor, _XGBTDEstimator
+from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.walk_forward import walk_forward_folds
 from tests.label_stubs import StubLabel
@@ -329,12 +330,13 @@ def test_unknown_hyperparameter_raises_type_error(tmp_path):
         model.train()
 
 
-def test_resolved_hyperparameters_are_written_to_config_json_and_the_run(tmp_path, tracker):
+def test_resolved_hyperparameters_are_recorded_in_the_trained_run_and_the_run(tmp_path, tracker):
     hyper = {**FAST, "lr": 0.1}
     factors, labels = _panels(seed=20)
     _train(tmp_path, factors, labels, hyperparameters=dict(hyper), early_stopping=True, patience=4, tracker=tracker)
 
-    saved = json.loads((_only_checkpoint(tmp_path / "ckpt").parent / "config.json").read_text())
+    trained_run = TrainedRun.open(_only_checkpoint(tmp_path / "ckpt"))
+    saved = trained_run.config
     expected = {
         **XGBTDRegressor.DEFAULT_PARAMS,
         "random_state": 42,
@@ -342,7 +344,8 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_the_run(tmp_pat
         "device": xgboost_default_device(),
         "early_stopping_rounds": 4,
     }
-    assert saved["resolved_hyperparameters"] == expected
+    assert trained_run.resolved_hyperparameters == expected
+    assert "resolved_hyperparameters" not in saved
     assert saved["hyperparameters"] == {**hyper, "early_stopping": True, "early_stopping_patience": 4}
 
     rec = tracker.runs[0]

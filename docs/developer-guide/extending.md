@@ -658,11 +658,10 @@ True
 ```
 
 `_resolved_hyperparameters` is optional. When it returns a mapping, the
-hyperparameters actually in effect are recorded in the checkpoint's
-`config.json`, so a run stays reproducible if a default changes. It is called
-before `_init_model` (to log the run config), so either compute it from
-`self.config`, as here, or return `None` until `_init_model` has run, as
-`XGBoostRegressor` does. The checkpoint
+hyperparameters actually in effect are recorded in the trained unit's
+`run.json` (`TrainedRun.resolved_hyperparameters`), so a run stays
+reproducible if a default changes. It is read after `_init_model` (to log the
+run config) and again once the fit is done (for `run.json`). The checkpoint
 is a joblib pickle of `self.model`; only load files you trust.
 
 `TorchModel` is for PyTorch networks fed through a standard `Dataset` and

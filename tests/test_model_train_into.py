@@ -22,7 +22,7 @@ Everything is synthetic, CPU-only and offline.
 import numpy as np
 import pytest
 
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.test_model_metrics_file import StubLibraryHead, _model
 from tests.torch_heads import OneBarHead
 from tests.tracking_fixtures import RecordingTracker

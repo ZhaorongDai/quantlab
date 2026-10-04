@@ -92,7 +92,7 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
     A head implements three hooks: ``_init_model``, ``_fit_model`` and
     ``_forward``. ``_transform_feature`` (inf to NaN), ``_transform_target``
     (``training_target``, else the raw label), ``_loss`` (MSE),
-    ``_resolved_hyperparameters`` and the inherited ``_compute_metrics``
+    and the inherited ``_resolved_hyperparameters`` and ``_compute_metrics``
     have defaults that may be overridden.
     ``{split}_loss`` is ``_loss`` on the training target per bar, averaged
     over bars; the other metrics score the raw first label. Checkpoints are
@@ -234,33 +234,6 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         ``x`` in place.
         """
         return np.where(np.isinf(x), np.float32(np.nan), x)
-
-    def _resolved_hyperparameters(self) -> dict | None:
-        """Return the hyperparameters actually in effect, or None to record nothing.
-
-        A head that merges user overrides into library defaults in
-        ``_init_model`` overrides this to expose the merged result. When not
-        None, ``_fit`` adds it to the tracking run's config and ``get_config`` adds
-        it to ``config.json`` as ``resolved_hyperparameters``, so a run stays
-        reproducible after defaults change. It is a record, not an input:
-        ``config.hyperparameters`` is left as the user wrote it, and the
-        config loader drops the key when rebuilding.
-        """
-        return None
-
-    def get_config(self) -> dict:
-        """Return ``BaseModel.get_config()`` plus any resolved hyperparameters.
-
-        Examples
-        --------
-        >>> "resolved_hyperparameters" in head.get_config()
-        False
-        """
-        cfg = super().get_config()
-        resolved = self._resolved_hyperparameters()
-        if resolved is not None:
-            cfg["resolved_hyperparameters"] = dict(resolved)
-        return cfg
 
     def _loss(self, target: np.ndarray, pred: np.ndarray) -> float:
         """Return the MSE over every label of one bar's ``[n, L]`` rows.

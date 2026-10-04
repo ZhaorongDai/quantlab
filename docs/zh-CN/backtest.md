@@ -311,7 +311,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 >>> cfg2 = write_price_store(root / "cv", n_bars=80)
 >>> days2 = pd.bdate_range("2024-01-01", periods=80)
 >>> project_dir = train_cv_project(make_model(root / "cv_train", cfg2, days2, train_end=29), 30)
->>> from quantlab.utils.trained_run import TrainedRun
+>>> from quantlab.runs.trained_run import TrainedRun
 >>> walk = TrainedRun.open(project_dir)
 >>> len(walk.folds), walk.folds[0].test_window[0][:10], walk.folds[-1].test_window[1][:10]
 (8, '2024-02-12', '2024-04-17')

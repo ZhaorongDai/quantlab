@@ -51,7 +51,7 @@ from quantlab.model.torch_training import (
 )
 from quantlab.label.forward import Forward
 from quantlab.utils.metrics import regression_panel_metrics
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.torch_heads import MeanContextHead, RecordingHead
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker

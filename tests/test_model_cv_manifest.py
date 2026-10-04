@@ -2,8 +2,8 @@
 
 `train_cv` writes `{model_save_dir}/{Class}_trial_{timestamp}/`, a
 "walk_forward" trained unit: one "model" unit per fold in `fold_{i}/` and,
-last, `run.json` holding `{"format_version": 1, "kind": "walk_forward",
-"folds": [...], "cv_mean": {...}}`. It returns that unit as a `TrainedRun`.
+last, `run.json` holding the run header (`format_version`, `kind`
+"walk_forward", `written_at`), `"folds": [...]` and `"cv_mean": {...}`. It returns that unit as a `TrainedRun`.
 
 Why the record exists: `run_cv` backtests every fold's out-of-sample segment,
 and it can only replay the folds a training run actually used if that
@@ -40,7 +40,8 @@ import xarray as xr
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.torch_model import TorchModel
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.directory import FORMAT_VERSION
+from quantlab.runs.trained_run import TrainedRun
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 
@@ -161,14 +162,14 @@ def _fold_tuple(fold: TrainedRun) -> tuple:
 
 def test_sequential_ml_record_equals_returned_folds(tmp_path):
     """The record's folds are the returned unit's folds, and the wrapper
-    carries `format_version` 1, the kind, the folds and `cv_mean`."""
+    carries the run header, the folds and `cv_mean`."""
     model = _library(tmp_path, "ckpt")
 
     cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
     record = _read_record(tmp_path / "ckpt")
-    assert set(record) == {"format_version", "kind", "folds", "cv_mean"}
-    assert record["format_version"] == 1 and record["kind"] == "walk_forward"
+    assert set(record) == {"format_version", "kind", "written_at", "folds", "cv_mean"}
+    assert record["format_version"] == FORMAT_VERSION and record["kind"] == "walk_forward"
     assert len(cv.folds) == N_FOLDS
     assert [
         (e["fold"], tuple(e["train_window"]), tuple(e["fitted_train_window"]),
@@ -265,7 +266,10 @@ def test_empty_fold_list_still_writes_a_record(tmp_path, monkeypatch):
 
     assert cv.folds == () and cv.cv_mean == {}
     record = _read_record(tmp_path / "ckpt")
-    assert record == {"format_version": 1, "kind": "walk_forward", "folds": [], "cv_mean": {}}
+    assert record.pop("written_at")
+    assert record == {
+        "format_version": FORMAT_VERSION, "kind": "walk_forward", "folds": [], "cv_mean": {}
+    }
 
 
 def test_record_is_strict_json_with_null_for_non_finite_metrics(tmp_path):

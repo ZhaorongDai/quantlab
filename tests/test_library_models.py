@@ -29,7 +29,7 @@ from quantlab.base.config import FactorConfig, ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 
@@ -600,7 +600,7 @@ def test_train_returns_its_checkpoint_and_same_second_runs_never_collide(
     """
     import datetime as datetime_module
 
-    import quantlab.utils.trained_run as trained_run_module
+    import quantlab.runs.trained_run as trained_run_module
 
     frozen = datetime_module.datetime(2026, 9, 15, 12, 0, 0, 123456)
 

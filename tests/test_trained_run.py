@@ -21,19 +21,35 @@ a model and of a seed ensemble: every unit and every child (member, fold)
 opens on its own with the windows and metrics training returned, a copied
 trial directory opens at its new location, and no ``cv_folds.json``,
 ``ensemble.json`` or ``metrics.json`` is written.
+
+Since #132 the module lives in the run layer (``quantlab.runs``), on the
+run-directory mechanism: every kind opens through ``open_run`` as the same
+``TrainedRun``, without loading the backtest, model, factor or label layers;
+``run.json`` carries the shared header (``format_version``, ``kind``,
+``written_at``), so a unit of the previous format version is refused; and a
+library model's ``resolved_hyperparameters`` is recorded in the unit's
+``run.json``, never in ``config.json``.
 """
 
 import dataclasses
 import json
 import shutil
+import subprocess
+import sys
 
 import pandas as pd
 import pytest
 import xarray as xr
 
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
-from quantlab.utils.trained_run import TrainedRun
-from tests.backtest_fixtures import SeededHead, make_model, write_price_store
+from quantlab.runs.directory import FORMAT_VERSION, open_run
+from quantlab.runs.trained_run import TrainedRun
+from tests.backtest_fixtures import (
+    FirstFeatureHead,
+    SeededHead,
+    make_model,
+    write_price_store,
+)
 
 N_BARS = 40
 
@@ -286,3 +302,112 @@ def test_a_walk_forward_record_that_disagrees_with_a_fold_is_refused(setup):
 
     with pytest.raises(ValueError, match="fold 0 differently.*retrain"):
         TrainedRun.open(run.path)
+
+
+# ---------------------------------------------------------------- the run layer (#132)
+
+
+class _ResolvingHead(FirstFeatureHead):
+    """A library head that reports the hyperparameters it resolved."""
+
+    def _resolved_hyperparameters(self):
+        return {"depth": 3, **self.config.hyperparameters}
+
+
+def test_every_trained_kind_opens_through_open_run(setup):
+    tmp_path, dataset_config, _, dates = setup
+    _, checkpoint = _trained(setup)
+    ensemble_checkpoint = _ensemble(setup, "open_ensemble").collect().train()
+    walk = make_model(tmp_path / "open_cv", dataset_config, **dates).collect().train_cv(
+        train_periods=20
+    )
+
+    for path in (checkpoint, checkpoint.parent, ensemble_checkpoint, walk.path):
+        run = open_run(path)
+        assert isinstance(run, TrainedRun)
+        assert run == TrainedRun.open(path)
+    assert [open_run(p).kind for p in (checkpoint, ensemble_checkpoint, walk.path)] == [
+        "model", "ensemble", "walk_forward"
+    ]
+
+
+def test_the_header_records_the_kind_and_when_it_was_written(setup):
+    _, checkpoint = _trained(setup)
+    run = TrainedRun.open(checkpoint)
+
+    assert pd.Timestamp(run.written_at).tzinfo is not None
+
+
+def test_a_unit_of_the_previous_format_version_is_refused(setup):
+    _, checkpoint = _trained(setup)
+    path = checkpoint.parent / "run.json"
+    record = json.loads(path.read_text())
+    assert record["format_version"] == FORMAT_VERSION
+    path.write_text(json.dumps({**record, "format_version": FORMAT_VERSION - 1}))
+
+    with pytest.raises(ValueError, match=f"format_version {FORMAT_VERSION - 1}.*retrain"):
+        open_run(checkpoint)
+    with pytest.raises(ValueError, match=f"format_version {FORMAT_VERSION - 1}.*retrain"):
+        TrainedRun.open(checkpoint)
+
+
+def test_open_run_refuses_a_directory_without_run_json(tmp_path):
+    (tmp_path / "unit").mkdir()
+
+    with pytest.raises(ValueError, match="no run.json.*retrain"):
+        open_run(tmp_path / "unit")
+
+
+def test_open_run_refuses_an_unknown_kind(setup):
+    _, checkpoint = _trained(setup)
+    path = checkpoint.parent / "run.json"
+    path.write_text(json.dumps({**json.loads(path.read_text()), "kind": "bogus"}))
+
+    with pytest.raises(ValueError, match="kind 'bogus'"):
+        open_run(checkpoint)
+
+
+def test_opening_a_trained_run_loads_no_other_layer(setup):
+    _, checkpoint = _trained(setup)
+    code = (
+        "import sys\n"
+        "from quantlab.runs.directory import open_run\n"
+        f"open_run({str(checkpoint)!r})\n"
+        "layers = ('quantlab.base.backtest', 'quantlab.backtest', 'quantlab.model',\n"
+        "          'quantlab.factor', 'quantlab.label', 'quantlab.runs.backtest_run')\n"
+        "print(sorted(m for m in sys.modules if m.startswith(layers)))\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "[]"
+
+
+def test_resolved_hyperparameters_are_recorded_in_the_trained_run(setup):
+    tmp_path, dataset_config, _, dates = setup
+    model = make_model(
+        tmp_path / "resolved", dataset_config, head=_ResolvingHead,
+        hyperparameters={"lr": 0.1}, **dates,
+    )
+    checkpoint = model.collect().train()
+
+    run = TrainedRun.open(checkpoint)
+
+    assert run.resolved_hyperparameters == {"depth": 3, "lr": 0.1}
+    assert "resolved_hyperparameters" not in run.config
+    assert "resolved_hyperparameters" not in model.get_config()
+    # The config is the rebuild recipe alone, and rebuilds the model.
+    assert type(model).from_config(run.config).get_config() == model.get_config()
+
+
+def test_a_model_that_resolves_nothing_records_none(setup):
+    _, checkpoint = _trained(setup)
+
+    assert TrainedRun.open(checkpoint).resolved_hyperparameters is None
+
+
+def test_a_config_json_with_a_record_key_is_refused_on_rebuild(setup):
+    model, checkpoint = _trained(setup)
+    config = {**TrainedRun.open(checkpoint).config, "resolved_hyperparameters": {"depth": 3}}
+
+    with pytest.raises(ValueError, match="resolved_hyperparameters"):
+        type(model).from_config(config)

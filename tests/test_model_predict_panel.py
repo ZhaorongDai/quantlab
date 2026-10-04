@@ -35,7 +35,7 @@ import quantlab.utils.module as module_utils
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 

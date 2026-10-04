@@ -68,12 +68,12 @@ The config carries the factor and label objects, where checkpoints go, and four 
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/`, a *trained unit* holding the checkpoint, `config.json`, `ic_series.csv`, `test_predictions.zarr` and, written last, `run.json`. `config.json` holds what rebuilds the model: `get_config()`, plus the resolved hyperparameters of a library head. `run.json` describes the unit: the training window as configured and as fitted after the purge (see Purging the label lookahead below), the test window, a `trained_on` record (the feature names, label names and symbols the model saw) and the scores of the run (see Metrics below). The other two files hold the per-bar IC series and the test-segment predictions (see IC series and saved predictions below).
+`train()` returns the absolute path of the checkpoint. Each call writes a new trial directory `checkpoints/XGBoostRegressor_trial_<timestamp>/`, a *trained unit* holding the checkpoint, `config.json`, `ic_series.csv`, `test_predictions.zarr` and, written last, `run.json`. `config.json` holds what rebuilds the model, `get_config()`, and nothing else. `run.json` describes the unit: the training window as configured and as fitted after the purge (see Purging the label lookahead below), the test window, a `trained_on` record (the feature names, label names and symbols the model saw), the scores of the run (see Metrics below) and, for a library head, the hyperparameters the library actually trained with (`resolved_hyperparameters`). The other two files hold the per-bar IC series and the test-segment predictions (see IC series and saved predictions below).
 
-A run is read back through `TrainedRun` in `quantlab.utils.trained_run`, not by opening its files: only that module reads and writes them (ADR 0018). `TrainedRun.open` takes the unit's directory, its `run.json` or the checkpoint, and returns the unit's `kind`, its windows, `metrics`, `trained_on`, `checkpoint`, `config` and the paths of its evaluation files. Paths inside `run.json` are relative to the unit, so a trial directory copied from another machine still opens. A directory without `run.json`, or written in another `format_version`, is refused with a message to retrain it.
+A run is read back through `TrainedRun` in `quantlab.runs.trained_run`, not by opening its files: only that module reads and writes them (ADR 0018). `TrainedRun.open` takes the unit's directory, its `run.json` or the checkpoint, and returns the unit's `kind`, its windows, `metrics`, `trained_on`, `resolved_hyperparameters`, `checkpoint`, `config` and the paths of its evaluation files. `open_run` in `quantlab.runs.directory` opens any run directory and returns its type, here a `TrainedRun`. Paths inside `run.json` are relative to the unit, so a trial directory copied from another machine still opens. A directory without `run.json`, or written in another `format_version`, is refused with a message to retrain it.
 
 ```python
->>> from quantlab.utils.trained_run import TrainedRun
+>>> from quantlab.runs.trained_run import TrainedRun
 >>> run = TrainedRun.open(checkpoint)
 >>> run.kind, run.path.name.startswith("XGBoostRegressor_trial_"), run.checkpoint == checkpoint
 ('model', True, True)
@@ -280,8 +280,7 @@ A library head fits the raw label unless `hyperparameters["training_target"]` na
 >>> ranked_run = TrainedRun.open(ranked.train())
 >>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
 [(0.679, 0.003), (0.674, 0.439)]
->>> record = ranked_run.config
->>> record["hyperparameters"]["training_target"], "training_target" in record["resolved_hyperparameters"]
+>>> ranked_run.config["hyperparameters"]["training_target"], "training_target" in ranked_run.resolved_hyperparameters
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
 Traceback (most recent call last):
@@ -831,7 +830,7 @@ Every shipped head picks its device when training starts and when a checkpoint i
 
 A trained model stays on its training device for evaluation and for later predictions in the same process. Only the checkpoint is written from the CPU (the RealMLP network is moved there for the write and back, xgboost Boosters are saved with `device="cpu"`), so a model trained on a GPU loads and predicts on a machine without one. `load` places the model on the device the same rule picks on the loading machine.
 
-A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"cuda:1"`, `"mps"`, ...). Either way the device used is recorded under `resolved_hyperparameters` in `config.json`, while `hyperparameters` keeps what the caller passed. On a machine without CUDA, as here:
+A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"cuda:1"`, `"mps"`, ...). Either way the device used is recorded under `resolved_hyperparameters` in the trained unit's `run.json` (`TrainedRun.resolved_hyperparameters`), while `hyperparameters` keeps what the caller passed. On a machine without CUDA, as here:
 
 ```python
 >>> from dataclasses import replace
@@ -845,8 +844,8 @@ A `device` in `hyperparameters` is passed to the library unchanged (`"cpu"`, `"c
 ... )
 >>> def trained_device(head):
 ...     """Train ``head``; return its recorded device and whether the caller gave one."""
-...     record = TrainedRun.open(head.collect().train()).config
-...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
+...     trained = TrainedRun.open(head.collect().train())
+...     return trained.resolved_hyperparameters["device"], "device" in trained.config["hyperparameters"]
 >>> trained_device(XGBoostRegressor(device_config))
 ('cpu', False)
 >>> trained_device(RealMLPRegressor(replace(device_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
@@ -1092,4 +1091,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`), `quantlab/utils/walk_forward.py` (`walk_forward_folds`), `quantlab/utils/trained_run.py` (`TrainedRun`) and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`), `quantlab/utils/walk_forward.py` (`walk_forward_folds`), `quantlab/runs/trained_run.py` (`TrainedRun`) and `quantlab/utils/metrics.py`.

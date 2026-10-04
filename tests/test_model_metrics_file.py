@@ -28,6 +28,7 @@ import xarray as xr
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
+from quantlab.runs.directory import FORMAT_VERSION
 from quantlab.utils.jsonable import to_jsonable
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
@@ -162,7 +163,7 @@ def test_walk_forward_record_holds_every_split_and_the_cv_mean_block(tmp_path, t
 
     (project,) = [p for p in (tmp_path / "ckpt").iterdir() if p.is_dir()]
     record = _strict_json(project / "run.json")
-    assert record["format_version"] == 1 and record["kind"] == "walk_forward"
+    assert record["format_version"] == FORMAT_VERSION and record["kind"] == "walk_forward"
     assert [entry["metrics"] for entry in record["folds"]] == [f.metrics for f in cv.folds]
     for entry, fold in zip(record["folds"], cv.folds):
         assert _strict_json(fold.path / "run.json")["metrics"] == entry["metrics"]

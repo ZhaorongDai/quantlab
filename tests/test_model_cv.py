@@ -55,7 +55,7 @@ import xarray as xr
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
 from quantlab.base.tracking import NullTracker

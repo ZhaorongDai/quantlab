@@ -51,6 +51,7 @@ from quantlab.base.model import (
 )
 from quantlab.model.torch_model import TorchModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
+from quantlab.runs.trained_run import TrainedRun
 from tests.torch_heads import OneBarHead
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
@@ -462,21 +463,19 @@ def test_loader_rebuilds_the_shipped_xgboost_head(tmp_path, monkeypatch):
     assert type(model.config) is ModelConfig
 
 
-def test_loader_drops_the_resolved_hyperparameters_record(tmp_path, monkeypatch):
-    """`LibraryModel.get_config` may add a top-level `resolved_hyperparameters`
-    record; it is not an `ModelConfig` field, so the loader must drop it before
-    `cls.config_cls(**config)` or every such checkpoint fails to reload."""
+def test_loader_refuses_the_resolved_hyperparameters_record(tmp_path, monkeypatch):
+    """Since #132 `resolved_hyperparameters` is recorded in the trained unit's
+    `run.json`, never in `config.json`: the config is the rebuild recipe alone,
+    so the record key is refused like any unknown key."""
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
+    assert "resolved_hyperparameters" not in saved
     saved["resolved_hyperparameters"] = {"eta": 0.3, "num_boost_round": 4}
 
-    model = module_utils.load_model_from_config(saved)
-
-    assert type(model.config) is ModelConfig
-    assert model.config.hyperparameters == {}
+    with pytest.raises(ValueError, match="resolved_hyperparameters"):
+        module_utils.load_model_from_config(saved)
 
 
-def test_loader_still_rejects_other_unknown_keys(tmp_path, monkeypatch):
-    """Only that one record key is dropped; anything else unknown stays loud."""
+def test_loader_rejects_other_unknown_keys(tmp_path, monkeypatch):
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     saved["not_a_config_field"] = 1
 
@@ -485,8 +484,7 @@ def test_loader_still_rejects_other_unknown_keys(tmp_path, monkeypatch):
 
 
 def test_torch_config_json_has_no_resolved_hyperparameters_key(tmp_path):
-    """The record is a LibraryModel feature; torch checkpoints' config.json is
-    unchanged."""
+    """No config.json holds the record, and a torch model reports none."""
     cfg = ModelConfig(
         **_kwargs(tmp_path),
         train_start=START,
@@ -505,6 +503,7 @@ def test_torch_config_json_has_no_resolved_hyperparameters_key(tmp_path):
 
     assert "resolved_hyperparameters" not in json.loads(written[0].read_text())
     assert "resolved_hyperparameters" not in model.get_config()
+    assert TrainedRun.open(written[0].parent).resolved_hyperparameters is None
 
 
 # --------------------------------------------------------------------------

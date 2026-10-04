@@ -18,7 +18,7 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.backtest_fixtures import make_model, make_stock_dataset, write_price_store
 from tests.label_stubs import StubLabel
 

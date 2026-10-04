@@ -209,7 +209,7 @@ Beside the checkpoint, `train()` writes `config.json`, which rebuilds the
 model, and last `run.json`, which describes the run: its training window as
 configured and as fitted after the purge, its test window, what it was
 trained on and its metrics. A run is read back through
-`quantlab.utils.trained_run.TrainedRun`, never by opening its files (ADR
+`quantlab.runs.trained_run.TrainedRun`, never by opening its files (ADR
 0018): `TrainedRun.open(checkpoint).metrics` holds the scores of the first
 label on its raw values for each segment: `train_*`, `val_*` and `test_*`,
 each of `loss`, `mse`, `rmse`, `mae`, `r2`, `ic`, `rank_ic`, `icir` and
@@ -232,7 +232,7 @@ computed later without predicting again (`TrainedRun` gives their paths as
 Every fold of `train_cv` writes the same files into its own unit directory.
 
 ```python
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 
 scores = TrainedRun.open(checkpoint).metrics
 scores["val_ic"], scores["test_ic"]
@@ -325,11 +325,12 @@ models/
 The trial directory is named after the class and the time of the run, so
 repeated runs never overwrite each other. `config.json` holds the model's
 full configuration, including the nested configurations of every factor,
-label and dataset, and, for heads that merge your settings into library
-defaults, the `resolved_hyperparameters` actually used. `run.json`, written
-last, describes the unit: the training window as configured and as fitted
-after the purge, the test window, a `trained_on` record with the feature
-names, label names and sorted training symbols, and the metrics. Paths in it
+label and dataset: what rebuilding the model needs, and nothing else.
+`run.json`, written last, describes the unit: the training window as
+configured and as fitted after the purge, the test window, a `trained_on`
+record with the feature names, label names and sorted training symbols, the
+metrics and, for heads that merge your settings into library defaults, the
+`resolved_hyperparameters` actually used. Paths in it
 are relative, so a trial directory copied from a training server opens on
 another machine. `TrainedRun.open` reads a unit from its directory, its
 `run.json` or its checkpoint; a directory without `run.json` or of another

@@ -48,6 +48,8 @@ from quantlab.backend import XrBackend
 # converter and polars), which adds about a second of import time.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
+from quantlab.runs.directory import staged
+from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils import backtest_stats
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import (
@@ -62,7 +64,6 @@ from quantlab.utils.fingerprint import dataset_fingerprint
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
-from quantlab.utils.trained_run import TrainedRun
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
 
@@ -966,7 +967,7 @@ class BaseBacktester(Component, ABC):
 
         Subclasses do not override this method. It opens the walk-forward
         unit ``config.cv_project_dir`` with
-        ``quantlab.utils.trained_run.TrainedRun``, keeps the
+        ``quantlab.runs.trained_run.TrainedRun``, keeps the
         folds whose test segment lies inside the backtest window, and checks
         on the price calendar that those test segments are contiguous and
         non-overlapping before any model is loaded (a stitched curve with a
@@ -2881,10 +2882,10 @@ class BaseBacktester(Component, ABC):
         ``name`` is the final directory name, used as the report title. The
         artifacts go into a hidden sibling ``.{name}.partial`` first and the
         directory is renamed into place only when everything succeeded
-        (a rename within one filesystem is atomic). On any exception,
-        including ``KeyboardInterrupt``, the staging directory is removed
-        and the error re-raised, so ``output_dir`` only ever contains
-        complete run directories that a loader can safely rebuild from.
+        (``quantlab.runs.directory.staged``). On any exception, including
+        ``KeyboardInterrupt``, the staging directory is removed and the
+        error re-raised, so ``output_dir`` only ever contains complete run
+        directories that a loader can safely rebuild from.
 
         Raises
         ------
@@ -2892,23 +2893,11 @@ class BaseBacktester(Component, ABC):
             If the final directory already exists; it is never
             overwritten.
         """
-        import shutil
-
         if self.config.output_dir is None:
             return None
         final = Path(self.config.output_dir) / self._run_name
-        if final.exists():
-            raise RuntimeError(f"{final} already exists")
-        staging = final.parent / f".{final.name}.partial"
-        staging.mkdir(parents=True)
-        try:
+        with staged(final) as staging:
             write(staging, final.name)
-            if final.exists():
-                raise RuntimeError(f"{final} already exists")
-            staging.rename(final)
-        except BaseException:
-            shutil.rmtree(staging, ignore_errors=True)
-            raise
         return final
 
     def _report_chart_inputs(

@@ -13,7 +13,7 @@ import pytest
 import xarray as xr
 
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.backtest_fixtures import make_model, write_price_store
 from tests.test_model_cv_expanding import FITTED, N_TIMES, TIMES, _days, _model
 

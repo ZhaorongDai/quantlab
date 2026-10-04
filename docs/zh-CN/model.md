@@ -68,12 +68,12 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 'XGBoostRegressor_total.joblib'
 ```
 
-`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/`，它是一个*训练单元*（trained unit），里面有检查点文件、`config.json`、`ic_series.csv`、`test_predictions.zarr`，以及最后写入的 `run.json`。`config.json` 保存重建模型所需的内容：`get_config()`，库模型头另加解析后的超参数。`run.json` 描述这个单元：配置的训练窗口和清除之后实际拟合的训练窗口（见下文“清除标签的前视”）、测试窗口、一份 `trained_on` 记录（模型训练时见过的特征名、标签名和标的），以及这次运行的评分（见下文“评估指标”）。另外两个文件保存逐 bar 的 IC 序列和测试段的预测（见下文“IC 序列与保存的预测”）。
+`train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/`，它是一个*训练单元*（trained unit），里面有检查点文件、`config.json`、`ic_series.csv`、`test_predictions.zarr`，以及最后写入的 `run.json`。`config.json` 只保存重建模型所需的内容：`get_config()`。`run.json` 描述这个单元：配置的训练窗口和清除之后实际拟合的训练窗口（见下文“清除标签的前视”）、测试窗口、一份 `trained_on` 记录（模型训练时见过的特征名、标签名和标的）、这次运行的评分（见下文“评估指标”），以及库模型头实际训练所用的超参数（`resolved_hyperparameters`）。另外两个文件保存逐 bar 的 IC 序列和测试段的预测（见下文“IC 序列与保存的预测”）。
 
-读回一次运行要通过 `quantlab.utils.trained_run` 中的 `TrainedRun`，而不是直接打开它的文件：只有这个模块读写这些文件（ADR 0018）。`TrainedRun.open` 接受单元目录、它的 `run.json` 或检查点，返回单元的 `kind`、各个窗口、`metrics`、`trained_on`、`checkpoint`、`config` 以及评估文件的路径。`run.json` 里的路径都相对于单元，所以从另一台机器拷来的试验目录照样能打开。没有 `run.json`，或用别的 `format_version` 写的目录会被拒绝，并提示重新训练。
+读回一次运行要通过 `quantlab.runs.trained_run` 中的 `TrainedRun`，而不是直接打开它的文件：只有这个模块读写这些文件（ADR 0018）。`TrainedRun.open` 接受单元目录、它的 `run.json` 或检查点，返回单元的 `kind`、各个窗口、`metrics`、`trained_on`、`resolved_hyperparameters`、`checkpoint`、`config` 以及评估文件的路径。`quantlab.runs.directory` 中的 `open_run` 能打开任何运行目录并返回对应的类型，这里是 `TrainedRun`。`run.json` 里的路径都相对于单元，所以从另一台机器拷来的试验目录照样能打开。没有 `run.json`，或用别的 `format_version` 写的目录会被拒绝，并提示重新训练。
 
 ```python
->>> from quantlab.utils.trained_run import TrainedRun
+>>> from quantlab.runs.trained_run import TrainedRun
 >>> run = TrainedRun.open(checkpoint)
 >>> run.kind, run.path.name.startswith("XGBoostRegressor_trial_"), run.checkpoint == checkpoint
 ('model', True, True)
@@ -280,8 +280,7 @@ True
 >>> ranked_run = TrainedRun.open(ranked.train())
 >>> [(round(m["test_rank_ic"], 3), round(m["test_mse"], 3)) for m in (run.metrics, ranked_run.metrics)]
 [(0.679, 0.003), (0.674, 0.439)]
->>> record = ranked_run.config
->>> record["hyperparameters"]["training_target"], "training_target" in record["resolved_hyperparameters"]
+>>> ranked_run.config["hyperparameters"]["training_target"], "training_target" in ranked_run.resolved_hyperparameters
 ('cs_rank', False)
 >>> XGBoostRegressor(replace(config, hyperparameters={"training_target": "rank"})).train()
 Traceback (most recent call last):
@@ -831,7 +830,7 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 
 训练好的模型在同一进程里的评估和后续预测中留在训练设备上。只有检查点从 CPU 写出（RealMLP 网络为写入移到 CPU 再移回，xgboost 的 Booster 以 `device="cpu"` 保存），因此在 GPU 上训练的模型能在没有 GPU 的机器上加载并预测。`load` 按同一规则把模型放到加载机器选出的设备上。
 
-`hyperparameters` 里给出的 `device` 原样传给库（`"cpu"`、`"cuda:1"`、`"mps"` 等）。无论哪种情况，实际使用的设备都记录在 `config.json` 的 `resolved_hyperparameters` 里，而 `hyperparameters` 保留调用方传入的内容。在没有 CUDA 的机器上（如下例）：
+`hyperparameters` 里给出的 `device` 原样传给库（`"cpu"`、`"cuda:1"`、`"mps"` 等）。无论哪种情况，实际使用的设备都记录在训练单元 `run.json` 的 `resolved_hyperparameters` 里（`TrainedRun.resolved_hyperparameters`），而 `hyperparameters` 保留调用方传入的内容。在没有 CUDA 的机器上（如下例）：
 
 ```python
 >>> from dataclasses import replace
@@ -845,8 +844,8 @@ MASTER 与官方代码一样按训练损失停止：第一个训练损失不超�
 ... )
 >>> def trained_device(head):
 ...     """Train ``head``; return its recorded device and whether the caller gave one."""
-...     record = TrainedRun.open(head.collect().train()).config
-...     return record["resolved_hyperparameters"]["device"], "device" in record["hyperparameters"]
+...     trained = TrainedRun.open(head.collect().train())
+...     return trained.resolved_hyperparameters["device"], "device" in trained.config["hyperparameters"]
 >>> trained_device(XGBoostRegressor(device_config))
 ('cpu', False)
 >>> trained_device(RealMLPRegressor(replace(device_config, hyperparameters={"n_epochs": 5, "n_threads": 1})))
@@ -1092,4 +1091,4 @@ ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 walk-forward 运行如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）、`quantlab/utils/walk_forward.py`（`walk_forward_folds`）、`quantlab/utils/trained_run.py`（`TrainedRun`）和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 walk-forward 运行如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）、`quantlab/utils/walk_forward.py`（`walk_forward_folds`）、`quantlab/runs/trained_run.py`（`TrainedRun`）和 `quantlab/utils/metrics.py` 的 docstring。

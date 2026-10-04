@@ -41,7 +41,7 @@ class TabkitRegressor(LibraryModel):
     the keys ``LibraryModel`` reads itself
     (``LIBRARY_RESERVED_HYPERPARAMETERS``), which wins and is never modified. An unknown key
     raises ``TypeError`` from pytabkit at ``_init_model``. The merged dict is recorded under
-    ``resolved_hyperparameters`` in the checkpoint's ``config.json`` and in
+    ``resolved_hyperparameters`` in the trained unit's ``run.json`` and in
     the run config.
 
     Every head pins ``val_fraction=0.0`` in its ``DEFAULT_PARAMS``.

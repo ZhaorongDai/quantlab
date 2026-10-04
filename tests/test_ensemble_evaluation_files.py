@@ -38,7 +38,7 @@ from quantlab.model import ensemble as ensemble_base
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.metrics import regression_panel_metrics
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.backtest_fixtures import SeededHead, make_model, write_price_store
 
 N_BARS = 60

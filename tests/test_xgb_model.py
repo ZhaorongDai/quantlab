@@ -46,7 +46,7 @@ from quantlab.model.predefined.xgb import (
 )
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.walk_forward import walk_forward_folds
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordedRun, RecordingTracker
 
@@ -513,9 +513,9 @@ def test_a_cs_rank_training_target_trains_loads_and_never_reaches_xgb_train(
 
     assert len(seen) == 1 and "training_target" not in seen[0]
     checkpoint = _only_checkpoint(tmp_path / "ckpt")
-    saved = json.loads((checkpoint.parent / "config.json").read_text())
-    assert saved["hyperparameters"] == hyper
-    assert "training_target" not in saved["resolved_hyperparameters"]
+    trained_run = TrainedRun.open(checkpoint)
+    assert trained_run.config["hyperparameters"] == hyper
+    assert "training_target" not in trained_run.resolved_hyperparameters
     assert trained.label_scales == {"ret_a": "standardized"}
 
     fresh_factors, fresh_labels = _panels(seed=24)
@@ -680,7 +680,7 @@ def test_alias_and_canonical_key_together_raise(tmp_path, tracker, alias, canoni
 # --------------------------------------------------------------------------
 
 
-def test_resolved_hyperparameters_are_written_to_config_json_and_the_run_config(tmp_path, tracker):
+def test_resolved_hyperparameters_are_recorded_in_the_trained_run_and_the_run_config(tmp_path, tracker):
     """The record holds what xgboost actually trained with -- every default,
     the user's overrides, alias-resolved keys and the round count -- so a run
     stays reproducible if `DEFAULT_PARAMS` changes later. The user-level
@@ -689,8 +689,10 @@ def test_resolved_hyperparameters_are_written_to_config_json_and_the_run_config(
     factors, labels = _panels(seed=43)
     _train(tmp_path, factors, labels, tracker=tracker, hyperparameters=dict(hyper))
 
-    saved = json.loads((_only_checkpoint(tmp_path / "ckpt").parent / "config.json").read_text())
-    resolved = saved["resolved_hyperparameters"]
+    trained_run = TrainedRun.open(_only_checkpoint(tmp_path / "ckpt"))
+    saved = trained_run.config
+    resolved = trained_run.resolved_hyperparameters
+    assert "resolved_hyperparameters" not in saved
     expected = {
         **XGBoostRegressor.DEFAULT_PARAMS,
         "device": xgboost_default_device(),

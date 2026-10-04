@@ -1,13 +1,17 @@
 """Trained runs: the files a training run leaves on disk, and how they are read back.
 
-Training writes one directory per trained unit. A unit holds its files and,
-written last, ``run.json``, which describes the unit. There are three kinds:
+Training writes one directory per trained unit, a run of the run layer
+(``quantlab.runs.directory``): it holds its files and, written last,
+``run.json``, which describes the unit under the shared header. There are
+three kinds:
 
 - ``"model"``: one checkpoint, the ``config.json`` that rebuilds the model,
   and, when the fit was evaluated, the per-bar IC series ``ic_series.csv``
   and the test-segment predictions ``test_predictions.zarr``. ``run.json``
   holds the training window as configured and as fitted after the purge,
-  the test window, what the model was trained on and the metrics.
+  the test window, what the model was trained on, the metrics and, for a
+  library model that reports them, the hyperparameters the library actually
+  trained with, ``resolved_hyperparameters``.
 - ``"ensemble"``: its members, each a ``"model"`` unit in ``member_{k}/``,
   and the evaluation files of the combined prediction. ``run.json`` holds
   the members (directory and seed), the three windows and the metrics. Its
@@ -20,13 +24,15 @@ written last, ``run.json``, which describes the unit. There are three kinds:
 ``train_cv`` a ``"walk_forward"`` unit there. Paths inside ``run.json`` are
 relative to the unit, so a unit copied elsewhere still opens.
 
-``TrainedRun.open`` is how a run is read: from the unit's directory, its
-``run.json``, or a model's checkpoint; members and folds are opened with
-it, as child ``TrainedRun`` objects. A unit without ``run.json``, or written
-in a ``format_version`` this module does not know, is refused with a
-message to retrain it. The writing functions are for the model layer.
+``TrainedRun.open`` (or ``quantlab.runs.directory.open_run``) is how a run
+is read: from the unit's directory, its ``run.json``, or a model's
+checkpoint; members and folds are opened with it, as child ``TrainedRun``
+objects. A unit without ``run.json``, or written in another
+``format_version``, is refused with a message to retrain it. The writing
+functions are for the model layer.
 
-This module imports no other quantlab layer.
+This module imports no quantlab module outside ``quantlab.utils`` and the run
+layer.
 
 Examples
 --------
@@ -50,13 +56,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.jsonable import to_jsonable
+from quantlab.runs.directory import (
+    KINDS,
+    RUN_FILE,
+    read_record,
+    record_path,
+    recorded_path,
+    relative_name,
+    run_directory,
+    write_record,
+)
 
-#: The ``run.json`` structure this module writes and reads.
-FORMAT_VERSION = 1
-
-_RUN_FILE = "run.json"
+#: The kinds of run this module reads: those ``open_run`` hands to ``TrainedRun``.
+_KINDS = tuple(kind for kind, path in KINDS.items() if path == f"{__name__}.TrainedRun")
 _CONFIG_FILE = "config.json"
 _IC_SERIES_FILE = "ic_series.csv"
 _TEST_PREDICTIONS_FILE = "test_predictions.zarr"
@@ -76,6 +88,8 @@ class TrainedRun:
         The unit's directory.
     kind : str
         ``"model"``, ``"ensemble"`` or ``"walk_forward"``.
+    written_at : str
+        When ``run.json`` was written, an ISO 8601 UTC timestamp.
     train_window : tuple or None
         The training window as configured, before the purge; an ensemble's
         covers its members'.
@@ -99,6 +113,10 @@ class TrainedRun:
         The per-bar IC series, when written.
     test_predictions : Path or None
         The test-segment prediction store, when written.
+    resolved_hyperparameters : dict or None
+        The hyperparameters a ``"model"`` unit's library actually trained
+        with, library defaults merged in; None when the model reports none.
+        A record of the fit, not part of the rebuild recipe ``config``.
     members : tuple of TrainedRun
         An ``"ensemble"`` unit's members, in member order; empty otherwise.
     folds : tuple of TrainedRun
@@ -124,6 +142,7 @@ class TrainedRun:
 
     path: Path
     kind: str
+    written_at: str
     train_window: tuple | None
     fitted_train_window: tuple | None
     test_window: tuple | None
@@ -132,6 +151,7 @@ class TrainedRun:
     trained_on: dict | None
     ic_series: Path | None
     test_predictions: Path | None
+    resolved_hyperparameters: dict | None = None
     members: tuple = ()
     folds: tuple = ()
     cv_mean: dict | None = None
@@ -158,9 +178,8 @@ class TrainedRun:
             If ``path`` does not exist.
         ValueError
             If the unit, or one of its members or folds, has no ``run.json``
-            or a ``format_version`` other than ``FORMAT_VERSION``, or
-            ``path`` is a file other than the unit's ``run.json`` or
-            checkpoint.
+            or another ``format_version``, is not a trained run, or ``path``
+            is a file other than the unit's ``run.json`` or checkpoint.
 
         Examples
         --------
@@ -168,23 +187,9 @@ class TrainedRun:
         True
         """
         path = Path(path)
-        if not path.exists():
-            raise FileNotFoundError(f"{path} does not exist")
-        directory = path if path.is_dir() else path.parent
-        record_path = directory / _RUN_FILE
-        if not record_path.is_file():
-            raise ValueError(
-                f"{directory} has no {_RUN_FILE}, so it is not a trained run "
-                f"this quantlab can read; retrain it"
-            )
-        record = json.loads(record_path.read_text(encoding="utf-8"))
-        version = record.get("format_version") if isinstance(record, dict) else None
-        if version != FORMAT_VERSION:
-            raise ValueError(
-                f"{record_path} has format_version {version}, but this quantlab "
-                f"reads format_version {FORMAT_VERSION}; retrain it"
-            )
-        if path.is_file() and path.name not in (_RUN_FILE, record.get("checkpoint")):
+        directory = run_directory(path)
+        record = read_record(directory, _KINDS)
+        if path.is_file() and path.name not in (RUN_FILE, record.get("checkpoint")):
             raise ValueError(
                 f"{path} is not the checkpoint of the trained run in {directory}"
             )
@@ -192,28 +197,34 @@ class TrainedRun:
         if kind == "model":
             checkpoint = directory / record["checkpoint"]
         elif kind == "ensemble":
-            checkpoint = record_path
+            checkpoint = record_path(directory)
         else:
             checkpoint = None
         return cls(
             path=directory,
             kind=kind,
+            written_at=record["written_at"],
             train_window=_window(record.get("train_window")),
             fitted_train_window=_window(record.get("fitted_train_window")),
             test_window=_window(record.get("test_window")),
             metrics=dict(record.get("metrics") or {}),
             checkpoint=checkpoint,
             trained_on=record.get("trained_on"),
-            ic_series=_optional(directory, record.get("ic_series")),
-            test_predictions=_optional(directory, record.get("test_predictions")),
+            ic_series=recorded_path(directory, record.get("ic_series")),
+            test_predictions=recorded_path(directory, record.get("test_predictions")),
+            resolved_hyperparameters=record.get("resolved_hyperparameters"),
             members=tuple(
                 dataclasses.replace(
-                    cls.open(directory / entry["directory"]), seed=entry["seed"]
+                    cls.open(recorded_path(directory, entry["directory"])), seed=entry["seed"]
                 )
                 for entry in record.get("members", ())
             ),
             folds=tuple(
-                _checked_fold(record_path, entry, cls.open(directory / entry["directory"]))
+                _checked_fold(
+                    record_path(directory),
+                    entry,
+                    cls.open(recorded_path(directory, entry["directory"])),
+                )
                 for entry in record.get("folds", ())
             ),
             cv_mean=record.get("cv_mean") if kind == "walk_forward" else None,
@@ -231,7 +242,7 @@ class TrainedRun:
         return json.loads((self.path / _CONFIG_FILE).read_text(encoding="utf-8"))
 
 
-def _checked_fold(record_path: Path, entry: dict, fold: "TrainedRun") -> "TrainedRun":
+def _checked_fold(walk_record: Path, entry: dict, fold: "TrainedRun") -> "TrainedRun":
     """Return ``fold`` with its index, after checking the walk-forward record's copy of it.
 
     Raises
@@ -249,8 +260,8 @@ def _checked_fold(record_path: Path, entry: dict, fold: "TrainedRun") -> "Traine
     own = {key: getattr(fold, key) for key in copy}
     if copy != own:
         raise ValueError(
-            f"{record_path} records fold {entry['fold']} differently from "
-            f"{fold.path / _RUN_FILE}; the run was altered after training, retrain it"
+            f"{walk_record} records fold {entry['fold']} differently from "
+            f"{record_path(fold.path)}; the run was altered after training, retrain it"
         )
     return dataclasses.replace(fold, index=entry["fold"])
 
@@ -258,11 +269,6 @@ def _checked_fold(record_path: Path, entry: dict, fold: "TrainedRun") -> "Traine
 def _window(value) -> tuple | None:
     """Return a recorded ``[start, end]`` as a tuple, or None when absent."""
     return None if value is None else tuple(value)
-
-
-def _optional(directory: Path, name: str | None) -> Path | None:
-    """Return ``directory / name``, or None when no name is recorded."""
-    return None if name is None else directory / name
 
 
 def new_trial_directory(root: Path | str, class_name: str) -> Path:
@@ -344,17 +350,6 @@ def _evaluation_names(directory: Path) -> dict:
     }
 
 
-def _write_run(directory: Path, record: dict) -> Path:
-    """Write ``record`` as the unit's ``run.json``, atomically; NaN and inf become null."""
-    path = directory / _RUN_FILE
-    write_json_atomically(
-        path,
-        to_jsonable({"format_version": FORMAT_VERSION, **record}),
-        indent=2,
-    )
-    return path
-
-
 def write_model_run(
     directory: Path | str,
     *,
@@ -364,6 +359,7 @@ def write_model_run(
     test_window: tuple,
     trained_on: dict,
     metrics: dict | None,
+    resolved_hyperparameters: dict | None = None,
 ) -> None:
     """Write the ``run.json`` of a ``"model"`` unit, atomically, as its last file.
 
@@ -382,6 +378,9 @@ def write_model_run(
         ``factor_names``, ``label_names`` and ``symbols``.
     metrics : dict or None
         The fit's metrics; None when the fit was not evaluated.
+    resolved_hyperparameters : dict, optional
+        The hyperparameters the library actually trained with; None to
+        record nothing.
 
     Examples
     --------
@@ -395,16 +394,19 @@ def write_model_run(
     {}
     """
     directory = Path(directory)
-    _write_run(
+    write_record(
         directory,
+        "model",
         {
-            "kind": "model",
-            "checkpoint": Path(checkpoint).name,
+            "checkpoint": relative_name(checkpoint, directory),
             "train_window": list(train_window),
             "fitted_train_window": list(fitted_train_window),
             "test_window": list(test_window),
             "trained_on": trained_on,
             "metrics": metrics or {},
+            "resolved_hyperparameters": (
+                None if resolved_hyperparameters is None else dict(resolved_hyperparameters)
+            ),
             **_evaluation_names(directory),
         },
     )
@@ -451,13 +453,13 @@ def write_ensemble_run(
     True
     """
     directory = Path(directory)
-    return _write_run(
+    return write_record(
         directory,
+        "ensemble",
         {
-            "kind": "ensemble",
             "members": [
                 {
-                    "directory": member_directory(directory, k).name,
+                    "directory": relative_name(member_directory(directory, k), directory),
                     "seed": seed,
                 }
                 for k, seed in enumerate(seeds)
@@ -507,7 +509,7 @@ def write_walk_forward_run(
         entries.append(
             {
                 "fold": index,
-                "directory": fold.path.name,
+                "directory": relative_name(fold.path, directory),
                 "kind": fold.kind,
                 "train_window": list(fold.train_window),
                 "fitted_train_window": list(fold.fitted_train_window),
@@ -515,8 +517,5 @@ def write_walk_forward_run(
                 "metrics": fold.metrics,
             }
         )
-    _write_run(
-        directory,
-        {"kind": "walk_forward", "folds": entries, "cv_mean": cv_mean},
-    )
+    write_record(directory, "walk_forward", {"folds": entries, "cv_mean": cv_mean})
     return TrainedRun.open(directory)

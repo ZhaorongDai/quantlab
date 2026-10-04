@@ -54,7 +54,7 @@ from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.metrics import regression_panel_metrics
 from quantlab.utils.module import load_model_from_config
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 
 # Only warnings and errors from the library, so the printed results stand out.
 logger.remove()

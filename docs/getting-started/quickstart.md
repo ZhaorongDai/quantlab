@@ -217,8 +217,8 @@ Checkpoint: models/XGBoostRegressor_trial_20260927_212057_563434/XGBoostRegresso
 
 Each call to `train()` creates a new timestamped trial directory, so earlier checkpoints are
 never overwritten. Next to the `.joblib` checkpoint sit a `config.json` recording the model,
-its factors and labels, and the hyperparameters XGBoost actually used, and a `run.json` with
-the training windows and metrics, which `quantlab.utils.trained_run.TrainedRun` reads back. The training and test
+its factors and labels, and a `run.json` with the training windows, the metrics and the
+hyperparameters XGBoost actually used, which `quantlab.runs.trained_run.TrainedRun` reads back. The training and test
 metrics also go to the config's `tracker`, which by default sends them nowhere
 (see [experiment tracking](installation.md#experiment-tracking)). Walk-forward cross-validation
 through `train_cv()` is covered in [models](../user-guide/models.md).

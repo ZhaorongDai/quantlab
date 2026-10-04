@@ -31,7 +31,7 @@ from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.utils import module as module_utils
 from quantlab.utils.ensemble import average_predictions
-from quantlab.utils.trained_run import TrainedRun
+from quantlab.runs.trained_run import TrainedRun
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SeededHead,
