@@ -53,7 +53,7 @@ class FactorPolars(Factor):
                 )
     """
 
-    #: The config class ``load_factor_from_config`` rebuilds this factor with.
+    #: The config class ``from_config`` rebuilds this factor with.
     config_cls = PolarsFactorConfig
 
     #: Index columns, never reported as factor names.

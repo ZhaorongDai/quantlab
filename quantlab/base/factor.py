@@ -34,6 +34,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from quantlab.base.component import Component
 from quantlab.base.config import BaseFactorConfig
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
@@ -72,7 +73,7 @@ def _on_panel_axes(data: xr.Dataset) -> xr.Dataset:
     return XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
 
 
-class Factor(ABC):
+class Factor(Component, ABC):
     """Backend-agnostic base class for factors and labels.
 
     A ``Factor`` holds a config whose ``dataset`` attribute is the dataset it
@@ -242,17 +243,6 @@ class Factor(ABC):
         1
         """
         return len(self.get_factor_names())
-
-    @property
-    def import_path(self) -> str:
-        """Dotted ``module.QualName`` path used to rebuild this class from a config.
-
-        Examples
-        --------
-        >>> factor.import_path
-        'quantlab.factor.predefined.momentum.Momentum'
-        """
-        return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     @property
     def class_name(self) -> str:
@@ -739,26 +729,6 @@ class Factor(ABC):
         ('momentum_20',)
         """
         return self.config.factor_names
-
-    def get_config(self) -> dict:
-        """Return a serializable dict describing this factor and its dataset.
-
-        The dataset's own config is nested under ``"dataset"``;
-        ``quantlab.utils.module.load_factor_from_config`` rebuilds the factor
-        from the result.
-
-        Examples
-        --------
-        >>> cfg = factor.get_config()
-        >>> cfg["name"]
-        'quantlab.factor.predefined.momentum.Momentum'
-        >>> cfg["kwargs"], cfg["dataset"]["frequency"]
-        ({'n': 20}, '1d')
-        """
-        ds_config = self.config.dataset.get_config()
-        cfg = self.config.to_dict()
-        cfg["dataset"] = ds_config  # type: ignore
-        return cfg  # type: ignore
 
     @abstractmethod
     def _get_factor_names(self) -> tuple[str, ...]:

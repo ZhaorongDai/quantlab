@@ -110,9 +110,8 @@ class _OpenToOpenLabel(Forward):
     """A ``Forward`` label over a trailing open-to-open factor built from a ``FactorConfig``.
 
     The ``FactorConfig`` is the whole description: ``get_config()`` returns it
-    with this class's import path as ``name``, so
-    ``quantlab.utils.module.load_factor_from_config`` rebuilds the label from
-    it like any factor.
+    with this class's import path as ``name``, so the inherited
+    ``from_config`` rebuilds the label from it like any factor.
     """
 
     #: Config class the label is built from and rebuilt with.

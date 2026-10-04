@@ -131,7 +131,7 @@ class FactorKunQuant(Factor):
                 return Function(builder.ops)
     """
 
-    #: The config class ``load_factor_from_config`` rebuilds this factor with.
+    #: The config class ``from_config`` rebuilds this factor with.
     config_cls = FactorConfig
 
     def __init__(self, config: FactorConfig):

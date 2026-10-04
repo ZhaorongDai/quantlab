@@ -8,8 +8,9 @@ with ``dataclasses.replace``. The object's config setter normalises the
 config it is given into a new config, filling in derived values such as
 open-ended dates and the ``name`` field, which records the owning class's
 dotted import path so the object can be rebuilt from the serialised dict (see
-``quantlab.utils.module``); the caller's config is never edited. ``to_dict()``
-on each config produces that dict. Acquisition, universe and backtest configs
+``quantlab.base.component``); the caller's config is never edited. ``to_dict()``
+on each config produces that dict, each field declared with ``component()``
+written as its component's own config. Acquisition, universe and backtest configs
 are not frozen.
 
 Throughout, a *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and
@@ -28,6 +29,7 @@ from dataclasses import asdict, dataclass, field, fields, replace
 from types import UnionType
 from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
 
+from quantlab.base.component import component, config_to_dict
 from quantlab.base.tracking import NullTracker, Tracker
 from quantlab.utils.execution import ExecutionSettings
 from quantlab.enums.data import (
@@ -78,6 +80,20 @@ class _FrozenConfig:
             if isinstance(value, list) and _allows_tuple(spec.type):
                 object.__setattr__(self, spec.name, tuple(value))
 
+    def to_dict(self):
+        """Return the config as a plain dict, each component as its own config.
+
+        The fields declared with ``quantlab.base.component.component`` hold
+        their components' ``get_config()``; see
+        ``quantlab.base.component.config_to_dict``.
+
+        Examples
+        --------
+        >>> sorted(BaseDatasetConfig(zarr_file_path="stock.zarr").to_dict())
+        ['end_date', 'kwargs', 'name', 'resample_freq', 'resample_how', 'start_date', 'symbols', 'zarr_file_path']
+        """
+        return config_to_dict(self)
+
 
 @dataclass(kw_only=True, frozen=True)
 class BaseDatasetConfig(_FrozenConfig):
@@ -126,16 +142,6 @@ class BaseDatasetConfig(_FrozenConfig):
     #: Dotted import path of the dataset class; filled by the config setter
     #: and used to rebuild the dataset from its serialised config.
     name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict via ``dataclasses.asdict``.
-
-        Examples
-        --------
-        >>> sorted(cfg.to_dict())
-        ['end_date', 'kwargs', 'name', 'resample_freq', 'resample_how', 'start_date', 'symbols', 'zarr_file_path']
-        """
-        return asdict(self)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -465,9 +471,9 @@ class MergedDatasetConfig(_FrozenConfig):
     """Config of a merged dataset: the datasets it merges, in order.
 
     A merged dataset holds no store of its own, so this config has no path,
-    dates or symbols; each input keeps its own config. ``to_dict()`` nests
-    each input's config dict under ``datasets``, and
-    ``quantlab.utils.module.load_dataset_from_config`` rebuilds them.
+    dates or symbols; each input keeps its own config. ``datasets`` is a
+    component field, so ``to_dict()`` nests each input's config dict under it
+    and ``MergedDataset.from_config`` rebuilds them.
 
     Examples
     --------
@@ -481,22 +487,9 @@ class MergedDatasetConfig(_FrozenConfig):
     """
 
     #: The datasets merged, in order. A list is stored as a tuple.
-    datasets: tuple
+    datasets: tuple = component(many=True)
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict, each input as its config dict.
-
-        Examples
-        --------
-        >>> sorted(cfg.to_dict())
-        ['datasets', 'name']
-        """
-        return {
-            "datasets": [dataset.get_config() for dataset in self.datasets],
-            "name": self.name,
-        }
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -647,7 +640,7 @@ class BaseFactorConfig(_FrozenConfig):
     warmup_bars: int
     #: The market dataset the factor is computed from, or a list of them,
     #: which the factor merges into one ``MergedDataset``.
-    dataset: "MarketDataset | tuple"
+    dataset: "MarketDataset | tuple" = component()
     #: Path of the Zarr store ``build`` writes the factor values to and
     #: ``read`` reads them back from.
     file_path: str | None = None
@@ -667,16 +660,6 @@ class BaseFactorConfig(_FrozenConfig):
 
     #: Dotted import path of the factor class; filled by the config setter.
     name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict via ``dataclasses.asdict``.
-
-        Examples
-        --------
-        >>> cfg.to_dict()["warmup_bars"]
-        20
-        """
-        return asdict(self)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -734,9 +717,9 @@ class MarketFeatureConfig(BaseFactorConfig):
     features, and the calendar ``warmup_bars`` is counted on. ``series``
     names the index or ETF datasets the features are computed from, one
     single-symbol dataset per name; the name prefixes the features, as in
-    ``spy_ret_mean_20``. ``to_dict()`` nests each series dataset's config
-    dict under ``series``, and
-    ``quantlab.utils.module.load_factor_from_config`` rebuilds them.
+    ``spy_ret_mean_20``. ``series`` is a component field, so ``to_dict()``
+    nests each series dataset's config dict under it and
+    ``MarketFeatures.from_config`` rebuilds them.
 
     Examples
     --------
@@ -751,21 +734,7 @@ class MarketFeatureConfig(BaseFactorConfig):
     warmup_bars: int = 60
     #: Series name to the single-symbol dataset it is computed from, in the
     #: order the features are listed.
-    series: "dict[str, MarketDataset]"
-
-    def to_dict(self):
-        """Return the config as a plain dict, each series as its config dict.
-
-        Examples
-        --------
-        >>> cfg.to_dict()["series"]["spy"] == spy.config.to_dict()
-        True
-        """
-        cfg = asdict(replace(self, series={}))
-        cfg["series"] = {
-            name: dataset.get_config() for name, dataset in self.series.items()
-        }
-        return cfg
+    series: "dict[str, MarketDataset]" = component(many=True)
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -774,9 +743,9 @@ class ForwardConfig(_FrozenConfig):
 
     The label at bar t is ``factor`` at bar t + ``delay`` + ``span``. A
     ``Forward`` owns no store, so the config has no path or warm-up of its
-    own; the wrapped factor keeps its config. ``to_dict()`` nests the
-    factor's config dict under ``factor``, and
-    ``quantlab.utils.module.load_factor_from_config`` rebuilds it.
+    own; the wrapped factor keeps its config. ``factor`` is a component
+    field, so ``to_dict()`` nests the factor's config dict under it and
+    ``Forward.from_config`` rebuilds it.
 
     Examples
     --------
@@ -788,7 +757,7 @@ class ForwardConfig(_FrozenConfig):
     """
 
     #: The factor shifted forward to make the label.
-    factor: "Factor"
+    factor: "Factor" = component()
     #: Bars the label accumulates over, such as the n bars of an n-bar
     #: forward return.
     span: int
@@ -797,21 +766,6 @@ class ForwardConfig(_FrozenConfig):
     delay: int = 1
     #: Dotted import path of the label class; filled by the config setter.
     name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict, the factor as its config dict.
-
-        Examples
-        --------
-        >>> sorted(cfg.to_dict())
-        ['delay', 'factor', 'name', 'span']
-        """
-        return {
-            "factor": self.factor.get_config(),
-            "span": self.span,
-            "delay": self.delay,
-            "name": self.name,
-        }
 
 
 @dataclass(frozen=True)

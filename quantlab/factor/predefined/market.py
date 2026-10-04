@@ -112,7 +112,7 @@ class MarketFeatures(Factor):
           dtype=float32)
     """
 
-    #: The config class ``load_factor_from_config`` rebuilds this factor with.
+    #: The config class ``from_config`` rebuilds this factor with.
     config_cls = MarketFeatureConfig
 
     # Narrower type annotation for readers and type checkers only.

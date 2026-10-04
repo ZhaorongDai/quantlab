@@ -39,6 +39,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
+from quantlab.base.component import Component
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend import XrBackend
@@ -141,7 +142,7 @@ class ConversionResult:
     rebuild_rolled_back: bool = False
 
 
-class BaseDataset(ABC):
+class BaseDataset(Component, ABC):
     """Abstract base class shared by every dataset in quantlab.
 
     A subclass implements ``_raw_data_to_xr``, which reads the raw files and
@@ -333,19 +334,6 @@ class BaseDataset(ABC):
             .mode()
             .values[0]
         )
-
-    @property
-    def import_path(self) -> str:
-        """Return the dotted ``module.QualName`` path of the concrete class.
-
-        This is how a saved config names the class to rebuild.
-
-        Examples
-        --------
-        >>> ds.import_path  # for a class defined in a script
-        '__main__.DemoDataset'
-        """
-        return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
 
     def _filter(self):
         """Narrow the built panel to the config's date range and symbols."""
@@ -905,15 +893,33 @@ class BaseDataset(ABC):
             self._filter()
             self.data_backend.write(self.store_path, **kwargs)
 
-    def get_config(self) -> dict:
-        """Return the config as a plain dictionary.
+    @classmethod
+    def from_config(cls, config: dict, run_dir: "str | os.PathLike | None" = None) -> Self:
+        """Rebuild the dataset from its saved config, resolved against ``run_dir``.
+
+        ``resolve_run_config`` prepares the config first (a ``FrameDataset``
+        resolves a store recorded relative to the run directory), then the
+        component rule rebuilds it (``quantlab.base.component.Component``).
+
+        Parameters
+        ----------
+        config : dict
+            The dict ``get_config()`` returned.
+        run_dir : str or os.PathLike, optional
+            The run directory the config was read from.
+
+        Returns
+        -------
+        BaseDataset
+            The rebuilt dataset.
 
         Examples
         --------
-        >>> ds.get_config()["start_date"]
-        '2024-01-02'
+        >>> DemoDataset.from_config(ds.get_config()) == ds
+        True
         """
-        return self.config.to_dict()  # type: ignore
+        run_dir = None if run_dir is None else Path(run_dir)
+        return super().from_config(cls.resolve_run_config(config, run_dir), run_dir)
 
     def persist_with_run(self, run_dir: Path, name: str) -> dict | None:
         """Write what a backtest run directory needs to rebuild this dataset.

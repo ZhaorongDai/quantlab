@@ -18,11 +18,12 @@ from typing import Self
 import pandas as pd
 import xarray as xr
 
+from quantlab.base.component import Component
 from quantlab.base.config import ForwardConfig
 from quantlab.utils.date_range import as_label, check_range, last_moment
 
 
-class Forward:
+class Forward(Component):
     """A factor shifted ``delay + span`` bars earlier, used as a label.
 
     ``read`` and ``compute`` ask the wrapped factor for the requested range
@@ -58,7 +59,7 @@ class Forward:
     ValueError: Forward: span must be at least 1, got 0.
     """
 
-    #: Config class ``quantlab.utils.module.load_factor_from_config`` builds.
+    #: Config class the label is built from and rebuilt with (``from_config``).
     config_cls = ForwardConfig
     #: What the label measures: ``"return"``, or ``"volatility"`` for a label
     #: whose predicted level is used as a volatility. Model evaluation reads
@@ -111,17 +112,6 @@ class Forward:
             )
 
     @property
-    def import_path(self) -> str:
-        """Dotted ``module.QualName`` path used to rebuild this class from a config.
-
-        Examples
-        --------
-        >>> label.import_path
-        'quantlab.label.forward.Forward'
-        """
-        return f"{type(self).__module__}.{type(self).__qualname__}"
-
-    @property
     def class_name(self) -> str:
         """Bare class name, used in log and error messages.
 
@@ -163,23 +153,6 @@ class Forward:
         ('momentum_5',)
         """
         return self.config.factor.get_factor_names()
-
-    def get_config(self) -> dict:
-        """Return a serializable dict describing this label and its factor.
-
-        The wrapped factor's config dict, its dataset's included, is nested
-        under ``"factor"``; ``quantlab.utils.module.load_factor_from_config``
-        rebuilds the label from the result.
-
-        Examples
-        --------
-        >>> cfg = label.get_config()
-        >>> cfg["name"], sorted(cfg)
-        ('quantlab.label.forward.Forward', ['delay', 'factor', 'name', 'span'])
-        >>> load_factor_from_config(cfg) == label
-        True
-        """
-        return self.config.to_dict()
 
     def read(
         self,

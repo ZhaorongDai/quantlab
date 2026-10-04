@@ -7,7 +7,9 @@ runs. The loaders here read such a dict back, import the named class, rebuild
 any nested objects (a factor's dataset, a model's factors and labels, a
 backtester's price dataset and model) and construct the object with the config
 class the class itself declares through ``config_cls``. This is what makes a
-stored run reproducible from its ``config.json`` alone.
+stored run reproducible from its ``config.json`` alone. The dataset and factor
+loaders are thin wrappers over the component rule,
+``quantlab.base.component.rebuild``.
 
 Examples
 --------
@@ -21,7 +23,6 @@ Examples
 import copy
 import importlib
 import os
-from pathlib import Path
 
 
 def get_cls_from_path(path: str):
@@ -55,44 +56,22 @@ def get_cls_from_path(path: str):
     return getattr(module, class_name)
 
 
-def _config_cls_of(cls) -> type:
-    """Return the config class ``cls`` declares in ``config_cls``.
-
-    The config class is never guessed. A guess could rebuild one factor
-    backend's config dict as another backend's config, and it would let any
-    importable callable be instantiated with a config dict. A class without
-    ``config_cls`` is therefore refused.
-
-    Raises
-    ------
-    TypeError
-        If ``cls`` has no ``config_cls`` attribute, or it is not a type.
-    """
-    config_cls = getattr(cls, "config_cls", None)
-    if not isinstance(config_cls, type):
-        raise TypeError(
-            f"{cls.__qualname__} declares no config_cls, so it cannot be "
-            f"rebuilt from a config dict."
-        )
-    return config_cls
-
-
 def load_dataset_from_config(
     config: dict, *, run_dir: "str | os.PathLike | None" = None
 ):
     """Rebuild a dataset from its config dict.
 
-    The class named in ``config["name"]`` is imported, its
-    ``resolve_run_config(config, run_dir)`` prepares the config (a
-    ``FrameDataset`` resolves a store a backtest run directory recorded
-    relative to itself; every other dataset uses its paths as written), and
-    the class is constructed with its own declared config class. The input
-    dict is deep-copied first and is returned to the caller unchanged.
+    A thin wrapper over the component rule,
+    ``quantlab.base.component.rebuild``: the class named in
+    ``config["name"]`` rebuilds itself and every dataset nested in it, and
+    a ``FrameDataset`` store recorded relative to a run directory is
+    resolved against ``run_dir`` at any depth. The caller's dict is not
+    modified.
 
     Parameters
     ----------
     config : dict
-        The dict a dataset's ``config.to_dict()`` produced.
+        The dict a dataset's ``get_config()`` produced.
     run_dir : str or os.PathLike, optional
         The run directory the config was read from.
 
@@ -104,9 +83,8 @@ def load_dataset_from_config(
     Raises
     ------
     ValueError
-        If the class's ``resolve_run_config`` refuses the config, such as a
-        ``FrameDataset`` store named relative to a run directory without
-        ``run_dir``.
+        If the config holds an unknown key, or names a ``FrameDataset`` store
+        relative to a run directory without ``run_dir``.
 
     Examples
     --------
@@ -116,36 +94,31 @@ def load_dataset_from_config(
     >>> type(rebuilt) is type(dataset), rebuilt.config == dataset.config
     (True, True)
     """
-    config = copy.deepcopy(config)
-    # Configs saved before `catalog_path` was removed still carry the key.
-    config.pop("catalog_path", None)
-    cls = get_cls_from_path(config["name"])
-    config_cls = _config_cls_of(cls)
-    if "datasets" in config:  # a merged dataset nests its inputs' configs
-        config["datasets"] = [
-            load_dataset_from_config(d, run_dir=run_dir) for d in config["datasets"]
-        ]
-    config = cls.resolve_run_config(config, None if run_dir is None else Path(run_dir))
-    return cls(config_cls(**config))
+    from quantlab.base.component import rebuild
+
+    return rebuild(config, run_dir)
 
 
-def load_factor_from_config(config: dict):
+def load_factor_from_config(
+    config: dict, *, run_dir: "str | os.PathLike | None" = None
+):
     """Rebuild a factor or label, and what is nested inside it, from a config dict.
 
-    The class named in ``config["name"]`` is resolved first. A factor's
-    nested ``dataset`` dict is replaced by a rebuilt dataset; a label's
-    (``quantlab.label.forward.Forward``) nested ``factor`` dict is replaced
-    by a rebuilt factor, recursively. A market-feature factor's
-    (``quantlab.factor.predefined.market.MarketFeatures``) ``series`` dict of dataset
-    config dicts is rebuilt into datasets as well. The object is then
-    constructed with its declared config class. The caller's dict is never
-    modified.
+    A thin wrapper over the component rule,
+    ``quantlab.base.component.rebuild``: the class named in
+    ``config["name"]`` rebuilds the components its config class declares (a
+    factor's dataset, a label's factor, a market-feature factor's series)
+    and is constructed with its declared config class. The caller's dict is
+    never modified.
 
     Parameters
     ----------
     config : dict
         The dict a factor's or label's ``get_config()`` produced, including
         a nested ``dataset`` or ``factor`` dict.
+    run_dir : str or os.PathLike, optional
+        The run directory the config was read from, passed to every nested
+        dataset.
 
     Returns
     -------
@@ -163,18 +136,9 @@ def load_factor_from_config(config: dict):
     >>> rebuilt.config.factor_names == factor.config.factor_names
     True
     """
-    config = copy.deepcopy(config)
-    cls = get_cls_from_path(config["name"])
-    if "factor" in config:  # a label nests the factor it shifts
-        config["factor"] = load_factor_from_config(config["factor"])
-    else:
-        config["dataset"] = load_dataset_from_config(config["dataset"])
-    if "series" in config:  # a market-feature factor nests its index datasets
-        config["series"] = {
-            name: load_dataset_from_config(dataset)
-            for name, dataset in config["series"].items()
-        }
-    return cls(_config_cls_of(cls)(**config))
+    from quantlab.base.component import rebuild
+
+    return rebuild(config, run_dir)
 
 
 def load_model_from_config(config: dict):
@@ -330,9 +294,11 @@ def load_backtester_from_config(
 
     from dataclasses import fields
 
+    from quantlab.base.component import config_cls_of
+
     missing = [
         field.name
-        for field in fields(_config_cls_of(cls))
+        for field in fields(config_cls_of(cls))
         if field.name != "name" and field.name not in config
     ]
     if missing:
@@ -371,6 +337,6 @@ def load_backtester_from_config(
         else load_dataset_from_config(benchmark, run_dir=run_dir)
     )
 
-    backtester = cls(_config_cls_of(cls)(**config))
+    backtester = cls(config_cls_of(cls)(**config))
     backtester.expected_fingerprint = expected
     return backtester
