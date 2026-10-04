@@ -924,9 +924,11 @@ class BaseDataset(Component, ABC):
     def persist_with_run(self, run_dir: Path, name: str) -> dict | None:
         """Write what a backtest run directory needs to rebuild this dataset.
 
-        A backtester calls this while it writes a run directory, once per
-        dataset of its config, with ``name`` the config field (such as
-        ``"price_dataset"``). The return value is the config ``config.json``
+        A backtest run directory is written calling this once per dataset
+        found anywhere in the backtester's component tree, with ``name`` the
+        dataset's component path (``"price_dataset"``,
+        ``"model.factors.0.dataset"``); a dataset found again is not asked
+        again. The return value is the config ``config.json``
         records for the dataset, or ``None`` to record ``get_config()`` as it
         is. A dataset read from a project store needs nothing written: the
         store outlives the run, so the default writes nothing and returns
@@ -938,7 +940,7 @@ class BaseDataset(Component, ABC):
         run_dir : Path
             The run directory being written.
         name : str
-            The backtest config field holding this dataset.
+            The dataset's component path in the backtester.
 
         Returns
         -------

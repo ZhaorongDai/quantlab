@@ -4,8 +4,8 @@
 pipeline for daily US equities. It composes the ``US_EQUITY_MARKET`` price
 conventions, the portfolio construction rule of its config that turns
 predictions into target weights, and the vectorbt simulation engine
-inherited from ``VectorBtBacktester``. A saved run's ``config.json`` rebuilds it through
-``quantlab.utils.module.load_backtester_from_config``.
+inherited from ``VectorBtBacktester``. A saved run rebuilds it through
+``quantlab.runs.backtest_run.BacktestRun.rebuild_backtester``.
 """
 
 import xarray as xr
@@ -72,9 +72,8 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
     ...     )
     ... )
     >>> result = backtester.run()
-    >>> sorted(p.name for p in result.run_dir.iterdir())
-    ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json',
-     'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
+    >>> BacktestRun.open(result.run_dir).kind
+    'run'
     >>> result.weights["weight"].dims
     ('timestamp', 'symbol')
     """

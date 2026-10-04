@@ -13,11 +13,9 @@ loaders are thin wrappers over the component rule,
 
 Examples
 --------
->>> import json
->>> from quantlab.utils.module import load_backtester_from_config
->>> config = json.load(open("runs/2024-06-01/config.json"))
->>> backtester = load_backtester_from_config(config)
->>> result = backtester.run()
+>>> from quantlab.runs.trained_run import TrainedRun
+>>> from quantlab.utils.module import load_model_from_config
+>>> model = load_model_from_config(TrainedRun.open(checkpoint).config)
 """
 
 import importlib
@@ -180,19 +178,17 @@ def load_backtester_from_config(
 ):
     """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
-    The class named by ``config["name"]`` is checked to be a backtester and
-    rebuilds itself through ``BaseBacktester.from_config``: the records
-    (``market``, ``data_fingerprint``, ``trained_checkpoint``) are taken out,
-    a missing config field is refused, and the component rule rebuilds the
-    datasets, model, construction rule and tracker. Calling ``run()`` or
-    ``run_cv()`` on the result re-runs the stored backtest; a
-    ``run_weights()`` run is replayed by passing ``run_weights`` the weights
-    it simulated, ``XrBackend().read(run_dir / "weights.zarr").data``.
+    A thin wrapper over the component rule: the class named by
+    ``config["name"]`` is checked to be a backtester and rebuilds itself
+    through ``BaseBacktester.from_config``, which refuses a missing config
+    field. A run directory is better rebuilt with
+    ``quantlab.runs.backtest_run.BacktestRun.open(run_dir).rebuild_backtester()``,
+    which also passes ``run_dir`` and the run's data fingerprint.
 
-    A run whose price or benchmark dataset was a ``FrameDataset`` (every
-    ``quantlab.api.backtest`` run) holds that panel under the run
-    directory's ``inputs/``, and its config names the store relative to the
-    run directory, so the directory can be moved; such a config needs
+    A run whose datasets were held in memory (``FrameDataset``, every
+    ``quantlab.api.backtest`` run) holds their panels under the run
+    directory, and its config names those stores relative to the run
+    directory, so the directory can be moved; such a config needs
     ``run_dir``.
 
     Parameters
@@ -201,7 +197,7 @@ def load_backtester_from_config(
         The dict read from a run directory's ``config.json``.
     run_dir : str or os.PathLike, optional
         The run directory ``config`` was read from. Required when the config
-        names ``inputs/`` stores, which are resolved against it.
+        names stores relative to it.
 
     Returns
     -------
@@ -215,48 +211,15 @@ def load_backtester_from_config(
         checked before any nested dataset or model is built.
     ValueError
         If any config field other than ``name`` is missing, a key is
-        unknown, or the config names ``inputs/`` stores and ``run_dir`` is
-        not given.
+        unknown, or the config names stores relative to a run directory and
+        ``run_dir`` is not given.
 
     Examples
     --------
-    Given the run directory of an earlier backtest:
+    With ``backtester`` any backtester built earlier:
 
-    >>> import json
-    >>> with open("/data/backtests/2024-06-01/config.json") as f:
-    ...     config = json.load(f)
-    >>> backtester = load_backtester_from_config(config)
-    >>> result = backtester.run()
-
-    A ``quantlab.api.backtest`` run kept with ``output_dir``, rebuilt from its
-    directory and replayed from its saved weights:
-
-    >>> import json, tempfile
-    >>> import numpy as np
-    >>> import pandas as pd
-    >>> import quantlab.api as qa
-    >>> from quantlab.backend import XrBackend
-    >>> from quantlab.utils.module import load_backtester_from_config
-    >>> bars = pd.bdate_range("2024-01-01", periods=5)
-    >>> prices = pd.DataFrame({
-    ...     "timestamp": np.repeat(bars, 2), "symbol": ["AAA", "BBB"] * 5,
-    ...     "open": np.linspace(10.0, 14.0, 10), "close": np.linspace(10.5, 14.5, 10),
-    ... })
-    >>> weights = pd.DataFrame({"timestamp": [bars[0]], "symbol": ["AAA"],
-    ...                         "weight": [1.0]})
-    >>> report = qa.backtest(prices, weights=weights, output_dir=tempfile.mkdtemp())
-    >>> run_dir = report.raw.run_dir
-    >>> config = json.loads((run_dir / "config.json").read_text())
-    >>> config["price_dataset"]["zarr_file_path"]
-    'inputs/price_dataset.zarr'
-    >>> backtester = load_backtester_from_config(config, run_dir=run_dir)
-    >>> again = backtester.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
-    >>> json.loads((again.run_dir / "metrics.json").read_text()) == json.loads(
-    ...     (run_dir / "metrics.json").read_text())
-    True
-    >>> again.simulation.value.values.round(2).tolist()
-    [1000000.0, 1044873.23, 1126424.31, 1207975.4, 1289526.48]
-    >>> (again.simulation.value == report.raw.simulation.value).all().item()
+    >>> rebuilt = load_backtester_from_config(backtester.get_config())
+    >>> rebuilt.get_config() == backtester.get_config()
     True
     """
     # Imported here so this module does not import the backtest layer at

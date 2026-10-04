@@ -19,7 +19,8 @@ against it. What is locked here:
   the last bar, in percent, and `Excess Max Drawdown [%]` is the deepest fall
   of that ratio.
 - **Persistence and report.** `equity.zarr` carries both curves,
-  `fingerprint.json` the benchmark's data, `config.json` rebuilds the
+  the run's data fingerprint (`BacktestRun.data_fingerprint`) the benchmark's
+  data, `config.json` rebuilds the
   benchmark, and `report.html` draws the benchmark NAV with the portfolio's
   and adds the excess-return and excess-drawdown rows and tables.
 - **run_cv.** The stitched curve and every fold are compared with the
@@ -44,6 +45,7 @@ from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.utils.backtest_report import write_backtest_report
 from quantlab.utils.backtest_stats import win_rates
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -269,7 +271,7 @@ def test_run_directory_carries_the_benchmark(benchmark_run):
     np.testing.assert_allclose(
         equity["benchmark_value"].values, result.benchmark.value.values
     )
-    assert "benchmark_dataset" in json.loads((run_dir / "fingerprint.json").read_text())
+    assert "benchmark_dataset" in BacktestRun.open(run_dir).data_fingerprint
     metrics = json.loads((run_dir / "metrics.json").read_text())
     assert metrics["relative"]["whole"]["Excess Return [%]"] == pytest.approx(
         result.metrics["relative"]["whole"]["Excess Return [%]"]
@@ -401,11 +403,11 @@ def test_run_cv_compares_the_stitched_curve_and_every_fold(tmp_path, expanding):
     for record in cv.folds:
         assert record["benchmark"] is not None
         assert "relative" in record["metrics"]
-        fold_equity = xr.open_zarr(
-            cv.run_dir / "folds" / f"fold_{record['fold']}" / "equity.zarr"
-        )
-        assert "benchmark_value" in fold_equity.data_vars
-    assert "benchmark_dataset" in json.loads((cv.run_dir / "fingerprint.json").read_text())
+    run = BacktestRun.open(cv.run_dir)
+    assert [fold.index for fold in run.folds] == [record["fold"] for record in cv.folds]
+    for fold in run.folds:
+        assert "benchmark_value" in fold.equity().data_vars
+    assert "benchmark_dataset" in run.data_fingerprint
     page = (Path(cv.run_dir) / "report.html").read_text(encoding="utf-8")
     assert '"name":"excess_drawdown"' in page
     # The windows timeline draws one row per fold, each with the training

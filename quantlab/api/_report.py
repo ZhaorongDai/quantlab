@@ -188,14 +188,12 @@ class BacktestReport:
         """Write the library's run directory of this backtest under ``directory``.
 
         The run is simulated again from the same prices and weights with
-        ``output_dir=directory``, which is deterministic, so the directory
-        (``config.json``, ``weights.zarr``, ``equity.zarr``, ``metrics.json``,
-        ``settlements.json``, ``fingerprint.json``, ``report.html``) describes exactly
-        this report. It is self-contained: the price and benchmark panels are written
-        under ``inputs/`` and ``config.json`` names them relative to the run directory,
-        so ``quantlab.utils.module.load_backtester_from_config(config, run_dir=...)``
-        rebuilds the backtester, even after the directory has moved, and its
-        ``run_weights`` given ``XrBackend().read(run_dir / "weights.zarr").data``
+        ``output_dir=directory``, which is deterministic, so the run directory
+        describes exactly this report. It is self-contained: the price and benchmark
+        panels are written under the run directory and its recipe names them relative
+        to it, so ``quantlab.runs.backtest_run.BacktestRun.open(run_dir)`` reads the
+        run and ``rebuild_backtester()`` rebuilds the backtester, even after the
+        directory has moved; its ``run_weights`` given the run's ``weights()``
         replays the run. The report itself is unchanged.
 
         Parameters
@@ -223,11 +221,10 @@ class BacktestReport:
         >>> weights = pd.DataFrame({"timestamp": [bars[0]], "symbol": ["AAA"],
         ...                         "weight": [1.0]})
         >>> report = qa.backtest(prices, weights=weights)
-        >>> run_dir = report.save(tempfile.mkdtemp())
-        >>> sorted(path.name for path in run_dir.iterdir())
-        ['config.json', 'equity.zarr', 'fingerprint.json', 'inputs', 'metrics.json', 'report.html', 'settlements.json', 'weights.zarr']
-        >>> sorted(path.name for path in (run_dir / "inputs").iterdir())
-        ['price_dataset.zarr']
+        >>> from quantlab.runs.backtest_run import BacktestRun
+        >>> run = BacktestRun.open(report.save(tempfile.mkdtemp()))
+        >>> run.kind, run.rebuild("price_dataset").config.zarr_file_path.endswith("price_dataset.zarr")
+        ('run_weights', True)
         """
         backtester = self._backtester
         config = dataclasses.replace(backtester.config, output_dir=str(directory))

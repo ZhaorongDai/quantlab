@@ -16,6 +16,12 @@ themselves, and that one declaration drives both directions:
 
 Nothing is recognised by key name or by shape: a free-form dict field (a
 factor's ``kwargs``) is never entered, even when it holds a ``"name"`` key.
+
+The same declarations give the component tree: ``walk_components`` yields
+every component under a root with its path of field names, and inside
+``recorded_configs`` a component found in a declared field is written as the
+config recorded for it instead of its own ``get_config()`` (a run directory
+records an in-memory dataset reading its copy under the run).
 Only a class that declares a config class is ever rebuilt, so a saved dict
 cannot instantiate an arbitrary importable callable.
 
@@ -35,16 +41,23 @@ True
 
 from __future__ import annotations
 
+import contextvars
 import copy
 import dataclasses
 import os
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Self
 
 #: The key under a field's ``metadata`` that marks it as holding components;
 #: its value is whether the field holds many.
 _METADATA_KEY = "quantlab.component"
+
+#: The configs ``recorded_configs`` substitutes, keyed by component identity.
+_RECORDED: contextvars.ContextVar[Mapping[int, dict] | None] = contextvars.ContextVar(
+    "quantlab_recorded_configs", default=None
+)
 
 
 def component(*, many: bool = False, **field_kwargs: Any) -> Any:
@@ -160,10 +173,97 @@ def _write_components(value: Any) -> Any:
     if value is None:
         return None
     if isinstance(value, Mapping):
-        return {key: item.get_config() for key, item in value.items()}
+        return {key: _config_of(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
-        return [item.get_config() for item in value]
-    return value.get_config()
+        return [_config_of(item) for item in value]
+    return _config_of(value)
+
+
+def _config_of(item: Any) -> dict:
+    """Return the config recorded for ``item`` under ``recorded_configs``, else its own."""
+    recorded = _RECORDED.get()
+    if recorded is not None and id(item) in recorded:
+        return copy.deepcopy(recorded[id(item)])
+    return item.get_config()
+
+
+def walk_components(root: Any, path: str = "") -> Iterator[tuple[str, Any]]:
+    """Yield every component under ``root`` with its path, depth first, ``root`` excluded.
+
+    The tree follows the declared component fields (see ``component``) of
+    each component's ``config``. A path joins the field names with ``.``,
+    and an item of a many-field adds its index or key, so the price dataset
+    of a backtester is ``"price_dataset"`` and the dataset of its model's
+    first factor ``"model.factors.0.dataset"``. A component held in several
+    places is yielded at each of them.
+
+    Parameters
+    ----------
+    root : Component
+        The component to walk.
+    path : str, optional
+        The path of ``root`` itself, prefixed to every path yielded.
+
+    Yields
+    ------
+    tuple[str, Component]
+        A path and the component found there.
+
+    Examples
+    --------
+    With ``label`` a ``Forward`` label over a factor over a dataset:
+
+    >>> [path for path, _ in walk_components(label)]
+    ['factor', 'factor.dataset']
+    """
+    config = getattr(root, "config", None)
+    if not dataclasses.is_dataclass(config) or isinstance(config, type):
+        return
+    for name, many in component_fields(config).items():
+        value = getattr(config, name, None)
+        if value is None:
+            continue
+        if isinstance(value, Mapping):
+            items = list(value.items())
+        elif isinstance(value, (list, tuple)):
+            items = list(enumerate(value))
+        else:
+            items = [(None, value)]
+        for key, item in items:
+            if item is None:
+                continue
+            here = name if not path else f"{path}.{name}"
+            if key is not None:
+                here = f"{here}.{key}"
+            yield here, item
+            yield from walk_components(item, here)
+
+
+@contextmanager
+def recorded_configs(configs: Mapping[int, dict]) -> Iterator[None]:
+    """Write each component ``configs`` names, by ``id``, as the config recorded for it.
+
+    Inside the block, ``get_config()`` of any component writes a component
+    found in a declared field whose ``id`` is a key of ``configs`` as that
+    config, at every depth. The components themselves are not changed.
+
+    Parameters
+    ----------
+    configs : Mapping[int, dict]
+        ``id(component)`` to the config to write for it.
+
+    Examples
+    --------
+    >>> dataset = label.config.factor.config.dataset
+    >>> with recorded_configs({id(dataset): {"name": "x"}}):
+    ...     label.get_config()["factor"]["dataset"]
+    {'name': 'x'}
+    """
+    token = _RECORDED.set(configs)
+    try:
+        yield
+    finally:
+        _RECORDED.reset(token)
 
 
 def config_cls_of(cls: type) -> type:
@@ -252,13 +352,15 @@ def _rebuild_components(value: Any, many: bool, run_dir: Path | None) -> Any:
     if value is None:
         return None
     if isinstance(value, (list, tuple)):
-        return [rebuild(item, run_dir) for item in value]
+        return [_rebuild_one(item, run_dir) for item in value]
     if many and isinstance(value, Mapping):
-        return {key: rebuild(item, run_dir) for key, item in value.items()}
-    if isinstance(value, Mapping):
-        return rebuild(value, run_dir)
-    # Already an object (a caller filled the field in), kept as given.
-    return value
+        return {key: _rebuild_one(item, run_dir) for key, item in value.items()}
+    return _rebuild_one(value, run_dir)
+
+
+def _rebuild_one(value: Any, run_dir: Path | None) -> Any:
+    """Rebuild one saved component; an object a caller filled in is kept as given."""
+    return rebuild(value, run_dir) if isinstance(value, Mapping) else value
 
 
 class Component:
@@ -377,10 +479,15 @@ class Component:
                 f"{config_cls.__name__} does not have; refusing to rebuild it."
             )
         run_dir = None if run_dir is None else Path(run_dir)
+        declared = component_fields(config_cls)
+        # A component field is rebuilt into new objects, or holds an object a
+        # caller filled in, which is used as given (never copied).
         fields = {
-            key: copy.deepcopy(value) for key, value in config.items() if key in known
+            key: value if key in declared else copy.deepcopy(value)
+            for key, value in config.items()
+            if key in known
         }
-        for name, many in component_fields(config_cls).items():
+        for name, many in declared.items():
             if name in fields:
                 fields[name] = _rebuild_components(fields[name], many, run_dir)
         return fields

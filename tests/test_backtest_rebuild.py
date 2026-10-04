@@ -2,19 +2,20 @@
 
 What is locked here:
 
-- **D-25, the config rebuilds everything.** `load_backtester_from_config`
-  turns the `config.json` a run wrote back into a backtester: the backtester
-  class, its `CrossSectionBacktestConfig`, the price dataset, the model with its
+- **D-25, the recipe rebuilds everything.** `BacktestRun.rebuild_backtester`
+  turns the recipe a run wrote back into a backtester: the backtester class,
+  its `CrossSectionBacktestConfig`, the price dataset, the model with its
   factors and labels (and the checkpoint reference), and every scalar
   parameter. Re-running the rebuilt backtester reproduces the same target
   weights and the same equity curve, for `run()` in load and train mode and for
   `run_cv()`.
 - **D-26, the backtester round trip.** `get_config()` -> JSON -> loader ->
   `get_config()` is the identity, with the declared config classes on the way.
-- **D-27, fingerprints on rebuild.** `data_fingerprint` in `config.json` is a
-  record of what the original run read, not a config field. The loader moves it
-  onto `expected_fingerprint`, so an unchanged store re-runs silently and a
-  changed store re-runs with a warning naming the dataset, and still completes.
+- **D-27, fingerprints on rebuild.** The data fingerprint is a record of what
+  the original run read, kept in its `run.json` (#133), never in the recipe.
+  `rebuild_backtester` sets it as `expected_fingerprint`, so an unchanged store
+  re-runs silently and a changed store re-runs with a warning naming the
+  dataset, and still completes.
 - **Security (RESEARCH Security Domain).** A `name` that is not a
   `BaseBacktester` subclass is refused before any dataset or model is built.
 
@@ -44,6 +45,7 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.tracking.wandb import WandbTracker
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -150,8 +152,9 @@ def _trained(root: Path):
     return dataset_config, checkpoint
 
 
-def _read_run_config(run_dir: Path) -> dict:
-    return json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
+def _rebuilt(run_dir: Path, **overrides) -> USEquityCrossectionSelectStockVectorBt:
+    """The backtester a run directory records, rebuilt through `BacktestRun`."""
+    return BacktestRun.open(run_dir).rebuild_backtester(**overrides)
 
 
 def _assert_same_run_artifacts(first_dir: Path, second_dir: Path) -> None:
@@ -230,37 +233,40 @@ def test_rebuilt_backtester_has_the_same_class_config_class_and_config(tmp_path)
     assert _json(rebuilt.get_config()) == saved
 
 
-def test_rebuild_from_a_run_config_moves_the_fingerprint_to_expected(tmp_path):
+def test_rebuild_from_a_run_sets_its_fingerprint_as_expected(tmp_path):
     dataset_config, checkpoint = _trained(tmp_path)
     result = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
-    saved = _read_run_config(result.run_dir)
-    assert "data_fingerprint" in saved
+    run = BacktestRun.open(result.run_dir)
+    assert run.data_fingerprint
 
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = run.rebuild_backtester()
 
-    assert rebuilt.expected_fingerprint == saved["data_fingerprint"]
+    assert rebuilt.expected_fingerprint == run.data_fingerprint
     assert "data_fingerprint" not in rebuilt.get_config()
     assert rebuilt.config.checkpoint == str(checkpoint)
 
 
-def test_a_run_config_with_the_market_block_rebuilds(tmp_path):
-    """#106: the `market` block is a record of the class's MARKET, not a config field.
+def test_the_recipe_holds_no_records_and_the_run_records_the_market(tmp_path):
+    """#106/#133: the market columns are a record of the class's MARKET, kept in run.json.
 
-    The rebuilt backtester takes its columns from its class again, and its own
-    config (and so its next run directory) carries the same block.
+    The recipe the run wrote rebuilds a backtester whose config is exactly that
+    recipe, with no record mixed in, and the rebuilt backtester takes its columns
+    from its class again.
     """
     dataset_config, checkpoint = _trained(tmp_path)
     result = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
-    saved = _read_run_config(result.run_dir)
-    assert saved["market"] == {
-        "fill_price_column": "adjOpen",
-        "valuation_price_column": "adjClose",
-    }
+    run = BacktestRun.open(result.run_dir)
+    assert (run.market.fill_price_column, run.market.valuation_price_column) == (
+        "adjOpen",
+        "adjClose",
+    )
 
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = run.rebuild_backtester()
 
     assert rebuilt.MARKET.fill_price_column == "adjOpen"
-    assert _json(rebuilt.get_config())["market"] == saved["market"]
+    config = _json(rebuilt.get_config())
+    assert not {"market", "data_fingerprint", "trained_checkpoint"} & set(config)
+    assert _json(module_utils.load_backtester_from_config(config).get_config()) == config
 
 
 def test_backtest_config_path_fields_are_stored_absolute(tmp_path, monkeypatch):
@@ -300,7 +306,6 @@ def test_loader_does_not_mutate_its_input(tmp_path):
             tmp_path, dataset_config, checkpoint=tmp_path / "never_read.joblib"
         ).get_config()
     )
-    saved["data_fingerprint"] = {"price_dataset": {"digest": "abc"}}
     before = copy.deepcopy(saved)
 
     module_utils.load_backtester_from_config(saved)
@@ -442,7 +447,7 @@ def test_load_mode_rebuild_reproduces_weights_and_equity(tmp_path, warning_messa
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
 
-    rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
+    rebuilt = _rebuilt(first.run_dir)
     second = rebuilt.run()
 
     _assert_same_run_artifacts(first.run_dir, second.run_dir)
@@ -463,18 +468,16 @@ def test_train_mode_rebuild_retrains_and_reproduces_weights_and_equity(
 ):
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
     first = _backtester(tmp_path, dataset_config, model_mode="train").run()
-    saved = _read_run_config(first.run_dir)
-    assert saved["model_mode"] == "train"
-    assert saved["checkpoint"] is None
-
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = _rebuilt(first.run_dir)
+    assert rebuilt.config.model_mode == "train"
+    assert rebuilt.config.checkpoint is None
     # Code review WR-04: `BaseModel.train` names its project directory to the
     # microsecond and never reuses an existing one, so the rebuild retrains
     # immediately. The old `time.sleep(1.1)` wall-clock workaround is gone;
     # without the fix this line raises "... already exists" within the second.
     second = rebuilt.run()
 
-    checkpoints = sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib"))
+    checkpoints = sorted(Path(rebuilt.config.model.config.model_save_dir).rglob("*.joblib"))
     assert len(checkpoints) == 2, "the rebuilt run must train its own model"
     _assert_same_run_artifacts(first.run_dir, second.run_dir)
     assert (
@@ -485,44 +488,39 @@ def test_train_mode_rebuild_retrains_and_reproduces_weights_and_equity(
 
 
 def test_train_mode_run_records_its_checkpoint_and_replays_it_in_load_mode(tmp_path):
-    """Code review WR-04: a train-mode run records the checkpoint it trained.
+    """Code review WR-04 / #133: a train-mode run records the unit it trained.
 
-    Before the fix neither config.json nor metrics.json named the model a
-    train-mode backtest produced. That backtest could not be replayed against
-    the exact model, only retrained, and retraining is not bit-reproducible for
-    torch or GPU heads. `trained_checkpoint` must now be in both files, point at
-    the one checkpoint trained, and replay identically through a load-mode
-    rebuild. The loader treats it as a record, so the replay's own config
-    (load mode, nothing trained) carries none. Red on the old code
-    (KeyError on `trained_checkpoint`).
+    A train-mode backtest that did not name the model it produced could only be
+    retrained, and retraining is not bit-reproducible for torch or GPU heads.
+    The run's `trained_run()` opens the one unit trained, `metrics.json` names
+    its checkpoint, and a load-mode rebuild of that checkpoint replays the run
+    identically. The replay trains nothing and loads that same unit.
     """
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
     first = _backtester(tmp_path, dataset_config, model_mode="train").run()
-    saved = _read_run_config(first.run_dir)
-    metrics = json.loads((first.run_dir / "metrics.json").read_text(encoding="utf-8"))
+    run = BacktestRun.open(first.run_dir)
+    model_save_dir = Path(run.rebuild("model").config.model_save_dir)
 
-    recorded = saved["trained_checkpoint"]
+    unit = run.trained_run()
+    recorded = run.metrics()["trained_checkpoint"]
     assert Path(recorded).is_absolute() and Path(recorded).is_file(), recorded
-    assert metrics["trained_checkpoint"] == recorded
-    assert sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib")) == [
-        Path(recorded)
-    ]
+    assert unit.checkpoint == Path(recorded)
+    assert sorted(model_save_dir.rglob("*.joblib")) == [Path(recorded)]
 
-    replay = module_utils.load_backtester_from_config(
-        dict(saved, model_mode="load", checkpoint=recorded)
-    )
+    replay = run.rebuild_backtester(model_mode="load", checkpoint=recorded)
     second = replay.run()
 
     _assert_same_run_artifacts(first.run_dir, second.run_dir)
-    assert "trained_checkpoint" not in _read_run_config(second.run_dir)
-    assert len(sorted(Path(saved["model"]["model_save_dir"]).rglob("*.joblib"))) == 1
+    assert BacktestRun.open(second.run_dir).trained_run() == unit
+    assert "trained_checkpoint" not in BacktestRun.open(second.run_dir).metrics()
+    assert len(sorted(model_save_dir.rglob("*.joblib"))) == 1
 
 
 def test_run_cv_rebuild_reproduces_the_stitched_curve(tmp_path, warning_messages):
     original = _cv_original(tmp_path)
     first = original.run_cv()
 
-    rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
+    rebuilt = _rebuilt(first.run_dir)
     second = rebuilt.run_cv()
 
     assert len(second.folds) == len(first.folds) > 1
@@ -537,7 +535,6 @@ def test_run_cv_rebuild_reproduces_the_stitched_curve(tmp_path, warning_messages
 def test_changed_store_rebuild_warns_and_completes(tmp_path, warning_messages):
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
-    saved = _read_run_config(first.run_dir)
 
     # Overwrite one adjusted close inside the backtest window directly in the
     # Zarr array (group opened "r+"), the way a Tiingo re-base rewrites history.
@@ -550,7 +547,7 @@ def test_changed_store_rebuild_warns_and_completes(tmp_path, warning_messages):
         xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].values[bar, symbol]
     ) == pytest.approx(old * 1.25)
 
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = _rebuilt(first.run_dir)
     assert _fingerprint_warnings(warning_messages) == []
     second = rebuilt.run()
 
@@ -590,7 +587,6 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
     """
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
-    saved = _read_run_config(first.run_dir)
 
     # A real data change at the same path `_trained` wrote: one symbol
     # disappears, so the factor and the price fingerprint both differ
@@ -599,7 +595,7 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
 
     # --- control: no raise, the mismatch is reported exactly as today --------
     warning_messages.clear()
-    module_utils.load_backtester_from_config(saved).run()
+    _rebuilt(first.run_dir).run()
 
     control = _fingerprint_warnings(warning_messages)
     assert len(control) == 2, control
@@ -610,7 +606,7 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
 
     # --- probe: a raise inside the window, after a fingerprint exists --------
     warning_messages.clear()
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = _rebuilt(first.run_dir)
     monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
 
     with pytest.raises(ValueError, match="representative downstream failure"):
@@ -641,11 +637,10 @@ def test_a_failing_partial_diagnostic_never_replaces_the_real_exception(
     """
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
-    saved = _read_run_config(first.run_dir)
     write_price_store(tmp_path / "store", symbols=SYMBOLS[:-1], n_bars=N_BARS)
 
     warning_messages.clear()
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = _rebuilt(first.run_dir)
     monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
 
     def broken_diagnostic(*_args, **_kwargs):
@@ -684,7 +679,7 @@ def test_run_cv_reports_a_partial_comparison_when_a_fold_raises(
     # The probe depends on the fold window being narrower than the stitched one.
     assert len(first.folds) > 1
 
-    rebuilt = module_utils.load_backtester_from_config(_read_run_config(first.run_dir))
+    rebuilt = _rebuilt(first.run_dir)
     monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
     warning_messages.clear()
 

@@ -19,8 +19,9 @@ What is locked here, and what turns it red:
 - every `predefined` package's `__init__.py` is empty.
 - the walk-forward module (`quantlab/utils/walk_forward.py`), which the base layer
   imports, imports no quantlab module outside `quantlab.utils`;
-- the run layer (`quantlab/runs`) imports only `quantlab.utils`, itself and the
-  base root modules it names (`RUNS_BASE_MODULES`), never the model, factor, label,
+- the run layer (`quantlab/runs`) imports only `quantlab.utils`, itself, the storage
+  backend (`quantlab.backend`) and the base root modules it names
+  (`RUNS_BASE_MODULES`), never the model, factor, label,
   backtest or portfolio layers; its `__init__.py` is empty; and the trained-run
   module imports no quantlab module outside `quantlab.utils` and the run-directory
   mechanism, so the base layer may import it.
@@ -150,15 +151,18 @@ def test_the_walk_forward_module_stays_in_utils():
 
 
 RUNS = REPO_ROOT / "quantlab/runs"
-#: The base root modules the run layer may import.
-RUNS_BASE_MODULES = ()
+#: The base root modules the run layer may import: the component rule (rebuilds,
+#: the component tree) and the prediction panel a backtest run reads.
+RUNS_BASE_MODULES = ("quantlab.base.component", "quantlab.base.portfolio")
 
 
 def test_the_run_layer_imports_only_utils_and_named_base_modules():
     files = _python_files(RUNS)
     # Positive control: the mechanism and the trained run are seen.
-    assert {"directory.py", "trained_run.py"} <= {path.name for path in files}
-    allowed = ("quantlab.utils", "quantlab.runs", *RUNS_BASE_MODULES)
+    assert {"directory.py", "trained_run.py", "backtest_run.py"} <= {
+        path.name for path in files
+    }
+    allowed = ("quantlab.utils", "quantlab.runs", "quantlab.backend", *RUNS_BASE_MODULES)
     offenders = {
         path.name: sorted(
             name

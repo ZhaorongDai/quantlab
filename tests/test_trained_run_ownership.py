@@ -1,6 +1,8 @@
 """ADR 0018: a training run's files are written and read only through
-the run layer: `quantlab/runs/trained_run.py` and, for the `run.json` every run
-type shares, the run-directory mechanism `quantlab/runs/directory.py` (#132).
+the run layer: `quantlab/runs/trained_run.py`, the run-directory mechanism
+`quantlab/runs/directory.py` (the `run.json` every run type shares) and the
+backtest-run module `quantlab/runs/backtest_run.py`, which lays out a run_cv
+run's folds.
 
 What is locked here, and what turns it red, in the library, the examples and the
 Python sessions (`>>>` / `...` lines) of the docs, docstrings included:
@@ -26,6 +28,7 @@ from tests.test_backtest_contracts import REPO_ROOT
 OWNERS = (
     REPO_ROOT / "quantlab/runs/trained_run.py",
     REPO_ROOT / "quantlab/runs/directory.py",
+    REPO_ROOT / "quantlab/runs/backtest_run.py",
 )
 
 _RECORD_FILES = (

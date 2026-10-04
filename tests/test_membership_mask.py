@@ -9,8 +9,8 @@ What is locked here, and what turns it red:
 - a security that is never a member in the window is never selected;
 - the run's ``predictions.zarr`` carries the masked predictions;
 - the masked run equals the unmasked one up to the leaving date;
-- the membership panel is fingerprinted, and ``load_backtester_from_config``
-  rebuilds the wrapper and replays the run;
+- the membership panel is fingerprinted, and the run's
+  ``BacktestRun.rebuild_backtester`` rebuilds the wrapper and replays the run;
 - ``run_cv`` masks every fold and the stitched ``predictions.zarr``;
 - predicting a bar the membership panel does not cover is refused (unknown
   membership is not "not a member").
@@ -18,7 +18,6 @@ What is locked here, and what turns it red:
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
 
 import numpy as np
 import pandas as pd
@@ -30,7 +29,7 @@ from quantlab.base.config import ConstituentDatasetConfig
 from quantlab.base.constituent import IndexConstituentDataset
 from quantlab.base.portfolio import PredictionPanel
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
-from quantlab.utils import module as module_utils
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import make_model, train_checkpoint
 from tests.test_backtest_predictor_protocol import _backtester, _model_dates, _setup
 
@@ -181,13 +180,13 @@ def test_predictions_zarr_carries_the_masked_predictions(scenario):
     xr.testing.assert_identical(stored[name], result.predictions[name])
 
 
-def test_the_masked_run_is_rebuilt_from_its_config(scenario):
+def test_the_masked_run_is_rebuilt_from_its_run_directory(scenario):
     first = scenario["masked_backtester"]("masked").run()
-    saved = json.loads((first.run_dir / "config.json").read_text())
+    run = BacktestRun.open(first.run_dir)
 
-    assert "membership" in saved["data_fingerprint"]
+    assert "membership" in run.data_fingerprint
 
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = run.rebuild_backtester()
 
     assert type(rebuilt.config.model) is MembershipMaskedPredictor
     again = rebuilt.run()

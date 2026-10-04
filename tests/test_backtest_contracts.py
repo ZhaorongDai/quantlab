@@ -125,8 +125,9 @@ def test_abstract_method_sets_are_exact():
 def test_run_lives_only_on_base_backtester():
     """`run()`, `run_cv()` and `run_weights()` are the templates (D-02): nothing
     above the base redefines one or grows a public method of its own, and the
-    public callables the base itself defines are exactly the three entry points
-    plus `get_config`."""
+    public callables the base itself defines are exactly the three entry points,
+    `from_config` and `report_figure` (`get_config` is the component rule's,
+    inherited)."""
     for entry in _ENTRY_POINTS:
         assert entry in vars(BaseBacktester), entry
 
@@ -157,7 +158,6 @@ def test_run_lives_only_on_base_backtester():
         "run",
         "run_cv",
         "run_weights",
-        "get_config",
         "from_config",
         "report_figure",
     }, public_callables

@@ -2,7 +2,8 @@
 
 D-24: every run writes its own directory `output_dir/{class}_{timestamp}/`
 holding config.json, weights.zarr, equity.zarr (value, returns), predictions.zarr,
-settlements.json, metrics.json, report.html and fingerprint.json. An existing
+settlements.json, metrics.json, report.html and run.json, which records the data
+fingerprints and the market (read through `BacktestRun`, #133). An existing
 directory is never overwritten, and every JSON artifact is strict JSON (NaN and
 inf persisted as null, timestamps as ISO strings).
 
@@ -70,6 +71,7 @@ from loguru import logger
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun, Market
 from tests.backtest_fixtures import (
     ADJUSTED_COLUMNS,
     RAW_COLUMNS,
@@ -95,10 +97,10 @@ DELIST_BAR = OVERLAP_START_BAR + 3
 D24_ARTIFACTS = [
     "config.json",
     "equity.zarr",
-    "fingerprint.json",
     "metrics.json",
     "predictions.zarr",
     "report.html",
+    "run.json",
     "settlements.json",
     "weights.zarr",
 ]
@@ -252,7 +254,7 @@ def test_equity_zarr_has_value_and_returns_on_timestamp(overlap_run):
 def test_every_json_artifact_is_strict_json(overlap_run):
     result = overlap_run["result"]
     run_dir = result.run_dir
-    for name in ("config.json", "metrics.json", "settlements.json", "fingerprint.json"):
+    for name in ("config.json", "metrics.json", "settlements.json", "run.json"):
         _strict_json(run_dir / name)
 
     # Not vacuous: the run really settled a delisting, and each record carries
@@ -306,7 +308,7 @@ def test_an_interrupted_persist_leaves_no_run_directory(tmp_path, monkeypatch):
     """Code review WR-08: a run directory exists only once every D-24 artifact is written.
 
     The old `_report_and_persist` created `output_dir/{class}_{ts}/` and wrote
-    config.json (and the zarr stores) before metrics, report and fingerprint.
+    config.json (and the zarr stores) before metrics, report and run.json.
     An interruption there (Ctrl-C is simulated while report.html is written)
     left a directory with a valid config.json and no metrics. It looked
     finished, and a rebuild would "reproduce" it. After the interruption
@@ -394,14 +396,11 @@ def test_fingerprint_is_stable_and_nan_canonical(tmp_path):
         dataset_fingerprint(_panel(canonical), ["adjClose", "notAColumn"])
 
 
-def test_fingerprint_json_covers_price_and_factor_datasets(overlap_run):
+def test_the_run_records_fingerprints_of_the_price_and_factor_datasets(overlap_run):
     result = overlap_run["result"]
-    assert (result.run_dir / "fingerprint.json").is_file(), sorted(
-        p.name for p in result.run_dir.iterdir()
-    )
     from quantlab.utils.fingerprint import dataset_fingerprint
 
-    fingerprints = _strict_json(result.run_dir / "fingerprint.json")
+    fingerprints = BacktestRun.open(result.run_dir).data_fingerprint
     assert set(fingerprints) == {"price_dataset", "factor[0]:PastReturnFactor"}
 
     entry_keys = {
@@ -436,28 +435,26 @@ def test_fingerprint_json_covers_price_and_factor_datasets(overlap_run):
     assert pd.Timestamp(factor["end"]) == pd.Timestamp(price["end"])
 
 
-def test_run_config_json_records_the_market_price_columns(overlap_run):
-    """#106: an executor learns the fill and valuation columns from config.json.
+def test_the_run_records_the_market_price_columns(overlap_run):
+    """#106: an executor learns the fill and valuation columns from the run.
 
     quantlab-trader reads a run directory without importing the backtester
     class (which loads vectorbt), so the columns the run filled and valued at
-    are recorded beside the rest of the config.
+    are recorded in its run.json, read as `BacktestRun.market` (#133).
     """
-    config = _strict_json(overlap_run["result"].run_dir / "config.json")
+    run = BacktestRun.open(overlap_run["result"].run_dir)
 
-    assert config["market"] == {
-        "fill_price_column": "adjOpen",
-        "valuation_price_column": "adjClose",
-    }
+    assert run.market == Market(fill_price_column="adjOpen", valuation_price_column="adjClose")
+    assert "market" not in _strict_json(overlap_run["result"].run_dir / "config.json")
 
 
-def test_get_config_carries_the_data_fingerprint_after_a_run(overlap_run):
-    assert "data_fingerprint" not in overlap_run["config_before_run"]
-    result = overlap_run["result"]
+def test_the_config_stays_the_recipe_after_a_run(overlap_run):
+    """#133: the data fingerprint is a record of the run, never part of the config."""
     config = overlap_run["backtester"].get_config()
-    fingerprints = _strict_json(result.run_dir / "fingerprint.json")
-    assert json.loads(json.dumps(config["data_fingerprint"])) == fingerprints
-    assert _strict_json(result.run_dir / "config.json")["data_fingerprint"] == fingerprints
+    assert config == overlap_run["config_before_run"]
+    assert "data_fingerprint" not in config
+    assert "data_fingerprint" not in _strict_json(overlap_run["result"].run_dir / "config.json")
+    assert BacktestRun.open(overlap_run["result"].run_dir).data_fingerprint
 
 
 def _fingerprint_warnings(messages: list[str]) -> list[str]:
@@ -469,7 +466,7 @@ def test_matching_expected_fingerprint_logs_no_warning(tmp_path, warnings_sink):
     first = _backtester(
         tmp_path, dataset_config, checkpoint, tag="a", window_start_bar=30, window_end_bar=50
     ).run()
-    expected = _strict_json(first.run_dir / "fingerprint.json")
+    expected = BacktestRun.open(first.run_dir).data_fingerprint
 
     rebuild = _backtester(
         tmp_path, dataset_config, checkpoint, tag="b", window_start_bar=30, window_end_bar=50
@@ -485,7 +482,7 @@ def test_changed_store_logs_a_fingerprint_warning_and_completes(tmp_path, warnin
     first = _backtester(
         tmp_path, dataset_config, checkpoint, tag="a", window_start_bar=30, window_end_bar=50
     ).run()
-    expected = _strict_json(first.run_dir / "fingerprint.json")
+    expected = BacktestRun.open(first.run_dir).data_fingerprint
 
     # A retroactive re-base: one adjusted close inside the window changes.
     store = xr.open_zarr(dataset_config.zarr_file_path).load()
@@ -598,7 +595,7 @@ def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
     first = _read_strategy_backtester(
         tmp_path, dataset_config, checkpoint, factor_store, tag="a"
     ).run()
-    expected = _strict_json(first.run_dir / "fingerprint.json")
+    expected = BacktestRun.open(first.run_dir).data_fingerprint
     assert [k for k in expected if k.startswith("factor_store[")] == [
         "factor_store[0]:PastReturnFactor"
     ], sorted(expected)
@@ -649,7 +646,7 @@ def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warning
         )
 
     first = _train_mode("a").run()
-    expected = _strict_json(first.run_dir / "fingerprint.json")
+    expected = BacktestRun.open(first.run_dir).data_fingerprint
     assert {
         "train_factor[0]:PastReturnFactor",
         "train_label[0]:ForwardReturnLabel",

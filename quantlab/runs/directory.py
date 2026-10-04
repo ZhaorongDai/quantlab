@@ -18,7 +18,9 @@ written through ``staged``: into a hidden sibling first, renamed into place
 when complete.
 
 The run types are ``quantlab.runs.trained_run.TrainedRun`` (kinds
-``"model"``, ``"ensemble"``, ``"walk_forward"``). ``open_run`` reads any run
+``"model"``, ``"ensemble"``, ``"walk_forward"``) and
+``quantlab.runs.backtest_run.BacktestRun`` (kinds ``"run"``, ``"run_cv"``,
+``"run_weights"``, ``"fold"``). ``open_run`` reads any run
 and returns its type, which is imported only when a run of that kind is
 opened.
 
@@ -54,6 +56,10 @@ KINDS = {
     "model": "quantlab.runs.trained_run.TrainedRun",
     "ensemble": "quantlab.runs.trained_run.TrainedRun",
     "walk_forward": "quantlab.runs.trained_run.TrainedRun",
+    "run": "quantlab.runs.backtest_run.BacktestRun",
+    "run_cv": "quantlab.runs.backtest_run.BacktestRun",
+    "run_weights": "quantlab.runs.backtest_run.BacktestRun",
+    "fold": "quantlab.runs.backtest_run.BacktestRun",
 }
 
 

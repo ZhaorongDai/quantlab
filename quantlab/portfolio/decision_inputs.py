@@ -21,29 +21,26 @@ The rebalance schedule, ``rebalance_mask``, lives here as well: every
 ``rebalance_periods`` bars from the *anchor* (the first bar of the
 prediction panel a run decided on), the last bar never.
 
-``DecisionInputs.from_run`` rebuilds the inputs of a recorded backtest run
-from its ``config.json`` and ``predictions.zarr``.
+``DecisionInputs.from_run`` rebuilds the inputs of a recorded backtest run,
+read through ``quantlab.runs.backtest_run.BacktestRun``.
 
 This module imports the portfolio and data base classes, the Execution
-module and the class loaders of ``quantlab.utils.module``, never the
-backtest, model, factor or label layers.
+module and the backtest-run reader, never the backtest, model, factor or
+label layers.
 """
 
-import json
 import warnings
 from os import PathLike
-from pathlib import Path
 from typing import Self
 
 import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.component import rebuild
 from quantlab.base.data import InsufficientHistoryError, MarketDataset
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext, PredictionPanel
+from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.utils.execution import ExecutionBook, ExecutionSettings
-from quantlab.utils.module import load_dataset_from_config
 
 _DIMS = ("timestamp", "symbol")
 
@@ -272,17 +269,15 @@ class DecisionInputs:
     def from_run(cls, run_dir: str | PathLike, *, end=None) -> Self:
         """Rebuild the decision inputs of a recorded backtest run.
 
-        From the run's ``config.json``: the rule (``constructor``, rebuilt by
-        the ``from_config`` of the class it names), the price dataset (an
-        in-memory one reading the copy under the run directory), the market
-        columns (``market``), the execution settings (``sizing_basis``,
-        ``fees``, ``slippage``) and ``rebalance_periods``; from its
-        ``predictions.zarr``: the label specs the rule is bound to and the
-        anchor (the panel's first bar). Without ``end`` the schedule is
-        open-ended, as a live run's is: it keeps counting past the run's
-        last bar. The predictions themselves are not
-        read, and neither the model nor the factor, label or backtest layers
-        are imported (a rule declaring factors imports its factors' layer).
+        Read through ``BacktestRun``: the rule (``rebuild("constructor")``),
+        the price dataset (``rebuild("price_dataset")``, an in-memory one
+        reading the copy under the run directory), the market columns, the
+        execution settings and the rebalance periods; from the run's
+        prediction panel, the label specs the rule is bound to and the anchor
+        (the panel's first bar). Without ``end`` the schedule is open-ended,
+        as a live run's is: it keeps counting past the run's last bar.
+        Neither the model nor the factor, label or backtest layers are
+        imported (a rule declaring factors imports its factors' layer).
         ``weights`` on the run's predictions reproduces the run's weights.
 
         Parameters
@@ -301,11 +296,11 @@ class DecisionInputs:
         Raises
         ------
         FileNotFoundError
-            If the run has no ``config.json`` or no ``predictions.zarr`` (a
-            ``run_weights()`` run has no model and so no panel).
+            If the run has no prediction panel (a ``run_weights()`` run has
+            no model and so no panel).
         ValueError
-            If ``config.json`` records no constructor, or the rule refuses
-            the specs.
+            If the run is not a backtest run, records no constructor, or the
+            rule refuses the specs.
 
         Examples
         --------
@@ -314,32 +309,28 @@ class DecisionInputs:
         >>> inputs = DecisionInputs.from_run(run_dir)
         >>> inputs.constructor
         TopNConstructor(direction='long_only', top_n=2, score_label=None)
-        >>> predictions = PredictionPanel.read(run_dir / "predictions.zarr").predictions
+        >>> predictions = BacktestRun.open(run_dir).predictions().predictions
         >>> weights = inputs.weights(predictions)  # the run's weights
         """
-        run_dir = Path(run_dir)
-        config = json.loads((run_dir / "config.json").read_text())
-        recorded = config.get("constructor")
-        if recorded is None:
-            raise ValueError(f"{run_dir / 'config.json'} records no constructor")
-        path = run_dir / PredictionPanel.FILE_NAME
-        if not path.exists():
+        run = BacktestRun.open(run_dir)
+        panel = run.predictions()
+        if panel is None:
             raise FileNotFoundError(
-                f"{run_dir} has no {PredictionPanel.FILE_NAME}; only a run with a "
-                f"model (run() or run_cv()) writes one"
+                f"{run.path} has no prediction panel; only a run with a model "
+                f"(run() or run_cv()) writes one"
             )
-        constructor = rebuild(recorded)
-        constructor.bind(PredictionPanel.read_labels(path))
-        with xr.open_zarr(path) as panel:
-            anchor = panel.timestamp.values[0]
+        constructor = run.rebuild("constructor")
+        if constructor is None:
+            raise ValueError(f"{run.path}: the run records no constructor")
+        constructor.bind(panel.labels)
         return cls(
-            load_dataset_from_config(config["price_dataset"], run_dir=run_dir),
+            run.rebuild("price_dataset"),
             constructor,
-            fill_column=config["market"]["fill_price_column"],
-            valuation_column=config["market"]["valuation_price_column"],
-            rebalance_periods=config["rebalance_periods"],
-            anchor=anchor,
-            execution=ExecutionSettings(config["sizing_basis"], config["fees"], config["slippage"]),
+            fill_column=run.market.fill_price_column,
+            valuation_column=run.market.valuation_price_column,
+            rebalance_periods=run.rebalance_periods,
+            anchor=panel.predictions.timestamp.values[0],
+            execution=run.execution,
             end=end,
         )
 

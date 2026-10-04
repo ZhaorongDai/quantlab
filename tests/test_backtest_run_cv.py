@@ -36,7 +36,8 @@ What is locked here, and what turns it red:
   holdings and capital carry across fold boundaries (#90), while every fold
   also gets its own backtest that starts flat from `init_cash`.
 - **D-24 / D-35, the run directory.** The top-level artifacts describe the
-  stitched curve, and `folds/fold_{i}/` holds each fold's weights and equity.
+  stitched curve, and each fold is a child run of kind `fold` (`BacktestRun.folds`,
+  #133) holding its own weights, equity, settlements and metrics.
 
 Everything is synthetic, CPU-only and offline. Configs are constructed
 directly, never through the factories in `quantlab/config/__init__.py` (D-32).
@@ -60,6 +61,7 @@ from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PredictionPanel
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun, Market
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -601,7 +603,7 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         "equity.zarr",
         "metrics.json",
         "settlements.json",
-        "fingerprint.json",
+        "run.json",
         "report.html",
         "predictions.zarr",
         "folds",
@@ -632,21 +634,19 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         result.simulation.value.values,
     )
 
-    # --- per-fold artifacts --------------------------------------------------
-    assert sorted(p.name for p in (run_dir / "folds").iterdir()) == sorted(
-        f"fold_{record['fold']}" for record in result.folds
-    )
-    for record in result.folds:
-        fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
-        assert {p.name for p in fold_dir.iterdir()} == {"weights.zarr", "equity.zarr"}
+    # --- per-fold child runs ------------------------------------------------
+    run = BacktestRun.open(run_dir)
+    assert run.kind == "run_cv"
+    assert [fold.index for fold in run.folds] == [record["fold"] for record in result.folds]
+    for fold, record in zip(run.folds, result.folds):
+        assert fold.kind == "fold"
         np.testing.assert_array_equal(
-            xr.open_zarr(fold_dir / "weights.zarr")["weight"].values,
-            record["weights"]["weight"].values,
+            fold.weights()["weight"].values, record["weights"]["weight"].values
         )
         np.testing.assert_array_equal(
-            xr.open_zarr(fold_dir / "equity.zarr")["value"].values,
-            record["simulation"].value.values,
+            fold.equity()["value"].values, record["simulation"].value.values
         )
+        assert len(fold.settlements()) == len(record["simulation"].settlements)
 
     # --- metrics.json --------------------------------------------------------
     metrics = _strict_json(run_dir / "metrics.json")
@@ -663,13 +663,11 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         assert "Total Return [%]" in entry["metrics"]["whole"]
     assert metrics["stitched"]["in_sample_ranges"] == []
 
-    # --- settlements.json ----------------------------------------------------
-    settlements = _strict_json(run_dir / "settlements.json")
-    assert set(settlements) == {"stitched", "folds"}
-    assert [entry["fold"] for entry in settlements["folds"]] == list(range(N_FOLDS))
+    # --- settlements: the stitched list, each fold's in its child run ----------
+    assert len(run.settlements()) == len(result.simulation.settlements)
 
-    # --- fingerprint.json and config.json: the union window (D-27) -----------
-    fingerprint = _strict_json(run_dir / "fingerprint.json")
+    # --- the data fingerprint and the market: the union window (D-27) --------
+    fingerprint = run.data_fingerprint
     first_day = _day(cv_project.bars[FIRST_TEST_BAR])
     last_day = _day(cv_project.bars[LAST_TEST_BAR])
     assert _day(fingerprint["price_dataset"]["start"]) == first_day
@@ -680,11 +678,9 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
 
     config = _strict_json(run_dir / "config.json")
     assert config["cv_project_dir"] == str(cv_project.project_dir)
-    assert config["data_fingerprint"] == fingerprint
-    assert config["market"] == {
-        "fill_price_column": "adjOpen",
-        "valuation_price_column": "adjClose",
-    }
+    assert "data_fingerprint" not in config and "market" not in config
+    assert run.market == Market(fill_price_column="adjOpen", valuation_price_column="adjClose")
+    assert run.trained_run().path == cv_project.project_dir
 
 
 #: Contexts every `_Recorder` saw, in call order.

@@ -1,11 +1,11 @@
 """A `quantlab.api.backtest` run kept on disk rebuilds and replays from its directory.
 
 A run given `output_dir` (or saved with `BacktestReport.save`) holds its input panels
-under `inputs/`, and its `config.json` names them relative to the run directory, so
-`load_backtester_from_config(config, run_dir=run_dir)` rebuilds the backtester and
-replaying the saved `weights.zarr` through `run_weights` writes the same `metrics.json`,
-equity and data fingerprints, without a warning, even after the directory has moved. A
-run on a Zarr-backed dataset writes no `inputs/` and keeps its store paths.
+under `inputs/`, and its recipe names them relative to the run directory, so
+`BacktestRun.open(run_dir).rebuild_backtester()` rebuilds the backtester and replaying
+the run's weights through `run_weights` writes the same metrics, weights, equity and
+data fingerprints, without a warning, even after the directory has moved. A run on a
+Zarr-backed dataset writes no `inputs/` and keeps its store paths.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -21,7 +21,6 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.api as qa
-from quantlab.backend import XrBackend
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.memory import FrameDataset
@@ -29,6 +28,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.utils.module import load_backtester_from_config
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import write_price_store
 
 N_BARS = 30
@@ -102,25 +102,21 @@ def _config(run_dir: Path) -> dict:
     return json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
 
 
-def _json(run_dir: Path, name: str) -> dict:
-    return json.loads((run_dir / name).read_text(encoding="utf-8"))
-
-
 def _replay(run_dir: Path):
     """Rebuild the run in ``run_dir`` and replay its saved weights."""
-    rebuilt = load_backtester_from_config(_config(run_dir), run_dir=run_dir)
-    return rebuilt, rebuilt.run_weights(XrBackend().read(run_dir / "weights.zarr").data)
+    run = BacktestRun.open(run_dir)
+    rebuilt = run.rebuild_backtester()
+    return rebuilt, rebuilt.run_weights(run.weights())
 
 
 def _assert_same_run(first_dir: Path, second_dir: Path) -> None:
     """The two run directories hold the same metrics, weights, equity and fingerprints."""
     assert first_dir != second_dir
-    assert _json(second_dir, "metrics.json") == _json(first_dir, "metrics.json")
-    assert _json(second_dir, "fingerprint.json") == _json(first_dir, "fingerprint.json")
-    for store in ("weights.zarr", "equity.zarr"):
-        xr.testing.assert_identical(
-            xr.open_zarr(first_dir / store).load(), xr.open_zarr(second_dir / store).load()
-        )
+    first, second = BacktestRun.open(first_dir), BacktestRun.open(second_dir)
+    assert second.metrics() == first.metrics()
+    assert second.data_fingerprint == first.data_fingerprint
+    xr.testing.assert_identical(first.weights(), second.weights())
+    xr.testing.assert_identical(first.equity(), second.equity())
 
 
 # --------------------------------------------------------------------------- inputs
@@ -194,7 +190,7 @@ def test_the_rebuilt_run_replays_the_weights_with_the_same_result(
     rebuilt, again = _replay(run_dir)
 
     _assert_same_run(run_dir, again.run_dir)
-    assert rebuilt.expected_fingerprint == _json(run_dir, "fingerprint.json")
+    assert rebuilt.expected_fingerprint == BacktestRun.open(run_dir).data_fingerprint
     assert warning_messages == []
 
 

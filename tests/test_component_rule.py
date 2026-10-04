@@ -12,7 +12,11 @@ as the component's own config (its `"name"` the import path), and one generic
 - an unknown key in a saved config is refused;
 - a `FrameDataset` recorded relative to a run directory, nested under a factor or a
   label, rebuilds given `run_dir` and is refused without it;
-- a class without a config class is never rebuilt.
+- a class without a config class is never rebuilt;
+- the declarations give the component tree: `walk_components` yields every
+  component with its field path, `recorded_configs` writes a component as the config
+  recorded for it at any depth, and an object filled into a saved config is used as
+  given, never copied (#133).
 """
 
 import dataclasses
@@ -22,13 +26,20 @@ from pathlib import Path
 import pytest
 import xarray as xr
 
-from quantlab.base.component import Component, component, rebuild
+from quantlab.base.component import (
+    Component,
+    component,
+    rebuild,
+    recorded_configs,
+    walk_components,
+)
 from quantlab.base.config import (
     ConstituentDatasetConfig,
     DatasetConfig,
     FactorConfig,
     ForwardConfig,
     MarketFeatureConfig,
+    MergedDatasetConfig,
     PolarsFactorConfig,
 )
 from quantlab.dataset.constituent import SP500ConstituentDataset
@@ -443,3 +454,42 @@ def test_no_rebuild_outside_the_component_rule_dispatches_on_a_name_key():
         )
     )
     assert offenders == []
+
+
+# ---------------------------------------------------------------- the component tree (#133)
+
+
+def test_walk_components_yields_every_component_with_its_field_path(stock):
+    label = Forward(ForwardConfig(factor=_past_return(stock), span=2))
+
+    walked = list(walk_components(label))
+
+    assert [path for path, _ in walked] == ["factor", "factor.dataset"]
+    assert walked[0][1] is label.config.factor and walked[1][1] is stock
+
+
+def test_walk_components_indexes_the_items_of_a_many_field(stock, tmp_path):
+    merged = MergedDataset(MergedDatasetConfig(datasets=[stock, _one_symbol(stock, "AAA", tmp_path / "one.zarr")]))
+
+    assert [path for path, _ in walk_components(merged)] == ["datasets.0", "datasets.1"]
+
+
+def test_recorded_configs_substitutes_a_component_at_any_depth_inside_the_block(stock):
+    label = Forward(ForwardConfig(factor=_past_return(stock), span=2))
+    recorded = {"name": "quantlab.dataset.memory.FrameDataset", "zarr_file_path": "inputs/x.zarr"}
+
+    with recorded_configs({id(stock): recorded}):
+        inside = label.get_config()
+    outside = label.get_config()
+
+    assert inside["factor"]["dataset"] == recorded
+    assert outside["factor"]["dataset"] == stock.get_config()
+
+
+def test_a_component_filled_into_a_saved_config_is_used_as_given(stock):
+    label = Forward(ForwardConfig(factor=_past_return(stock), span=2))
+    saved = label.get_config()
+
+    rebuilt = Forward.from_config({**saved, "factor": label.config.factor})
+
+    assert rebuilt.config.factor is label.config.factor

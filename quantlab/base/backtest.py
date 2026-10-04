@@ -27,7 +27,7 @@ the data has changed.
 
 import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -43,15 +43,13 @@ from quantlab.base.component import Component, config_cls_of
 from quantlab.base.data import MarketDataset
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
 from quantlab.base.tracking import TrackingRun
-from quantlab.backend import XrBackend
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
 # converter and polars), which adds about a second of import time.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
-from quantlab.runs.directory import staged
+from quantlab.runs.backtest_run import FoldArtifacts, Market, write_backtest_run
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils import backtest_stats
-from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_report import (
     backtest_report_figure,
     report_chart_inputs,
@@ -66,10 +64,6 @@ from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig, FactorConfig, ForwardConfig
-
-#: The config fields holding datasets a run directory records, each asked
-#: through ``persist_with_run`` what a rebuild needs written beside the run.
-RUN_DATASET_FIELDS = ("price_dataset", "benchmark_dataset")
 
 #: Fields of a data fingerprint that are compared against the expected run;
 #: any difference logs a warning.
@@ -367,9 +361,8 @@ class BacktestResult:
     Examples
     --------
     >>> result = backtester.run()
-    >>> sorted(p.name for p in result.run_dir.iterdir())
-    ['config.json', 'equity.zarr', 'fingerprint.json', 'metrics.json',
-     'predictions.zarr', 'report.html', 'settlements.json', 'weights.zarr']
+    >>> BacktestRun.open(result.run_dir).metrics() == to_jsonable(result.metrics)
+    True
     >>> sorted(result.metrics)
     ['execution', 'in_sample', 'in_sample_range', 'notes', 'out_of_sample',
      'out_of_sample_ranges', 'portfolio_construction', 'training_window', 'whole']
@@ -503,6 +496,10 @@ class BaseBacktester(Component, ABC):
         # Absolute path of the checkpoint a train-mode run() produced; None in
         # load mode and before any run.
         self._trained_checkpoint: str | None = None
+        # Directory of the trained unit the last run used (trained, loaded, or
+        # the walk-forward unit of run_cv); None before any run and for
+        # run_weights.
+        self._trained_unit: Path | None = None
         # Built on first use by the ticker_lookup property.
         self._ticker_lookup: "CrspTickerLookup | None" = None
         # The benchmark's symbol-axis label, set by `_load_benchmark_prices`.
@@ -734,79 +731,25 @@ class BaseBacktester(Component, ABC):
         """
         return self.__class__.__name__
 
-    #: Keys a backtester's ``get_config()`` adds as records of a run rather
-    #: than config fields; ``from_config`` takes them out before rebuilding.
-    RECORD_KEYS = ("market", "data_fingerprint", "trained_checkpoint")
-
-    def get_config(self) -> dict:
-        """Return the config by the component rule, plus the run's records.
-
-        The fields are written by ``quantlab.base.component``: each dataset,
-        the model, the construction rule and the tracker as its own
-        ``get_config()``. Three records follow, none of them config fields.
-        Every mapping carries ``market``, the ``fill_price_column`` and
-        ``valuation_price_column`` of ``MARKET``, so a tool reading a run
-        directory (an executor such as quantlab-trader) learns the price
-        columns without importing the backtester class. After a run it
-        carries ``data_fingerprint``, one fingerprint per dataset the run
-        read, and after a train-mode run ``trained_checkpoint``.
-        ``from_config`` takes the records out again (``RECORD_KEYS``). A run
-        directory's ``config.json`` differs in one respect: a price or
-        benchmark ``FrameDataset`` is recorded reading the copy of its panel
-        under ``inputs/``, named relative to the run directory.
-
-        Examples
-        --------
-        >>> cfg = backtester.get_config()
-        >>> cfg["name"], cfg["model_mode"], cfg["rebalance_periods"]
-        ('mypkg.backtest.MyBacktester', 'load', 5)
-        >>> sorted(cfg["data_fingerprint"])  # present once run() has read
-        ['factor[0]:PastReturnFactor', 'price_dataset']
-        >>> cfg["market"]
-        {'fill_price_column': 'open', 'valuation_price_column': 'close'}
-
-        A config without a model (for ``run_weights()``) records ``None``:
-
-        >>> import dataclasses
-        >>> no_model = dataclasses.replace(
-        ...     backtester.config, model=None, model_mode=None, checkpoint=None
-        ... )
-        >>> type(backtester)(no_model).get_config()["model"] is None
-        True
-        """
-        cfg = super().get_config()
-        cfg["market"] = {
-            "fill_price_column": self.MARKET.fill_price_column,  # type: ignore[union-attr]
-            "valuation_price_column": self.MARKET.valuation_price_column,  # type: ignore[union-attr]
-        }
-        if self._fingerprints:
-            cfg["data_fingerprint"] = dict(self._fingerprints)
-        if self._trained_checkpoint is not None:
-            cfg["trained_checkpoint"] = self._trained_checkpoint
-        return cfg
-
     @classmethod
     def from_config(cls, config: dict, run_dir=None) -> Self:
-        """Rebuild a backtester from the ``config.json`` a backtest run wrote.
+        """Rebuild a backtester from its ``get_config()``, a run's recipe.
 
-        The records (``RECORD_KEYS``) are taken out first: ``market`` is
-        dropped, since the rebuilt class supplies its own ``MARKET``;
-        ``data_fingerprint`` becomes the rebuilt backtester's
-        ``expected_fingerprint``, so a re-run warns when its data differs;
-        ``trained_checkpoint`` is dropped (to replay that exact model, set
-        ``model_mode="load"`` and ``checkpoint`` to it). Every config field
-        must be present: a missing one is refused rather than filled from
-        today's dataclass default, which may differ from the value the run
-        used. The fields are then rebuilt by the component rule, with
-        ``run_dir`` passed to every dataset at any depth.
+        Every config field must be present: a missing one is refused rather
+        than filled from today's dataclass default, which may differ from the
+        value the run used. The fields are then rebuilt by the component
+        rule, with ``run_dir`` passed to every dataset at any depth. A run
+        directory is rebuilt through
+        ``quantlab.runs.backtest_run.BacktestRun.rebuild_backtester``, which
+        also sets the run's data fingerprint as ``expected_fingerprint``.
 
         Parameters
         ----------
         config : dict
-            The dict read from a run directory's ``config.json``.
+            The dict ``get_config()`` returned.
         run_dir : str or os.PathLike, optional
             The run directory ``config`` was read from. Required when the
-            config names ``inputs/`` stores, which are resolved against it.
+            config names stores relative to it.
 
         Returns
         -------
@@ -817,7 +760,8 @@ class BaseBacktester(Component, ABC):
         ------
         ValueError
             If a config field is missing, a key is unknown, or the config
-            names ``inputs/`` stores and ``run_dir`` is not given.
+            names stores relative to a run directory and ``run_dir`` is not
+            given.
 
         Examples
         --------
@@ -825,8 +769,6 @@ class BaseBacktester(Component, ABC):
         >>> rebuilt.get_config() == backtester.get_config()
         True
         """
-        expected = config.get("data_fingerprint")
-        config = {k: v for k, v in config.items() if k not in cls.RECORD_KEYS}
         missing = [
             spec.name
             for spec in dataclasses.fields(config_cls_of(cls))
@@ -839,9 +781,7 @@ class BaseBacktester(Component, ABC):
                 f"dataclass defaults, which may differ from the values the "
                 f"stored backtest ran with"
             )
-        backtester = super().from_config(config, run_dir)
-        backtester.expected_fingerprint = expected
-        return backtester
+        return super().from_config(config, run_dir)
 
     @staticmethod
     def _iso_date(value) -> str:
@@ -960,7 +900,7 @@ class BaseBacktester(Component, ABC):
                 *self.config.model.fitted_train_bounds,
             )
 
-        return self._run_window(_model_window)
+        return self._run_window(_model_window, kind="run")
 
     def run_cv(self) -> CVBacktestResult:
         """Replay a ``train_cv`` run fold by fold and simulate the stitched weights.
@@ -1051,6 +991,7 @@ class BaseBacktester(Component, ABC):
         self._fingerprints = {}
         # run_cv only loads; never carry a checkpoint trained by an earlier run().
         self._trained_checkpoint = None
+        self._trained_unit = None
 
         folds = self._select_folds(self._read_cv_folds())
         calendar = self._price_calendar(folds[-1]["test_end"])
@@ -1158,13 +1099,15 @@ class BaseBacktester(Component, ABC):
             ],
             "notes": notes,
         }
-        run_dir = self._persist_cv(
-            records,
+        run_dir = self._report_and_persist(
+            "run_cv",
             stitched_weights,
             stitched_simulation,
             metrics,
             benchmark=stitched_benchmark,
             predictions=stitched_predictions,
+            records=records,
+            units=[fold["_unit"] for fold in folds],
         )
 
         return CVBacktestResult(
@@ -1199,8 +1142,8 @@ class BaseBacktester(Component, ABC):
         weights : xarray.Dataset or xarray.DataArray
             Target weights on ``(timestamp, symbol)``, in either axis order.
             A dataset must carry a ``weight`` variable; a data array is used
-            whatever its name. A run directory's ``weights.zarr``, read with
-            ``XrBackend().read(path).data``, replays that run. The
+            whatever its name. A run's weights, read with
+            ``BacktestRun.open(run_dir).weights()``, replay that run. The
             timestamps must be exactly the price bars
             of the window and the symbols exactly the price dataset's
             symbols, in any order (they are aligned to the price axes). A
@@ -1249,6 +1192,7 @@ class BaseBacktester(Component, ABC):
             lambda start_date, end_date: self._weights_window(
                 weights, start_date, end_date
             ),
+            kind="run_weights",
             notes=(
                 "run_weights: the target weights were given, not predicted by a "
                 "model, so there is no training window and the metrics cover "
@@ -1371,7 +1315,7 @@ class BaseBacktester(Component, ABC):
             )
 
     def _run_window(
-        self, backtest_window, notes: tuple[str, ...] = ()
+        self, backtest_window, *, kind: str, notes: tuple[str, ...] = ()
     ) -> BacktestResult:
         """Run one backtest window and persist it; shared by ``run()`` and ``run_weights()``.
 
@@ -1380,7 +1324,8 @@ class BaseBacktester(Component, ABC):
         reset first, so a second run on the same object starts clean. The
         data fingerprints are compared after the window, and also on its
         failure path, since fingerprints may already have been recorded and
-        differ when it raises. ``notes`` are appended to the default report
+        differ when it raises. ``kind`` is the run's kind (``"run"`` or
+        ``"run_weights"``); ``notes`` are appended to the default report
         notes. The window runs inside its tracking run (see
         ``_tracking_run``); the run directory is written (unless
         ``output_dir`` is ``None``) and tracked (see ``_track``).
@@ -1389,6 +1334,7 @@ class BaseBacktester(Component, ABC):
         end_date = self._iso_date(self.config.end_date)
         self._fingerprints = {}
         self._trained_checkpoint = None
+        self._trained_unit = None
         with self._tracking_run() as run:
             try:
                 window = backtest_window(start_date, end_date)
@@ -1403,6 +1349,7 @@ class BaseBacktester(Component, ABC):
                 metrics["trained_checkpoint"] = self._trained_checkpoint
             metrics["notes"] = self._report_notes() + list(notes)
             run_dir = self._report_and_persist(
+                kind,
                 window.weights,
                 window.simulation,
                 metrics,
@@ -1574,6 +1521,7 @@ class BaseBacktester(Component, ABC):
         """
         path = Path(self.config.cv_project_dir)  # type: ignore[arg-type]
         run = TrainedRun.open(path)
+        self._trained_unit = run.path
         if run.kind != "walk_forward":
             raise ValueError(
                 f"{self.class_name}: cv_project_dir {path} is a {run.kind!r} "
@@ -1602,6 +1550,8 @@ class BaseBacktester(Component, ABC):
                     # the whole train_end day count as training on
                     # intraday data.
                     "_train_bounds": (train_start, train_end),
+                    # The fold's trained unit, recorded by its child run.
+                    "_unit": fold.path,
                 }
             )
         return folds
@@ -1787,13 +1737,15 @@ class BaseBacktester(Component, ABC):
         configured = model.train_bounds
         if self.config.model_mode == "load":
             self._load_model_checkpoint(self.config.checkpoint)
+            self._trained_unit = TrainedRun.open(self.config.checkpoint).path
             return configured
         model.collect()
         # Fingerprint the training data right after collect() and before
         # train().
         self._record_fingerprint_entries(model.training_fingerprint_inputs())
-        # The checkpoint train() wrote is recorded in config.json and metrics.
+        # The checkpoint train() wrote is recorded in metrics, its unit in run.json.
         self._trained_checkpoint = str(model.train())
+        self._trained_unit = TrainedRun.open(self._trained_checkpoint).path
         return configured
 
     def _warn_if_config_model_dates_differ(self, calendar, configured: tuple) -> None:
@@ -2681,14 +2633,22 @@ class BaseBacktester(Component, ABC):
     def _track(self, run: TrackingRun, run_dir: Path | None, metrics: dict) -> None:
         """Write one finished backtest to its tracking run.
 
-        The run config gains what the backtest resolved (the data
-        fingerprints), the summary holds the ``whole``, ``in_sample`` and
+        The run config gains the records of the run: the market's price
+        columns (``market``) and the data fingerprints
+        (``data_fingerprint``), as the run directory's ``run.json`` holds
+        them. The summary holds the ``whole``, ``in_sample`` and
         ``out_of_sample`` blocks as ``whole/<metric>`` and so on (plus
         ``benchmark`` and ``relative`` when a benchmark ran), and
         ``report.html`` is attached. A run kept in memory (``run_dir`` is
         ``None``) has no report to attach.
         """
-        run.update_config(self.get_config())
+        run.update_config(
+            {
+                **self.get_config(),
+                "market": dataclasses.asdict(self._market()),
+                "data_fingerprint": dict(self._fingerprints),
+            }
+        )
         run.summarize(
             {
                 block: metrics[block]
@@ -2771,27 +2731,35 @@ class BaseBacktester(Component, ABC):
 
     def _report_and_persist(
         self,
+        kind: str,
         weights: xr.Dataset,
         simulation: SimulationResult,
         metrics: dict,
         *,
         benchmark: SimulationResult | None = None,
         predictions: xr.Dataset | None = None,
+        records: Sequence[dict] = (),
+        units: Sequence[Path] = (),
     ) -> Path | None:
-        """Write a new run directory with every artifact of ``run()`` or ``run_weights()``.
+        """Write a new run directory with every artifact of a run.
 
         Nothing is written, and ``None`` is returned, when
-        ``config.output_dir`` is ``None``.
+        ``config.output_dir`` is ``None``. Otherwise the directory
+        ``output_dir/{ClassName}_{timestamp}/`` is written through
+        ``quantlab.runs.backtest_run.write_backtest_run`` (staged, complete or
+        absent): the recipe, the weights, the equity curve (with the
+        benchmark's when one ran), the settlements, the metrics, the report,
+        the prediction panel when ``predictions`` is given (a run with a
+        model) and ``run.json`` recording the market, the data fingerprints
+        and the trained unit used.
 
-        The directory holds ``config.json``, ``weights.zarr``,
-        ``equity.zarr`` (``value`` and ``returns``, plus ``benchmark_value``
-        and ``benchmark_returns`` when a benchmark ran), ``settlements.json``,
-        ``metrics.json``, ``report.html`` and ``fingerprint.json``, plus
-        ``predictions.zarr`` when ``predictions`` is given (a run with a
-        model; see ``_write_predictions``) and ``inputs/`` when a dataset is
-        held in memory (see ``_run_dir_config``). Each
-        JSON file goes through ``to_jsonable`` (NaN and infinities become
-        null, timestamps become ISO strings) and is written atomically.
+        ``kind`` is ``"run"``, ``"run_weights"`` or ``"run_cv"``. A
+        ``run_cv`` run describes the stitched curve: ``metrics`` holds
+        ``stitched``, ``folds`` and ``notes``, the report reads
+        ``metrics["stitched"]`` and the fold ``records``, and each record is
+        written as a child run of kind ``"fold"`` (its weights, equity curve,
+        settlements and metrics), with ``units`` giving each fold's trained
+        unit in record order.
 
         ``report.html`` is self-contained: headline numbers, a timeline
         of the backtest and training windows from ``_report_windows``, the
@@ -2802,103 +2770,70 @@ class BaseBacktester(Component, ABC):
         shaded and the deepest drawdown marked, the benchmark beside the
         portfolio), Excess (with a benchmark), Rolling and Portfolio
         (turnover, holdings and exposure per rebalance), followed by the
-        notes. A metric the report does not know is still shown, so a
-        change in the metric set cannot make the report raise and discard
-        the staged run.
+        notes. A ``run_cv`` report shades no in-sample range (the several
+        in-sample ranges are listed in the summary lines and the notes). A
+        metric the report does not know is still shown, so a change in the
+        metric set cannot make the report raise and discard the staged run.
 
         Returns
         -------
         Path or None
             The final run directory, or ``None`` without ``output_dir``.
         """
-        # Everything is written to a staging directory that is renamed into
-        # place only after the last artifact succeeds.
-        def _write(run_dir: Path, name: str) -> None:
-            """Write every artifact of this run into ``run_dir`` titled ``name``."""
-            write_json_atomically(
-                run_dir / "config.json",
-                to_jsonable(self._run_dir_config(run_dir)),
-                indent=2,
-            )
-            self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
-            if predictions is not None:
-                self._write_predictions(run_dir, predictions)
-            write_json_atomically(
-                run_dir / "settlements.json",
-                to_jsonable(simulation.settlements),
-                indent=2,
-            )
-            write_json_atomically(
-                run_dir / "metrics.json", to_jsonable(metrics), indent=2
-            )
-            chart = self._report_chart_inputs(simulation, metrics, benchmark)
-            write_backtest_report(
-                simulation.value,
-                run_dir / "report.html",
-                title=name,
-                summary=self._report_summary(
-                    simulation, metrics, drawdown_span=chart["drawdown_span"]
-                ),
-                windows=self._report_windows(simulation, metrics),
-                metrics=metrics,
-                **chart,
-                **self._report_portfolio_inputs(weights, simulation),
-            )
-            write_json_atomically(
-                run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
-            )
-
-        return self._persist_run_dir(_write)
-
-    def _run_dir_config(self, run_dir: Path) -> dict:
-        """Return the ``config.json`` of ``run_dir``, writing what its datasets need.
-
-        ``get_config()``, except that each dataset of ``RUN_DATASET_FIELDS``
-        is asked through ``persist_with_run(run_dir, field)`` what a rebuild
-        needs: a dataset read from a project store writes nothing and is
-        recorded as it is; a ``FrameDataset`` writes its panel to
-        ``inputs/<field>.zarr`` and is recorded reading it, relative to the
-        run directory, which ``load_backtester_from_config(config,
-        run_dir=...)`` resolves again.
-        """
-        config = self.get_config()
-        for name in RUN_DATASET_FIELDS:
-            dataset = getattr(self.config, name)
-            if dataset is None:
-                continue
-            recorded = dataset.persist_with_run(run_dir, name)
-            if recorded is not None:
-                config[name] = recorded
-        return config
-
-    def _persist_run_dir(self, write) -> Path | None:
-        """Create ``output_dir/{ClassName}_{timestamp}/`` and fill it through ``write``.
-
-        With ``config.output_dir`` set to ``None`` the run stays in memory:
-        ``write`` is never called, nothing is created, and ``None`` is
-        returned.
-
-        ``write(directory, name)`` writes every artifact into ``directory``;
-        ``name`` is the final directory name, used as the report title. The
-        artifacts go into a hidden sibling ``.{name}.partial`` first and the
-        directory is renamed into place only when everything succeeded
-        (``quantlab.runs.directory.staged``). On any exception, including
-        ``KeyboardInterrupt``, the staging directory is removed and the
-        error re-raised, so ``output_dir`` only ever contains complete run
-        directories that a loader can safely rebuild from.
-
-        Raises
-        ------
-        RuntimeError
-            If the final directory already exists; it is never
-            overwritten.
-        """
         if self.config.output_dir is None:
             return None
         final = Path(self.config.output_dir) / self._run_name
-        with staged(final) as staging:
-            write(staging, final.name)
-        return final
+        stitched = metrics["stitched"] if kind == "run_cv" else None
+        block = metrics if stitched is None else stitched
+
+        def _report(path: Path) -> None:
+            """Write ``report.html`` of this run at ``path``."""
+            chart = self._report_chart_inputs(simulation, metrics, benchmark, block=stitched)
+            write_backtest_report(
+                simulation.value,
+                path,
+                title=final.name,
+                summary=self._report_summary(
+                    simulation, block, drawdown_span=chart["drawdown_span"]
+                ),
+                windows=self._report_windows(simulation, block, list(records) or None),
+                metrics=block,
+                **chart,
+                **self._report_portfolio_inputs(weights, simulation),
+            )
+
+        return write_backtest_run(
+            final,
+            kind,
+            backtester=self,
+            market=self._market(),
+            data_fingerprint=self._fingerprints,
+            trained_run=self._trained_unit,
+            weights=weights,
+            equity=self._equity(simulation, benchmark),
+            settlements=simulation.settlements,
+            metrics=metrics,
+            write_report=_report,
+            predictions=self._prediction_panel(predictions),
+            folds=[
+                FoldArtifacts(
+                    index=record["fold"],
+                    weights=record["weights"],
+                    equity=self._equity(record["simulation"], record.get("benchmark")),
+                    settlements=record["simulation"].settlements,
+                    metrics=record["metrics"],
+                    trained_run=unit,
+                )
+                for record, unit in zip(records, units, strict=True)
+            ],
+        )
+
+    def _market(self) -> Market:
+        """Return the price columns of ``MARKET``, recorded with every run."""
+        return Market(
+            fill_price_column=self.MARKET.fill_price_column,  # type: ignore[union-attr]
+            valuation_price_column=self.MARKET.valuation_price_column,  # type: ignore[union-attr]
+        )
 
     def _report_chart_inputs(
         self,
@@ -2944,36 +2879,29 @@ class BaseBacktester(Component, ABC):
         )
 
     @staticmethod
-    def _write_weights_and_equity(
-        directory: Path,
-        weights: xr.Dataset,
-        simulation: SimulationResult,
-        benchmark: SimulationResult | None = None,
-    ) -> None:
-        """Write ``weights.zarr`` and ``equity.zarr`` into ``directory``.
+    def _equity(
+        simulation: SimulationResult, benchmark: SimulationResult | None = None
+    ) -> xr.Dataset:
+        """Return the equity curve a run directory records.
 
-        With a benchmark, ``equity.zarr`` also carries ``benchmark_value`` and
-        ``benchmark_returns`` on the same ``timestamp`` axis.
+        ``value`` and ``returns``, plus ``benchmark_value`` and
+        ``benchmark_returns`` on the same ``timestamp`` axis with a benchmark.
         """
-        XrBackend().to_internal(weights).write(str(directory / "weights.zarr"))
         equity = {"value": simulation.value, "returns": simulation.returns}
         if benchmark is not None:
             equity["benchmark_value"] = benchmark.value
             equity["benchmark_returns"] = benchmark.returns
-        XrBackend().to_internal(xr.Dataset(equity)).write(
-            str(directory / "equity.zarr")
-        )
+        return xr.Dataset(equity)
 
-    def _write_predictions(self, directory: Path, predictions: xr.Dataset) -> None:
-        """Write the predictions the rule read as ``predictions.zarr`` into ``directory``.
+    def _prediction_panel(self, predictions: xr.Dataset | None) -> PredictionPanel | None:
+        """Return the predictions the rule read with the model's label specs, or None.
 
-        ``predictions`` are on the price axes (as handed to
-        ``_generate_signals``) and are stored with ``label_specs`` of the
-        model as a ``PredictionPanel``.
+        ``predictions`` are on the price axes, as handed to
+        ``_generate_signals``.
         """
-        PredictionPanel(predictions, label_specs(self.config.model)).write(
-            directory / PredictionPanel.FILE_NAME
-        )
+        if predictions is None:
+            return None
+        return PredictionPanel(predictions, label_specs(self.config.model))
 
     def _stitched_split(
         self, timestamps: np.ndarray, records: list[dict]
@@ -3006,91 +2934,3 @@ class BaseBacktester(Component, ABC):
             "out_of_sample_ranges": pieces,
         }
 
-    def _persist_cv(
-        self,
-        records: list[dict],
-        weights: xr.Dataset,
-        simulation: SimulationResult,
-        metrics: dict,
-        *,
-        benchmark: SimulationResult | None = None,
-        predictions: xr.Dataset,
-    ) -> Path | None:
-        """Write a new run directory with every artifact of a ``run_cv()``.
-
-        The top level describes the stitched curve with the same files as a
-        ``run()`` directory: ``config.json``, ``weights.zarr``,
-        ``equity.zarr``, ``metrics.json`` (``stitched``, ``folds``,
-        ``notes``), ``settlements.json`` (``stitched`` plus per-fold
-        ``folds``), ``fingerprint.json`` (the stitched window),
-        ``predictions.zarr`` (the concatenated fold predictions the stitched
-        pass read, see ``_write_predictions``) and ``report.html``. The report receives ``metrics["stitched"]``, shades
-        no in-sample range (the several in-sample ranges are listed in the
-        summary lines and the notes) and marks the deepest drawdown of the
-        stitched simulation. Each fold's own simulation is written under
-        ``folds/fold_{i}/`` as ``weights.zarr`` and ``equity.zarr``, where
-        ``i`` is the fold's index.
-
-        Returns
-        -------
-        Path or None
-            The final run directory, or ``None`` without ``output_dir``.
-        """
-        # As in run(): write to a staging directory, rename when complete.
-        def _write(run_dir: Path, name: str) -> None:
-            """Write every artifact of this CV run into ``run_dir`` titled ``name``."""
-            write_json_atomically(
-                run_dir / "config.json",
-                to_jsonable(self._run_dir_config(run_dir)),
-                indent=2,
-            )
-            self._write_weights_and_equity(run_dir, weights, simulation, benchmark)
-            self._write_predictions(run_dir, predictions)
-            for record in records:
-                fold_dir = run_dir / "folds" / f"fold_{record['fold']}"
-                fold_dir.mkdir(parents=True)
-                self._write_weights_and_equity(
-                    fold_dir,
-                    record["weights"],
-                    record["simulation"],
-                    record.get("benchmark"),
-                )
-            write_json_atomically(
-                run_dir / "settlements.json",
-                to_jsonable(
-                    {
-                        "stitched": simulation.settlements,
-                        "folds": [
-                            {
-                                "fold": record["fold"],
-                                "settlements": record["simulation"].settlements,
-                            }
-                            for record in records
-                        ],
-                    }
-                ),
-                indent=2,
-            )
-            write_json_atomically(
-                run_dir / "metrics.json", to_jsonable(metrics), indent=2
-            )
-            chart = self._report_chart_inputs(
-                simulation, metrics, benchmark, block=metrics["stitched"]
-            )
-            write_backtest_report(
-                simulation.value,
-                run_dir / "report.html",
-                title=name,
-                summary=self._report_summary(
-                    simulation, metrics["stitched"], drawdown_span=chart["drawdown_span"]
-                ),
-                windows=self._report_windows(simulation, metrics["stitched"], records),
-                metrics=metrics["stitched"],
-                **chart,
-                **self._report_portfolio_inputs(weights, simulation),
-            )
-            write_json_atomically(
-                run_dir / "fingerprint.json", to_jsonable(self._fingerprints), indent=2
-            )
-
-        return self._persist_run_dir(_write)

@@ -27,7 +27,7 @@ from quantlab.utils.date_range import as_label, check_range
 from quantlab.utils.frame import to_panel
 
 #: Directory of a backtest run directory that ``persist_with_run`` writes the held
-#: panels into, one ``<config field>.zarr`` store each.
+#: panels into, one ``<component path>.zarr`` store each.
 RUN_INPUTS_DIRNAME = "inputs"
 
 
@@ -290,7 +290,8 @@ class FrameDataset(MarketDataset):
         run_dir : Path
             The run directory being written.
         name : str
-            The backtest config field holding this dataset (``"price_dataset"``).
+            The dataset's component path in the backtester (``"price_dataset"``,
+            ``"model.factors.0.dataset"``).
 
         Returns
         -------

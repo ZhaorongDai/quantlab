@@ -3,22 +3,21 @@
 What is locked here, and what turns it red:
 
 - `run()` in train mode trains every seed into one ensemble directory,
-  records the unit's `run.json` as the trained checkpoint, and backtests the
-  average of the members' predictions.
+  records the unit's `run.json` as the trained checkpoint and the unit as the
+  run's trained run, and backtests the average of the members' predictions.
 - `run()` in load mode with `checkpoint` = that `run.json` replays the
   ensemble with the training dates its members' records hold (a stale
   training window on the ensemble's own model is overridden by the recorded
   one).
 - The data fingerprints of an ensemble run carry the same keys as a single
   model's: the members read identical inputs, which are hashed once.
-- `load_backtester_from_config` rebuilds a load-mode and a train-mode
+- `BacktestRun.rebuild_backtester` rebuilds a load-mode and a train-mode
   ensemble backtest, and the re-run gives the same predictions, weights and
   equity curve.
 
 Everything is synthetic, CPU-only and offline.
 """
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -29,8 +28,8 @@ import xarray as xr
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
-from quantlab.utils import module as module_utils
 from quantlab.utils.ensemble import average_predictions
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
@@ -92,10 +91,6 @@ def _backtester(tmp_path, dataset_config, model, bars, *, name, checkpoint=None)
     )
 
 
-def _saved_config(result) -> dict:
-    return json.loads((result.run_dir / "config.json").read_text())
-
-
 def _assert_same_result(a, b) -> None:
     xr.testing.assert_identical(a.predictions, b.predictions)
     xr.testing.assert_identical(a.weights, b.weights)
@@ -114,7 +109,7 @@ def test_train_mode_trains_every_seed_and_backtests_the_average(tmp_path):
     assert saved.kind == "ensemble"
     assert [m.seed for m in saved.members] == SEEDS
     assert all(m.checkpoint.is_file() for m in saved.members)
-    assert _saved_config(result)["trained_checkpoint"] == str(checkpoint)
+    assert BacktestRun.open(result.run_dir).trained_run() == saved
 
     start, end = _day(bars[WINDOW[0]]), _day(bars[WINDOW[1]])
     members = [m.predict_window(start, end) for m in ensemble.members]
@@ -165,8 +160,8 @@ def test_ensemble_fingerprints_have_the_keys_of_a_single_model(tmp_path):
     ).run()
 
     assert (
-        _saved_config(ens_result)["data_fingerprint"]
-        == _saved_config(single_result)["data_fingerprint"]
+        BacktestRun.open(ens_result.run_dir).data_fingerprint
+        == BacktestRun.open(single_result.run_dir).data_fingerprint
     )
 
 
@@ -178,13 +173,16 @@ def test_load_mode_rebuild_reproduces_the_run(tmp_path):
         bars, name="load", checkpoint=checkpoint,
     ).run()
 
-    rebuilt = module_utils.load_backtester_from_config(_saved_config(first))
+    rebuilt = BacktestRun.open(first.run_dir).rebuild_backtester()
 
     assert type(rebuilt.config.model) is SeedEnsemble
     assert rebuilt.config.model.seeds == tuple(SEEDS)
     again = rebuilt.run()
     _assert_same_result(first, again)
-    assert _saved_config(first)["data_fingerprint"] == _saved_config(again)["data_fingerprint"]
+    assert (
+        BacktestRun.open(first.run_dir).data_fingerprint
+        == BacktestRun.open(again.run_dir).data_fingerprint
+    )
 
 
 def test_train_mode_rebuild_retrains_and_reproduces_the_run(tmp_path):
@@ -194,7 +192,7 @@ def test_train_mode_rebuild_retrains_and_reproduces_the_run(tmp_path):
         bars, name="train",
     ).run()
 
-    rebuilt = module_utils.load_backtester_from_config(_saved_config(first))
+    rebuilt = BacktestRun.open(first.run_dir).rebuild_backtester()
     again = rebuilt.run()
 
     _assert_same_result(first, again)

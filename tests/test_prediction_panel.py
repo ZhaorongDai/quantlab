@@ -268,9 +268,13 @@ def test_from_run_refuses_a_run_without_a_prediction_panel(tmp_path, model_run):
 
     from quantlab.portfolio.decision_inputs import DecisionInputs
 
-    shutil.copy(model_run.run_dir / "config.json", tmp_path / "config.json")
-    with pytest.raises(FileNotFoundError, match="predictions.zarr"):
-        DecisionInputs.from_run(tmp_path)
+    from quantlab.base.portfolio import PredictionPanel
+
+    run_dir = tmp_path / model_run.run_dir.name
+    shutil.copytree(model_run.run_dir, run_dir)
+    shutil.rmtree(run_dir / PredictionPanel.FILE_NAME)
+    with pytest.raises(FileNotFoundError, match="no prediction panel"):
+        DecisionInputs.from_run(run_dir)
 
 
 def test_from_run_loads_no_model_factor_label_or_engine_module(model_run):

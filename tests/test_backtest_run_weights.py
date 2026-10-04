@@ -34,6 +34,7 @@ import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.runs.backtest_run import BacktestRun, Market
 from quantlab.utils.module import load_backtester_from_config
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
@@ -51,9 +52,9 @@ WINDOW_END = 55
 RUN_DIR_ARTIFACTS = [
     "config.json",
     "equity.zarr",
-    "fingerprint.json",
     "metrics.json",
     "report.html",
+    "run.json",
     "settlements.json",
     "weights.zarr",
 ]
@@ -355,16 +356,13 @@ def test_run_weights_with_an_output_dir_writes_a_whole_window_run_directory(stor
     assert sorted(metrics["benchmark"]) == ["axis_symbol", "symbol", "whole"]
     assert sorted(metrics["relative"]) == ["whole"]
     assert sorted(result.metrics) == sorted(metrics)
-    config = json.loads((result.run_dir / "config.json").read_text())
-    assert config["model"] is None
-    assert sorted(config["data_fingerprint"]) == ["benchmark_dataset", "price_dataset"]
-    assert config["market"] == {
-        "fill_price_column": "adjOpen",
-        "valuation_price_column": "adjClose",
-    }
-    persisted = xr.open_zarr(result.run_dir / "weights.zarr").load()
+    run = BacktestRun.open(result.run_dir)
+    assert run.kind == "run_weights" and run.trained_run() is None
+    assert run.rebuild("model") is None
+    assert sorted(run.data_fingerprint) == ["benchmark_dataset", "price_dataset"]
+    assert run.market == Market(fill_price_column="adjOpen", valuation_price_column="adjClose")
     np.testing.assert_array_equal(
-        persisted["weight"].values, run_result.weights["weight"].values
+        run.weights()["weight"].values, run_result.weights["weight"].values
     )
     report = (result.run_dir / "report.html").read_text()
     assert "In-sample" not in report

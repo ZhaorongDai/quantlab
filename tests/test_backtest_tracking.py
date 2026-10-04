@@ -16,6 +16,7 @@ import pytest
 
 from quantlab.base.config import BacktestConfig
 from quantlab.base.tracking import NullTracker
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.tracking.wandb import WandbTracker
 from quantlab.utils.module import load_backtester_from_config
 from tests.test_backtest_contracts import REPO_ROOT
@@ -68,8 +69,8 @@ def test_a_run_is_one_finished_run_with_the_metric_blocks_and_the_report(tmp_pat
     assert run.config["tracker"] == tracker.get_config()
     # Opened before the backtest; the fingerprints it read are added after.
     assert "data_fingerprint" not in run.config
-    saved = json.loads((result.run_dir / "config.json").read_text())
-    assert run.config_updates[-1]["data_fingerprint"] == saved["data_fingerprint"]
+    recorded = BacktestRun.open(result.run_dir).data_fingerprint
+    assert json.loads(json.dumps(run.config_updates[-1]["data_fingerprint"])) == recorded
     assert run.summary, "the summary must receive metrics"
     for key, value in run.summary.items():
         assert key.split("/")[0] in {"whole", "in_sample", "out_of_sample"}, key

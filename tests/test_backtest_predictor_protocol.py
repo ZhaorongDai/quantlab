@@ -10,8 +10,8 @@ What is locked here, and what turns it red:
   it wraps.
 - An object missing a protocol member is refused at construction with a
   `TypeError` naming the protocol and the missing member.
-- `load_backtester_from_config` rebuilds the model through `from_config` of
-  the class named in the saved config.
+- A run's rebuild (`BacktestRun.rebuild_backtester`) rebuilds the model
+  through `from_config` of the class named in the saved recipe.
 - Source rule: `quantlab/base/backtest.py` and `quantlab/backtest/*.py` read
   no attribute of the model other than a protocol member (so no `config` and
   no `_`-prefixed method), and never name `ModelConfig`.
@@ -20,7 +20,6 @@ Everything is synthetic, CPU-only and offline.
 """
 
 import ast
-import json
 from pathlib import Path
 from typing import get_protocol_members
 
@@ -33,8 +32,8 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.backtest import Predictor
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.base.model import BaseModel
-from quantlab.utils import module as module_utils
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (
     DelegatingPredictor,
     make_model,
@@ -88,7 +87,7 @@ def _setup(tmp_path):
 
 
 def _saved_fingerprints(result) -> dict:
-    return json.loads((result.run_dir / "config.json").read_text())["data_fingerprint"]
+    return BacktestRun.open(result.run_dir).data_fingerprint
 
 
 def _assert_same_result(a, b) -> None:
@@ -195,9 +194,8 @@ def test_rebuild_goes_through_from_config_of_the_saved_class(tmp_path):
         bars, name="wrapped", checkpoint=checkpoint,
     )
     first = original.run()
-    saved = json.loads((first.run_dir / "config.json").read_text())
 
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = BacktestRun.open(first.run_dir).rebuild_backtester()
 
     assert type(rebuilt.config.model).__name__ == "DelegatingPredictor"
     again = rebuilt.run()

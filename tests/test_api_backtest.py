@@ -28,6 +28,7 @@ from quantlab.base.config import BacktestConfig, CrossSectionBacktestConfig, Top
 from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.dataset.stock import StockDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.utils.execution import ExecutionSettings
 from tests.backtest_fixtures import SYMBOLS, write_price_store
 
@@ -37,10 +38,10 @@ CANONICAL = ("open", "high", "low", "close", "volume")
 RUN_DIR_ARTIFACTS = [
     "config.json",
     "equity.zarr",
-    "fingerprint.json",
     "inputs",
     "metrics.json",
     "report.html",
+    "run.json",
     "settlements.json",
     "weights.zarr",
 ]
@@ -529,10 +530,10 @@ def test_save_writes_the_run_directory_of_the_same_run(stores):
 
     assert run_dir.parent == stores["root"] / "saved"
     assert sorted(p.name for p in run_dir.iterdir()) == RUN_DIR_ARTIFACTS
-    equity = xr.open_zarr(run_dir / "equity.zarr").load()
-    np.testing.assert_array_equal(equity["value"].values, report.equity["value"].to_numpy())
-    weights = xr.open_zarr(run_dir / "weights.zarr").load()
-    np.testing.assert_array_equal(weights["weight"].values, report.raw.weights["weight"].values)
+    run = BacktestRun.open(run_dir)
+    assert run.kind == "run_weights"
+    np.testing.assert_array_equal(run.equity()["value"].values, report.equity["value"].to_numpy())
+    np.testing.assert_array_equal(run.weights()["weight"].values, report.raw.weights["weight"].values)
     assert report.raw.run_dir is None
 
 
