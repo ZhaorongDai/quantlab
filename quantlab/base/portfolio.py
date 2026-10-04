@@ -48,6 +48,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
+from quantlab.base.component import Component
 
 if TYPE_CHECKING:
     from quantlab.base.factor import Factor
@@ -419,12 +420,13 @@ class Decision:
     events: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
-class _Configured:
+class _Configured(Component):
     """A component built from one frozen config dataclass: a rule or a risk model.
 
-    ``get_config`` returns the config's fields plus the class's import path
-    under ``"name"``, a field holding another such component as that
-    component's own config; ``from_config`` rebuilds both.
+    It is serialised and rebuilt by the component rule
+    (``quantlab.base.component``): a field holding another component (a
+    rule's risk model) is declared with ``component()`` on the config
+    dataclass, and a free-form parameter dict is kept as data.
     """
 
     #: The dataclass of the component's parameters.
@@ -465,66 +467,6 @@ class _Configured:
     def __hash__(self) -> int:
         """Hash of the class and the config."""
         return hash((type(self), self.config))
-
-    @property
-    def import_path(self) -> str:
-        """The class as a dotted import path, the ``name`` of its config.
-
-        Examples
-        --------
-        >>> rule.import_path
-        'quantlab.portfolio.predefined.top_n.TopNConstructor'
-        """
-        return f"{type(self).__module__}.{type(self).__qualname__}"
-
-    def get_config(self) -> dict[str, Any]:
-        """Return the config's fields plus the class's import path under ``"name"``.
-
-        A field holding another component (a rule's risk model) is written
-        as that component's own ``get_config()``.
-
-        Examples
-        --------
-        >>> rule.get_config()
-        {'direction': 'long_only', 'top_n': 2, 'score_label': None, 'name': 'quantlab.portfolio.predefined.top_n.TopNConstructor'}
-        """
-        out = {}
-        for f in dataclasses.fields(self._config):
-            value = getattr(self._config, f.name)
-            out[f.name] = (
-                value.get_config() if isinstance(value, _Configured) else value
-            )
-        return {**out, "name": self.import_path}
-
-    @classmethod
-    def from_config(cls, config: dict) -> Self:
-        """Rebuild the component from the dict ``get_config()`` returned.
-
-        A nested dict carrying a ``"name"`` is rebuilt by ``from_config`` of
-        the class it names.
-
-        Parameters
-        ----------
-        config : dict
-            The dict ``get_config()`` returned, for example read back from a
-            backtest run's ``config.json``; the top-level ``"name"`` is
-            ignored here.
-
-        Examples
-        --------
-        >>> TopNConstructor.from_config(rule.get_config()) == rule
-        True
-        """
-        from quantlab.utils.module import get_cls_from_path
-
-        params = {}
-        for key, value in config.items():
-            if key == "name":
-                continue
-            if isinstance(value, dict) and "name" in value:
-                value = get_cls_from_path(value["name"]).from_config(value)
-            params[key] = value
-        return cls(cls.config_cls(**params))
 
 
 @dataclass(frozen=True)

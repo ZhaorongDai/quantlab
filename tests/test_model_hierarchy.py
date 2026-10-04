@@ -29,6 +29,7 @@ Everything is synthetic, CPU-only and offline.
 """
 
 import ast
+import dataclasses
 import inspect
 import textwrap
 
@@ -39,6 +40,7 @@ import torch.nn as nn
 import xarray as xr
 
 import quantlab.utils.module as module_utils
+from quantlab.base.component import Component
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import (
@@ -65,8 +67,19 @@ END = np.datetime_as_string(TIMES[N_TIMES - 1], unit="D")
 PUBLIC_METHODS = frozenset({"train", "train_cv", "load", "predict"})
 
 
-class FakePanel:
-    """A stand-in for a factor/label object: only what `collect()` calls."""
+@dataclasses.dataclass(frozen=True)
+class FakePanelConfig:
+    factor_names: list
+
+
+class FakePanel(Component):
+    """A stand-in for a factor/label object: only what `collect()` calls.
+
+    It is a component (`quantlab.base.component`), so a model config holding
+    it rebuilds it from its saved names, with fresh seed-0 values.
+    """
+
+    config_cls = FakePanelConfig
 
     def __init__(self, names, seed=0):
         rng = np.random.default_rng(seed)
@@ -91,8 +104,13 @@ class FakePanel:
     def read(self, start, end):
         return self._ds.sel(timestamp=slice(start, end))
 
-    def get_config(self):
-        return {"name": "FakePanel", "factor_names": list(self.names)}
+    @property
+    def config(self) -> FakePanelConfig:
+        return FakePanelConfig(factor_names=list(self.names))
+
+    @classmethod
+    def from_config(cls, config, run_dir=None):
+        return cls(cls._rebuilt_fields(config, run_dir)["factor_names"])
 
 
 class StubLibraryHead(LibraryModel):
@@ -364,18 +382,6 @@ def test_library_model_never_references_deepcopy():
 # --------------------------------------------------------------------------
 
 
-def _patch_factor_loader(monkeypatch):
-    """Rebuild each saved panel as a `FakePanel`; the `_kwargs` label (the
-    only panel named `ret`) comes back wrapped as a label, since a model
-    rejects a label without `lookahead_bars()`."""
-
-    def load(cfg):
-        panel = FakePanel(cfg["factor_names"])
-        return StubLabel(panel) if cfg["factor_names"] == ["ret"] else panel
-
-    monkeypatch.setattr(module_utils, "load_factor_from_config", load)
-
-
 def _fit_kwargs(tmp_path):
     return dict(
         **_kwargs(tmp_path),
@@ -402,7 +408,6 @@ def test_a_trained_model_is_rebuilt_and_loaded_from_config_json_alone(
     and load the checkpoint beside it: the same predictions come back."""
     import json
 
-    _patch_factor_loader(monkeypatch)
     model = cls(ModelConfig(**_fit_kwargs(tmp_path), hyperparameters=dict(hyper)))
     checkpoint = model.collect().train()
     saved = json.loads((checkpoint.parent / "config.json").read_text())
@@ -419,9 +424,7 @@ def test_a_trained_model_is_rebuilt_and_loaded_from_config_json_alone(
 
 
 def test_loader_rebuilds_a_torch_head(tmp_path, monkeypatch):
-    """Real dotted path, real class lookup; only factor reconstruction is
-    faked."""
-    _patch_factor_loader(monkeypatch)
+    """Real dotted path, real class lookup; the stand-in panels rebuild themselves."""
     saved = OneBarHead(ModelConfig(**_kwargs(tmp_path))).get_config()
     assert saved["name"] == "tests.torch_heads.OneBarHead"
 
@@ -433,7 +436,6 @@ def test_loader_rebuilds_a_torch_head(tmp_path, monkeypatch):
 
 def test_loader_rebuilds_a_library_head(tmp_path, monkeypatch):
     """The loader reads `config_cls` from the class, never a hardcoded config."""
-    _patch_factor_loader(monkeypatch)
     saved = StubLibraryHead(ModelConfig(**_kwargs(tmp_path))).get_config()
     real = module_utils.get_cls_from_path
     monkeypatch.setattr(
@@ -451,7 +453,6 @@ def test_loader_rebuilds_a_library_head(tmp_path, monkeypatch):
 def test_loader_rebuilds_the_shipped_xgboost_head(tmp_path, monkeypatch):
     """Same as above through the REAL dotted path of the shipped library head, so
     the class lookup itself is not faked."""
-    _patch_factor_loader(monkeypatch)
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     assert saved["name"] == "quantlab.model.predefined.xgb.XGBoostRegressor"
 
@@ -465,7 +466,6 @@ def test_loader_drops_the_resolved_hyperparameters_record(tmp_path, monkeypatch)
     """`LibraryModel.get_config` may add a top-level `resolved_hyperparameters`
     record; it is not an `ModelConfig` field, so the loader must drop it before
     `cls.config_cls(**config)` or every such checkpoint fails to reload."""
-    _patch_factor_loader(monkeypatch)
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     saved["resolved_hyperparameters"] = {"eta": 0.3, "num_boost_round": 4}
 
@@ -477,11 +477,10 @@ def test_loader_drops_the_resolved_hyperparameters_record(tmp_path, monkeypatch)
 
 def test_loader_still_rejects_other_unknown_keys(tmp_path, monkeypatch):
     """Only that one record key is dropped; anything else unknown stays loud."""
-    _patch_factor_loader(monkeypatch)
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     saved["not_a_config_field"] = 1
 
-    with pytest.raises(TypeError, match="not_a_config_field"):
+    with pytest.raises(ValueError, match="not_a_config_field"):
         module_utils.load_model_from_config(saved)
 
 

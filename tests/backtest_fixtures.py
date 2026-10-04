@@ -14,6 +14,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
+from quantlab.base.component import component, rebuild
 from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel
@@ -269,6 +270,12 @@ class DelegatingPredictor:
     rebuild, so a config rebuild that bypasses `from_config` fails.
     """
 
+    @dataclasses.dataclass(frozen=True)
+    class Config:
+        inner: object = component()
+
+    config_cls = Config
+
     def __init__(self, inner):
         self.inner = inner
 
@@ -326,8 +333,5 @@ class DelegatingPredictor:
         }
 
     @classmethod
-    def from_config(cls, config):
-        from quantlab.utils.module import get_cls_from_path
-
-        inner = config["inner"]
-        return cls(get_cls_from_path(inner["name"]).from_config(inner))
+    def from_config(cls, config, run_dir=None):
+        return cls(rebuild(config["inner"], run_dir))

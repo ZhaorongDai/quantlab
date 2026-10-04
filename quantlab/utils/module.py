@@ -20,7 +20,6 @@ Examples
 >>> result = backtester.run()
 """
 
-import copy
 import importlib
 import os
 
@@ -144,13 +143,13 @@ def load_factor_from_config(
 def load_model_from_config(config: dict):
     """Rebuild a model, with its factors and labels, from a config dict.
 
-    The class named by ``config["name"]`` is imported and its own
-    ``from_config`` rebuilds the model, so a model class decides how its
-    config is read back. ``BaseModel.from_config`` rebuilds the factors and
-    labels and drops the training record a library model's ``config.json``
-    carries, ``resolved_hyperparameters``; any other unknown key still raises
-    ``TypeError`` from the config class.
-    The caller's dict is never modified.
+    A thin wrapper over the component rule,
+    ``quantlab.base.component.rebuild``: the class named by
+    ``config["name"]`` rebuilds itself through its own ``from_config``, so
+    any predictor (a model, an ensemble) is read back. ``BaseModel.from_config``
+    drops the training record a library model's ``config.json`` carries,
+    ``resolved_hyperparameters``; any other unknown key is refused with
+    ``ValueError``. The caller's dict is never modified.
 
     Parameters
     ----------
@@ -173,7 +172,9 @@ def load_model_from_config(config: dict):
     >>> model = load_model_from_config(config)
     >>> model = model.load("/data/models/xgb/best.joblib")
     """
-    return get_cls_from_path(config["name"]).from_config(config)
+    from quantlab.base.component import rebuild
+
+    return rebuild(config)
 
 
 def load_backtester_from_config(
@@ -181,36 +182,20 @@ def load_backtester_from_config(
 ):
     """Rebuild a backtester from the ``config.json`` a backtest run wrote.
 
-    The price dataset, the model (through ``from_config`` of the class its
-    config names, so any ``Predictor`` rebuilds itself; ``None`` for a
-    ``run_weights()`` run without one), the portfolio construction rule of a
-    cross-sectional config (likewise through its class's ``from_config``), the
-    tracker (likewise), an optional benchmark dataset and every scalar
-    parameter are rebuilt, and the backtester is constructed with its declared config class.
-    Calling ``run()`` or ``run_cv()`` on the result re-runs the stored
-    backtest; a ``run_weights()`` run is replayed by passing ``run_weights``
-    the weights it simulated, ``XrBackend().read(run_dir / "weights.zarr").data``.
+    The class named by ``config["name"]`` is checked to be a backtester and
+    rebuilds itself through ``BaseBacktester.from_config``: the records
+    (``market``, ``data_fingerprint``, ``trained_checkpoint``) are taken out,
+    a missing config field is refused, and the component rule rebuilds the
+    datasets, model, construction rule and tracker. Calling ``run()`` or
+    ``run_cv()`` on the result re-runs the stored backtest; a
+    ``run_weights()`` run is replayed by passing ``run_weights`` the weights
+    it simulated, ``XrBackend().read(run_dir / "weights.zarr").data``.
 
-    The datasets are rebuilt through ``load_dataset_from_config`` with
-    ``run_dir``. A run whose price or benchmark dataset was a ``FrameDataset``
-    (every ``quantlab.api.backtest`` run) holds that panel under the run
+    A run whose price or benchmark dataset was a ``FrameDataset`` (every
+    ``quantlab.api.backtest`` run) holds that panel under the run
     directory's ``inputs/``, and its config names the store relative to the
     run directory, so the directory can be moved; such a config needs
     ``run_dir``.
-
-    Three keys are records rather than config fields. ``market`` names the
-    fill and valuation price columns of the backtester class's ``MARKET`` and
-    is dropped, since the rebuilt class supplies its own. ``data_fingerprint``
-    describes the data the original run read (time range, axis sizes and a
-    sha256 digest of the values); it is removed and assigned to the rebuilt backtester's
-    ``expected_fingerprint`` so the re-run can warn when its data differs.
-    ``trained_checkpoint`` names the checkpoint a train-mode run produced.
-    Rebuilding such a config retrains the model, so to replay that exact
-    model, set ``model_mode="load"`` and ``checkpoint`` to the recorded path.
-
-    Every field of the config class must be present in the dict. Missing keys
-    are not filled from the current dataclass defaults, because a default that
-    changed since the run would silently produce a different backtest.
 
     Parameters
     ----------
@@ -231,8 +216,9 @@ def load_backtester_from_config(
         If ``config["name"]`` is not a ``BaseBacktester`` subclass. This is
         checked before any nested dataset or model is built.
     ValueError
-        If any config field other than ``name`` is missing, or the config
-        names ``inputs/`` stores and ``run_dir`` is not given.
+        If any config field other than ``name`` is missing, a key is
+        unknown, or the config names ``inputs/`` stores and ``run_dir`` is
+        not given.
 
     Examples
     --------
@@ -279,64 +265,10 @@ def load_backtester_from_config(
     # import time.
     from quantlab.base.backtest import BaseBacktester
 
-    config = copy.deepcopy(config)
-    expected = config.pop("data_fingerprint", None)
-    config.pop("trained_checkpoint", None)
-    # The market block records the class's MARKET; the rebuilt class supplies it.
-    config.pop("market", None)
-
     cls = get_cls_from_path(config["name"])
     if not (isinstance(cls, type) and issubclass(cls, BaseBacktester)):
         raise TypeError(
             f"{config['name']} is not a BaseBacktester subclass, so it cannot be "
             f"rebuilt as a backtester"
         )
-
-    from dataclasses import fields
-
-    from quantlab.base.component import config_cls_of
-
-    missing = [
-        field.name
-        for field in fields(config_cls_of(cls))
-        if field.name != "name" and field.name not in config
-    ]
-    if missing:
-        raise ValueError(
-            f"{config['name']} config is missing field(s) {missing}; refusing to "
-            f"fill them from the current dataclass defaults, which may differ "
-            f"from the values the stored backtest ran with"
-        )
-
-    config["price_dataset"] = load_dataset_from_config(
-        config["price_dataset"], run_dir=run_dir
-    )
-    # The model is rebuilt by its own class, so any predictor (a model, or an
-    # ensemble of models) round-trips without a special case here.
-    # A config for run_weights() carries no model.
-    model = config.get("model")
-    config["model"] = (
-        None
-        if model is None
-        else get_cls_from_path(model["name"]).from_config(model)
-    )
-    # A cross-sectional config holds its portfolio construction rule, rebuilt
-    # by the class its config names.
-    constructor = config.get("constructor")
-    if constructor is not None:
-        config["constructor"] = get_cls_from_path(constructor["name"]).from_config(
-            constructor
-        )
-    config["tracker"] = get_cls_from_path(config["tracker"]["name"]).from_config(
-        config["tracker"]
-    )
-    benchmark = config.get("benchmark_dataset")
-    config["benchmark_dataset"] = (
-        None
-        if benchmark is None
-        else load_dataset_from_config(benchmark, run_dir=run_dir)
-    )
-
-    backtester = cls(config_cls_of(cls)(**config))
-    backtester.expected_fingerprint = expected
-    return backtester
+    return cls.from_config(config, run_dir=run_dir)

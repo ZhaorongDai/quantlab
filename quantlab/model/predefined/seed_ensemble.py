@@ -12,12 +12,31 @@ model.
 
 import dataclasses
 from numbers import Integral
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import xarray as xr
 
+from quantlab.base.component import component
 from quantlab.model.ensemble import BaseEnsemble
-from quantlab.utils.module import get_cls_from_path
+
+if TYPE_CHECKING:  # type hints only
+    from quantlab.base.model import BaseModel
+
+
+@dataclasses.dataclass(frozen=True)
+class SeedEnsembleConfig:
+    """What a ``SeedEnsemble`` is rebuilt from: the wrapped model and the seeds.
+
+    Examples
+    --------
+    >>> SeedEnsemble(model, [0, 1]).config.seeds
+    [0, 1]
+    """
+
+    #: The model every member is a copy of, under its own seed.
+    model: "BaseModel" = component()
+    #: The members' random seeds, in member order.
+    seeds: list[int]
 
 
 class SeedEnsemble(BaseEnsemble):
@@ -70,6 +89,9 @@ class SeedEnsemble(BaseEnsemble):
         >>> list(out.data_vars), out.sizes["timestamp"]
         (['fwd_ret_1'], 21)
     """
+
+    #: The config dataclass the ensemble is serialised and rebuilt with.
+    config_cls = SeedEnsembleConfig
 
     def __init__(self, model, seeds):
         """Initialize the ensemble; see the class docstring for parameters."""
@@ -184,13 +206,9 @@ class SeedEnsemble(BaseEnsemble):
         """
         return self.members[0].training_fingerprint_inputs()
 
-    def get_config(self) -> dict:
-        """Return the wrapped model's config and the seeds as a JSON-ready dict.
-
-        Returns
-        -------
-        dict
-            ``{"name": ..., "seeds": [...], "model": model.get_config()}``.
+    @property
+    def config(self) -> SeedEnsembleConfig:
+        """The wrapped model and the seeds; ``get_config()`` serialises it.
 
         Examples
         --------
@@ -198,24 +216,22 @@ class SeedEnsemble(BaseEnsemble):
         >>> config["name"], config["seeds"], config["model"]["name"]
         ('quantlab.model.predefined.seed_ensemble.SeedEnsemble', [0, 1], 'tests.backtest_fixtures.SeededHead')
         """
-        return {
-            "name": self.import_path,
-            "seeds": list(self.seeds),
-            "model": self.model.get_config(),
-        }
+        return SeedEnsembleConfig(model=self.model, seeds=list(self.seeds))
 
     @classmethod
-    def from_config(cls, config: dict) -> Self:
+    def from_config(cls, config: dict, run_dir=None) -> Self:
         """Rebuild a seed ensemble from the dict ``get_config()`` returned.
 
-        The wrapped model is rebuilt by ``from_config`` of the class its
-        config names, and the seeds are applied to it.
+        The wrapped model is rebuilt by the component rule, and the seeds are
+        applied to it.
 
         Parameters
         ----------
         config : dict
             The dict ``get_config()`` returned, for example read back from a
             backtest run's ``config.json``.
+        run_dir : str or os.PathLike, optional
+            The run directory the config was read from.
 
         Returns
         -------
@@ -228,6 +244,5 @@ class SeedEnsemble(BaseEnsemble):
         >>> rebuilt.seeds, type(rebuilt.members[0]).__name__
         ((0, 1, 2), 'SeededHead')
         """
-        model_config = config["model"]
-        model = get_cls_from_path(model_config["name"]).from_config(model_config)
-        return cls(model, config["seeds"])
+        fields = cls._rebuilt_fields(config, run_dir)
+        return cls(fields["model"], fields["seeds"])

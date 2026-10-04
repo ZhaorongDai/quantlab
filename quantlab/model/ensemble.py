@@ -62,7 +62,7 @@ does not vary seeds) and nothing specific to one kind of ensemble; each
 member's class is in its own ``config.json``.
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
@@ -71,6 +71,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from quantlab.base.component import Component
 from quantlab.base.model import BaseModel
 from quantlab.utils.ensemble import average_predictions, member_correlation
 from quantlab.utils.metrics import (
@@ -101,17 +102,14 @@ def _covering(bounds) -> tuple:
     )
 
 
-def _class_path(obj) -> str:
-    """Return the dotted import path of ``obj``'s class."""
-    return f"{type(obj).__module__}.{type(obj).__qualname__}"
-
-
-class BaseEnsemble(ABC):
+class BaseEnsemble(Component, ABC):
     """Base class of an ensemble that combines the predictions of several models.
 
-    Subclass it, build the members and implement ``get_config`` and
-    ``from_config``; override ``_combine`` to replace the per-label rule
-    (see the module docstring for every hook).
+    Subclass it, build the members, declare ``config_cls`` (a dataclass
+    whose member fields are declared with ``component()``) with a ``config``
+    property building it, and override ``from_config`` to construct the
+    ensemble from the rebuilt fields; override ``_combine`` to replace the
+    per-label rule (see the module docstring for every hook).
 
     Parameters
     ----------
@@ -167,17 +165,6 @@ class BaseEnsemble(ABC):
         'SeedEnsemble'
         """
         return type(self).__name__
-
-    @property
-    def import_path(self) -> str:
-        """The ensemble's class as a dotted import path, the ``name`` of its config.
-
-        Examples
-        --------
-        >>> ensemble.import_path
-        'quantlab.model.predefined.seed_ensemble.SeedEnsemble'
-        """
-        return _class_path(self)
 
     def _check_members_agree(self, members: list) -> None:
         """Refuse members that predict a label of one name with different configs.
@@ -858,10 +845,10 @@ class BaseEnsemble(ABC):
             )
         for k, (saved, member) in enumerate(zip(run.members, self.members)):
             name = saved.config.get("name")
-            if name != _class_path(member):
+            if name != member.import_path:
                 raise ValueError(
                     f"{self.class_name}: {path} member {k} is a {name}, but this "
-                    f"ensemble's member {k} is a {_class_path(member)}"
+                    f"ensemble's member {k} is a {member.import_path}"
                 )
             if saved.seed != self._member_seed(k):
                 raise ValueError(
@@ -941,16 +928,3 @@ class BaseEnsemble(ABC):
         for member, saved in zip(self.members, run.members):
             member.load(saved.checkpoint)
         return self
-
-    # ------------------------------------------------------------------
-    # Config
-    # ------------------------------------------------------------------
-
-    @abstractmethod
-    def get_config(self) -> dict:
-        """Return a JSON-ready dict naming the ensemble class in ``"name"``."""
-
-    @classmethod
-    @abstractmethod
-    def from_config(cls, config: dict) -> Self:
-        """Rebuild the ensemble from the dict ``get_config()`` returned."""

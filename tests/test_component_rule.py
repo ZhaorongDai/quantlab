@@ -261,3 +261,185 @@ def test_an_empty_component_field_stays_empty():
 
     assert saved["leaf"] is None
     assert _Tree.from_config(saved) == _Tree(_TreeConfig())
+
+
+# -- every other component: predictors, portfolio rules, trackers, backtesters (#131) -----
+
+
+from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
+from quantlab.backtest.predefined.weights import WeightsVectorBt
+from quantlab.base.config import (
+    CrossSectionBacktestConfig,
+    LedoitWolfConfig,
+    MeanVarianceConfig,
+    TopNConfig,
+    WeightsBacktestConfig,
+)
+from quantlab.base.portfolio import _Configured
+from quantlab.base.tracking import NullTracker
+from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
+from quantlab.model.predefined.model_ensemble import ModelEnsemble
+from quantlab.model.predefined.seed_ensemble import SeedEnsemble
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
+from quantlab.portfolio.predefined.top_n import TopNConstructor
+from quantlab.tracking.mlflow import MlflowTracker
+from quantlab.tracking.wandb import WandbTracker
+from tests.backtest_fixtures import SeededHead, make_model
+from tests.torch_heads import OneBarHead
+
+_DATES = dict(
+    start_date="2024-01-01",
+    end_date="2024-03-22",
+    train_start="2024-01-01",
+    train_end="2024-02-15",
+    test_start="2024-02-16",
+    test_end="2024-03-22",
+)
+
+
+def _model(stock, tmp, **kwargs):
+    return make_model(tmp / "m", stock.config, **_DATES, **kwargs)
+
+
+def _sp500(tmp):
+    return KINDS["constituent dataset"](None, tmp)
+
+
+def _mean_variance():
+    return MeanVarianceOptimizer(
+        MeanVarianceConfig(
+            expected_return_label="fwd_ret_1",
+            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+            risk_aversion=1.0,
+            ic=0.05,
+        )
+    )
+
+
+def _cross_section(stock, tmp):
+    return USEquityCrossectionSelectStockVectorBt(
+        CrossSectionBacktestConfig(
+            price_dataset=stock,
+            model=_model(stock, tmp),
+            model_mode="load",
+            checkpoint=str(tmp / "never_read.joblib"),
+            start_date="2024-02-16",
+            end_date="2024-03-22",
+            output_dir=str(tmp / "runs"),
+            rebalance_periods=2,
+            constructor=_mean_variance(),
+            benchmark_dataset=_one_symbol(stock, "AAA", tmp / "bench.zarr"),
+            tracker=NullTracker(project="p"),
+        )
+    )
+
+
+OTHER_KINDS = {
+    "model": lambda stock, tmp: _model(stock, tmp, hyperparameters={"name": "kept"}),
+    "seed ensemble": lambda stock, tmp: SeedEnsemble(_model(stock, tmp, head=SeededHead), [0, 1]),
+    "model ensemble": lambda stock, tmp: ModelEnsemble(
+        [_model(stock, tmp / "a"), _model(stock, tmp / "b", n=2)]
+    ),
+    "membership mask": lambda stock, tmp: MembershipMaskedPredictor(
+        _model(stock, tmp), _sp500(tmp)
+    ),
+    "top-n rule": lambda stock, tmp: TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
+    "risk model": lambda stock, tmp: LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+    "mean-variance rule": lambda stock, tmp: _mean_variance(),
+    "null tracker": lambda stock, tmp: NullTracker(project="p"),
+    "wandb tracker": lambda stock, tmp: WandbTracker(project="p"),
+    "mlflow tracker": lambda stock, tmp: MlflowTracker(project="p"),
+    "torch head": lambda stock, tmp: _model(stock, tmp, head=OneBarHead),
+    "cross-section backtester": _cross_section,
+    "weights backtester": lambda stock, tmp: WeightsVectorBt(
+        WeightsBacktestConfig(
+            price_dataset=stock,
+            start_date="2024-01-01",
+            end_date="2024-03-22",
+            output_dir=None,
+            rebalance_periods=1,
+            fill_price_column="adjOpen",
+            valuation_price_column="adjClose",
+            trading_days_per_year=252,
+            session_minutes_per_day=390,
+        )
+    ),
+}
+
+
+@pytest.mark.parametrize("kind", OTHER_KINDS)
+def test_every_other_component_round_trips(kind, stock, tmp_path):
+    original = OTHER_KINDS[kind](stock, tmp_path)
+    saved = _json(original.get_config())
+
+    by_class = type(original).from_config(saved)
+    by_name = rebuild(saved)
+
+    assert type(by_class) is type(original) and type(by_name) is type(original)
+    assert _json(by_class.get_config()) == saved
+    assert _json(by_name.get_config()) == saved
+
+
+def test_a_model_whose_factor_reads_a_recorded_frame_dataset_rebuilds_against_run_dir(
+    stock, tmp_path
+):
+    run_dir = tmp_path / "run"
+    saved = _json(_model(stock, tmp_path).get_config())
+    held = FrameDataset(xr.open_zarr(stock.config.zarr_file_path).load())
+    saved["factors"][0]["dataset"] = held.persist_with_run(run_dir, "factor_dataset")
+
+    rebuilt = rebuild(saved, run_dir=run_dir)
+
+    assert type(rebuilt.config.factors[0].config.dataset) is FrameDataset
+    with pytest.raises(ValueError, match="run_dir"):
+        rebuild(saved)
+
+
+@dataclasses.dataclass(frozen=True)
+class _ParametrisedConfig:
+    options: dict
+    risk_model: LedoitWolfRiskModel | None = component(default=None)
+
+
+class _Parametrised(_Configured):
+    config_cls = _ParametrisedConfig
+
+
+def test_a_portfolio_parameter_dict_holding_name_stays_data():
+    options = {"name": "quantlab.portfolio.predefined.top_n.TopNConstructor", "top_n": 3}
+    rule = _Parametrised(
+        _ParametrisedConfig(
+            options=options, risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20))
+        )
+    )
+
+    rebuilt = rebuild(_json(rule.get_config()))
+
+    assert rebuilt == rule
+    assert rebuilt.config.options == options
+
+
+def test_an_unknown_key_in_a_backtest_or_model_config_is_refused(stock, tmp_path):
+    saved = _json(_cross_section(stock, tmp_path).get_config())
+
+    with pytest.raises(ValueError, match="unknown key.*'colour'"):
+        rebuild({**saved, "colour": "red"})
+    with pytest.raises(ValueError, match="unknown key.*'colour'"):
+        rebuild({**saved, "model": {**saved["model"], "colour": "red"}})
+
+
+def test_no_rebuild_outside_the_component_rule_dispatches_on_a_name_key():
+    """Only the component rule turns a dict's ``"name"`` into a class to rebuild."""
+    root = Path(__file__).resolve().parents[1] / "quantlab"
+    offenders = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if path.name != "component.py"
+        and (
+            '["name"]).from_config' in (text := path.read_text())
+            or "_OBJECT_FIELDS" in text
+            or 'and "name" in value' in text
+        )
+    )
+    assert offenders == []

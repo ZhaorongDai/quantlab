@@ -38,10 +38,10 @@ import xarray as xr
 import zarr
 from loguru import logger
 
+import quantlab.base.component as component_rule
 import quantlab.utils.module as module_utils
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
-from quantlab.base.model import BaseModel
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
@@ -328,10 +328,7 @@ def test_rebuild_refuses_a_config_missing_a_field(tmp_path, monkeypatch, field_n
     del saved[field_name]
     built: list[dict] = []
     monkeypatch.setattr(
-        module_utils, "load_dataset_from_config", lambda cfg: built.append(cfg)
-    )
-    monkeypatch.setattr(
-        BaseModel, "from_config", classmethod(lambda cls, cfg: built.append(cfg))
+        component_rule, "rebuild", lambda cfg, run_dir=None: built.append(cfg)
     )
 
     with pytest.raises(ValueError, match=field_name):
@@ -398,22 +395,15 @@ def test_non_backtester_class_is_refused_before_building_anything(
     )
     tampered = dict(saved, name="quantlab.dataset.stock.StockDataset")
 
-    dataset_calls: list[dict] = []
-    model_calls: list[dict] = []
+    built: list[dict] = []
     monkeypatch.setattr(
-        module_utils, "load_dataset_from_config", lambda cfg: dataset_calls.append(cfg)
-    )
-    monkeypatch.setattr(
-        BaseModel,
-        "from_config",
-        classmethod(lambda cls, cfg: model_calls.append(cfg)),
+        component_rule, "rebuild", lambda cfg, run_dir=None: built.append(cfg)
     )
 
     with pytest.raises(TypeError, match=r"quantlab\.dataset\.stock\.StockDataset"):
         module_utils.load_backtester_from_config(tampered)
 
-    assert dataset_calls == []
-    assert model_calls == []
+    assert built == []
 
 
 def _imported_modules(path: Path) -> set[str]:

@@ -39,10 +39,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from quantlab.base.component import rebuild
 from quantlab.base.data import InsufficientHistoryError, MarketDataset
 from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext, PredictionPanel
 from quantlab.utils.execution import ExecutionBook, ExecutionSettings
-from quantlab.utils.module import get_cls_from_path, load_dataset_from_config
+from quantlab.utils.module import load_dataset_from_config
 
 _DIMS = ("timestamp", "symbol")
 
@@ -327,7 +328,7 @@ class DecisionInputs:
                 f"{run_dir} has no {PredictionPanel.FILE_NAME}; only a run with a "
                 f"model (run() or run_cv()) writes one"
             )
-        constructor = get_cls_from_path(recorded["name"]).from_config(recorded)
+        constructor = rebuild(recorded)
         constructor.bind(PredictionPanel.read_labels(path))
         with xr.open_zarr(path) as panel:
             anchor = panel.timestamp.values[0]

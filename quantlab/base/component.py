@@ -347,6 +347,26 @@ class Component:
         >>> Forward.from_config(label.get_config()) == label
         True
         """
+        return cls(config_cls_of(cls)(**cls._rebuilt_fields(config, run_dir)))
+
+    @classmethod
+    def _rebuilt_fields(
+        cls, config: Mapping[str, Any], run_dir: str | os.PathLike | None = None
+    ) -> dict[str, Any]:
+        """Return the config class's fields from a saved config, components rebuilt.
+
+        The step ``from_config`` constructs the config class from. A
+        component whose constructor takes its parts rather than a config
+        object (an ensemble, a tracker) overrides ``from_config`` and passes
+        these fields to its own constructor.
+
+        Raises
+        ------
+        TypeError
+            If the class declares no config class.
+        ValueError
+            If ``config`` holds a key the config class does not have.
+        """
         config_cls = config_cls_of(cls)
         known = {spec.name for spec in dataclasses.fields(config_cls)}
         unknown = sorted(set(config) - known - {"name"})
@@ -357,12 +377,10 @@ class Component:
                 f"{config_cls.__name__} does not have; refusing to rebuild it."
             )
         run_dir = None if run_dir is None else Path(run_dir)
-        params = {
-            key: copy.deepcopy(value)
-            for key, value in config.items()
-            if key in known
+        fields = {
+            key: copy.deepcopy(value) for key, value in config.items() if key in known
         }
         for name, many in component_fields(config_cls).items():
-            if name in params:
-                params[name] = _rebuild_components(params[name], many, run_dir)
-        return cls(config_cls(**params))
+            if name in fields:
+                fields[name] = _rebuild_components(fields[name], many, run_dir)
+        return fields

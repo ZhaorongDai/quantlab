@@ -24,7 +24,6 @@ the training target of ``quantlab.model.training_target``. Both take one
 ``RESERVED_HYPERPARAMETERS``. Shipped heads live in ``quantlab/model/predefined``.
 """
 
-import copy
 import dataclasses
 import os
 import random
@@ -43,6 +42,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
+from quantlab.base.component import Component
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
@@ -94,7 +94,7 @@ RESERVED_HYPERPARAMETERS: frozenset[str] = (
 )
 
 
-class BaseModel(ABC):
+class BaseModel(Component, ABC):
     """Framework-agnostic base class of every model head.
 
     A head is configured with a list of factor objects (its features) and
@@ -409,17 +409,6 @@ class BaseModel(ABC):
         )
 
     @property
-    def import_path(self) -> str:
-        """Dotted ``module.QualName`` path of the head's class.
-
-        Examples
-        --------
-        >>> model.import_path
-        __main__.MyHead
-        """
-        return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
-
-    @property
     def num_factors(self) -> int:
         """Number of feature variables across all configured factors.
 
@@ -663,24 +652,6 @@ class BaseModel(ABC):
             )
         )
 
-    def get_config(self) -> dict:
-        """Return the config as a JSON-ready dict with nested factor and label configs.
-
-        The ``factors`` and ``labels`` entries are replaced by each object's own
-        ``get_config()`` so the dict can be written to ``config.json`` and
-        used to rebuild the model later.
-
-        Examples
-        --------
-        >>> cfg = model.get_config()
-        >>> sorted(cfg)[:3]
-        ['end_date', 'factor_data_strategy', 'factors']
-        """
-        cfg = self.config.to_dict()
-        cfg["factors"] = [factor.get_config() for factor in self.config.factors]  # type: ignore
-        cfg["labels"] = [label.get_config() for label in self.config.labels]  # type: ignore
-        return cfg  # type: ignore
-
     def _get_config_with_extra_kv(self, extra_kv: dict) -> dict:
         """Return ``get_config()`` updated with ``extra_kv``."""
         cfg = self.get_config()
@@ -688,25 +659,34 @@ class BaseModel(ABC):
         return cfg
 
     @classmethod
-    def from_config(cls, config: dict) -> Self:
-        """Rebuild a model, with its factors and labels, from a ``get_config()`` dict.
+    def from_config(cls, config: dict, run_dir: "str | os.PathLike | None" = None) -> Self:
+        """Rebuild a model, with its factors, labels and tracker, from a ``get_config()`` dict.
 
-        The factors and labels are rebuilt from their own config dicts and
-        the model is constructed with ``cls.config_cls``. The key a library
-        model's ``config.json`` carries as a training record rather than a
-        config field, ``resolved_hyperparameters``, is dropped first; any
-        other unknown key raises ``TypeError`` from the config class. The caller's dict is never modified.
+        The component rule (``quantlab.base.component``) rebuilds the
+        declared factor, label and tracker fields, passing ``run_dir`` down to
+        every dataset, and constructs the model with ``cls.config_cls``. The
+        key a library model's ``config.json`` carries as a training record
+        rather than a config field, ``resolved_hyperparameters``, is dropped
+        first; any other unknown key is refused. The caller's dict is never
+        modified.
 
         Parameters
         ----------
         config : dict
             The dict ``get_config()`` returned, or the ``config.json`` written
             beside a checkpoint.
+        run_dir : str or os.PathLike, optional
+            The run directory the config was read from.
 
         Returns
         -------
         Self
             An untrained model; call ``load`` to restore a checkpoint.
+
+        Raises
+        ------
+        ValueError
+            If ``config`` holds a key ``config_cls`` does not have.
 
         Examples
         --------
@@ -714,20 +694,10 @@ class BaseModel(ABC):
         >>> rebuilt.get_config() == model.get_config()
         True
         """
-        # Imported here: the loaders import model classes by dotted path.
-        from quantlab.utils.module import get_cls_from_path, load_factor_from_config
-
-        config = copy.deepcopy(config)
         # `resolved_hyperparameters` (what the library actually trained with)
-        # is a record, not a config field. Drop only it so any other unknown
-        # key still fails.
-        config.pop("resolved_hyperparameters", None)
-        config["factors"] = [load_factor_from_config(f) for f in config["factors"]]
-        config["labels"] = [load_factor_from_config(f) for f in config["labels"]]
-        config["tracker"] = get_cls_from_path(config["tracker"]["name"]).from_config(
-            config["tracker"]
-        )
-        return cls(cls.config_cls(**config))
+        # is a record, not a config field.
+        config = {k: v for k, v in config.items() if k != "resolved_hyperparameters"}
+        return super().from_config(config, run_dir)
 
     @property
     def labels(self) -> list:

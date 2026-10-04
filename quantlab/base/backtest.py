@@ -25,6 +25,7 @@ data a run read, stored so that a later rebuild of the run can tell whether
 the data has changed.
 """
 
+import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -38,6 +39,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
+from quantlab.base.component import Component, config_cls_of
 from quantlab.base.data import MarketDataset
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
 from quantlab.base.tracking import TrackingRun
@@ -131,7 +133,7 @@ class Predictor(Protocol):
     load(path), check_checkpoint(path)
         Load-mode preparation; ``check_checkpoint`` validates a checkpoint
         without loading it and runs first.
-    get_config(), from_config(config)
+    get_config(), from_config(config, run_dir=None)
         A JSON-ready dict naming the class in ``"name"``, and the class
         method that rebuilds the predictor from it.
 
@@ -180,7 +182,7 @@ class Predictor(Protocol):
     def get_config(self) -> dict: ...
 
     @classmethod
-    def from_config(cls, config: dict) -> Self: ...
+    def from_config(cls, config: dict, run_dir=None) -> Self: ...
 
 
 def label_specs(predictor: Predictor) -> tuple[LabelSpec, ...]:
@@ -430,7 +432,7 @@ class CVBacktestResult:
     metrics: dict = field(default_factory=dict)
     benchmark: SimulationResult | None = None
 
-class BaseBacktester(ABC):
+class BaseBacktester(Component, ABC):
     """Abstract base of every backtester: the public entry points and shared steps.
 
     The engine varies by inheritance and the market and selection logic by
@@ -731,32 +733,23 @@ class BaseBacktester(ABC):
         """
         return self.__class__.__name__
 
-    @property
-    def import_path(self) -> str:
-        """The dotted import path recorded as ``config.name``.
-
-        Examples
-        --------
-        >>> backtester.import_path
-        mypkg.backtest.MyBacktester
-        """
-        return f"{self.__class__.__module__}.{self.__class__.__qualname__}"
+    #: Keys a backtester's ``get_config()`` adds as records of a run rather
+    #: than config fields; ``from_config`` takes them out before rebuilding.
+    RECORD_KEYS = ("market", "data_fingerprint", "trained_checkpoint")
 
     def get_config(self) -> dict:
-        """Return the scalar config fields plus the nested dataset and model configs.
+        """Return the config by the component rule, plus the run's records.
 
-        The whole config is never passed through ``asdict``: the live objects
-        are replaced by their own ``get_config()`` output. After a run the
-        mapping also carries ``data_fingerprint``, one fingerprint per dataset
-        the run read, and after a train-mode run ``trained_checkpoint``, so a
-        saved ``config.json`` can rebuild and replay the same run. Every
-        mapping carries ``market``, the ``fill_price_column`` and
+        The fields are written by ``quantlab.base.component``: each dataset,
+        the model, the construction rule and the tracker as its own
+        ``get_config()``. Three records follow, none of them config fields.
+        Every mapping carries ``market``, the ``fill_price_column`` and
         ``valuation_price_column`` of ``MARKET``, so a tool reading a run
         directory (an executor such as quantlab-trader) learns the price
-        columns without importing the backtester class. ``market``,
-        ``data_fingerprint`` and ``trained_checkpoint`` are records, not
-        config fields: ``load_backtester_from_config`` drops ``market`` and
-        the rebuilt class supplies its own ``MARKET``. A run
+        columns without importing the backtester class. After a run it
+        carries ``data_fingerprint``, one fingerprint per dataset the run
+        read, and after a train-mode run ``trained_checkpoint``.
+        ``from_config`` takes the records out again (``RECORD_KEYS``). A run
         directory's ``config.json`` differs in one respect: a price or
         benchmark ``FrameDataset`` is recorded reading the copy of its panel
         under ``inputs/``, named relative to the run directory.
@@ -780,32 +773,74 @@ class BaseBacktester(ABC):
         >>> type(backtester)(no_model).get_config()["model"] is None
         True
         """
-        cfg = self.config.to_dict()
-        cfg["price_dataset"] = self.config.price_dataset.get_config()
-        model = self.config.model
-        cfg["model"] = None if model is None else model.get_config()
-        cfg["benchmark_dataset"] = (
-            None
-            if self.config.benchmark_dataset is None
-            else self.config.benchmark_dataset.get_config()
-        )
-        cfg["tracker"] = self.config.tracker.get_config()
-        constructor = getattr(self.config, "constructor", None)
-        if constructor is not None:
-            cfg["constructor"] = constructor.get_config()
-        # A record of the class's MARKET, so a reader of a run directory
-        # learns the price columns without importing the backtester class.
+        cfg = super().get_config()
         cfg["market"] = {
             "fill_price_column": self.MARKET.fill_price_column,  # type: ignore[union-attr]
             "valuation_price_column": self.MARKET.valuation_price_column,  # type: ignore[union-attr]
         }
         if self._fingerprints:
             cfg["data_fingerprint"] = dict(self._fingerprints)
-        # After a train-mode run, record the checkpoint it produced so load
-        # mode can replay exactly this model.
         if self._trained_checkpoint is not None:
             cfg["trained_checkpoint"] = self._trained_checkpoint
         return cfg
+
+    @classmethod
+    def from_config(cls, config: dict, run_dir=None) -> Self:
+        """Rebuild a backtester from the ``config.json`` a backtest run wrote.
+
+        The records (``RECORD_KEYS``) are taken out first: ``market`` is
+        dropped, since the rebuilt class supplies its own ``MARKET``;
+        ``data_fingerprint`` becomes the rebuilt backtester's
+        ``expected_fingerprint``, so a re-run warns when its data differs;
+        ``trained_checkpoint`` is dropped (to replay that exact model, set
+        ``model_mode="load"`` and ``checkpoint`` to it). Every config field
+        must be present: a missing one is refused rather than filled from
+        today's dataclass default, which may differ from the value the run
+        used. The fields are then rebuilt by the component rule, with
+        ``run_dir`` passed to every dataset at any depth.
+
+        Parameters
+        ----------
+        config : dict
+            The dict read from a run directory's ``config.json``.
+        run_dir : str or os.PathLike, optional
+            The run directory ``config`` was read from. Required when the
+            config names ``inputs/`` stores, which are resolved against it.
+
+        Returns
+        -------
+        BaseBacktester
+            A backtester ready to run.
+
+        Raises
+        ------
+        ValueError
+            If a config field is missing, a key is unknown, or the config
+            names ``inputs/`` stores and ``run_dir`` is not given.
+
+        Examples
+        --------
+        >>> rebuilt = type(backtester).from_config(backtester.get_config())
+        >>> rebuilt.get_config() == backtester.get_config()
+        True
+        """
+        expected = config.get("data_fingerprint")
+        config = {k: v for k, v in config.items() if k not in cls.RECORD_KEYS}
+        missing = [
+            spec.name
+            for spec in dataclasses.fields(config_cls_of(cls))
+            if spec.name != "name" and spec.name not in config
+        ]
+        if missing:
+            raise ValueError(
+                f"{config.get('name', cls.__qualname__)} config is missing "
+                f"field(s) {missing}; refusing to fill them from the current "
+                f"dataclass defaults, which may differ from the values the "
+                f"stored backtest ran with"
+            )
+        backtester = super().from_config(config, run_dir)
+        backtester.expected_fingerprint = expected
+        return backtester
 
     @staticmethod
     def _iso_date(value) -> str:

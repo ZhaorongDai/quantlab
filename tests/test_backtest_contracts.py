@@ -158,6 +158,7 @@ def test_run_lives_only_on_base_backtester():
         "run_cv",
         "run_weights",
         "get_config",
+        "from_config",
         "report_figure",
     }, public_callables
 

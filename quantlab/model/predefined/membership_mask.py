@@ -14,17 +14,34 @@ of the model it wraps, and the backtester's ``predictions.zarr`` holds the
 masked panel.
 """
 
+import dataclasses
 from typing import TYPE_CHECKING, Self
 
 import pandas as pd
 import xarray as xr
 
-from quantlab.utils.module import get_cls_from_path, load_dataset_from_config
+from quantlab.base.component import Component, component
 
 if TYPE_CHECKING:  # type hints only
     from pathlib import Path
 
     from quantlab.base.constituent import IndexConstituentDataset
+
+
+@dataclasses.dataclass(frozen=True)
+class MembershipMaskConfig:
+    """What a ``MembershipMaskedPredictor`` is rebuilt from.
+
+    Examples
+    --------
+    >>> sorted(MembershipMaskConfig(predictor=model, membership=membership).__dataclass_fields__)
+    ['membership', 'predictor']
+    """
+
+    #: The wrapped predictor.
+    predictor: object = component()
+    #: The index-membership dataset the predictions are masked with.
+    membership: "IndexConstituentDataset" = component()
 
 
 class _MembershipPanel:
@@ -37,7 +54,7 @@ class _MembershipPanel:
         return self.membership.panel(first, last)
 
 
-class MembershipMaskedPredictor:
+class MembershipMaskedPredictor(Component):
     """A ``Predictor`` whose predictions are NaN where the symbol is not an index member.
 
     ``predict_window`` asks the wrapped predictor for its predictions and
@@ -86,6 +103,9 @@ class MembershipMaskedPredictor:
         ... )
         >>> result = backtester.run()  # predictions.zarr is masked too
     """
+
+    #: The config dataclass the wrapper is serialised and rebuilt with.
+    config_cls = MembershipMaskConfig
 
     def __init__(
         self, predictor, membership: "IndexConstituentDataset"
@@ -309,23 +329,22 @@ class MembershipMaskedPredictor:
         """
         self.predictor.check_checkpoint(path)
 
-    def get_config(self) -> dict:
-        """The class path, the wrapped predictor's config and the membership's config.
+    @property
+    def config(self) -> MembershipMaskConfig:
+        """The wrapped predictor and the membership dataset; ``get_config()`` serialises it.
 
         Examples
         --------
         >>> sorted(masked.get_config())
         ['membership', 'name', 'predictor']
         """
-        return {
-            "name": f"{type(self).__module__}.{type(self).__qualname__}",
-            "predictor": self.predictor.get_config(),
-            "membership": self.membership.get_config(),
-        }
+        return MembershipMaskConfig(predictor=self.predictor, membership=self.membership)
 
     @classmethod
-    def from_config(cls, config: dict) -> Self:
+    def from_config(cls, config: dict, run_dir=None) -> Self:
         """Rebuild the wrapper, its predictor and its membership dataset from ``get_config()``.
+
+        Both are rebuilt by the component rule, with ``run_dir`` passed down.
 
         Examples
         --------
@@ -333,8 +352,5 @@ class MembershipMaskedPredictor:
         >>> type(rebuilt.membership) is type(masked.membership)
         True
         """
-        predictor = config["predictor"]
-        return cls(
-            get_cls_from_path(predictor["name"]).from_config(predictor),
-            load_dataset_from_config(config["membership"]),
-        )
+        fields = cls._rebuilt_fields(config, run_dir)
+        return cls(fields["predictor"], fields["membership"])

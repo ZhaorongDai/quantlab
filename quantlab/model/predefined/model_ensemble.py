@@ -12,10 +12,25 @@ backtested, loaded and rebuilt from a run's ``config.json`` like a single
 model.
 """
 
+import dataclasses
 from typing import Self
 
+from quantlab.base.component import component
 from quantlab.model.ensemble import BaseEnsemble
-from quantlab.utils.module import get_cls_from_path
+
+
+@dataclasses.dataclass(frozen=True)
+class ModelEnsembleConfig:
+    """What a ``ModelEnsemble`` is rebuilt from: its member models.
+
+    Examples
+    --------
+    >>> len(ModelEnsemble([xgb, gats]).config.members)
+    2
+    """
+
+    #: The member models, in order.
+    members: list = component(many=True)
 
 
 class ModelEnsemble(BaseEnsemble):
@@ -58,13 +73,12 @@ class ModelEnsemble(BaseEnsemble):
         ['fwd_ret_1']
     """
 
-    def get_config(self) -> dict:
-        """Return every member's config as a JSON-ready dict.
+    #: The config dataclass the ensemble is serialised and rebuilt with.
+    config_cls = ModelEnsembleConfig
 
-        Returns
-        -------
-        dict
-            ``{"name": ..., "members": [member.get_config(), ...]}``.
+    @property
+    def config(self) -> ModelEnsembleConfig:
+        """The member models; ``get_config()`` serialises it.
 
         Examples
         --------
@@ -72,22 +86,21 @@ class ModelEnsemble(BaseEnsemble):
         >>> config["name"], [m["name"] for m in config["members"]]
         ('quantlab.model.predefined.model_ensemble.ModelEnsemble', ['quantlab.model.predefined.xgb.XGBoostRegressor', 'quantlab.model.predefined.gats.GATsRegressor'])
         """
-        return {
-            "name": self.import_path,
-            "members": [member.get_config() for member in self.members],
-        }
+        return ModelEnsembleConfig(members=list(self.members))
 
     @classmethod
-    def from_config(cls, config: dict) -> Self:
+    def from_config(cls, config: dict, run_dir=None) -> Self:
         """Rebuild a model ensemble from the dict ``get_config()`` returned.
 
-        Each member is rebuilt by ``from_config`` of the class its config names.
+        Each member is rebuilt by the component rule.
 
         Parameters
         ----------
         config : dict
             The dict ``get_config()`` returned, for example read back from a
             backtest run's ``config.json``.
+        run_dir : str or os.PathLike, optional
+            The run directory the config was read from.
 
         Returns
         -------
@@ -100,9 +113,4 @@ class ModelEnsemble(BaseEnsemble):
         >>> [type(m).__name__ for m in rebuilt.members]
         ['XGBoostRegressor', 'GATsRegressor']
         """
-        return cls(
-            [
-                get_cls_from_path(member["name"]).from_config(member)
-                for member in config["members"]
-            ]
-        )
+        return cls(cls._rebuilt_fields(config, run_dir)["members"])

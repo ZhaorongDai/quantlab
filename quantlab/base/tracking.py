@@ -17,8 +17,8 @@ Adapters live in ``quantlab/tracking``, one module per tracking library; this
 module imports none.
 """
 
-import dataclasses
 import math
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -29,6 +29,7 @@ from typing import Any, Self
 import numpy as np
 from loguru import logger
 
+from quantlab.base.component import Component
 from quantlab.utils.jsonable import to_jsonable
 
 __all__ = ["NullRun", "NullTracker", "Tracker", "TrackingRun", "flatten_metrics"]
@@ -239,7 +240,7 @@ class TrackingRun(ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class Tracker(ABC):
+class Tracker(Component, ABC):
     """Where tracking runs are sent; the root of every tracker.
 
     A tracker is a frozen dataclass of its settings, so it compares by value
@@ -266,6 +267,22 @@ class Tracker(ABC):
     """
 
     project: str | None = None
+
+    def __init_subclass__(cls, **kwargs):
+        """Make every tracker class its own config class (a tracker is its settings)."""
+        super().__init_subclass__(**kwargs)
+        cls.config_cls = cls
+
+    @property
+    def config(self) -> Self:
+        """The tracker itself: its fields are its config.
+
+        Examples
+        --------
+        >>> NullTracker(project="p").config
+        NullTracker(project='p')
+        """
+        return self
 
     @contextmanager
     def start_run(
@@ -323,45 +340,34 @@ class Tracker(ABC):
     ) -> TrackingRun:
         """Open a run in the resolved project with a JSON-safe config."""
 
-    @property
-    def import_path(self) -> str:
-        """The class as a dotted import path, the ``name`` of its config.
-
-        Examples
-        --------
-        >>> NullTracker().import_path
-        'quantlab.base.tracking.NullTracker'
-        """
-        return f"{type(self).__module__}.{type(self).__qualname__}"
-
-    def get_config(self) -> dict[str, Any]:
-        """Return the tracker's fields plus its import path under ``"name"``.
-
-        Examples
-        --------
-        >>> NullTracker(project="p").get_config()
-        {'project': 'p', 'name': 'quantlab.base.tracking.NullTracker'}
-        """
-        fields = {f.name: getattr(self, f.name) for f in dataclasses.fields(self)}
-        return {**fields, "name": self.import_path}
-
     @classmethod
-    def from_config(cls, config: Mapping[str, Any]) -> Self:
+    def from_config(
+        cls, config: Mapping[str, Any], run_dir: "str | os.PathLike | None" = None
+    ) -> Self:
         """Rebuild the tracker from the dict ``get_config()`` returned.
+
+        A tracker is constructed from its fields, not from a config object;
+        an unknown key is refused (see ``quantlab.base.component``).
 
         Parameters
         ----------
         config : Mapping[str, Any]
             The dict ``get_config()`` returned, for example read back from a
-            run's ``config.json``; ``"name"`` is ignored here (the caller
-            picks the class from it).
+            run's ``config.json``.
+        run_dir : str or os.PathLike, optional
+            Unused: a tracker holds no dataset.
+
+        Raises
+        ------
+        ValueError
+            If ``config`` holds a key the tracker does not have.
 
         Examples
         --------
         >>> NullTracker.from_config({"project": "p", "name": "quantlab.base.tracking.NullTracker"})
         NullTracker(project='p')
         """
-        return cls(**{key: value for key, value in config.items() if key != "name"})
+        return cls(**cls._rebuilt_fields(config, run_dir))
 
 
 class NullRun(TrackingRun):

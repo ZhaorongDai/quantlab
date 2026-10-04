@@ -25,7 +25,7 @@ Fields are documented with ``#:`` comments so the meaning of each one sits
 beside its definition.
 """
 
-from dataclasses import asdict, dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields
 from types import UnionType
 from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
 
@@ -834,7 +834,7 @@ class MeanVarianceConfig(_FrozenConfig):
     #: the horizon of the expected return and the covariance.
     expected_return_label: str
     #: The risk model estimating the covariance of one-bar returns.
-    risk_model: "RiskModel"
+    risk_model: "RiskModel" = component()
     #: Risk aversion ``lambda`` of the variance penalty.
     risk_aversion: float
     #: How the prediction becomes the expected return ``mu``.
@@ -926,9 +926,9 @@ class ModelConfig(_FrozenConfig):
     """
 
     #: The factors whose values form the model's input features.
-    factors: list["Factor"]
+    factors: list["Factor"] = component(many=True)
     #: The factors (labels) whose values form the prediction targets.
-    labels: list["Factor"]
+    labels: list["Factor"] = component(many=True)
     #: Root directory checkpoints and their ``config.json`` are written under.
     model_save_dir: str
     #: ``"read"`` loads factor values from their stores; ``"cal"`` computes
@@ -961,25 +961,10 @@ class ModelConfig(_FrozenConfig):
     test_end: str | None = None
     #: Where training runs are tracked (ADR 0015); the default
     #: ``NullTracker`` sends nothing anywhere.
-    tracker: Tracker = NullTracker()
+    tracker: Tracker = component(default=NullTracker())
 
     #: Dotted import path of the model class; filled by the config setter.
     name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict, the tracker as its ``get_config()``.
-
-        Examples
-        --------
-        >>> cfg.to_dict()["hyperparameters"]
-        {'max_depth': 6, 'early_stopping': True}
-        >>> cfg.to_dict()["tracker"]
-        {'project': None, 'name': 'quantlab.base.tracking.NullTracker'}
-        """
-        return {
-            **asdict(replace(self, tracker=NullTracker())),
-            "tracker": self.tracker.get_config(),
-        }
 
 
 @dataclass(kw_only=True)
@@ -1023,7 +1008,7 @@ class BacktestConfig:
     """
 
     #: The dataset whose prices the simulation trades on.
-    price_dataset: "MarketDataset"
+    price_dataset: "MarketDataset" = component()
     #: First date of the backtest window, inclusive.
     start_date: str
     #: Last date of the backtest window, inclusive.
@@ -1046,7 +1031,7 @@ class BacktestConfig:
     #: ``run_cv()`` require it; ``run_weights()`` backtests precomputed
     #: weights and ignores it, so it may be ``None`` there. ``model`` and
     #: ``model_mode`` are both set or both ``None``.
-    model: "BaseModel | None" = None
+    model: "BaseModel | None" = component(default=None)
     #: ``"train"`` trains ``model`` on its own dates first; ``"load"`` restores
     #: a checkpoint (``checkpoint`` for ``run()``, ``cv_project_dir`` for
     #: ``run_cv()``). Required by ``run()`` and ``run_cv()``, like ``model``.
@@ -1083,18 +1068,14 @@ class BacktestConfig:
     #: and holding it on the strategy's bars and reports the portfolio
     #: against it (``benchmark`` and ``relative`` metric blocks, the
     #: benchmark NAV and the excess-return and excess-drawdown charts).
-    benchmark_dataset: "MarketDataset | None" = None
+    benchmark_dataset: "MarketDataset | None" = component(default=None)
 
     #: Where each run's metrics and report are tracked (ADR 0015); the
     #: default ``NullTracker`` sends nothing anywhere.
-    tracker: Tracker = NullTracker()
+    tracker: Tracker = component(default=NullTracker())
 
     #: Dotted import path of the backtester class; filled by the config setter.
     name: str | None = None
-
-    #: Fields holding live objects. ``to_dict`` skips them; the backtester's
-    #: ``get_config`` nests each one's own config instead.
-    _OBJECT_FIELDS = ("price_dataset", "model", "benchmark_dataset", "tracker")
 
     @property
     def execution(self) -> ExecutionSettings:
@@ -1108,23 +1089,21 @@ class BacktestConfig:
         return ExecutionSettings(self.sizing_basis, self.fees, self.slippage)
 
     def to_dict(self):
-        """Return only the scalar fields as a dict.
+        """Return the config as a plain dict, each component as its own config.
 
-        ``dataclasses.asdict`` is avoided on purpose: it would deep-copy the
-        panels already read into memory and the trained model on every call.
+        The dataset, model, rule and tracker fields are declared with
+        ``quantlab.base.component.component`` and written as their
+        ``get_config()``; nothing is deep-copied through ``dataclasses.asdict``,
+        so no panel or trained model is copied.
 
         Examples
         --------
-        >>> "model" in cfg.to_dict()
-        False
+        >>> cfg.to_dict()["model"]["name"] == model.import_path
+        True
         >>> cfg.to_dict()["rebalance_periods"]
         5
         """
-        return {
-            f.name: getattr(self, f.name)
-            for f in fields(self)
-            if f.name not in self._OBJECT_FIELDS
-        }
+        return config_to_dict(self)
 
 
 @dataclass(kw_only=True)
@@ -1154,17 +1133,7 @@ class CrossSectionBacktestConfig(BacktestConfig):
     #: The portfolio construction rule (a ``PortfolioConstructor``, such as
     #: ``quantlab.portfolio.predefined.top_n.TopNConstructor``) that turns
     #: each rebalance bar's predictions into target weights.
-    constructor: "PortfolioConstructor"
-
-    #: Fields holding live objects. ``to_dict`` skips them; the backtester's
-    #: ``get_config`` nests each one's own config instead.
-    _OBJECT_FIELDS = (
-        "price_dataset",
-        "model",
-        "benchmark_dataset",
-        "tracker",
-        "constructor",
-    )
+    constructor: "PortfolioConstructor" = component()
 
 
 @dataclass(kw_only=True)
