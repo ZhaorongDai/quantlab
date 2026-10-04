@@ -164,48 +164,6 @@ class SeedEnsemble(BaseEnsemble):
         data = self.members[0].data_backend.get_xarray_dataset(["timestamp", "symbol"])
         return [member.predict_panel(data) for member in self.members]
 
-    def fingerprint_inputs(self, start, end) -> list[tuple]:
-        """Return the data ``predict_window(start, end)`` reads, for fingerprinting.
-
-        The first member's entries, unchanged: every member reads the same
-        features, which are requested once, so the keys are those of a
-        single model.
-
-        Parameters
-        ----------
-        start, end : str
-            The window passed to ``predict_window``.
-
-        Returns
-        -------
-        list[tuple]
-            ``(key, factor, strategy, first, last)`` entries in factor order.
-
-        Examples
-        --------
-        >>> [key for key, *_ in ensemble.fingerprint_inputs("2024-02-12", "2024-03-11")]
-        ['factor[0]:PastReturnFactor']
-        """
-        return self.members[0].fingerprint_inputs(start, end)
-
-    def training_fingerprint_inputs(self) -> list[tuple]:
-        """Return the data ``collect()`` reads, for fingerprinting.
-
-        The first member's entries, unchanged: it is the only member that
-        collects.
-
-        Returns
-        -------
-        list[tuple]
-            ``(key, item, strategy, first, last)`` entries, factors first.
-
-        Examples
-        --------
-        >>> [key for key, *_ in ensemble.training_fingerprint_inputs()]
-        ['train_factor[0]:PastReturnFactor', 'train_label[0]:ForwardReturnLabel']
-        """
-        return self.members[0].training_fingerprint_inputs()
-
     @property
     def config(self) -> SeedEnsembleConfig:
         """The wrapped model and the seeds; ``get_config()`` serialises it.

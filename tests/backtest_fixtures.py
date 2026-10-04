@@ -306,12 +306,6 @@ class DelegatingPredictor:
     def predict_window(self, start, end):
         return self.inner.predict_window(start, end)
 
-    def fingerprint_inputs(self, start, end):
-        return self.inner.fingerprint_inputs(start, end)
-
-    def training_fingerprint_inputs(self):
-        return self.inner.training_fingerprint_inputs()
-
     def collect(self):
         self.inner.collect()
         return self

@@ -362,7 +362,7 @@ class DecisionInputs:
             return False
         if not len(self._calendar) or t > self._calendar[-1]:
             last = self.dataset.bar_after(t, np.iinfo(np.int64).max)
-            self._calendar = pd.DatetimeIndex(self.dataset.panel(self.anchor, last).timestamp.values)
+            self._calendar = self.dataset.calendar(self.anchor, last)
         position = int(self._calendar.get_indexer([t])[0])
         return position >= 0 and position % self.rebalance_periods == 0
 
@@ -609,7 +609,7 @@ class DecisionInputs:
         if pd.Timestamp(timestamps[0]) == self.anchor:
             mask = rebalance_mask(len(timestamps), self.rebalance_periods)
         else:
-            calendar = pd.Index(self.dataset.panel(self.anchor, timestamps[-1]).timestamp.values)
+            calendar = self.dataset.calendar(self.anchor, timestamps[-1])
             offsets = calendar.get_indexer(timestamps)
             mask = (offsets >= 0) & (offsets % self.rebalance_periods == 0)
             mask[-1] = False
@@ -638,7 +638,7 @@ class DecisionInputs:
                 )
             start = self.dataset.bar_before(first, exc.available)
         return (
-            self.dataset.panel(start, last)[[self.fill_column, self.valuation_column]]
+            self.dataset.panel(start, last, variables=[self.fill_column, self.valuation_column])
             .reindex(symbol=symbols)
             .transpose(*_DIMS)
             .load()

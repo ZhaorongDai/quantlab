@@ -7,7 +7,7 @@ What is locked here, and what turns it red:
 - An object that implements the protocol by delegation, without inheriting
   `BaseModel`, is accepted by `run()` in load and train mode and produces the
   same predictions, weights, equity curve and data fingerprints as the model
-  it wraps.
+  it wraps (the same data, recorded under the wrapper's component paths).
 - An object missing a protocol member is refused at construction with a
   `TypeError` naming the protocol and the missing member.
 - A run's rebuild (`BacktestRun.rebuild_backtester`) rebuilds the model
@@ -90,11 +90,20 @@ def _saved_fingerprints(result) -> dict:
     return BacktestRun.open(result.run_dir).data_fingerprint
 
 
+def _digests(result) -> list:
+    """The recorded requests and digests, whatever component path keys them."""
+    return sorted(
+        (str(entry["request"]), entry["digest"])
+        for entries in _saved_fingerprints(result).values()
+        for entry in entries
+    )
+
+
 def _assert_same_result(a, b) -> None:
     xr.testing.assert_identical(a.predictions, b.predictions)
     xr.testing.assert_identical(a.weights, b.weights)
     np.testing.assert_array_equal(a.simulation.value.values, b.simulation.value.values)
-    assert _saved_fingerprints(a) == _saved_fingerprints(b)
+    assert _digests(a) == _digests(b)
 
 
 def test_base_model_satisfies_the_protocol_structurally():
@@ -107,8 +116,6 @@ def test_base_model_satisfies_the_protocol_structurally():
         "label_delays",
         "label_scales",
         "predict_window",
-        "fingerprint_inputs",
-        "training_fingerprint_inputs",
         "collect",
         "train",
         "load",
@@ -158,7 +165,9 @@ def test_a_delegating_predictor_matches_the_model_in_train_mode(tmp_path):
 
     _assert_same_result(plain, wrapped)
     assert Path(wrapped.metrics["trained_checkpoint"]).is_file()
-    assert any(key.startswith("train_factor") for key in _saved_fingerprints(wrapped))
+    # Training reads are the trained unit's: only labels are read for
+    # training alone, and no label read is in the backtest's record.
+    assert not any(".labels." in key for key in _saved_fingerprints(wrapped))
 
 
 def _without(member: str) -> type:

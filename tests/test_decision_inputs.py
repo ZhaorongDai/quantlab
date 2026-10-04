@@ -205,13 +205,13 @@ def test_rebalances_is_the_schedule_weights_follows():
 def test_rebalances_reads_the_calendar_once_over_a_replay(monkeypatch):
     dataset = _dataset()
     reads = []
-    original = type(dataset).panel
+    original = type(dataset).calendar
 
-    def counting(self, start, end, symbols=None):
+    def counting(self, start, end):
         reads.append((start, end))
-        return original(self, start, end, symbols)
+        return original(self, start, end)
 
-    monkeypatch.setattr(type(dataset), "panel", counting)
+    monkeypatch.setattr(type(dataset), "calendar", counting)
     inputs = _inputs(_rule("top_n"), dataset)
 
     asked = [inputs.rebalances(t) for t in TS[WARMUP:]]

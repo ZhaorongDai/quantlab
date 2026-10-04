@@ -403,13 +403,16 @@ def test_fingerprint_is_stable_and_nan_canonical(tmp_path):
 
 
 def test_the_run_records_fingerprints_of_the_price_and_factor_datasets(overlap_run):
+    """The run records what it read, by component path, one entry per request."""
     result = overlap_run["result"]
     from quantlab.utils.fingerprint import dataset_fingerprint
 
     fingerprints = BacktestRun.open(result.run_dir).data_fingerprint
-    assert set(fingerprints) == {"price_dataset", "factor[0]:PastReturnFactor"}
+    # Load mode: no training data, and the label dataset is read for training only.
+    assert set(fingerprints) == {"price_dataset", "model.factors.0.dataset"}
 
     entry_keys = {
+        "request",
         "algorithm",
         "digest",
         "variables",
@@ -418,27 +421,56 @@ def test_the_run_records_fingerprints_of_the_price_and_factor_datasets(overlap_r
         "n_timestamps",
         "n_symbols",
     }
-    for entry in fingerprints.values():
-        assert set(entry) == entry_keys
-        assert entry["algorithm"] == "sha256"
-        assert entry["n_symbols"] == len(SYMBOLS)
+    for entries in fingerprints.values():
+        for entry in entries:
+            assert set(entry) == entry_keys
+            assert entry["algorithm"] == "sha256"
+            assert entry["n_symbols"] == len(SYMBOLS)
 
-    price = fingerprints["price_dataset"]
-    columns = [MARKET.fill_price_column, MARKET.valuation_price_column]
-    assert price["variables"] == sorted(columns)
+    columns = sorted([MARKET.fill_price_column, MARKET.valuation_price_column])
+    window = [
+        entry for entry in fingerprints["price_dataset"]
+        if entry["request"]["start"] == _day(BARS[OVERLAP_START_BAR])
+    ]
+    (price,) = window
+    # Only the fill and valuation columns are read for the window.
+    assert price["request"]["variables"] == columns == price["variables"]
     assert price["n_timestamps"] == OVERLAP_END_BAR - OVERLAP_START_BAR + 1
-    # The digest is over exactly the window's fill and valuation columns.
     store = xr.open_zarr(overlap_run["dataset_config"].zarr_file_path).sel(
         timestamp=slice(_day(BARS[OVERLAP_START_BAR]), _day(BARS[OVERLAP_END_BAR]))
     )
     assert price["digest"] == dataset_fingerprint(store, columns)["digest"]
+    # The delisting check reads the valuation column after the window.
+    assert any(
+        entry["variables"] == [MARKET.valuation_price_column]
+        and pd.Timestamp(entry["start"]) > pd.Timestamp(price["end"])
+        for entry in fingerprints["price_dataset"]
+    )
 
-    factor = fingerprints["factor[0]:PastReturnFactor"]
+    (factor,) = fingerprints["model.factors.0.dataset"]
     # A Polars factor consumes the whole lazyframe: every data variable counts.
     assert factor["variables"] == sorted(ADJUSTED_COLUMNS + RAW_COLUMNS)
     # The factor range includes the warm-up bars before the window start (D-27).
     assert pd.Timestamp(factor["start"]) < pd.Timestamp(price["start"])
     assert pd.Timestamp(factor["end"]) == pd.Timestamp(price["end"])
+
+
+def test_one_dataset_read_by_two_consumers_is_recorded_once(tmp_path):
+    """The price dataset is also the factor's dataset: one key, the first path."""
+    dataset_config, checkpoint = _trained_store(tmp_path)
+    backtester = _backtester(
+        tmp_path, dataset_config, checkpoint, tag="shared", window_start_bar=30,
+        window_end_bar=50,
+    )
+    shared = backtester.config.model.config.factors[0].config.dataset
+    backtester.config.price_dataset = shared  # one object, two consumers
+
+    backtester.run()
+
+    assert set(backtester.data_fingerprint) == {"price_dataset"}
+    variables = [e["request"]["variables"] for e in backtester.data_fingerprint["price_dataset"]]
+    assert None in variables  # the factor's whole-frame read
+    assert sorted([MARKET.fill_price_column, MARKET.valuation_price_column]) in variables
 
 
 def test_the_run_records_the_market_price_columns(overlap_run):
@@ -507,10 +539,11 @@ def test_changed_store_logs_a_fingerprint_warning_and_completes(tmp_path, warnin
 
     assert result is not None and result.run_dir.exists()
     price_warnings = [
-        m for m in _fingerprint_warnings(warnings_sink) if "price_dataset" in m
+        m for m in _fingerprint_warnings(warnings_sink) if "'price_dataset'" in m
     ]
-    assert len(price_warnings) == 1, warnings_sink
-    assert "digest" in price_warnings[0]
+    # The window read and the rule's price-history read both cover bar 35.
+    assert price_warnings, warnings_sink
+    assert all("digest differs" in m for m in price_warnings)
 
 
 # --------------------------------------------------------------------------
@@ -574,15 +607,12 @@ def _shift_value(zarr_path, variable: str, timestamp, symbol: str, shift: float)
 def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
     tmp_path, warnings_sink
 ):
-    """Code review WR-05: under `factor_data_strategy="read"` the factor STORE is fingerprinted.
+    """Under `factor_data_strategy="read"` the factor STORE is fingerprinted.
 
     Read-strategy features come from the saved factor store, not from the raw
-    dataset. The old code hashed only the raw dataset behind each factor, so a
-    recomputed or edited factor store changed the predictions and weights
-    while the stored fingerprint still matched, with no warning. D-27 exists to
-    catch exactly that. The run must record `factor_store[0]:PastReturnFactor`
-    and warn on it, and only on it, after one stored factor value changes. Red
-    on the old code: no such key.
+    dataset, so a recomputed or edited factor store changes the predictions
+    and weights. The store read is recorded under the factor's own component
+    path, `model.factors.0`, and only it warns after one stored value changes.
     """
     from quantlab.base.config import PolarsFactorConfig
     from tests.backtest_fixtures import PastReturnFactor
@@ -602,9 +632,7 @@ def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
         tmp_path, dataset_config, checkpoint, factor_store, tag="a"
     ).run()
     expected = BacktestRun.open(first.run_dir).data_fingerprint
-    assert [k for k in expected if k.startswith("factor_store[")] == [
-        "factor_store[0]:PastReturnFactor"
-    ], sorted(expected)
+    assert set(expected) == {"price_dataset", "model.factors.0"}, sorted(expected)
 
     _shift_value(factor_store, "past_ret_1", BARS[35], SYMBOLS[0], shift=0.01)
     rebuild = _read_strategy_backtester(
@@ -616,22 +644,17 @@ def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
 
     assert result.run_dir.exists()
     changed = _fingerprint_warnings(warnings_sink)
-    store_warnings = [m for m in changed if "factor_store[0]:PastReturnFactor" in m]
-    assert len(store_warnings) == 1, warnings_sink
-    assert "digest" in store_warnings[0]
-    assert not any("'price_dataset'" in m or "'factor[0]" in m for m in changed), changed
+    assert len(changed) == 1, warnings_sink
+    assert "'model.factors.0'" in changed[0] and "digest differs" in changed[0]
 
 
-def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warnings_sink):
-    """Code review WR-05: train mode fingerprints each factor and label dataset it trains on.
+def test_train_mode_records_no_training_data(tmp_path, warnings_sink):
+    """A backtest records only what its window reads; training is the trained unit's.
 
-    The model trains on bars 0..29, and the backtest window 30..50 warms up
-    from bar 25. A retroactive re-base at bar 10 lies inside training only.
-    The old fingerprint covered just the price window and the factors'
-    warm-up plus window, so the rebuild silently retrained a different model.
-    The run must record `train_factor[0]:PastReturnFactor` and
-    `train_label[0]:ForwardReturnLabel`, and the rebuild must warn on both
-    and on neither backtest-window key. Red on the old code: no such keys.
+    The model trains on bars 0..29 and the backtest window 30..50 warms up
+    from bar 25. A re-base at bar 10 lies inside training only, so the
+    backtest's own record does not change and the rebuild is silent about it
+    (the trained unit's own record is what notices it).
     """
     dataset_config = write_price_store(tmp_path / "store", n_bars=N_BARS)
 
@@ -653,10 +676,9 @@ def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warning
 
     first = _train_mode("a").run()
     expected = BacktestRun.open(first.run_dir).data_fingerprint
-    assert {
-        "train_factor[0]:PastReturnFactor",
-        "train_label[0]:ForwardReturnLabel",
-    } <= set(expected), sorted(expected)
+    assert set(expected) == {"price_dataset", "model.factors.0.dataset"}, sorted(expected)
+    (factor,) = expected["model.factors.0.dataset"]
+    assert pd.Timestamp(factor["start"]) >= pd.Timestamp(BARS[25])
 
     _shift_value(
         dataset_config.zarr_file_path,
@@ -670,10 +692,7 @@ def test_train_mode_fingerprints_the_data_the_model_trained_on(tmp_path, warning
     warnings_sink.clear()
     rebuild.run()
 
-    changed = _fingerprint_warnings(warnings_sink)
-    assert any("train_factor[0]:PastReturnFactor" in m for m in changed), warnings_sink
-    assert any("train_label[0]:ForwardReturnLabel" in m for m in changed), warnings_sink
-    assert not any("'price_dataset'" in m or "'factor[0]" in m for m in changed), changed
+    assert _fingerprint_warnings(warnings_sink) == []
 
 
 # --------------------------------------------------------------------------

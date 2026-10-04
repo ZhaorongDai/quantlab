@@ -1,4 +1,4 @@
-"""A run records the data it reads at the dataset seam (spec #135, ticket #136).
+"""A run records the data it reads at the dataset seam.
 
 A ``DataRecorder`` is a context a run opens. Every read through
 ``BaseDataset.panel`` and ``Factor.read`` while it is open is logged as a
@@ -349,3 +349,36 @@ def test_a_merge_input_holding_none_of_the_variables_is_not_read():
     assert list(recorder.records) == ["right"]
     with pytest.raises(KeyError, match="no input holds"):
         merged.panel("2024-01-02", "2024-01-05", variables=["ask"])
+
+
+def test_a_kunquant_factor_reads_only_its_data_columns(spot_kline_zarr):
+    from tests.test_factor_merge import MaDeviation
+    from quantlab.base.config import FactorConfig
+    from quantlab.dataset.spot import SpotKlineDataset
+
+    spot = SpotKlineDataset(spot_kline_zarr())
+    factor = MaDeviation(FactorConfig(
+        dataset=spot, mode="batch", data_columns=("close",), warmup_bars=5, njobs=1,
+    ))
+
+    with DataRecorder(keys=[(spot, "dataset")]) as recorder:
+        factor.compute("2024-01-10", "2024-01-20")
+
+    (entry,) = recorder.records["dataset"]
+    assert entry["request"]["variables"] == ["Close"]  # the store's own name
+
+
+def test_unrecorded_reads_reach_no_recorder_and_are_not_hashed(prices, hashes):
+    from quantlab.utils.fingerprint import unrecorded
+
+    with DataRecorder(keys=[(prices, "p")]) as outer:
+        with unrecorded():
+            assert active_recorder() is None
+            prices.panel("2024-01-02", "2024-01-31")
+            with DataRecorder(keys=[(prices, "inner")]) as inner:
+                prices.panel("2024-01-02", "2024-01-05")
+        assert active_recorder() is outer
+
+    assert outer.records == {}
+    assert list(inner.records) == ["inner"]
+    assert len(hashes) == 1

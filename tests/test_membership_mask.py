@@ -183,7 +183,9 @@ def test_the_masked_run_is_rebuilt_from_its_run_directory(scenario):
     first = scenario["masked_backtester"]("masked").run()
     run = BacktestRun.open(first.run_dir)
 
-    assert "membership" in run.data_fingerprint
+    # Recorded under its component path, its one variable only.
+    (entry,) = run.data_fingerprint["model.membership"]
+    assert entry["variables"] == ["is_member"]
 
     rebuilt = run.rebuild_backtester()
 

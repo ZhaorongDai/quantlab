@@ -29,8 +29,6 @@ of different classes over different factors. Optional hooks:
 - ``collect``, ``_member_predictions``, ``_member_panel_predictions``: how
   members collect their data and features, each member on its own by
   default; an ensemble whose members read the same data shares it.
-- ``fingerprint_inputs``, ``training_fingerprint_inputs``: which data it
-  reports reading.
 - ``_member_seed``: the seed recorded for each member in ``run.json``.
 
 Shipped ensembles are in ``quantlab/model/predefined`` (``SeedEnsemble``,
@@ -471,56 +469,6 @@ class BaseEnsemble(Component, ABC):
         """
         combined = self._combine(self._member_predictions(start, end))
         return combined.sel(timestamp=slice(start, end))
-
-    def fingerprint_inputs(self, start, end) -> list[tuple]:
-        """Return the data ``predict_window(start, end)`` reads, for fingerprinting.
-
-        The union of the members' entries, each key prefixed with
-        ``member[{k}]:`` so that entries of different members never collide.
-
-        Parameters
-        ----------
-        start, end : str
-            The window passed to ``predict_window``.
-
-        Returns
-        -------
-        list[tuple]
-            ``(key, factor, strategy, first, last)`` entries, member by member.
-
-        Examples
-        --------
-        >>> [key for key, *_ in BaseEnsemble.fingerprint_inputs(
-        ...     ensemble, "2024-02-12", "2024-03-11")][:2]
-        ['member[0]:factor[0]:PastReturnFactor', 'member[1]:factor[0]:PastReturnFactor']
-        """
-        return [
-            (f"member[{k}]:{key}", *rest)
-            for k, member in enumerate(self.members)
-            for key, *rest in member.fingerprint_inputs(start, end)
-        ]
-
-    def training_fingerprint_inputs(self) -> list[tuple]:
-        """Return the data ``collect()`` reads, for fingerprinting.
-
-        The union of the members' entries, each key prefixed with
-        ``member[{k}]:``.
-
-        Returns
-        -------
-        list[tuple]
-            ``(key, item, strategy, first, last)`` entries, member by member.
-
-        Examples
-        --------
-        >>> [key for key, *_ in BaseEnsemble.training_fingerprint_inputs(ensemble)][:2]
-        ['member[0]:train_factor[0]:PastReturnFactor', 'member[0]:train_label[0]:ForwardReturnLabel']
-        """
-        return [
-            (f"member[{k}]:{key}", *rest)
-            for k, member in enumerate(self.members)
-            for key, *rest in member.training_fingerprint_inputs()
-        ]
 
     # ------------------------------------------------------------------
     # Training and the ensemble directory

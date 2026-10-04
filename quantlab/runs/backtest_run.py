@@ -16,7 +16,9 @@ written last. Its kinds are ``"run"``, ``"run_cv"``, ``"run_weights"`` and
   the
   config fields that hold components (``components``, so a field is rebuilt
   by its declaration without importing the backtester class), the data
-  fingerprint of every dataset the run read, ``trained_run`` (the trained unit
+  fingerprint (what the run's ``DataRecorder`` recorded: every dataset or
+  factor store it read, by component path; a ``run_cv`` run's is its stitched
+  pass, each fold child run holds its fold's), ``trained_run`` (the trained unit
   the backtest used: the one trained in train mode, the checkpoint's in load
   mode, the walk-forward unit for ``run_cv``; none for ``run_weights``) and
   the folds.
@@ -123,6 +125,8 @@ class FoldArtifacts:
         The fold's metrics.
     trained_run : Path or str
         The fold's trained unit.
+    data_fingerprint : Mapping
+        What the fold read, as its ``DataRecorder`` recorded it.
     """
 
     index: int
@@ -131,6 +135,7 @@ class FoldArtifacts:
     settlements: list
     metrics: dict
     trained_run: Path | str
+    data_fingerprint: Mapping = field(default_factory=dict)
 
 
 def write_backtest_run(
@@ -167,7 +172,8 @@ def write_backtest_run(
     annualization : Annualization
         The backtester class's annualization.
     data_fingerprint : Mapping
-        One fingerprint per dataset the run read.
+        What the run read, as its ``DataRecorder`` recorded it: entries by
+        component path (the stitched pass of a ``run_cv`` run).
     benchmark_source : str or None
         Where the benchmark was read from, as the report names it; None
         without a benchmark.
@@ -232,6 +238,7 @@ def write_backtest_run(
                     "index": fold.index,
                     "window": _window(fold.equity),
                     "trained_run": _unit(fold.trained_run),
+                    "data_fingerprint": dict(fold.data_fingerprint),
                 },
             )
             children.append(
@@ -320,7 +327,8 @@ class BacktestRun:
     annualization : Annualization
         How its statistics were annualized.
     data_fingerprint : dict
-        One fingerprint per dataset the run read; a fold has none of its own.
+        What the run read, by component path, as its ``DataRecorder``
+        recorded it: a ``run_cv`` run's stitched pass, a fold's own reads.
     folds : tuple of BacktestRun
         A ``run_cv`` run's folds, in fold order; empty otherwise.
     index : int or None
@@ -530,8 +538,9 @@ class BacktestRun:
 
         The recipe is rebuilt by the component rule, datasets recorded under
         the run directory read from it, and the run's data fingerprint is
-        set as the backtester's ``expected_fingerprint``, so a re-run warns
-        when its data differs.
+        set as the backtester's ``expected_fingerprint`` (and each fold's as
+        ``expected_fold_fingerprints``), so a re-run warns when its data
+        differs, naming the fold.
 
         Parameters
         ----------
@@ -568,7 +577,10 @@ class BacktestRun:
                 f"known: {sorted(set(config) - {'name'})}"
             )
         backtester = rebuild_component({**config, **overrides}, self._recipe_dir)
-        backtester.expected_fingerprint = self.data_fingerprint or None
+        backtester.expected_fingerprint = self.data_fingerprint
+        backtester.expected_fold_fingerprints = {
+            fold.index: fold.data_fingerprint for fold in self.folds
+        }
         return backtester
 
     # ------------------------------------------------------------ readers

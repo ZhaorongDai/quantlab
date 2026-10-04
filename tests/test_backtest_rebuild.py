@@ -74,11 +74,11 @@ CV_TRAIN_PERIODS = 30
 CV_FIRST_TEST_BAR = 30
 CV_LAST_TEST_BAR = 77
 
-#: `BaseBacktester._compare_fingerprints` starts every warning with this.
+#: `quantlab.utils.fingerprint.DataRecorder` starts every mismatch with this.
 FINGERPRINT_WARNING = "data fingerprint mismatch"
 
-#: The distinctive substring of `quantlab.base.backtest.FINGERPRINT_PARTIAL_NOTE`,
-#: the tail `_compare_fingerprints(partial=True)` appends instead of "continuing".
+#: The distinctive substring of `quantlab.utils.fingerprint.PARTIAL_NOTE`, the
+#: tail a failure-path comparison appends instead of "continuing".
 #: Spelled out here rather than imported on purpose: an ImportError at module
 #: level would break collection of this whole file, and these locks must be able
 #: to go red on code that does not define the constant yet. Any future rewording
@@ -572,36 +572,32 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
 ):
     """A run that dies inside `_backtest_window` still says the data changed (D-03.11-UAT-A).
 
-    Control arm: without any raise, the two fingerprint mismatches are reported
-    exactly as they are today — same count, same trailing text, no partial
-    marker. That arm proves the mismatch is detectable at all and that the happy
-    path gained no extra or reworded warning.
+    Control arm: without any raise, the factor dataset and the price dataset
+    are reported changed, every warning ending "continuing", none partial.
 
-    Probe arm: `predict_panel` raises after `_record_factor_fingerprints` has already
-    recorded the factor fingerprint and before the price fingerprint exists. The
-    factor mismatch must be reported, marked partial, and the original
-    `ValueError` must be what propagates.
+    Probe arm: `predict_panel` raises after the factor's dataset was read and
+    before any price is. The factor dataset's mismatch is reported, marked
+    partial, the run keeps what it had read as its `data_fingerprint`, and
+    the original `ValueError` propagates.
     """
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
 
     # A real data change at the same path `_trained` wrote: one symbol
-    # disappears, so the factor and the price fingerprint both differ
-    # (digest + n_symbols).
+    # disappears, so every read differs.
     write_price_store(tmp_path / "store", symbols=SYMBOLS[:-1], n_bars=N_BARS)
 
-    # --- control: no raise, the mismatch is reported exactly as today --------
+    # --- control: no raise -----------------------------------------------------
     warning_messages.clear()
     _rebuilt(first.run_dir).run()
 
     control = _fingerprint_warnings(warning_messages)
-    assert len(control) == 2, control
-    assert any("'factor[0]:PastReturnFactor'" in m for m in control), control
+    assert any("'model.factors.0.dataset'" in m for m in control), control
     assert any("'price_dataset'" in m for m in control), control
     assert all(m.endswith("; continuing") for m in control), control
     assert all(PARTIAL_WARNING not in m for m in control), control
 
-    # --- probe: a raise inside the window, after a fingerprint exists --------
+    # --- probe: a raise inside the window, after the factor data was read ------
     warning_messages.clear()
     rebuilt = _rebuilt(first.run_dir)
     monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
@@ -609,15 +605,15 @@ def test_a_raise_inside_the_window_still_reports_the_changed_data(
     with pytest.raises(ValueError, match="representative downstream failure"):
         rebuilt.run()
 
-    # The price fingerprint does not exist yet at raise time.
-    assert sorted(rebuilt._fingerprints) == ["factor[0]:PastReturnFactor"]
+    # No price had been read yet at raise time.
+    assert sorted(rebuilt.data_fingerprint) == ["model.factors.0.dataset"]
     probe = _fingerprint_warnings(warning_messages)
     assert len(probe) == 1, probe
-    assert "'factor[0]:PastReturnFactor'" in probe[0], probe
-    assert "n_symbols: expected 6, got 5" in probe[0], probe
+    assert "'model.factors.0.dataset'" in probe[0], probe
+    assert "x 6 symbols" in probe[0] and "x 5 symbols" in probe[0], probe
     assert PARTIAL_WARNING in probe[0], probe
     # `price_dataset` was not read YET, not "not read": warning about it would
-    # be a false alarm invented by the fix.
+    # be a false alarm.
     assert all("not read by this run" not in m for m in warning_messages), (
         warning_messages
     )
@@ -632,6 +628,8 @@ def test_a_failing_partial_diagnostic_never_replaces_the_real_exception(
     not hide it: the broken diagnostic is reported as its own warning, and the
     original `ValueError` propagates unchanged.
     """
+    from quantlab.utils.fingerprint import DataRecorder
+
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
     write_price_store(tmp_path / "store", symbols=SYMBOLS[:-1], n_bars=N_BARS)
@@ -643,7 +641,7 @@ def test_a_failing_partial_diagnostic_never_replaces_the_real_exception(
     def broken_diagnostic(*_args, **_kwargs):
         raise RuntimeError("the diagnostic itself is broken")
 
-    monkeypatch.setattr(rebuilt, "_compare_fingerprints", broken_diagnostic)
+    monkeypatch.setattr(DataRecorder, "_compare", broken_diagnostic)
 
     with pytest.raises(ValueError, match="representative downstream failure") as excinfo:
         rebuilt.run()
@@ -658,23 +656,26 @@ def test_a_failing_partial_diagnostic_never_replaces_the_real_exception(
     assert any("the diagnostic itself is broken" in m for m in reported), reported
 
 
+def _shift_close(dataset_config, bar: int, factor: float) -> None:
+    """Rewrite one adjusted close in place, the way a re-base rewrites history."""
+    group = zarr.open_group(dataset_config.zarr_file_path, mode="r+")
+    group["adjClose"][bar, 0] = float(group["adjClose"][bar, 0]) * factor
+
+
 def test_run_cv_reports_a_partial_comparison_when_a_fold_raises(
     tmp_path, warning_messages, monkeypatch
 ):
-    """`run_cv` carries the same failure-path diagnostic (D-03.11-UAT-A).
+    """`run_cv` carries the same failure-path diagnostic, per fold (D-03.11-UAT-A).
 
-    What this test does NOT claim: that the store changed. It did not. The
-    fold-0 window is narrower than the stitched window the expected fingerprint
-    describes, so the differing fields are `end` / `n_timestamps` / `digest` by
-    construction, not because any data moved. What is locked is that the
-    diagnostic RUNS on the failure path, that every warning it emits is marked
-    partial, and that the original exception propagates. That range caveat is
-    exactly why the partial marker exists.
+    A close inside fold 0's test segment changes; the rebuilt `run_cv` dies
+    in fold 0's prediction. Fold 0 compares with its own record: the factor
+    dataset it had read is reported, marked partial and naming the fold, and
+    the original exception propagates.
     """
     original = _cv_original(tmp_path)
     first = original.run_cv()
-    # The probe depends on the fold window being narrower than the stitched one.
     assert len(first.folds) > 1
+    _shift_close(original.config.price_dataset.config, CV_FIRST_TEST_BAR + 2, 1.25)
 
     rebuilt = _rebuilt(first.run_dir)
     monkeypatch.setattr(rebuilt.config.model, "predict_panel", _boom)
@@ -684,9 +685,34 @@ def test_run_cv_reports_a_partial_comparison_when_a_fold_raises(
         rebuilt.run_cv()
 
     partial = _fingerprint_warnings(warning_messages)
-    assert partial, warning_messages
-    assert all(PARTIAL_WARNING in m for m in partial), partial
-    assert any("'factor[0]:PastReturnFactor'" in m for m in partial), partial
+    assert len(partial) == 1, warning_messages
+    assert PARTIAL_WARNING in partial[0]
+    assert "fold 0:" in partial[0] and "'model.factors.0.dataset'" in partial[0]
     assert all("not read by this run" not in m for m in warning_messages), (
         warning_messages
     )
+
+
+def test_run_cv_rebuild_names_the_fold_whose_data_changed(tmp_path, warning_messages):
+    """Each fold child run holds its own record; a rebuild names the fold that changed.
+
+    Folds test 6 bars each from bar 30 and the factor warms up 5 bars, so a
+    close changed at bar 50 lies in fold 3's test segment and fold 4's
+    warm-up, and in the stitched pass, but in no other fold.
+    """
+    original = _cv_original(tmp_path)
+    first = original.run_cv()
+    run = BacktestRun.open(first.run_dir)
+    for fold in run.folds:
+        assert set(fold.data_fingerprint) == {"price_dataset", "model.factors.0.dataset"}
+    assert set(run.data_fingerprint) == {"price_dataset"}  # the stitched pass
+
+    _shift_close(original.config.price_dataset.config, 50, 1.25)
+    warning_messages.clear()
+    second = _rebuilt(first.run_dir).run_cv()
+
+    assert second.run_dir.is_dir()
+    changed = _fingerprint_warnings(warning_messages)
+    named = {i for i in range(len(first.folds)) if any(f"fold {i}:" in m for m in changed)}
+    assert named == {3, 4}, changed
+    assert any(m.startswith("USEquityCrossectionSelectStockVectorBt: data") for m in changed)

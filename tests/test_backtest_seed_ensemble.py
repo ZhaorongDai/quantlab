@@ -9,8 +9,8 @@ What is locked here, and what turns it red:
   ensemble with the training dates its members' records hold (a stale
   training window on the ensemble's own model is overridden by the recorded
   one).
-- The data fingerprints of an ensemble run carry the same keys as a single
-  model's: the members read identical inputs, which are hashed once.
+- An ensemble run records the same data as a single model's, under the
+  ensemble's component path: the members read identical inputs once.
 - `BacktestRun.rebuild_backtester` rebuilds a load-mode and a train-mode
   ensemble backtest, and the re-run gives the same predictions, weights and
   equity curve.
@@ -142,7 +142,7 @@ def test_load_mode_replays_the_trained_unit_with_its_recorded_dates(tmp_path):
     )
 
 
-def test_ensemble_fingerprints_have_the_keys_of_a_single_model(tmp_path):
+def test_ensemble_records_the_data_of_a_single_model(tmp_path):
     dataset_config, bars = _setup(tmp_path)
     ensemble = _ensemble(tmp_path / "ens", dataset_config, bars)
     ensemble_checkpoint = ensemble.collect().train()
@@ -159,9 +159,15 @@ def test_ensemble_fingerprints_have_the_keys_of_a_single_model(tmp_path):
         bars, name="single", checkpoint=checkpoint,
     ).run()
 
+    ensemble_record = BacktestRun.open(ens_result.run_dir).data_fingerprint
+    single_record = BacktestRun.open(single_result.run_dir).data_fingerprint
+    # Members share one read: one factor-data key, at the ensemble's model path.
+    assert set(ensemble_record) == {"price_dataset", "model.model.factors.0.dataset"}
+    assert set(single_record) == {"price_dataset", "model.factors.0.dataset"}
+    assert ensemble_record["price_dataset"] == single_record["price_dataset"]
     assert (
-        BacktestRun.open(ens_result.run_dir).data_fingerprint
-        == BacktestRun.open(single_result.run_dir).data_fingerprint
+        ensemble_record["model.model.factors.0.dataset"]
+        == single_record["model.factors.0.dataset"]
     )
 
 

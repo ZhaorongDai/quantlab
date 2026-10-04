@@ -22,7 +22,8 @@ when one is given. This module has no project-internal imports.
 
 import contextvars
 import hashlib
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -35,6 +36,7 @@ __all__ = [
     "active_recorder",
     "dataset_fingerprint",
     "record_read",
+    "unrecorded",
 ]
 
 #: Tail of every warning of a failure-path comparison, in place of the usual
@@ -137,6 +139,29 @@ def active_recorder() -> "DataRecorder | None":
     True
     """
     return _ACTIVE.get()
+
+
+@contextmanager
+def unrecorded() -> Iterator[None]:
+    """Keep the reads inside out of every open recorder, and hash nothing.
+
+    For reads that belong to another record than the run's around them:
+    a backtest's training step, whose reads are the trained unit's. A
+    recorder opened inside still records.
+
+    Examples
+    --------
+    >>> with DataRecorder() as recorder:
+    ...     with unrecorded():
+    ...         _ = prices.panel("2024-01-02", "2024-01-31")
+    >>> recorder.records
+    {}
+    """
+    token = _ACTIVE.set(None)
+    try:
+        yield
+    finally:
+        _ACTIVE.reset(token)
 
 
 def record_read(

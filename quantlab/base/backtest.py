@@ -22,7 +22,10 @@ both separately. A *fold* is one train/test split of a walk-forward
 cross-validation run (``train_cv``), and the *stitched* curve simulates the
 test segments of all folds back to back. A *fingerprint* is a hash of the
 data a run read, stored so that a later rebuild of the run can tell whether
-the data has changed.
+the data has changed. The backtester does not decide what is fingerprinted:
+it opens a ``quantlab.utils.fingerprint.DataRecorder`` around each run, each
+``run_cv`` fold and the stitched pass, and every dataset or factor store read
+inside it is recorded under its component path.
 """
 
 import dataclasses
@@ -39,7 +42,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.component import Component, config_cls_of
+from quantlab.base.component import Component, config_cls_of, walk_components
 from quantlab.base.data import MarketDataset
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
 from quantlab.base.tracking import TrackingRun
@@ -64,26 +67,11 @@ from quantlab.utils.backtest_report import (
     report_windows,
     write_backtest_report,
 )
-from quantlab.utils.fingerprint import dataset_fingerprint
-from quantlab.utils.jsonable import to_jsonable
+from quantlab.utils.fingerprint import DataRecorder, unrecorded
 from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
-from .config import BacktestConfig, FactorConfig, ForwardConfig
-
-#: Fields of a data fingerprint that are compared against the expected run;
-#: any difference logs a warning.
-FINGERPRINT_COMPARED_FIELDS = ("digest", "start", "end", "n_timestamps", "n_symbols")
-
-#: Tail of every fingerprint warning emitted after a failed run, in place of
-#: the usual "continuing". Log readers and tests find partial comparisons by
-#: the substring ``"comparison is PARTIAL"``, so keep it when rewording.
-FINGERPRINT_PARTIAL_NOTE = (
-    "this comparison is PARTIAL: the run failed before it finished reading, so "
-    "a differing digest/start/end/n_timestamps may reflect the interrupted read "
-    "(under run_cv, a single fold's window) rather than a data change; the "
-    "original error follows"
-)
+from .config import BacktestConfig
 
 class Predictor(Protocol):
     """What the backtester needs from a model: the whole contract between the two.
@@ -123,12 +111,6 @@ class Predictor(Protocol):
         The predictions for every bar from ``start`` to ``end``, one variable
         per label on ``(timestamp, symbol)``; the predictor requests its own
         features, warm-up included.
-    fingerprint_inputs(start, end), training_fingerprint_inputs()
-        The data ``predict_window`` and ``collect`` read, as
-        ``(key, factor or label, strategy, first, last)`` entries. The
-        backtester hashes ``factor.read(first, last)`` for strategy
-        ``"read"`` and the dataset inputs of ``factor.compute(first, last)``
-        otherwise, and records the result under ``key``.
     collect(), train()
         Train-mode preparation; ``train`` returns the checkpoint it wrote.
     load(path), check_checkpoint(path)
@@ -142,7 +124,7 @@ class Predictor(Protocol):
     --------
     >>> from typing import get_protocol_members
     >>> sorted(get_protocol_members(Predictor))[:4]
-    ['check_checkpoint', 'collect', 'fingerprint_inputs', 'from_config']
+    ['check_checkpoint', 'collect', 'fitted_train_bounds', 'from_config']
     >>> from quantlab.base.model import BaseModel
     >>> all(hasattr(BaseModel, name) for name in get_protocol_members(Predictor))
     True
@@ -167,10 +149,6 @@ class Predictor(Protocol):
     def label_scales(self) -> dict[str, str]: ...
 
     def predict_window(self, start, end) -> xr.Dataset: ...
-
-    def fingerprint_inputs(self, start, end) -> list[tuple]: ...
-
-    def training_fingerprint_inputs(self) -> list[tuple]: ...
 
     def collect(self): ...
 
@@ -470,10 +448,15 @@ class BaseBacktester(Component, ABC):
         label ``delay`` differs from it, since the label would then measure
         a return the engine never trades.
     expected_fingerprint : dict or None
-        Fingerprints of a previous run of the same config. When set, each
-        run compares the data it reads against them and warns on a
-        difference. It is filled in when a run is rebuilt from its saved
-        ``config.json``.
+        The data fingerprint of a previous run of the same config (the
+        stitched pass of a ``run_cv`` run). When set, each run compares the
+        data it reads against it, by digest, and warns on a difference. It
+        is filled in when a run is rebuilt with
+        ``BacktestRun.rebuild_backtester``.
+    expected_fold_fingerprints : dict or None
+        The data fingerprint of each fold of a previous ``run_cv`` run, by
+        fold index; each fold of ``run_cv`` compares with its own and the
+        warning names the fold. Filled in by ``rebuild_backtester`` too.
 
     Examples
     --------
@@ -498,6 +481,9 @@ class BaseBacktester(Component, ABC):
         # Created before the config is assigned, because the setter and the
         # validation hook may read them.
         self.expected_fingerprint: dict | None = None
+        self.expected_fold_fingerprints: dict[int, dict] | None = None
+        # The records of the last run's recorder (the stitched pass of
+        # run_cv); each fold's records travel with its fold record.
         self._fingerprints: dict = {}
         # Absolute path of the checkpoint a train-mode run() produced; None in
         # load mode and before any run.
@@ -514,17 +500,23 @@ class BaseBacktester(Component, ABC):
 
     @property
     def data_fingerprint(self) -> dict:
-        """The fingerprints of the data the last run read, one per dataset; empty before a run.
+        """The data fingerprint of the last run; empty before a run.
 
-        A run directory records the same mapping
-        (``quantlab.runs.backtest_run.BacktestRun.data_fingerprint``), also
-        for a run kept in memory here.
+        What the run's ``DataRecorder`` recorded: each dataset or factor
+        store the run read, keyed by its component path in the backtester
+        (``price_dataset``, ``model.factors.0.dataset``), with one entry per
+        distinct request. For ``run_cv`` it is the stitched pass; each fold's
+        is in its fold record. A run directory records the same mapping
+        (``quantlab.runs.backtest_run.BacktestRun.data_fingerprint``); it is
+        computed for a run kept in memory too.
 
         Examples
         --------
         >>> _ = backtester.run_weights(weights)  # output_dir=None
         >>> sorted(backtester.data_fingerprint)
         ['price_dataset']
+        >>> backtester.data_fingerprint["price_dataset"][0]["variables"]
+        ['adjClose', 'adjOpen']
         """
         return dict(self._fingerprints)
 
@@ -858,8 +850,10 @@ class BaseBacktester(Component, ABC):
         window, the concrete class turns the predictions into target weights, the engine simulates them, metrics
         are computed for the whole window and for the in-sample and
         out-of-sample parts, and everything is written to a new directory
-        under ``config.output_dir``. Data fingerprints are compared against
-        ``expected_fingerprint`` when one is set, also on the failure path.
+        under ``config.output_dir``. The data the window reads is recorded
+        (see ``data_fingerprint``) and compared with
+        ``expected_fingerprint`` when one is set, also on the failure path;
+        training reads are the trained unit's, not the backtest's.
 
         Returns
         -------
@@ -904,11 +898,8 @@ class BaseBacktester(Component, ABC):
 
         def _model_window(start_date: str, end_date: str) -> _BacktestWindow:
             """Prepare the model, then predict and backtest the window."""
-            # `_prepare_model` runs inside `_run_window`'s failure guard on
-            # purpose: in train mode it records the training-data
-            # fingerprints before `model.train()`, which can fail for the
-            # same data reasons. In load mode the model takes the training
-            # dates its checkpoint records.
+            # In load mode the model takes the training dates its checkpoint
+            # records.
             configured = self._prepare_model()
             calendar = self._price_calendar(end_date)
             # The comparison with config.model's dates is bar-based, so it
@@ -949,8 +940,10 @@ class BaseBacktester(Component, ABC):
         the rebalance schedule runs on from the first bar; the weights are
         simulated once, with capital carried across as well, and the
         ``stitched`` metrics record the pass's ``portfolio_construction``.
-        Per-fold metrics still come from the independent per-fold backtests. Fingerprints cover the
-        whole stitched window.
+        Per-fold metrics still come from the independent per-fold backtests.
+        Each fold records the data it reads, compared with that fold's
+        expected fingerprint (the warning names the fold); the run's own
+        fingerprint is what the stitched pass reads.
 
         Returns
         -------
@@ -1019,21 +1012,20 @@ class BaseBacktester(Component, ABC):
         calendar = self._price_calendar(folds[-1]["test_end"])
         self._assert_contiguous_folds(folds, calendar)
 
+        expected_folds = self.expected_fold_fingerprints or {}
         records: list[dict] = []
         for fold in folds:
             self._load_model_checkpoint(fold["checkpoint"])
-            # Only the fold window records fingerprints, so only its failure
-            # triggers the partial comparison; checkpoint errors above do not.
-            try:
+            with self._recorder(
+                expected_folds.get(fold["fold"]),
+                f"{self.class_name} fold {fold['fold']}",
+            ) as recorder:
                 window = self._backtest_window(
                     fold["test_start"],
                     fold["test_end"],
                     calendar,
                     *fold["_train_bounds"],
                 )
-            except Exception:
-                self._compare_fingerprints_on_failure()
-                raise
             records.append(
                 {
                     **self._fold_summary(fold),
@@ -1042,6 +1034,7 @@ class BaseBacktester(Component, ABC):
                     "simulation": window.simulation,
                     "benchmark": window.benchmark,
                     "metrics": window.metrics,
+                    "data_fingerprint": recorder.records,
                 }
             )
 
@@ -1055,54 +1048,48 @@ class BaseBacktester(Component, ABC):
             [record["predictions"] for record in records], dim="timestamp"
         )
 
-        # The per-fold loop left only the last fold's fingerprints. Take the
-        # factor fingerprints over the whole stitched window (with the first
-        # fold's warm-up) and the price fingerprint from the stitched prices,
-        # then compare.
-        self._fingerprints = {}
+        # The stitched pass records what it reads itself: the prices, the
+        # benchmark and whatever the rule reads to decide.
+        recorder = self._recorder(self.expected_fingerprint, self.class_name)
         try:
-            self._record_fingerprint_entries(
-                self.config.model.fingerprint_inputs(first_start, last_end)
-            )
-            stitched_prices = self._load_prices(first_start, last_end)
-            stitched_benchmark_prices = self._load_benchmark_prices(
-                first_start, last_end, stitched_prices.timestamp.values
-            )
-        except Exception:
-            self._compare_fingerprints_on_failure()
-            raise
-        self._compare_fingerprints()
-
-        if not np.array_equal(
-            stitched_predictions.timestamp.values.astype("datetime64[ns]"),
-            stitched_prices.timestamp.values.astype("datetime64[ns]"),
-        ):
-            raise ValueError(
-                f"{self.class_name}: the concatenated fold predictions do not cover "
-                f"exactly the price bars {first_start}..{last_end}"
-            )
-        stitched_predictions = stitched_predictions.reindex(
-            symbol=stitched_prices.symbol.values
-        )
-        stitched_delisted = self._delisting_marks(stitched_prices)
-        stitched_weights = self._generate_signals(
-            stitched_predictions, stitched_prices, stitched_delisted
-        )
-        self._assert_weights_contract(stitched_weights, stitched_prices)
-        stitched_simulation = self._simulate(
-            stitched_weights, stitched_prices, delisted=stitched_delisted
-        )
-        stitched_benchmark = (
-            None
-            if stitched_benchmark_prices is None
-            else self._simulate_benchmark(stitched_benchmark_prices)
-        )
-        stitched_metrics = self._compute_metrics(
-            stitched_simulation,
-            stitched_benchmark,
-            self._stitched_split(stitched_prices.timestamp.values, records),
-        )
-        stitched_metrics.update(self._signal_metrics())
+            with recorder:
+                stitched_prices = self._load_prices(first_start, last_end)
+                stitched_benchmark_prices = self._load_benchmark_prices(
+                    first_start, last_end, stitched_prices.timestamp.values
+                )
+                if not np.array_equal(
+                    stitched_predictions.timestamp.values.astype("datetime64[ns]"),
+                    stitched_prices.timestamp.values.astype("datetime64[ns]"),
+                ):
+                    raise ValueError(
+                        f"{self.class_name}: the concatenated fold predictions do not cover "
+                        f"exactly the price bars {first_start}..{last_end}"
+                    )
+                stitched_predictions = stitched_predictions.reindex(
+                    symbol=stitched_prices.symbol.values
+                )
+                stitched_delisted = self._delisting_marks(stitched_prices)
+                stitched_weights = self._generate_signals(
+                    stitched_predictions, stitched_prices, stitched_delisted
+                )
+                self._assert_weights_contract(stitched_weights, stitched_prices)
+                stitched_simulation = self._simulate(
+                    stitched_weights, stitched_prices, delisted=stitched_delisted
+                )
+                stitched_benchmark = (
+                    None
+                    if stitched_benchmark_prices is None
+                    else self._simulate_benchmark(stitched_benchmark_prices)
+                )
+                stitched_metrics = self._compute_metrics(
+                    stitched_simulation,
+                    stitched_benchmark,
+                    self._stitched_split(stitched_prices.timestamp.values, records),
+                )
+                stitched_metrics.update(self._signal_metrics())
+        finally:
+            # A failed pass still reports what it had read before failing.
+            self._fingerprints = recorder.records
 
         notes = self._report_notes() + [
             f"run_cv: the stitched curve is one continuous simulation over folds "
@@ -1344,9 +1331,9 @@ class BaseBacktester(Component, ABC):
         ``backtest_window(start_date, end_date)`` computes the window from
         the config's ISO dates without persisting anything. Per-run state is
         reset first, so a second run on the same object starts clean. The
-        data fingerprints are compared after the window, and also on its
-        failure path, since fingerprints may already have been recorded and
-        differ when it raises. ``kind`` is the run's kind (``"run"`` or
+        window runs inside the run's ``DataRecorder``, which compares with
+        ``expected_fingerprint`` when it closes, partially on the failure
+        path. ``kind`` is the run's kind (``"run"`` or
         ``"run_weights"``); ``notes`` are appended to the default report
         notes. The window runs inside its tracking run (see
         ``_tracking_run``); the run directory is written (unless
@@ -1358,13 +1345,13 @@ class BaseBacktester(Component, ABC):
         self._trained_checkpoint = None
         self._trained_unit = None
         with self._tracking_run() as run:
+            recorder = self._recorder(self.expected_fingerprint, self.class_name)
             try:
-                window = backtest_window(start_date, end_date)
-            except Exception:
-                self._compare_fingerprints_on_failure()
-                raise
-            # Outside the try (and not in a finally) so a clean run compares once.
-            self._compare_fingerprints()
+                with recorder:
+                    window = backtest_window(start_date, end_date)
+            finally:
+                # A failed run still reports what it had read before failing.
+                self._fingerprints = recorder.records
 
             metrics = window.metrics
             if self._trained_checkpoint is not None:
@@ -1761,12 +1748,12 @@ class BaseBacktester(Component, ABC):
             self._load_model_checkpoint(self.config.checkpoint)
             self._trained_unit = TrainedRun.open(self.config.checkpoint).path
             return configured
-        model.collect()
-        # Fingerprint the training data right after collect() and before
-        # train().
-        self._record_fingerprint_entries(model.training_fingerprint_inputs())
-        # The checkpoint train() wrote is recorded in metrics, its unit in run.json.
-        self._trained_checkpoint = str(model.train())
+        # Training reads belong to the trained unit, never to the backtest's
+        # record.
+        with unrecorded():
+            model.collect()
+            # The checkpoint train() wrote is recorded in metrics, its unit in run.json.
+            self._trained_checkpoint = str(model.train())
         self._trained_unit = TrainedRun.open(self._trained_checkpoint).path
         return configured
 
@@ -1892,49 +1879,60 @@ class BaseBacktester(Component, ABC):
         the timestamps of a date-range request are read; the dataset's
         config is not touched.
         """
-        panel = self.config.price_dataset.panel(Date.START_DATE, end_date)
-        return np.sort(panel.timestamp.values)
+        calendar = self.config.price_dataset.calendar(Date.START_DATE, end_date)
+        return np.sort(calendar.values)
 
     def _predict_window(self, start_date: str, end_date: str) -> xr.Dataset:
-        """Fingerprint the model's inputs, then predict the window.
+        """Predict the window.
 
         The model requests its own features for ``start_date`` to
         ``end_date`` (``Predictor.predict_window``), warm-up included; no
         config is changed.
         """
         with Timer(f"{self.class_name}: predict_window"):
-            model = self.config.model
-            self._record_fingerprint_entries(
-                model.fingerprint_inputs(start_date, end_date)
-            )
-            return model.predict_window(start_date, end_date)
+            return self.config.model.predict_window(start_date, end_date)
 
     def _load_prices(self, start_date: str, end_date: str) -> xr.Dataset:
         """Return the fill and valuation price columns over the window.
 
         The columns come from a date-range request, which leaves the
         dataset untouched, so the price dataset may be the same object as a
-        factor's dataset. The price fingerprint is recorded here.
+        factor's dataset. Only those two columns are read, and so recorded.
 
         Raises
         ------
         ValueError
             If either price column is missing from the store.
         """
-        dataset = self.config.price_dataset
-        ds = dataset.panel(start_date, end_date)
+        return self._read_price_columns(
+            self.config.price_dataset, start_date, end_date, "price column"
+        ).load()
 
-        fill = self.MARKET.fill_price_column  # type: ignore[union-attr]
-        valuation = self.MARKET.valuation_price_column  # type: ignore[union-attr]
-        for column in (fill, valuation):
-            if column not in ds.data_vars:
-                raise ValueError(
-                    f"{self.class_name}: price column {column!r} not found in "
-                    f"{self._where(dataset)}"
-                )
-        prices = ds[[fill, valuation]].load()
-        self._record_price_fingerprint(prices)
-        return prices
+    def _read_price_columns(
+        self, dataset: MarketDataset, start_date: str, end_date: str, what: str
+    ) -> xr.Dataset:
+        """Read the fill and valuation columns of ``dataset`` over the window.
+
+        Raises
+        ------
+        ValueError
+            Naming the first of the two columns ``dataset`` does not hold.
+        """
+        columns = [
+            self.MARKET.fill_price_column,  # type: ignore[union-attr]
+            self.MARKET.valuation_price_column,  # type: ignore[union-attr]
+        ]
+        try:
+            return dataset.panel(start_date, end_date, variables=columns)
+        except KeyError:
+            held = set(dataset.head(0).collect_schema().names())
+            missing = [column for column in columns if column not in held]
+            if not missing:
+                raise
+            raise ValueError(
+                f"{self.class_name}: {what} {missing[0]!r} not found in "
+                f"{self._where(dataset)}"
+            ) from None
 
     @staticmethod
     def _where(dataset: MarketDataset) -> str:
@@ -1943,14 +1941,6 @@ class BaseBacktester(Component, ABC):
         if path is None:
             return f"the {type(dataset).__name__} held in memory"
         return str(path)
-
-    def _record_price_fingerprint(self, prices: xr.Dataset) -> None:
-        """Record the fingerprint of the two price columns under ``price_dataset``."""
-        columns = [
-            self.MARKET.fill_price_column,  # type: ignore[union-attr]
-            self.MARKET.valuation_price_column,  # type: ignore[union-attr]
-        ]
-        self._fingerprints["price_dataset"] = dataset_fingerprint(prices, columns)
 
     def _load_benchmark_prices(
         self, start_date: str, end_date: str, timestamps: np.ndarray
@@ -1966,8 +1956,6 @@ class BaseBacktester(Component, ABC):
         valued on the same bars. A benchmark bar the strategy calendar does
         not have is dropped; a strategy bar the benchmark lacks carries the
         benchmark's previous price forward and is counted in one warning.
-        The fingerprint is recorded under ``benchmark_dataset``, over the
-        data as read rather than as aligned.
 
         Raises
         ------
@@ -1980,16 +1968,11 @@ class BaseBacktester(Component, ABC):
         dataset = self.config.benchmark_dataset
         if dataset is None:
             return None
-        ds = dataset.panel(start_date, end_date)
-
+        ds = self._read_price_columns(
+            dataset, start_date, end_date, "benchmark price column"
+        )
         fill = self.MARKET.fill_price_column  # type: ignore[union-attr]
         valuation = self.MARKET.valuation_price_column  # type: ignore[union-attr]
-        for column in (fill, valuation):
-            if column not in ds.data_vars:
-                raise ValueError(
-                    f"{self.class_name}: benchmark price column {column!r} not "
-                    f"found in {self._where(dataset)}"
-                )
         symbols = [str(symbol) for symbol in ds.symbol.values]
         if len(symbols) != 1:
             raise ValueError(
@@ -1998,10 +1981,7 @@ class BaseBacktester(Component, ABC):
                 f"{self._where(dataset)}: {symbols[:10]}"
             )
         self._benchmark_axis_symbol = symbols[0]
-        read = ds[[fill, valuation]].load()
-        self._fingerprints["benchmark_dataset"] = dataset_fingerprint(
-            read, [fill, valuation]
-        )
+        read = ds.load()
 
         bars = np.asarray(timestamps).astype("datetime64[ns]")
         read = read.assign_coords(
@@ -2036,149 +2016,20 @@ class BaseBacktester(Component, ABC):
             )
         return aligned
 
-    @staticmethod
-    def _dataset_variables_fingerprint(factor, ds: xr.Dataset) -> dict:
-        """Fingerprint the data a factor (or label) consumes from its dataset.
+    def _recorder(self, expected: dict | None, owner: str) -> DataRecorder:
+        """Return the recorder of one run, fold or stitched pass.
 
-        ``ds`` is the dataset panel to fingerprint. A KunQuant factor
-        (``FactorConfig``) reads ``data_columns``; a Polars factor consumes
-        the whole frame, so every data variable is covered.
+        Every component of the backtester is keyed by its path in the tree,
+        the first path when it is found at several (as the run directory
+        names a held dataset's copy), so a dataset read by several consumers
+        is recorded once;
+        ``expected`` is compared on close, warnings opening with ``owner``.
         """
-        if isinstance(factor.config, ForwardConfig):
-            return BaseBacktester._dataset_variables_fingerprint(factor.config.factor, ds)
-        if isinstance(factor.config, FactorConfig):
-            variables = list(factor.config.data_columns)
-        else:
-            variables = list(ds.data_vars)
-        return dataset_fingerprint(ds, variables)
-
-    @staticmethod
-    def _store_fingerprint(ds: xr.Dataset) -> dict:
-        """Fingerprint a panel read from a factor or label store, all variables."""
-        return dataset_fingerprint(ds, list(ds.data_vars))
-
-    def _record_fingerprint_entries(self, entries) -> None:
-        """Hash the data a model reports it reads and record it by key.
-
-        ``entries`` come from ``Predictor.fingerprint_inputs`` (the ``run()``
-        window, each ``run_cv()`` fold and the stitched window) or
-        ``Predictor.training_fingerprint_inputs`` (train mode, after
-        ``collect()`` and before ``train()``, since the window fingerprints
-        do not cover the training span). Each is
-        ``(key, item, strategy, first, last)``: under ``"read"`` the panel
-        ``item.read(first, last)`` is fingerprinted over all its variables,
-        otherwise the variables ``item`` consumes from the dataset panel
-        ``item.compute(first, last)`` reads, its warm-up bars included.
-        """
-        for key, item, strategy, first, last in entries:
-            if strategy == "read":
-                self._fingerprints[key] = self._store_fingerprint(item.read(first, last))
-            else:
-                self._fingerprints[key] = self._dataset_variables_fingerprint(
-                    item, self._compute_inputs(item, first, last)
-                )
-
-    @classmethod
-    def _compute_inputs(cls, item, start, end) -> xr.Dataset:
-        """Return the dataset panel ``item.compute(start, end)`` reads.
-
-        The range comes from the factor itself, so the fingerprint covers
-        exactly the warm-up and resample padding ``compute`` reads. A label
-        (``Forward``) computes its factor up to ``lookahead_bars()`` bars
-        after ``end``, so its factor's inputs are fingerprinted over that
-        later range.
-        """
-        if isinstance(item.config, ForwardConfig):
-            return cls._compute_inputs(item.config.factor, start, item._later_end(end))
-        return item.config.dataset.panel(*item._input_range(start, end, warn=False))
-
-    def _compare_fingerprints(self, *, partial: bool = False) -> None:
-        """Compare this run's fingerprints against ``expected_fingerprint``.
-
-        Does nothing when ``expected_fingerprint`` is ``None``. A key present
-        on one side only, or a key whose ``FINGERPRINT_COMPARED_FIELDS``
-        differ, logs one warning naming the key and the fields. Datasets get
-        appended to and adjusted prices get restated, so a rebuilt run must
-        notice changed data, but changed data can still be backtested, so
-        this never raises.
-
-        With ``partial=True`` (the failure path) each warning ends with
-        ``FINGERPRINT_PARTIAL_NOTE`` instead of ``"continuing"``, because
-        the original error follows and an interrupted read may explain a
-        difference, and keys expected but not yet read are skipped, since
-        "not read yet" is not "not read".
-
-        Parameters
-        ----------
-        partial : bool
-            Whether this is the failure-path comparison.
-        """
-        expected = self.expected_fingerprint
-        if expected is None:
-            return
-        tail = FINGERPRINT_PARTIAL_NOTE if partial else "continuing"
-        actual = to_jsonable(self._fingerprints)
-        for key in sorted(set(expected) | set(actual)):  # type: ignore[arg-type]
-            if key not in actual:
-                # On the failure path this only means "not read yet".
-                if partial:
-                    continue
-                logger.warning(
-                    f"{self.class_name}: data fingerprint mismatch for {key!r}: "
-                    f"present in expected_fingerprint but not read by this run; "
-                    f"{tail}"
-                )
-                continue
-            if key not in expected:
-                logger.warning(
-                    f"{self.class_name}: data fingerprint mismatch for {key!r}: "
-                    f"read by this run but absent from expected_fingerprint; "
-                    f"{tail}"
-                )
-                continue
-            wanted, got = expected[key], actual[key]
-            differing = [
-                name
-                for name in FINGERPRINT_COMPARED_FIELDS
-                if wanted.get(name) != got.get(name)
-            ]
-            if differing:
-                details = "; ".join(
-                    f"{name}: expected {wanted.get(name)!r}, got {got.get(name)!r}"
-                    for name in differing
-                )
-                logger.warning(
-                    f"{self.class_name}: data fingerprint mismatch for {key!r} "
-                    f"(differing fields: {', '.join(differing)}): {details}. The "
-                    f"data changed since the expected run; {tail}"
-                )
-
-    def _compare_fingerprints_on_failure(self) -> None:
-        """Run a partial fingerprint comparison on the failure path, never raising.
-
-        ``run()`` and ``run_cv()`` compare fingerprints only after a window
-        completes, but the factor fingerprints are recorded before
-        prediction. When the window fails part-way the data may already
-        have changed and the operator would only see the downstream error,
-        so the comparison is repeated here with ``partial=True``.
-
-        Swallowing exceptions is deliberate and must stay: this diagnostic
-        is extra information and must never replace the original error. A
-        failure of the diagnostic itself logs a warning that does not
-        contain "data fingerprint mismatch", and even that logging is
-        guarded so a broken log sink cannot become the raised error.
-        """
-        try:
-            self._compare_fingerprints(partial=True)
-        except BaseException as error:  # noqa: BLE001 - never replace the error
-            try:
-                logger.warning(
-                    f"{self.class_name}: the failure-path data diagnostic itself "
-                    f"raised {type(error).__name__}: {error!r}; it is skipped and "
-                    f"the original error follows"
-                )
-            except BaseException:  # noqa: BLE001 - a broken log sink must not raise
-                pass
+        return DataRecorder(
+            keys=[(item, path) for path, item in walk_components(self)],
+            expected=expected,
+            owner=owner,
+        )
 
     def _assert_weights_contract(
         self, weights: xr.Dataset, prices: xr.Dataset
@@ -2854,6 +2705,7 @@ class BaseBacktester(Component, ABC):
                     settlements=record["simulation"].settlements,
                     metrics=record["metrics"],
                     trained_run=unit,
+                    data_fingerprint=record["data_fingerprint"],
                 )
                 for record, unit in zip(records, units, strict=True)
             ],

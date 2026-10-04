@@ -662,15 +662,20 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
     # --- settlements: the stitched list, each fold's in its child run ----------
     assert len(run.settlements()) == len(result.simulation.settlements)
 
-    # --- the data fingerprint and the market: the union window (D-27) --------
-    fingerprint = run.data_fingerprint
+    # --- the data fingerprint: the stitched pass on top, each fold's in its run --
     first_day = _day(cv_project.bars[FIRST_TEST_BAR])
     last_day = _day(cv_project.bars[LAST_TEST_BAR])
-    assert _day(fingerprint["price_dataset"]["start"]) == first_day
-    assert _day(fingerprint["price_dataset"]["end"]) == last_day
-    factor = fingerprint["factor[0]:PastReturnFactor"]
-    assert _day(factor["start"]) < first_day, "the factor range must include warm-up"
-    assert _day(factor["end"]) == last_day
+    # The stitched pass reads prices only: its predictions are the folds'.
+    assert set(run.data_fingerprint) == {"price_dataset"}
+    window = [
+        entry for entry in run.data_fingerprint["price_dataset"]
+        if entry["request"]["start"] == first_day
+    ]
+    assert [_day(entry["end"]) for entry in window] == [last_day]
+    for fold, record in zip(run.folds, result.folds):
+        (factor,) = fold.data_fingerprint["model.factors.0.dataset"]
+        assert _day(factor["start"]) < record["test_start"], "the factor range must include warm-up"
+        assert _day(factor["end"]) == record["test_end"]
 
     assert run.rebuild_backtester().config.cv_project_dir == str(cv_project.project_dir)
     assert run.market == Market(fill_price_column="adjOpen", valuation_price_column="adjClose")

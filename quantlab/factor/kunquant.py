@@ -355,6 +355,10 @@ class FactorKunQuant(Factor):
         """
         ...
 
+    def _input_variables(self) -> list[str]:
+        """Read only the dataset's own columns of ``config.data_columns``."""
+        return self.config.dataset.own_names(self.config.data_columns)
+
     def _kunquant_inputs(
         self, inputs: xr.Dataset
     ) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:

@@ -517,15 +517,13 @@ class BaseModel(Component, ABC):
         ]
         return xr.combine_by_coords(panels)  # type: ignore
 
-    def _feature_start(self, factor, strategy: str, start, *, warn: bool = True):
+    def _feature_start(self, factor, strategy: str, start):
         """Return ``start`` moved ``warmup_bars`` bars back on ``factor``'s dataset.
 
         With fewer bars before ``start`` in the dataset, or, under
         ``"read"``, in the factor's store, the request starts at the earliest
-        one there is and, when ``warn`` is true, a ``UserWarning`` states the
-        shortfall; the first windows then hold zero rows for the missing
-        history. The backtester fingerprints the same range with
-        ``warn=False``.
+        one there is and a ``UserWarning`` states the shortfall; the first
+        windows then hold zero rows for the missing history.
         """
         bars = self.warmup_bars
         if bars == 0:
@@ -535,18 +533,16 @@ class BaseModel(Component, ABC):
             warm = dataset.bar_before(start, bars)
         except InsufficientHistoryError as exc:
             warm = dataset.bar_before(start, exc.available)
-            if warn:
-                self._warn_short_warmup(
-                    factor, start, bars, f"its dataset holds only {exc.available}"
-                )
+            self._warn_short_warmup(
+                factor, start, bars, f"its dataset holds only {exc.available}"
+            )
         if strategy == "read":
             stored = factor.store_range()
             if stored is not None and warm < pd.Timestamp(stored[0]):
                 warm = pd.Timestamp(stored[0])
-                if warn:
-                    self._warn_short_warmup(
-                        factor, start, bars, f"its store starts at {stored[0]}"
-                    )
+                self._warn_short_warmup(
+                    factor, start, bars, f"its store starts at {stored[0]}"
+                )
         return warm
 
     def _warn_short_warmup(self, factor, start, bars: int, why: str) -> None:
@@ -748,85 +744,6 @@ class BaseModel(Component, ABC):
         """
         features = self._collect_all_features(start, end)
         return self.predict_panel(features).sel(timestamp=slice(start, end))
-
-    def fingerprint_inputs(self, start, end) -> list[tuple]:
-        """Return the data ``predict_window(start, end)`` reads, for fingerprinting.
-
-        One entry ``(key, factor, strategy, first, last)`` per factor,
-        ``strategy`` ``"cal"``, under the key ``factor[{i}]:{ClassName}``:
-        the dataset inputs ``factor.compute(first, last)`` reads. Under the
-        ``"read"`` factor strategy a second entry
-        ``factor_store[{i}]:{ClassName}``, strategy ``"read"``, covers the
-        store panel ``factor.read(first, last)``, which is what the
-        predictions are built from. ``first`` is ``start`` moved back by the
-        model's warm-up, the range ``predict_window`` requests.
-
-        Parameters
-        ----------
-        start, end : str
-            The window passed to ``predict_window``.
-
-        Returns
-        -------
-        list[tuple]
-            ``(key, factor, strategy, first, last)`` entries in factor order.
-
-        Examples
-        --------
-        >>> [(key, strategy, first, last)
-        ...  for key, _, strategy, first, last
-        ...  in model.fingerprint_inputs("2024-02-12", "2024-03-11")]
-        [('factor[0]:PastReturnFactor', 'cal', '2024-02-12', '2024-03-11')]
-        """
-        strategy = self.config.factor_data_strategy
-        entries: list[tuple] = []
-        for i, factor in enumerate(self.config.factors):
-            name = type(factor).__name__
-            first = self._feature_start(factor, strategy, start, warn=False)
-            entries.append((f"factor[{i}]:{name}", factor, "cal", first, end))
-            if strategy == "read":
-                entries.append((f"factor_store[{i}]:{name}", factor, "read", first, end))
-        return entries
-
-    def training_fingerprint_inputs(self) -> list[tuple]:
-        """Return the data ``collect()`` reads, for fingerprinting.
-
-        One entry ``(key, item, strategy, first, last)`` per factor and per
-        label over ``start_date`` to ``end_date``, a factor's ``first``
-        moved back by the model's warm-up as ``collect()`` requests it. Under
-        the ``"cal"`` strategy the keys are ``train_factor[{i}]:{ClassName}``
-        and ``train_label[{i}]:{ClassName}`` (the dataset inputs ``compute``
-        reads); under ``"read"`` they are ``train_factor_store[{i}]:...`` and
-        ``train_label_store[{i}]:...`` (the store panels ``read`` returns).
-
-        Returns
-        -------
-        list[tuple]
-            ``(key, item, strategy, first, last)`` entries, factors first.
-
-        Examples
-        --------
-        >>> entries = model.training_fingerprint_inputs()
-        >>> [key for key, *_ in entries]
-        ['train_factor[0]:PastReturnFactor', 'train_label[0]:ForwardReturnLabel']
-        >>> entries[1][2:]
-        ('cal', '2024-01-01', '2024-02-09')
-        """
-        config = self.config
-        end = config.end_date
-        entries: list[tuple] = []
-        for prefix, items, strategy in (
-            ("train_factor", config.factors, config.factor_data_strategy),
-            ("train_label", config.labels, config.label_data_strategy),
-        ):
-            for i, item in enumerate(items):
-                name = type(item).__name__
-                start = config.start_date
-                if prefix == "train_factor":
-                    start = self._feature_start(item, strategy, start, warn=False)
-                kind = f"{prefix}_store" if strategy == "read" else prefix
-                entries.append((f"{kind}[{i}]:{name}", item, strategy, start, end))
-        return entries
 
     def to_array(self, data: xr.Dataset, variables: list[str]) -> np.ndarray:
         """Convert a panel to a ``[num_times, num_symbols, len(variables)]`` array.

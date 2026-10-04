@@ -764,6 +764,42 @@ class BaseDataset(Component, ABC):
             )
         return panel
 
+    def calendar(
+        self,
+        start: "str | datetime.date | pd.Timestamp",
+        end: "str | datetime.date | pd.Timestamp",
+    ) -> pd.DatetimeIndex:
+        """Return the bars from ``start`` to ``end``, both inclusive, timestamps only.
+
+        The calendar ``bar_before`` and ``bar_after`` count on: the store's
+        own timestamps, or the resampled bars of a resampled dataset. Only
+        the timestamps are read, so it is not a data read a
+        ``DataRecorder`` records; ``panel`` is.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range. A date-only ``end`` includes every bar of that day.
+
+        Returns
+        -------
+        pd.DatetimeIndex
+            The sorted bar timestamps in the range.
+
+        Raises
+        ------
+        ValueError
+            If ``start`` is after ``end``.
+
+        Examples
+        --------
+        >>> ds.calendar("2024-01-05", "2024-01-08")  # Friday to Monday
+        DatetimeIndex(['2024-01-05', '2024-01-08'], dtype='datetime64[ns]', freq=None)
+        """
+        first, last = check_range(start, end, f"{self.class_name}.calendar()")
+        bars = self._calendar()
+        return bars[(bars >= first) & (bars <= last)]
+
     def bar_before(
         self, date: "str | datetime.date | pd.Timestamp", n: int
     ) -> pd.Timestamp:
@@ -2092,13 +2128,40 @@ class MarketDataset(BaseDataset):
         later = calendar[calendar > end]
         if len(later) == 0:
             return np.zeros(len(symbols), dtype=bool)
-        panel = self.panel(later[0], later[-1])
-        if column not in panel.data_vars:
+        try:
+            panel = self.panel(later[0], later[-1], variables=[column])
+        except KeyError:  # the store has no such column
             return np.zeros(len(symbols), dtype=bool)
         return np.asarray(
             panel[column].reindex(symbol=list(symbols)).notnull().any("timestamp").values,
             dtype=bool,
         )
+
+    def own_names(self, names) -> list[str]:
+        """Return this dataset's own names of the shared variable ``names``.
+
+        The inverse of ``COLUMN_MAP``: a shared name some column is renamed
+        to becomes that column, any other name stays. A reader passes the
+        result as ``panel(variables=...)`` to read only the columns it
+        exports under the shared names (a KunQuant factor's
+        ``data_columns``).
+
+        Parameters
+        ----------
+        names : iterable of str
+            Shared variable names.
+
+        Examples
+        --------
+        >>> spot.own_names(["close", "volume"])
+        ['Close', 'Volume']
+        >>> stock.own_names(["adjClose"])
+        ['adjClose']
+        """
+        inverse: dict[str, list[str]] = {}
+        for own, shared in self.COLUMN_MAP.items():
+            inverse.setdefault(shared, []).append(own)
+        return [own for name in names for own in inverse.get(name, [name])]
 
     def shared_name_map(self, names) -> dict[str, str]:
         """Return the part of ``COLUMN_MAP`` that applies to ``names``.

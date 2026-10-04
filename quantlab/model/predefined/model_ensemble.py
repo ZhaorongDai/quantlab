@@ -36,8 +36,8 @@ class ModelEnsembleConfig:
 class ModelEnsemble(BaseEnsemble):
     """An ensemble of models given one by one, of any classes and over any factors.
 
-    Every hook keeps ``BaseEnsemble``'s default: each member collects, predicts
-    and is fingerprinted on its own, and the predictions are combined label by
+    Every hook keeps ``BaseEnsemble``'s default: each member collects and predicts
+    on its own, and the predictions are combined label by
     label (averaged when shared, passed through otherwise). Subclass it and override ``_combine`` for another
     combination rule. ``train()`` writes an ensemble unit whose ``run.json``
     records a null seed per member; ``train_cv()`` writes one such unit per

@@ -248,6 +248,16 @@ class MergedDataset(MarketDataset):
                 )
         return labels[0]
 
+    def own_names(self, names) -> list[str]:
+        """Return ``names`` as they are: the merged panel holds the shared names.
+
+        Examples
+        --------
+        >>> MergedDataset([spot, held]).own_names(["close"])
+        ['close']
+        """
+        return list(names)
+
     def _to_kunquant(
         self, data: xr.Dataset, data_columns: tuple[str, ...]
     ) -> tuple[dict, np.ndarray, np.ndarray]:

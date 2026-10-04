@@ -44,16 +44,6 @@ class MembershipMaskConfig:
     membership: "IndexConstituentDataset" = component()
 
 
-class _MembershipPanel:
-    """The membership panel as a fingerprint entry: ``read(first, last)``."""
-
-    def __init__(self, membership: "IndexConstituentDataset") -> None:
-        self.membership = membership
-
-    def read(self, first, last) -> xr.Dataset:
-        return self.membership.panel(first, last)
-
-
 class MembershipMaskedPredictor(Component):
     """A ``Predictor`` whose predictions are NaN where the symbol is not an index member.
 
@@ -161,7 +151,9 @@ class MembershipMaskedPredictor(Component):
         if predictions.sizes.get("timestamp", 0) == 0:
             return predictions
         days = pd.DatetimeIndex(predictions["timestamp"].values).normalize()
-        is_member = self.membership.panel(days.min(), days.max())["is_member"]
+        is_member = self.membership.panel(
+            days.min(), days.max(), variables=["is_member"]
+        )["is_member"]
         uncovered = days.difference(pd.DatetimeIndex(is_member["timestamp"].values))
         if len(uncovered):
             raise ValueError(
@@ -182,8 +174,8 @@ class MembershipMaskedPredictor(Component):
         return predictions.where(member)
 
     # -- Predictor protocol ----------------------------------------------
-    # Everything but ``predict_window`` and ``fingerprint_inputs`` forwards to
-    # the wrapped predictor unchanged.
+    # Everything but ``predict_window`` forwards to the wrapped predictor
+    # unchanged.
 
     @property
     def labels(self) -> list:
@@ -261,33 +253,6 @@ class MembershipMaskedPredictor(Component):
         True
         """
         return self.mask(self.predictor.predict_window(start, end))
-
-    def fingerprint_inputs(self, start, end) -> list[tuple]:
-        """The wrapped predictor's inputs plus the membership panel over the window.
-
-        The membership entry is keyed ``"membership"`` and read with
-        ``panel(start, end)`` (the backtester calls ``read`` on a ``"read"``
-        entry, which a dataset does not have, hence the small adapter).
-
-        Examples
-        --------
-        >>> masked.fingerprint_inputs("2024-02-12", "2024-03-11")[-1][0]
-        'membership'
-        """
-        return [
-            *self.predictor.fingerprint_inputs(start, end),
-            ("membership", _MembershipPanel(self.membership), "read", start, end),
-        ]
-
-    def training_fingerprint_inputs(self) -> list[tuple]:
-        """The wrapped predictor's training inputs; training reads no membership.
-
-        Examples
-        --------
-        >>> masked.training_fingerprint_inputs() == model.training_fingerprint_inputs()
-        True
-        """
-        return self.predictor.training_fingerprint_inputs()
 
     def collect(self) -> Self:
         """Collect the wrapped predictor's training data; returns the wrapper.
