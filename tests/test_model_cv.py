@@ -415,7 +415,7 @@ def test_torch_train_cv_results_carry_metrics_and_open_a_summary_run(tmp_path, t
 
     assert len(cv.folds) == GOLDEN_N_FOLDS
     for fold in cv.folds:
-        assert {"train_mse", "val_mse", "test_mse", "test_ic"} <= set(fold.metrics)
+        assert {"train_loss", "val_ic", "test_ic", "test_rank_ic"} <= set(fold.metrics)
         assert fold.checkpoint.suffix == ".pth" and fold.checkpoint.is_file()
     assert len(tracker.runs) == GOLDEN_N_FOLDS + 1
     assert tracker.runs[-1].name == "GoldenTorchHead_cv_summary"

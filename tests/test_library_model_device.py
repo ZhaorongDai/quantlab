@@ -419,7 +419,7 @@ def test_realmlp_is_written_on_the_cpu_and_moved_back_to_its_device(tmp_path, cu
 
 
 def test_realmlp_is_not_moved_before_evaluation(tmp_path, cuda, monkeypatch):
-    """Training and evaluation run on the training device; only the write moves it."""
+    """Training and the split losses run on the training device; only the write moves it."""
     from pytabkit import RealMLP_TD_Regressor
 
     from quantlab.model.library_model import LibraryModel
@@ -435,16 +435,16 @@ def test_realmlp_is_not_moved_before_evaluation(tmp_path, cuda, monkeypatch):
         LibraryModel, "_write_checkpoint",
         lambda self, path: (events.append(("write",)), original_write(self, path))[1],
     )
-    original_evaluate = LibraryModel._evaluate
+    original_split_loss = LibraryModel._split_loss
     monkeypatch.setattr(
-        LibraryModel, "_evaluate",
-        lambda self, *a: (events.append(("evaluate",)), original_evaluate(self, *a))[1],
+        LibraryModel, "_split_loss",
+        lambda self, *a: (events.append(("loss",)), original_split_loss(self, *a))[1],
     )
     cuda(False)
     _head(RealMLPRegressor, tmp_path, {"n_epochs": 2, "n_threads": 1}).collect().train()
 
     first_move = events.index(("to", "cpu"))
-    assert ("evaluate",) in events[:first_move]
+    assert ("loss",) in events[:first_move]
     assert events[first_move:] == [("to", "cpu"), ("write",), ("to", "cpu")]
 
 

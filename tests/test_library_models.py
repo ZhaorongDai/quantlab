@@ -310,7 +310,19 @@ def test_a_rank_training_target_reaches_the_rows_and_metrics_stay_raw(tmp_path):
     x = model.to_array(data, model.get_factor_names())[:80]
     y = model.to_array(data, model.get_label_names())[:80]
     pred = model.predict(x)
-    assert metrics["train_mse"] == pytest.approx(float(np.mean((pred - y) ** 2)), rel=1e-5)
+    assert metrics["train_ic"] == pytest.approx(_mean_ic(pred[..., 0], y[..., 0]), rel=1e-5)
+    # A rank-scale prediction is not on the label's scale: no error metric.
+    assert not any(key.endswith(("mse", "mae", "r2")) for key in metrics)
+
+
+def _mean_ic(pred, target):
+    """Mean over bars of the Pearson correlation across symbols with both finite."""
+    ics = []
+    for p, t in zip(pred, target):
+        ok = np.isfinite(p) & np.isfinite(t)
+        if ok.sum() >= 2:
+            ics.append(np.corrcoef(p[ok], t[ok])[0, 1])
+    return float(np.mean(ics))
 
 
 # --------------------------------------------------------------------------
@@ -350,8 +362,9 @@ def test_a_training_target_hyperparameter_reaches_the_rows_and_metrics_stay_raw(
     y = model.to_array(data, model.get_label_names())
     pred = model.predict(x)
     for split, bars in (("train", slice(0, 80)), ("test", slice(100, 130))):
-        mse = float(np.mean((pred[bars] - y[bars]) ** 2))
-        assert metrics[f"{split}_mse"] == pytest.approx(mse, rel=1e-5), split
+        ic = _mean_ic(pred[bars, :, 0], y[bars, :, 0])
+        assert metrics[f"{split}_ic"] == pytest.approx(ic, rel=1e-5), split
+    assert not any(key.endswith(("mse", "mae", "r2")) for key in metrics)
 
 
 @pytest.mark.parametrize("training_target", ["cs_rank", "cs_zscore"])

@@ -1,8 +1,10 @@
-"""Metrics on disk: the metrics of `train()`'s `run.json` and of a walk-forward unit (issue #38, #123).
+"""Metrics on disk: the metrics of `train()`'s `run.json` and of a walk-forward unit (issue #38, #123, #142).
 
-`train()` records the `train_*` / `val_*` / `test_*` metrics of the first label
+`train()` records the `train_*` / `val_*` / `test_*` metrics of every label
 in the unit's `run.json` (#122), so a run's scores survive without a
-tracker. `train_cv()` keeps every split's metrics in each fold
+tracker. They come from the model's evaluation after training (#142): the
+first label as `{split}_{metric}`, every other as `{split}_{label}_{metric}`,
+error metrics only for a label predicted on its own scale. `train_cv()` keeps every split's metrics in each fold
 entry of the walk-forward unit's `run.json` (and in each fold unit's own) and
 adds a top-level `cv_mean` block, the fold means of every metric, which the
 `{cls}_cv_summary` tracking run also receives.
@@ -14,7 +16,9 @@ What turns this file red:
 - a run without a validation segment writes `val_*` keys;
 - a fold entry lacks a split, or `cv_mean` is not the fold mean of every
   metric, or differs from the summary run;
-- a non-finite metric reaches a file as a bare `NaN` token.
+- a non-finite metric reaches a file as a bare `NaN` token;
+- `test_ic` is not the IC of the saved `test_predictions.zarr` against the raw
+  label, or a two-label model does not score its second label.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -42,6 +46,10 @@ START = np.datetime_as_string(TIMES[0], unit="D")
 END = np.datetime_as_string(TIMES[-1], unit="D")
 
 METRIC_KEYS = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
+#: The keys of a head trained on a standardized target (OneBarHead z-scores
+#: it): its prediction is not on the label's scale, so no error metric.
+STANDARDIZED_KEYS = ("loss", "ic", "rank_ic", "icir", "rank_icir")
+KEYS = {"library": METRIC_KEYS, "torch": STANDARDIZED_KEYS}
 SPLITS = ("train", "val", "test")
 
 
@@ -93,9 +101,12 @@ class StubLibraryHead(LibraryModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-class NaNMetricLibraryHead(StubLibraryHead):
-    def _compute_metrics(self, y, pred, split, timestamps):
-        return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
+class ConstantLibraryHead(StubLibraryHead):
+    """Predicts 0 everywhere: every cross-section is constant, so the IC is
+    undefined (NaN) on every bar while the error metrics stay finite."""
+
+    def _forward(self, x):
+        return np.zeros((len(x), self.model["num_labels"]))
 
 
 def _model(tmp_path: Path, cls=StubLibraryHead, **overrides):
@@ -126,34 +137,36 @@ def _strict_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject)
 
 
-@pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
-def test_train_writes_metrics_json_equal_to_the_run_summary(tmp_path, tracker, cls):
+@pytest.mark.parametrize("cls, kind", [(StubLibraryHead, "library"), (OneBarHead, "torch")],
+                         ids=["library", "torch"])
+def test_train_writes_metrics_json_equal_to_the_run_summary(tmp_path, tracker, cls, kind):
     checkpoint = _model(tmp_path, cls=cls, tracker=tracker).train()
 
     metrics = _strict_json(checkpoint.parent / "run.json")["metrics"]
-    assert set(metrics) == {f"{s}_{k}" for s in SPLITS for k in METRIC_KEYS}
+    assert set(metrics) == {f"{s}_{k}" for s in SPLITS for k in KEYS[kind]}
     (run,) = tracker.runs
     # The summary keeps finite values only; run.json writes the rest as null.
     assert {k: v for k, v in metrics.items() if v is not None} == to_jsonable(run.summary)
 
 
-@pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
+@pytest.mark.parametrize("cls, kind", [(StubLibraryHead, "library"), (OneBarHead, "torch")],
+                         ids=["library", "torch"])
 def test_metrics_json_has_no_val_keys_without_a_validation_segment(
-    tmp_path, cls
+    tmp_path, cls, kind
 ):
     checkpoint = _model(tmp_path, cls=cls, val_size=0.0).train()
 
     metrics = _strict_json(checkpoint.parent / "run.json")["metrics"]
-    assert set(metrics) == {f"{s}_{k}" for s in ("train", "test") for k in METRIC_KEYS}
+    assert set(metrics) == {f"{s}_{k}" for s in ("train", "test") for k in KEYS[kind]}
 
 
 def test_metrics_json_writes_non_finite_metrics_as_null(tmp_path):
-    checkpoint = _model(tmp_path, cls=NaNMetricLibraryHead).train()
+    checkpoint = _model(tmp_path, cls=ConstantLibraryHead).train()
 
     metrics = _strict_json(checkpoint.parent / "run.json")["metrics"]
     for split in SPLITS:
-        assert metrics[f"{split}_nan_metric"] is None
-        assert metrics[f"{split}_finite_metric"] == 1.5
+        assert metrics[f"{split}_ic"] is None
+        assert isinstance(metrics[f"{split}_mse"], float)
 
 
 def test_walk_forward_record_holds_every_split_and_the_cv_mean_block(tmp_path, tracker):
@@ -185,3 +198,39 @@ def test_walk_forward_record_holds_every_split_and_the_cv_mean_block(tmp_path, t
     assert {k: v for k, v in cv_mean.items() if v is not None} == to_jsonable(
         summary_run.summary
     )
+
+
+def _pearson_by_bar(pred: np.ndarray, target: np.ndarray) -> np.ndarray:
+    """Per-bar Pearson correlation over the symbols with both values finite."""
+    out = []
+    for p, t in zip(pred, target):
+        ok = np.isfinite(p) & np.isfinite(t)
+        out.append(np.corrcoef(p[ok], t[ok])[0, 1] if ok.sum() >= 2 else np.nan)
+    return np.array(out)
+
+
+@pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])
+def test_test_ic_is_the_ic_of_the_saved_test_predictions(tmp_path, cls):
+    model = _model(tmp_path, cls=cls)
+    run_dir = model.train().parent
+
+    saved = xr.open_zarr(run_dir / "test_predictions.zarr").load()
+    truth = model.data_backend.get_xarray_dataset(["timestamp", "symbol"])["ret"]
+    truth = truth.sel(timestamp=saved.timestamp, symbol=saved.symbol).values
+    metrics = _strict_json(run_dir / "run.json")["metrics"]
+    expected = np.nanmean(_pearson_by_bar(saved["ret"].values, truth))
+    assert metrics["test_ic"] == pytest.approx(expected, rel=1e-6)
+
+
+def test_a_two_label_model_scores_both_labels(tmp_path):
+    model = _model(
+        tmp_path,
+        labels=[StubLabel(FakePanel(["ret"], seed=2)), StubLabel(FakePanel(["ret_b"], seed=3))],
+    )
+    metrics = _strict_json(model.train().parent / "run.json")["metrics"]
+
+    # The first label unprefixed, the second as {split}_{label}_{metric}; both
+    # raw, so both carry the error metrics.
+    assert set(metrics) == {f"{s}_{k}" for s in SPLITS for k in METRIC_KEYS} | {
+        f"{s}_ret_b_{k}" for s in SPLITS for k in METRIC_KEYS if k != "loss"
+    }

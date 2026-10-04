@@ -92,10 +92,11 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
     A head implements three hooks: ``_init_model``, ``_fit_model`` and
     ``_forward``. ``_transform_feature`` (inf to NaN), ``_transform_target``
     (``training_target``, else the raw label), ``_loss`` (MSE),
-    and the inherited ``_resolved_hyperparameters`` and ``_compute_metrics``
-    have defaults that may be overridden.
+    and the inherited ``_resolved_hyperparameters`` have defaults that may
+    be overridden.
     ``{split}_loss`` is ``_loss`` on the training target per bar, averaged
-    over bars; the other metrics score the raw first label. Checkpoints are
+    over bars; the other metrics come from the model's evaluation after
+    training (see ``BaseModel._evaluate``). Checkpoints are
     ``.joblib`` files written with ``joblib.dump``; they are pickles, so only
     load files you trust.
 
@@ -288,15 +289,11 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         chosen[torch.as_tensor(np.asarray(bars, dtype=np.int64))] = True
         return chosen
 
-    def _evaluate(self, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
-        """Evaluate one split and write the prefixed metrics to the run summary.
+    def _split_loss(self, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
+        """Return ``{split}_loss``: ``_loss`` on each bar's training target, averaged over bars.
 
-        Every present cell of ``bars`` is predicted. ``{split}_loss`` is
-        ``_loss`` on each bar's training target, averaged over the bars
-        that have one, so every bar weighs the same; the other keys are
-        ``_compute_metrics`` on the raw labels. They go to the run summary
-        (final values, no step), so they do not interfere with per-round
-        ``log(step=...)`` curves.
+        Every present cell of ``bars`` is predicted, and every bar with a
+        valid training target weighs the same.
         """
         num_times, num_symbols = panel.present.shape
         pred = np.full((num_times, num_symbols, self.num_labels), np.nan, dtype=np.float64)
@@ -311,32 +308,25 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
             for bar in bars
             if mask[bar].any()
         ]
-        metrics = {f"{split}_loss": float(np.mean(losses)) if losses else float("nan")}
-        y_raw = panel.y_raw.numpy()
-        for key, value in self._compute_metrics(
-            y_raw[bars], pred[bars], split, panel.timestamps[bars]
-        ).items():
-            metrics[f"{split}_{key}"] = value
-        self._run.summarize(metrics)
-        return metrics
+        return {f"{split}_loss": float(np.mean(losses)) if losses else float("nan")}
 
     def _fit(self, checkpoint: Path) -> dict:
-        """Build the rows, fit once with ``_fit_model``, evaluate and save.
+        """Build the rows, fit once with ``_fit_model``, compute the losses and save.
 
         The validation segment is the trailing ``val_size`` share of the
         training window, and the purge of ``_fit_segments`` drops the last L
         bars before validation and before test, as in the torch variant.
         The training target is computed once, before the fit:
         ``_transform_target`` sees ``training=True`` on the training bars and
-        ``training=False`` on the validation and test bars. Empty splits skip
-        evaluation: no validation segment means no ``val_*`` metrics, and an
-        empty test segment no ``test_*`` metrics.
+        ``training=False`` on the validation and test bars. Empty splits
+        have no loss: no validation segment means no ``val_loss``, and an
+        empty test segment no ``test_loss``.
 
         Returns
         -------
         dict
-            The ``train_*``, ``val_*`` and ``test_*`` metrics, with the
-            values ``_evaluate`` wrote to the run summary.
+            ``{split}_loss`` of ``_split_loss`` for ``train``, ``val`` and
+            ``test``.
 
         Raises
         ------
@@ -394,11 +384,11 @@ class LibraryModel(TrainingTargetMixin, BaseModel):
         with Timer(f"{self.class_name}: fit_model"):
             self._fit_model(train_rows, val_rows)
 
-        with Timer(f"{self.class_name}: evaluate"):
-            metrics = self._evaluate("train", panel, train_bars)
+        with Timer(f"{self.class_name}: losses"):
+            metrics = self._split_loss("train", panel, train_bars)
             for split, bars in (("val", val_bars), ("test", test_bars)):
                 if len(bars):
-                    metrics.update(self._evaluate(split, panel, bars))
+                    metrics.update(self._split_loss(split, panel, bars))
 
         self._save_model(checkpoint)
         return metrics

@@ -40,9 +40,10 @@ class TorchModel(TrainingTargetMixin, BaseModel):
 
     The base class owns every data contract: the warm-up, the training
     target and its mask, moving batches to the device, the epoch loop,
-    evaluation under ``no_grad`` in eval mode, the ``train_*`` / ``val_*`` /
-    ``test_*`` metrics on the raw first label, ``.pth`` checkpoints and
-    prediction. A head writes three things:
+    evaluation under ``no_grad`` in eval mode, the ``{split}_loss`` of each
+    split, ``.pth`` checkpoints and prediction; the other metrics come from
+    the model's evaluation after training (see ``BaseModel._evaluate``). A
+    head writes three things:
 
     ``window_bars``
         N, the bars in each symbol's window.
@@ -627,27 +628,8 @@ class TorchModel(TrainingTargetMixin, BaseModel):
                 )
         return out.numpy()
 
-    def _evaluate(self, epoch: int, split: str, panel: TrainingPanel, bars) -> dict[str, float]:
-        """Return one split's metrics and write them to the run summary.
-
-        ``{split}_loss`` is the mean ``_val_one_batch`` over the split's
-        batches, one per bar with the default dataset; the other keys are
-        ``_compute_metrics`` on the raw labels.
-        """
-        pred = self._predict_panel_bars(panel, bars)
-        metrics = {
-            f"{split}_loss": self._eval_loss(epoch, self._loader(panel, bars, training=False))
-        }
-        y_raw = panel.y_raw.cpu().numpy()
-        for key, value in self._compute_metrics(
-            y_raw[bars], pred[bars], split, panel.timestamps[bars]
-        ).items():
-            metrics[f"{split}_{key}"] = value
-        self._run.summarize(metrics)
-        return metrics
-
     def _fit(self, checkpoint: Path) -> dict:
-        """Build the training panel and target, train until ``_should_stop``, evaluate, save.
+        """Build the training panel and target, train until ``_should_stop``, save.
 
         The panel is split by ``_fit_segments``, but every window reads the
         whole collected panel, so the first validation and test bars (and
@@ -667,9 +649,9 @@ class TorchModel(TrainingTargetMixin, BaseModel):
         Returns
         -------
         dict
-            ``{split}_loss`` and the ``_compute_metrics`` keys for ``train``,
-            ``val`` (only with a validation segment) and ``test`` (only when
-            it has bars).
+            ``{split}_loss``, the mean ``_val_one_batch`` per bar of the
+            last epoch's weights, for ``train``, ``val`` (only with a
+            validation segment) and ``test`` (only when it has bars).
 
         Raises
         ------
@@ -729,11 +711,14 @@ class TorchModel(TrainingTargetMixin, BaseModel):
                 break
         self._on_fit_end()
 
-        with Timer(f"{self.class_name}: evaluate"):
-            metrics = self._evaluate(epoch, "train", panel, train_bars)
-            for split, bars in (("val", val_bars), ("test", test_bars)):
-                if len(bars):
-                    metrics.update(self._evaluate(epoch, split, panel, bars))
+        with Timer(f"{self.class_name}: losses"):
+            metrics = {
+                f"{split}_loss": self._eval_loss(
+                    epoch, self._loader(panel, bars, training=False)
+                )
+                for split, bars in (("train", train_bars), ("val", val_bars), ("test", test_bars))
+                if split == "train" or len(bars)
+            }
 
         self._save_model(checkpoint)
         self.optim = None

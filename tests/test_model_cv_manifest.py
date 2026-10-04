@@ -108,12 +108,12 @@ class StubLibraryHead(LibraryModel):
         return np.repeat(x[..., :1], self.model["num_labels"], axis=-1)
 
 
-class NaNMetricLibraryHead(StubLibraryHead):
-    """Every fold reports one non-finite metric, as a numpy scalar, beside a
-    finite one -- the shape vectorbt-style and panel metrics really take."""
+class ConstantLibraryHead(StubLibraryHead):
+    """Predicts 0 everywhere: every cross-section is constant, so the IC is
+    undefined (NaN) on every bar while the error metrics stay finite."""
 
-    def _compute_metrics(self, y, pred, split, timestamps):
-        return {"nan_metric": np.float64("nan"), "finite_metric": np.float64(1.5)}
+    def _forward(self, x):
+        return np.zeros((len(x), self.model["num_labels"]))
 
 
 def _common(tmp_path: Path, save_dir: str) -> dict:
@@ -196,7 +196,7 @@ def test_torch_record_equals_returned_folds(tmp_path):
     assert len(record["folds"]) == len(cv.folds) == N_FOLDS
     for entry, fold in zip(record["folds"], cv.folds):
         assert set(entry) == FOLD_ENTRY_KEYS
-        assert {"train_mse", "val_mse", "test_mse", "test_rank_ic"} <= set(entry["metrics"])
+        assert {"train_loss", "val_ic", "test_ic", "test_rank_ic"} <= set(entry["metrics"])
         assert fold.checkpoint.suffix == ".pth" and fold.checkpoint.is_file()
     assert cv.cv_mean["cv_n_folds"] == N_FOLDS
 
@@ -281,17 +281,19 @@ def test_record_is_strict_json_with_null_for_non_finite_metrics(tmp_path):
     """A NaN numpy metric must reach the files as `null`: `json.dump`'s
     default writes a bare `NaN` token, which strict parsers reject. The fold
     units read back carry None."""
-    model = _library(tmp_path, "ckpt", cls=NaNMetricLibraryHead)
+    model = _library(tmp_path, "ckpt", cls=ConstantLibraryHead)
 
     cv = model.train_cv(train_periods=TRAIN_PERIODS)
 
     record = _read_record(tmp_path / "ckpt")
     assert len(record["folds"]) == N_FOLDS
     for entry, fold in zip(record["folds"], cv.folds):
-        assert entry["metrics"]["test_nan_metric"] is None
-        assert entry["metrics"]["test_finite_metric"] == 1.5
-        assert fold.metrics["test_nan_metric"] is None
-    assert cv.cv_mean["cv_mean_test_finite_metric"] == 1.5
+        assert entry["metrics"]["test_ic"] is None
+        assert isinstance(entry["metrics"]["test_mse"], float)
+        assert fold.metrics["test_ic"] is None
+    assert cv.cv_mean["cv_mean_test_mse"] == pytest.approx(
+        np.mean([fold.metrics["test_mse"] for fold in cv.folds])
+    )
     # A metric undefined in every fold still has its mean, recorded as null.
-    assert record["cv_mean"]["cv_mean_test_nan_metric"] is None
-    assert cv.cv_mean["cv_mean_test_nan_metric"] is None
+    assert record["cv_mean"]["cv_mean_test_ic"] is None
+    assert cv.cv_mean["cv_mean_test_ic"] is None

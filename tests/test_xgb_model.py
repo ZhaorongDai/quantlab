@@ -459,9 +459,9 @@ def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
     tmp_path, tracker, monkeypatch
 ):
     """The Booster fits per-bar ranks (in [0, 1], unlike the raw label), still
-    learns the signal, and `test_mse` / `test_ic` score its prediction
-    against the raw label: a rank-scale prediction is far from a return-scale
-    label in MSE while ranking it well."""
+    learns the signal, and `test_ic` scores its prediction against the raw
+    label; a rank-scale prediction is not on the label's scale, so no error
+    metric is reported."""
     seen = []
     fit_model = XGBoostRegressor._fit_model
 
@@ -488,10 +488,9 @@ def test_a_rank_training_target_trains_and_metrics_score_the_raw_label(
     test_x, test_y = _test_arrays(model)
     pred = model.predict(test_x)
     raw = regression_panel_metrics(pred[..., 0], test_y[..., 0])
-    assert metrics["test_mse"] == pytest.approx(raw["mse"], rel=1e-5)
     assert metrics["test_ic"] == pytest.approx(raw["ic"], rel=1e-5)
     assert metrics["test_ic"] > 0.5
-    assert metrics["test_mse"] > 0.1
+    assert "test_mse" not in metrics
 
 
 def test_a_cs_rank_training_target_trains_loads_and_never_reaches_xgb_train(

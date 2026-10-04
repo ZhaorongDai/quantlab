@@ -50,7 +50,7 @@ from quantlab.model.torch_training import (
     masked_mse,
 )
 from quantlab.label.forward import Forward
-from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.utils.metrics import ic_panel_metrics
 from quantlab.runs.trained_run import TrainedRun
 from tests.torch_heads import MeanContextHead, RecordingHead
 from tests.label_stubs import StubLabel
@@ -356,7 +356,7 @@ def test_train_cv_runs_a_windowed_head_and_folds_start_after_the_warm_up(warm_mo
     assert results[0].fitted_train_window[0][:10] == "2024-01-20"
     for result in results:
         assert result.checkpoint.is_file()
-        assert np.isfinite(result.metrics["test_mse"])
+        assert np.isfinite(result.metrics["test_ic"])
 
 
 def test_a_short_history_before_the_start_warns(warm_model):
@@ -455,9 +455,13 @@ def test_metrics_use_the_raw_label_not_the_transformed_target(tmp_path):
 
     metrics = TrainedRun.open(checkpoint).metrics
     pred = model.predict_panel(_feature_panel(features))["ret"].values[30:]
-    expected = regression_panel_metrics(pred, label[30:])
+    expected = ic_panel_metrics(pred, label[30:])
     for key, value in expected.items():
         assert metrics[f"test_{key}"] == pytest.approx(float(value), rel=1e-5)
+    # The prediction is on the z-scored target's scale, not the label's, so
+    # no error metric compares it with the label.
+    assert model.label_scales == {"ret": "standardized"}
+    assert not any(key.endswith(("mse", "mae", "r2")) for key in metrics)
 
 
 # ---------------------------------------------------------------------------
@@ -545,7 +549,7 @@ def test_a_dl_train_writes_metrics_json_and_reloads_to_the_same_predictions(
     checkpoint = model.train()
 
     metrics = TrainedRun.open(checkpoint).metrics
-    keys = ("loss", "mse", "rmse", "mae", "r2", "ic", "rank_ic", "icir", "rank_icir")
+    keys = ("loss", "ic", "rank_ic", "icir", "rank_icir")
     assert set(metrics) == {f"{s}_{k}" for s in ("train", "val", "test") for k in keys}
     assert metrics == tracker.runs[0].summary
 

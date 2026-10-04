@@ -25,7 +25,6 @@ the training target of ``quantlab.model.training_target``. Both take one
 """
 
 import dataclasses
-import os
 import random
 import warnings
 from abc import ABC, abstractmethod
@@ -48,19 +47,14 @@ from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
 from quantlab.runs.trained_run import (
     TrainedRun,
-    evaluation_paths,
     fold_directory,
     new_trial_directory,
     write_model_config,
     write_model_run,
     write_walk_forward_run,
 )
+from quantlab.utils.evaluation import Segments, evaluate
 from quantlab.utils.fingerprint import DataRecorder
-from quantlab.utils.metrics import (
-    regression_panel_metrics,
-    scores_volatility_level,
-    volatility_level_metrics,
-)
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
@@ -188,9 +182,6 @@ class BaseModel(Component, ABC):
         # The open tracking run while training, a NullRun otherwise, so heads
         # write to it without checking that one is open.
         self._run: TrackingRun = NullRun()
-        # Per-split (timestamps, ic, rank_ic) series of the current fit, filled
-        # by `_compute_metrics` and written by `_write_evaluation_files`.
-        self._ic_series: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
         # What the last collect() read, recorded on the unit train() or
         # train_cv() writes; see training_record.
         self._training_record: dict = {}
@@ -1232,13 +1223,15 @@ class BaseModel(Component, ABC):
         so models trained one after another in one process do not share
         random state. A tracking run named ``experiment_name`` is opened in
         the group ``group`` (see ``_tracking_run``), and the variant's
-        ``_fit`` trains,
-        evaluates and writes the checkpoint ``{experiment_name}{checkpoint_suffix}``
-        and its ``config.json`` into ``run_dir``. When ``_fit`` returns
-        metrics, ``ic_series.csv`` and ``test_predictions.zarr`` are written
-        beside it, see ``_write_evaluation_files``. Last, ``run.json`` makes
-        ``run_dir`` a trained unit (``quantlab.runs.trained_run``), and the
-        fitted window becomes ``fitted_train_bounds``. No trial directory is
+        ``_fit`` trains and writes the checkpoint
+        ``{experiment_name}{checkpoint_suffix}`` and its ``config.json`` into
+        ``run_dir``, returning its ``{split}_loss``. The trained model is then
+        scored by ``_evaluate``, which writes ``ic_series.csv`` and
+        ``test_predictions.zarr`` beside the checkpoint; the losses and the
+        evaluation metrics, merged, go once to the tracking run's summary
+        and, last, to ``run.json``, which makes ``run_dir`` a trained unit
+        (``quantlab.runs.trained_run``); the fitted window becomes
+        ``fitted_train_bounds``. No trial directory is
         created: ``train`` and every ``train_cv`` fold pass the directory
         they lay out themselves.
 
@@ -1258,7 +1251,9 @@ class BaseModel(Component, ABC):
         Returns
         -------
         tuple[Path, dict or None]
-            The absolute checkpoint path and the metrics ``_fit`` returned.
+            The absolute checkpoint path and the metrics: the losses
+            ``_fit`` returned and the ``_evaluate`` metrics, or None when
+            ``_fit`` returned None.
 
         Raises
         ------
@@ -1268,13 +1263,13 @@ class BaseModel(Component, ABC):
         self._set_random_seed(self.config.random_seed)
         run_dir = Path(run_dir).absolute()
         checkpoint = run_dir / f"{experiment_name}{self.checkpoint_suffix}"
-        self._ic_series = {}
-        with self._tracking_run(group, experiment_name):
-            metrics = self._fit(checkpoint)
+        with self._tracking_run(group, experiment_name) as run:
+            losses = self._fit(checkpoint)
             # Written before the run finishes, so a tracker failing to finish
             # it cannot cost the files.
+            metrics = None if losses is None else {**losses, **self._evaluate(run_dir)}
             if metrics is not None:
-                self._write_evaluation_files(run_dir)
+                run.summarize(metrics)
             fitted = self._fitted_train_window()
             write_model_run(
                 run_dir,
@@ -1290,79 +1285,35 @@ class BaseModel(Component, ABC):
             self._fitted_window = fitted
         return checkpoint, metrics
 
-    def _write_evaluation_files(self, run_dir: Path) -> None:
-        """Write the per-bar IC series and the test-segment predictions of a fit.
+    def _evaluate(self, run_dir: Path) -> dict:
+        """Score the trained model on its collected panel and write the evaluation files.
 
-        Called by ``_train_into`` right after ``_fit`` returned metrics, with
-        the run's checkpoint directory.
-
-        ``ic_series.csv`` has the columns ``split, timestamp, ic, rank_ic``:
-        one row per bar of each evaluated split (``train``, ``val``,
-        ``test``, in that order, each in time order), holding the per-bar IC
-        and rank IC of the first label on raw values that ``_compute_metrics``
-        averaged into ``{split}_ic`` / ``{split}_rank_ic`` and turned into
-        ``{split}_icir`` / ``{split}_rank_icir``. A bar the IC skips (fewer
-        than two symbols with both a finite prediction and a finite label, or
-        a constant cross-section) has no row; a cell is empty only when one
-        of the two values is defined and the other is not.
-
-        ``test_predictions.zarr`` is ``predict_panel`` on the test segment:
-        one variable per label on ``(timestamp, symbol)``, over the test bars
-        and every collected symbol. The panel is predicted from the
-        collected features with ``warmup_bars`` bars before the first test
-        bar. No store is written when the test segment has no bars.
+        The model predicts its whole collected panel once with
+        ``predict_panel``, so every bar is predicted from all the history
+        collected before it (a windowed head's warm-up included), and
+        ``quantlab.utils.evaluation.evaluate`` scores every label against
+        its raw values on the ``_fit_segments`` segments, by the model's
+        ``label_scales``. The same predictions give the metrics,
+        ``ic_series.csv`` and ``test_predictions.zarr`` in ``run_dir``.
         """
-        ic_series, test_predictions = evaluation_paths(run_dir)
-        self._write_ic_series(ic_series, self._ic_series)
-
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
         )
-        test_stamps = self._fit_segments(data)[2].timestamp.values
-        if len(test_stamps) == 0:
-            return
-        stamps = data.timestamp.values
-        first, last = np.searchsorted(stamps, [test_stamps[0], test_stamps[-1]])
-        features = data.isel(
-            timestamp=slice(max(0, int(first) - self.warmup_bars), int(last) + 1)
+        train, val, test = (part.timestamp.values for part in self._fit_segments(data))
+        labels = {
+            str(name): label
+            for label in self.config.labels
+            for name in self._variable_names(label)
+        }
+        return evaluate(
+            self.predict_panel(data),
+            data,
+            labels=labels,
+            label_scales=self.label_scales,
+            segments=Segments(train=train, val=val, test=test),
+            test_bounds=self.test_bounds,
+            run_dir=run_dir,
         )
-        predictions = self.predict_panel(features).sel(timestamp=test_stamps)
-        predictions.to_zarr(test_predictions, mode="w")
-
-    @staticmethod
-    def _write_ic_series(path: Path, series: dict) -> None:
-        """Write per-bar IC series to ``path`` as ``ic_series.csv``, atomically.
-
-        ``series`` maps a split name to ``(timestamps, ic, rank_ic)`` arrays
-        of one length. The rows follow the splits ``train``, ``val``,
-        ``test`` that ``series`` holds, each in its given order; a bar where
-        neither value is finite has no row. An ensemble writes its own file
-        through here, so both files share one layout.
-        """
-        rows = []
-        for split in ("train", "val", "test"):
-            if split not in series:
-                continue
-            stamps, ic, rank_ic = series[split]
-            keep = np.isfinite(ic) | np.isfinite(rank_ic)
-            rows.append(
-                pd.DataFrame(
-                    {
-                        "split": split,
-                        "timestamp": stamps[keep],
-                        "ic": ic[keep],
-                        "rank_ic": rank_ic[keep],
-                    }
-                )
-            )
-        frame = (
-            pd.concat(rows, ignore_index=True)
-            if rows
-            else pd.DataFrame(columns=["split", "timestamp", "ic", "rank_ic"])
-        )
-        staging = path.with_name(path.name + ".tmp")
-        frame.to_csv(staging, index=False)
-        os.replace(staging, path)
 
     def _check_hyperparameters(self) -> None:
         """Validate the reserved hyperparameters this variant reads.
@@ -1733,44 +1684,16 @@ class BaseModel(Component, ABC):
 
     @abstractmethod
     def _fit(self, checkpoint: Path) -> dict | None:
-        """Train, evaluate and save once, writing metrics to the open run ``_run``.
+        """Train and save once, logging step metrics to the open run ``_run``.
 
         The checkpoint is saved to ``checkpoint``, with its ``config.json``
-        beside it. Returns the metrics of every evaluated
-        split as one dict keyed ``{split}_{metric}`` with split ``train``,
-        ``val`` (only when there is a validation segment) and ``test``
-        (``train`` records it in ``run.json``, ``train_cv`` averages it),
-        or None when the variant produces no metrics.
+        beside it. Returns the training-target loss of every split as
+        ``{split}_loss``, with split ``train``, ``val`` (only when there is
+        a validation segment) and ``test`` (only when it has bars), or None
+        when the variant produces no metrics, which skips evaluation. The
+        other metrics are not the variant's: ``_train_into`` scores the
+        trained model with ``_evaluate``.
         """
-
-    def _compute_metrics(
-        self, y: np.ndarray, pred: np.ndarray, split: str, timestamps
-    ) -> dict:
-        """Return ``regression_panel_metrics`` for the first label on raw values.
-
-        ``y`` and ``pred`` are ``[T, S, L]``; only label index 0 is scored.
-        ``timestamps`` are the ``T`` bars of ``y`` in order. The per-bar IC
-        and rank IC series behind ``ic`` / ``icir`` and ``rank_ic`` /
-        ``rank_icir`` are kept under ``split`` for ``_write_evaluation_files``,
-        so the file and the metrics ``run.json`` records come from the same
-        predictions.
-        When ``scores_volatility_level`` holds for the first label (a
-        volatility label the model predicts on its own scale), the
-        ``volatility_level_metrics`` ``qlike`` and ``variance_ratio`` are
-        added: the IC only scores how the prediction ranks volatility.
-        """
-        metrics, series = regression_panel_metrics(
-            pred[..., 0], y[..., 0], return_series=True
-        )
-        first = str(self.get_label_names()[0])
-        if scores_volatility_level(self.config.labels[0], self.label_scales.get(first)):
-            metrics.update(volatility_level_metrics(pred[..., 0], y[..., 0]))
-        self._ic_series[split] = (
-            np.asarray(timestamps),
-            series["ic"],
-            series["rank_ic"],
-        )
-        return metrics
 
     @abstractmethod
     def _predict(self, data):

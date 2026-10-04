@@ -81,6 +81,7 @@ from quantlab.runs.trained_run import (
     write_ensemble_run,
 )
 from quantlab.utils.ensemble import average_predictions, member_correlation
+from quantlab.utils.evaluation import write_ic_series
 from quantlab.utils.metrics import (
     ic_panel_metrics,
     scores_volatility_level,
@@ -737,7 +738,7 @@ class BaseEnsemble(Component, ABC):
         Written into ``run_dir``:
 
         - ``ic_series.csv``: the first label's per-bar series behind them, in
-          the layout of a single model's file (``BaseModel._write_ic_series``).
+          the layout of a single model's file (``write_ic_series``).
         - ``test_predictions.zarr``: the combined prediction, one variable
           per label, on the first member's test bars inside the ensemble's
           ``test_bounds``; not written when there are none.
@@ -792,7 +793,7 @@ class BaseEnsemble(Component, ABC):
 
         ic_series_path, test_predictions_path = evaluation_paths(run_dir)
         first = self.members[0]
-        first._write_ic_series(ic_series_path, series)
+        write_ic_series(ic_series_path, series)
         data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
         )
