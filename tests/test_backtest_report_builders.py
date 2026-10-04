@@ -90,6 +90,14 @@ def test_a_run_without_a_model_has_a_signal_line_and_its_selection():
     assert summary["Top N"] == "4"
 
 
+def test_a_run_without_a_constructor_or_a_selection_shows_neither():
+    """Weights given without saying how they were selected: no empty selection lines."""
+    summary = report_summary(
+        _config(model_mode=None, top_n=None, direction=None), {}, bar_interval="1D"
+    )
+    assert list(summary) == ["Bar interval", "Signal", "Rebalance every", "Fees"]
+
+
 def test_each_fold_row_is_a_timeline_row():
     folds = [
         {"fold": 0, "training_window": ("2023-01-02", "2023-12-29"),

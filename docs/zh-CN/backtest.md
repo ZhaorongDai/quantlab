@@ -686,7 +686,7 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 >>> summary = report_summary(held_backtester.get_config(), held.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
-['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+['Bar interval', 'Signal', 'Rebalance every', 'Fees']
 >>> report_windows(held.simulation.value.timestamp.values, held.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
 >>> from quantlab.utils.backtest_report import report_chart_inputs

@@ -321,7 +321,9 @@ def report_summary(
     ``drawdown_span``; ``Model mode``, or ``Signal`` for a run without a
     model (a ``block`` without ``out_of_sample_ranges``); ``Rebalance
     every``; ``Portfolio construction`` (the rule's ``repr``) when the
-    config names a constructor, else ``Top N`` and ``Direction``; ``Fees``;
+    config names a constructor, else ``Top N`` and ``Direction`` for those
+    of the two the config gives a value (weights recording the selection
+    they came from); ``Fees``;
     ``Trained checkpoint`` when ``block`` records one. Every key is read
     with ``.get()`` and a missing value is a dash, so a renamed key degrades
     the page instead of raising. A caller replaces a line by assigning to
@@ -389,8 +391,9 @@ def report_summary(
     if isinstance(constructor, dict):
         summary["Portfolio construction"] = _component_repr(constructor)
     else:
-        summary["Top N"] = _text(config.get("top_n"))
-        summary["Direction"] = _text(config.get("direction"))
+        for label, key in (("Top N", "top_n"), ("Direction", "direction")):
+            if config.get(key) is not None:
+                summary[label] = _text(config[key])
     summary["Fees"] = _text(config.get("fees"))
     if block.get("trained_checkpoint") is not None:
         summary["Trained checkpoint"] = _text(block["trained_checkpoint"])
