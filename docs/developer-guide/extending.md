@@ -215,8 +215,9 @@ set the class attribute `COLUMN_MAP` from store name to shared name:
 `MergedDataset` renames the dataset with it before merging. A dataset that
 overrides `panel` itself, such as one held in memory, accepts
 `variables=None` to narrow the panel to those variables, and ends with
-`record_read(self, start, end, symbols=symbols, variables=variables,
-reread=lambda: self.panel(start, end, symbols, variables))`
+`record_read(self, panel, symbols=symbols, variables=variables,
+reread=lambda: self.panel(start, end, symbols, variables))` with the panel it
+returns
 (`quantlab.utils.fingerprint`), so a run records what it read (see
 [Data fingerprints](internals.md#data-fingerprints)). A dataset that only
 composes other datasets records nothing itself and passes the request on.
@@ -306,9 +307,9 @@ the vendor's capability.
 ## A storage backend
 
 A backend is where a dataset or factor keeps its panel. `DataBackend`
-(`quantlab.base.backend`) has eight abstract methods: `read`, `write`,
+(`quantlab.base.backend`) has nine abstract methods: `read`, `write`,
 `to_internal`, `filter_by_date`, `filter_by_symbol`, `get_xarray_dataset`,
-`get_lazyframe` and `head`. A class that leaves one out cannot be
+`get_lazyframe`, `head` and `resample`. A class that leaves one out cannot be
 instantiated. Two details of the contract are easy to get wrong: the
 `filter_by_*` methods narrow the held data in place, while `head(path, n)`
 must open the store at `path`, read at most `n` rows without loading the
@@ -388,7 +389,7 @@ through a fresh instance of `type(data_backend)`, call its `read(path)` and
 take `get_xarray_dataset(["timestamp", "symbol"])`, and `copy()` and
 `resample()` give the copy a backend of the same type. The backend class
 must therefore construct without arguments. For a medium that does not
-hold an xarray object, implement all eight methods; `PlBackend` in
+hold an xarray object, implement all nine methods; `PlBackend` in
 `quantlab/backend.py` is the reference for a table-shaped medium, and its
 `get_xarray_dataset(indexes)` shows how to turn the named columns into the
 dataset's dimensions. Chunked conversion and `Dataset.update()` also call

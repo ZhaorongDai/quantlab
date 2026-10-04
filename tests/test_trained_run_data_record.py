@@ -82,7 +82,7 @@ def test_a_model_unit_records_its_training_reads(tmp_path):
     assert set(unit.data_fingerprint) == MODEL_KEYS
     assert unit.data_fingerprint == model.training_record
     (factor,) = unit.data_fingerprint["factors.0.dataset"]
-    assert factor["request"]["end"] == _day(bars[29])
+    assert pd.Timestamp(factor["request"]["end"]) == pd.Timestamp(bars[29])
 
 
 def test_a_seed_ensemble_records_on_its_unit_and_its_members_record_none(tmp_path):

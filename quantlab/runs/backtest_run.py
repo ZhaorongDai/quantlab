@@ -307,6 +307,26 @@ def _window(equity: xr.Dataset) -> list[str]:
     return [bar_label(bars[0]), bar_label(bars[-1])]
 
 
+def _under(path: str, fields: set) -> bool:
+    """Return whether component ``path`` lies under one of the config ``fields``."""
+    return any(path == name or path.startswith(f"{name}.") for name in fields)
+
+
+def _outside(record: Mapping, fields: set) -> dict:
+    """Return a data fingerprint without the keys under the config ``fields``."""
+    return {key: value for key, value in record.items() if not _under(key, fields)}
+
+
+def _code_outside(record: Mapping, fields: set) -> dict:
+    """Return a code record without the modules only components under ``fields`` use."""
+    modules = {}
+    for name, entry in (record.get("modules") or {}).items():
+        kept = [path for path in entry["components"] if not _under(path, fields)]
+        if kept:
+            modules[name] = {**entry, "components": kept}
+    return {**record, "modules": modules}
+
+
 def _unit(path: Path | str | None) -> str | None:
     """Return a trained unit's directory as an absolute path, or None."""
     return None if path is None else str(Path(path).absolute())
@@ -554,7 +574,8 @@ class BacktestRun:
         retrained unit is compared with the one the run used; not when an
         override replaces ``model`` or ``model_mode``, since the unit then
         describes another model. The rebuilt tree's code record is compared
-        with the run's ``code`` right away, and a train-mode run's trained
+        with the run's ``code`` right away; a component an override replaces
+        is left out of both comparisons, data and code, on both sides, and a train-mode run's trained
         unit's code is set as ``expected_training_code``; differences only
         warn.
 
@@ -594,9 +615,16 @@ class BacktestRun:
             )
         recipe = {**config, **overrides}
         backtester = rebuild_component(recipe, self._recipe_dir)
-        backtester.expected_fingerprint = self.data_fingerprint
+        # A replaced component reads other data and runs other code than the
+        # one the run recorded: neither side's record of it is compared.
+        replaced = set(overrides)
+        backtester.expected_fingerprint = _outside(self.data_fingerprint, replaced)
         if self.code is not None:
-            compare_code(self.code, code_of(backtester), owner=str(self.path))
+            compare_code(
+                _code_outside(self.code, replaced),
+                _code_outside(code_of(backtester), replaced),
+                owner=str(self.path),
+            )
         retrains_same_model = config.get("model_mode") == "train" and not (
             {"model", "model_mode"} & set(overrides)
         )
@@ -614,7 +642,7 @@ class BacktestRun:
                 backtester.expected_training_fingerprint = trained.data_fingerprint
                 backtester.expected_training_code = trained.code
         backtester.expected_fold_fingerprints = {
-            fold.index: fold.data_fingerprint for fold in self.folds
+            fold.index: _outside(fold.data_fingerprint, replaced) for fold in self.folds
         }
         return backtester
 

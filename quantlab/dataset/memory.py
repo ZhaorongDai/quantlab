@@ -496,7 +496,7 @@ class FrameDataset(MarketDataset):
             data = data[list(variables)]
         panel = XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
         record_read(
-            self, start, end, symbols=symbols, variables=variables,
+            self, panel, symbols=symbols, variables=variables,
             reread=lambda: self.panel(start, end, symbols, variables),
         )
         return panel

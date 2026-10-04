@@ -313,7 +313,7 @@ class Factor(Component, ABC):
             )
             data = self._resample_panel(source).sel(timestamp=window)
         panel = _on_panel_axes(data)
-        record_read(self, start, end, reread=lambda: self.read(start, end))
+        record_read(self, panel, reread=lambda: self.read(start, end))
         return panel
 
     @property

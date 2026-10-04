@@ -669,7 +669,7 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
     assert set(run.data_fingerprint) == {"price_dataset"}
     window = [
         entry for entry in run.data_fingerprint["price_dataset"]
-        if entry["request"]["start"] == first_day
+        if pd.Timestamp(entry["request"]["start"]) == pd.Timestamp(first_day)
     ]
     assert [_day(entry["end"]) for entry in window] == [last_day]
     for fold, record in zip(run.folds, result.folds):

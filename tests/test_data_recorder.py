@@ -72,11 +72,22 @@ def test_each_distinct_request_is_logged_and_hashed_once(prices, hashes):
         assert hashes == []  # nothing is hashed before the run ends
 
     entries = recorder.records["price_dataset"]
-    assert [e["request"]["end"] for e in entries] == ["2024-01-31", "2024-02-15"]
+    assert [e["request"]["end"] for e in entries] == ["2024-01-31T00:00:00", "2024-02-15T00:00:00"]
     assert len(hashes) == 2
     assert entries[0]["n_timestamps"] == 22
     assert entries[0]["request"]["variables"] is None
     assert "adjClose" in entries[0]["variables"]  # no variables: every variable
+
+
+def test_two_spellings_of_the_same_bars_are_one_request(prices, hashes):
+    """The request is the bars read, not the dates as a caller spelled them."""
+    with DataRecorder(keys=[(prices, "price_dataset")]) as recorder:
+        prices.panel("2023-12-30", "2024-01-31")  # a weekend before the first bar
+        prices.panel(pd.Timestamp("2024-01-01"), "2024-01-31 23:00")
+
+    (entry,) = recorder.records["price_dataset"]
+    assert entry["request"]["start"] == "2024-01-01T00:00:00"
+    assert len(hashes) == 1
 
 
 def test_outside_a_recorder_a_read_records_and_hashes_nothing(prices, hashes):
@@ -179,7 +190,8 @@ def test_a_factor_store_read_is_recorded_under_the_factor_key(tmp_path, hashes):
     (entry,) = recorder.records["model.factors.0"]
     assert entry["variables"] == ["past_ret_3"]
     assert entry["request"] == {
-        "start": "2024-01-15", "end": "2024-02-01", "symbols": None, "variables": None,
+        "start": "2024-01-15T00:00:00", "end": "2024-02-01T00:00:00", "symbols": None,
+        "variables": None,
     }
     assert len(hashes) == 1
 

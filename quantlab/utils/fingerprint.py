@@ -13,8 +13,8 @@ could report different digests.
 
 A ``DataRecorder`` is the context a run opens to learn what it read. The two
 read seams, ``BaseDataset.panel`` and ``Factor.read``, call ``record_read``;
-inside an open recorder the read is logged as a request (dataset, start, end,
-symbols, variables), outside one it returns at once. When the recorder closes,
+inside an open recorder the read is logged as a request (dataset, the first
+and last bar read, symbols, variables), outside one it returns at once. When the recorder closes,
 each distinct request is read again once and hashed with
 ``dataset_fingerprint``, and the records are compared with an expected record
 when one is given. This module has no project-internal imports.
@@ -167,8 +167,7 @@ def unrecorded() -> Iterator[None]:
 
 def record_read(
     source,
-    start,
-    end,
+    panel: xr.Dataset,
     *,
     symbols=None,
     variables=None,
@@ -185,8 +184,11 @@ def record_read(
     ----------
     source : BaseDataset or Factor
         The leaf dataset or the factor whose store was read.
-    start, end : str, datetime.date or pd.Timestamp
-        The requested range, as given to the seam.
+    panel : xr.Dataset
+        What the read returned. Its first and last bar are the request's
+        range, so two requests spelled differently (``"2020-01-01"`` and the
+        first bar ``2020-01-02T00:00:00``) that read the same bars are one
+        request. Only its timestamps are read here.
     symbols : sequence, optional
         The requested symbols; ``None`` for every symbol.
     variables : sequence of str, optional
@@ -204,17 +206,22 @@ def record_read(
     A leaf dataset's ``panel`` ends with (``prices`` is a ``StockDataset``)::
 
         record_read(
-            self, start, end, symbols=symbols, variables=variables,
+            self, panel, symbols=symbols, variables=variables,
             reread=lambda: self.panel(start, end, symbols, variables),
         )
     """
     recorder = _ACTIVE.get()
-    if recorder is not None:
-        recorder._log(source, start, end, symbols, variables, reread, store)
+    if recorder is None:
+        return
+    bars = panel["timestamp"].values
+    start, end = (bars.min(), bars.max()) if bars.size else (None, None)
+    recorder._log(source, start, end, symbols, variables, reread, store)
 
 
-def _text(value) -> str:
-    """Return a range end as recorded: strings as given, anything else ISO."""
+def _text(value) -> str | None:
+    """Return a range end as recorded: strings as given, anything else ISO, None as None."""
+    if value is None:
+        return None
     return value if isinstance(value, str) else pd.Timestamp(value).isoformat()
 
 
@@ -293,8 +300,9 @@ class DataRecorder:
     ----------
     records : dict
         ``{key: [entry, ...]}``, filled when the context closes. Each entry is
-        a ``dataset_fingerprint`` record plus ``request``: the requested
-        ``start``, ``end``, ``symbols`` and ``variables`` (``None`` for all).
+        a ``dataset_fingerprint`` record plus ``request``: the first and last
+        bar read (``start``, ``end``), the requested ``symbols`` and
+        ``variables`` (``None`` for all).
 
     Examples
     --------

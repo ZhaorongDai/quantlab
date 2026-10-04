@@ -182,3 +182,30 @@ def test_no_code_outside_the_data_and_fingerprint_modules_knows_what_a_factor_re
         assert not used & gone, relative
         for name, allowed in owners.items():
             assert name not in used or relative in allowed, (relative, name)
+
+
+def test_replaying_a_runs_weights_without_its_model_compares_only_what_it_keeps(tmp_path):
+    """An override replaces a component: its records are left out on both sides."""
+    from loguru import logger
+
+    from quantlab.runs.backtest_run import BacktestRun
+
+    dataset_config = write_price_store(tmp_path, n_bars=N_BARS)
+    bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+    checkpoint = train_checkpoint(make_model(tmp_path / "train", dataset_config, **_model_dates(bars)))
+    first = _backtester(
+        make_stock_dataset(dataset_config),
+        make_model(tmp_path / "model", dataset_config, **_model_dates(bars)),
+        model_mode="load", checkpoint=str(checkpoint), output_dir=str(tmp_path / "runs"),
+    ).run()
+    run = BacktestRun.open(first.run_dir)
+    messages: list[str] = []
+    handler = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        replay = run.rebuild_backtester(model=None, model_mode=None, checkpoint=None)
+        replay.run_weights(run.weights())
+    finally:
+        logger.remove(handler)
+
+    assert set(replay.expected_fingerprint) == {"price_dataset"}
+    assert [m for m in messages if "mismatch" in m] == []

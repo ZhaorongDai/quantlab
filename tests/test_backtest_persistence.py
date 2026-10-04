@@ -430,7 +430,7 @@ def test_the_run_records_fingerprints_of_the_price_and_factor_datasets(overlap_r
     columns = sorted([MARKET.fill_price_column, MARKET.valuation_price_column])
     window = [
         entry for entry in fingerprints["price_dataset"]
-        if entry["request"]["start"] == _day(BARS[OVERLAP_START_BAR])
+        if pd.Timestamp(entry["request"]["start"]) == pd.Timestamp(BARS[OVERLAP_START_BAR])
     ]
     (price,) = window
     # Only the fill and valuation columns are read for the window.

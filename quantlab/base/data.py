@@ -744,7 +744,7 @@ class BaseDataset(Component, ABC):
                 source = source[list(variables)]
             # The view records nothing itself: the source store is the read.
             record_read(
-                self, first - pad, last + pad, symbols=symbols,
+                self, source, symbols=symbols,
                 variables=variables, store=self.config.zarr_file_path,
                 reread=lambda: source,
             )
@@ -759,7 +759,7 @@ class BaseDataset(Component, ABC):
         )
         if not self._reads_source_store():
             record_read(
-                self, start, end, symbols=symbols, variables=variables,
+                self, panel, symbols=symbols, variables=variables,
                 reread=lambda: self.panel(start, end, symbols, variables),
             )
         return panel
