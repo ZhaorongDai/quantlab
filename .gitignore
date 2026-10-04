@@ -252,5 +252,6 @@ output.txt
 # Local experiment logs and scripts
 experiments/
 
-# Contains vendor test-key evaluation results (Sharadar terms forbid publishing them)
-docs/research/us-equity-data-sources.md
+# Research notes stay local; qlib-gats-master.md is cited by code and docs
+docs/research/*
+!docs/research/qlib-gats-master.md
