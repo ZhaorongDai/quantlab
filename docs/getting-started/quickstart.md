@@ -340,7 +340,8 @@ Rebuilt from its run directory, same equity curve: True
 ```
 
 The re-run also compares the data it reads against the fingerprints recorded in the first
-run (a hash of the price and factor inputs) and warns if the underlying data has changed.
+run (a hash of every request for price and factor inputs) and warns if the underlying data has
+changed; the rebuild warns as well when the code of a component or a library version changed.
 
 ## Where to go next
 

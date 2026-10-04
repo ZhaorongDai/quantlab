@@ -277,7 +277,8 @@ A run directory is read through `BacktestRun` (`quantlab.runs.backtest_run`), or
 | `execution`, `rebalance_periods` | The `ExecutionSettings` (`sizing_basis`, `fees`, `slippage`) and the bars between rebalances, from the run's config. |
 | `annualization`, `init_cash` | The trading days per year and session minutes per day the statistics were annualized by, and the cash the simulation started with. |
 | `backtester_class`, `benchmark_source`, `recipe()` | The import path of the backtester class; where the benchmark was read from (its store, or the dataset held in memory; `None` without one); the recipe itself, the config mapping `report_summary` reads. |
-| `data_fingerprint` | A digest and extent of every dataset the run read: the prices, each factor's input, the benchmark, and in train mode the training data. |
+| `data_fingerprint` | What the run read, recorded where it was read: for each dataset or factor store, keyed by its component path (`price_dataset`, `model.factors.0.dataset`, `benchmark_dataset`), one digest and extent per distinct request. It covers the price columns, the delisting check's look-ahead, the rule's price history before the window, each factor's inputs and a merge's inputs. A `run_cv()` run's is the stitched pass; each fold holds its own. Training reads are the trained unit's (`trained_run().data_fingerprint`). |
+| `code` | The code the run used: the quantlab git commit and whether tracked files were changed, the SHA-256 of every module defining a class of the backtester's component tree (framework or component module, with the component paths using it), and the versions of numpy, pandas, xarray, polars, xgboost, torch, vectorbt, KunQuant and cvxpy. |
 | `trained_run()` | The trained unit the backtest used, as a `TrainedRun`: the unit trained in train mode, the checkpoint's unit in load mode, the walk-forward unit for `run_cv()`, the fold's own unit for a fold; `None` for `run_weights()`. |
 | `weights()`, `equity()` | The target weights on `(timestamp, symbol)`; the portfolio `value` and per-bar `returns` on `timestamp`, plus `benchmark_value` and `benchmark_returns` when a benchmark ran. |
 | `metrics()` | The same mapping as `result.metrics`, as JSON holds it: NaN and infinity become `None`, tuples lists. Every run records `execution` (rejected orders and the largest target deviation). A `run()`, a `run_cv()` fold and the stitched `run_cv()` pass also record `portfolio_construction`: `failed_bar_count` and `failed_bars`, the rebalance bars the constructor could not decide (an optimisation that failed or was infeasible), which the backtest held instead, and any event the constructor reported, such as the mean-variance optimiser's `closed_without_risk` (held symbols closed because the risk model had no estimate for them) or the top-n rule's `tie_at_cutoff` (tied symbols a book's cut left out, so the picks were decided by symbol order), with its `count` (symbols over all its bars) and its `bars`, one record per bar that names the symbols or, for `tie_at_cutoff`, counts them. |
@@ -295,7 +296,7 @@ Market(fill_price_column='adjOpen', valuation_price_column='adjClose')
 >>> run.execution
 ExecutionSettings(sizing_basis='fill', fees=0.0005, slippage=0.0005)
 >>> sorted(run.data_fingerprint), run.trained_run().kind
-(['factor[0]:PastReturn', 'price_dataset'], 'model')
+(['model.factors.0.dataset', 'price_dataset'], 'model')
 >>> sorted(run.metrics()) == sorted(result.metrics), run.metrics()["out_of_sample_ranges"]
 (True, [['2024-02-26', '2024-03-22']])
 >>> [spec.name for spec in run.predictions().labels], sorted(run.equity().data_vars)
@@ -477,7 +478,7 @@ config = CrossSectionBacktestConfig(
 )
 ```
 
-The wrapper satisfies the `Predictor` protocol. Its `predict_window` sets a prediction to NaN wherever `is_member` is false on that bar's date (a symbol missing from the membership panel is not a member) and forwards every other member to the model, so it works in train and load mode, in `run_cv()`, and with an ensemble. A stock that leaves the index keeps its prices, so it stays tradable and is never settled as a delisting: its prediction turns NaN and the rule decides what happens to a holding (`TopNConstructor` sells it at the next rebalance, `MeanVarianceOptimizer` holds it at an expected return of 0). The run's prediction panel holds the masked predictions, the membership panel over the window is fingerprinted under `membership`, and `rebuild_backtester()` rebuilds the wrapper with its membership dataset. A bar whose date the membership panel does not cover raises `ValueError`, because unknown membership is not "not a member".
+The wrapper satisfies the `Predictor` protocol. Its `predict_window` sets a prediction to NaN wherever `is_member` is false on that bar's date (a symbol missing from the membership panel is not a member) and forwards every other member to the model, so it works in train and load mode, in `run_cv()`, and with an ensemble. A stock that leaves the index keeps its prices, so it stays tradable and is never settled as a delisting: its prediction turns NaN and the rule decides what happens to a holding (`TopNConstructor` sells it at the next rebalance, `MeanVarianceOptimizer` holds it at an expected return of 0). The run's prediction panel holds the masked predictions, the membership panel's `is_member` over the window is recorded under `model.membership`, and `rebuild_backtester()` rebuilds the wrapper with its membership dataset. A bar whose date the membership panel does not cover raises `ValueError`, because unknown membership is not "not a member".
 
 Masking the prices with membership instead (a price panel `.where(is_member)`) makes a leaver untradable on its first non-member bar and settles it at its last member close, a sale that never happens live.
 
@@ -536,7 +537,7 @@ With `mode="offline"` the run is written under `wandb/` (or `WANDB_DIR`) as the 
 
 ### Rebuild a run
 
-The run's config names every class by its dotted import path, so `rebuild_backtester()` builds the same backtester, including its price dataset and model, and `run()` repeats the backtest into a new directory. The run's data fingerprint becomes the rebuilt backtester's `expected_fingerprint`: when the data changed since the original run, the rebuilt run logs a warning per changed dataset and continues. `rebuild(field)` rebuilds one component field alone.
+The run's config names every class by its dotted import path, so `rebuild_backtester()` builds the same backtester, including its price dataset and model, and `run()` repeats the backtest into a new directory. The run's data fingerprint becomes the rebuilt backtester's `expected_fingerprint` (each `run_cv()` fold's its `expected_fold_fingerprints`, a train-mode run's trained unit's its `expected_training_fingerprint`): when the data changed since the original run, the rebuilt run logs a warning per changed request, naming the dataset's component path (and the fold), and continues. The rebuild also compares the code: a changed module or library version logs a warning naming the module and the component paths using it, component modules before framework modules. `rebuild(field)` rebuilds one component field alone.
 
 ```python
 >>> run = BacktestRun.open(result.run_dir)
@@ -770,7 +771,6 @@ To keep the top-N rule with another score, `DecisionInputs(dataset, TopNConstruc
 | `train_bounds`, `test_bounds` | the training and test windows: configured, or after `load` those the checkpoint records |
 | `fitted_train_bounds` | the training window actually fitted, after the purge; the in-sample split starts from it |
 | `predict_window(start, end)` | the prediction panel of a window; the predictor requests its own features and warm-up |
-| `fingerprint_inputs(start, end)`, `training_fingerprint_inputs()` | `(key, factor or label, strategy, first, last)` entries that the backtester hashes into `data_fingerprint` |
 | `collect()`, `train()` | train mode; `train` returns the checkpoint |
 | `check_checkpoint(path)`, `load(path)` | load mode; the check runs before any feature is computed |
 | `get_config()`, `from_config(config)` | the run's config, and its rebuild (`rebuild_backtester`) through the class named in `"name"` |
@@ -781,10 +781,10 @@ The backtester reads no model config and calls no other model method. A config w
 >>> from typing import get_protocol_members
 >>> from quantlab.base.backtest import Predictor
 >>> sorted(get_protocol_members(Predictor))
-['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
+['check_checkpoint', 'collect', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds']
 ```
 
-A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble unit, the run's `trained_run()`, and records the ensemble's checkpoint as `trained_checkpoint`; in load mode `checkpoint` is that `run.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs, so the data fingerprints carry the keys of a single model, and `rebuild("model")` rebuilds the ensemble from its `get_config()` in the run's config. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
+A `SeedEnsemble` (see Average several seeds in the model guide) is such a predictor. In train mode `run()` trains every seed into one ensemble unit, the run's `trained_run()`, and records the ensemble's checkpoint as `trained_checkpoint`; in load mode `checkpoint` is that `run.json`, and the in-sample split starts from the ensemble's `fitted_train_bounds`, which covers the windows its members' records state. The predictions are the members' averaged cross-sectional z-scores. The members read the same inputs once, so the data fingerprint records them once, under the ensemble's component path (`model.model.factors.0.dataset`), and `rebuild("model")` rebuilds the ensemble from its `get_config()` in the run's config. `MomentumHead` has nothing to fit, so its three seeds agree and the weights equal the single model's in the first session.
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -806,7 +806,7 @@ A `SeedEnsemble` (see Average several seeds in the model guide) is such a predic
 True
 >>> replayed_run = BacktestRun.open(replayed.run_dir)
 >>> replayed_run.rebuild("model").seeds, sorted(replayed_run.data_fingerprint)
-((0, 1, 2), ['factor[0]:PastReturn', 'price_dataset'])
+((0, 1, 2), ['model.model.factors.0.dataset', 'price_dataset'])
 >>> replayed_run.trained_run() == unit
 True
 ```

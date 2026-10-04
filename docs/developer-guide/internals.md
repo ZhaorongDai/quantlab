@@ -4,8 +4,8 @@ This page describes the machinery that keeps quantlab's long-running jobs
 safe to interrupt and its results safe to trust: how downloads and
 conversions resume where they stopped, how a store is rebuilt without losing
 the old one, why three package `__init__.py` files stay empty, how files are
-written atomically, and how data fingerprints tie a
-backtest to the data it read. It is written for contributors who change these
+written atomically, and how data fingerprints and code records tie a
+run to the data it read and the code it ran. It is written for contributors who change these
 parts of the code or add a component that has to cooperate with them. Users
 only need the behaviour, which [Data sources](../user-guide/data-sources.md),
 [Datasets](../user-guide/datasets.md) and
@@ -176,9 +176,9 @@ rename, as described above.
 
 ## Data fingerprints
 
-A backtest is reproducible only if the data under it has not changed, and
-data does change: stores are appended to, and adjusted prices are restated
-after splits and dividends. `quantlab.utils.fingerprint.dataset_fingerprint`
+A run is reproducible only if the data under it has not changed, and data
+does change: stores are appended to, and adjusted prices are restated after
+splits and dividends. `quantlab.utils.fingerprint.dataset_fingerprint`
 records, for one panel and a list of variables, a SHA-256 digest over the
 timestamps, the symbol names and the values, plus the first and last
 timestamp and the axis sizes. The panel is sorted first so axis order does
@@ -186,19 +186,84 @@ not matter, and every NaN is rewritten to one canonical bit pattern and every
 `-0.0` to `0.0`, because otherwise two reads of identical data could hash
 differently.
 
-The backtester records one fingerprint for the two price columns it trades
-on, one per factor over the dataset columns that factor consumes (and over the
-factor store itself when features are read from a store), and in train mode
-one per factor and label over the training data. The model says what it reads:
-`fingerprint_inputs(start, end)` and `training_fingerprint_inputs()` return
-`(key, factor or label, strategy, first, last)` entries, warm-up included,
-and the backtester only hashes them, so a predictor that composes several
-models reports the union of its members' inputs. They are recorded in the run
-directory's `run.json` (`BacktestRun.data_fingerprint`). A backtester rebuilt
-by `BacktestRun.rebuild_backtester()` takes them as its
-`expected_fingerprint`, compares its own fingerprints with them and logs a
-warning for every key that differs or is missing.
-It never raises, because changed data can still be worth backtesting. If the
-run fails partway, a partial comparison runs before the error propagates, with
-a note that an interrupted read may explain the difference; that diagnostic
-swallows its own errors so it can never replace the original exception.
+Nothing decides what to fingerprint. The data is recorded where it is read
+(ADR 0021). A run opens a `DataRecorder`, and the two read seams log every
+request made while it is open:
+
+- `BaseDataset.panel(start, end, symbols=None, variables=None)` on a leaf
+  dataset, a store or a panel held in memory;
+- `Factor.read(start, end)`, a factor store.
+
+Each call ends with `record_read(...)`. Outside every recorder that call
+returns at once, so research reads cost nothing. With recorders nested, only
+the innermost logs. `unrecorded()` keeps a block out of all of them; the
+backtester uses it around its training step. A `MergedDataset` asks each
+input for its own names of the requested variables and records nothing
+itself. A resampled dataset without its own store records the source store
+it read.
+
+When the recorder closes, each distinct request is read once more and hashed
+once, over the requested variables, or every variable when none were
+requested. `records` maps each key to the list of requests in the order they
+were first read: a `dataset_fingerprint` record plus the `request` (`start`,
+`end`, `symbols`, `variables`).
+
+The keys are component paths, so one dataset read by several consumers is
+one key:
+
+| Opened by | Keys are paths in | Record stored in |
+| --- | --- | --- |
+| `BaseModel.collect()`, an ensemble's `collect()` | the model (`factors.0.dataset`) | the `run.json` of the unit `train()` or `train_cv()` writes next (`TrainedRun.data_fingerprint`); members and folds hold none |
+| `run()`, `run_weights()` | the backtester (`price_dataset`, `model.factors.0.dataset`) | the run's `run.json` (`BacktestRun.data_fingerprint`) |
+| each `run_cv()` fold | the backtester | the fold's child run |
+| the `run_cv()` stitched pass | the backtester | the run's `run.json` |
+
+A dataset found at several paths takes the first. A dataset outside the tree
+is keyed by its class and store path.
+
+A recorder given an expected record compares on close, per key and request,
+by `digest` alone. A changed, missing or extra key or request logs one
+warning that shows the ranges and sizes as explanation. It never raises,
+because changed data can still be worth backtesting.
+`BacktestRun.rebuild_backtester()` passes the run's record as
+`expected_fingerprint`, each fold's as `expected_fold_fingerprints`, and, for
+a train-mode run, the trained unit's as `expected_training_fingerprint`. The
+last is compared with `compare_records` once the retrained unit is written.
+
+If the run fails partway, what was read so far is hashed and compared before
+the error propagates. A key or request not read yet is skipped, and every
+warning carries a note that an interrupted read may explain the difference.
+That diagnostic swallows its own errors, so it can never replace the original
+exception.
+
+### Code records
+
+`quantlab.utils.code_record.code_record` records the code a run used. The
+`run.json` of a backtest run and of a top trained unit holds it as `code`
+(`BacktestRun.code`, `TrainedRun.code`), built by
+`quantlab.base.component.code_of(root)` over the component tree:
+
+- `git` holds the commit of the repository quantlab is imported from and
+  `dirty`, which covers tracked files only. It is `None` outside a working
+  tree. It is context and is never compared.
+- `modules` holds, for every module defining a class of the tree or a base
+  class of one:
+  - the SHA-256 of its source file;
+  - whether it is a framework module, meaning a quantlab module outside
+    `predefined/` and `quantlab.dataset`, or a component module, meaning a
+    shipped implementation or a user's own class;
+  - the component paths that use it.
+
+  Standard-library and installed third-party modules, and classes without a
+  source file, are skipped. quantlab's own modules are recorded however it is
+  installed.
+- `libraries` holds the installed versions of `LIBRARIES` (numpy, pandas,
+  xarray, polars, xgboost, torch, vectorbt, KunQuant and cvxpy). They are
+  read from package metadata without importing the packages.
+
+`compare_code` warns once per changed, missing or extra module digest, with
+component modules before framework modules and each warning naming the
+component paths, and once per changed library version.
+`rebuild_backtester()` compares the rebuilt tree with the run at once. A
+train-mode rebuild also compares the retrained unit with the unit the run
+used (`expected_training_code`).

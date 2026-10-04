@@ -60,7 +60,7 @@ working example.
 
 [Internals](developer-guide/internals.md) describes the machinery that makes long jobs safe to
 interrupt: resumable downloads and conversions, rebuilds, the volume check, atomic writes and
-data fingerprints.
+data fingerprints and code records.
 
 ## Topic reference
 

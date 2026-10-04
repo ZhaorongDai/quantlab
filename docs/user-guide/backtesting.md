@@ -502,7 +502,7 @@ trained unit included); only the run layer names its files.
 | File | Content | Read with |
 |---|---|---|
 | `config.json` | The recipe: every config field, with the nested price dataset, model, construction rule and tracker configs. Enough to rebuild the run, and nothing else. | `rebuild(field)`, `rebuild_backtester(**overrides)` |
-| `run.json` | Written last: the format version, the kind (`run`, `run_cv`, `run_weights`, or `fold` for a fold of a `run_cv()` run), the window, the `market` (fill and valuation price columns, for tools that read the run without importing the backtester class), the config fields that hold components, the data fingerprints and the trained unit the backtest used. A directory of another format version, or without `run.json`, is refused with a message to re-run it. | `kind`, `window`, `market`, `data_fingerprint`, `trained_run()` |
+| `run.json` | Written last: the format version, the kind (`run`, `run_cv`, `run_weights`, or `fold` for a fold of a `run_cv()` run), the window, the `market` (fill and valuation price columns, for tools that read the run without importing the backtester class), the config fields that hold components, the data fingerprints, the code record and the trained unit the backtest used. A directory of another format version, or without `run.json`, is refused with a message to re-run it. | `kind`, `window`, `market`, `data_fingerprint`, `code`, `trained_run()` |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. | `weights()` |
 | `equity.zarr` | Portfolio `value` and per-bar `returns` on `timestamp`. | `equity()` |
 | `metrics.json` | The metric blocks described above. | `metrics()` |
@@ -575,15 +575,19 @@ train-mode run produced, load the unit it trained:
 
 Data can change under a stored backtest: stores get appended to, and adjusted
 prices are restated after every split or dividend. The data fingerprints the
-run records (`BacktestRun.data_fingerprint`) guard against this. A
-fingerprint is a SHA-256 hash of the values the run consumed, together with
-the first and last timestamp and the axis sizes; one is recorded for the
-price data, for each factor's input, and in train mode for the training data.
+run records (`BacktestRun.data_fingerprint`) guard against this. Every read a
+component makes is recorded where it is read, keyed by the dataset's component
+path, one entry per distinct request: a SHA-256 hash of the values read,
+together with the first and last timestamp and the axis sizes. That covers
+the price columns, the rule's price history before the window, each factor's
+inputs and a merged dataset's inputs; a `run_cv()` fold records its own, and
+the training data is recorded on the trained unit.
 `rebuild_backtester()` sets them as the rebuilt backtester's
-`expected_fingerprint`, which compares its own fingerprints against them and
-logs a warning such as
-`data fingerprint mismatch for 'price_dataset' (differing fields: digest, end)`
-for each difference. It does not refuse to run, because a backtest on updated
+`expected_fingerprint`, which compares by digest alone and logs a warning such as
+`data fingerprint mismatch for 'price_dataset', request 2024-02-12..2024-03-22,
+variables ['adjClose', 'adjOpen']: digest differs (expected ..., got ...)`
+for each difference. The run also records its code (`BacktestRun.code`), and a
+rebuild warns when a component's module or a library version changed. It does not refuse to run, because a backtest on updated
 data is often exactly what you want; the warning makes sure it is not a
 surprise.
 

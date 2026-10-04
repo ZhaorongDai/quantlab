@@ -220,7 +220,7 @@ trained run as well); only the run layer names its files. What it holds, by read
 | Reader | Contents |
 |--------|----------|
 | `rebuild(field)`, `rebuild_backtester(**overrides)` | the rebuild recipe: the backtester's config with its nested datasets, model, rule and tracker; a dataset held in memory is copied into the run directory, named by its component path |
-| `kind`, `window`, `market`, `data_fingerprint`, `trained_run()` | the run's record, `run.json`, written last: the entry point that ran, the bars simulated, the fill and valuation price columns, a SHA-256 digest, date range and shape of each input the run read, and the trained unit the backtest used |
+| `kind`, `window`, `market`, `data_fingerprint`, `trained_run()` | the run's record, `run.json`, written last: the entry point that ran, the bars simulated, the fill and valuation price columns, a SHA-256 digest, date range and shape of each request the run made for its inputs, keyed by component path, and the trained unit the backtest used |
 | `execution`, `rebalance_periods` | the execution settings and the rebalance period of the recipe |
 | `weights()` | the target-weight panel, one `weight` per `(timestamp, symbol)` |
 | `equity()` | the simulated portfolio value and per-bar returns |
@@ -238,13 +238,18 @@ construction. The out-of-sample part is everything else. Both are reported separ
 backtest that accidentally overlaps its training data is visible rather than silently
 flattering.
 
-The fingerprints make re-runs checkable. When a run is rebuilt with `rebuild_backtester()`, the
-new run computes the same digests and logs a warning for every input whose data differs from
-what the original run read, for example because a store was updated with newer prices.
+The fingerprints make re-runs checkable. A run records its data where it reads it, whatever
+component reads it, and records its code (`code`): the quantlab commit, a digest of every module
+its components come from and the library versions. When a run is rebuilt with
+`rebuild_backtester()`, the new run computes the same digests and logs a warning for every
+request whose data differs from what the original run read, for example because a store was
+updated with newer prices, and for every module or library version that changed. A trained unit
+records its training data and its code the same way, and a train-mode rebuild compares the
+retrained unit with it.
 
 A cross-validated backtest (`run_cv()`) holds the same for the stitched curve across all folds,
 and each fold is a child run of kind `"fold"` (`BacktestRun.folds`) with its own weights,
-equity, settlements and metrics and its own trained unit. See [backtesting](backtesting.md).
+equity, settlements and metrics, its own data fingerprint and its own trained unit. See [backtesting](backtesting.md).
 
 ## Package layout
 

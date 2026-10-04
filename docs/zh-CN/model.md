@@ -70,7 +70,7 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 
 `train()` 返回检查点的绝对路径。每次调用都会新建一个试验目录 `checkpoints/XGBoostRegressor_trial_<时间戳>/`，它是一个*训练单元*（trained unit），里面有检查点文件、`config.json`、`ic_series.csv`、`test_predictions.zarr`，以及最后写入的 `run.json`。`config.json` 只保存重建模型所需的内容：`get_config()`。`run.json` 描述这个单元：配置的训练窗口和清除之后实际拟合的训练窗口（见下文“清除标签的前视”）、测试窗口、一份 `trained_on` 记录（模型训练时见过的特征名、标签名和标的）、这次运行的评分（见下文“评估指标”），以及库模型头实际训练所用的超参数（`resolved_hyperparameters`）。另外两个文件保存逐 bar 的 IC 序列和测试段的预测（见下文“IC 序列与保存的预测”）。
 
-读回一次运行要通过 `quantlab.runs.trained_run` 中的 `TrainedRun`，而不是直接打开它的文件：只有这个模块读写这些文件（ADR 0018）。`TrainedRun.open` 接受单元目录、它的 `run.json` 或检查点，返回单元的 `kind`、各个窗口、`metrics`、`trained_on`、`resolved_hyperparameters`、`checkpoint`、`config` 以及评估文件的路径。`quantlab.runs.directory` 中的 `open_run` 能打开任何运行目录并返回对应的类型，这里是 `TrainedRun`。`run.json` 里的路径都相对于单元，所以从另一台机器拷来的试验目录照样能打开。没有 `run.json`，或用别的 `format_version` 写的目录会被拒绝，并提示重新训练。
+读回一次运行要通过 `quantlab.runs.trained_run` 中的 `TrainedRun`，而不是直接打开它的文件：只有这个模块读写这些文件（ADR 0018）。`TrainedRun.open` 接受单元目录、它的 `run.json` 或检查点，返回单元的 `kind`、各个窗口、`metrics`、`trained_on`、`resolved_hyperparameters`、`checkpoint`、`config`、评估文件的路径、`data_fingerprint`（`collect()` 读取的内容，以模型内的组件路径为键，例如 `factors.0.dataset`）以及 `code`（quantlab 的 commit、模型组件树中每个定义了类的模块的摘要和各库版本）。后两项只记录在读取数据的那个单元上：模型本身，或集成单元、walk-forward 单元，不记录在它们的成员或各折上。`quantlab.runs.directory` 中的 `open_run` 能打开任何运行目录并返回对应的类型，这里是 `TrainedRun`。`run.json` 里的路径都相对于单元，所以从另一台机器拷来的试验目录照样能打开。没有 `run.json`，或用别的 `format_version` 写的目录会被拒绝，并提示重新训练。
 
 ```python
 >>> from quantlab.runs.trained_run import TrainedRun
@@ -130,7 +130,7 @@ Data variables:
 True
 ```
 
-`check_checkpoint(path)` 只做同样的变量检查，不加载任何东西；它返回检查点的 `TrainedRun` 或抛出 `ValueError`。`predict_window(start, end)` 自己请求特征（在 `start` 之前带上模型头的预热），返回截到 `start`..`end` 的预测。`fitted_train_bounds` 是清除之后实际拟合的训练窗口：`train()` 之后是模型拟合的窗口，`load()` 之后是记录中写的窗口。回测器通过 `Predictor` 协议使用这些方法，以及 `train_bounds`、`test_bounds`、`labels`、`label_delays` 和指纹条目（见回测指南），并用类方法 `from_config` 从配置重建模型。
+`check_checkpoint(path)` 只做同样的变量检查，不加载任何东西；它返回检查点的 `TrainedRun` 或抛出 `ValueError`。`predict_window(start, end)` 自己请求特征（在 `start` 之前带上模型头的预热），返回截到 `start`..`end` 的预测。`fitted_train_bounds` 是清除之后实际拟合的训练窗口：`train()` 之后是模型拟合的窗口，`load()` 之后是记录中写的窗口。回测器通过 `Predictor` 协议使用这些方法，以及 `train_bounds`、`test_bounds`、`labels` 和 `label_delays`（见回测指南），并用类方法 `from_config` 从配置重建模型。
 
 ```python
 >>> XGBoostRegressor(config).check_checkpoint(checkpoint).kind
@@ -994,7 +994,7 @@ MLflow 3 打开本地 `file:` 存储时要求设置 `MLFLOW_ALLOW_FILE_STORE=tru
 
 `TorchModel` 的模型头就是窗口、网络和损失，再加上它覆写的可选钩子；“训练 torch 模型”里的 `MinimalHead` 就是一个完整的例子，`CorrHead` 演示了可选钩子。`quantlab/model/predefined/gats.py` 和 `quantlab/model/predefined/master.py` 是复现已发表模型的完整模型头：它们演示了由带默认值的超参数构建网络、目标变换、两种停止规则，以及（MASTER 中）在构造时对照因子名检查的超参数。训练面板、warm-up、训练目标及其掩码、数据加载器的播种、epoch 循环、评估、按 `where` 放回预测、指标和检查点由基类负责。
 
-新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测运行的配方才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的）；`fingerprint_inputs` / `training_fingerprint_inputs`（它报告读取了哪些数据）；`_member_seed(k)`（集成 `run.json` 里为第 k 个成员记录的种子）。`ModelEnsemble` 是最小的完整示例。
+新的集成继承 `quantlab.model.ensemble.BaseEnsemble`，把成员（至少两个模型；多个成员预测的同名标签配置必须相同）传给 `BaseEnsemble.__init__`，并实现 `get_config` 和 `from_config`；`get_config` 必须在 `"name"` 中写明类路径，回测运行的配方才能重建它。其余都有默认实现，对任何类的成员都适用。可选钩子有：`_combine(predictions)`（合成规则，见"组合不同的模型"）；`_collect()`、`_member_predictions(start, end)` 和 `_member_panel_predictions()`（成员读取相同数据时，共用一份面板或一次特征请求，`SeedEnsemble` 就是这样做的；`collect()` 把 `_collect()` 读取的内容记录在集成的单元上）；`_member_seed(k)`（集成 `run.json` 里为第 k 个成员记录的种子）。`ModelEnsemble` 是最小的完整示例。
 
 ## 注意事项
 

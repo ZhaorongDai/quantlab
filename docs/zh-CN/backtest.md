@@ -277,7 +277,8 @@ out_of_sample -5.61 -4.27 13
 | `execution`、`rebalance_periods` | 来自运行配置的 `ExecutionSettings`（`sizing_basis`、`fees`、`slippage`）与调仓间隔 bar 数。 |
 | `annualization`、`init_cash` | 统计年化所用的每年交易日数与每日交易分钟数，以及模拟的初始资金。 |
 | `backtester_class`、`benchmark_source`、`recipe()` | 回测器类的导入路径；基准的来源（其 store，或内存中持有的数据集；没有基准时为 `None`）；重建配方本身，即 `report_summary` 读取的配置映射。 |
-| `data_fingerprint` | 本次运行读取的每个数据集的摘要和范围：价格、每个因子的输入、基准，train 模式下还有训练数据。 |
+| `data_fingerprint` | 本次运行读了什么，在读取处记录：每个数据集或因子 store 按其组件路径（`price_dataset`、`model.factors.0.dataset`、`benchmark_dataset`）为键，每个不同的请求一条摘要和范围。覆盖价格列、退市判断向后读取的部分、规则在窗口之前读取的价格历史、每个因子的输入以及合并数据集的各个输入。`run_cv()` 运行记录的是拼接段，每一折记录自己的读取。训练读取记录在训练单元上（`trained_run().data_fingerprint`）。 |
+| `code` | 运行所用的代码：quantlab 的 git commit 以及已跟踪文件是否有改动，回测器组件树中每个定义了类的模块的 SHA-256（区分框架模块与组件模块，并列出使用它的组件路径），以及 numpy、pandas、xarray、polars、xgboost、torch、vectorbt、KunQuant 和 cvxpy 的版本。 |
 | `trained_run()` | 回测所用的训练单元，即一个 `TrainedRun`：train 模式下是训练出的单元，load 模式下是 checkpoint 所在的单元，`run_cv()` 是 walk-forward 单元，一折则是该折自己的单元；`run_weights()` 为 `None`。 |
 | `weights()`、`equity()` | `(timestamp, symbol)` 上的目标权重；`timestamp` 上的组合 `value` 与每根 bar 的 `returns`，跑了基准时另有 `benchmark_value` 和 `benchmark_returns`。 |
 | `metrics()` | 与 `result.metrics` 相同的映射，按 JSON 保存的形式：NaN 和无穷大变为 `None`，元组变为列表。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
@@ -295,7 +296,7 @@ Market(fill_price_column='adjOpen', valuation_price_column='adjClose')
 >>> run.execution
 ExecutionSettings(sizing_basis='fill', fees=0.0005, slippage=0.0005)
 >>> sorted(run.data_fingerprint), run.trained_run().kind
-(['factor[0]:PastReturn', 'price_dataset'], 'model')
+(['model.factors.0.dataset', 'price_dataset'], 'model')
 >>> sorted(run.metrics()) == sorted(result.metrics), run.metrics()["out_of_sample_ranges"]
 (True, [['2024-02-26', '2024-03-22']])
 >>> [spec.name for spec in run.predictions().labels], sorted(run.equity().data_vars)
@@ -477,7 +478,7 @@ config = CrossSectionBacktestConfig(
 )
 ```
 
-包装器满足 `Predictor` 协议。它的 `predict_window` 在该 bar 日期的 `is_member` 为假时把预测置为 NaN（成分面板中没有的标的视为非成分股），其余成员全部转发给模型，因此适用于训练与加载两种模式、`run_cv()` 以及 ensemble。被剔除出指数的股票保留价格，因此仍可交易，也不会被当作退市结算：它的预测变为 NaN，持仓如何处理由规则决定（`TopNConstructor` 在下一个调仓 bar 卖出，`MeanVarianceOptimizer` 按预期收益 0 持有）。运行的预测面板保存遮蔽后的预测，窗口内的成分面板以 `membership` 为键记入指纹，`rebuild_backtester()` 会连同成分数据集一起重建包装器。成分面板未覆盖的 bar 日期会抛出 `ValueError`，因为成分未知不等于“非成分股”。
+包装器满足 `Predictor` 协议。它的 `predict_window` 在该 bar 日期的 `is_member` 为假时把预测置为 NaN（成分面板中没有的标的视为非成分股），其余成员全部转发给模型，因此适用于训练与加载两种模式、`run_cv()` 以及 ensemble。被剔除出指数的股票保留价格，因此仍可交易，也不会被当作退市结算：它的预测变为 NaN，持仓如何处理由规则决定（`TopNConstructor` 在下一个调仓 bar 卖出，`MeanVarianceOptimizer` 按预期收益 0 持有）。运行的预测面板保存遮蔽后的预测，窗口内成分面板的 `is_member` 以 `model.membership` 为键记入指纹，`rebuild_backtester()` 会连同成分数据集一起重建包装器。成分面板未覆盖的 bar 日期会抛出 `ValueError`，因为成分未知不等于“非成分股”。
 
 反过来用成分遮蔽价格（价格面板 `.where(is_member)`）会让被剔除的股票在第一个非成分 bar 变得不可交易，并以最后一个成分日的收盘价结算，而实盘中这笔卖出从未发生。
 
@@ -536,7 +537,7 @@ WandbTracker(project='momentum_backtests', entity=None, mode='offline')
 
 ### 重建一次运行
 
-运行的配置用点分导入路径记录每个类，所以 `rebuild_backtester()` 能重建出相同的回测器，包括它的价格数据集和模型，`run()` 会把这次回测重做一遍，写入新目录。运行的数据指纹成为重建后回测器的 `expected_fingerprint`：如果自原始运行以来数据发生了变化，重建的运行会对每个变化的数据集记录一条警告并继续。`rebuild(field)` 单独重建一个组件字段。
+运行的配置用点分导入路径记录每个类，所以 `rebuild_backtester()` 能重建出相同的回测器，包括它的价格数据集和模型，`run()` 会把这次回测重做一遍，写入新目录。运行的数据指纹成为重建后回测器的 `expected_fingerprint`（`run_cv()` 每一折的指纹成为 `expected_fold_fingerprints`，train 模式运行所用训练单元的指纹成为 `expected_training_fingerprint`）：如果自原始运行以来数据发生了变化，重建的运行会对每个变化的请求记录一条警告，写明数据集的组件路径（以及是哪一折），然后继续。重建时还会比对代码：模块或库版本有变化时记录警告，写明模块和使用它的组件路径，组件模块排在框架模块之前。`rebuild(field)` 单独重建一个组件字段。
 
 ```python
 >>> run = BacktestRun.open(result.run_dir)
@@ -770,7 +771,6 @@ timestamp
 | `train_bounds`、`test_bounds` | 训练窗口和测试窗口：配置中的，或 `load` 之后检查点记录的 |
 | `fitted_train_bounds` | 清除（purge）之后实际拟合的训练窗口；样本内划分从它出发 |
 | `predict_window(start, end)` | 一个窗口的预测面板；预测器自己请求特征和预热 |
-| `fingerprint_inputs(start, end)`、`training_fingerprint_inputs()` | `(key, 因子或标签, 策略, first, last)` 条目，回测器把它们哈希进 `data_fingerprint` |
 | `collect()`、`train()` | 训练模式；`train` 返回检查点 |
 | `check_checkpoint(path)`、`load(path)` | 加载模式；检查在计算任何特征之前运行 |
 | `get_config()`、`from_config(config)` | 运行的配置，以及通过 `"name"` 指明的类对它的重建（`rebuild_backtester`） |
@@ -781,10 +781,10 @@ timestamp
 >>> from typing import get_protocol_members
 >>> from quantlab.base.backtest import Predictor
 >>> sorted(get_protocol_members(Predictor))
-['check_checkpoint', 'collect', 'fingerprint_inputs', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds', 'training_fingerprint_inputs']
+['check_checkpoint', 'collect', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds']
 ```
 
-`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成单元（即运行的 `trained_run()`），并把集成的 checkpoint 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `run.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入，所以数据指纹的键与单个模型相同；`rebuild("model")` 用运行配置中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
+`SeedEnsemble`（见 model 指南的“平均多个种子”）就是这样的预测器。训练模式下，`run()` 把每个种子训练到同一个集成单元（即运行的 `trained_run()`），并把集成的 checkpoint 记为 `trained_checkpoint`；加载模式下，`checkpoint` 就是这个 `run.json`，样本内划分从集成的 `fitted_train_bounds` 出发，它覆盖各成员记录中写明的窗口。预测是各成员截面 z-score 的平均。各成员读取相同的输入且只读一次，所以数据指纹只记一次，键位于集成的组件路径下（`model.model.factors.0.dataset`）；`rebuild("model")` 用运行配置中的 `get_config()` 重建集成。`MomentumHead` 没有需要拟合的内容，三个种子的结果一致，所以权重与第一段会话中单个模型的权重相同。
 
 ```python
 >>> from quantlab.model.predefined.seed_ensemble import SeedEnsemble
@@ -806,7 +806,7 @@ timestamp
 True
 >>> replayed_run = BacktestRun.open(replayed.run_dir)
 >>> replayed_run.rebuild("model").seeds, sorted(replayed_run.data_fingerprint)
-((0, 1, 2), ['factor[0]:PastReturn', 'price_dataset'])
+((0, 1, 2), ['model.model.factors.0.dataset', 'price_dataset'])
 >>> replayed_run.trained_run() == unit
 True
 ```

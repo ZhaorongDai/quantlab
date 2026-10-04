@@ -212,7 +212,14 @@ from the shared ones (`open`, `high`, `low`, `close`, `volume`, `amount`),
 set the class attribute `COLUMN_MAP` from store name to shared name:
 `to_shared_names` applies it, `_to_kunquant` can export through
 `self._kunquant_arrays(self.to_shared_names(data), data_columns)`, and a
-`MergedDataset` renames the dataset with it before merging.
+`MergedDataset` renames the dataset with it before merging. A dataset that
+overrides `panel` itself, such as one held in memory, accepts
+`variables=None` to narrow the panel to those variables, and ends with
+`record_read(self, start, end, symbols=symbols, variables=variables,
+reread=lambda: self.panel(start, end, symbols, variables))`
+(`quantlab.utils.fingerprint`), so a run records what it read (see
+[Data fingerprints](internals.md#data-fingerprints)). A dataset that only
+composes other datasets records nothing itself and passes the request on.
 
 This dataset reads daily bars from a single long-format CSV file:
 
@@ -870,9 +877,11 @@ directory.
 
 A backtester reaches the model only through the `Predictor` protocol
 (`quantlab.base.backtest.Predictor`): `labels`, `label_delays`,
-`train_bounds`, `test_bounds`, `predict_window`, `fingerprint_inputs`,
-`training_fingerprint_inputs`, `collect`, `train`, `load`,
-`check_checkpoint`, `get_config` and the class method `from_config`. It never
+`train_bounds`, `test_bounds`, `fitted_train_bounds`, `label_scales`,
+`predict_window`, `collect`, `train`, `load`, `check_checkpoint`,
+`get_config` and the class method `from_config`. It says nothing about the
+data it reads: what any component reads is recorded at the dataset seam
+(ADR 0021). It never
 reads `config.model.config` and never calls a `_`-prefixed model method, and
 `tests/test_backtest_predictor_protocol.py` scans the backtest layer for both.
 A new selection rule follows the same rule: take label names from
