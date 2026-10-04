@@ -18,7 +18,8 @@ written last. Its kinds are ``"run"``, ``"run_cv"``, ``"run_weights"`` and
   by its declaration without importing the backtester class), the data
   fingerprint (what the run's ``DataRecorder`` recorded: every dataset or
   factor store it read, by component path; a ``run_cv`` run's is its stitched
-  pass, each fold child run holds its fold's), ``trained_run`` (the trained unit
+  pass, each fold child run holds its fold's), ``code`` (the backtester tree's
+  code record, ``quantlab.utils.code_record``), ``trained_run`` (the trained unit
   the backtest used: the one trained in train mode, the checkpoint's in load
   mode, the walk-forward unit for ``run_cv``; none for ``run_weights``) and
   the folds.
@@ -54,7 +55,7 @@ from loguru import logger
 
 from quantlab.backend import XrBackend
 from quantlab.base.component import rebuild as rebuild_component
-from quantlab.base.component import component_fields, recorded_configs, walk_components
+from quantlab.base.component import code_of, component_fields, recorded_configs, walk_components
 from quantlab.base.portfolio import PredictionPanel
 from quantlab.runs.directory import (
     read_record,
@@ -67,6 +68,7 @@ from quantlab.runs.directory import (
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.backtest_stats import bar_label
+from quantlab.utils.code_record import compare_code
 from quantlab.utils.execution import ExecutionSettings
 from quantlab.utils.jsonable import to_jsonable
 
@@ -254,6 +256,7 @@ def write_backtest_run(
                 "annualization": dataclasses.asdict(annualization),
                 "components": component_fields(backtester.config),
                 "data_fingerprint": dict(data_fingerprint),
+                "code": code_of(backtester),
                 "benchmark_source": benchmark_source,
                 "trained_run": _unit(trained_run),
                 "folds": children,
@@ -330,6 +333,9 @@ class BacktestRun:
     data_fingerprint : dict
         What the run read, by component path, as its ``DataRecorder``
         recorded it: a ``run_cv`` run's stitched pass, a fold's own reads.
+    code : dict or None
+        The code record of the backtester's tree when the run was written
+        (``git``, ``modules``, ``libraries``); a fold's is its run's.
     folds : tuple of BacktestRun
         A ``run_cv`` run's folds, in fold order; empty otherwise.
     index : int or None
@@ -351,6 +357,7 @@ class BacktestRun:
     market: Market
     annualization: Annualization
     data_fingerprint: dict
+    code: dict | None = None
     folds: tuple = ()
     index: int | None = None
     _trained_run: str | None = field(default=None, repr=False)
@@ -401,6 +408,7 @@ class BacktestRun:
             market=Market(**parent["market"]),
             annualization=Annualization(**parent["annualization"]),
             data_fingerprint=dict(record.get("data_fingerprint") or {}),
+            code=parent.get("code"),
             folds=tuple(
                 cls.open(recorded_path(directory, entry["directory"]))
                 for entry in record.get("folds", ())
@@ -545,7 +553,10 @@ class BacktestRun:
         unit's training record as ``expected_training_fingerprint``, so the
         retrained unit is compared with the one the run used; not when an
         override replaces ``model`` or ``model_mode``, since the unit then
-        describes another model.
+        describes another model. The rebuilt tree's code record is compared
+        with the run's ``code`` right away, and a train-mode run's trained
+        unit's code is set as ``expected_training_code``; differences only
+        warn.
 
         Parameters
         ----------
@@ -584,6 +595,8 @@ class BacktestRun:
         recipe = {**config, **overrides}
         backtester = rebuild_component(recipe, self._recipe_dir)
         backtester.expected_fingerprint = self.data_fingerprint
+        if self.code is not None:
+            compare_code(self.code, code_of(backtester), owner=str(self.path))
         retrains_same_model = config.get("model_mode") == "train" and not (
             {"model", "model_mode"} & set(overrides)
         )
@@ -599,6 +612,7 @@ class BacktestRun:
                 )
             else:
                 backtester.expected_training_fingerprint = trained.data_fingerprint
+                backtester.expected_training_code = trained.code
         backtester.expected_fold_fingerprints = {
             fold.index: fold.data_fingerprint for fold in self.folds
         }

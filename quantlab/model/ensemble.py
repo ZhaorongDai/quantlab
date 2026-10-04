@@ -70,7 +70,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.component import Component
+from quantlab.base.component import Component, code_of
 from quantlab.base.model import BaseModel, record_training_reads
 from quantlab.runs.trained_run import (
     TrainedRun,
@@ -383,6 +383,10 @@ class BaseEnsemble(Component, ABC):
         """
         return dict(self._training_record)
 
+    def _provenance(self) -> dict:
+        """What the ensemble's top unit records: ``training_record`` and the code record."""
+        return {"data_fingerprint": self.training_record, "code": code_of(self)}
+
     def _collect(self) -> None:
         """Collect every member's own data; see ``BaseModel._collect``.
 
@@ -542,7 +546,7 @@ class BaseEnsemble(Component, ABC):
             member._check_hyperparameters()
         directory = new_trial_directory(self.model_save_dir, self.class_name)
         return self._train_into(
-            directory, group=directory.name, data_fingerprint=self.training_record
+            directory, group=directory.name, provenance=self._provenance()
         )
 
     def _train_into(
@@ -551,7 +555,7 @@ class BaseEnsemble(Component, ABC):
         group: str,
         *,
         run_tag: str | None = None,
-        data_fingerprint: dict | None = None,
+        provenance: dict | None = None,
     ) -> Path:
         """Train every member, evaluate the combination and write the unit into ``run_dir``.
 
@@ -574,9 +578,9 @@ class BaseEnsemble(Component, ABC):
             Inserted into every member's run name, so that runs of several
             ensemble units in one group stay apart; ``train_cv`` passes
             ``fold_{i}``.
-        data_fingerprint : dict, optional
-            What ``collect()`` read, for the unit that read it (``train``);
-            a fold records none.
+        provenance : dict, optional
+            ``_provenance()``, for the top unit (``train``); a fold records
+            none.
 
         Returns
         -------
@@ -600,7 +604,7 @@ class BaseEnsemble(Component, ABC):
             fitted_train_window=self.fitted_train_bounds,
             test_window=self.test_bounds,
             metrics=metrics,
-            data_fingerprint=data_fingerprint,
+            provenance=provenance,
         )
 
     def train_cv(
@@ -697,7 +701,7 @@ class BaseEnsemble(Component, ABC):
             folds,
             name=f"{self.class_name}_cv_summary",
             config=self.get_config(),
-            data_fingerprint=self.training_record,
+            provenance=self._provenance(),
         )
 
     def _write_evaluation_files(self, run_dir: Path) -> dict:

@@ -50,6 +50,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Self
 
+from quantlab.utils.code_record import code_record
+
 #: The key under a field's ``metadata`` that marks it as holding components;
 #: its value is whether the field holds many.
 _METADATA_KEY = "quantlab.component"
@@ -237,6 +239,23 @@ def walk_components(root: Any, path: str = "") -> Iterator[tuple[str, Any]]:
                 here = f"{here}.{key}"
             yield here, item
             yield from walk_components(item, here)
+
+
+def code_of(root: Any) -> dict:
+    """Return the code record of ``root`` and every component under it.
+
+    ``quantlab.utils.code_record.code_record`` over ``root`` (path ``""``)
+    and ``walk_components(root)``: the git commit, the digest of every module
+    defining a class of the tree or a base class of one, and the library
+    versions.
+
+    Examples
+    --------
+    >>> record = code_of(model)
+    >>> record["modules"]["quantlab.base.model"]["components"]
+    ['']
+    """
+    return code_record([("", root), *walk_components(root)])
 
 
 @contextmanager

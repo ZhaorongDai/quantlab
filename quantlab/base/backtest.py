@@ -67,6 +67,7 @@ from quantlab.utils.backtest_report import (
     report_windows,
     write_backtest_report,
 )
+from quantlab.utils.code_record import compare_code
 from quantlab.utils.fingerprint import DataRecorder, compare_records, unrecorded
 from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
@@ -457,12 +458,12 @@ class BaseBacktester(Component, ABC):
         The data fingerprint of each fold of a previous ``run_cv`` run, by
         fold index; each fold of ``run_cv`` compares with its own and the
         warning names the fold. Filled in by ``rebuild_backtester`` too.
-    expected_training_fingerprint : dict or None
-        The training data record of the trained unit a previous train-mode
-        run used. When set, a train-mode ``run()`` compares the record of
-        the unit it trains with it and warns on a difference. Filled in by
-        ``rebuild_backtester`` for a train-mode run; load mode trains
-        nothing and compares no training data.
+    expected_training_fingerprint, expected_training_code : dict or None
+        The training data record and the code record of the trained unit a
+        previous train-mode run used. When set, a train-mode ``run()``
+        compares the unit it trains with them and warns on a difference.
+        Filled in by ``rebuild_backtester`` for a train-mode run; load mode
+        trains nothing and compares neither.
 
     Examples
     --------
@@ -489,6 +490,7 @@ class BaseBacktester(Component, ABC):
         self.expected_fingerprint: dict | None = None
         self.expected_fold_fingerprints: dict[int, dict] | None = None
         self.expected_training_fingerprint: dict | None = None
+        self.expected_training_code: dict | None = None
         # The records of the last run's recorder (the stitched pass of
         # run_cv); each fold's records travel with its fold record.
         self._fingerprints: dict = {}
@@ -1768,6 +1770,10 @@ class BaseBacktester(Component, ABC):
                 self.expected_training_fingerprint,
                 unit.data_fingerprint,
                 owner=f"{self.class_name} training",
+            )
+        if self.expected_training_code is not None and unit.code is not None:
+            compare_code(
+                self.expected_training_code, unit.code, owner=f"{self.class_name} training"
             )
         return configured
 

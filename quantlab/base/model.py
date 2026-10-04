@@ -42,7 +42,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
-from quantlab.base.component import Component, walk_components
+from quantlab.base.component import Component, code_of, walk_components
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.tracking import NullRun, TrackingRun
 from quantlab.enums.constant import Date
@@ -632,6 +632,15 @@ class BaseModel(Component, ABC):
         """
         return dict(self._training_record)
 
+    def _provenance(self) -> dict:
+        """What the top unit records about its data and its code.
+
+        ``data_fingerprint`` is ``training_record``; ``code`` the code record
+        of this model's tree (``quantlab.base.component.code_of``), taken
+        when the unit is written.
+        """
+        return {"data_fingerprint": self.training_record, "code": code_of(self)}
+
     def _collect(self) -> None:
         """Read the features and labels into ``data_backend``; see ``collect``.
 
@@ -1206,7 +1215,7 @@ class BaseModel(Component, ABC):
             trial,
             group=trial.name,
             experiment_name=f"{self.class_name}_total",
-            data_fingerprint=self._training_record,
+            provenance=self._provenance(),
         )
         return checkpoint
 
@@ -1215,7 +1224,7 @@ class BaseModel(Component, ABC):
         run_dir: Path | str,
         group: str,
         experiment_name: str,
-        data_fingerprint: dict | None = None,
+        provenance: dict | None = None,
     ) -> tuple[Path, dict | None]:
         """Train, evaluate and save once into a caller-given run directory.
 
@@ -1242,9 +1251,9 @@ class BaseModel(Component, ABC):
             Tracking group of the run, the trial directory's name.
         experiment_name : str
             Tracking run name, also the checkpoint file's stem.
-        data_fingerprint : dict, optional
-            The record of the ``collect()`` the unit trains on, for the unit
-            that read the data (``train``); a fold or a member records none.
+        provenance : dict, optional
+            ``_provenance()``, for the top unit (``train``); a fold or a
+            member records none.
 
         Returns
         -------
@@ -1276,7 +1285,7 @@ class BaseModel(Component, ABC):
                 trained_on=self._trained_on(),
                 metrics=metrics,
                 resolved_hyperparameters=self._resolved_hyperparameters(),
-                data_fingerprint=data_fingerprint,
+                provenance=provenance,
             )
             self._fitted_window = fitted
         return checkpoint, metrics
@@ -1636,7 +1645,7 @@ class BaseModel(Component, ABC):
         trial = new_trial_directory(self.config.model_save_dir, self.class_name)
         for fold in folds:
             self._train_one_fold(fold, trial)
-        return self._finish_walk_forward(trial, folds, data_fingerprint=self._training_record)
+        return self._finish_walk_forward(trial, folds, provenance=self._provenance())
 
     def _finish_walk_forward(
         self,
@@ -1645,15 +1654,15 @@ class BaseModel(Component, ABC):
         *,
         name: str | None = None,
         config: dict | None = None,
-        data_fingerprint: dict | None = None,
+        provenance: dict | None = None,
     ) -> TrainedRun:
         """Write the walk-forward unit ``trial`` over its trained folds and track the CV means.
 
         The fold means of the folds' recorded metrics (``_cv_mean_metrics``)
         go to the summary run ``name`` (``{class}_cv_summary`` by default,
         see ``_track_cv_summary``) when there are any, and into the unit's
-        ``run.json`` with ``data_fingerprint``, what the folds' data read.
-        An ensemble passes its own ``name``, ``config`` and record.
+        ``run.json`` with ``provenance`` (see ``_provenance``). An ensemble
+        passes its own ``name``, ``config`` and provenance.
         """
         indices = [fold.index for fold in folds]
         fold_runs = [TrainedRun.open(fold_directory(trial, i)) for i in indices]
@@ -1661,7 +1670,7 @@ class BaseModel(Component, ABC):
         if means:
             self._track_cv_summary(trial.name, means, name=name, config=config)
         return write_walk_forward_run(
-            trial, folds=indices, cv_mean=means, data_fingerprint=data_fingerprint
+            trial, folds=indices, cv_mean=means, provenance=provenance
         )
 
     def _assert_shape_match_y(self, data):

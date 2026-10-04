@@ -22,8 +22,9 @@ three kinds:
 
 Every unit's ``run.json`` also holds ``data_fingerprint``: what the unit's
 ``collect()`` read, as its ``DataRecorder`` recorded it, keyed by component
-path within the model. Only the unit that read records it: the trained model,
-or the ensemble or walk-forward unit; its members and folds hold none.
+path within the model; and ``code``, the code record of the model
+(``quantlab.utils.code_record``). Only the top unit records them: the trained
+model, or the ensemble or walk-forward unit; its members and folds hold none.
 
 ``train`` writes a unit at ``{model_save_dir}/{Class}_trial_{timestamp}/``,
 ``train_cv`` a ``"walk_forward"`` unit there. Paths inside ``run.json`` are
@@ -126,6 +127,9 @@ class TrainedRun:
         What the unit's ``collect()`` read, by component path within the
         model (``factors.0.dataset``); empty for a member or a fold, whose
         data their ensemble or walk-forward unit read.
+    code : dict or None
+        The code record of the model it trained (``git``, ``modules``,
+        ``libraries``); None for a member or a fold.
     members : tuple of TrainedRun
         An ``"ensemble"`` unit's members, in member order; empty otherwise.
     folds : tuple of TrainedRun
@@ -162,6 +166,7 @@ class TrainedRun:
     test_predictions: Path | None
     resolved_hyperparameters: dict | None = None
     data_fingerprint: dict = dataclasses.field(default_factory=dict)
+    code: dict | None = None
     members: tuple = ()
     folds: tuple = ()
     cv_mean: dict | None = None
@@ -224,6 +229,7 @@ class TrainedRun:
             test_predictions=recorded_path(directory, record.get("test_predictions")),
             resolved_hyperparameters=record.get("resolved_hyperparameters"),
             data_fingerprint=dict(record.get("data_fingerprint") or {}),
+            code=record.get("code"),
             members=tuple(
                 dataclasses.replace(
                     cls.open(recorded_path(directory, entry["directory"])), seed=entry["seed"]
@@ -350,6 +356,15 @@ def write_model_config(directory: Path | str, config: dict) -> None:
         json.dump(config, f, indent=4)
 
 
+def _provenance(provenance: Mapping | None) -> dict:
+    """Return the ``data_fingerprint`` and ``code`` fields of a unit's ``run.json``."""
+    provenance = provenance or {}
+    return {
+        "data_fingerprint": dict(provenance.get("data_fingerprint") or {}),
+        "code": provenance.get("code"),
+    }
+
+
 def _evaluation_names(directory: Path) -> dict:
     """Return the ``ic_series`` / ``test_predictions`` entries, each a file's name when it exists."""
     ic_series, test_predictions = evaluation_paths(directory)
@@ -371,7 +386,7 @@ def write_model_run(
     trained_on: dict,
     metrics: dict | None,
     resolved_hyperparameters: dict | None = None,
-    data_fingerprint: Mapping | None = None,
+    provenance: Mapping | None = None,
 ) -> None:
     """Write the ``run.json`` of a ``"model"`` unit, atomically, as its last file.
 
@@ -393,9 +408,9 @@ def write_model_run(
     resolved_hyperparameters : dict, optional
         The hyperparameters the library actually trained with; None to
         record nothing.
-    data_fingerprint : mapping, optional
-        What the unit's ``collect()`` read; None (a fold, a member) records
-        an empty one.
+    provenance : mapping, optional
+        The top unit's ``data_fingerprint`` and ``code``; None (a member, a
+        fold) records an empty fingerprint and no code.
 
     Examples
     --------
@@ -422,7 +437,7 @@ def write_model_run(
             "resolved_hyperparameters": (
                 None if resolved_hyperparameters is None else dict(resolved_hyperparameters)
             ),
-            "data_fingerprint": dict(data_fingerprint or {}),
+            **_provenance(provenance),
             **_evaluation_names(directory),
         },
     )
@@ -436,7 +451,7 @@ def write_ensemble_run(
     fitted_train_window: tuple,
     test_window: tuple,
     metrics: dict,
-    data_fingerprint: Mapping | None = None,
+    provenance: Mapping | None = None,
 ) -> Path:
     """Write the ``run.json`` of an ``"ensemble"`` unit, atomically, as its last file.
 
@@ -453,9 +468,9 @@ def write_ensemble_run(
         ``(start, end)`` pairs of the ensemble, see ``TrainedRun``.
     metrics : dict
         The metrics of the combined prediction.
-    data_fingerprint : mapping, optional
-        What the ensemble's ``collect()`` read; None (a fold) records an
-        empty one.
+    provenance : mapping, optional
+        The top unit's ``data_fingerprint`` and ``code``; None (a member, a
+        fold) records an empty fingerprint and no code.
 
     Returns
     -------
@@ -488,7 +503,7 @@ def write_ensemble_run(
             "fitted_train_window": list(fitted_train_window),
             "test_window": list(test_window),
             "metrics": metrics,
-            "data_fingerprint": dict(data_fingerprint or {}),
+            **_provenance(provenance),
             **_evaluation_names(directory),
         },
     )
@@ -499,7 +514,7 @@ def write_walk_forward_run(
     *,
     folds: Sequence[int],
     cv_mean: dict,
-    data_fingerprint: Mapping | None = None,
+    provenance: Mapping | None = None,
 ) -> TrainedRun:
     """Write the ``run.json`` of a ``"walk_forward"`` unit and return the unit.
 
@@ -515,8 +530,9 @@ def write_walk_forward_run(
         The fold indices, in fold order.
     cv_mean : dict
         The fold means of the metrics; NaN and inf become null.
-    data_fingerprint : mapping, optional
-        What the ``collect()`` the folds trained on read.
+    provenance : mapping, optional
+        The top unit's ``data_fingerprint`` and ``code``; None (a member, a
+        fold) records an empty fingerprint and no code.
 
     Returns
     -------
@@ -550,7 +566,7 @@ def write_walk_forward_run(
         {
             "folds": entries,
             "cv_mean": cv_mean,
-            "data_fingerprint": dict(data_fingerprint or {}),
+            **_provenance(provenance),
         },
     )
     return TrainedRun.open(directory)
