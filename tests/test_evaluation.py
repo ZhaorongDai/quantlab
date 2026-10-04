@@ -17,7 +17,10 @@ What turns this file red:
 - `ic_series.csv` is not the first label's per-bar series in the
   `split, timestamp, ic, rank_ic` layout, or `test_predictions.zarr` is not
   cut to the test bounds;
-- a label uses another label's segments when the caller gives one per label.
+- a label uses another label's segments when the caller gives one per label;
+- a label given its own truth panel is not scored on that panel's symbols;
+- `member_correlation` is missing for a label several members predict, is
+  given for a label one member predicts, or differs from the hand value.
 
 Every expected value below is computed by hand in the comments, not by
 calling the metric functions.
@@ -250,3 +253,46 @@ def test_a_date_test_bound_keeps_every_intraday_bar_of_its_day(tmp_path):
 
     saved = xr.open_zarr(tmp_path / "test_predictions.zarr").load()
     assert list(saved.timestamp.values) == list(hours[2:])
+
+
+def test_member_correlation_is_scored_for_a_label_several_members_predict(tmp_path):
+    # Members PRED, 2 * PRED + 1 and -PRED: on every bar the pairs correlate
+    # 1, -1 and -1, mean -1/3. vol has one member and gets no correlation.
+    metrics = evaluate(
+        _panel(ret=PRED, vol=PRED),
+        _panel(ret=TRUTH, vol=TRUTH),
+        labels={"ret": RETURN, "vol": RETURN},
+        label_scales={"ret": "standardized", "vol": "raw"},
+        segments=_segments(),
+        test_bounds=(TIMES[0], TIMES[-1]),
+        run_dir=None,
+        member_predictions={
+            "ret": [_panel(ret=PRED), _panel(ret=2 * PRED + 1), _panel(ret=-PRED)],
+            "vol": [_panel(vol=PRED)],
+        },
+    )
+
+    assert metrics["train_member_correlation"] == pytest.approx(-1 / 3)
+    assert metrics["test_member_correlation"] == pytest.approx(-1 / 3)
+    assert not any(key.endswith("vol_member_correlation") for key in metrics)
+
+
+def test_each_label_can_use_its_own_truth_panel(tmp_path):
+    # ret's truth covers A-D; vol's only A, B and C, on which the members
+    # [1, 2, 3] and [3, 2, 1] correlate -1. Over A-D, D (4 against 9 from
+    # the members below) would pull the correlation away from -1.
+    first = _panel(ret=PRED, vol=PRED)
+    second = _panel(ret=PRED, vol=np.tile([3.0, 2.0, 1.0, 9.0], (4, 1)))
+    metrics = evaluate(
+        first,
+        {"ret": _panel(ret=TRUTH), "vol": _panel(vol=TRUTH).sel(symbol=["A", "B", "C"])},
+        labels={"ret": RETURN, "vol": RETURN},
+        label_scales={"ret": "raw", "vol": "standardized"},
+        segments=_segments(),
+        test_bounds=(TIMES[0], TIMES[-1]),
+        run_dir=None,
+        member_predictions={"vol": [first, second]},
+    )
+
+    assert metrics["train_ic"] == pytest.approx(TRAIN_IC)
+    assert metrics["train_vol_member_correlation"] == pytest.approx(-1.0)

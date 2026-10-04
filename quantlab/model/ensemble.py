@@ -66,7 +66,6 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Self
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 
@@ -74,19 +73,13 @@ from quantlab.base.component import Component, code_of
 from quantlab.base.model import BaseModel, record_training_reads
 from quantlab.runs.trained_run import (
     TrainedRun,
-    evaluation_paths,
     fold_directory,
     member_directory,
     new_trial_directory,
     write_ensemble_run,
 )
-from quantlab.utils.ensemble import average_predictions, member_correlation
-from quantlab.utils.evaluation import write_ic_series
-from quantlab.utils.metrics import (
-    ic_panel_metrics,
-    scores_volatility_level,
-    volatility_level_metrics,
-)
+from quantlab.utils.ensemble import average_predictions
+from quantlab.utils.evaluation import evaluate
 
 
 def _as_time(value) -> pd.Timestamp:
@@ -519,7 +512,7 @@ class BaseEnsemble(Component, ABC):
         directory's name, and reseeds its generators from its own
         ``random_seed`` right before it trains. The directory then gets the
         evaluation files of the combined prediction (``ic_series.csv``,
-        ``test_predictions.zarr``, see ``_write_evaluation_files``) and
+        ``test_predictions.zarr``, see ``_evaluate``) and
         last, atomically, ``run.json``, which makes it an ``"ensemble"``
         unit (``quantlab.runs.trained_run``) recording the members, the
         windows and the metrics. If a member or the ensemble evaluation
@@ -564,7 +557,7 @@ class BaseEnsemble(Component, ABC):
         tracking run ``{MemberClass}_member_{k}``
         (``{MemberClass}_{run_tag}_member_{k}`` with a ``run_tag``) in the
         group ``group``. Then come the evaluation files of the combined
-        prediction (see ``_write_evaluation_files``) and last ``run.json``.
+        prediction (see ``_evaluate``) and last ``run.json``.
         Hyperparameters are not checked here: ``train`` checks them first,
         and ``train_cv`` once before its folds.
 
@@ -597,7 +590,7 @@ class BaseEnsemble(Component, ABC):
                 group=group,
                 experiment_name=f"{member.class_name}{tag}_member_{k}",
             )
-        metrics = self._write_evaluation_files(directory)
+        metrics = self._evaluate(directory)
         return write_ensemble_run(
             directory,
             seeds=[self._member_seed(k) for k in range(len(self.members))],
@@ -705,43 +698,27 @@ class BaseEnsemble(Component, ABC):
             provenance=self._provenance(),
         )
 
-    def _write_evaluation_files(self, run_dir: Path) -> dict:
-        """Evaluate the combined prediction of the trained members and write its files.
+    def _evaluate(self, run_dir: Path) -> dict:
+        """Score the combined prediction of the trained members and write its files.
 
         Every member predicts its whole collected panel
         (``_member_panel_predictions``) and the predictions are combined by
-        ``_combine``, the same rule ``predict_window`` uses. Each label is
-        scored against the truth of the first member predicting it: that
-        member's collected panel, cut by its ``_fit_segments`` into the
-        purged train, validation and test segments a single model evaluates,
-        a split being skipped when it has no bars (so no ``val_*`` without a
-        validation segment). On each split ``ic_panel_metrics`` scores the
-        combined prediction of the label against the label's raw values,
-        and, for a label at least two members predict,
-        ``member_correlation`` measures how much their predictions of it
-        agree. No error metric is computed: an averaged label is in z-score
-        units, not in the target's. A label whose ``kind`` is
-        ``"volatility"`` and whose combined prediction is on its own scale
-        (``label_scales`` ``"raw"``, a label one raw member predicts) also
-        gets the ``volatility_level_metrics`` ``qlike`` and
-        ``variance_ratio``.
+        ``_combine``, the same rule ``predict_window`` uses. The combination
+        is scored by ``quantlab.utils.evaluation.evaluate``, the Evaluation a
+        model uses, with the ensemble's ``label_scales``: each label against
+        the raw values in the collected panel of the first member predicting
+        it, on that member's symbols and ``evaluation_segments``, and with the
+        predictions of the members predicting it, so a label at least two
+        members predict also gets ``{split}_member_correlation``. The keys
+        and rules are a model's: an averaged label (in z-score units) gets
+        the IC family only, a label one raw member predicts the error metrics
+        too, and ``qlike`` / ``variance_ratio`` for a raw volatility label.
 
-        The metrics, which ``run.json`` records, are for the first label
-        ``{split}_ic``, ``{split}_rank_ic``, ``{split}_icir``,
-        ``{split}_rank_icir`` and, when shared, ``{split}_member_correlation``
-        (the mean over bars of the mean pairwise Pearson correlation of the
-        members' predictions over their common finite symbols), and
-        ``{split}_qlike`` / ``{split}_variance_ratio`` for a raw volatility
-        label; for every other label the same keys as
-        ``{split}_{label}_{metric}``.
-
-        Written into ``run_dir``:
-
-        - ``ic_series.csv``: the first label's per-bar series behind them, in
-          the layout of a single model's file (``write_ic_series``).
-        - ``test_predictions.zarr``: the combined prediction, one variable
-          per label, on the first member's test bars inside the ensemble's
-          ``test_bounds``; not written when there are none.
+        Written into ``run_dir`` by ``evaluate``: ``ic_series.csv`` (the
+        first label's per-bar series) and ``test_predictions.zarr`` (the
+        combined prediction, one variable per label, on the first member's
+        test bars inside the ensemble's ``test_bounds``; not written when
+        there are none).
 
         Returns
         -------
@@ -749,65 +726,30 @@ class BaseEnsemble(Component, ABC):
             The metrics, with NaN where a metric is undefined.
         """
         predictions = self._member_panel_predictions()
-        combined = self._combine(predictions)
-        scales = self.label_scales
+        owners = self._label_owners()
         # Members agree on every label of one name (_check_members_agree), so
         # the first label object naming a variable speaks for all of them.
-        objects = {str(name): obj for obj in reversed(self.labels) for name in obj.get_factor_names()}
-        metrics, series = {}, {}
-        for i, (label, owners) in enumerate(self._label_owners().items()):
-            level = scores_volatility_level(objects.get(label), scales.get(label))
-            member = self.members[owners[0]]
-            data = member.data_backend.get_xarray_dataset(
-                ["timestamp", "symbol"]
-            ).sortby(["timestamp", "symbol"])
-            prefix = "" if i == 0 else f"{label}_"
-            for split, part in zip(("train", "val", "test"), member._fit_segments(data)):
-                stamps = part.timestamp.values
-                if len(stamps) == 0:
-                    continue
-                pred = combined[label].reindex(timestamp=stamps, symbol=data.symbol.values)
-                values, per_bar = ic_panel_metrics(
-                    pred.values,
-                    data[label].sel(timestamp=stamps).values,
-                    return_series=True,
-                )
-                if level:
-                    values.update(volatility_level_metrics(
-                        pred.values, data[label].sel(timestamp=stamps).values
-                    ))
-                metrics.update(
-                    {f"{split}_{prefix}{key}": value for key, value in values.items()}
-                )
-                if len(owners) > 1:
-                    metrics[f"{split}_{prefix}member_correlation"], _ = member_correlation(
-                        [
-                            predictions[k][label]
-                            .reindex(timestamp=stamps, symbol=data.symbol.values)
-                            .values
-                            for k in owners
-                        ]
-                    )
-                if i == 0:
-                    series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])
-
-        ic_series_path, test_predictions_path = evaluation_paths(run_dir)
-        first = self.members[0]
-        write_ic_series(ic_series_path, series)
-        data = first.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
-            ["timestamp", "symbol"]
+        objects = {
+            str(name): obj for obj in reversed(self.labels) for name in obj.get_factor_names()
+        }
+        segments, truth = {}, {}
+        for name, indices in owners.items():
+            member = self.members[indices[0]]
+            segments[name] = member.evaluation_segments()
+            truth[name] = member.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        return evaluate(
+            self._combine(predictions),
+            truth,
+            labels={name: objects[name] for name in owners},
+            label_scales=self.label_scales,
+            segments=segments,
+            test_bounds=self.test_bounds,
+            run_dir=run_dir,
+            member_predictions={
+                name: [predictions[k] for k in indices]
+                for name, indices in owners.items()
+            },
         )
-        test_stamps = first._fit_segments(data)[2].timestamp.values
-        test_start, test_end = self.test_bounds
-        test_stamps = test_stamps[
-            (test_stamps >= np.datetime64(_as_time(test_start)))
-            & (test_stamps <= np.datetime64(_as_time(test_end)))
-        ]
-        if len(test_stamps):
-            combined.reindex(timestamp=test_stamps).to_zarr(
-                test_predictions_path, mode="w"
-            )
-        return metrics
 
     # ------------------------------------------------------------------
     # The trained unit: check and load

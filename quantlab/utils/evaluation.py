@@ -19,10 +19,13 @@ Scoring rules, one set for every unit:
   standardized prediction is in other units than the label.
 - ``qlike`` and ``variance_ratio`` (``volatility_level_metrics``) where
   ``scores_volatility_level`` holds: a volatility label predicted raw.
+- ``member_correlation`` (``quantlab.utils.ensemble.member_correlation``)
+  for a label an ensemble's combined prediction averages over several
+  members, given their predictions.
 """
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +34,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.runs.trained_run import evaluation_paths
+from quantlab.utils.ensemble import member_correlation
 from quantlab.utils.metrics import (
     ic_panel_metrics,
     mae,
@@ -82,13 +86,14 @@ class Segments:
 
 def evaluate(
     predictions: xr.Dataset,
-    truth: xr.Dataset,
+    truth: xr.Dataset | Mapping[str, xr.Dataset],
     *,
     labels: Mapping[str, object],
     label_scales: Mapping[str, str],
     segments: Segments | Mapping[str, Segments],
     test_bounds: tuple,
     run_dir: Path | str | None,
+    member_predictions: Mapping[str, Sequence[xr.Dataset]] | None = None,
 ) -> dict[str, float]:
     """Score a unit's predictions of every label and write its evaluation files.
 
@@ -100,9 +105,11 @@ def evaluate(
     ----------
     predictions : xr.Dataset
         One variable per label name on ``(timestamp, symbol)``.
-    truth : xr.Dataset
+    truth : xr.Dataset or Mapping[str, xr.Dataset]
         The labels' raw values, one variable per label name on
-        ``(timestamp, symbol)``, covering every segment's bars.
+        ``(timestamp, symbol)``, covering every segment's bars; or each
+        label's own panel holding it (an ensemble scores a label on the
+        symbols of the first member predicting it).
     labels : Mapping[str, object]
         Label name to the label object predicting it (read for its
         ``kind``), in label order: the first key is the first label.
@@ -117,6 +124,12 @@ def evaluate(
     run_dir : Path or str or None
         Directory receiving ``ic_series.csv`` and ``test_predictions.zarr``;
         None writes nothing.
+    member_predictions : Mapping[str, Sequence[xr.Dataset]], optional
+        For an ensemble: label name to the prediction panels of the members
+        predicting it. A label with at least two also gets
+        ``{split}_member_correlation`` (prefixed as its other keys), how
+        much the members agree on its segment's bars and the truth's
+        symbols.
 
     Returns
     -------
@@ -148,6 +161,7 @@ def evaluate(
     per_label = (
         segments if not isinstance(segments, Segments) else {name: segments for name in names}
     )
+    truths = truth if not isinstance(truth, xr.Dataset) else {name: truth for name in names}
     metrics: dict[str, float] = {}
     series: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     for i, name in enumerate(names):
@@ -155,10 +169,11 @@ def evaluate(
         scale = label_scales.get(name)
         level = scores_volatility_level(labels[name], scale)
         for split, stamps in per_label[name].splits():
-            target = truth[name].sel(timestamp=stamps)
+            target = truths[name][name].sel(timestamp=stamps)
+            symbols = target.symbol.values
             pred = (
                 predictions[name]
-                .reindex(timestamp=stamps, symbol=target.symbol.values)
+                .reindex(timestamp=stamps, symbol=symbols)
                 .values
             )
             target = target.values
@@ -170,6 +185,16 @@ def evaluate(
                 )
             if level:
                 values.update(volatility_level_metrics(pred, target))
+            members = (member_predictions or {}).get(name, ())
+            if len(members) > 1:
+                values["member_correlation"], _ = member_correlation(
+                    [
+                        panel[name]
+                        .reindex(timestamp=stamps, symbol=symbols)
+                        .values
+                        for panel in members
+                    ]
+                )
             metrics.update({f"{split}_{prefix}{key}": value for key, value in values.items()})
             if i == 0:
                 series[split] = (stamps, per_bar["ic"], per_bar["rank_ic"])

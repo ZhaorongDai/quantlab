@@ -1292,14 +1292,13 @@ class BaseModel(Component, ABC):
         ``predict_panel``, so every bar is predicted from all the history
         collected before it (a windowed head's warm-up included), and
         ``quantlab.utils.evaluation.evaluate`` scores every label against
-        its raw values on the ``_fit_segments`` segments, by the model's
+        its raw values on the ``evaluation_segments``, by the model's
         ``label_scales``. The same predictions give the metrics,
         ``ic_series.csv`` and ``test_predictions.zarr`` in ``run_dir``.
         """
         data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby(
             ["timestamp", "symbol"]
         )
-        train, val, test = (part.timestamp.values for part in self._fit_segments(data))
         labels = {
             str(name): label
             for label in self.config.labels
@@ -1310,10 +1309,42 @@ class BaseModel(Component, ABC):
             data,
             labels=labels,
             label_scales=self.label_scales,
-            segments=Segments(train=train, val=val, test=test),
+            segments=self.evaluation_segments(),
             test_bounds=self.test_bounds,
             run_dir=run_dir,
         )
+
+    def evaluation_segments(self) -> Segments:
+        """The bars the model is scored on: its purged train, validation and test segments.
+
+        The collected panel's timestamps, cut as training cuts them (see
+        ``_fit_segments``): the training window split by ``val_size``, then
+        each segment followed by another losing its last L bars, L the
+        largest ``lookahead_bars()`` of the model's labels. Call
+        ``collect()`` first.
+
+        Returns
+        -------
+        Segments
+            Timestamps of each segment; ``val`` is empty when ``val_size``
+            is 0 or the purge empties it.
+
+        Raises
+        ------
+        ValueError
+            If no training bar is left, by ``val_size`` or by the purge.
+
+        Examples
+        --------
+        With ``val_size`` 0:
+
+        >>> segments = model.collect().evaluation_segments()
+        >>> [split for split, _ in segments.splits()]
+        ['train', 'test']
+        """
+        data = self.data_backend.get_xarray_dataset(["timestamp", "symbol"])
+        train, val, test = (part.timestamp.values for part in self._fit_segments(data))
+        return Segments(train=train, val=val, test=test)
 
     def _check_hyperparameters(self) -> None:
         """Validate the reserved hyperparameters this variant reads.

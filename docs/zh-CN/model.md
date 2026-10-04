@@ -420,7 +420,7 @@ True
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-集成单元里还有平均预测的评估文件，在最后一个成员训练完之后、它的 `run.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值在单模型所用的同一组去重叠（purge）后的训练、验证和测试段上评分（取第一个成员的分段）。单元的指标含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，用单模型所用的面板指标（`quantlab.utils.metrics.ic_panel_metrics`）对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的波动率标签保留这个尺度，也会有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的波动率标签是 z 分数单位，两项都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
+集成单元里还有平均预测的评估文件，在最后一个成员训练完之后、它的 `run.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值由单模型所用的同一个评估（`quantlab.utils.evaluation.evaluate`）打分，每个标签的分段取预测它的第一个成员去重叠（purge）后的训练、验证和测试段（`evaluation_segments()`），因此模型和集成按同一套规则命名和计算指标。单元的指标含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。平均得到的标签没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的标签保留这个尺度，并按该成员自己的方式打分：还有 `{split}_mse`、`{split}_rmse`、`{split}_mae` 和 `{split}_r2`，波动率标签还有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的标签是 z 分数单位，这些都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
 
 ```python
 >>> metrics = trained.metrics

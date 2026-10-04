@@ -95,10 +95,7 @@ def _expected(ensemble):
     averaged = average_predictions(predictions)
     label = first.get_label_names()[0]
     metrics, series = {}, {}
-    for split, part in zip(("train", "val", "test"), first._fit_segments(data)):
-        stamps = part.timestamp.values
-        if len(stamps) == 0:
-            continue
+    for split, stamps in first.evaluation_segments().splits():
         pred = averaged[label].sel(timestamp=stamps, symbol=data.symbol.values).values
         target = data[label].sel(timestamp=stamps).values
         values, per_bar = regression_panel_metrics(pred, target, return_series=True)
@@ -219,7 +216,7 @@ def test_a_failure_while_writing_the_ensemble_files_leaves_no_record(
     def failing(*args, **kwargs):
         raise RuntimeError("evaluation broke")
 
-    monkeypatch.setattr(ensemble_base, "ic_panel_metrics", failing)
+    monkeypatch.setattr(ensemble_base, "evaluate", failing)
 
     with pytest.raises(RuntimeError, match="evaluation broke"):
         ensemble.collect().train()

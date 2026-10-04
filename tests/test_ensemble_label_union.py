@@ -19,6 +19,10 @@ What is locked here, and what turns it red:
 - The evaluation files score each label against the truth of a member that
   predicts it; `member_correlation` is reported only for labels with at least
   two members.
+- An ensemble whose every label one member predicts reports, label by label,
+  the same metric keys and values as that member does on its own (one
+  Evaluation, #143): error metrics included for a raw label, the training
+  loss excepted.
 
 Everything is synthetic, CPU-only and offline.
 """
@@ -239,12 +243,8 @@ def test_evaluation_scores_each_label_against_its_own_truth(setup):
 
     assert set(saved.data_vars) == {"fwd_ret_1", "fwd_ret_2"}
     assert not any("member_correlation" in key for key in metrics)
-    ret_stamps = ret._fit_segments(
-        ret.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby("timestamp")
-    )[2].timestamp.values
-    vol_stamps = vol._fit_segments(
-        vol.data_backend.get_xarray_dataset(["timestamp", "symbol"]).sortby("timestamp")
-    )[2].timestamp.values
+    ret_stamps = ret.evaluation_segments().test
+    vol_stamps = vol.evaluation_segments().test
     assert metrics["test_ic"] == pytest.approx(_expected_ic(ret, "fwd_ret_1", ret_stamps))
     assert metrics["test_fwd_ret_2_ic"] == pytest.approx(
         _expected_ic(vol, "fwd_ret_2", vol_stamps)
@@ -262,3 +262,27 @@ def test_member_correlation_is_reported_only_for_shared_labels(setup):
     assert "test_member_correlation" in metrics
     assert "train_member_correlation" in metrics
     assert not any(key.endswith("fwd_ret_2_member_correlation") for key in metrics)
+
+
+def test_a_one_member_per_label_ensemble_reports_its_members_metrics(setup):
+    member, _, _ = setup
+    ret, vol = member("ret"), member("vol", head=SeededHead, n=3, horizon=2)
+    ensemble = ModelEnsemble([ret, vol])
+
+    checkpoint = ensemble.collect().train()
+    metrics = _metrics(checkpoint)
+    run = TrainedRun.open(checkpoint)
+    own = [
+        {k: v for k, v in saved.metrics.items() if not k.endswith("_loss")}
+        for saved in run.members
+    ]
+
+    assert "test_mse" in own[0] and "test_mse" in own[1]
+    expected = {
+        **own[0],
+        **{
+            key.replace("_", "_fwd_ret_2_", 1): value
+            for key, value in own[1].items()
+        },
+    }
+    assert metrics == expected
