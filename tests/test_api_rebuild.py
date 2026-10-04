@@ -136,6 +136,7 @@ def test_a_run_with_output_dir_holds_its_input_panels(tmp_path):
     config = _config(run_dir)
     assert config["price_dataset"]["zarr_file_path"] == "inputs/price_dataset.zarr"
     assert config["benchmark_dataset"]["zarr_file_path"] == "inputs/benchmark_dataset.zarr"
+    assert BacktestRun.open(run_dir).benchmark_source == "the FrameDataset held in memory"
     stored = xr.open_zarr(run_dir / "inputs" / "price_dataset.zarr").load()
     held = FrameDataset(_prices()).panel(_bars()[0], _bars()[-1])
     for name in ("open", "close", "volume"):

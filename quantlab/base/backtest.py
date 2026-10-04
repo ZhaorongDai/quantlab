@@ -48,6 +48,7 @@ from quantlab.base.tracking import TrackingRun
 from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.runs.backtest_run import (
+    Annualization,
     BacktestRun,
     FoldArtifacts,
     Market,
@@ -510,6 +511,22 @@ class BaseBacktester(Component, ABC):
         # The benchmark's symbol-axis label, set by `_load_benchmark_prices`.
         self._benchmark_axis_symbol: str | None = None
         self.config = config
+
+    @property
+    def data_fingerprint(self) -> dict:
+        """The fingerprints of the data the last run read, one per dataset; empty before a run.
+
+        A run directory records the same mapping
+        (``quantlab.runs.backtest_run.BacktestRun.data_fingerprint``), also
+        for a run kept in memory here.
+
+        Examples
+        --------
+        >>> _ = backtester.run_weights(weights)  # output_dir=None
+        >>> sorted(backtester.data_fingerprint)
+        ['price_dataset']
+        """
+        return dict(self._fingerprints)
 
     @property
     def ticker_lookup(self) -> CrspTickerLookup | None:
@@ -2812,7 +2829,16 @@ class BaseBacktester(Component, ABC):
             kind,
             backtester=self,
             market=self._market(),
+            annualization=Annualization(
+                trading_days_per_year=self.MARKET.trading_days_per_year,  # type: ignore[union-attr]
+                session_minutes_per_day=self.MARKET.session_minutes_per_day,  # type: ignore[union-attr]
+            ),
             data_fingerprint=self._fingerprints,
+            benchmark_source=(
+                None
+                if self.config.benchmark_dataset is None
+                else self._where(self.config.benchmark_dataset)
+            ),
             trained_run=self._trained_unit,
             weights=weights,
             equity=self._equity(simulation, benchmark),

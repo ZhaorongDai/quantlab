@@ -251,11 +251,11 @@ def test_run_cv_refuses_an_old_layout_and_says_to_retrain(tmp_path, cv_project):
 
 def test_run_cv_refuses_an_unknown_format_version(tmp_path, cv_project):
     project = _edited_project(
-        tmp_path, cv_project, lambda payload: payload.update(format_version=3)
+        tmp_path, cv_project, lambda payload: payload.update(format_version=99)
     )
     backtester = _backtester(tmp_path, cv_project, cv_project_dir=project)
 
-    with pytest.raises(ValueError, match=r"format_version 3.*retrain"):
+    with pytest.raises(ValueError, match=r"format_version 99.*retrain"):
         backtester.run_cv()
 
 

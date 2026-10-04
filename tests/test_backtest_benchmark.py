@@ -258,7 +258,7 @@ def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
 
 
 def test_run_directory_carries_the_benchmark(benchmark_run):
-    _, result = benchmark_run
+    backtester, result = benchmark_run
     run = BacktestRun.open(result.run_dir)
     equity = run.equity()
     assert set(equity.data_vars) == {
@@ -271,6 +271,7 @@ def test_run_directory_carries_the_benchmark(benchmark_run):
         equity["benchmark_value"].values, result.benchmark.value.values
     )
     assert "benchmark_dataset" in run.data_fingerprint
+    assert run.benchmark_source == backtester.config.benchmark_dataset.config.zarr_file_path
     metrics = run.metrics()
     assert metrics["relative"]["whole"]["Excess Return [%]"] == pytest.approx(
         result.metrics["relative"]["whole"]["Excess Return [%]"]

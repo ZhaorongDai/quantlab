@@ -11,7 +11,9 @@ written last. Its kinds are ``"run"``, ``"run_cv"``, ``"run_weights"`` and
   component tree is recorded reading its copy under ``inputs/``, named by its
   component path and written once however many fields hold it.
 - ``run.json`` holds the header, the window (the first and last bar of the
-  equity curve), ``market`` (the backtester class's price columns), the
+  equity curve), ``market`` (the backtester class's price columns),
+  ``annualization`` (its trading days per year and session minutes per day),
+  the
   config fields that hold components (``components``, so a field is rebuilt
   by its declaration without importing the backtester class), the data
   fingerprint of every dataset the run read, ``trained_run`` (the trained unit
@@ -92,6 +94,20 @@ class Market:
 
 
 @dataclass(frozen=True)
+class Annualization:
+    """How a backtester annualized its statistics: trading days and session length.
+
+    Examples
+    --------
+    >>> BacktestRun.open(run_dir).annualization
+    Annualization(trading_days_per_year=252, session_minutes_per_day=390)
+    """
+
+    trading_days_per_year: int
+    session_minutes_per_day: int
+
+
+@dataclass(frozen=True)
 class FoldArtifacts:
     """What a ``run_cv`` run writes for one fold, a child run of kind ``"fold"``.
 
@@ -123,7 +139,9 @@ def write_backtest_run(
     *,
     backtester: Any,
     market: Market,
+    annualization: Annualization,
     data_fingerprint: Mapping,
+    benchmark_source: str | None,
     trained_run: Path | str | None,
     weights: xr.Dataset,
     equity: xr.Dataset,
@@ -146,8 +164,13 @@ def write_backtest_run(
         dataset in its component tree writes its copy under the run directory.
     market : Market
         The backtester class's price columns.
+    annualization : Annualization
+        The backtester class's annualization.
     data_fingerprint : Mapping
         One fingerprint per dataset the run read.
+    benchmark_source : str or None
+        Where the benchmark was read from, as the report names it; None
+        without a benchmark.
     trained_run : Path, str or None
         The trained unit the backtest used; None for ``run_weights``.
     weights, equity : xarray.Dataset
@@ -178,7 +201,9 @@ def write_backtest_run(
     Examples
     --------
     >>> write_backtest_run(runs / "MyBacktester_1", "run", backtester=backtester,
-    ...                    market=Market("open", "close"), data_fingerprint={},
+    ...                    market=Market("open", "close"),
+    ...                    annualization=Annualization(252, 390), data_fingerprint={},
+    ...                    benchmark_source=None,
     ...                    trained_run=checkpoint_unit, weights=weights, equity=equity,
     ...                    settlements=[], metrics=metrics, write_report=report)
     >>> BacktestRun.open(runs / "MyBacktester_1").kind
@@ -218,8 +243,10 @@ def write_backtest_run(
             {
                 "window": _window(equity),
                 "market": dataclasses.asdict(market),
+                "annualization": dataclasses.asdict(annualization),
                 "components": component_fields(backtester.config),
                 "data_fingerprint": dict(data_fingerprint),
+                "benchmark_source": benchmark_source,
                 "trained_run": _unit(trained_run),
                 "folds": children,
             },
@@ -290,6 +317,8 @@ class BacktestRun:
         The first and last bar simulated, as bar labels.
     market : Market
         The price columns the backtester filled and valued at.
+    annualization : Annualization
+        How its statistics were annualized.
     data_fingerprint : dict
         One fingerprint per dataset the run read; a fold has none of its own.
     folds : tuple of BacktestRun
@@ -311,10 +340,12 @@ class BacktestRun:
     written_at: str
     window: tuple
     market: Market
+    annualization: Annualization
     data_fingerprint: dict
     folds: tuple = ()
     index: int | None = None
     _trained_run: str | None = field(default=None, repr=False)
+    _benchmark_source: str | None = field(default=None, repr=False)
     _components: dict = field(default_factory=dict, repr=False)
     _recipe_dir: Path | None = field(default=None, repr=False)
 
@@ -359,6 +390,7 @@ class BacktestRun:
             written_at=record["written_at"],
             window=tuple(record["window"]),
             market=Market(**parent["market"]),
+            annualization=Annualization(**parent["annualization"]),
             data_fingerprint=dict(record.get("data_fingerprint") or {}),
             folds=tuple(
                 cls.open(recorded_path(directory, entry["directory"]))
@@ -366,6 +398,7 @@ class BacktestRun:
             ),
             index=record.get("index"),
             _trained_run=record.get("trained_run"),
+            _benchmark_source=parent.get("benchmark_source"),
             _components=dict(parent["components"]),
             _recipe_dir=recipe,
         )
@@ -387,6 +420,56 @@ class BacktestRun:
         """
         config = self._config()
         return ExecutionSettings(config["sizing_basis"], config["fees"], config["slippage"])
+
+    @property
+    def init_cash(self) -> float:
+        """The cash the simulation started with.
+
+        Examples
+        --------
+        >>> BacktestRun.open(run_dir).init_cash
+        1000000.0
+        """
+        return float(self._config()["init_cash"])
+
+    @property
+    def backtester_class(self) -> str:
+        """The import path of the backtester class that wrote the run.
+
+        Examples
+        --------
+        >>> BacktestRun.open(run_dir).backtester_class.rsplit(".", 1)[-1]
+        'USEquityCrossectionSelectStockVectorBt'
+        """
+        return str(self._config()["name"])
+
+    @property
+    def benchmark_source(self) -> str | None:
+        """Where the benchmark was read from: its store, or the dataset held in memory.
+
+        None for a run without a benchmark. Recorded when the run was
+        written, as its report names it.
+
+        Examples
+        --------
+        >>> BacktestRun.open(run_dir).benchmark_source
+        '/data/zarrs/spy.zarr'
+        """
+        return self._benchmark_source
+
+    def recipe(self) -> dict:
+        """The run's rebuild recipe, the backtester's ``get_config()`` as recorded.
+
+        For presentation that takes a config mapping
+        (``quantlab.utils.backtest_report.report_summary``); a component is
+        rebuilt with ``rebuild(field)`` and the backtester with
+        ``rebuild_backtester``.
+
+        Examples
+        --------
+        >>> summary = report_summary(run.recipe(), run.metrics(), bar_interval="1D")
+        """
+        return self._config()
 
     @property
     def rebalance_periods(self) -> int:
@@ -510,6 +593,17 @@ class BacktestRun:
         """
         return XrBackend().read(self.path / _EQUITY_FILE).data.load()
 
+    @property
+    def has_predictions(self) -> bool:
+        """Whether the run has a prediction panel (a run with a model), without reading it.
+
+        Examples
+        --------
+        >>> BacktestRun.open(run_dir).has_predictions
+        True
+        """
+        return (self.path / _PREDICTIONS_FILE).exists()
+
     def predictions(self) -> PredictionPanel | None:
         """The predictions the rule read, or None for a run without a model or a fold.
 
@@ -518,8 +612,7 @@ class BacktestRun:
         >>> [spec.name for spec in BacktestRun.open(run_dir).predictions().labels]
         ['fwd_ret_1']
         """
-        path = self.path / _PREDICTIONS_FILE
-        return PredictionPanel.read(path) if path.exists() else None
+        return PredictionPanel.read(self.path / _PREDICTIONS_FILE) if self.has_predictions else None
 
     def metrics(self) -> dict:
         """The run's metrics, as the backtester returned them (NaN as None).

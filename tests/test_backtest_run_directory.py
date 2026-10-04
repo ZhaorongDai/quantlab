@@ -7,7 +7,8 @@ here, through real `run()`, `run_cv()` and `run_weights()` calls:
 - `open_run(run_dir)` gives a `BacktestRun` of kind `run`, `run_cv` or
   `run_weights`, whose typed properties (window, market, execution, rebalance
   periods, data fingerprint) and readers (weights, predictions, metrics, equity,
-  settlements) match the run's result; a run_cv run's folds are child runs of
+  settlements) match the run's result, with the annualization, the initial cash,
+  the backtester class, the benchmark source and the recipe; a run_cv run's folds are child runs of
   kind `fold`;
 - `trained_run()` opens the trained unit the backtest used: the unit trained in
   train mode, the checkpoint's unit in load mode, the walk-forward unit for
@@ -45,7 +46,7 @@ from quantlab.base.config import ModelConfig
 from quantlab.base.portfolio import PredictionPanel
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.runs.backtest_run import BacktestRun, Market
+from quantlab.runs.backtest_run import Annualization, BacktestRun, Market
 from quantlab.runs.directory import FORMAT_VERSION, open_run
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils.execution import ExecutionSettings
@@ -145,8 +146,16 @@ def test_a_run_opens_as_a_backtest_run_matching_its_result(tmp_path, trained):
         US_EQUITY_MARKET.fill_price_column, US_EQUITY_MARKET.valuation_price_column
     )
     assert run.execution == ExecutionSettings("fill", 0.001, 0.0)
+    assert run.annualization == Annualization(
+        US_EQUITY_MARKET.trading_days_per_year, US_EQUITY_MARKET.session_minutes_per_day
+    )
+    assert run.init_cash == backtester.config.init_cash
+    assert run.backtester_class == backtester.import_path
+    assert run.benchmark_source is None
+    assert run.recipe() == _json(backtester.get_config())
     assert run.rebalance_periods == 2
     assert "price_dataset" in run.data_fingerprint
+    assert run.data_fingerprint == _json(backtester.data_fingerprint)
     xr.testing.assert_identical(run.weights(), result.weights)
     panel = run.predictions()
     assert isinstance(panel, PredictionPanel)

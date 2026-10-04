@@ -275,11 +275,14 @@ out_of_sample -5.61 -4.27 13
 | `kind`、`window` | `"run"`、`"run_cv"`、`"run_weights"`，`run_cv()` 运行的一折则是 `"fold"`；模拟的第一根和最后一根 bar。 |
 | `market` | 回测器类的 `fill_price_column` 和 `valuation_price_column`，读取运行的工具不必导入该类就能知道这两列。 |
 | `execution`、`rebalance_periods` | 来自运行配置的 `ExecutionSettings`（`sizing_basis`、`fees`、`slippage`）与调仓间隔 bar 数。 |
+| `annualization`、`init_cash` | 统计年化所用的每年交易日数与每日交易分钟数，以及模拟的初始资金。 |
+| `backtester_class`、`benchmark_source`、`recipe()` | 回测器类的导入路径；基准的来源（其 store，或内存中持有的数据集；没有基准时为 `None`）；重建配方本身，即 `report_summary` 读取的配置映射。 |
 | `data_fingerprint` | 本次运行读取的每个数据集的摘要和范围：价格、每个因子的输入、基准，train 模式下还有训练数据。 |
 | `trained_run()` | 回测所用的训练单元，即一个 `TrainedRun`：train 模式下是训练出的单元，load 模式下是 checkpoint 所在的单元，`run_cv()` 是 walk-forward 单元，一折则是该折自己的单元；`run_weights()` 为 `None`。 |
 | `weights()`、`equity()` | `(timestamp, symbol)` 上的目标权重；`timestamp` 上的组合 `value` 与每根 bar 的 `returns`，跑了基准时另有 `benchmark_value` 和 `benchmark_returns`。 |
 | `metrics()` | 与 `result.metrics` 相同的映射，按 JSON 保存的形式：NaN 和无穷大变为 `None`，元组变为列表。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
 | `settlements()` | 退市结算记录。 |
+| `report()`、`log_report(tracking_run)` | HTML 报告的文本；把它附到追踪 run 上。 |
 | `predictions()` | 仅带模型的运行（`run()`、`run_cv()`）才有：组合构建规则读到的预测（在价格坐标轴上）及其标签规格，格式为 `PredictionPanel`；`DecisionInputs.from_run(run_dir)` 凭它在不加载模型的情况下重建该运行的决策输入，包括已绑定的规则（见[组合构建](portfolio.md#不加载模型重建一次运行的决策输入)）。`run_weights()` 的运行为 `None`。 |
 | `folds` | `run_cv()` 运行的各折，每折是一个 kind 为 `"fold"` 的 `BacktestRun`。 |
 | `rebuild(field)`、`rebuild_backtester(**overrides)` | 某个配置字段持有的组件，以及回测器本身（见[重建一次运行](#重建一次运行)）。 |
