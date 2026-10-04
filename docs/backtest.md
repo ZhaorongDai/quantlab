@@ -429,7 +429,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ...     "open": [10.0, 20.0, 11.0, 20.0, 12.0, 21.0, 12.0, 22.0, 13.0, 22.0],
 ...     "close": [10.5, 20.0, 11.5, 20.5, 12.0, 21.5, 12.5, 22.0, 13.0, 22.5],
 ... }))
->>> backtester = WeightsVectorBt(WeightsBacktestConfig(
+>>> held_backtester = WeightsVectorBt(WeightsBacktestConfig(
 ...     price_dataset=prices, start_date="2024-01-01", end_date="2024-01-05",
 ...     output_dir=None, rebalance_periods=1, fees=0.0, slippage=0.0,
 ...     fill_price_column="open", valuation_price_column="close",
@@ -439,8 +439,8 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ...     [[1.0, 0.0]] + [[np.nan, np.nan]] * 4, dims=("timestamp", "symbol"),
 ...     coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
 ... )
->>> result = backtester.run_weights(weights)
->>> result.simulation.value.values.round(2).tolist()
+>>> held = held_backtester.run_weights(weights)
+>>> held.simulation.value.values.round(2).tolist()
 [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
 ```
 
@@ -453,7 +453,7 @@ With `output_dir=None` a run writes nothing: no run directory, no report. `resul
 ...     dataclasses.replace(weights_config, output_dir=None)
 ... ).run_weights(result.weights)
 >>> in_memory.run_dir is None, round(in_memory.metrics["whole"]["Total Return [%]"], 2)
-(True, -5.85)
+(True, -5.87)
 ```
 
 `report_figure(result)` returns the Performance chart `report.html` would embed (equity, drawdown and monthly returns, with the benchmark beside the portfolio when a benchmark ran) as a plotly figure, so a run kept in memory can be looked at too. It takes the result of `run()` or `run_weights()`.
@@ -487,19 +487,20 @@ Masking the prices with membership instead (a price panel `.where(is_member)`) m
 Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for example the QQQ store written by `scripts/wrds/etf.py --etf qqq` (`CrspDatasetConfig.qqq_benchmark`). It is a `(timestamp, symbol)` panel like the price dataset, in a store of its own, with the same `adjOpen` / `adjClose` columns. Pass the dataset object itself:
 
 ```python
->>> from quantlab.dataset.crsp import CrspStockDataset
->>> qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
-...     zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",
-...     raw_data_dir_path="data/downloads/us_equity/1d/crsp/wrds",
-...     reference_dir="data/reference/crsp",
-... ))
->>> config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
->>> result = USEquityCrossectionSelectStockVectorBt(config).run()
->>> sorted(result.metrics["relative"]["whole"])[:4]
-['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
+from quantlab.base.config import CrspDatasetConfig
+from quantlab.dataset.crsp import CrspStockDataset
+qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
+    zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",
+    raw_data_dir_path="data/downloads/us_equity/1d/crsp/wrds",
+    reference_dir="data/reference/crsp",
+))
+config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
+benchmarked = USEquityCrossectionSelectStockVectorBt(config).run()
+sorted(benchmarked.metrics["relative"]["whole"])[:4]
+# ['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
 ```
 
-The benchmark is read over the window and put on the strategy's own bars; a bar it lacks carries its previous price forward (one warning), and a benchmark that starts after the window, or a panel with more than one symbol, is refused. It is bought and held with the strategy's conventions: all-in at the second bar's open, from the same `init_cash`, with the same fees and slippage, so the two value curves compare bar for bar. `result.benchmark` is its `SimulationResult`.
+The benchmark is read over the window and put on the strategy's own bars; a bar it lacks carries its previous price forward (one warning), and a benchmark that starts after the window, or a panel with more than one symbol, is refused. It is bought and held with the strategy's conventions: all-in at the second bar's open, from the same `init_cash`, with the same fees and slippage, so the two value curves compare bar for bar. `benchmarked.benchmark` is its `SimulationResult`.
 
 The run then carries two more metric blocks, each with `whole`, `in_sample` and `out_of_sample` slices:
 
@@ -578,7 +579,7 @@ A `run_weights()` run has no model to predict its weights again, so it is replay
 >>> import dataclasses, shutil, tempfile
 >>> from quantlab.runs.backtest_run import BacktestRun
 >>> kept = WeightsVectorBt(
-...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
+...     dataclasses.replace(held_backtester.config, output_dir=tempfile.mkdtemp())
 ... ).run_weights(weights)
 >>> kept_run = BacktestRun.open(kept.run_dir)
 >>> kept_run.kind, type(kept_run.rebuild("price_dataset")).__name__
@@ -611,18 +612,18 @@ The returns-based rows and the turnover rows of `metrics.json` are public functi
 | `exposure_stats(fills, close, cash)` | `Max Gross Exposure [%]` of `whole`, equal to vectorbt's to rounding |
 | `drawdown_span(value)` and `bar_label(value)` | the deepest drawdown the report marks, and the label `metrics.json` writes for a bar |
 
-`ranges` are inclusive pairs of bar labels, as `metrics.json` records them (`in_sample_range`, `out_of_sample_ranges`). The strategy's own `whole` block is the exception: its turnover and win-rate rows come from these functions, but its return, ratio, trade, exposure and fee rows come from the engine's portfolio statistics; the trade and exposure rows equal `round_trip_stats` and `exposure_stats` of its fills. With `result` the `WeightsVectorBt` run above:
+`ranges` are inclusive pairs of bar labels, as `metrics.json` records them (`in_sample_range`, `out_of_sample_ranges`). The strategy's own `whole` block is the exception: its turnover and win-rate rows come from these functions, but its return, ratio, trade, exposure and fee rows come from the engine's portfolio statistics; the trade and exposure rows equal `round_trip_stats` and `exposure_stats` of its fills. With `held` the `WeightsVectorBt` run above:
 
 ```python
 >>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
 >>> year = year_freq("1D", 252, 390)
 >>> stats = return_stats(
-...     result.simulation.returns, bar_interval="1D", year_freq=year,
+...     held.simulation.returns, bar_interval="1D", year_freq=year,
 ...     ranges=[("2024-01-02", "2024-01-05")],
 ... )
 >>> round(stats["Total Return [%]"], 4), stats["Period"]
 (18.1818, Timedelta('4 days 00:00:00'))
->>> flows = turnover(result.simulation.orders, result.simulation.value, init_cash=1_000_000.0)
+>>> flows = turnover(held.simulation.orders, held.simulation.value, init_cash=1_000_000.0)
 >>> turnover_stats(flows, bar_interval="1D", year_freq=year, rebalance_periods=1)
 {'Turnover per Rebalance [%]': 100.0, 'Total Turnover [%]': 100.0, 'Annualized Turnover [%]': 25200.0}
 ```
@@ -631,7 +632,7 @@ A round trip is a position from flat to flat in one symbol: adding to or trimmin
 
 ```python
 >>> from quantlab.utils.backtest_stats import round_trip_stats, round_trips
->>> orders = result.simulation.orders
+>>> orders = held.simulation.orders
 >>> fills = orders.assign(size=orders["size"] * xr.where(orders["side"] == "Buy", 1.0, -1.0))
 >>> close = xr.DataArray(
 ...     [[10.5, 20.0], [11.5, 20.5], [12.0, 21.5], [12.5, 22.0], [13.0, 22.5]],
@@ -643,9 +644,9 @@ A round trip is a position from flat to flat in one symbol: adding to or trimmin
 >>> stats = round_trip_stats(trips, bar_interval="1D")
 >>> stats["Total Trades"], stats["Total Open Trades"], round(stats["Open Trade PnL"], 2)
 (1, 1, 181818.18)
->>> {key: result.metrics["whole"][key] for key in ("Total Trades", "Total Open Trades")}
+>>> {key: held.metrics["whole"][key] for key in ("Total Trades", "Total Open Trades")}
 {'Total Trades': 1, 'Total Open Trades': 1}
->>> round(result.metrics["whole"]["Open Trade PnL"], 2)
+>>> round(held.metrics["whole"]["Open Trade PnL"], 2)
 181818.18
 ```
 
@@ -657,11 +658,11 @@ The rules the vectorbt engine executes a fill bar by (an order at the fill price
 >>> import numpy as np
 >>> from quantlab.utils.execution import ExecutionSettings, replay
 >>> prices = np.array([[10.0], [10.0]])
->>> result = replay(
+>>> book = replay(
 ...     np.array([[1.0], [np.nan]]), prices, prices, np.zeros((2, 1), dtype=bool),
 ...     ExecutionSettings(fees=0.01),
 ... )
->>> round(float(result.shares[1, 0]), 10), float(result.cash[1])
+>>> round(float(book.shares[1, 0]), 10), float(book.cash[1])
 (0.099009901, 0.0)
 ```
 
@@ -682,19 +683,19 @@ A line of the summary is replaced by assigning to its key, which keeps its place
 
 ```python
 >>> from quantlab.utils.backtest_report import report_summary, report_windows, write_backtest_report
->>> summary = report_summary(backtester.get_config(), result.metrics, bar_interval="1D")
+>>> summary = report_summary(held_backtester.get_config(), held.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
-['Bar interval', 'Signal', 'Rebalance every', 'Portfolio construction', 'Fees']
->>> report_windows(result.simulation.value.timestamp.values, result.metrics)["backtest"]
+['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+>>> report_windows(held.simulation.value.timestamp.values, held.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
 >>> from quantlab.utils.backtest_report import report_chart_inputs
 >>> write_backtest_report(
-...     result.simulation.value, "replay.html", title="replay", summary=summary,
-...     windows=report_windows(result.simulation.value.timestamp.values, result.metrics),
-...     metrics=result.metrics,
-...     **report_chart_inputs(result.metrics, ["Fills from the event-driven replay."],
-...                           returns=result.simulation.returns, init_cash=1_000_000.0),
+...     held.simulation.value, "replay.html", title="replay", summary=summary,
+...     windows=report_windows(held.simulation.value.timestamp.values, held.metrics),
+...     metrics=held.metrics,
+...     **report_chart_inputs(held.metrics, ["Fills from the event-driven replay."],
+...                           returns=held.simulation.returns, init_cash=1_000_000.0),
 ...     extra_tables={"Execution (event-driven)": {"Commissions": 12.5, "Dividends": 3}},
 ... )
 >>> "<h2>Execution (event-driven)</h2>" in open("replay.html").read()

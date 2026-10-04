@@ -429,7 +429,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ...     "open": [10.0, 20.0, 11.0, 20.0, 12.0, 21.0, 12.0, 22.0, 13.0, 22.0],
 ...     "close": [10.5, 20.0, 11.5, 20.5, 12.0, 21.5, 12.5, 22.0, 13.0, 22.5],
 ... }))
->>> backtester = WeightsVectorBt(WeightsBacktestConfig(
+>>> held_backtester = WeightsVectorBt(WeightsBacktestConfig(
 ...     price_dataset=prices, start_date="2024-01-01", end_date="2024-01-05",
 ...     output_dir=None, rebalance_periods=1, fees=0.0, slippage=0.0,
 ...     fill_price_column="open", valuation_price_column="close",
@@ -439,8 +439,8 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ...     [[1.0, 0.0]] + [[np.nan, np.nan]] * 4, dims=("timestamp", "symbol"),
 ...     coords={"timestamp": bars, "symbol": ["AAA", "BBB"]},
 ... )
->>> result = backtester.run_weights(weights)
->>> result.simulation.value.values.round(2).tolist()
+>>> held = held_backtester.run_weights(weights)
+>>> held.simulation.value.values.round(2).tolist()
 [1000000.0, 1045454.55, 1090909.09, 1136363.64, 1181818.18]
 ```
 
@@ -453,7 +453,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 ...     dataclasses.replace(weights_config, output_dir=None)
 ... ).run_weights(result.weights)
 >>> in_memory.run_dir is None, round(in_memory.metrics["whole"]["Total Return [%]"], 2)
-(True, -5.85)
+(True, -5.87)
 ```
 
 `report_figure(result)` 以 plotly 图形返回 `report.html` 中 Performance 标签页的那张图（净值、回撤、月度收益，设置了基准时基准与组合并列），因此只在内存中运行的结果也能查看。它接受 `run()` 或 `run_weights()` 的结果。
@@ -487,19 +487,20 @@ config = CrossSectionBacktestConfig(
 把 `benchmark_dataset` 设为只含一个标的的市场数据集，例如 `scripts/wrds/etf.py --etf qqq` 写出的 QQQ store（`CrspDatasetConfig.qqq_benchmark`）。它和价格数据集一样是 `(timestamp, symbol)` 面板，放在单独的 store 里，带有相同的 `adjOpen` / `adjClose` 列。直接传入数据集对象：
 
 ```python
->>> from quantlab.dataset.crsp import CrspStockDataset
->>> qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
-...     zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",
-...     raw_data_dir_path="data/downloads/us_equity/1d/crsp/wrds",
-...     reference_dir="data/reference/crsp",
-... ))
->>> config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
->>> result = USEquityCrossectionSelectStockVectorBt(config).run()
->>> sorted(result.metrics["relative"]["whole"])[:4]
-['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
+from quantlab.base.config import CrspDatasetConfig
+from quantlab.dataset.crsp import CrspStockDataset
+qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
+    zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",
+    raw_data_dir_path="data/downloads/us_equity/1d/crsp/wrds",
+    reference_dir="data/reference/crsp",
+))
+config = CrossSectionBacktestConfig(..., benchmark_dataset=qqq)
+benchmarked = USEquityCrossectionSelectStockVectorBt(config).run()
+sorted(benchmarked.metrics["relative"]["whole"])[:4]
+# ['Annualized Excess Return [%]', 'Bars', 'Benchmark Total Return [%]', 'Beta']
 ```
 
-基准按回测窗口读取，并对齐到策略自己的 bar 上；基准缺失的 bar 沿用前一个价格（记录一条警告）。基准晚于窗口开始、或面板中不止一个标的时会报错。基准按策略的同一套执行约定买入并持有：在第二根 bar 的开盘价全仓买入，初始资金 `init_cash`、手续费和滑点都与策略相同，因此两条净值曲线可以逐 bar 比较。`result.benchmark` 是它的 `SimulationResult`。
+基准按回测窗口读取，并对齐到策略自己的 bar 上；基准缺失的 bar 沿用前一个价格（记录一条警告）。基准晚于窗口开始、或面板中不止一个标的时会报错。基准按策略的同一套执行约定买入并持有：在第二根 bar 的开盘价全仓买入，初始资金 `init_cash`、手续费和滑点都与策略相同，因此两条净值曲线可以逐 bar 比较。`benchmarked.benchmark` 是它的 `SimulationResult`。
 
 运行结果多出两个指标块，每块都有 `whole`、`in_sample`、`out_of_sample` 三个切片：
 
@@ -578,7 +579,7 @@ True
 >>> import dataclasses, shutil, tempfile
 >>> from quantlab.runs.backtest_run import BacktestRun
 >>> kept = WeightsVectorBt(
-...     dataclasses.replace(backtester.config, output_dir=tempfile.mkdtemp())
+...     dataclasses.replace(held_backtester.config, output_dir=tempfile.mkdtemp())
 ... ).run_weights(weights)
 >>> kept_run = BacktestRun.open(kept.run_dir)
 >>> kept_run.kind, type(kept_run.rebuild("price_dataset")).__name__
@@ -611,18 +612,18 @@ True
 | `exposure_stats(fills, close, cash)` | `whole` 的 `Max Gross Exposure [%]`，与 vectorbt 的值在舍入误差内相等 |
 | `drawdown_span(value)` 与 `bar_label(value)` | 报告标出的最深回撤，以及 `metrics.json` 为一根 bar 写的标签 |
 
-`ranges` 是闭区间的 bar 标签对，与 `metrics.json` 记录的形式相同（`in_sample_range`、`out_of_sample_ranges`）。策略自身的 `whole` 块是例外：其中换手率和胜率各行来自这些函数，而收益、比率、交易、敞口和费用各行来自引擎的组合统计；其中交易和敞口各行等于对其成交调用 `round_trip_stats` 和 `exposure_stats` 的结果。以上文 `WeightsVectorBt` 的运行结果 `result` 为例：
+`ranges` 是闭区间的 bar 标签对，与 `metrics.json` 记录的形式相同（`in_sample_range`、`out_of_sample_ranges`）。策略自身的 `whole` 块是例外：其中换手率和胜率各行来自这些函数，而收益、比率、交易、敞口和费用各行来自引擎的组合统计；其中交易和敞口各行等于对其成交调用 `round_trip_stats` 和 `exposure_stats` 的结果。以上文 `WeightsVectorBt` 的运行结果 `held` 为例：
 
 ```python
 >>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
 >>> year = year_freq("1D", 252, 390)
 >>> stats = return_stats(
-...     result.simulation.returns, bar_interval="1D", year_freq=year,
+...     held.simulation.returns, bar_interval="1D", year_freq=year,
 ...     ranges=[("2024-01-02", "2024-01-05")],
 ... )
 >>> round(stats["Total Return [%]"], 4), stats["Period"]
 (18.1818, Timedelta('4 days 00:00:00'))
->>> flows = turnover(result.simulation.orders, result.simulation.value, init_cash=1_000_000.0)
+>>> flows = turnover(held.simulation.orders, held.simulation.value, init_cash=1_000_000.0)
 >>> turnover_stats(flows, bar_interval="1D", year_freq=year, rebalance_periods=1)
 {'Turnover per Rebalance [%]': 100.0, 'Total Turnover [%]': 100.0, 'Annualized Turnover [%]': 25200.0}
 ```
@@ -631,7 +632,7 @@ True
 
 ```python
 >>> from quantlab.utils.backtest_stats import round_trip_stats, round_trips
->>> orders = result.simulation.orders
+>>> orders = held.simulation.orders
 >>> fills = orders.assign(size=orders["size"] * xr.where(orders["side"] == "Buy", 1.0, -1.0))
 >>> close = xr.DataArray(
 ...     [[10.5, 20.0], [11.5, 20.5], [12.0, 21.5], [12.5, 22.0], [13.0, 22.5]],
@@ -643,9 +644,9 @@ True
 >>> stats = round_trip_stats(trips, bar_interval="1D")
 >>> stats["Total Trades"], stats["Total Open Trades"], round(stats["Open Trade PnL"], 2)
 (1, 1, 181818.18)
->>> {key: result.metrics["whole"][key] for key in ("Total Trades", "Total Open Trades")}
+>>> {key: held.metrics["whole"][key] for key in ("Total Trades", "Total Open Trades")}
 {'Total Trades': 1, 'Total Open Trades': 1}
->>> round(result.metrics["whole"]["Open Trade PnL"], 2)
+>>> round(held.metrics["whole"]["Open Trade PnL"], 2)
 181818.18
 ```
 
@@ -657,11 +658,11 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 >>> import numpy as np
 >>> from quantlab.utils.execution import ExecutionSettings, replay
 >>> prices = np.array([[10.0], [10.0]])
->>> result = replay(
+>>> book = replay(
 ...     np.array([[1.0], [np.nan]]), prices, prices, np.zeros((2, 1), dtype=bool),
 ...     ExecutionSettings(fees=0.01),
 ... )
->>> round(float(result.shares[1, 0]), 10), float(result.cash[1])
+>>> round(float(book.shares[1, 0]), 10), float(book.cash[1])
 (0.099009901, 0.0)
 ```
 
@@ -682,19 +683,19 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 
 ```python
 >>> from quantlab.utils.backtest_report import report_summary, report_windows, write_backtest_report
->>> summary = report_summary(backtester.get_config(), result.metrics, bar_interval="1D")
+>>> summary = report_summary(held_backtester.get_config(), held.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
-['Bar interval', 'Signal', 'Rebalance every', 'Portfolio construction', 'Fees']
->>> report_windows(result.simulation.value.timestamp.values, result.metrics)["backtest"]
+['Bar interval', 'Signal', 'Rebalance every', 'Top N', 'Direction', 'Fees']
+>>> report_windows(held.simulation.value.timestamp.values, held.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
 >>> from quantlab.utils.backtest_report import report_chart_inputs
 >>> write_backtest_report(
-...     result.simulation.value, "replay.html", title="replay", summary=summary,
-...     windows=report_windows(result.simulation.value.timestamp.values, result.metrics),
-...     metrics=result.metrics,
-...     **report_chart_inputs(result.metrics, ["Fills from the event-driven replay."],
-...                           returns=result.simulation.returns, init_cash=1_000_000.0),
+...     held.simulation.value, "replay.html", title="replay", summary=summary,
+...     windows=report_windows(held.simulation.value.timestamp.values, held.metrics),
+...     metrics=held.metrics,
+...     **report_chart_inputs(held.metrics, ["Fills from the event-driven replay."],
+...                           returns=held.simulation.returns, init_cash=1_000_000.0),
 ...     extra_tables={"Execution (event-driven)": {"Commissions": 12.5, "Dividends": 3}},
 ... )
 >>> "<h2>Execution (event-driven)</h2>" in open("replay.html").read()
