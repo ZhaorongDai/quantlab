@@ -173,7 +173,7 @@ Data variables:
 | `"alpha158_crypto"` | `Alpha158SpotKline` | 上述各列和 `amount` | 沿时间在 20 根 bar 上做 z-score |
 | `"alpha101_crypto"` | `Alpha101SpotKline` | 上述各列和 `amount` | 沿时间在 20 根 bar 上做 z-score |
 
-股票因子集针对经过拆股和分红复权的价格，VWAP 取 `(high + low + close) / 3`；加密货币因子集从 `amount` 读取成交额。需要基本面数据或因子收益序列的因子（`LiteratureAlpha`、`ResidualMomentumFF3`、`MarketFeatures`）没有简称。
+股票因子集针对经过拆股和分红复权的价格，VWAP 取 `(high + low + close) / 3`；加密货币因子集从 `amount` 读取成交额。需要基本面数据或因子收益序列的因子（`LiteratureAlpha`、`ResidualMomentumFF3`、`MarketFeatures`、`BarraStyle`）没有简称。
 
 整个 frame 一次算完，第一根 bar 之前没有历史，所以每个滚动窗口开头的几根 bar 是 NaN，而不是被丢弃。因子值是 float32。
 

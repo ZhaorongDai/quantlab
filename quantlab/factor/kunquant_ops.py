@@ -1,10 +1,10 @@
-"""Custom KunQuant operators that normalize a factor or tame its outliers.
+"""Custom KunQuant operators: normalizations, outlier handling and weighted statistics.
 
 KunQuant is the library this project uses to compute most factors. A factor
 formula is written as a graph of operators (``WindowedAvg``, ``Rank``, ...),
 and KunQuant compiles that graph to native C++ code that runs over a whole
-``(timestamp, symbol)`` array at once. This module adds four operators to
-that vocabulary.
+``(timestamp, symbol)`` array at once. This module adds operators to that
+vocabulary.
 
 ``WindowedZScore`` is a *time-series* normalization: each symbol is compared
 with its own recent past. ``CrossSectionalZScore`` is a *cross-sectional*
@@ -19,9 +19,23 @@ second. They are not two implementations of the same thing.
 bar's lower and upper quantiles across symbols, the second replaces values
 outside them with NaN. They are typically applied before a cross-sectional
 z-score so that a few extreme symbols do not dominate its mean and spread.
+
+The exponentially weighted window statistics (``EWSum``, ``EWMean``,
+``EWVar``, ``EWCov``, ``EWBeta``, ``EWAlpha``) weight the trailing ``window``
+bars by ``0.5 ** (age / half_life)``, where ``age`` is 0 for the current bar,
+and skip missing values. The cross-sectional ``CrossSectionalWeightedMean``,
+``CrossSectionalTopN`` and ``CapWeightedStandardize`` and the elementwise
+``SigmaClip`` are the estimation-universe tools of a Barra-style risk factor
+(see ``quantlab.factor.predefined.barra``), usable by any factor.
 """
 
-from KunQuant.Op import Builder
+from KunQuant.Op import (
+    Builder,
+    ForeachBackWindow,
+    IterValue,
+    WindowedTempOutput,
+    WindowLoopIndex,
+)
 from KunQuant.ops import *
 
 
@@ -352,3 +366,634 @@ class CrossSectionalTrim(_CrossSectionalQuantileBounds):
 
     _TRIM = True
 
+
+def _check_ew_window(window: int, half_life: float) -> tuple[int, float]:
+    """Return ``(window, half_life)`` as ``(int, float)``, or raise if unusable."""
+    window, half_life = int(window), float(half_life)
+    if window < 1:
+        raise ValueError(f"an EW window needs window >= 1, got {window}")
+    if not half_life > 0.0:
+        raise ValueError(f"an EW window needs half_life > 0, got {half_life}")
+    return window, half_life
+
+
+def _ew_weight(loop: ForeachBackWindow, window: int, half_life: float) -> OpBase:
+    """Return ``0.5 ** (age / half_life)`` for the loop's current bar, inside ``loop``.
+
+    ``age = window - 1 - WindowLoopIndex`` is 0 for the newest bar. KunQuant's
+    ``Exp`` is a short polynomial accurate to about 1e-7 even in double, so the
+    weight is built exactly instead: ``age`` is split into powers of two and
+    the matching constants ``decay ** (2 ** k)``, computed in Python float64,
+    are multiplied together.
+    """
+    decay = 0.5 ** (1.0 / half_life)
+    rest = (WindowLoopIndex(loop) - float(window - 1)) * -1.0
+    weight: OpBase = ConstantOp(1.0)
+    step = 1 << max(window - 1, 1).bit_length() - 1
+    while step >= 1 and window > 1:
+        has_bit = rest >= float(step)
+        weight = weight * Select(has_bit, ConstantOp(decay**step), ConstantOp(1.0))
+        rest = rest - Select(has_bit, ConstantOp(float(step)), ConstantOp(0.0))
+        step //= 2
+    return weight
+
+
+def _zero_where_missing(value: OpBase) -> OpBase:
+    """Return ``value`` with NaN and infinities replaced by 0."""
+    return SetInfOrNanToValue(value, 0.0)
+
+
+def _present(value: OpBase) -> OpBase:
+    """Return 1 where ``value`` is finite and 0 where it is NaN or infinite."""
+    return _zero_where_missing(value * 0.0 + 1.0)
+
+
+def _jointly(value: OpBase, other: OpBase) -> OpBase:
+    """Return ``value``, NaN wherever ``other`` is NaN or infinite."""
+    return value + other * 0.0
+
+
+def _window_filled(value: OpBase, window: int) -> OpBase:
+    """Return 0 once ``window`` bars of history exist and NaN before.
+
+    Added to a windowed result so that it stays NaN until the window has
+    filled; a missing value inside the window does not count against it.
+    """
+    zero = _zero_where_missing(value * 0.0)
+    return BackRef(zero, window - 1) if window > 1 else zero
+
+
+class _EWWindowOp(CompositiveOp, WindowedTrait):
+    """Shared machinery of the exponentially weighted window statistics.
+
+    The weights are ``0.5 ** (age / half_life)`` over the trailing ``window``
+    bars, ``age`` 0 being the current bar. A NaN or infinite value is skipped:
+    it adds nothing to a weighted sum and its weight is left out of the sum
+    of weights. The result is NaN until ``window`` bars of history exist, and
+    a statistic with no valid value in its window is NaN. Every op here is a
+    composite op: KunQuant expands it into loops over the window
+    (``ForeachBackWindow``) while compiling, so the parameters can differ
+    between two uses in one graph.
+    """
+
+    def __init__(self, inputs: list[OpBase], window: int, half_life: float) -> None:
+        """Initialize the operator; see the subclass docstring for parameters."""
+        window, half_life = _check_ew_window(window, half_life)
+        super().__init__(inputs, [("window", window), ("half_life", half_life)])
+
+    @property
+    def _window(self) -> int:
+        return self.attrs["window"]  # type: ignore[return-value]
+
+    @property
+    def _half_life(self) -> float:
+        return self.attrs["half_life"]  # type: ignore[return-value]
+
+    def _weighted_sums(self, b: Builder, sources: list[OpBase], terms) -> list[OpBase]:
+        """Return one EW sum per term, all computed in a single window loop.
+
+        ``terms(values, weight)`` receives the loop's current value of each
+        source and that bar's weight, and returns the per-bar terms to sum.
+        A term that is NaN or infinite adds 0.
+        """
+        window = self._window
+        windowed = [WindowedTempOutput(source, window) for source in sources]
+        loop = ForeachBackWindow(windowed[0], window, *windowed[1:])
+        b.set_loop(loop)
+        values = [IterValue(loop, source) for source in windowed]
+        per_bar = [_zero_where_missing(term) for term in terms(values, _ew_weight(loop, window, self._half_life))]
+        b.set_loop(self.get_parent())
+        return [ReduceAdd(term) for term in per_bar]
+
+    def _means(self, b: Builder, x: OpBase, y: OpBase | None = None) -> list[OpBase]:
+        """Return the EW means of ``x`` (and ``y``) and the sum of weights, in one loop.
+
+        Pass ``x`` and ``y`` already masked to their joint presence.
+        """
+        sources = [x] if y is None else [x, y]
+        sums = self._weighted_sums(
+            b,
+            sources,
+            lambda values, weight: [weight * _present(values[0])]
+            + [weight * value for value in values],
+        )
+        total = sums[0]
+        return [weighted / total for weighted in sums[1:]] + [total]
+
+    def _beta_parts(self, b: Builder) -> tuple[OpBase, OpBase, OpBase, OpBase]:
+        """Return ``(mean_y, mean_x, cov_xy, var_x)`` over the bars where both are valid.
+
+        Shared by ``EWCov``, ``EWBeta`` and ``EWAlpha``, whose inputs are
+        ``(y, x)``. The means come first, then the centred moments in a
+        second loop (a two-pass estimate, which keeps its precision when the
+        mean is large against the spread).
+        """
+        y = _jointly(self.inputs[0], self.inputs[1])
+        x = _jointly(self.inputs[1], self.inputs[0])
+        mean_x, mean_y, total = self._means(b, x, y)
+        cross, square = self._weighted_sums(
+            b,
+            [x, y],
+            lambda values, weight: [
+                weight * (values[0] - mean_x) * (values[1] - mean_y),
+                weight * (values[0] - mean_x) * (values[0] - mean_x),
+            ],
+        )
+        filled = _window_filled(self.inputs[0] + self.inputs[1], self._window)
+        return mean_y + filled, mean_x + filled, cross / total + filled, square / total + filled
+
+
+class EWSum(_EWWindowOp):
+    """Exponentially weighted window sum, ``sum(w_age * x)`` over valid bars.
+
+    The weights are ``w_age = 0.5 ** (age / half_life)`` over the trailing
+    ``window`` bars, ``age`` 0 being the current bar; they are not
+    normalized. A NaN or infinite value adds nothing. The result is NaN for
+    the first ``window - 1`` bars and 0 for a window with no valid value.
+
+    Parameters
+    ----------
+    v : OpBase
+        The input series.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(EWSum(Input("ret"), 252, 63), "ret_ew_sum")
+    """
+
+    def __init__(self, v: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([v], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into one window loop; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            (total,) = self._weighted_sums(
+                b, [self.inputs[0]], lambda values, weight: [weight * values[0]]
+            )
+            total + _window_filled(self.inputs[0], self._window)
+        return b.ops
+
+
+class EWMean(_EWWindowOp):
+    """Exponentially weighted window mean, ``sum(w * x) / sum(w)`` over valid bars.
+
+    The weights are those of ``EWSum``; dividing by the sum of the weights
+    of the valid bars normalizes them. The result is NaN for the first
+    ``window - 1`` bars and for a window with no valid value.
+
+    Parameters
+    ----------
+    v : OpBase
+        The input series.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(EWMean(Input("ret"), 252, 63), "ret_ew_mean")
+    """
+
+    def __init__(self, v: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([v], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into one window loop; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            mean, _ = self._means(b, self.inputs[0])
+            mean + _window_filled(self.inputs[0], self._window)
+        return b.ops
+
+
+class EWVar(_EWWindowOp):
+    """Exponentially weighted window variance, ``sum(w * (x - m)**2) / sum(w)``.
+
+    ``m`` is the ``EWMean`` of the same window and the sums run over the
+    valid bars. The variance is the weighted population variance: no
+    small-sample correction is applied, as in USE4's DASTD. NaN for the first
+    ``window - 1`` bars and for a window with no valid value.
+
+    Parameters
+    ----------
+    v : OpBase
+        The input series.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(Sqrt(EWVar(Input("ret"), 252, 42)), "dastd")
+    """
+
+    def __init__(self, v: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([v], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into two window loops; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            x = self.inputs[0]
+            mean, total = self._means(b, x)
+            (square,) = self._weighted_sums(
+                b, [x], lambda values, weight: [weight * (values[0] - mean) * (values[0] - mean)]
+            )
+            square / total + _window_filled(x, self._window)
+        return b.ops
+
+
+class EWCov(_EWWindowOp):
+    """Exponentially weighted window covariance of ``y`` and ``x``.
+
+    ``sum(w * (x - m_x) * (y - m_y)) / sum(w)`` over the bars where both are
+    valid, the means taken over the same bars. A weighted population
+    covariance, symmetric in its two inputs. NaN for the first ``window - 1``
+    bars and for a window with no bar where both are valid.
+
+    Parameters
+    ----------
+    y, x : OpBase
+        The two input series.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(EWCov(Input("ret"), Input("market"), 252, 63), "cov")
+    """
+
+    def __init__(self, y: OpBase, x: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([y, x], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into two window loops; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            _, _, cov, _ = self._beta_parts(b)
+            # KunQuant takes the last op built as the result; ``cov`` is not.
+            cov * 1.0
+        return b.ops
+
+
+class EWBeta(_EWWindowOp):
+    """Slope of the exponentially weighted least-squares fit of ``y`` on ``x``.
+
+    The fit ``y = alpha + beta * x`` minimizes ``sum(w * residual**2)`` over
+    the bars where both are valid, with an intercept. In closed form
+    ``beta = cov_w(x, y) / var_w(x)`` (see ``EWCov`` and ``EWVar``). NaN for
+    the first ``window - 1`` bars, and NaN or infinite when ``x`` does not
+    vary over the valid bars.
+
+    Parameters
+    ----------
+    y : OpBase
+        The regressand, such as a stock's excess return.
+    x : OpBase
+        The regressor, such as the market's excess return.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(EWBeta(Input("excess"), Input("market_excess"), 252, 63), "beta")
+    """
+
+    def __init__(self, y: OpBase, x: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([y, x], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into two window loops; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            _, _, cov, var = self._beta_parts(b)
+            cov / var
+        return b.ops
+
+
+class EWAlpha(_EWWindowOp):
+    """Intercept of the exponentially weighted least-squares fit of ``y`` on ``x``.
+
+    ``alpha = m_y - beta * m_x``, with ``beta`` as in ``EWBeta`` and the EW
+    means taken over the bars where both are valid.
+
+    Parameters
+    ----------
+    y : OpBase
+        The regressand.
+    x : OpBase
+        The regressor.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(EWAlpha(Input("excess"), Input("market_excess"), 252, 63), "alpha")
+    """
+
+    def __init__(self, y: OpBase, x: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([y, x], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into two window loops; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            mean_y, mean_x, cov, var = self._beta_parts(b)
+            mean_y - cov / var * mean_x
+        return b.ops
+
+
+class CrossSectionalWeightedMean(GenericCrossSectionalOp):
+    """Weighted mean of ``v`` across symbols per bar, broadcast to every symbol.
+
+    ``sum(w * v) / sum(w)`` over the symbols whose ``v`` is finite and whose
+    weight is finite and positive; any other symbol is left out.
+    A bar with no such symbol is NaN. Give the weight 0 outside a universe
+    to average over the universe only, as the cap-weighted market return of
+    an estimation universe does.
+
+    Shares ``CrossSectionalZScore``'s constraints: batch runs start at bar
+    0 and the symbol count is a multiple of the SIMD block width.
+
+    Parameters
+    ----------
+    v : OpBase
+        The values to average.
+    w : OpBase
+        The weights, such as market capitalizations.
+
+    Examples
+    --------
+    >>> Output(CrossSectionalWeightedMean(Input("ret"), Input("cap")), "market")
+    """
+
+    def __init__(self, v: OpBase, w: OpBase) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([v, w], None)
+
+    def generate_head(self) -> str:
+        """Return the C++ preamble for the generated function, which is empty."""
+        return ""
+
+    def generate_body(self) -> str:
+        """Return the C++ loop that writes the weighted mean of one bar."""
+        return """
+        T sw = 0, swv = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            T v = input_0[i], w = input_1[i];
+            if (std::isfinite(v) && std::isfinite(w) && w > 0) { sw += w; swv += w * v; }
+        }
+        T mean = sw > 0 ? swv / sw : NAN;
+        for (size_t i = 0; i < num_stocks; i++) output_0[i] = mean;
+        """
+
+
+class CrossSectionalTopN(GenericCrossSectionalOp):
+    """1 for the ``n`` symbols with the largest ``v`` on each bar, 0 elsewhere.
+
+    NaN and infinite values are never selected and come out 0; when fewer than ``n``
+    values are valid, all of them are selected. A tie at the boundary is
+    broken by symbol order: the earlier symbol on the axis wins. The output
+    is a 0/1 mask, such as an estimation universe of the ``n`` largest
+    companies by the previous bar's market cap.
+
+    The C++ body cannot read an op parameter (see
+    ``_CrossSectionalQuantileBounds``), so constructing
+    ``CrossSectionalTopN(v, 3000)`` returns an instance of a subclass created
+    once per ``n`` (``CrossSectionalTopN_3000``) with ``n`` written into its
+    code. ``isinstance(op, CrossSectionalTopN)`` still holds. The batch-start
+    and SIMD-width notes of ``CrossSectionalZScore`` apply.
+
+    Parameters
+    ----------
+    v : OpBase
+        The values to rank, larger is better.
+    n : int
+        How many symbols to select per bar, at least 1.
+
+    Raises
+    ------
+    ValueError
+        If ``n < 1``.
+
+    Examples
+    --------
+    >>> Output(CrossSectionalTopN(BackRef(Input("marketcap"), 1), 3000), "estu")
+    """
+
+    _N: int = 1
+    _variants: dict = {}
+
+    def __new__(cls, v: OpBase, n: int):
+        """Return an instance of the subclass specialized to ``n``."""
+        if int(n) != n or n < 1:
+            raise ValueError(f"CrossSectionalTopN: need an integer n >= 1, got {n}")
+        n = int(n)
+        variant = CrossSectionalTopN._variants.get(n)
+        if variant is None:
+            variant = type(f"CrossSectionalTopN_{n}", (CrossSectionalTopN,), {"_N": n})
+            variant.__module__ = CrossSectionalTopN.__module__
+            CrossSectionalTopN._variants[n] = variant
+        return super().__new__(variant)
+
+    def __init__(self, v: OpBase, n: int) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([v], [("n", int(n))])
+
+    def generate_head(self) -> str:
+        """Return the C++ set-up: a buffer of the valid symbols' indices."""
+        return """
+        std::vector<size_t> valid;
+        valid.reserve(num_stocks);
+        """
+
+    def generate_body(self) -> str:
+        """Return the C++ loop that marks the top ``n`` symbols of one bar."""
+        return f"""
+        valid.clear();
+        for (size_t i = 0; i < num_stocks; i++) {{
+            output_0[i] = 0;
+            if (std::isfinite(input_0[i])) valid.push_back(i);
+        }}
+        size_t keep = std::min(valid.size(), (size_t){self._N});
+        auto larger = [&](size_t a, size_t b) {{
+            T va = input_0[a], vb = input_0[b];
+            return va > vb || (va == vb && a < b);
+        }};
+        if (keep < valid.size()) {{
+            std::nth_element(valid.begin(), valid.begin() + keep, valid.end(), larger);
+        }}
+        for (size_t k = 0; k < keep; k++) output_0[valid[k]] = 1;
+        """
+
+
+class CapWeightedStandardize(GenericCrossSectionalOp):
+    """Standardize to a weighted mean of 0 and an equal-weighted std of 1 in a universe.
+
+    On each bar, with ``U`` the symbols where ``universe > 0`` and ``v`` is
+    finite::
+
+        mean = sum(w * v) / sum(w)       over U where w is finite and > 0
+        std  = sample std of v (ddof=1)  over U, equally weighted
+        out  = (v - mean) / std          for EVERY symbol with a valid v
+
+    This is USE4's standardization with ``w`` the market cap: the
+    cap-weighted universe then has zero exposure, and the universe's
+    exposures have unit spread. Symbols outside the universe are shifted and
+    scaled by the same numbers, so they get exposures too. NaN and infinite
+    inputs come out NaN; a bar whose mean or std is undefined, or whose std is 0, is NaN
+    for every symbol.
+
+    The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
+
+    Parameters
+    ----------
+    v : OpBase
+        The raw values, such as a descriptor.
+    w : OpBase
+        The weights of the mean, such as the previous bar's market cap.
+    universe : OpBase
+        A mask, positive inside the universe (``CrossSectionalTopN``'s 1).
+
+    Examples
+    --------
+    >>> cap = BackRef(Input("marketcap"), 1)
+    >>> estu = CrossSectionalTopN(cap, 3000)
+    >>> Output(CapWeightedStandardize(Log(Input("marketcap")), cap, estu), "size")
+    """
+
+    def __init__(self, v: OpBase, w: OpBase, universe: OpBase) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([v, w, universe], None)
+
+    def generate_head(self) -> str:
+        """Return the C++ preamble for the generated function, which is empty."""
+        return ""
+
+    def generate_body(self) -> str:
+        """Return the C++ loops that standardize one bar."""
+        return """
+        T sw = 0, swv = 0, sum = 0;
+        size_t n = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            T v = input_0[i], w = input_1[i];
+            if (input_2[i] > 0 && std::isfinite(v)) {
+                sum += v; n++;
+                if (std::isfinite(w) && w > 0) { sw += w; swv += w * v; }
+            }
+        }
+        T mean_eq = n > 0 ? sum / n : NAN;
+        T ss = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            T v = input_0[i];
+            if (input_2[i] > 0 && std::isfinite(v)) { T d = v - mean_eq; ss += d * d; }
+        }
+        T sd = n > 1 ? std::sqrt(ss / (n - 1)) : NAN;
+        T mean = sw > 0 ? swv / sw : NAN;
+        for (size_t i = 0; i < num_stocks; i++) {
+            T v = input_0[i];
+            output_0[i] = (!std::isfinite(v) || std::isnan(mean) || !(sd > 0)) ? NAN : (v - mean) / sd;
+        }
+        """
+
+
+class SigmaClip(CompositiveOp):
+    """Drop data errors and clip outliers of an already standardized value.
+
+    A value whose magnitude exceeds ``data_error`` is treated as a data
+    error and becomes NaN; any other value is clipped to
+    ``[-clip, clip]``. NaN stays NaN. Apply it to a standardized exposure,
+    where both thresholds are in standard deviations (USE4 clips at 3).
+
+    Parameters
+    ----------
+    v : OpBase
+        A standardized series, such as ``CapWeightedStandardize``'s output.
+    data_error : float, default 10.0
+        Magnitude beyond which a value is dropped.
+    clip : float, default 3.0
+        Magnitude values are clipped to, at most ``data_error``.
+
+    Raises
+    ------
+    ValueError
+        If ``0 < clip <= data_error`` does not hold.
+
+    Examples
+    --------
+    >>> Output(SigmaClip(CapWeightedStandardize(raw, cap, estu)), "beta")
+    """
+
+    def __init__(self, v: OpBase, data_error: float = 10.0, clip: float = 3.0) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        data_error, clip = float(data_error), float(clip)
+        if not 0.0 < clip <= data_error:
+            raise ValueError(
+                f"SigmaClip: need 0 < clip <= data_error, got clip={clip}, "
+                f"data_error={data_error}"
+            )
+        super().__init__([v], [("data_error", data_error), ("clip", clip)])
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into comparisons and ``Select``; NaN compares false and passes through."""
+        data_error: float = self.attrs["data_error"]  # type: ignore[assignment]
+        clip: float = self.attrs["clip"]  # type: ignore[assignment]
+        b = Builder(self.get_parent())
+        with b:
+            v = self.inputs[0]
+            clipped = Select(
+                v > clip,
+                ConstantOp(clip),
+                Select(v < -clip, ConstantOp(-clip), v),
+            )
+            Select(Abs(v) > data_error, ConstantOp("nan"), clipped)
+        return b.ops

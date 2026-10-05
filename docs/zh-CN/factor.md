@@ -473,9 +473,11 @@ XrBackend()
 
 ### 沿时间或跨标的做标准化
 
-`quantlab.factor.kunquant_ops` 提供四个 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`，窗口是 `kwargs["zscore_window"]` 根 bar（默认 20），与 `warmup_bars` 相互独立；要让第一个请求的 bar 完全标准化，`warmup_bars` 必须覆盖 alpha 自身的回看长度再加 `zscore_window - 1` 根 bar（完整的 Alpha158 最多是 60 + 19）。`zscore_window` 不是正整数时，构造因子就会被拒绝；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。当天没有 bar 的标的（尚未上市、已退市或全 NaN 的列）在这两个类的每个输出上都是 NaN，因此既不进入它们的排名，也不进入 z-score；在有数据的 bar 上，取值与 KunQuant 相同，包括它的公式对真实数据上无定义的值（例如窗口内取值恒定时的相关系数）给出的 0。“扩展”一节中的 KunQuant 因子同时用了两个算子。
+`quantlab.factor.kunquant_ops` 提供下面这些 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`，窗口是 `kwargs["zscore_window"]` 根 bar（默认 20），与 `warmup_bars` 相互独立；要让第一个请求的 bar 完全标准化，`warmup_bars` 必须覆盖 alpha 自身的回看长度再加 `zscore_window - 1` 根 bar（完整的 Alpha158 最多是 60 + 19）。`zscore_window` 不是正整数时，构造因子就会被拒绝；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。当天没有 bar 的标的（尚未上市、已退市或全 NaN 的列）在这两个类的每个输出上都是 NaN，因此既不进入它们的排名，也不进入 z-score；在有数据的 bar 上，取值与 KunQuant 相同，包括它的公式对真实数据上无定义的值（例如窗口内取值恒定时的相关系数）给出的 0。“扩展”一节中的 KunQuant 因子同时用了两个算子。
 
 该模块还有两个截面去极值算子。`CrossSectionalWinsorize(v, lower=0.01, upper=0.99)`（缩尾）在每个时间点把取值截到该时点所有标的的 `lower` 和 `upper` 分位数之间；`CrossSectionalTrim(v, lower=0.01, upper=0.99)`（截尾）把严格落在这两个分位数之外的值设为 NaN。分位数忽略 NaN，并按线性插值计算，与 `np.nanquantile` 一致。常见用法是 `CrossSectionalZScore(CrossSectionalWinsorize(v))`，避免少数极端标的主导均值和标准差。KunQuant 0.1.11 没有内置这两个算子：它的 `Clip` 按固定常数截断，`WindowedQuantile` 是沿时间方向的。
+
+指数加权窗口统计量以 `0.5 ** (age / half_life)` 给最近 `window` 根 bar 加权，当前 bar 的 `age` 为 0：`EWSum`、`EWMean`、`EWVar`（加权总体方差）、`EWCov`，以及 `EWBeta` / `EWAlpha`，即 `y` 对 `x` 加权最小二乘拟合的斜率和截距。NaN 值被跳过而不是传播，其权重也不计入权重和；历史不足 `window` 根 bar 时结果为 NaN。权重是精确构造的，没有用 KunQuant 的 `Exp`（一个精度约 1e-7 的多项式）。随之提供四个估计域算子：`CrossSectionalTopN(v, n)` 在每个时间点把最大的 `n` 个值标为 1（并列时排在前面的标的优先；每个 `n` 生成一个类），`CrossSectionalWeightedMean(v, w)` 广播按 `w` 加权的均值，`CapWeightedStandardize(v, w, universe)` 减去估计域内按 `w` 加权的均值、除以估计域内等权样本标准差，并对所有标的使用同一组数，`SigmaClip(z, data_error=10, clip=3)` 把超过 `data_error` 的标准化值设为 NaN，其余截到 `±clip`。`BarraStyle` 用到了 `EWBeta` 和这四个估计域算子。
 
 ### 已有的因子
 
@@ -485,6 +487,7 @@ XrBackend()
 | `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库；`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha101` 中的副本构建，没有数据的 bar 输出 NaN |
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
+| `BarraStyle` | KunQuant | USE4 风格暴露：标准化的 LNCAP、BETA 描述子，Size、Beta 风格因子和估计域标记，双精度计算；只支持批量 |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
 | `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
 | `Forward` | 任意 | 把一个因子向前平移成标签 |
