@@ -488,28 +488,26 @@ class _EWWindowOp(CompositiveOp, WindowedTrait):
         second loop (a two-pass estimate, which keeps its precision when the
         mean is large against the spread).
         """
-        mean_y, mean_x, cov, var_x, _ = self._regression_moments(b, with_var_y=False)
-        return mean_y, mean_x, cov, var_x
+        return self._regression_moments(b, ["xy", "xx"])  # type: ignore[return-value]
 
-    def _regression_moments(
-        self, b: Builder, with_var_y: bool = True
-    ) -> tuple[OpBase, OpBase, OpBase, OpBase, OpBase | None]:
-        """Return ``(mean_y, mean_x, cov_xy, var_x, var_y)`` over the bars where both are valid.
+    def _regression_moments(self, b: Builder, products: list[str]) -> list[OpBase]:
+        """Return ``[mean_y, mean_x]`` and the named centred moments, over the bars where both are valid.
 
-        ``var_y`` is ``None`` unless ``with_var_y``. See ``_beta_parts``.
+        ``products`` names each moment by its two factors, ``"xy"``,
+        ``"xx"`` or ``"yy"``: ``"xy"`` is ``sum(w (x - mean_x)(y - mean_y)) /
+        sum(w)``. All of them come from one second loop. See ``_beta_parts``.
         """
         y = _jointly(self.inputs[0], self.inputs[1])
         x = _jointly(self.inputs[1], self.inputs[0])
         mean_x, mean_y, total = self._means(b, x, y)
 
         def terms(values, weight):
-            dx, dy = values[0] - mean_x, values[1] - mean_y
-            return [weight * dx * dy, weight * dx * dx] + ([weight * dy * dy] if with_var_y else [])
+            centred = {"x": values[0] - mean_x, "y": values[1] - mean_y}
+            return [weight * centred[a] * centred[c] for a, c in products]
 
         sums = self._weighted_sums(b, [x, y], terms)
         filled = _window_filled(self.inputs[0] + self.inputs[1], self._window)
-        moments = [mean_y + filled, mean_x + filled] + [value / total + filled for value in sums]
-        return (*moments, None) if not with_var_y else tuple(moments)  # type: ignore[return-value]
+        return [mean_y + filled, mean_x + filled] + [value / total + filled for value in sums]
 
 
 class EWSum(_EWWindowOp):
@@ -803,7 +801,7 @@ class EWResidualStd(_EWWindowOp):
         """Expand into two window loops; KunQuant calls this while compiling."""
         b = Builder(self.get_parent())
         with b:
-            _, _, cov, var_x, var_y = self._regression_moments(b)
+            _, _, cov, var_x, var_y = self._regression_moments(b, ["xy", "xx", "yy"])
             residual = var_y - cov * cov / var_x
             Sqrt(Select(residual > 0.0, residual, residual * 0.0))
         return b.ops
@@ -1168,13 +1166,19 @@ class SigmaClip(CompositiveOp):
         return b.ops
 
 
-#: C++ of the residual ops' shared step: the weighted means over the fit sample.
+#: C++ of the residual ops' shared step: the weighted means and centred
+#: moments over the fit sample. ``WLS_TOLERANCE`` is the relative size below
+#: which a regressor's centred spread (or the two regressors' determinant) is
+#: taken as zero, so a constant or collinear regressor gives NaN, not a slope
+#: made of rounding.
 _WLS_MEANS = """
-        T sw = 0, swy = 0, swx1 = 0, swx2 = 0;
+        const T WLS_TOLERANCE = (T)1e-10;
+        T sw = 0, swy = 0, swx1 = 0, swx2 = 0, q1 = 0, q2 = 0;
         for (size_t i = 0; i < num_stocks; i++) {
             if (!fit(i)) continue;
             T w = weight(i);
             sw += w; swy += w * input_0[i]; swx1 += w * x1(i); swx2 += w * x2(i);
+            q1 += w * x1(i) * x1(i); q2 += w * x2(i) * x2(i);
         }
         T my = sw > 0 ? swy / sw : NAN, m1 = sw > 0 ? swx1 / sw : NAN, m2 = sw > 0 ? swx2 / sw : NAN;
         T s11 = 0, s12 = 0, s22 = 0, s1y = 0, s2y = 0;
@@ -1212,7 +1216,8 @@ class CrossSectionalWLSResidual(GenericCrossSectionalOp):
     This orthogonalizes one style against another, as USE4 orthogonalizes
     Non-linear Size against Size. A symbol whose ``x`` is missing is taken
     at ``mx`` and so keeps ``y - my``. A bar with no fit sample, or where
-    ``x`` does not vary over it, is NaN for every symbol.
+    ``x`` does not vary over it (its centred spread below 1e-10 of its
+    uncentred one), is NaN for every symbol.
 
     The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
 
@@ -1256,7 +1261,7 @@ class CrossSectionalWLSResidual(GenericCrossSectionalOp):
     def generate_body(self) -> str:
         """Return the C++ that fits one bar and writes its residuals."""
         return self._accessors() + _WLS_MEANS + """
-        T b1 = s11 > 0 ? s1y / s11 : NAN, b2 = 0;
+        T b1 = s11 > WLS_TOLERANCE * q1 && s11 > 0 ? s1y / s11 : NAN, b2 = 0;
 """ + _WLS_WRITE
 
 
@@ -1269,8 +1274,9 @@ class CrossSectionalWLSResidual2(GenericCrossSectionalOp):
     ``w`` is finite and positive), and every symbol with a finite ``y`` gets
     ``y - my - b1 (x1 - m1) - b2 (x2 - m2)``, a missing regressor taken at
     its mean. USE4 orthogonalizes Residual Volatility against Beta and Size
-    this way. A bar whose regressors are collinear over the fit sample is
-    NaN for every symbol.
+    this way. A bar where a regressor does not vary, or the two are
+    collinear (the determinant below 1e-10 of the product of the spreads),
+    over the fit sample is NaN for every symbol.
 
     The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
 
@@ -1315,6 +1321,8 @@ class CrossSectionalWLSResidual2(GenericCrossSectionalOp):
         """Return the C++ that fits one bar and writes its residuals."""
         return self._accessors() + _WLS_MEANS + """
         T det = s11 * s22 - s12 * s12;
-        T b1 = det > 0 ? (s22 * s1y - s12 * s2y) / det : NAN;
-        T b2 = det > 0 ? (s11 * s2y - s12 * s1y) / det : NAN;
+        bool solvable = s11 > WLS_TOLERANCE * q1 && s22 > WLS_TOLERANCE * q2
+            && det > WLS_TOLERANCE * s11 * s22 && det > 0;
+        T b1 = solvable ? (s22 * s1y - s12 * s2y) / det : NAN;
+        T b2 = solvable ? (s11 * s2y - s12 * s1y) / det : NAN;
 """ + _WLS_WRITE

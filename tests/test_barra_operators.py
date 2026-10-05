@@ -59,10 +59,11 @@ _TIE_BAR = 41
 _MONTHS, _MONTH_LENGTH = 3, 5
 _CRASH = 7  # a symbol whose cumulative log return falls below -1
 _COMBINE_WEIGHTS = (0.75, 0.15, 0.10)
+_FLAT_BAR = 12  # a bar where x is the same for every symbol
 
 
 def _panel() -> dict[str, np.ndarray]:
-    """``y``, ``x``, ``w`` (weights), ``u`` (a 0/1 universe), ``z`` and ``lr`` (log returns) on ``[T, S]``."""
+    """``x``, ``y``, ``w`` (weights), ``u`` (a 0/1 universe), ``z``, ``lr`` (log returns), ``[T, S]``."""
     rng = np.random.default_rng(3)
     x = rng.normal(0.0005, 0.01, size=(_T, _S))
     y = 0.3 + 1.2 * x + rng.normal(0.0, 0.01, size=(_T, _S))
@@ -78,6 +79,7 @@ def _panel() -> dict[str, np.ndarray]:
     lr = rng.normal(0.0, 0.02, size=(_T, _S))
     lr[rng.random((_T, _S)) < 0.05] = np.nan
     lr[40:48, _CRASH] = -0.2  # Z falls below -1 for a while
+    x[_FLAT_BAR] = 0.001
     for values in (x, y, w, big, lr):
         values[_NAN_BAR, :] = np.nan
         values[:, _NAN_SYMBOL] = np.nan
@@ -263,7 +265,7 @@ def _wls_residual_reference(y, regressors, w, u) -> np.ndarray:
         fit = (u[t] > 0) & np.isfinite(y[t]) & np.isfinite(w[t]) & (w[t] > 0)
         for x in regressors:
             fit &= np.isfinite(x[t])
-        if fit.sum() <= len(regressors):
+        if fit.sum() <= len(regressors) or any(np.ptp(x[t, fit]) == 0 for x in regressors):
             continue
         root = np.sqrt(w[t, fit])
         design = np.column_stack([np.ones(fit.sum())] + [x[t, fit] for x in regressors])
@@ -435,7 +437,7 @@ def test_wls_residual_matches_lstsq_and_is_orthogonal_in_the_fit_sample(run, out
         fit = (u[t] > 0) & np.isfinite(inputs["y"][t]) & np.isfinite(w[t]) & (w[t] > 0)
         for x in xs:
             fit &= np.isfinite(x[t])
-        if fit.sum() <= len(xs) + 2:  # an exact fit leaves only rounding noise
+        if fit.sum() <= len(xs) + 2 or t == _FLAT_BAR:  # an exact fit leaves only rounding noise
             continue
         for x in xs:
             dx = x[t, fit] - np.average(x[t, fit], weights=w[t, fit])
@@ -446,6 +448,13 @@ def test_wls_residual_matches_lstsq_and_is_orthogonal_in_the_fit_sample(run, out
     # A symbol outside the fit sample with a missing regressor still gets a residual.
     missing_x = np.isfinite(inputs["y"]) & np.isnan(inputs["x"]) & np.isfinite(want)
     assert missing_x.any() and np.isfinite(got[missing_x]).all()
+
+
+def test_wls_residual_is_nan_where_the_regressor_does_not_vary(run) -> None:
+    _, _, outputs = run
+    # Centring a constant leaves rounding, not a spread to fit.
+    assert np.isnan(outputs["wls1"][_FLAT_BAR]).all()
+    assert np.isnan(outputs["wls2"][_FLAT_BAR]).all()
 
 
 def test_renormalized_combine_and_cmra_refuse_bad_parameters() -> None:

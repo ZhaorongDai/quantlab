@@ -15,9 +15,10 @@ mean exposure of the universe is 0 and the equally weighted standard
 deviation is 1. Symbols outside the universe are shifted and scaled by the
 same numbers, so every symbol with data gets an exposure.
 
-This version outputs the price-based styles: Size (descriptor LNCAP),
-Beta (BETA), Momentum (RSTR), Residual Volatility (DASTD, CMRA, HSIGMA),
-Non-linear Size and Non-linear Beta, as described in Menchero, Orr and
+This version outputs the price- and volume-based styles: Size (descriptor
+LNCAP), Beta (BETA), Momentum (RSTR), Residual Volatility (DASTD, CMRA,
+HSIGMA), Non-linear Size, Non-linear Beta, Liquidity (STOM, STOQ, STOA) and
+Dividend Yield (YILD), as described in Menchero, Orr and
 Wang, *The Barra US Equity Model (USE4), Methodology Notes* (MSCI, 2011),
 and its Empirical Notes, Appendix A. The fundamentals-based styles are
 added in later versions.
@@ -55,12 +56,16 @@ from quantlab.factor.kunquant_ops import (
     CrossSectionalWLSResidual,
     CrossSectionalWLSResidual2,
     EWBeta,
+    EWMean,
     EWResidualStd,
-    EWSum,
     EWVar,
     RenormalizedCombine,
     SigmaClip,
 )
+
+#: Name of the graph input holding each symbol's running product of split
+#: factors, derived from ``split_column`` before the graph runs.
+SPLIT_BASIS = "_split_basis"
 
 #: The regression weights an orthogonalization may use, by config name.
 ORTHOGONALIZATION_WEIGHTINGS = ("sqrt_cap", "cap", "equal")
@@ -87,6 +92,19 @@ class BarraStyleParameters:
         Panel variable holding the risk-free rate as a decimal return per
         bar, the same on every symbol. It is lagged one bar before use,
         because the rate of a day is published the next business day.
+    close_column : str, default "close"
+        Panel variable holding the raw (unadjusted) close, the price
+        Dividend Yield divides by and turnover's dollar volume uses.
+    volume_column : str, default "volume"
+        Panel variable holding the raw share volume, in the same share basis
+        as ``close_column`` on each bar.
+    dividend_column : str, default "divCash"
+        Panel variable holding the cash dividend per share on its ex-date,
+        in that day's share basis, 0 on other bars.
+    split_column : str, default "splitFactor"
+        Panel variable holding a split's new shares per old share on its
+        effective date, 1 on other bars; it converts earlier dividends to
+        the current share basis.
     estimation_universe_size : int, default 3000
         Number of largest companies, by the previous bar's market cap, in
         the estimation universe. Our choice: USE4 uses the MSCI USA IMI,
@@ -122,6 +140,17 @@ class BarraStyleParameters:
         computed. Our choice.
     dastd_weight, cmra_weight, hsigma_weight : float, default 0.75, 0.15, 0.10
         Weights of DASTD, CMRA and HSIGMA in Residual Volatility (USE4).
+    liquidity_month_length : int, default 21
+        Bars in one Liquidity month (USE4).
+    stoq_months, stoa_months : int, default 3, 12
+        Months averaged by STOQ and STOA (USE4).
+    liquidity_min_fraction : float, default 0.5
+        Fraction of a Liquidity window's bars that must have a turnover for
+        that descriptor to be computed. Our choice.
+    stom_weight, stoq_weight, stoa_weight : float, default 0.35, 0.35, 0.30
+        Weights of STOM, STOQ and STOA in Liquidity (USE4).
+    dividend_window : int, default 252
+        Bars of dividends summed by YILD, a trailing year (USE4).
     orthogonalization_weighting : str, default "sqrt_cap"
         Regression weights of the orthogonalizations: ``"sqrt_cap"`` (the
         square root of the previous bar's market cap), ``"cap"`` or
@@ -140,7 +169,7 @@ class BarraStyleParameters:
     --------
     >>> params = BarraStyleParameters(estimation_universe_size=500)
     >>> params.panel_columns
-    ('adjClose', 'marketcap', 'risk_free')
+    ('adjClose', 'marketcap', 'risk_free', 'close', 'volume', 'divCash', 'splitFactor')
     >>> params.warmup_bars
     526
     """
@@ -148,6 +177,10 @@ class BarraStyleParameters:
     price_column: str = "adjClose"
     market_cap_column: str = "marketcap"
     risk_free_column: str = "risk_free"
+    close_column: str = "close"
+    volume_column: str = "volume"
+    dividend_column: str = "divCash"
+    split_column: str = "splitFactor"
     estimation_universe_size: int = 3000
     beta_window: int = 252
     beta_half_life: float = 63.0
@@ -164,6 +197,14 @@ class BarraStyleParameters:
     dastd_weight: float = 0.75
     cmra_weight: float = 0.15
     hsigma_weight: float = 0.10
+    liquidity_month_length: int = 21
+    stoq_months: int = 3
+    stoa_months: int = 12
+    liquidity_min_fraction: float = 0.5
+    stom_weight: float = 0.35
+    stoq_weight: float = 0.35
+    stoa_weight: float = 0.30
+    dividend_window: int = 252
     orthogonalization_weighting: str = "sqrt_cap"
     data_error_sigma: float = 10.0
     clip_sigma: float = 3.0
@@ -210,9 +251,17 @@ class BarraStyleParameters:
         Examples
         --------
         >>> BarraStyleParameters().panel_columns
-        ('adjClose', 'marketcap', 'risk_free')
+        ('adjClose', 'marketcap', 'risk_free', 'close', 'volume', 'divCash', 'splitFactor')
         """
-        return (self.price_column, self.market_cap_column, self.risk_free_column)
+        return (
+            self.price_column,
+            self.market_cap_column,
+            self.risk_free_column,
+            self.close_column,
+            self.volume_column,
+            self.dividend_column,
+            self.split_column,
+        )
 
     @property
     def warmup_bars(self) -> int:
@@ -231,6 +280,8 @@ class BarraStyleParameters:
             self.momentum_window + self.momentum_lag,
             self.dastd_window,
             self.cmra_months * self.cmra_month_length,
+            self.stoa_months * self.liquidity_month_length,
+            self.dividend_window,
         )
 
     def validate(self) -> None:
@@ -281,6 +332,18 @@ class BarraStyleParameters:
             )
         if not min(self.dastd_weight, self.cmra_weight, self.hsigma_weight) > 0:
             raise ValueError("dastd_weight, cmra_weight and hsigma_weight must be positive")
+        if self.liquidity_month_length < 1 or not 1 <= self.stoq_months <= self.stoa_months:
+            raise ValueError(
+                "liquidity_month_length must be at least 1 and 1 <= stoq_months <= stoa_months"
+            )
+        if not 0 < self.liquidity_min_fraction <= 1:
+            raise ValueError(
+                f"liquidity_min_fraction must be in (0, 1], got {self.liquidity_min_fraction}"
+            )
+        if not min(self.stom_weight, self.stoq_weight, self.stoa_weight) > 0:
+            raise ValueError("stom_weight, stoq_weight and stoa_weight must be positive")
+        if self.dividend_window < 1:
+            raise ValueError("dividend_window must be at least 1")
         if self.orthogonalization_weighting not in ORTHOGONALIZATION_WEIGHTINGS:
             raise ValueError(
                 f"orthogonalization_weighting must be one of {ORTHOGONALIZATION_WEIGHTINGS}, "
@@ -302,8 +365,9 @@ def _present(value: OpBase) -> OpBase:
 class BarraStyle(FactorKunQuant):
     """USE4-style exposures: standardized descriptors and style factors.
 
-    Reads three panel variables (see ``BarraStyleParameters``): the adjusted
-    close, the market cap and the risk-free rate, usually from a merge of a
+    Reads seven panel variables (see ``BarraStyleParameters``): the adjusted
+    close, the market cap, the risk-free rate, and the raw close, raw
+    volume, cash dividend and split factor, usually from a merge of a
     Sharadar price dataset, the Sharadar DAILY dataset and a risk-free
     series broadcast across symbols. On every bar ``t``:
 
@@ -319,16 +383,32 @@ class BarraStyle(FactorKunQuant):
       ``excess`` on the market's excess return over the last
       ``beta_window`` bars (half-life ``beta_half_life``), and HSIGMA the
       weighted standard deviation of that fit's residual;
-    - RSTR is the exponentially weighted sum (weights not normalized, as in
-      USE4) of ``log_excess`` over ``momentum_window`` bars ending
-      ``momentum_lag`` bars ago (half-life ``momentum_half_life``);
+    - RSTR is the exponentially weighted sum of ``log_excess`` over
+      ``momentum_window`` bars ending ``momentum_lag`` bars ago (half-life
+      ``momentum_half_life``), the weights normalized to sum to 1 over the
+      bars with a return (our choice: USE4 does not say; without it a
+      security with gaps in its window would be pulled toward 0);
     - DASTD is the exponentially weighted standard deviation of ``excess``
       over ``dastd_window`` bars (half-life ``dastd_half_life``);
     - CMRA is ``log(1 + max Z) - log(1 + min Z)``, ``Z(T)`` the sum of
       ``log_excess`` over the last ``T`` months of ``cmra_month_length``
       bars, ``T = 1 .. cmra_months``; NaN when ``min Z <= -1``;
-    - a windowed descriptor is NaN with fewer valid returns in its window
-      than its ``*_min_observations``;
+    - a day's turnover is ``volume * close / marketcap``, its dollar volume
+      over its market cap: the share count ``marketcap / close`` and the
+      volume are on that day's share basis, so a split moves neither
+      (Sharadar's SF1 ``sharesbas`` is restated for later splits and is not
+      used). STOM, STOQ and STOA are ``log(L * mean turnover)`` over the
+      last 1, ``stoq_months`` and ``stoa_months`` months of
+      ``L = liquidity_month_length`` bars, which is USE4's
+      ``log(sum over a month)`` and ``log(mean over months of exp(STOM))``
+      when every day has a turnover; a day without one is left out of the
+      mean (our choice);
+    - YILD is the cash dividends of the last ``dividend_window`` bars,
+      each converted to today's share basis through the splits since its
+      ex-date, divided by today's raw close;
+    - a windowed descriptor is NaN with fewer valid values in its window
+      than its ``*_min_observations`` (``liquidity_min_fraction`` of the
+      window for Liquidity);
     - each descriptor is standardized over the universe (market cap at
       ``t-1`` weighted mean 0, equally weighted standard deviation 1), a
       value beyond ``data_error_sigma`` becomes NaN, and the rest are
@@ -337,6 +417,9 @@ class BarraStyle(FactorKunQuant):
     - Residual Volatility is ``0.75 DASTD + 0.15 CMRA + 0.10 HSIGMA``
       (``*_weight``) over the descriptors present, standardized,
       orthogonalized against Beta and Size and standardized again;
+    - Liquidity is ``0.35 STOM + 0.35 STOQ + 0.30 STOA`` over the
+      descriptors present, standardized; Dividend Yield is YILD
+      standardized again;
     - the NLSIZE descriptor is the cube of the Size exposure, standardized
       and clipped like any descriptor; Non-linear Size is it orthogonalized
       against Size and standardized again. NLBETA and Non-linear Beta are
@@ -353,11 +436,13 @@ class BarraStyle(FactorKunQuant):
     Outputs, all on ``(timestamp, symbol)``:
 
     - ``desc_lncap``, ``desc_beta``, ``desc_rstr``, ``desc_dastd``,
-      ``desc_cmra``, ``desc_hsigma``, ``desc_nlsize``, ``desc_nlbeta``: the
+      ``desc_cmra``, ``desc_hsigma``, ``desc_nlsize``, ``desc_nlbeta``,
+      ``desc_stom``, ``desc_stoq``, ``desc_stoa``, ``desc_yild``: the
       standardized, clipped descriptors;
     - ``style_size``, ``style_beta``, ``style_momentum``,
       ``style_residual_volatility``, ``style_nonlinear_size``,
-      ``style_nonlinear_beta``: the style exposures;
+      ``style_nonlinear_beta``, ``style_liquidity``,
+      ``style_dividend_yield``: the style exposures;
     - ``estu``: 1 inside the estimation universe of the bar, 0 outside.
 
     The graph runs in double precision. On 1000 bars of 3008 symbols, with
@@ -391,7 +476,8 @@ class BarraStyle(FactorKunQuant):
     ...     warmup_bars=526,
     ...     dataset=[prices, daily, risk_free],
     ...     mode="batch",
-    ...     data_columns=("adjClose", "marketcap", "risk_free"),
+    ...     data_columns=("adjClose", "marketcap", "risk_free", "close", "volume",
+    ...                   "divCash", "splitFactor"),
     ...     file_path="barra_style.zarr",
     ... ))
     >>> factor.get_factor_names()[:4]
@@ -407,12 +493,18 @@ class BarraStyle(FactorKunQuant):
         "desc_hsigma",
         "desc_nlsize",
         "desc_nlbeta",
+        "desc_stom",
+        "desc_stoq",
+        "desc_stoa",
+        "desc_yild",
         "style_size",
         "style_beta",
         "style_momentum",
         "style_residual_volatility",
         "style_nonlinear_size",
         "style_nonlinear_beta",
+        "style_liquidity",
+        "style_dividend_yield",
         "estu",
     )
 
@@ -489,9 +581,11 @@ class BarraStyle(FactorKunQuant):
                 return Select(observed >= float(least), raw, ConstantOp("nan"))
 
             def standardize(value: OpBase) -> OpBase:
+                """``value`` at cap-weighted mean 0 and unit std over the universe."""
                 return CapWeightedStandardize(value, cap_before, estu)
 
             def descriptor(raw: OpBase) -> OpBase:
+                """``raw`` standardized, data errors dropped and outliers clipped."""
                 return SigmaClip(standardize(raw), params.data_error_sigma, params.clip_sigma)
 
             beta_window, beta_half_life = params.beta_window, params.beta_half_life
@@ -506,7 +600,7 @@ class BarraStyle(FactorKunQuant):
             )
             lagged = BackRef(log_excess, params.momentum_lag) if params.momentum_lag else log_excess
             rstr = counted(
-                EWSum(lagged, params.momentum_window, params.momentum_half_life),
+                EWMean(lagged, params.momentum_window, params.momentum_half_life),
                 lagged, params.momentum_window, params.momentum_min_observations,
             )
             dastd = counted(
@@ -519,6 +613,27 @@ class BarraStyle(FactorKunQuant):
                 log_excess, cmra_window, params.volatility_min_observations,
             )
 
+            close = Input(params.close_column)
+            turnover = Input(params.volume_column) * close / cap
+            month = params.liquidity_month_length
+
+            def share_turnover(months: int) -> OpBase:
+                window = months * month
+                observed = WindowedSum(_present(turnover), window)
+                mean = WindowedSum(SetInfOrNanToValue(turnover, 0.0), window) / observed
+                least = max(1.0, params.liquidity_min_fraction * window)
+                return Select(observed >= least, Log(mean * float(month)), ConstantOp("nan"))
+
+            # Each dividend in today's share basis: the split basis is the
+            # running product of split factors, so basis[ex-date] / basis[t]
+            # undoes the splits since the ex-date.
+            basis = Input(SPLIT_BASIS)
+            dividends = WindowedSum(
+                SetInfOrNanToValue(Input(params.dividend_column), 0.0) * basis,
+                params.dividend_window,
+            )
+            yild = dividends / (basis * close)
+
             desc = {
                 "lncap": descriptor(Log(cap)),
                 "beta": descriptor(beta),
@@ -526,6 +641,10 @@ class BarraStyle(FactorKunQuant):
                 "dastd": descriptor(dastd),
                 "cmra": descriptor(cmra),
                 "hsigma": descriptor(hsigma),
+                "stom": descriptor(share_turnover(1)),
+                "stoq": descriptor(share_turnover(params.stoq_months)),
+                "stoa": descriptor(share_turnover(params.stoa_months)),
+                "yild": descriptor(yild),
             }
             style_size = standardize(desc["lncap"])
             style_beta = standardize(desc["beta"])
@@ -549,6 +668,11 @@ class BarraStyle(FactorKunQuant):
                 "style_nonlinear_beta": standardize(CrossSectionalWLSResidual(
                     desc["nlbeta"], style_beta, regression_weight, estu
                 )),
+                "style_liquidity": standardize(RenormalizedCombine(
+                    [desc["stom"], desc["stoq"], desc["stoa"]],
+                    [params.stom_weight, params.stoq_weight, params.stoa_weight],
+                )),
+                "style_dividend_yield": standardize(desc["yild"]),
                 "estu": estu,
             })
             for name, value in outputs.items():
@@ -564,12 +688,22 @@ class BarraStyle(FactorKunQuant):
         ``to_kunquant`` exports float32, which would round a USD market cap
         to seven digits before the graph sees it, so the panel is renamed to
         the shared names as ``to_kunquant`` does and exported in float64.
+        The ``SPLIT_BASIS`` input is added: each symbol's running product of
+        split factors along time, a missing or non-positive factor counting
+        as 1. Only its ratios between bars are used, so where it starts does
+        not matter.
         """
         panel = self.config.dataset.to_shared_names(inputs).sortby(["timestamp", "symbol"])
         arrays = {
-            column: np.ascontiguousarray(panel[column].to_numpy().astype(np.float64))
+            column: np.ascontiguousarray(
+                panel[column].transpose("timestamp", "symbol").to_numpy().astype(np.float64)
+            )
             for column in self.config.data_columns
         }
+        splits = arrays[self._parameters().split_column]
+        arrays[SPLIT_BASIS] = np.ascontiguousarray(
+            np.cumprod(np.where(np.isfinite(splits) & (splits > 0), splits, 1.0), axis=0)
+        )
         return arrays, panel["symbol"].values, panel["timestamp"].values
 
     def _make(self):

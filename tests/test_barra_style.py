@@ -44,6 +44,10 @@ _DASTD_WINDOW, _DASTD_HALF_LIFE = 30, 8.0
 _CMRA_MONTHS, _CMRA_LENGTH = 3, 8
 _VOL_MIN = 12
 _CRASH = 5  # a symbol whose cumulative log return falls below -1: no CMRA
+_SPLIT, _TWIN = 19, 20  # one company twice: a 2-for-1 split, and no split
+_SPLIT_BAR = 50
+_MONTH, _STOQ, _STOA, _LIQ_MIN = 5, 3, 6, 0.5
+_DIV_WINDOW = 40
 _KWARGS = {
     "beta_window": _WINDOW,
     "beta_half_life": _HALF_LIFE,
@@ -58,8 +62,15 @@ _KWARGS = {
     "cmra_months": _CMRA_MONTHS,
     "cmra_month_length": _CMRA_LENGTH,
     "volatility_min_observations": _VOL_MIN,
+    "liquidity_month_length": _MONTH,
+    "stoq_months": _STOQ,
+    "stoa_months": _STOA,
+    "liquidity_min_fraction": _LIQ_MIN,
+    "dividend_window": _DIV_WINDOW,
 }
 _RESVOL_WEIGHTS = (0.75, 0.15, 0.10)
+_LIQUIDITY_WEIGHTS = (0.35, 0.35, 0.30)
+_COLUMNS = ("adjClose", "marketcap", "risk_free", "close", "volume", "divCash", "splitFactor")
 
 
 def _inputs() -> dict[str, np.ndarray]:
@@ -69,11 +80,28 @@ def _inputs() -> dict[str, np.ndarray]:
     betas = rng.normal(1.0, 0.4, size=_S)
     returns = risk_free[:, None] + market[:, None] * betas + rng.normal(0, 0.015, (_T, _S))
     returns[60:70, _CRASH] = -0.12  # a crash: the cumulative log return goes below -1
+    returns[:, _TWIN] = returns[:, _SPLIT]
     price = 20.0 * np.cumprod(1.0 + returns, axis=0)
     shares = rng.lognormal(18.0, 1.0, size=_S)
     shares[_TINY] = 1.0e3
+    shares[_TWIN] = shares[_SPLIT]
     cap = price * shares
-    for values in (price, cap):
+    # Volume as a daily turnover of the share count; a few days without one.
+    volume = rng.lognormal(-5.0, 0.6, size=(_T, _S)) * shares
+    volume[rng.random((_T, _S)) < 0.05] = np.nan
+    volume[:, _TWIN] = volume[:, _SPLIT]
+    # Every other company pays 0.4% of its price every 15 bars.
+    dividend = np.zeros((_T, _S))
+    dividend[7::15, ::2] = 0.004 * price[7::15, ::2]
+    dividend[:, _TWIN] = dividend[:, _SPLIT] = 0.004 * price[:, _SPLIT] * (np.arange(_T) % 15 == 7)
+    close = price.copy()
+    split = np.ones((_T, _S))
+    # Before its 2-for-1 split the company had half the shares at twice the price.
+    split[_SPLIT_BAR, _SPLIT] = 2.0
+    close[:_SPLIT_BAR, _SPLIT] *= 2.0
+    volume[:_SPLIT_BAR, _SPLIT] /= 2.0
+    dividend[:_SPLIT_BAR, _SPLIT] *= 2.0
+    for values in (price, cap, close, volume):
         values[:_LISTING_BAR, _LISTED_LATE] = np.nan
     cap[[30, 31, 64], _CAP_GAP] = np.nan
     price[47, 2] = np.nan  # a missing bar inside the window
@@ -81,6 +109,10 @@ def _inputs() -> dict[str, np.ndarray]:
         "adjClose": price,
         "marketcap": cap,
         "risk_free": np.broadcast_to(risk_free[:, None], (_T, _S)).copy(),
+        "close": close,
+        "volume": volume,
+        "divCash": dividend,
+        "splitFactor": split,
     }
 
 
@@ -104,13 +136,14 @@ def _store(tmp_path: Path, name: str, variables: dict[str, np.ndarray]) -> Stock
 
 def _config(tmp_path: Path, **overrides) -> FactorConfig:
     inputs = _inputs()
-    prices = _store(tmp_path, "prices", {k: inputs[k] for k in ("adjClose", "risk_free")})
+    price_columns = ("adjClose", "risk_free", "close", "volume", "divCash", "splitFactor")
+    prices = _store(tmp_path, "prices", {k: inputs[k] for k in price_columns})
     caps = _store(tmp_path, "caps", {"marketcap": inputs["marketcap"]})
     values = {
         "warmup_bars": 0,
         "dataset": [prices, caps],
         "mode": "batch",
-        "data_columns": ("adjClose", "marketcap", "risk_free"),
+        "data_columns": _COLUMNS,
         "file_path": str(tmp_path / "barra.zarr"),
         "njobs": 2,
         "kwargs": dict(_KWARGS),
@@ -230,7 +263,10 @@ def _reference() -> dict[str, np.ndarray]:
     momentum_weights = _ew_weights(_MOM_WINDOW, _MOM_HALF_LIFE)[:, None]
     for t, rows in _windowed(lagged, _MOM_WINDOW):
         ok = np.isfinite(rows)
-        rstr[t] = np.where(ok.sum(axis=0) >= _MOM_MIN, np.where(ok, rows * momentum_weights, 0).sum(axis=0), np.nan)
+        weighted = np.where(ok, rows * momentum_weights, 0).sum(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            normalized = weighted / np.where(ok, momentum_weights, 0).sum(axis=0)
+        rstr[t] = np.where(ok.sum(axis=0) >= _MOM_MIN, normalized, np.nan)
 
     dastd = np.full((_T, _S), np.nan)
     dastd_weights = _ew_weights(_DASTD_WINDOW, _DASTD_HALF_LIFE)
@@ -250,6 +286,23 @@ def _reference() -> dict[str, np.ndarray]:
         with np.errstate(invalid="ignore", divide="ignore"):
             cmra[t] = np.where(enough & (low > -1.0), np.log1p(high) - np.log1p(low), np.nan)
 
+    turnover = inputs["volume"] * inputs["close"] / cap
+
+    def share_turnover(months):
+        window = months * _MONTH
+        out = np.full((_T, _S), np.nan)
+        for t, rows in _windowed(turnover, window):
+            ok = np.isfinite(rows)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                mean = np.where(ok, rows, 0).sum(axis=0) / ok.sum(axis=0)
+                out[t] = np.where(ok.sum(axis=0) >= max(1.0, _LIQ_MIN * window), np.log(_MONTH * mean), np.nan)
+        return out
+
+    basis = np.cumprod(inputs["splitFactor"], axis=0)
+    yild = np.full((_T, _S), np.nan)
+    for t, rows in _windowed(inputs["divCash"] * basis, _DIV_WINDOW):
+        yild[t] = rows.sum(axis=0) / (basis[t] * inputs["close"][t])
+
     def descriptor(raw):
         return _clip(_standardize(raw, cap_before, estu))
 
@@ -263,6 +316,10 @@ def _reference() -> dict[str, np.ndarray]:
         "dastd": descriptor(dastd),
         "cmra": descriptor(cmra),
         "hsigma": descriptor(hsigma),
+        "stom": descriptor(share_turnover(1)),
+        "stoq": descriptor(share_turnover(_STOQ)),
+        "stoa": descriptor(share_turnover(_STOA)),
+        "yild": descriptor(yild),
     }
     style_size, style_beta = standardize(desc["lncap"]), standardize(desc["beta"])
     desc["nlsize"] = descriptor(style_size**3)
@@ -272,6 +329,11 @@ def _reference() -> dict[str, np.ndarray]:
     present = sum(np.isfinite(d) * w for d, w in zip(parts, _RESVOL_WEIGHTS))
     with np.errstate(invalid="ignore", divide="ignore"):
         combined = standardize(np.where(present > 0, total / present, np.nan))
+    liquidity_parts = [desc["stom"], desc["stoq"], desc["stoa"]]
+    liquidity_total = sum(np.where(np.isfinite(d), d, 0.0) * w for d, w in zip(liquidity_parts, _LIQUIDITY_WEIGHTS))
+    liquidity_present = sum(np.isfinite(d) * w for d, w in zip(liquidity_parts, _LIQUIDITY_WEIGHTS))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        liquidity = np.where(liquidity_present > 0, liquidity_total / liquidity_present, np.nan)
     root_cap = np.sqrt(cap_before)
     out = {f"desc_{name}": value for name, value in desc.items()}
     out.update({
@@ -283,6 +345,8 @@ def _reference() -> dict[str, np.ndarray]:
         ),
         "style_nonlinear_size": standardize(_residual(desc["nlsize"], [style_size], root_cap, estu)),
         "style_nonlinear_beta": standardize(_residual(desc["nlbeta"], [style_beta], root_cap, estu)),
+        "style_liquidity": standardize(liquidity),
+        "style_dividend_yield": standardize(desc["yild"]),
         "estu": estu.astype(np.float64),
         "cap_before": cap_before,
         "dastd_raw": dastd,
@@ -303,11 +367,16 @@ def computed(tmp_path_factory) -> tuple[BarraStyle, xr.Dataset, dict[str, np.nda
 
 
 _EXACT = ("desc_lncap", "desc_beta", "desc_dastd", "desc_hsigma", "desc_nlsize", "desc_nlbeta",
-          "style_size", "style_beta", "style_nonlinear_size", "style_nonlinear_beta", "estu")
-_ON_LOG_RETURNS = ("desc_rstr", "desc_cmra", "style_momentum", "style_residual_volatility")
+          "desc_yild", "style_size", "style_beta", "style_nonlinear_size", "style_nonlinear_beta",
+          "style_dividend_yield", "estu")
+# KunQuant's Log is accurate to about 4e-10.
+_ON_LOGS = ("desc_rstr", "desc_cmra", "desc_stom", "desc_stoq", "desc_stoa", "style_momentum",
+            "style_residual_volatility", "style_liquidity")
+_STYLES = ("style_size", "style_beta", "style_momentum", "style_residual_volatility",
+           "style_nonlinear_size", "style_nonlinear_beta", "style_liquidity", "style_dividend_yield")
 
 
-@pytest.mark.parametrize("name", _EXACT + _ON_LOG_RETURNS)
+@pytest.mark.parametrize("name", _EXACT + _ON_LOGS)
 def test_outputs_match_the_numpy_reference(computed, name) -> None:
     _, out, want = computed
     got = out[name].transpose("timestamp", "symbol").to_numpy()
@@ -350,6 +419,18 @@ def test_orthogonalized_styles_have_no_weighted_correlation_with_their_regressor
     assert checked > _T // 2
 
 
+def test_a_split_leaves_turnover_and_dividend_yield_continuous(computed) -> None:
+    _, out, _ = computed
+    # The split company and its unsplit twin are the same economics in two
+    # share bases, so every descriptor and style agrees.
+    for name in ("desc_stom", "desc_stoq", "desc_stoa", "desc_yild", "style_liquidity",
+                 "style_dividend_yield"):
+        split = out[name].sel(symbol=f"S{_SPLIT:02d}").values
+        twin = out[name].sel(symbol=f"S{_TWIN:02d}").values
+        np.testing.assert_allclose(split, twin, rtol=1e-12, atol=1e-12, equal_nan=True)
+        assert np.isfinite(split[_SPLIT_BAR + _DIV_WINDOW :]).all()
+
+
 def test_a_symbol_missing_a_descriptor_still_gets_residual_volatility(computed) -> None:
     _, out, want = computed
     style = out["style_residual_volatility"].transpose("timestamp", "symbol").to_numpy()
@@ -372,7 +453,7 @@ def test_the_fixture_exercises_clipping_late_listing_and_the_minimum_count(compu
     assert np.isfinite(want["desc_beta"][_WINDOW - 1 :, 0]).all()
 
 
-@pytest.mark.parametrize("name", ["style_size", "style_beta"])
+@pytest.mark.parametrize("name", _STYLES)
 def test_styles_have_cap_weighted_mean_zero_and_unit_std_in_the_universe(computed, name) -> None:
     _, out, want = computed
     got = out[name].transpose("timestamp", "symbol").to_numpy()
@@ -385,7 +466,7 @@ def test_styles_have_cap_weighted_mean_zero_and_unit_std_in_the_universe(compute
         assert abs(np.average(got[t, inside], weights=cap_before[t, inside])) < 1e-10
         assert abs(got[t, inside].std(ddof=1) - 1.0) < 1e-10
         checked += 1
-    assert checked >= _T - _WINDOW
+    assert checked >= _T - _WINDOW - _MOM_LAG
 
 
 def test_symbols_outside_the_universe_still_get_exposures(computed) -> None:
@@ -430,7 +511,7 @@ def test_the_factor_rebuilds_from_its_config_json(computed, tmp_path) -> None:
 
 def test_data_columns_and_kwargs_are_checked(tmp_path) -> None:
     with pytest.raises(ValueError, match="data_columns must exactly match"):
-        BarraStyle(_config(tmp_path, data_columns=("adjClose", "marketcap")))
+        BarraStyle(_config(tmp_path, data_columns=("adjClose", "marketcap", "risk_free")))
     with pytest.raises(ValueError, match="unknown config.kwargs"):
         BarraStyle(_config(tmp_path, kwargs={"beta_windw": 10}))
     with pytest.raises(ValueError, match="beta_min_observations"):
@@ -445,7 +526,32 @@ def test_defaults_are_use4_where_published() -> None:
     assert (params.dastd_window, params.dastd_half_life) == (252, 42.0)
     assert (params.cmra_months, params.cmra_month_length) == (12, 21)
     assert (params.dastd_weight, params.cmra_weight, params.hsigma_weight) == (0.75, 0.15, 0.10)
+    assert (params.liquidity_month_length, params.stoq_months, params.stoa_months) == (21, 3, 12)
+    assert (params.stom_weight, params.stoq_weight, params.stoa_weight) == (0.35, 0.35, 0.30)
+    assert params.dividend_window == 252
+    # Our choices, where MSCI publishes none.
+    assert params.orthogonalization_weighting == "sqrt_cap"
+    assert (params.momentum_min_observations, params.volatility_min_observations) == (252, 63)
+    assert (params.liquidity_min_fraction, params.data_error_sigma) == (0.5, 10.0)
     assert params.warmup_bars == 526
+
+
+def test_equal_weighting_orthogonalizes_with_equal_weights(tmp_path) -> None:
+    config = _config(tmp_path, kwargs={**_KWARGS, "orthogonalization_weighting": "equal"},
+                     factor_names=("style_nonlinear_size", "style_size", "estu"))
+    out = compute_all(BarraStyle(config))
+    got = out["style_nonlinear_size"].transpose("timestamp", "symbol").to_numpy()
+    size = out["style_size"].transpose("timestamp", "symbol").to_numpy()
+    estu = out["estu"].transpose("timestamp", "symbol").to_numpy() > 0
+    checked = 0
+    for t in range(_T):
+        fit = estu[t] & np.isfinite(got[t]) & np.isfinite(size[t])
+        if fit.sum() < 5:
+            continue
+        dy, dx = got[t, fit] - got[t, fit].mean(), size[t, fit] - size[t, fit].mean()
+        assert abs((dy * dx).mean()) < 1e-9 * np.sqrt((dy**2).mean() * (dx**2).mean())
+        checked += 1
+    assert checked > _T // 2
 
 
 @pytest.mark.parametrize(
@@ -456,6 +562,10 @@ def test_defaults_are_use4_where_published() -> None:
         ({"volatility_min_observations": 100}, "volatility_min_observations"),
         ({"cmra_weight": 0.0}, "positive"),
         ({"momentum_lag": -1}, "momentum_lag"),
+        ({"liquidity_min_fraction": 0.0}, "liquidity_min_fraction"),
+        ({"stoq_months": 13}, "stoq_months"),
+        ({"stoa_weight": -1.0}, "positive"),
+        ({"dividend_window": 0}, "dividend_window"),
     ],
 )
 def test_invalid_price_style_parameters_are_refused(tmp_path, kwargs, match) -> None:
