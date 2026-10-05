@@ -122,6 +122,15 @@ class BarraStyleParameters:
         Panel variable holding the risk-free rate as a decimal return per
         bar, the same on every symbol. It is lagged one bar before use,
         because the rate of a day is published the next business day.
+    risk_free_symbol : str or None, default None
+        When set, the risk-free rate is the ``risk_free_column`` of this one
+        symbol (``FredRateDataset``'s ``"DTB3"``, merged in as is) and the
+        factor broadcasts it across the other symbols: the symbol is
+        dropped, the bars kept are those where any other symbol has a
+        ``price_column``, and a bar without a published rate (a bond-market
+        holiday on a trading day) takes the last rate before it (our
+        choice). ``None`` reads the column on every symbol, already
+        broadcast.
     close_column : str, default "close"
         Panel variable holding the raw (unadjusted) close, the price
         Dividend Yield divides by and turnover's dollar volume uses.
@@ -265,6 +274,7 @@ class BarraStyleParameters:
     price_column: str = "adjClose"
     market_cap_column: str = "marketcap"
     risk_free_column: str = "risk_free"
+    risk_free_symbol: str | None = None
     close_column: str = "close"
     volume_column: str = "volume"
     dividend_column: str = "divCash"
@@ -516,6 +526,36 @@ class BarraStyleParameters:
 def _present(value: OpBase) -> OpBase:
     """Return 1 where ``value`` is finite and 0 elsewhere."""
     return SetInfOrNanToValue(value * 0.0 + 1.0, 0.0)
+
+
+def _broadcast_risk_free(panel: xr.Dataset, params: BarraStyleParameters) -> xr.Dataset:
+    """Return ``panel`` with the rate of ``risk_free_symbol`` on every other symbol.
+
+    The rate symbol is dropped, the bars kept are those where another
+    symbol has a price, and the rate is forward-filled over the panel's
+    bars before those are kept, so a trading day without a published rate
+    takes the last one.
+
+    Raises
+    ------
+    ValueError
+        If the panel has no ``risk_free_symbol``.
+    """
+    symbol = params.risk_free_symbol
+    if symbol not in panel["symbol"].values.tolist():
+        raise ValueError(
+            f"BarraStyle: risk_free_symbol {symbol!r} is not a symbol of the input panel"
+        )
+    rate = panel[params.risk_free_column].sel(symbol=symbol, drop=True).ffill("timestamp")
+    others = panel.drop_sel(symbol=[symbol])
+    others = others.assign_coords(symbol=np.asarray(others["symbol"].values.tolist()))
+    traded = others[params.price_column].notnull().any("symbol")
+    others = others.sel(timestamp=traded)
+    return others.assign(
+        {params.risk_free_column: rate.sel(timestamp=others["timestamp"]).broadcast_like(
+            others[params.price_column]
+        )}
+    )
 
 
 def _as_float64(values: np.ndarray) -> np.ndarray:
@@ -1005,7 +1045,9 @@ class BarraStyle(FactorKunQuant):
         ``to_kunquant`` exports float32, which would round a USD market cap
         to seven digits before the graph sees it, so the panel is renamed to
         the shared names as ``to_kunquant`` does and exported in float64.
-        A date variable (the fiscal year ends) is exported as days since
+        With ``risk_free_symbol`` set, the rate is first broadcast across
+        the symbols (``_broadcast_risk_free``). A date variable (the fiscal
+        year ends) is exported as days since
         1970, NaN where it is NaT. The industry code goes in as
         ``INDUSTRY_INPUT``. The ``SPLIT_BASIS`` input is added: each
         symbol's running product of
@@ -1013,14 +1055,17 @@ class BarraStyle(FactorKunQuant):
         as 1. Only its ratios between bars are used, so where it starts does
         not matter.
         """
-        panel = self.config.dataset.to_shared_names(inputs).sortby(["timestamp", "symbol"])
+        params = self._parameters()
+        panel = self.config.dataset.to_shared_names(inputs)
+        if params.risk_free_symbol is not None:
+            panel = _broadcast_risk_free(panel, params)
+        panel = panel.sortby(["timestamp", "symbol"])
         arrays = {
             column: np.ascontiguousarray(
                 _as_float64(panel[column].transpose("timestamp", "symbol").to_numpy())
             )
             for column in self.config.data_columns
         }
-        params = self._parameters()
         arrays[INDUSTRY_INPUT] = arrays.pop(params.industry_column)
         splits = arrays[params.split_column]
         arrays[SPLIT_BASIS] = np.ascontiguousarray(

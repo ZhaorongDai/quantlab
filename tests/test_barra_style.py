@@ -797,3 +797,51 @@ def test_growth_places_each_fiscal_year_at_its_year_end(computed) -> None:
     got = out["desc_egro"].sel(symbol=f"S{_SKIPPED_YEAR:02d}").values
     np.testing.assert_allclose(got, want["desc_egro"][:, _SKIPPED_YEAR], rtol=1e-9, atol=1e-9, equal_nan=True)
     assert np.isfinite(got[_LISTING_BAR:]).any()
+
+
+def test_a_single_symbol_risk_free_rate_is_broadcast_on_the_trading_days(tmp_path) -> None:
+    inputs = _inputs()
+    rate = inputs["risk_free"][:, 0].copy()
+    timestamps = pd.bdate_range("2021-01-04", periods=_T)
+    # FRED's calendar: one extra date with no trading, and a trading day
+    # without a published rate (a bond-market holiday).
+    fred_days = timestamps.append(pd.DatetimeIndex(["2021-01-09"])).sort_values()
+    fred_rate = pd.Series(rate, index=timestamps).reindex(fred_days)
+    fred_rate[pd.Timestamp("2021-01-09")] = 0.5  # never a trading day: never read
+    fred_rate[timestamps[30]] = np.nan
+    store = tmp_path / "fred.zarr"
+    xr.Dataset(
+        {"risk_free": (("timestamp", "symbol"), fred_rate.to_numpy()[:, None])},
+        coords={"timestamp": fred_days, "symbol": np.asarray(["DTB3"], dtype=object)},
+    ).to_zarr(store, mode="w")
+    fred = StockDataset(DatasetConfig(
+        zarr_file_path=str(store), raw_data_dir_path=str(tmp_path / "raw"),
+        market="us_equity", frequency="1d",
+    ))
+    names = ("style_beta", "style_momentum", "style_residual_volatility")
+    config = _config(tmp_path, kwargs={**_KWARGS, "risk_free_symbol": "DTB3"}, factor_names=names)
+    datasets = list(config.dataset)
+    price_columns = ("adjClose", "close", "volume", "divCash", "splitFactor")
+    datasets[0] = _store(tmp_path, "prices_without_rate", {k: inputs[k] for k in price_columns})
+    got = compute_all(BarraStyle(_config(
+        tmp_path, kwargs={**_KWARGS, "risk_free_symbol": "DTB3"}, factor_names=names,
+        dataset=[*datasets, fred],
+    )))
+
+    filled = rate.copy()
+    filled[30] = filled[29]
+    broadcast = {**inputs, "risk_free": np.broadcast_to(filled[:, None], (_T, _S)).copy()}
+    price_store = _store(tmp_path / "want", "prices_filled", {k: broadcast[k] for k in (*price_columns, "risk_free")})
+    want = compute_all(BarraStyle(_config(
+        tmp_path / "want", factor_names=names, dataset=[price_store, *datasets[1:]],
+    )))
+    assert got["symbol"].values.tolist() == want["symbol"].values.tolist()
+    assert pd.DatetimeIndex(got["timestamp"].values).equals(timestamps)
+    for name in names:
+        np.testing.assert_allclose(got[name].values, want[name].values, rtol=1e-12, equal_nan=True)
+
+
+def test_an_unknown_risk_free_symbol_is_refused(tmp_path) -> None:
+    factor = BarraStyle(_config(tmp_path, kwargs={**_KWARGS, "risk_free_symbol": "DGS10"}))
+    with pytest.raises(ValueError, match="DGS10"):
+        compute_all(factor)
