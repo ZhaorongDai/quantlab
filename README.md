@@ -92,7 +92,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.registry import DataSourceRegistry, credential_status
 

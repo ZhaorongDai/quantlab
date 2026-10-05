@@ -40,7 +40,7 @@ Data moves through three tiers:
    they never touch the raw tier.
 
 Every dataset class shares the same lifecycle, defined on
-`quantlab.base.data.BaseDataset`:
+`quantlab.dataset.base.BaseDataset`:
 
 | Method | What it does |
 |---|---|
@@ -60,10 +60,10 @@ any number of requests from any number of consumers.
 
 ## Configuring a dataset
 
-A market dataset is built from a `quantlab.base.config.DatasetConfig`:
+A market dataset is built from a `quantlab.dataset.config.DatasetConfig`:
 
 ```python
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
 config = DatasetConfig(
@@ -439,6 +439,6 @@ you (see [Factors](factors.md)).
 - [Data sources](data-sources.md) and [WRDS](wrds.md): produce the raw tier.
 - [Extending quantlab](../developer-guide/extending.md): write a dataset for a
   new vendor by implementing `_raw_data_to_xr`.
-- The docstrings of `quantlab.base.data.BaseDataset`,
-  `quantlab.backend.zarr.XrBackend` and `quantlab.utils.chunking.ChunkLedger` for
+- The docstrings of `quantlab.dataset.base.BaseDataset`,
+  `quantlab.backend.zarr.XrBackend` and `quantlab.dataset._support.ledger.ChunkLedger` for
   every parameter.

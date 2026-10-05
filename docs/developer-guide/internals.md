@@ -44,13 +44,13 @@ removes the entry.
 
 A *batch* is one request covering several symbols. Vendors such as Alpaca
 answer it as a chain of pages linked by opaque tokens, so a batch can itself
-be interrupted halfway. The *page ledger* (`quantlab.utils.pageledger`)
+be interrupted halfway. The *page ledger* (`quantlab.dataset._support.ledger`)
 records, per batch, every page fetched, the token the next request must send,
 and the shard files each page was written to. `Acquisition._fetch_batch` is
 the only pagination loop, and it resumes from the ledger:
 
 ```python
-from quantlab.utils.pageledger import PageLedger
+from quantlab.dataset._support.ledger import PageLedger
 
 roster = ["AAPL", "MSFT"]
 key = PageLedger.batch_key("alpaca", "1m", "2024-01-02", "2024-01-05", roster)
@@ -100,7 +100,7 @@ write.
 
 Converting a large raw tier into a Zarr store is also resumable.
 `BaseDataset.from_raw_data_chunked` splits the time axis into windows with
-`TimeChunkPlanner` (`quantlab.utils.chunking`), densifies each window onto one
+`TimeChunkPlanner` (`quantlab.dataset._support.ledger`), densifies each window onto one
 symbol axis fixed for the whole range before the first window (so all windows
 line up column by column), appends it to the store, and records it in a
 `ChunkLedger` next to the store (`<store>.chunks.json`). A re-run skips the
@@ -134,7 +134,7 @@ recovery. A widen refuses to start while a non-empty `.superseded.tmp` copy
 is left over from an earlier crash, because that copy may be the only
 complete version of the data.
 
-`BaseStoreRebuilder` (`quantlab.base.rebuild`) is the skeleton for an explicit
+`BaseStoreRebuilder` (`quantlab.dataset._support.rebuild`) is the skeleton for an explicit
 rebuild of a whole store, used by the CRSP rebuilder in
 `quantlab/dataset/crsp/rebuild.py`. `rebuild()` runs
 `assert_inputs_present`, `backup`, `clear`, `_convert` and `_measure` in that

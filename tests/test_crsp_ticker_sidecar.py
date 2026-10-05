@@ -127,7 +127,7 @@ def _payload(dataset_config) -> dict:
 def test_the_suffix_and_the_path_follow_the_filter_report_s_shape():
     """`.crsp_tickers.json`, a SIBLING of the store -- the same one-line
     `Path(str(zarr_file_path) + SUFFIX)` the filter report uses."""
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX, CrspStockDataset
 
     assert TICKER_SIDECAR_SUFFIX == ".crsp_tickers.json"
@@ -240,7 +240,7 @@ def test_an_existing_store_blocks_the_write(tmp_path):
     written. A rebuild deletes the store and its `.crsp_*.json` siblings first;
     `quantlab/dataset/crsp/rebuild.py:CrspStoreRebuilder` is what does that.
     """
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from quantlab.dataset.crsp import CrspStockDataset
 
     store = tmp_path / "crsp.zarr"

@@ -312,7 +312,7 @@ def test_a_merge_input_reads_its_own_name_of_a_shared_variable(spot_kline_zarr):
 
 
 def test_a_resample_view_records_the_source_store_it_read(tmp_path):
-    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.config import DatasetConfig
     from quantlab.dataset.spot import SpotKlineDataset
 
     timestamps = pd.date_range("2024-01-01", periods=5 * 24 * 60, freq="min")

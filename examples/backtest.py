@@ -35,12 +35,12 @@ from loguru import logger
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
-    DatasetConfig,
     ForwardConfig,
     ModelConfig,
     PolarsFactorConfig,
     TopNConfig,
 )
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset

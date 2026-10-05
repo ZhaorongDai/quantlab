@@ -49,7 +49,7 @@ write_raw(raw, "2023-01-02", "2023-12-29", {"AAA": "2023-01-01", "BBB": "2023-07
 `TimeChunkPlanner` 把原始数据里实际出现的时间戳，按周期边界切成窗口。粒度可选 `year`、`quarter`、`month`、`day` 或 `hour`。每个窗口的两端都是数据里真实存在的时间戳，而不是日历上的周期末，所以窗口不会指向一个没有交易的日子。
 
 ```python
->>> from quantlab.utils.chunking import TimeChunkPlanner
+>>> from quantlab.dataset._support.ledger import TimeChunkPlanner
 >>> planner = TimeChunkPlanner("quarter")
 >>> for start, end in planner.plan_from_timestamps(pd.bdate_range("2023-01-02", "2023-12-29")):
 ...     print(start.date(), end.date())
@@ -66,7 +66,7 @@ write_raw(raw, "2023-01-02", "2023-12-29", {"AAA": "2023-01-01", "BBB": "2023-07
 
 ```python
 >>> import dataclasses, json
->>> from quantlab.base.config import DatasetConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
@@ -256,7 +256,7 @@ rebuild 会替换整个 store。运行期间原来的 store 和台账被移到�
 `BaseStoreRebuilder` 包装一次转换，使 store 可以被安全地重新生成。它先检查原始输入是否存在，把 store 及其附属文件复制到备份目录，删除它们，运行转换，并返回一个 `RebuildMeasurement`。子类需要声明附属文件的后缀并实现四个方法。
 
 ```python
->>> from quantlab.base.rebuild import BaseStoreRebuilder
+>>> from quantlab.dataset._support.rebuild import BaseStoreRebuilder
 >>> class StockRebuilder(BaseStoreRebuilder):
 ...     SIDECAR_SUFFIXES = (".chunks.json",)
 ...     def _required_inputs(self):
@@ -297,7 +297,7 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.base import BaseDataset
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 
@@ -385,4 +385,4 @@ rebuild 是整个 store 的操作。无论是哪个标的触发的，它都会�
 
 ## 另请参阅
 
-dataset 指南介绍面板和 config。backend 指南介绍 `XrBackend.append`、`widen_symbol_axis`，以及拒绝不安全追加的检查。acquisition 指南介绍如何生成原始数据树。相关模块：`quantlab.utils.chunking`（`TimeChunkPlanner`、`ChunkLedger`）、`quantlab.base.data`（`from_raw_data_chunked`、`update`、`ConversionResult`）、`quantlab.base.rebuild` 和 `quantlab.utils.progress`。
+dataset 指南介绍面板和 config。backend 指南介绍 `XrBackend.append`、`widen_symbol_axis`，以及拒绝不安全追加的检查。acquisition 指南介绍如何生成原始数据树。相关模块：`quantlab.dataset._support.ledger`（`TimeChunkPlanner`、`ChunkLedger`）、`quantlab.dataset.base`（`from_raw_data_chunked`、`update`、`ConversionResult`）、`quantlab.dataset._support.rebuild` 和 `quantlab.utils.progress`。

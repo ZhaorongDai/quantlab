@@ -47,7 +47,8 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DatasetConfig, FactorConfig, ModelConfig
+from quantlab.base.config import FactorConfig, ModelConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.predefined.fret import Return

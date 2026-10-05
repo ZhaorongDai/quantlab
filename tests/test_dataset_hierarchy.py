@@ -28,12 +28,8 @@ import pandas as pd
 import xarray as xr
 
 from conftest import WHOLE_STORE
-from quantlab.base.config import (
-    BaseDatasetConfig,
-    ConstituentDatasetConfig,
-    DatasetConfig,
-)
-from quantlab.base.data import BaseDataset, MarketDataset
+from quantlab.dataset.config import BaseDatasetConfig, ConstituentDatasetConfig, DatasetConfig
+from quantlab.dataset.base import BaseDataset, MarketDataset
 
 # The KunQuant-specific members. A membership panel has no compiled-graph
 # representation, so none of these may live on the shared base
@@ -258,7 +254,7 @@ def test_base_data_module_exposes_only_the_two_split_classes() -> None:
     `base.data.Dataset` failed, the answer is `MarketDataset` for a dataset
     with bars and a catalog, `BaseDataset` for anything else.
     """
-    import quantlab.base.data as base_data_module
+    import quantlab.dataset.base as base_data_module
 
     assert hasattr(base_data_module, "BaseDataset")
     assert hasattr(base_data_module, "MarketDataset")

@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/constituent.md)
 
 An index constituent panel records which symbols belonged to an index on each date. It is stored like any other quantlab dataset: an `xarray.Dataset` on `(timestamp, symbol)` with a single boolean variable, `is_member`, saved as Zarr. Because membership is stored as dated intervals rather than as a current list, a name that was removed from an index years ago is still present in the panel for the dates on which it was a member.
 
-The module `quantlab.universe` holds the symbol-universe catalog (a parquet table of symbol, category and interval) together with the fetchers that build it. `quantlab.base.constituent` turns an interval table into the panel. `quantlab.dataset.constituent` binds concrete indexes to it.
+The module `quantlab.universe` holds the symbol-universe catalog (a parquet table of symbol, category and interval) together with the fetchers that build it. `quantlab.dataset.base` turns an interval table into the panel. `quantlab.dataset.constituent` binds concrete indexes to it.
 
 ## Prerequisites
 
@@ -20,8 +20,8 @@ The offline examples on this page need only quantlab and its dependencies. The W
 >>> import os, tempfile
 >>> import pandas as pd
 >>> import polars as pl
->>> from quantlab.base.config import ConstituentDatasetConfig
->>> from quantlab.base.constituent import IndexConstituentDataset
+>>> from quantlab.dataset.config import ConstituentDatasetConfig
+>>> from quantlab.dataset.base import IndexConstituentDataset
 >>> class DemoPanel(IndexConstituentDataset):
 ...     def _pit_coverage_start(self):
 ...         return "2020-01-01"
@@ -145,7 +145,7 @@ Five concrete classes live in `quantlab.dataset.constituent`. All take a `Consti
 The Wikipedia pair downloads its sources, so the call is shown here without output:
 
 ```python
-from quantlab.base.config import ConstituentDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig
 from quantlab.dataset.constituent import SP500ConstituentDataset
 
 config = ConstituentDatasetConfig(
@@ -167,7 +167,7 @@ The CRSP classes read the CRSP reference directory written by the CRSP download 
 ```python
 >>> from tests.crsp_fixtures import write_reference_tables
 >>> _ = write_reference_tables("data/reference")
->>> from quantlab.base.config import ConstituentDatasetConfig
+>>> from quantlab.dataset.config import ConstituentDatasetConfig
 >>> from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 >>> config = ConstituentDatasetConfig(
 ...     zarr_file_path="data/crsp_sp500.zarr",
@@ -235,7 +235,7 @@ Mask a training or analysis panel this way, never a backtest's `price_dataset`: 
 `UniverseCatalog` reads a parquet table with the columns `symbol`, `category`, `start_date`, `end_date` and `end_date_is_inferred`. The built-in categories are `us_all` and `nasdaq_all` (exchange rosters that include delisted names), `sp500_constituent` and `nasdaq100_constituent`. Building the table downloads Tiingo and Wikipedia sources, so the build call is shown without output:
 
 ```python
-from quantlab.base.config import UniverseConfig
+from quantlab.universe import UniverseConfig
 from quantlab.universe import UniverseCatalog
 
 config = UniverseConfig(
@@ -249,7 +249,7 @@ Querying needs only the file. The session below writes a six-row table by hand a
 
 ```python
 >>> import os, polars as pl
->>> from quantlab.base.config import UniverseConfig
+>>> from quantlab.universe import UniverseConfig
 >>> from quantlab.universe import UniverseCatalog
 >>> config = UniverseConfig(
 ...     output_path="data/reference/universe.parquet",
@@ -315,8 +315,9 @@ Adding an index to the panel layer needs one subclass of `IndexConstituentDatase
 ```python
 >>> import os, tempfile
 >>> import polars as pl
->>> from quantlab.base.config import ConstituentDatasetConfig, UniverseConfig
->>> from quantlab.base.constituent import IndexConstituentDataset
+>>> from quantlab.dataset.config import ConstituentDatasetConfig
+>>> from quantlab.universe import UniverseConfig
+>>> from quantlab.dataset.base import IndexConstituentDataset
 >>> from quantlab.universe import IndexMembershipFetcher, UniverseCatalog
 >>> class DemoIndexFetcher(IndexMembershipFetcher):
 ...     ANCHOR_URL = CHANGES_URL = "offline"
@@ -434,4 +435,4 @@ Change-log sources record additions and removals only from a start date onward. 
 
 ## See also
 
-The `universe` guide covers the price and liquidity filter, which answers a different question from index membership and can be combined with it. The `dataset` guide describes the dataset base class the panel extends, `wrds_crsp` describes the CRSP reference tier, and `acquisition` covers downloads. Class docstrings: `quantlab.base.constituent.IndexConstituentDataset`, `quantlab.dataset.constituent`, `quantlab.universe.UniverseCatalog`, `quantlab.universe.IndexMembershipFetcher`, `quantlab.dataset._support.masking.UniverseMask`.
+The `universe` guide covers the price and liquidity filter, which answers a different question from index membership and can be combined with it. The `dataset` guide describes the dataset base class the panel extends, `wrds_crsp` describes the CRSP reference tier, and `acquisition` covers downloads. Class docstrings: `quantlab.dataset.base.IndexConstituentDataset`, `quantlab.dataset.constituent`, `quantlab.universe.UniverseCatalog`, `quantlab.universe.IndexMembershipFetcher`, `quantlab.dataset._support.masking.UniverseMask`.

@@ -123,7 +123,7 @@ A `CrspDatasetConfig` names the raw tier, the reference tier and the store. The 
 ```python
 >>> import crsp_demo
 >>> crsp_demo.build()
->>> from quantlab.base.config import CrspDatasetConfig
+>>> from quantlab.dataset.config import CrspDatasetConfig
 >>> from quantlab.dataset.crsp import CrspStockDataset
 >>> config = CrspDatasetConfig(
 ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",

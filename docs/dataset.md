@@ -44,7 +44,7 @@ A dataset is built from a config dataclass. `BaseDatasetConfig` carries what eve
 
 ```python
 >>> import dataclasses
->>> from quantlab.base.config import DatasetConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
@@ -154,7 +154,7 @@ timestamp
 Timestamp('2024-01-03 00:00:00')
 >>> ds.bar_before("2024-01-03", 2)
 Traceback (most recent call last):
-quantlab.base.data.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
+quantlab.dataset.base.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
 ```
 
 ### Read the anomaly flags
@@ -368,7 +368,7 @@ ValueError: FrameDataset.update(): the panel is held in memory, handed over at c
 ```python
 >>> import tempfile
 >>> from pathlib import Path
->>> from quantlab.base.config import FrameDatasetConfig
+>>> from quantlab.dataset.config import FrameDatasetConfig
 >>> path = Path(tempfile.mkdtemp()) / "bars.zarr"
 >>> on_disk = mem.to_zarr(path)
 >>> on_disk.store_path == str(path), mem.store_path
@@ -417,7 +417,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.base import MarketDataset
 
 
 class CsvDailyDataset(MarketDataset):
@@ -479,7 +479,7 @@ timestamp
 A subclass that leaves out a required method cannot be constructed:
 
 ```python
->>> from quantlab.base.data import BaseDataset
+>>> from quantlab.dataset.base import BaseDataset
 >>> class Incomplete(BaseDataset):
 ...     pass
 ...
@@ -498,8 +498,8 @@ For a raw source that can filter by date before it loads, implement `_raw_data_t
 A panel without price columns subclasses `BaseDataset` directly, uses `BaseDatasetConfig`, and overrides `_clean`. The default `_clean` requires OHLCV columns, so a boolean membership panel is validated with its own function instead. `clean_membership_panel` checks the dtype, dimensions and time order and returns the panel unchanged.
 
 ```python
->>> from quantlab.base.config import BaseDatasetConfig
->>> from quantlab.base.data import BaseDataset
+>>> from quantlab.dataset.config import BaseDatasetConfig
+>>> from quantlab.dataset.base import BaseDataset
 >>> from quantlab.dataset._support.cleaning import clean_membership_panel
 >>> class InIndexDataset(BaseDataset):
 ...     def _raw_data_to_xr(self) -> xr.Dataset:
@@ -544,4 +544,4 @@ Two rows with the same `(timestamp, symbol)` reaching `to_xarray()` raise `Value
 
 ## See also
 
-The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.base.data`, `quantlab.base.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset.memory`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.
+The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.dataset.base`, `quantlab.base.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset.memory`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.

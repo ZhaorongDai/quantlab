@@ -22,8 +22,8 @@ from typing import Callable
 import pytest
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
-from quantlab.base.data import ConversionResult
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import ConversionResult
 from quantlab.registry import DataSourceRegistry, convert
 
 #: Two calendar years, a handful of observed days in each, so a `year` window

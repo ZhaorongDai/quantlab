@@ -25,7 +25,7 @@ from quantlab.universe import (
     UniverseCatalog,
     USEquityUniverseFetcher,
 )
-from quantlab.base.config import UniverseConfig
+from quantlab.universe import UniverseConfig
 from quantlab.enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
 

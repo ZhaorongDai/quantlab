@@ -15,7 +15,7 @@ from quantlab.api._compute import NJOBS, compute_over, output_library
 from quantlab.base.config import FactorConfig
 from quantlab.base.factor import Factor
 from quantlab.dataset.memory import FrameDataset
-from quantlab.utils.frame import to_panel
+from quantlab.dataset._support.frame import to_panel
 from quantlab.core.component import get_cls_from_path
 
 #: The canonical price and volume columns of a frame.

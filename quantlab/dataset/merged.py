@@ -22,8 +22,8 @@ import polars as pl
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import MergedDatasetConfig
-from quantlab.base.data import BaseDataset, MarketDataset
+from quantlab.dataset.config import MergedDatasetConfig
+from quantlab.dataset.base import BaseDataset, MarketDataset
 from quantlab.utils.date_range import check_range
 
 

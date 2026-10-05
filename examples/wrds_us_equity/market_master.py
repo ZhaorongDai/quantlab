@@ -36,16 +36,13 @@ from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
-    IWM_PERMNO,
-    QQQ_PERMNO,
-    SPY_PERMNO,
     CrossSectionBacktestConfig,
-    CrspDatasetConfig,
     FactorConfig,
     MarketFeatureConfig,
     ModelConfig,
     TopNConfig,
 )
+from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101Stock

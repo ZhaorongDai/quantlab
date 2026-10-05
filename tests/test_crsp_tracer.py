@@ -70,7 +70,7 @@ def test_tracer_one_permno_month_lands_raw_and_converts_to_a_drop_in_panel(
     from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from tests.crsp_fixtures import (
         AAPL_AUG_2020_ROWS,
         FakeCrspSession,
@@ -384,7 +384,7 @@ def _convert_to_panel(
     from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from tests.crsp_fixtures import (
         CCM_ROWS,
         DELISTS_ROWS,

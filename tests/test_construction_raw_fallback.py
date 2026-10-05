@@ -16,7 +16,7 @@ from typing import Callable
 import pytest
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
 

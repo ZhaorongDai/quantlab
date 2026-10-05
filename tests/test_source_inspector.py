@@ -984,7 +984,7 @@ def _browse_dataset_config(tmp_path: Path, vendor: str = "tiingo"):
     error and no provenance. The fixture tree `hive_raw_tree` writes matches
     that layout, so the two agree by construction rather than by coincidence.
     """
-    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.config import DatasetConfig
 
     parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"
     return DatasetConfig(
@@ -1277,7 +1277,7 @@ def test_browse_zarr_says_an_integer_axis_is_permnos_and_where_the_names_are(
     import xarray as xr
 
     from quantlab.acquisition._support.inspector import SourceInspector
-    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.config import DatasetConfig
 
     store = tmp_path / "crsp" / "crsp.zarr"
     store.parent.mkdir(parents=True, exist_ok=True)
@@ -1379,7 +1379,7 @@ def test_browse_raw_reads_no_store_at_construction(
     Reddened by: deleting `_RawTierReader._reset_symbols`.
     """
     from quantlab.acquisition._support.inspector import SourceInspector, _RawTierReader
-    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.config import DatasetConfig
 
     _five_month_tree(tmp_path, hive_raw_tree, stock_pqt_row)
     parent = tmp_path / "downloads" / "us_equity" / "1d" / "nasdaq_data"

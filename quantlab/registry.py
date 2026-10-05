@@ -37,8 +37,9 @@ from dataclasses import dataclass
 from typing import Callable
 
 from quantlab.base.acquisition import Acquisition, AcquisitionResult
-from quantlab.base.config import AcquisitionConfig, DatasetConfig
-from quantlab.base.data import ConversionResult, MarketDataset
+from quantlab.base.config import AcquisitionConfig
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import ConversionResult, MarketDataset
 from quantlab.utils.progress import CancelToken, ProgressReporter
 from quantlab.enums.data import Frequency, Market, UniverseCategory, Vendor
 
@@ -739,7 +740,7 @@ def convert(
     --------
     Needs a raw tier already downloaded by ``run()``::
 
-        from quantlab.base.config import DatasetConfig
+        from quantlab.dataset.config import DatasetConfig
         from quantlab.registry import DataSourceRegistry, convert
 
         source = DataSourceRegistry.get("tiingo")

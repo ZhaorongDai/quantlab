@@ -229,7 +229,8 @@ from pathlib import Path
 import polars as pl
 
 from quantlab.base.acquisition import Acquisition
-from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.base.config import AcquisitionConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.config import stock_acquisition_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.registry import Capability, SourceDescriptor, register_source
@@ -330,7 +331,7 @@ RuntimeError: TIINGO_API_KEY environment variable is not set. Export it before r
 `convert()` 没有内存保护。以下情况它抛出 `ValueError`：数据源没有这种 capability（消息里会列出它实际提供的）、多个 capability 匹配且转换目标不同、匹配的 capability 没有 `dataset_cls`。Alpaca 的 tick 报价和成交以不规则的事件轴原样保存，属于最后一种情况：
 
 ```python
->>> from quantlab.base.config import DatasetConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> tick_cfg = DatasetConfig(raw_data_dir_path="data/alpaca", zarr_file_path="data/out.zarr",
 ...     market="us_equity", frequency="tick", vendor="alpaca",
 ...     start_date="2024-01-01", end_date="2024-01-31")

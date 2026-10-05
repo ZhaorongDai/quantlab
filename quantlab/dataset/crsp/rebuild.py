@@ -6,7 +6,7 @@ Zarr directory holding the converted daily price panel. *Sidecars* are the
 small JSON files written next to it (``<store>.zarr.<suffix>``).
 
 ``CrspStoreRebuilder`` fills in the CRSP-specific parts of
-``quantlab.base.rebuild.BaseStoreRebuilder``: it lists the sidecar files a
+``quantlab.dataset._support.rebuild.BaseStoreRebuilder``: it lists the sidecar files a
 CRSP store owns, says which converter writes the store, and computes a few
 quality counts once the store is written. The order of operations (check
 inputs, back up, clear, convert, measure) and every refusal live in
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import xarray as xr
 
-from quantlab.base.rebuild import BaseStoreRebuilder
+from quantlab.dataset._support.rebuild import BaseStoreRebuilder
 from quantlab.dataset._support.cleaning import REQUIRED_COLUMNS
 
 #: Every sidecar that belongs to a CRSP store, as a suffix on the store path:
@@ -65,7 +65,7 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
 
     Examples
     --------
-    >>> from quantlab.base.config import CrspDatasetConfig
+    >>> from quantlab.dataset.config import CrspDatasetConfig
     >>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
     >>> config = CrspDatasetConfig(
     ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",

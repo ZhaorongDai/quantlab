@@ -23,7 +23,8 @@ import xarray as xr
 from conftest import WHOLE_STORE, compute_all
 from quantlab.backend.parquet import PlBackend
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.base.config import FactorConfig, PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
@@ -532,7 +533,7 @@ def test_session_labels_cut_by_session_and_label_daily_bars_at_midnight():
 
 
 def test_nbbo_dataset_labels_bars_by_xnys_session(tmp_path: Path):
-    from quantlab.base.config import NbboDatasetConfig
+    from quantlab.dataset.config import NbboDatasetConfig
     from quantlab.dataset.nbbo import NbboPanelDataset
 
     config = NbboDatasetConfig(

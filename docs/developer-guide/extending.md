@@ -131,7 +131,7 @@ vendor. `run()` downloads, `convert()` turns the raw tier into a Zarr panel
 with the capability's `dataset_cls`:
 
 ```python
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.registry import DataSourceRegistry, convert, run
 
 source = DataSourceRegistry.get("demo")
@@ -200,7 +200,7 @@ For a real vendor, a few more steps apply:
 ## A dataset
 
 A dataset converts a raw tier into a dense panel and stores it. For market
-bars, subclass `MarketDataset` (`quantlab.base.data`) and implement three
+bars, subclass `MarketDataset` (`quantlab.dataset.base`) and implement three
 hooks: `_raw_data_to_xr` returns the panel for the configured date range,
 `_raw_data_to_xr_window` returns one time window of it on a given symbol axis
 (used by chunked conversion), and `_to_kunquant` exports a panel to the
@@ -231,8 +231,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import MarketDataset
 
 
 class CsvBarDataset(MarketDataset):

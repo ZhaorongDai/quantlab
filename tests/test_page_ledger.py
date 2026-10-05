@@ -165,7 +165,7 @@ def _five_page_chain(alpaca_bars_page):
 
 
 def _batch_key_for(cfg):
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     return PageLedger.batch_key(
         cfg.vendor, cfg.frequency, cfg.start_date, cfg.end_date, cfg.symbols
@@ -173,7 +173,7 @@ def _batch_key_for(cfg):
 
 
 def _ledger_path_for(cfg):
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     # Bars are a named data type, so the ledger sits under the `bars/`
     # watermark root, not under the vendor's watermark path itself.
@@ -402,7 +402,7 @@ def test_a_ledger_whose_roster_fingerprint_differs_is_not_resumed_onto(
     sorted roster (so they address different FILES), and `symbol_fingerprint`
     is checked on load (so even a shared file would read back empty).
     """
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     path = str(tmp_path / "roster.pages.json")
 
@@ -435,8 +435,8 @@ def test_the_batch_key_fingerprint_is_a_function_of_the_set_not_the_order():
     re-fetch data already on disk. A different MEMBER, however, is a different
     batch.
     """
-    from quantlab.utils.chunking import ChunkLedger
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import ChunkLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     args = ("alpaca", "1d", "2024-01-01", "2024-01-31")
 
@@ -446,13 +446,13 @@ def test_the_batch_key_fingerprint_is_a_function_of_the_set_not_the_order():
     assert PageLedger.batch_key(*args, ("A", "B")) != PageLedger.batch_key(
         *args, ("A", "C")
     )
-    assert PageLedger.fingerprint(("B", "A")) == PageLedger.fingerprint(("A", "B"))
-    assert PageLedger.fingerprint(("A", "B")) != PageLedger.fingerprint(("A", "C"))
+    assert PageLedger.roster_fingerprint(("B", "A")) == PageLedger.roster_fingerprint(("A", "B"))
+    assert PageLedger.roster_fingerprint(("A", "B")) != PageLedger.roster_fingerprint(("A", "C"))
 
     # The contrast that makes the difference deliberate rather than accidental:
     # ChunkLedger's fingerprint IS order-sensitive, because two orderings of a
     # pinned axis produce two differently-aligned Zarr stores.
-    assert ChunkLedger.fingerprint(["B", "A"]) != ChunkLedger.fingerprint(
+    assert ChunkLedger.axis_fingerprint(["B", "A"]) != ChunkLedger.axis_fingerprint(
         ["A", "B"]
     )
 
@@ -530,7 +530,7 @@ def test_a_ledger_with_pages_but_no_fingerprint_is_never_resumed_onto(tmp_path):
     """
     import json
 
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     path = tmp_path / "identityless.pages.json"
     path.write_text(
@@ -576,7 +576,7 @@ def test_an_identityless_ledger_with_no_pages_keeps_its_forward_compatible_keys(
     """
     import json
 
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     path = tmp_path / "future.pages.json"
     path.write_text(json.dumps({"pages": [], "a_future_key": "kept"}))
@@ -599,7 +599,7 @@ def test_describe_puts_the_identity_on_disk_before_the_first_page(tmp_path):
     """
     import json
 
-    from quantlab.utils.pageledger import PageLedger
+    from quantlab.dataset._support.ledger import PageLedger
 
     path = tmp_path / "described.pages.json"
     ledger = PageLedger(str(path), symbols=("A", "B"))
@@ -607,7 +607,7 @@ def test_describe_puts_the_identity_on_disk_before_the_first_page(tmp_path):
 
     assert path.exists(), "the identity must be on disk before the first request"
     stored = json.loads(path.read_text())
-    assert stored["symbol_fingerprint"] == PageLedger.fingerprint(("A", "B"))
+    assert stored["symbol_fingerprint"] == PageLedger.roster_fingerprint(("A", "B"))
     assert stored["symbol_count"] == 2
     assert stored["pages"] == []
 

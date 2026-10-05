@@ -49,7 +49,7 @@ write_raw(raw, "2023-01-02", "2023-12-29", {"AAA": "2023-01-01", "BBB": "2023-07
 A `TimeChunkPlanner` splits the timestamps that actually occur in the raw data into windows at a period boundary. The granularity is one of `year`, `quarter`, `month`, `day` or `hour`. Every window edge is a timestamp present in the data, never a calendar period end, so a window never names a day on which nothing traded.
 
 ```python
->>> from quantlab.utils.chunking import TimeChunkPlanner
+>>> from quantlab.dataset._support.ledger import TimeChunkPlanner
 >>> planner = TimeChunkPlanner("quarter")
 >>> for start, end in planner.plan_from_timestamps(pd.bdate_range("2023-01-02", "2023-12-29")):
 ...     print(start.date(), end.date())
@@ -66,7 +66,7 @@ A `TimeChunkPlanner` splits the timestamps that actually occur in the raw data i
 
 ```python
 >>> import dataclasses, json
->>> from quantlab.base.config import DatasetConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
@@ -256,7 +256,7 @@ A rebuild replaces the whole store. The original store and ledger are moved asid
 `BaseStoreRebuilder` wraps a conversion so that a store can be regenerated safely. It checks that the raw inputs exist, copies the store and its sidecar files to a backup directory, deletes them, runs the conversion, and returns a `RebuildMeasurement`. A subclass names its sidecar suffixes and implements four methods.
 
 ```python
->>> from quantlab.base.rebuild import BaseStoreRebuilder
+>>> from quantlab.dataset._support.rebuild import BaseStoreRebuilder
 >>> class StockRebuilder(BaseStoreRebuilder):
 ...     SIDECAR_SUFFIXES = (".chunks.json",)
 ...     def _required_inputs(self):
@@ -298,7 +298,7 @@ from pathlib import Path
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.base import BaseDataset
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 
@@ -386,4 +386,4 @@ Argument errors: `TimeChunkPlanner: unknown granularity 'week'; accepted values 
 
 ## See also
 
-The dataset guide describes the panel and the config. The backend guide covers `XrBackend.append`, `widen_symbol_axis` and the checks that refuse an unsafe append. The acquisition guide covers producing the raw tree. Relevant modules: `quantlab.utils.chunking` (`TimeChunkPlanner`, `ChunkLedger`), `quantlab.base.data` (`from_raw_data_chunked`, `update`, `ConversionResult`), `quantlab.base.rebuild` and `quantlab.utils.progress`.
+The dataset guide describes the panel and the config. The backend guide covers `XrBackend.append`, `widen_symbol_axis` and the checks that refuse an unsafe append. The acquisition guide covers producing the raw tree. Relevant modules: `quantlab.dataset._support.ledger` (`TimeChunkPlanner`, `ChunkLedger`), `quantlab.dataset.base` (`from_raw_data_chunked`, `update`, `ConversionResult`), `quantlab.dataset._support.rebuild` and `quantlab.utils.progress`.

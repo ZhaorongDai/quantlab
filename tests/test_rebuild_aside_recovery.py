@@ -36,8 +36,8 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.config import BaseDatasetConfig
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.config import BaseDatasetConfig
+from quantlab.dataset.base import BaseDataset
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

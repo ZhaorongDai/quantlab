@@ -8,7 +8,7 @@ from pathlib import Path
 
 import polars as pl
 
-from quantlab.utils.frame import Library
+from quantlab.dataset._support.frame import Library
 
 
 class FactorReport:

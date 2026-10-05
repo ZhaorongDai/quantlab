@@ -17,15 +17,12 @@ from typing import Callable
 import pytest
 
 import quantlab.core.component as component_rule
-from quantlab.base.config import (
+from quantlab.base.config import ModelConfig, FactorConfig, ModelConfig, PolarsFactorConfig
+from quantlab.dataset.config import (
     ConstituentDatasetConfig,
     CrspDatasetConfig,
     DatasetConfig,
-    ModelConfig,
-    FactorConfig,
-    ModelConfig,
     NbboDatasetConfig,
-    PolarsFactorConfig,
 )
 from quantlab.dataset.constituent import (
     CompustatNasdaq100ConstituentDataset,

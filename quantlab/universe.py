@@ -22,6 +22,7 @@ columns ``symbol``, ``category``, ``start_date``, ``end_date`` and
 See ``docs/constituent.md`` for a guide.
 """
 
+from dataclasses import asdict, dataclass
 import datetime
 import io
 import os
@@ -36,7 +37,6 @@ import polars as pl
 import requests
 from loguru import logger
 
-from quantlab.base.config import UniverseConfig
 from quantlab.backend.parquet import PlBackend
 from quantlab.enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
@@ -44,6 +44,45 @@ from quantlab.enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 #: whose bot policy asks for one. Read from ``QUANTLAB_CONTACT`` so that no
 #: personal address is committed to source; the default is a neutral
 #: project URL.
+@dataclass
+class UniverseConfig:
+    """Config of the point-in-time universe catalog builder.
+
+    The catalog records which symbols belonged to the investable universe on
+    each date, using only information available on that date. Building on it
+    avoids survivorship bias, the error of testing only on companies that
+    still exist today.
+
+    Examples
+    --------
+    >>> cfg = UniverseConfig(
+    ...     output_path="/data/reference/universe.parquet",
+    ...     cache_dir="/data/reference/_cache",
+    ... )
+    >>> cfg.kwargs is None
+    True
+    """
+
+    #: File the built catalog is written to.
+    output_path: str
+    #: Directory where downloaded reference files are cached.
+    cache_dir: str
+    #: Builder-specific options. ``None`` is treated as empty.
+    kwargs: dict | None = None
+    #: Dotted import path of the catalog class; filled by the config setter.
+    name: str | None = None
+
+    def to_dict(self):
+        """Return the config as a plain dict via ``dataclasses.asdict``.
+
+        Examples
+        --------
+        >>> cfg.to_dict()["output_path"]
+        '/data/reference/universe.parquet'
+        """
+        return asdict(self)
+
+
 _CONTACT = os.environ.get(
     "QUANTLAB_CONTACT", "https://github.com/quantlab/quantlab"
 )

@@ -37,7 +37,7 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
 from quantlab.base.config import ModelConfig, FactorConfig, ForwardConfig
-from quantlab.base.data import InsufficientHistoryError
+from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.model.torch_model import TorchModel
 from quantlab.dataset.spot import SpotKlineDataset

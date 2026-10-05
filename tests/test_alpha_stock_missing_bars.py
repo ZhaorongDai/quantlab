@@ -28,7 +28,8 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.predefined import Alpha101, Alpha158
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101Stock

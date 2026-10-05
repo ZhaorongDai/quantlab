@@ -69,7 +69,7 @@ from Tiingo and Wikipedia, needs no API key, and `save()` writes the table to
 root; no script wraps this step:
 
 ```python
-from quantlab.base.config import UniverseConfig
+from quantlab.universe import UniverseConfig
 from quantlab.config import get_data_root
 from quantlab.universe import UniverseCatalog
 
@@ -99,7 +99,7 @@ The example writes a four-row catalog by hand, in which `DDD` delisted on
 2024-01-31 and `EEE` listed on 2024-03-01:
 
 ```python
-from quantlab.base.config import UniverseConfig
+from quantlab.universe import UniverseConfig
 from quantlab.universe import UniverseCatalog
 
 catalog = UniverseCatalog.load(
@@ -133,7 +133,7 @@ The download scripts resolve their symbol lists from this table; see
 The catalog answers questions about symbols. To use membership inside the
 pipeline, turn it into a panel: a dataset whose single boolean variable
 `is_member` is `True` where a symbol belonged to the index on that day. These
-datasets subclass `quantlab.base.constituent.IndexConstituentDataset` and are
+datasets subclass `quantlab.dataset.base.IndexConstituentDataset` and are
 configured with `ConstituentDatasetConfig`:
 
 | Class (in `quantlab.dataset.constituent`) | Index | `symbol` axis | Source | Coverage starts |
@@ -185,8 +185,8 @@ price data:
 
 ```python
 import polars as pl
-from quantlab.base.config import ConstituentDatasetConfig
-from quantlab.base.constituent import IndexConstituentDataset
+from quantlab.dataset.config import ConstituentDatasetConfig
+from quantlab.dataset.base import IndexConstituentDataset
 from quantlab.dataset._support.masking import UniverseMask
 
 class DemoIndex(IndexConstituentDataset):
@@ -296,5 +296,5 @@ normally once it lists.
 - [Factors](factors.md): the factors and labels computed on a masked panel.
 - [WRDS](wrds.md): CRSP reference tables, PERMNOs and `security_filter`.
 - The docstrings of `quantlab.universe.UniverseCatalog`,
-  `quantlab.base.constituent.IndexConstituentDataset` and
+  `quantlab.dataset.base.IndexConstituentDataset` and
   `quantlab.dataset._support.masking.UniverseMask` for every parameter.

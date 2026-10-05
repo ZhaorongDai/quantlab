@@ -14,7 +14,8 @@ import xarray as xr
 
 from conftest import compute_all
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import FactorConfig, FrameDatasetConfig
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import FrameDatasetConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
@@ -93,7 +94,7 @@ def test_read_requests_are_answered_from_memory(stock, store):
 
 
 def test_too_little_history_raises_the_library_error(store):
-    from quantlab.base.data import InsufficientHistoryError
+    from quantlab.dataset.base import InsufficientHistoryError
 
     with pytest.raises(InsufficientHistoryError, match="in memory"):
         FrameDataset(store).bar_before("2024-01-03", 5)

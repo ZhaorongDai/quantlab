@@ -31,7 +31,8 @@ import pytest
 import xarray as xr
 
 from conftest import compute_all
-from quantlab.base.config import DatasetConfig, PolarsFactorConfig
+from quantlab.base.config import PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.momentum import Momentum
@@ -172,7 +173,7 @@ def test_an_explicit_factor_names_pin_is_not_overwritten_at_construction(
             "short-circuit the derivation before any probe read"
         )
 
-    monkeypatch.setattr("quantlab.base.data.BaseDataset.head", _forbidden_head)
+    monkeypatch.setattr("quantlab.dataset.base.BaseDataset.head", _forbidden_head)
 
     pinned = Momentum(
         _momentum_config(

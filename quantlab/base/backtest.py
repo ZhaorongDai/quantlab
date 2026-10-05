@@ -43,7 +43,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.core.component import Component, config_cls_of, walk_components
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.base import MarketDataset
 from quantlab.runs.prediction_panel import LabelSpec, PredictionPanel
 from quantlab.tracking.base import TrackingRun
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP

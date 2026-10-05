@@ -25,11 +25,9 @@ PosixPath('/mnt/quant')
 import os
 from pathlib import Path
 
-from quantlab.base.config import (
-    AcquisitionConfig,
-    DatasetConfig,
-    UniverseConfig,
-)
+from quantlab.base.config import AcquisitionConfig
+from quantlab.dataset.config import DatasetConfig
+from quantlab.universe import UniverseConfig
 from quantlab.enums.data import Frequency, Market, Vendor
 
 #: Process-level storage-root override, set by ``set_data_root`` and consulted

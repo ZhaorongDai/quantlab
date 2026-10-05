@@ -13,7 +13,7 @@ import xarray as xr
 
 from quantlab.api._report import BacktestReport
 from quantlab.dataset.memory import FrameDataset
-from quantlab.utils.frame import (
+from quantlab.dataset._support.frame import (
     columns_present,
     library_of,
     to_field_panel,

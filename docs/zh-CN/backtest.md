@@ -25,7 +25,8 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
+from quantlab.base.config import ForwardConfig, ModelConfig, PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
@@ -487,7 +488,7 @@ config = CrossSectionBacktestConfig(
 把 `benchmark_dataset` 设为只含一个标的的市场数据集，例如 `scripts/wrds/etf.py --etf qqq` 写出的 QQQ store（`CrspDatasetConfig.qqq_benchmark`）。它和价格数据集一样是 `(timestamp, symbol)` 面板，放在单独的 store 里，带有相同的 `adjOpen` / `adjClose` 列。直接传入数据集对象：
 
 ```python
-from quantlab.base.config import CrspDatasetConfig
+from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
     zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",

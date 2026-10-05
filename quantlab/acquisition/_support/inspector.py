@@ -29,7 +29,8 @@ from typing import Sequence
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.base.config import AcquisitionConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.utils.coverage import CoverageLedger, validate_symbols
 from quantlab.dataset.stock import StockDataset
 

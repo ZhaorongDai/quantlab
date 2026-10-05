@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from quantlab.base.config import DatasetConfig, FactorConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
+from quantlab.base.config import FactorConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.momentum import Momentum

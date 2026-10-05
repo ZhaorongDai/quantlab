@@ -51,7 +51,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 
 SYMBOLS = [f"S{i:02d}" for i in range(16)]
 N_BARS = 400

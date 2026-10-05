@@ -55,7 +55,7 @@ from pathlib import Path
 import polars as pl
 
 from quantlab.registry import DataSourceRegistry, convert, run
-from quantlab.base.config import NbboDatasetConfig
+from quantlab.dataset.config import NbboDatasetConfig
 from quantlab.dataset.nbbo import NbboPanelDataset
 from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.crsp.membership import CrspMembership

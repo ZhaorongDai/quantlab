@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from quantlab.base.config import ConstituentDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig
 from quantlab.dataset.constituent import CrspMarketConstituentDataset
 
 from crsp_fixtures import secinfo_row, write_reference_tables

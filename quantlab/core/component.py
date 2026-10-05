@@ -113,7 +113,8 @@ def component_fields(config_cls: type) -> dict[str, bool]:
 
     Examples
     --------
-    >>> from quantlab.base.config import ForwardConfig, MergedDatasetConfig
+    >>> from quantlab.base.config import ForwardConfig
+    >>> from quantlab.dataset.config import MergedDatasetConfig
     >>> component_fields(ForwardConfig), component_fields(MergedDatasetConfig)
     ({'factor': False}, {'datasets': True})
     """

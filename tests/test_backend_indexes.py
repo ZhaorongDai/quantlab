@@ -37,8 +37,8 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from quantlab.base.config import BaseDatasetConfig
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.config import BaseDatasetConfig
+from quantlab.dataset.base import BaseDataset
 from quantlab.backend.parquet import PlBackend
 from quantlab.backend.zarr import XrBackend
 

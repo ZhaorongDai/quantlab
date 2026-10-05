@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.data import InsufficientHistoryError, MarketDataset
+from quantlab.dataset.base import InsufficientHistoryError, MarketDataset
 from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.execution.rules import ExecutionBook, ExecutionSettings

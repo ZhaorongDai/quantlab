@@ -25,7 +25,7 @@ from quantlab.core.component import Component, component
 if TYPE_CHECKING:  # type hints only
     from pathlib import Path
 
-    from quantlab.base.constituent import IndexConstituentDataset
+    from quantlab.dataset.base import IndexConstituentDataset
 
 
 @dataclasses.dataclass(frozen=True)

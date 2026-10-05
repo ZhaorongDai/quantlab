@@ -145,7 +145,7 @@ def test_the_module_imports_no_quantlab_layer_or_heavy_library():
         "import sys\n"
         "import quantlab.utils.backtest_stats\n"
         "heavy = ('quantlab.model', 'quantlab.dataset', 'quantlab.factor', 'quantlab.label',\n"
-        "         'quantlab.base.model', 'quantlab.base.data', 'quantlab.backtest',\n"
+        "         'quantlab.base.model', 'quantlab.dataset.base', 'quantlab.backtest',\n"
         "         'vectorbt', 'torch', 'xgboost', 'KunQuant')\n"
         "print(sorted(name for name in sys.modules\n"
         "             if any(name == h or name.startswith(h + '.') for h in heavy)))\n"

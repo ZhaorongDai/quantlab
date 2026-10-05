@@ -27,7 +27,8 @@ import numpy as np
 import xarray as xr
 
 from conftest import WHOLE_STORE
-from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
 

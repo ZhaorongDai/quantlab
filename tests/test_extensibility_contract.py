@@ -26,8 +26,8 @@ import pandas as pd
 import xarray as xr
 
 from conftest import WHOLE_STORE
-from quantlab.base.config import DatasetConfig
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import MarketDataset
 
 CORE_LAYER_FILES = (
     "quantlab/base/factor.py",

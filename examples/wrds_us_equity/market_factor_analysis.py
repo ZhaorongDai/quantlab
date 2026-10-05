@@ -30,10 +30,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from quantlab.base.config import (
-    CrspDatasetConfig,
-    FactorConfig,
-)
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101Stock

@@ -14,7 +14,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.utils.frame import Library, to_frame
+from quantlab.dataset._support.frame import Library, to_frame
 
 #: Columns of ``BacktestReport.orders`` and their dtypes, used when there are no orders.
 ORDER_COLUMNS = {

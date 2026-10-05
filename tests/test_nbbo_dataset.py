@@ -82,7 +82,7 @@ def test_tracer_one_wrds_symbol_day_lands_raw_and_resamples_to_a_zarr_panel(
     from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
-    from quantlab.base.config import NbboDatasetConfig
+    from quantlab.dataset.config import NbboDatasetConfig
     from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.nbbo import NbboPanelDataset
 
@@ -222,7 +222,7 @@ def _acquire(tmp_path, rows: dict, *, symbols=("AAPL",)):
 
 
 def _dataset_config(tmp_path, acq_cfg, start, end, *, name="nbbo.zarr", **kwargs):
-    from quantlab.base.config import NbboDatasetConfig
+    from quantlab.dataset.config import NbboDatasetConfig
 
     permnos = kwargs.pop("permnos", (str(AAPL),))
     return NbboDatasetConfig(
@@ -765,7 +765,7 @@ def test_extended_window_store_is_granularity_independent(
 
 
 def test_rebuild_from_config_carries_nbbo_fields(mock_wrds_session, tmp_path):
-    from quantlab.base.config import NbboDatasetConfig
+    from quantlab.dataset.config import NbboDatasetConfig
     from quantlab.dataset.nbbo import NbboPanelDataset
     from quantlab.core.component import rebuild
 

@@ -46,7 +46,8 @@ The session first writes a small synthetic spot store and defines a helper that 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
 >>> from quantlab.backend.zarr import XrBackend
->>> from quantlab.base.config import DatasetConfig, PolarsFactorConfig
+>>> from quantlab.base.config import PolarsFactorConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.spot import SpotKlineDataset
 >>> from quantlab.factor.predefined.momentum import Momentum
 >>> rng = np.random.default_rng(0)
@@ -185,7 +186,8 @@ A merge never picks a value by input order. A cell holding a value in two inputs
 ```python
 >>> import json
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
+>>> from quantlab.base.config import MarketFeatureConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.factor.predefined.market import MarketFeatures
 >>> from quantlab.core.component import rebuild
@@ -243,9 +245,8 @@ On each bar the values go to every target symbol that has a bar there, that is, 
 For US equities from WRDS, give each ETF its own CRSP store, as for a backtest benchmark. `scripts/wrds/etf.py --etf spy,qqq,iwm` downloads SPY, QQQ and IWM (the S&P 500, the Nasdaq-100 and the Russell 2000) into one store each, and `CrspDatasetConfig.etf_benchmark` keeps the ETF, which the default security filter drops as a fund:
 
 ```python
-from quantlab.base.config import (
-    IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig,
-)
+from quantlab.base.config import MarketFeatureConfig
+from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.market import MarketFeatures
 

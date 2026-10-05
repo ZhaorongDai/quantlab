@@ -27,8 +27,9 @@ from KunQuant.Op import Input
 
 from conftest import compute_all
 
-from quantlab.base.config import DatasetConfig, FactorConfig
-from quantlab.base.data import MarketDataset
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import MarketDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101SpotKline, Alpha101Stock

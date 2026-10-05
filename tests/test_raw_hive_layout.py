@@ -147,7 +147,7 @@ import re
 
 import pytest
 
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
 #: polars ABBREVIATES a long scan source list rather than printing every path:

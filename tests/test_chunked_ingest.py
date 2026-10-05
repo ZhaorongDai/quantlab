@@ -34,9 +34,9 @@ import xarray as xr
 import zarr
 from loguru import logger
 
-from quantlab.utils.chunking import ChunkLedger, TimeChunkPlanner
-from quantlab.base.config import BaseDatasetConfig, DatasetConfig
-from quantlab.base.data import BaseDataset
+from quantlab.dataset._support.ledger import ChunkLedger, TimeChunkPlanner
+from quantlab.dataset.config import BaseDatasetConfig, DatasetConfig
+from quantlab.dataset.base import BaseDataset
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.stock import StockDataset
@@ -1074,7 +1074,7 @@ def test_a_day_granularity_conversion_reaches_zarr_identical_to_the_unchunked_st
     assert len(ledger.windows) == 9
     assert sum(w["rows"] for w in ledger.windows) == 9
     assert ledger.symbol_count == 3
-    assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
+    assert ledger.symbol_fingerprint == ChunkLedger.axis_fingerprint(["A", "B", "C"])
 
 
 # ---------------------------------------------------------------------------
@@ -1774,7 +1774,7 @@ def test_the_ledger_lives_beside_the_store_not_inside_it(
     assert len(ledger.windows) == 3
     assert sum(w["rows"] for w in ledger.windows) == 9
     assert ledger.symbol_count == 3
-    assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
+    assert ledger.symbol_fingerprint == ChunkLedger.axis_fingerprint(["A", "B", "C"])
 
 
 # ---------------------------------------------------------------------------
@@ -2048,7 +2048,7 @@ def test_a_widen_rebases_the_ledger_so_the_next_run_resumes(
 
     ledger = ChunkLedger(ChunkLedger.default_path(config.zarr_file_path))
     assert ledger.symbol_count == 3
-    assert ledger.symbol_fingerprint == ChunkLedger.fingerprint(["A", "B", "C"])
+    assert ledger.symbol_fingerprint == ChunkLedger.axis_fingerprint(["A", "B", "C"])
     # The rebase re-fingerprints the AXIS; it must not touch the record of
     # which windows are already written.
     assert len(ledger.windows) == 3

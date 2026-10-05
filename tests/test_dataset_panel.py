@@ -19,7 +19,7 @@ import pytest
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 

@@ -44,7 +44,7 @@ Dataset 由一个 config dataclass 构造。`BaseDatasetConfig` 含所有 datase
 
 ```python
 >>> import dataclasses
->>> from quantlab.base.config import DatasetConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> config = DatasetConfig(
 ...     raw_data_dir_path=str(raw),
@@ -154,7 +154,7 @@ timestamp
 Timestamp('2024-01-03 00:00:00')
 >>> ds.bar_before("2024-01-03", 2)
 Traceback (most recent call last):
-quantlab.base.data.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
+quantlab.dataset.base.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
 ```
 
 ### 读取异常标记
@@ -368,7 +368,7 @@ ValueError: FrameDataset.update(): the panel is held in memory, handed over at c
 ```python
 >>> import tempfile
 >>> from pathlib import Path
->>> from quantlab.base.config import FrameDatasetConfig
+>>> from quantlab.dataset.config import FrameDatasetConfig
 >>> path = Path(tempfile.mkdtemp()) / "bars.zarr"
 >>> on_disk = mem.to_zarr(path)
 >>> on_disk.store_path == str(path), mem.store_path
@@ -417,7 +417,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.base import MarketDataset
 
 
 class CsvDailyDataset(MarketDataset):
@@ -479,7 +479,7 @@ timestamp
 缺少必需方法的子类无法被构造：
 
 ```python
->>> from quantlab.base.data import BaseDataset
+>>> from quantlab.dataset.base import BaseDataset
 >>> class Incomplete(BaseDataset):
 ...     pass
 ...
@@ -498,8 +498,8 @@ TypeError: Can't instantiate abstract class Incomplete without an implementation
 没有价格列的面板直接继承 `BaseDataset`，使用 `BaseDatasetConfig`，并覆写 `_clean`。默认的 `_clean` 要求 OHLCV 列，所以布尔型成分面板改用自己的校验函数。`clean_membership_panel` 检查 dtype、维度和时间顺序，并原样返回面板。
 
 ```python
->>> from quantlab.base.config import BaseDatasetConfig
->>> from quantlab.base.data import BaseDataset
+>>> from quantlab.dataset.config import BaseDatasetConfig
+>>> from quantlab.dataset.base import BaseDataset
 >>> from quantlab.dataset._support.cleaning import clean_membership_panel
 >>> class InIndexDataset(BaseDataset):
 ...     def _raw_data_to_xr(self) -> xr.Dataset:
@@ -544,4 +544,4 @@ timestamp
 
 ## 另请参阅
 
-chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.base.data`、`quantlab.base.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset.memory`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。
+chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.dataset.base`、`quantlab.base.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset.memory`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。

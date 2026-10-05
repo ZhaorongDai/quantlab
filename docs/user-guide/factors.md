@@ -79,7 +79,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
 rng = np.random.default_rng(0)

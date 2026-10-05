@@ -15,7 +15,7 @@ import xarray as xr
 
 from quantlab.api import _labels
 from quantlab.api._factor_report import FactorReport
-from quantlab.utils.frame import (
+from quantlab.dataset._support.frame import (
     INDEX_COLUMNS,
     columns_present,
     library_of,

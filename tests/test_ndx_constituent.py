@@ -18,7 +18,7 @@ import pandas as pd
 import xarray as xr
 
 from conftest import WHOLE_STORE
-from quantlab.base.config import ConstituentDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig
 from quantlab.dataset.constituent import Nasdaq100ConstituentDataset, SP500ConstituentDataset
 
 _NDX_COVERAGE_START = "2007-02-01"

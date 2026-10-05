@@ -25,12 +25,8 @@ import xarray as xr
 
 from quantlab.analysis.factor_report import FactorAnalyzer
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import (
-    DatasetConfig,
-    FactorConfig,
-    ForwardConfig,
-    PolarsFactorConfig,
-)
+from quantlab.base.config import FactorConfig, ForwardConfig, PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.momentum import Momentum

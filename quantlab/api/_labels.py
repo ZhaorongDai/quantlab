@@ -17,7 +17,7 @@ import xarray as xr
 from quantlab.api._compute import NJOBS, compute_over, output_library
 from quantlab.base.config import FactorConfig, ForwardConfig
 from quantlab.label.forward import Forward
-from quantlab.utils.frame import INDEX_COLUMNS, to_panel
+from quantlab.dataset._support.frame import INDEX_COLUMNS, to_panel
 
 #: The field the library labels read.
 LABEL_FIELD = "adjOpen"

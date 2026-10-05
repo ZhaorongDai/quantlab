@@ -10,7 +10,8 @@ from KunQuant.Op import Input
 
 from conftest import compute_all
 
-from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.literature_alpha import (
     LiteratureAlpha,

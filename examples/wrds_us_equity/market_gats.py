@@ -33,14 +33,8 @@ from pathlib import Path
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import (
-    SPY_PERMNO,
-    CrossSectionBacktestConfig,
-    CrspDatasetConfig,
-    FactorConfig,
-    ModelConfig,
-    TopNConfig,
-)
+from quantlab.base.config import CrossSectionBacktestConfig, FactorConfig, ModelConfig, TopNConfig
+from quantlab.dataset.config import SPY_PERMNO, CrspDatasetConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101Stock

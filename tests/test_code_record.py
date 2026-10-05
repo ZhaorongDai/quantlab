@@ -97,6 +97,8 @@ def test_a_code_record_holds_git_modules_and_libraries(tmp_path):
     assert modules["quantlab.base.model"]["components"] == [""]
     # Shipped implementations are component modules, layer frameworks are not.
     assert modules["quantlab.dataset.stock"]["framework"] is False
+    # The dataset layer's root classes are framework, its datasets are not.
+    assert modules["quantlab.dataset.base"]["framework"] is True
     assert modules["quantlab.factor.polars"]["framework"] is True
     assert all(len(entry["sha256"]) == 64 for entry in modules.values())
     # Standard-library and installed modules are not recorded; their libraries are.

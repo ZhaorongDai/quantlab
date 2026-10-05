@@ -4,7 +4,7 @@
 0011). It is a real ``MarketDataset``: a factor, label or backtester that reads a dataset
 reads it through the same public requests (``panel``, ``bar_before``, ``head``,
 ``to_kunquant``), answered from the panel it holds instead of from a Zarr store. The frame
-is converted by ``quantlab.utils.frame.to_panel``, the same rules ``quantlab.api`` applies.
+is converted by ``quantlab.dataset._support.frame.to_panel``, the same rules ``quantlab.api`` applies.
 A ``FrameDatasetConfig`` naming a store instead reads that store into memory once, at
 construction: this is how a saved run's inputs come back when the run is rebuilt.
 """
@@ -21,17 +21,17 @@ import polars as pl
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import FrameDatasetConfig
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.config import FrameDatasetConfig
+from quantlab.dataset.base import MarketDataset
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.runs.record import record_read
-from quantlab.utils.frame import to_panel
+from quantlab.dataset._support.frame import to_panel
 
 class FrameDataset(MarketDataset):
     """A market dataset whose panel is held in memory.
 
     Built from a long pandas or polars frame (one row per ``timestamp`` and ``symbol``) or
-    from an ``xarray.Dataset`` panel. The input rules of ``quantlab.utils.frame`` apply: a
+    from an ``xarray.Dataset`` panel. The input rules of ``quantlab.dataset._support.frame`` apply: a
     pandas ``(timestamp, symbol)`` MultiIndex is reset, ``columns`` renames first, a
     repeated ``(timestamp, symbol)`` raises, timezone-aware timestamps become naive UTC,
     symbols become ``str`` and missing cells become NaN. Every other column becomes a
@@ -91,7 +91,7 @@ class FrameDataset(MarketDataset):
 
     >>> import tempfile
     >>> from pathlib import Path
-    >>> from quantlab.base.config import FrameDatasetConfig
+    >>> from quantlab.dataset.config import FrameDatasetConfig
     >>> path = str(Path(tempfile.mkdtemp()) / "bars.zarr")
     >>> _ = ds.to_zarr(path)
     >>> FrameDataset(FrameDatasetConfig(zarr_file_path=path)).panel(

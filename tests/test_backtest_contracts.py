@@ -216,7 +216,7 @@ def _resolved_imports(path: Path) -> set[str]:
       be a submodule (`from quantlab import config`);
     - a relative import is resolved against the file's own dotted module name,
       derived from its path under the repo root, by stripping `level` trailing
-      components and appending `module`. For `quantlab/base/data.py`,
+      components and appending `module`. For `quantlab/dataset/base.py`,
       `from ..backtest import x` becomes `quantlab.backtest` and
       `quantlab.backtest.x`. An `__init__.py` keeps `__init__` as its last
       component, so `from . import x` there resolves to its own package.

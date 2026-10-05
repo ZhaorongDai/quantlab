@@ -136,7 +136,7 @@ def _pull(
 
 
 def _dataset_config(tmp_path, cfg, reference_dir, *, start, end, store="crsp.zarr"):
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
 
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / store),

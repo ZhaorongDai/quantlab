@@ -44,7 +44,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.config import DatasetConfig, NbboDatasetConfig
+from quantlab.dataset.config import DatasetConfig, NbboDatasetConfig
 from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_panel
 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 from quantlab.dataset.crsp.reference import CrspReference

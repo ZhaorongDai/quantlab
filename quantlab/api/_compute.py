@@ -12,7 +12,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.dataset.memory import FrameDataset
-from quantlab.utils.frame import INDEX_COLUMNS, Library, library_of, to_frame
+from quantlab.dataset._support.frame import INDEX_COLUMNS, Library, library_of, to_frame
 
 #: KunQuant threads a computation runs on: every CPU.
 NJOBS = os.cpu_count() or 1

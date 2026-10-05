@@ -206,7 +206,8 @@ class BinaryReturn(_OpenToOpenLabel):
 
     >>> import numpy as np, pandas as pd, xarray as xr
     >>> from quantlab.backend.zarr import XrBackend
-    >>> from quantlab.base.config import DatasetConfig, FactorConfig
+    >>> from quantlab.base.config import FactorConfig
+    >>> from quantlab.dataset.config import DatasetConfig
     >>> from quantlab.dataset.stock import StockDataset
     >>> from quantlab.label.predefined.fret import BinaryReturn, Return
     >>> opens = np.array([10.0, 11.0, np.nan, 12.0, 11.0, 13.0, 12.0, 14.0])
@@ -274,7 +275,8 @@ class Volatility(_OpenToOpenLabel):
 
     >>> import numpy as np, pandas as pd, xarray as xr
     >>> from quantlab.backend.zarr import XrBackend
-    >>> from quantlab.base.config import DatasetConfig, FactorConfig
+    >>> from quantlab.base.config import FactorConfig
+    >>> from quantlab.dataset.config import DatasetConfig
     >>> from quantlab.dataset.stock import StockDataset
     >>> from quantlab.label.predefined.fret import Volatility
     >>> opens = 10.0 * np.cumprod([1.0, 1.1, 0.9, 1.1, 0.9, 1.1, 0.9, 1.1])

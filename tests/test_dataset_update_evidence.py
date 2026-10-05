@@ -27,8 +27,8 @@ import polars as pl
 import pytest
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.stock import StockDataset
 
 # ---------------------------------------------------------------------------

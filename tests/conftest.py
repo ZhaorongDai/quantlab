@@ -71,7 +71,8 @@ import pytest
 import xarray as xr
 import zarr
 
-from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.base.config import AcquisitionConfig
+from quantlab.dataset.config import DatasetConfig
 
 #: Test modules collected only when named on the command line. Each one runs
 #: against real data under `QUANTLAB_DATA_ROOT` and fails, rather than skips,

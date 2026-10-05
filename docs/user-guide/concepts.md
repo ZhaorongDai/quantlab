@@ -24,7 +24,7 @@ vendor API --> acquisition --> raw tier --> dataset --> factors, labels --> mode
 | Stage | Input | Output | Base class |
 |-------|-------|--------|------------|
 | Acquisition | a vendor API and an `AcquisitionConfig` | raw parquet files on disk | `quantlab.base.acquisition.Acquisition` |
-| Dataset | the raw files | a price panel in a Zarr store | `quantlab.base.data.BaseDataset` |
+| Dataset | the raw files | a price panel in a Zarr store | `quantlab.dataset.base.BaseDataset` |
 | Factor and label | a price panel | a factor panel | `quantlab.base.factor.Factor` |
 | Model | factor and label panels | a prediction panel | `quantlab.base.model.BaseModel` |
 | Selection | a prediction panel | a target-weight panel | a strategy-specific class |
@@ -158,7 +158,7 @@ the config class the class declares. In the example below, `root` is a directory
 small `stock.zarr` store with 30 daily bars for three symbols, from 1 January 2024.
 
 ```python
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.core.component import rebuild
 

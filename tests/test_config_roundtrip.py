@@ -43,15 +43,10 @@ from typing import Callable
 import pytest
 
 import quantlab.core.component as component_rule
-from quantlab.base.config import (
-    ConstituentDatasetConfig,
-    DatasetConfig,
-    FactorConfig,
-    ModelConfig,
-    PolarsFactorConfig,
-)
-from quantlab.base.constituent import IndexConstituentDataset
-from quantlab.base.data import BaseDataset, MarketDataset
+from quantlab.base.config import FactorConfig, ModelConfig, PolarsFactorConfig
+from quantlab.dataset.config import ConstituentDatasetConfig, DatasetConfig
+from quantlab.dataset.base import IndexConstituentDataset
+from quantlab.dataset.base import BaseDataset, MarketDataset
 from quantlab.base.factor import Factor
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.polars import FactorPolars

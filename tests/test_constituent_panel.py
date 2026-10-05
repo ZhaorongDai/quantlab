@@ -17,9 +17,9 @@ import xarray as xr
 from loguru import logger
 
 from conftest import WHOLE_STORE
-from quantlab.base.config import ConstituentDatasetConfig
-from quantlab.base.constituent import IndexConstituentDataset
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.config import ConstituentDatasetConfig
+from quantlab.dataset.base import IndexConstituentDataset
+from quantlab.dataset.base import BaseDataset
 from quantlab.dataset._support.cleaning import clean_membership_panel
 from quantlab.dataset.constituent import SP500ConstituentDataset
 

@@ -34,14 +34,12 @@ from quantlab.core.component import (
     walk_components,
 )
 from quantlab.base.config import (
-    ConstituentDatasetConfig,
-    DatasetConfig,
     FactorConfig,
     ForwardConfig,
     MarketFeatureConfig,
-    MergedDatasetConfig,
     PolarsFactorConfig,
 )
+from quantlab.dataset.config import ConstituentDatasetConfig, DatasetConfig, MergedDatasetConfig
 from quantlab.dataset.constituent import SP500ConstituentDataset
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.spot import SpotKlineDataset

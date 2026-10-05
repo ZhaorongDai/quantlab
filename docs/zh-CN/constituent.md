@@ -4,7 +4,7 @@
 
 指数成分面板记录每一天有哪些标的属于某个指数。它和 quantlab 的其他数据集一样：一个以 `(timestamp, symbol)` 为维度的 `xarray.Dataset`，只有一个布尔变量 `is_member`，以 Zarr 存盘。成分关系以带日期的区间保存，而不是一份"当前名单"，所以多年前被剔除出指数的股票，在它仍是成分的那些日期上依然出现在面板里。
 
-`quantlab.universe` 模块保存标的池目录（一张 parquet 表，字段为 symbol、category 和区间）以及构建它的抓取器。`quantlab.base.constituent` 把区间表变成面板，`quantlab.dataset.constituent` 把具体的指数绑定到这个基类上。
+`quantlab.universe` 模块保存标的池目录（一张 parquet 表，字段为 symbol、category 和区间）以及构建它的抓取器。`quantlab.dataset.base` 把区间表变成面板，`quantlab.dataset.constituent` 把具体的指数绑定到这个基类上。
 
 ## 前置条件
 
@@ -20,8 +20,8 @@
 >>> import os, tempfile
 >>> import pandas as pd
 >>> import polars as pl
->>> from quantlab.base.config import ConstituentDatasetConfig
->>> from quantlab.base.constituent import IndexConstituentDataset
+>>> from quantlab.dataset.config import ConstituentDatasetConfig
+>>> from quantlab.dataset.base import IndexConstituentDataset
 >>> class DemoPanel(IndexConstituentDataset):
 ...     def _pit_coverage_start(self):
 ...         return "2020-01-01"
@@ -145,7 +145,7 @@ Frozen({'timestamp': 6, 'symbol': 3})
 维基百科这一对要下载数据源，所以这里只展示调用方式，不带输出：
 
 ```python
-from quantlab.base.config import ConstituentDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig
 from quantlab.dataset.constituent import SP500ConstituentDataset
 
 config = ConstituentDatasetConfig(
@@ -167,7 +167,7 @@ CRSP 系列的类读取 CRSP 下载写出的参考目录（见 `wrds_crsp` 指�
 ```python
 >>> from tests.crsp_fixtures import write_reference_tables
 >>> _ = write_reference_tables("data/reference")
->>> from quantlab.base.config import ConstituentDatasetConfig
+>>> from quantlab.dataset.config import ConstituentDatasetConfig
 >>> from quantlab.dataset.constituent import CrspSP500ConstituentDataset
 >>> config = ConstituentDatasetConfig(
 ...     zarr_file_path="data/crsp_sp500.zarr",
@@ -235,7 +235,7 @@ timestamp
 `UniverseCatalog` 读取一张 parquet 表，字段为 `symbol`、`category`、`start_date`、`end_date` 和 `end_date_is_inferred`。内置的类别有 `us_all` 和 `nasdaq_all`（包含已退市名字的交易所名册）、`sp500_constituent` 和 `nasdaq100_constituent`。构建这张表要下载 Tiingo 和维基百科的数据源，所以构建调用只展示不带输出：
 
 ```python
-from quantlab.base.config import UniverseConfig
+from quantlab.universe import UniverseConfig
 from quantlab.universe import UniverseCatalog
 
 config = UniverseConfig(
@@ -249,7 +249,7 @@ UniverseCatalog(config).build().save()
 
 ```python
 >>> import os, polars as pl
->>> from quantlab.base.config import UniverseConfig
+>>> from quantlab.universe import UniverseConfig
 >>> from quantlab.universe import UniverseCatalog
 >>> config = UniverseConfig(
 ...     output_path="data/reference/universe.parquet",
@@ -315,8 +315,9 @@ ValueError: Cannot answer sp500_constituent membership before 1976-07-01 -- as_o
 ```python
 >>> import os, tempfile
 >>> import polars as pl
->>> from quantlab.base.config import ConstituentDatasetConfig, UniverseConfig
->>> from quantlab.base.constituent import IndexConstituentDataset
+>>> from quantlab.dataset.config import ConstituentDatasetConfig
+>>> from quantlab.universe import UniverseConfig
+>>> from quantlab.dataset.base import IndexConstituentDataset
 >>> from quantlab.universe import IndexMembershipFetcher, UniverseCatalog
 >>> class DemoIndexFetcher(IndexMembershipFetcher):
 ...     ANCHOR_URL = CHANGES_URL = "offline"
@@ -434,4 +435,4 @@ ValueError: UniverseMask: the membership panel must carry an 'is_member' variabl
 
 ## 另请参阅
 
-`universe` 指南介绍价格与流动性过滤器，它回答的问题与指数成分不同，二者可以组合使用。`dataset` 指南介绍面板所继承的数据集基类，`wrds_crsp` 介绍 CRSP 参考层，`acquisition` 介绍采集量守卫。类文档字符串：`quantlab.base.constituent.IndexConstituentDataset`、`quantlab.dataset.constituent`、`quantlab.universe.UniverseCatalog`、`quantlab.universe.IndexMembershipFetcher`、`quantlab.dataset._support.masking.UniverseMask`。
+`universe` 指南介绍价格与流动性过滤器，它回答的问题与指数成分不同，二者可以组合使用。`dataset` 指南介绍面板所继承的数据集基类，`wrds_crsp` 介绍 CRSP 参考层，`acquisition` 介绍采集量守卫。类文档字符串：`quantlab.dataset.base.IndexConstituentDataset`、`quantlab.dataset.constituent`、`quantlab.universe.UniverseCatalog`、`quantlab.universe.IndexMembershipFetcher`、`quantlab.dataset._support.masking.UniverseMask`。

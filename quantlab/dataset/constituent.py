@@ -8,7 +8,7 @@ indexed by ``timestamp`` and ``symbol`` whose ``is_member`` variable is True
 on the days a symbol was a member.
 
 Each class here plugs one membership source into the shared panel builder
-``quantlab.base.constituent.IndexConstituentDataset`` by implementing its two
+``quantlab.dataset.base.IndexConstituentDataset`` by implementing its two
 hooks, ``_pit_coverage_start`` and ``_build_intervals``. Two sources cover the
 S&P 500 and the Nasdaq-100:
 
@@ -37,8 +37,8 @@ from quantlab.universe import (
     Nasdaq100MembershipFetcher,
     SP500MembershipFetcher,
 )
-from quantlab.base.config import ConstituentDatasetConfig
-from quantlab.base.constituent import IndexConstituentDataset
+from quantlab.dataset.config import ConstituentDatasetConfig
+from quantlab.dataset.base import IndexConstituentDataset
 from quantlab.dataset.crsp.market import CrspMarketRoster
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference

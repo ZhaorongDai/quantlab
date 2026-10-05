@@ -67,7 +67,7 @@ import pytest
 import xarray as xr
 import zarr
 
-from quantlab.base.config import CrspDatasetConfig
+from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder

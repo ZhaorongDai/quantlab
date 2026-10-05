@@ -21,7 +21,8 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
+from quantlab.base.config import FactorConfig, PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.momentum import Momentum

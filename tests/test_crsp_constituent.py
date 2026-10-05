@@ -476,7 +476,7 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
     from quantlab import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.crsp import WrdsCrspDailyAcquisition
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from quantlab.dataset.constituent import CrspSP500ConstituentDataset
     from tests.crsp_fixtures import (
         FakeCrspSession,
@@ -569,7 +569,7 @@ def test_membership_symbols_agree_with_the_crsp_price_panel(
 
 def _panel_config(tmp_path, reference_dir, name, **overrides):
     """Module-local config constructor (03.1-PATTERNS.md section 6)."""
-    from quantlab.base.config import ConstituentDatasetConfig
+    from quantlab.dataset.config import ConstituentDatasetConfig
 
     params = dict(
         zarr_file_path=str(Path(tmp_path) / "us_equity" / f"{name}.zarr"),
@@ -819,7 +819,7 @@ def test_both_crsp_universes_round_trip_through_their_saved_config(tmp_path):
     """
     import json
 
-    from quantlab.base.config import ConstituentDatasetConfig
+    from quantlab.dataset.config import ConstituentDatasetConfig
     from quantlab.dataset.constituent import (
         CompustatNasdaq100ConstituentDataset,
         CrspSP500ConstituentDataset,
@@ -848,7 +848,7 @@ def test_the_crsp_classes_add_only_the_two_hooks_and_leave_wikipedia_alone(tmp_p
     touches the two Wikipedia-based classes that were already here -- which
     still answer with their own coverage starts, from their own fetchers.
     """
-    from quantlab.base.constituent import IndexConstituentDataset
+    from quantlab.dataset.base import IndexConstituentDataset
     from quantlab.dataset.constituent import (
         CompustatNasdaq100ConstituentDataset,
         CrspSP500ConstituentDataset,

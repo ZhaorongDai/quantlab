@@ -222,7 +222,7 @@ def _pull(
 def _dataset_config(
     tmp_path, cfg, reference_dir, *, start, end, store="crsp.zarr", **overrides
 ):
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
 
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / store),
@@ -241,7 +241,7 @@ def _bare_config(tmp_path, **overrides):
     is validated, so a malformed filter must fail here, long before a raw tier
     is read.
     """
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
 
     return CrspDatasetConfig(
         zarr_file_path=str(tmp_path / "crsp.zarr"),
@@ -1039,7 +1039,7 @@ def test_the_qqq_benchmark_store_is_one_symbol_across_the_qqqq_years(
     dollars, and 1999's own volume -- the anchor's side of the `dlycumfacshr`
     2 -> 1 step -- is its raw volume unchanged.
     """
-    from quantlab.base.config import QQQ_PERMNO, CrspDatasetConfig
+    from quantlab.dataset.config import QQQ_PERMNO, CrspDatasetConfig
 
     cfg, reference_dir = _qqq_raw(tmp_path)
     benchmark = CrspDatasetConfig.qqq_benchmark(
@@ -1168,7 +1168,7 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
     import copy
     import json
 
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from quantlab.dataset.crsp import CrspStockDataset
     from quantlab.core.component import rebuild
 
@@ -1931,7 +1931,7 @@ def test_a_non_crsp_dataset_still_accepts_config_symbols(tmp_path):
     or of the `symbol` DIMENSION -- would break a dozen readers to tidy up one
     vendor. This test is what makes that regression loud.
     """
-    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.config import DatasetConfig
     from quantlab.dataset.stock import StockDataset
 
     dataset = StockDataset(

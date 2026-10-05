@@ -17,11 +17,11 @@ import numpy as np
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
-from quantlab.base.data import MarketDataset
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import MarketDataset
 from quantlab.dataset._support.cleaning import dedup_raw_frame, flag_anomalies, validate_schema
 from quantlab.enums.data import BinanceCSVHeaders
-from quantlab.utils.file import file_date_filter, get_csv_files
+from quantlab.dataset._support.file import file_date_filter, get_csv_files
 from quantlab.utils.timer import Timer
 
 

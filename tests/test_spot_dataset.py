@@ -10,8 +10,8 @@ from typing import Callable
 import numpy as np
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig
-from quantlab.base.data import BaseDataset
+from quantlab.dataset.config import DatasetConfig
+from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.spot import SpotKlineDataset
 
 

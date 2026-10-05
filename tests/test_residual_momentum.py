@@ -17,7 +17,8 @@ from loguru import logger
 
 from conftest import WHOLE_STORE, compute_all
 
-from quantlab.base.config import DatasetConfig, FactorConfig
+from quantlab.base.config import FactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.residual_momentum import (
     ResidualMomentumFF3,

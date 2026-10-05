@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 import polars as pl
 import pytest
 
-from quantlab.base.config import NbboDatasetConfig
+from quantlab.dataset.config import NbboDatasetConfig
 from quantlab.dataset.nbbo.resample import NbboFilterPolicy, NbboResampler
 
 DAY = "2024-01-24"

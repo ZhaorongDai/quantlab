@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Callable
 
 from conftest import WHOLE_STORE
-from quantlab.base.config import AcquisitionConfig, DatasetConfig
+from quantlab.base.config import AcquisitionConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
 # The `stock_pqt_row` / `hive_raw_tree` helpers these tests use live in

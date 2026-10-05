@@ -851,7 +851,7 @@ def test_the_conversion_window_reaches_the_refusal_through_member_intervals(
     The frame still carries 81020 for the 2015 window because a window scopes
     the refusal and never filters intervals.
     """
-    from quantlab.base.config import CrspDatasetConfig
+    from quantlab.dataset.config import CrspDatasetConfig
     from quantlab.dataset.crsp import CrspStockDataset
 
     reference_dir = str(_gap_tier(tmp_path).reference.reference_dir)

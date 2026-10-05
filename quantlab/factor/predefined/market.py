@@ -24,7 +24,7 @@ import numpy as np
 import xarray as xr
 
 from quantlab.base.config import MarketFeatureConfig
-from quantlab.base.data import BaseDataset, InsufficientHistoryError, MarketDataset
+from quantlab.dataset.base import BaseDataset, InsufficientHistoryError, MarketDataset
 from quantlab.base.factor import Factor
 
 #: Rolling windows, in bars of the series, of the mean and standard deviation

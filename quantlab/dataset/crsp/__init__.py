@@ -61,7 +61,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.config import CrspDatasetConfig, DatasetConfig
+from quantlab.dataset.config import CrspDatasetConfig, DatasetConfig
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
 from quantlab.dataset.stock import StockDataset

@@ -46,8 +46,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-import quantlab.base.data as base_data_module
-from quantlab.base.data import BaseDataset
+import quantlab.dataset.base as base_data_module
+from quantlab.dataset.base import BaseDataset
 from quantlab.backend.zarr import XrBackend
 
 

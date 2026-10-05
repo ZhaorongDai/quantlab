@@ -25,7 +25,8 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
+from quantlab.base.config import ForwardConfig, ModelConfig, PolarsFactorConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.stock import StockDataset
@@ -487,7 +488,7 @@ Masking the prices with membership instead (a price panel `.where(is_member)`) m
 Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for example the QQQ store written by `scripts/wrds/etf.py --etf qqq` (`CrspDatasetConfig.qqq_benchmark`). It is a `(timestamp, symbol)` panel like the price dataset, in a store of its own, with the same `adjOpen` / `adjClose` columns. Pass the dataset object itself:
 
 ```python
-from quantlab.base.config import CrspDatasetConfig
+from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
     zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",

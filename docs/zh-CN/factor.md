@@ -46,7 +46,8 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
 >>> from quantlab.backend.zarr import XrBackend
->>> from quantlab.base.config import DatasetConfig, PolarsFactorConfig
+>>> from quantlab.base.config import PolarsFactorConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.spot import SpotKlineDataset
 >>> from quantlab.factor.predefined.momentum import Momentum
 >>> rng = np.random.default_rng(0)
@@ -185,7 +186,8 @@ True
 ```python
 >>> import json
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
+>>> from quantlab.base.config import MarketFeatureConfig
+>>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.factor.predefined.market import MarketFeatures
 >>> from quantlab.core.component import rebuild
@@ -243,9 +245,8 @@ True
 对来自 WRDS 的美股，像回测基准那样给每只 ETF 单独一个 CRSP 存储。`scripts/wrds/etf.py --etf spy,qqq,iwm` 把 SPY、QQQ 和 IWM（标普 500、纳斯达克 100 和罗素 2000）各下载到一个存储里，`CrspDatasetConfig.etf_benchmark` 会保留 ETF，而默认的证券过滤器会把它当作基金剔除：
 
 ```python
-from quantlab.base.config import (
-    IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig, MarketFeatureConfig,
-)
+from quantlab.base.config import MarketFeatureConfig
+from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.market import MarketFeatures
 

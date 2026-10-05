@@ -51,7 +51,7 @@ from conftest import (
     stored_symbol_dtype,
     symbol_coord,
 )
-from quantlab.base.config import DatasetConfig
+from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 
 # ---------------------------------------------------------------------------

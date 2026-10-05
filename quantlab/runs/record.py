@@ -29,7 +29,8 @@ quantlab module outside the shipped implementations is a *framework* module: eac
 layer's root class and extension framework, such as ``quantlab.factor.polars`` or
 ``quantlab.portfolio.decision_inputs``. Every other recorded module is a
 *component* module: the shipped implementations (``quantlab.<layer>.predefined``,
-the datasets of ``quantlab.dataset``) and a user's own classes. Standard-library
+the datasets of ``quantlab.dataset``, whose ``base``, ``config`` and ``_support``
+are framework) and a user's own classes. Standard-library
 and installed third-party modules are not recorded, nor a class without a source
 file (one defined in a notebook); the libraries' versions are. ``dirty`` reports
 uncommitted changes to tracked files only; ``git`` is ``None`` when quantlab is not
@@ -775,14 +776,18 @@ def _entry(name: str, wanted: dict, got: dict) -> dict:
     return got.get(name) or wanted[name]
 
 
+#: The modules of ``quantlab.dataset`` that are its framework rather than a dataset.
+_DATASET_FRAMEWORK = ("base", "config", "_support")
+
+
 def _is_framework(name: str) -> bool:
     """Return whether module ``name`` is a quantlab framework module (see the module docs)."""
     parts = name.split(".")
-    return (
-        parts[0] == "quantlab"
-        and "predefined" not in parts
-        and parts[:2] != ["quantlab", "dataset"]
-    )
+    if parts[0] != "quantlab" or "predefined" in parts:
+        return False
+    if parts[:2] == ["quantlab", "dataset"]:
+        return len(parts) > 2 and parts[2] in _DATASET_FRAMEWORK
+    return True
 
 
 def _is_quantlab(name: str) -> bool:

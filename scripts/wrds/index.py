@@ -47,7 +47,7 @@ from dataclasses import replace
 from datetime import date
 
 from quantlab.registry import DataSourceRegistry, convert, run
-from quantlab.base.config import ConstituentDatasetConfig, CrspDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig, CrspDatasetConfig
 from quantlab.dataset.constituent import (
     CompustatNasdaq100ConstituentDataset,
     CrspSP500ConstituentDataset,

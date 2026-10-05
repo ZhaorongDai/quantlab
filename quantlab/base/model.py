@@ -41,7 +41,7 @@ import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
 from quantlab.core.component import Component, walk_components
-from quantlab.base.data import InsufficientHistoryError
+from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.tracking.base import NullRun, Tracker, TrackingRun
 from quantlab.enums.constant import Date
 from quantlab.runs.trained_run import (

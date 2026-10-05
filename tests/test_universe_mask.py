@@ -524,7 +524,7 @@ def test_a_permno_panel_against_a_ticker_universe_is_still_refused() -> None:
 
 
 def test_from_datasets_masks_the_requested_range_of_two_stores(tmp_path) -> None:
-    from quantlab.base.config import DatasetConfig
+    from quantlab.dataset.config import DatasetConfig
     from quantlab.dataset.stock import StockDataset
 
     def stored(name: str, panel: xr.Dataset) -> StockDataset:

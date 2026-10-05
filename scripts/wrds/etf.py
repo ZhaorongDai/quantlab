@@ -42,7 +42,7 @@ import sys
 from datetime import date
 
 from quantlab.registry import DataSourceRegistry, convert, run
-from quantlab.base.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
+from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.utils.cli import (
     add_max_workers_arg,
