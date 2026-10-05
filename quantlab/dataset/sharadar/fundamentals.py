@@ -64,6 +64,7 @@ from quantlab.dataset.sharadar.tables import (
     raw_through,
     scan_raw_table,
     table,
+    trading_days,
 )
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
@@ -158,16 +159,7 @@ class SharadarFundamentalsDataset(BaseDataset):
     def _trading_days(self) -> pl.Series:
         """Return SEP's trading days up to ``_raw_through()``, sorted, as ns datetimes (cached)."""
         if self._days_cache is None:
-            self._days_cache = (
-                scan_raw_table(self.config.raw_data_dir_path, "sep")
-                .select(pl.col("date").unique())
-                .filter(pl.col("date") <= pl.lit(self._raw_through()))
-                .sort("date")
-                .collect()
-                .get_column("date")
-                .cast(pl.Datetime("ns"))
-                .alias("timestamp")
-            )
+            self._days_cache = trading_days(self.config.raw_data_dir_path, self._raw_through())
         return self._days_cache
 
     def _shown(self) -> pl.DataFrame:

@@ -15,7 +15,8 @@ windows by ``SharadarClient``, not the symbol-batched hive tree an
 and no config factory: ``registry.run()`` refuses it, and the download and the
 daily update are ``scripts/sharadar/download.py`` and
 ``scripts/sharadar/update.py``. ``registry.convert()`` builds the SEP and SFP
-stores, the SF1 fundamentals stores and the DAILY valuation store; the S&P 500 membership panel is a
+stores, the SF1 fundamentals stores, and the DAILY, EVENTS, insider (SF2)
+and 13F ownership (SF3A) stores; the S&P 500 membership panel is a
 constituent dataset, built by the scripts.
 
 Examples
@@ -24,14 +25,17 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("sharadar")
 >>> [c.data_type for c in source.capabilities]
-['sep', 'sfp', 'sf1', 'daily', 'actions', 'sp500', 'tickers', 'indicators']
+['sep', 'sfp', 'sf1', 'daily', 'events', 'sf2', 'sf3', 'sf3a', 'sf3b', 'actions', 'sp500', 'tickers', 'indicators']
 >>> source.required_env
 ('SHARADAR_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
+from quantlab.dataset.sharadar.events import SharadarEventsDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
+from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
+from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
 #: The plan every table needs: the Bundle covers all of them.
@@ -76,8 +80,44 @@ SHARADAR_SOURCE = register_source(
                 frequency="1d",
                 data_type="daily",
                 dataset_cls=SharadarDailyDataset,
-                earliest_available="1998-12-31",
+                earliest_available="1998-12-01",
                 entitlement=_ENTITLEMENT,
+            ),
+            # 8-K event codes, set on the filing date.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="events",
+                dataset_cls=SharadarEventsDataset,
+                earliest_available="1993-11-08",
+                entitlement=_ENTITLEMENT,
+            ),
+            # Insiders' net open-market buying, on the filing date.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="sf2",
+                dataset_cls=SharadarInsidersDataset,
+                earliest_available="2008-01-02",
+                entitlement=_ENTITLEMENT,
+            ),
+            # 13F holdings: SF3 raw only; its sum by security (SF3A) is the
+            # ownership panel, its sum by investor (SF3B) raw only.
+            Capability(
+                market="us_equity", frequency="1d", data_type="sf3",
+                earliest_available="2013-06-30", entitlement=_ENTITLEMENT,
+            ),
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="sf3a",
+                dataset_cls=SharadarHoldingsDataset,
+                earliest_available="2013-06-30",
+                entitlement=_ENTITLEMENT,
+            ),
+            Capability(
+                market="us_equity", frequency="1d", data_type="sf3b",
+                earliest_available="2013-06-30", entitlement=_ENTITLEMENT,
             ),
             # Raw only: dividends, splits and spinoffs feed the price panels.
             Capability(

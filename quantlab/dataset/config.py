@@ -535,6 +535,70 @@ class SharadarDailyConfig(SharadarDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class SharadarEventsConfig(SharadarDatasetConfig):
+    """Config of the Sharadar 8-K events panel (EVENTS) on the permaticker axis.
+
+    The universe fields work as for a price panel; EVENTS covers SF1's
+    filers, and its default category filter is SF1's, domestic common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarEventsConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_events_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table
+    'events'
+    """
+
+    #: Always EVENTS.
+    table: str = "events"
+
+
+@dataclass(kw_only=True, frozen=True)
+class SharadarInsidersConfig(SharadarDatasetConfig):
+    """Config of the Sharadar insider-transactions panel (SF2) on the permaticker axis.
+
+    The universe fields work as for a price panel, on SF2's TICKERS rows;
+    the default category filter is domestic common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarInsidersConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_insiders_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table
+    'sf2'
+    """
+
+    #: Always SF2.
+    table: str = "sf2"
+
+
+@dataclass(kw_only=True, frozen=True)
+class SharadarHoldingsConfig(SharadarDatasetConfig):
+    """Config of the Sharadar 13F institutional-ownership panel (SF3A) on the permaticker axis.
+
+    The universe fields work as for a price panel, on SEP's TICKERS rows
+    (SF3A's tickers are mapped through them); the default category filter
+    is domestic common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarHoldingsConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_holdings_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table
+    'sf3a'
+    """
+
+    #: Always SF3A, the vendor's sum of SF3 by security.
+    table: str = "sf3a"
+
+
+@dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 

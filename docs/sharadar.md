@@ -16,7 +16,7 @@ The data is licensed for personal use: keep raw files and stores on your own mac
 
 ## Pulling the raw tier
 
-`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `sf1` (fundamentals), `daily` (valuations), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
+`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `sf1` (fundamentals), `daily` (valuations), `events` (8-K filings), `sf2` (insider transactions), `sf3` (13F holdings) and its sums by security and by investor `sf3a` and `sf3b`, `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
 
 ```python
 from quantlab.acquisition.sharadar.client import SharadarClient
@@ -156,6 +156,75 @@ panel["marketcap"].attrs["unit"]  # 'USD'
 - **Units.** The vendor writes `marketcap` and `ev` in USD millions, while SF1 writes them in USD. The panel multiplies them to USD, so a merge with SF1 never mixes units. Each variable's `unit` attribute is `USD` or `ratio`. The conversion refuses to run if INDICATORS stops giving `USD millions` for those two.
 - **Updates by `lastupdated`.** DAILY is keyed by `(ticker, date)`. `update.py` refreshes it like SF1, with `SharadarClient.updated_table("daily", download_dir)`, or in bulk when that query fails. `update()` then appends the new days. A stored day is never rewritten, so a later vendor change to it never reaches the store.
 
+## 8-K events (EVENTS)
+
+EVENTS holds one row per company and 8-K filing date. Its `eventcodes` column is a pipe-joined list of two-digit item codes, for example `22|91` (results of operations, and financial statements). The codes come from Sharadar's published list, the `EVENTCODES` rows of INDICATORS (37 codes). `SharadarEventsDataset` has one boolean variable per published code, `event_<code>`, and each variable's `title` attribute is the code's title.
+
+```python
+from quantlab.dataset.config import SharadarEventsConfig
+from quantlab.dataset.sharadar.events import SharadarEventsDataset
+
+config = SharadarEventsConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_events_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarEventsDataset(config).update()
+panel = SharadarEventsDataset(config).panel("2024-01-02", "2024-12-31")
+panel["event_22"].attrs["title"]  # 'Results of Operations and Financial Condition'
+```
+
+- **Placement.** A cell is True on the first SEP trading day on or after the filing date, and False on every other day. A filing dated before SEP's first trading day (EVENTS starts in 1993, SEP on 1997-12-31) is left out, not moved onto that first day.
+- **Codes.** Every published code is a variable, even one no filing has used yet. If a filing lists a code that the list does not publish, the conversion is refused. Re-pull INDICATORS to fix it; `update.py` pulls INDICATORS every run. A code published after the store was built becomes a new variable on the next update. It is False on the days already stored, because no filing could list it then.
+- **Same-day timing.** A filing made after the close lands on its filing date's bar. A signal formed at a bar's close should therefore read the panel one bar back. The same holds for the insider panel.
+- **Axis.** TICKERS has no EVENTS rows, so EVENTS' tickers are mapped through the SF1 rows. On the 2026-10-02 pull, all 17,845 EVENTS tickers map this way. The universe fields work as for a price panel.
+- **Updates.** EVENTS has no `lastupdated`, so `update.py` re-pulls it as a trailing date window, as it does SEP. `update()` then appends the new days.
+
+On the 2026-10-02 pull, EVENTS has 2.5 million filings. A store from 2015 holds 15,607 permatickers on 2,955 trading days and builds in about 10 seconds. AAPL's `event_22` is set on 2024-02-01, 05-02, 08-01 and 10-31, its four earnings releases.
+
+## Insider transactions (SF2)
+
+SF2 holds one row per security line of an insider's Form 3, 4 or 5. Its `date` is the SEC filing date, the day the trade became public; `transactiondate` is earlier, two days at the median. `SharadarInsidersDataset` counts only open-market trades in the stock itself: transaction code `P` (purchase) or `S` (sale) on a non-derivative line (`securityadcode` `NA` or `ND`). Grants, option exercises, tax withholding, gifts and derivative lines are compensation or bookkeeping, not a decision to buy or sell, and are left out.
+
+```python
+from quantlab.dataset.config import SharadarInsidersConfig
+from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
+
+config = SharadarInsidersConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_insiders_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarInsidersDataset(config).update()
+panel = SharadarInsidersDataset(config).panel("2024-01-02", "2024-12-31")
+```
+
+- **Variables.** `net_shares` is shares bought minus shares sold, and `net_value` is USD bought minus USD sold. Both are summed per security over the filings that become available on a day, and are 0 on a day without a trade. A trade lands on the first SEP trading day on or after its filing date, never on its transaction date.
+- **Units.** INDICATORS calls `transactionvalue` USD millions, but on the 2026-10-02 pull it equals shares times price at the median, so it is USD. It is unsigned; a sale counts negative.
+- **Amendments.** A trade is counted on the first filing that shows it. An amendment (4/A) repeats the trades of the filing it restates, and a later line that repeats one exactly (same insider, transaction date, code, shares and price) is not counted again. When the amendment arrives, the vendor relabels the original `RESTATED - 4`. The label is ignored, because a live update saw the original as a plain `4` on its filing date: a live store and a rebuilt one give the same panel. An amendment that changes a trade's shares or price is counted again on its own date. On the 2026-10-02 pull, about 21,000 of the 2.5 million open-market lines do that.
+- **Axis and updates.** TICKERS has SF2 rows, and every SF2 ticker maps through them. SF2 has no `lastupdated`, so `update.py` re-pulls it as a trailing date window.
+
+Known limit: a filer's typo stays in the data. One 2024 filing gives $65,122 per share for a penny stock, so it adds $21.9 billion of buying; `net_shares` is not affected. Normalise `net_value` (for example by market cap) and winsorise it before using it as a factor.
+
+## 13F institutional ownership (SF3A)
+
+Institutions file their 13F holdings up to 45 days after each quarter's end. SF3 holds every holding: security, investor, security type and quarter (81 million rows). SF3A is the vendor's sum of SF3 by security and quarter. On the 2026-10-05 pull, its `shrholders` and `shrunits` equal SF3 summed by hand up to rounding. `SharadarHoldingsDataset` reads SF3A, because pulling it whole every morning costs 18 MB.
+
+```python
+from quantlab.dataset.config import SharadarHoldingsConfig
+from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
+
+config = SharadarHoldingsConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_holdings_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarHoldingsDataset(config).update()
+panel = SharadarHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
+```
+
+- **Variables.** `holders` is the number of institutions holding the common stock, `shares_held` is their shares (`shrunits` is in thousands), and `quarter_end` is the quarter shown.
+- **Placement.** SF3 has no filing date, and a quarter's rows fill in as filings arrive. On 2026-10-05, AAPL's newest quarter has 29 holders against 6,153 for the quarter before. A quarter is therefore shown from the first SEP trading day on or after quarter end + 45 days, until the next quarter's day, so a partial quarter is never shown. A security with no row in the shown quarter shows NaN, not an older quarter's count. AAPL moves from 6,131 to 6,136 holders on 2026-05-15 and to 6,153 holders (9.68 billion shares) on 2026-08-14.
+- **Axis.** TICKERS lists SF3's tickers only under the price tables (its `SF3B` rows are investors), so SF3A's tickers are mapped through SEP's rows. A ticker SEP does not list, such as a fund or a CUSIP with no Sharadar prices, is left out and counted in the log. On the 2026-10-05 pull that is 330,000 of 674,000 rows, and a 2024 trading day shows about 5,800 securities.
+- **Updates.** `update.py` pulls SF3A whole every run and appends the new trading days. A rebuilt store shows each quarter as the vendor holds it now, including filings made after the 45 days; an updated store shows it as it stood on the update. SF3 and SF3B feed no store, so only `download.py` pulls them.
+
 ## Scripts
 
 The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
@@ -164,11 +233,11 @@ The download and the daily update are two scripts, run from the repository root.
 export SHARADAR_API_KEY=<your-sharadar-key>
 # once: every table as a bulk zip, then the price, membership, SF1 and DAILY stores
 uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
-# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, SF1 and DAILY by lastupdated, then append
+# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, SF1 and DAILY by lastupdated, EVENTS and SF2 as trailing windows, SF3A whole, then append
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1` and `daily` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP, SFP, SF1 and DAILY stores.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership panel.
 
 ## Daily update
 

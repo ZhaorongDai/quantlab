@@ -255,6 +255,103 @@ def daily_row(ticker: str, date: str, **values) -> dict:
     return row
 
 
+#: VERBATIM `events` column order (`schema/events`, as of 2026-08-18).
+EVENTS_COLUMNS: tuple[str, ...] = ("ticker", "date", "eventcodes")
+
+#: VERBATIM `insiders` (SF2) column order (`schema/insiders`, as of 2026-08-18).
+SF2_COLUMNS: tuple[str, ...] = (
+    "ticker", "date", "formtype", "ownername", "officertitle", "isdirector",
+    "isofficer", "istenpercentowner", "transactiondate", "securityadcode",
+    "transactioncode", "sharesownedbeforetransaction", "transactionshares",
+    "sharesownedfollowingtransaction", "transactionpricepershare",
+    "transactionvalue", "securitytitle", "directorindirect", "natureofownership",
+    "dateexercisable", "priceexercisable", "expirationdate", "rownum",
+)
+
+#: VERBATIM `holdings` (SF3) column order (`schema/holdings`, as of 2026-08-18).
+SF3_COLUMNS: tuple[str, ...] = ("ticker", "investorid", "securitytype", "date", "value", "units")
+
+
+def events_row(ticker: str, date: str, eventcodes: str) -> dict:
+    """One EVENTS row; ``eventcodes`` is pipe-joined, as the vendor writes it (``22|91``)."""
+    return {"ticker": ticker, "date": date, "eventcodes": eventcodes}  # SYNTHETIC
+
+
+def eventcodes_rows(codes: dict[str, str]) -> list[dict]:
+    """INDICATORS rows of table ``EVENTCODES``: ``{code: title}``."""
+    return [
+        {
+            "table": "EVENTCODES",  # VERBATIM label
+            "indicator": code,
+            "isfilter": "N",  # SYNTHETIC
+            "isprimarykey": "N",  # SYNTHETIC
+            "title": title,
+            "description": "Synthetic description",  # SYNTHETIC
+            "unittype": "text",  # SYNTHETIC
+        }
+        for code, title in codes.items()
+    ]
+
+
+def sf2_row(
+    ticker: str, date: str, code: str | None, shares: int, price: float | None, **overrides
+) -> dict:
+    """One SF2 row of a non-derivative transaction of common stock.
+
+    ``code`` is the SEC transaction code (``P`` open-market purchase, ``S``
+    sale, ``A`` grant, ...). ``shares`` is signed as the vendor writes it:
+    positive acquired (``securityadcode`` ``NA``), negative disposed
+    (``ND``). ``transactionvalue`` is ``|shares| * price`` in USD, unsigned.
+    """
+    row = {
+        "ticker": ticker,  # SYNTHETIC
+        "date": date,  # SYNTHETIC: the filing date
+        "formtype": "4",  # VERBATIM form type
+        "ownername": "DOE JANE",  # SYNTHETIC
+        "isdirector": "N",  # SYNTHETIC
+        "isofficer": "Y",  # SYNTHETIC
+        "istenpercentowner": "N",  # SYNTHETIC
+        "transactiondate": date,  # SYNTHETIC
+        "securityadcode": "NA" if shares >= 0 else "ND",  # VERBATIM codes
+        "transactioncode": code,
+        "sharesownedbeforetransaction": 10_000,  # SYNTHETIC
+        "transactionshares": shares,  # SYNTHETIC
+        "sharesownedfollowingtransaction": 10_000 + shares,  # SYNTHETIC
+        "transactionpricepershare": price,  # SYNTHETIC
+        "transactionvalue": None if price is None else round(abs(shares) * price),  # SYNTHETIC
+        "securitytitle": "Common Stock",  # SYNTHETIC
+        "directorindirect": "D",  # VERBATIM code
+        "rownum": 1,  # SYNTHETIC
+    }
+    row.update(overrides)
+    return row
+
+
+#: VERBATIM `holdings_ticker` (SF3A) column order (`schema/holdings_ticker`, as of 2026-08-18).
+SF3A_COLUMNS: tuple[str, ...] = (
+    "date", "ticker", "name",
+    "shrholders", "cllholders", "putholders", "wntholders", "dbtholders", "prfholders",
+    "fndholders", "undholders",
+    "shrunits", "cllunits", "putunits", "wntunits", "dbtunits", "prfunits", "fndunits", "undunits",
+    "shrvalue", "cllvalue", "putvalue", "wntvalue", "dbtvalue", "prfvalue", "fndvalue", "undvalue",
+    "totalvalue", "percentoftotal",
+)
+
+
+def sf3a_row(quarter_end: str, ticker: str, holders: int, units: float, **overrides) -> dict:
+    """One SF3A row: a security's 13F holders and shares (``units``, thousands) in one quarter."""
+    row = {
+        "date": quarter_end,  # SYNTHETIC; the vendor writes it as text
+        "ticker": ticker,  # SYNTHETIC
+        "name": f"{ticker} CORP",  # SYNTHETIC
+        "shrholders": holders,  # SYNTHETIC
+        "shrunits": units,  # SYNTHETIC
+        "shrvalue": units * 0.01,  # SYNTHETIC
+    }
+    row.update(overrides)
+    return row
+
+
 INDICATORS_ROWS: list[dict] = [
     {
         "table": "stocks",

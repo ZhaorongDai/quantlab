@@ -11,7 +11,7 @@ Install the project with `uv sync`. Browsing the catalogue and inspecting local 
 | Vendor | Environment variables | Serves |
 |---|---|---|
 | `alpaca` | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | US equity 1d and 1m bars; tick quotes and trades |
-| `sharadar` | `SHARADAR_API_KEY` | US stock (SEP) and fund (SFP) daily prices, SF1 fundamentals, DAILY valuations, ACTIONS, S&P 500 membership, TICKERS, INDICATORS; downloaded by `scripts/sharadar/`, not `run()` (see [Sharadar](sharadar.md)) |
+| `sharadar` | `SHARADAR_API_KEY` | US stock (SEP) and fund (SFP) daily prices, SF1 fundamentals, DAILY valuations, 8-K events, insider transactions, 13F holdings, ACTIONS, S&P 500 membership, TICKERS, INDICATORS; downloaded by `scripts/sharadar/`, not `run()` (see [Sharadar](sharadar.md)) |
 | `tiingo` | `TIINGO_API_KEY` | US equity daily bars |
 | `wrds` | `WRDS_USERNAME` (password in `~/.pgpass`) | TAQ NBBO quotes; CRSP daily bars |
 

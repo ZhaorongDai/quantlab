@@ -76,7 +76,7 @@ working on.
 | [Resumable downloads](pageledger.md) | How a multi-page download resumes after an interruption |
 | [WRDS CRSP daily stocks](wrds_crsp.md) | US daily data by PERMNO, total-return adjustment and delisting returns |
 | [WRDS TAQ quotes](wrds_taq.md) | National best bid and offer quotes and their resampling to bars |
-| [Sharadar daily stocks](sharadar.md) | The Sharadar client, the raw parquet tier, the raw-price panel on the permaticker axis, point-in-time SF1 fundamentals and DAILY valuations |
+| [Sharadar daily stocks](sharadar.md) | The Sharadar client, the raw parquet tier, the raw-price panel on the permaticker axis, point-in-time SF1 fundamentals, DAILY valuations, and 8-K, insider and 13F panels |
 | [Index constituents](constituent.md) | Point-in-time membership panels for the S&P 500 and Nasdaq-100 |
 | [Datasets](dataset.md) | From raw files to the `(timestamp, symbol)` panel, and adding a market |
 | [Chunked conversion](chunking.md) | Converting a large date range one window at a time |

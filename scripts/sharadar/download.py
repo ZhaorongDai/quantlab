@@ -1,9 +1,10 @@
 """Download every Sharadar table of the raw tier and build the Zarr stores.
 
 One run pulls each table the raw tier knows (``sep``, ``sfp``, ``actions``,
-``sp500``, ``sf1``, ``daily``, ``tickers``, ``indicators``; METRICS is never
-downloaded) as a bulk zip into ``<download-dir>/sharadar/<table>/``, then
-builds or extends eight stores in ``--zarr-dir``:
+``sp500``, ``sf1``, ``daily``, ``events``, ``sf2``, ``sf3``, ``sf3a``,
+``sf3b``, ``tickers``, ``indicators``; METRICS is never downloaded) as a bulk
+zip into ``<download-dir>/sharadar/<table>/``, then builds or extends these
+stores in ``--zarr-dir``:
 
 - ``sharadar_sep_1d.zarr``, stock prices on the permaticker axis, raw and
   adjusted (the default universe: domestic common stock);
@@ -16,6 +17,12 @@ builds or extends eight stores in ``--zarr-dir``:
   trading days;
 - ``sharadar_daily_1d.zarr``, the DAILY valuations (market cap and EV in
   USD, PE, PB, PS, EV/EBIT, EV/EBITDA);
+- ``sharadar_events_1d.zarr``, one boolean per 8-K event code, set on the
+  filing date;
+- ``sharadar_insiders_1d.zarr``, insiders' net open-market shares and USD
+  bought, on the filing date;
+- ``sharadar_holdings_1d.zarr``, 13F holders and shares held (from SF3A),
+  each quarter shown from quarter end + 45 days;
 - ``sharadar_sp500_membership.zarr``, point-in-time S&P 500 membership.
 
 Each store is built with ``update()``, so it keeps the chunk ledger the daily
@@ -50,9 +57,15 @@ from quantlab.dataset.config import (
     ConstituentDatasetConfig,
     SharadarDailyConfig,
     SharadarDatasetConfig,
+    SharadarEventsConfig,
     SharadarFundamentalsConfig,
+    SharadarHoldingsConfig,
+    SharadarInsidersConfig,
 )
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
+from quantlab.dataset.sharadar.events import SharadarEventsDataset
+from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
+from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
@@ -68,7 +81,10 @@ from quantlab.utils.cli import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Pulled first: the price conversions map tickers through TICKERS.
-TABLE_ORDER = ("tickers", "indicators", "sep", "sfp", "actions", "sp500", "sf1", "daily")
+TABLE_ORDER = (
+    "tickers", "indicators", "sep", "sfp", "actions", "sp500", "sf1", "daily",
+    "events", "sf2", "sf3", "sf3a", "sf3b",
+)
 
 #: Each price store and the config fields it is built with beyond its paths:
 #: the whole SEP and SFP tables, every permaticker ever an S&P 500 member
@@ -85,6 +101,12 @@ MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
 #: The DAILY valuation store.
 DAILY_STORE = "sharadar_daily_1d.zarr"
+#: The stores of the filing and ownership panels, with their config and dataset classes.
+FILING_STORES = {
+    "sharadar_events_1d.zarr": (SharadarEventsConfig, SharadarEventsDataset),
+    "sharadar_insiders_1d.zarr": (SharadarInsidersConfig, SharadarInsidersDataset),
+    "sharadar_holdings_1d.zarr": (SharadarHoldingsConfig, SharadarHoldingsDataset),
+}
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -185,3 +207,11 @@ if __name__ == "__main__":
         start_date=args.start,
     )
     print_conversion_result(SharadarDailyDataset(daily).update().last_chunk_result)
+
+    for store, (config_cls, dataset_cls) in FILING_STORES.items():
+        config = config_cls(
+            zarr_file_path=str(zarr_dir / store),
+            raw_data_dir_path=str(vendor_root),
+            start_date=args.start,
+        )
+        print_conversion_result(dataset_cls(config).update().last_chunk_result)

@@ -173,6 +173,21 @@ SF1_INDICATORS: tuple[str, ...] = tuple(
 #: DAILY's valuation columns in the vendor's order.
 DAILY_INDICATORS: tuple[str, ...] = ("ev", "evebit", "evebitda", "marketcap", "pb", "pe", "ps")
 
+#: The 13F security types, in the order SF3A and SF3B sum them.
+SECURITY_TYPES: tuple[str, ...] = ("shr", "cll", "put", "wnt", "dbt", "prf", "fnd", "und")
+
+
+def _holdings_sums(count_suffix: str) -> dict[str, type[pl.DataType]]:
+    """Return the per-security-type columns of SF3A (``"holders"``) or SF3B (``"holdings"``)."""
+    return {
+        **{f"{kind}{count_suffix}": pl.Int64 for kind in SECURITY_TYPES},
+        **{f"{kind}units": pl.Float64 for kind in SECURITY_TYPES},
+        **{f"{kind}value": pl.Float64 for kind in SECURITY_TYPES},
+        "totalvalue": pl.Float64,
+        "percentoftotal": pl.Float64,
+    }
+
+
 #: The tables the raw tier holds so far, by code.
 TABLES: dict[str, SharadarTable] = {
     table.code: table
@@ -211,6 +226,81 @@ TABLES: dict[str, SharadarTable] = {
             categories=_DOMESTIC_COMMON,
             primary_key=("ticker", "date"),
             tickers_code="sf1",
+        ),
+        # 8-K filings: one row per company and filing date, with the pipe-joined
+        # event codes of INDICATORS' EVENTCODES rows.
+        SharadarTable(
+            code="events",
+            api_name="events",
+            schema={"ticker": pl.String, "date": pl.Date, "eventcodes": pl.String},
+            categories=_DOMESTIC_COMMON,
+            # TICKERS has no EVENTS rows; EVENTS covers SF1's filers.
+            tickers_code="sf1",
+        ),
+        # Insider transactions (forms 3, 4 and 5); ``date`` is the filing date.
+        SharadarTable(
+            code="sf2",
+            api_name="insiders",
+            schema={
+                "ticker": pl.String,
+                "date": pl.Date,
+                "formtype": pl.String,
+                "ownername": pl.String,
+                "officertitle": pl.String,
+                "isdirector": pl.String,
+                "isofficer": pl.String,
+                "istenpercentowner": pl.String,
+                "transactiondate": pl.Date,
+                "securityadcode": pl.String,
+                "transactioncode": pl.String,
+                "sharesownedbeforetransaction": pl.Int64,
+                "transactionshares": pl.Int64,
+                "sharesownedfollowingtransaction": pl.Int64,
+                "transactionpricepershare": pl.Float64,
+                "transactionvalue": pl.Int64,
+                "securitytitle": pl.String,
+                "directorindirect": pl.String,
+                "natureofownership": pl.String,
+                "dateexercisable": pl.Date,
+                "priceexercisable": pl.Float64,
+                "expirationdate": pl.Date,
+                "rownum": pl.Int64,
+            },
+            categories=_DOMESTIC_COMMON,
+        ),
+        # 13F holdings, one row per security, investor and security type;
+        # ``date`` is the quarter end, not a filing date.
+        SharadarTable(
+            code="sf3",
+            api_name="holdings",
+            schema={
+                "ticker": pl.String,
+                "investorid": pl.String,
+                "securitytype": pl.String,
+                "date": pl.Date,
+                "value": pl.Float64,
+                "units": pl.Float64,
+            },
+            categories=_DOMESTIC_COMMON,
+            tickers_code="sep",
+        ),
+        # SF3 summed by security and by investor; ``date`` is declared text.
+        SharadarTable(
+            code="sf3a",
+            api_name="holdings_ticker",
+            schema={"date": pl.String, "ticker": pl.String, "name": pl.String, **_holdings_sums("holders")},
+            categories=_DOMESTIC_COMMON,
+            tickers_code="sep",
+        ),
+        SharadarTable(
+            code="sf3b",
+            api_name="holdings_investor",
+            schema={
+                "date": pl.String,
+                "investorid": pl.String,
+                "investorname": pl.String,
+                **_holdings_sums("holdings"),
+            },
         ),
         SharadarTable(
             code="actions",
@@ -497,6 +587,29 @@ def raw_through(vendor_root: str | Path, codes: tuple[str, ...]) -> date:
             watermark = min(latest, vendor_today())
         days.append(watermark)
     return min(days)
+
+
+def trading_days(vendor_root: str | Path, through: date) -> pl.Series:
+    """Return SEP's trading days up to ``through``, sorted, as ns datetimes named ``timestamp``.
+
+    The calendar of every Sharadar panel that is not itself a price table
+    (fundamentals, filings, holdings), so they line up with the price panels.
+
+    Examples
+    --------
+    >>> trading_days("/data/downloads/sharadar", date(2024, 1, 3)).tail(2).to_list()
+    [datetime.datetime(2024, 1, 2, 0, 0), datetime.datetime(2024, 1, 3, 0, 0)]
+    """
+    return (
+        scan_raw_table(vendor_root, "sep")
+        .select(pl.col("date").unique())
+        .filter(pl.col("date") <= pl.lit(through))
+        .sort("date")
+        .collect()
+        .get_column("date")
+        .cast(pl.Datetime("ns"))
+        .alias("timestamp")
+    )
 
 
 def write_watermark(vendor_root: str | Path, code: str, through: date) -> None:

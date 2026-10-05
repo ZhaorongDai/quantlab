@@ -2,9 +2,10 @@
 
 Run every morning after ``download.py`` has built the stores. One run:
 
-1. pulls TICKERS whole (new listings and ticker changes) and SP500 whole (it
-   is small);
-2. pulls a trailing date window of SEP, SFP and ACTIONS over REST: from the
+1. pulls TICKERS whole (new listings and ticker changes), INDICATORS whole
+   (units and the 8-K event codes), and SP500 and SF3A whole (they are
+   small; SF3A's newest quarter fills in place);
+2. pulls a trailing date window of SEP, SFP, ACTIONS, EVENTS and SF2 over REST: from the
    ``--trading-days``-th most recent raw date before each table's watermark
    through today (US/Eastern), so a late vendor correction to a recent day is
    seen; and every SF1 row the vendor changed since SF1's watermark (by
@@ -15,11 +16,16 @@ Run every morning after ``download.py`` has built the stores. One run:
    (``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``,
    ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr``,
    ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr``,
-   ``sharadar_sf1_art.zarr`` and ``sharadar_daily_1d.zarr``), each from the
+   ``sharadar_sf1_art.zarr``, ``sharadar_daily_1d.zarr``,
+   ``sharadar_events_1d.zarr``, ``sharadar_insiders_1d.zarr`` and
+   ``sharadar_holdings_1d.zarr``), each from the
    first day it already holds: new bars are appended and earlier rows are
    never rewritten. A vendor correction to a stored date of a price store is
    listed in ``<store>.corrections.json`` instead; one to SF1 or DAILY is not
    reported.
+
+SF3 (every 13F holding, 400 MB) and SF3B (holdings by investor) feed no
+store and are not refreshed here; ``download.py`` pulls them whole.
 
 An interrupted run resumes from each table's watermark and each store's last
 bar; running it twice in a day appends nothing the second time.
@@ -53,9 +59,15 @@ from quantlab.dataset.config import (
     ConstituentDatasetConfig,
     SharadarDailyConfig,
     SharadarDatasetConfig,
+    SharadarEventsConfig,
     SharadarFundamentalsConfig,
+    SharadarHoldingsConfig,
+    SharadarInsidersConfig,
 )
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
+from quantlab.dataset.sharadar.events import SharadarEventsDataset
+from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
+from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
@@ -71,9 +83,9 @@ from quantlab.utils.cli import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Pulled whole every run: reference and membership tables are small.
-WHOLE_TABLES = ("tickers", "sp500")
+WHOLE_TABLES = ("tickers", "indicators", "sp500", "sf3a")
 #: Pulled as a trailing date window.
-WINDOW_TABLES = ("sep", "sfp", "actions")
+WINDOW_TABLES = ("sep", "sfp", "actions", "events", "sf2")
 #: Pulled as the rows changed since the watermark (``lastupdated``).
 UPDATED_TABLES = ("sf1", "daily")
 
@@ -92,6 +104,12 @@ MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
 #: The DAILY valuation store.
 DAILY_STORE = "sharadar_daily_1d.zarr"
+#: The stores of the filing and ownership panels, with their config and dataset classes.
+FILING_STORES = {
+    "sharadar_events_1d.zarr": (SharadarEventsConfig, SharadarEventsDataset),
+    "sharadar_insiders_1d.zarr": (SharadarInsidersConfig, SharadarInsidersDataset),
+    "sharadar_holdings_1d.zarr": (SharadarHoldingsConfig, SharadarHoldingsDataset),
+}
 
 
 def _store_start(path: Path) -> str:
@@ -144,7 +162,7 @@ if __name__ == "__main__":
         )
     vendor_root = download_dir / VENDOR_DIR
     missing = [
-        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES, DAILY_STORE)
+        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES, DAILY_STORE, *FILING_STORES)
         if not (zarr_dir / store).exists()
     ]
     if missing:
@@ -204,3 +222,11 @@ if __name__ == "__main__":
         start_date=_store_start(zarr_dir / DAILY_STORE),
     )
     print_conversion_result(SharadarDailyDataset(daily).update().last_chunk_result)
+
+    for store, (config_cls, dataset_cls) in FILING_STORES.items():
+        config = config_cls(
+            zarr_file_path=str(zarr_dir / store),
+            raw_data_dir_path=str(vendor_root),
+            start_date=_store_start(zarr_dir / store),
+        )
+        print_conversion_result(dataset_cls(config).update().last_chunk_result)
