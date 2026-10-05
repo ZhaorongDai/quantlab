@@ -48,11 +48,15 @@ class SharadarTable:
         The table's name on ``api.sharadar.com/v1.0``.
     schema : dict of str to polars.DataType
         The columns in the vendor's order, with their types.
+    categories : tuple of str or None
+        For a price table, the TICKERS ``category`` values an unrostered
+        universe keeps by default; ``None`` keeps every category.
     """
 
     code: str
     api_name: str
     schema: dict[str, type[pl.DataType]]
+    categories: tuple[str, ...] | None = None
 
     @property
     def tickers_labels(self) -> tuple[str, str]:
@@ -69,26 +73,38 @@ class SharadarTable:
         return (self.code.upper(), self.api_name)
 
 
+#: The columns of both price tables, SEP (stocks) and SFP (funds).
+_PRICE_SCHEMA: dict[str, type[pl.DataType]] = {
+    "ticker": pl.String,
+    "date": pl.Date,
+    "open": pl.Float64,
+    "high": pl.Float64,
+    "low": pl.Float64,
+    "close": pl.Float64,
+    "volume": pl.Float64,
+    "closeadj": pl.Float64,
+    "closeunadj": pl.Float64,
+    "lastupdated": pl.Date,
+}
+
 #: The tables the raw tier holds so far, by code.
 TABLES: dict[str, SharadarTable] = {
     table.code: table
     for table in (
+        # SEP's default universe is domestic common stock, every share class
+        # of it; ADRs, Canadian filers and preferreds are dropped.
         SharadarTable(
             code="sep",
             api_name="stocks",
-            schema={
-                "ticker": pl.String,
-                "date": pl.Date,
-                "open": pl.Float64,
-                "high": pl.Float64,
-                "low": pl.Float64,
-                "close": pl.Float64,
-                "volume": pl.Float64,
-                "closeadj": pl.Float64,
-                "closeunadj": pl.Float64,
-                "lastupdated": pl.Date,
-            },
+            schema=_PRICE_SCHEMA,
+            categories=(
+                "Domestic Common Stock",
+                "Domestic Common Stock Primary Class",
+                "Domestic Common Stock Secondary Class",
+            ),
         ),
+        # SFP holds funds (ETF, CEF, ETN, ETD, ...): no category is dropped.
+        SharadarTable(code="sfp", api_name="funds", schema=_PRICE_SCHEMA),
         SharadarTable(
             code="actions",
             api_name="actions",

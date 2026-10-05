@@ -16,7 +16,7 @@ The data is licensed for personal use: keep raw files and stores on your own mac
 
 ## Pulling the raw tier
 
-`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
+`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
 
 ```python
 from quantlab.acquisition.sharadar.client import SharadarClient
@@ -65,7 +65,7 @@ What the panel means:
 
 Which permatickers a conversion keeps depends on whether it has an explicit roster.
 
-- **Market universe (no roster).** Filtered by the TICKERS `category` through `category_filter`. The default keeps domestic common stock in every share class: `Domestic Common Stock`, `Domestic Common Stock Primary Class` and `Domestic Common Stock Secondary Class`. ADRs, Canadian filers, preferreds and every other category are dropped. Since 2024 that keeps 5,902 of the 7,895 permatickers priced in SEP. Pass `category_filter=None` to keep everything, or a tuple of categories of your own.
+- **Market universe (no roster).** Filtered by the TICKERS `category` through `category_filter`, whose default `"default"` is the table's own: for SEP, domestic common stock in every share class (`Domestic Common Stock`, `Domestic Common Stock Primary Class` and `Domestic Common Stock Secondary Class`; ADRs, Canadian filers, preferreds and every other category are dropped, which since 2024 keeps 5,902 of the 7,895 permatickers priced in SEP); for SFP, every fund category. Pass `category_filter=None` to keep everything, or a tuple of categories of your own.
 - **Roster.** `permatickers=(...)` names securities explicitly, and `roster_universe="sp500"` takes every permaticker that was an S&P 500 member at some point in the conversion window, with all its bars. A roster is never filtered by category: a listed member is never silently dropped. Both together give the union.
 
 The `sp500` raw table (pull it with `client.bulk_table("sp500", ...)`) also becomes a point-in-time membership panel on the permaticker axis:
@@ -82,3 +82,20 @@ membership.from_raw_data().save()
 ```
 
 An `added` or `removed` row's date is the effective membership date, so a stock is a member from its `added` date and stops being one on its `removed` date. The changes go back to the index's launch in 1957, but Sharadar's prices, and so its permatickers, begin on 1997-12-31, so the panel answers membership from that date: the 24 members that left before then are dropped, and so is a former member Sharadar never priced (one, CBB1, which left on 1998-01-27), with a warning naming it. A current member without a permaticker is refused, because it means TICKERS is older than SP500. A ticker with no change at all was a member throughout. On the 2026-10-05 pull the panel holds 499 to 507 members a day. The panel ends on the table's last date, not today, so a rebuild from the same raw file gives the same panel.
+
+## Funds and benchmarks
+
+SFP (funds: ETFs, closed-end funds, ETNs and the like) converts through the same path as SEP, adjusted prices included: pull `sfp` with `client.bulk_table("sfp", ...)` and set `table="sfp"`. Its TICKERS rows are labelled `SFP`, its default `category_filter` keeps every fund category (`ETF`, `CEF`, `ETD`, `ETN`, `CEF Preferred`, `UNIT`, `ETMF`, `IDX`, `MF` on the 2026-10-05 pull); a whole-table store is `sharadar_sfp_1d.zarr`. A backtest benchmark is a store holding one fund:
+
+```python
+from quantlab.dataset.config import SharadarDatasetConfig
+from quantlab.dataset.sharadar.stock import SharadarStockDataset
+
+spy = SharadarDatasetConfig.etf_benchmark(
+    permaticker=118691,  # SPY's SFP permaticker in TICKERS
+    zarr_file_path="/data/quantlab/zarrs/sharadar_spy_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarStockDataset(spy).from_raw_data().save()
+# then BacktestConfig(benchmark_dataset=SharadarStockDataset(spy), ...)
+```

@@ -111,7 +111,9 @@ class SharadarStockDataset(MarketDataset):
 
         Refuses anything that is not a ``SharadarDatasetConfig``, a table
         that is not a price table, any ``symbols`` value and an empty
-        ``permatickers``. ``permatickers`` is returned as a tuple of ints.
+        ``permatickers``. ``permatickers`` is returned as a tuple of ints, and
+        ``category_filter="default"`` as the table's own default (``None``
+        for SFP).
 
         Raises
         ------
@@ -157,6 +159,15 @@ class SharadarStockDataset(MarketDataset):
             raise ValueError(
                 f"{self.class_name}: roster_universe {config.roster_universe!r} "
                 f"is not a Sharadar universe; known: {ROSTER_UNIVERSES}."
+            )
+        if config.category_filter == "default":
+            config = dataclasses.replace(
+                config, category_filter=table(config.table).categories
+            )
+        elif isinstance(config.category_filter, str):
+            raise ValueError(
+                f"{self.class_name}: config.category_filter must be 'default', "
+                f"None or a tuple of categories; got {config.category_filter!r}."
             )
         if config.category_filter is not None:
             categories = tuple(str(value) for value in config.category_filter)

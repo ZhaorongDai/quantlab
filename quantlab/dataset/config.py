@@ -420,16 +420,59 @@ class SharadarDatasetConfig(DatasetConfig):
     roster_universe: str | None = None
 
     #: TICKERS ``category`` values an *unrostered* market universe keeps (one
-    #: with neither ``permatickers`` nor ``roster_universe``). The default is
-    #: domestic common stock, every share class of it; ADRs, Canadian
-    #: filers, preferreds and anything else are dropped. ``None`` keeps every
-    #: category. Ignored when a roster is set: a named security is never
-    #: filtered out.
-    category_filter: tuple[str, ...] | None = (
-        "Domestic Common Stock",
-        "Domestic Common Stock Primary Class",
-        "Domestic Common Stock Secondary Class",
-    )
+    #: with neither ``permatickers`` nor ``roster_universe``). ``"default"``
+    #: is the table's own default, which the dataset resolves: for SEP,
+    #: domestic common stock, every share class of it (ADRs, Canadian filers,
+    #: preferreds and anything else are dropped); for SFP, every fund
+    #: category (``None``). ``None`` keeps every category. Ignored when a
+    #: roster is set: a named security is never filtered out.
+    category_filter: tuple[str, ...] | str | None = "default"
+
+    @classmethod
+    def etf_benchmark(
+        cls,
+        *,
+        permaticker: int,
+        zarr_file_path: str,
+        raw_data_dir_path: str,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> "SharadarDatasetConfig":
+        """Return the config of an SFP store holding only one benchmark fund.
+
+        A backtest benchmark is a market dataset with exactly one symbol;
+        ``table="sfp"`` and ``permatickers=(permaticker,)`` give that, and a
+        named permaticker is never filtered by category.
+
+        Parameters
+        ----------
+        permaticker : int
+            The fund's permaticker, from the TICKERS rows of table ``SFP``.
+        zarr_file_path : str
+            Path of the benchmark's own Zarr store.
+        raw_data_dir_path : str
+            ``<download-dir>/sharadar``.
+        start_date, end_date : str or None
+            The window to convert, both inclusive.
+
+        Examples
+        --------
+        >>> cfg = SharadarDatasetConfig.etf_benchmark(
+        ...     permaticker=118691,
+        ...     zarr_file_path="/data/zarrs/sharadar_spy_1d.zarr",
+        ...     raw_data_dir_path="/data/downloads/sharadar",
+        ... )
+        >>> cfg.table, cfg.permatickers
+        ('sfp', (118691,))
+        """
+        return cls(
+            zarr_file_path=zarr_file_path,
+            raw_data_dir_path=raw_data_dir_path,
+            start_date=start_date,
+            end_date=end_date,
+            table="sfp",
+            permatickers=(int(permaticker),),
+        )
 
 
 @dataclass(kw_only=True, frozen=True)
