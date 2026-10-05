@@ -197,6 +197,56 @@ def test_bar_t_weight_fills_at_bar_t_plus_1_open(tmp_path):
     assert order["side"] == "Buy"
 
 
+#: B's prices are about 1e-13, ASTI's 2024 adjusted level; vectorbt refuses an order
+#: below about 1e-12 (an absolute tolerance), so 2e-12 would not reproduce it.
+TINY = 5e-15
+
+
+def _tiny_price_case(scale: float):
+    """Two symbols; B is priced at ``scale`` times a normal price and is bought, trimmed, sold."""
+    ts = _timestamps(6)
+    a = np.array([10.0, 10.2, 10.1, 10.4, 10.3, 10.6])
+    b = np.array([20.0, 19.5, 20.5, 21.0, 20.0, 19.0]) * scale
+    fill = np.column_stack([a, b])
+    valuation = np.column_stack([a * 1.01, b * 1.01])
+    weights = _weights(
+        [[0.5, 0.5], [NAN, NAN], [0.7, 0.3], [NAN, NAN], [1.0, 0.0], [NAN, NAN]], ts, ["A", "B"]
+    )
+    return weights, _panel(fill, valuation, ts, ["A", "B"])
+
+
+def test_a_symbol_priced_near_1e_13_simulates_exactly_like_the_same_symbol_at_a_normal_price(
+    tmp_path,
+):
+    """#192: adjusted prices of a serial reverse-splitter (ASTI: 1.6e-13) are rescaled per
+    symbol before vectorbt, which refuses any order at such a price. The rescale is
+    a constant per symbol, so the value curve equals the normal-priced panel's, and
+    the order records stay in the panel's units."""
+    backtester = _backtester(tmp_path)
+    tiny = backtester._simulate(*_tiny_price_case(TINY))
+    normal = backtester._simulate(*_tiny_price_case(1.0))
+
+    np.testing.assert_allclose(tiny.value.values, normal.value.values, rtol=1e-12)
+    tiny_b, normal_b = _orders_for(tiny.orders, "B"), _orders_for(normal.orders, "B")
+    assert len(tiny_b) == len(normal_b) == 3
+    for t, n in zip(tiny_b, normal_b):
+        assert t["price"] == pytest.approx(n["price"] * TINY, rel=1e-12)
+        assert t["size"] == pytest.approx(n["size"] / TINY, rel=1e-12)
+        assert t["fees"] == pytest.approx(n["fees"], rel=1e-12)
+
+
+def test_a_zero_target_on_a_symbol_priced_near_1e_13_is_no_error(tmp_path):
+    """#192: a symbol the strategy never holds still gets explicit 0 targets."""
+    backtester = _backtester(tmp_path)
+    weights, prices = _tiny_price_case(TINY)
+    weights["weight"].loc[{"symbol": "B"}] = xr.where(
+        weights["weight"].sel(symbol="B").notnull(), 0.0, np.nan
+    )
+    result = backtester._simulate(weights, prices)
+    assert _orders_for(result.orders, "B") == []
+    assert np.isfinite(result.value.values).all()
+
+
 def test_slippage_moves_buys_up_and_sells_down(tmp_path):
     """D-19: slippage is applied against the trade on the fill-bar price."""
     backtester = _backtester(tmp_path, fees=0.0, slippage=0.01)

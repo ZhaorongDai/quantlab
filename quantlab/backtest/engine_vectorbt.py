@@ -31,6 +31,30 @@ from quantlab.execution.rules import FILL_DELAY_BARS, OrderPlan, plan_orders
 _WORTHLESS_PRICE = float(np.finfo(np.float64).tiny)
 
 
+def _price_scales(valuation: pd.DataFrame) -> np.ndarray:
+    """Return each column's price scale: the power of 2 nearest 1 over its first valuation.
+
+    Adjusted prices are anchored at a security's first bar, so a serial
+    reverse-splitter ends far below a cent (ASTI's 2024 adjusted close is
+    1.6e-13), and vectorbt refuses any order, even a target of 0, at a price
+    below about 1e-12. Scaled by its power of 2 a column's first finite
+    positive valuation lies within a factor of sqrt(2) of 1, and multiplying or dividing by a
+    power of 2 is exact in floating point, so a column already near 1 is
+    untouched and every other one is moved without rounding. A column with
+    no such valuation keeps a scale of 1.
+
+    Examples
+    --------
+    >>> _price_scales(pd.DataFrame({"A": [np.nan, 1e-13], "B": [10.0, 11.0], "C": [np.nan, np.nan]})).tolist()
+    [8796093022208.0, 0.125, 1.0]
+    """
+    values = valuation.to_numpy(dtype=np.float64)
+    usable = np.isfinite(values) & (values > 0)
+    first = np.argmax(usable, axis=0)
+    level = np.where(usable.any(axis=0), values[first, np.arange(values.shape[1])], 1.0)
+    return np.exp2(-np.round(np.log2(level)))
+
+
 class VectorBtBacktester(BaseBacktester):
     """Abstract backtester that simulates target weights with vectorbt.
 
@@ -215,16 +239,22 @@ class VectorBtBacktester(BaseBacktester):
         def frame(values):
             return pd.DataFrame(values, index=valuation.index, columns=valuation.columns)
 
+        # vectorbt sees every column at a price level near 1 (_price_scales):
+        # prices times the column's scale, shares divided by it, so values,
+        # cash, fees and P&L are unchanged; the order records are mapped back
+        # to the panel's units below.
+        scales = _price_scales(valuation)
+
         # vectorbt refuses an order priced at 0, which a settlement at a last
         # valuation of 0 (a -100% delisting return) is. It is sent at the
         # smallest positive float as a target amount of 0, since vectorbt
         # sizes a target percent against a price it rounds to 0.
         worthless = plan.settle & (plan.price == 0.0)
-        order_price = np.where(worthless, _WORTHLESS_PRICE, plan.price)
+        order_price = np.where(worthless, _WORTHLESS_PRICE, plan.price * scales)
         size_type = np.where(worthless, SizeType.TargetAmount, SizeType.TargetPercent)
 
         pf = vbt.Portfolio.from_orders(
-            close=valuation,
+            close=valuation * scales,
             price=frame(order_price),
             size=frame(plan.size),
             size_type=frame(size_type),
@@ -257,12 +287,16 @@ class VectorBtBacktester(BaseBacktester):
 
         records = pf.orders.records_readable
         order_prices = records["Price"].to_numpy(dtype=np.float64)
+        order_scales = scales[valuation.columns.get_indexer(records["Column"])]
         orders = xr.Dataset(
             {
                 "timestamp": ("order", pd.to_datetime(records["Timestamp"]).to_numpy()),
                 "symbol": ("order", records["Column"].astype(str).to_numpy()),
-                "size": ("order", records["Size"].to_numpy(dtype=np.float64)),
-                "price": ("order", np.where(order_prices == _WORTHLESS_PRICE, 0.0, order_prices)),
+                "size": ("order", records["Size"].to_numpy(dtype=np.float64) * order_scales),
+                "price": (
+                    "order",
+                    np.where(order_prices == _WORTHLESS_PRICE, 0.0, order_prices / order_scales),
+                ),
                 "fees": ("order", records["Fees"].to_numpy(dtype=np.float64)),
                 "side": ("order", records["Side"].astype(str).to_numpy()),
             }
