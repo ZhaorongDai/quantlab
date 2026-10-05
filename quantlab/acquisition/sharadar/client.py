@@ -19,9 +19,12 @@ A *date-window pull* (``window_table``) refreshes a date-keyed table every
 morning: it asks REST for every calendar day from a trailing number of
 trading days before the table's watermark through today, one request per
 day and page, and writes the rows as one window file, a complete copy of
-the table over those dates that supersedes earlier rows of them. Each pull,
-bulk or window, then records the table's watermark, so an interrupted
-refresh restarts from the last one that finished.
+the table over those dates that supersedes earlier rows of them. An
+*updated pull* (``updated_table``) refreshes a table keyed by more than its
+date (SF1): it asks REST for every row whose ``lastupdated`` is on or after
+the table's watermark, and each row replaces the earlier row with the same
+primary key. Each pull then records the table's watermark, so an
+interrupted refresh restarts from the last one that finished.
 
 Every HTTP request goes through one *transport* function, the client's only
 seam: tests replace it and run offline. A 401 or 403, or a missing key,
@@ -59,6 +62,7 @@ from joblib import Parallel, delayed
 from loguru import logger
 
 from quantlab.dataset.sharadar.tables import (
+    UPDATED_PREFIX,
     VENDOR_DIR,
     WINDOW_PREFIX,
     SharadarTable,
@@ -66,6 +70,7 @@ from quantlab.dataset.sharadar.tables import (
     read_watermark,
     scan_raw_table,
     table,
+    updated_file,
     vendor_today,
     window_file,
     write_watermark,
@@ -286,11 +291,13 @@ class SharadarClient:
             partial = Path(scratch) / target.name
             pl.scan_csv(csv_path, schema=spec.schema).sink_parquet(partial)
             os.replace(partial, target)
-        # The bulk file is the newest copy of every date, so it supersedes the
-        # windows; the watermark (the day of the pull) is written last.
+        # The bulk file is the newest copy of every row, so it supersedes the
+        # window and updated pulls; the watermark (the day of the pull) is
+        # written last.
         vendor_root = Path(download_dir) / VENDOR_DIR
-        for window in directory.glob(f"{WINDOW_PREFIX}*.parquet"):
-            window.unlink()
+        for prefix in (WINDOW_PREFIX, UPDATED_PREFIX):
+            for pull in directory.glob(f"{prefix}*.parquet"):
+                pull.unlink()
         if "date" in spec.schema:
             write_watermark(vendor_root, code, vendor_today())
         logger.info(f"Sharadar {code}: bulk pull (years={years}) written to {target}")
@@ -380,6 +387,127 @@ class SharadarClient:
             f"Sharadar {code}: {rows.height} row(s) over {start}..{end} written to {target}"
         )
         return target
+
+    def updated_table(
+        self,
+        code: str,
+        download_dir: str | Path,
+        *,
+        since: str | date | None = None,
+        page_rows: int = 10_000,
+    ) -> Path:
+        """Pull every row the vendor changed since a day, and write them as an updated pull.
+
+        The rows are those whose ``lastupdated`` is on or after ``since``
+        (the table's watermark by default), in ticker order. Pages are cut
+        at whole tickers: a full page drops its last ticker, and the next
+        request starts from it (``ticker.gte``), so a ticker's rows are never
+        split across two pages whatever order the vendor gives them within
+        it. The rows are checked against the schema and written as one
+        updated file (``quantlab.dataset.sharadar.tables.updated_file``);
+        each replaces the earlier row with the same primary key. Only then
+        is the watermark moved to the day the pull started (US/Eastern), so
+        the next pull asks again for that day: a row changed during the pull
+        is pulled twice rather than missed.
+
+        Parameters
+        ----------
+        code : str
+            The code of a table with a ``lastupdated`` column and a primary
+            key (``"sf1"``).
+        download_dir : str or Path
+            The download root holding ``sharadar/<code>/``, with a bulk pull
+            of the table already in it.
+        since : str, date or None, default None
+            First ``lastupdated`` day to pull; ``None`` is the watermark.
+        page_rows : int, default 10000
+            Rows per request (Sharadar's ``limit``). One ticker's changed
+            rows must fit in a page.
+
+        Returns
+        -------
+        Path
+            The updated file written.
+
+        Raises
+        ------
+        KeyError
+            If the code is not a known table.
+        ValueError
+            If the table has no ``lastupdated`` column or primary key, has no
+            watermark and no ``since`` is given, or one ticker fills a page.
+        SharadarEntitlementError, SharadarHttpError
+            As for ``bulk_table``.
+
+        Examples
+        --------
+        Refresh SF1 each morning (needs the key and the network)::
+
+            SharadarClient().updated_table("sf1", "/data/quantlab/downloads")
+        """
+        spec = table(code)
+        if spec.primary_key is None or "lastupdated" not in spec.schema:
+            raise ValueError(
+                f"Sharadar table {code!r} is not refreshed by lastupdated; "
+                f"use window_table or bulk_table."
+            )
+        key = os.environ.get(API_KEY_ENV)
+        if not key:
+            raise SharadarEntitlementError(
+                f"cannot pull Sharadar table {code!r}: {API_KEY_ENV} is not set."
+            )
+        vendor_root = Path(download_dir) / VENDOR_DIR
+        if since is None:
+            since = read_watermark(vendor_root, code)
+            if since is None:
+                raise ValueError(
+                    f"Sharadar table {code!r} has no watermark under {vendor_root}; "
+                    f"pull it in bulk first (SharadarClient.bulk_table)."
+                )
+        since = date.fromisoformat(str(since))
+        started = vendor_today()
+        rows = self._pull_updated(spec, key, since, page_rows)
+        target = updated_file(vendor_root, code, datetime.now(UTC), since)
+        partial = target.with_name(f".{target.name}.partial")
+        rows.write_parquet(partial)
+        os.replace(partial, target)
+        write_watermark(vendor_root, code, started)
+        logger.info(
+            f"Sharadar {code}: {rows.height} row(s) updated since {since} written to {target}"
+        )
+        return target
+
+    def _pull_updated(
+        self, spec: SharadarTable, key: str, since: date, page_rows: int
+    ) -> pl.DataFrame:
+        """Return every row updated on or after ``since``, paged at whole tickers."""
+        frames = []
+        cursor = None
+        while True:
+            params = {
+                "lastupdated.gte": since.isoformat(),
+                "format": "csv",
+                "sort": "ticker.asc",
+                "limit": str(page_rows),
+            }
+            if cursor is not None:
+                params["ticker.gte"] = cursor
+            response = self._get(
+                spec, f"{DATA_URL}/{spec.api_name}", params=params, headers={"x-api-key": key}
+            )
+            page = self._parse_page(spec, _text(response, limit=None))
+            if page.height < page_rows:
+                frames.append(page)
+                return pl.concat(frames)
+            last = page.get_column("ticker")[-1]
+            complete = page.filter(pl.col("ticker") != last)
+            if complete.height == 0:
+                raise ValueError(
+                    f"Sharadar table {spec.code!r}: ticker {last!r} alone fills a "
+                    f"page of {page_rows} updated rows; pass a larger page_rows."
+                )
+            frames.append(complete)
+            cursor = last
 
     @staticmethod
     def _window_start(vendor_root: Path, code: str, end: date, trading_days: int) -> date:

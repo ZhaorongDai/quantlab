@@ -54,14 +54,19 @@ class SharadarTable:
     schema : dict of str to polars.DataType
         The columns in the vendor's order, with their types.
     categories : tuple of str or None
-        For a price table, the TICKERS ``category`` values an unrostered
-        universe keeps by default; ``None`` keeps every category.
+        For a table converted to a panel, the TICKERS ``category`` values an
+        unrostered universe keeps by default; ``None`` keeps every category.
+    primary_key : tuple of str or None
+        The vendor's primary key, for a table refreshed by ``lastupdated``
+        (see ``updated_file``): an updated row replaces the earlier row with
+        the same key. ``None`` for a table that is never refreshed that way.
     """
 
     code: str
     api_name: str
     schema: dict[str, type[pl.DataType]]
     categories: tuple[str, ...] | None = None
+    primary_key: tuple[str, ...] | None = None
 
     @property
     def tickers_labels(self) -> tuple[str, str]:
@@ -92,24 +97,78 @@ _PRICE_SCHEMA: dict[str, type[pl.DataType]] = {
     "lastupdated": pl.Date,
 }
 
+#: SEP's default universe: domestic common stock, every share class of it;
+#: ADRs, Canadian filers and preferreds are dropped. SF1 shares it.
+_DOMESTIC_COMMON: tuple[str, ...] = (
+    "Domestic Common Stock",
+    "Domestic Common Stock Primary Class",
+    "Domestic Common Stock Secondary Class",
+)
+
+#: The identity and date columns of SF1 (``fundamentals``), in the vendor's order.
+SF1_KEY_COLUMNS: dict[str, type[pl.DataType]] = {
+    "ticker": pl.String,
+    "dimension": pl.String,
+    "calendardate": pl.Date,
+    "date": pl.Date,
+    "reportperiod": pl.Date,
+    "fiscalperiod": pl.String,
+    "lastupdated": pl.Date,
+}
+
+#: SF1's indicator columns in the vendor's order: ``bigint`` ones are money,
+#: share counts and ``evebit``; ``double precision`` ones are ratios and
+#: per-share values.
+_SF1_BIGINT = frozenset(
+    "accoci assets assetsavg assetsc assetsnc capex cashneq cashnequsd cor "
+    "consolinc debt debtc debtnc debtusd deferredrev depamor deposits ebit "
+    "ebitda ebitdausd ebitusd ebt equity equityavg equityusd ev evebit fcf gp "
+    "intangibles intexp invcap invcapavg inventory investments investmentsc "
+    "investmentsnc liabilities liabilitiesc liabilitiesnc marketcap ncf ncfbus "
+    "ncfcommon ncfdebt ncfdiv ncff ncfi ncfinv ncfo ncfx netinc netinccmn "
+    "netinccmnusd netincdis netincnci opex opinc payables ppnenet prefdivis "
+    "receivables retearn revenue revenueusd rnd sbcomp sgna sharesbas shareswa "
+    "shareswadil tangibles taxassets taxexp taxliabilities workingcapital".split()
+)
+SF1_INDICATORS: tuple[str, ...] = tuple(
+    "accoci assets assetsavg assetsc assetsnc assetturnover bvps capex cashneq "
+    "cashnequsd cor consolinc currentratio de debt debtc debtnc debtusd "
+    "deferredrev depamor deposits divyield dps ebit ebitda ebitdamargin "
+    "ebitdausd ebitusd ebt eps epsdil epsusd equity equityavg equityusd ev "
+    "evebit evebitda fcf fcfps fxusd gp grossmargin intangibles intexp invcap "
+    "invcapavg inventory investments investmentsc investmentsnc liabilities "
+    "liabilitiesc liabilitiesnc marketcap ncf ncfbus ncfcommon ncfdebt ncfdiv "
+    "ncff ncfi ncfinv ncfo ncfx netinc netinccmn netinccmnusd netincdis "
+    "netincnci netmargin opex opinc payables payoutratio pb pe pe1 ppnenet "
+    "prefdivis price ps ps1 receivables retearn revenue revenueusd rnd roa roe "
+    "roic ros sbcomp sgna sharefactor sharesbas shareswa shareswadil sps "
+    "tangibles taxassets taxexp taxliabilities tbvps workingcapital".split()
+)
+
 #: The tables the raw tier holds so far, by code.
 TABLES: dict[str, SharadarTable] = {
     table.code: table
     for table in (
-        # SEP's default universe is domestic common stock, every share class
-        # of it; ADRs, Canadian filers and preferreds are dropped.
         SharadarTable(
-            code="sep",
-            api_name="stocks",
-            schema=_PRICE_SCHEMA,
-            categories=(
-                "Domestic Common Stock",
-                "Domestic Common Stock Primary Class",
-                "Domestic Common Stock Secondary Class",
-            ),
+            code="sep", api_name="stocks", schema=_PRICE_SCHEMA, categories=_DOMESTIC_COMMON
         ),
         # SFP holds funds (ETF, CEF, ETN, ETD, ...): no category is dropped.
         SharadarTable(code="sfp", api_name="funds", schema=_PRICE_SCHEMA),
+        # Fundamentals: every dimension is kept raw; only the as-reported
+        # ones (ARQ, ART) ever reach a store.
+        SharadarTable(
+            code="sf1",
+            api_name="fundamentals",
+            schema={
+                **SF1_KEY_COLUMNS,
+                **{
+                    name: pl.Int64 if name in _SF1_BIGINT else pl.Float64
+                    for name in SF1_INDICATORS
+                },
+            },
+            categories=_DOMESTIC_COMMON,
+            primary_key=("ticker", "dimension", "date", "reportperiod"),
+        ),
         SharadarTable(
             code="actions",
             api_name="actions",
@@ -250,6 +309,30 @@ def window_file(
 #: Filename prefix of a date-window pull (see ``window_file``).
 WINDOW_PREFIX = "window_"
 
+#: Filename prefix of a ``lastupdated`` pull (see ``updated_file``).
+UPDATED_PREFIX = "updated_"
+
+
+def updated_file(
+    vendor_root: str | Path, code: str, pulled_at: datetime, since: date
+) -> Path:
+    """Return the path a ``lastupdated`` pull of a table is written to.
+
+    An updated pull holds every row the vendor changed on or after
+    ``since``; each replaces the earlier row with the same primary key
+    (``SharadarTable.primary_key``). The name records when it was pulled, so
+    names sort in pull order.
+
+    Examples
+    --------
+    >>> updated_file("/d/sharadar", "sf1", datetime(2024, 1, 11, 8, 30),
+    ...              date(2024, 1, 10)).name
+    'updated_20240111T083000000000_2024-01-10.parquet'
+    """
+    return raw_table_dir(vendor_root, code) / (
+        f"{UPDATED_PREFIX}{pulled_at:%Y%m%dT%H%M%S%f}_{since}.parquet"
+    )
+
 
 def _window_dates(path: Path) -> tuple[date, date]:
     """Return the ``(start, end)`` dates a window file's name covers."""
@@ -258,12 +341,14 @@ def _window_dates(path: Path) -> tuple[date, date]:
 
 
 def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
-    """Scan one raw table: its bulk pull overlaid with its date-window pulls.
+    """Scan one raw table: its bulk pull overlaid with its later pulls.
 
     A window pull is a complete copy of the table over its dates, so a row
     is kept only from the newest file covering its date: the bulk file's
     rows of a window's dates, and an older window's rows of a newer
-    window's dates, are left out.
+    window's dates, are left out. An updated pull (``updated_file``) holds
+    changed rows, so each of its rows replaces the earlier row with the same
+    primary key, and the newest pull wins.
 
     Raises
     ------
@@ -277,12 +362,33 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
     """
     directory = raw_table_dir(vendor_root, code)
     windows = sorted(directory.glob(f"{WINDOW_PREFIX}*.parquet"))
+    updates = sorted(directory.glob(f"{UPDATED_PREFIX}*.parquet"))
     files = [p for p in [bulk_file(vendor_root, code)] if p.exists()] + windows
     if not files:
         raise FileNotFoundError(
             f"no raw Sharadar {code!r} table under {directory}; pull it first "
             f"(SharadarClient.bulk_table({code!r}, <download-dir>))"
         )
+    base = _overlay_windows(files, windows)
+    if not updates:
+        return base
+    key = table(code).primary_key
+    if key is None:
+        raise ValueError(
+            f"Sharadar table {code!r} has updated pulls under {directory} but "
+            f"no primary key to apply them by."
+        )
+    pulls = [base, *(pl.scan_parquet(path) for path in updates)]
+    return (
+        pl.concat([frame.with_columns(pl.lit(i).alias("_pull")) for i, frame in enumerate(pulls)])
+        .sort("_pull", maintain_order=True)
+        .unique(subset=list(key), keep="last", maintain_order=True)
+        .drop("_pull")
+    )
+
+
+def _overlay_windows(files: list[Path], windows: list[Path]) -> pl.LazyFrame:
+    """Scan the bulk file and the window files, each date from the newest file covering it."""
     if not windows:
         return pl.scan_parquet(files)
     covered = [_window_dates(path) for path in windows]

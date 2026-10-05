@@ -102,6 +102,27 @@ INDICATORS_COLUMNS: tuple[str, ...] = (
     "unittype",
 )
 
+#: VERBATIM `fundamentals` (SF1) column order (`schema/fundamentals`, as of
+#: 2026-08-18).
+SF1_COLUMNS: tuple[str, ...] = (
+    "ticker", "dimension", "calendardate", "date", "reportperiod", "fiscalperiod",
+    "lastupdated", "accoci", "assets", "assetsavg", "assetsc", "assetsnc",
+    "assetturnover", "bvps", "capex", "cashneq", "cashnequsd", "cor", "consolinc",
+    "currentratio", "de", "debt", "debtc", "debtnc", "debtusd", "deferredrev",
+    "depamor", "deposits", "divyield", "dps", "ebit", "ebitda", "ebitdamargin",
+    "ebitdausd", "ebitusd", "ebt", "eps", "epsdil", "epsusd", "equity", "equityavg",
+    "equityusd", "ev", "evebit", "evebitda", "fcf", "fcfps", "fxusd", "gp",
+    "grossmargin", "intangibles", "intexp", "invcap", "invcapavg", "inventory",
+    "investments", "investmentsc", "investmentsnc", "liabilities", "liabilitiesc",
+    "liabilitiesnc", "marketcap", "ncf", "ncfbus", "ncfcommon", "ncfdebt", "ncfdiv",
+    "ncff", "ncfi", "ncfinv", "ncfo", "ncfx", "netinc", "netinccmn", "netinccmnusd",
+    "netincdis", "netincnci", "netmargin", "opex", "opinc", "payables", "payoutratio",
+    "pb", "pe", "pe1", "ppnenet", "prefdivis", "price", "ps", "ps1", "receivables",
+    "retearn", "revenue", "revenueusd", "rnd", "roa", "roe", "roic", "ros", "sbcomp",
+    "sgna", "sharefactor", "sharesbas", "shareswa", "shareswadil", "sps", "tangibles",
+    "taxassets", "taxexp", "taxliabilities", "tbvps", "workingcapital",
+)
+
 
 def csv_text(columns: tuple[str, ...], rows: list[dict]) -> str:
     """Render ``rows`` as Sharadar CSV: a header, then one line per row.
@@ -190,6 +211,28 @@ def sp500_row(date: str, action: str, ticker: str, **overrides) -> dict:
         "note": None,
     }
     row.update(overrides)
+    return row
+
+
+def sf1_row(
+    ticker: str, dimension: str, date: str, reportperiod: str, **values
+) -> dict:
+    """One SF1 row: its key, then the indicators given in ``values``.
+
+    ``date`` is the release date for an AR dimension (the SEC filing date) and
+    the period end for an MR one, as the vendor writes it. Indicators not given
+    are empty (null).
+    """
+    row = {
+        "ticker": ticker,  # SYNTHETIC
+        "dimension": dimension,  # VERBATIM dimension code, e.g. `ARQ`, `MRQ`
+        "calendardate": reportperiod,  # SYNTHETIC
+        "date": date,  # SYNTHETIC
+        "reportperiod": reportperiod,  # SYNTHETIC
+        "fiscalperiod": "2024-Q1",  # SYNTHETIC
+        "lastupdated": "2026-08-10",  # SYNTHETIC
+    }
+    row.update(values)  # SYNTHETIC
     return row
 
 
@@ -309,7 +352,9 @@ class FakeVendor:
     (``years``) answers 302 then the whole table as a zip (ignoring
     ``Range``); a REST request answers the rows dated within
     ``from``..``to``, sorted by ``sort``'s field and paged by ``offset`` and
-    ``limit``. A request whose ``from`` is in ``fail_on`` answers HTTP 404.
+    ``limit``; one with ``lastupdated.gte`` answers the rows changed on or after
+    that day from ``ticker.gte`` on, in ticker order, up to ``limit``. A
+    request whose ``from`` is in ``fail_on`` answers HTTP 404.
     """
 
     def __init__(self, tables: dict[str, tuple[tuple[str, ...], list[dict]]]):
@@ -332,6 +377,20 @@ class FakeVendor:
         if "years" in params:
             signed = SIGNED.format(table=api)
             return Response(status=302, headers={"Location": signed}, body=iter([b""]))
+        if "lastupdated.gte" in params:
+            # An updated pull: rows changed since a day, from a ticker on, in
+            # ticker order; within a ticker the vendor's order is its own,
+            # played here by reversing the stored order.
+            selected = [
+                r for r in reversed(rows)
+                if r["lastupdated"] >= params["lastupdated.gte"]
+                and r["ticker"] >= params.get("ticker.gte", "")
+            ]
+            selected.sort(key=lambda r: r["ticker"])
+            page = selected[: int(params.get("limit", 10000))]
+            return Response(
+                status=200, headers={}, body=iter([csv_text(columns, page).encode()])
+            )
         if params["from"] in self.fail_on:
             return Response(status=404, headers={}, body=iter([b"not found (SYNTHETIC)"]))
         selected = [r for r in rows if params["from"] <= r["date"] <= params["to"]]

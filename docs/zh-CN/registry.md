@@ -11,7 +11,7 @@
 | 厂商 | 环境变量 | 提供的数据 |
 |---|---|---|
 | `alpaca` | `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | 美股 1d、1m 行情；tick 报价与成交 |
-| `sharadar` | `SHARADAR_API_KEY` | 美股股票（SEP）与基金（SFP）日线、ACTIONS、标普 500 成分、TICKERS、INDICATORS；由 `scripts/sharadar/` 下载，不走 `run()`（见 [Sharadar](../sharadar.md)） |
+| `sharadar` | `SHARADAR_API_KEY` | 美股股票（SEP）与基金（SFP）日线、SF1 基本面、ACTIONS、标普 500 成分、TICKERS、INDICATORS；由 `scripts/sharadar/` 下载，不走 `run()`（见 [Sharadar](../sharadar.md)） |
 | `tiingo` | `TIINGO_API_KEY` | 美股日线 |
 | `wrds` | `WRDS_USERNAME`（密码放在 `~/.pgpass`） | TAQ NBBO 报价；CRSP 日线 |
 

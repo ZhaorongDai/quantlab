@@ -106,6 +106,106 @@ DIFF_SUFFIX = ".diff.json"
 _ERROR_SAMPLE = 5
 
 
+def normalize_universe(config: SharadarDatasetConfig, owner: str) -> SharadarDatasetConfig:
+    """Check and normalise a Sharadar config's universe fields.
+
+    Refuses any ``symbols`` value, an empty ``permatickers`` and an unknown
+    ``roster_universe``. ``permatickers`` is returned as a tuple of ints,
+    and ``category_filter="default"`` as the table's own default
+    (``SharadarTable.categories``).
+
+    Parameters
+    ----------
+    config : SharadarDatasetConfig
+        The config to check.
+    owner : str
+        Named in error messages.
+
+    Raises
+    ------
+    ValueError
+        For an invalid field.
+
+    Examples
+    --------
+    >>> normalize_universe(config, "demo").category_filter
+    ('Domestic Common Stock', 'Domestic Common Stock Primary Class', 'Domestic Common Stock Secondary Class')
+    """
+    if config.symbols is not None:
+        raise ValueError(
+            f"{owner}: config.symbols is not selectable on a "
+            f"Sharadar panel; got {config.symbols!r}. The symbol axis is "
+            f"the permaticker, and a ticker can be renamed or reused. Use "
+            f"config.permatickers instead."
+        )
+    if config.permatickers is not None:
+        permatickers = tuple(int(value) for value in config.permatickers)
+        if not permatickers:
+            raise ValueError(
+                f"{owner}: config.permatickers is empty. Pass "
+                f"None for every security, or name at least one."
+            )
+        config = dataclasses.replace(config, permatickers=permatickers)
+    if config.roster_universe is not None and config.roster_universe not in ROSTER_UNIVERSES:
+        raise ValueError(
+            f"{owner}: roster_universe {config.roster_universe!r} "
+            f"is not a Sharadar universe; known: {ROSTER_UNIVERSES}."
+        )
+    if config.category_filter == "default":
+        config = dataclasses.replace(
+            config, category_filter=table(config.table).categories
+        )
+    elif isinstance(config.category_filter, str):
+        raise ValueError(
+            f"{owner}: config.category_filter must be 'default', "
+            f"None or a tuple of categories; got {config.category_filter!r}."
+        )
+    if config.category_filter is not None:
+        categories = tuple(str(value) for value in config.category_filter)
+        if not categories:
+            raise ValueError(
+                f"{owner}: config.category_filter is empty. Pass "
+                f"None to keep every category, or name at least one."
+            )
+        config = dataclasses.replace(config, category_filter=categories)
+    return config
+
+
+def universe(config: SharadarDatasetConfig) -> list[int]:
+    """Return the permatickers a conversion of ``config`` keeps.
+
+    An explicit roster (``permatickers``, the members of ``roster_universe``
+    inside the window, or both) is kept whole. Without one, the market
+    universe is every permaticker whose TICKERS ``category`` (on the rows of
+    ``config.table``) is in ``category_filter``, or every one when that is
+    ``None``.
+
+    Examples
+    --------
+    >>> universe(dataclasses.replace(config, permatickers=(101,)))
+    [101]
+    """
+    root = config.raw_data_dir_path
+    if config.permatickers is None and config.roster_universe is None:
+        tickers = scan_raw_table(root, "tickers").filter(
+            pl.col("table").is_in(table(config.table).tickers_labels)
+        )
+        if config.category_filter is not None:
+            tickers = tickers.filter(
+                pl.col("category").is_in(list(config.category_filter))
+            )
+        return tickers.select("permaticker").unique().collect().to_series().to_list()
+    roster = set(config.permatickers or ())
+    if config.roster_universe is not None:
+        start = date.fromisoformat(config.start_date)
+        end = date.fromisoformat(config.end_date)
+        spells = sp500_intervals(root).filter(
+            (pl.col("start_date") <= end) & (pl.col("end_date") >= start)
+        )
+        roster.update(spells.get_column("permaticker").to_list())
+    return sorted(roster)
+
+
 class SharadarStockDataset(MarketDataset):
     """Dense daily panel of raw OHLCV from a Sharadar price table, keyed by permaticker.
 
@@ -161,44 +261,7 @@ class SharadarStockDataset(MarketDataset):
             raise ValueError(
                 f"{self.class_name}: table {config.table!r} is not a price table."
             )
-        if config.symbols is not None:
-            raise ValueError(
-                f"{self.class_name}: config.symbols is not selectable on a "
-                f"Sharadar panel; got {config.symbols!r}. The symbol axis is "
-                f"the permaticker, and a ticker can be renamed or reused. Use "
-                f"config.permatickers instead."
-            )
-        if config.permatickers is not None:
-            permatickers = tuple(int(value) for value in config.permatickers)
-            if not permatickers:
-                raise ValueError(
-                    f"{self.class_name}: config.permatickers is empty. Pass "
-                    f"None for every security, or name at least one."
-                )
-            config = dataclasses.replace(config, permatickers=permatickers)
-        if config.roster_universe is not None and config.roster_universe not in ROSTER_UNIVERSES:
-            raise ValueError(
-                f"{self.class_name}: roster_universe {config.roster_universe!r} "
-                f"is not a Sharadar universe; known: {ROSTER_UNIVERSES}."
-            )
-        if config.category_filter == "default":
-            config = dataclasses.replace(
-                config, category_filter=table(config.table).categories
-            )
-        elif isinstance(config.category_filter, str):
-            raise ValueError(
-                f"{self.class_name}: config.category_filter must be 'default', "
-                f"None or a tuple of categories; got {config.category_filter!r}."
-            )
-        if config.category_filter is not None:
-            categories = tuple(str(value) for value in config.category_filter)
-            if not categories:
-                raise ValueError(
-                    f"{self.class_name}: config.category_filter is empty. Pass "
-                    f"None to keep every category, or name at least one."
-                )
-            config = dataclasses.replace(config, category_filter=categories)
-        return config
+        return normalize_universe(config, self.class_name)
 
     def _on_config_installed(self) -> None:
         """Drop the derivation cached for the previous config."""
@@ -240,7 +303,7 @@ class SharadarStockDataset(MarketDataset):
             )
             mapping = permaticker_mapping(root, self.config.table)
             frame = self._map_permatickers(prices, mapping)
-            frame = frame.filter(pl.col("permaticker").is_in(self._universe()))
+            frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             self._assert_unique_keys(frame)
             ratio = (
                 pl.when(pl.col("close") > 0)
@@ -265,36 +328,6 @@ class SharadarStockDataset(MarketDataset):
             )
         self._derivation_cache = frame
         return frame
-
-    def _universe(self) -> list[int]:
-        """Return the permatickers the conversion keeps.
-
-        An explicit roster (``permatickers``, the members of
-        ``roster_universe`` inside the window, or both) is kept whole.
-        Without one, the market universe is every permaticker whose TICKERS
-        ``category`` is in ``category_filter``, or every one when that is
-        ``None``.
-        """
-        config = self.config
-        root = config.raw_data_dir_path
-        if config.permatickers is None and config.roster_universe is None:
-            tickers = scan_raw_table(root, "tickers").filter(
-                pl.col("table").is_in(table(config.table).tickers_labels)
-            )
-            if config.category_filter is not None:
-                tickers = tickers.filter(
-                    pl.col("category").is_in(list(config.category_filter))
-                )
-            return tickers.select("permaticker").unique().collect().to_series().to_list()
-        roster = set(config.permatickers or ())
-        if config.roster_universe is not None:
-            start = date.fromisoformat(config.start_date)
-            end = date.fromisoformat(config.end_date)
-            spells = sp500_intervals(root).filter(
-                (pl.col("start_date") <= end) & (pl.col("end_date") >= start)
-            )
-            roster.update(spells.get_column("permaticker").to_list())
-        return sorted(roster)
 
     def _events(self, mapping: pl.DataFrame, start, end) -> pl.DataFrame:
         """Return the window's cash distributions and splits per permaticker and date.

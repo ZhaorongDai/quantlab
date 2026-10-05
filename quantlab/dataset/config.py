@@ -480,6 +480,39 @@ class SharadarDatasetConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class SharadarFundamentalsConfig(SharadarDatasetConfig):
+    """Config of a point-in-time panel of Sharadar fundamentals (SF1) on the permaticker axis.
+
+    One store holds one as-reported dimension: ``"ARQ"`` (each fiscal
+    quarter) or ``"ART"`` (trailing twelve months). The most-recent
+    dimensions (MRQ, MRY, MRT) are refused, because their dates are period
+    ends, not release dates. The universe fields (``permatickers``,
+    ``roster_universe``, ``category_filter``) work as for a price panel;
+    SF1's default category filter is SEP's, domestic common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarFundamentalsConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_sf1_arq.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table, cfg.dimension, cfg.stale_after_days
+    ('sf1', 'ARQ', 365)
+    """
+
+    #: Always SF1.
+    table: str = "sf1"
+
+    #: The as-reported dimension the panel holds: ``"ARQ"`` or ``"ART"``.
+    dimension: str = "ARQ"
+
+    #: Days after its release date that a row stops being shown when no
+    #: newer row has replaced it, as for the Compustat panel (ADR 0003).
+    #: ``None`` shows it until it is replaced.
+    stale_after_days: int | None = 365
+
+
+@dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 

@@ -7,12 +7,14 @@ Run every morning after ``download.py`` has built the stores. One run:
 2. pulls a trailing date window of SEP, SFP and ACTIONS over REST: from the
    ``--trading-days``-th most recent raw date before each table's watermark
    through today (US/Eastern), so a late vendor correction to a recent day is
-   seen;
+   seen; and every SF1 row the vendor changed since SF1's watermark (by
+   ``lastupdated``), new filings included;
 3. runs ``update()`` on every store ``download.py`` built in ``--zarr-dir``
    (``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``,
-   ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr`` and
-   ``sharadar_sp500_membership.zarr``), each from the first day it already
-   holds: new bars are
+   ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr``,
+   ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr`` and
+   ``sharadar_sf1_art.zarr``), each from the first day it already holds: new
+   bars are
    appended, earlier rows are never rewritten, and a vendor correction to a
    stored date is listed in ``<store>.corrections.json`` instead.
 
@@ -46,7 +48,9 @@ from quantlab.dataset.config import (
     SPY_PERMATICKER,
     ConstituentDatasetConfig,
     SharadarDatasetConfig,
+    SharadarFundamentalsConfig,
 )
+from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 from quantlab.dataset.sharadar.tables import VENDOR_DIR
@@ -64,6 +68,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WHOLE_TABLES = ("tickers", "sp500")
 #: Pulled as a trailing date window.
 WINDOW_TABLES = ("sep", "sfp", "actions")
+#: Pulled as the rows changed since the watermark (``lastupdated``).
+UPDATED_TABLES = ("sf1",)
 
 #: Each price store and the config fields it is built with beyond its paths:
 #: the whole SEP and SFP tables, every permaticker ever an S&P 500 member
@@ -76,6 +82,8 @@ PRICE_STORES = {
     "sharadar_spy_1d.zarr": {"table": "sfp", "permatickers": (SPY_PERMATICKER,)},
 }
 MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
+#: Each point-in-time fundamentals store and its as-reported SF1 dimension.
+FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
 
 
 def _store_start(path: Path) -> str:
@@ -128,7 +136,7 @@ if __name__ == "__main__":
         )
     vendor_root = download_dir / VENDOR_DIR
     missing = [
-        store for store in (*PRICE_STORES, MEMBERSHIP_STORE)
+        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES)
         if not (zarr_dir / store).exists()
     ]
     if missing:
@@ -140,6 +148,8 @@ if __name__ == "__main__":
             print(f"{code}: {client.bulk_table(code, download_dir)}")
         for code in WINDOW_TABLES:
             print(f"{code}: {client.window_table(code, download_dir, trading_days=args.trading_days)}")
+        for code in UPDATED_TABLES:
+            print(f"{code}: {client.updated_table(code, download_dir)}")
     except (SharadarEntitlementError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"{exc}\n")
 
@@ -163,3 +173,12 @@ if __name__ == "__main__":
         )
     )
     print_conversion_result(membership.update().last_chunk_result)
+
+    for store, dimension in FUNDAMENTALS_STORES.items():
+        config = SharadarFundamentalsConfig(
+            zarr_file_path=str(zarr_dir / store),
+            raw_data_dir_path=str(vendor_root),
+            dimension=dimension,
+            start_date=_store_start(zarr_dir / store),
+        )
+        print_conversion_result(SharadarFundamentalsDataset(config).update().last_chunk_result)

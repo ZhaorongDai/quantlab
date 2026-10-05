@@ -36,19 +36,21 @@ def test_the_registry_lists_sharadar_and_its_tables():
 
     source = _source()
     data_types = [c.data_type for c in source.capabilities]
-    assert data_types == ["sep", "sfp", "actions", "sp500", "tickers", "indicators"]
+    assert data_types == ["sep", "sfp", "sf1", "actions", "sp500", "tickers", "indicators"]
     # Every table of the raw tier, and never METRICS.
     assert set(data_types) == set(TABLES)
     assert "metrics" not in data_types
     assert {(c.market, c.frequency) for c in source.capabilities} == {("us_equity", "1d")}
 
 
-def test_only_the_price_tables_convert_through_the_registry():
+def test_only_the_panel_tables_convert_through_the_registry():
+    from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
     from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
     by_type = {c.data_type: c.dataset_cls for c in _source().capabilities}
     assert by_type["sep"] is SharadarStockDataset
     assert by_type["sfp"] is SharadarStockDataset
+    assert by_type["sf1"] is SharadarFundamentalsDataset
     assert all(by_type[t] is None for t in ("actions", "sp500", "tickers", "indicators"))
 
 

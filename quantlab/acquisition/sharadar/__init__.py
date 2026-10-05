@@ -7,7 +7,7 @@ importing the client also registers the source.
 ``SHARADAR_SOURCE`` registers Sharadar with ``quantlab.acquisition.registry``
 so an operator surface lists it: one ``Capability`` per table of the raw tier
 (``quantlab.dataset.sharadar.tables.TABLES``), the credential variable, and the
-dataset class that converts each price table.
+dataset class that converts each table that becomes a panel.
 
 Sharadar's raw tier is whole tables, pulled as bulk zips and trailing date
 windows by ``SharadarClient``, not the symbol-batched hive tree an
@@ -15,8 +15,8 @@ windows by ``SharadarClient``, not the symbol-batched hive tree an
 and no config factory: ``registry.run()`` refuses it, and the download and the
 daily update are ``scripts/sharadar/download.py`` and
 ``scripts/sharadar/update.py``. ``registry.convert()`` builds the SEP and SFP
-stores; the S&P 500 membership panel is a constituent dataset, built by the
-scripts.
+stores and the SF1 fundamentals stores; the S&P 500 membership panel is a
+constituent dataset, built by the scripts.
 
 Examples
 --------
@@ -24,12 +24,13 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("sharadar")
 >>> [c.data_type for c in source.capabilities]
-['sep', 'sfp', 'actions', 'sp500', 'tickers', 'indicators']
+['sep', 'sfp', 'sf1', 'actions', 'sp500', 'tickers', 'indicators']
 >>> source.required_env
 ('SHARADAR_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
+from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
 #: The plan every table needs: the Bundle covers all of them.
@@ -56,6 +57,15 @@ SHARADAR_SOURCE = register_source(
                 frequency="1d",
                 data_type="sfp",
                 dataset_cls=SharadarStockDataset,
+                earliest_available="1997-12-31",
+                entitlement=_ENTITLEMENT,
+            ),
+            # Point-in-time fundamentals, one store per as-reported dimension.
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="sf1",
+                dataset_cls=SharadarFundamentalsDataset,
                 earliest_available="1997-12-31",
                 entitlement=_ENTITLEMENT,
             ),

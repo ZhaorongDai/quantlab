@@ -16,7 +16,7 @@ The data is licensed for personal use: keep raw files and stores on your own mac
 
 ## Pulling the raw tier
 
-`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
+`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `sf1` (fundamentals), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
 
 ```python
 from quantlab.acquisition.sharadar.client import SharadarClient
@@ -100,6 +100,36 @@ SharadarStockDataset(spy).from_raw_data().save()
 # then BacktestConfig(benchmark_dataset=SharadarStockDataset(spy), ...)
 ```
 
+## Fundamentals (SF1)
+
+SF1 holds one row per company, dimension and filing, with 105 indicators (income statement, balance sheet, cash flow, per-share values and ratios). Its raw tier keeps every dimension. A store holds one *as-reported* dimension: `ARQ` (each fiscal quarter) or `ART` (trailing twelve months). For those, `date` is the SEC filing date (the release date), and a filing that restates a period is a new row. The most-recent dimensions (`MRQ`, `MRY`, `MRT`) are dated at the period end and rewritten on restatement, so they would leak values one to three months early. `SharadarFundamentalsConfig` refuses them, and so does `ARY`.
+
+```python
+from quantlab.dataset.config import SharadarFundamentalsConfig
+from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
+
+config = SharadarFundamentalsConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_sf1_arq.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+    dimension="ARQ",          # or "ART"
+    stale_after_days=365,     # the default; None never expires a row
+)
+SharadarFundamentalsDataset(config).update()
+panel = SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-12-31")
+```
+
+The panel follows the point-in-time rule of [ADR 0003](adr/0003-point-in-time-fundamentals-by-release-date.md):
+
+- **Calendar and axis.** The timestamps are SEP's trading days, so the panel lines up with the price panels bar for bar, and the `symbol` axis is the permaticker. The universe fields (`permatickers`, `roster_universe`, `category_filter`) work as for a price panel; the default keeps domestic common stock.
+- **Placement.** A row is available from the first trading day on or after its release date. A weekend filing is shown on Monday.
+- **Selection.** On each day the panel shows, per security, the available row with the latest fiscal period, and within that period the latest filing. A restatement is shown from its own release date, never earlier. A later filing of an older period never replaces a newer period's row.
+- **Staleness.** A row no newer row has replaced stops being shown `stale_after_days` after its release date.
+- **Variables.** Each indicator is a float64 variable whose `unit` attribute is the vendor's unit type from INDICATORS: `currency` (the reporting currency), `USD`, `ratio`, `units` or a per-share unit. SF1's `marketcap` and `ev` are in USD. `release_date` and `reportperiod` (the fiscal period end) say which row each cell shows.
+
+On the 2026-10-05 pull, SF1 has 3.2 million rows (680,000 ARQ and 690,000 ART). Each store holds 15,645 permatickers on 7,233 trading days from 1997-12-31, takes about 10 minutes to build with a 3.4 GB peak per year window, and is about 450 MB on disk. About 4,900 companies are shown on a 2024 trading day, and no cell shows a row before its release date.
+
+**Updates by `lastupdated`.** SF1 is keyed by `(ticker, dimension, date, reportperiod)`, not by date, so it is refreshed differently from the price tables. `SharadarClient.updated_table("sf1", download_dir)` asks REST for every row whose `lastupdated` is on or after the table's watermark. Pages are cut at whole tickers (`ticker.gte`), so a ticker's rows are never split across two pages. The rows are written as `sf1/updated_<pulled at>_<since>.parquet`, and reading the table replaces each earlier row with the same key; the newest pull wins. The watermark moves to the day the pull started. A new bulk pull deletes the updated files. `update()` then appends the new trading days. A stored day is never rewritten, so a value the vendor changes afterwards reaches only the days after the update. A first filer is added to the store with no history; a security that gains rows inside the store's range rebuilds it, as for the price stores. On 2026-10-05, the rows changed in the week since 2026-09-28 (1,436) came back in one request.
+
 ## Scripts
 
 The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
@@ -108,11 +138,11 @@ The download and the daily update are two scripts, run from the repository root.
 export SHARADAR_API_KEY=<your-sharadar-key>
 # once: every table as a bulk zip, then the price and membership stores
 uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
-# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, then append
+# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, SF1 by lastupdated, then append
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions` and `sp500` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`) and `sharadar_sp500_membership.zarr` with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP and SFP stores.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500` and `sf1` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP, SFP and SF1 stores.
 
 ## Daily update
 
