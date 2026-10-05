@@ -19,20 +19,20 @@ The data is licensed for personal use: keep raw files and stores on your own mac
 `SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
 
 ```python
-from quantlab.acquisition.sharadar import SharadarClient
+from quantlab.acquisition.sharadar.client import SharadarClient
 
 client = SharadarClient()
 for code in ("sep", "tickers", "indicators"):
     client.bulk_table(code, "/data/quantlab/downloads")
 ```
 
-A full-history SEP zip is about 1 GB, so pull it on the training server. Rate-limit (429) and server-error responses are retried after a back-off.
+The zip is downloaded in parallel byte ranges (`SharadarClient(download_workers=8, part_bytes=64 << 20)` by default), or as one stream when the storage ignores `Range`. Rate-limit (429) and server-error responses, connections that fail to open and byte ranges whose stream breaks are retried after a back-off. A full-history SEP zip is about 1 GB.
 
 ## Building and reading the panel
 
 ```python
 from quantlab.dataset.config import SharadarDatasetConfig
-from quantlab.dataset.sharadar import SharadarStockDataset
+from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
 config = SharadarDatasetConfig(
     zarr_file_path="/data/quantlab/zarrs/sharadar_sep_1d.zarr",

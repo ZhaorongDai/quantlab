@@ -29,7 +29,7 @@ def _api_key(monkeypatch):
 
 def _pull(download_dir, sep_rows, tickers_rows):
     """Pull SEP and TICKERS through the client; return the vendor root."""
-    from quantlab.acquisition.sharadar import SharadarClient
+    from quantlab.acquisition.sharadar.client import SharadarClient
 
     transport = FakeTransport(
         bulk_routes(
@@ -47,7 +47,7 @@ def _pull(download_dir, sep_rows, tickers_rows):
 
 def _dataset(tmp_path, vendor_root, **fields):
     from quantlab.dataset.config import SharadarDatasetConfig
-    from quantlab.dataset.sharadar import SharadarStockDataset
+    from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
     config = SharadarDatasetConfig(
         zarr_file_path=str(tmp_path / "sharadar_sep_1d.zarr"),
@@ -206,7 +206,7 @@ def test_the_panel_exports_to_kunquant(tmp_path):
 
 def test_chunked_conversion_matches_the_one_shot_store(tmp_path):
     from quantlab.dataset.config import SharadarDatasetConfig
-    from quantlab.dataset.sharadar import SharadarStockDataset
+    from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
     rows = [
         sep_row("AAA", "2023-12-29", 9.0),  # SYNTHETIC

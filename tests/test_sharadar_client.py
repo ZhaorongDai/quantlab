@@ -6,6 +6,8 @@ the client, the zip handling and the parquet writing run for real.
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import polars as pl
 import pytest
 
@@ -32,12 +34,13 @@ def api_key(monkeypatch):
     return KEY
 
 
-def _client(transport, sleeps=None):
-    from quantlab.acquisition.sharadar import SharadarClient
+def _client(transport, sleeps=None, **options):
+    from quantlab.acquisition.sharadar.client import SharadarClient
 
     return SharadarClient(
         transport=transport,
         sleep=(sleeps.append if sleeps is not None else lambda seconds: None),
+        **options,
     )
 
 
@@ -48,7 +51,7 @@ SEP_TEXT = csv_text(
 
 
 def test_a_missing_key_raises_an_entitlement_error_naming_the_table(monkeypatch, tmp_path):
-    from quantlab.acquisition.sharadar import SharadarEntitlementError
+    from quantlab.acquisition.sharadar.client import SharadarEntitlementError
 
     monkeypatch.delenv("SHARADAR_API_KEY", raising=False)
     transport = FakeTransport({})
@@ -60,7 +63,7 @@ def test_a_missing_key_raises_an_entitlement_error_naming_the_table(monkeypatch,
 
 @pytest.mark.parametrize("status", [401, 403])
 def test_a_rejected_key_raises_an_entitlement_error_naming_the_table(api_key, tmp_path, status):
-    from quantlab.acquisition.sharadar import SharadarEntitlementError
+    from quantlab.acquisition.sharadar.client import SharadarEntitlementError
 
     transport = FakeTransport(
         {f"{API}/stocks": [Reply(status, b'{"error":"Exceeds free tier"}')]}
@@ -82,15 +85,17 @@ def test_a_bulk_pull_follows_the_redirect_and_writes_raw_parquet(api_key, tmp_pa
     assert frame["closeunadj"].to_list() == [10.0, 11.0]
     assert frame.schema["date"] == pl.Date
 
-    first, second = transport.calls
+    first, *signed = transport.calls
     assert first.url == f"{API}/stocks"
     assert first.params["years"] == "full"
     # The key travels in a header, never in a URL a log could print.
     assert first.headers["x-api-key"] == KEY
     assert KEY not in str(first.params)
     # The pre-signed URL is the vendor's storage, which never gets the key.
-    assert second.url.startswith("https://bulk.example.invalid/stocks.csv.zip")
-    assert "x-api-key" not in second.headers
+    assert signed and all(
+        c.url.startswith("https://bulk.example.invalid/stocks.csv.zip") for c in signed
+    )
+    assert not any("x-api-key" in c.headers for c in signed)
     # Nothing but the parquet is left behind.
     assert [p.name for p in path.parent.iterdir()] == [path.name]
 
@@ -150,7 +155,7 @@ def test_rate_limit_responses_back_off_and_retry(api_key, tmp_path):
 
 
 def test_rate_limiting_that_never_ends_raises_after_the_retries(api_key, tmp_path):
-    from quantlab.acquisition.sharadar import SharadarHttpError
+    from quantlab.acquisition.sharadar.client import SharadarHttpError
 
     transport = FakeTransport({f"{API}/stocks": [Reply(429)]})
     sleeps: list[float] = []
@@ -167,7 +172,7 @@ def test_an_unknown_table_is_refused_before_any_request(api_key, tmp_path):
 
 
 def test_an_expired_signed_url_is_not_blamed_on_the_key(api_key, tmp_path):
-    from quantlab.acquisition.sharadar import (
+    from quantlab.acquisition.sharadar.client import (
         SharadarEntitlementError,
         SharadarHttpError,
     )
@@ -185,4 +190,98 @@ def test_every_response_is_closed(api_key, tmp_path):
     routes[f"{API}/stocks"] = [Reply(429), *routes[f"{API}/stocks"]]
     transport = FakeTransport(routes)
     _client(transport).bulk_table("sep", tmp_path)
-    assert transport.closed == len(transport.calls) == 3
+    assert transport.closed == len(transport.calls) > 3
+
+
+def _signed_calls(transport):
+    return [c for c in transport.calls if c.url.startswith("https://bulk.example.invalid/")]
+
+
+def test_the_zip_downloads_in_parallel_byte_ranges(api_key, tmp_path):
+    # Enough rows that the zip spans several 64-byte parts.
+    rows = [sep_row("AAA", f"2024-01-{day:02d}", 10.0 + day) for day in range(1, 29)]  # SYNTHETIC
+    transport = FakeTransport(bulk_routes({"stocks": csv_text(SEP_COLUMNS, rows)}))
+    client = _client(transport, download_workers=4, part_bytes=64)
+    frame = pl.read_parquet(client.bulk_table("sep", tmp_path))
+
+    assert frame["closeunadj"].to_list() == [10.0 + day for day in range(1, 29)]
+    ranges = [c.headers["Range"] for c in _signed_calls(transport)]
+    # A one-byte probe for the size, then the parts, which tile the file.
+    assert ranges[0] == "bytes=0-0"
+    parts = sorted(
+        tuple(int(v) for v in r.removeprefix("bytes=").split("-")) for r in ranges[1:]
+    )
+    assert len(parts) > 2
+    assert parts[0][0] == 0
+    assert all(b[0] == a[1] + 1 for a, b in pairwise(parts))
+    assert transport.closed == len(transport.calls)
+
+
+def test_storage_that_ignores_ranges_downloads_in_one_stream(api_key, tmp_path):
+    routes = bulk_routes({"stocks": SEP_TEXT})
+    signed = next(url for url in routes if url != f"{API}/stocks")
+    routes[signed] = [Reply(200, routes[signed][0].body, ranges=False)]
+    transport = FakeTransport(routes)
+    frame = pl.read_parquet(_client(transport, part_bytes=8).bulk_table("sep", tmp_path))
+    assert frame.height == 2
+    assert len(_signed_calls(transport)) == 1
+
+
+def test_a_failed_part_is_retried(api_key, tmp_path):
+    routes = bulk_routes({"stocks": SEP_TEXT})
+    signed = next(url for url in routes if url != f"{API}/stocks")
+    zipped = routes[signed][0].body
+    # Probe answers, then one part hits a 503 and is retried.
+    routes[signed] = [Reply(200, zipped), Reply(503), Reply(200, zipped)]
+    transport = FakeTransport(routes)
+    sleeps: list[float] = []
+    frame = pl.read_parquet(
+        _client(transport, sleeps, download_workers=1, part_bytes=1 << 20).bulk_table("sep", tmp_path)
+    )
+    assert frame.height == 2
+    assert len(sleeps) == 1
+
+
+def test_a_part_whose_connection_breaks_is_downloaded_again(api_key, tmp_path):
+    routes = bulk_routes({"stocks": SEP_TEXT})
+    signed = next(url for url in routes if url != f"{API}/stocks")
+    zipped = routes[signed][0].body
+    # Probe answers, the part's stream drops half way, the retry completes.
+    routes[signed] = [Reply(200, zipped), Reply(200, zipped, breaks=True), Reply(200, zipped)]
+    transport = FakeTransport(routes)
+    sleeps: list[float] = []
+    frame = pl.read_parquet(
+        _client(transport, sleeps, download_workers=1, part_bytes=1 << 20).bulk_table("sep", tmp_path)
+    )
+    assert frame["closeunadj"].to_list() == [10.0, 11.0]
+    assert len(sleeps) == 1
+    assert transport.closed == len(transport.calls)
+
+
+def test_a_connection_that_keeps_breaking_raises_after_the_retries(api_key, tmp_path):
+    from quantlab.acquisition.sharadar.client import SharadarHttpError
+
+    routes = bulk_routes({"stocks": SEP_TEXT})
+    signed = next(url for url in routes if url != f"{API}/stocks")
+    zipped = routes[signed][0].body
+    routes[signed] = [Reply(200, zipped), Reply(200, zipped, breaks=True)]
+    transport = FakeTransport(routes)
+    with pytest.raises(SharadarHttpError, match="broken"):
+        _client(transport, max_retries=2, part_bytes=1 << 20).bulk_table("sep", tmp_path)
+
+
+def test_a_connection_that_fails_to_open_is_retried(api_key, tmp_path):
+    from quantlab.acquisition.sharadar.client import SharadarTransportError
+
+    inner = FakeTransport(bulk_routes({"stocks": SEP_TEXT}))
+    failures = [SharadarTransportError("connection refused (SYNTHETIC)")]
+
+    def flaky(url, *, params, headers):
+        if failures:
+            raise failures.pop()
+        return inner(url, params=params, headers=headers)
+
+    sleeps: list[float] = []
+    frame = pl.read_parquet(_client(flaky, sleeps).bulk_table("sep", tmp_path))
+    assert frame.height == 2
+    assert len(sleeps) == 1

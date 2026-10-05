@@ -18,6 +18,7 @@ test key, is in this repository: the data is licensed.
 from __future__ import annotations
 
 import io
+import threading
 import zipfile
 from dataclasses import dataclass, field
 from urllib.parse import urlencode
@@ -162,6 +163,12 @@ class Reply:
     status: int
     body: bytes = b""
     headers: dict = field(default_factory=dict)
+    #: Whether a 200 reply answers a ``Range`` request with the 206 slice, as
+    #: file storage does. ``False`` ignores the header and sends everything.
+    ranges: bool = True
+    #: Whether the connection drops after the first half of the body, as a
+    #: broken stream does.
+    breaks: bool = False
 
 
 @dataclass
@@ -185,29 +192,48 @@ class FakeTransport:
         self.calls: list[Call] = []
         #: How many responses the client closed.
         self.closed = 0
+        # The client may call from several threads at once.
+        self._lock = threading.Lock()
 
     def __call__(self, url: str, *, params: dict, headers: dict):
-        from quantlab.acquisition.sharadar import Response
+        from quantlab.acquisition.sharadar.client import Response
 
-        self.calls.append(Call(url, dict(params), dict(headers)))
         route = url.split("?")[0]
-        if route not in self.routes:
-            raise AssertionError(
-                f"unexpected request {url} {urlencode(params)}; scripted: {sorted(self.routes)}"
-            )
-        replies = self.routes[route]
-        reply = replies.pop(0) if len(replies) > 1 else replies[0]
+        with self._lock:
+            self.calls.append(Call(url, dict(params), dict(headers)))
+            if route not in self.routes:
+                raise AssertionError(
+                    f"unexpected request {url} {urlencode(params)}; scripted: {sorted(self.routes)}"
+                )
+            replies = self.routes[route]
+            reply = replies.pop(0) if len(replies) > 1 else replies[0]
+        status, body, reply_headers = reply.status, reply.body, dict(reply.headers)
+        requested = headers.get("Range")
+        if requested and status == 200 and reply.ranges:
+            first, last = (int(v) for v in requested.removeprefix("bytes=").split("-"))
+            last = min(last, len(body) - 1)
+            status, body = 206, body[first : last + 1]
+            reply_headers["Content-Range"] = f"bytes {first}-{last}/{len(reply.body)}"
         # Two chunks, so the client must join a streamed body.
-        half = len(reply.body) // 2
+        half = len(body) // 2
         return Response(
-            status=reply.status,
-            headers=dict(reply.headers),
-            body=iter([reply.body[:half], reply.body[half:]]),
+            status=status,
+            headers=reply_headers,
+            body=_broken(body[:half]) if reply.breaks else iter([body[:half], body[half:]]),
             close=self._close,
         )
 
     def _close(self) -> None:
-        self.closed += 1
+        with self._lock:
+            self.closed += 1
+
+
+def _broken(first: bytes):
+    """Yield ``first``, then fail as a dropped connection does."""
+    from quantlab.acquisition.sharadar.client import SharadarTransportError
+
+    yield first
+    raise SharadarTransportError("connection broken (SYNTHETIC)")
 
 
 API = "https://api.sharadar.com/v1.0/data"
