@@ -8,8 +8,9 @@ writer and the reader cannot disagree.
 
 Each table has a short *code*, the lower-cased legacy Sharadar code (``sep``
 for stock prices), which names its directory, and an *API name*
-(``stocks``), which is what ``api.sharadar.com/v1.0`` and the ``table``
-column of TICKERS call it. Column names and order are Sharadar's published
+(``stocks``), which is what ``api.sharadar.com/v1.0`` calls it. TICKERS'
+``table`` column uses the upper-case code in the bulk file (``SEP``) and the
+API name over REST (``stocks``). Column names and order are Sharadar's published
 schema, verbatim (``GET api.sharadar.com/v1.0/schema/<api name>``, as of
 2026-08-18), with the PostgreSQL types mapped to polars: ``text`` to
 ``String``, ``date`` to ``Date``, ``double precision`` to ``Float64`` and
@@ -44,8 +45,7 @@ class SharadarTable:
     code : str
         Lower-cased legacy code; the name of the table's raw directory.
     api_name : str
-        The table's name on ``api.sharadar.com/v1.0`` and in the ``table``
-        column of TICKERS.
+        The table's name on ``api.sharadar.com/v1.0``.
     schema : dict of str to polars.DataType
         The columns in the vendor's order, with their types.
     """
@@ -53,6 +53,20 @@ class SharadarTable:
     code: str
     api_name: str
     schema: dict[str, type[pl.DataType]]
+
+    @property
+    def tickers_labels(self) -> tuple[str, str]:
+        """Return the values TICKERS' ``table`` column gives this table's rows.
+
+        The bulk TICKERS file uses the upper-case legacy code (``SEP``), the
+        REST API the API name (``stocks``); both are accepted.
+
+        Examples
+        --------
+        >>> TABLES["sep"].tickers_labels
+        ('SEP', 'stocks')
+        """
+        return (self.code.upper(), self.api_name)
 
 
 #: The tables the raw tier holds so far, by code.

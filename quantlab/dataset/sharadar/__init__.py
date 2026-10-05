@@ -165,7 +165,7 @@ class SharadarStockDataset(MarketDataset):
             )
             mapping = (
                 scan_raw_table(root, "tickers")
-                .filter(pl.col("table") == table(self.config.table).api_name)
+                .filter(pl.col("table").is_in(table(self.config.table).tickers_labels))
                 .select("ticker", "permaticker")
                 .unique()
                 .collect()

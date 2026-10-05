@@ -7,8 +7,10 @@ request from a script of responses.
 **Provenance rule for every value in this module.** Column names and their
 order are VERBATIM from Sharadar's published PostgreSQL schemas
 (`GET api.sharadar.com/v1.0/schema/{table}?format=postgres`, "As of
-2026-08-18"), and the `tickers.table` value `stocks` is VERBATIM from the
-vendor's data dictionary. Every row value is invented for the test and carries
+2026-08-18"). The `tickers.table` values are VERBATIM too: the bulk TICKERS
+file labels rows with the legacy codes (`SEP`, `SFP`, `SF1`, ...; live bulk
+pull, 2026-10-05), while the REST API labels them with the API names
+(`stocks`, `funds`, ...). Every row value is invented for the test and carries
 a `# SYNTHETIC` comment. No row returned by Sharadar, including from its public
 test key, is in this repository: the data is licensed.
 """

@@ -96,7 +96,7 @@ def test_a_bulk_pull_follows_the_redirect_and_writes_raw_parquet(api_key, tmp_pa
 
 
 def test_tickers_and_indicators_are_kept_as_parquet_sidecar_tables(api_key, tmp_path):
-    tickers_text = csv_text(TICKERS_COLUMNS, [tickers_row("stocks", 101, "AAA")])  # SYNTHETIC
+    tickers_text = csv_text(TICKERS_COLUMNS, [tickers_row("SEP", 101, "AAA")])  # SYNTHETIC
     indicators_text = csv_text(INDICATORS_COLUMNS, INDICATORS_ROWS)
     transport = FakeTransport(
         bulk_routes({"tickers": tickers_text, "descriptions": indicators_text})

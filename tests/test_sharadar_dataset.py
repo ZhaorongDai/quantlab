@@ -74,7 +74,7 @@ def test_the_panel_is_raw_ohlcv_on_the_permaticker_axis(tmp_path):
         sep_row("AAA", "2024-01-03", 51.0, closeunadj=102.0),  # SYNTHETIC
         sep_row("BBB", "2024-01-02", 20.0),  # SYNTHETIC
     ]
-    tickers = [tickers_row("stocks", 101, "AAA"), tickers_row("stocks", 202, "BBB")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 101, "AAA"), tickers_row("SEP", 202, "BBB")]  # SYNTHETIC
     ds = _build(tmp_path, rows, tickers)
 
     panel = ds.panel("2024-01-01", "2024-01-31")
@@ -99,7 +99,7 @@ def test_a_ticker_change_keeps_one_permatickers_history_whole(tmp_path):
         sep_row("META", "2024-01-02", 10.0),  # SYNTHETIC
         sep_row("META", "2024-01-03", 11.0),  # SYNTHETIC
     ]
-    tickers = [tickers_row("stocks", 303, "META", relatedtickers="FB")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 303, "META", relatedtickers="FB")]  # SYNTHETIC
     panel = _build(tmp_path, rows, tickers).panel("2024-01-01", "2024-01-31")
     assert panel.symbol.values.tolist() == [303]
     assert panel["close"].sel(symbol=303).values.tolist() == [10.0, 11.0]
@@ -113,8 +113,8 @@ def test_two_tickers_of_one_permaticker_share_its_column(tmp_path):
         sep_row("META", "2024-01-03", 11.0),  # SYNTHETIC
     ]
     tickers = [
-        tickers_row("stocks", 303, "FB"),  # SYNTHETIC
-        tickers_row("stocks", 303, "META"),  # SYNTHETIC
+        tickers_row("SEP", 303, "FB"),  # SYNTHETIC
+        tickers_row("SEP", 303, "META"),  # SYNTHETIC
     ]
     panel = _build(tmp_path, rows, tickers).panel("2024-01-01", "2024-01-31")
     assert panel["close"].sel(symbol=303).values.tolist() == [10.0, 11.0]
@@ -128,8 +128,8 @@ def test_a_reused_ticker_never_splices_two_companies(tmp_path):
         sep_row("ABC", "2024-01-04", 70.0),  # SYNTHETIC
     ]
     tickers = [
-        tickers_row("stocks", 404, "ABC1", isdelisted="Y"),  # SYNTHETIC
-        tickers_row("stocks", 505, "ABC"),  # SYNTHETIC
+        tickers_row("SEP", 404, "ABC1", isdelisted="Y"),  # SYNTHETIC
+        tickers_row("SEP", 505, "ABC"),  # SYNTHETIC
     ]
     panel = _build(tmp_path, rows, tickers).panel("2024-01-01", "2024-01-31")
     close = panel["close"].to_pandas()
@@ -141,8 +141,8 @@ def test_the_mapping_uses_only_the_tables_own_tickers_rows(tmp_path):
     # The same ticker under another table (a fund) is a different security.
     rows = [sep_row("XYZ", "2024-01-02", 10.0)]  # SYNTHETIC
     tickers = [
-        tickers_row("funds", 909, "XYZ"),  # SYNTHETIC
-        tickers_row("stocks", 606, "XYZ"),  # SYNTHETIC
+        tickers_row("SFP", 909, "XYZ"),  # SYNTHETIC
+        tickers_row("SEP", 606, "XYZ"),  # SYNTHETIC
     ]
     panel = _build(tmp_path, rows, tickers).panel("2024-01-01", "2024-01-31")
     assert panel.symbol.values.tolist() == [606]
@@ -150,7 +150,7 @@ def test_the_mapping_uses_only_the_tables_own_tickers_rows(tmp_path):
 
 def test_a_ticker_mapped_to_two_permatickers_is_refused(tmp_path):
     rows = [sep_row("DUP", "2024-01-02", 10.0)]  # SYNTHETIC
-    tickers = [tickers_row("stocks", 1, "DUP"), tickers_row("stocks", 2, "DUP")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 1, "DUP"), tickers_row("SEP", 2, "DUP")]  # SYNTHETIC
     vendor_root = _pull(tmp_path / "downloads", rows, tickers)
     with pytest.raises(ValueError, match="DUP"):
         _dataset(tmp_path, vendor_root).from_raw_data()
@@ -158,7 +158,7 @@ def test_a_ticker_mapped_to_two_permatickers_is_refused(tmp_path):
 
 def test_a_ticker_missing_from_tickers_is_refused(tmp_path):
     rows = [sep_row("AAA", "2024-01-02", 10.0), sep_row("ZZZ", "2024-01-02", 5.0)]  # SYNTHETIC
-    tickers = [tickers_row("stocks", 101, "AAA")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 101, "AAA")]  # SYNTHETIC
     vendor_root = _pull(tmp_path / "downloads", rows, tickers)
     with pytest.raises(ValueError, match="ZZZ"):
         _dataset(tmp_path, vendor_root).from_raw_data()
@@ -166,7 +166,7 @@ def test_a_ticker_missing_from_tickers_is_refused(tmp_path):
 
 def test_two_tickers_of_one_permaticker_on_one_date_are_refused(tmp_path):
     rows = [sep_row("FB", "2024-01-02", 10.0), sep_row("META", "2024-01-02", 10.5)]  # SYNTHETIC
-    tickers = [tickers_row("stocks", 303, "FB"), tickers_row("stocks", 303, "META")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 303, "FB"), tickers_row("SEP", 303, "META")]  # SYNTHETIC
     vendor_root = _pull(tmp_path / "downloads", rows, tickers)
     with pytest.raises(ValueError, match="303"):
         _dataset(tmp_path, vendor_root).from_raw_data()
@@ -178,7 +178,7 @@ def test_the_config_dates_and_permatickers_bound_the_conversion(tmp_path):
         sep_row("AAA", "2024-01-03", 11.0),  # SYNTHETIC
         sep_row("BBB", "2024-01-03", 20.0),  # SYNTHETIC
     ]
-    tickers = [tickers_row("stocks", 101, "AAA"), tickers_row("stocks", 202, "BBB")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 101, "AAA"), tickers_row("SEP", 202, "BBB")]  # SYNTHETIC
     ds = _build(
         tmp_path, rows, tickers,
         start_date="2024-01-03", end_date="2024-01-31", permatickers=(101,),
@@ -195,7 +195,7 @@ def test_ticker_symbols_are_refused_in_favour_of_permatickers(tmp_path):
 
 def test_the_panel_exports_to_kunquant(tmp_path):
     rows = [sep_row("AAA", "2024-01-02", 10.0), sep_row("AAA", "2024-01-03", 11.0)]  # SYNTHETIC
-    ds = _build(tmp_path, rows, [tickers_row("stocks", 101, "AAA")])  # SYNTHETIC
+    ds = _build(tmp_path, rows, [tickers_row("SEP", 101, "AAA")])  # SYNTHETIC
     inputs, symbols, _ = ds.to_kunquant(
         ("close", "volume"), panel=ds.panel("2024-01-01", "2024-01-31")
     )
@@ -213,7 +213,7 @@ def test_chunked_conversion_matches_the_one_shot_store(tmp_path):
         sep_row("AAA", "2024-01-02", 10.0),  # SYNTHETIC
         sep_row("BBB", "2024-01-03", 20.0),  # SYNTHETIC
     ]
-    tickers = [tickers_row("stocks", 101, "AAA"), tickers_row("stocks", 202, "BBB")]  # SYNTHETIC
+    tickers = [tickers_row("SEP", 101, "AAA"), tickers_row("SEP", 202, "BBB")]  # SYNTHETIC
     one_shot = _build(tmp_path, rows, tickers)
     chunked = SharadarStockDataset(
         SharadarDatasetConfig(
@@ -234,9 +234,19 @@ def test_the_dataset_rebuilds_from_its_saved_config(tmp_path):
     from quantlab.core.component import config_to_dict, rebuild
 
     rows = [sep_row("AAA", "2024-01-02", 10.0)]  # SYNTHETIC
-    ds = _build(tmp_path, rows, [tickers_row("stocks", 101, "AAA")], permatickers=(101,))  # SYNTHETIC
+    ds = _build(tmp_path, rows, [tickers_row("SEP", 101, "AAA")], permatickers=(101,))  # SYNTHETIC
     saved = json.loads(json.dumps(config_to_dict(ds.config)))
     rebuilt = rebuild(saved)
     assert type(rebuilt).__name__ == "SharadarStockDataset"
     assert rebuilt.config == ds.config
     assert rebuilt.panel("2024-01-01", "2024-01-31").symbol.values.tolist() == [101]
+
+
+def test_the_rest_apis_table_name_maps_like_the_bulk_code(tmp_path):
+    # The bulk TICKERS file labels SEP rows `SEP`; the REST API labels them
+    # `stocks`. Either spelling maps the stock table.
+    rows = [sep_row("AAA", "2024-01-02", 10.0)]  # SYNTHETIC
+    panel = _build(tmp_path, rows, [tickers_row("stocks", 101, "AAA")]).panel(  # SYNTHETIC
+        "2024-01-01", "2024-01-31"
+    )
+    assert panel.symbol.values.tolist() == [101]
