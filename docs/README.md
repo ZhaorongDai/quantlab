@@ -58,6 +58,10 @@ backtest run.
 dataset, a storage backend, a factor, a model head and a backtest rule, each with a minimal
 working example.
 
+[Style factors](developer-guide/style-factors.md) documents `BarraStyle`, the Barra
+USE4-style exposures: every style and descriptor, the deviations from USE4, which defaults are
+MSCI's and which are ours, and what a full-history run on Sharadar data gives.
+
 [Internals](developer-guide/internals.md) describes the machinery that makes long jobs safe to
 interrupt: resumable downloads and conversions, rebuilds, the volume check, atomic writes and
 data fingerprints and code records.
