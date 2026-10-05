@@ -26,7 +26,7 @@ uv run python scripts/sharadar/download.py \
 
 and point the script at that root: `QUANTLAB_DATA_DIR=/data/quantlab`, or set `DATA_ROOT` at the top of the file. The script reads `<data root>/zarrs/` and writes under `<data root>/pipeline/sharadar_sp500/`. `scripts/sharadar/update.py` keeps the stores current.
 
-The data is licensed for personal use: keep the data root outside the repository, and keep runs off public trackers. The tracker is offline (runs are written to `wandb/` and never uploaded); set it to `"disabled"` to write nothing.
+The data is licensed for personal use: the data root must be outside the repository (the script refuses one inside it), and runs stay off public trackers. The tracker is offline (runs are written to `wandb/` and never uploaded); set it to `"disabled"` to write nothing.
 
 ## Run
 

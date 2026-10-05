@@ -53,6 +53,7 @@ from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
+from quantlab.utils.cli import inside_repository
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository.
 #: Replace with ``Path("/my/root")``. The stores are where
@@ -138,15 +139,21 @@ def prepare_stores() -> None:
     """Write ``prices`` (full history of every member ever) and ``members``
     (the same panel, NaN where the permaticker was not a member that day).
     """
-    prices_ds, membership = index_dataset(), index_membership()
-    for store in (prices_ds.config.zarr_file_path, membership.config.zarr_file_path):
+    # The data is licensed for personal use: never write it into the repository.
+    if inside_repository([DATA_ROOT], Path(__file__).resolve().parents[2]):
+        raise ValueError(
+            f"data root {DATA_ROOT} is inside the repository; set "
+            f"QUANTLAB_DATA_DIR or DATA_ROOT to a directory outside it."
+        )
+    index, membership = index_dataset(), index_membership()
+    for store in (index.config.zarr_file_path, membership.config.zarr_file_path):
         if not Path(store).exists():
             raise FileNotFoundError(
                 f"{store} not found; run scripts/sharadar/download.py first "
                 f"(see README.md)."
             )
     # Every bar up to END: the factors warm up on the history before START.
-    prices = prices_ds.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume"]]
+    prices = index.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume"]]
     member = (
         membership.panel(Date.START_DATE, END)["is_member"]
         .reindex(timestamp=prices.timestamp, symbol=prices.symbol)
