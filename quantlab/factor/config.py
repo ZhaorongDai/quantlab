@@ -3,8 +3,9 @@
 A factor is constructed from one of these and exposes it as ``self.config``. They
 are frozen; the factor's config setter normalises the config it is given into a
 new one (dates, factor names, the ``name`` field the factor is rebuilt from; see
-``quantlab.core.component``). A factor's ``dataset`` (and a market-feature
-factor's ``series``) is declared with ``component()`` and written as its own config.
+``quantlab.core.component``). A factor's ``dataset`` (a market-feature
+factor's ``series``, a neutralized factor's ``factor``) is declared with
+``component()`` and written as its own config.
 """
 
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from quantlab.enums.data import ResampleFrequency
 
 if TYPE_CHECKING:
     from quantlab.dataset.base import MarketDataset
+    from quantlab.factor.base import Factor
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -141,3 +143,40 @@ class MarketFeatureConfig(BaseFactorConfig):
     #: Series name to the single-symbol dataset it is computed from, in the
     #: order the features are listed.
     series: "dict[str, MarketDataset]" = component(many=True)
+
+
+@dataclass(kw_only=True, frozen=True)
+class NeutralizedConfig(BaseFactorConfig):
+    """Config of ``quantlab.factor.predefined.neutralized.NeutralizedFactor``.
+
+    ``factor`` is the factor whose outputs are neutralized; it keeps its own
+    config, warm-up and store. ``dataset`` is the dataset of the exposures,
+    the panel holding ``size_column`` and ``industry_column``, or a list of
+    datasets, merged into one ``MergedDataset`` as for any factor. Both are
+    component fields, so ``to_dict()`` nests their configs and
+    ``NeutralizedFactor.from_config`` rebuilds them.
+
+    Examples
+    --------
+    With ``alpha`` a stock alpha factor, ``daily`` a Sharadar daily metrics
+    dataset and ``industry`` a Sharadar industry dataset:
+
+    >>> cfg = NeutralizedConfig(factor=alpha, dataset=[daily, industry])
+    >>> cfg.regressors, cfg.size_column, cfg.warmup_bars
+    (('industry', 'size'), 'marketcap', 0)
+    """
+
+    #: Neutralization looks at one bar at a time, so it reads no history;
+    #: the wrapped factor warms itself up. Anything but 0 is refused.
+    warmup_bars: int = 0
+    #: The factor whose outputs are neutralized.
+    factor: "Factor" = component()
+    #: Exposure variable holding the market cap; its log is the size regressor.
+    size_column: str = "marketcap"
+    #: Exposure variable holding the integer industry code.
+    industry_column: str = "industry"
+    #: What the outputs are neutralized against: ``"industry"``, ``"size"``
+    #: or both.
+    regressors: tuple[str, ...] = ("industry", "size")
+    #: Threads used by the KunQuant executor.
+    njobs: int = 128

@@ -479,6 +479,29 @@ XrBackend()
 
 指数加权窗口统计量以 `0.5 ** (age / half_life)` 给最近 `window` 根 bar 加权，当前 bar 的 `age` 为 0：`EWSum`、`EWMean`、`EWVar`（加权总体方差）、`EWCov`，以及 `EWBeta` / `EWAlpha`，即 `y` 对 `x` 加权最小二乘拟合的斜率和截距。NaN 值被跳过而不是传播，其权重也不计入权重和；历史不足 `window` 根 bar 时结果为 NaN。权重是精确构造的，没有用 KunQuant 的 `Exp`（一个精度约 1e-7 的多项式）。随之提供五个估计域算子：`CrossSectionalTopN(v, n)` 在每个时间点把最大的 `n` 个值标为 1（并列时排在前面的标的优先；每个 `n` 生成一个类），`CrossSectionalWeightedMean(v, w)` 广播按 `w` 加权的均值，`CapWeightedStandardize(v, w, universe)` 减去估计域内按 `w` 加权的均值、除以估计域内等权样本标准差，并对所有标的使用同一组数，`CrossSectionalSigmaClip(v, universe, data_error=10, clip=3)` 取 `v` 在估计域内的等权均值 `m` 和样本标准差 `s`，把离 `m` 超过 `data_error * s` 的值设为 NaN，其余截到 `m ± clip * s`（USE4 的离群值处理，在标准化之前作用于原始描述符；每组阈值生成一个类）。`EWResidualStd(y, x, window, half_life)` 是 `EWBeta` 拟合残差的加权标准差；`CMRA(v, months=12, month_length=21)` 是 USE4 的累计区间 `log(1 + max Z) - log(1 + min Z)`，`Z` 为 `v` 在最近 1 到 `months` 个月上的和（`min Z <= -1` 时为 NaN）。`CrossSectionalWLSResidual(y, x, w, universe)` 每根 bar 在估计域内做 `y` 对 `x` 带截距、按 `w` 加权的最小二乘回归，并给每个标的它的残差，缺失的回归变量按其均值处理（回归变量没有变化的 bar 为 NaN）；`RenormalizedCombine(values, weights)` 对存在的值加权求和，权重在存在的值上重新归一。`CrossSectionalIndustrySizeFill(y, size, industry, w, universe, eligible)` 在 `y` 有限处保持原值，对符合条件的标的的缺失值，用估计域内按 `w` 加权、每个行业代码一个截距加 `size` 斜率的回归来填补（Frisch–Waugh–Lovell，不解矩阵）；`use_industry=False` 或 `use_size=False` 去掉一个回归变量。`CrossSectionalNeutralize(y, size, industry, w=None, universe=None)` 拟合同一个回归，给每个 `y` 有限的标的输出残差；所用回归变量缺失、或其行业没有拟合成员时为 NaN（对行业、size 或两者做中性化，开关同上；size 在当根 bar 不变化时保留行业内去均值后的值，而不是整根 NaN）。不传 `w` 即普通最小二乘，不传 `universe` 即在全部标的上拟合；不要把同一个常数传两次，KunQuant 会把它们合并成一个输入，导致算子无法编译。残差不再重新标准化。KunQuant 的 `Log` 在双精度下绝对误差约 4e-10。`BarraStyle` 用到了这些算子。
 
+### 对行业和市值做因子中性化
+
+`NeutralizedFactor`（`quantlab.factor.predefined.neutralized`）包装另一个因子，把行业和市值的成分从它的输出中去掉。每根 bar 上，每个输出被替换为它在全部标的上、对“每个行业一个截距 + 对数市值斜率”做普通最小二乘回归的残差（`CrossSectionalNeutralize`），残差再跨标的做一次 z-score。输出沿用被包装因子的名字，所以把模型 `factors` 里的因子换成包装后的因子即可，其他什么都不用改。它的配置是 `NeutralizedConfig`：`factor` 是被包装的因子，它照常计算、预热和存储；`dataset` 是暴露数据，一个数据集或会被合并成一个的数据集列表，其中含 `size_column`（默认 `"marketcap"`）和 `industry_column`（默认 `"industry"`）；`regressors` 取 `("industry", "size")`、`("industry",)` 或 `("size",)`。暴露数据按被包装因子的 bar 读取（bar t 用 bar t 的值），并对齐到它的标的上。某根 bar 上所用暴露缺失、或市值不为正的标的在该处为 NaN；Sharadar 的次要股权类别（GOOG）没有自己的市值，因此在 size 中性化下也是 NaN。`warmup_bars` 为 0，其他值会被拒绝。包装因子有自己的存储，`build`、`read`、`extend` 与普通因子一样可用，从存储读取因子的模型读到的就是中性化后的值。它只支持批量：没有流式模式，也不能重采样。下面把 `examples/sharadar_us_equity/sp500_xgb.py` 里的 `Alpha158Stock`（在 Sharadar 存储的 permaticker 轴上）对 Sharadar 的日度市值和 point-in-time 行业做中性化；先 `alpha158_neutral.build(START, END)`，再在模型的 `factors` 里用 `alpha158_neutral` 替换 `alpha158`。
+
+```python
+from quantlab.dataset.config import SharadarDailyConfig, SharadarIndustryConfig
+from quantlab.dataset.sharadar.daily import SharadarDailyDataset
+from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
+from quantlab.factor.config import NeutralizedConfig
+from quantlab.factor.predefined.neutralized import NeutralizedFactor
+
+daily = SharadarDailyDataset(SharadarDailyConfig(
+    zarr_file_path=str(STORES / "sharadar_daily_1d.zarr"), raw_data_dir_path=str(VENDOR),
+))
+industry = SharadarIndustryDataset(SharadarIndustryConfig(
+    zarr_file_path=str(STORES / "sharadar_industry_1d.zarr"), raw_data_dir_path=str(VENDOR),
+))
+alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
+    factor=alpha158, dataset=[daily, industry],
+    file_path=str(WORK / "factor" / "alpha158_neutral.zarr"), njobs=16,
+))
+```
+
 ### 已有的因子
 
 | 类 | 后端 | 说明 |
