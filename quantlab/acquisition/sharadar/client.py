@@ -15,6 +15,14 @@ parquet file under ``<download-dir>/sharadar/<code>/`` (see
 ``quantlab.dataset.sharadar.tables``). The raw tier is the vendor's exact
 rows, so every Zarr store can be rebuilt from it without the network.
 
+A *date-window pull* (``window_table``) refreshes a date-keyed table every
+morning: it asks REST for every calendar day from a trailing number of
+trading days before the table's watermark through today, one request per
+day and page, and writes the rows as one window file, a complete copy of
+the table over those dates that supersedes earlier rows of them. Each pull,
+bulk or window, then records the table's watermark, so an interrupted
+refresh restarts from the last one that finished.
+
 Every HTTP request goes through one *transport* function, the client's only
 seam: tests replace it and run offline. A 401 or 403, or a missing key,
 raises ``SharadarEntitlementError`` naming the table. A 429 (rate limited) or
@@ -43,6 +51,7 @@ import zipfile
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -51,9 +60,15 @@ from loguru import logger
 
 from quantlab.dataset.sharadar.tables import (
     VENDOR_DIR,
+    WINDOW_PREFIX,
     SharadarTable,
     raw_table_dir,
+    read_watermark,
+    scan_raw_table,
     table,
+    vendor_today,
+    window_file,
+    write_watermark,
 )
 
 #: The environment variable holding the API key; the only place it is read from.
@@ -271,8 +286,152 @@ class SharadarClient:
             partial = Path(scratch) / target.name
             pl.scan_csv(csv_path, schema=spec.schema).sink_parquet(partial)
             os.replace(partial, target)
+        # The bulk file is the newest copy of every date, so it supersedes the
+        # windows; the watermark (the day of the pull) is written last.
+        vendor_root = Path(download_dir) / VENDOR_DIR
+        for window in directory.glob(f"{WINDOW_PREFIX}*.parquet"):
+            window.unlink()
+        if "date" in spec.schema:
+            write_watermark(vendor_root, code, vendor_today())
         logger.info(f"Sharadar {code}: bulk pull (years={years}) written to {target}")
         return target
+
+    def window_table(
+        self,
+        code: str,
+        download_dir: str | Path,
+        *,
+        through: str | date | None = None,
+        trading_days: int = 10,
+        page_rows: int = 10_000,
+    ) -> Path:
+        """Pull a table's recent dates over REST and write them as a window file.
+
+        The window runs from the ``trading_days``-th most recent date of the
+        raw table on or before its watermark through ``through``, every
+        calendar day (a weekend answers no row). Each day is asked for
+        separately and paged by ``page_rows`` in ticker order, so paging is
+        stable. The rows are checked against the schema, written as one
+        window file (see ``quantlab.dataset.sharadar.tables.window_file``),
+        and only then is the watermark moved to ``through``: a failed pull
+        leaves the raw tier and the watermark as they were.
+
+        Parameters
+        ----------
+        code : str
+            A date-keyed table's code (``"sep"``, ``"actions"``).
+        download_dir : str or Path
+            The download root holding ``sharadar/<code>/``, with a bulk pull
+            of the table already in it.
+        through : str, date or None, default None
+            Last day of the window; ``None`` is today in Sharadar's time
+            zone (US/Eastern).
+        trading_days : int, default 10
+            Raw dates re-pulled before the watermark, so a late vendor
+            correction to a recent day is seen.
+        page_rows : int, default 10000
+            Rows per request (Sharadar's ``limit``).
+
+        Returns
+        -------
+        Path
+            The window file written.
+
+        Raises
+        ------
+        KeyError
+            If the code is not a known table.
+        ValueError
+            If the table has no ``date`` column, or no raw pull yet.
+        SharadarEntitlementError, SharadarHttpError
+            As for ``bulk_table``.
+
+        Examples
+        --------
+        Refresh SEP and ACTIONS each morning (needs the key and the network)::
+
+            client = SharadarClient()
+            for code in ("sep", "actions"):
+                client.window_table(code, "/data/quantlab/downloads")
+        """
+        spec = table(code)
+        if "date" not in spec.schema:
+            raise ValueError(f"Sharadar table {code!r} has no date column to window.")
+        key = os.environ.get(API_KEY_ENV)
+        if not key:
+            raise SharadarEntitlementError(
+                f"cannot pull Sharadar table {code!r}: {API_KEY_ENV} is not set."
+            )
+        vendor_root = Path(download_dir) / VENDOR_DIR
+        end = date.fromisoformat(str(through)) if through is not None else vendor_today()
+        start = self._window_start(vendor_root, code, end, trading_days)
+        frames = []
+        day = start
+        while day <= end:
+            frames.extend(self._pull_day(spec, key, day, page_rows))
+            day += timedelta(days=1)
+        rows = pl.concat(frames) if frames else pl.DataFrame(schema=spec.schema)
+        target = window_file(vendor_root, code, datetime.now(UTC), start, end)
+        partial = target.with_name(f".{target.name}.partial")
+        rows.write_parquet(partial)
+        os.replace(partial, target)
+        write_watermark(vendor_root, code, end)
+        logger.info(
+            f"Sharadar {code}: {rows.height} row(s) over {start}..{end} written to {target}"
+        )
+        return target
+
+    @staticmethod
+    def _window_start(vendor_root: Path, code: str, end: date, trading_days: int) -> date:
+        """Return the first day of a window: ``trading_days`` raw dates before the watermark."""
+        watermark = read_watermark(vendor_root, code)
+        if watermark is None:
+            raise ValueError(
+                f"Sharadar table {code!r} has no watermark under {vendor_root}; "
+                f"pull it in bulk first (SharadarClient.bulk_table)."
+            )
+        through = min(watermark, end)
+        dates = (
+            scan_raw_table(vendor_root, code)
+            .filter(pl.col("date") <= pl.lit(through))
+            .select(pl.col("date").unique().sort(descending=True).head(trading_days))
+            .collect()
+            .get_column("date")
+        )
+        return dates.min() if dates.len() else through
+
+    def _pull_day(
+        self, spec: SharadarTable, key: str, day: date, page_rows: int
+    ) -> list[pl.DataFrame]:
+        """Return one day's rows of a table, page by page."""
+        pages = []
+        offset = 0
+        while True:
+            response = self._get(
+                spec,
+                f"{DATA_URL}/{spec.api_name}",
+                params={
+                    "from": day.isoformat(),
+                    "to": day.isoformat(),
+                    "format": "csv",
+                    "sort": "ticker.asc",
+                    "limit": str(page_rows),
+                    "offset": str(offset),
+                },
+                headers={"x-api-key": key},
+            )
+            text = _text(response, limit=None)
+            page = self._parse_page(spec, text)
+            pages.append(page)
+            if page.height < page_rows:
+                return pages
+            offset += page_rows
+
+    @staticmethod
+    def _parse_page(spec: SharadarTable, text: str) -> pl.DataFrame:
+        """Parse one CSV page, checking its header is the table's schema."""
+        _check_header(spec, next(csv.reader(io.StringIO(text)), []))
+        return pl.read_csv(io.StringIO(text), schema=spec.schema)
 
     def _download_zip(self, spec: SharadarTable, url: str, archive: Path) -> None:
         """Download the pre-signed zip to ``archive`` in parallel byte ranges.
@@ -446,13 +605,7 @@ class SharadarClient:
             with bundle.open(members[0]) as source, target.open("wb") as sink:
                 shutil.copyfileobj(source, sink, length=1 << 20)
         with target.open(newline="", encoding="utf-8") as handle:
-            header = next(csv.reader(handle), [])
-        if tuple(header) != tuple(spec.schema):
-            raise ValueError(
-                f"Sharadar table {spec.code!r}: the CSV columns {header} are "
-                f"not the declared schema {list(spec.schema)}. Sharadar changed "
-                f"the table; update quantlab.dataset.sharadar.tables."
-            )
+            _check_header(spec, next(csv.reader(handle), []))
         return target
 
 
@@ -472,14 +625,24 @@ def _retry_after(response: Response) -> float | None:
         return None
 
 
-def _text(response: Response, limit: int = 300) -> str:
-    """Return the start of a small error body as text, then close the response."""
+def _text(response: Response, limit: int | None = 300) -> str:
+    """Return a body as text (its first ``limit`` bytes, or all of it), then close the response."""
     body = io.BytesIO()
     try:
         for chunk in response.body:
             body.write(chunk)
-            if body.tell() >= limit:
+            if limit is not None and body.tell() >= limit:
                 break
     finally:
         response.close()
     return body.getvalue()[:limit].decode("utf-8", errors="replace")
+
+
+def _check_header(spec: SharadarTable, header: list[str]) -> None:
+    """Raise if a CSV header is not the table's schema, verbatim."""
+    if tuple(header) != tuple(spec.schema):
+        raise ValueError(
+            f"Sharadar table {spec.code!r}: the CSV columns {header} are "
+            f"not the declared schema {list(spec.schema)}. Sharadar changed "
+            f"the table; update quantlab.dataset.sharadar.tables."
+        )

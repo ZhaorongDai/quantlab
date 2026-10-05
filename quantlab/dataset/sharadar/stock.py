@@ -52,7 +52,10 @@ Examples
 from __future__ import annotations
 
 import dataclasses
+import json
 from datetime import date, datetime
+from pathlib import Path
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -66,10 +69,13 @@ from quantlab.dataset.sharadar.membership import ROSTER_UNIVERSES, sp500_interva
 from quantlab.dataset.sharadar.tables import (
     map_permatickers,
     permaticker_mapping,
+    read_watermark,
     scan_raw_table,
     table,
+    vendor_today,
 )
 from quantlab.enums.data import TiingoColumns
+from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
@@ -80,6 +86,19 @@ PRICE_VARIABLES: tuple[str, ...] = tuple(TiingoColumns.EOD.split(","))
 #: ACTIONS types that pay cash per share on their date, as ``divCash``:
 #: ordinary dividends and the value of spun-off shares.
 DISTRIBUTIONS: tuple[str, ...] = ("dividend", "spinoffdividend")
+
+#: Stored bars an update derives again, to report what the vendor changed and
+#: to continue each security's adjusted chain from its last stored bar.
+UPDATE_OVERLAP_BARS = 10
+
+#: The variables compared for vendor corrections: the raw prices and the
+#: events. The adjusted ones follow from them.
+CORRECTION_VARIABLES: tuple[str, ...] = (
+    "open", "high", "low", "close", "volume", "divCash", "splitFactor",
+)
+
+#: Suffix of the corrections report written beside the store.
+CORRECTIONS_SUFFIX = ".corrections.json"
 
 #: Number of offending keys an error message lists.
 _ERROR_SAMPLE = 5
@@ -422,6 +441,246 @@ class SharadarStockDataset(MarketDataset):
                 f"of one permaticker priced on one date cannot both be the "
                 f"security's price; refusing rather than choosing one."
             )
+
+    # -- the daily update ---------------------------------------------------
+
+    def corrections_path(self) -> Path:
+        """Return the corrections report beside the store (``<store>.corrections.json``).
+
+        Examples
+        --------
+        >>> SharadarStockDataset(config).corrections_path().name
+        'sharadar_sep_1d.zarr.corrections.json'
+        """
+        return Path(f"{self.store_path}{CORRECTIONS_SUFFIX}")
+
+    def update(
+        self,
+        granularity: str = "year",
+        ledger_path: str | None = None,
+        append_dim: str = "timestamp",
+    ) -> Self:
+        """Append the bars the raw tier has gained since the store's last bar.
+
+        Without a store this is ``BaseDataset.update``, a chunked build (and
+        ``granularity``, ``ledger_path`` and ``append_dim`` apply to it only).
+        With one, the store only grows:
+
+        - New bars are those after the store's last bar and on or before
+          every input table's watermark (the price table's and ACTIONS'),
+          so a bar is never stored before its dividends and splits are
+          known; a later update resumes from the store's last bar.
+        - The last ``UPDATE_OVERLAP_BARS`` stored bars are derived again from
+          the raw tier and compared with the store. A raw or event variable
+          (``CORRECTION_VARIABLES``) the vendor has changed is written to
+          ``corrections_path()`` and logged, never to the store.
+        - Each security's new adjusted prices continue from its last stored
+          adjusted close (and adjusted volume), whatever the vendor
+          corrected, so the stored chain is never re-anchored.
+        - A new listing is added with no history (``XrBackend.widen_and_append``);
+          a security new to the store with raw bars inside its range is
+          refused, since only a rebuild can store those.
+
+        The chunk ledger of a chunked build is not extended.
+
+        Returns
+        -------
+        Self
+            ``self``.
+
+        Raises
+        ------
+        ValueError
+            If a security new to the store has bars inside its range.
+
+        Examples
+        --------
+        After the morning's window pulls (``SharadarClient.window_table``)::
+
+            SharadarStockDataset(config).update()
+        """
+        if not Path(self.store_path).exists():
+            return super().update(granularity, ledger_path, append_dim)
+        self._refuse_if_resampled("update")
+        stored = self._open_store(self.store_path)
+        stamps = pd.DatetimeIndex(stored["timestamp"].values)
+        last = stamps[-1]
+        through = min(self._raw_through(), date.fromisoformat(self.config.end_date))
+        if through <= last.date():
+            logger.info(f"{self.class_name}: {self.store_path} is up to date ({last.date()}).")
+            return self
+        stored_symbols = stored["symbol"].values.tolist()
+        universe = sorted(set(stored_symbols) | set(self._universe()))
+        start = stamps[-min(UPDATE_OVERLAP_BARS, len(stamps))]
+        derived = self._recent(start, through, universe)
+        start = self._reach_back(stored, derived, last, start)
+        if start is not None:
+            derived = self._recent(start, through, universe)
+        overlap = derived.filter(pl.col("timestamp") <= pl.lit(last.to_datetime64()))
+        self._report_corrections(stored, overlap, stored_symbols)
+        fresh = derived.filter(pl.col("timestamp") > pl.lit(last.to_datetime64()))
+        if fresh.height == 0:
+            logger.info(f"{self.class_name}: no new bar through {through}.")
+            return self
+        fresh = self._continue_chain(stored, overlap, fresh, stored_symbols)
+        axis = sort_symbol_axis(set(stored_symbols) | set(fresh["symbol"].to_list()))
+        window = (
+            fresh.to_pandas().set_index(["timestamp", "symbol"]).to_xarray()
+            .reindex(symbol=axis).sortby("timestamp")
+        )
+        window = self._pin_append_dtypes(self._clean(window))
+        self.data_backend.to_internal(window)
+        self.data_backend.widen_and_append(
+            self.store_path, append_dim="timestamp", fill_values=self._widen_fill_values()
+        )
+        logger.info(
+            f"{self.class_name}: appended {window.sizes['timestamp']} bar(s) "
+            f"through {through} to {self.store_path}."
+        )
+        return self
+
+    def _raw_through(self) -> date:
+        """Return the last day every input table's raw tier is complete through.
+
+        A table without a watermark (pulled before watermarks existed)
+        counts as complete through its last raw date, or today if later.
+        """
+        root = self.config.raw_data_dir_path
+        days = []
+        for code in (self.config.table, "actions"):
+            watermark = read_watermark(root, code)
+            if watermark is None:
+                latest = scan_raw_table(root, code).select(pl.col("date").max()).collect().item()
+                watermark = min(latest, vendor_today())
+            days.append(watermark)
+        return min(days)
+
+    def _recent(self, start: pd.Timestamp, through: date, universe: list[int]) -> pl.DataFrame:
+        """Derive ``start``..``through`` for exactly ``universe`` (a roster, never filtered)."""
+        config = dataclasses.replace(
+            self.config,
+            start_date=start.date().isoformat(),
+            end_date=through.isoformat(),
+            permatickers=tuple(universe),
+            roster_universe=None,
+            category_filter=None,
+        )
+        return type(self)(config)._derivation()
+
+    @staticmethod
+    def _reach_back(
+        stored: xr.Dataset, derived: pl.DataFrame, last: pd.Timestamp, start: pd.Timestamp
+    ) -> pd.Timestamp | None:
+        """Return an earlier start when a stored security resumes after a long gap.
+
+        A security with new bars but no stored positive close since
+        ``start`` (halted for longer than the overlap) needs the derivation
+        to reach back to its last stored close, so its new bars can
+        continue from it. ``None`` when no security needs it.
+        """
+        resumed = (
+            derived.filter((pl.col("timestamp") > pl.lit(last.to_datetime64())) & (pl.col("close") > 0))
+            .get_column("symbol").unique().to_list()
+        )
+        resumed = [s for s in resumed if s in set(stored["symbol"].values.tolist())]
+        if not resumed:
+            return None
+        recent = stored["close"].sel(timestamp=slice(start, last), symbol=resumed).to_pandas()
+        gapped = [s for s in resumed if not (recent[s] > 0).any()]
+        if not gapped:
+            return None
+        # Only the gapped securities' whole history is read.
+        close = stored["close"].sel(symbol=gapped).to_pandas()
+        earlier = [close[s][close[s] > 0].index.max() for s in gapped]
+        earlier = [day for day in earlier if pd.notna(day)]
+        return min(earlier) if earlier else None
+
+    def _report_corrections(
+        self, stored: xr.Dataset, overlap: pl.DataFrame, stored_symbols: list
+    ) -> None:
+        """Write and log every stored value the vendor has since changed."""
+        if overlap.height == 0:
+            return
+        stamps = overlap.get_column("timestamp").unique().sort().to_list()
+        old = stored[list(CORRECTION_VARIABLES)].sel(timestamp=stamps).load()
+        new = (
+            overlap.to_pandas().set_index(["timestamp", "symbol"]).to_xarray()
+            .reindex(timestamp=old["timestamp"].values, symbol=stored_symbols)
+        )
+        found = []
+        for name in CORRECTION_VARIABLES:
+            a = np.asarray(old[name].transpose("timestamp", "symbol").values, dtype=np.float64)
+            b = np.asarray(new[name].transpose("timestamp", "symbol").values, dtype=np.float64)
+            same = np.isclose(a, b, rtol=1e-9, atol=0.0) | (np.isnan(a) & np.isnan(b))
+            for i, j in zip(*np.nonzero(~same), strict=True):
+                found.append(
+                    {
+                        "table": self.config.table,
+                        "permaticker": int(stored_symbols[j]),
+                        "date": str(pd.Timestamp(old["timestamp"].values[i]).date()),
+                        "variable": name,
+                        "stored": None if np.isnan(a[i, j]) else float(a[i, j]),
+                        "vendor": None if np.isnan(b[i, j]) else float(b[i, j]),
+                    }
+                )
+        if not found:
+            return
+        path = self.corrections_path()
+        known = json.loads(path.read_text()) if path.exists() else []
+        added = [entry for entry in found if entry not in known]
+        write_json_atomically(path, known + added, indent=2, sort_keys=True)
+        logger.warning(
+            f"{self.class_name}: the vendor changed {len(found)} stored value(s) "
+            f"({len(added)} not reported before); they are listed in {path} "
+            f"and were not written, first {found[:_ERROR_SAMPLE]}."
+        )
+
+    def _continue_chain(
+        self, stored: xr.Dataset, overlap: pl.DataFrame, fresh: pl.DataFrame, stored_symbols: list
+    ) -> pl.DataFrame:
+        """Rescale the new bars' adjusted values to continue each stored chain.
+
+        A stored security's factor is its stored adjusted close over the
+        derived one on its last bar where both exist (likewise for adjusted
+        volume); a new listing keeps the derivation's own anchor.
+        """
+        known = set(stored_symbols)
+        newcomers = fresh.filter(~pl.col("symbol").is_in(list(known))).get_column("symbol").unique()
+        early = overlap.filter(pl.col("symbol").is_in(newcomers.to_list()) & (pl.col("close") > 0))
+        if early.height:
+            raise ValueError(
+                f"{self.class_name}: {early['symbol'].n_unique()} security(ies) "
+                f"new to {self.store_path} have bars inside its range, first "
+                f"{early['symbol'].unique().sort().head(_ERROR_SAMPLE).to_list()}; "
+                f"an update only appends, so rebuild the store to include them."
+            )
+        stamps = overlap.get_column("timestamp").unique().sort().to_list()
+        if not stamps:
+            return fresh
+        old = stored[["adjClose", "adjVolume"]].sel(timestamp=stamps).load().to_dataframe()
+        anchors = (
+            overlap.select("timestamp", "symbol", "adjClose", "adjVolume")
+            .join(
+                pl.from_pandas(old.reset_index()).rename(
+                    {"adjClose": "_stored_close", "adjVolume": "_stored_volume"}
+                ).with_columns(pl.col("symbol").cast(pl.Int64)),
+                on=["timestamp", "symbol"],
+            )
+            .filter(pl.col("adjClose").is_finite() & pl.col("_stored_close").is_finite())
+            .sort("timestamp")
+            .group_by("symbol")
+            .agg(
+                (pl.col("_stored_close") / pl.col("adjClose")).last().alias("_price"),
+                (pl.col("_stored_volume") / pl.col("adjVolume")).last().alias("_volume"),
+            )
+        )
+        fresh = fresh.join(anchors, on="symbol", how="left").with_columns(
+            pl.col("_price").fill_null(1.0), pl.col("_volume").fill_nan(1.0).fill_null(1.0)
+        )
+        return fresh.with_columns(
+            *(pl.col(name) * pl.col("_price") for name in ("adjOpen", "adjHigh", "adjLow", "adjClose")),
+            pl.col("adjVolume") * pl.col("_volume"),
+        ).drop("_price", "_volume")
 
     # -- axes and windows ---------------------------------------------------
 
