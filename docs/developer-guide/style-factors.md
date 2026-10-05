@@ -212,10 +212,11 @@ Every window, half-life, lag, weight and threshold is a field of
 2026-10-05 Sharadar pull and FRED's DTB3:
 
 - **Size and cost.** The store covers 6,476 trading days (2001-01-02 to
-  2026-10-02) of 17,090 permatickers and is 7.0 GB. Building it takes 4.4
-  minutes; the whole script, the coverage count and the factor report
-  included, takes 9.1 minutes with a 300 GB peak of memory on a 128-core
-  machine.
+  2026-10-02) of 17,090 permatickers and is 7.1 GB. Building it takes 5.1
+  minutes: reading and merging the seven inputs about 4 minutes, the
+  compiled graph 27 seconds, writing the store 29 seconds; the whole script, the coverage
+  count and the factor report included, takes 9.3 minutes with a 280 GB
+  peak of memory on a 128-core machine.
 - **Coverage.** Over the estimation universe (3,000 stocks every day), each
   of the 12 styles has a value in at least 99.92% of the cells in every
   year, and the industry code in 99.87%.
@@ -225,6 +226,12 @@ Every window, half-life, lag, weight and threshold is a field of
   29, 22 and 13 of the 3,000 are trimmed to 3 equally weighted standard
   deviations above the equally weighted mean of LNCAP on those days (1.0%,
   0.7% and 0.4%), and none at the lower bound.
+- **Share classes.** On 2024-06-28, 189 secondary share classes trade
+  (an SEP price that day). 188 have a firm; LGF.A has no CIK in TICKERS.
+  187 of them get Size and every fundamentals-based style; LLYVK's firm
+  has no DAILY market cap that day. GOOG, BRK.A and FOX have exactly the
+  Size and Book-to-Price of GOOGL, BRK.B and FOXA. The estimation universe
+  is the same on every bar as without the share classes.
 - **Beta.** A raw BETA recomputed independently in numpy has a cap-weighted
   mean of 1.005, 1.005 and 1.033 over the estimation universe on those
   days, and `style_beta` correlates with it at 0.991, 0.998 and 0.973.
@@ -233,18 +240,18 @@ Every window, half-life, lag, weight and threshold is a field of
 
   | Style | IC | t | Lag-1 rank autocorrelation |
   |---|---|---|---|
-  | Size | 0.081 | 15.4 | 1.000 |
+  | Size | 0.079 | 15.2 | 1.000 |
   | Beta | -0.000 | -0.0 | 0.997 |
   | Momentum | 0.055 | 9.1 | 0.991 |
-  | Residual Volatility | -0.097 | -14.8 | 0.997 |
-  | Non-linear Size | 0.042 | 11.8 | 0.995 |
+  | Residual Volatility | -0.097 | -14.9 | 0.997 |
+  | Non-linear Size | 0.040 | 10.5 | 0.995 |
   | Non-linear Beta | 0.003 | 0.9 | 0.986 |
-  | Liquidity | -0.013 | -1.9 | 0.999 |
+  | Liquidity | -0.014 | -2.0 | 0.999 |
   | Dividend Yield | 0.050 | 9.1 | 0.999 |
-  | Book-to-Price | 0.005 | 1.1 | 0.998 |
-  | Earnings Yield | 0.072 | 12.4 | 0.997 |
-  | Leverage | 0.007 | 1.4 | 0.999 |
-  | Growth | 0.017 | 6.1 | 0.999 |
+  | Book-to-Price | 0.003 | 0.6 | 0.998 |
+  | Earnings Yield | 0.070 | 12.5 | 0.997 |
+  | Leverage | 0.004 | 0.7 | 0.999 |
+  | Growth | 0.016 | 5.7 | 0.999 |
 
   Over all common stocks, micro caps included, the small, volatile and
   unprofitable stocks did worst, so Size, Earnings Yield and Dividend Yield
