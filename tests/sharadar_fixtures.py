@@ -69,6 +69,17 @@ TICKERS_COLUMNS: tuple[str, ...] = (
     "companysite",
 )
 
+#: VERBATIM `actions` column order.
+ACTIONS_COLUMNS: tuple[str, ...] = (
+    "date",
+    "action",
+    "ticker",
+    "name",
+    "value",
+    "contraticker",
+    "contraname",
+)
+
 #: VERBATIM `descriptions` (INDICATORS) column order.
 INDICATORS_COLUMNS: tuple[str, ...] = (
     "table",
@@ -121,6 +132,19 @@ def sep_row(ticker: str, date: str, close: float, **overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+def action_row(date: str, action: str, ticker: str, value: float | None) -> dict:
+    """One ACTIONS row. ``N/A`` is how the vendor fills an unused contra column."""
+    return {
+        "date": date,
+        "action": action,  # VERBATIM action type, e.g. `dividend`, `split`
+        "ticker": ticker,
+        "name": f"{ticker} CORP",  # SYNTHETIC
+        "value": value,  # SYNTHETIC
+        "contraticker": "N/A",
+        "contraname": "N/A",
+    }
 
 
 def tickers_row(table: str, permaticker: int, ticker: str, **overrides) -> dict:

@@ -26,7 +26,16 @@ rewrites a stored row:
 
 Sharadar's adjusted columns (``close`` and the other split-adjusted values,
 ``closeadj``) and ``lastupdated`` are not stored: the vendor rewrites them over
-the whole history on every ex-date.
+the whole history on every ex-date. quantlab builds its own adjusted prices
+instead, from the raw prices and the dividend and split events of the ACTIONS
+table, with the CRSP panel's convention and names (``adjOpen``, ``adjHigh``,
+``adjLow``, ``adjClose``, ``adjVolume``, ``divCash``, ``splitFactor``; see
+``SharadarStockDataset._adjust``). The panel therefore carries the same
+twelve daily variables as a CRSP or Tiingo panel, and a factor, label or
+backtest reads it without knowing the vendor. ``tradable_bars`` and
+``delisting_bars`` are the ``MarketDataset`` defaults: a bar without a fill
+price is untradable, and a delisted security is settled at its last close,
+with no delisting return imputed (Sharadar gives none).
 
 Examples
 --------
@@ -37,7 +46,7 @@ Examples
 >>> SharadarStockDataset(config).from_raw_data().save()
 >>> panel = SharadarStockDataset(config).panel("2024-01-02", "2024-01-05")
 >>> sorted(panel.data_vars)
-['anomaly_flag', 'close', 'high', 'low', 'open', 'volume']
+['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'divCash', 'high', 'low', 'open', 'splitFactor', 'volume']
 """
 
 from __future__ import annotations
@@ -49,15 +58,18 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
+from loguru import logger
 
 from quantlab.dataset.base import MarketDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
 from quantlab.dataset.sharadar.tables import scan_raw_table, table
+from quantlab.enums.data import TiingoColumns
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
-#: The panel's variables, in order.
-PRICE_VARIABLES: tuple[str, ...] = ("open", "high", "low", "close", "volume")
+#: The panel's variables: the twelve shared daily variables, in
+#: ``TiingoColumns.EOD`` order, as the CRSP panel holds them.
+PRICE_VARIABLES: tuple[str, ...] = tuple(TiingoColumns.EOD.split(","))
 
 #: Number of offending keys an error message lists.
 _ERROR_SAMPLE = 5
@@ -195,11 +207,141 @@ class SharadarStockDataset(MarketDataset):
                 (pl.col("low") * ratio).alias("low"),
                 pl.col("closeunadj").alias("close"),
                 (pl.col("volume") / ratio).alias("volume"),
-            ).with_columns(
-                pl.col(name).cast(pl.Float64) for name in PRICE_VARIABLES
+                ratio.alias("_ratio"),
+            )
+            events = self._events(mapping, start, end)
+            frame = self._adjust(frame, events).select(
+                "timestamp",
+                "symbol",
+                *(pl.col(name).cast(pl.Float64) for name in PRICE_VARIABLES),
             )
         self._derivation_cache = frame
         return frame
+
+    def _events(self, mapping: pl.DataFrame, start, end) -> pl.DataFrame:
+        """Return the window's dividends and splits per permaticker and date.
+
+        ACTIONS is keyed by the same current ticker as the price table, so its
+        rows are mapped through the price table's TICKERS rows; a row of a
+        ticker outside the price table is another security and is dropped.
+        Several events of one kind on one date are summed (dividends) or
+        multiplied (splits).
+
+        Returns
+        -------
+        pl.DataFrame
+            Columns ``timestamp``, ``symbol``, ``_dividend`` (Sharadar's
+            split-adjusted value, null when none) and ``_split`` (new shares
+            per old share, null when none).
+        """
+        actions = (
+            scan_raw_table(self.config.raw_data_dir_path, "actions")
+            .filter(
+                pl.col("date").is_between(pl.lit(start), pl.lit(end))
+                & pl.col("action").is_in(["dividend", "split"])
+            )
+            .collect()
+            .join(mapping, on="ticker", how="inner")
+        )
+        return actions.group_by(
+            pl.col("date").cast(pl.Datetime("ns")).alias("timestamp"),
+            pl.col("permaticker").alias("symbol"),
+        ).agg(
+            pl.col("value").filter(pl.col("action") == "dividend").sum().alias("_dividend"),
+            pl.col("value").filter(pl.col("action") == "split").product().alias("_split"),
+            (pl.col("action") == "dividend").any().alias("_has_dividend"),
+            (pl.col("action") == "split").any().alias("_has_split"),
+        ).select(
+            "timestamp",
+            "symbol",
+            pl.when("_has_dividend").then("_dividend").alias("_dividend"),
+            pl.when("_has_split").then("_split").alias("_split"),
+        )
+
+    def _adjust(self, frame: pl.DataFrame, events: pl.DataFrame) -> pl.DataFrame:
+        """Add the events and the adjusted prices to the raw rows.
+
+        Follows the CRSP path's convention (``quantlab.dataset.crsp``):
+
+        - ``divCash`` is the cash paid per share held on the ex-date, 0.0
+          on other rows. ACTIONS gives a dividend adjusted for every later
+          split, so it is multiplied back by the row's
+          ``closeunadj / close`` (SEP's own later-split factor; ACTIONS and
+          SEP are adjusted for the same splits when pulled together).
+        - ``splitFactor`` is the split's new shares per old share on its
+          effective date, 1.0 on other rows.
+        - The day's total return is
+          ``(close * splitFactor + divCash) / close_prev - 1``, with
+          ``close_prev`` the last earlier positive raw close, so a halt is
+          spanned. ``adjClose`` is each permaticker's *anchor* (its first
+          row in the window with a positive close) grown by the product of
+          those returns since, and NaN where ``close`` is missing.
+        - ``adjOpen``/``adjHigh``/``adjLow`` are scaled by
+          ``adjClose / close``; ``adjVolume`` is the raw volume in the
+          anchor's shares, divided by the splits since the anchor.
+
+        An event on a date without a positive close cannot enter the chain;
+        it is logged and dropped. No delisting return is imputed.
+        """
+        frame = frame.join(events, on=["timestamp", "symbol"], how="left").sort(
+            "symbol", "timestamp"
+        )
+        dropped = events.join(
+            frame.filter(pl.col("close") > 0).select("timestamp", "symbol"),
+            on=["timestamp", "symbol"],
+            how="anti",
+        )
+        if dropped.height:
+            sample = [
+                f"{row['symbol']}@{str(row['timestamp'])[:10]}"
+                for row in dropped.sort("symbol", "timestamp").head(_ERROR_SAMPLE).to_dicts()
+            ]
+            logger.warning(
+                f"{self.class_name}: {dropped.height} dividend/split event(s) "
+                f"fall on a date without a positive close and are left out "
+                f"of the adjusted price, first {sample}."
+            )
+        frame = frame.with_columns(
+            (pl.col("_dividend") * pl.col("_ratio")).fill_null(0.0).alias("divCash"),
+            pl.col("_split").fill_null(1.0).alias("splitFactor"),
+        )
+        positive = pl.when(pl.col("close") > 0).then(pl.col("close"))
+        close_prev = positive.shift(1).forward_fill().over("symbol")
+        ret = (
+            pl.col("close") * pl.col("splitFactor") + pl.col("divCash")
+        ) / close_prev - 1.0
+        frame = frame.with_columns(
+            (1.0 + ret.fill_null(0.0)).cum_prod().over("symbol").alias("_G"),
+            pl.col("splitFactor").cum_prod().over("symbol").alias("_S"),
+        )
+        anchor = (
+            frame.filter(pl.col("close") > 0)
+            .group_by("symbol")
+            .agg(
+                pl.col("close").first().alias("_close_anchor"),
+                pl.col("_G").first().alias("_G_anchor"),
+                pl.col("_S").first().alias("_S_anchor"),
+            )
+        )
+        unanchored = frame.select("symbol").unique().join(anchor, on="symbol", how="anti")
+        if unanchored.height:
+            logger.warning(
+                f"{self.class_name}: {unanchored.height} permaticker(s) have no "
+                f"positive close in the window, so no adjusted price, first "
+                f"{unanchored.sort('symbol').head(_ERROR_SAMPLE)['symbol'].to_list()}."
+            )
+        frame = frame.join(anchor, on="symbol", how="left").with_columns(
+            pl.when(pl.col("close") > 0)
+            .then(pl.col("_close_anchor") * pl.col("_G") / pl.col("_G_anchor"))
+            .alias("adjClose")
+        )
+        factor = pl.col("adjClose") / pl.col("close")
+        return frame.with_columns(
+            (pl.col("open") * factor).alias("adjOpen"),
+            (pl.col("high") * factor).alias("adjHigh"),
+            (pl.col("low") * factor).alias("adjLow"),
+            (pl.col("volume") * pl.col("_S_anchor") / pl.col("_S")).alias("adjVolume"),
+        )
 
     def _map_permatickers(
         self, prices: pl.DataFrame, mapping: pl.DataFrame
