@@ -296,7 +296,7 @@ module.
 
 ### Evaluation
 
-`quantlab.utils.evaluation.evaluate` scores a trained unit after training.
+`quantlab.model.evaluation.evaluate` scores a trained unit after training.
 It takes the unit's prediction panel, the labels' raw values, the label
 objects with their `label_scales`, the unit's train, validation and test
 segments (`Segments`), its test bounds and a directory. It returns the
@@ -323,7 +323,7 @@ computed.
 
 ### Walk-forward training
 
-`quantlab.utils.walk_forward_training.train_walk_forward(unit,
+`quantlab.model.walk_forward_training.train_walk_forward(unit,
 train_periods, expanding, test_periods)` runs every `train_cv` call. It needs
 only the public protocol `WalkForwardTrainable` defined beside it:
 

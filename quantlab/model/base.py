@@ -13,7 +13,7 @@ range and collecting them into one dataset, the public ``train`` /
 ``train_cv`` / ``load`` / ``predict`` / ``predict_panel`` methods, and
 the directory layout of a training run, whose files are written and read
 through ``quantlab.runs.trained_run``. The fold boundaries of rolling
-cross-validation come from ``quantlab.utils.walk_forward``. It imports no training
+cross-validation come from ``quantlab.model.split``. It imports no training
 framework. The two variants live in the model layer:
 ``quantlab.model.torch_model.TorchModel`` (PyTorch: one cross-section of
 symbols per training step, each with its own window of past bars, ``.pth``
@@ -50,13 +50,13 @@ from quantlab.runs.trained_run import (
     write_model_config,
     write_model_run,
 )
-from quantlab.utils.evaluation import Segments, evaluate
+from quantlab.model.evaluation import Segments, evaluate
 from quantlab.runs.record import DataRecorder, code_of
 from quantlab.utils.symbol_axis import sort_symbol_axis
-from quantlab.utils.split import purge_segments
+from quantlab.model.split import purge_segments
 from quantlab.utils.timer import Timer
-from quantlab.utils.walk_forward import Fold
-from quantlab.utils.walk_forward_training import fold_config, train_walk_forward
+from quantlab.model.split import Fold
+from quantlab.model.walk_forward_training import fold_config, train_walk_forward
 
 from .config import ModelConfig
 
@@ -1302,7 +1302,7 @@ class BaseModel(Component, ABC):
         The model predicts its whole collected panel once with
         ``predict_panel``, so every bar is predicted from all the history
         collected before it (a windowed head's warm-up included), and
-        ``quantlab.utils.evaluation.evaluate`` scores every label against
+        ``quantlab.model.evaluation.evaluate`` scores every label against
         its raw values on the ``evaluation_segments``, by the model's
         ``label_scales``. The same predictions give the metrics,
         ``ic_series.csv`` and ``test_predictions.zarr`` in ``run_dir``.
@@ -1543,7 +1543,7 @@ class BaseModel(Component, ABC):
         default) or, with ``expanding=True``, keeps the first fold's start
         and grows to all history before the test period. Both modes test on
         the same periods, so their results compare bar for bar. Folds are
-        laid out by ``quantlab.utils.walk_forward.walk_forward_folds`` over the
+        laid out by ``quantlab.model.split.walk_forward_folds`` over the
         timestamps between ``config.start_date`` and ``config.end_date``. Each fold's training
         window loses its last L bars, L being the largest
         ``lookahead_bars()`` among the labels, so no fitted label reads a
@@ -1559,7 +1559,7 @@ class BaseModel(Component, ABC):
         summary of a separate ``{class}_cv_summary`` run. Last, the trial's
         ``run.json`` records the folds and those means. A backtester's
         ``run_cv`` replays the unit. The procedure is
-        ``quantlab.utils.walk_forward_training.train_walk_forward``, the one
+        ``quantlab.model.walk_forward_training.train_walk_forward``, the one
         an ensemble's ``train_cv`` runs too. Afterwards the model keeps the
         dates it was configured with, not the last fold's.
 

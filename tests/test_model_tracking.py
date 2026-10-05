@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.tracking.base import NullTracker
 from quantlab.tracking.wandb import WandbTracker
 from quantlab.core.component import rebuild
@@ -143,7 +143,7 @@ def _guards_a_run(node: ast.AST) -> bool:
 
 
 def test_the_model_layer_never_checks_whether_a_run_is_open():
-    files = [REPO_ROOT / "quantlab/base/model.py", *_python_files(REPO_ROOT / "quantlab/model")]
+    files = [REPO_ROOT / "quantlab/model/base.py", *_python_files(REPO_ROOT / "quantlab/model")]
     # Positive control: the shipped heads are seen.
     assert any(path.name == "xgb.py" for path in files)
     offenders = sorted(

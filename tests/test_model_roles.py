@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import DatasetConfig

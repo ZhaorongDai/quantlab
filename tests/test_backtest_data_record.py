@@ -172,7 +172,7 @@ def test_no_code_outside_the_data_and_fingerprint_modules_knows_what_a_factor_re
     owners = {
         "_input_range": {"quantlab/factor/base.py"},
         "_later_end": {"quantlab/label/forward.py"},
-        "_feature_start": {"quantlab/base/model.py"},
+        "_feature_start": {"quantlab/model/base.py"},
         "_dataset_fingerprint": {"quantlab/runs/record.py"},
     }
     gone = {"fingerprint_inputs", "training_fingerprint_inputs"}

@@ -504,7 +504,7 @@ def test_without_mlflow_a_config_rebuilds_and_opening_a_run_names_the_extra():
     code = (
         "import sys\n"
         "sys.modules['mlflow'] = None\n"
-        "import quantlab.base.model\n"
+        "import quantlab.model.base\n"
         "from quantlab.tracking.mlflow import MlflowTracker\n"
         "tracker = MlflowTracker.from_config(MlflowTracker(project='p').get_config())\n"
         "try:\n"

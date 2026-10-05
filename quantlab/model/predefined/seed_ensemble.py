@@ -20,7 +20,7 @@ from quantlab.core.component import component
 from quantlab.model.ensemble import BaseEnsemble
 
 if TYPE_CHECKING:  # type hints only
-    from quantlab.base.model import BaseModel
+    from quantlab.model.base import BaseModel
 
 
 @dataclasses.dataclass(frozen=True)

@@ -36,7 +36,7 @@ import xarray as xr
 import xgboost as xgb
 from loguru import logger
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.tracking.base import NullTracker, Tracker
 from quantlab.model.predefined._support.devices import xgboost_default_device
@@ -47,8 +47,8 @@ from quantlab.model.predefined.xgb import (
     pooled_ccc_loss,
     record_feature_importance,
 )
-from quantlab.utils.metrics import regression_panel_metrics
-from quantlab.utils.walk_forward import walk_forward_folds
+from quantlab.model.evaluation import regression_panel_metrics
+from quantlab.model.split import walk_forward_folds
 from quantlab.runs.trained_run import TrainedRun
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordedRun, RecordingTracker

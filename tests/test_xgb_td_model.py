@@ -39,14 +39,14 @@ import xarray as xr
 from loguru import logger
 from pytabkit import XGB_TD_Regressor
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined._support.devices import xgboost_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor
 from quantlab.model.predefined.xgb_td import XGBTDRegressor, _XGBTDEstimator
 from quantlab.runs.trained_run import TrainedRun
-from quantlab.utils.metrics import regression_panel_metrics
-from quantlab.utils.walk_forward import walk_forward_folds
+from quantlab.model.evaluation import regression_panel_metrics
+from quantlab.model.split import walk_forward_folds
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 

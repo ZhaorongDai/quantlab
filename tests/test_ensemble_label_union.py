@@ -37,8 +37,8 @@ import xarray as xr
 
 from quantlab.factor.config import PolarsFactorConfig
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
-from quantlab.utils.ensemble import average_predictions
-from quantlab.utils.metrics import ic_panel_metrics
+from quantlab.model.ensemble import average_predictions
+from quantlab.model.evaluation import ic_panel_metrics
 from quantlab.runs.trained_run import TrainedRun
 from tests.backtest_fixtures import (
     FirstFeatureHead,

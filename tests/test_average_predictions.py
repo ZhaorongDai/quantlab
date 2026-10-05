@@ -22,7 +22,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.utils.ensemble import average_predictions
+from quantlab.model.ensemble import average_predictions
 
 STAMPS = pd.date_range("2024-01-01", periods=3, freq="D")
 SYMBOLS = ["A", "B", "C", "D"]

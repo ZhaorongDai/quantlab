@@ -16,7 +16,7 @@ import numpy as np
 import torch
 from loguru import logger
 
-from quantlab.base.model import LIBRARY_RESERVED_HYPERPARAMETERS, BaseModel
+from quantlab.model.base import LIBRARY_RESERVED_HYPERPARAMETERS, BaseModel
 from quantlab.model.torch_data import TrainingPanel
 from quantlab.model.torch_training import cs_rank_norm, cs_zscore
 from quantlab.model.training_target import TrainingTargetMixin

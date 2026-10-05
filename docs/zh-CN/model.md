@@ -51,7 +51,7 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 配置对象包含因子和标签对象、检查点的保存目录，以及四个日期：训练窗口和测试窗口（两端都包含）。训练窗口末尾的 `val_size` 比例（默认 0.2）被留作验证段。`factor_data_strategy` 和 `label_data_strategy` 决定是读取已存储的值（`"read"`）还是先计算（`"cal"`）。`XGBoostRegressor` 是树模型的模型头，`hyperparameters` 会传给它。
 
 ```python
->>> from quantlab.base.config import ModelConfig
+>>> from quantlab.model.config import ModelConfig
 >>> from quantlab.model.predefined.xgb import XGBoostRegressor
 >>> config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
@@ -91,10 +91,10 @@ export OMP_NUM_THREADS=1   # 仅 macOS
 
 bar t 上的标签会读到 t + L 为止的 bar，L 是模型所有标签中最大的 `lookahead_bars()`。因此每个切分边界都会丢掉前一段的最后 L 个 bar（purge），使参与拟合的标签不会读到后一段的任何 bar。`train()` 先按位置把训练窗口切成训练段和验证段，再对训练/验证、验证/测试两个边界做清除；测试段保留全部 bar。`val_size=0` 时，训练段直接相对测试段清除。所以每个边界都会让拟合少用 L 个 bar。L 不是参数，而是由标签决定。
 
-上面的示例中 L 为 2。训练窗口 2024-01-01 到 2024-05-31 共 152 个 bar；前 121 个（到 2024-04-30）用于训练，其余 31 个用于验证。清除之后，训练段止于 2024-04-28，验证段止于 2024-05-29。切分由 `quantlab.utils.split.purge_segments` 完成，下文的 walk-forward 各折也用它。
+上面的示例中 L 为 2。训练窗口 2024-01-01 到 2024-05-31 共 152 个 bar；前 121 个（到 2024-04-30）用于训练，其余 31 个用于验证。清除之后，训练段止于 2024-04-28，验证段止于 2024-05-29。切分由 `quantlab.model.split.purge_segments` 完成，下文的 walk-forward 各折也用它。
 
 ```python
->>> from quantlab.utils.split import purge_segments
+>>> from quantlab.model.split import purge_segments
 >>> train_bars, val_bars, test_bars = purge_segments(
 ...     coords["timestamp"],
 ...     [("2024-01-01", "2024-04-30"), ("2024-05-01", "2024-05-31"), ("2024-06-01", "2024-07-18")],
@@ -146,9 +146,9 @@ True
 
 ### 评估指标
 
-`quantlab.utils.metrics` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。
+`quantlab.model.evaluation` 对 `[T, S]` 面板打分，只有预测和目标同时有限的单元格才参与计算。除了 MSE、RMSE、MAE 和 R2，还有两个截面指标。IC 是同一时间点上、跨标的的预测与目标之间的 Pearson 相关系数，再对时间取平均。RankIC 在每个时间点的排名上做同样的计算，因此衡量的是排序能力，与量纲无关。某个时间点上预测和目标同时有限的标的少于两个，或者预测或目标在截面上是常数时，这个时间点没有 IC，求平均时直接跳过，而不是当作 0。ICIR 和 RankICIR 衡量信号的稳定性：逐时间点 IC（或 RankIC）的均值除以它的样本标准差（`ddof=1`）。有 IC 的时间点少于两个时，它们是 NaN。
 
-模型训练完成之后才打分，由 `quantlab.utils.evaluation` 中的评估（`evaluate`）完成，集成也用它。模型用 `predict_panel` 对收集到的整个面板预测一次，因此窗口型模型头的前几个 bar 也有 warm-up；每个标签都在 `evaluation_segments()` 给出的训练、验证和测试段（即上面清除后的分段）上，对照它的原始值打分。指标、`ic_series.csv` 和 `test_predictions.zarr` 来自同一份预测。规则对模型和集成是同一套：
+模型训练完成之后才打分，由 `quantlab.model.evaluation` 中的评估（`evaluate`）完成，集成也用它。模型用 `predict_panel` 对收集到的整个面板预测一次，因此窗口型模型头的前几个 bar 也有 warm-up；每个标签都在 `evaluation_segments()` 给出的训练、验证和测试段（即上面清除后的分段）上，对照它的原始值打分。指标、`ic_series.csv` 和 `test_predictions.zarr` 来自同一份预测。规则对模型和集成是同一套：
 
 - 每个标签都打分。第一个标签的键为 `{split}_{metric}`，其余标签为 `{split}_{label}_{metric}`。
 - IC 一族（`ic`、`rank_ic`、`icir`、`rank_icir`）总会计算。
@@ -170,7 +170,7 @@ True
 `evaluate` 不需要模型，不训练也能给预测打分；`regression_panel_metrics` 可以在任意面板上计算一个标签的评分：
 
 ```python
->>> from quantlab.utils.metrics import regression_panel_metrics
+>>> from quantlab.model.evaluation import regression_panel_metrics
 >>> test = slice("2024-06-01", "2024-07-18")
 >>> scores = regression_panel_metrics(
 ...     predictions["ret"].sel(timestamp=test).values,
@@ -192,7 +192,7 @@ IC 和 RankIC 背后的逐时间点数值由 `cross_sectional_ic_series` 和 `cr
 如果每个单元格的预测都是实际波动率的一半，预测的方差就只有实际的四分之一：
 
 ```python
->>> from quantlab.utils.metrics import volatility_level_metrics
+>>> from quantlab.model.evaluation import volatility_level_metrics
 >>> volatility_level_metrics([[0.1, 0.2]], [[0.2, 0.4]])
 {'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
 ```
@@ -237,13 +237,13 @@ True
 | `TorchModel` | torch，每一步一个标的截面 | `.pth` | `window_bars`、`_init_model`、`_loss`；其余是带默认实现的可选钩子（见“训练 torch 模型”） |
 | `LibraryModel` | numpy 行，使用库自带的提前停止 | `.joblib` | `_init_model`、`_fit_model`、`_forward`；可选 `_transform_feature`、`_transform_target`、`_loss`（见“扩展”） |
 
-自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；以及 `TorchModel` 模型头 `GATsRegressor`（`quantlab.model.predefined.gats`，截面上的 Qlib GATs）和 `MASTERRegressor`（`quantlab.model.predefined.master`，市场引导的 transformer MASTER）。所有自带模型（包括集成）都放在 `quantlab/model/predefined/`，新模型头或新集成要继承的类放在 `quantlab/model/` 顶层（`torch_model.py`、`library_model.py`、`ensemble.py`）。完整的配置字段见 `quantlab/base/model.py` 和 `quantlab/base/config.py` 的 docstring。
+自带的模型头有 `XGBoostRegressor`、`XGBTDRegressor` 和 `RealMLPRegressor`，都是 `LibraryModel`；以及 `TorchModel` 模型头 `GATsRegressor`（`quantlab.model.predefined.gats`，截面上的 Qlib GATs）和 `MASTERRegressor`（`quantlab.model.predefined.master`，市场引导的 transformer MASTER）。所有自带模型（包括集成）都放在 `quantlab/model/predefined/`，新模型头或新集成要继承的类放在 `quantlab/model/` 顶层（`torch_model.py`、`library_model.py`、`ensemble.py`）。完整的配置字段见 `quantlab/model/base.py` 和 `quantlab/base/config.py` 的 docstring。
 
 ### 配置与保留超参数
 
 所有模型头都使用同一个 `ModelConfig`。它只包含两个变体都会读取的字段：因子和标签、保存目录、数据策略、日期、`val_size`、`random_seed` 和 `hyperparameters`。所有训练设置都放进 `hyperparameters` 这一个扁平字典，它会被记录到 `config.json`，因此仅凭 `config.json` 就能重建模型。
 
-基类和自带的模型头会自己从中读取下面这些键（`quantlab.base.model.RESERVED_HYPERPARAMETERS`，即 `TORCH_RESERVED_HYPERPARAMETERS` 与 `LIBRARY_RESERVED_HYPERPARAMETERS` 的并集）：
+基类和自带的模型头会自己从中读取下面这些键（`quantlab.model.base.RESERVED_HYPERPARAMETERS`，即 `TORCH_RESERVED_HYPERPARAMETERS` 与 `LIBRARY_RESERVED_HYPERPARAMETERS` 的并集）：
 
 | 键 | 读取方 | 默认值 |
 |---|---|---|
@@ -322,10 +322,10 @@ hyperparameters = {
 
 `train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的追踪 run。
 
-各折由 `quantlab.utils.walk_forward` 中的 `walk_forward_folds(timestamps, train_periods, test_periods=None, expanding=False, purge_bars=0)` 切分，模型和集成的 `train_cv` 都调用它。它不需要模型，所以可以在昂贵的训练之前先检查切分。每个 `Fold` 带有 `index`、配置的训练窗口（`train_window`）、清除之后实际拟合的训练窗口（`fitted_train_window`）和测试窗口 `test_window`，两端都包含。`purge_bars` 就是 L；模型传入自己各标签 `lookahead_bars()` 的最大值。
+各折由 `quantlab.model.split` 中的 `walk_forward_folds(timestamps, train_periods, test_periods=None, expanding=False, purge_bars=0)` 切分，模型和集成的 `train_cv` 都调用它。它不需要模型，所以可以在昂贵的训练之前先检查切分。每个 `Fold` 带有 `index`、配置的训练窗口（`train_window`）、清除之后实际拟合的训练窗口（`fitted_train_window`）和测试窗口 `test_window`，两端都包含。`purge_bars` 就是 L；模型传入自己各标签 `lookahead_bars()` 的最大值。
 
 ```python
->>> from quantlab.utils.walk_forward import walk_forward_folds
+>>> from quantlab.model.split import walk_forward_folds
 >>> planned = walk_forward_folds(coords["timestamp"], 100, purge_bars=label.lookahead_bars())
 >>> len(planned), planned[0]
 (5, Fold(index=0, train_window=('2024-01-01', '2024-04-09'), fitted_train_window=('2024-01-01', '2024-04-07'), test_window=('2024-04-10', '2024-04-29')))
@@ -383,7 +383,7 @@ True
 ('2024-06-29', '2024-06-01')
 ```
 
-这套流程是 `quantlab.utils.walk_forward_training` 中的 `train_walk_forward`，集成的 `train_cv` 也走它：在创建任何目录之前检查超参数，划分各折，把每折训练进 `fold_{i}/`，对各折指标取平均，写摘要 run 和 `run.json`。凡是满足其协议 `WalkForwardTrainable` 的对象它都能训练（见开发者内部文档）。
+这套流程是 `quantlab.model.walk_forward_training` 中的 `train_walk_forward`，集成的 `train_cv` 也走它：在创建任何目录之前检查超参数，划分各折，把每折训练进 `fold_{i}/`，对各折指标取平均，写摘要 run 和 `run.json`。凡是满足其协议 `WalkForwardTrainable` 的对象它都能训练（见开发者内部文档）。
 
 ### 平均多个种子
 
@@ -420,7 +420,7 @@ True
 
 每个成员都是一个独立的 `"model"` 单元，它的 `config.json` 写明它的类；集成的记录除种子字段外（集成不改变种子时为 `None`）不含任何种子集成专有的内容，所以由不同模型组成的集成写的是同样的格式。
 
-集成的预测是其成员预测的 `average_predictions`（位于 `quantlab.utils.ensemble`）。每个成员的面板在每个 bar 上按标的做 z-score，即 `(x - mean) / std`，与 `CrossSectionalZScore` 一样取 `ddof=1`；再对各成员的 z-score 等权平均，忽略 NaN。某个成员在某个 bar 上的有限值少于两个，或截面为常数时，该成员在这个 bar 上不参与平均；只有部分成员有预测的格子取这些成员的平均，没有任何成员预测的格子为 NaN。各面板的坐标做外连接，变量集合不同的面板抛出 `ValueError`。结果的单位是 z-score，而非收益：每个 bar 的均值为 0。
+集成的预测是其成员预测的 `average_predictions`（位于 `quantlab.model.ensemble`）。每个成员的面板在每个 bar 上按标的做 z-score，即 `(x - mean) / std`，与 `CrossSectionalZScore` 一样取 `ddof=1`；再对各成员的 z-score 等权平均，忽略 NaN。某个成员在某个 bar 上的有限值少于两个，或截面为常数时，该成员在这个 bar 上不参与平均；只有部分成员有预测的格子取这些成员的平均，没有任何成员预测的格子为 NaN。各面板的坐标做外连接，变量集合不同的面板抛出 `ValueError`。结果的单位是 z-score，而非收益：每个 bar 的均值为 0。
 
 ```python
 >>> window = ensemble.predict_window("2024-06-01", "2024-07-18")
@@ -429,16 +429,16 @@ True
 >>> members = [m.predict_window("2024-06-01", "2024-07-18") for m in ensemble.members]
 >>> round(float(members[0]["ret"][0, 0]), 4), round(float(members[1]["ret"][0, 0]), 4)
 (-0.0077, -0.002)
->>> from quantlab.utils.ensemble import average_predictions
+>>> from quantlab.model.ensemble import average_predictions
 >>> bool(np.allclose(average_predictions(members)["ret"], window["ret"]))
 True
->>> from quantlab.utils.metrics import cross_sectional_rank_ic
+>>> from quantlab.model.evaluation import cross_sectional_rank_ic
 >>> y = label.ds["ret"].sel(timestamp=slice("2024-06-01", "2024-07-18")).values
 >>> [round(cross_sectional_rank_ic(m["ret"].values, y), 3) for m in members], round(cross_sectional_rank_ic(window["ret"].values, y), 3)
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-集成单元里还有平均预测的评估文件，在最后一个成员训练完之后、它的 `run.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值由单模型所用的同一个评估（`quantlab.utils.evaluation.evaluate`）打分，每个标签的分段取预测它的第一个成员去重叠（purge）后的训练、验证和测试段（`evaluation_segments()`），因此模型和集成按同一套规则命名和计算指标。单元的指标含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。平均得到的标签没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的标签保留这个尺度，并按该成员自己的方式打分：还有 `{split}_mse`、`{split}_rmse`、`{split}_mae` 和 `{split}_r2`，波动率标签还有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的标签是 z 分数单位，这些都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
+集成单元里还有平均预测的评估文件，在最后一个成员训练完之后、它的 `run.json` 之前写入。每个成员预测自己收集到的整个面板，预测经 `average_predictions` 平均，平均值由单模型所用的同一个评估（`quantlab.model.evaluation.evaluate`）打分，每个标签的分段取预测它的第一个成员去重叠（purge）后的训练、验证和测试段（`evaluation_segments()`），因此模型和集成按同一套规则命名和计算指标。单元的指标含 `train`、`val`（仅当有验证段时）和 `test` 的 `{split}_ic`、`{split}_rank_ic`、`{split}_icir` 和 `{split}_rank_icir`，对原始的第一个标签计算；另有 `{split}_member_correlation`，衡量各成员预测的一致程度（见下文）。平均得到的标签没有 loss、MSE、MAE 或 R2，因为平均值是 z 分数单位。只有一个成员按标签本身尺度预测的标签保留这个尺度，并按该成员自己的方式打分：还有 `{split}_mse`、`{split}_rmse`、`{split}_mae` 和 `{split}_r2`，波动率标签还有 `{split}_qlike` 和 `{split}_variance_ratio`（见上文“波动率标签”；不是第一个标签时为 `{split}_{label}_qlike`）；由多个成员平均的标签是 z 分数单位，这些都没有。`ic_series.csv` 以单模型文件的格式保存这些指标背后的逐 bar 序列，`test_predictions.zarr` 保存测试段上的平均预测。每个成员保留自己的文件，内容不变。
 
 ```python
 >>> metrics = trained.metrics
@@ -455,7 +455,7 @@ True
 ({'timestamp': 48, 'symbol': 20}, True)
 ```
 
-`{split}_member_correlation` 是各成员在该段上第一个标签预测的 `member_correlation`（位于 `quantlab.utils.ensemble`）。每个 bar 上只取所有成员预测都有限的标的，在这些标的上计算每一对成员的 Pearson 相关系数，再对成员对取平均（某个成员在这个 bar 上为常数时，含它的成员对不参与），然后对 bar 取平均，忽略 NaN。公共标的少于两个的 bar 跳过。取值在 `[-1, 1]` 内，没有可用 bar 时为 null。`member_correlation(predictions)` 接受每个成员一个 `[T, S]` 数组（形状必须相同），返回均值和逐 bar 序列；只有一个成员时两者都是 NaN。
+`{split}_member_correlation` 是各成员在该段上第一个标签预测的 `member_correlation`（位于 `quantlab.model.ensemble`）。每个 bar 上只取所有成员预测都有限的标的，在这些标的上计算每一对成员的 Pearson 相关系数，再对成员对取平均（某个成员在这个 bar 上为常数时，含它的成员对不参与），然后对 bar 取平均，忽略 NaN。公共标的少于两个的 bar 跳过。取值在 `[-1, 1]` 内，没有可用 bar 时为 null。`member_correlation(predictions)` 接受每个成员一个 `[T, S]` 数组（形状必须相同），返回均值和逐 bar 序列；只有一个成员时两者都是 NaN。
 
 这个数说明平均能带来多少提升。设有 `k` 个成员，平均 IC 为 `IC_i`，两两平均相关系数为 `ρ`，等权平均的 IC 近似为
 
@@ -467,8 +467,8 @@ IC_ens ≈ mean IC_i × sqrt(k / (1 + (k - 1) ρ))
 
 ```python
 >>> import numpy as np
->>> from quantlab.utils.ensemble import member_correlation
->>> from quantlab.utils.metrics import ic_panel_metrics
+>>> from quantlab.model.ensemble import member_correlation
+>>> from quantlab.model.evaluation import ic_panel_metrics
 >>> rng = np.random.default_rng(0)
 >>> target = rng.normal(size=(250, 300))
 >>> def report(members):
@@ -605,7 +605,7 @@ torch 模型头（`TorchModel`）通过标准的 PyTorch 组件取数据。基�
 ```python
 >>> import torch
 >>> import torch.nn as nn
->>> from quantlab.base.config import ModelConfig
+>>> from quantlab.model.config import ModelConfig
 >>> from quantlab.model.torch_model import TorchModel
 >>> from quantlab.model.torch_training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
@@ -1111,4 +1111,4 @@ ValueError: XGBoostRegressor: train_cv: train_periods=4 needs at least 5 trainin
 
 ## 另请参阅
 
-factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 walk-forward 运行如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/base/model.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/utils/ensemble.py`（`average_predictions`）、`quantlab/utils/walk_forward.py`（`walk_forward_folds`）、`quantlab/utils/walk_forward_training.py`（`train_walk_forward`）、`quantlab/utils/evaluation.py`（`evaluate`）、`quantlab/runs/trained_run.py`（`TrainedRun`）和 `quantlab/utils/metrics.py` 的 docstring。
+factor 指南（`docs/factor.md`）介绍因子和标签如何生成，backtest 指南（`docs/backtest.md`）介绍 `predict_panel` 的输出和 walk-forward 运行如何进入回测。backend 指南（`docs/backend.md`）介绍面板使用的 Zarr 与 xarray 存储。API 细节见 `quantlab/model/base.py`、`quantlab/base/config.py`（`ModelConfig`）、`quantlab/model/torch_model.py`、`quantlab/model/torch_data.py`、`quantlab/model/predefined/gats.py`、`quantlab/model/predefined/master.py`、`quantlab/model/torch_training.py`、`quantlab/factor/predefined/market.py`、`quantlab/model/predefined/xgb.py`、`quantlab/model/library_model.py`、`quantlab/model/predefined/seed_ensemble.py`（`SeedEnsemble`）、`quantlab/model/predefined/model_ensemble.py`（`ModelEnsemble`）、`quantlab/model/ensemble.py`（`BaseEnsemble`）、`quantlab/model/ensemble.py`（`average_predictions`）、`quantlab/model/split.py`（`walk_forward_folds`）、`quantlab/model/walk_forward_training.py`（`train_walk_forward`）、`quantlab/model/evaluation.py`（`evaluate`）、`quantlab/runs/trained_run.py`（`TrainedRun`）和 `quantlab/model/evaluation.py` 的 docstring。

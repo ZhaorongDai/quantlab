@@ -93,8 +93,8 @@ def test_a_code_record_holds_git_modules_and_libraries(tmp_path):
     head = modules["tests.backtest_fixtures"]
     assert head["framework"] is False
     assert {"", "factors.0", "labels.0"} <= set(head["components"])
-    assert modules["quantlab.base.model"]["framework"] is True
-    assert modules["quantlab.base.model"]["components"] == [""]
+    assert modules["quantlab.model.base"]["framework"] is True
+    assert modules["quantlab.model.base"]["components"] == [""]
     # Shipped implementations are component modules, layer frameworks are not.
     assert modules["quantlab.dataset.stock"]["framework"] is False
     # The dataset layer's root classes are framework, its datasets are not.

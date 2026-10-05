@@ -22,7 +22,7 @@ import warnings
 import numpy as np
 import pytest
 
-from quantlab.utils.ensemble import member_correlation
+from quantlab.model.ensemble import member_correlation
 
 
 def test_identical_members_correlate_perfectly():

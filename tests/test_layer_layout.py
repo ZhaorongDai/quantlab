@@ -9,7 +9,7 @@ What is locked here, and what turns it red:
   mapped to the layer they move to. While the move (#146) is under way, the violations
   that remain are listed in ``PENDING_VIOLATIONS``: the test fails on a violation not in
   the list and on a listed one that no longer exists, so the list only shrinks;
-- importing any `quantlab/base` module loads no torch (the training target of both model
+- importing any layer's root class or configs loads no torch (the training target of both model
   variants lives in `quantlab/model/training_target.py`, not on `BaseModel`);
 - no layer's framework module (a top-level file of `quantlab/factor`, `quantlab/label`,
   `quantlab/model`, `quantlab/backtest`, `quantlab/portfolio`) imports that layer's
@@ -39,10 +39,19 @@ BASE = REPO_ROOT / "quantlab/base"
 LAYERS = ("factor", "label", "model", "backtest", "portfolio")
 
 
-def test_importing_the_base_layer_loads_no_torch():
+def test_importing_the_root_classes_and_configs_loads_no_torch():
+    # Every layer's root class and configs (``<layer>/base.py``, ``<layer>/config.py``)
+    # and what is left in ``quantlab/base`` while #146 is under way.
+    paths = [
+        *BASE.glob("*.py"),
+        *(REPO_ROOT / "quantlab").glob("*/base.py"),
+        *(REPO_ROOT / "quantlab").glob("*/config.py"),
+    ]
     modules = sorted(
-        f"quantlab.base.{path.stem}" for path in BASE.glob("*.py") if path.stem != "__init__"
+        _module_name(path) for path in paths if path.stem != "__init__"
     )
+    # Positive control: the model layer's root class is among them.
+    assert "quantlab.model.base" in modules
     code = (
         "import sys\n"
         + "".join(f"import {name}\n" for name in modules)
@@ -139,12 +148,6 @@ LAYER_ORDER = (
 MODULE_LAYERS = {
     "quantlab.enums": "utils",
     "quantlab.utils": "utils",
-    "quantlab.utils.split": "model",
-    "quantlab.utils.walk_forward": "model",
-    "quantlab.utils.walk_forward_training": "model",
-    "quantlab.utils.evaluation": "model",
-    "quantlab.utils.metrics": "model",
-    "quantlab.utils.ensemble": "model",
     "quantlab.utils.backtest_stats": "backtest",
     "quantlab.utils.backtest_report": "backtest",
     "quantlab.utils.cli": "api",
@@ -162,7 +165,6 @@ MODULE_LAYERS = {
     "quantlab.factor": "factor",
     "quantlab.label": "label",
     "quantlab.model": "model",
-    "quantlab.base.model": "model",
     "quantlab.portfolio": "portfolio",
     "quantlab.base.portfolio": "portfolio",
     "quantlab.backtest": "backtest",
@@ -175,7 +177,7 @@ MODULE_LAYERS = {
 PENDING_VIOLATIONS = {
     ("quantlab/base/config.py", "quantlab.dataset.base"),
     ("quantlab/base/config.py", "quantlab.factor.base"),
-    ("quantlab/base/config.py", "quantlab.base.model"),
+    ("quantlab/base/config.py", "quantlab.model.base"),
     ("quantlab/base/config.py", "quantlab.base.portfolio"),
     ("quantlab/base/config.py", "quantlab.tracking.base"),
     ("quantlab/base/config.py", "quantlab.execution.rules"),

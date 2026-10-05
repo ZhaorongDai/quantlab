@@ -24,7 +24,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from quantlab.utils.walk_forward import Fold, walk_forward_folds
+from quantlab.model.split import Fold, walk_forward_folds
 
 BARS = np.arange("2024-01-01", "2024-01-31", dtype="datetime64[D]").astype("datetime64[ns]")
 

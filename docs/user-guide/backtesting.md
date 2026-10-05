@@ -376,7 +376,7 @@ bar of the test segment. The label on the last fitted bar still reads the L
 bars after it, so those bars influenced training as well. The model's
 *effective training window* therefore runs from `train_start` to the last
 fitted bar plus L bars, counted on the price calendar
-(`quantlab.utils.split.in_sample_window`). When the test segment follows the
+(`quantlab.model.split.in_sample_window`). When the test segment follows the
 training segment, the purge and the lookahead cancel and the window ends on
 the configured `train_end`. In load mode the windows the
 checkpoint's `run.json` records are used (the model reports the fitted one as

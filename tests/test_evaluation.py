@@ -34,7 +34,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.utils.evaluation import Segments, evaluate
+from quantlab.model.evaluation import Segments, evaluate
+from quantlab.model.ensemble import _member_agreement
 
 TIMES = np.datetime64("2024-01-01") + np.arange(4).astype("timedelta64[D]")
 SYMBOLS = ["A", "B", "C", "D"]
@@ -82,6 +83,13 @@ def _evaluate(tmp_path, predictions=None, truth=None, labels=None, scales=None,
         segments=segments or _segments(),
         test_bounds=test_bounds,
         run_dir=tmp_path,
+    )
+
+
+def _agreement(members: dict):
+    """The ensemble's extra metric over ``members`` (label -> member panels)."""
+    return lambda name, stamps, symbols: _member_agreement(
+        members.get(name, []), name, stamps, symbols
     )
 
 
@@ -266,10 +274,12 @@ def test_member_correlation_is_scored_for_a_label_several_members_predict(tmp_pa
         segments=_segments(),
         test_bounds=(TIMES[0], TIMES[-1]),
         run_dir=None,
-        member_predictions={
-            "ret": [_panel(ret=PRED), _panel(ret=2 * PRED + 1), _panel(ret=-PRED)],
-            "vol": [_panel(vol=PRED)],
-        },
+        extra_metrics=_agreement(
+            {
+                "ret": [_panel(ret=PRED), _panel(ret=2 * PRED + 1), _panel(ret=-PRED)],
+                "vol": [_panel(vol=PRED)],
+            }
+        ),
     )
 
     assert metrics["train_member_correlation"] == pytest.approx(-1 / 3)
@@ -291,7 +301,7 @@ def test_each_label_can_use_its_own_truth_panel(tmp_path):
         segments=_segments(),
         test_bounds=(TIMES[0], TIMES[-1]),
         run_dir=None,
-        member_predictions={"vol": [first, second]},
+        extra_metrics=_agreement({"vol": [first, second]}),
     )
 
     assert metrics["train_ic"] == pytest.approx(TRAIN_IC)

@@ -1,4 +1,4 @@
-"""Tests for `quantlab/utils/metrics.py` (quick task 260914-lno).
+"""Tests for `quantlab/model/evaluation.py` (quick task 260914-lno).
 
 The metrics module is the one place the model layer turns a `[T, S]`
 prediction panel into numbers written to the tracking run and returned from `train_cv`, so
@@ -26,8 +26,8 @@ import numpy as np
 import pytest
 from scipy.stats import pearsonr, spearmanr
 
-from quantlab.utils import metrics
-from quantlab.utils.metrics import (
+from quantlab.model import evaluation as metrics
+from quantlab.model.evaluation import (
     cross_sectional_ic,
     cross_sectional_ic_series,
     cross_sectional_rank_ic,

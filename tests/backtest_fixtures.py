@@ -15,7 +15,7 @@ import polars as pl
 import xarray as xr
 
 from quantlab.core.component import component, rebuild
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.factor.config import PolarsFactorConfig
 from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import DatasetConfig

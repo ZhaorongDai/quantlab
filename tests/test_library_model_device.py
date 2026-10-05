@@ -31,7 +31,7 @@ import pytest
 import torch
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.predefined._support import devices
 from quantlab.model.predefined.realmlp import RealMLPRegressor
 from quantlab.model.predefined.xgb import XGBoostRegressor

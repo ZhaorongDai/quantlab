@@ -254,7 +254,7 @@ class Volatility(_OpenToOpenLabel):
     The output column is ``vol_{n}``. Its ``kind`` is ``"volatility"``, so
     a model predicting it on the label's own scale also reports the level
     metrics ``qlike`` and ``variance_ratio`` (see
-    ``quantlab.utils.metrics.volatility_level_metrics``).
+    ``quantlab.model.evaluation.volatility_level_metrics``).
 
     Parameters
     ----------

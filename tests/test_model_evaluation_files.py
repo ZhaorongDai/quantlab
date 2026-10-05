@@ -29,11 +29,11 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
-from quantlab.utils.metrics import information_ratio
+from quantlab.model.evaluation import information_ratio
 from tests.label_stubs import StubLabel
 from tests.torch_heads import MeanContextHead, OneBarHead
 

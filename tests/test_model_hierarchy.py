@@ -1,6 +1,6 @@
 """Structural contract of the three-layer model hierarchy (quick task 260914-lno).
 
-`quantlab/base/model.py` is split into:
+`quantlab/model/base.py` is split into:
 
 - `BaseModel` -- framework-agnostic lifecycle; the ONLY home of the public
   `train` / `train_cv` / `load` / `predict`;
@@ -41,9 +41,9 @@ import xarray as xr
 
 import quantlab.core.component as component_rule
 from quantlab.core.component import Component
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.model import (
+from quantlab.model.base import (
     LIBRARY_RESERVED_HYPERPARAMETERS,
     RESERVED_HYPERPARAMETERS,
     TORCH_RESERVED_HYPERPARAMETERS,

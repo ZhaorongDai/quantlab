@@ -68,7 +68,7 @@ from quantlab.utils.backtest_report import (
     write_backtest_report,
 )
 from quantlab.runs.record import DataRecorder, compare, unrecorded
-from quantlab.utils.split import in_sample_window, split_ranges
+from quantlab.model.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
 from .config import BacktestConfig
@@ -125,7 +125,7 @@ class Predictor(Protocol):
     >>> from typing import get_protocol_members
     >>> sorted(get_protocol_members(Predictor))[:4]
     ['check_checkpoint', 'collect', 'fitted_train_bounds', 'from_config']
-    >>> from quantlab.base.model import BaseModel
+    >>> from quantlab.model.base import BaseModel
     >>> all(hasattr(BaseModel, name) for name in get_protocol_members(Predictor))
     True
     """
@@ -2187,14 +2187,14 @@ class BaseBacktester(Component, ABC):
 
         ``train_start`` / ``train_end`` are the fitted training window, after
         the model's purge. The *effective training window* is every bar the
-        model has seen, ``quantlab.utils.split.in_sample_window`` of the
+        model has seen, ``quantlab.model.split.in_sample_window`` of the
         fitted window and the labels' lookahead L, counted in calendar bars.
         Returns three keys that are merged into the top level of the metrics,
         all as ``_bar_label`` endpoints: ``training_window`` (the effective
         training window or ``None``), ``in_sample_range`` (first and last
         window bar inside it, or ``None``) and ``out_of_sample_ranges`` (the
         0, 1 or 2 runs of window bars outside it, from
-        ``quantlab.utils.split.split_ranges``). A non-empty overlap logs a
+        ``quantlab.model.split.split_ranges``). A non-empty overlap logs a
         warning naming both windows, and the backtest goes on with the two
         parts reported separately. A ``None`` training date logs a warning
         and every bar counts as out-of-sample.
@@ -2816,7 +2816,7 @@ class BaseBacktester(Component, ABC):
         ``in_sample_ranges`` every fold's non-empty ``in_sample_range`` in
         fold order, and ``out_of_sample_ranges`` the contiguous runs of
         ``timestamps`` outside all of them, from
-        ``quantlab.utils.split.split_ranges``. No singular ``in_sample_range``
+        ``quantlab.model.split.split_ranges``. No singular ``in_sample_range``
         is produced, because several ranges do not fit one pair.
         """
         in_sample_ranges = [

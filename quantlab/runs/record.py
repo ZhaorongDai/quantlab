@@ -874,7 +874,7 @@ def code_of(root: Any) -> dict:
     Examples
     --------
     >>> record = code_of(model)
-    >>> record["modules"]["quantlab.base.model"]["components"]
+    >>> record["modules"]["quantlab.model.base"]["components"]
     ['']
     """
     return code_record([("", root), *walk_components(root)])

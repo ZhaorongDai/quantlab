@@ -7,7 +7,7 @@ procedure, so the two cannot drift apart:
 
 1. check the unit's hyperparameters, before any directory exists;
 2. lay out the folds over the unit's bars with
-   ``quantlab.utils.walk_forward.walk_forward_folds`` and its purge length;
+   ``quantlab.model.split.walk_forward_folds`` and its purge length;
 3. create the trial directory ``{class}_trial_{timestamp}/`` under the
    unit's ``model_save_dir`` and train fold i, in order, into ``fold_{i}/``
    (the unit applies the fold's dates, trains and restores its own dates);
@@ -40,7 +40,7 @@ from quantlab.runs.trained_run import (
     new_trial_directory,
     write_walk_forward_run,
 )
-from quantlab.utils.walk_forward import Fold, walk_forward_folds
+from quantlab.model.split import Fold, walk_forward_folds
 
 #: Prefixes of the metric keys averaged over folds, one per split.
 METRIC_PREFIXES = ("train_", "val_", "test_")

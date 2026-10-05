@@ -25,7 +25,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.factor.config import PolarsFactorConfig
 from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import DatasetConfig
@@ -243,7 +243,7 @@ The portfolio construction rule has a warm-up of its own: each bar reads its las
 
 ### In-sample and out-of-sample
 
-Let L be the largest `lookahead_bars()` among the model's labels. The model fits on the bars `train_start` to `train_end` less the purge, which drops the last L bars before the test segment. The label on the last fitted bar reads L bars further, so the effective training window runs from `train_start` to the last fitted bar plus L bars on the price calendar (`quantlab.utils.split.in_sample_window`). For a test segment that follows the training segment, this window ends on the configured `train_end`. Window bars inside it are in-sample and the rest are out-of-sample. In load mode the model takes the training dates its checkpoint's `run.json` records, and the fitted window comes from the model's `fitted_train_bounds`. When the window overlaps the training window the run logs a warning and continues.
+Let L be the largest `lookahead_bars()` among the model's labels. The model fits on the bars `train_start` to `train_end` less the purge, which drops the last L bars before the test segment. The label on the last fitted bar reads L bars further, so the effective training window runs from `train_start` to the last fitted bar plus L bars on the price calendar (`quantlab.model.split.in_sample_window`). For a test segment that follows the training segment, this window ends on the configured `train_end`. Window bars inside it are in-sample and the rest are out-of-sample. In load mode the model takes the training dates its checkpoint's `run.json` records, and the fitted window comes from the model's `fitted_train_bounds`. When the window overlaps the training window the run logs a warning and continues.
 
 ```python
 >>> m = result.metrics
@@ -365,7 +365,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ('fold', ('2024-02-12', '2024-02-19'), True)
 ```
 
-The run describes the stitched curve: its weights, equity curve, settlements and metrics are the stitched pass's, and its prediction panel holds the concatenated fold predictions. Each fold is a child run of kind `"fold"`, in `cv_run.folds`, with its own weights, equity curve, settlements and metrics and the fold's trained unit. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the fitted window, after the purge, in the fold's `run.json`. A fold's in-sample window ends L bars after the fitted window's end, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.utils.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
+The run describes the stitched curve: its weights, equity curve, settlements and metrics are the stitched pass's, and its prediction panel holds the concatenated fold predictions. Each fold is a child run of kind `"fold"`, in `cv_run.folds`, with its own weights, equity curve, settlements and metrics and the fold's trained unit. The stitched curve is one simulation, so capital carries across fold boundaries. Each fold also has an independent simulation that starts from `init_cash`, and the per-fold metrics come from those. `train_cv` purges the last L bars of every fold's training segment and records the fitted window, after the purge, in the fold's `run.json`. A fold's in-sample window ends L bars after the fitted window's end, on the bar before the fold's test segment, so no stitched bar is in-sample. `quantlab.model.split.split_ranges` cuts the stitched bars into `in_sample_ranges` and `out_of_sample_ranges`.
 
 ```python
 >>> stitched = cv.metrics["stitched"]

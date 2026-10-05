@@ -36,7 +36,7 @@ import xarray as xr
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.factor.config import FactorConfig
 from quantlab.label.config import ForwardConfig
 from quantlab.dataset.base import InsufficientHistoryError
@@ -52,7 +52,7 @@ from quantlab.model.torch_training import (
     masked_mse,
 )
 from quantlab.label.forward import Forward
-from quantlab.utils.metrics import ic_panel_metrics
+from quantlab.model.evaluation import ic_panel_metrics
 from quantlab.runs.trained_run import TrainedRun
 from tests.torch_heads import MeanContextHead, RecordingHead
 from tests.label_stubs import StubLabel

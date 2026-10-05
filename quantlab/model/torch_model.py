@@ -18,7 +18,7 @@ from loguru import logger
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from quantlab.base.model import TORCH_RESERVED_HYPERPARAMETERS, BaseModel
+from quantlab.model.base import TORCH_RESERVED_HYPERPARAMETERS, BaseModel
 from quantlab.model.torch_data import Batch, CrossSectionDataset, TrainingPanel
 from quantlab.model.training_target import TrainingTargetMixin
 from quantlab.utils.timer import Timer

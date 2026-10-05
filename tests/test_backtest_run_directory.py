@@ -43,7 +43,7 @@ from quantlab.backtest.predefined.us_equity import (
 )
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.factor.config import PolarsFactorConfig
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.runs.prediction_panel import PredictionPanel
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor

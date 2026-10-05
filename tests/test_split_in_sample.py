@@ -11,7 +11,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.utils.split import in_sample_window, split_ranges
+from quantlab.model.split import in_sample_window, split_ranges
 
 BDAYS = pd.bdate_range("2024-01-01", periods=20).values
 

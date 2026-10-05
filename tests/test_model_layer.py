@@ -26,7 +26,7 @@ import torch
 import torch.nn as nn
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from tests.torch_heads import OneBarHead, RecordingHead
 from tests.label_stubs import StubLabel
 

@@ -28,10 +28,10 @@ an ensemble keep their own dates is the adapters' part, tested in
 import numpy as np
 import pytest
 
-from quantlab.base.model import BaseModel
+from quantlab.model.base import BaseModel
 from quantlab.model.ensemble import BaseEnsemble
 from quantlab.runs.trained_run import TrainedRun, write_model_run
-from quantlab.utils.walk_forward_training import (
+from quantlab.model.walk_forward_training import (
     WalkForwardTrainable,
     cv_mean_metrics,
     train_walk_forward,

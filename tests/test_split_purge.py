@@ -9,7 +9,7 @@ on it reads a bar of the next segment.
 import numpy as np
 import pandas as pd
 
-from quantlab.utils.split import purge_segments
+from quantlab.model.split import purge_segments
 
 DAYS = pd.date_range("2024-01-01", periods=10, freq="D").values
 

@@ -15,7 +15,8 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.trained_run import TrainedRun

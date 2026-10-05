@@ -43,7 +43,7 @@ import pytest
 import xarray as xr
 
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
-from quantlab.utils.ensemble import average_predictions
+from quantlab.model.ensemble import average_predictions
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.runs.trained_run import TrainedRun
 from tests.test_backtest_contracts import (
@@ -341,9 +341,9 @@ def test_config_round_trips_the_wrapped_model_and_seeds(tmp_path):
 
 
 def test_model_package_layout_and_layering():
-    """The model package sits above the base layer: its `__init__.py` files
-    are empty, nothing else in quantlab imports it (so `base/` never reaches
-    up into a concrete head), and it imports no backtest module."""
+    """The model package's `__init__.py` files are empty and it imports no
+    backtest module. Which layers may import it is the layer order's
+    (`tests/test_layer_layout.py`, ADR 0022)."""
     package = REPO_ROOT / "quantlab/model"
     for init in (
         package / "__init__.py",
@@ -356,17 +356,6 @@ def test_model_package_layout_and_layering():
     assert "quantlab.model.predefined.xgb" in _resolved_imports(
         package / "predefined/xgb_td.py"
     )
-
-    offenders = {
-        str(path.relative_to(REPO_ROOT)): sorted(
-            name
-            for name in _resolved_imports(path)
-            if _is_or_under(name, "quantlab.model")
-        )
-        for path in _python_files(REPO_ROOT / "quantlab")
-        if package not in path.parents
-    }
-    assert {path: names for path, names in offenders.items() if names} == {}
 
     for path in _python_files(package):
         backtest = sorted(

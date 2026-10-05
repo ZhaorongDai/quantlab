@@ -30,7 +30,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.runs.directory import FORMAT_VERSION
 from quantlab.utils.jsonable import to_jsonable

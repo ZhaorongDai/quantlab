@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset

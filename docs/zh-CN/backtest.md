@@ -25,7 +25,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.factor.config import PolarsFactorConfig
 from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import DatasetConfig
@@ -243,7 +243,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 ### 样本内与样本外
 
-记 L 为模型各标签 `lookahead_bars()` 的最大值。模型在 `train_start` 到 `train_end` 的 bar 上拟合，但要扣掉清洗（purge）部分，即测试段之前的最后 L 根 bar。最后一根参与拟合的 bar 上的标签还要再往后读 L 根 bar，所以有效训练窗口从 `train_start` 开始，到最后一根拟合 bar 之后第 L 根 bar 为止，按价格日历计数（`quantlab.utils.split.in_sample_window`）。测试段紧接训练段时，这个窗口恰好结束于配置的 `train_end`。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，模型采用其 checkpoint 的 `run.json` 记录的训练日期，拟合窗口取自模型的 `fitted_train_bounds`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
+记 L 为模型各标签 `lookahead_bars()` 的最大值。模型在 `train_start` 到 `train_end` 的 bar 上拟合，但要扣掉清洗（purge）部分，即测试段之前的最后 L 根 bar。最后一根参与拟合的 bar 上的标签还要再往后读 L 根 bar，所以有效训练窗口从 `train_start` 开始，到最后一根拟合 bar 之后第 L 根 bar 为止，按价格日历计数（`quantlab.model.split.in_sample_window`）。测试段紧接训练段时，这个窗口恰好结束于配置的 `train_end`。回测窗口里落在有效训练窗口内的 bar 是样本内，其余是样本外。load 模式下，模型采用其 checkpoint 的 `run.json` 记录的训练日期，拟合窗口取自模型的 `fitted_train_bounds`。回测窗口与训练窗口重叠时，运行会记录一条警告并继续。
 
 ```python
 >>> m = result.metrics
@@ -365,7 +365,7 @@ Name: 2024-02-12 00:00:00, dtype: float64
 ('fold', ('2024-02-12', '2024-02-19'), True)
 ```
 
-运行描述的是拼接后的曲线：它的权重、净值曲线、结算和指标都来自拼接过程，预测面板是各折预测的拼接。每一折是一个 kind 为 `"fold"` 的子运行，在 `cv_run.folds` 中，有自己的权重、净值曲线、结算、指标以及该折的训练单元。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗之后实际拟合的窗口记入该折的 `run.json`。一折的样本内窗口结束于拟合窗口终点之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.utils.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
+运行描述的是拼接后的曲线：它的权重、净值曲线、结算和指标都来自拼接过程，预测面板是各折预测的拼接。每一折是一个 kind 为 `"fold"` 的子运行，在 `cv_run.folds` 中，有自己的权重、净值曲线、结算、指标以及该折的训练单元。拼接曲线是一次模拟，所以资金会跨折延续。每一折另有一次从 `init_cash` 起步的独立模拟，各折的指标来自这些独立模拟。`train_cv` 对每一折的训练段清洗掉最后 L 根 bar，并把清洗之后实际拟合的窗口记入该折的 `run.json`。一折的样本内窗口结束于拟合窗口终点之后第 L 根 bar，也就是该折测试段之前的那根 bar，所以拼接曲线上没有样本内的 bar。`quantlab.model.split.split_ranges` 把拼接后的 bar 切分为 `in_sample_ranges` 和 `out_of_sample_ranges`。
 
 ```python
 >>> stitched = cv.metrics["stitched"]

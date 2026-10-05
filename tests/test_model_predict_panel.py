@@ -32,7 +32,7 @@ import torch.nn as nn
 import xarray as xr
 
 import quantlab.core.component as component_rule
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.runs.trained_run import TrainedRun

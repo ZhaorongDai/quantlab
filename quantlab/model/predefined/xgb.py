@@ -1,7 +1,7 @@
 """XGBoost regression head for the tree-model layer.
 
 ``XGBoostRegressor`` is a ``LibraryModel`` (the numpy-based model base class in
-``quantlab.base.model``). It trains an XGBoost ``Booster`` with ``xgb.train``
+``quantlab.model.base``). It trains an XGBoost ``Booster`` with ``xgb.train``
 on the rows the base builds from the factor panel (one per cell with a
 valid training target) and predicts future returns row by row. The Booster is fit on a pooled concordance-correlation loss
 (``pooled_ccc_loss``) through the custom objective ``ccc_objective``, early
@@ -20,7 +20,7 @@ from contextlib import contextmanager
 import xgboost as xgb
 from loguru import logger
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.tracking.base import TrackingRun
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.library_model import Rows

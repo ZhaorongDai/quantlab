@@ -165,7 +165,7 @@ lookahead) of the earlier segment, so no label it fits on reads a bar of the lat
 the last label it trains on reads bar 249.
 
 ```python
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.predefined.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(

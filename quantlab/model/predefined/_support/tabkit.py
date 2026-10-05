@@ -19,7 +19,7 @@ from contextlib import contextmanager
 import numpy as np
 from loguru import logger
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.library_model import Rows
 

@@ -3,7 +3,7 @@
 Before this file the repository had ZERO `train_cv` tests.
 
 The first two tests are GOLDENS captured against the pre-refactor
-`quantlab/base/model.py`, before `BaseModel` was split into
+`quantlab/model/base.py`, before `BaseModel` was split into
 `BaseModel` / `TorchModel` / `LibraryModel` and before the fold-boundary arithmetic
 was pulled out of `train_cv`'s two copy-pasted branches into one generator.
 They were run green on the untouched code and committed on their own, ahead of
@@ -56,14 +56,14 @@ import numpy as np
 import pytest
 import xarray as xr
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
 from quantlab.tracking.base import NullTracker
-from quantlab.utils.walk_forward import Fold, walk_forward_folds
-from quantlab.utils.walk_forward_training import WalkForwardTrainable
+from quantlab.model.split import Fold, walk_forward_folds
+from quantlab.model.walk_forward_training import WalkForwardTrainable
 from tests.label_stubs import StubLabel
 from tests.tracking_fixtures import RecordingTracker
 
@@ -313,7 +313,7 @@ def test_train_cv_trains_exactly_what_cv_folds_yields(tmp_path, monkeypatch):
     those two, on exactly those dates. Turns red if train_cv grows its own
     copy of the fold arithmetic again."""
     monkeypatch.setattr(
-        "quantlab.utils.walk_forward_training.walk_forward_folds", lambda timestamps, train_periods, **_: HANDMADE_FOLDS
+        "quantlab.model.walk_forward_training.walk_forward_folds", lambda timestamps, train_periods, **_: HANDMADE_FOLDS
     )
     save_dir = "ckpt_seq"
     model = StubLibraryHead(_library_config(tmp_path, save_dir))

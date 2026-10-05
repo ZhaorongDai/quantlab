@@ -385,7 +385,7 @@ def test_label_falls_back_without_raising_when_the_sidecar_is_absent(tmp_path):
     NONE of them may break because an audit file is missing.
 
     The three are `quantlab/dataset/_support/masking.py:262`,
-    `quantlab/backtest/engine_vectorbt.py:303` and `quantlab/base/model.py`'s
+    `quantlab/backtest/engine_vectorbt.py:303` and `quantlab/model/base.py`'s
     `_spell` (entered from both the `missing` and the `extra` branch of
     `predict_panel`); between them they render six human-visible messages. The
     two counts are different numbers, and it is the CALL SITE count the design

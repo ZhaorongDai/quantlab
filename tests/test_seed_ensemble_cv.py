@@ -46,7 +46,7 @@ from quantlab.model.predefined.seed_ensemble import SeedEnsemble
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.runs.trained_run import TrainedRun
-from quantlab.utils.walk_forward_training import WalkForwardTrainable, cv_mean_metrics
+from quantlab.model.walk_forward_training import WalkForwardTrainable, cv_mean_metrics
 from tests.tracking_fixtures import RecordingTracker
 from tests.backtest_fixtures import (
     SeededHead,

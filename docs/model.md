@@ -51,7 +51,7 @@ The sessions below use a small in-memory stand-in for the factor and label objec
 The config carries the factor and label objects, where checkpoints go, and four dates: the training window and the test window (all inclusive). The last `val_size` share of the training window (0.2 by default) is held out as a validation segment. `factor_data_strategy` and `label_data_strategy` say whether to read stored values (`"read"`) or compute them first (`"cal"`). `XGBoostRegressor` is a tree-model head; `hyperparameters` is passed to it.
 
 ```python
->>> from quantlab.base.config import ModelConfig
+>>> from quantlab.model.config import ModelConfig
 >>> from quantlab.model.predefined.xgb import XGBoostRegressor
 >>> config = ModelConfig(
 ...     factors=[factor], labels=[label], model_save_dir="checkpoints",
@@ -91,10 +91,10 @@ A run is read back through `TrainedRun` in `quantlab.runs.trained_run`, not by o
 
 The label at bar t reads bars up to t + L, where L is the largest `lookahead_bars()` among the model's labels. Every split boundary therefore drops the last L bars of the earlier segment, so no label used for fitting reads a bar of the later segment. `train()` cuts the training window into train and validation by position, then purges the train/validation and validation/test boundaries; the test segment keeps all its bars. With `val_size=0` the train segment is purged against test directly. Fitting thus loses L bars at each boundary. L is never a parameter: it follows from the labels.
 
-In the session above L is 2. The training window 2024-01-01 to 2024-05-31 has 152 bars; the first 121 (to 2024-04-30) train and the other 31 validate. After the purge the train segment ends on 2024-04-28 and the validation segment on 2024-05-29. The splitting is done by `quantlab.utils.split.purge_segments`, which walk-forward folds (below) share.
+In the session above L is 2. The training window 2024-01-01 to 2024-05-31 has 152 bars; the first 121 (to 2024-04-30) train and the other 31 validate. After the purge the train segment ends on 2024-04-28 and the validation segment on 2024-05-29. The splitting is done by `quantlab.model.split.purge_segments`, which walk-forward folds (below) share.
 
 ```python
->>> from quantlab.utils.split import purge_segments
+>>> from quantlab.model.split import purge_segments
 >>> train_bars, val_bars, test_bars = purge_segments(
 ...     coords["timestamp"],
 ...     [("2024-01-01", "2024-04-30"), ("2024-05-01", "2024-05-31"), ("2024-06-01", "2024-07-18")],
@@ -146,9 +146,9 @@ True
 
 ### Metrics
 
-`quantlab.utils.metrics` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC.
+`quantlab.model.evaluation` scores `[T, S]` panels. Only cells where both prediction and target are finite count. Besides MSE, RMSE, MAE and R2 it provides two cross-sectional measures. IC is the Pearson correlation between prediction and target across the symbols of one timestamp, averaged over time. RankIC does the same on the per-timestamp ranks, so it measures ordering and ignores scale. A timestamp with fewer than two symbols where both are finite, or with a constant prediction or target, has no IC and is left out of the mean rather than counted as 0. ICIR and RankICIR measure how stable the signal is: the mean of the per-timestamp IC (or RankIC) divided by its sample standard deviation (`ddof=1`). They are NaN when fewer than two timestamps have an IC.
 
-A trained model is scored after training, by the Evaluation in `quantlab.utils.evaluation` (`evaluate`), which an ensemble uses too. The model predicts its whole collected panel once with `predict_panel`, so a windowed head's first bars get their warm-up, and every label is scored against its raw values on the train, validation and test segments of `evaluation_segments()` (the purged segments above). The same predictions give the metrics, `ic_series.csv` and `test_predictions.zarr`. The rules, one set for a model and an ensemble:
+A trained model is scored after training, by the Evaluation in `quantlab.model.evaluation` (`evaluate`), which an ensemble uses too. The model predicts its whole collected panel once with `predict_panel`, so a windowed head's first bars get their warm-up, and every label is scored against its raw values on the train, validation and test segments of `evaluation_segments()` (the purged segments above). The same predictions give the metrics, `ic_series.csv` and `test_predictions.zarr`. The rules, one set for a model and an ensemble:
 
 - Every label is scored. The first label's keys are `{split}_{metric}`, every other label's `{split}_{label}_{metric}`.
 - The IC family (`ic`, `rank_ic`, `icir`, `rank_icir`) always.
@@ -170,7 +170,7 @@ The head adds `loss`: its loss on the training target (the label after the head'
 `evaluate` needs no model, so predictions can be scored without training anything; `regression_panel_metrics` computes the scores of one label on any panel:
 
 ```python
->>> from quantlab.utils.metrics import regression_panel_metrics
+>>> from quantlab.model.evaluation import regression_panel_metrics
 >>> test = slice("2024-06-01", "2024-07-18")
 >>> scores = regression_panel_metrics(
 ...     predictions["ret"].sel(timestamp=test).values,
@@ -192,7 +192,7 @@ For a label that is not a return, the IC measures how well the prediction ranks 
 A prediction of half the realised volatility on every cell predicts a quarter of the variance:
 
 ```python
->>> from quantlab.utils.metrics import volatility_level_metrics
+>>> from quantlab.model.evaluation import volatility_level_metrics
 >>> volatility_level_metrics([[0.1, 0.2]], [[0.2, 0.4]])
 {'qlike': 1.6137056388801092, 'variance_ratio': 4.0}
 ```
@@ -237,13 +237,13 @@ Every head derives from `BaseModel` through one of two variants. The variants di
 | `TorchModel` | torch, one cross-section of symbols per step | `.pth` | `window_bars`, `_init_model`, `_loss`; optional hooks with defaults (see Train a torch model) |
 | `LibraryModel` | numpy rows, the library's own early stopping | `.joblib` | `_init_model`, `_fit_model`, `_forward`; optional `_transform_feature`, `_transform_target`, `_loss` (see Extending) |
 
-Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads, and the `TorchModel` heads `GATsRegressor` (`quantlab.model.predefined.gats`, Qlib's GATs on the cross-section) and `MASTERRegressor` (`quantlab.model.predefined.master`, the market-guided transformer MASTER). Every shipped model, the ensembles included, lives in `quantlab/model/predefined/`, and the classes a new head or ensemble subclasses live at the top of `quantlab/model/` (`torch_model.py`, `library_model.py`, `ensemble.py`). See the docstrings of `quantlab/base/model.py` and `quantlab/base/config.py` for the full config fields.
+Shipped heads: `XGBoostRegressor`, `XGBTDRegressor` and `RealMLPRegressor`, all `LibraryModel` heads, and the `TorchModel` heads `GATsRegressor` (`quantlab.model.predefined.gats`, Qlib's GATs on the cross-section) and `MASTERRegressor` (`quantlab.model.predefined.master`, the market-guided transformer MASTER). Every shipped model, the ensembles included, lives in `quantlab/model/predefined/`, and the classes a new head or ensemble subclasses live at the top of `quantlab/model/` (`torch_model.py`, `library_model.py`, `ensemble.py`). See the docstrings of `quantlab/model/base.py` and `quantlab/base/config.py` for the full config fields.
 
 ### Configuration and reserved hyperparameters
 
 Every head takes one `ModelConfig`. It holds only what both variants read: the factors and labels, the save directory, the data strategies, the dates, `val_size`, `random_seed` and `hyperparameters`. Every training setting goes in `hyperparameters`, one flat dict that is recorded in `config.json`, so `config.json` alone rebuilds the model.
 
-The base classes and the shipped heads read these keys from it themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`, the union of `TORCH_RESERVED_HYPERPARAMETERS` and `LIBRARY_RESERVED_HYPERPARAMETERS`):
+The base classes and the shipped heads read these keys from it themselves (`quantlab.model.base.RESERVED_HYPERPARAMETERS`, the union of `TORCH_RESERVED_HYPERPARAMETERS` and `LIBRARY_RESERVED_HYPERPARAMETERS`):
 
 | Key | Read by | Default |
 |---|---|---|
@@ -322,10 +322,10 @@ The training target mattered most: on the Nasdaq-100 every `cs_rank` candidate b
 
 `train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own tracking run.
 
-The folds are laid out by `walk_forward_folds(timestamps, train_periods, test_periods=None, expanding=False, purge_bars=0)` in `quantlab.utils.walk_forward`, which a model's and an ensemble's `train_cv` both call. It needs no model, so the split can be checked before an expensive run. Each `Fold` carries its `index`, the training window as configured (`train_window`), the training window actually fitted after the purge (`fitted_train_window`) and the `test_window`, all inclusive. `purge_bars` is L; the model passes the largest `lookahead_bars()` among its labels.
+The folds are laid out by `walk_forward_folds(timestamps, train_periods, test_periods=None, expanding=False, purge_bars=0)` in `quantlab.model.split`, which a model's and an ensemble's `train_cv` both call. It needs no model, so the split can be checked before an expensive run. Each `Fold` carries its `index`, the training window as configured (`train_window`), the training window actually fitted after the purge (`fitted_train_window`) and the `test_window`, all inclusive. `purge_bars` is L; the model passes the largest `lookahead_bars()` among its labels.
 
 ```python
->>> from quantlab.utils.walk_forward import walk_forward_folds
+>>> from quantlab.model.split import walk_forward_folds
 >>> planned = walk_forward_folds(coords["timestamp"], 100, purge_bars=label.lookahead_bars())
 >>> len(planned), planned[0]
 (5, Fold(index=0, train_window=('2024-01-01', '2024-04-09'), fitted_train_window=('2024-01-01', '2024-04-07'), test_window=('2024-04-10', '2024-04-29')))
@@ -383,7 +383,7 @@ The folds train one after another, on the one collected panel. Each fold trains 
 ('2024-06-29', '2024-06-01')
 ```
 
-The procedure is `train_walk_forward` in `quantlab.utils.walk_forward_training`, which an ensemble's `train_cv` runs too: it checks the hyperparameters before any directory exists, lays out the folds, trains each into `fold_{i}/`, averages the folds' metrics and writes the summary run and `run.json`. It trains anything that satisfies its protocol `WalkForwardTrainable` (see the developer internals).
+The procedure is `train_walk_forward` in `quantlab.model.walk_forward_training`, which an ensemble's `train_cv` runs too: it checks the hyperparameters before any directory exists, lays out the folds, trains each into `fold_{i}/`, averages the folds' metrics and writes the summary run and `run.json`. It trains anything that satisfies its protocol `WalkForwardTrainable` (see the developer internals).
 
 ### Average several seeds
 
@@ -420,7 +420,7 @@ True
 
 A member is a `"model"` unit of its own, whose `config.json` names its class; the ensemble's record names nothing specific to seeds beyond the seed field (`None` when the ensemble does not vary seeds), so an ensemble of different models writes the same format.
 
-The ensemble's prediction is `average_predictions` (in `quantlab.utils.ensemble`) of its members' predictions. Each member's panel is z-scored over symbols on each bar, `(x - mean) / std` with `ddof=1` as `CrossSectionalZScore` does, and the z-scores are averaged over members with equal weights, ignoring NaN. A member whose bar has fewer than two finite values or a constant cross-section is left out on that bar; a cell only some members predict is the mean of those members, and a cell no member predicts is NaN. The panels' coordinates are outer-joined, and panels with different variable sets raise `ValueError`. The result is in z-score units, not returns: each bar has mean 0.
+The ensemble's prediction is `average_predictions` (in `quantlab.model.ensemble`) of its members' predictions. Each member's panel is z-scored over symbols on each bar, `(x - mean) / std` with `ddof=1` as `CrossSectionalZScore` does, and the z-scores are averaged over members with equal weights, ignoring NaN. A member whose bar has fewer than two finite values or a constant cross-section is left out on that bar; a cell only some members predict is the mean of those members, and a cell no member predicts is NaN. The panels' coordinates are outer-joined, and panels with different variable sets raise `ValueError`. The result is in z-score units, not returns: each bar has mean 0.
 
 ```python
 >>> window = ensemble.predict_window("2024-06-01", "2024-07-18")
@@ -429,16 +429,16 @@ The ensemble's prediction is `average_predictions` (in `quantlab.utils.ensemble`
 >>> members = [m.predict_window("2024-06-01", "2024-07-18") for m in ensemble.members]
 >>> round(float(members[0]["ret"][0, 0]), 4), round(float(members[1]["ret"][0, 0]), 4)
 (-0.0077, -0.002)
->>> from quantlab.utils.ensemble import average_predictions
+>>> from quantlab.model.ensemble import average_predictions
 >>> bool(np.allclose(average_predictions(members)["ret"], window["ret"]))
 True
->>> from quantlab.utils.metrics import cross_sectional_rank_ic
+>>> from quantlab.model.evaluation import cross_sectional_rank_ic
 >>> y = label.ds["ret"].sel(timestamp=slice("2024-06-01", "2024-07-18")).values
 >>> [round(cross_sectional_rank_ic(m["ret"].values, y), 3) for m in members], round(cross_sectional_rank_ic(window["ret"].values, y), 3)
 ([0.682, 0.687, 0.689], 0.688)
 ```
 
-The ensemble unit also holds the evaluation files of the averaged prediction, written after the last member and before its `run.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored by the Evaluation a single model uses (`quantlab.utils.evaluation.evaluate`), each label on the purged train, validation and test segments (`evaluation_segments()`) of the first member predicting it, so a model and an ensemble name and compute their metrics by one rule. The unit's metrics hold `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label, and `{split}_member_correlation`, how much the members agree (below). An averaged label has no loss, MSE, MAE or R2, because the average is in z-score units. A label only one member predicts on the label's own scale keeps that scale and is scored as that member scores it: `{split}_mse`, `{split}_rmse`, `{split}_mae` and `{split}_r2` too, and for a volatility label `{split}_qlike` and `{split}_variance_ratio` (see Volatility labels above; for a label other than the first, `{split}_{label}_qlike`); a label averaged over several members is in z-score units and gets none of them. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
+The ensemble unit also holds the evaluation files of the averaged prediction, written after the last member and before its `run.json`. Every member predicts its whole collected panel, the predictions are averaged by `average_predictions`, and the average is scored by the Evaluation a single model uses (`quantlab.model.evaluation.evaluate`), each label on the purged train, validation and test segments (`evaluation_segments()`) of the first member predicting it, so a model and an ensemble name and compute their metrics by one rule. The unit's metrics hold `{split}_ic`, `{split}_rank_ic`, `{split}_icir` and `{split}_rank_icir` for `train`, `val` (only when there is a validation segment) and `test`, computed on the raw first label, and `{split}_member_correlation`, how much the members agree (below). An averaged label has no loss, MSE, MAE or R2, because the average is in z-score units. A label only one member predicts on the label's own scale keeps that scale and is scored as that member scores it: `{split}_mse`, `{split}_rmse`, `{split}_mae` and `{split}_r2` too, and for a volatility label `{split}_qlike` and `{split}_variance_ratio` (see Volatility labels above; for a label other than the first, `{split}_{label}_qlike`); a label averaged over several members is in z-score units and gets none of them. `ic_series.csv` holds the per-bar series behind them in the layout of a single model's file, and `test_predictions.zarr` the averaged prediction on the test segment. Each member keeps its own files, unchanged.
 
 ```python
 >>> metrics = trained.metrics
@@ -455,7 +455,7 @@ The ensemble unit also holds the evaluation files of the averaged prediction, wr
 ({'timestamp': 48, 'symbol': 20}, True)
 ```
 
-`{split}_member_correlation` is `member_correlation` (in `quantlab.utils.ensemble`) of the members' first-label predictions on that split. On each bar only the symbols where every member's prediction is finite count; over them the Pearson correlation of each pair of members is computed and averaged over the pairs (a pair with a constant member on that bar is left out), and the bar values are averaged over bars, ignoring NaN. A bar with fewer than two common symbols is skipped. The value lies in `[-1, 1]` and is null when no bar is usable. `member_correlation(predictions)` takes one `[T, S]` array per member, all of one shape, and returns the mean and the per-bar series; with a single member both are NaN.
+`{split}_member_correlation` is `member_correlation` (in `quantlab.model.ensemble`) of the members' first-label predictions on that split. On each bar only the symbols where every member's prediction is finite count; over them the Pearson correlation of each pair of members is computed and averaged over the pairs (a pair with a constant member on that bar is left out), and the bar values are averaged over bars, ignoring NaN. A bar with fewer than two common symbols is skipped. The value lies in `[-1, 1]` and is null when no bar is usable. `member_correlation(predictions)` takes one `[T, S]` array per member, all of one shape, and returns the mean and the per-bar series; with a single member both are NaN.
 
 The number tells how much averaging can add. With `k` members of mean IC `IC_i` and mean pairwise correlation `ρ`, the equal-weight average has approximately
 
@@ -467,8 +467,8 @@ With `ρ` near 1 the members are copies of one another and the ensemble IC stays
 
 ```python
 >>> import numpy as np
->>> from quantlab.utils.ensemble import member_correlation
->>> from quantlab.utils.metrics import ic_panel_metrics
+>>> from quantlab.model.ensemble import member_correlation
+>>> from quantlab.model.evaluation import ic_panel_metrics
 >>> rng = np.random.default_rng(0)
 >>> target = rng.normal(size=(250, 300))
 >>> def report(members):
@@ -605,7 +605,7 @@ The smallest head is a window, a network and a loss:
 ```python
 >>> import torch
 >>> import torch.nn as nn
->>> from quantlab.base.config import ModelConfig
+>>> from quantlab.model.config import ModelConfig
 >>> from quantlab.model.torch_model import TorchModel
 >>> from quantlab.model.torch_training import cs_zscore, masked_mse
 >>> class LastBar(nn.Module):
@@ -1111,4 +1111,4 @@ On macOS the `xgboost` wheel links Homebrew's OpenMP runtime while `torch` bundl
 
 ## See also
 
-The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/base/model.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/utils/ensemble.py` (`average_predictions`), `quantlab/utils/walk_forward.py` (`walk_forward_folds`), `quantlab/utils/walk_forward_training.py` (`train_walk_forward`), `quantlab/utils/evaluation.py` (`evaluate`), `quantlab/runs/trained_run.py` (`TrainedRun`) and `quantlab/utils/metrics.py`.
+The factor guide (`docs/factor.md`) explains how factors and labels are produced, and the backtest guide (`docs/backtest.md`) shows how `predict_panel` output and a walk-forward run feed a backtest. The backend guide (`docs/backend.md`) covers the Zarr and xarray storage the panels use. API details are in the docstrings of `quantlab/model/base.py`, `quantlab/base/config.py` (`ModelConfig`), `quantlab/model/torch_model.py`, `quantlab/model/torch_data.py`, `quantlab/model/predefined/gats.py`, `quantlab/model/predefined/master.py`, `quantlab/model/torch_training.py`, `quantlab/factor/predefined/market.py`, `quantlab/model/predefined/xgb.py`, `quantlab/model/library_model.py`, `quantlab/model/predefined/seed_ensemble.py` (`SeedEnsemble`), `quantlab/model/predefined/model_ensemble.py` (`ModelEnsemble`), `quantlab/model/ensemble.py` (`BaseEnsemble`), `quantlab/model/ensemble.py` (`average_predictions`), `quantlab/model/split.py` (`walk_forward_folds`), `quantlab/model/walk_forward_training.py` (`train_walk_forward`), `quantlab/model/evaluation.py` (`evaluate`), `quantlab/runs/trained_run.py` (`TrainedRun`) and `quantlab/model/evaluation.py`.

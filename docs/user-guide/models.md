@@ -37,7 +37,7 @@ raises `TypeError`, naming the misplaced object.
 
 ## The model hierarchy
 
-Every model derives from `quantlab.base.model.BaseModel`, which implements
+Every model derives from `quantlab.model.base.BaseModel`, which implements
 the public entry points once for all heads: `collect`, `train`, `train_cv`,
 `load`, `predict` and `predict_panel`. It also owns the checkpoint layout and
 the cross-validation folds. Below it sit two variants, one per kind of
@@ -82,7 +82,7 @@ defaults. `XGBoostRegressor`, for example, merges your keys over
 
 ## Configure a model
 
-Every head, torch or library, takes one `quantlab.base.config.ModelConfig`.
+Every head, torch or library, takes one `quantlab.model.config.ModelConfig`.
 Passing anything else raises `TypeError` before anything else happens. Its
 fields are:
 
@@ -103,7 +103,7 @@ fields are:
 - `random_seed`.
 
 Some `hyperparameters` keys are reserved: the base classes and the shipped
-heads read them themselves (`quantlab.base.model.RESERVED_HYPERPARAMETERS`).
+heads read them themselves (`quantlab.model.base.RESERVED_HYPERPARAMETERS`).
 
 - `epochs` (default 100): the cap on a torch head's training epochs. A value
   that is not a positive integer raises `ValueError` in `collect()` or when
@@ -166,7 +166,7 @@ its last L bars:
 
 Fitting thus loses L bars at every boundary. L follows from the labels and
 is not a parameter. The splitting is done by
-`quantlab.utils.split.purge_segments`. When the purge leaves no training
+`quantlab.model.split.purge_segments`. When the purge leaves no training
 bar, `train()` and `train_cv()` raise `ValueError`.
 
 ## Train a model
@@ -177,7 +177,7 @@ label (see [Factors and labels](factors.md)), then configures
 testing:
 
 ```python
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.predefined.xgb import XGBoostRegressor
 
 model = XGBoostRegressor(ModelConfig(
@@ -271,7 +271,7 @@ loaded.
 
 ## Evaluate predictions
 
-`quantlab.utils.metrics` scores a `[T, S]` prediction panel against the
+`quantlab.model.evaluation` scores a `[T, S]` prediction panel against the
 realised label panel. Only cells where both are finite count.
 
 - The IC (information coefficient) is the correlation between prediction and
@@ -296,7 +296,7 @@ realised label panel. Only cells where both are finite count.
 per-bar values:
 
 ```python
-from quantlab.utils.metrics import regression_panel_metrics
+from quantlab.model.evaluation import regression_panel_metrics
 
 m = regression_panel_metrics(pred["ret_1"].values, test["ret_1"].values)
 ```
@@ -364,7 +364,7 @@ Across folds you see how stable the model's quality is over time.
 
 `train_cv(train_periods, expanding=False, test_periods=None)` lays the folds
 out over the bars between `config.start_date` and `config.end_date`, through
-`quantlab.utils.walk_forward.walk_forward_folds`, which you can also call on a
+`quantlab.model.split.walk_forward_folds`, which you can also call on a
 timestamp axis to check the folds before training. Each
 fold's training window is `train_periods` bars and its test segment the next
 `test_periods` bars (`train_periods // 5` by default), and the next fold
@@ -511,7 +511,7 @@ last weights. Its other defaults are the paper's: an 8-bar window, model
 width 256 and learning rate 1e-5.
 
 ```python
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.predefined.gats import GATsRegressor
 from quantlab.model.predefined.master import MASTERRegressor
 
@@ -570,7 +570,7 @@ the epoch with the lowest validation loss:
 
 ```python
 import torch.nn as nn
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.torch_model import TorchModel
 from quantlab.model.torch_training import cs_rank_norm, masked_mse
 
@@ -638,7 +638,7 @@ symbols. Features are clipped to ±3 and missing values become 0.
   features trains on those three. A factor left unpinned contributes every
   name its class can produce (`_get_factor_names()`).
 - On macOS, the xgboost and torch wheels ship different OpenMP runtimes that
-  clash in one process. Because `quantlab.base.model` imports torch, any
+  clash in one process. Because `quantlab.model.base` imports torch, any
   script that trains an `LibraryModel` head is affected. Set `OMP_NUM_THREADS=1`
   before anything imports torch or xgboost, as the example scripts do. Linux
   is not affected.
@@ -653,7 +653,7 @@ symbols. Features are clipped to ±3 and missing values become 0.
 - [Factors and labels](factors.md) for building the inputs.
 - [Backtesting](backtesting.md) for turning predictions into target weights
   and replaying a CV run.
-- The docstrings of `quantlab.base.model.BaseModel`, `TorchModel` and `LibraryModel`
+- The docstrings of `quantlab.model.base.BaseModel`, `TorchModel` and `LibraryModel`
   for every method, and of each head class for its hyperparameters.
 - [Extending quantlab](../developer-guide/extending.md) for writing a new
   model head.

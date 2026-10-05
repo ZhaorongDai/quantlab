@@ -4,7 +4,7 @@ What this file locks, and what turns each lock red:
 
 - **D-17, the effective training window.** It is the fitted training window
   (after the model's purge) plus the labels' lookahead L, counted in bars by
-  `quantlab.utils.split.in_sample_window` (tested in
+  `quantlab.model.split.in_sample_window` (tested in
   `tests/test_split_in_sample.py`): the last fitted label reads L bars
   further, so those bars are in-sample too. Through `run()`, the bar the last
   fitted label reads is in-sample and the next one is not, in load and train

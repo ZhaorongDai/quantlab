@@ -601,7 +601,7 @@ as `Return` and `BinaryReturn` in `quantlab/label/predefined/fret.py` do.
 ## A model head
 
 A model head is the part of a return model that is specific to one learning
-algorithm. `BaseModel` (`quantlab.base.model`) owns everything shared:
+algorithm. `BaseModel` (`quantlab.model.base`) owns everything shared:
 collecting features and labels, the train/validation/test split and
 walk-forward cross-validation (both purged by the labels' lookahead), checkpoints in a trained-run directory read through `TrainedRun`, and
 `predict_panel`. Two variants add the framework-specific loop.
@@ -624,7 +624,7 @@ eight symbols. A ridge regression:
 ```python
 import numpy as np
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 
 
@@ -708,7 +708,7 @@ A GRU per symbol followed by attention across the bar's symbols:
 import torch
 from torch import nn
 
-from quantlab.base.config import ModelConfig
+from quantlab.model.config import ModelConfig
 from quantlab.model.torch_model import TorchModel
 from quantlab.model.torch_training import cs_rank_norm, masked_mse
 

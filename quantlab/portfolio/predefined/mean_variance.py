@@ -25,7 +25,7 @@ import xarray as xr
 from quantlab.base.config import MeanVarianceConfig
 from quantlab.base.portfolio import CovarianceEstimate, FactorCovarianceEstimate, PortfolioConstructionError, PortfolioConstructor, PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
-from quantlab.utils.ensemble import _cross_sectional_zscore
+from quantlab.utils.cross_section import cross_sectional_zscore
 
 if TYPE_CHECKING:
     from quantlab.factor.base import Factor
@@ -92,11 +92,11 @@ class MeanVarianceInputs:
 def _zscore(values: np.ndarray) -> np.ndarray:
     """Cross-sectional z-score with ``ddof=1``; all 0.0 when it is undefined.
 
-    ``_cross_sectional_zscore``, which also treats fewer than two values or
+    ``cross_sectional_zscore``, which also treats fewer than two values or
     a constant cross-section (a one-ulp residue in the standard deviation
     included) as undefined.
     """
-    return np.nan_to_num(_cross_sectional_zscore(values), nan=0.0)
+    return np.nan_to_num(cross_sectional_zscore(values), nan=0.0)
 
 
 def _project_capped_simplex(values: np.ndarray, cap: float, total: float = 1.0) -> np.ndarray:

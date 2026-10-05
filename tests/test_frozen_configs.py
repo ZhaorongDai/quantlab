@@ -17,7 +17,7 @@ from typing import Callable
 import pytest
 
 import quantlab.core.component as component_rule
-from quantlab.base.config import ModelConfig, ModelConfig
+from quantlab.model.config import ModelConfig, ModelConfig
 from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.dataset.config import (
     ConstituentDatasetConfig,
