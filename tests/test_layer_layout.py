@@ -9,7 +9,7 @@ What is locked here, and what turns it red:
 - importing any layer's root class or configs loads no torch (the training target of both model
   variants lives in `quantlab/model/training_target.py`, not on `BaseModel`);
 - no layer's framework module (a top-level file of `quantlab/factor`, `quantlab/label`,
-  `quantlab/model`, `quantlab/backtest`, `quantlab/portfolio`) imports that layer's
+  `quantlab/model`, `quantlab/risk`, `quantlab/backtest`, `quantlab/portfolio`) imports that layer's
   `predefined` package, so a user's own factor, label, model, backtester or portfolio
   construction rule needs nothing from the shipped ones;
 - cvxpy is imported by the mean-variance optimiser only;
@@ -32,7 +32,7 @@ from tests.test_backtest_contracts import (
     _resolved_imports,
 )
 
-LAYERS = ("factor", "label", "model", "backtest", "portfolio")
+LAYERS = ("factor", "label", "model", "risk", "backtest", "portfolio")
 
 
 def test_importing_the_root_classes_and_configs_loads_no_torch():
@@ -131,6 +131,7 @@ LAYER_ORDER = (
     "factor",
     "label",
     "model",
+    "risk",
     "portfolio",
     "backtest",
     "api",
@@ -153,6 +154,7 @@ MODULE_LAYERS = {
     "quantlab.factor": "factor",
     "quantlab.label": "label",
     "quantlab.model": "model",
+    "quantlab.risk": "risk",
     "quantlab.portfolio": "portfolio",
     "quantlab.backtest": "backtest",
     "quantlab.api": "api",
