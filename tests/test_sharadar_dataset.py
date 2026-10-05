@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 
 from tests.sharadar_fixtures import (
+    ACTIONS_COLUMNS,
     SEP_COLUMNS,
     TICKERS_COLUMNS,
     FakeTransport,
@@ -27,8 +28,8 @@ def _api_key(monkeypatch):
     monkeypatch.setenv("SHARADAR_API_KEY", "synthetic-key")  # SYNTHETIC
 
 
-def _pull(download_dir, sep_rows, tickers_rows):
-    """Pull SEP and TICKERS through the client; return the vendor root."""
+def _pull(download_dir, sep_rows, tickers_rows, actions_rows=()):
+    """Pull SEP, TICKERS and ACTIONS through the client; return the vendor root."""
     from quantlab.acquisition.sharadar.client import SharadarClient
 
     transport = FakeTransport(
@@ -36,12 +37,13 @@ def _pull(download_dir, sep_rows, tickers_rows):
             {
                 "stocks": csv_text(SEP_COLUMNS, sep_rows),
                 "tickers": csv_text(TICKERS_COLUMNS, tickers_rows),
+                "actions": csv_text(ACTIONS_COLUMNS, list(actions_rows)),
             }
         )
     )
     client = SharadarClient(transport=transport, sleep=lambda seconds: None)
-    client.bulk_table("sep", download_dir)
-    client.bulk_table("tickers", download_dir)
+    for code in ("sep", "tickers", "actions"):
+        client.bulk_table(code, download_dir)
     return download_dir / "sharadar"
 
 
@@ -57,8 +59,8 @@ def _dataset(tmp_path, vendor_root, **fields):
     return SharadarStockDataset(config)
 
 
-def _build(tmp_path, sep_rows, tickers_rows, **fields):
-    vendor_root = _pull(tmp_path / "downloads", sep_rows, tickers_rows)
+def _build(tmp_path, sep_rows, tickers_rows, actions_rows=(), **fields):
+    vendor_root = _pull(tmp_path / "downloads", sep_rows, tickers_rows, actions_rows)
     _dataset(tmp_path, vendor_root, **fields).from_raw_data().save()
     return _dataset(tmp_path, vendor_root, **fields)
 

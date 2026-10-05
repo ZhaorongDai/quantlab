@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 
 from tests.sharadar_fixtures import (
+    ACTIONS_COLUMNS,
     SEP_COLUMNS,
     SP500_COLUMNS,
     TICKERS_COLUMNS,
@@ -33,18 +34,20 @@ def _api_key(monkeypatch):
 
 
 def _pull(download_dir, sep_rows, tickers_rows, sp500_rows=None):
-    """Pull SEP, TICKERS and (when given) SP500; return the vendor root."""
+    """Pull SEP, TICKERS, an empty ACTIONS and (when given) SP500; return the vendor root."""
     from quantlab.acquisition.sharadar.client import SharadarClient
 
     tables = {
         "stocks": csv_text(SEP_COLUMNS, sep_rows),
         "tickers": csv_text(TICKERS_COLUMNS, tickers_rows),
+        "actions": csv_text(ACTIONS_COLUMNS, []),
     }
     if sp500_rows is not None:
         tables["sp500"] = csv_text(SP500_COLUMNS, sp500_rows)
     client = SharadarClient(transport=FakeTransport(bulk_routes(tables)), sleep=lambda s: None)
     client.bulk_table("sep", download_dir)
     client.bulk_table("tickers", download_dir)
+    client.bulk_table("actions", download_dir)
     if sp500_rows is not None:
         client.bulk_table("sp500", download_dir)
     return download_dir / "sharadar"

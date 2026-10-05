@@ -90,6 +90,19 @@ TABLES: dict[str, SharadarTable] = {
             },
         ),
         SharadarTable(
+            code="actions",
+            api_name="actions",
+            schema={
+                "date": pl.Date,
+                "action": pl.String,
+                "ticker": pl.String,
+                "name": pl.String,
+                "value": pl.Float64,
+                "contraticker": pl.String,
+                "contraname": pl.String,
+            },
+        ),
+        SharadarTable(
             code="tickers",
             api_name="tickers",
             schema={
