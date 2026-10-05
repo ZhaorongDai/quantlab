@@ -48,6 +48,14 @@ _SPLIT, _TWIN = 19, 20  # one company twice: a 2-for-1 split, and no split
 _SPLIT_BAR = 50
 _MONTH, _STOQ, _STOA, _LIQ_MIN = 5, 3, 6, 0.5
 _DIV_WINDOW = 40
+_DIV_MIN = 20
+_UNCLASSIFIED = 4  # a bank: no current / non-current split of debt or liabilities
+_NEGATIVE_BOOK = 6
+_FOREIGN = 8  # reports in a currency 1.35 to the USD
+_TWO_YEARS, _THREE_YEARS = 10, 11  # fiscal-year history this short
+_REFILED, _REFILE_BAR = 0, 70  # a new filing reaches this symbol from this bar
+_FUNDAMENTALS = ("equity", "debtnc", "debt", "liabilitiesc", "assets", "netinccmn", "depamor", "fxusd")
+_HISTORY = tuple(f"{p}{k}" for p in ("eps_fy", "sps_fy") for k in range(5))
 _KWARGS = {
     "beta_window": _WINDOW,
     "beta_half_life": _HALF_LIFE,
@@ -67,10 +75,12 @@ _KWARGS = {
     "stoa_months": _STOA,
     "liquidity_min_fraction": _LIQ_MIN,
     "dividend_window": _DIV_WINDOW,
+    "dividend_min_observations": _DIV_MIN,
 }
 _RESVOL_WEIGHTS = (0.75, 0.15, 0.10)
 _LIQUIDITY_WEIGHTS = (0.35, 0.35, 0.30)
-_COLUMNS = ("adjClose", "marketcap", "risk_free", "close", "volume", "divCash", "splitFactor")
+_COLUMNS = ("adjClose", "marketcap", "risk_free", "close", "volume", "divCash", "splitFactor",
+            *_FUNDAMENTALS, *_HISTORY)
 
 
 def _inputs() -> dict[str, np.ndarray]:
@@ -105,7 +115,40 @@ def _inputs() -> dict[str, np.ndarray]:
         values[:_LISTING_BAR, _LISTED_LATE] = np.nan
     cap[[30, 31, 64], _CAP_GAP] = np.nan
     price[47, 2] = np.nan  # a missing bar inside the window
+
+    def per_symbol(low, high):
+        return np.broadcast_to(rng.uniform(low, high, size=_S), (_T, _S)).copy()
+
+    fx = np.ones((_T, _S))
+    fx[:, _FOREIGN] = 1.35
+    book = per_symbol(0.2, 0.9) * cap[0] * fx
+    book[:, _NEGATIVE_BOOK] *= -1.0
+    debtnc = per_symbol(0.0, 0.5) * np.abs(book)
+    current = per_symbol(0.1, 0.4) * np.abs(book)
+    debt = debtnc + per_symbol(0.0, 0.2) * np.abs(book)
+    debtnc[:, _UNCLASSIFIED] = np.nan
+    current[:, _UNCLASSIFIED] = np.nan
+    assets = np.abs(book) + debt + current + per_symbol(0.0, 1.0) * np.abs(book)
+    earnings = per_symbol(-0.05, 0.15) * np.abs(book)
+    depreciation = per_symbol(0.0, 0.05) * np.abs(book)
+    book[_REFILE_BAR:, _REFILED] *= 1.3
+    earnings[_REFILE_BAR:, _REFILED] *= 0.5
+    history = {}
+    for prefix, level in (("eps_fy", 2.0), ("sps_fy", 20.0)):
+        growth = rng.normal(0.08, 0.1, size=_S)
+        for k in range(5):
+            values = level * (1.0 + growth) ** (-k) * (1.0 + rng.normal(0.0, 0.05, size=_S))
+            values[_TWO_YEARS] = np.nan if k >= 2 else values[_TWO_YEARS]
+            values[_THREE_YEARS] = np.nan if k >= 3 else values[_THREE_YEARS]
+            history[f"{prefix}{k}"] = np.broadcast_to(values, (_T, _S)).copy()
+    history["eps_fy1"][:, 12] = np.nan  # a year without an EPS inside the history
+    fundamentals = {
+        "equity": book, "debtnc": debtnc, "debt": debt, "liabilitiesc": current,
+        "assets": assets, "netinccmn": earnings, "depamor": depreciation, "fxusd": fx,
+    }
     return {
+        **fundamentals,
+        **history,
         "adjClose": price,
         "marketcap": cap,
         "risk_free": np.broadcast_to(risk_free[:, None], (_T, _S)).copy(),
@@ -139,9 +182,11 @@ def _config(tmp_path: Path, **overrides) -> FactorConfig:
     price_columns = ("adjClose", "risk_free", "close", "volume", "divCash", "splitFactor")
     prices = _store(tmp_path, "prices", {k: inputs[k] for k in price_columns})
     caps = _store(tmp_path, "caps", {"marketcap": inputs["marketcap"]})
+    fundamentals = _store(tmp_path, "fundamentals", {k: inputs[k] for k in _FUNDAMENTALS})
+    history = _store(tmp_path, "history", {k: inputs[k] for k in _HISTORY})
     values = {
         "warmup_bars": 0,
-        "dataset": [prices, caps],
+        "dataset": [prices, caps, fundamentals, history],
         "mode": "batch",
         "data_columns": _COLUMNS,
         "file_path": str(tmp_path / "barra.zarr"),
@@ -229,6 +274,21 @@ def _residual(y: np.ndarray, regressors: list[np.ndarray], w: np.ndarray, estu: 
     return out
 
 
+def _count(values: np.ndarray, window: int) -> np.ndarray:
+    """Valid values in each trailing window, NaN until it fills."""
+    out = np.full(values.shape, np.nan)
+    for t, rows in _windowed(values, window):
+        out[t] = np.isfinite(rows).sum(axis=0)
+    return out
+
+
+def _combine(parts: list[np.ndarray], weights) -> np.ndarray:
+    total = sum(np.where(np.isfinite(d), d, 0.0) * w for d, w in zip(parts, weights))
+    present = sum(np.isfinite(d) * w for d, w in zip(parts, weights))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(present > 0, total / present, np.nan)
+
+
 def _reference() -> dict[str, np.ndarray]:
     inputs = _inputs()
     price, cap = inputs["adjClose"], inputs["marketcap"]
@@ -303,6 +363,31 @@ def _reference() -> dict[str, np.ndarray]:
     for t, rows in _windowed(inputs["divCash"] * basis, _DIV_WINDOW):
         yild[t] = rows.sum(axis=0) / (basis[t] * inputs["close"][t])
 
+    yild = np.where(_count(inputs["close"], _DIV_WINDOW) >= _DIV_MIN, yild, np.nan)
+
+    fx = inputs["fxusd"]
+    book, earnings = inputs["equity"], inputs["netinccmn"]
+    long_term = np.where(np.isfinite(inputs["debtnc"]), inputs["debtnc"], inputs["debt"])
+    with np.errstate(invalid="ignore", divide="ignore"):
+        btop = book / fx / cap
+        etop = earnings / fx / cap
+        cetop = (earnings + inputs["depamor"]) / fx / cap
+        mlev = 1.0 + long_term / fx / cap
+        blev = np.where(book > 0, 1.0 + long_term / book, np.nan)
+        dtoa = (inputs["debtnc"] + inputs["liabilitiesc"]) / inputs["assets"]
+
+    def growth(prefix):
+        out = np.full((_T, _S), np.nan)
+        years = np.stack([inputs[f"{prefix}{k}"] for k in range(5)])
+        for t in range(_T):
+            for s in range(_S):
+                v = years[:, t, s]
+                known = np.isfinite(v)
+                if known.sum() >= 3 and np.abs(v[known]).mean() > 0:
+                    slope = np.polyfit(-np.arange(5)[known], v[known], 1)[0]
+                    out[t, s] = slope / np.abs(v[known]).mean()
+        return out
+
     def descriptor(raw):
         return _clip(_standardize(raw, cap_before, estu))
 
@@ -320,6 +405,14 @@ def _reference() -> dict[str, np.ndarray]:
         "stoq": descriptor(share_turnover(_STOQ)),
         "stoa": descriptor(share_turnover(_STOA)),
         "yild": descriptor(yild),
+        "btop": descriptor(btop),
+        "etop": descriptor(etop),
+        "cetop": descriptor(cetop),
+        "mlev": descriptor(mlev),
+        "dtoa": descriptor(dtoa),
+        "blev": descriptor(blev),
+        "egro": descriptor(growth("eps_fy")),
+        "sgro": descriptor(growth("sps_fy")),
     }
     style_size, style_beta = standardize(desc["lncap"]), standardize(desc["beta"])
     desc["nlsize"] = descriptor(style_size**3)
@@ -347,6 +440,10 @@ def _reference() -> dict[str, np.ndarray]:
         "style_nonlinear_beta": standardize(_residual(desc["nlbeta"], [style_beta], root_cap, estu)),
         "style_liquidity": standardize(liquidity),
         "style_dividend_yield": standardize(desc["yild"]),
+        "style_book_to_price": standardize(desc["btop"]),
+        "style_earnings_yield": standardize(_combine([desc["cetop"], desc["etop"]], (0.15, 0.10))),
+        "style_leverage": standardize(_combine([desc["mlev"], desc["dtoa"], desc["blev"]], (0.75, 0.15, 0.10))),
+        "style_growth": standardize(_combine([desc["egro"], desc["sgro"]], (0.20, 0.10))),
         "estu": estu.astype(np.float64),
         "cap_before": cap_before,
         "dastd_raw": dastd,
@@ -366,14 +463,18 @@ def computed(tmp_path_factory) -> tuple[BarraStyle, xr.Dataset, dict[str, np.nda
 # --- tests ----------------------------------------------------------------
 
 
+_FUNDAMENTAL_OUTPUTS = ("desc_btop", "desc_etop", "desc_cetop", "desc_mlev", "desc_dtoa",
+                        "desc_blev", "desc_egro", "desc_sgro", "style_book_to_price",
+                        "style_earnings_yield", "style_leverage", "style_growth")
 _EXACT = ("desc_lncap", "desc_beta", "desc_dastd", "desc_hsigma", "desc_nlsize", "desc_nlbeta",
           "desc_yild", "style_size", "style_beta", "style_nonlinear_size", "style_nonlinear_beta",
-          "style_dividend_yield", "estu")
+          "style_dividend_yield", "estu", *_FUNDAMENTAL_OUTPUTS)
 # KunQuant's Log is accurate to about 4e-10.
 _ON_LOGS = ("desc_rstr", "desc_cmra", "desc_stom", "desc_stoq", "desc_stoa", "style_momentum",
             "style_residual_volatility", "style_liquidity")
 _STYLES = ("style_size", "style_beta", "style_momentum", "style_residual_volatility",
-           "style_nonlinear_size", "style_nonlinear_beta", "style_liquidity", "style_dividend_yield")
+           "style_nonlinear_size", "style_nonlinear_beta", "style_liquidity", "style_dividend_yield",
+           "style_book_to_price", "style_earnings_yield", "style_leverage", "style_growth")
 
 
 @pytest.mark.parametrize("name", _EXACT + _ON_LOGS)
@@ -571,3 +672,39 @@ def test_equal_weighting_orthogonalizes_with_equal_weights(tmp_path) -> None:
 def test_invalid_price_style_parameters_are_refused(tmp_path, kwargs, match) -> None:
     with pytest.raises(ValueError, match=match):
         BarraStyle(_config(tmp_path, kwargs={**_KWARGS, **kwargs}))
+
+
+def test_growth_needs_three_known_years_and_uses_three_four_or_five(computed) -> None:
+    _, out, _ = computed
+    egro = out["desc_egro"].transpose("timestamp", "symbol").to_numpy()
+    assert np.isnan(egro[:, _TWO_YEARS]).all()
+    assert np.isfinite(egro[_LISTING_BAR:, _THREE_YEARS]).any()  # three years
+    assert np.isfinite(egro[_LISTING_BAR:, 12]).any()  # four: one year without an EPS
+    assert np.isfinite(egro[_LISTING_BAR:, 1]).any()  # five
+
+
+def test_leverage_falls_back_and_refuses_where_its_inputs_do(computed) -> None:
+    _, out, _ = computed
+    sel = lambda name, symbol: out[name].sel(symbol=f"S{symbol:02d}").values  # noqa: E731
+    assert np.isnan(sel("desc_dtoa", _UNCLASSIFIED)).all()
+    assert np.isfinite(sel("desc_mlev", _UNCLASSIFIED)[1:]).any()  # total debt instead
+    assert np.isnan(sel("desc_blev", _NEGATIVE_BOOK)).all()
+    assert np.isfinite(sel("style_leverage", _NEGATIVE_BOOK)[1:]).any()
+
+
+def test_a_fundamentals_value_changes_exposures_only_from_its_bar(computed, tmp_path) -> None:
+    _, out, _ = computed
+    inputs = _inputs()
+    unchanged = {k: inputs[k].copy() for k in ("equity", "netinccmn")}
+    for values in unchanged.values():
+        values[_REFILE_BAR:, _REFILED] = values[0, _REFILED]
+    fundamentals = _store(tmp_path, "fundamentals_before", {**{k: inputs[k] for k in _FUNDAMENTALS}, **unchanged})
+    config = _config(tmp_path)
+    datasets = list(config.dataset)
+    datasets[2] = fundamentals
+    other = compute_all(BarraStyle(_config(tmp_path, dataset=datasets)))
+    for name in ("desc_btop", "style_book_to_price", "style_earnings_yield"):
+        a = out[name].transpose("timestamp", "symbol").to_numpy()
+        b = other[name].transpose("timestamp", "symbol").to_numpy()
+        np.testing.assert_array_equal(a[:_REFILE_BAR], b[:_REFILE_BAR])
+        assert not np.allclose(a[_REFILE_BAR:, _REFILED], b[_REFILE_BAR:, _REFILED])

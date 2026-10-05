@@ -278,10 +278,7 @@ class MergedDataset(MarketDataset):
         frames = []
         for dataset in self.datasets:
             frame = dataset.head(n)
-            if isinstance(dataset, MarketDataset):
-                frame = frame.rename(
-                    dataset.shared_name_map(frame.collect_schema().names())
-                )
+            frame = frame.rename(dataset.shared_name_map(frame.collect_schema().names()))
             frames.append(frame)
         return pl.concat(frames, how="diagonal_relaxed")
 
@@ -413,10 +410,8 @@ class MergedDataset(MarketDataset):
 
 
 def _shared_names(dataset: BaseDataset, panel: xr.Dataset) -> xr.Dataset:
-    """Return ``panel`` renamed by ``dataset``'s column mapping, if it has one."""
-    if isinstance(dataset, MarketDataset):
-        return dataset.to_shared_names(panel)
-    return panel
+    """Return ``panel`` renamed by ``dataset``'s column mapping."""
+    return dataset.to_shared_names(panel)
 
 
 def _own_names(dataset: BaseDataset, variables) -> "list[str] | None":
@@ -433,10 +428,8 @@ def _own_names(dataset: BaseDataset, variables) -> "list[str] | None":
 
 
 def _shared_map(dataset: BaseDataset, names) -> dict[str, str]:
-    """Return the input's renaming onto the shared names, if it has one."""
-    if isinstance(dataset, MarketDataset):
-        return dataset.shared_name_map(names)
-    return {}
+    """Return the input's renaming onto the shared names."""
+    return dataset.shared_name_map(names)
 
 
 def _describe(dataset: BaseDataset) -> str:

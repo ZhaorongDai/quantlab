@@ -15,13 +15,24 @@ mean exposure of the universe is 0 and the equally weighted standard
 deviation is 1. Symbols outside the universe are shifted and scaled by the
 same numbers, so every symbol with data gets an exposure.
 
-This version outputs the price- and volume-based styles: Size (descriptor
-LNCAP), Beta (BETA), Momentum (RSTR), Residual Volatility (DASTD, CMRA,
-HSIGMA), Non-linear Size, Non-linear Beta, Liquidity (STOM, STOQ, STOA) and
-Dividend Yield (YILD), as described in Menchero, Orr and
-Wang, *The Barra US Equity Model (USE4), Methodology Notes* (MSCI, 2011),
-and its Empirical Notes, Appendix A. The fundamentals-based styles are
-added in later versions.
+It outputs USE4's styles: Size (descriptor LNCAP), Beta (BETA), Momentum
+(RSTR), Residual Volatility (DASTD, CMRA, HSIGMA), Non-linear Size,
+Non-linear Beta, Liquidity (STOM, STOQ, STOA), Dividend Yield (YILD),
+Book-to-Price (BTOP), Earnings Yield (ETOP, CETOP), Leverage (MLEV, DTOA,
+BLEV) and Growth (EGRO, SGRO), as described in Menchero, Orr and Wang, *The
+Barra US Equity Model (USE4), Methodology Notes* (MSCI, 2011), and its
+Empirical Notes, Appendix A.
+
+Deviations from USE4, all because Sharadar sells no analyst forecasts or
+preferred-equity field:
+
+- Earnings Yield has no EPFWD (forward earnings): it is the trailing
+  CETOP and ETOP only, their USE4 weights renormalized;
+- Growth has no EGRLF (analyst long-term growth): it is the historical
+  EGRO and SGRO only, their USE4 weights renormalized;
+- CETOP's cash earnings, which MSCI does not define, are trailing net
+  income to common plus depreciation and amortization;
+- preferred equity is taken as 0 in MLEV and BLEV.
 
 A style with several descriptors is their fixed-weight sum over the
 descriptors a symbol has, the weights renormalized over those present, so
@@ -43,7 +54,16 @@ import xarray as xr
 from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Op import Builder, ConstantOp, Input, OpBase, Output
-from KunQuant.ops import BackRef, Log, Select, SetInfOrNanToValue, Sqrt, WindowedSum
+from KunQuant.ops import (
+    Abs,
+    And,
+    BackRef,
+    Log,
+    Select,
+    SetInfOrNanToValue,
+    Sqrt,
+    WindowedSum,
+)
 from KunQuant.Stage import Function
 
 from quantlab.factor.config import FactorConfig
@@ -105,6 +125,35 @@ class BarraStyleParameters:
         Panel variable holding a split's new shares per old share on its
         effective date, 1 on other bars; it converts earlier dividends to
         the current share basis.
+    book_equity_column : str, default "equity"
+        Book value of common equity (SF1, reporting currency).
+    long_term_debt_column : str, default "debtnc"
+        Long-term (non-current) debt (SF1, reporting currency).
+    total_debt_column : str, default "debt"
+        Total debt (SF1), taken as the long-term debt of a company whose
+        balance sheet does not split current from non-current (a bank). Our
+        choice.
+    current_liabilities_column : str, default "liabilitiesc"
+        Current liabilities (SF1, reporting currency).
+    assets_column : str, default "assets"
+        Total assets (SF1, reporting currency).
+    earnings_column : str, default "netinccmn"
+        Trailing twelve months' net income to common (SF1 ART).
+    depreciation_column : str, default "depamor"
+        Trailing twelve months' depreciation and amortization (SF1 ART).
+    fx_column : str, default "fxusd"
+        Reporting currency per USD (SF1 ``fxusd``): an amount in USD is the
+        amount divided by it.
+    eps_prefix, sales_prefix : str, default "eps_fy", "sps_fy"
+        Prefixes of the fiscal-year history variables
+        (``SharadarFiscalYearsDataset``): ``<prefix>0`` is the latest fiscal
+        year's EPS or sales per share, ``<prefix>1`` the year before.
+    growth_years : int, default 5
+        Fiscal years EGRO and SGRO regress on, the slots ``0 ..
+        growth_years - 1`` (USE4: five).
+    min_growth_years : int, default 3
+        Fewest known fiscal years for EGRO or SGRO to be computed. Our
+        choice.
     estimation_universe_size : int, default 3000
         Number of largest companies, by the previous bar's market cap, in
         the estimation universe. Our choice: USE4 uses the MSCI USA IMI,
@@ -151,6 +200,17 @@ class BarraStyleParameters:
         Weights of STOM, STOQ and STOA in Liquidity (USE4).
     dividend_window : int, default 252
         Bars of dividends summed by YILD, a trailing year (USE4).
+    dividend_min_observations : int, default 126
+        Fewest raw closes in the YILD window for YILD to be computed. Our
+        choice.
+    cetop_weight, etop_weight : float, default 0.15, 0.10
+        Weights of CETOP and ETOP in Earnings Yield (USE4; EPFWD's 0.75 is
+        dropped and the two renormalized).
+    egro_weight, sgro_weight : float, default 0.20, 0.10
+        Weights of EGRO and SGRO in Growth (USE4; EGRLF's 0.70 is dropped and
+        the two renormalized).
+    mlev_weight, dtoa_weight, blev_weight : float, default 0.75, 0.15, 0.10
+        Weights of MLEV, DTOA and BLEV in Leverage (USE4).
     orthogonalization_weighting : str, default "sqrt_cap"
         Regression weights of the orthogonalizations: ``"sqrt_cap"`` (the
         square root of the previous bar's market cap), ``"cap"`` or
@@ -168,8 +228,10 @@ class BarraStyleParameters:
     Examples
     --------
     >>> params = BarraStyleParameters(estimation_universe_size=500)
-    >>> params.panel_columns
+    >>> params.panel_columns[:7]
     ('adjClose', 'marketcap', 'risk_free', 'close', 'volume', 'divCash', 'splitFactor')
+    >>> len(params.panel_columns)
+    25
     >>> params.warmup_bars
     526
     """
@@ -181,6 +243,18 @@ class BarraStyleParameters:
     volume_column: str = "volume"
     dividend_column: str = "divCash"
     split_column: str = "splitFactor"
+    book_equity_column: str = "equity"
+    long_term_debt_column: str = "debtnc"
+    total_debt_column: str = "debt"
+    current_liabilities_column: str = "liabilitiesc"
+    assets_column: str = "assets"
+    earnings_column: str = "netinccmn"
+    depreciation_column: str = "depamor"
+    fx_column: str = "fxusd"
+    eps_prefix: str = "eps_fy"
+    sales_prefix: str = "sps_fy"
+    growth_years: int = 5
+    min_growth_years: int = 3
     estimation_universe_size: int = 3000
     beta_window: int = 252
     beta_half_life: float = 63.0
@@ -205,6 +279,14 @@ class BarraStyleParameters:
     stoq_weight: float = 0.35
     stoa_weight: float = 0.30
     dividend_window: int = 252
+    dividend_min_observations: int = 126
+    cetop_weight: float = 0.15
+    etop_weight: float = 0.10
+    egro_weight: float = 0.20
+    sgro_weight: float = 0.10
+    mlev_weight: float = 0.75
+    dtoa_weight: float = 0.15
+    blev_weight: float = 0.10
     orthogonalization_weighting: str = "sqrt_cap"
     data_error_sigma: float = 10.0
     clip_sigma: float = 3.0
@@ -250,8 +332,8 @@ class BarraStyleParameters:
 
         Examples
         --------
-        >>> BarraStyleParameters().panel_columns
-        ('adjClose', 'marketcap', 'risk_free', 'close', 'volume', 'divCash', 'splitFactor')
+        >>> BarraStyleParameters().panel_columns[7:16]
+        ('equity', 'debtnc', 'debt', 'liabilitiesc', 'assets', 'netinccmn', 'depamor', 'fxusd', 'eps_fy0')
         """
         return (
             self.price_column,
@@ -261,7 +343,27 @@ class BarraStyleParameters:
             self.volume_column,
             self.dividend_column,
             self.split_column,
+            self.book_equity_column,
+            self.long_term_debt_column,
+            self.total_debt_column,
+            self.current_liabilities_column,
+            self.assets_column,
+            self.earnings_column,
+            self.depreciation_column,
+            self.fx_column,
+            *self.history_columns(self.eps_prefix),
+            *self.history_columns(self.sales_prefix),
         )
+
+    def history_columns(self, prefix: str) -> tuple[str, ...]:
+        """Return the fiscal-year history variables of one prefix, newest first.
+
+        Examples
+        --------
+        >>> BarraStyleParameters(growth_years=3).history_columns("eps_fy")
+        ('eps_fy0', 'eps_fy1', 'eps_fy2')
+        """
+        return tuple(f"{prefix}{year}" for year in range(self.growth_years))
 
     @property
     def warmup_bars(self) -> int:
@@ -342,8 +444,20 @@ class BarraStyleParameters:
             )
         if not min(self.stom_weight, self.stoq_weight, self.stoa_weight) > 0:
             raise ValueError("stom_weight, stoq_weight and stoa_weight must be positive")
-        if self.dividend_window < 1:
-            raise ValueError("dividend_window must be at least 1")
+        if not 1 <= self.dividend_min_observations <= self.dividend_window:
+            raise ValueError(
+                f"dividend_min_observations must be between 1 and dividend_window "
+                f"({self.dividend_window}), got {self.dividend_min_observations}"
+            )
+        if not 2 <= self.min_growth_years <= self.growth_years:
+            raise ValueError(
+                f"min_growth_years must be between 2 and growth_years "
+                f"({self.growth_years}), got {self.min_growth_years}"
+            )
+        weights = (self.cetop_weight, self.etop_weight, self.egro_weight, self.sgro_weight,
+                   self.mlev_weight, self.dtoa_weight, self.blev_weight)
+        if not min(weights) > 0:
+            raise ValueError("every descriptor weight must be positive")
         if self.orthogonalization_weighting not in ORTHOGONALIZATION_WEIGHTINGS:
             raise ValueError(
                 f"orthogonalization_weighting must be one of {ORTHOGONALIZATION_WEIGHTINGS}, "
@@ -362,14 +476,48 @@ def _present(value: OpBase) -> OpBase:
     return SetInfOrNanToValue(value * 0.0 + 1.0, 0.0)
 
 
+def _growth(years: list[OpBase], least: int) -> OpBase:
+    """Return the least-squares slope of ``years`` on time over their mean absolute value.
+
+    ``years[k]`` is the value ``k`` years ago, at time ``-k``. Only the
+    finite values enter: the slope is ``sum((x - mx)(v - mv)) / sum((x -
+    mx)**2)`` and the scale the mean of ``|v|``, over them. NaN with fewer
+    than ``least`` finite values or a scale of 0.
+    """
+    present = [_present(value) for value in years]
+    filled = [SetInfOrNanToValue(value, 0.0) for value in years]
+    count: OpBase = ConstantOp(0.0)
+    sum_x: OpBase = ConstantOp(0.0)
+    sum_v: OpBase = ConstantOp(0.0)
+    sum_abs: OpBase = ConstantOp(0.0)
+    for k, (known, value) in enumerate(zip(present, filled)):
+        count = count + known
+        sum_x = sum_x + known * float(-k)
+        sum_v = sum_v + value
+        sum_abs = sum_abs + Abs(value)
+    mean_x, mean_v = sum_x / count, sum_v / count
+    cross: OpBase = ConstantOp(0.0)
+    square: OpBase = ConstantOp(0.0)
+    for k, (known, value) in enumerate(zip(present, filled)):
+        dx = (mean_x * -1.0 + float(-k)) * known
+        cross = cross + dx * (value - mean_v)
+        square = square + dx * dx
+    scale = sum_abs / count
+    enough = And(count >= float(least), scale > 0.0)
+    return Select(enough, cross / square / scale, ConstantOp("nan"))
+
+
 class BarraStyle(FactorKunQuant):
     """USE4-style exposures: standardized descriptors and style factors.
 
-    Reads seven panel variables (see ``BarraStyleParameters``): the adjusted
-    close, the market cap, the risk-free rate, and the raw close, raw
-    volume, cash dividend and split factor, usually from a merge of a
-    Sharadar price dataset, the Sharadar DAILY dataset and a risk-free
-    series broadcast across symbols. On every bar ``t``:
+    Reads the panel variables of ``BarraStyleParameters.panel_columns``:
+    the adjusted close, the market cap, the risk-free rate, the raw close,
+    raw volume, cash dividend and split factor, eight SF1 fundamentals and
+    the fiscal-year EPS and sales-per-share history. They usually come from
+    a merge of a Sharadar price dataset, the DAILY dataset, the SF1 ART
+    fundamentals dataset (whose balance-sheet items equal ARQ's on every
+    filing), the fiscal-year history dataset and a risk-free series
+    broadcast across symbols. On every bar ``t``:
 
     - the estimation universe is the ``estimation_universe_size`` symbols
       with the largest market cap at ``t-1``;
@@ -386,8 +534,7 @@ class BarraStyle(FactorKunQuant):
     - RSTR is the exponentially weighted sum of ``log_excess`` over
       ``momentum_window`` bars ending ``momentum_lag`` bars ago (half-life
       ``momentum_half_life``), the weights normalized to sum to 1 over the
-      bars with a return (our choice: USE4 does not say; without it a
-      security with gaps in its window would be pulled toward 0);
+      bars with a return (our choice: USE4 does not say);
     - DASTD is the exponentially weighted standard deviation of ``excess``
       over ``dastd_window`` bars (half-life ``dastd_half_life``);
     - CMRA is ``log(1 + max Z) - log(1 + min Z)``, ``Z(T)`` the sum of
@@ -395,17 +542,30 @@ class BarraStyle(FactorKunQuant):
       bars, ``T = 1 .. cmra_months``; NaN when ``min Z <= -1``;
     - a day's turnover is ``volume * close / marketcap``, its dollar volume
       over its market cap: the share count ``marketcap / close`` and the
-      volume are on that day's share basis, so a split moves neither
-      (Sharadar's SF1 ``sharesbas`` is restated for later splits and is not
-      used). STOM, STOQ and STOA are ``log(L * mean turnover)`` over the
+      volume are on that day's share basis, so a split moves neither.
+      STOM, STOQ and STOA are ``log(L * mean turnover)`` over the
       last 1, ``stoq_months`` and ``stoa_months`` months of
       ``L = liquidity_month_length`` bars, which is USE4's
       ``log(sum over a month)`` and ``log(mean over months of exp(STOM))``
       when every day has a turnover; a day without one is left out of the
-      mean (our choice);
+      mean (our choice), and a window of zero volume only is NaN;
     - YILD is the cash dividends of the last ``dividend_window`` bars,
       each converted to today's share basis through the splits since its
       ex-date, divided by today's raw close;
+    - fundamentals are converted to USD by ``fx_column`` where they meet
+      the market cap. BTOP is book equity over market cap; ETOP is trailing
+      net income to common over market cap and CETOP the same plus
+      depreciation and amortization; with long-term debt ``LD`` (the total
+      debt where the long-term part is not reported), MLEV is ``1 + LD /
+      market cap``, BLEV ``1 + LD / book equity`` (NaN for book equity at
+      or below 0, our choice) and DTOA ``(LD + current liabilities) /
+      assets`` over the non-current debt only (NaN where it or the current
+      liabilities are not reported);
+    - EGRO is the slope of a least-squares fit of the fiscal-year EPS
+      ``eps_fy0 .. eps_fy<growth_years - 1>`` on time (``0, -1, ...``
+      years), over the years known, divided by their mean absolute value;
+      NaN with fewer than ``min_growth_years`` known years or a mean of 0.
+      SGRO is the same with sales per share;
     - a windowed descriptor is NaN with fewer valid values in its window
       than its ``*_min_observations`` (``liquidity_min_fraction`` of the
       window for Liquidity);
@@ -419,7 +579,10 @@ class BarraStyle(FactorKunQuant):
       orthogonalized against Beta and Size and standardized again;
     - Liquidity is ``0.35 STOM + 0.35 STOQ + 0.30 STOA`` over the
       descriptors present, standardized; Dividend Yield is YILD
-      standardized again;
+      standardized again; Book-to-Price is BTOP standardized again;
+      Earnings Yield is ``0.15 CETOP + 0.10 ETOP``, Leverage ``0.75 MLEV +
+      0.15 DTOA + 0.10 BLEV`` and Growth ``0.20 EGRO + 0.10 SGRO``, each
+      over the descriptors present, standardized;
     - the NLSIZE descriptor is the cube of the Size exposure, standardized
       and clipped like any descriptor; Non-linear Size is it orthogonalized
       against Size and standardized again. NLBETA and Non-linear Beta are
@@ -437,12 +600,16 @@ class BarraStyle(FactorKunQuant):
 
     - ``desc_lncap``, ``desc_beta``, ``desc_rstr``, ``desc_dastd``,
       ``desc_cmra``, ``desc_hsigma``, ``desc_nlsize``, ``desc_nlbeta``,
-      ``desc_stom``, ``desc_stoq``, ``desc_stoa``, ``desc_yild``: the
+      ``desc_stom``, ``desc_stoq``, ``desc_stoa``, ``desc_yild``,
+      ``desc_btop``, ``desc_etop``, ``desc_cetop``, ``desc_mlev``,
+      ``desc_dtoa``, ``desc_blev``, ``desc_egro``, ``desc_sgro``: the
       standardized, clipped descriptors;
     - ``style_size``, ``style_beta``, ``style_momentum``,
       ``style_residual_volatility``, ``style_nonlinear_size``,
       ``style_nonlinear_beta``, ``style_liquidity``,
-      ``style_dividend_yield``: the style exposures;
+      ``style_dividend_yield``, ``style_book_to_price``,
+      ``style_earnings_yield``, ``style_leverage``, ``style_growth``: the
+      style exposures;
     - ``estu``: 1 inside the estimation universe of the bar, 0 outside.
 
     The graph runs in double precision. On 1000 bars of 3008 symbols, with
@@ -497,6 +664,14 @@ class BarraStyle(FactorKunQuant):
         "desc_stoq",
         "desc_stoa",
         "desc_yild",
+        "desc_btop",
+        "desc_etop",
+        "desc_cetop",
+        "desc_mlev",
+        "desc_dtoa",
+        "desc_blev",
+        "desc_egro",
+        "desc_sgro",
         "style_size",
         "style_beta",
         "style_momentum",
@@ -505,6 +680,10 @@ class BarraStyle(FactorKunQuant):
         "style_nonlinear_beta",
         "style_liquidity",
         "style_dividend_yield",
+        "style_book_to_price",
+        "style_earnings_yield",
+        "style_leverage",
+        "style_growth",
         "estu",
     )
 
@@ -618,6 +797,7 @@ class BarraStyle(FactorKunQuant):
             month = params.liquidity_month_length
 
             def share_turnover(months: int) -> OpBase:
+                """``log(month * mean turnover)`` over the last ``months`` months."""
                 window = months * month
                 observed = WindowedSum(_present(turnover), window)
                 mean = WindowedSum(SetInfOrNanToValue(turnover, 0.0), window) / observed
@@ -632,7 +812,37 @@ class BarraStyle(FactorKunQuant):
                 SetInfOrNanToValue(Input(params.dividend_column), 0.0) * basis,
                 params.dividend_window,
             )
-            yild = dividends / (basis * close)
+            yild = counted(
+                dividends / (basis * close), close, params.dividend_window,
+                params.dividend_min_observations,
+            )
+
+            fx = Input(params.fx_column)
+            equity = Input(params.book_equity_column)
+            earnings = Input(params.earnings_column)
+            reported_long_term = Input(params.long_term_debt_column)
+            long_term = Select(
+                _present(reported_long_term) > 0.0,
+                reported_long_term,
+                Input(params.total_debt_column),
+            )
+            nan = ConstantOp("nan")
+            btop = equity / fx / cap
+            etop = earnings / fx / cap
+            cetop = (earnings + Input(params.depreciation_column)) / fx / cap
+            mlev = long_term / fx / cap + 1.0
+            blev = Select(equity > 0.0, long_term / equity + 1.0, nan)
+            dtoa = (reported_long_term + Input(params.current_liabilities_column)) / Input(
+                params.assets_column
+            )
+            egro = _growth(
+                [Input(name) for name in params.history_columns(params.eps_prefix)],
+                params.min_growth_years,
+            )
+            sgro = _growth(
+                [Input(name) for name in params.history_columns(params.sales_prefix)],
+                params.min_growth_years,
+            )
 
             desc = {
                 "lncap": descriptor(Log(cap)),
@@ -645,6 +855,14 @@ class BarraStyle(FactorKunQuant):
                 "stoq": descriptor(share_turnover(params.stoq_months)),
                 "stoa": descriptor(share_turnover(params.stoa_months)),
                 "yild": descriptor(yild),
+                "btop": descriptor(btop),
+                "etop": descriptor(etop),
+                "cetop": descriptor(cetop),
+                "mlev": descriptor(mlev),
+                "dtoa": descriptor(dtoa),
+                "blev": descriptor(blev),
+                "egro": descriptor(egro),
+                "sgro": descriptor(sgro),
             }
             style_size = standardize(desc["lncap"])
             style_beta = standardize(desc["beta"])
@@ -673,6 +891,17 @@ class BarraStyle(FactorKunQuant):
                     [params.stom_weight, params.stoq_weight, params.stoa_weight],
                 )),
                 "style_dividend_yield": standardize(desc["yild"]),
+                "style_book_to_price": standardize(desc["btop"]),
+                "style_earnings_yield": standardize(RenormalizedCombine(
+                    [desc["cetop"], desc["etop"]], [params.cetop_weight, params.etop_weight]
+                )),
+                "style_leverage": standardize(RenormalizedCombine(
+                    [desc["mlev"], desc["dtoa"], desc["blev"]],
+                    [params.mlev_weight, params.dtoa_weight, params.blev_weight],
+                )),
+                "style_growth": standardize(RenormalizedCombine(
+                    [desc["egro"], desc["sgro"]], [params.egro_weight, params.sgro_weight]
+                )),
                 "estu": estu,
             })
             for name, value in outputs.items():

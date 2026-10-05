@@ -320,7 +320,5 @@ def _series_features(series: xr.Dataset) -> dict[str, xr.DataArray]:
 
 
 def _shared_names(dataset: BaseDataset, panel: xr.Dataset) -> xr.Dataset:
-    """Return ``panel`` renamed by ``dataset``'s column mapping, if it has one."""
-    if isinstance(dataset, MarketDataset):
-        return dataset.to_shared_names(panel)
-    return panel
+    """Return ``panel`` renamed by ``dataset``'s column mapping."""
+    return dataset.to_shared_names(panel)

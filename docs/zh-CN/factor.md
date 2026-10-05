@@ -487,7 +487,7 @@ XrBackend()
 | `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库；`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha101` 中的副本构建，没有数据的 bar 输出 NaN |
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
-| `BarraStyle` | KunQuant | USE4 风格暴露：标准化的 LNCAP、BETA、RSTR、DASTD、CMRA、HSIGMA、NLSIZE、NLBETA、STOM、STOQ、STOA、YILD 描述子，Size、Beta、Momentum、Residual Volatility、Non-linear Size、Non-linear Beta、Liquidity、Dividend Yield 风格因子（Residual Volatility 和两个非线性因子已正交化）和估计域标记，双精度计算；读取复权收盘价、市值、无风险利率、原始收盘价、原始成交量、`divCash` 和 `splitFactor`；只支持批量 |
+| `BarraStyle` | KunQuant | USE4 风格暴露：20 个标准化描述子和 12 个风格因子（Size、Beta、Momentum、Residual Volatility、Non-linear Size、Non-linear Beta、Liquidity、Dividend Yield、Book-to-Price、Earnings Yield、Leverage、Growth；Residual Volatility 和两个非线性因子已正交化）以及估计域标记，双精度计算。读取价格与分红（SEP）、市值（DAILY）、八个 SF1 ART 基本面字段、财年历史和无风险利率：见 `BarraStyleParameters().panel_columns`。Earnings Yield 和 Growth 用的是历史与滚动口径，没有 USE4 的分析师预测描述子；只支持批量 |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
 | `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
 | `Forward` | 任意 | 把一个因子向前平移成标签 |

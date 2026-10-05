@@ -1986,6 +1986,79 @@ class BaseDataset(Component, ABC):
         }
         return data.assign(**promoted) if promoted else data
 
+    #: The store's own variable names mapped onto the shared names every
+    #: factor programs against (``open``, ``high``, ``low``, ``close``,
+    #: ``volume``, ``amount``). A variable not named here keeps its name.
+    COLUMN_MAP: dict[str, str] = {}
+
+    def to_shared_names(self, panel: xr.Dataset) -> xr.Dataset:
+        """Return ``panel`` with its variables renamed by ``COLUMN_MAP``.
+
+        Names of ``COLUMN_MAP`` the panel does not hold are skipped. This is
+        the renaming ``to_kunquant`` applies, and the one a merge applies to
+        each of its inputs.
+
+        Parameters
+        ----------
+        panel : xr.Dataset
+            A panel of this dataset.
+
+        Returns
+        -------
+        xr.Dataset
+            The same panel under the shared names.
+
+        Examples
+        --------
+        >>> spot = SpotKlineDataset(spot_config)   # Binance's Title-Case names
+        >>> list(spot.to_shared_names(spot.panel("2024-01-02", "2024-01-05")).data_vars)
+        ['open', 'high', 'low', 'close', 'volume', 'amount']
+        """
+        return panel.rename(self.shared_name_map(panel.data_vars))
+
+    def own_names(self, names) -> list[str]:
+        """Return this dataset's own names of the shared variable ``names``.
+
+        The inverse of ``COLUMN_MAP``: a shared name some column is renamed
+        to becomes that column, any other name stays. A reader passes the
+        result as ``panel(variables=...)`` to read only the columns it
+        exports under the shared names (a KunQuant factor's
+        ``data_columns``).
+
+        Parameters
+        ----------
+        names : iterable of str
+            Shared variable names.
+
+        Examples
+        --------
+        >>> spot.own_names(["close", "volume"])
+        ['Close', 'Volume']
+        >>> stock.own_names(["adjClose"])
+        ['adjClose']
+        """
+        inverse: dict[str, list[str]] = {}
+        for own, shared in self.COLUMN_MAP.items():
+            inverse.setdefault(shared, []).append(own)
+        return [own for name in names for own in inverse.get(name, [name])]
+
+    def shared_name_map(self, names) -> dict[str, str]:
+        """Return the part of ``COLUMN_MAP`` that applies to ``names``.
+
+        Parameters
+        ----------
+        names : iterable of str
+            Variable or column names, such as a panel's ``data_vars`` or a
+            ``LazyFrame``'s columns.
+
+        Examples
+        --------
+        >>> spot.shared_name_map(["timestamp", "Close", "Volume"])
+        {'Close': 'close', 'Volume': 'volume'}
+        """
+        names = set(names)
+        return {k: v for k, v in self.COLUMN_MAP.items() if k in names}
+
     def _clean(self, data: xr.Dataset) -> xr.Dataset:
         """Validate and flag the converted panel before it is stored.
 
@@ -2016,7 +2089,8 @@ class MarketDataset(BaseDataset):
     contiguous ``[time, symbol]`` float32 arrays for KunQuant (the compiled
     factor engine). A subclass implements ``_raw_data_to_xr``,
     ``_raw_data_to_xr_window`` and ``_to_kunquant``, and sets ``COLUMN_MAP``
-    when its variable names differ from the shared ones.
+    (inherited from ``BaseDataset``) when its variable names differ from the
+    shared ones.
 
     Parameters
     ----------
@@ -2041,36 +2115,6 @@ class MarketDataset(BaseDataset):
 
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = DatasetConfig
-
-    #: The store's own variable names mapped onto the shared names every
-    #: factor programs against (``open``, ``high``, ``low``, ``close``,
-    #: ``volume``, ``amount``). A variable not named here keeps its name.
-    COLUMN_MAP: dict[str, str] = {}
-
-    def to_shared_names(self, panel: xr.Dataset) -> xr.Dataset:
-        """Return ``panel`` with its variables renamed by ``COLUMN_MAP``.
-
-        Names of ``COLUMN_MAP`` the panel does not hold are skipped. This is
-        the renaming ``to_kunquant`` applies, and the one a merge applies to
-        each of its inputs.
-
-        Parameters
-        ----------
-        panel : xr.Dataset
-            A panel of this dataset.
-
-        Returns
-        -------
-        xr.Dataset
-            The same panel under the shared names.
-
-        Examples
-        --------
-        >>> spot = SpotKlineDataset(spot_config)   # Binance's Title-Case names
-        >>> list(spot.to_shared_names(spot.panel("2024-01-02", "2024-01-05")).data_vars)
-        ['open', 'high', 'low', 'close', 'volume', 'amount']
-        """
-        return panel.rename(self.shared_name_map(panel.data_vars))
 
     def tradable_bars(self, prices: xr.Dataset, fill_column: str) -> xr.DataArray:
         """Mark, in a price panel, which symbols can be traded at each bar.
@@ -2185,49 +2229,6 @@ class MarketDataset(BaseDataset):
             panel[column].reindex(symbol=list(symbols)).notnull().any("timestamp").values,
             dtype=bool,
         )
-
-    def own_names(self, names) -> list[str]:
-        """Return this dataset's own names of the shared variable ``names``.
-
-        The inverse of ``COLUMN_MAP``: a shared name some column is renamed
-        to becomes that column, any other name stays. A reader passes the
-        result as ``panel(variables=...)`` to read only the columns it
-        exports under the shared names (a KunQuant factor's
-        ``data_columns``).
-
-        Parameters
-        ----------
-        names : iterable of str
-            Shared variable names.
-
-        Examples
-        --------
-        >>> spot.own_names(["close", "volume"])
-        ['Close', 'Volume']
-        >>> stock.own_names(["adjClose"])
-        ['adjClose']
-        """
-        inverse: dict[str, list[str]] = {}
-        for own, shared in self.COLUMN_MAP.items():
-            inverse.setdefault(shared, []).append(own)
-        return [own for name in names for own in inverse.get(name, [name])]
-
-    def shared_name_map(self, names) -> dict[str, str]:
-        """Return the part of ``COLUMN_MAP`` that applies to ``names``.
-
-        Parameters
-        ----------
-        names : iterable of str
-            Variable or column names, such as a panel's ``data_vars`` or a
-            ``LazyFrame``'s columns.
-
-        Examples
-        --------
-        >>> spot.shared_name_map(["timestamp", "Close", "Volume"])
-        {'Close': 'close', 'Volume': 'volume'}
-        """
-        names = set(names)
-        return {k: v for k, v in self.COLUMN_MAP.items() if k in names}
 
     @staticmethod
     def _kunquant_arrays(

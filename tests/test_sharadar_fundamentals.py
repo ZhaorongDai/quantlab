@@ -14,8 +14,11 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
+import xarray as xr
 
 from tests.sharadar_fixtures import (
+    DAILY_COLUMNS,
+    daily_row,
     INDICATORS_COLUMNS,
     SEP_COLUMNS,
     SF1_COLUMNS,
@@ -407,3 +410,34 @@ def test_raw_rows_keep_every_dimension(tmp_path, today):
         ["ARQ", "ART", "ARY", "MRQ", "MRT", "MRY"]
     )
     assert raw.schema["revenue"] == pl.Int64
+
+
+def test_a_merge_with_daily_keeps_daily_valuations_under_the_plain_names(tmp_path, today):
+    from quantlab.dataset.config import SharadarDailyConfig
+    from quantlab.dataset.merged import MergedDataset
+    from quantlab.dataset.sharadar.daily import SharadarDailyDataset
+
+    sf1 = [sf1_row("AAA", "ART", "2024-01-04", "2023-09-30", revenue=100, marketcap=5)]  # SYNTHETIC
+    vendor = _vendor(sf1)
+    vendor.tables["daily"] = (DAILY_COLUMNS, [daily_row("AAA", d, marketcap=7.0) for d in DAYS[:8]])  # SYNTHETIC
+    vendor.tables["descriptions"][1].extend(
+        {**UNITS[0], "table": "DAILY", "indicator": name, "unittype": "USD millions"}  # VERBATIM unit type
+        for name in ("marketcap", "ev")
+    )
+    root = _bulk(vendor, tmp_path / "dl")
+    _client(vendor).bulk_table("daily", tmp_path / "dl")
+    art = _dataset(tmp_path, root, dimension="ART").update()
+    daily = SharadarDailyDataset(SharadarDailyConfig(
+        zarr_file_path=str(tmp_path / "daily.zarr"), raw_data_dir_path=str(root),
+    )).update()
+
+    merged = MergedDataset([art, daily]).panel(
+        "2024-01-02", "2024-01-11", variables=["marketcap", "sf1_marketcap", "revenue"]
+    )
+
+    assert merged["symbol"].values.tolist() == [101]
+    # DAILY is in USD millions; the panel holds USD.
+    assert set(merged["marketcap"].values.ravel()) == {7.0e6}
+    assert merged["sf1_marketcap"].sel(timestamp="2024-01-05").values.tolist() == [5.0]
+    assert merged["revenue"].sel(timestamp="2024-01-05").values.tolist() == [100.0]
+    assert "marketcap" in art.panel("2024-01-02", "2024-01-11").data_vars

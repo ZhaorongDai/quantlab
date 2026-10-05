@@ -43,6 +43,11 @@ Build the quarterly store from a downloaded raw tier and read a quarter::
     SharadarFundamentalsDataset(config).update()
     panel = SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-03-28")
     panel["revenue"].attrs["unit"]  # 'currency'
+
+SF1 also holds DAILY's valuation indicators, as of each filing. Merged with
+the DAILY panel (``MergedDataset``), they are renamed ``sf1_marketcap``,
+``sf1_ev``, ``sf1_pe`` and so on (``COLUMN_MAP``), so ``marketcap`` is
+DAILY's daily value.
 """
 
 from __future__ import annotations
@@ -58,6 +63,7 @@ from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.config import DatasetConfig, SharadarFundamentalsConfig
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
+    DAILY_INDICATORS,
     SF1_INDICATORS,
     map_permatickers,
     permaticker_mapping,
@@ -100,6 +106,14 @@ class SharadarFundamentalsDataset(BaseDataset):
 
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = SharadarFundamentalsConfig
+
+    #: SF1's valuation indicators that DAILY also holds (``marketcap``,
+    #: ``ev``, ``pe``, ...) go by ``sf1_<name>`` when merged or exported, so
+    #: a merge with the DAILY panel keeps DAILY's daily values under the
+    #: plain names. The store and ``panel()`` keep SF1's own names.
+    COLUMN_MAP = {
+        name: f"sf1_{name}" for name in DAILY_INDICATORS if name in SF1_INDICATORS
+    }
 
     def _normalize_config(self, config: DatasetConfig) -> SharadarFundamentalsConfig:
         """Normalise as the base class does, then check the SF1 fields.
