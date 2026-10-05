@@ -70,10 +70,9 @@ from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
     map_permatickers,
     permaticker_mapping,
-    read_watermark,
+    raw_through,
     scan_raw_table,
     table,
-    vendor_today,
 )
 from quantlab.enums.data import TiingoColumns
 from quantlab.utils.atomic import write_json_atomically
@@ -460,18 +459,9 @@ class SharadarStockDataset(MarketDataset):
     def _raw_through(self) -> date:
         """Return the last day every input table's raw tier is complete through.
 
-        A table without a watermark (pulled before watermarks existed)
-        counts as complete through its last raw date, or today if later.
+        See ``quantlab.dataset.sharadar.tables.raw_through``.
         """
-        root = self.config.raw_data_dir_path
-        days = []
-        for code in (self.config.table, "actions"):
-            watermark = read_watermark(root, code)
-            if watermark is None:
-                latest = scan_raw_table(root, code).select(pl.col("date").max()).collect().item()
-                watermark = min(latest, vendor_today())
-            days.append(watermark)
-        return min(days)
+        return raw_through(self.config.raw_data_dir_path, (self.config.table, "actions"))
 
     def _continue_store(self, window: xr.Dataset) -> xr.Dataset:
         """Report what the vendor changed in the store, and continue its adjusted chain.

@@ -513,6 +513,28 @@ class SharadarFundamentalsConfig(SharadarDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class SharadarDailyConfig(SharadarDatasetConfig):
+    """Config of the Sharadar DAILY valuation panel (market cap, EV, PE, PB, PS) on the permaticker axis.
+
+    The universe fields (``permatickers``, ``roster_universe``,
+    ``category_filter``) work as for a price panel; DAILY covers SF1's
+    filers, and its default category filter is SF1's, domestic common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarDailyConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_daily_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table
+    'daily'
+    """
+
+    #: Always DAILY.
+    table: str = "daily"
+
+
+@dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 

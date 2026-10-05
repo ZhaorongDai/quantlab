@@ -15,7 +15,7 @@ windows by ``SharadarClient``, not the symbol-batched hive tree an
 and no config factory: ``registry.run()`` refuses it, and the download and the
 daily update are ``scripts/sharadar/download.py`` and
 ``scripts/sharadar/update.py``. ``registry.convert()`` builds the SEP and SFP
-stores and the SF1 fundamentals stores; the S&P 500 membership panel is a
+stores, the SF1 fundamentals stores and the DAILY valuation store; the S&P 500 membership panel is a
 constituent dataset, built by the scripts.
 
 Examples
@@ -24,12 +24,13 @@ Examples
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> source = DataSourceRegistry.get("sharadar")
 >>> [c.data_type for c in source.capabilities]
-['sep', 'sfp', 'sf1', 'actions', 'sp500', 'tickers', 'indicators']
+['sep', 'sfp', 'sf1', 'daily', 'actions', 'sp500', 'tickers', 'indicators']
 >>> source.required_env
 ('SHARADAR_API_KEY',)
 """
 
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
+from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
@@ -67,6 +68,15 @@ SHARADAR_SOURCE = register_source(
                 data_type="sf1",
                 dataset_cls=SharadarFundamentalsDataset,
                 earliest_available="1997-12-31",
+                entitlement=_ENTITLEMENT,
+            ),
+            # Daily valuations (market cap and EV in USD).
+            Capability(
+                market="us_equity",
+                frequency="1d",
+                data_type="daily",
+                dataset_cls=SharadarDailyDataset,
+                earliest_available="1998-12-31",
                 entitlement=_ENTITLEMENT,
             ),
             # Raw only: dividends, splits and spinoffs feed the price panels.

@@ -1,9 +1,9 @@
 """Download every Sharadar table of the raw tier and build the Zarr stores.
 
 One run pulls each table the raw tier knows (``sep``, ``sfp``, ``actions``,
-``sp500``, ``sf1``, ``tickers``, ``indicators``; METRICS is never
+``sp500``, ``sf1``, ``daily``, ``tickers``, ``indicators``; METRICS is never
 downloaded) as a bulk zip into ``<download-dir>/sharadar/<table>/``, then
-builds or extends seven stores in ``--zarr-dir``:
+builds or extends eight stores in ``--zarr-dir``:
 
 - ``sharadar_sep_1d.zarr``, stock prices on the permaticker axis, raw and
   adjusted (the default universe: domestic common stock);
@@ -14,6 +14,8 @@ builds or extends seven stores in ``--zarr-dir``:
 - ``sharadar_sf1_arq.zarr`` and ``sharadar_sf1_art.zarr``, point-in-time
   fundamentals (as reported, quarterly and trailing twelve months) on SEP's
   trading days;
+- ``sharadar_daily_1d.zarr``, the DAILY valuations (market cap and EV in
+  USD, PE, PB, PS, EV/EBIT, EV/EBITDA);
 - ``sharadar_sp500_membership.zarr``, point-in-time S&P 500 membership.
 
 Each store is built with ``update()``, so it keeps the chunk ledger the daily
@@ -46,9 +48,11 @@ from quantlab.acquisition.sharadar.client import (
 from quantlab.dataset.config import (
     SPY_PERMATICKER,
     ConstituentDatasetConfig,
+    SharadarDailyConfig,
     SharadarDatasetConfig,
     SharadarFundamentalsConfig,
 )
+from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
@@ -64,7 +68,7 @@ from quantlab.utils.cli import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 #: Pulled first: the price conversions map tickers through TICKERS.
-TABLE_ORDER = ("tickers", "indicators", "sep", "sfp", "actions", "sp500", "sf1")
+TABLE_ORDER = ("tickers", "indicators", "sep", "sfp", "actions", "sp500", "sf1", "daily")
 
 #: Each price store and the config fields it is built with beyond its paths:
 #: the whole SEP and SFP tables, every permaticker ever an S&P 500 member
@@ -79,6 +83,8 @@ PRICE_STORES = {
 MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 #: Each point-in-time fundamentals store and its as-reported SF1 dimension.
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
+#: The DAILY valuation store.
+DAILY_STORE = "sharadar_daily_1d.zarr"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -86,7 +92,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Download every Sharadar table (bulk zips) and build the SEP, SFP, "
-            "S&P 500 roster, SPY and S&P 500 membership Zarr stores. Requires SHARADAR_API_KEY in "
+            "S&P 500 roster, SPY, S&P 500 membership, SF1 and DAILY Zarr stores. Requires SHARADAR_API_KEY in "
             "the environment. Both directories must be outside this "
             "repository (the data is licensed); the script refuses otherwise."
         )
@@ -172,3 +178,10 @@ if __name__ == "__main__":
             start_date=args.start,
         )
         print_conversion_result(SharadarFundamentalsDataset(config).update().last_chunk_result)
+
+    daily = SharadarDailyConfig(
+        zarr_file_path=str(zarr_dir / DAILY_STORE),
+        raw_data_dir_path=str(vendor_root),
+        start_date=args.start,
+    )
+    print_conversion_result(SharadarDailyDataset(daily).update().last_chunk_result)

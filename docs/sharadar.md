@@ -16,7 +16,7 @@ The data is licensed for personal use: keep raw files and stores on your own mac
 
 ## Pulling the raw tier
 
-`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `sf1` (fundamentals), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
+`SharadarClient.bulk_table(code, download_dir)` pulls one whole table as Sharadar's bulk zip and writes it as `<download_dir>/sharadar/<code>/<code>.parquet`, with the vendor's column names and order checked against the declared schema. The tables available so far are `sep` (stock prices), `sfp` (fund prices), `sf1` (fundamentals), `daily` (valuations), `actions` (dividends, splits and other corporate actions), `tickers` (the ticker-to-permaticker mapping) and `indicators` (the data dictionary); TICKERS and INDICATORS stay parquet sidecar tables and never become Zarr stores.
 
 ```python
 from quantlab.acquisition.sharadar.client import SharadarClient
@@ -135,19 +135,40 @@ Known limits:
 - A row placed by an update reaches only the days after that update, while a rebuild places it at its release date. Both are free of look-ahead, but a rebuilt store and an updated one can differ on the days between.
 - Unlike the Compustat panel, there is no link end: a delisted company's last row is shown until it goes stale.
 
+## Valuations (DAILY)
+
+DAILY holds one row per company and trading day: `marketcap`, `ev` and the ratios `evebit`, `evebitda`, `pb`, `pe` and `ps`. The vendor computes them from the day's price and the most recent SEC filing, as reported, so a row uses nothing later than its date. `SharadarDailyDataset` converts them into a dense panel on DAILY's own dates.
+
+```python
+from quantlab.dataset.config import SharadarDailyConfig
+from quantlab.dataset.sharadar.daily import SharadarDailyDataset
+
+config = SharadarDailyConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_daily_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarDailyDataset(config).update()
+panel = SharadarDailyDataset(config).panel("2024-01-02", "2024-12-31")
+panel["marketcap"].attrs["unit"]  # 'USD'
+```
+
+- **Axis.** The `symbol` axis is the permaticker. TICKERS has no DAILY rows, because DAILY covers SF1's filers, so DAILY's tickers are mapped through the SF1 rows. The universe fields work as for a price panel; the default keeps domestic common stock.
+- **Units.** The vendor writes `marketcap` and `ev` in USD millions, while SF1 writes them in USD. The panel multiplies them to USD, so a merge with SF1 never mixes units. Each variable's `unit` attribute is `USD` or `ratio`. The conversion refuses to run if INDICATORS stops giving `USD millions` for those two.
+- **Updates by `lastupdated`.** DAILY is keyed by `(ticker, date)`. `update.py` refreshes it like SF1, with `SharadarClient.updated_table("daily", download_dir)`, or in bulk when that query fails. `update()` then appends the new days. A stored day is never rewritten, so a later vendor change to it never reaches the store.
+
 ## Scripts
 
 The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
 
 ```bash
 export SHARADAR_API_KEY=<your-sharadar-key>
-# once: every table as a bulk zip, then the price and membership stores
+# once: every table as a bulk zip, then the price, membership, SF1 and DAILY stores
 uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
-# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, SF1 by lastupdated, then append
+# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, SF1 and DAILY by lastupdated, then append
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500` and `sf1` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP, SFP and SF1 stores.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1` and `daily` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP, SFP, SF1 and DAILY stores.
 
 ## Daily update
 

@@ -9,15 +9,17 @@ Run every morning after ``download.py`` has built the stores. One run:
    through today (US/Eastern), so a late vendor correction to a recent day is
    seen; and every SF1 row the vendor changed since SF1's watermark (by
    ``lastupdated``), new filings included, or the whole of SF1 in bulk when
-   that query fails (Sharadar stops a query after 15 seconds);
+   that query fails (Sharadar stops a query after 15 seconds), and the
+   same for DAILY;
 3. runs ``update()`` on every store ``download.py`` built in ``--zarr-dir``
    (``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``,
    ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr``,
-   ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr`` and
-   ``sharadar_sf1_art.zarr``), each from the first day it already holds: new
-   bars are
-   appended, earlier rows are never rewritten, and a vendor correction to a
-   stored date is listed in ``<store>.corrections.json`` instead.
+   ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr``,
+   ``sharadar_sf1_art.zarr`` and ``sharadar_daily_1d.zarr``), each from the
+   first day it already holds: new bars are appended and earlier rows are
+   never rewritten. A vendor correction to a stored date of a price store is
+   listed in ``<store>.corrections.json`` instead; one to SF1 or DAILY is not
+   reported.
 
 An interrupted run resumes from each table's watermark and each store's last
 bar; running it twice in a day appends nothing the second time.
@@ -49,9 +51,11 @@ from quantlab.acquisition.sharadar.client import (
 from quantlab.dataset.config import (
     SPY_PERMATICKER,
     ConstituentDatasetConfig,
+    SharadarDailyConfig,
     SharadarDatasetConfig,
     SharadarFundamentalsConfig,
 )
+from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
@@ -71,7 +75,7 @@ WHOLE_TABLES = ("tickers", "sp500")
 #: Pulled as a trailing date window.
 WINDOW_TABLES = ("sep", "sfp", "actions")
 #: Pulled as the rows changed since the watermark (``lastupdated``).
-UPDATED_TABLES = ("sf1",)
+UPDATED_TABLES = ("sf1", "daily")
 
 #: Each price store and the config fields it is built with beyond its paths:
 #: the whole SEP and SFP tables, every permaticker ever an S&P 500 member
@@ -86,6 +90,8 @@ PRICE_STORES = {
 MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 #: Each point-in-time fundamentals store and its as-reported SF1 dimension.
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
+#: The DAILY valuation store.
+DAILY_STORE = "sharadar_daily_1d.zarr"
 
 
 def _store_start(path: Path) -> str:
@@ -138,7 +144,7 @@ if __name__ == "__main__":
         )
     vendor_root = download_dir / VENDOR_DIR
     missing = [
-        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES)
+        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES, DAILY_STORE)
         if not (zarr_dir / store).exists()
     ]
     if missing:
@@ -191,3 +197,10 @@ if __name__ == "__main__":
             start_date=_store_start(zarr_dir / store),
         )
         print_conversion_result(SharadarFundamentalsDataset(config).update().last_chunk_result)
+
+    daily = SharadarDailyConfig(
+        zarr_file_path=str(zarr_dir / DAILY_STORE),
+        raw_data_dir_path=str(vendor_root),
+        start_date=_store_start(zarr_dir / DAILY_STORE),
+    )
+    print_conversion_result(SharadarDailyDataset(daily).update().last_chunk_result)

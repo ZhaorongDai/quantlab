@@ -61,10 +61,9 @@ from quantlab.dataset.sharadar.tables import (
     SF1_INDICATORS,
     map_permatickers,
     permaticker_mapping,
-    read_watermark,
+    raw_through,
     scan_raw_table,
     table,
-    vendor_today,
 )
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
@@ -152,18 +151,9 @@ class SharadarFundamentalsDataset(BaseDataset):
     def _raw_through(self) -> date:
         """Return the last day both SF1 and the SEP calendar are complete through.
 
-        A table without a watermark counts as complete through its last raw
-        date, or today if later.
+        See ``quantlab.dataset.sharadar.tables.raw_through``.
         """
-        root = self.config.raw_data_dir_path
-        days = []
-        for code in ("sf1", "sep"):
-            watermark = read_watermark(root, code)
-            if watermark is None:
-                latest = scan_raw_table(root, code).select(pl.col("date").max()).collect().item()
-                watermark = min(latest, vendor_today())
-            days.append(watermark)
-        return min(days)
+        return raw_through(self.config.raw_data_dir_path, ("sf1", "sep"))
 
     def _trading_days(self) -> pl.Series:
         """Return SEP's trading days up to ``_raw_through()``, sorted, as ns datetimes (cached)."""

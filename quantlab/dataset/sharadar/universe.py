@@ -105,7 +105,7 @@ def universe(config: SharadarDatasetConfig) -> list[int]:
     root = config.raw_data_dir_path
     if config.permatickers is None and config.roster_universe is None:
         tickers = scan_raw_table(root, "tickers").filter(
-            pl.col("table").is_in(table(config.table).tickers_labels)
+            pl.col("table").is_in(table(config.table).mapping_labels)
         )
         if config.category_filter is not None:
             tickers = tickers.filter(

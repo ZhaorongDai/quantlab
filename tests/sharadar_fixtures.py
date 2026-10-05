@@ -236,6 +236,25 @@ def sf1_row(
     return row
 
 
+#: VERBATIM `daily` (DAILY) column order (`schema/daily`, as of 2026-08-18).
+DAILY_COLUMNS: tuple[str, ...] = (
+    "ticker", "date", "lastupdated", "ev", "evebit", "evebitda", "marketcap",
+    "pb", "pe", "ps",
+)
+
+
+def daily_row(ticker: str, date: str, **values) -> dict:
+    """One DAILY row: its key, then the values given (``marketcap`` and ``ev``
+    in USD millions, as the vendor writes them). Values not given are empty."""
+    row = {
+        "ticker": ticker,  # SYNTHETIC
+        "date": date,  # SYNTHETIC
+        "lastupdated": "2026-08-10",  # SYNTHETIC
+    }
+    row.update(values)  # SYNTHETIC
+    return row
+
+
 INDICATORS_ROWS: list[dict] = [
     {
         "table": "stocks",

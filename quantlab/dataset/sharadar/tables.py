@@ -60,6 +60,10 @@ class SharadarTable:
         The vendor's primary key, for a table refreshed by ``lastupdated``
         (see ``updated_file``): an updated row replaces the earlier row with
         the same key. ``None`` for a table that is never refreshed that way.
+    tickers_code : str or None
+        The code of the table whose TICKERS rows map this table's tickers,
+        for a table TICKERS has no rows of (DAILY covers SF1's filers);
+        ``None`` maps through the table's own rows.
     """
 
     code: str
@@ -67,13 +71,15 @@ class SharadarTable:
     schema: dict[str, type[pl.DataType]]
     categories: tuple[str, ...] | None = None
     primary_key: tuple[str, ...] | None = None
+    tickers_code: str | None = None
 
     @property
     def tickers_labels(self) -> tuple[str, str]:
         """Return the values TICKERS' ``table`` column gives this table's rows.
 
         The bulk TICKERS file uses the upper-case legacy code (``SEP``), the
-        REST API the API name (``stocks``); both are accepted.
+        REST API the API name (``stocks``); both are accepted. INDICATORS'
+        ``table`` column labels a table the same way.
 
         Examples
         --------
@@ -81,6 +87,25 @@ class SharadarTable:
         ('SEP', 'stocks')
         """
         return (self.code.upper(), self.api_name)
+
+    @property
+    def mapping_labels(self) -> tuple[str, str]:
+        """Return the TICKERS ``table`` values whose rows map this table's tickers.
+
+        The table's own labels (``tickers_labels``), or, for a table TICKERS
+        has no rows of (``tickers_code``), those of the table it is mapped
+        through.
+
+        Examples
+        --------
+        >>> TABLES["sep"].mapping_labels
+        ('SEP', 'stocks')
+        >>> TABLES["daily"].mapping_labels
+        ('SF1', 'fundamentals')
+        """
+        if self.tickers_code is not None:
+            return TABLES[self.tickers_code].tickers_labels
+        return self.tickers_labels
 
 
 #: The columns of both price tables, SEP (stocks) and SFP (funds).
@@ -145,6 +170,9 @@ SF1_INDICATORS: tuple[str, ...] = tuple(
     "tangibles taxassets taxexp taxliabilities tbvps workingcapital".split()
 )
 
+#: DAILY's valuation columns in the vendor's order.
+DAILY_INDICATORS: tuple[str, ...] = ("ev", "evebit", "evebitda", "marketcap", "pb", "pe", "ps")
+
 #: The tables the raw tier holds so far, by code.
 TABLES: dict[str, SharadarTable] = {
     table.code: table
@@ -168,6 +196,21 @@ TABLES: dict[str, SharadarTable] = {
             },
             categories=_DOMESTIC_COMMON,
             primary_key=("ticker", "dimension", "date", "reportperiod"),
+        ),
+        # Daily valuations of SF1's filers. TICKERS has no DAILY rows, so its
+        # tickers map through SF1's; ``marketcap`` and ``ev`` are USD millions.
+        SharadarTable(
+            code="daily",
+            api_name="daily",
+            schema={
+                "ticker": pl.String,
+                "date": pl.Date,
+                "lastupdated": pl.Date,
+                **{name: pl.Float64 for name in DAILY_INDICATORS},
+            },
+            categories=_DOMESTIC_COMMON,
+            primary_key=("ticker", "date"),
+            tickers_code="sf1",
         ),
         SharadarTable(
             code="actions",
@@ -434,6 +477,28 @@ def read_watermark(vendor_root: str | Path, code: str) -> date | None:
     return date.fromisoformat(json.loads(path.read_text())["through"])
 
 
+def raw_through(vendor_root: str | Path, codes: tuple[str, ...]) -> date:
+    """Return the last day every one of ``codes`` is complete through in the raw tier.
+
+    A table's day is its watermark; a table without one (pulled before
+    watermarks existed) counts as complete through its last raw date, or
+    today if later.
+
+    Examples
+    --------
+    >>> raw_through("/data/downloads/sharadar", ("sep", "actions"))
+    datetime.date(2024, 1, 11)
+    """
+    days = []
+    for code in codes:
+        watermark = read_watermark(vendor_root, code)
+        if watermark is None:
+            latest = scan_raw_table(vendor_root, code).select(pl.col("date").max()).collect().item()
+            watermark = min(latest, vendor_today())
+        days.append(watermark)
+    return min(days)
+
+
 def write_watermark(vendor_root: str | Path, code: str, through: date) -> None:
     """Record that a table's raw tier is complete through ``through``."""
     write_json_atomically(
@@ -474,7 +539,7 @@ def permaticker_mapping(vendor_root: str | Path, code: str) -> pl.DataFrame:
     """
     return (
         scan_raw_table(vendor_root, "tickers")
-        .filter(pl.col("table").is_in(table(code).tickers_labels))
+        .filter(pl.col("table").is_in(table(code).mapping_labels))
         .select("ticker", "permaticker")
         .unique()
         .collect()
