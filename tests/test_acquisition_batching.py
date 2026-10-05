@@ -443,6 +443,8 @@ def test_no_concrete_acquisition_subclass_carries_a_not_implemented_placeholder(
 #: AAPL (2020-08), so both PERMNOs have data inside 2008-09-01..2020-08-31 and
 #: the walk's "it actually landed" assertions have something to land.
 _WALK_CONFIG_OVERRIDES = {
+    # FRED's symbols are series ids, answered by `mock_fred_http`.
+    "FredAcquisition": {"symbols": ("DTB3", "DGS10")},
     "WrdsCrspDailyAcquisition": {
         "frequency": "1d",
         "kwargs": {"data_type": "crsp_daily"},
@@ -454,7 +456,8 @@ _WALK_CONFIG_OVERRIDES = {
 
 
 def test_every_concrete_acquisition_subclass_reaches_the_vendor_via_fetch_batch(
-    mock_tiingo_client, mock_alpaca_client, mock_crsp_session, acquisition_config
+    mock_tiingo_client, mock_alpaca_client, mock_crsp_session, mock_fred_http,
+    acquisition_config,
 ):
     """SC-1's positive direction: one shared path, walked per subclass.
 

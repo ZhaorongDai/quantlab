@@ -307,6 +307,43 @@ through `quantlab.acquisition.registry.run` and `convert` as in this guide.
 
 The library's storage root is the environment variable `QUANTLAB_DATA_DIR`, else the repository's `data/` directory. The scripts do not use it: they take `--download-dir` for the raw files and `--zarr-dir` for the stores, both defaulting to the current directory.
 
+### Download the risk-free rate (FRED)
+
+FRED's CSV endpoint needs no key, so `FredAcquisition` reads no credential. Each series id is one symbol of the download. `FredRateDataset` turns a rate series, quoted in annualized percent, into a panel with one symbol: `rate` as published and `risk_free = rate / 100 / days_per_year`, a decimal return per trading day with the default 252. A holiday has no observation and is NaN. A factor that needs the rate on every stock broadcasts it across symbols, and lags it one bar, because the rate of a day is published the next business day.
+
+```python
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.config import AcquisitionConfig
+from quantlab.acquisition.registry import convert, run
+from quantlab.dataset.config import FredRateConfig
+from quantlab.dataset.fred import FredRateDataset
+
+source = DataSourceRegistry.get("fred")
+run(source, AcquisitionConfig(
+    market="us_equity", frequency="1d", vendor="fred",
+    raw_data_dir_path="downloads/fred", watermark_path="downloads/_watermarks/fred",
+    symbols=("DTB3",), start_date="1954-01-04",
+))
+config = FredRateConfig(zarr_file_path="fred_dtb3_1d.zarr", raw_data_dir_path="downloads/fred")
+convert(source, config)
+panel = FredRateDataset(config).panel("2024-12-20", "2024-12-31")
+print(panel["rate"].sel(symbol="DTB3").to_series().round(2).to_string())
+```
+
+```text
+timestamp
+2024-12-20    4.23
+2024-12-23    4.24
+2024-12-24    4.28
+2024-12-25     NaN
+2024-12-26    4.24
+2024-12-27    4.19
+2024-12-30    4.23
+2024-12-31    4.23
+```
+
+On 2026-10-05 the whole DTB3 history is 18,979 dates from 1954-01-04 to 2026-10-01, 800 of them holidays without a value. `refresh()` with a later `end_date` fetches from the watermark on.
+
 ## Extending
 
 A new vendor implements `_fetch_page` as above and declares `VENDOR` and `RAW_COLUMNS`. Three optional hooks cover the vendor-specific policy.

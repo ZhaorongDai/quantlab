@@ -118,6 +118,59 @@ def _reset_data_root_override():
     config.set_data_root(None)
 
 
+#: Hosts no test may reach; the key-free FRED endpoint needs no credential, so
+#: nothing else would stop a forgotten fake from downloading for real.
+_FORBIDDEN_HOSTS = ("fred.stlouisfed.org",)
+
+
+@pytest.fixture(autouse=True)
+def _forbid_fred_network(monkeypatch):
+    """No automated test may download from FRED.
+
+    `tests/test_acquisition_batching.py` walks every concrete `Acquisition`
+    subclass and calls `download()` on it, and FRED needs no key, so a
+    forgotten fake would reach the network silently. `requests.get` is
+    wrapped so a FRED URL raises `AssertionError`; every other call passes
+    through unchanged. `requests` is imported inside the body, as for the
+    WRDS tripwire, and `quantlab.acquisition.fred` is never imported here.
+    """
+    import requests
+
+    real_get = requests.get
+
+    def guarded_get(url, *args, **kwargs):
+        if any(host in str(url) for host in _FORBIDDEN_HOSTS):
+            raise AssertionError(f"a test tried to reach {url}")
+        return real_get(url, *args, **kwargs)
+
+    monkeypatch.setattr(requests, "get", guarded_get)
+
+
+@pytest.fixture
+def mock_fred_http(monkeypatch):
+    """Patch `quantlab.acquisition.fred._http_get` to answer every series with two days.
+
+    The answer is FRED's VERBATIM CSV shape (`observation_date,<id>`) with
+    invented values for 2024-01-02 and 2024-01-03 (`# SYNTHETIC`), kept to
+    the requested `cosd`..`coed` window. Patched by dotted string, so this file
+    imports nothing at module scope.
+    """
+    import requests
+
+    def fake_get(url, params):
+        rows = [f"observation_date,{params['id']}"]
+        for day, value in (("2024-01-02", "5.24"), ("2024-01-03", "5.25")):  # SYNTHETIC
+            if params["cosd"] <= day <= params["coed"]:
+                rows.append(f"{day},{value}")
+        response = requests.Response()
+        response.status_code = 200
+        response._content = ("\n".join(rows) + "\n").encode()
+        return response
+
+    monkeypatch.setattr("quantlab.acquisition.fred._http_get", fake_get)
+    return fake_get
+
+
 def _refuse_wrds_connection(*args, **kwargs):
     """What every PostgreSQL/WRDS connect entry point is replaced with.
 

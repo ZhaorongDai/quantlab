@@ -304,6 +304,43 @@ Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的�
 
 库的存储根目录取环境变量 `QUANTLAB_DATA_DIR`，否则用仓库下的 `data/` 目录。脚本不用它：原始文件的位置由 `--download-dir` 指定，Zarr store 的位置由 `--zarr-dir` 指定，两者都默认为当前目录。
 
+### 下载无风险利率（FRED）
+
+FRED 的 CSV 接口不需要 key，所以 `FredAcquisition` 不读任何凭证。下载时每个序列 id 是一个 symbol。`FredRateDataset` 把一个以年化百分比报价的利率序列转成只有一个 symbol 的面板：`rate` 是原始发布值，`risk_free = rate / 100 / days_per_year` 是每个交易日的小数收益（默认 252）。假日没有观测值，为 NaN。需要在每只股票上使用利率的因子自己沿 symbol 广播，并滞后一个 bar，因为某一天的利率在下一个工作日才发布。
+
+```python
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.config import AcquisitionConfig
+from quantlab.acquisition.registry import convert, run
+from quantlab.dataset.config import FredRateConfig
+from quantlab.dataset.fred import FredRateDataset
+
+source = DataSourceRegistry.get("fred")
+run(source, AcquisitionConfig(
+    market="us_equity", frequency="1d", vendor="fred",
+    raw_data_dir_path="downloads/fred", watermark_path="downloads/_watermarks/fred",
+    symbols=("DTB3",), start_date="1954-01-04",
+))
+config = FredRateConfig(zarr_file_path="fred_dtb3_1d.zarr", raw_data_dir_path="downloads/fred")
+convert(source, config)
+panel = FredRateDataset(config).panel("2024-12-20", "2024-12-31")
+print(panel["rate"].sel(symbol="DTB3").to_series().round(2).to_string())
+```
+
+```text
+timestamp
+2024-12-20    4.23
+2024-12-23    4.24
+2024-12-24    4.28
+2024-12-25     NaN
+2024-12-26    4.24
+2024-12-27    4.19
+2024-12-30    4.23
+2024-12-31    4.23
+```
+
+2026-10-05 实测，DTB3 全部历史为 1954-01-04 到 2026-10-01 共 18,979 个日期，其中 800 个是没有数值的假日。`refresh()` 配上更晚的 `end_date` 会从水位往后补。
+
 ## 扩展
 
 新增一个厂商，就是像上面那样实现 `_fetch_page` 并声明 `VENDOR` 和 `RAW_COLUMNS`。另有三个可选钩子承载厂商特有的策略。

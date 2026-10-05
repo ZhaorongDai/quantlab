@@ -30,7 +30,7 @@ Examples
 >>> import quantlab.acquisition.registry
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']
 """
 
 import dataclasses
@@ -395,3 +395,4 @@ from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
 from quantlab.acquisition import wrds as _wrds  # noqa: E402,F401
 from quantlab.acquisition import sharadar as _sharadar  # noqa: E402,F401
+from quantlab.acquisition import fred as _fred  # noqa: E402,F401

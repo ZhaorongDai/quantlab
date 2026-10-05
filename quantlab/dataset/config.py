@@ -693,6 +693,42 @@ class SharadarIndustryConfig(SharadarDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class FredRateConfig(DatasetConfig):
+    """Config of a single-symbol panel of one FRED interest-rate series.
+
+    ``raw_data_dir_path`` is the FRED raw tier that ``FredAcquisition``
+    writes; the panel's one symbol is the series id. The series must be
+    quoted in annualized percent, as the Treasury bill rates are.
+
+    Examples
+    --------
+    >>> cfg = FredRateConfig(
+    ...     zarr_file_path="/data/zarrs/fred_dtb3_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/us_equity/1d/macro/fred",
+    ... )
+    >>> cfg.series, cfg.days_per_year, cfg.vendor
+    ('DTB3', 252, 'fred')
+    """
+
+    #: The rate's market is the one whose returns it is subtracted from.
+    market: Market = "us_equity"
+    #: FRED's Treasury bill rates are daily.
+    frequency: Frequency = "1d"
+    #: Always FRED.
+    vendor: Vendor | None = "fred"
+
+    #: FRED series id: the default, DTB3, is the 3-month Treasury bill
+    #: secondary market rate, discount basis, annualized percent.
+    series: str = "DTB3"
+
+    #: Days per year the annual rate is divided by to give the per-bar
+    #: ``risk_free`` return: ``rate / 100 / days_per_year``. The default,
+    #: 252 trading days, is our choice; it makes the per-bar rate a rate
+    #: per trading day, the bar of a daily price panel.
+    days_per_year: int = 252
+
+
+@dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 
