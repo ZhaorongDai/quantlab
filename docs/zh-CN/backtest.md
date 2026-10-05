@@ -4,7 +4,7 @@
 
 回测拿一个训练好的收益模型和一份价格数据集，展示模型的预测如果拿来交易会得到什么结果。模型对每个标的、每根 bar 给出一个分数，选股规则把分数变成目标权重，模拟引擎按这些权重成交并记录净值曲线。每次运行都会写出一个运行目录，里面有权重、净值曲线、指标、HTML 报告，以及重建这次运行所需的配置。
 
-主要的类有：`BaseBacktester`（`quantlab/base/backtest.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、决策输入与调仓时点（`quantlab/portfolio/decision_inputs.py` 中的 `DecisionInputs` 和 `rebalance_mask`）、配置里 `constructor` 持有的组合构建规则（继承 `quantlab/portfolio/base.py` 中的 `PortfolioConstructor`：这里用 `TopNConstructor`，也可以用[组合构建](portfolio.md)里的均值-方差优化器），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
+主要的类有：`BaseBacktester`（`quantlab/backtest/base.py`）、vectorbt 引擎 `VectorBtBacktester`（`quantlab/backtest/engine_vectorbt.py`）、决策输入与调仓时点（`quantlab/portfolio/decision_inputs.py` 中的 `DecisionInputs` 和 `rebalance_mask`）、配置里 `constructor` 持有的组合构建规则（继承 `quantlab/portfolio/base.py` 中的 `PortfolioConstructor`：这里用 `TopNConstructor`，也可以用[组合构建](portfolio.md)里的均值-方差优化器），以及美股回测器 `USEquityCrossectionSelectStockVectorBt`（`quantlab/backtest/predefined/us_equity.py`）。
 
 ## 前置条件
 
@@ -140,7 +140,7 @@ def train_cv_project(model, train_periods):
 >>> import xarray as xr
 >>> from demo_parts import *
 >>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
->>> from quantlab.base.config import CrossSectionBacktestConfig
+>>> from quantlab.backtest.config import CrossSectionBacktestConfig
 >>> from quantlab.portfolio.config import TopNConfig
 >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> root = Path(tempfile.mkdtemp())
@@ -424,7 +424,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 >>> import pandas as pd
 >>> import xarray as xr
 >>> from quantlab.backtest.predefined.weights import WeightsVectorBt
->>> from quantlab.base.config import WeightsBacktestConfig
+>>> from quantlab.backtest.config import WeightsBacktestConfig
 >>> from quantlab.dataset.memory import FrameDataset
 >>> bars = pd.bdate_range("2024-01-01", periods=5)
 >>> prices = FrameDataset(pd.DataFrame({
@@ -603,7 +603,7 @@ True
 
 ### 不用回测器计算统计量
 
-`metrics.json` 中基于收益的各行和换手率各行，是 `quantlab.utils.backtest_stats` 的公开函数。该模块只导入 numpy、pandas 和 xarray，不导入模型层、数据集层，也不导入 vectorbt。在别处模拟一次 quantlab 运行的工具调用这些函数，就能以相同的名字报告相同的数值。
+`metrics.json` 中基于收益的各行和换手率各行，是 `quantlab.runs.backtest_stats` 的公开函数。该模块只导入 numpy、pandas 和 xarray，不导入模型层、数据集层，也不导入 vectorbt。在别处模拟一次 quantlab 运行的工具调用这些函数，就能以相同的名字报告相同的数值。
 
 | 函数 | 对应 `metrics.json` 的行 |
 |---|---|
@@ -619,7 +619,7 @@ True
 `ranges` 是闭区间的 bar 标签对，与 `metrics.json` 记录的形式相同（`in_sample_range`、`out_of_sample_ranges`）。策略自身的 `whole` 块是例外：其中换手率和胜率各行来自这些函数，而收益、比率、交易、敞口和费用各行来自引擎的组合统计；其中交易和敞口各行等于对其成交调用 `round_trip_stats` 和 `exposure_stats` 的结果。以上文 `WeightsVectorBt` 的运行结果 `held` 为例：
 
 ```python
->>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
+>>> from quantlab.runs.backtest_stats import return_stats, turnover, turnover_stats, year_freq
 >>> year = year_freq("1D", 252, 390)
 >>> stats = return_stats(
 ...     held.simulation.returns, bar_interval="1D", year_freq=year,
@@ -635,7 +635,7 @@ True
 一个往返交易（round trip）是某个标的从空仓到空仓的一段持仓：加仓或减仓不会结束它，穿过零的成交结束它并开出反向持仓，最后一根 bar 仍持有的仓位是未平仓的，按其最后的估值价标记。`round_trips` 接收成交（`timestamp`、`symbol`、带符号的 `size`、`price`、`fees`）和估值价格，后者给出计算往返长度所用的 bar 轴；`cash_flows`（`timestamp`、`symbol`、`amount`）把持仓期间收到的股息或分配计入该往返的盈亏和收益率；现金流的时间戳是持仓必须持有进入的那根 bar（股息的除息日 bar）。拆股不是输入：成交和价格须在同一复权口径上给出。以上文的运行为例，其订单的 `size` 不带符号，方向在 `side` 中：
 
 ```python
->>> from quantlab.utils.backtest_stats import round_trip_stats, round_trips
+>>> from quantlab.runs.backtest_stats import round_trip_stats, round_trips
 >>> orders = held.simulation.orders
 >>> fills = orders.assign(size=orders["size"] * xr.where(orders["side"] == "Buy", 1.0, -1.0))
 >>> close = xr.DataArray(
@@ -674,7 +674,7 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 
 ### 以 quantlab 的格式写报告
 
-`report.html` 的输入在 `quantlab.utils.backtest_report` 中有接收普通数据的公开构建函数，因此在别处模拟的执行器能写出与 quantlab 格式完全一致的页面。quantlab 自己的页面也经由它们构建。
+`report.html` 的输入在 `quantlab.runs.backtest_report` 中有接收普通数据的公开构建函数，因此在别处模拟的执行器能写出与 quantlab 格式完全一致的页面。quantlab 自己的页面也经由它们构建。
 
 | 函数 | 对应 `write_backtest_report` 的参数 |
 |---|---|
@@ -686,14 +686,14 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 给 summary 的某个键赋值即可替换该行且位置不变；`write_backtest_report(..., extra_tables={标题: {行名: 值}})` 在指标表之后追加带标题的表格，用于只有执行器才有的统计量。接上文：
 
 ```python
->>> from quantlab.utils.backtest_report import report_summary, report_windows, write_backtest_report
+>>> from quantlab.runs.backtest_report import report_summary, report_windows, write_backtest_report
 >>> summary = report_summary(held_backtester.get_config(), held.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
 ['Bar interval', 'Signal', 'Rebalance every', 'Fees']
 >>> report_windows(held.simulation.value.timestamp.values, held.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
->>> from quantlab.utils.backtest_report import report_chart_inputs
+>>> from quantlab.runs.backtest_report import report_chart_inputs
 >>> write_backtest_report(
 ...     held.simulation.value, "replay.html", title="replay", summary=summary,
 ...     windows=report_windows(held.simulation.value.timestamp.values, held.metrics),
@@ -718,7 +718,7 @@ import xarray as xr
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
-from quantlab.base.config import BacktestConfig
+from quantlab.backtest.config import BacktestConfig
 
 
 class ScoreWeightedBacktester(VectorBtBacktester):
@@ -744,7 +744,7 @@ class ScoreWeightedBacktester(VectorBtBacktester):
 
 ```python
 >>> from score_weighted import ScoreWeightedBacktester
->>> from quantlab.base.config import BacktestConfig
+>>> from quantlab.backtest.config import BacktestConfig
 >>> custom = ScoreWeightedBacktester(BacktestConfig(
 ...     price_dataset=prices_of(cfg),
 ...     model=make_model(root / "custom", cfg, days),
@@ -768,7 +768,7 @@ timestamp
 
 ### 回测任意预测器
 
-`config.model` 不必是 `BaseModel`。回测器只依赖 `quantlab.base.backtest` 中的 `Predictor` 协议，`BaseModel` 不继承它也满足它。由多个模型组合成的集成、或包装一个模型的对象，只要具备全部成员，回测器无需任何改动即可回测：
+`config.model` 不必是 `BaseModel`。回测器只依赖 `quantlab.backtest.base` 中的 `Predictor` 协议，`BaseModel` 不继承它也满足它。由多个模型组合成的集成、或包装一个模型的对象，只要具备全部成员，回测器无需任何改动即可回测：
 
 | 成员 | 回测器的用途 |
 |---|---|
@@ -784,7 +784,7 @@ timestamp
 
 ```python
 >>> from typing import get_protocol_members
->>> from quantlab.base.backtest import Predictor
+>>> from quantlab.backtest.base import Predictor
 >>> sorted(get_protocol_members(Predictor))
 ['check_checkpoint', 'collect', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds']
 ```
@@ -873,7 +873,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 配方缺少字段时，会被拒绝，而不是用当前默认值补上：
 
 ```python
->>> from quantlab.base.backtest import BaseBacktester
+>>> from quantlab.backtest.base import BaseBacktester
 >>> from quantlab.core.component import rebuild
 >>> recipe = backtester.get_config()
 >>> del recipe["constructor"]
@@ -891,4 +891,4 @@ ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStoc
 - [model](model.md)：`train`、`train_cv`、`TrainedRun` 与 `predict_panel`。
 - [dataset](dataset.md)：价格数据集；[factor](factor.md)：模型使用的因子和标签。
 - [backend](backend.md)：权重和净值曲线所写入的 Zarr 存储。
-- `quantlab/base/backtest.py` 中的 `BaseBacktester`、`BacktestResult`、`CVBacktestResult`、`MarketSpec`；`quantlab/base/config.py` 中的 `BacktestConfig` 与 `CrossSectionBacktestConfig`；`quantlab/runs/backtest_run.py` 中的 `BacktestRun` 与 `quantlab/runs/directory.py` 中的 `open_run`。
+- `quantlab/backtest/base.py` 中的 `BaseBacktester`、`BacktestResult`、`CVBacktestResult`、`MarketSpec`；`quantlab/backtest/config.py` 中的 `BacktestConfig` 与 `CrossSectionBacktestConfig`；`quantlab/runs/backtest_run.py` 中的 `BacktestRun` 与 `quantlab/runs/directory.py` 中的 `open_run`。

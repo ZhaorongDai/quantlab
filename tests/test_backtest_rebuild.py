@@ -40,10 +40,10 @@ import zarr
 from loguru import logger
 
 import quantlab.core.component as component_rule
-from quantlab.base.backtest import BaseBacktester
+from quantlab.backtest.base import BaseBacktester
 import quantlab.core.component as component_rule
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig
 from quantlab.utils.jsonable import to_jsonable

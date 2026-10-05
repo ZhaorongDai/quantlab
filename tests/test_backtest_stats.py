@@ -1,4 +1,4 @@
-"""Public backtest statistics: ``quantlab.utils.backtest_stats`` (#109).
+"""Public backtest statistics: ``quantlab.runs.backtest_stats`` (#109).
 
 The returns-based statistics and the turnover rows of ``metrics.json`` are
 public functions of a light module, so a tool that simulates elsewhere
@@ -28,7 +28,7 @@ import vectorbt as vbt
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.utils.backtest_stats import (
+from quantlab.runs.backtest_stats import (
     bar_label,
     drawdown_span,
     in_ranges,
@@ -143,7 +143,7 @@ def test_a_runs_metrics_rows_are_the_functions_output(stores):  # noqa: F811
 def test_the_module_imports_no_quantlab_layer_or_heavy_library():
     code = (
         "import sys\n"
-        "import quantlab.utils.backtest_stats\n"
+        "import quantlab.runs.backtest_stats\n"
         "heavy = ('quantlab.model', 'quantlab.dataset', 'quantlab.factor', 'quantlab.label',\n"
         "         'quantlab.model.base', 'quantlab.dataset.base', 'quantlab.backtest',\n"
         "         'vectorbt', 'torch', 'xgboost', 'KunQuant')\n"

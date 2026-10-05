@@ -26,12 +26,12 @@ from loguru import logger
 
 import quantlab.api as qa
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.core.component import rebuild
-from quantlab.base.backtest import BaseBacktester
+from quantlab.backtest.base import BaseBacktester
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import write_price_store

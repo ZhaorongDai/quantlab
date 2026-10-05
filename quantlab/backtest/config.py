@@ -1,28 +1,15 @@
-"""Dataclass configurations threaded through every layer of the pipeline.
+"""The configs of the backtest layer.
 
-Each domain object (dataset, factor, model, backtester, acquisition, universe
-catalog) is constructed from one of the config classes here and exposes it as
-``self.config``. Dataset, factor and model configs are frozen: a field
-cannot be assigned after creation, and a changed config is a new one made
-with ``dataclasses.replace``. The object's config setter normalises the
-config it is given into a new config, filling in derived values such as
-open-ended dates and the ``name`` field, which records the owning class's
-dotted import path so the object can be rebuilt from the serialised dict (see
-``quantlab.core.component``); the caller's config is never edited. ``to_dict()``
-on each config produces that dict, each field declared with ``component()``
-written as its component's own config. Acquisition, universe and backtest configs
-are not frozen.
+A backtester is constructed from a ``BacktestConfig`` subclass and exposes it as
+``self.config``. Unlike the dataset, factor and model configs these are not frozen.
+The price dataset, the model, the portfolio construction rule, the benchmark and
+the tracker are declared with ``component()``, so ``to_dict()`` writes each as its
+own config and the backtester can be rebuilt from the run's ``config.json`` (see
+``quantlab.core.component``). The execution settings (sizing basis, fees, slippage)
+are those of ``quantlab.execution.rules``.
 
-Throughout, a *panel* is an ``xarray.Dataset`` indexed by ``timestamp`` and
-``symbol``. Several configs describe US-equity data from WRDS (Wharton
-Research Data Services, a university data platform). CRSP (the Center for
-Research in Security Prices) supplies daily stock data keyed by PERMNO, a
-permanent integer id that stays with a security when its ticker changes. TAQ
-(Trade and Quote) supplies intraday quotes, and the NBBO (National Best Bid
-and Offer) is the best bid and ask across all US exchanges at each moment.
-
-Fields are documented with ``#:`` comments so the meaning of each one sits
-beside its definition.
+Fields are documented with ``#:`` comments so the meaning of each one sits beside
+its definition.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -35,9 +22,8 @@ from quantlab.enums.data import Market
 
 if TYPE_CHECKING:
     from quantlab.dataset.base import MarketDataset
-    from quantlab.factor.base import Factor
     from quantlab.model.base import BaseModel
-    from quantlab.portfolio.base import PortfolioConstructor, RiskModel
+    from quantlab.portfolio.base import PortfolioConstructor
 
 
 @dataclass(kw_only=True)
@@ -98,7 +84,7 @@ class BacktestConfig:
     output_dir: str | None
 
     #: The model that produces the scores the target weights are built from:
-    #: any object with the members of ``quantlab.base.backtest.Predictor``,
+    #: any object with the members of ``quantlab.backtest.base.Predictor``,
     #: such as a ``BaseModel`` (the annotation names the usual case, because
     #: this module does not import the backtest layer). ``run()`` and
     #: ``run_cv()`` require it; ``run_weights()`` backtests precomputed
@@ -223,7 +209,7 @@ class WeightsBacktestConfig(BacktestConfig):
     Examples
     --------
     >>> import pandas as pd
-    >>> from quantlab.base.config import WeightsBacktestConfig
+    >>> from quantlab.backtest.config import WeightsBacktestConfig
     >>> from quantlab.dataset.memory import FrameDataset
     >>> price_dataset = FrameDataset(pd.DataFrame({
     ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-03"]),

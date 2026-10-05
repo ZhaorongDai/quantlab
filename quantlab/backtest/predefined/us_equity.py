@@ -11,8 +11,8 @@ inherited from ``VectorBtBacktester``. A saved run rebuilds it through
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.base.backtest import MarketSpec, label_specs
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.base import MarketSpec, label_specs
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.portfolio.decision_inputs import DecisionInputs
 
@@ -56,7 +56,7 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
 
     Examples
     --------
-    >>> from quantlab.base.config import CrossSectionBacktestConfig
+    >>> from quantlab.backtest.config import CrossSectionBacktestConfig
     >>> from quantlab.portfolio.config import TopNConfig
     >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
     >>> backtester = USEquityCrossectionSelectStockVectorBt(

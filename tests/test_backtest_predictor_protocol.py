@@ -12,7 +12,7 @@ What is locked here, and what turns it red:
   `TypeError` naming the protocol and the missing member.
 - A run's rebuild (`BacktestRun.rebuild_backtester`) rebuilds the model
   through `from_config` of the class named in the saved recipe.
-- Source rule: `quantlab/base/backtest.py` and `quantlab/backtest/*.py` read
+- Source rule: `quantlab/backtest/base.py` and `quantlab/backtest/*.py` read
   no attribute of the model other than a protocol member (so no `config` and
   no `_`-prefixed method), and never name `ModelConfig`.
 
@@ -29,8 +29,8 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.backtest import Predictor
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.base import Predictor
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.model.base import BaseModel
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -218,7 +218,7 @@ def test_rebuild_goes_through_from_config_of_the_saved_class(tmp_path):
 
 
 def _backtest_layer_files() -> list[Path]:
-    return [REPO_ROOT / "quantlab/base/backtest.py"] + sorted(
+    return [REPO_ROOT / "quantlab/backtest/base.py"] + sorted(
         p for p in (REPO_ROOT / "quantlab/backtest").glob("*.py")
     )
 

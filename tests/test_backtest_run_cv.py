@@ -61,7 +61,7 @@ from loguru import logger
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.portfolio.decision_inputs import rebalance_mask
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.runs.prediction_panel import LabelSpec
@@ -362,7 +362,7 @@ def test_a_failed_cv_persist_leaves_no_run_directory(tmp_path, cv_project, monke
     writing is made to fail here: `output_dir` must end up empty, with no
     final directory and no staging leftover. Red on the old code.
     """
-    import quantlab.base.backtest as backtest_module
+    import quantlab.backtest.base as backtest_module
 
     def _fail(*args, **kwargs):
         raise RuntimeError("simulated failure while writing report.html")

@@ -34,7 +34,7 @@ class LabelSpec:
     so a rule can be rebuilt from a run directory without its model
     (``quantlab.portfolio.decision_inputs.DecisionInputs.from_run``). The
     backtester derives the specs of its predictor with
-    ``quantlab.base.backtest.label_specs``.
+    ``quantlab.backtest.base.label_specs``.
 
     Parameters
     ----------

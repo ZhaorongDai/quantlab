@@ -44,7 +44,7 @@ from collections.abc import Mapping
 from quantlab.api import _factors, _labels
 from quantlab.api._factor_report import FactorReport
 from quantlab.api._report import BacktestReport
-from quantlab.base.config import BacktestConfig
+from quantlab.backtest.config import BacktestConfig
 
 
 def compute_factors(

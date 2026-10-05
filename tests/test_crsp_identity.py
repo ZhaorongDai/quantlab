@@ -1136,7 +1136,7 @@ def test_qqq_store_stays_data_and_the_backtester_consumes_it(mock_crsp_session, 
     for path in crsp_files:
         assert "benchmark_dataset" not in path.read_text(encoding="utf-8"), path
 
-    backtest = root / "quantlab" / "base" / "backtest.py"
+    backtest = root / "quantlab" / "backtest" / "base.py"
     tree = ast.parse(backtest.read_text(encoding="utf-8"))
     refusals = [
         node

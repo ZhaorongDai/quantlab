@@ -31,7 +31,7 @@ The concrete class shipped with quantlab is
 is a *cross-sectional stock-selection* backtester: on each rebalance day it
 ranks every symbol in the price dataset by the model's score and holds the
 best ones. It is configured with a `CrossSectionBacktestConfig`
-(`quantlab.base.config`).
+(`quantlab.backtest.config`).
 
 A call to `run()` performs these steps in order:
 
@@ -50,7 +50,7 @@ A call to `run()` performs these steps in order:
 6. Write everything to a new run directory under `output_dir`.
 
 The class hierarchy mirrors those responsibilities. `BaseBacktester`
-(`quantlab.base.backtest`) owns the steps that do not depend on a simulation
+(`quantlab.backtest.base`) owns the steps that do not depend on a simulation
 engine: dates, warm-up, the in-sample split, metrics and persistence.
 `VectorBtBacktester` (`quantlab.backtest.engine_vectorbt`) implements the
 simulation with vectorbt. The concrete class adds the market's price columns
@@ -70,7 +70,7 @@ model's `collect()` and `train()` before predicting:
 
 ```python
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
@@ -142,7 +142,7 @@ is read: a wrong config class raises `TypeError`, and invalid dates, a
 `init_cash`, a `constructor` that is not a `PortfolioConstructor` (`TypeError`),
 an unknown `direction` or a `score_label` the model does not predict raise
 `ValueError`. See the docstrings of
-`quantlab.base.config.BacktestConfig` and `CrossSectionBacktestConfig` for
+`quantlab.backtest.config.BacktestConfig` and `CrossSectionBacktestConfig` for
 every field.
 
 ## Target weights: the signal format

@@ -35,11 +35,11 @@ CORE_LAYER_FILES = (
     "quantlab/model/torch_model.py",
     "quantlab/model/library_model.py",
     "quantlab/backend/base.py",
-    "quantlab/base/backtest.py",
+    "quantlab/backtest/base.py",
 )
 
 # Why `CrspTickerLookup` is deliberately NOT in this tuple (G-03.11-1):
-# `quantlab/base/backtest.py:15` carries a named vendor import
+# `quantlab/backtest/base.py:15` carries a named vendor import
 # (`from quantlab.dataset.crsp.tickers import CrspTickerLookup`) -- a concrete
 # dataset-layer class name living in `base/`. `base/factor.py` solved the same
 # problem the other way (the dataset declares a constant, `base/` only reads
@@ -49,12 +49,12 @@ CORE_LAYER_FILES = (
 # rejected), and instead put the file behind this gate so *future*
 # market-literal leaks into `base/backtest.py` turn red.
 # Measured fact at the time of the ruling: none of the four substrings below
-# occurs in `quantlab/base/backtest.py`, so widening the gate is green today
+# occurs in `quantlab/backtest/base.py`, so widening the gate is green today
 # rather than an owed debt.
 #
 # What this gate sees, and what it does not. It sees exactly the four legacy
 # market literals listed below, on non-comment lines -- nothing else. It does
-# NOT see either of the two concrete couplings `quantlab/base/backtest.py`
+# NOT see either of the two concrete couplings `quantlab/backtest/base.py`
 # already carries: the named vendor import at `:15` (excluded on purpose per
 # ruling (b) above), nor the concrete market class name that appears in prose
 # at `:153`. Docstring lines ARE scanned, but that class name is CamelCase

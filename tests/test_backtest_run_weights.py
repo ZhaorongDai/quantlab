@@ -35,11 +35,11 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.runs.backtest_run import BacktestRun, Market
 from quantlab.core.component import rebuild
-from quantlab.base.backtest import BaseBacktester
+from quantlab.backtest.base import BaseBacktester
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -413,7 +413,7 @@ def test_report_figure_refuses_a_result_of_another_config(stores, overrides, mes
 
 
 def test_report_figure_refuses_a_cv_result(stores):
-    from quantlab.base.backtest import CVBacktestResult
+    from quantlab.backtest.base import CVBacktestResult
 
     backtester, result = _weights_result(stores)
     cv_result = CVBacktestResult(
@@ -436,7 +436,7 @@ def test_report_figure_refuses_a_cv_result(stores):
 @pytest.mark.parametrize("top_n", [True, 2.0, 0])
 def test_weights_backtester_refuses_a_top_n_that_is_not_a_positive_integer(stores, top_n):
     from quantlab.backtest.predefined.weights import WeightsVectorBt
-    from quantlab.base.config import WeightsBacktestConfig
+    from quantlab.backtest.config import WeightsBacktestConfig
 
     bars = _bars()
     config = WeightsBacktestConfig(

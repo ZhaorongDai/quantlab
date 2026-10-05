@@ -48,12 +48,12 @@ from loguru import logger
 import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.backtest import SimulationResult
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.base import SimulationResult
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.utils import backtest_stats
-from quantlab.utils.backtest_stats import in_ranges
+from quantlab.runs import backtest_stats
+from quantlab.runs.backtest_stats import in_ranges
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,

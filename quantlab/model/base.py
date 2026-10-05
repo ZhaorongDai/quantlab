@@ -58,7 +58,7 @@ from quantlab.utils.timer import Timer
 from quantlab.model.split import Fold
 from quantlab.model.walk_forward_training import fold_config, train_walk_forward
 
-from .config import ModelConfig
+from quantlab.model.config import ModelConfig
 
 #: Keys of ``ModelConfig.hyperparameters`` a ``TorchModel`` reads itself:
 #: ``epochs`` (the epoch cap, default 100), ``lr`` (learning rate of the

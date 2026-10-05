@@ -75,7 +75,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun, Market
@@ -323,7 +323,7 @@ def test_an_interrupted_persist_leaves_no_run_directory(tmp_path, monkeypatch):
     report works again, the same backtester writes one complete directory. Red
     on the old code: the half-written directory remains.
     """
-    import quantlab.base.backtest as backtest_module
+    import quantlab.backtest.base as backtest_module
 
     dataset_config, checkpoint = _trained_store(tmp_path)
     backtester = _backtester(

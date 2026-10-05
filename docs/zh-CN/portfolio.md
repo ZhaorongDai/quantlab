@@ -89,7 +89,7 @@ array([0.5, 0.5, 0. , 0. ])
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
 - 每根 bar 只读截至（含）它的最近 `history_bars` 个原始估值价格（默认 `lookback_bars + 1`；Ledoit-Wolf 为 `lookback_bars + 1 + max_stale_bars`；均值方差取其风险模型的值），所以决策与价格历史从哪里开始无关。回测的预热期包含第一根 bar 之前的 `history_bars - 1` 根 bar，所以第一根 bar 就有完整的窗口。
 
-回测器在构造时调用规则的 `bind(labels)`，这时还没有读任何数据、也没有训练任何模型。`labels` 为每个预测变量给出一个 `LabelSpec(name, scale, delay, span)`，由回测器用 `quantlab.base.backtest.label_specs` 从预测器推导；不是 `Forward` 标签的 `span` 为 `None`。规则对预测能知道的只有这些规格，永远拿不到模型本身。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
+回测器在构造时调用规则的 `bind(labels)`，这时还没有读任何数据、也没有训练任何模型。`labels` 为每个预测变量给出一个 `LabelSpec(name, scale, delay, span)`，由回测器用 `quantlab.backtest.base.label_specs` 从预测器推导；不是 `Forward` 标签的 `span` 为 `None`。规则对预测能知道的只有这些规格，永远拿不到模型本身。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
 
 规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。`decide` 把它变成在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
 

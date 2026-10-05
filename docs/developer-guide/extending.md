@@ -821,8 +821,8 @@ import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.portfolio.decision_inputs import rebalance_mask
-from quantlab.base.backtest import MarketSpec
-from quantlab.base.config import BacktestConfig
+from quantlab.backtest.base import MarketSpec
+from quantlab.backtest.config import BacktestConfig
 
 #: Unadjusted open/close columns, a 24/7 market: 365 trading days of 1440 minutes.
 ROUND_THE_CLOCK = MarketSpec(
@@ -878,7 +878,7 @@ bar's open, rejected orders, delisting settlements, metrics and the run
 directory.
 
 A backtester reaches the model only through the `Predictor` protocol
-(`quantlab.base.backtest.Predictor`): `labels`, `label_delays`,
+(`quantlab.backtest.base.Predictor`): `labels`, `label_delays`,
 `train_bounds`, `test_bounds`, `fitted_train_bounds`, `label_scales`,
 `predict_window`, `collect`, `train`, `load`, `check_checkpoint`,
 `get_config` and the class method `from_config`. It says nothing about the
@@ -911,8 +911,8 @@ A different simulation engine is a sibling of `VectorBtBacktester`: subclass
 `BaseBacktester`, set `fill_delay_bars` (the bars between the bar a weight
 forms on and the bar it fills on, 1 for vectorbt) and implement `_simulate`,
 `_simulate_benchmark` and `_engine_stats`, returning the engine-neutral
-`SimulationResult` described in the docstring of `quantlab.base.backtest`.
+`SimulationResult` described in the docstring of `quantlab.backtest.base`.
 The slice, benchmark, relative and turnover statistics are computed from that
-result by `quantlab.utils.backtest_stats`, so a new engine does not provide
+result by `quantlab.runs.backtest_stats`, so a new engine does not provide
 them. `run()` and `run_cv()` refuse a model whose label
 `delay` differs from `fill_delay_bars`.

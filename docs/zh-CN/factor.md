@@ -665,4 +665,4 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 
 ## 另请参阅
 
-`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.factor.base`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.base.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.predefined.fret` 和 `quantlab.factor.kunquant_ops`。
+`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.factor.base`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.backtest.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.predefined.fret` 和 `quantlab.factor.kunquant_ops`。

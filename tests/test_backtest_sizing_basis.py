@@ -25,7 +25,7 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.weights import WeightsVectorBt
-from quantlab.base.config import WeightsBacktestConfig
+from quantlab.backtest.config import WeightsBacktestConfig
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.dataset.memory import FrameDataset
 from tests.test_backtest_run_weights import _config, stores  # noqa: F401

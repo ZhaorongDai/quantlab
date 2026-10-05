@@ -28,7 +28,7 @@ vendor API --> acquisition --> raw tier --> dataset --> factors, labels --> mode
 | Factor and label | a price panel | a factor panel | `quantlab.factor.base.Factor` |
 | Model | factor and label panels | a prediction panel | `quantlab.model.base.BaseModel` |
 | Selection | a prediction panel | a target-weight panel | a strategy-specific class |
-| Backtest | target weights and prices | a simulation, metrics and a run directory | `quantlab.base.backtest.BaseBacktester` |
+| Backtest | target weights and prices | a simulation, metrics and a run directory | `quantlab.backtest.base.BaseBacktester` |
 
 Acquisition downloads raw data from a vendor (Tiingo, Alpaca or WRDS) and writes it unchanged
 to a directory tree of parquet files, the raw tier. Keeping the vendor's rows as they arrived
@@ -112,7 +112,7 @@ Storage objects in `quantlab.backend` read and write panels: `XrBackend` for Zar
 ## Config dataclasses
 
 Every object in quantlab is built from one config dataclass, defined in
-`quantlab.base.config`, and keeps it as its `config` attribute:
+`quantlab.backtest.config`, and keeps it as its `config` attribute:
 
 | Config | Builds |
 |--------|--------|

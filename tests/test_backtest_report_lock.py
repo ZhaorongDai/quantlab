@@ -1,7 +1,7 @@
 """Byte lock on a backtest run's ``report.html`` and ``metrics.json`` (#115).
 
 The inputs of the report became public functions in
-``quantlab.utils.backtest_report`` (``report_summary``, ``report_windows``,
+``quantlab.runs.backtest_report`` (``report_summary``, ``report_windows``,
 ``report_chart_inputs``, ``report_portfolio_inputs``) so another executor can
 write a report in quantlab's format. The backtester builds its own report
 through them, and its pages and metrics must not change by a byte. What is
@@ -46,7 +46,7 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun

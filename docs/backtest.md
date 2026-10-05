@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the decision inputs and rebalance schedule (`DecisionInputs` and `rebalance_mask` in `quantlab/portfolio/decision_inputs.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/portfolio/base.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/backtest/base.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the decision inputs and rebalance schedule (`DecisionInputs` and `rebalance_mask` in `quantlab/portfolio/decision_inputs.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/portfolio/base.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -140,7 +140,7 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 >>> import xarray as xr
 >>> from demo_parts import *
 >>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
->>> from quantlab.base.config import CrossSectionBacktestConfig
+>>> from quantlab.backtest.config import CrossSectionBacktestConfig
 >>> from quantlab.portfolio.config import TopNConfig
 >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> root = Path(tempfile.mkdtemp())
@@ -424,7 +424,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 >>> import pandas as pd
 >>> import xarray as xr
 >>> from quantlab.backtest.predefined.weights import WeightsVectorBt
->>> from quantlab.base.config import WeightsBacktestConfig
+>>> from quantlab.backtest.config import WeightsBacktestConfig
 >>> from quantlab.dataset.memory import FrameDataset
 >>> bars = pd.bdate_range("2024-01-01", periods=5)
 >>> prices = FrameDataset(pd.DataFrame({
@@ -603,7 +603,7 @@ The rebuilt `FrameDataset` reads the copy into memory; the replay keeps its own 
 
 ### Compute the statistics without a backtester
 
-The returns-based rows and the turnover rows of `metrics.json` are public functions of `quantlab.utils.backtest_stats`, a module that imports numpy, pandas and xarray only: no model or dataset layer, no vectorbt. A tool that simulates a quantlab run elsewhere calls them to report the same numbers under the same names.
+The returns-based rows and the turnover rows of `metrics.json` are public functions of `quantlab.runs.backtest_stats`, a module that imports numpy, pandas and xarray only: no model or dataset layer, no vectorbt. A tool that simulates a quantlab run elsewhere calls them to report the same numbers under the same names.
 
 | Function | Rows of `metrics.json` |
 |---|---|
@@ -619,7 +619,7 @@ The returns-based rows and the turnover rows of `metrics.json` are public functi
 `ranges` are inclusive pairs of bar labels, as `metrics.json` records them (`in_sample_range`, `out_of_sample_ranges`). The strategy's own `whole` block is the exception: its turnover and win-rate rows come from these functions, but its return, ratio, trade, exposure and fee rows come from the engine's portfolio statistics; the trade and exposure rows equal `round_trip_stats` and `exposure_stats` of its fills. With `held` the `WeightsVectorBt` run above:
 
 ```python
->>> from quantlab.utils.backtest_stats import return_stats, turnover, turnover_stats, year_freq
+>>> from quantlab.runs.backtest_stats import return_stats, turnover, turnover_stats, year_freq
 >>> year = year_freq("1D", 252, 390)
 >>> stats = return_stats(
 ...     held.simulation.returns, bar_interval="1D", year_freq=year,
@@ -635,7 +635,7 @@ The returns-based rows and the turnover rows of `metrics.json` are public functi
 A round trip is a position from flat to flat in one symbol: adding to or trimming it does not end it, a fill that crosses zero ends it and opens the opposite one, and a position still held at the last bar is open, marked at its last valuation price. `round_trips` takes the fills (`timestamp`, `symbol`, signed `size`, `price`, `fees`) and the valuation prices, which give the bar axis that trip lengths are counted on; `cash_flows` (`timestamp`, `symbol`, `amount`) adds the dividends or distributions a position received while open to its PnL and return; a flow is timestamped with the bar the position had to be held into (a dividend's ex-date bar). Splits are not an input: give the fills and prices on one adjustment basis. On the run above, whose orders carry an unsigned `size` and a `side`:
 
 ```python
->>> from quantlab.utils.backtest_stats import round_trip_stats, round_trips
+>>> from quantlab.runs.backtest_stats import round_trip_stats, round_trips
 >>> orders = held.simulation.orders
 >>> fills = orders.assign(size=orders["size"] * xr.where(orders["side"] == "Buy", 1.0, -1.0))
 >>> close = xr.DataArray(
@@ -674,7 +674,7 @@ The whole book in one stock at 10 with a 1% fee costs more than the cash, so the
 
 ### Write a report in quantlab's format
 
-The inputs of `report.html` have public builders in `quantlab.utils.backtest_report`, taking plain data, so an executor that simulates elsewhere writes a page in exactly quantlab's format. quantlab's own pages are built through them.
+The inputs of `report.html` have public builders in `quantlab.runs.backtest_report`, taking plain data, so an executor that simulates elsewhere writes a page in exactly quantlab's format. quantlab's own pages are built through them.
 
 | Function | Argument of `write_backtest_report` |
 |---|---|
@@ -686,14 +686,14 @@ The inputs of `report.html` have public builders in `quantlab.utils.backtest_rep
 A line of the summary is replaced by assigning to its key, which keeps its place, and `write_backtest_report(..., extra_tables={heading: {label: value}})` adds titled tables after the metric tables, for statistics only the executor has. Continuing the session:
 
 ```python
->>> from quantlab.utils.backtest_report import report_summary, report_windows, write_backtest_report
+>>> from quantlab.runs.backtest_report import report_summary, report_windows, write_backtest_report
 >>> summary = report_summary(held_backtester.get_config(), held.metrics, bar_interval="1D")
 >>> summary["Fees"] = "IBKR tiered, 0.0035 USD a share"
 >>> list(summary)
 ['Bar interval', 'Signal', 'Rebalance every', 'Fees']
 >>> report_windows(held.simulation.value.timestamp.values, held.metrics)["backtest"]
 ('2024-01-01', '2024-01-05')
->>> from quantlab.utils.backtest_report import report_chart_inputs
+>>> from quantlab.runs.backtest_report import report_chart_inputs
 >>> write_backtest_report(
 ...     held.simulation.value, "replay.html", title="replay", summary=summary,
 ...     windows=report_windows(held.simulation.value.timestamp.values, held.metrics),
@@ -718,7 +718,7 @@ import xarray as xr
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.backtest.predefined.us_equity import US_EQUITY_MARKET
-from quantlab.base.config import BacktestConfig
+from quantlab.backtest.config import BacktestConfig
 
 
 class ScoreWeightedBacktester(VectorBtBacktester):
@@ -744,7 +744,7 @@ Its config class is `BacktestConfig`, so no `constructor` is required.
 
 ```python
 >>> from score_weighted import ScoreWeightedBacktester
->>> from quantlab.base.config import BacktestConfig
+>>> from quantlab.backtest.config import BacktestConfig
 >>> custom = ScoreWeightedBacktester(BacktestConfig(
 ...     price_dataset=prices_of(cfg),
 ...     model=make_model(root / "custom", cfg, days),
@@ -768,7 +768,7 @@ To keep the top-N rule with another score, `DecisionInputs(dataset, TopNConstruc
 
 ### Backtest any predictor
 
-`config.model` does not have to be a `BaseModel`. The backtester depends only on the `Predictor` protocol in `quantlab.base.backtest`, which `BaseModel` satisfies without inheriting it. An ensemble that composes several models, or a wrapper around a model, is backtested unchanged as long as it has every member:
+`config.model` does not have to be a `BaseModel`. The backtester depends only on the `Predictor` protocol in `quantlab.backtest.base`, which `BaseModel` satisfies without inheriting it. An ensemble that composes several models, or a wrapper around a model, is backtested unchanged as long as it has every member:
 
 | Member | What the backtester uses it for |
 |---|---|
@@ -784,7 +784,7 @@ The backtester reads no model config and calls no other model method. A config w
 
 ```python
 >>> from typing import get_protocol_members
->>> from quantlab.base.backtest import Predictor
+>>> from quantlab.backtest.base import Predictor
 >>> sorted(get_protocol_members(Predictor))
 ['check_checkpoint', 'collect', 'fitted_train_bounds', 'from_config', 'get_config', 'label_delays', 'label_scales', 'labels', 'load', 'predict_window', 'test_bounds', 'train', 'train_bounds']
 ```
@@ -873,7 +873,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 A recipe with a missing field is refused instead of being filled from current defaults:
 
 ```python
->>> from quantlab.base.backtest import BaseBacktester
+>>> from quantlab.backtest.base import BaseBacktester
 >>> from quantlab.core.component import rebuild
 >>> recipe = backtester.get_config()
 >>> del recipe["constructor"]
@@ -891,4 +891,4 @@ If a fold is missing from the middle of the walk-forward run's `run.json`, `run_
 - [model](model.md) for `train`, `train_cv`, `TrainedRun` and `predict_panel`.
 - [dataset](dataset.md) for the price dataset and [factor](factor.md) for the factors and labels a model consumes.
 - [backend](backend.md) for the Zarr stores the weights and equity curve are written to.
-- `BaseBacktester`, `BacktestResult`, `CVBacktestResult` and `MarketSpec` in `quantlab/base/backtest.py`; `BacktestConfig` and `CrossSectionBacktestConfig` in `quantlab/base/config.py`; `BacktestRun` in `quantlab/runs/backtest_run.py` and `open_run` in `quantlab/runs/directory.py`.
+- `BaseBacktester`, `BacktestResult`, `CVBacktestResult` and `MarketSpec` in `quantlab/backtest/base.py`; `BacktestConfig` and `CrossSectionBacktestConfig` in `quantlab/backtest/config.py`; `BacktestRun` in `quantlab/runs/backtest_run.py` and `open_run` in `quantlab/runs/directory.py`.

@@ -544,4 +544,4 @@ Two rows with the same `(timestamp, symbol)` reaching `to_xarray()` raise `Value
 
 ## See also
 
-The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.dataset.base`, `quantlab.base.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset.memory`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.
+The chunking guide covers `from_raw_data_chunked()`, `update()` and resuming. The acquisition and registry guides describe how raw files are downloaded and how a converter is chosen from a config. The backend guide covers `XrBackend`, and the factor guide shows how a factor reads a dataset. Relevant modules: `quantlab.dataset.base`, `quantlab.backtest.config`, `quantlab.dataset.spot`, `quantlab.dataset.stock`, `quantlab.dataset.memory`, `quantlab.dataset._support.cleaning` and `quantlab.dataset._support.session_calendar`.

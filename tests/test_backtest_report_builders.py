@@ -1,4 +1,4 @@
-"""The public report-input builders of ``quantlab.utils.backtest_report`` (#115).
+"""The public report-input builders of ``quantlab.runs.backtest_report`` (#115).
 
 A backtest run's ``report.html`` is drawn from plain data: the run's config
 mapping, its metric block, its value and returns, its weights and fills and,
@@ -27,7 +27,7 @@ from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopN
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.utils.backtest_report import (
+from quantlab.runs.backtest_report import (
     report_chart_inputs,
     report_portfolio_inputs,
     report_summary,

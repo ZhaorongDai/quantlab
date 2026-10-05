@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.utils.backtest_report import write_backtest_report
+from quantlab.runs.backtest_report import write_backtest_report
 
 N = 300
 BARS = pd.bdate_range("2023-01-02", periods=N)

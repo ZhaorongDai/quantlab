@@ -286,7 +286,7 @@ def test_factor_panels_lacking_a_declared_name_are_refused():
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE = "quantlab/portfolio/decision_inputs.py"
-CALLERS = ("quantlab/backtest/predefined/us_equity.py", "quantlab/base/backtest.py", "quantlab/api/_backtest.py")
+CALLERS = ("quantlab/backtest/predefined/us_equity.py", "quantlab/backtest/base.py", "quantlab/api/_backtest.py")
 #: Names only the module may use to assemble decision inputs.
 ASSEMBLY = {"tradable_bars", "rebalance_mask", "bar_before", "required_factors", "history_bars", "lookback_bars", "ExecutionBook"}
 

@@ -14,8 +14,8 @@ the backtester, and ``run_weights`` given the run's ``weights()`` replays the ru
 import xarray as xr
 
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
-from quantlab.base.backtest import MarketSpec
-from quantlab.base.config import WeightsBacktestConfig
+from quantlab.backtest.base import MarketSpec
+from quantlab.backtest.config import WeightsBacktestConfig
 
 
 class WeightsVectorBt(VectorBtBacktester):
@@ -47,7 +47,7 @@ class WeightsVectorBt(VectorBtBacktester):
     >>> import pandas as pd
     >>> import xarray as xr
     >>> from quantlab.backtest.predefined.weights import WeightsVectorBt
-    >>> from quantlab.base.config import WeightsBacktestConfig
+    >>> from quantlab.backtest.config import WeightsBacktestConfig
     >>> from quantlab.dataset.memory import FrameDataset
     >>> bars = pd.bdate_range("2024-01-01", periods=5)
     >>> prices = FrameDataset(pd.DataFrame({

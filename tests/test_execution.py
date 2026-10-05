@@ -275,7 +275,7 @@ def test_the_replay_holds_what_vectorbt_executes(sizing_basis):
     import pandas as pd
 
     from quantlab.backtest.predefined.weights import WeightsVectorBt
-    from quantlab.base.config import WeightsBacktestConfig
+    from quantlab.backtest.config import WeightsBacktestConfig
     from quantlab.dataset.memory import FrameDataset
 
     open_, close, weights = _market_panel()

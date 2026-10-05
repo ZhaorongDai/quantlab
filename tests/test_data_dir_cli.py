@@ -227,7 +227,7 @@ def test_utils_cli_does_not_import_config_at_module_scope() -> None:
     """D-04: `quantlab/utils/cli.py` imports nothing from the project at
     module scope. Importing the configuration package there would drag
     `quantlab.backend`, `quantlab.dataset.spot`, `quantlab.dataset.stock` and
-    `quantlab.base.config` into every import of the dependency-light CLI
+    `quantlab.backtest.config` into every import of the dependency-light CLI
     helper module.
     """
     tree = ast.parse((REPO_ROOT / "quantlab" / "utils" / "cli.py").read_text())

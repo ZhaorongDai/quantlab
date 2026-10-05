@@ -498,7 +498,7 @@ class BacktestRun:
         """The run's rebuild recipe, the backtester's ``get_config()`` as recorded.
 
         For presentation that takes a config mapping
-        (``quantlab.utils.backtest_report.report_summary``); a component is
+        (``quantlab.runs.backtest_report.report_summary``); a component is
         rebuilt with ``rebuild(field)`` and the backtester with
         ``rebuild_backtester``.
 

@@ -58,8 +58,9 @@ from quantlab.runs.backtest_run import (
     write_backtest_run,
 )
 from quantlab.runs.trained_run import TrainedRun
-from quantlab.utils import backtest_stats, date_range
-from quantlab.utils.backtest_report import (
+from quantlab.utils import date_range
+from quantlab.runs import backtest_stats
+from quantlab.runs.backtest_report import (
     backtest_report_figure,
     report_chart_inputs,
     report_portfolio_inputs,
@@ -71,7 +72,7 @@ from quantlab.runs.record import DataRecorder, compare, unrecorded
 from quantlab.model.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
-from .config import BacktestConfig
+from quantlab.backtest.config import BacktestConfig
 
 class Predictor(Protocol):
     """What the backtester needs from a model: the whole contract between the two.
@@ -251,7 +252,7 @@ class MarketSpec:
     def year_freq(self, bar_interval) -> pd.Timedelta:
         """Return one year in vectorbt's convention for bars of ``bar_interval``.
 
-        ``quantlab.utils.backtest_stats.year_freq`` with this market's
+        ``quantlab.runs.backtest_stats.year_freq`` with this market's
         trading days and session minutes; its docstring gives the rule.
 
         Parameters
@@ -661,7 +662,7 @@ class BaseBacktester(Component, ABC):
         if missing:
             raise TypeError(
                 f"{self.class_name}: config.model must implement the Predictor "
-                f"protocol (quantlab.base.backtest.Predictor), but "
+                f"protocol (quantlab.backtest.base.Predictor), but "
                 f"{type(config.model).__name__} lacks {missing}"
             )
 
@@ -1255,7 +1256,7 @@ class BaseBacktester(Component, ABC):
         >>> import pandas as pd
         >>> import xarray as xr
         >>> from quantlab.backtest.predefined.weights import WeightsVectorBt
-        >>> from quantlab.base.config import WeightsBacktestConfig
+        >>> from quantlab.backtest.config import WeightsBacktestConfig
         >>> from quantlab.dataset.memory import FrameDataset
         >>> bars = pd.bdate_range("2024-01-01", periods=5)
         >>> prices = FrameDataset(pd.DataFrame({

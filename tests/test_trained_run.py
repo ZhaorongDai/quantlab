@@ -378,7 +378,7 @@ def test_opening_a_trained_run_loads_no_other_layer(setup):
         "import sys\n"
         "from quantlab.runs.directory import open_run\n"
         f"open_run({str(checkpoint)!r})\n"
-        "layers = ('quantlab.base.backtest', 'quantlab.backtest', 'quantlab.model',\n"
+        "layers = ('quantlab.backtest.base', 'quantlab.backtest', 'quantlab.model',\n"
         "          'quantlab.factor', 'quantlab.label', 'quantlab.runs.backtest_run')\n"
         "print(sorted(m for m in sys.modules if m.startswith(layers)))\n"
     )

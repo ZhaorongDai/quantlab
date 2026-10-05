@@ -21,7 +21,7 @@ from loguru import logger
 
 import quantlab.runs.record as code_record_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
@@ -145,7 +145,7 @@ def test_a_run_and_its_trained_unit_record_their_code(tmp_path):
     dataset_config, bars = _store(tmp_path)
     run = BacktestRun.open(_backtester(tmp_path, dataset_config, bars).run().run_dir)
 
-    assert run.code["modules"]["quantlab.base.backtest"]["framework"] is True
+    assert run.code["modules"]["quantlab.backtest.base"]["framework"] is True
     assert "price_dataset" in run.code["modules"]["quantlab.dataset.stock"]["components"]
     unit = run.trained_run()
     assert unit.code["modules"]["tests.backtest_fixtures"]["components"][0] == ""

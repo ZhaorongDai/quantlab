@@ -21,8 +21,8 @@ import xarray as xr
 from loguru import logger
 from vectorbt.portfolio.enums import SizeType
 
-from quantlab.base.backtest import BaseBacktester, SimulationResult
-from quantlab.utils import backtest_stats
+from quantlab.backtest.base import BaseBacktester, SimulationResult
+from quantlab.runs import backtest_stats
 from quantlab.execution.rules import FILL_DELAY_BARS, OrderPlan, plan_orders
 
 #: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt

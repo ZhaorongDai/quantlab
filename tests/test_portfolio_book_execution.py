@@ -21,7 +21,7 @@ import pytest
 import xarray as xr
 
 from quantlab.backtest.predefined.weights import WeightsVectorBt
-from quantlab.base.config import WeightsBacktestConfig
+from quantlab.backtest.config import WeightsBacktestConfig
 from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs

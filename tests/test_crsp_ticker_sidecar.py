@@ -949,7 +949,7 @@ def test_product_end_refuses_an_unparseable_sidecar_too(tmp_path, payload):
 def test_beside_store_builds_the_lookup_from_a_store_path(converted):
     """The one place the suffix is appended for a reader, so the two production
     construction sites (`quantlab/dataset/_support/masking.py:115`,
-    `quantlab/base/backtest.py:198`) do not each spell `".crsp_tickers.json"`
+    `quantlab/backtest/base.py:198`) do not each spell `".crsp_tickers.json"`
     for themselves."""
     from quantlab.dataset.crsp.tickers import CrspTickerLookup
 

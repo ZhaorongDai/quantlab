@@ -63,8 +63,8 @@ from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )
-from quantlab.base.backtest import BaseBacktester, SimulationResult
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.base import BaseBacktester, SimulationResult
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.label.forward import Forward
 from quantlab.portfolio.predefined.top_n import TopNConstructor

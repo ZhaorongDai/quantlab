@@ -24,7 +24,7 @@ import pytest
 import vectorbt as vbt
 import xarray as xr
 
-from quantlab.utils.backtest_stats import exposure_stats, round_trip_stats, round_trips
+from quantlab.runs.backtest_stats import exposure_stats, round_trip_stats, round_trips
 
 #: The rows ``round_trip_stats`` reports, by vectorbt's metric name.
 TRADE_METRICS = {
@@ -166,7 +166,7 @@ def test_no_fills_give_vectorbts_rows():
 
 def test_a_quantlab_runs_own_fills_give_its_whole_blocks_trade_rows(tmp_path):
     from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-    from quantlab.base.config import CrossSectionBacktestConfig
+    from quantlab.backtest.config import CrossSectionBacktestConfig
     from quantlab.portfolio.config import TopNConfig
     from quantlab.portfolio.predefined.top_n import TopNConstructor
     from tests.backtest_fixtures import make_stock_dataset, write_price_store

@@ -40,10 +40,10 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
-from quantlab.utils.backtest_report import write_backtest_report
-from quantlab.utils.backtest_stats import win_rates
+from quantlab.runs.backtest_report import write_backtest_report
+from quantlab.runs.backtest_stats import win_rates
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (

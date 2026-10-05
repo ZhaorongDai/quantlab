@@ -3,7 +3,7 @@
 This file is the backtest layer's equivalent of `tests/test_model_hierarchy.py`:
 it keeps the architecture plan 03.7-01 built from eroding silently. The layer is
 
-- `BaseBacktester` (`quantlab/base/backtest.py`) -- the ONLY home of `run()`;
+- `BaseBacktester` (`quantlab/backtest/base.py`) -- the ONLY home of `run()`;
 - `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`) -- the engine
   layer, still abstract;
 - `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`)
@@ -32,7 +32,7 @@ What is locked here, the decision each lock enforces, and what turns it red:
   `object()`s, so if another check runs first it raises a different error and
   the test fails.
 - **Price column names live only in the market spec (D-04).** No string
-  constant inside any function body of `quantlab/base/backtest.py` or
+  constant inside any function body of `quantlab/backtest/base.py` or
   `quantlab/backtest/*.py` equals the spec's fill or valuation column name. A
   method that hardcodes the column is red. The names are read from
   `US_EQUITY_MARKET`, so the lock follows the spec.
@@ -41,7 +41,7 @@ What is locked here, the decision each lock enforces, and what turns it red:
   `quantlab.config`. Relative spellings are resolved against the file's
   package, because a substring scan cannot see them.
 - **One-directional layering.** No quantlab module outside
-  `quantlab/backtest/`, `quantlab/base/backtest.py` and `quantlab/api/` (the
+  `quantlab/backtest/`, `quantlab/backtest/base.py` and `quantlab/api/` (the
   frame facade above every layer, ADR 0011) imports the backtest layer.
 - **vectorbt stays inside the engine (D-31).** No quantlab module other than
   `quantlab/backtest/engine_vectorbt.py` imports vectorbt, with no exemption.
@@ -67,8 +67,8 @@ from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )
-from quantlab.base.backtest import BaseBacktester
-from quantlab.base.config import BacktestConfig
+from quantlab.backtest.base import BaseBacktester
+from quantlab.backtest.config import BacktestConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -112,7 +112,7 @@ def test_abstract_method_sets_are_exact():
             "_simulate_benchmark",
             "_engine_stats",
             # Slice return statistics were an engine hook until #109 made
-            # them the engine-free `quantlab.utils.backtest_stats.return_stats`.
+            # them the engine-free `quantlab.runs.backtest_stats.return_stats`.
         }
     )
     assert VectorBtBacktester.__abstractmethods__ == frozenset(
@@ -199,7 +199,7 @@ def _python_files(root: Path) -> list[Path]:
 
 
 def _backtest_layer_files() -> list[Path]:
-    return [REPO_ROOT / "quantlab/base/backtest.py"] + _python_files(
+    return [REPO_ROOT / "quantlab/backtest/base.py"] + _python_files(
         REPO_ROOT / "quantlab/backtest"
     )
 
@@ -286,10 +286,10 @@ def test_backtest_layer_never_imports_config_factories():
     assert REPO_ROOT / "tests/test_backtest_contracts.py" in files
 
     # Positive control on a real relative spelling: `from .config import
-    # BacktestConfig` in quantlab/base/backtest.py must resolve to the sibling
+    # BacktestConfig` in quantlab/backtest/base.py must resolve to the sibling
     # module, or every relative import below would be checked as garbage.
-    assert {"quantlab.base.config", "quantlab.base.config.BacktestConfig"} <= (
-        _resolved_imports(REPO_ROOT / "quantlab/base/backtest.py")
+    assert {"quantlab.backtest.config", "quantlab.backtest.config.BacktestConfig"} <= (
+        _resolved_imports(REPO_ROOT / "quantlab/backtest/base.py")
     )
 
     offenders = {
@@ -307,7 +307,7 @@ def test_backtest_layer_never_imports_config_factories():
 def test_no_lower_layer_imports_the_backtest_layer():
     """Layering: the backtest layer is imported only by itself and by
     `quantlab/api/`, the facade that sits above every layer."""
-    allowed_files = {REPO_ROOT / "quantlab/base/backtest.py"}
+    allowed_files = {REPO_ROOT / "quantlab/backtest/base.py"}
     backtest_pkg = REPO_ROOT / "quantlab/backtest"
     api_pkg = REPO_ROOT / "quantlab/api"
 
@@ -325,7 +325,7 @@ def test_no_lower_layer_imports_the_backtest_layer():
             name
             for name in _resolved_imports(path)
             if _is_or_under(name, "quantlab.backtest")
-            or _is_or_under(name, "quantlab.base.backtest")
+            or _is_or_under(name, "quantlab.backtest.base")
         )
         if names:
             offenders[str(path.relative_to(REPO_ROOT))] = names

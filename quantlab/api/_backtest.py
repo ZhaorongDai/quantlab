@@ -55,7 +55,7 @@ def backtest(
 ) -> BacktestReport:
     """Backtest weights or top-N scores on ``prices``; see ``quantlab.api.backtest``."""
     from quantlab.backtest.predefined.weights import WeightsVectorBt
-    from quantlab.base.config import WeightsBacktestConfig
+    from quantlab.backtest.config import WeightsBacktestConfig
 
     library = library_of(prices)
     _check_signal(weights, scores, top_n, direction)

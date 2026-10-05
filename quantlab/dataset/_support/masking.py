@@ -12,7 +12,7 @@ dataset with a market-data panel. It reports which index members the market
 data does not cover, and returns the market panel with every non-member cell
 set to NaN. It combines two concrete datasets rather than defining an
 abstract interface, so it lives beside the datasets instead of in
-``quantlab.base``.
+``quantlab.dataset.base``.
 """
 
 from typing import TYPE_CHECKING, Optional

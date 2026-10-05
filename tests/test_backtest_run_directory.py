@@ -41,7 +41,7 @@ from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )
-from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import TopNConfig
 from quantlab.factor.config import PolarsFactorConfig
 from quantlab.model.config import ModelConfig
@@ -364,7 +364,7 @@ def test_opening_and_reading_a_backtest_run_loads_no_other_layer(tmp_path, train
         f"run = open_run({str(run_dir)!r})\n"
         "run.weights(); run.predictions(); run.metrics(); run.equity(); run.settlements()\n"
         "run.execution; run.rebalance_periods; run.trained_run()\n"
-        "layers = ('quantlab.base.backtest', 'quantlab.backtest', 'quantlab.model',\n"
+        "layers = ('quantlab.backtest.base', 'quantlab.backtest', 'quantlab.model',\n"
         "          'quantlab.factor', 'quantlab.label')\n"
         "print(sorted(m for m in sys.modules if m.startswith(layers)))\n"
     )

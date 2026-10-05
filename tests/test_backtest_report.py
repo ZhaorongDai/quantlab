@@ -1,4 +1,4 @@
-"""Leaf tests for `quantlab/utils/backtest_report.py` (quick task 260915-sxx).
+"""Leaf tests for `quantlab/runs/backtest_report.py` (quick task 260915-sxx).
 
 `write_backtest_report` is a leaf: it takes arrays and already-formatted
 strings and writes one self-contained HTML page. These tests call it directly
@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.utils.backtest_report import write_backtest_report
+from quantlab.runs.backtest_report import write_backtest_report
 
 N_BARS = 12
 BARS = pd.bdate_range("2024-01-01", periods=N_BARS)
@@ -166,14 +166,15 @@ def test_the_module_is_a_leaf():
     """
     import pathlib
 
-    import quantlab.utils.backtest_report as module
+    import quantlab.runs.backtest_report as module
 
     source = pathlib.Path(module.__file__).read_text(encoding="utf-8")
     offenders = [
         line
         for line in source.splitlines()
         if line.startswith(("from quantlab", "import quantlab"))
-        and line != "from quantlab.utils import backtest_stats, date_range"
+        and line
+        not in ("from quantlab.utils import date_range", "from quantlab.runs import backtest_stats")
     ]
     assert offenders == []
 

@@ -362,6 +362,6 @@ def test_model_package_layout_and_layering():
             name
             for name in _resolved_imports(path)
             if _is_or_under(name, "quantlab.backtest")
-            or _is_or_under(name, "quantlab.base.backtest")
+            or _is_or_under(name, "quantlab.backtest.base")
         )
         assert backtest == [], (path, backtest)

@@ -544,4 +544,4 @@ timestamp
 
 ## 另请参阅
 
-chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.dataset.base`、`quantlab.base.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset.memory`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。
+chunking 指南介绍 `from_raw_data_chunked()`、`update()` 和断点续跑。acquisition 与 registry 指南说明原始文件如何下载、如何根据 config 选择转换器。backend 指南介绍 `XrBackend`，factor 指南说明因子如何读取 dataset。相关模块：`quantlab.dataset.base`、`quantlab.backtest.config`、`quantlab.dataset.spot`、`quantlab.dataset.stock`、`quantlab.dataset.memory`、`quantlab.dataset._support.cleaning` 和 `quantlab.dataset._support.session_calendar`。

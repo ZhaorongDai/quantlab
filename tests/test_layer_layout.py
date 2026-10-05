@@ -148,11 +148,7 @@ LAYER_ORDER = (
 MODULE_LAYERS = {
     "quantlab.enums": "utils",
     "quantlab.utils": "utils",
-    "quantlab.utils.backtest_stats": "backtest",
-    "quantlab.utils.backtest_report": "backtest",
-    "quantlab.utils.cli": "api",
     "quantlab.core": "core",
-    "quantlab.base.config": "core",
     "quantlab.backend": "backend",
     "quantlab.tracking": "tracking",
     "quantlab.execution": "execution",
@@ -167,20 +163,12 @@ MODULE_LAYERS = {
     "quantlab.model": "model",
     "quantlab.portfolio": "portfolio",
     "quantlab.backtest": "backtest",
-    "quantlab.base.backtest": "backtest",
     "quantlab.api": "api",
 }
 
 #: Imports that still go against the order while #146 is under way: (importing file,
 #: imported module). Only shrinks; deleted by the last ticket of #146.
-PENDING_VIOLATIONS = {
-    ("quantlab/base/config.py", "quantlab.dataset.base"),
-    ("quantlab/base/config.py", "quantlab.factor.base"),
-    ("quantlab/base/config.py", "quantlab.model.base"),
-    ("quantlab/base/config.py", "quantlab.portfolio.base"),
-    ("quantlab/base/config.py", "quantlab.tracking.base"),
-    ("quantlab/base/config.py", "quantlab.execution.rules"),
-}
+PENDING_VIOLATIONS: set[tuple[str, str]] = set()
 
 
 def _layer_of(name: str) -> str | None:

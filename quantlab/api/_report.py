@@ -67,7 +67,7 @@ class BacktestReport:
     benchmark : DataFrame or None
         ``timestamp``, ``value`` and ``returns`` of buying and holding the benchmark on
         the same bars, costs and cash; ``None`` without a benchmark.
-    raw : quantlab.base.backtest.BacktestResult
+    raw : quantlab.backtest.base.BacktestResult
         The library's own result, xarray throughout.
 
     Examples

@@ -6,7 +6,7 @@ return blocks, the ``relative`` block, the win rates and the three turnover
 rows; and the round-trip trade rows and ``Max Gross Exposure [%]`` of its
 ``whole`` block, from fill records (``round_trips``, ``round_trip_stats``,
 ``exposure_stats``), with the deepest drawdown the report marks
-(``drawdown_span``). ``quantlab.base.backtest`` computes them through this module for every
+(``drawdown_span``). ``quantlab.backtest.base`` computes them through this module for every
 engine, and a tool that simulates a run elsewhere
 (an event-driven replay of a quantlab run) calls the same functions to report
 comparable numbers.

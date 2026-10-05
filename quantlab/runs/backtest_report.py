@@ -32,9 +32,9 @@ writes a page in exactly this format: ``report_summary`` (the "Setup"
 lines, from a run's config mapping), ``report_windows`` (the timeline),
 ``report_chart_inputs`` (the chart and benchmark arguments) and
 ``report_portfolio_inputs`` (the Portfolio and Rolling tabs).
-``quantlab.base.backtest`` builds its own pages through them. This module
+``quantlab.backtest.base`` builds its own pages through them. This module
 imports only the standard library, numpy, pandas, xarray, plotly and
-``quantlab.utils.backtest_stats``.
+``quantlab.runs.backtest_stats``.
 """
 
 import html
@@ -48,7 +48,8 @@ import plotly.graph_objects as go
 import xarray as xr
 from plotly.subplots import make_subplots
 
-from quantlab.utils import backtest_stats, date_range
+from quantlab.utils import date_range
+from quantlab.runs import backtest_stats
 
 __all__ = [
     "backtest_report_figure",
@@ -628,7 +629,7 @@ def backtest_report_figure(
     Examples
     --------
     >>> import pandas as pd, xarray as xr
-    >>> from quantlab.utils.backtest_report import backtest_report_figure
+    >>> from quantlab.runs.backtest_report import backtest_report_figure
     >>> ts = pd.bdate_range("2024-01-01", periods=5)
     >>> value = xr.DataArray([100.0, 104.0, 98.0, 103.0, 110.0],
     ...                      dims=("timestamp",), coords={"timestamp": ts})
