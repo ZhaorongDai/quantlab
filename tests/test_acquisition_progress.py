@@ -1341,8 +1341,9 @@ def test_no_task_isolation_was_added() -> None:
     second fan-out mechanism. The fan-outs in this repository are all
     `joblib.Parallel`: `Acquisition._run_once`'s threading call over download
     batches, `FactorAnalysis._render_to`'s loky call that draws a factor
-    report's figures, and `dataset_fingerprint`'s threading call over a
-    request's variables; none isolates a long task from a caller.
+    report's figures, `dataset_fingerprint`'s threading call over a
+    request's variables, and `SharadarClient._download_zip`'s threading call
+    over a bulk zip's byte ranges; none isolates a long task from a caller.
 
     Asserted from the AST rather than by counting substrings. `inspect
     .getsource(...).count("Parallel(")` -- the obvious form -- is 3 against

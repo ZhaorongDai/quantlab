@@ -1251,7 +1251,12 @@ class BaseDataset(Component, ABC):
         range, is worked out once before any window, and every window is
         built on exactly that axis so that all windows line up column by
         column. Completed windows are recorded in a ledger file, so a
-        crashed or cancelled run resumes by skipping them. Cleaning runs per
+        crashed or cancelled run resumes by skipping them. Everything up to
+        the ledger's last end counts as written, so a window that straddles
+        it is cut to its new bars: a daily run extends a store whose last
+        window is still growing, at any granularity. Every window appended
+        to a store that existed before the run passes through
+        ``_continue_store`` first. Cleaning runs per
         window, so a price jump that spans two windows is not flagged.
 
         When the store already exists with a different symbol axis,
@@ -1337,6 +1342,18 @@ class BaseDataset(Component, ABC):
             # The ledger and the store record the same history; check they agree
             # before the first append, which cannot be undone.
             ledger.assert_consistent(symbols, self.config.zarr_file_path)
+            # Windows are appended in time order, so the ledger covers every
+            # timestamp up to its last end. A window there is written even
+            # when its edges differ from the recorded ones: the last window
+            # of a store grows with every new bar, and a store may be updated
+            # at another granularity than it was built at.
+            covered = (
+                pd.Timestamp(ledger.last_end)
+                if ledger.last_end is not None
+                else None
+            )
+            # A store that existed before this run is continued, not built.
+            continuing = Path(str(self.config.zarr_file_path)).exists()
 
             logger.info(
                 f"{self.class_name}: chunked ingestion over {len(windows)} "
@@ -1402,7 +1419,9 @@ class BaseDataset(Component, ABC):
                     )
                     break
 
-                if ledger.is_written(start, end):
+                if ledger.is_written(start, end) or (
+                    covered is not None and end <= covered
+                ):
                     windows_skipped += 1
                     logger.info(
                         f"{self.class_name}: window {start.date()}..{end.date()} "
@@ -1427,6 +1446,10 @@ class BaseDataset(Component, ABC):
                     )
                     continue
 
+                if covered is not None and start <= covered:
+                    # The window straddles the ledger's end: only its new
+                    # bars are appended.
+                    start = timestamps[timestamps > covered].min()
                 window = self._raw_data_to_xr_window(start, end, symbols)
                 # Compare in the axis's own type, not as text: integer labels
                 # would never equal their string forms.
@@ -1441,6 +1464,8 @@ class BaseDataset(Component, ABC):
                         f"column in the store."
                     )
 
+                if continuing:
+                    window = self._continue_store(window)
                 window = self._clean(window)
                 window = self._pin_append_dtypes(window)
                 # Measure after cleaning and dtype promotion: that is what the
@@ -1920,6 +1945,30 @@ class BaseDataset(Component, ABC):
         """Delete the set-aside store and ledger after a successful rebuild."""
         shutil.rmtree(asides["store_aside"], ignore_errors=True)
         Path(asides["ledger_aside"]).unlink(missing_ok=True)
+
+    def _continue_store(self, window: xr.Dataset) -> xr.Dataset:
+        """Return a window about to be appended to a store that existed before this run.
+
+        ``from_raw_data_chunked`` (and so ``update``) calls this for every
+        window it appends after the store's existing bars, before cleaning;
+        a fresh build and a rebuild never call it. The default returns the
+        window unchanged. A dataset whose stored values depend on earlier
+        bars (an adjusted price chained from an anchor) overrides it to
+        continue from what is stored, or to report what the vendor has
+        changed in the stored bars.
+
+        Parameters
+        ----------
+        window : xr.Dataset
+            The window on the pinned symbol axis, all of it after the
+            store's last timestamp.
+
+        Returns
+        -------
+        xr.Dataset
+            The window to clean and append, on the same axes.
+        """
+        return window
 
     @staticmethod
     def _pin_append_dtypes(data: xr.Dataset) -> xr.Dataset:

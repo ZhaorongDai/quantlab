@@ -170,7 +170,7 @@ def _stored(ds, start="2024-01-01", end="2024-12-31"):
 def test_an_update_appends_new_bars_and_leaves_earlier_rows_identical(tmp_path):
     vendor = _vendor(DAYS[:4])
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     before = _stored(_dataset(tmp_path, root))
 
     # Two more days, with a $2 dividend on the second.
@@ -198,7 +198,7 @@ def test_an_update_appends_new_bars_and_leaves_earlier_rows_identical(tmp_path):
 def test_an_updated_store_equals_a_store_built_from_scratch(tmp_path):
     vendor = _vendor(DAYS[:4], tickers=("AAA", "BBB"))
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     vendor.tables["stocks"][1].extend(
         sep_row(t, d, 90.0 + i)  # SYNTHETIC
         for t in ("AAA", "BBB") for i, d in enumerate(DAYS[4:])
@@ -228,7 +228,7 @@ def test_a_security_halted_longer_than_the_overlap_continues_its_chain(tmp_path,
     # BBB trades on the first two days only, then is halted.
     rows[:] = [r for r in rows if r["ticker"] == "AAA" or r["date"] <= DAYS[1]]
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     rows.extend([sep_row("AAA", DAYS[6], 120.0), sep_row("BBB", DAYS[6], 99.0)])  # SYNTHETIC
     vendor.tables["actions"][1].append(action_row(DAYS[6], "dividend", "BBB", 1.0))  # SYNTHETIC
     _window(vendor, tmp_path, DAYS[6])
@@ -245,7 +245,7 @@ def test_a_security_halted_longer_than_the_overlap_continues_its_chain(tmp_path,
 def test_a_vendor_correction_to_a_stored_date_is_reported_and_not_written(tmp_path):
     vendor = _vendor(DAYS[:4])
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     rows = vendor.tables["stocks"][1]
     rows[3]["closeunadj"] = 103.5  # SYNTHETIC: the vendor corrects a stored day
     rows.append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
@@ -270,7 +270,7 @@ def test_a_vendor_correction_to_a_stored_date_is_reported_and_not_written(tmp_pa
 def test_an_update_stops_at_the_oldest_table_watermark_and_resumes(tmp_path):
     vendor = _vendor(DAYS[:4])
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     vendor.tables["stocks"][1].extend(
         [sep_row("AAA", DAYS[4], 104.0), sep_row("AAA", DAYS[5], 105.0)]  # SYNTHETIC
     )
@@ -293,7 +293,7 @@ def test_an_update_stops_at_the_oldest_table_watermark_and_resumes(tmp_path):
 def test_a_new_listing_is_added_with_no_history(tmp_path):
     vendor = _vendor(DAYS[:4])
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     vendor.tables["tickers"][1].append(tickers_row("SEP", 909, "NEW"))  # SYNTHETIC
     vendor.tables["stocks"][1].extend(
         [sep_row("AAA", DAYS[4], 104.0), sep_row("NEW", DAYS[4], 20.0)]  # SYNTHETIC
@@ -311,7 +311,7 @@ def test_a_new_listing_is_added_with_no_history(tmp_path):
 def test_an_update_with_nothing_new_changes_nothing(tmp_path):
     vendor = _vendor(DAYS[:4])
     root = _bulk(vendor, tmp_path)
-    _dataset(tmp_path, root).from_raw_data().save()
+    _dataset(tmp_path, root).update()
     before = _stored(_dataset(tmp_path, root))
     _window(vendor, tmp_path, DAYS[3])
     _dataset(tmp_path, root).update()

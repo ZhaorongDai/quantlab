@@ -49,13 +49,13 @@ import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
 import requests
+from joblib import Parallel, delayed
 from loguru import logger
 
 from quantlab.dataset.sharadar.tables import (
@@ -488,9 +488,8 @@ class SharadarClient:
             )
 
         workers = min(self._download_workers, len(parts))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            # list() re-raises the first failed part.
-            list(pool.map(fetch, parts))
+        # Threads, as every fan-out in quantlab: the parts wait on the network.
+        Parallel(n_jobs=workers, backend="threading")(delayed(fetch)(part) for part in parts)
         logger.info(
             f"Sharadar {spec.code}: {total / 2**20:.1f} MiB downloaded in "
             f"{len(parts)} part(s) by {workers} thread(s)"
