@@ -124,6 +124,19 @@ TABLES: dict[str, SharadarTable] = {
             },
         ),
         SharadarTable(
+            code="sp500",
+            api_name="sp500",
+            schema={
+                "date": pl.Date,
+                "action": pl.String,
+                "ticker": pl.String,
+                "name": pl.String,
+                "contraticker": pl.String,
+                "contraname": pl.String,
+                "note": pl.String,
+            },
+        ),
+        SharadarTable(
             code="indicators",
             api_name="descriptions",
             schema={
@@ -195,3 +208,104 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
             f"(SharadarClient.bulk_table({code!r}, <download-dir>))"
         )
     return pl.scan_parquet(files)
+
+
+#: Number of offending keys an error message lists.
+_ERROR_SAMPLE = 5
+
+
+def permaticker_mapping(vendor_root: str | Path, code: str) -> pl.DataFrame:
+    """Return the ``(ticker, permaticker)`` pairs TICKERS gives one table's rows.
+
+    Only the TICKERS rows labelled with the table (``SEP`` or ``stocks`` for
+    ``sep``) count: the same ticker under another table can be another
+    security.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/sharadar``.
+    code : str
+        The code of the table whose tickers are mapped.
+
+    Returns
+    -------
+    pl.DataFrame
+        Distinct ``ticker``/``permaticker`` pairs.
+
+    Examples
+    --------
+    >>> permaticker_mapping("/data/downloads/sharadar", "sep").columns
+    ['ticker', 'permaticker']
+    """
+    return (
+        scan_raw_table(vendor_root, "tickers")
+        .filter(pl.col("table").is_in(table(code).tickers_labels))
+        .select("ticker", "permaticker")
+        .unique()
+        .collect()
+    )
+
+
+def map_permatickers(
+    frame: pl.DataFrame, mapping: pl.DataFrame, *, owner: str, code: str
+) -> pl.DataFrame:
+    """Add each row's ``permaticker``, refusing a missing or ambiguous one.
+
+    Parameters
+    ----------
+    frame : pl.DataFrame
+        Rows with a ``ticker`` column.
+    mapping : pl.DataFrame
+        ``permaticker_mapping`` of the rows' table.
+    owner : str
+        Named in error messages.
+    code : str
+        The rows' table, named in error messages.
+
+    Returns
+    -------
+    pl.DataFrame
+        ``frame`` with a ``permaticker`` column.
+
+    Raises
+    ------
+    ValueError
+        If a ticker maps to several permatickers, or to none.
+
+    Examples
+    --------
+    >>> rows = pl.DataFrame({"ticker": ["AAA"]})
+    >>> pairs = pl.DataFrame({"ticker": ["AAA"], "permaticker": [101]})
+    >>> map_permatickers(rows, pairs, owner="demo", code="sep")["permaticker"].to_list()
+    [101]
+    """
+    used = mapping.join(frame.select("ticker").unique(), on="ticker")
+    ambiguous = (
+        used.group_by("ticker")
+        .agg(pl.col("permaticker").sort())
+        .filter(pl.col("permaticker").list.len() > 1)
+        .sort("ticker")
+    )
+    if ambiguous.height:
+        sample = dict(ambiguous.head(_ERROR_SAMPLE).iter_rows())
+        raise ValueError(
+            f"{owner}: {ambiguous.height} {code!r} ticker(s) map to several "
+            f"permatickers in TICKERS, first {sample}. Refusing rather than "
+            f"guessing which company a row belongs to; re-pull TICKERS."
+        )
+    joined = frame.join(used, on="ticker", how="left")
+    unmapped = (
+        joined.filter(pl.col("permaticker").is_null())
+        .get_column("ticker")
+        .unique()
+        .sort()
+    )
+    if unmapped.len():
+        raise ValueError(
+            f"{owner}: {unmapped.len()} {code!r} ticker(s) have no permaticker "
+            f"in TICKERS, first {unmapped.head(_ERROR_SAMPLE).to_list()}. "
+            f"TICKERS is probably older than the {code!r} table (a ticker "
+            f"changed between the two pulls); re-pull TICKERS."
+        )
+    return joined

@@ -43,7 +43,7 @@ Examples
 from __future__ import annotations
 
 import dataclasses
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
@@ -52,7 +52,13 @@ import xarray as xr
 
 from quantlab.dataset.base import MarketDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
-from quantlab.dataset.sharadar.tables import scan_raw_table, table
+from quantlab.dataset.sharadar.membership import ROSTER_UNIVERSES, sp500_intervals
+from quantlab.dataset.sharadar.tables import (
+    map_permatickers,
+    permaticker_mapping,
+    scan_raw_table,
+    table,
+)
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
@@ -131,6 +137,19 @@ class SharadarStockDataset(MarketDataset):
                     f"None for every security, or name at least one."
                 )
             config = dataclasses.replace(config, permatickers=permatickers)
+        if config.roster_universe is not None and config.roster_universe not in ROSTER_UNIVERSES:
+            raise ValueError(
+                f"{self.class_name}: roster_universe {config.roster_universe!r} "
+                f"is not a Sharadar universe; known: {ROSTER_UNIVERSES}."
+            )
+        if config.category_filter is not None:
+            categories = tuple(str(value) for value in config.category_filter)
+            if not categories:
+                raise ValueError(
+                    f"{self.class_name}: config.category_filter is empty. Pass "
+                    f"None to keep every category, or name at least one."
+                )
+            config = dataclasses.replace(config, category_filter=categories)
         return config
 
     def _on_config_installed(self) -> None:
@@ -163,23 +182,14 @@ class SharadarStockDataset(MarketDataset):
                 .filter(pl.col("date").is_between(pl.lit(start), pl.lit(end)))
                 .collect()
             )
-            mapping = (
-                scan_raw_table(root, "tickers")
-                .filter(pl.col("table").is_in(table(self.config.table).tickers_labels))
-                .select("ticker", "permaticker")
-                .unique()
-                .collect()
-            )
+            mapping = permaticker_mapping(root, self.config.table)
             frame = self._map_permatickers(prices, mapping)
-            if self.config.permatickers is not None:
-                frame = frame.filter(
-                    pl.col("permaticker").is_in(list(self.config.permatickers))
-                )
+            frame = frame.filter(pl.col("permaticker").is_in(self._universe()))
             if frame.height == 0:
                 raise ValueError(
                     f"{self.class_name}: no {self.config.table!r} row in "
                     f"[{self.config.start_date}, {self.config.end_date}] for "
-                    f"the configured permatickers."
+                    f"the configured universe."
                 )
             self._assert_unique_keys(frame)
             ratio = (
@@ -201,41 +211,43 @@ class SharadarStockDataset(MarketDataset):
         self._derivation_cache = frame
         return frame
 
+    def _universe(self) -> list[int]:
+        """Return the permatickers the conversion keeps.
+
+        An explicit roster (``permatickers``, the members of
+        ``roster_universe`` inside the window, or both) is kept whole.
+        Without one, the market universe is every permaticker whose TICKERS
+        ``category`` is in ``category_filter``, or every one when that is
+        ``None``.
+        """
+        config = self.config
+        root = config.raw_data_dir_path
+        if config.permatickers is None and config.roster_universe is None:
+            tickers = scan_raw_table(root, "tickers").filter(
+                pl.col("table").is_in(table(config.table).tickers_labels)
+            )
+            if config.category_filter is not None:
+                tickers = tickers.filter(
+                    pl.col("category").is_in(list(config.category_filter))
+                )
+            return tickers.select("permaticker").unique().collect().to_series().to_list()
+        roster = set(config.permatickers or ())
+        if config.roster_universe is not None:
+            start = date.fromisoformat(config.start_date)
+            end = date.fromisoformat(config.end_date)
+            spells = sp500_intervals(root).filter(
+                (pl.col("start_date") <= end) & (pl.col("end_date") >= start)
+            )
+            roster.update(spells.get_column("permaticker").to_list())
+        return sorted(roster)
+
     def _map_permatickers(
         self, prices: pl.DataFrame, mapping: pl.DataFrame
     ) -> pl.DataFrame:
         """Add each raw row's permaticker, refusing a missing or ambiguous one."""
-        used = mapping.join(prices.select("ticker").unique(), on="ticker")
-        ambiguous = (
-            used.group_by("ticker")
-            .agg(pl.col("permaticker").sort())
-            .filter(pl.col("permaticker").list.len() > 1)
-            .sort("ticker")
+        return map_permatickers(
+            prices, mapping, owner=self.class_name, code=self.config.table
         )
-        if ambiguous.height:
-            sample = dict(ambiguous.head(_ERROR_SAMPLE).iter_rows())
-            raise ValueError(
-                f"{self.class_name}: {ambiguous.height} {self.config.table!r} "
-                f"ticker(s) map to several permatickers in TICKERS, first "
-                f"{sample}. Refusing rather than guessing which company a "
-                f"row belongs to; re-pull TICKERS."
-            )
-        frame = prices.join(used, on="ticker", how="left")
-        unmapped = (
-            frame.filter(pl.col("permaticker").is_null())
-            .get_column("ticker")
-            .unique()
-            .sort()
-        )
-        if unmapped.len():
-            raise ValueError(
-                f"{self.class_name}: {unmapped.len()} {self.config.table!r} "
-                f"ticker(s) have no permaticker in TICKERS, first "
-                f"{unmapped.head(_ERROR_SAMPLE).to_list()}. TICKERS is "
-                f"probably older than the price table (a ticker changed "
-                f"between the two pulls); re-pull TICKERS."
-            )
-        return frame
 
     def _assert_unique_keys(self, frame: pl.DataFrame) -> None:
         """Raise if two rows share a permaticker and a date."""

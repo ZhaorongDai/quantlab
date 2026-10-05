@@ -409,9 +409,27 @@ class SharadarDatasetConfig(DatasetConfig):
     #: ``<raw_data_dir_path>/<table>/``.
     table: str = "sep"
 
-    #: Restrict the conversion to these permatickers. ``None`` means every
-    #: security in the raw table; an empty tuple is refused.
+    #: Restrict the conversion to these permatickers, an explicit roster
+    #: that ``category_filter`` never touches. An empty tuple is refused.
     permatickers: tuple[int, ...] | None = None
+
+    #: An index whose members form an explicit roster: every permaticker that
+    #: was a member at some point in ``[start_date, end_date]`` is converted,
+    #: with all its bars and whatever its category. ``"sp500"`` reads the raw
+    #: SP500 table. Combined with ``permatickers``, the roster is the union.
+    roster_universe: str | None = None
+
+    #: TICKERS ``category`` values an *unrostered* market universe keeps (one
+    #: with neither ``permatickers`` nor ``roster_universe``). The default is
+    #: domestic common stock, every share class of it; ADRs, Canadian
+    #: filers, preferreds and anything else are dropped. ``None`` keeps every
+    #: category. Ignored when a roster is set: a named security is never
+    #: filtered out.
+    category_filter: tuple[str, ...] | None = (
+        "Domestic Common Stock",
+        "Domestic Common Stock Primary Class",
+        "Domestic Common Stock Secondary Class",
+    )
 
 
 @dataclass(kw_only=True, frozen=True)

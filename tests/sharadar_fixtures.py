@@ -69,6 +69,17 @@ TICKERS_COLUMNS: tuple[str, ...] = (
     "companysite",
 )
 
+#: VERBATIM `sp500` column order.
+SP500_COLUMNS: tuple[str, ...] = (
+    "date",
+    "action",
+    "ticker",
+    "name",
+    "contraticker",
+    "contraname",
+    "note",
+)
+
 #: VERBATIM `descriptions` (INDICATORS) column order.
 INDICATORS_COLUMNS: tuple[str, ...] = (
     "table",
@@ -138,6 +149,21 @@ def tickers_row(table: str, permaticker: int, ticker: str, **overrides) -> dict:
         "lastupdated": "2026-08-10",  # SYNTHETIC
         "firstpricedate": "2020-01-02",  # SYNTHETIC
         "lastpricedate": "2026-08-10",  # SYNTHETIC
+    }
+    row.update(overrides)
+    return row
+
+
+def sp500_row(date: str, action: str, ticker: str, **overrides) -> dict:
+    """One SP500 row. ``N/A`` is the vendor's VERBATIM filler for an unused contra field."""
+    row = {
+        "date": date,  # SYNTHETIC
+        "action": action,
+        "ticker": ticker,  # SYNTHETIC
+        "name": f"{ticker} CORP",  # SYNTHETIC
+        "contraticker": "N/A",
+        "contraname": "N/A",
+        "note": None,
     }
     row.update(overrides)
     return row
