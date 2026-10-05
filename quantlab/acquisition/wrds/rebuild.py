@@ -66,7 +66,7 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
     Examples
     --------
     >>> from quantlab.dataset.config import CrspDatasetConfig
-    >>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
+    >>> from quantlab.acquisition.wrds.rebuild import CrspStoreRebuilder
     >>> config = CrspDatasetConfig(
     ...     zarr_file_path="data/data/us_equity/1d/crsp.zarr",
     ...     raw_data_dir_path="data/downloads/us_equity/1d/wrds_crsp/wrds",
@@ -113,8 +113,9 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
     def _convert(self) -> object:
         """Re-run the offline conversion and return its ``ConversionResult``.
 
-        The imports are inside the function so that importing the rebuilder
-        does not load ``quantlab.acquisition``. ``on_new_listing="refuse"``
+        The registry is imported inside the function so that importing the
+        rebuilder does not import every vendor through the registry.
+        ``on_new_listing="refuse"``
         is deliberate: a rebuild should reproduce a known panel, and a new
         listing appearing means the raw files are not the ones the earlier
         measurements were taken from.
@@ -122,9 +123,9 @@ class CrspStoreRebuilder(BaseStoreRebuilder):
         Returns
         -------
         ConversionResult
-            The result returned by ``quantlab.registry.convert``.
+            The result returned by ``quantlab.acquisition.registry.convert``.
         """
-        from quantlab.registry import convert
+        from quantlab.acquisition.registry import convert
         from quantlab.acquisition.wrds import WRDS_SOURCE
 
         return convert(

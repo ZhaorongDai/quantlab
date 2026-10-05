@@ -43,7 +43,7 @@ PACKAGE may not.
 unique to the deleted machinery. The recorded exclusion, so the next reader
 sees it was weighed rather than missed: the LITERAL `.crsp_adjustment.json` is
 deliberately NOT listed. It must keep living in
-`quantlab/dataset/crsp/rebuild.py:CRSP_SIDECAR_SUFFIXES` -- the CLEARING list
+`quantlab/acquisition/wrds/rebuild.py:CRSP_SIDECAR_SUFFIXES` -- the CLEARING list
 -- because a rebuild that stopped deleting it would leave a file describing a
 deleted mechanism sitting beside a store it never described (R-05). Listing
 that string here would make this gate cry wolf on a line that is deliberately

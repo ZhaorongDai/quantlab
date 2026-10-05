@@ -30,7 +30,7 @@ import requests
 from loguru import logger
 from tiingo.restclient import RestClientError
 
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.config import AcquisitionConfig
 
 #: Deliberately far larger than anything that could be dispatched before the
 #: abort trips. "Stopped early" and "ground through all of them" must not be

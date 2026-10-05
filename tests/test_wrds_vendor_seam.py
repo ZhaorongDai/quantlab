@@ -14,7 +14,7 @@ This file pins the shape that makes the second provider a one-row change:
   submodules; `wrds/taq.py`'s SOURCE names neither the registry nor the
   descriptor;
 - the registry's bottom vendor import names the PACKAGE `wrds` and no submodule
-  of it, so a cold `import quantlab.registry` still enumerates
+  of it, so a cold `import quantlab.acquisition.registry` still enumerates
   every source, and so does an import that touches a provider submodule FIRST;
 - the one `WrdsSession` offers GENERIC `schema_usable` / `fetch_rows` /
   `copy_csv`, so the CRSP provider reaches the shared connection without adding
@@ -55,7 +55,7 @@ from tests.wrds_fixtures import fake_connect, render_composed
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WRDS_TAQ_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "wrds" / "taq.py"
-REGISTRY_SOURCE = REPO_ROOT / "quantlab" / "registry.py"
+REGISTRY_SOURCE = REPO_ROOT / "quantlab" / "acquisition" / "registry.py"
 
 USER = "test-wrds-user-not-real"
 SENTINEL_PW = "SENTINEL-PW"
@@ -187,7 +187,7 @@ def test_wrds_descriptor_lives_in_the_neutral_module() -> None:
     asserts the exact set -- so nothing is unpinned, it is pinned in the one
     place that is about inventory.
     """
-    from quantlab.registry import DataSourceRegistry
+    from quantlab.acquisition.base import DataSourceRegistry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
     from quantlab.dataset.nbbo import NbboPanelDataset
@@ -210,7 +210,7 @@ def test_wrds_descriptor_lives_in_the_neutral_module() -> None:
 def test_wrds_taq_registers_nothing_and_imports_no_registry() -> None:
     """A SOURCE-TEXT claim about `wrds/taq.py`, NOT a runtime claim about
     `sys.modules`: the provider submodule is REGISTRATION-FREE -- no
-    `register_source` call, and no import naming `quantlab.registry`
+    `register_source` call, and no import naming `quantlab.acquisition.registry`
     or `quantlab.acquisition.wrds` (which, now that the providers are siblings
     inside that package, also covers `...wrds.crsp` and `...wrds.taq`).
 
@@ -263,8 +263,8 @@ def test_wrds_taq_registers_nothing_and_imports_no_registry() -> None:
     offending = sorted(
         name
         for name in imported
-        if name == "quantlab.registry"
-        or name.startswith("quantlab.registry.")
+        if name == "quantlab.acquisition.registry"
+        or name.startswith("quantlab.acquisition.registry.")
         or name == "quantlab.acquisition.wrds"
         or name.startswith("quantlab.acquisition.wrds.")
     )
@@ -311,7 +311,7 @@ def test_registry_bottom_import_names_the_package_entry_point() -> None:
     [
         "quantlab.acquisition.wrds.taq",
         "quantlab.acquisition.wrds",
-        "quantlab.registry",
+        "quantlab.acquisition.registry",
         "quantlab.acquisition.alpaca",
         "quantlab.universe",
     ],
@@ -332,8 +332,8 @@ def test_enumeration_survives_any_import_order(first_module) -> None:
     `from package import submodule` is defined to work during partial init.
 
     260922-lu2 moved the registry OUT of `quantlab/acquisition/` to
-    `quantlab/registry.py`, so the cycle now CROSSES A PACKAGE BOUNDARY --
-    `quantlab.registry` -> `quantlab.acquisition.wrds` -> `quantlab.registry` --
+    `quantlab/acquisition/registry.py`, so the cycle now CROSSES A PACKAGE BOUNDARY --
+    `quantlab.acquisition.registry` -> `quantlab.acquisition.wrds` -> `quantlab.acquisition.registry` --
     where it previously stayed inside one. The mechanics are unchanged, but the
     partially-initialised module now sits outside the package whose `__init__`
     the importer just ran, so the scope of this test widened with it. It was
@@ -354,7 +354,7 @@ def test_enumeration_survives_any_import_order(first_module) -> None:
     """
     child = _run_child(
         f"import {first_module}\n"
-        "from quantlab.registry import DataSourceRegistry\n"
+        "from quantlab.acquisition.registry import DataSourceRegistry\n"
         "print(sorted(d.vendor for d in DataSourceRegistry.all()))\n"
     )
 
@@ -374,7 +374,7 @@ def test_the_moved_descriptor_is_registered_exactly_once() -> None:
     """
     child = _run_child(
         "import json\n"
-        "from quantlab.registry import DataSourceRegistry\n"
+        "from quantlab.acquisition.registry import DataSourceRegistry\n"
         "vendors = [d.vendor for d in DataSourceRegistry.SOURCES]\n"
         "print(json.dumps({'vendors': vendors}))\n"
     )

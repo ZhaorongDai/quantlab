@@ -32,73 +32,13 @@ from quantlab.core.component import component, config_to_dict
 from quantlab.core.config import FrozenConfig
 from quantlab.tracking.base import NullTracker, Tracker
 from quantlab.execution.rules import ExecutionSettings
-from quantlab.enums.data import (
-    Frequency,
-    Market,
-    ResampleFrequency,
-    Vendor,
-)
+from quantlab.enums.data import Market, ResampleFrequency
 
 if TYPE_CHECKING:
     from quantlab.dataset.base import MarketDataset
     from .factor import Factor
     from .model import BaseModel
     from .portfolio import PortfolioConstructor, RiskModel
-
-
-@dataclass
-class AcquisitionConfig:
-    """Config of a raw-data download for one market, frequency and vendor.
-
-    Examples
-    --------
-    >>> cfg = AcquisitionConfig(
-    ...     market="us_equity",
-    ...     frequency="1d",
-    ...     vendor="tiingo",
-    ...     raw_data_dir_path="/data/downloads/us_equity/1d/tiingo",
-    ...     watermark_path="/data/downloads/us_equity/1d/_watermarks/tiingo",
-    ...     symbols=("AAPL", "MSFT"),
-    ...     start_date="2020-01-01",
-    ...     kwargs={"max_workers": 4},
-    ... )
-    >>> cfg.symbols
-    ('AAPL', 'MSFT')
-    """
-
-    #: The market being downloaded.
-    market: Market
-    #: The acquisition frequency (daily, minute or tick).
-    frequency: Frequency
-    #: The vendor the data is fetched from.
-    vendor: Vendor
-    #: Root of the raw tree the shards are written into.
-    raw_data_dir_path: str
-    #: Directory holding the per-symbol watermarks that let an interrupted
-    #: download resume.
-    watermark_path: str
-    #: The symbols to download.
-    symbols: tuple[str, ...]
-    #: First date to fetch, inclusive. ``None`` means the vendor's earliest.
-    start_date: str | None = None
-    #: Last date to fetch, inclusive. ``None`` means the latest available.
-    end_date: str | None = None
-    #: Vendor-specific options (batch sizes, feeds, ``data_type``). ``None``
-    #: is treated as empty.
-    kwargs: dict | None = None
-    #: Dotted import path of the acquisition class; filled by the config
-    #: setter.
-    name: str | None = None
-
-    def to_dict(self):
-        """Return the config as a plain dict via ``dataclasses.asdict``.
-
-        Examples
-        --------
-        >>> cfg.to_dict()["kwargs"]
-        {'max_workers': 4}
-        """
-        return asdict(self)
 
 
 @dataclass(kw_only=True, frozen=True)

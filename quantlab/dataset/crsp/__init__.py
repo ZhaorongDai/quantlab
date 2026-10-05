@@ -1538,7 +1538,7 @@ class CrspStockDataset(StockDataset):
         would overwrite the existing store's report with numbers for a panel
         that was never written. The cost is that an append does not refresh
         the sidecars, so they describe the panel as first written; a rebuild
-        (``quantlab.dataset.crsp.rebuild``) deletes them first. Both writes
+        (``quantlab.acquisition.wrds.rebuild``) deletes them first. Both writes
         pass ``indent=2, sort_keys=True`` so the file layout does not depend
         on the JSON writer's defaults.
         """

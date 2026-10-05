@@ -14,7 +14,7 @@ many shards and sidecars exist, and a row-level view of either tier limited
 to chosen symbols and dates. It imports no vendor client and never creates an
 ``Acquisition``, so it needs no API key and makes no network request,
 whatever is called in whatever order. Listing the sources themselves is left
-to ``quantlab.registry``, whose import loads every vendor module.
+to ``quantlab.acquisition.registry``, whose import loads every vendor module.
 
 Nothing is cached on the instance. Every method builds its own coverage
 ledger or opens its own store and closes it before returning, so one query
@@ -29,9 +29,9 @@ from typing import Sequence
 import polars as pl
 import xarray as xr
 
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.dataset.config import DatasetConfig
-from quantlab.utils.coverage import CoverageLedger, validate_symbols
+from quantlab.acquisition._support.coverage import CoverageLedger, validate_symbols
 from quantlab.dataset.stock import StockDataset
 
 

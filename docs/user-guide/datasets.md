@@ -384,7 +384,7 @@ symbol that disappeared from the raw tier resolves to `"refuse"`, since both
 other strategies would lose data. The decision is logged before it runs.
 
 The WRDS scripts convert after downloading with the default granularity and
-strategy; `quantlab.registry.convert` exposes `granularity` and
+strategy; `quantlab.acquisition.registry.convert` exposes `granularity` and
 `on_new_listing`. See [Data sources](data-sources.md).
 
 `SpotKlineDataset` supports the chunked path but reconverts the whole range

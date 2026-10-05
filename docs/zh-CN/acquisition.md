@@ -24,8 +24,8 @@ Acquisition 是 quantlab 中把厂商原始数据下载到本地 parquet 文件�
 >>> from datetime import date
 >>> from pathlib import Path
 >>> import polars as pl
->>> from quantlab.base.acquisition import Acquisition
->>> from quantlab.base.config import AcquisitionConfig
+>>> from quantlab.acquisition.base import Acquisition
+>>> from quantlab.acquisition.config import AcquisitionConfig
 >>> class DemoAcquisition(Acquisition):
 ...     VENDOR = "tiingo"
 ...     RAW_COLUMNS = ("timestamp", "symbol", "vendor", "close")
@@ -300,7 +300,7 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01
 uv run python scripts/wrds/nbbo.py --permnos 14593,10107 --start 2024-01-02 --end 2024-01-31
 ```
 
-Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的方式通过 `quantlab.registry.run` 和 `convert` 驱动。
+Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的方式通过 `quantlab.acquisition.registry.run` 和 `convert` 驱动。
 
 库的存储根目录取环境变量 `QUANTLAB_DATA_DIR`，否则用仓库下的 `data/` 目录。脚本不用它：原始文件的位置由 `--download-dir` 指定，Zarr store 的位置由 `--zarr-dir` 指定，两者都默认为当前目录。
 
@@ -331,7 +331,7 @@ Tiingo、Alpaca 和 Binance 只有库接口：它们的采集类按本指南的�
 
 ## 注意事项
 
-原始目录下只能放 parquet 文件，边车必须放在它之外、与之并列的 `_watermarks` 目录中。config 不携带凭证，因为 `AcquisitionConfig.to_dict()` 会被写到模型 checkpoint 旁边的磁盘上。`quantlab.utils.coverage` 中的 `CoverageLedger.for_config(config)` 用与引擎相同的规则分类，但不需要厂商类，所以在没有 API key 的机器上也能使用。
+原始目录下只能放 parquet 文件，边车必须放在它之外、与之并列的 `_watermarks` 目录中。config 不携带凭证，因为 `AcquisitionConfig.to_dict()` 会被写到模型 checkpoint 旁边的磁盘上。`quantlab.acquisition._support.coverage` 中的 `CoverageLedger.for_config(config)` 用与引擎相同的规则分类，但不需要厂商类，所以在没有 API key 的机器上也能使用。
 
 标的会同时成为路径段和查询参数值，因此每个标的都必须符合 ticker 模式（大写字母和数字，最多 7 个字符，后面最多再跟两个以 `.` 或 `-` 开头的后缀）。其他写法会在发出任何请求之前中止运行：
 
@@ -358,4 +358,4 @@ RuntimeError: APCA_API_KEY_ID and APCA_API_SECRET_KEY environment variables must
 
 ## 另请参阅
 
-[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universes](../user-guide/universes.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.base.acquisition.Acquisition`、`quantlab.utils.coverage.CoverageLedger` 和 `quantlab.utils.progress` 的类文档字符串列出了全部选项。
+[pageledger](pageledger.md) 指南介绍多页批次内部的续跑；[registry](registry.md) 指南介绍如何按名称查找并运行厂商；[universes](../user-guide/universes.md) 指南介绍标的名单；[dataset](dataset.md) 指南介绍如何把原始文件转换成 xarray 面板。`quantlab.acquisition.base.Acquisition`、`quantlab.acquisition._support.coverage.CoverageLedger` 和 `quantlab.utils.progress` 的类文档字符串列出了全部选项。

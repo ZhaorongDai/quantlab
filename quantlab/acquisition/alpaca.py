@@ -18,7 +18,7 @@ ticker today.
 Credentials are read from ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` in
 the environment and are never stored on a config or written to a log.
 ``ALPACA_SOURCE`` at the bottom of the module registers the vendor with
-``quantlab.registry``.
+``quantlab.acquisition.registry``.
 """
 
 import functools
@@ -27,14 +27,10 @@ import os
 import polars as pl
 import requests
 
-from quantlab.registry import (
-    Capability,
-    SourceDescriptor,
-    register_source,
-)
-from quantlab.base.acquisition import Acquisition
-from quantlab.base.config import AcquisitionConfig
-from quantlab.config import stock_acquisition_config
+from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
+from quantlab.acquisition.base import Acquisition
+from quantlab.acquisition.config import AcquisitionConfig
+from quantlab.acquisition.config import stock_acquisition_config
 from quantlab.dataset.stock import StockDataset
 
 #: The two environment variables Alpaca credentials are read from.
@@ -253,7 +249,7 @@ class AlpacaAcquisition(Acquisition):
     --------
     Needs ``APCA_API_KEY_ID`` and ``APCA_API_SECRET_KEY`` exported::
 
-        from quantlab.base.config import AcquisitionConfig
+        from quantlab.acquisition.config import AcquisitionConfig
 
         cfg = AcquisitionConfig(
             market="us_equity", frequency="1d", vendor="alpaca",
@@ -829,8 +825,8 @@ class AlpacaAcquisition(Acquisition):
 
 
 #: The registry entry for this vendor, defined beside the class so that adding
-#: a vendor touches one file. ``quantlab.registry`` imports this module at its
-#: end, so a fresh ``import quantlab.registry`` still lists this source.
+#: a vendor touches one file. ``quantlab.acquisition.registry`` imports this module at its
+#: end, so a fresh ``import quantlab.acquisition.registry`` still lists this source.
 ALPACA_SOURCE = register_source(
     SourceDescriptor(
         vendor="alpaca",

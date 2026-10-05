@@ -70,7 +70,7 @@ import zarr
 from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference
-from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
+from quantlab.acquisition.wrds.rebuild import CrspStoreRebuilder
 
 #: The window this gate rebuilds (03.11 D-15 / operator RULING 2). ONLY 2024,
 #: not the raw tier's full 2019-2025 span: `03.11-RESEARCH.md` section R1 took

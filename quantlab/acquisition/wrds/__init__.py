@@ -20,7 +20,7 @@ per process pools at most ``WrdsSession.MAX_CONNECTIONS`` connections, so
 parallel download workers each query on their own connection while the
 account's connection limit is respected.
 
-``WRDS_SOURCE`` registers this vendor with ``quantlab.registry``. It is a
+``WRDS_SOURCE`` registers this vendor with ``quantlab.acquisition.registry``. It is a
 single descriptor for the whole account, and each of its ``Capability`` rows
 names the acquisition class and config factory of one product. The
 descriptor lives here, not beside one of the two classes, because otherwise
@@ -39,11 +39,7 @@ Examples
 """
 
 from quantlab.acquisition.wrds import crsp, taq
-from quantlab.registry import (
-    Capability,
-    SourceDescriptor,
-    register_source,
-)
+from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.nbbo import NbboPanelDataset
 

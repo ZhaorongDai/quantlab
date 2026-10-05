@@ -94,7 +94,8 @@ import xarray as xr
 
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
-from quantlab.registry import DataSourceRegistry, credential_status
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import credential_status
 
 # Which vendors can quantlab download from, and are their credentials set?
 for source in DataSourceRegistry.all():

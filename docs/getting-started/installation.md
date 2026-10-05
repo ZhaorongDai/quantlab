@@ -207,7 +207,8 @@ You can ask the data-source registry which credentials it can see. The check rep
 whether each variable is set, never its value. With none of them set, it prints:
 
 ```python
-from quantlab.registry import DataSourceRegistry, credential_status
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import credential_status
 
 for source in DataSourceRegistry.all():
     print(source.vendor, credential_status(source))

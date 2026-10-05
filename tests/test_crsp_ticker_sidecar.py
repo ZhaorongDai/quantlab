@@ -238,7 +238,7 @@ def test_an_existing_store_blocks_the_write(tmp_path):
     lesser harm -- without the guard a REFUSED re-conversion would overwrite
     the surviving store's audit files with numbers for a panel that was never
     written. A rebuild deletes the store and its `.crsp_*.json` siblings first;
-    `quantlab/dataset/crsp/rebuild.py:CrspStoreRebuilder` is what does that.
+    `quantlab/acquisition/wrds/rebuild.py:CrspStoreRebuilder` is what does that.
     """
     from quantlab.dataset.config import CrspDatasetConfig
     from quantlab.dataset.crsp import CrspStockDataset

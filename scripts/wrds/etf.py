@@ -41,7 +41,8 @@ import argparse
 import sys
 from datetime import date
 
-from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import convert, run
 from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.utils.cli import (

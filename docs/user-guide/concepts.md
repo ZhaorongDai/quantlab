@@ -23,7 +23,7 @@ vendor API --> acquisition --> raw tier --> dataset --> factors, labels --> mode
 
 | Stage | Input | Output | Base class |
 |-------|-------|--------|------------|
-| Acquisition | a vendor API and an `AcquisitionConfig` | raw parquet files on disk | `quantlab.base.acquisition.Acquisition` |
+| Acquisition | a vendor API and an `AcquisitionConfig` | raw parquet files on disk | `quantlab.acquisition.base.Acquisition` |
 | Dataset | the raw files | a price panel in a Zarr store | `quantlab.dataset.base.BaseDataset` |
 | Factor and label | a price panel | a factor panel | `quantlab.base.factor.Factor` |
 | Model | factor and label panels | a prediction panel | `quantlab.base.model.BaseModel` |
@@ -259,7 +259,7 @@ subclass to write your own factor, label, model or backtester. Each layer's `pre
 package holds the implementations quantlab ships. To add a new model you subclass
 `quantlab.model.torch_model.TorchModel` or `quantlab.model.library_model.LibraryModel`; to
 add a KunQuant factor you subclass `quantlab.factor.kunquant.FactorKunQuant`; to add a data
-source you subclass `quantlab.base.acquisition.Acquisition` and register it. The
+source you subclass `quantlab.acquisition.base.Acquisition` and register it. The
 [extending guide](../developer-guide/extending.md) walks through each case.
 
 ```text

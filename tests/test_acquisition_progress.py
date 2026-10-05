@@ -614,7 +614,7 @@ def test_run_forwards_the_reporter_and_the_cancel_token(
     """
     import inspect
 
-    from quantlab.registry import run
+    from quantlab.acquisition.registry import run
     from quantlab.acquisition.tiingo import TIINGO_SOURCE
     from quantlab.utils.progress import CallbackProgressReporter, CancelToken
 
@@ -1370,7 +1370,7 @@ def test_no_task_isolation_was_added() -> None:
     )
 
     tree = ast.parse(
-        (__import__("pathlib").Path("quantlab/base/acquisition.py")).read_text()
+        (__import__("pathlib").Path("quantlab/acquisition/base.py")).read_text()
     )
     parallel_calls = [
         node

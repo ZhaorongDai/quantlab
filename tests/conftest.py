@@ -71,7 +71,7 @@ import pytest
 import xarray as xr
 import zarr
 
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.dataset.config import DatasetConfig
 
 #: Test modules collected only when named on the command line. Each one runs
@@ -200,7 +200,7 @@ def isolated_registry(monkeypatch):
     if it is ever deleted or weakened, this fixture's guarantee goes with it.
 
     The import is deliberately left to raise `ImportError` until
-    `quantlab/registry.py` lands. It must NOT be softened with a
+    `quantlab/acquisition/registry.py` lands. It must NOT be softened with a
     `try/except` or a `pytest.importorskip`: a silently-skipped isolation
     fixture is how a fake source leaks into every later test, and a test that
     quietly did not isolate is indistinguishable from one that did.
@@ -209,7 +209,7 @@ def isolated_registry(monkeypatch):
     convention `_reset_data_root_override` above already follows, so this file
     keeps its zero-import-time dependency promise.
     """
-    from quantlab.registry import DataSourceRegistry
+    from quantlab.acquisition.base import DataSourceRegistry
 
     monkeypatch.setattr(
         DataSourceRegistry,

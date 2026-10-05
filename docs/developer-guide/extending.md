@@ -55,10 +55,10 @@ modules by their full dotted path, and do not add re-exports.
 
 A data source is a vendor quantlab can download from. Adding one takes an
 `Acquisition` subclass, which knows how to make one request, and a
-`SourceDescriptor` registered with `quantlab.registry`, which tells the rest of
+`SourceDescriptor` registered with `quantlab.acquisition.registry`, which tells the rest of
 quantlab what the vendor serves.
 
-`Acquisition` (`quantlab.base.acquisition`) owns everything else: batching,
+`Acquisition` (`quantlab.acquisition.base`) owns everything else: batching,
 worker threads, pagination, resuming an interrupted run, per-symbol
 watermarks, the failure manifest, credential scrubbing and the Parquet shard
 layout. A subclass sets `VENDOR` and `RAW_COLUMNS` and implements one method,
@@ -73,10 +73,10 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from quantlab.base.acquisition import Acquisition
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.base import Acquisition
+from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.dataset.stock import StockDataset
-from quantlab.registry import Capability, SourceDescriptor, register_source
+from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 
 FIELDS = ("open", "high", "low", "close", "volume")
 
@@ -132,7 +132,8 @@ with the capability's `dataset_cls`:
 
 ```python
 from quantlab.dataset.config import DatasetConfig
-from quantlab.registry import DataSourceRegistry, convert, run
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import convert, run
 
 source = DataSourceRegistry.get("demo")
 config = source.config_factory_for("us_equity", "1d")(
@@ -179,8 +180,8 @@ For a real vendor, a few more steps apply:
 
 - Put the class and its `register_source(...)` call in one module under
   `quantlab/acquisition/`, and import that module at the bottom of
-  `quantlab/registry.py` next to the other vendors, so that
-  `import quantlab.registry` lists it.
+  `quantlab/acquisition/registry.py` next to the other vendors, so that
+  `import quantlab.acquisition.registry` lists it.
 - Add the vendor name to the `Vendor` literal in `quantlab/enums/data.py`.
 - Read the API key from the environment in `__init__` and raise if it is
   missing. List the variable names in `CREDENTIAL_ENV_VARS`, so the base class

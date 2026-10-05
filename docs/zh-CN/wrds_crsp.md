@@ -142,7 +142,7 @@ uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2
 Frozen({'timestamp': 21, 'symbol': 3})
 ```
 
-`raw_data_dir_path` 必须以厂商目录 `wrds` 结尾，`reference_dir` 是它旁边的 `_reference` 目录。脚本流程里，同样的转换通过 `quantlab.registry.convert` 完成，它按窗口逐段转换，中断后可以续跑。
+`raw_data_dir_path` 必须以厂商目录 `wrds` 结尾，`reference_dir` 是它旁边的 `_reference` 目录。脚本流程里，同样的转换通过 `quantlab.acquisition.registry.convert` 完成，它按窗口逐段转换，中断后可以续跑。
 
 面板包含 Tiingo 日频面板的十二个变量，外加 CRSP 的扩展变量：
 
@@ -308,7 +308,7 @@ uv run python scripts/wrds/market.py --start 2024-01-01 --end 2024-12-31
 
 ### 增量更新 store
 
-`--refresh` 从每个 PERMNO 已记录的水位继续，向前延长 `--end` 是受支持的方向。市场 store 的名单在两次刷新之间会增长。脚本使用库的默认转换选项；`quantlab.registry.convert(..., on_new_listing=...)` 决定新 PERMNO 怎么办：`refuse`（默认）直接停止；`widen` 加入新的列，历史部分为 NaN，适合真正的新上市；`rebuild` 会对每个窗口重新稠密化，适合本来就有历史的 PERMNO。
+`--refresh` 从每个 PERMNO 已记录的水位继续，向前延长 `--end` 是受支持的方向。市场 store 的名单在两次刷新之间会增长。脚本使用库的默认转换选项；`quantlab.acquisition.registry.convert(..., on_new_listing=...)` 决定新 PERMNO 怎么办：`refuse`（默认）直接停止；`widen` 加入新的列，历史部分为 NaN，适合真正的新上市；`rebuild` 会对每个窗口重新稠密化，适合本来就有历史的 PERMNO。
 
 ### 加入基准 ETF
 
@@ -330,7 +330,7 @@ store 是由原始层和参考层派生出来的，所以转换代码或过滤�
 
 ```python
 >>> from pathlib import Path
->>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
+>>> from quantlab.acquisition.wrds.rebuild import CrspStoreRebuilder
 >>> rebuilder = CrspStoreRebuilder(config, data_root=".")
 >>> result = rebuilder.rebuild(backup_dir=Path("backup"))
 >>> result.dims, result.data_var_count

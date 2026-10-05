@@ -187,7 +187,7 @@ def test_place_downloads_keeps_the_vendor_directory_and_moves_both_tiers(
     the watermarks sit beside it under `_watermarks/wrds`, so everything an
     acquisition derives from the raw directory's parent (`_reference/`,
     `_vintage/`) lands in the chosen directory too."""
-    from quantlab.base.config import AcquisitionConfig
+    from quantlab.acquisition.config import AcquisitionConfig
 
     original = AcquisitionConfig(
         raw_data_dir_path="/root/downloads/us_equity/1d/wrds_crsp/wrds",

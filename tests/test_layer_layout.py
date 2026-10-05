@@ -139,7 +139,6 @@ LAYER_ORDER = (
 MODULE_LAYERS = {
     "quantlab.enums": "utils",
     "quantlab.utils": "utils",
-    "quantlab.utils.coverage": "acquisition",
     "quantlab.utils.split": "model",
     "quantlab.utils.walk_forward": "model",
     "quantlab.utils.walk_forward_training": "model",
@@ -159,8 +158,6 @@ MODULE_LAYERS = {
     "quantlab.dataset": "dataset",
     "quantlab.config": "config",
     "quantlab.acquisition": "acquisition",
-    "quantlab.registry": "acquisition",
-    "quantlab.base.acquisition": "acquisition",
     "quantlab.analysis": "analysis",
     "quantlab.factor": "factor",
     "quantlab.my_ops": "factor",
@@ -184,8 +181,6 @@ PENDING_VIOLATIONS = {
     ("quantlab/base/config.py", "quantlab.base.portfolio"),
     ("quantlab/base/config.py", "quantlab.tracking.base"),
     ("quantlab/base/config.py", "quantlab.execution.rules"),
-    ("quantlab/dataset/crsp/rebuild.py", "quantlab.acquisition.wrds"),
-    ("quantlab/dataset/crsp/rebuild.py", "quantlab.registry"),
 }
 
 

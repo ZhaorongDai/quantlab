@@ -8,15 +8,16 @@ import ast
 from pathlib import Path
 
 import quantlab.config as config
-from quantlab.config import (
-    get_data_root,
-    set_data_root,
-    stock_acquisition_config,
-    stock_kline_config,
-    universe_config,
-)
+from quantlab.acquisition.config import stock_acquisition_config
+from quantlab.config import get_data_root, set_data_root, stock_kline_config, universe_config
 
 _CONFIG_SOURCE = Path(config.__file__).resolve()
+#: Every module holding a root-derived config factory: the package itself and the
+#: acquisition factory beside ``AcquisitionConfig``.
+_FACTORY_SOURCES = (
+    _CONFIG_SOURCE,
+    Path(__file__).resolve().parents[1] / "quantlab/acquisition/config.py",
+)
 
 #: Derived from THIS FILE, deliberately not from `config.__file__`. The
 #: storage-root default is itself a walk up from the configuration
@@ -204,7 +205,7 @@ _ROOTING_CALLS = {"get_data_root", "_market_data_root", "_market_downloads_root"
 
 
 def _rooted_path_keywords() -> dict[str, list[str]]:
-    """Map each `*_config` factory in `config/__init__.py` to the path-shaped
+    """Map each `*_config` factory in `_FACTORY_SOURCES` to the path-shaped
     keyword arguments it passes, flagging any that is not rooted in
     `get_data_root()` or one of its two derived roots.
 
@@ -213,10 +214,9 @@ def _rooted_path_keywords() -> dict[str, list[str]]:
     added -- the failure mode this repo has already hit once, with the
     `--universe` choices that drifted from `UNIVERSE_CATEGORY_MAP`.
     """
-    tree = ast.parse(_CONFIG_SOURCE.read_text())
     offenders: dict[str, list[str]] = {}
 
-    for func in tree.body:
+    for func in (f for source in _FACTORY_SOURCES for f in ast.parse(source.read_text()).body):
         if not isinstance(func, ast.FunctionDef) or not func.name.endswith("_config"):
             continue
 
@@ -276,10 +276,10 @@ def test_the_by_construction_root_check_actually_inspects_something() -> None:
     path keywords the scan CONSIDERED, so a keyword-naming change that makes
     the scan blind fails here instead of going quietly green.
     """
-    tree = ast.parse(_CONFIG_SOURCE.read_text())
     considered = [
         kw.arg
-        for func in tree.body
+        for source in _FACTORY_SOURCES
+        for func in ast.parse(source.read_text()).body
         if isinstance(func, ast.FunctionDef) and func.name.endswith("_config")
         for node in ast.walk(func)
         if isinstance(node, ast.Call)
@@ -292,7 +292,7 @@ def test_the_by_construction_root_check_actually_inspects_something() -> None:
     # universe_config (output_path, cache_dir).
     assert len(considered) >= 6, (
         f"only {len(considered)} path-shaped keyword arguments found in "
-        "quantlab/config/__init__.py's factories; the by-construction root check "
+        "the config factories; the by-construction root check "
         "above "
         "is scanning less than the file contains."
     )

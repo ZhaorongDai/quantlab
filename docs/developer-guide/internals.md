@@ -33,7 +33,7 @@ raw/demo/month=2024-01/part-5b7fc3dffa5ab4a0-00000.pqt
 
 A *watermark* records the date range of a symbol's data already on disk, for
 example `{"last_date": "2024-03-29", "start_date": "2024-01-02"}`. Before each
-pass, `Acquisition._run` asks `CoverageLedger` (`quantlab.utils.coverage`)
+pass, `Acquisition._run` asks `CoverageLedger` (`quantlab.acquisition._support.coverage`)
 which requested symbols are not yet covered for the requested window, and
 fetches only those. A watermark is written only after the symbol's whole
 batch has been fetched and written, so a symbol interrupted mid-download has
@@ -136,7 +136,7 @@ complete version of the data.
 
 `BaseStoreRebuilder` (`quantlab.dataset._support.rebuild`) is the skeleton for an explicit
 rebuild of a whole store, used by the CRSP rebuilder in
-`quantlab/dataset/crsp/rebuild.py`. `rebuild()` runs
+`quantlab/acquisition/wrds/rebuild.py`. `rebuild()` runs
 `assert_inputs_present`, `backup`, `clear`, `_convert` and `_measure` in that
 order: a missing raw tier is reported while the old store is still on disk
 (converting nothing would write an empty panel that looks like a period with

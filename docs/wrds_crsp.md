@@ -142,7 +142,7 @@ A `CrspDatasetConfig` names the raw tier, the reference tier and the store. The 
 Frozen({'timestamp': 21, 'symbol': 3})
 ```
 
-`raw_data_dir_path` must end at the vendor folder `wrds`, and `reference_dir` is the `_reference` folder next to it. In the script flow the same conversion runs through `quantlab.registry.convert`, which converts one window at a time and resumes an interrupted run.
+`raw_data_dir_path` must end at the vendor folder `wrds`, and `reference_dir` is the `_reference` folder next to it. In the script flow the same conversion runs through `quantlab.acquisition.registry.convert`, which converts one window at a time and resumes an interrupted run.
 
 The panel holds the twelve variables of a Tiingo daily panel plus the CRSP extras:
 
@@ -310,7 +310,7 @@ It writes `wrds_crsp_market_1d.zarr` and the listing mask `wrds_crsp_market_memb
 
 ### Keep a store up to date
 
-`--refresh` resumes each PERMNO from its recorded watermark, and extending `--end` forward is the supported direction. On a market store the roster grows between refreshes. The scripts convert with the library defaults; `quantlab.registry.convert(..., on_new_listing=...)` chooses what happens to a new PERMNO: `refuse` (the default) stops, `widen` adds the new columns with NaN history and suits a genuinely new listing, and `rebuild` re-densifies every window and suits a PERMNO that already had history.
+`--refresh` resumes each PERMNO from its recorded watermark, and extending `--end` forward is the supported direction. On a market store the roster grows between refreshes. The scripts convert with the library defaults; `quantlab.acquisition.registry.convert(..., on_new_listing=...)` chooses what happens to a new PERMNO: `refuse` (the default) stops, `widen` adds the new columns with NaN history and suits a genuinely new listing, and `rebuild` re-densifies every window and suits a PERMNO that already had history.
 
 ### Add a benchmark ETF
 
@@ -332,7 +332,7 @@ A store is derived from the raw and reference tiers, so changed conversion code 
 
 ```python
 >>> from pathlib import Path
->>> from quantlab.dataset.crsp.rebuild import CrspStoreRebuilder
+>>> from quantlab.acquisition.wrds.rebuild import CrspStoreRebuilder
 >>> rebuilder = CrspStoreRebuilder(config, data_root=".")
 >>> result = rebuilder.rebuild(backup_dir=Path("backup"))
 >>> result.dims, result.data_var_count

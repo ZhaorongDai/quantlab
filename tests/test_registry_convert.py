@@ -1,4 +1,4 @@
-"""`quantlab.registry.convert()` -- the registry-level raw->Zarr
+"""`quantlab.acquisition.registry.convert()` -- the registry-level raw->Zarr
 entry point (DATA-07, phase 03.5).
 
 The requirement these tests exist for is stated as a CALL SITE, not as a
@@ -24,7 +24,8 @@ import xarray as xr
 
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.base import ConversionResult
-from quantlab.registry import DataSourceRegistry, convert
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import convert
 
 #: Two calendar years, a handful of observed days in each, so a `year` window
 #: is cheap and there are exactly TWO planned windows to write, skip and count.
@@ -182,8 +183,8 @@ def test_run_still_returns_an_acquisition_result_and_converts_nothing() -> None:
     """
     import inspect
 
-    from quantlab import registry
-    from quantlab.base.acquisition import AcquisitionResult
+    from quantlab.acquisition import registry
+    from quantlab.acquisition.base import AcquisitionResult
 
     assert registry.run.__annotations__["return"] is AcquisitionResult
     assert registry.convert.__annotations__["return"] is ConversionResult
@@ -340,11 +341,7 @@ def test_two_matching_targets_without_a_data_type_refuse_rather_than_guess(
     the synthetic descriptor cannot leak into a later test.
     """
     from quantlab.acquisition import tiingo as tiingo_module
-    from quantlab.registry import (
-        Capability,
-        SourceDescriptor,
-        register_source,
-    )
+    from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
     from quantlab.dataset.spot import SpotKlineDataset
     from quantlab.dataset.stock import StockDataset
 

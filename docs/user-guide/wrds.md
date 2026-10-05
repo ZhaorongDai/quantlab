@@ -19,7 +19,7 @@ quantlab uses two of them, registered as one source, `wrds`, with two
 capabilities:
 
 ```python
-from quantlab.registry import DataSourceRegistry
+from quantlab.acquisition.base import DataSourceRegistry
 
 wrds = DataSourceRegistry.get("wrds")
 for cap in wrds.capabilities:
@@ -175,7 +175,8 @@ registry and pass the result to `run()`; symbols are PERMNOs as strings. This
 needs a WRDS account:
 
 ```python
-from quantlab.registry import DataSourceRegistry, run
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import run
 
 wrds = DataSourceRegistry.get("wrds")
 factory = wrds.config_factory_for("us_equity", "1d", "crsp_daily")
@@ -237,7 +238,7 @@ appends to the store without changing values already written. Moving
 `--start`, or adding raw history earlier than what the store was built
 from, changes each security's starting point and therefore every adjusted
 value; nothing detects this, so rebuild the store instead
-(`quantlab.dataset.crsp.rebuild.CrspStoreRebuilder` rebuilds it offline from
+(`quantlab.acquisition.wrds.rebuild.CrspStoreRebuilder` rebuilds it offline from
 the raw and reference tiers and removes its stale sidecar files).
 
 ### Delisting returns, in plain words
@@ -383,7 +384,7 @@ timestamps and several records can share one.
 
 ## Resampling NBBO quotes into bars
 
-The script, or a call to `quantlab.registry.convert` with an
+The script, or a call to `quantlab.acquisition.registry.convert` with an
 `NbboDatasetConfig`, resamples the raw records into a regular bar panel on
 `(timestamp, symbol)`, written to
 `<zarr-dir>/wrds_nbbo_{interval}_{start}-{end}.zarr` (for example

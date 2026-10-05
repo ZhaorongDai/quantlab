@@ -283,7 +283,7 @@ rebuild 会替换整个 store。运行期间原来的 store 和台账被移到�
 ### 命令行
 
 `scripts/wrds/` 下的 WRDS 脚本在下载后按库默认的粒度和新上市策略进行转换。其它设置在 notebook 里
-传给 `quantlab.registry.convert` 或 `from_raw_data_chunked`，如上文所示。下载本身需要 vendor 凭证，见
+传给 `quantlab.acquisition.registry.convert` 或 `from_raw_data_chunked`，如上文所示。下载本身需要 vendor 凭证，见
 acquisition 指南。
 
 ## 扩展

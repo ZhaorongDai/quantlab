@@ -10,7 +10,7 @@ the symbols whose download failed.
 ``CoverageLedger`` reads those files and answers the one question a refresh
 needs: which of the requested symbols still have to be fetched for the
 requested date range. It is the only implementation of that rule. The
-acquisition engine in ``quantlab/base/acquisition.py`` creates a ledger and
+acquisition engine in ``quantlab/acquisition/base.py`` creates a ledger and
 delegates to it, and the source inspector (a read-only tool that reports
 what is on disk) builds one through ``CoverageLedger.for_config``, so the
 two always give the same answer.
@@ -24,7 +24,7 @@ import json
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: Filename of the failure manifest, written under ``watermark_root`` next to

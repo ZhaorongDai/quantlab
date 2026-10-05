@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.config import AcquisitionConfig
 
 
 def _make_config(tmp_path: Path) -> AcquisitionConfig:

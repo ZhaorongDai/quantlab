@@ -23,7 +23,7 @@ The sessions in this guide leave out the log lines that quantlab writes to stder
 `DataSourceRegistry.all()` returns one `SourceDescriptor` per vendor, sorted by vendor name. A descriptor holds the display name, the environment variable names, the default acquisition class and a tuple of `Capability` rows. A capability is one combination of market, frequency and data type that the vendor serves; data type is `None` when the vendor draws no such distinction.
 
 ```python
->>> from quantlab.registry import DataSourceRegistry
+>>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
 ['alpaca', 'tiingo', 'wrds']
 >>> wrds = DataSourceRegistry.get("wrds")
@@ -42,7 +42,7 @@ A descriptor stores environment variable names, never values. `credential_status
 
 ```python
 >>> import os
->>> from quantlab.registry import credential_status, is_configured
+>>> from quantlab.acquisition.registry import credential_status, is_configured
 >>> credential_status(wrds)
 {'WRDS_USERNAME': False}
 >>> is_configured(wrds)
@@ -77,7 +77,8 @@ If several matching rows name different classes, `acquisition_cls_for()` raises 
 `run(source, config)` downloads a window into the raw tier (parquet shards plus one small JSON watermark file per symbol) and returns an `AcquisitionResult`. `convert(source, dataset_config)` reads the raw tier and writes the Zarr store; it needs no credential and no network. The two calls are separate on purpose. A configuration for a source comes from its `config_factory`:
 
 ```python
-from quantlab.registry import DataSourceRegistry, run, convert
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import run, convert
 
 source = DataSourceRegistry.get("tiingo")            # needs TIINGO_API_KEY
 config = source.config_factory(
@@ -104,7 +105,8 @@ A `CallbackProgressReporter` collects the events. Each event carries `completed`
 ```python
 >>> import tempfile
 >>> from pathlib import Path
->>> from quantlab.registry import DataSourceRegistry, run, convert
+>>> from quantlab.acquisition.base import DataSourceRegistry
+>>> from quantlab.acquisition.registry import run, convert
 >>> import demo_source
 >>> root = Path(tempfile.mkdtemp())
 >>> acq_cfg, ds_cfg = demo_source.make_configs(root)
@@ -228,12 +230,12 @@ from pathlib import Path
 
 import polars as pl
 
-from quantlab.base.acquisition import Acquisition
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.base import Acquisition
+from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.dataset.config import DatasetConfig
-from quantlab.config import stock_acquisition_config
+from quantlab.acquisition.config import stock_acquisition_config
 from quantlab.dataset.stock import StockDataset
-from quantlab.registry import Capability, SourceDescriptor, register_source
+from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 
 PRICE_COLUMNS = ("open", "high", "low", "close", "adjOpen", "adjHigh", "adjLow", "adjClose")
 OTHER_COLUMNS = ("volume", "adjVolume", "divCash", "splitFactor")
@@ -295,14 +297,14 @@ def make_configs(root: Path, symbols=("AAPL", "MSFT", "NVDA")):
     return acquisition, dataset
 ```
 
-The descriptor lists one `Capability` per combination the vendor serves. `dataset_cls` names the dataset that converts the raw tier; leave it `None` for a capability that has no dense panel form, and `convert()` will refuse it. A capability may also carry its own `acquisition_cls` and `config_factory`, which is how one WRDS account serves two products. Registration must happen before anyone asks the registry, so a source outside the repository has to be imported first. For a source inside the repository, add its module to the import lines at the bottom of `quantlab/registry.py`.
+The descriptor lists one `Capability` per combination the vendor serves. `dataset_cls` names the dataset that converts the raw tier; leave it `None` for a capability that has no dense panel form, and `convert()` will refuse it. A capability may also carry its own `acquisition_cls` and `config_factory`, which is how one WRDS account serves two products. Registration must happen before anyone asks the registry, so a source outside the repository has to be imported first. For a source inside the repository, add its module to the import lines at the bottom of `quantlab/acquisition/registry.py`.
 
 ```python
 >>> [d.vendor for d in DataSourceRegistry.all()]
 ['alpaca', 'demo', 'tiingo', 'wrds']
 >>> DataSourceRegistry.get("demo").supports("us_equity", "1d")
 True
->>> from quantlab.registry import is_configured
+>>> from quantlab.acquisition.registry import is_configured
 >>> is_configured(demo_source.DEMO)
 False
 ```
@@ -345,8 +347,8 @@ The raw parquet shards of such a capability are the deliverable and can be read 
 
 `browse_raw()` and `browse_zarr()` require a non-empty symbol list and a date window, and raise `ValueError` for an empty list. `browse_zarr()` also raises `ValueError` for a symbol the store does not carry (`... does not carry ['ZZZ'] (requested ['ZZZ']). The store carries 3 symbol(s). ...`) instead of returning a column of NaN. On a CRSP store the symbol axis holds PERMNO integers, and the message says so.
 
-Descriptors hold no base URL or host, and `SourceInspector` imports no vendor module. The registry import pulls in every vendor module, so `import quantlab.registry` is slower than importing the inspector alone.
+Descriptors hold no base URL or host, and `SourceInspector` imports no vendor module. The registry import pulls in every vendor module, so `import quantlab.acquisition.registry` is slower than importing the inspector alone.
 
 ## See also
 
-The [acquisition](acquisition.md) guide covers the download engine, batching, resume and the failure manifest. The [WRDS TAQ](wrds_taq.md) guide covers the `wrds` source in detail. See also [pageledger](pageledger.md) (page-level resume) and [dataset](dataset.md) and [chunking](chunking.md) (what `convert()` writes). Module docstrings: `quantlab.registry`, `quantlab.acquisition._support.inspector`, `quantlab.utils.progress`.
+The [acquisition](acquisition.md) guide covers the download engine, batching, resume and the failure manifest. The [WRDS TAQ](wrds_taq.md) guide covers the `wrds` source in detail. See also [pageledger](pageledger.md) (page-level resume) and [dataset](dataset.md) and [chunking](chunking.md) (what `convert()` writes). Module docstrings: `quantlab.acquisition.registry`, `quantlab.acquisition._support.inspector`, `quantlab.utils.progress`.

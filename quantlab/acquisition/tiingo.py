@@ -10,7 +10,7 @@ the whole run rather than failing symbols one by one.
 
 The API key is read from ``TIINGO_API_KEY`` in the environment and is never
 stored on a config or written to a log. ``TIINGO_SOURCE`` at the bottom of
-the module registers the vendor with ``quantlab.registry``.
+the module registers the vendor with ``quantlab.acquisition.registry``.
 """
 
 import functools
@@ -19,14 +19,10 @@ import os
 import polars as pl
 from tiingo import TiingoClient
 
-from quantlab.registry import (
-    Capability,
-    SourceDescriptor,
-    register_source,
-)
-from quantlab.base.acquisition import Acquisition
-from quantlab.base.config import AcquisitionConfig
-from quantlab.config import stock_acquisition_config
+from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
+from quantlab.acquisition.base import Acquisition
+from quantlab.acquisition.config import AcquisitionConfig
+from quantlab.acquisition.config import stock_acquisition_config
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
 
@@ -87,7 +83,7 @@ class TiingoAcquisition(Acquisition):
     --------
     Needs ``TIINGO_API_KEY`` exported; ``download()`` goes to the network::
 
-        from quantlab.base.config import AcquisitionConfig
+        from quantlab.acquisition.config import AcquisitionConfig
 
         cfg = AcquisitionConfig(
             market="us_equity", frequency="1d", vendor="tiingo",
@@ -319,8 +315,8 @@ class TiingoAcquisition(Acquisition):
 
 
 #: The registry entry for this vendor, defined beside the class so that adding
-#: a vendor touches one file. ``quantlab.registry`` imports this module at its
-#: end, so a fresh ``import quantlab.registry`` still lists this source.
+#: a vendor touches one file. ``quantlab.acquisition.registry`` imports this module at its
+#: end, so a fresh ``import quantlab.acquisition.registry`` still lists this source.
 TIINGO_SOURCE = register_source(
     SourceDescriptor(
         vendor="tiingo",

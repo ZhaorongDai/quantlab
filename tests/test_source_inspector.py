@@ -164,7 +164,7 @@ def test_the_stock_zarr_fixture_opens_and_carries_a_symbol_index(
 # ---------------------------------------------------------------------------
 # 03.4-04 Task 1 -- the CoverageLedger extraction (D-09)
 #
-# `quantlab/utils/coverage.py` is where coverage judgement now lives, and it is
+# `quantlab/acquisition/_support/coverage.py` is where coverage judgement now lives, and it is
 # a LEAF: `Acquisition` composes a ledger and delegates, while the inspector
 # built in Task 2 composes one directly. These tests pin the two properties the
 # extraction ADDED (an explicit sidecar enumeration, and the shared
@@ -193,7 +193,7 @@ def test_iter_watermark_symbols_skips_the_manifest_and_the_page_ledgers(
     """
     import json
 
-    from quantlab.utils.coverage import (
+    from quantlab.acquisition._support.coverage import (
         FAILURE_MANIFEST_NAME,
         PAGE_LEDGER_DIR_NAME,
         CoverageLedger,
@@ -247,8 +247,8 @@ def test_the_failure_manifest_name_is_declared_once_and_bound_by_acquisition(
     import inspect
     import re
 
-    import quantlab.base.acquisition as acquisition_module
-    from quantlab.utils.coverage import FAILURE_MANIFEST_NAME, CoverageLedger
+    import quantlab.acquisition.base as acquisition_module
+    from quantlab.acquisition._support.coverage import FAILURE_MANIFEST_NAME, CoverageLedger
 
     assert acquisition_module.Acquisition.FAILURE_MANIFEST_NAME == (
         FAILURE_MANIFEST_NAME
@@ -284,7 +284,7 @@ def test_every_moved_acquisition_member_is_a_single_delegating_call() -> None:
     import inspect
     from pathlib import Path
 
-    import quantlab.base.acquisition as acquisition_module
+    import quantlab.acquisition.base as acquisition_module
 
     moved = {
         "_watermark_root",
@@ -354,15 +354,15 @@ _INSPECTOR_RESOLVER_TOKEN = "INSPECTOR-FORBIDDEN-IMPORT-RESOLVED"
 
 #: Every module whose presence in the inspector's import graph would mean an
 #: `Acquisition` subclass -- and therefore a credential demand and a socket --
-#: is reachable from the read surface. `quantlab.registry` is in the
+#: is reachable from the read surface. `quantlab.acquisition.registry` is in the
 #: set for a second reason: its own bottom imports pull BOTH vendor modules, so
 #: reaching it reaches them transitively.
 _FORBIDDEN_INSPECTOR_MODULES = frozenset(
     {
-        "quantlab.base.acquisition",
+        "quantlab.acquisition.base",
         "quantlab.acquisition.tiingo",
         "quantlab.acquisition.alpaca",
-        "quantlab.registry",
+        "quantlab.acquisition.registry",
     }
 )
 
@@ -393,7 +393,7 @@ def _resolved_imports(source_path, module_name: str) -> set[str]:
     Copied from `tests/test_volume_guard.py:717-745`. Relative imports are
     resolved against `module_name`'s own package, which is the whole point:
     `from ..base.acquisition import X` and `from ..base import acquisition`
-    name the same module as `import quantlab.base.acquisition` and must be seen
+    name the same module as `import quantlab.acquisition.base` and must be seen
     as such. `from X import y` also contributes `X.y`, because `y` may itself be
     a submodule.
     """
@@ -434,7 +434,7 @@ def _sidecar_tree(config, *, covered=(), widened=(), legacy=(), no_data=()):
     """
     import json
 
-    from quantlab.utils.coverage import CoverageLedger
+    from quantlab.acquisition._support.coverage import CoverageLedger
 
     ledger = CoverageLedger.for_config(config)
     root = ledger.watermark_root
@@ -561,11 +561,11 @@ def test_inspector_binds_no_client() -> None:
     of BOTH new modules with `ast` -- relative spellings included, which no
     substring scan can see -- and asserts the forbidden set is untouched.
 
-    `quantlab.registry` is in the forbidden set for a second
+    `quantlab.acquisition.registry` is in the forbidden set for a second
     reason: its own bottom imports pull both vendor modules, so reaching the
     registry reaches every client transitively.
 
-    Reddened by: adding `from quantlab.registry import ...` (or any
+    Reddened by: adding `from quantlab.acquisition.registry import ...` (or any
     relative spelling of it) to either module, or binding an `Acquisition`
     subclass into the inspector's namespace, or putting a single byte into any
     of the three package `__init__.py` files on the inspector's import path --
@@ -575,8 +575,8 @@ def test_inspector_binds_no_client() -> None:
     from pathlib import Path
 
     import quantlab.acquisition._support.inspector as inspector_module
-    import quantlab.utils.coverage as coverage_module
-    from quantlab.base.acquisition import Acquisition
+    import quantlab.acquisition._support.coverage as coverage_module
+    from quantlab.acquisition.base import Acquisition
 
     for module in (inspector_module, coverage_module):
         resolved = _resolved_imports(
@@ -665,7 +665,7 @@ def test_coverage_is_the_same_code_as_the_real_run(
 
     from quantlab.acquisition._support.inspector import SourceInspector
     from quantlab.acquisition.tiingo import TiingoAcquisition
-    from quantlab.utils.coverage import CoverageLedger
+    from quantlab.acquisition._support.coverage import CoverageLedger
 
     config = acquisition_config(
         vendor="tiingo", symbols=("AAPL", "MSFT", "GOOG", "TSLA")
@@ -785,7 +785,7 @@ def test_tick_watermark_roots_agree_between_the_two_ledger_constructors(
     monkeypatch.setenv("APCA_API_SECRET_KEY", "not-a-real-secret")
 
     from quantlab.acquisition.alpaca import AlpacaAcquisition
-    from quantlab.utils.coverage import CoverageLedger
+    from quantlab.acquisition._support.coverage import CoverageLedger
 
     tick = acquisition_config(
         vendor="alpaca", frequency="tick", kwargs={"data_type": "trades"}
@@ -837,10 +837,7 @@ def test_inventory_reports_the_two_tiers_separately(
     import json
 
     from quantlab.acquisition._support.inspector import SourceInspector
-    from quantlab.utils.coverage import (
-        FAILURE_MANIFEST_NAME,
-        PAGE_LEDGER_DIR_NAME,
-    )
+    from quantlab.acquisition._support.coverage import FAILURE_MANIFEST_NAME, PAGE_LEDGER_DIR_NAME
 
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
     ledger = _sidecar_tree(config, covered=("AAPL", "MSFT"))
@@ -927,7 +924,7 @@ def test_inventory_makes_one_traversal_and_one_sidecar_pass(
     import os as os_module
 
     from quantlab.acquisition._support.inspector import SourceInspector
-    from quantlab.utils.coverage import CoverageLedger
+    from quantlab.acquisition._support.coverage import CoverageLedger
 
     config = acquisition_config(vendor="tiingo", symbols=("AAPL", "MSFT"))
     _sidecar_tree(config, covered=("AAPL", "MSFT"), legacy=("GOOG",))

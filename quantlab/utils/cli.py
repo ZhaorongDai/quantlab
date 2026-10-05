@@ -186,7 +186,7 @@ def place_downloads(config, download_dir):
 
 
 def print_conversion_result(result, *, print_fn=print):
-    """Print the ``ConversionResult`` returned by ``quantlab.registry.convert``.
+    """Print the ``ConversionResult`` returned by ``quantlab.acquisition.registry.convert``.
 
     Every line comes off the returned object, not the config and not a
     read-back of the store, so the printed path is the one actually written

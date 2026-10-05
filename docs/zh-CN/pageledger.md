@@ -16,8 +16,8 @@
 >>> from datetime import date
 >>> from pathlib import Path
 >>> import polars as pl
->>> from quantlab.base.acquisition import Acquisition
->>> from quantlab.base.config import AcquisitionConfig
+>>> from quantlab.acquisition.base import Acquisition
+>>> from quantlab.acquisition.config import AcquisitionConfig
 >>> from quantlab.dataset._support.ledger import PageLedger
 >>> class PagedAcquisition(Acquisition):
 ...     VENDOR = "alpaca"
@@ -238,4 +238,4 @@ ValueError: StuckAcquisition: the vendor returned the same page token it was giv
 
 ## 另请参阅
 
-[acquisition](acquisition.md) 指南介绍账本外层的下载循环。`quantlab.dataset._support.ledger.PageLedger` 和 `quantlab.base.acquisition.Acquisition._fetch_batch` 的类文档字符串详细描述了每个方法和写入顺序。
+[acquisition](acquisition.md) 指南介绍账本外层的下载循环。`quantlab.dataset._support.ledger.PageLedger` 和 `quantlab.acquisition.base.Acquisition._fetch_batch` 的类文档字符串详细描述了每个方法和写入顺序。

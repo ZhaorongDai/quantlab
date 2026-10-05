@@ -24,8 +24,8 @@ A vendor client is a subclass with three parts: `VENDOR` names the vendor, `RAW_
 >>> from datetime import date
 >>> from pathlib import Path
 >>> import polars as pl
->>> from quantlab.base.acquisition import Acquisition
->>> from quantlab.base.config import AcquisitionConfig
+>>> from quantlab.acquisition.base import Acquisition
+>>> from quantlab.acquisition.config import AcquisitionConfig
 >>> class DemoAcquisition(Acquisition):
 ...     VENDOR = "tiingo"
 ...     RAW_COLUMNS = ("timestamp", "symbol", "vendor", "close")
@@ -303,7 +303,7 @@ uv run python scripts/wrds/nbbo.py --permnos 14593,10107 --start 2024-01-02 --en
 ```
 
 Tiingo, Alpaca and Binance have library interfaces only: their acquisition classes are driven
-through `quantlab.registry.run` and `convert` as in this guide.
+through `quantlab.acquisition.registry.run` and `convert` as in this guide.
 
 The library's storage root is the environment variable `QUANTLAB_DATA_DIR`, else the repository's `data/` directory. The scripts do not use it: they take `--download-dir` for the raw files and `--zarr-dir` for the stores, both defaulting to the current directory.
 
@@ -334,7 +334,7 @@ Intraday frequencies also need `SESSION_TIME_ZONE`, the time zone whose calendar
 
 ## Notes
 
-Only parquet files may live under the raw directory, and the sidecars must live outside it, in the sibling `_watermarks` tree. A config never carries credentials, since `AcquisitionConfig.to_dict()` is written to disk next to model checkpoints. `CoverageLedger.for_config(config)` in `quantlab.utils.coverage` applies the same classification as the engine without a vendor class, so it works on a machine that has no API keys.
+Only parquet files may live under the raw directory, and the sidecars must live outside it, in the sibling `_watermarks` tree. A config never carries credentials, since `AcquisitionConfig.to_dict()` is written to disk next to model checkpoints. `CoverageLedger.for_config(config)` in `quantlab.acquisition._support.coverage` applies the same classification as the engine without a vendor class, so it works on a machine that has no API keys.
 
 Symbols become both path segments and query values, so each must match the ticker pattern (uppercase letters and digits, at most seven characters, plus up to two suffixes after `.` or `-`). Anything else stops the run before any request:
 
@@ -361,4 +361,4 @@ Raw tick data is written exactly as the vendor sent it, with no resampling and n
 
 ## See also
 
-The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universes](user-guide/universes.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.base.acquisition.Acquisition`, `quantlab.utils.coverage.CoverageLedger` and `quantlab.utils.progress` list every option.
+The [pageledger](pageledger.md) guide for resuming inside a multi-page batch, the [registry](registry.md) guide for looking up a vendor and running it by name, the [universes](user-guide/universes.md) guide for the symbol roster, and the [dataset](dataset.md) guide for converting raw files to the xarray panel. The class docstrings of `quantlab.acquisition.base.Acquisition`, `quantlab.acquisition._support.coverage.CoverageLedger` and `quantlab.utils.progress` list every option.

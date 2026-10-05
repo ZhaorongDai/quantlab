@@ -284,7 +284,7 @@ A rebuild replaces the whole store. The original store and ledger are moved asid
 
 The WRDS scripts under `scripts/wrds/` convert after downloading with the library defaults
 for the granularity and the new-listing strategy. Other settings are passed to
-`quantlab.registry.convert` or `from_raw_data_chunked` from a notebook, as above. The download
+`quantlab.acquisition.registry.convert` or `from_raw_data_chunked` from a notebook, as above. The download
 itself needs a vendor credential; see the acquisition guide.
 
 ## Extending

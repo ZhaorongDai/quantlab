@@ -254,7 +254,7 @@ def _bare_config(tmp_path, **overrides):
 
 
 def _convert(dataset_config, granularity="year"):
-    from quantlab import registry
+    from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
 
     return registry.convert(

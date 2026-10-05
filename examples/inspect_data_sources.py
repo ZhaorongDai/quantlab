@@ -4,13 +4,13 @@ This example needs no API key, no WRDS account and no network. It shows:
 
 1. every registered data source, what it serves and whether its credentials
    are set in this environment (as booleans; no value is ever printed);
-2. a download driven through ``quantlab.registry.run`` with a progress
+2. a download driven through ``quantlab.acquisition.registry.run`` with a progress
    callback, a resumed second run, and a run stopped with a ``CancelToken``.
    A real vendor needs credentials and network access, so the download uses
    a small stand-in acquisition class that invents prices locally and writes
    them in the Tiingo raw layout;
 3. read-only inspection of the files on disk with ``SourceInspector``;
-4. conversion of the raw files into a Zarr panel with ``quantlab.registry.convert``.
+4. conversion of the raw files into a Zarr panel with ``quantlab.acquisition.registry.convert``.
 
 Everything is written to a temporary directory that is deleted at the end.
 
@@ -30,18 +30,13 @@ from loguru import logger
 
 from quantlab.acquisition._support.inspector import SourceInspector
 from quantlab.acquisition.tiingo import TiingoAcquisition
-from quantlab.base.acquisition import Acquisition
+from quantlab.acquisition.base import Acquisition
 from quantlab.utils.progress import CallbackProgressReporter, CancelToken
-from quantlab.config import set_data_root, stock_acquisition_config, stock_kline_config
+from quantlab.acquisition.config import stock_acquisition_config
+from quantlab.config import set_data_root, stock_kline_config
 from quantlab.dataset.stock import StockDataset
-from quantlab.registry import (
-    Capability,
-    DataSourceRegistry,
-    SourceDescriptor,
-    convert,
-    credential_status,
-    run,
-)
+from quantlab.acquisition.base import Capability, DataSourceRegistry, SourceDescriptor
+from quantlab.acquisition.registry import convert, credential_status, run
 
 # Keep the output readable: show only warnings from quantlab's logger, and
 # silence a Zarr notice about consolidated metadata that is not relevant here.

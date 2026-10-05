@@ -31,7 +31,7 @@ downloading anything again. See [Datasets](datasets.md) for the panel side.
 
 ## The vendors
 
-Each vendor is described once in `quantlab.registry` by a *source descriptor*,
+Each vendor is described once in `quantlab.acquisition.registry` by a *source descriptor*,
 which lists the environment variables holding its credentials and the
 *capabilities* it serves. A capability is one `(market, frequency, data_type)`
 combination, together with the dataset class that can convert it to a panel.
@@ -54,10 +54,11 @@ no download script.
 ### Listing sources in Python
 
 `DataSourceRegistry.all()` returns every descriptor. Importing
-`quantlab.registry` imports all vendor modules, so the list is always complete.
+`quantlab.acquisition.registry` imports all vendor modules, so the list is always complete.
 
 ```python
-from quantlab.registry import DataSourceRegistry, credential_status
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import credential_status
 
 for source in DataSourceRegistry.all():
     print(f"{source.vendor}: {source.display_name}")
@@ -88,7 +89,7 @@ wrds: WRDS (NYSE TAQ millisecond NBBO; CRSP Stock v2 daily)
 
 `DataSourceRegistry.get("tiingo")` returns one descriptor, and
 `source.supports("us_equity", "tick")` answers whether it serves a combination.
-See the docstrings in `quantlab/registry.py` for the full interface.
+See the docstrings in `quantlab/acquisition/registry.py` for the full interface.
 
 ## Credentials
 
@@ -151,18 +152,19 @@ uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 \
 The scripts are described in [WRDS: CRSP and TAQ](wrds.md); run any of them
 with `--help` for its complete flag list. Tiingo, Alpaca and Binance have
 library interfaces only: their acquisition and dataset classes are driven from
-Python through `quantlab.registry.run` and `quantlab.registry.convert`, as in
+Python through `quantlab.acquisition.registry.run` and `quantlab.acquisition.registry.convert`, as in
 the next section.
 
 ## Downloading from Python
 
-`quantlab.registry.run(descriptor, config)` runs a download in the current
+`quantlab.acquisition.registry.run(descriptor, config)` runs a download in the current
 process and returns an `AcquisitionResult`. The descriptor's `config_factory`
 builds an `AcquisitionConfig` with the standard paths for that vendor. This
 needs `TIINGO_API_KEY` and network access, so no output is shown:
 
 ```python
-from quantlab.registry import DataSourceRegistry, run
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import run
 
 source = DataSourceRegistry.get("tiingo")
 config = source.config_factory(
@@ -185,7 +187,7 @@ config: `batch_size` (symbols per request), `max_workers` (concurrent
 requests), `resume`, `progress`, the quota and rate-limit knobs below, and
 vendor options such as Alpaca's `data_type`, `feed`, `adjustment` and
 `page_limit`. Alpaca bars are requested unadjusted (`adjustment="raw"`) unless
-you say otherwise. See the docstrings of `quantlab.base.acquisition.Acquisition`
+you say otherwise. See the docstrings of `quantlab.acquisition.base.Acquisition`
 and each vendor class for details.
 
 ### Progress events
@@ -402,14 +404,15 @@ would look like a security with no history.
 ## Converting raw downloads into a panel
 
 The WRDS scripts convert after downloading with the library defaults; for
-other options call `quantlab.registry.convert(descriptor, dataset_config)` in
+other options call `quantlab.acquisition.registry.convert(descriptor, dataset_config)` in
 Python. Conversion
 reads only local files, so it needs no credentials. In the example it converts
 the raw tier written above:
 
 ```python
 from quantlab.config import stock_kline_config
-from quantlab.registry import DataSourceRegistry, convert
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import convert
 
 ds_config = stock_kline_config(start_date="2024-01-01", end_date="2024-03-29",
                                symbols=("AAPL", "AMD", "MSFT", "NVDA"))

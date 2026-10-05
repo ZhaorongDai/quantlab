@@ -11,7 +11,7 @@ current code would produce, and it has to be rebuilt.
 safely. It fixes the order of the steps, the checks that refuse to proceed,
 and the ``RebuildMeasurement`` that a rebuild returns. A subclass decides
 which raw files must exist, which converter to call and what to measure (the
-CRSP subclass in ``quantlab/dataset/crsp/rebuild.py`` is an example).
+CRSP subclass in ``quantlab/acquisition/wrds/rebuild.py`` is an example).
 
 The steps run in this order: ``assert_inputs_present``, ``backup``,
 ``clear``, ``_convert``, ``_measure``. Checking inputs first means a missing

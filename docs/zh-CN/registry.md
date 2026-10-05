@@ -23,7 +23,7 @@
 `DataSourceRegistry.all()` 为每个厂商返回一个 `SourceDescriptor`（描述符），按厂商名排序。描述符包含显示名、环境变量名、默认的采集类，以及一组 `Capability`（能力）。一个 capability 就是该厂商提供的一种「市场、频率、数据类型」组合；厂商不区分数据类型时，data type 为 `None`。
 
 ```python
->>> from quantlab.registry import DataSourceRegistry
+>>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
 ['alpaca', 'tiingo', 'wrds']
 >>> wrds = DataSourceRegistry.get("wrds")
@@ -42,7 +42,7 @@ us_equity 1d crsp_daily 1925-12-31
 
 ```python
 >>> import os
->>> from quantlab.registry import credential_status, is_configured
+>>> from quantlab.acquisition.registry import credential_status, is_configured
 >>> credential_status(wrds)
 {'WRDS_USERNAME': False}
 >>> is_configured(wrds)
@@ -77,7 +77,8 @@ False
 `run(source, config)` 把一个时间窗口下载到原始层（parquet 分片，加上每个标的一个很小的 JSON 水位标记文件），并返回 `AcquisitionResult`。`convert(source, dataset_config)` 读取原始层并写出 Zarr 存储；它不需要凭证，也不联网。两个调用是刻意分开的。数据源的配置由它的 `config_factory` 生成：
 
 ```python
-from quantlab.registry import DataSourceRegistry, run, convert
+from quantlab.acquisition.base import DataSourceRegistry
+from quantlab.acquisition.registry import run, convert
 
 source = DataSourceRegistry.get("tiingo")            # 需要 TIINGO_API_KEY
 config = source.config_factory(
@@ -104,7 +105,8 @@ result.failures                                       # 本次运行的 {标的:
 ```python
 >>> import tempfile
 >>> from pathlib import Path
->>> from quantlab.registry import DataSourceRegistry, run, convert
+>>> from quantlab.acquisition.base import DataSourceRegistry
+>>> from quantlab.acquisition.registry import run, convert
 >>> import demo_source
 >>> root = Path(tempfile.mkdtemp())
 >>> acq_cfg, ds_cfg = demo_source.make_configs(root)
@@ -228,12 +230,12 @@ from pathlib import Path
 
 import polars as pl
 
-from quantlab.base.acquisition import Acquisition
-from quantlab.base.config import AcquisitionConfig
+from quantlab.acquisition.base import Acquisition
+from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.dataset.config import DatasetConfig
-from quantlab.config import stock_acquisition_config
+from quantlab.acquisition.config import stock_acquisition_config
 from quantlab.dataset.stock import StockDataset
-from quantlab.registry import Capability, SourceDescriptor, register_source
+from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 
 PRICE_COLUMNS = ("open", "high", "low", "close", "adjOpen", "adjHigh", "adjLow", "adjClose")
 OTHER_COLUMNS = ("volume", "adjVolume", "divCash", "splitFactor")
@@ -295,14 +297,14 @@ def make_configs(root: Path, symbols=("AAPL", "MSFT", "NVDA")):
     return acquisition, dataset
 ```
 
-描述符为厂商提供的每种组合列一个 `Capability`。`dataset_cls` 指定转换原始层的 dataset 类；对于没有稠密面板形式的 capability 留成 `None`，`convert()` 会拒绝它。capability 还可以带自己的 `acquisition_cls` 和 `config_factory`，一个 WRDS 账号提供两种产品就是这样做到的。注册必须发生在有人查询注册表之前，所以仓库之外的数据源需要先 import。仓库之内的数据源，把它的模块加到 `quantlab/registry.py` 底部的 import 行里。
+描述符为厂商提供的每种组合列一个 `Capability`。`dataset_cls` 指定转换原始层的 dataset 类；对于没有稠密面板形式的 capability 留成 `None`，`convert()` 会拒绝它。capability 还可以带自己的 `acquisition_cls` 和 `config_factory`，一个 WRDS 账号提供两种产品就是这样做到的。注册必须发生在有人查询注册表之前，所以仓库之外的数据源需要先 import。仓库之内的数据源，把它的模块加到 `quantlab/acquisition/registry.py` 底部的 import 行里。
 
 ```python
 >>> [d.vendor for d in DataSourceRegistry.all()]
 ['alpaca', 'demo', 'tiingo', 'wrds']
 >>> DataSourceRegistry.get("demo").supports("us_equity", "1d")
 True
->>> from quantlab.registry import is_configured
+>>> from quantlab.acquisition.registry import is_configured
 >>> is_configured(demo_source.DEMO)
 False
 ```
@@ -345,8 +347,8 @@ ValueError: Alpaca Market Data: no raw-to-Zarr conversion exists for ('us_equity
 
 `browse_raw()` 和 `browse_zarr()` 要求非空的标的列表和日期窗口，列表为空时抛出 `ValueError`。对于存储里没有的标的，`browse_zarr()` 也抛出 `ValueError`（`... does not carry ['ZZZ'] (requested ['ZZZ']). The store carries 3 symbol(s). ...`），而不是返回一列 NaN。CRSP 存储的标的轴是 PERMNO 整数，消息里会说明这一点。
 
-描述符不保存 base URL 或主机名，`SourceInspector` 不导入任何厂商模块。导入注册表会加载所有厂商模块，所以 `import quantlab.registry` 比单独导入检视器慢。
+描述符不保存 base URL 或主机名，`SourceInspector` 不导入任何厂商模块。导入注册表会加载所有厂商模块，所以 `import quantlab.acquisition.registry` 比单独导入检视器慢。
 
 ## 另请参阅
 
-[acquisition](acquisition.md) 指南讲下载引擎、分批、续跑和失败清单。[WRDS TAQ](wrds_taq.md) 指南详述 `wrds` 数据源。另见 [pageledger](pageledger.md)（页级续跑）以及 [dataset](dataset.md) 和 [chunking](chunking.md)（`convert()` 写出什么）。模块文档字符串：`quantlab.registry`、`quantlab.acquisition._support.inspector`、`quantlab.utils.progress`。
+[acquisition](acquisition.md) 指南讲下载引擎、分批、续跑和失败清单。[WRDS TAQ](wrds_taq.md) 指南详述 `wrds` 数据源。另见 [pageledger](pageledger.md)（页级续跑）以及 [dataset](dataset.md) 和 [chunking](chunking.md)（`convert()` 写出什么）。模块文档字符串：`quantlab.acquisition.registry`、`quantlab.acquisition._support.inspector`、`quantlab.utils.progress`。
