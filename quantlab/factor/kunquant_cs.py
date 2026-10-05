@@ -24,9 +24,11 @@ z-score so that a few extreme symbols do not dominate its mean and spread.
 least-squares residual ``CrossSectionalWLSResidual`` and
 ``CrossSectionalIndustrySizeFill`` are the estimation-universe tools of a
 Barra-style risk factor (``quantlab.factor.predefined.barra``), usable by
-any factor. ``RenormalizedCombine`` is elementwise, with no time or symbol
-window; it is here because it is a per-bar step of that same pipeline
-(combining descriptors).
+any factor. ``CrossSectionalNeutralize`` fits the same industry and size
+regression as ``CrossSectionalIndustrySizeFill`` and keeps the residual: it
+neutralizes a factor against industry, size or both. ``RenormalizedCombine``
+is elementwise, with no time or symbol window; it is here because it is a
+per-bar step of that same pipeline (combining descriptors).
 """
 
 from KunQuant.Op import Builder
@@ -745,12 +747,143 @@ class CrossSectionalWLSResidual(GenericCrossSectionalOp):
         """
 
 
-#: Largest industry code ``CrossSectionalIndustrySizeFill`` accepts; it sizes
+#: Largest industry code the industry and size regression accepts; it sizes
 #: the per-industry accumulators.
 _MAX_INDUSTRY_CODE = 4096
 
 
-class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
+class _IndustrySizeRegression(GenericCrossSectionalOp):
+    """Shared machinery of the per-bar weighted regression on industry and size.
+
+    The model is one intercept per industry plus a common slope on
+    ``size``, fitted by weighted least squares without a matrix solve
+    (Frisch-Waugh-Lovell). Subclasses take ``y, size, industry`` as their
+    first three inputs, then the weights and the universe mask when they
+    are given, call ``_variant`` from ``__new__`` and write their output
+    loop after ``_fit_code()``.
+
+    The C++ body cannot read an op parameter (see
+    ``_CrossSectionalQuantileBounds``), so each set of flags gets a
+    subclass of the public class of its own, named after the regressors it
+    uses and the optional inputs it takes
+    (``CrossSectionalNeutralize_industry_size_w``).
+    """
+
+    _USE_INDUSTRY: bool = True
+    _USE_SIZE: bool = True
+    _HAS_W: bool = True
+    _HAS_UNIVERSE: bool = True
+    _variants: dict = {}
+
+    @classmethod
+    def _variant(
+        cls, use_industry: bool, use_size: bool, *, optional: tuple[tuple[str, bool], ...] = ()
+    ) -> type:
+        """Return the subclass of the public class ``cls`` specialized to its flags.
+
+        ``optional`` names the inputs the public class may go without
+        (``("w", True)``); a given one is added to the class name.
+        """
+        if not (use_industry or use_size):
+            raise ValueError(f"{cls.__name__}: needs industry, size or both")
+        flags = (("industry", bool(use_industry)), ("size", bool(use_size))) + tuple(
+            (name, bool(given)) for name, given in optional
+        )
+        key = (cls, flags)
+        variant = _IndustrySizeRegression._variants.get(key)
+        if variant is None:
+            given = dict(flags)
+            tag = "_".join(name for name, used in flags if used)
+            variant = type(
+                f"{cls.__name__}_{tag}",
+                (cls,),
+                {
+                    "_USE_INDUSTRY": given["industry"],
+                    "_USE_SIZE": given["size"],
+                    "_HAS_W": given.get("w", True),
+                    "_HAS_UNIVERSE": given.get("universe", True),
+                },
+            )
+            variant.__module__ = cls.__module__
+            _IndustrySizeRegression._variants[key] = variant
+        return variant
+
+    def generate_head(self) -> str:
+        """Return the C++ set-up: per-industry accumulators, sized on each bar."""
+        return """
+        std::vector<T> group_w, group_y, group_s;
+        """
+
+    def _industry(self) -> str:
+        """C++ for symbol ``i``'s group: its industry code, or 0 without industries."""
+        return "(size_t)input_2[i]" if self._USE_INDUSTRY else "(size_t)0"
+
+    def _size(self) -> str:
+        """C++ for symbol ``i``'s size, or 0 without size."""
+        return "input_1[i]" if self._USE_SIZE else "(T)0"
+
+    def _weight(self) -> str:
+        """C++ for symbol ``i``'s regression weight, 1 without ``w``."""
+        return "input_3[i]" if self._HAS_W else "(T)1"
+
+    def _in_universe(self) -> str:
+        """C++ that is true where symbol ``i`` is in the fit universe, always without one."""
+        index = 4 if self._HAS_W else 3
+        return f"input_{index}[i] > 0" if self._HAS_UNIVERSE else "true"
+
+    def _fit_code(self) -> str:
+        """Return the C++ that fits one bar.
+
+        It defines ``regressors_ok(i)`` (the regressors used are present),
+        ``groups``, the weighted fit-sample means ``group_y[g]`` and
+        ``group_s[g]`` with their total weight ``group_w[g]``, and the
+        ``slope`` on size, 0 where size does not vary within the industries
+        (below 1e-10 of its spread). The fitted value of a symbol with
+        ``regressors_ok`` whose group ``g < groups`` has ``group_w[g] > 0``
+        is ``group_y[g] + slope * (size - group_s[g])``.
+        """
+        industry, size, weight = self._industry(), self._size(), self._weight()
+        industry_ok = (
+            "std::isfinite(input_2[i]) && input_2[i] >= 0 && input_2[i] <= MAX_INDUSTRY"
+            " && input_2[i] == std::floor(input_2[i])"
+            if self._USE_INDUSTRY
+            else "true"
+        )
+        size_ok = "std::isfinite(input_1[i])" if self._USE_SIZE else "true"
+        return f"""
+        const T MAX_INDUSTRY = {_MAX_INDUSTRY_CODE};
+        auto regressors_ok = [&](size_t i) -> bool {{ return ({industry_ok}) && ({size_ok}); }};
+        auto fit = [&](size_t i) -> bool {{
+            T w = {weight};
+            return ({self._in_universe()}) && std::isfinite(input_0[i]) && std::isfinite(w) && w > 0
+                && regressors_ok(i);
+        }};
+        size_t groups = 1;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            if (regressors_ok(i)) groups = std::max(groups, {industry} + 1);
+        }}
+        group_w.assign(groups, 0); group_y.assign(groups, 0); group_s.assign(groups, 0);
+        for (size_t i = 0; i < num_stocks; i++) {{
+            if (!fit(i)) continue;
+            size_t g = {industry};
+            T w = {weight};
+            group_w[g] += w; group_y[g] += w * input_0[i]; group_s[g] += w * {size};
+        }}
+        for (size_t g = 0; g < groups; g++) {{
+            if (group_w[g] > 0) {{ group_y[g] /= group_w[g]; group_s[g] /= group_w[g]; }}
+        }}
+        T sss = 0, ssy = 0, scale = 0;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            if (!fit(i)) continue;
+            size_t g = {industry};
+            T w = {weight}, ds = {size} - group_s[g], dy = input_0[i] - group_y[g];
+            sss += w * ds * ds; ssy += w * ds * dy; scale += w * {size} * {size};
+        }}
+        T slope = sss > (T)1e-10 * scale && sss > 0 ? ssy / sss : 0;
+        """
+
+
+class CrossSectionalIndustrySizeFill(_IndustrySizeRegression):
     """Fill a missing value from a per-bar weighted regression on industry and size.
 
     On each bar the fit uses the symbols where ``universe > 0``, ``y`` is
@@ -774,7 +907,8 @@ class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
     and also when ``size`` does not vary within the industries, below
     1e-10 of its spread). Each pair of flags gets a class of its own
     (``CrossSectionalIndustrySizeFill_industry_size``), whose C++ has the
-    flags written in; ``isinstance`` still holds. The batch-start and
+    flags written in; ``isinstance`` still holds. ``CrossSectionalNeutralize``
+    fits the same model and keeps the residual instead. The batch-start and
     SIMD-width notes of ``CrossSectionalZScore`` apply.
 
     Parameters
@@ -805,26 +939,9 @@ class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
     >>> Output(CrossSectionalIndustrySizeFill(beta, size, Input("industry"), Sqrt(cap), estu, live), "beta")
     """
 
-    _USE_INDUSTRY: bool = True
-    _USE_SIZE: bool = True
-    _variants: dict = {}
-
     def __new__(cls, y, size, industry, w, universe, eligible, use_industry=True, use_size=True):
         """Return an instance of the subclass specialized to the two flags."""
-        if not (use_industry or use_size):
-            raise ValueError("CrossSectionalIndustrySizeFill: needs industry, size or both")
-        key = (bool(use_industry), bool(use_size))
-        variant = CrossSectionalIndustrySizeFill._variants.get(key)
-        if variant is None:
-            tag = "_".join(name for name, used in zip(("industry", "size"), key) if used)
-            variant = type(
-                f"CrossSectionalIndustrySizeFill_{tag}",
-                (CrossSectionalIndustrySizeFill,),
-                {"_USE_INDUSTRY": key[0], "_USE_SIZE": key[1]},
-            )
-            variant.__module__ = CrossSectionalIndustrySizeFill.__module__
-            CrossSectionalIndustrySizeFill._variants[key] = variant
-        return super().__new__(variant)
+        return super().__new__(CrossSectionalIndustrySizeFill._variant(use_industry, use_size))
 
     def __init__(self, y, size, industry, w, universe, eligible, use_industry=True, use_size=True):
         """Initialize the operator; see the class docstring for parameters."""
@@ -833,53 +950,10 @@ class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
             [("use_industry", bool(use_industry)), ("use_size", bool(use_size))],
         )
 
-    def generate_head(self) -> str:
-        """Return the C++ set-up: per-industry accumulators, sized on each bar."""
-        return """
-        std::vector<T> group_w, group_y, group_s;
-        """
-
     def generate_body(self) -> str:
         """Return the C++ that fits one bar and fills its missing values."""
-        industry = "(size_t)input_2[i]" if self._USE_INDUSTRY else "(size_t)0"
-        industry_ok = (
-            "std::isfinite(input_2[i]) && input_2[i] >= 0 && input_2[i] <= MAX_INDUSTRY"
-            " && input_2[i] == std::floor(input_2[i])"
-            if self._USE_INDUSTRY
-            else "true"
-        )
-        size_ok = "std::isfinite(input_1[i])" if self._USE_SIZE else "true"
-        size = "input_1[i]" if self._USE_SIZE else "(T)0"
-        return f"""
-        const T MAX_INDUSTRY = {_MAX_INDUSTRY_CODE};
-        auto regressors_ok = [&](size_t i) -> bool {{ return ({industry_ok}) && ({size_ok}); }};
-        auto fit = [&](size_t i) -> bool {{
-            T w = input_3[i];
-            return input_4[i] > 0 && std::isfinite(input_0[i]) && std::isfinite(w) && w > 0
-                && regressors_ok(i);
-        }};
-        size_t groups = 1;
-        for (size_t i = 0; i < num_stocks; i++) {{
-            if (regressors_ok(i)) groups = std::max(groups, {industry} + 1);
-        }}
-        group_w.assign(groups, 0); group_y.assign(groups, 0); group_s.assign(groups, 0);
-        for (size_t i = 0; i < num_stocks; i++) {{
-            if (!fit(i)) continue;
-            size_t g = {industry};
-            T w = input_3[i];
-            group_w[g] += w; group_y[g] += w * input_0[i]; group_s[g] += w * {size};
-        }}
-        for (size_t g = 0; g < groups; g++) {{
-            if (group_w[g] > 0) {{ group_y[g] /= group_w[g]; group_s[g] /= group_w[g]; }}
-        }}
-        T sss = 0, ssy = 0, scale = 0;
-        for (size_t i = 0; i < num_stocks; i++) {{
-            if (!fit(i)) continue;
-            size_t g = {industry};
-            T w = input_3[i], ds = {size} - group_s[g], dy = input_0[i] - group_y[g];
-            sss += w * ds * ds; ssy += w * ds * dy; scale += w * {size} * {size};
-        }}
-        T slope = sss > (T)1e-10 * scale && sss > 0 ? ssy / sss : 0;
+        industry, size = self._industry(), self._size()
+        return self._fit_code() + f"""
         for (size_t i = 0; i < num_stocks; i++) {{
             T y = input_0[i];
             if (std::isfinite(y)) {{ output_0[i] = y; continue; }}
@@ -888,5 +962,118 @@ class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
             size_t g = {industry};
             if (g >= groups || !(group_w[g] > 0)) continue;
             output_0[i] = group_y[g] + slope * ({size} - group_s[g]);
+        }}
+        """
+
+
+class CrossSectionalNeutralize(_IndustrySizeRegression):
+    """Neutralize ``y`` against industry, size or both: its residual from a per-bar regression.
+
+    The regression is ``CrossSectionalIndustrySizeFill``'s: on each bar,
+    over the symbols where ``universe > 0``, ``y`` is finite, ``w`` is
+    finite and positive and the regressors used are present (``industry``
+    an integer code from 0 to 4096; any other code counts as missing), one
+    intercept per industry plus a common slope on ``size``, by weighted
+    least squares. Every symbol with a finite ``y``, inside the universe or
+    not, gets::
+
+        out = y - intercept[industry] - b * size
+
+    The residual has zero weighted sum within each industry and zero
+    weighted covariance with ``size`` over the fit sample. It is NaN where
+    ``y`` is missing or infinite, where a regressor used is missing, and
+    where the symbol's industry has no fit member: a neutralized panel has
+    no value that was left as it was. ``use_size=False`` neutralizes
+    against industry alone (the weighted industry mean is subtracted);
+    ``use_industry=False`` against size alone, with one common intercept.
+
+    Unlike ``CrossSectionalWLSResidual``, a bar where ``size`` does not vary
+    (within the industries, below 1e-10 of its spread) is not NaN: the
+    residual of a least-squares fit is unique even then, and the slope is
+    taken as 0. A symbol alone in its industry in the fit sample is left
+    with a residual of 0. The output is not re-standardized; follow it with
+    ``CrossSectionalZScore`` for that.
+
+    ``w`` and ``universe`` are optional: without ``w`` the fit is ordinary
+    least squares, without ``universe`` it uses every symbol. Leave them out
+    rather than passing a constant: KunQuant merges equal expressions, so
+    the same node passed twice to one cross-sectional op (a constant 1 as
+    both ``w`` and ``universe``) reaches the C++ as one input and the op
+    does not compile. Each set of flags and optional inputs gets a class of
+    its own (``CrossSectionalNeutralize_industry_size``,
+    ``CrossSectionalNeutralize_industry_size_w_universe``); ``isinstance``
+    still holds. The batch-start and SIMD-width notes of
+    ``CrossSectionalZScore`` apply.
+
+    Parameters
+    ----------
+    y : OpBase
+        The values to neutralize, such as an alpha factor.
+    size : OpBase
+        The size regressor, such as the log of market cap. Ignored, but
+        still required, with ``use_size=False``.
+    industry : OpBase
+        The industry code, a non-negative integer stored as a float.
+        Ignored, but still required, with ``use_industry=False``.
+    w : OpBase, optional
+        The regression weights, such as the square root of market cap as a
+        Barra-style model weighs. Without it, every symbol weighs 1.
+    universe : OpBase, optional
+        A mask, positive for the symbols the fit uses. Without it, the fit
+        uses every symbol.
+    use_industry, use_size : bool, default True
+        Which regressors the model has; at least one.
+
+    Raises
+    ------
+    ValueError
+        If both flags are false.
+
+    Examples
+    --------
+    Industry and size neutral by ordinary least squares over every symbol,
+    then size neutral alone:
+
+    >>> cap = Input("marketcap")
+    >>> Output(CrossSectionalNeutralize(alpha, Log(cap), Input("industry")), "alpha_neutral")
+    >>> Output(CrossSectionalNeutralize(alpha, Log(cap), ConstantOp(0.0), use_industry=False),
+    ...        "alpha_size_neutral")
+
+    Weighted by the square root of market cap and fitted on an estimation
+    universe, as Barra does:
+
+    >>> Output(CrossSectionalNeutralize(alpha, Log(cap), Input("industry"), Sqrt(cap), estu), "alpha_barra_neutral")
+    """
+
+    def __new__(cls, y, size, industry, w=None, universe=None, use_industry=True, use_size=True):
+        """Return an instance of the subclass specialized to the flags and the inputs given."""
+        variant = CrossSectionalNeutralize._variant(
+            use_industry, use_size, optional=(("w", w is not None), ("universe", universe is not None))
+        )
+        return super().__new__(variant)
+
+    def __init__(self, y, size, industry, w=None, universe=None, use_industry=True, use_size=True):
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__(
+            [v for v in (y, size, industry, w, universe) if v is not None],
+            [
+                ("use_industry", bool(use_industry)),
+                ("use_size", bool(use_size)),
+                ("weighted", w is not None),
+                ("in_universe", universe is not None),
+            ],
+        )
+
+    def generate_body(self) -> str:
+        """Return the C++ that fits one bar and writes its residuals."""
+        industry, size = self._industry(), self._size()
+        return self._fit_code() + f"""
+        for (size_t i = 0; i < num_stocks; i++) {{
+            T y = input_0[i];
+            output_0[i] = NAN;
+            if (!std::isfinite(y) || !regressors_ok(i)) continue;
+            size_t g = {industry};
+            if (g >= groups || !(group_w[g] > 0)) continue;
+            output_0[i] = y - group_y[g] - slope * ({size} - group_s[g]);
         }}
         """

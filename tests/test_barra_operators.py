@@ -6,8 +6,9 @@ weighted window statistics (``EWSum``, ``EWMean``, ``EWVar``, ``EWCov``,
 ``EWBeta``, ``EWAlpha``, ``EWResidualStd``), ``CMRA``, the cross-sectional
 ``CrossSectionalWeightedMean``, ``CrossSectionalTopN``,
 ``CapWeightedStandardize``, ``CrossSectionalSigmaClip``, the weighted
-least-squares residual ``CrossSectionalWLSResidual``, and the elementwise
-``RenormalizedCombine``. The regression
+least-squares residual ``CrossSectionalWLSResidual``, the industry and size
+regression of ``CrossSectionalIndustrySizeFill`` and ``CrossSectionalNeutralize``,
+and the elementwise ``RenormalizedCombine``. The regression
 references solve with ``numpy.linalg.lstsq``, not the closed forms.
 
 The panel has scattered NaN and infinities, an all-NaN bar and an all-NaN
@@ -32,6 +33,7 @@ from quantlab.factor.kunquant import shared_executor
 from quantlab.factor.kunquant_cs import (
     CapWeightedStandardize,
     CrossSectionalIndustrySizeFill,
+    CrossSectionalNeutralize,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
     CrossSectionalSigmaClip,
@@ -120,6 +122,12 @@ def _function() -> Function:
         Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e), "fill_industry_size")
         Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e, use_size=False), "fill_industry")
         Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e, use_industry=False), "fill_size")
+        Output(CrossSectionalNeutralize(y, x, ind, w, u), "neutral_industry_size")
+        Output(CrossSectionalNeutralize(y, x, ind, w, u, use_size=False), "neutral_industry")
+        Output(CrossSectionalNeutralize(y, x, ind, w, u, use_industry=False), "neutral_size")
+        Output(CrossSectionalNeutralize(y, x, ind), "neutral_ols_all")
+        Output(CrossSectionalNeutralize(y, x, ind, universe=u), "neutral_ols")
+        Output(CrossSectionalNeutralize(y, x, ind, w=w), "neutral_all")
     return Function(b.ops)
 
 
@@ -128,6 +136,8 @@ _OUTPUTS = (
     "wmean", "top", "standardized", "clipped",
     "ew_resid_std", "cmra", "combined", "wls1",
     "fill_industry_size", "fill_industry", "fill_size",
+    "neutral_industry_size", "neutral_industry", "neutral_size",
+    "neutral_ols_all", "neutral_ols", "neutral_all",
 )
 
 
@@ -301,9 +311,12 @@ def _wls_residual_reference(y, regressors, w, u) -> np.ndarray:
     return out
 
 
-def _fill_reference(y, size, industry, w, u, eligible, use_industry=True, use_size=True):
-    """Fill missing ``y`` from ``lstsq`` on explicit industry dummies and size; infinities are missing."""
-    out = np.where(np.isfinite(y), y, np.nan)
+def _industry_size_fits(y, size, industry, w, u, use_industry=True, use_size=True):
+    """Yield ``(t, design, coef, usable)`` of a ``lstsq`` fit on explicit industry dummies and size.
+
+    ``usable`` marks the symbols whose regressors are present and whose
+    industry has a fit member, the ones ``design[i] @ coef`` is defined for.
+    """
     for t in range(y.shape[0]):
         ok = np.ones(y.shape[1], dtype=bool)
         if use_industry:
@@ -312,10 +325,10 @@ def _fill_reference(y, size, industry, w, u, eligible, use_industry=True, use_si
         if use_size:
             ok &= np.isfinite(size[t])
         fit = ok & (u[t] > 0) & np.isfinite(y[t]) & np.isfinite(w[t]) & (w[t] > 0)
-        codes = sorted(set(industry[t, fit].astype(int))) if use_industry else [0]
-        group = (lambda i: int(industry[t, i]) if ok[i] else -1) if use_industry else (lambda i: 0)
         if not fit.any():
             continue
+        codes = sorted(set(industry[t, fit].astype(int))) if use_industry else [0]
+        group = (lambda i: int(industry[t, i]) if ok[i] else -1) if use_industry else (lambda i: 0)
         columns = [[float(group(i) == c) for c in codes] for i in range(y.shape[1])]
         if use_size:
             columns = [row + [size[t, i]] for i, row in enumerate(columns)]
@@ -325,10 +338,25 @@ def _fill_reference(y, size, industry, w, u, eligible, use_industry=True, use_si
             design[:, -1] = 0.0
         root = np.sqrt(w[t, fit])
         coef, *_ = np.linalg.lstsq(design[fit] * root[:, None], y[t, fit] * root, rcond=None)
-        for i in range(y.shape[1]):
-            if np.isfinite(y[t, i]) or not (eligible[t, i] > 0 and ok[i]) or group(i) not in codes:
-                continue
-            out[t, i] = design[i] @ coef
+        usable = np.array([ok[i] and group(i) in codes for i in range(y.shape[1])])
+        yield t, design, coef, usable
+
+
+def _neutralize_reference(y, size, industry, w, u, use_industry=True, use_size=True):
+    """Residual of ``y`` from ``_industry_size_fits`` wherever ``y`` is finite and the fit applies."""
+    out = np.full(y.shape, np.nan)
+    for t, design, coef, usable in _industry_size_fits(y, size, industry, w, u, use_industry, use_size):
+        keep = usable & np.isfinite(y[t])
+        out[t, keep] = y[t, keep] - design[keep] @ coef
+    return out
+
+
+def _fill_reference(y, size, industry, w, u, eligible, use_industry=True, use_size=True):
+    """Fill missing ``y`` from ``lstsq`` on explicit industry dummies and size; infinities are missing."""
+    out = np.where(np.isfinite(y), y, np.nan)
+    for t, design, coef, usable in _industry_size_fits(y, size, industry, w, u, use_industry, use_size):
+        fill = usable & ~np.isfinite(y[t]) & (eligible[t] > 0)
+        out[t, fill] = design[fill] @ coef
     return out
 
 
@@ -570,3 +598,108 @@ def test_industry_size_fill_compiles_one_class_per_regressor_set() -> None:
             CrossSectionalIndustrySizeFill(v, v, v, v, v, v, use_industry=False, use_size=False)
     assert type(a) is not type(b) and isinstance(b, CrossSectionalIndustrySizeFill)
     assert type(b).__name__ == "CrossSectionalIndustrySizeFill_industry"
+
+
+@pytest.mark.parametrize(
+    "output, flags",
+    [
+        ("neutral_industry_size", {}),
+        ("neutral_industry", {"use_size": False}),
+        ("neutral_size", {"use_industry": False}),
+    ],
+)
+def test_neutralize_matches_lstsq_on_explicit_dummies(run, output, flags) -> None:
+    dtype, inputs, outputs = run
+    want = _neutralize_reference(inputs["y"], inputs["x"], inputs["ind"], inputs["w"], inputs["u"], **flags)
+    _assert_matches(outputs[output], want, dtype, rtol=1e-8, atol=1e-10)
+    outside = (inputs["u"] == 0) & np.isfinite(want)
+    assert outside.sum() > _T, "symbols outside the universe should get a residual too"
+
+
+@pytest.mark.parametrize(
+    "output, flags",
+    [
+        ("neutral_industry_size", {}),
+        ("neutral_industry", {"use_size": False}),
+        ("neutral_size", {"use_industry": False}),
+    ],
+)
+def test_neutralize_residual_is_orthogonal_to_the_regressors_in_the_fit_sample(run, output, flags) -> None:
+    dtype, inputs, outputs = run
+    got, y, size, industry, w, u = (
+        outputs[output], inputs["y"], inputs["x"], inputs["ind"], inputs["w"], inputs["u"]
+    )
+    tol = 1e-10 if dtype == "double" else 1e-4
+    checked = 0
+    for t, design, _, usable in _industry_size_fits(y, size, industry, w, u, **flags):
+        fit = usable & (u[t] > 0) & np.isfinite(y[t]) & np.isfinite(w[t]) & (w[t] > 0)
+        wt, norm_y = w[t, fit], np.sqrt(np.sum(w[t, fit] * y[t, fit] ** 2))
+        for column in design[fit].T:  # every industry dummy, and size
+            bound = np.sqrt(np.sum(wt * column**2)) * norm_y  # Cauchy-Schwarz, with y for the residual
+            assert abs(np.sum(wt * column * got[t, fit])) <= tol * bound
+        checked += 1
+    assert checked > _T // 2
+
+
+@pytest.mark.parametrize(
+    "output, weighted, in_universe",
+    [("neutral_ols_all", False, False), ("neutral_ols", False, True), ("neutral_all", True, False)],
+)
+def test_neutralize_without_w_is_ols_and_without_universe_fits_every_symbol(
+    run, output, weighted, in_universe
+) -> None:
+    dtype, inputs, outputs = run
+    ones = np.ones_like(inputs["y"])
+    w = inputs["w"] if weighted else ones
+    u = inputs["u"] if in_universe else ones
+    want = _neutralize_reference(inputs["y"], inputs["x"], inputs["ind"], w, u)
+    _assert_matches(outputs[output], want, dtype, rtol=1e-8, atol=1e-10)
+
+
+def test_neutralize_is_nan_where_a_regressor_or_the_industry_fit_is_missing(run) -> None:
+    _, inputs, outputs = run
+    got = outputs["neutral_industry_size"]
+    y, u = inputs["y"], inputs["u"]
+    assert np.isnan(got[~np.isfinite(y)]).all()
+    assert np.isnan(got[np.isnan(inputs["ind"])]).all()
+    assert np.isnan(got[:, 12]).all()  # a non-integer industry code
+    assert np.isnan(got[np.isnan(inputs["x"])]).all()
+    # Symbol 11 is alone in its industry: off the fit sample it has no intercept, on it nothing is left.
+    alone_out = np.isfinite(y[:, 11]) & (u[:, 11] == 0)
+    assert alone_out.any() and np.isnan(got[alone_out, 11]).all()
+    alone_in = np.isfinite(got[:, 11])
+    assert alone_in.any() and np.allclose(got[alone_in, 11], 0.0, atol=1e-5)
+    # Missing size does not matter when size is not a regressor.
+    no_size = np.isnan(inputs["x"]) & np.isfinite(outputs["neutral_industry"])
+    assert no_size.any()
+
+
+def test_neutralize_keeps_a_flat_size_bar_instead_of_going_nan(run) -> None:
+    dtype, inputs, outputs = run
+    # Size is the same for every symbol on _FLAT_BAR: the slope is 0, the residual still exists.
+    got = outputs["neutral_size"][_FLAT_BAR]
+    y, w, u = inputs["y"][_FLAT_BAR], inputs["w"][_FLAT_BAR], inputs["u"][_FLAT_BAR]
+    fit = (u > 0) & np.isfinite(y) & np.isfinite(w) & (w > 0) & np.isfinite(inputs["x"][_FLAT_BAR])
+    keep = np.isfinite(y) & np.isfinite(inputs["x"][_FLAT_BAR])
+    want = y[keep] - np.average(y[fit], weights=w[fit])
+    np.testing.assert_allclose(got[keep], want, rtol=1e-8 if dtype == "double" else 2e-5, atol=1e-6)
+
+
+def test_neutralize_compiles_one_class_per_regressor_set() -> None:
+    with Builder():
+        v = Input("v")
+        a = CrossSectionalNeutralize(v, v, v)
+        b = CrossSectionalNeutralize(v, v, v, use_industry=False)
+        c = CrossSectionalNeutralize(v, v, v, use_industry=False)
+        d = CrossSectionalNeutralize(v, v, v, v)
+        e = CrossSectionalNeutralize(v, v, v, universe=v)
+        fill = CrossSectionalIndustrySizeFill(v, v, v, v, v, v, use_industry=False)
+        with pytest.raises(ValueError, match="industry, size or both"):
+            CrossSectionalNeutralize(v, v, v, use_industry=False, use_size=False)
+    assert type(a) is not type(b) and type(b) is type(c) and isinstance(b, CrossSectionalNeutralize)
+    assert type(a).__name__ == "CrossSectionalNeutralize_industry_size"
+    assert type(b).__name__ == "CrossSectionalNeutralize_size"
+    assert not isinstance(fill, CrossSectionalNeutralize) and type(fill) is not type(b)
+    assert type(d).__name__ == "CrossSectionalNeutralize_industry_size_w"
+    assert type(e).__name__ == "CrossSectionalNeutralize_industry_size_universe"
+    assert len(a.inputs) == 3 and len(d.inputs) == 4 and len(e.inputs) == 4
