@@ -281,3 +281,40 @@ def test_no_test_can_reach_fred_through_the_real_transport():
 
     with pytest.raises(AssertionError, match="fred.stlouisfed.org"):
         _http_get(CSV_URL, {"id": "DTB3", "cosd": "2024-01-02", "coed": "2024-01-03"})
+
+
+def test_a_day_not_yet_published_is_fetched_by_the_next_refresh(tmp_path, fred):
+    # Run on 2024-01-09 before that day's rate is out: FRED has through 01-08.
+    fake = fred({d: v for d, v in SERIES.items() if d <= "2024-01-08"})
+    acquisition = _acquisition(tmp_path, end="2024-01-09").download()
+    assert acquisition._read_watermark("DTB3") == "2024-01-08"
+
+    fake.rows = dict(SERIES)
+    _acquisition(tmp_path, end="2024-01-10").refresh()
+
+    assert _rates(_panel(tmp_path))["2024-01-09"] == 5.21
+
+
+def test_an_update_appends_to_an_existing_store(tmp_path, fred):
+    fake = fred({d: v for d, v in SERIES.items() if d <= "2024-01-05"})
+    _acquisition(tmp_path, end="2024-01-05").download()
+    _dataset(tmp_path).update()
+    fake.rows = dict(SERIES)
+    _acquisition(tmp_path, end="2024-01-09").refresh()
+
+    _dataset(tmp_path).update()
+
+    rates = _rates(_dataset(tmp_path).panel("2024-01-01", "2024-12-31").load())
+    assert list(rates) == list(SERIES)
+    assert rates["2024-01-09"] == 5.21
+
+
+def test_an_empty_answer_is_no_rows():
+    from quantlab.acquisition.fred import parse_csv
+
+    assert parse_csv("", "DTB3").height == 0
+
+
+def test_no_test_can_reach_fred_through_a_session():
+    with pytest.raises(AssertionError, match="fred.stlouisfed.org"):
+        requests.Session().get("https://fred.stlouisfed.org/graph/fredgraph.csv")

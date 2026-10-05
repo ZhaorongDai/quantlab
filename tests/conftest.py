@@ -118,9 +118,9 @@ def _reset_data_root_override():
     config.set_data_root(None)
 
 
-#: Hosts no test may reach; the key-free FRED endpoint needs no credential, so
-#: nothing else would stop a forgotten fake from downloading for real.
-_FORBIDDEN_HOSTS = ("fred.stlouisfed.org",)
+#: The host no test may reach; the key-free FRED endpoint needs no credential,
+#: so nothing else would stop a forgotten fake from downloading for real.
+FRED_HOST = "fred.stlouisfed.org"
 
 
 @pytest.fixture(autouse=True)
@@ -129,21 +129,23 @@ def _forbid_fred_network(monkeypatch):
 
     `tests/test_acquisition_batching.py` walks every concrete `Acquisition`
     subclass and calls `download()` on it, and FRED needs no key, so a
-    forgotten fake would reach the network silently. `requests.get` is
+    forgotten fake would reach the network silently. `requests` is
     wrapped so a FRED URL raises `AssertionError`; every other call passes
     through unchanged. `requests` is imported inside the body, as for the
     WRDS tripwire, and `quantlab.acquisition.fred` is never imported here.
+    `Session.request` is the method every `requests` entry point ends in
+    (`requests.get`, a `Session`), so all of them are covered.
     """
     import requests
 
-    real_get = requests.get
+    real_request = requests.Session.request
 
-    def guarded_get(url, *args, **kwargs):
-        if any(host in str(url) for host in _FORBIDDEN_HOSTS):
+    def guarded_request(self, method, url, *args, **kwargs):
+        if FRED_HOST in str(url):
             raise AssertionError(f"a test tried to reach {url}")
-        return real_get(url, *args, **kwargs)
+        return real_request(self, method, url, *args, **kwargs)
 
-    monkeypatch.setattr(requests, "get", guarded_get)
+    monkeypatch.setattr(requests.Session, "request", guarded_request)
 
 
 @pytest.fixture

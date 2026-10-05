@@ -81,13 +81,16 @@ def parse_csv(text: str, series: str) -> pl.DataFrame:
     Raises
     ------
     ValueError
-        If the header is not a date column followed by ``series``.
+        If the answer is not two columns, the second named ``series``, or a
+        date is not ``YYYY-MM-DD``.
 
     Examples
     --------
     >>> parse_csv("observation_date,DTB3\\n2024-01-02,5.24\\n2024-01-03,.\\n", "DTB3")["value"].to_list()
     [5.24, None]
     """
+    if not text.strip():
+        return pl.DataFrame(schema={"timestamp": pl.Datetime("us"), "value": pl.Float64})
     frame = pl.read_csv(
         io.StringIO(text), infer_schema=False, missing_utf8_is_empty_string=True
     )
@@ -115,6 +118,11 @@ class FredAcquisition(Acquisition):
     429 is FRED asking to slow down and is waited out; any other error
     fails that series alone. No credential exists to read or scrub.
 
+    A series' watermark is its last date with a value, not the requested
+    end: FRED publishes a day's rate the next business day, so a download
+    run on that day would otherwise mark a day as covered before it exists,
+    and ``refresh()``, which starts at the watermark, would never fetch it.
+
     Parameters
     ----------
     config : AcquisitionConfig
@@ -138,6 +146,27 @@ class FredAcquisition(Acquisition):
 
     #: FRED's "too many requests"; any other status fails the series.
     RATE_LIMIT_STATUS_CODES = frozenset({429})
+
+    def __init__(self, config):
+        """Initialize the acquisition; see the class docstring for parameters."""
+        super().__init__(config)
+        self._covered: dict[str, str] = {}
+
+    def _write_watermark(
+        self,
+        symbol: str,
+        last_date: str,
+        start_date: str | None = None,
+        no_data: bool = False,
+    ) -> None:
+        """Record the series as covered through its last date with a value, at most ``last_date``.
+
+        ``_fetch_page`` records that date per series; a series that
+        returned no value in this run keeps the start of the window it asked
+        for, so the next ``refresh()`` asks for it again.
+        """
+        covered = min(last_date, self._covered.get(symbol, last_date))
+        super()._write_watermark(symbol, covered, start_date=start_date, no_data=no_data)
 
     def _fetch_page(
         self,
@@ -170,8 +199,15 @@ class FredAcquisition(Acquisition):
                 CSV_URL, {"id": series, "cosd": start_date[:10], "coed": end_date[:10]}
             )
             response.raise_for_status()
+            rows = parse_csv(response.text, series)
+            valued = rows.filter(pl.col("value").is_not_null())
+            self._covered[series] = (
+                valued.get_column("timestamp").max().strftime("%Y-%m-%d")
+                if valued.height
+                else start_date[:10]
+            )
             frames.append(
-                parse_csv(response.text, series).with_columns(
+                rows.with_columns(
                     pl.lit(series).alias("symbol"), pl.lit(self.VENDOR).alias("vendor")
                 )
             )

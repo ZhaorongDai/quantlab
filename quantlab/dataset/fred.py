@@ -41,7 +41,6 @@ Download DTB3 (no API key) and build its store::
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -112,11 +111,12 @@ class FredRateDataset(BaseDataset):
         return config
 
     def _observations(self) -> pl.DataFrame:
-        """Return the series' observations, one per date, the newest download winning.
+        """Return the series' observations, one per date.
 
-        A refresh fetches its first day again into a new shard, and FRED may
-        revise a value, so a date can sit in several shards; the row of the
-        most recently written shard is kept.
+        A refresh fetches its first day again into a new shard, so a date
+        can sit in several shards; a value is kept over a missing one, and
+        of two values the one in the later shard file name (any of them: the
+        same day fetched twice holds the same published number).
 
         Raises
         ------
@@ -138,12 +138,8 @@ class FredRateDataset(BaseDataset):
                 f"{self.class_name}: the raw tier at {root} holds no row of "
                 f"series {self.config.series!r}; download it with FredAcquisition."
             )
-        written = {path: os.stat(path).st_mtime_ns for path in frame["_file"].unique()}
         return (
-            frame.with_columns(
-                pl.col("_file").replace_strict(written, return_dtype=pl.Int64).alias("_written")
-            )
-            .sort("timestamp", "_written", "_file")
+            frame.sort("timestamp", pl.col("value").is_not_null(), "_file")
             .unique(subset="timestamp", keep="last", maintain_order=True)
             .select(pl.col("timestamp").cast(pl.Datetime("ns")), "value")
         )
