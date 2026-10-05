@@ -23,6 +23,7 @@ WATERMARKS_DIR_NAME = "_watermarks"
 
 def add_output_dir_args(
     parser: argparse.ArgumentParser,
+    download_help: str | None = None,
 ) -> argparse.ArgumentParser:
     """Add ``--download-dir`` and ``--zarr-dir`` to ``parser``.
 
@@ -34,6 +35,9 @@ def add_output_dir_args(
     ----------
     parser : argparse.ArgumentParser
         The parser to extend.
+    download_help : str or None, default None
+        Help text for ``--download-dir`` when the vendor's raw layout differs
+        from the WRDS one the default text describes.
 
     Returns
     -------
@@ -52,7 +56,7 @@ def add_output_dir_args(
         "--download-dir",
         type=str,
         default=".",
-        help=(
+        help=download_help or (
             "Directory for the raw downloads. The raw files go to "
             "<download-dir>/<vendor>/<data type>/ (wrds/crsp_daily/ or "
             "wrds/nbbo/), the watermarks that --refresh reads to "
@@ -141,6 +145,37 @@ def resolve_output_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
         Path(args.download_dir).expanduser().absolute(),
         Path(args.zarr_dir).expanduser().absolute(),
     )
+
+
+def inside_repository(paths, repo_root) -> list[Path]:
+    """Return the ``paths`` that resolve inside ``repo_root``.
+
+    A script whose output is licensed data (Sharadar's raw tables and the
+    stores built from them) refuses a directory inside the repository, so the
+    data can never be committed. Symlinks are resolved, so a link out of the
+    repository passes and a link into it does not. Neither directory needs to
+    exist.
+
+    Parameters
+    ----------
+    paths : iterable of path-like
+        The directories to check.
+    repo_root : path-like
+        The repository's top directory.
+
+    Returns
+    -------
+    list[pathlib.Path]
+        The offending paths, as given, in order; empty when none is inside.
+
+    Examples
+    --------
+    >>> inside_repository([Path("/data/raw"), Path("/home/me/quantlab/data")],
+    ...                   Path("/home/me/quantlab"))
+    [PosixPath('/home/me/quantlab/data')]
+    """
+    root = Path(repo_root).resolve()
+    return [Path(path) for path in paths if Path(path).resolve().is_relative_to(root)]
 
 
 def place_downloads(config, download_dir):
