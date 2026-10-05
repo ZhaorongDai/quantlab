@@ -75,10 +75,10 @@ CV_TRAIN_PERIODS = 30
 CV_FIRST_TEST_BAR = 30
 CV_LAST_TEST_BAR = 77
 
-#: `quantlab.utils.fingerprint.DataRecorder` starts every mismatch with this.
+#: `quantlab.runs.record.DataRecorder` starts every mismatch with this.
 FINGERPRINT_WARNING = "data fingerprint mismatch"
 
-#: The distinctive substring of `quantlab.utils.fingerprint.PARTIAL_NOTE`, the
+#: The distinctive substring of `quantlab.runs.record._PARTIAL_NOTE`, the
 #: tail a failure-path comparison appends instead of "continuing".
 #: Spelled out here rather than imported on purpose: an ImportError at module
 #: level would break collection of this whole file, and these locks must be able
@@ -633,7 +633,7 @@ def test_a_failing_partial_diagnostic_never_replaces_the_real_exception(
     not hide it: the broken diagnostic is reported as its own warning, and the
     original `ValueError` propagates unchanged.
     """
-    from quantlab.utils.fingerprint import DataRecorder
+    from quantlab.runs.record import DataRecorder
 
     dataset_config, checkpoint = _trained(tmp_path)
     first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()

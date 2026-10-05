@@ -139,9 +139,7 @@ LAYER_ORDER = (
 MODULE_LAYERS = {
     "quantlab.enums": "utils",
     "quantlab.utils": "utils",
-    "quantlab.utils.execution": "execution",
-    "quantlab.utils.fingerprint": "runs",
-    "quantlab.utils.code_record": "runs",
+    "quantlab.execution.rules": "execution",
     "quantlab.utils.chunking": "dataset",
     "quantlab.utils.pageledger": "dataset",
     "quantlab.utils.frame": "dataset",
@@ -188,17 +186,14 @@ MODULE_LAYERS = {
 #: Imports that still go against the order while #146 is under way: (importing file,
 #: imported module). Only shrinks; deleted by the last ticket of #146.
 PENDING_VIOLATIONS = {
-    ("quantlab/core/component.py", "quantlab.utils.code_record"),
     ("quantlab/base/config.py", "quantlab.base.data"),
     ("quantlab/base/config.py", "quantlab.base.factor"),
     ("quantlab/base/config.py", "quantlab.base.model"),
     ("quantlab/base/config.py", "quantlab.base.portfolio"),
     ("quantlab/base/config.py", "quantlab.tracking.base"),
-    ("quantlab/base/config.py", "quantlab.utils.execution"),
+    ("quantlab/base/config.py", "quantlab.execution.rules"),
     ("quantlab/dataset/crsp/rebuild.py", "quantlab.acquisition.wrds"),
     ("quantlab/dataset/crsp/rebuild.py", "quantlab.registry"),
-    ("quantlab/runs/backtest_run.py", "quantlab.base.portfolio"),
-    ("quantlab/runs/backtest_run.py", "quantlab.utils.backtest_stats"),
 }
 
 

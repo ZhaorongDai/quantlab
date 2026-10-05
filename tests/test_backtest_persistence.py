@@ -368,7 +368,7 @@ def _panel(values: np.ndarray) -> xr.Dataset:
 
 
 def test_fingerprint_is_stable_and_nan_canonical(tmp_path):
-    from quantlab.utils.fingerprint import dataset_fingerprint
+    from quantlab.runs.record import _dataset_fingerprint as dataset_fingerprint
 
     zarr_path = write_price_store(tmp_path / "store", n_bars=20).zarr_file_path
     columns = [MARKET.fill_price_column, MARKET.valuation_price_column]
@@ -405,7 +405,7 @@ def test_fingerprint_is_stable_and_nan_canonical(tmp_path):
 def test_the_run_records_fingerprints_of_the_price_and_factor_datasets(overlap_run):
     """The run records what it read, by component path, one entry per request."""
     result = overlap_run["result"]
-    from quantlab.utils.fingerprint import dataset_fingerprint
+    from quantlab.runs.record import _dataset_fingerprint as dataset_fingerprint
 
     fingerprints = BacktestRun.open(result.run_dir).data_fingerprint
     # Load mode: no training data, and the label dataset is read for training only.

@@ -652,11 +652,11 @@ True
 
 ### 不用回测器回放 Execution 规则
 
-vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quantlab.utils.execution`，它只导入 numpy。这些规则包括：订单按成交价成交；没有原始成交价的订单被拒绝；退市持仓按最后估值结算；按所选 sizing basis 定仓位；先卖后买，每笔买单受剩余现金限制；收取手续费和滑点。引擎用 `plan_orders` 生成订单计划。`replay` 返回这些订单在每个 bar 之后留下的股数和现金，与 vectorbt 实际执行的结果一致，差别只在浮点舍入；它还报告引擎记录的拒单和退市结算（`tests/test_execution.py`）。`ExecutionBook` 一个 bar 一个 bar 地维护同一本账，适合那种做完每次调仓的决策后才知道权重的驱动：它 `submit` 一个 bar 的权重，再按时间顺序逐个 `trade` 各个 bar。`DecisionInputs.weights` 就是这样重放交给规则的持仓，带上运行的 sizing basis、手续费和滑点，所以规则据以决策的持仓就是引擎随后模拟的持仓。
+vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quantlab.execution.rules`，它只导入 numpy。这些规则包括：订单按成交价成交；没有原始成交价的订单被拒绝；退市持仓按最后估值结算；按所选 sizing basis 定仓位；先卖后买，每笔买单受剩余现金限制；收取手续费和滑点。引擎用 `plan_orders` 生成订单计划。`replay` 返回这些订单在每个 bar 之后留下的股数和现金，与 vectorbt 实际执行的结果一致，差别只在浮点舍入；它还报告引擎记录的拒单和退市结算（`tests/test_execution.py`）。`ExecutionBook` 一个 bar 一个 bar 地维护同一本账，适合那种做完每次调仓的决策后才知道权重的驱动：它 `submit` 一个 bar 的权重，再按时间顺序逐个 `trade` 各个 bar。`DecisionInputs.weights` 就是这样重放交给规则的持仓，带上运行的 sizing basis、手续费和滑点，所以规则据以决策的持仓就是引擎随后模拟的持仓。
 
 ```python
 >>> import numpy as np
->>> from quantlab.utils.execution import ExecutionSettings, replay
+>>> from quantlab.execution.rules import ExecutionSettings, replay
 >>> prices = np.array([[10.0], [10.0]])
 >>> book = replay(
 ...     np.array([[1.0], [np.nan]]), prices, prices, np.zeros((2, 1), dtype=bool),

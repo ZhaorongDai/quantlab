@@ -25,7 +25,7 @@ from quantlab.base.config import WeightsBacktestConfig
 from quantlab.base.portfolio import PortfolioConstructor
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs
-from quantlab.utils.execution import ExecutionSettings
+from quantlab.execution.rules import ExecutionSettings
 
 NAN = np.nan
 N_BARS, N_SYMBOLS, REBALANCE = 40, 6, 3

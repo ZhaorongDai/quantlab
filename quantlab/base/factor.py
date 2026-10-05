@@ -46,7 +46,7 @@ from quantlab.utils.date_range import (
     range_text,
     resample_padding,
 )
-from quantlab.utils.fingerprint import record_read
+from quantlab.runs.record import record_read
 from quantlab.utils.resample import (
     assert_coarser,
     resample_store_path,
@@ -270,7 +270,7 @@ class Factor(Component, ABC):
         resamples the part of the source factor's store the range needs.
 
         This is the factor read seam: inside an open
-        ``quantlab.utils.fingerprint.DataRecorder`` the request is logged
+        ``quantlab.runs.record.DataRecorder`` the request is logged
         and fingerprinted, over every variable, when the recorder closes.
 
         Parameters

@@ -84,7 +84,7 @@ array([0.5, 0.5, 0. , 0. ])
 A rule only decides. Its *decision inputs*, everything it may read at a bar except the holdings, are assembled by one module, `DecisionInputs` in `quantlab/portfolio/decision_inputs.py`, for the backtest and for an executor alike. It is built from the price dataset, the fill and valuation columns, the bound rule, the rebalance period, the *anchor* (the first bar of the prediction panel, from which the rebalance schedule counts) and the execution settings. The vectorised backtest calls its `weights(predictions, delisted=...)`, which loops the rule's one-bar decision (`decide`, see [One bar outside a backtest](#one-bar-outside-a-backtest)) over the rebalance bars and builds each bar's context:
 
 - The tradability is the price dataset's `tradable_bars`, and the factor values are the rule's `required_factors()` computed over the window with their own warm-up.
-- The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.utils.execution`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. The backtester passes its config's `execution` settings and the delisting marks it hands the engine; without settings the replay sizes at the fill price and charges no costs.
+- The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.execution.rules`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. The backtester passes its config's `execution` settings and the delisting marks it hands the engine; without settings the replay sizes at the fill price and charges no costs.
 - The rebalance bars are every `rebalance_periods`-th bar from the anchor; the last bar never rebalances, since an order decided there has no next bar to fill on (`rebalance_mask` in the same module).
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
 - Each bar reads only the last `history_bars` raw valuation prices up to and including it (`lookback_bars + 1` by default; Ledoit-Wolf `lookback_bars + 1 + max_stale_bars`; mean-variance its risk model's), so a decision does not depend on where the price history starts. The backtest's warm-up holds the `history_bars - 1` bars before its first bar, so that bar already has a full window.
@@ -129,7 +129,7 @@ An executor that keeps its own book, such as an event-driven backtest or a live 
 Here `inputs` is built directly, `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)`, over three bars of prices on which `DDD` has no price at `context.timestamp` (`from_run` builds the same from a run):
 
 ```python
->>> from quantlab.base.portfolio import LabelSpec
+>>> from quantlab.runs.prediction_panel import LabelSpec
 >>> from quantlab.dataset.memory import FrameDataset
 >>> bars = pd.bdate_range(end=context.timestamp, periods=3)
 >>> close = xr.DataArray(
@@ -198,7 +198,7 @@ The optimiser needs to know the span and scale of the labels it reads, which a b
 >>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
 >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
->>> from quantlab.base.portfolio import LabelSpec
+>>> from quantlab.runs.prediction_panel import LabelSpec
 >>> specs = [
 ...     LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
 ...     LabelSpec(name="vol_5", scale="raw", delay=1, span=5),

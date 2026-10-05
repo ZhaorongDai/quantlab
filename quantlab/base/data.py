@@ -46,7 +46,7 @@ from quantlab.backend.zarr import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data
 from quantlab.enums.constant import Date
 from quantlab.utils.date_range import as_label, check_range, resample_padding
-from quantlab.utils.fingerprint import record_read
+from quantlab.runs.record import record_read
 from quantlab.utils.resample import (
     assert_coarser,
     clock_labels,
@@ -681,7 +681,7 @@ class BaseDataset(Component, ABC):
         and serve several consumers at once. The config is not changed.
 
         This is the dataset read seam: inside an open
-        ``quantlab.utils.fingerprint.DataRecorder`` the request is logged
+        ``quantlab.runs.record.DataRecorder`` the request is logged
         and fingerprinted when the recorder closes; outside one nothing is
         recorded.
 

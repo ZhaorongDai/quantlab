@@ -242,7 +242,7 @@ def _selected(panel, prices_zone, scores, columns, config):
     ``config``'s sizing basis, fees and slippage on its rebalance schedule.
     """
     from quantlab.base.config import TopNConfig
-    from quantlab.base.portfolio import LabelSpec
+    from quantlab.runs.prediction_panel import LabelSpec
     from quantlab.portfolio.decision_inputs import DecisionInputs
     from quantlab.portfolio.predefined.top_n import TopNConstructor
 

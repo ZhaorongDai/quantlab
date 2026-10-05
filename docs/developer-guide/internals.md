@@ -179,8 +179,8 @@ rename, as described above.
 
 A run is reproducible only if the data under it has not changed, and data
 does change: stores are appended to, and adjusted prices are restated after
-splits and dividends. `quantlab.utils.fingerprint.dataset_fingerprint`
-records, for one panel and a list of variables, a SHA-256 digest of each
+splits and dividends. The run record (`quantlab.runs.record`) records, for
+one panel and a list of variables, a SHA-256 digest of each
 variable's values, then a SHA-256 digest over the timestamps, the symbol
 names and each variable's name, dtype and digest, plus the first and last
 timestamp and the axis sizes. The per-variable digests and dtypes are kept in
@@ -220,7 +220,7 @@ it read.
 When the recorder closes, each distinct request is read once more and hashed
 once, over the requested variables, or every variable when none were
 requested. `records` maps each key to the list of requests in the order they
-were first read: a `dataset_fingerprint` record plus the `request` (`start`,
+were first read: the hash record plus the `request` (`start`,
 `end`, `symbols`, `variables`).
 
 The keys are component paths, so one dataset read by several consumers is
@@ -243,7 +243,7 @@ because changed data can still be worth backtesting.
 `BacktestRun.rebuild_backtester()` passes the run's record as
 `expected_fingerprint`, each fold's as `expected_fold_fingerprints`, and, for
 a train-mode run, the trained unit's as `expected_training_fingerprint`. The
-last is compared with `compare_records` once the retrained unit is written.
+last is compared with `compare` once the retrained unit is written.
 
 If the run fails partway, what was read so far is hashed and compared before
 the error propagates. A key or request not read yet is skipped, and every
@@ -253,7 +253,7 @@ exception.
 
 ### Code records
 
-`quantlab.utils.code_record.code_record` records the code a run used. The
+`quantlab.runs.record.code_record` records the code a run used. The
 `run.json` of a backtest run and of a top trained unit holds it as `code`
 (`BacktestRun.code`, `TrainedRun.code`), built by
 `quantlab.core.component.code_of(root)` over the component tree:
@@ -276,7 +276,7 @@ exception.
   xarray, polars, xgboost, torch, vectorbt, KunQuant and cvxpy). They are
   read from package metadata without importing the packages.
 
-`compare_code` warns once per changed, missing or extra module digest, with
+`compare` warns once per changed, missing or extra module digest, with
 component modules before framework modules and each warning naming the
 component paths, and once per changed library version.
 `rebuild_backtester()` compares the rebuilt tree with the run at once. A

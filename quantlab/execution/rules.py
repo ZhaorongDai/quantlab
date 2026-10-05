@@ -412,11 +412,11 @@ class ExecutionBook:
             cash = _snap(cash)
             if size > 0:
                 bought, paid = _buy(size, price, cash, fees, slippage)
-                cash = _add(cash, -paid)
-                shares[k] = _add(_snap(shares[k]), bought)
+                cash = add(cash, -paid)
+                shares[k] = add(_snap(shares[k]), bought)
             else:
                 cash = cash + _sell(-size, price, fees, slippage)
-                shares[k] = _add(_snap(shares[k]), size)
+                shares[k] = add(_snap(shares[k]), size)
         self.shares[trades] = shares
         self.cash = float(cash)
         return report
@@ -499,8 +499,17 @@ def _ffill(values: np.ndarray) -> np.ndarray:
     return filled
 
 
-def _is_close(a: float, b: float) -> bool:
-    """vectorbt's ``is_close_nb``: equal up to its relative and absolute tolerance."""
+def is_close(a: float, b: float) -> bool:
+    """vectorbt's ``is_close_nb``: equal up to its relative and absolute tolerance.
+
+    One of the vectorbt numeric rules this module owns; the backtest metrics that
+    rebuild vectorbt's accounting use it too, so fills and metrics cannot drift.
+
+    Examples
+    --------
+    >>> is_close(1.0, 1.0 + 1e-12), is_close(1.0, 1.001), is_close(float("nan"), 0.0)
+    (True, False, False)
+    """
     if not (math.isfinite(a) and math.isfinite(b)):
         return False
     if a == b:
@@ -508,13 +517,20 @@ def _is_close(a: float, b: float) -> bool:
     return abs(a - b) <= max(_REL_TOL * max(abs(a), abs(b)), _ABS_TOL)
 
 
-def _add(a: float, b: float) -> float:
+def add(a: float, b: float) -> float:
     """vectorbt's ``add_nb``: ``a + b``, exactly 0 when the two cancel up to tolerance.
 
     Of opposite signs (or one of them 0) they cancel when their magnitudes
     are ``is_close``; of the same sign when the sum is ``is_close`` to 0.
-    Written out rather than through ``_is_close``, since it runs per order.
+    Written out rather than through ``is_close``, since it runs per order.
+    Takes numpy scalars as well as floats, and returns a float.
+
+    Examples
+    --------
+    >>> add(0.3, -0.3 + 1e-13), add(1.0, 2.0)
+    (0.0, 3.0)
     """
+    a, b = float(a), float(b)
     total = a + b
     if ((a > 0) - (a < 0)) != ((b > 0) - (b < 0)):
         tol = max(_REL_TOL * max(abs(a), abs(b)), _ABS_TOL)
@@ -543,7 +559,7 @@ def _buy(amount: float, price: float, cash: float, fees: float, slippage: float)
     paid_price = price * (1 + slippage)
     cost = amount * paid_price
     total = cost + cost * fees
-    if total <= cash or _is_close(total, cash):
+    if total <= cash or is_close(total, cash):
         return amount, total
     affordable = cash / (1 + fees)
     if affordable <= 0:
@@ -554,4 +570,4 @@ def _buy(amount: float, price: float, cash: float, fees: float, slippage: float)
 def _sell(amount: float, price: float, fees: float, slippage: float) -> float:
     """Return the cash a sale of ``amount`` shares brings in, as vectorbt's ``sell_nb``."""
     received = amount * price * (1 - slippage)
-    return _add(received, -received * fees)
+    return add(received, -received * fees)

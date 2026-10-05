@@ -28,7 +28,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.portfolio import LabelSpec, PredictionPanel
+from quantlab.runs.prediction_panel import LabelSpec, PredictionPanel
 from quantlab.runs.backtest_run import BacktestRun
 
 SPECS = (
@@ -234,7 +234,7 @@ def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
     from quantlab.base.config import BacktestConfig, TopNConfig
     from quantlab.portfolio.decision_inputs import DecisionInputs
     from quantlab.portfolio.predefined.top_n import TopNConstructor
-    from quantlab.utils.execution import ExecutionSettings
+    from quantlab.execution.rules import ExecutionSettings
 
     result = request.getfixturevalue(run)
     inputs = DecisionInputs.from_run(result.run_dir)

@@ -31,7 +31,7 @@ from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.dataset.stock import StockDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.utils.execution import ExecutionSettings
+from quantlab.execution.rules import ExecutionSettings
 from tests.backtest_fixtures import SYMBOLS, write_price_store
 
 N_BARS = 40

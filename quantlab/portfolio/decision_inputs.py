@@ -15,7 +15,7 @@ it, so a decision depends only on what is known at its bar, never on where
 a longer price history starts.
 
 The weights held are not a decision input. ``weights`` replays them through
-the Execution module (``quantlab.utils.execution``) with the run's delisting
+the Execution module (``quantlab.execution.rules``) with the run's delisting
 marks; ``context`` takes them from the caller, an executor's own account.
 The rebalance schedule, ``rebalance_mask``, lives here as well: every
 ``rebalance_periods`` bars from the *anchor* (the first bar of the
@@ -40,7 +40,7 @@ import xarray as xr
 from quantlab.base.data import InsufficientHistoryError, MarketDataset
 from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.utils.execution import ExecutionBook, ExecutionSettings
+from quantlab.execution.rules import ExecutionBook, ExecutionSettings
 
 _DIMS = ("timestamp", "symbol")
 

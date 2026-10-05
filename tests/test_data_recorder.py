@@ -13,12 +13,13 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-import quantlab.utils.fingerprint as fingerprint
+import quantlab.runs.record as fingerprint
 from quantlab.base.config import PolarsFactorConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.utils.fingerprint import DataRecorder, active_recorder
+from quantlab.runs.record import DataRecorder
+from quantlab.runs.record import _active_recorder as active_recorder
 from tests.backtest_fixtures import PastReturnFactor, write_price_store
 
 
@@ -35,13 +36,13 @@ def warnings_logged():
 def hashes(monkeypatch):
     """Count the calls to ``dataset_fingerprint``."""
     calls = []
-    original = fingerprint.dataset_fingerprint
+    original = fingerprint._dataset_fingerprint
 
     def counting(ds, variables):
         calls.append(sorted(variables))
         return original(ds, variables)
 
-    monkeypatch.setattr(fingerprint, "dataset_fingerprint", counting)
+    monkeypatch.setattr(fingerprint, "_dataset_fingerprint", counting)
     return calls
 
 
@@ -152,7 +153,7 @@ def test_an_in_memory_dataset_hashes_its_held_panel():
     with DataRecorder(keys=[(held, "held")]) as recorder:
         held.panel("2024-01-02", "2024-01-05")
 
-    expected = fingerprint.dataset_fingerprint(
+    expected = fingerprint._dataset_fingerprint(
         _frame().sel(timestamp=slice("2024-01-02", "2024-01-05")), ["close", "volume"]
     )
     assert recorder.records["held"][0]["digest"] == expected["digest"]
@@ -286,7 +287,7 @@ def test_a_failing_diagnostic_never_replaces_the_error(warnings_logged, monkeypa
     def broken(ds, variables):
         raise OSError("disk gone")
 
-    monkeypatch.setattr(fingerprint, "dataset_fingerprint", broken)
+    monkeypatch.setattr(fingerprint, "_dataset_fingerprint", broken)
     with pytest.raises(RuntimeError, match="boom"):
         with DataRecorder(keys=[(held, "data")], expected={}):
             held.panel("2024-01-02", "2024-01-05")
@@ -341,7 +342,7 @@ def test_a_failing_diagnostic_after_a_successful_run_only_warns(warnings_logged,
     def broken(ds, variables):
         raise OSError("disk gone")
 
-    monkeypatch.setattr(fingerprint, "dataset_fingerprint", broken)
+    monkeypatch.setattr(fingerprint, "_dataset_fingerprint", broken)
     with DataRecorder(keys=[(held, "data")]):
         held.panel("2024-01-02", "2024-01-05")
 
@@ -381,7 +382,7 @@ def test_a_kunquant_factor_reads_only_its_data_columns(spot_kline_zarr):
 
 
 def test_unrecorded_reads_reach_no_recorder_and_are_not_hashed(prices, hashes):
-    from quantlab.utils.fingerprint import unrecorded
+    from quantlab.runs.record import unrecorded
 
     with DataRecorder(keys=[(prices, "p")]) as outer:
         with unrecorded():
@@ -407,20 +408,20 @@ def _one_variable(values, dtype) -> xr.Dataset:
 def test_a_variable_is_hashed_in_its_stored_dtype():
     """No up-cast: the dtype is part of the digest, NaN and -0.0 are canonical in it."""
     values = [[1.5, np.nan], [-0.0, 2.0]]
-    as32 = fingerprint.dataset_fingerprint(_one_variable(values, np.float32), ["close"])
-    as64 = fingerprint.dataset_fingerprint(_one_variable(values, np.float64), ["close"])
+    as32 = fingerprint._dataset_fingerprint(_one_variable(values, np.float32), ["close"])
+    as64 = fingerprint._dataset_fingerprint(_one_variable(values, np.float64), ["close"])
     assert as32["digest"] != as64["digest"]
 
     other_nan = np.frombuffer(np.uint32(0x7FC00001).tobytes(), dtype=np.float32)[0]
     other_bits = _one_variable([[1.5, other_nan], [0.0, 2.0]], np.float32)
-    assert fingerprint.dataset_fingerprint(other_bits, ["close"])["digest"] == as32["digest"]
+    assert fingerprint._dataset_fingerprint(other_bits, ["close"])["digest"] == as32["digest"]
 
 
 def test_integer_and_boolean_variables_are_hashed_as_stored():
-    ints = fingerprint.dataset_fingerprint(_one_variable([[1, 2], [3, 4]], np.int64), ["close"])
-    flags = fingerprint.dataset_fingerprint(_one_variable([[True, False], [False, True]], bool), ["close"])
+    ints = fingerprint._dataset_fingerprint(_one_variable([[1, 2], [3, 4]], np.int64), ["close"])
+    flags = fingerprint._dataset_fingerprint(_one_variable([[True, False], [False, True]], bool), ["close"])
     assert len(ints["digest"]) == len(flags["digest"]) == 64
-    assert ints["digest"] != fingerprint.dataset_fingerprint(
+    assert ints["digest"] != fingerprint._dataset_fingerprint(
         _one_variable([[1, 2], [3, 5]], np.int64), ["close"]
     )["digest"]
 
@@ -452,9 +453,9 @@ def _wide_panel(n_timestamps=50, n_symbols=7, seed=0) -> xr.Dataset:
 def test_the_digest_does_not_depend_on_threads_or_blocks(workers, block_rows):
     panel = _wide_panel()
     names = list(panel.data_vars)
-    serial = fingerprint.dataset_fingerprint(panel, names, workers=1, block_rows=None)
+    serial = fingerprint._dataset_fingerprint(panel, names, workers=1, block_rows=None)
 
-    record = fingerprint.dataset_fingerprint(
+    record = fingerprint._dataset_fingerprint(
         panel, names, workers=workers, block_rows=block_rows
     )
 
@@ -464,11 +465,11 @@ def test_the_digest_does_not_depend_on_threads_or_blocks(workers, block_rows):
 
 def test_each_variable_has_its_own_digest_and_dtype():
     panel = _wide_panel()
-    before = fingerprint.dataset_fingerprint(panel, ["alpha", "count", "flag"])
+    before = fingerprint._dataset_fingerprint(panel, ["alpha", "count", "flag"])
     changed = panel.copy(deep=True)
     changed["alpha"][3, 2] += 1
 
-    after = fingerprint.dataset_fingerprint(changed, ["flag", "alpha", "count"])
+    after = fingerprint._dataset_fingerprint(changed, ["flag", "alpha", "count"])
 
     assert sorted(before["variable_digests"]) == ["alpha", "count", "flag"]
     assert before["variable_dtypes"] == {"alpha": "<f4", "count": "<i8", "flag": "|b1"}
@@ -479,10 +480,10 @@ def test_each_variable_has_its_own_digest_and_dtype():
 
 def test_relabelled_axes_change_the_digest_but_no_variable_digest():
     panel = _wide_panel()
-    before = fingerprint.dataset_fingerprint(panel, ["alpha"])
+    before = fingerprint._dataset_fingerprint(panel, ["alpha"])
     shifted = panel.assign_coords(timestamp=panel["timestamp"] + pd.Timedelta("1min"))
 
-    after = fingerprint.dataset_fingerprint(shifted, ["alpha"])
+    after = fingerprint._dataset_fingerprint(shifted, ["alpha"])
 
     assert after["digest"] != before["digest"]
     assert after["variable_digests"] == before["variable_digests"]
@@ -500,7 +501,7 @@ def test_a_lazily_read_variable_is_hashed_a_block_at_a_time(tmp_path, monkeypatc
         lazy = xr.open_zarr(tmp_path / "wide.zarr")
         tracemalloc.start()
         try:
-            record = fingerprint.dataset_fingerprint(lazy, ["alpha"], **kwargs)
+            record = fingerprint._dataset_fingerprint(lazy, ["alpha"], **kwargs)
             return record, tracemalloc.get_traced_memory()[1]
         finally:
             tracemalloc.stop()
@@ -517,12 +518,13 @@ def _records_of(panel, variables=None):
     """``DataRecorder.records`` of one whole-panel request of ``panel`` under ``data``."""
     names = variables or sorted(panel.data_vars)
     request = {"start": "2024-01-01", "end": "2024-01-03", "symbols": None, "variables": variables}
-    return {"data": [{"request": request, **fingerprint.dataset_fingerprint(panel, names)}]}
+    return {"data": [{"request": request, **fingerprint._dataset_fingerprint(panel, names)}]}
 
 
 def _mismatch(expected_panel, actual_panel, warnings_logged, variables=None):
-    fingerprint.compare_records(
-        _records_of(expected_panel, variables), _records_of(actual_panel, variables),
+    fingerprint.compare(
+        {"data_fingerprint": _records_of(expected_panel, variables)},
+        {"data_fingerprint": _records_of(actual_panel, variables)},
         owner="run",
     )
     (message,) = warnings_logged

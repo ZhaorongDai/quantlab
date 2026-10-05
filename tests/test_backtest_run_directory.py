@@ -43,13 +43,13 @@ from quantlab.backtest.predefined.us_equity import (
 )
 from quantlab.base.config import CrossSectionBacktestConfig, PolarsFactorConfig, TopNConfig
 from quantlab.base.config import ModelConfig
-from quantlab.base.portfolio import PredictionPanel
+from quantlab.runs.prediction_panel import PredictionPanel
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import Annualization, BacktestRun, Market
 from quantlab.runs.directory import FORMAT_VERSION, open_run
 from quantlab.runs.trained_run import TrainedRun
-from quantlab.utils.execution import ExecutionSettings
+from quantlab.execution.rules import ExecutionSettings
 from quantlab.utils.jsonable import to_jsonable
 from tests.backtest_fixtures import (
     FirstFeatureHead,

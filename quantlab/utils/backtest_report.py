@@ -48,7 +48,7 @@ import plotly.graph_objects as go
 import xarray as xr
 from plotly.subplots import make_subplots
 
-from quantlab.utils import backtest_stats
+from quantlab.utils import backtest_stats, date_range
 
 __all__ = [
     "backtest_report_figure",
@@ -415,7 +415,7 @@ def report_windows(timestamps, block: dict, folds: list[dict] | None = None) -> 
     folds : list[dict], optional
         One row per fold of a ``run_cv()`` run, in fold order, each with
         ``fold`` (its number), ``training_window``, ``traded`` (its first
-        and last traded bar, as ``backtest_stats.bar_label`` strings) and
+        and last traded bar, as ``date_range.bar_label`` strings) and
         ``in_sample_range``. From a run directory's ``metrics.json`` the
         row of ``fold`` in ``metrics["folds"]`` is ``fold["fold"]``,
         ``fold["metrics"]["training_window"]``,
@@ -441,7 +441,7 @@ def report_windows(timestamps, block: dict, folds: list[dict] | None = None) -> 
     (('2024-01-01', '2024-01-05'), 5, ['model'])
     """
     timestamps = np.asarray(timestamps)
-    traded = (backtest_stats.bar_label(timestamps[0]), backtest_stats.bar_label(timestamps[-1]))
+    traded = (date_range.bar_label(timestamps[0]), date_range.bar_label(timestamps[-1]))
     in_sample = list(block.get("in_sample_ranges") or [])
     if block.get("in_sample_range"):
         in_sample.append(block["in_sample_range"])

@@ -23,7 +23,7 @@ three kinds:
 Every unit's ``run.json`` also holds ``data_fingerprint``: what the unit's
 ``collect()`` read, as its ``DataRecorder`` recorded it, keyed by component
 path within the model; and ``code``, the code record of the model
-(``quantlab.utils.code_record``). Only the top unit records them: the trained
+(``quantlab.runs.record``). Only the top unit records them: the trained
 model, or the ensemble or walk-forward unit; its members and folds hold none.
 
 ``train`` writes a unit at ``{model_save_dir}/{Class}_trial_{timestamp}/``,

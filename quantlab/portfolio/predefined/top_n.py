@@ -13,7 +13,8 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.config import TopNConfig
-from quantlab.base.portfolio import LabelSpec, PortfolioConstructor, PortfolioContext
+from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.runs.prediction_panel import LabelSpec
 
 
 class TopNConstructor(PortfolioConstructor):
@@ -94,7 +95,7 @@ class TopNConstructor(PortfolioConstructor):
 
         Examples
         --------
-        >>> from quantlab.base.portfolio import LabelSpec
+        >>> from quantlab.runs.prediction_panel import LabelSpec
         >>> specs = [LabelSpec("ret_5", "raw", 1, 5), LabelSpec("ret_1", "raw", 1, 1)]
         >>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2, score_label="ret_20"))
         >>> rule.bind(specs)

@@ -34,7 +34,8 @@ import pytest
 import xarray as xr
 
 from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
-from quantlab.base.portfolio import LabelSpec, PortfolioContext
+from quantlab.base.portfolio import PortfolioContext
+from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs, rebalance_mask
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel

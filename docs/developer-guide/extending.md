@@ -218,7 +218,7 @@ overrides `panel` itself, such as one held in memory, accepts
 `record_read(self, panel, symbols=symbols, variables=variables,
 reread=lambda: self.panel(start, end, symbols, variables))` with the panel it
 returns
-(`quantlab.utils.fingerprint`), so a run records what it read (see
+(`quantlab.runs.record`), so a run records what it read (see
 [Data fingerprints](internals.md#data-fingerprints)). A dataset that only
 composes other datasets records nothing itself and passes the request on.
 

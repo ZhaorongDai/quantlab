@@ -70,7 +70,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.core.component import Component, code_of
+from quantlab.core.component import Component
+from quantlab.runs.record import code_of
 from quantlab.base.model import record_training_reads
 from quantlab.tracking.base import Tracker
 from quantlab.runs.trained_run import (

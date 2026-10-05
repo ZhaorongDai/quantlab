@@ -30,6 +30,9 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from quantlab.execution.rules import add, is_close
+from quantlab.utils.date_range import bar_label, label_ns
+
 #: Days in a calendar year, used to annualize bars longer than one day.
 CALENDAR_DAYS_PER_YEAR = 365.25
 
@@ -87,59 +90,6 @@ def year_freq(bar_interval, trading_days_per_year: int, session_minutes_per_day:
         minutes = interval / pd.Timedelta(minutes=1)
         bars_per_year = trading_days_per_year * session_minutes_per_day / minutes
     return interval * bars_per_year
-
-
-def label_ns(label) -> np.datetime64:
-    """Return a bar label (or any timestamp) as a nanosecond ``datetime64``.
-
-    Parameters
-    ----------
-    label
-        A bar label as ``metrics.json`` writes it (an ISO date or timestamp),
-        or anything ``pd.Timestamp`` accepts.
-
-    Returns
-    -------
-    numpy.datetime64
-        The exact instant, at nanosecond resolution; a date is midnight.
-
-    Examples
-    --------
-    >>> label_ns("2024-01-02")
-    np.datetime64('2024-01-02T00:00:00.000000000')
-    """
-    return np.datetime64(pd.Timestamp(str(label)).to_datetime64(), "ns")
-
-
-def bar_label(value) -> str:
-    """Return the label ``metrics.json`` and the report write for a bar.
-
-    A bar at midnight is written as an ISO date, any other bar as a full
-    ISO timestamp, so daily labels stay dates while intraday labels keep
-    their time of day; ``label_ns`` reads either back.
-
-    Parameters
-    ----------
-    value
-        A bar: a ``numpy.datetime64``, a ``pd.Timestamp`` or a string
-        ``pd.Timestamp`` accepts.
-
-    Returns
-    -------
-    str
-        The label.
-
-    Examples
-    --------
-    >>> bar_label(np.datetime64("2024-01-02T00:00"))
-    '2024-01-02'
-    >>> bar_label(pd.Timestamp("2024-01-02 15:30"))
-    '2024-01-02T15:30:00'
-    """
-    ts = pd.Timestamp(str(value)) if isinstance(value, str) else pd.Timestamp(value)
-    if ts == ts.normalize():
-        return ts.strftime("%Y-%m-%d")
-    return ts.isoformat()
 
 
 def in_ranges(timestamps, ranges: Sequence[tuple[str, str]]) -> np.ndarray:
@@ -767,26 +717,6 @@ def turnover_stats(
     }
 
 
-#: vectorbt's tolerances for "the same quantity" (``vectorbt.utils.math_``).
-_REL_TOL = 1e-9
-_ABS_TOL = 1e-12
-
-
-def _is_close(a: float, b: float) -> bool:
-    """vectorbt's ``is_close_nb``: equal up to its relative and absolute tolerance."""
-    if np.isnan(a) or np.isnan(b) or np.isinf(a) or np.isinf(b):
-        return False
-    if a == b:
-        return True
-    return abs(a - b) <= max(_REL_TOL * max(abs(a), abs(b)), _ABS_TOL)
-
-
-def _add(a: float, b: float) -> float:
-    """vectorbt's ``add_nb``: ``a + b``, exactly 0 when the two cancel up to tolerance."""
-    zero = _is_close(abs(a), abs(b)) if np.sign(a) != np.sign(b) else _is_close(a + b, 0.0)
-    return 0.0 if zero else a + b
-
-
 def _loop_sum(values) -> float:
     """Sum in order, starting from 0, as a compiled loop does."""
     total = 0.0
@@ -800,7 +730,7 @@ def _pnl_and_return(
 ) -> tuple[float, float]:
     """vectorbt's ``get_trade_stats_nb``: the PnL and return of one trade."""
     entry_value = size * entry_price
-    difference = _add(size * exit_price, -entry_value)
+    difference = add(size * exit_price, -entry_value)
     if difference != 0 and short:
         difference *= -1
     pnl = difference - entry_fees - exit_fees
@@ -832,14 +762,14 @@ def _symbol_exit_trades(sizes, prices, fees, bars, last_bar: int, last_price: fl
             entry_size += quantity
             entry_gross += quantity * price
             entry_fees += fee
-        elif _is_close(quantity, entry_size) or quantity < entry_size:
-            exit_size = entry_size if _is_close(quantity, entry_size) else quantity
+        elif is_close(quantity, entry_size) or quantity < entry_size:
+            exit_size = entry_size if is_close(quantity, entry_size) else quantity
             trades.append(dict(
                 trip=trip, size=exit_size, entry_bar=entry_bar, entry_price=entry_gross / entry_size,
                 entry_fees=exit_size / entry_size * entry_fees, exit_bar=bar, exit_price=price,
                 exit_fees=fee, short=short, open=False,
             ))
-            if _is_close(quantity, entry_size):
+            if is_close(quantity, entry_size):
                 in_position = False
             else:
                 fraction = (entry_size - quantity) / entry_size
@@ -857,7 +787,7 @@ def _symbol_exit_trades(sizes, prices, fees, bars, last_bar: int, last_price: fl
             entry_gross = entry_size * price
             entry_fees = fee - closed_fees
             entry_bar, short, trip = bar, not short, trip + 1
-    if in_position and not _is_close(-entry_size, 0.0) and -entry_size < 0:
+    if in_position and not is_close(-entry_size, 0.0) and -entry_size < 0:
         trades.append(dict(
             trip=trip, size=entry_size, entry_bar=entry_bar, entry_price=entry_gross / entry_size,
             entry_fees=entry_fees, exit_bar=last_bar, exit_price=last_price,
@@ -1255,11 +1185,11 @@ def exposure_stats(fills: xr.Dataset, close: xr.DataArray, cash: xr.DataArray) -
         for i in np.lexsort((np.arange(ts.size), bar, column)):
             col, size = column[i], sizes[i]
             before = position[col]
-            after = _add(before, size)
+            after = add(before, size)
             if size > 0 and before < 0:
                 covered = size if after < 0 else abs(before)
                 repaid = covered * (debt[col] / abs(before))
-                debt[col] = _add(debt[col], -repaid)
+                debt[col] = add(debt[col], -repaid)
                 debt_change[bar[i], col] -= repaid
             elif size < 0 and after < 0:
                 shorted = -size if before < 0 else abs(after)
@@ -1274,7 +1204,7 @@ def exposure_stats(fills: xr.Dataset, close: xr.DataArray, cash: xr.DataArray) -
     free = np.asarray(cash.values, dtype=np.float64) - 2 * np.cumsum(debt_change, axis=0).sum(axis=1)
     exposure = np.zeros(timestamps.size)
     for i in range(timestamps.size):
-        denominator = _add(gross[i], free[i])
+        denominator = add(gross[i], free[i])
         exposure[i] = 0.0 if denominator == 0 else gross[i] / denominator
     return {"Max Gross Exposure [%]": float(np.nanmax(exposure)) * 100 if exposure.size else float("nan")}
 

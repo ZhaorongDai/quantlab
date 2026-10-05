@@ -1,31 +1,57 @@
-"""Content fingerprint of the data a backtest run read.
+"""The run record: what a run read and which code it ran.
 
-A stored backtest is reproducible only if the data under it has not changed,
-and datasets do change: stores are appended to and adjusted prices are
-re-based retroactively. ``dataset_fingerprint`` records, for one dataset, the
-time range, the axis sizes and a sha256 digest over the values of the
-variables a run consumed. A rebuild from a persisted config computes the same
-record and compares it against the stored one.
+A run is reproducible from its config, its data and its code. This module records
+the last two and compares them with an earlier run's record. Its interface:
 
-NaN has many bit patterns, so every NaN is rewritten to one canonical NaN and
-every ``-0.0`` to ``0.0`` before hashing; otherwise two reads of identical data
-could report different digests.
+- ``DataRecorder``, the context a run opens to learn what it read, and
+  ``record_read``, which the two read seams (``BaseDataset.panel`` and
+  ``Factor.read``) call; ``unrecorded`` hides reads from every open recorder;
+- ``code_record`` and ``code_of``, the code a component tree ran;
+- ``compare``, which compares two provenance records
+  (``{"data_fingerprint": ..., "code": ...}``) and logs one warning per difference.
 
-A ``DataRecorder`` is the context a run opens to learn what it read. The two
-read seams, ``BaseDataset.panel`` and ``Factor.read``, call ``record_read``;
-inside an open recorder the read is logged as a request (dataset, the first
-and last bar read, symbols, variables), outside one it returns at once. When the recorder closes,
-each distinct request is read again once and hashed with
-``dataset_fingerprint``, and the records are compared with an expected record
-when one is given. This module has no project-internal imports.
+**Data.** Stores are appended to and adjusted prices are re-based retroactively, so
+a stored run is reproducible only if the data under it has not changed. Inside an
+open recorder a read is logged as a request (dataset, the first and last bar read,
+symbols, variables); outside one ``record_read`` returns at once. When the recorder
+closes, each distinct request is read again once and hashed: the time range, the
+axis sizes and a sha256 digest over the values of the variables read. NaN has many
+bit patterns, so every NaN is rewritten to one canonical NaN and every ``-0.0`` to
+``0.0`` before hashing; otherwise two reads of identical data could report
+different digests. The records are compared with an expected record when one is
+given, by digest alone.
+
+**Code.** ``code_record`` records, for one component tree, the git commit of the
+quantlab repository (and whether its tracked files had uncommitted changes), a
+sha256 digest of the source file of every module that defines a class of the tree,
+and the versions of the libraries whose behaviour decides a run's numbers. A
+quantlab module outside the shipped implementations is a *framework* module: each
+layer's root class and extension framework, such as ``quantlab.factor.polars`` or
+``quantlab.portfolio.decision_inputs``. Every other recorded module is a
+*component* module: the shipped implementations (``quantlab.<layer>.predefined``,
+the datasets of ``quantlab.dataset``) and a user's own classes. Standard-library
+and installed third-party modules are not recorded, nor a class without a source
+file (one defined in a notebook); the libraries' versions are. ``dirty`` reports
+uncommitted changes to tracked files only; ``git`` is ``None`` when quantlab is not
+imported from a git working tree. A code comparison compares module digests and
+library versions; the git commit is context only.
+
+Nothing here raises on a difference: a run on changed data or code still runs.
 """
 
 import contextvars
 import hashlib
+import importlib.metadata
+import inspect
 import math
 import os
+import subprocess
+import sys
+import sysconfig
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -33,12 +59,13 @@ import xarray as xr
 from joblib import Parallel, delayed
 from loguru import logger
 
+from quantlab.core.component import walk_components
+
 __all__ = [
-    "PARTIAL_NOTE",
     "DataRecorder",
-    "active_recorder",
-    "compare_records",
-    "dataset_fingerprint",
+    "code_of",
+    "code_record",
+    "compare",
     "record_read",
     "unrecorded",
 ]
@@ -46,7 +73,7 @@ __all__ = [
 #: Tail of every warning of a failure-path comparison, in place of the usual
 #: "continuing". Log readers and tests find partial comparisons by the
 #: substring ``"comparison is PARTIAL"``, so keep it when rewording.
-PARTIAL_NOTE = (
+_PARTIAL_NOTE = (
     "this comparison is PARTIAL: the run failed before it finished reading, so "
     "a differing digest may reflect the interrupted read rather than a data "
     "change; the original error follows"
@@ -115,7 +142,7 @@ def _variable_digest(variable: xr.DataArray, block_rows: int | None) -> str:
     return digest.hexdigest()
 
 
-def dataset_fingerprint(
+def _dataset_fingerprint(
     ds: xr.Dataset,
     variables: list[str],
     *,
@@ -169,7 +196,7 @@ def dataset_fingerprint(
 
     Examples
     --------
-    >>> record = dataset_fingerprint(prices, ["open", "close"])
+    >>> record = _dataset_fingerprint(prices, ["open", "close"])
     >>> record["digest"] == stored_record["digest"]
     True
     """
@@ -217,15 +244,15 @@ def dataset_fingerprint(
     }
 
 
-def active_recorder() -> "DataRecorder | None":
+def _active_recorder() -> "DataRecorder | None":
     """Return the innermost open ``DataRecorder``, or ``None`` outside every one.
 
     Examples
     --------
-    >>> active_recorder() is None
+    >>> _active_recorder() is None
     True
     >>> with DataRecorder() as recorder:
-    ...     active_recorder() is recorder
+    ...     _active_recorder() is recorder
     True
     """
     return _ACTIVE.get()
@@ -343,7 +370,7 @@ def _mismatch_causes(old: dict, new: dict) -> str:
     Parameters
     ----------
     old, new : dict
-        The expected and the actual ``dataset_fingerprint`` record.
+        The expected and the actual ``_dataset_fingerprint`` record.
 
     Returns
     -------
@@ -396,7 +423,7 @@ class DataRecorder:
     itself, its inputs do.
 
     When the context closes, each distinct request is read once more and
-    hashed with ``dataset_fingerprint`` over the requested variables (every
+    hashed with ``_dataset_fingerprint`` over the requested variables (every
     variable of the panel when none were requested). ``records`` then maps each
     key to its requests, in the order first read; an in-memory dataset hashes
     the panel it holds. With ``expected`` given, the records are compared with
@@ -406,7 +433,7 @@ class DataRecorder:
 
     If the body raises, what was read so far is hashed and compared partially:
     a request or key not read yet is not reported, every warning carries
-    ``PARTIAL_NOTE``, and the original error propagates. The diagnostic never
+    ``_PARTIAL_NOTE``, and the original error propagates. The diagnostic never
     raises and never replaces that error: a failure of the hashing or the
     comparison itself only logs a warning, and ``records`` keeps what was
     hashed before it.
@@ -427,7 +454,7 @@ class DataRecorder:
     ----------
     records : dict
         ``{key: [entry, ...]}``, filled when the context closes. Each entry is
-        a ``dataset_fingerprint`` record plus ``request``: the first and last
+        a ``_dataset_fingerprint`` record plus ``request``: the first and last
         bar read (``start``, ``end``), the requested ``symbols`` and
         ``variables`` (``None`` for all).
 
@@ -528,7 +555,7 @@ class DataRecorder:
                     panel = reread()
                     names = request["variables"] or list(panel.data_vars)
                     entries.append(
-                        {"request": request, **dataset_fingerprint(panel, names)}
+                        {"request": request, **_dataset_fingerprint(panel, names)}
                     )
         finally:
             _ACTIVE.reset(token)
@@ -536,11 +563,11 @@ class DataRecorder:
             self._compare(partial=partial)
 
     def _compare(self, *, partial: bool) -> None:
-        """Compare ``records`` with ``expected``; see ``compare_records``."""
-        compare_records(self.expected or {}, self.records, owner=self.owner, partial=partial)
+        """Compare ``records`` with ``expected``; see ``_compare_data``."""
+        _compare_data(self.expected or {}, self.records, owner=self.owner, partial=partial)
 
 
-def compare_records(
+def _compare_data(
     expected: Mapping, actual: Mapping, *, owner: str, partial: bool = False
 ) -> None:
     """Compare two records by ``digest`` alone, logging one warning per difference.
@@ -562,17 +589,17 @@ def compare_records(
     partial : bool
         The failure-path comparison: a key or request expected but not read
         yet is skipped, since "not read yet" is not "not read", and every
-        warning ends with ``PARTIAL_NOTE`` instead of "continuing".
+        warning ends with ``_PARTIAL_NOTE`` instead of "continuing".
 
     Examples
     --------
     ``used`` is the trained unit a run used and ``retrained`` the unit a
     rebuild trained, both ``TrainedRun``; unchanged data logs nothing::
 
-        compare_records(used.data_fingerprint, retrained.data_fingerprint,
+        _compare_data(used.data_fingerprint, retrained.data_fingerprint,
                         owner="FirstFeatureHead training")
     """
-    tail = PARTIAL_NOTE if partial else "continuing"
+    tail = _PARTIAL_NOTE if partial else "continuing"
 
     def warn(key: str, request: dict | None, problem: str) -> None:
         where = f"{key!r}" if request is None else (
@@ -614,3 +641,280 @@ def compare_records(
                     f"(expected {_extent(old)}, got {_extent(new)}). "
                     f"The data changed since the expected run",
                 )
+
+
+# Code record.
+
+#: The distributions whose versions a code record holds, when installed.
+_LIBRARIES = (
+    "numpy",
+    "pandas",
+    "xarray",
+    "polars",
+    "xgboost",
+    "torch",
+    "vectorbt",
+    "KunQuant",
+    "cvxpy",
+)
+
+#: Directories of installed third-party and standard-library code.
+_INSTALLED = tuple(
+    Path(path).resolve()
+    for key in ("stdlib", "platstdlib", "purelib", "platlib")
+    if (path := sysconfig.get_paths().get(key))
+)
+
+
+def code_record(components: Iterable[tuple[str, object]]) -> dict:
+    """Return the code record of a component tree.
+
+    Parameters
+    ----------
+    components : iterable of (str, object) pairs
+        Every component of the run with its component path; the root's path
+        is ``""``. ``walk_components`` yields the rest of a tree.
+
+    Returns
+    -------
+    dict
+        ``git``: ``{"commit", "dirty"}`` of the repository quantlab is
+        imported from, or ``None`` outside one. ``modules``: by module name,
+        ``{"sha256", "framework", "components"}``, the component paths whose
+        class or a base class of it the module defines. ``libraries``: by
+        distribution name, the installed version, for those of ``_LIBRARIES``
+        that are installed.
+
+    Examples
+    --------
+    >>> record = code_record([("", backtester), *walk_components(backtester)])
+    >>> sorted(record)
+    ['git', 'libraries', 'modules']
+    >>> record["modules"]["tests.backtest_fixtures"]["framework"]
+    False
+    >>> record["modules"]["quantlab.base.factor"]["framework"]
+    True
+    """
+    modules: dict[str, dict] = {}
+    for path, item in components:
+        for cls in type(item).__mro__:
+            source = _source_file(cls)
+            if source is None:
+                continue
+            entry = modules.setdefault(
+                cls.__module__,
+                {
+                    "sha256": _digest(source),
+                    "framework": _is_framework(cls.__module__),
+                    "components": [],
+                },
+            )
+            if path not in entry["components"]:
+                entry["components"].append(path)
+    return {
+        "git": _git(),
+        "modules": dict(sorted(modules.items())),
+        "libraries": _libraries(),
+    }
+
+
+def _compare_code(expected: Mapping, actual: Mapping, *, owner: str) -> None:
+    """Compare two code records, logging one warning per difference.
+
+    Module digests and library versions are compared; the git commit is
+    context only. Component modules are reported before framework modules,
+    each warning naming the module, whether it is a component or a framework
+    module, and the component paths using it. Nothing is raised: a run on
+    changed code still runs.
+
+    Parameters
+    ----------
+    expected, actual : mapping
+        ``code_record`` of the earlier run and of this one.
+    owner : str
+        The name that opens every warning.
+
+    Examples
+    --------
+    ``run`` is a ``BacktestRun``; its rebuilt backtester's code is compared::
+
+        _compare_code(run.code, code_of(rebuilt), owner=str(run.path))
+    """
+    wanted = dict(expected.get("modules") or {})
+    got = dict(actual.get("modules") or {})
+    names = list(dict.fromkeys([*wanted, *got]))
+    names.sort(key=lambda name: (_entry(name, wanted, got)["framework"], name))
+    for name in names:
+        entry = _entry(name, wanted, got)
+        kind = "framework module" if entry["framework"] else "component module"
+        used = ", ".join(repr(path) for path in entry["components"]) or "no component"
+        if name not in got:
+            problem = "in the expected record but not used by this run"
+        elif name not in wanted:
+            problem = "used by this run but absent from the expected record"
+        elif wanted[name].get("sha256") != got[name].get("sha256"):
+            problem = "its source changed since the expected run"
+        else:
+            continue
+        logger.warning(
+            f"{owner}: code mismatch for {kind} {name!r} (used by {used}): "
+            f"{problem}; continuing"
+        )
+    old = dict(expected.get("libraries") or {})
+    new = dict(actual.get("libraries") or {})
+    for name in list(dict.fromkeys([*old, *new])):
+        if old.get(name) != new.get(name):
+            logger.warning(
+                f"{owner}: code mismatch for library {name!r}: expected version "
+                f"{old.get(name)}, got {new.get(name)}; continuing"
+            )
+
+
+def _entry(name: str, wanted: dict, got: dict) -> dict:
+    """Return the record of module ``name`` from this run, else the expected one."""
+    return got.get(name) or wanted[name]
+
+
+def _is_framework(name: str) -> bool:
+    """Return whether module ``name`` is a quantlab framework module (see the module docs)."""
+    parts = name.split(".")
+    return (
+        parts[0] == "quantlab"
+        and "predefined" not in parts
+        and parts[:2] != ["quantlab", "dataset"]
+    )
+
+
+def _is_quantlab(name: str) -> bool:
+    """Return whether module ``name`` is part of quantlab."""
+    return name == "quantlab" or name.startswith("quantlab.")
+
+
+def _source_file(cls: type) -> Path | None:
+    """Return the source file of the module defining ``cls``, unless it is installed code.
+
+    quantlab's own modules are never installed code here, however quantlab
+    is installed.
+    """
+    module = sys.modules.get(cls.__module__)
+    if module is None or getattr(module, "__file__", None) is None:
+        return None
+    try:
+        source = Path(inspect.getsourcefile(module) or module.__file__).resolve()
+    except TypeError:  # a built-in or extension module
+        return None
+    if source.suffix != ".py" or not source.is_file():
+        return None
+    if not _is_quantlab(cls.__module__) and _installed(source):
+        return None
+    return source
+
+
+def _installed(path: Path) -> bool:
+    """Return whether ``path`` lies in the standard library or an installed package."""
+    return any(path.is_relative_to(root) for root in _INSTALLED)
+
+
+def _digest(path: Path) -> str:
+    """Return the sha256 of a file's bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _git() -> dict | None:
+    """Return the commit and dirty flag of the repository quantlab lives in, or None."""
+    package = sys.modules.get("quantlab")
+    if package is None or getattr(package, "__file__", None) is None:
+        return None
+    directory = Path(package.__file__).resolve().parent
+    if _installed(directory):
+        # An installed copy: a repository around the environment is not quantlab's.
+        return None
+
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(directory), *args],
+                capture_output=True, text=True, timeout=10, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    commit = git("rev-parse", "HEAD")
+    if commit is None:
+        return None
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return {"commit": commit.strip(), "dirty": bool(status and status.strip())}
+
+
+def _libraries() -> dict:
+    """Return the installed version of each of ``_LIBRARIES``, without importing them."""
+    versions = {}
+    for name in _LIBRARIES:
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    return versions
+
+
+def code_of(root: Any) -> dict:
+    """Return the code record of ``root`` and every component under it.
+
+    ``code_record`` over ``root`` (path ``""``)
+    and ``walk_components(root)``: the git commit, the digest of every module
+    defining a class of the tree or a base class of one, and the library
+    versions.
+
+    Examples
+    --------
+    >>> record = code_of(model)
+    >>> record["modules"]["quantlab.base.model"]["components"]
+    ['']
+    """
+    return code_record([("", root), *walk_components(root)])
+
+
+def compare(
+    expected: Mapping, actual: Mapping, *, owner: str, partial: bool = False
+) -> None:
+    """Compare two provenance records, logging one warning per difference.
+
+    A provenance record holds ``data_fingerprint`` (a ``DataRecorder.records``)
+    and ``code`` (a ``code_record``). Each of the two is compared when both
+    sides hold it and neither is ``None``, so a caller with only the code passes
+    ``{"code": ...}``. Data are compared by digest alone, per key and request: a
+    key or request on one side only, or a differing digest, logs a warning that
+    explains a differing digest from the per-variable digests and dtypes and
+    shows both ranges and sizes. Code is compared by module digest and library
+    version, component modules reported before framework modules; the git commit
+    is context only. Nothing is raised.
+
+    Parameters
+    ----------
+    expected, actual : mapping
+        The record of the earlier run and of this one.
+    owner : str
+        The name that opens every warning.
+    partial : bool
+        The failure-path comparison of the data: a key or request expected but
+        not read yet is skipped, since "not read yet" is not "not read", and every
+        warning says the comparison is partial instead of "continuing".
+
+    Examples
+    --------
+    ``used`` is the trained unit a run used and ``retrained`` the unit a rebuild
+    trained, both ``TrainedRun``; unchanged data and code log nothing::
+
+        compare(
+            {"data_fingerprint": used.data_fingerprint, "code": used.code},
+            {"data_fingerprint": retrained.data_fingerprint, "code": retrained.code},
+            owner="FirstFeatureHead training",
+        )
+    """
+    if expected.get("data_fingerprint") is not None and actual.get("data_fingerprint") is not None:
+        _compare_data(
+            expected["data_fingerprint"], actual["data_fingerprint"], owner=owner, partial=partial
+        )
+    if expected.get("code") is not None and actual.get("code") is not None:
+        _compare_code(expected["code"], actual["code"], owner=owner)

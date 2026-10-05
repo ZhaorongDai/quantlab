@@ -3,9 +3,11 @@
 Datasets answer ``panel(start, end)`` and factors answer ``read(start, end)``
 and ``compute(start, end)``. Both ends are inclusive, and a date-only ISO
 string such as ``"2024-01-05"`` covers every bar of that day, the way
-``xarray`` slices a ``timestamp`` index with it.
+``xarray`` slices a ``timestamp`` index with it. ``bar_label`` and ``label_ns``
+write a bar as the label run files use and read it back.
 """
 
+import numpy as np
 import pandas as pd
 
 from quantlab.utils.resample import resample_seconds
@@ -95,3 +97,56 @@ def range_text(value) -> str:
     '2024-01-05T00:00:00'
     """
     return value if isinstance(value, str) else pd.Timestamp(value).isoformat()
+
+
+def label_ns(label) -> np.datetime64:
+    """Return a bar label (or any timestamp) as a nanosecond ``datetime64``.
+
+    Parameters
+    ----------
+    label
+        A bar label as ``metrics.json`` writes it (an ISO date or timestamp),
+        or anything ``pd.Timestamp`` accepts.
+
+    Returns
+    -------
+    numpy.datetime64
+        The exact instant, at nanosecond resolution; a date is midnight.
+
+    Examples
+    --------
+    >>> label_ns("2024-01-02")
+    np.datetime64('2024-01-02T00:00:00.000000000')
+    """
+    return np.datetime64(pd.Timestamp(str(label)).to_datetime64(), "ns")
+
+
+def bar_label(value) -> str:
+    """Return the label ``metrics.json`` and the report write for a bar.
+
+    A bar at midnight is written as an ISO date, any other bar as a full
+    ISO timestamp, so daily labels stay dates while intraday labels keep
+    their time of day; ``label_ns`` reads either back.
+
+    Parameters
+    ----------
+    value
+        A bar: a ``numpy.datetime64``, a ``pd.Timestamp`` or a string
+        ``pd.Timestamp`` accepts.
+
+    Returns
+    -------
+    str
+        The label.
+
+    Examples
+    --------
+    >>> bar_label(np.datetime64("2024-01-02T00:00"))
+    '2024-01-02'
+    >>> bar_label(pd.Timestamp("2024-01-02 15:30"))
+    '2024-01-02T15:30:00'
+    """
+    ts = pd.Timestamp(str(value)) if isinstance(value, str) else pd.Timestamp(value)
+    if ts == ts.normalize():
+        return ts.strftime("%Y-%m-%d")
+    return ts.isoformat()

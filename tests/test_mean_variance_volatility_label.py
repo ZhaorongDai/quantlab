@@ -38,7 +38,8 @@ from quantlab.base.config import (
     ModelConfig,
     PolarsFactorConfig,
 )
-from quantlab.base.portfolio import LabelSpec, PortfolioContext
+from quantlab.base.portfolio import PortfolioContext
+from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.label.predefined.fret import Return, Volatility
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel

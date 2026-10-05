@@ -84,7 +84,7 @@ array([0.5, 0.5, 0. , 0. ])
 规则只负责决策。它的*决策输入*，即在一根 bar 上能读到的除持仓以外的一切，由同一个模块组装：`quantlab/portfolio/decision_inputs.py` 中的 `DecisionInputs`，回测和执行器都用它。它由价格数据集、成交价列和估值价列、已绑定的规则、调仓周期、*锚点*（预测面板的第一根 bar，调仓日程从它开始计数）以及执行设置构造。向量化回测调用它的 `weights(predictions, delisted=...)`，它在调仓 bar 上逐根调用规则的单 bar 决策（`decide`，见[回测之外决定一根 bar](#回测之外决定一根-bar)），并为每根 bar 构造 context：
 
 - 可交易性取自价格数据集的 `tradable_bars`；因子值是规则的 `required_factors()` 在窗口上计算的结果，各带自己的预热期。
-- 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.utils.execution`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。回测器传入自己 config 中的 `execution` 设置，以及交给引擎的同一份退市标记；不传设置时按成交价定仓位、不计成本。
+- 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.execution.rules`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。回测器传入自己 config 中的 `execution` 设置，以及交给引擎的同一份退市标记；不传设置时按成交价定仓位、不计成本。
 - 调仓 bar 是从锚点起每 `rebalance_periods` 根中的一根；最后一根 bar 从不调仓，因为在那里决定的订单没有下一根 bar 可以成交（同一模块中的 `rebalance_mask`）。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
 - 每根 bar 只读截至（含）它的最近 `history_bars` 个原始估值价格（默认 `lookback_bars + 1`；Ledoit-Wolf 为 `lookback_bars + 1 + max_stale_bars`；均值方差取其风险模型的值），所以决策与价格历史从哪里开始无关。回测的预热期包含第一根 bar 之前的 `history_bars - 1` 根 bar，所以第一根 bar 就有完整的窗口。
@@ -129,7 +129,7 @@ True
 这里直接构造 `inputs`，即 `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)`，价格只有三根 bar，`DDD` 在 `context.timestamp` 上没有价格（`from_run` 从一次运行构造同样的输入）：
 
 ```python
->>> from quantlab.base.portfolio import LabelSpec
+>>> from quantlab.runs.prediction_panel import LabelSpec
 >>> from quantlab.dataset.memory import FrameDataset
 >>> bars = pd.bdate_range(end=context.timestamp, periods=3)
 >>> close = xr.DataArray(
@@ -198,7 +198,7 @@ array([False, False, False,  True])
 >>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
 >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
->>> from quantlab.base.portfolio import LabelSpec
+>>> from quantlab.runs.prediction_panel import LabelSpec
 >>> specs = [
 ...     LabelSpec(name="ret_5", scale="raw", delay=1, span=5),
 ...     LabelSpec(name="vol_5", scale="raw", delay=1, span=5),

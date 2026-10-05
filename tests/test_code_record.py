@@ -19,13 +19,12 @@ import pytest
 import xarray as xr
 from loguru import logger
 
-import quantlab.utils.code_record as code_record_module
+import quantlab.runs.record as code_record_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.core.component import code_of
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.utils.code_record import code_record, compare_code
+from quantlab.runs.record import code_of, code_record, compare
 from tests.backtest_fixtures import make_model, make_stock_dataset, train_checkpoint, write_price_store
 
 N_BARS = 60
@@ -130,9 +129,9 @@ def test_component_modules_are_listed_before_framework_modules(warnings_logged):
         "libraries": {"numpy": "2.0"},
     }
 
-    compare_code(record, record, owner="run")
+    compare({"code": record}, {"code": record}, owner="run")
     assert warnings_logged == []
-    compare_code(record, changed, owner="run")
+    compare({"code": record}, {"code": changed}, owner="run")
 
     first, second = warnings_logged
     assert "component module 'mine.factors' (used by 'factors.0')" in first

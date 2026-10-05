@@ -23,7 +23,7 @@ cross-validation run (``train_cv``), and the *stitched* curve simulates the
 test segments of all folds back to back. A *fingerprint* is a hash of the
 data a run read, stored so that a later rebuild of the run can tell whether
 the data has changed. The backtester does not decide what is fingerprinted:
-it opens a ``quantlab.utils.fingerprint.DataRecorder`` around each run, each
+it opens a ``quantlab.runs.record.DataRecorder`` around each run, each
 ``run_cv`` fold and the stitched pass, and every dataset or factor store read
 inside it is recorded under its component path.
 """
@@ -44,7 +44,7 @@ from loguru import logger
 
 from quantlab.core.component import Component, config_cls_of, walk_components
 from quantlab.base.data import MarketDataset
-from quantlab.base.portfolio import LabelSpec, PredictionPanel
+from quantlab.runs.prediction_panel import LabelSpec, PredictionPanel
 from quantlab.tracking.base import TrackingRun
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
 # converter and polars), which adds about a second of import time.
@@ -58,7 +58,7 @@ from quantlab.runs.backtest_run import (
     write_backtest_run,
 )
 from quantlab.runs.trained_run import TrainedRun
-from quantlab.utils import backtest_stats
+from quantlab.utils import backtest_stats, date_range
 from quantlab.utils.backtest_report import (
     backtest_report_figure,
     report_chart_inputs,
@@ -67,8 +67,7 @@ from quantlab.utils.backtest_report import (
     report_windows,
     write_backtest_report,
 )
-from quantlab.utils.code_record import compare_code
-from quantlab.utils.fingerprint import DataRecorder, compare_records, unrecorded
+from quantlab.runs.record import DataRecorder, compare, unrecorded
 from quantlab.utils.split import in_sample_window, split_ranges
 from quantlab.utils.timer import Timer
 
@@ -825,10 +824,10 @@ class BaseBacktester(Component, ABC):
         A bar at midnight is written as an ISO date, any other bar as a full
         ISO timestamp, so daily labels stay dates while intraday range
         endpoints keep their time of day. Labels are read back by
-        ``backtest_stats.label_ns`` and compared as exact timestamps, never
-        by day. ``backtest_stats.bar_label``, the public form.
+        ``date_range.label_ns`` and compared as exact timestamps, never
+        by day. ``date_range.bar_label``, the public form.
         """
-        return backtest_stats.bar_label(value)
+        return date_range.bar_label(value)
 
     @staticmethod
     def _slice_bound(value):
@@ -1308,8 +1307,8 @@ class BaseBacktester(Component, ABC):
             configured benchmark or the other way round.
         """
         timestamps = result.simulation.value.timestamp.values
-        start = backtest_stats.label_ns(self._iso_date(self.config.start_date))
-        end = backtest_stats.label_ns(self._iso_date(self.config.end_date)) + np.timedelta64(1, "D")
+        start = date_range.label_ns(self._iso_date(self.config.start_date))
+        end = date_range.label_ns(self._iso_date(self.config.end_date)) + np.timedelta64(1, "D")
         if timestamps.size and (timestamps[0] < start or timestamps[-1] >= end):
             raise ValueError(
                 f"{self.class_name}: the result covers {self._bar_label(timestamps[0])} "
@@ -1765,16 +1764,14 @@ class BaseBacktester(Component, ABC):
             self._trained_checkpoint = str(model.train())
         unit = TrainedRun.open(self._trained_checkpoint)
         self._trained_unit = unit.path
-        if self.expected_training_fingerprint is not None:
-            compare_records(
-                self.expected_training_fingerprint,
-                unit.data_fingerprint,
-                owner=f"{self.class_name} training",
-            )
-        if self.expected_training_code is not None and unit.code is not None:
-            compare_code(
-                self.expected_training_code, unit.code, owner=f"{self.class_name} training"
-            )
+        compare(
+            {
+                "data_fingerprint": self.expected_training_fingerprint,
+                "code": self.expected_training_code,
+            },
+            {"data_fingerprint": unit.data_fingerprint, "code": unit.code},
+            owner=f"{self.class_name} training",
+        )
         return configured
 
     def _warn_if_config_model_dates_differ(self, calendar, configured: tuple) -> None:
@@ -2306,7 +2303,7 @@ class BaseBacktester(Component, ABC):
             entry_ts = trades["entry_timestamp"].values.astype("datetime64[ns]")
             exit_ts = trades["exit_timestamp"].values.astype("datetime64[ns]")
             for _, end in ranges:
-                end_ts = backtest_stats.label_ns(end)
+                end_ts = date_range.label_ns(end)
                 open_at_end = (entry_ts <= end_ts) & (~closed | (exit_ts > end_ts))
                 open_trade_count += int(open_at_end.sum())
 

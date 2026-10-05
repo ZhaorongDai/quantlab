@@ -49,7 +49,7 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.utils.backtest_stats import bar_label
+from quantlab.utils.date_range import bar_label
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,

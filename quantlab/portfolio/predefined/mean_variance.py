@@ -23,14 +23,8 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.base.config import MeanVarianceConfig
-from quantlab.base.portfolio import (
-    CovarianceEstimate,
-    FactorCovarianceEstimate,
-    LabelSpec,
-    PortfolioConstructionError,
-    PortfolioConstructor,
-    PortfolioContext,
-)
+from quantlab.base.portfolio import CovarianceEstimate, FactorCovarianceEstimate, PortfolioConstructionError, PortfolioConstructor, PortfolioContext
+from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.utils.ensemble import _cross_sectional_zscore
 
 if TYPE_CHECKING:
@@ -410,7 +404,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
         Examples
         --------
-        >>> from quantlab.base.portfolio import LabelSpec
+        >>> from quantlab.runs.prediction_panel import LabelSpec
         >>> optimizer.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])
         >>> optimizer.span
         5

@@ -1,4 +1,4 @@
-"""The Execution rules: ``quantlab.utils.execution`` (#117).
+"""The Execution rules: ``quantlab.execution.rules`` (#117).
 
 What the market does with a bar's orders, and the holdings that result, as a
 public engine-free module the vectorbt engine plans its orders with. What is
@@ -35,7 +35,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from quantlab.utils.execution import ExecutionBook, ExecutionSettings, replay
+from quantlab.execution.rules import ExecutionBook, ExecutionSettings, replay
 
 NAN = np.nan
 

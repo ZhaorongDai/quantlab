@@ -40,7 +40,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
-from quantlab.core.component import Component, code_of, walk_components
+from quantlab.core.component import Component, walk_components
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.tracking.base import NullRun, Tracker, TrackingRun
 from quantlab.enums.constant import Date
@@ -51,7 +51,7 @@ from quantlab.runs.trained_run import (
     write_model_run,
 )
 from quantlab.utils.evaluation import Segments, evaluate
-from quantlab.utils.fingerprint import DataRecorder
+from quantlab.runs.record import DataRecorder, code_of
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.split import purge_segments
 from quantlab.utils.timer import Timer
@@ -625,7 +625,7 @@ class BaseModel(Component, ABC):
         """What the top unit records about its data and its code.
 
         ``data_fingerprint`` is ``training_record``; ``code`` the code record
-        of this model's tree (``quantlab.core.component.code_of``), taken
+        of this model's tree (``quantlab.runs.record.code_of``), taken
         when the unit is written.
 
         Examples

@@ -62,7 +62,8 @@ import quantlab.backtest.engine_vectorbt as engine_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.portfolio.decision_inputs import rebalance_mask
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
-from quantlab.base.portfolio import LabelSpec, PortfolioConstructor
+from quantlab.base.portfolio import PortfolioConstructor
+from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun, Market
 from tests.backtest_fixtures import (

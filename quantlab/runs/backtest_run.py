@@ -19,7 +19,7 @@ written last. Its kinds are ``"run"``, ``"run_cv"``, ``"run_weights"`` and
   fingerprint (what the run's ``DataRecorder`` recorded: every dataset or
   factor store it read, by component path; a ``run_cv`` run's is its stitched
   pass, each fold child run holds its fold's), ``code`` (the backtester tree's
-  code record, ``quantlab.utils.code_record``), ``trained_run`` (the trained unit
+  code record, ``quantlab.runs.record``), ``trained_run`` (the trained unit
   the backtest used: the one trained in train mode, the checkpoint's in load
   mode, the walk-forward unit for ``run_cv``; none for ``run_weights``) and
   the folds.
@@ -55,8 +55,9 @@ from loguru import logger
 
 from quantlab.backend.zarr import XrBackend
 from quantlab.core.component import rebuild as rebuild_component
-from quantlab.core.component import code_of, component_fields, recorded_configs, walk_components
-from quantlab.base.portfolio import PredictionPanel
+from quantlab.core.component import component_fields, recorded_configs, walk_components
+from quantlab.runs.prediction_panel import PredictionPanel
+from quantlab.runs.record import code_of, compare
 from quantlab.runs.directory import (
     read_record,
     recorded_path,
@@ -67,9 +68,8 @@ from quantlab.runs.directory import (
 )
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.backtest_stats import bar_label
-from quantlab.utils.code_record import compare_code
-from quantlab.utils.execution import ExecutionSettings
+from quantlab.utils.date_range import bar_label
+from quantlab.execution.rules import ExecutionSettings
 from quantlab.utils.jsonable import to_jsonable
 
 _KINDS = ("run", "run_cv", "run_weights", "fold")
@@ -620,9 +620,9 @@ class BacktestRun:
         replaced = set(overrides)
         backtester.expected_fingerprint = _outside(self.data_fingerprint, replaced)
         if self.code is not None:
-            compare_code(
-                _code_outside(self.code, replaced),
-                _code_outside(code_of(backtester), replaced),
+            compare(
+                {"code": _code_outside(self.code, replaced)},
+                {"code": _code_outside(code_of(backtester), replaced)},
                 owner=str(self.path),
             )
         retrains_same_model = config.get("model_mode") == "train" and not (

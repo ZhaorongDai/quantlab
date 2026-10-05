@@ -29,7 +29,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
-from quantlab.utils.fingerprint import active_recorder
+from quantlab.runs.record import _active_recorder as active_recorder
 from tests.backtest_fixtures import (
     SYMBOLS,
     make_model,
@@ -173,7 +173,7 @@ def test_no_code_outside_the_data_and_fingerprint_modules_knows_what_a_factor_re
         "_input_range": {"quantlab/base/factor.py"},
         "_later_end": {"quantlab/label/forward.py"},
         "_feature_start": {"quantlab/base/model.py"},
-        "dataset_fingerprint": {"quantlab/utils/fingerprint.py"},
+        "_dataset_fingerprint": {"quantlab/runs/record.py"},
     }
     gone = {"fingerprint_inputs", "training_fingerprint_inputs"}
     for path in sorted((REPO_ROOT / "quantlab").rglob("*.py")):

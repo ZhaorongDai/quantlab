@@ -24,7 +24,7 @@ from quantlab.backend.zarr import XrBackend
 from quantlab.base.config import FrameDatasetConfig
 from quantlab.base.data import MarketDataset
 from quantlab.utils.date_range import as_label, check_range
-from quantlab.utils.fingerprint import record_read
+from quantlab.runs.record import record_read
 from quantlab.utils.frame import to_panel
 
 class FrameDataset(MarketDataset):

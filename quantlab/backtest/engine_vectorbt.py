@@ -23,7 +23,7 @@ from vectorbt.portfolio.enums import SizeType
 
 from quantlab.base.backtest import BaseBacktester, SimulationResult
 from quantlab.utils import backtest_stats
-from quantlab.utils.execution import FILL_DELAY_BARS, OrderPlan, plan_orders
+from quantlab.execution.rules import FILL_DELAY_BARS, OrderPlan, plan_orders
 
 #: The order price a settlement at a last valuation of 0.0 is sent at: vectorbt
 #: refuses a price of 0, and at the smallest positive float the trade's cash is
@@ -151,7 +151,7 @@ class VectorBtBacktester(BaseBacktester):
 
         This is the only method that builds pandas objects: the weight and
         price panels are converted, the orders come from the Execution rules
-        (``quantlab.utils.execution.plan_orders``: a signal at bar ``t`` fills
+        (``quantlab.execution.rules.plan_orders``: a signal at bar ``t`` fills
         at bar ``t + 1``, rejections and delisting settlements included), and
         vectorbt's results are mapped back onto the engine-neutral
         ``SimulationResult``. The bar interval is the most common difference
