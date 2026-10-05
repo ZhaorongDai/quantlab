@@ -598,6 +598,62 @@ class SharadarHoldingsConfig(SharadarDatasetConfig):
     table: str = "sf3a"
 
 
+#: The thin Fama-French 48 industries merged by default, as ``(from_code,
+#: to_code)`` pairs; see ``SharadarIndustryConfig.industry_merge``. Measured
+#: on the 2026-10-05 Sharadar pull over 1998-12-02..2026-10-02 (7,001 days):
+#: these nine industries average fewer than 10 members of the top 3,000
+#: domestic common stocks by the previous day's DAILY market cap. Each is
+#: merged into the industry, of those averaging at least 10, whose
+#: cap-weighted daily return over those members correlates most with its own
+#: (the correlation follows each pair). The full run is on issue #178.
+DEFAULT_INDUSTRY_MERGE: tuple[tuple[int, int], ...] = (
+    (1, 41),  # Agric -> Whlsl, 0.616 (BldMt 0.609 is close behind)
+    (3, 2),  # Soda -> Food, 0.483
+    (4, 2),  # Beer -> Food, 0.691
+    (5, 2),  # Smoke -> Food, 0.604
+    (16, 17),  # Txtls -> BldMt, 0.736
+    (20, 21),  # FabPr -> Mach, 0.702
+    (25, 24),  # Ships -> Aero, 0.679
+    (26, 24),  # Guns -> Aero, 0.565
+    (27, 28),  # Gold -> Mines, 0.463
+)
+
+
+@dataclass(kw_only=True, frozen=True)
+class SharadarIndustryConfig(SharadarDatasetConfig):
+    """Config of the point-in-time Fama-French 48 industry panel on the permaticker axis.
+
+    Each security's SIC history is rebuilt from its current TICKERS
+    ``siccode`` and the ACTIONS ``sicchangefrom`` rows, then classified into
+    the Fama-French 48 industries. The universe fields work as for a price
+    panel, on SEP's TICKERS rows; the default category filter is domestic
+    common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarIndustryConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_industry_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ...     industry_merge=((27, 28),),
+    ... )
+    >>> cfg.table, cfg.industry_merge
+    ('sep', ((27, 28),))
+    """
+
+    #: Always SEP: its TICKERS rows give the current SIC, its dates the calendar.
+    table: str = "sep"
+
+    #: Thin industries merged into others, as ``(from_code, to_code)`` pairs
+    #: of Fama-French 48 codes (1..48): a security classified ``from_code``
+    #: holds ``to_code``. The dataset refuses an unknown code, an industry
+    #: merged into itself or into two targets, and a target that is itself
+    #: merged away, and stores the pairs sorted. ``()`` merges nothing. The
+    #: default (``DEFAULT_INDUSTRY_MERGE``) merges the industries with on
+    #: average fewer than 10 members of a top-3000-by-market-cap universe;
+    #: the run behind it is recorded on issue #178.
+    industry_merge: tuple[tuple[int, int], ...] = DEFAULT_INDUSTRY_MERGE
+
+
 @dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).

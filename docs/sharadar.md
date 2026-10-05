@@ -225,6 +225,28 @@ panel = SharadarHoldingsDataset(config).panel("2024-01-02", "2024-12-31")
 - **Axis.** TICKERS lists SF3's tickers only under the price tables (its `SF3B` rows are investors), so SF3A's tickers are mapped through SEP's rows. A ticker SEP does not list, such as a fund or a CUSIP with no Sharadar prices, is left out and counted in the log. On the 2026-10-05 pull that is 330,000 of 674,000 rows, and a 2024 trading day shows about 5,800 securities.
 - **Updates.** `update.py` pulls SF3A whole every run and appends the new trading days. A rebuilt store shows each quarter as the vendor holds it now, including filings made after the 45 days; an updated store shows it as it stood on the update. SF3 and SF3B feed no store, so only `download.py` pulls them.
 
+## Industry (Fama-French 48)
+
+TICKERS gives each security's current SIC code. Its `famaindustry`, `sicindustry` and `sector` are current snapshots too, so they are never used. ACTIONS records every SIC change as a `sicchangefrom`/`sicchangeto` pair of rows on one date. `SharadarIndustryDataset` rebuilds each security's SIC history from them and classifies it into the Fama-French 48 industries, with French's published SIC ranges (`quantlab.dataset._support.ff48`).
+
+```python
+from quantlab.dataset.config import SharadarIndustryConfig
+from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
+
+config = SharadarIndustryConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_industry_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarIndustryDataset(config).update()
+panel = SharadarIndustryDataset(config).panel("2024-01-02", "2024-12-31")
+panel["industry"].attrs["names"]["35"]  # 'Comps'
+```
+
+- **Point in time.** The history is walked back from the current code. On a day, a security's SIC is the `sicchangefrom` of its first change dated after that day, or the current code when no change is later. A change therefore shows from its action date, or from the next trading day when that date is not one. `sicchangeto` is not read. On the 2026-10-05 pull, 19 of 2,927 changes disagree with the next change's `sicchangefrom`, and for 36 of 2,575 securities the last change's `sicchangeto` is not the current code. In both cases the walk back keeps the code that held afterwards. Over 1997-12-31..2026-10-02, 1,833 of 17,024 securities change industry at least once. AMZN, for example, is Books (8) until 1998-06-11 and Retail (42) from 1998-06-12.
+- **Variable.** `industry` holds the code as a float (1..48), NaN where the SIC is unknown (43 of the 17,067 securities have no code on any day) and outside the security's TICKERS `firstpricedate`..`lastpricedate`. A SIC inside no range is 48, "Other". French leaves such a code unclassified. Sharadar's `famaindustry` puts 9995 (non-operating establishments) under Business Services. For every other SIC, the most common `famaindustry` among TICKERS rows with that code is the industry given here. Sharadar's label differs from it on 450 of 20,861 SEP rows, because the snapshot is not kept in line with `siccode`. The variable's `names` attribute maps each code that can appear to French's short name.
+- **Thin industries.** `industry_merge` lists `(from_code, to_code)` pairs. Its default (`DEFAULT_INDUSTRY_MERGE`) merges the nine industries with on average fewer than 10 members of the top 3,000 domestic common stocks by the previous day's DAILY market cap, over 1998-12-02..2026-10-02. Each goes into the industry, among those with at least 10, whose cap-weighted daily return correlates most with its own: Agric to Whlsl, Soda, Beer and Smoke to Food, Txtls to BldMt, FabPr to Mach, Ships and Guns to Aero, and Gold to Mines. That leaves 39 codes. An unknown code, an industry merged into itself or into two targets, or a target that is itself merged away is refused. `()` merges nothing.
+- **Updates.** `update.py` pulls TICKERS whole and ACTIONS as a trailing window, then appends the new trading days. A stored day is never rewritten, so a change the vendor backdates reaches only the days appended after it.
+
 ## Scripts
 
 The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
@@ -237,7 +259,7 @@ uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloa
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership panel.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, and the industry store `sharadar_industry_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership and industry panels.
 
 ## Daily update
 

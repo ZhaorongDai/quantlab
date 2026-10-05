@@ -16,8 +16,9 @@ and no config factory: ``registry.run()`` refuses it, and the download and the
 daily update are ``scripts/sharadar/download.py`` and
 ``scripts/sharadar/update.py``. ``registry.convert()`` builds the SEP and SFP
 stores, the SF1 fundamentals stores, and the DAILY, EVENTS, insider (SF2)
-and 13F ownership (SF3A) stores; the S&P 500 membership panel is a
-constituent dataset, built by the scripts.
+and 13F ownership (SF3A) stores; the S&P 500 membership panel (a
+constituent dataset) and the industry panel (built from TICKERS and ACTIONS
+together, not from one table) are built by the scripts.
 
 Examples
 --------

@@ -17,8 +17,8 @@ Run every morning after ``download.py`` has built the stores. One run:
    ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr``,
    ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr``,
    ``sharadar_sf1_art.zarr``, ``sharadar_daily_1d.zarr``,
-   ``sharadar_events_1d.zarr``, ``sharadar_insiders_1d.zarr`` and
-   ``sharadar_holdings_1d.zarr``), each from the
+   ``sharadar_events_1d.zarr``, ``sharadar_insiders_1d.zarr``,
+   ``sharadar_holdings_1d.zarr`` and ``sharadar_industry_1d.zarr``), each from the
    first day it already holds: new bars are appended and earlier rows are
    never rewritten. A vendor correction to a stored date of a price store is
    listed in ``<store>.corrections.json`` instead; one to SF1 or DAILY is not
@@ -62,11 +62,13 @@ from quantlab.dataset.config import (
     SharadarEventsConfig,
     SharadarFundamentalsConfig,
     SharadarHoldingsConfig,
+    SharadarIndustryConfig,
     SharadarInsidersConfig,
 )
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.events import SharadarEventsDataset
 from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
+from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
@@ -104,11 +106,12 @@ MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
 #: The DAILY valuation store.
 DAILY_STORE = "sharadar_daily_1d.zarr"
-#: The stores of the filing and ownership panels, with their config and dataset classes.
-FILING_STORES = {
+#: The stores of the filing, ownership and industry panels, with their config and dataset classes.
+PANEL_STORES = {
     "sharadar_events_1d.zarr": (SharadarEventsConfig, SharadarEventsDataset),
     "sharadar_insiders_1d.zarr": (SharadarInsidersConfig, SharadarInsidersDataset),
     "sharadar_holdings_1d.zarr": (SharadarHoldingsConfig, SharadarHoldingsDataset),
+    "sharadar_industry_1d.zarr": (SharadarIndustryConfig, SharadarIndustryDataset),
 }
 
 
@@ -162,7 +165,7 @@ if __name__ == "__main__":
         )
     vendor_root = download_dir / VENDOR_DIR
     missing = [
-        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES, DAILY_STORE, *FILING_STORES)
+        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES, DAILY_STORE, *PANEL_STORES)
         if not (zarr_dir / store).exists()
     ]
     if missing:
@@ -223,7 +226,7 @@ if __name__ == "__main__":
     )
     print_conversion_result(SharadarDailyDataset(daily).update().last_chunk_result)
 
-    for store, (config_cls, dataset_cls) in FILING_STORES.items():
+    for store, (config_cls, dataset_cls) in PANEL_STORES.items():
         config = config_cls(
             zarr_file_path=str(zarr_dir / store),
             raw_data_dir_path=str(vendor_root),
