@@ -135,9 +135,11 @@ class TiingoColumns:
 
 
 #: The data vendors acquisition can download from. A vendor token is a path
-#: segment of the raw tree (``downloads/{market}/{frequency}/{subdir}/{vendor}/``)
-#: and a literal column in every raw shard, so it cannot be renamed later.
-Vendor = Literal["tiingo", "alpaca", "wrds"]
+#: segment of the raw tree, so it cannot be renamed later: in the hive tree
+#: (``downloads/{market}/{frequency}/{subdir}/{vendor}/``) it is also a literal
+#: column in every raw shard; Sharadar's tables live under
+#: ``<download-dir>/sharadar/<table>/`` instead (``quantlab.dataset.sharadar.tables``).
+Vendor = Literal["tiingo", "alpaca", "wrds", "sharadar"]
 
 #: Hive partition keys of the raw tier, per frequency. One definition, imported
 #: by both the writer (the acquisition base class) and the reader (the stock

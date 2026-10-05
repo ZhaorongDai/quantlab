@@ -377,6 +377,44 @@ class CrspDatasetConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class SharadarDatasetConfig(DatasetConfig):
+    """Config of a Sharadar daily price panel on the permaticker axis.
+
+    Sharadar keys its price tables by ticker and renames a delisted company's
+    history when its ticker is reused, so the panel's ``symbol`` axis is the
+    *permaticker*, Sharadar's unchanging integer id of one share class (ADR
+    0023). The inherited ticker-side ``symbols`` field is refused by the
+    dataset; use ``permatickers`` instead.
+
+    Examples
+    --------
+    >>> cfg = SharadarDatasetConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_sep_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ...     start_date="2015-01-01",
+    ... )
+    >>> cfg.market, cfg.frequency, cfg.vendor, cfg.table
+    ('us_equity', '1d', 'sharadar', 'sep')
+    """
+
+    #: Always US equity for this vendor.
+    market: Market = "us_equity"
+    #: Always daily for this vendor.
+    frequency: Frequency = "1d"
+    #: Always Sharadar for this dataset.
+    vendor: Vendor | None = "sharadar"
+
+    #: Code of the price table the panel is built from (a key of
+    #: ``quantlab.dataset.sharadar.tables.TABLES``); its raw parquet lives in
+    #: ``<raw_data_dir_path>/<table>/``.
+    table: str = "sep"
+
+    #: Restrict the conversion to these permatickers. ``None`` means every
+    #: security in the raw table; an empty tuple is refused.
+    permatickers: tuple[int, ...] | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
 class ConstituentDatasetConfig(BaseDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 
