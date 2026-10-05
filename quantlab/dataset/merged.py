@@ -159,7 +159,7 @@ class MergedDataset(MarketDataset):
                 held = set(data["symbol"].values.tolist())
                 data = data.sel(symbol=[s for s in symbols if s in held])
             read.append(dataset)
-            panels.append(_shared_names(dataset, data))
+            panels.append(dataset.to_shared_names(data))
         if not panels:
             raise KeyError(f"{self.class_name}: no input holds any of {list(variables)}.")
         merged = self._merge(read, panels)
@@ -196,10 +196,16 @@ class MergedDataset(MarketDataset):
                         f"never resolves a cell by input order; give the "
                         f"inputs disjoint symbols or variables."
                     )
-        merged = aligned[0]
-        for panel in aligned[1:]:
-            merged = merged.combine_first(panel)
-        return merged
+        # Variable by variable, so a datetime variable is only ever combined
+        # with itself, never promoted against another input's floats.
+        combined = {}
+        for name in names:
+            arrays = [panel[name] for panel in aligned if name in panel.data_vars]
+            value = arrays[0]
+            for other in arrays[1:]:
+                value = value.combine_first(other)
+            combined[name] = value
+        return xr.Dataset(combined, coords=aligned[0].coords)
 
     def _check_spacing(self) -> None:
         """Raise unless every input has the same most common bar spacing.
@@ -409,11 +415,6 @@ class MergedDataset(MarketDataset):
         self._refuse("_raw_data_to_xr_window")
 
 
-def _shared_names(dataset: BaseDataset, panel: xr.Dataset) -> xr.Dataset:
-    """Return ``panel`` renamed by ``dataset``'s column mapping."""
-    return dataset.to_shared_names(panel)
-
-
 def _own_names(dataset: BaseDataset, variables) -> "list[str] | None":
     """Return the input's own names of the shared ``variables`` it holds.
 
@@ -423,13 +424,8 @@ def _own_names(dataset: BaseDataset, variables) -> "list[str] | None":
     if variables is None:
         return None
     names = dataset.head(0).collect_schema().names()
-    shared, wanted = _shared_map(dataset, names), set(variables)
+    shared, wanted = dataset.shared_name_map(names), set(variables)
     return [name for name in names if shared.get(name, name) in wanted]
-
-
-def _shared_map(dataset: BaseDataset, names) -> dict[str, str]:
-    """Return the input's renaming onto the shared names."""
-    return dataset.shared_name_map(names)
 
 
 def _describe(dataset: BaseDataset) -> str:

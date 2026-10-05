@@ -1986,9 +1986,11 @@ class BaseDataset(Component, ABC):
         }
         return data.assign(**promoted) if promoted else data
 
-    #: The store's own variable names mapped onto the shared names every
-    #: factor programs against (``open``, ``high``, ``low``, ``close``,
-    #: ``volume``, ``amount``). A variable not named here keeps its name.
+    #: The store's own variable names mapped onto the names a merge and an
+    #: export use: the shared names every factor programs against (``open``,
+    #: ``high``, ``low``, ``close``, ``volume``, ``amount``), or a name that
+    #: keeps two datasets' variables apart in a merge (SF1's ``marketcap`` as
+    #: ``sf1_marketcap``). A variable not named here keeps its name.
     COLUMN_MAP: dict[str, str] = {}
 
     def to_shared_names(self, panel: xr.Dataset) -> xr.Dataset:

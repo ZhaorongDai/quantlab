@@ -1326,3 +1326,138 @@ class CrossSectionalWLSResidual2(GenericCrossSectionalOp):
         T b1 = solvable ? (s22 * s1y - s12 * s2y) / det : NAN;
         T b2 = solvable ? (s11 * s2y - s12 * s1y) / det : NAN;
 """ + _WLS_WRITE
+
+
+class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
+    """Fill a missing value from a per-bar weighted regression on industry and size.
+
+    On each bar the fit uses the symbols where ``universe > 0``, ``y`` is
+    finite, ``w`` is finite and positive, and the regressors used are
+    finite (``industry`` an integer code >= 0). The model is one intercept
+    per industry plus a common slope on ``size``, fitted by weighted least
+    squares without a matrix solve (Frisch-Waugh-Lovell): ``y`` and ``size``
+    are demeaned within each industry with the weights, the slope is
+    ``b = sum(w dy ds) / sum(w ds**2)``, and an industry's intercept is
+    ``mean_y - b mean_size`` over its fit members. Then::
+
+        out = y                                    where y is finite
+        out = intercept[industry] + b * size       where y is missing and eligible > 0
+
+    a missing value whose industry has no fit member, or whose regressors
+    are missing, stays NaN. USE4 imputes a style a stock lacks this way,
+    from a regression on industry and size. Constructing it with
+    ``use_industry=False`` fits one common intercept; with
+    ``use_size=False`` it fits the industry means alone (the slope is 0,
+    and also when ``size`` does not vary within the industries, below
+    1e-10 of its spread). Each pair of flags gets a class of its own
+    (``CrossSectionalIndustrySizeFill_industry_size``), whose C++ has the
+    flags written in; ``isinstance`` still holds. The batch-start and
+    SIMD-width notes of ``CrossSectionalZScore`` apply.
+
+    Parameters
+    ----------
+    y : OpBase
+        The values to fill, such as a style exposure.
+    size : OpBase
+        The size regressor, such as the Size exposure.
+    industry : OpBase
+        The industry code, a non-negative integer stored as a float.
+    w : OpBase
+        The regression weights, such as the square root of market cap.
+    universe : OpBase
+        A mask, positive for the symbols the fit uses.
+    eligible : OpBase
+        A mask, positive for the symbols a missing value may be filled for,
+        such as the symbols with a market cap on the bar.
+    use_industry, use_size : bool, default True
+        Which regressors the model has; at least one.
+
+    Raises
+    ------
+    ValueError
+        If both flags are false.
+
+    Examples
+    --------
+    >>> Output(CrossSectionalIndustrySizeFill(beta, size, Input("industry"), Sqrt(cap), estu, live), "beta")
+    """
+
+    _USE_INDUSTRY: bool = True
+    _USE_SIZE: bool = True
+    _variants: dict = {}
+
+    def __new__(cls, y, size, industry, w, universe, eligible, use_industry=True, use_size=True):
+        """Return an instance of the subclass specialized to the two flags."""
+        if not (use_industry or use_size):
+            raise ValueError("CrossSectionalIndustrySizeFill: needs industry, size or both")
+        key = (bool(use_industry), bool(use_size))
+        variant = CrossSectionalIndustrySizeFill._variants.get(key)
+        if variant is None:
+            tag = "_".join(name for name, used in zip(("industry", "size"), key) if used)
+            variant = type(
+                f"CrossSectionalIndustrySizeFill_{tag}",
+                (CrossSectionalIndustrySizeFill,),
+                {"_USE_INDUSTRY": key[0], "_USE_SIZE": key[1]},
+            )
+            variant.__module__ = CrossSectionalIndustrySizeFill.__module__
+            CrossSectionalIndustrySizeFill._variants[key] = variant
+        return super().__new__(variant)
+
+    def __init__(self, y, size, industry, w, universe, eligible, use_industry=True, use_size=True):
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__(
+            [y, size, industry, w, universe, eligible],
+            [("use_industry", bool(use_industry)), ("use_size", bool(use_size))],
+        )
+
+    def generate_head(self) -> str:
+        """Return the C++ set-up: per-industry accumulators, sized on each bar."""
+        return """
+        std::vector<T> group_w, group_y, group_s;
+        """
+
+    def generate_body(self) -> str:
+        """Return the C++ that fits one bar and fills its missing values."""
+        industry = "(size_t)input_2[i]" if self._USE_INDUSTRY else "(size_t)0"
+        industry_ok = "std::isfinite(input_2[i]) && input_2[i] >= 0" if self._USE_INDUSTRY else "true"
+        size_ok = "std::isfinite(input_1[i])" if self._USE_SIZE else "true"
+        size = "input_1[i]" if self._USE_SIZE else "(T)0"
+        return f"""
+        auto regressors_ok = [&](size_t i) -> bool {{ return ({industry_ok}) && ({size_ok}); }};
+        auto fit = [&](size_t i) -> bool {{
+            T w = input_3[i];
+            return input_4[i] > 0 && std::isfinite(input_0[i]) && std::isfinite(w) && w > 0
+                && regressors_ok(i);
+        }};
+        size_t groups = 1;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            if (regressors_ok(i)) groups = std::max(groups, {industry} + 1);
+        }}
+        group_w.assign(groups, 0); group_y.assign(groups, 0); group_s.assign(groups, 0);
+        for (size_t i = 0; i < num_stocks; i++) {{
+            if (!fit(i)) continue;
+            size_t g = {industry};
+            T w = input_3[i];
+            group_w[g] += w; group_y[g] += w * input_0[i]; group_s[g] += w * {size};
+        }}
+        for (size_t g = 0; g < groups; g++) {{
+            if (group_w[g] > 0) {{ group_y[g] /= group_w[g]; group_s[g] /= group_w[g]; }}
+        }}
+        T sss = 0, ssy = 0, scale = 0;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            if (!fit(i)) continue;
+            size_t g = {industry};
+            T w = input_3[i], ds = {size} - group_s[g], dy = input_0[i] - group_y[g];
+            sss += w * ds * ds; ssy += w * ds * dy; scale += w * {size} * {size};
+        }}
+        T slope = sss > (T)1e-10 * scale && sss > 0 ? ssy / sss : 0;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            T y = input_0[i];
+            if (std::isfinite(y)) {{ output_0[i] = y; continue; }}
+            output_0[i] = NAN;
+            if (!(input_5[i] > 0) || !regressors_ok(i)) continue;
+            size_t g = {industry};
+            if (g >= groups || !(group_w[g] > 0)) continue;
+            output_0[i] = group_y[g] + slope * ({size} - group_s[g]);
+        }}
+        """

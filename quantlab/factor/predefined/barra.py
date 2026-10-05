@@ -34,6 +34,11 @@ preferred-equity field:
   income to common plus depreciation and amortization;
 - preferred equity is taken as 0 in MLEV and BLEV.
 
+A style still missing for a symbol (no descriptor at all) is imputed from
+a per-bar weighted regression of the style on industry and Size, fitted in
+the estimation universe, as USE4 does; every style is then standardized
+once more. The symbol's point-in-time industry code is passed through.
+
 A style with several descriptors is their fixed-weight sum over the
 descriptors a symbol has, the weights renormalized over those present, so
 a symbol missing one descriptor still gets the style. Residual Volatility,
@@ -71,6 +76,7 @@ from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.kunquant_ops import (
     CMRA,
     CapWeightedStandardize,
+    CrossSectionalIndustrySizeFill,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
     CrossSectionalWLSResidual,
@@ -86,6 +92,10 @@ from quantlab.factor.kunquant_ops import (
 #: Name of the graph input holding each symbol's running product of split
 #: factors, derived from ``split_column`` before the graph runs.
 SPLIT_BASIS = "_split_basis"
+
+#: Name of the graph input holding ``industry_column``: KunQuant refuses an
+#: output named like an input, and the code is passed through as ``industry``.
+INDUSTRY_INPUT = "_industry"
 
 #: The regression weights an orthogonalization may use, by config name.
 ORTHOGONALIZATION_WEIGHTINGS = ("sqrt_cap", "cap", "equal")
@@ -148,12 +158,19 @@ class BarraStyleParameters:
         Prefixes of the fiscal-year history variables
         (``SharadarFiscalYearsDataset``): ``<prefix>0`` is the latest fiscal
         year's EPS or sales per share, ``<prefix>1`` the year before.
+    fiscal_year_end_prefix : str, default "reportperiod_fy"
+        Prefix of the fiscal-year history's fiscal year ends, the time axis
+        EGRO and SGRO regress on.
     growth_years : int, default 5
         Fiscal years EGRO and SGRO regress on, the slots ``0 ..
         growth_years - 1`` (USE4: five).
     min_growth_years : int, default 3
         Fewest known fiscal years for EGRO or SGRO to be computed. Our
         choice.
+    industry_column : str, default "industry"
+        Panel variable holding the point-in-time industry code, a
+        non-negative integer (``SharadarIndustryDataset``'s Fama-French 48
+        code); passed through as the ``industry`` output.
     estimation_universe_size : int, default 3000
         Number of largest companies, by the previous bar's market cap, in
         the estimation universe. Our choice: USE4 uses the MSCI USA IMI,
@@ -211,6 +228,15 @@ class BarraStyleParameters:
         the two renormalized).
     mlev_weight, dtoa_weight, blev_weight : float, default 0.75, 0.15, 0.10
         Weights of MLEV, DTOA and BLEV in Leverage (USE4).
+    imputation_regressors : tuple of str, default ("industry", "size")
+        Regressors a missing style is imputed from: ``"industry"`` (one
+        intercept per industry), ``"size"`` (the Size exposure), both, or
+        neither (``()``: no imputation). Size itself is imputed from the
+        industry alone. Our choice: USE4 names industry membership and
+        market cap as examples of the factors it uses but publishes no set.
+    imputation_weighting : str, default "sqrt_cap"
+        Regression weights of the imputation, one of
+        ``ORTHOGONALIZATION_WEIGHTINGS``. Our choice.
     orthogonalization_weighting : str, default "sqrt_cap"
         Regression weights of the orthogonalizations: ``"sqrt_cap"`` (the
         square root of the previous bar's market cap), ``"cap"`` or
@@ -231,7 +257,7 @@ class BarraStyleParameters:
     >>> params.panel_columns[:7]
     ('adjClose', 'marketcap', 'risk_free', 'close', 'volume', 'divCash', 'splitFactor')
     >>> len(params.panel_columns)
-    25
+    31
     >>> params.warmup_bars
     526
     """
@@ -253,8 +279,10 @@ class BarraStyleParameters:
     fx_column: str = "fxusd"
     eps_prefix: str = "eps_fy"
     sales_prefix: str = "sps_fy"
+    fiscal_year_end_prefix: str = "reportperiod_fy"
     growth_years: int = 5
     min_growth_years: int = 3
+    industry_column: str = "industry"
     estimation_universe_size: int = 3000
     beta_window: int = 252
     beta_half_life: float = 63.0
@@ -287,6 +315,8 @@ class BarraStyleParameters:
     mlev_weight: float = 0.75
     dtoa_weight: float = 0.15
     blev_weight: float = 0.10
+    imputation_regressors: tuple[str, ...] = ("industry", "size")
+    imputation_weighting: str = "sqrt_cap"
     orthogonalization_weighting: str = "sqrt_cap"
     data_error_sigma: float = 10.0
     clip_sigma: float = 3.0
@@ -353,6 +383,8 @@ class BarraStyleParameters:
             self.fx_column,
             *self.history_columns(self.eps_prefix),
             *self.history_columns(self.sales_prefix),
+            *self.history_columns(self.fiscal_year_end_prefix),
+            self.industry_column,
         )
 
     def history_columns(self, prefix: str) -> tuple[str, ...]:
@@ -458,6 +490,16 @@ class BarraStyleParameters:
                    self.mlev_weight, self.dtoa_weight, self.blev_weight)
         if not min(weights) > 0:
             raise ValueError("every descriptor weight must be positive")
+        unknown = set(self.imputation_regressors) - {"industry", "size"}
+        if unknown:
+            raise ValueError(
+                f"imputation_regressors may name 'industry' and 'size' only, got {sorted(unknown)}"
+            )
+        if self.imputation_weighting not in ORTHOGONALIZATION_WEIGHTINGS:
+            raise ValueError(
+                f"imputation_weighting must be one of {ORTHOGONALIZATION_WEIGHTINGS}, "
+                f"got {self.imputation_weighting!r}"
+            )
         if self.orthogonalization_weighting not in ORTHOGONALIZATION_WEIGHTINGS:
             raise ValueError(
                 f"orthogonalization_weighting must be one of {ORTHOGONALIZATION_WEIGHTINGS}, "
@@ -476,35 +518,47 @@ def _present(value: OpBase) -> OpBase:
     return SetInfOrNanToValue(value * 0.0 + 1.0, 0.0)
 
 
-def _growth(years: list[OpBase], least: int) -> OpBase:
+def _as_float64(values: np.ndarray) -> np.ndarray:
+    """Return ``values`` as float64, a datetime as days since 1970 with NaT as NaN."""
+    if np.issubdtype(values.dtype, np.datetime64):
+        days = values.astype("datetime64[ns]").astype(np.int64) / 86_400e9
+        return np.where(np.isnat(values), np.nan, days)
+    return values.astype(np.float64)
+
+
+def _growth(years: list[OpBase], ends: list[OpBase], least: int) -> OpBase:
     """Return the least-squares slope of ``years`` on time over their mean absolute value.
 
-    ``years[k]`` is the value ``k`` years ago, at time ``-k``. Only the
-    finite values enter: the slope is ``sum((x - mx)(v - mv)) / sum((x -
-    mx)**2)`` and the scale the mean of ``|v|``, over them. NaN with fewer
-    than ``least`` finite values or a scale of 0.
+    ``years[k]`` is a fiscal year's value and ``ends[k]`` its fiscal year
+    end in days; the time of year ``k`` is ``(ends[k] - ends[0]) / 365.25``
+    years. Only the years with a finite value and end enter: the slope is
+    ``sum((x - mx)(v - mv)) / sum((x - mx)**2)`` and the scale the mean of
+    ``|v|``, over them. NaN with fewer than ``least`` such years, no
+    latest year end, or a scale of 0.
     """
-    present = [_present(value) for value in years]
-    filled = [SetInfOrNanToValue(value, 0.0) for value in years]
+    times = [(end - ends[0]) / 365.25 for end in ends]
+    present = [_present(value + time) for value, time in zip(years, times)]
+    filled = [SetInfOrNanToValue(value, 0.0) * known for value, known in zip(years, present)]
+    at = [SetInfOrNanToValue(time, 0.0) * known for time, known in zip(times, present)]
     count: OpBase = ConstantOp(0.0)
     sum_x: OpBase = ConstantOp(0.0)
     sum_v: OpBase = ConstantOp(0.0)
     sum_abs: OpBase = ConstantOp(0.0)
-    for k, (known, value) in enumerate(zip(present, filled)):
+    for known, value, time in zip(present, filled, at):
         count = count + known
-        sum_x = sum_x + known * float(-k)
+        sum_x = sum_x + time
         sum_v = sum_v + value
         sum_abs = sum_abs + Abs(value)
     mean_x, mean_v = sum_x / count, sum_v / count
     cross: OpBase = ConstantOp(0.0)
     square: OpBase = ConstantOp(0.0)
-    for k, (known, value) in enumerate(zip(present, filled)):
-        dx = (mean_x * -1.0 + float(-k)) * known
+    for known, value, time in zip(present, filled, at):
+        dx = (time - mean_x) * known
         cross = cross + dx * (value - mean_v)
         square = square + dx * dx
     scale = sum_abs / count
     enough = And(count >= float(least), scale > 0.0)
-    return Select(enough, cross / square / scale, ConstantOp("nan"))
+    return Select(And(enough, square > 0.0), cross / square / scale, ConstantOp("nan"))
 
 
 class BarraStyle(FactorKunQuant):
@@ -562,10 +616,12 @@ class BarraStyle(FactorKunQuant):
       assets`` over the non-current debt only (NaN where it or the current
       liabilities are not reported);
     - EGRO is the slope of a least-squares fit of the fiscal-year EPS
-      ``eps_fy0 .. eps_fy<growth_years - 1>`` on time (``0, -1, ...``
-      years), over the years known, divided by their mean absolute value;
-      NaN with fewer than ``min_growth_years`` known years or a mean of 0.
-      SGRO is the same with sales per share;
+      ``eps_fy0 .. eps_fy<growth_years - 1>`` on time, each year placed at
+      its fiscal year end in years before the latest's (so a missing year
+      or a moved year end keeps the spacing true), over the years known,
+      divided by their mean absolute value; NaN with fewer than
+      ``min_growth_years`` known years or a mean of 0. SGRO is the same
+      with sales per share;
     - a windowed descriptor is NaN with fewer valid values in its window
       than its ``*_min_observations`` (``liquidity_min_fraction`` of the
       window for Liquidity);
@@ -583,6 +639,14 @@ class BarraStyle(FactorKunQuant):
       Earnings Yield is ``0.15 CETOP + 0.10 ETOP``, Leverage ``0.75 MLEV +
       0.15 DTOA + 0.10 BLEV`` and Growth ``0.20 EGRO + 0.10 SGRO``, each
       over the descriptors present, standardized;
+    - a style still missing for a symbol with a market cap on the bar is
+      imputed: the style is regressed, with ``imputation_weighting``
+      weights over the universe, on one intercept per industry and a slope
+      on the Size exposure (``imputation_regressors``; Size itself on the
+      industry alone), and the symbol gets its industry's intercept plus
+      the slope times its Size. A symbol keeps NaN when its industry has no
+      fitted member or a regressor of its own is missing. Every style is
+      then standardized once more, imputed values included;
     - the NLSIZE descriptor is the cube of the Size exposure, standardized
       and clipped like any descriptor; Non-linear Size is it orthogonalized
       against Size and standardized again. NLBETA and Non-linear Beta are
@@ -610,6 +674,7 @@ class BarraStyle(FactorKunQuant):
       ``style_dividend_yield``, ``style_book_to_price``,
       ``style_earnings_yield``, ``style_leverage``, ``style_growth``: the
       style exposures;
+    - ``industry``: the industry code, unchanged;
     - ``estu``: 1 inside the estimation universe of the bar, 0 outside.
 
     The graph runs in double precision. On 1000 bars of 3008 symbols, with
@@ -684,6 +749,7 @@ class BarraStyle(FactorKunQuant):
         "style_earnings_yield",
         "style_leverage",
         "style_growth",
+        "industry",
         "estu",
     )
 
@@ -748,11 +814,12 @@ class BarraStyle(FactorKunQuant):
             excess = stock_return - risk_free
             market_excess = market_return - risk_free
             log_excess = Log(stock_return + 1.0) - Log(risk_free + 1.0)
-            regression_weight = {
+            weights = {
                 "sqrt_cap": Sqrt(cap_before),
                 "cap": cap_before,
                 "equal": cap_before * 0.0 + 1.0,
-            }[params.orthogonalization_weighting]
+            }
+            regression_weight = weights[params.orthogonalization_weighting]
 
             def counted(raw: OpBase, values: OpBase, window: int, least: int) -> OpBase:
                 """``raw`` where ``values`` has at least ``least`` valid bars in ``window``."""
@@ -835,13 +902,14 @@ class BarraStyle(FactorKunQuant):
             dtoa = (reported_long_term + Input(params.current_liabilities_column)) / Input(
                 params.assets_column
             )
+            ends = [Input(name) for name in params.history_columns(params.fiscal_year_end_prefix)]
             egro = _growth(
                 [Input(name) for name in params.history_columns(params.eps_prefix)],
-                params.min_growth_years,
+                ends, params.min_growth_years,
             )
             sgro = _growth(
                 [Input(name) for name in params.history_columns(params.sales_prefix)],
-                params.min_growth_years,
+                ends, params.min_growth_years,
             )
 
             desc = {
@@ -902,6 +970,26 @@ class BarraStyle(FactorKunQuant):
                 "style_growth": standardize(RenormalizedCombine(
                     [desc["egro"], desc["sgro"]], [params.egro_weight, params.sgro_weight]
                 )),
+            })
+            industry = Input(INDUSTRY_INPUT)
+            live = _present(cap)
+            imputation_weight = weights[params.imputation_weighting]
+            for name in [name for name in outputs if name.startswith("style_")]:
+                regressors = set(params.imputation_regressors)
+                if name == "style_size":
+                    regressors.discard("size")
+                if regressors:
+                    # KunQuant merges an op passed twice into one input, so
+                    # Size, filled without the size regressor, passes the
+                    # market cap in that unused place.
+                    size = style_size if "size" in regressors else cap
+                    outputs[name] = CrossSectionalIndustrySizeFill(
+                        outputs[name], size, industry, imputation_weight, estu, live,
+                        use_industry="industry" in regressors, use_size="size" in regressors,
+                    )
+                outputs[name] = standardize(outputs[name])
+            outputs.update({
+                "industry": industry * 1.0,
                 "estu": estu,
             })
             for name, value in outputs.items():
@@ -917,7 +1005,10 @@ class BarraStyle(FactorKunQuant):
         ``to_kunquant`` exports float32, which would round a USD market cap
         to seven digits before the graph sees it, so the panel is renamed to
         the shared names as ``to_kunquant`` does and exported in float64.
-        The ``SPLIT_BASIS`` input is added: each symbol's running product of
+        A date variable (the fiscal year ends) is exported as days since
+        1970, NaN where it is NaT. The industry code goes in as
+        ``INDUSTRY_INPUT``. The ``SPLIT_BASIS`` input is added: each
+        symbol's running product of
         split factors along time, a missing or non-positive factor counting
         as 1. Only its ratios between bars are used, so where it starts does
         not matter.
@@ -925,11 +1016,13 @@ class BarraStyle(FactorKunQuant):
         panel = self.config.dataset.to_shared_names(inputs).sortby(["timestamp", "symbol"])
         arrays = {
             column: np.ascontiguousarray(
-                panel[column].transpose("timestamp", "symbol").to_numpy().astype(np.float64)
+                _as_float64(panel[column].transpose("timestamp", "symbol").to_numpy())
             )
             for column in self.config.data_columns
         }
-        splits = arrays[self._parameters().split_column]
+        params = self._parameters()
+        arrays[INDUSTRY_INPUT] = arrays.pop(params.industry_column)
+        splits = arrays[params.split_column]
         arrays[SPLIT_BASIS] = np.ascontiguousarray(
             np.cumprod(np.where(np.isfinite(splits) & (splits > 0), splits, 1.0), axis=0)
         )

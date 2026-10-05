@@ -55,7 +55,9 @@ _FOREIGN = 8  # reports in a currency 1.35 to the USD
 _TWO_YEARS, _THREE_YEARS = 10, 11  # fiscal-year history this short
 _REFILED, _REFILE_BAR = 0, 70  # a new filing reaches this symbol from this bar
 _FUNDAMENTALS = ("equity", "debtnc", "debt", "liabilitiesc", "assets", "netinccmn", "depamor", "fxusd")
-_HISTORY = tuple(f"{p}{k}" for p in ("eps_fy", "sps_fy") for k in range(5))
+_HISTORY = tuple(f"{p}{k}" for p in ("eps_fy", "sps_fy", "reportperiod_fy") for k in range(5))
+_SKIPPED_YEAR = 13  # no annual report for one year: its older slots are a year further back
+_NO_INDUSTRY = 16  # a security whose SIC is unknown
 _KWARGS = {
     "beta_window": _WINDOW,
     "beta_half_life": _HALF_LIFE,
@@ -80,7 +82,7 @@ _KWARGS = {
 _RESVOL_WEIGHTS = (0.75, 0.15, 0.10)
 _LIQUIDITY_WEIGHTS = (0.35, 0.35, 0.30)
 _COLUMNS = ("adjClose", "marketcap", "risk_free", "close", "volume", "divCash", "splitFactor",
-            *_FUNDAMENTALS, *_HISTORY)
+            *_FUNDAMENTALS, *_HISTORY, "industry")
 
 
 def _inputs() -> dict[str, np.ndarray]:
@@ -142,11 +144,21 @@ def _inputs() -> dict[str, np.ndarray]:
             values[_THREE_YEARS] = np.nan if k >= 3 else values[_THREE_YEARS]
             history[f"{prefix}{k}"] = np.broadcast_to(values, (_T, _S)).copy()
     history["eps_fy1"][:, 12] = np.nan  # a year without an EPS inside the history
+    for k in range(5):
+        ends = np.full(_S, np.datetime64("2020-09-30", "ns")) - np.timedelta64(int(365.25 * k), "D")
+        ends[_SKIPPED_YEAR] -= np.timedelta64(365 if k >= 2 else 0, "D")
+        ends[_TWO_YEARS] = np.datetime64("NaT") if k >= 2 else ends[_TWO_YEARS]
+        ends[_THREE_YEARS] = np.datetime64("NaT") if k >= 3 else ends[_THREE_YEARS]
+        history[f"reportperiod_fy{k}"] = np.broadcast_to(ends, (_T, _S)).copy()
     fundamentals = {
         "equity": book, "debtnc": debtnc, "debt": debt, "liabilitiesc": current,
         "assets": assets, "netinccmn": earnings, "depamor": depreciation, "fxusd": fx,
     }
+    industry = np.broadcast_to(rng.integers(1, 5, size=_S).astype(np.float64), (_T, _S)).copy()
+    industry[:, _NO_INDUSTRY] = np.nan
+    industry[:, _TWIN] = industry[:, _SPLIT]
     return {
+        "industry": industry,
         **fundamentals,
         **history,
         "adjClose": price,
@@ -184,9 +196,10 @@ def _config(tmp_path: Path, **overrides) -> FactorConfig:
     caps = _store(tmp_path, "caps", {"marketcap": inputs["marketcap"]})
     fundamentals = _store(tmp_path, "fundamentals", {k: inputs[k] for k in _FUNDAMENTALS})
     history = _store(tmp_path, "history", {k: inputs[k] for k in _HISTORY})
+    industry = _store(tmp_path, "industry", {"industry": inputs["industry"]})
     values = {
         "warmup_bars": 0,
-        "dataset": [prices, caps, fundamentals, history],
+        "dataset": [prices, caps, fundamentals, history, industry],
         "mode": "batch",
         "data_columns": _COLUMNS,
         "file_path": str(tmp_path / "barra.zarr"),
@@ -289,6 +302,26 @@ def _combine(parts: list[np.ndarray], weights) -> np.ndarray:
         return np.where(present > 0, total / present, np.nan)
 
 
+def _impute(style, size, industry, weights, estu, live, use_size=True) -> np.ndarray:
+    """Fill a missing style from ``lstsq`` on explicit industry dummies (and Size)."""
+    out = style.copy()
+    for t in range(_T):
+        ok = np.isfinite(industry[t]) & (np.isfinite(size[t]) if use_size else True)
+        fit = ok & estu[t] & np.isfinite(style[t]) & np.isfinite(weights[t]) & (weights[t] > 0)
+        if not fit.any():
+            continue
+        codes = sorted(set(industry[t, fit].astype(int)))
+        rows = [[float(industry[t, i] == c) for c in codes] + ([size[t, i]] if use_size else [])
+                for i in range(_S)]
+        design = np.nan_to_num(np.array(rows))
+        root = np.sqrt(weights[t, fit])
+        coefficients, *_ = np.linalg.lstsq(design[fit] * root[:, None], style[t, fit] * root, rcond=None)
+        for i in range(_S):
+            if np.isnan(style[t, i]) and live[t, i] and ok[i] and int(industry[t, i]) in codes:
+                out[t, i] = design[i] @ coefficients
+    return out
+
+
 def _reference() -> dict[str, np.ndarray]:
     inputs = _inputs()
     price, cap = inputs["adjClose"], inputs["marketcap"]
@@ -379,12 +412,14 @@ def _reference() -> dict[str, np.ndarray]:
     def growth(prefix):
         out = np.full((_T, _S), np.nan)
         years = np.stack([inputs[f"{prefix}{k}"] for k in range(5)])
+        ends = np.stack([inputs[f"reportperiod_fy{k}"] for k in range(5)])
         for t in range(_T):
             for s in range(_S):
-                v = years[:, t, s]
-                known = np.isfinite(v)
-                if known.sum() >= 3 and np.abs(v[known]).mean() > 0:
-                    slope = np.polyfit(-np.arange(5)[known], v[known], 1)[0]
+                v, end = years[:, t, s], ends[:, t, s]
+                known = np.isfinite(v) & ~np.isnat(end)
+                if known.sum() >= 3 and np.abs(v[known]).mean() > 0 and not np.isnat(end[0]):
+                    at = (end[known] - end[0]) / np.timedelta64(1, "D") / 365.25
+                    slope = np.polyfit(at, v[known], 1)[0]
                     out[t, s] = slope / np.abs(v[known]).mean()
         return out
 
@@ -445,11 +480,18 @@ def _reference() -> dict[str, np.ndarray]:
         "style_leverage": standardize(_combine([desc["mlev"], desc["dtoa"], desc["blev"]], (0.75, 0.15, 0.10))),
         "style_growth": standardize(_combine([desc["egro"], desc["sgro"]], (0.20, 0.10))),
         "estu": estu.astype(np.float64),
+        "industry": inputs["industry"],
         "cap_before": cap_before,
         "dastd_raw": dastd,
         "hsigma_raw": hsigma,
         "cmra_raw": cmra,
     })
+    live = np.isfinite(cap)
+    for name in [name for name in out if name.startswith("style_")]:
+        out[f"raw_{name}"] = out[name]
+        imputed = _impute(out[name], style_size, inputs["industry"], root_cap, estu, live,
+                          use_size=name != "style_size")
+        out[name] = standardize(imputed)
     return out
 
 
@@ -468,7 +510,7 @@ _FUNDAMENTAL_OUTPUTS = ("desc_btop", "desc_etop", "desc_cetop", "desc_mlev", "de
                         "style_earnings_yield", "style_leverage", "style_growth")
 _EXACT = ("desc_lncap", "desc_beta", "desc_dastd", "desc_hsigma", "desc_nlsize", "desc_nlbeta",
           "desc_yild", "style_size", "style_beta", "style_nonlinear_size", "style_nonlinear_beta",
-          "style_dividend_yield", "estu", *_FUNDAMENTAL_OUTPUTS)
+          "style_dividend_yield", "estu", "industry", *_FUNDAMENTAL_OUTPUTS)
 # KunQuant's Log is accurate to about 4e-10.
 _ON_LOGS = ("desc_rstr", "desc_cmra", "desc_stom", "desc_stoq", "desc_stoa", "style_momentum",
             "style_residual_volatility", "style_liquidity")
@@ -502,10 +544,15 @@ def test_orthogonalized_styles_have_no_weighted_correlation_with_their_regressor
     regressors = [out[r].transpose("timestamp", "symbol").to_numpy() for r in _ORTHOGONALIZED[name]]
     weights = np.sqrt(want["cap_before"])
     checked = 0
+    # Imputation fills styles after the orthogonalization, and the
+    # regressors are the styles before it: check the cells that were neither.
+    raws = [want[f"raw_{name}"]] + [want[f"raw_{r}"] for r in _ORTHOGONALIZED[name]]
     for t in range(_T):
         fit = (want["estu"][t] > 0) & np.isfinite(got[t]) & np.isfinite(weights[t])
         for x in regressors:
             fit &= np.isfinite(x[t])
+        for raw in raws:
+            fit &= np.isfinite(raw[t])
         if fit.sum() < 5:
             continue
         w = weights[t, fit]
@@ -583,11 +630,37 @@ def test_symbols_outside_the_universe_still_get_exposures(computed) -> None:
     assert np.isfinite(out["style_size"].sel(symbol=f"S{_CLIPPED:02d}").values[1:]).all()
 
 
-def test_a_descriptor_beyond_the_data_error_threshold_is_dropped(computed) -> None:
-    _, out, _ = computed
-    # The micro cap sits about 20 standard deviations below the universe.
+def test_a_descriptor_beyond_the_data_error_threshold_is_dropped_and_the_style_imputed(computed) -> None:
+    _, out, want = computed
+    # The micro cap sits about 20 standard deviations below the universe:
+    # its LNCAP is dropped, and its Size is imputed from its industry.
     assert np.isnan(out["desc_lncap"].sel(symbol=f"S{_TINY:02d}").values).all()
-    assert np.isnan(out["style_size"].sel(symbol=f"S{_TINY:02d}").values).all()
+    assert np.isnan(want["raw_style_size"][:, _TINY]).all()
+    assert np.isfinite(out["style_size"].sel(symbol=f"S{_TINY:02d}").values[1:]).all()
+
+
+def test_a_missing_style_is_imputed_and_a_present_one_keeps_its_value(computed) -> None:
+    _, out, want = computed
+    beta = out["style_beta"].transpose("timestamp", "symbol").to_numpy()
+    raw = want["raw_style_beta"]
+    imputed = np.isnan(raw) & np.isfinite(beta)
+    assert imputed[:, _LISTED_LATE].any(), "a late listing has no BETA yet: imputed"
+    # Before the final standardization, a present style is unchanged: the
+    # final values of present cells are an affine map of the raw ones.
+    for t in range(_WINDOW, _T):
+        kept = np.isfinite(raw[t]) & np.isfinite(beta[t])
+        if kept.sum() > 3:
+            slope, intercept = np.polyfit(raw[t, kept], beta[t, kept], 1)
+            np.testing.assert_allclose(beta[t, kept], slope * raw[t, kept] + intercept, atol=1e-9)
+    # No industry and no fit: a symbol without an industry is not imputed.
+    no_industry = out["style_beta"].sel(symbol=f"S{_NO_INDUSTRY:02d}").values
+    assert np.isnan(no_industry[np.isnan(want["raw_style_beta"][:, _NO_INDUSTRY])]).all()
+
+
+def test_the_industry_code_passes_through_unchanged(computed) -> None:
+    _, out, want = computed
+    got = out["industry"].transpose("timestamp", "symbol").to_numpy()
+    np.testing.assert_array_equal(got, want["industry"])
 
 
 def test_stream_mode_is_refused(tmp_path) -> None:
@@ -634,11 +707,15 @@ def test_defaults_are_use4_where_published() -> None:
     assert params.orthogonalization_weighting == "sqrt_cap"
     assert (params.momentum_min_observations, params.volatility_min_observations) == (252, 63)
     assert (params.liquidity_min_fraction, params.data_error_sigma) == (0.5, 10.0)
+    assert (params.imputation_regressors, params.imputation_weighting) == (("industry", "size"), "sqrt_cap")
+    assert (params.min_growth_years, params.dividend_min_observations) == (3, 126)
+    assert len(_STYLES) == 12
     assert params.warmup_bars == 526
 
 
 def test_equal_weighting_orthogonalizes_with_equal_weights(tmp_path) -> None:
-    config = _config(tmp_path, kwargs={**_KWARGS, "orthogonalization_weighting": "equal"},
+    config = _config(tmp_path, kwargs={**_KWARGS, "orthogonalization_weighting": "equal",
+                                       "imputation_regressors": ()},
                      factor_names=("style_nonlinear_size", "style_size", "estu"))
     out = compute_all(BarraStyle(config))
     got = out["style_nonlinear_size"].transpose("timestamp", "symbol").to_numpy()
@@ -667,6 +744,9 @@ def test_equal_weighting_orthogonalizes_with_equal_weights(tmp_path) -> None:
         ({"stoq_months": 13}, "stoq_months"),
         ({"stoa_weight": -1.0}, "positive"),
         ({"dividend_window": 0}, "dividend_window"),
+        ({"imputation_regressors": ("sector",)}, "imputation_regressors"),
+        ({"imputation_weighting": "volume"}, "imputation_weighting"),
+        ({"min_growth_years": 6}, "min_growth_years"),
     ],
 )
 def test_invalid_price_style_parameters_are_refused(tmp_path, kwargs, match) -> None:
@@ -708,3 +788,12 @@ def test_a_fundamentals_value_changes_exposures_only_from_its_bar(computed, tmp_
         b = other[name].transpose("timestamp", "symbol").to_numpy()
         np.testing.assert_array_equal(a[:_REFILE_BAR], b[:_REFILE_BAR])
         assert not np.allclose(a[_REFILE_BAR:, _REFILED], b[_REFILE_BAR:, _REFILED])
+
+
+def test_growth_places_each_fiscal_year_at_its_year_end(computed) -> None:
+    _, out, want = computed
+    # The company that skipped an annual report has its older years a year
+    # further back; the reference regresses on the true times as the factor does.
+    got = out["desc_egro"].sel(symbol=f"S{_SKIPPED_YEAR:02d}").values
+    np.testing.assert_allclose(got, want["desc_egro"][:, _SKIPPED_YEAR], rtol=1e-9, atol=1e-9, equal_nan=True)
+    assert np.isfinite(got[_LISTING_BAR:]).any()

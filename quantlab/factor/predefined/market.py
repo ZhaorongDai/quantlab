@@ -33,7 +33,7 @@ WINDOWS = (5, 10, 20, 30, 60)
 
 #: ``config.kwargs`` keys the factor reads, with their defaults. The column
 #: names are looked up after the dataset's ``COLUMN_MAP`` renaming (see
-#: ``MarketDataset.to_shared_names``).
+#: ``BaseDataset.to_shared_names``).
 _DEFAULT_KWARGS = {
     # Series variable the return is computed from.
     "close_column": "adjClose",
@@ -206,7 +206,7 @@ class MarketFeatures(Factor):
     def _compute_panel(self, inputs: xr.Dataset) -> xr.Dataset:
         """Compute every series over ``inputs``' bars and broadcast to its symbols."""
         timestamps = inputs["timestamp"].values
-        presence = _shared_names(self.config.dataset, inputs)
+        presence = self.config.dataset.to_shared_names(inputs)
         column = self.options["presence_column"]
         if column not in presence.data_vars:
             raise ValueError(
@@ -265,7 +265,7 @@ class MarketFeatures(Factor):
                 f"its {dataset.class_name} holds {data.sizes['symbol']}; "
                 f"give each series its own single-symbol dataset."
             )
-        data = _shared_names(dataset, data).isel(symbol=0, drop=True)
+        data = dataset.to_shared_names(data).isel(symbol=0, drop=True)
         options = self.options
         columns = [options["close_column"]]
         columns.append(options["amount_column"] or options["volume_column"])
@@ -319,6 +319,3 @@ def _series_features(series: xr.Dataset) -> dict[str, xr.DataArray]:
     return features
 
 
-def _shared_names(dataset: BaseDataset, panel: xr.Dataset) -> xr.Dataset:
-    """Return ``panel`` renamed by ``dataset``'s column mapping."""
-    return dataset.to_shared_names(panel)

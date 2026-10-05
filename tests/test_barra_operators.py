@@ -32,6 +32,7 @@ from quantlab.factor.kunquant import shared_executor
 from quantlab.factor.kunquant_ops import (
     CMRA,
     CapWeightedStandardize,
+    CrossSectionalIndustrySizeFill,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
     CrossSectionalWLSResidual,
@@ -83,13 +84,19 @@ def _panel() -> dict[str, np.ndarray]:
     for values in (x, y, w, big, lr):
         values[_NAN_BAR, :] = np.nan
         values[:, _NAN_SYMBOL] = np.nan
-    return {"x": x, "y": y, "w": w, "u": u, "z": big, "lr": lr}
+    industry = rng.integers(0, 4, size=(_T, _S)).astype(np.float64)
+    industry[:, 11] = 6.0  # an industry with no other member: never fitted
+    industry[rng.random((_T, _S)) < 0.05] = np.nan
+    eligible = (rng.random((_T, _S)) < 0.9).astype(np.float64)
+    return {"x": x, "y": y, "w": w, "u": u, "z": big, "lr": lr, "ind": industry, "e": eligible}
 
 
 def _function() -> Function:
     b = Builder()
     with b:
-        x, y, w, u, z, lr = (Input(name) for name in ("x", "y", "w", "u", "z", "lr"))
+        x, y, w, u, z, lr, ind, e = (
+            Input(name) for name in ("x", "y", "w", "u", "z", "lr", "ind", "e")
+        )
         Output(EWSum(x, _WINDOW, _HALF_LIFE), "ew_sum")
         Output(EWMean(x, _WINDOW, _HALF_LIFE), "ew_mean")
         Output(EWVar(x, _WINDOW, _HALF_LIFE), "ew_var")
@@ -106,6 +113,9 @@ def _function() -> Function:
         Output(RenormalizedCombine([x, y, z], list(_COMBINE_WEIGHTS)), "combined")
         Output(CrossSectionalWLSResidual(y, x, w, u), "wls1")
         Output(CrossSectionalWLSResidual2(y, x, z, w, u), "wls2")
+        Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e), "fill_industry_size")
+        Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e, use_size=False), "fill_industry")
+        Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e, use_industry=False), "fill_size")
     return Function(b.ops)
 
 
@@ -113,6 +123,7 @@ _OUTPUTS = (
     "ew_sum", "ew_mean", "ew_var", "ew_cov", "ew_beta", "ew_alpha", "ew_mean_short",
     "wmean", "top", "standardized", "clipped",
     "ew_resid_std", "cmra", "combined", "wls1", "wls2",
+    "fill_industry_size", "fill_industry", "fill_size",
 )
 
 
@@ -274,6 +285,36 @@ def _wls_residual_reference(y, regressors, w, u) -> np.ndarray:
         filled = [np.where(np.isfinite(x[t]), x[t], m) for x, m in zip(regressors, means)]
         fitted = coef[0] + sum(c * f for c, f in zip(coef[1:], filled))
         out[t] = np.where(np.isfinite(y[t]), y[t] - fitted, np.nan)
+    return out
+
+
+def _fill_reference(y, size, industry, w, u, eligible, use_industry=True, use_size=True):
+    """Fill missing ``y`` from ``lstsq`` on explicit industry dummies and size; infinities are missing."""
+    out = np.where(np.isfinite(y), y, np.nan)
+    for t in range(y.shape[0]):
+        ok = np.ones(y.shape[1], dtype=bool)
+        if use_industry:
+            ok &= np.isfinite(industry[t])
+        if use_size:
+            ok &= np.isfinite(size[t])
+        fit = ok & (u[t] > 0) & np.isfinite(y[t]) & np.isfinite(w[t]) & (w[t] > 0)
+        codes = sorted(set(industry[t, fit].astype(int))) if use_industry else [0]
+        group = (lambda i: int(industry[t, i]) if np.isfinite(industry[t, i]) else -1) if use_industry else (lambda i: 0)
+        if not fit.any():
+            continue
+        columns = [[float(group(i) == c) for c in codes] for i in range(y.shape[1])]
+        if use_size:
+            columns = [row + [size[t, i]] for i, row in enumerate(columns)]
+        design = np.array(columns)
+        if use_size and np.linalg.matrix_rank(design[fit]) < design.shape[1]:
+            # Size does not vary within the industries: the slope is taken as 0.
+            design[:, -1] = 0.0
+        root = np.sqrt(w[t, fit])
+        coef, *_ = np.linalg.lstsq(design[fit] * root[:, None], y[t, fit] * root, rcond=None)
+        for i in range(y.shape[1]):
+            if np.isfinite(y[t, i]) or not (eligible[t, i] > 0 and ok[i]) or group(i) not in codes:
+                continue
+            out[t, i] = design[i] @ coef
     return out
 
 
@@ -465,3 +506,43 @@ def test_renormalized_combine_and_cmra_refuse_bad_parameters() -> None:
             RenormalizedCombine([Input("a")], [0.0])
         with pytest.raises(ValueError, match="months"):
             CMRA(Input("a"), 0, 21)
+
+
+@pytest.mark.parametrize(
+    "output, flags",
+    [
+        ("fill_industry_size", {}),
+        ("fill_industry", {"use_size": False}),
+        ("fill_size", {"use_industry": False}),
+    ],
+)
+def test_industry_size_fill_matches_lstsq_on_explicit_dummies(run, output, flags) -> None:
+    dtype, inputs, outputs = run
+    want = _fill_reference(inputs["y"], inputs["x"], inputs["ind"], inputs["w"], inputs["u"],
+                           inputs["e"], **flags)
+    _assert_matches(outputs[output], want, dtype, rtol=1e-8, atol=1e-10)
+    present = np.isfinite(inputs["y"])
+    np.testing.assert_array_equal(outputs[output][present], inputs["y"][present])
+    assert np.isnan(outputs[output][np.isinf(inputs["y"]) & np.isnan(want)]).all()
+    filled = ~present & np.isfinite(want)
+    assert filled.sum() > _T // 2, "the fixture should fill a good many values"
+
+
+def test_industry_size_fill_leaves_unfittable_or_ineligible_values_missing(run) -> None:
+    _, inputs, outputs = run
+    got = outputs["fill_industry_size"]
+    missing = ~np.isfinite(inputs["y"])
+    assert np.isnan(got[missing & (inputs["e"] == 0)]).all()
+    assert np.isnan(got[missing[:, 11], 11]).all()  # its industry has no fit member
+    assert np.isnan(got[missing & np.isnan(inputs["ind"])]).all()
+
+
+def test_industry_size_fill_compiles_one_class_per_regressor_set() -> None:
+    with Builder():
+        v = Input("v")
+        a = CrossSectionalIndustrySizeFill(v, v, v, v, v, v)
+        b = CrossSectionalIndustrySizeFill(v, v, v, v, v, v, use_size=False)
+        with pytest.raises(ValueError, match="industry, size or both"):
+            CrossSectionalIndustrySizeFill(v, v, v, v, v, v, use_industry=False, use_size=False)
+    assert type(a) is not type(b) and isinstance(b, CrossSectionalIndustrySizeFill)
+    assert type(b).__name__ == "CrossSectionalIndustrySizeFill_industry"
