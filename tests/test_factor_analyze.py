@@ -35,7 +35,7 @@ from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.momentum import Momentum
 from quantlab.label.forward import Forward
-from quantlab.utils.module import load_factor_from_config
+from quantlab.core.component import rebuild
 
 #: Every bar of the synthetic stores, which start on 2024-01-01.
 ALL = ("2024-01-01", "2024-12-31")
@@ -210,7 +210,7 @@ def test_output_dir_writes_tables_figure_and_rebuildable_config(
 
     config = json.loads((out / "config.json").read_text())
     assert list(config) == ["factor", "frets"]
-    rebuilt = load_factor_from_config(config["factor"])
+    rebuilt = rebuild(config["factor"])
     assert type(rebuilt) is Momentum
     assert list(rebuilt.get_factor_names()) == ["momentum_5"]
     assert config["frets"][0]["name"].endswith("_ForwardReturn")

@@ -42,7 +42,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.component import Component, config_cls_of, walk_components
+from quantlab.core.component import Component, config_cls_of, walk_components
 from quantlab.base.data import MarketDataset
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
 from quantlab.base.tracking import TrackingRun

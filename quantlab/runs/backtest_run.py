@@ -54,8 +54,8 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
-from quantlab.base.component import rebuild as rebuild_component
-from quantlab.base.component import code_of, component_fields, recorded_configs, walk_components
+from quantlab.core.component import rebuild as rebuild_component
+from quantlab.core.component import code_of, component_fields, recorded_configs, walk_components
 from quantlab.base.portfolio import PredictionPanel
 from quantlab.runs.directory import (
     read_record,

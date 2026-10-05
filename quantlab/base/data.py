@@ -39,7 +39,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.component import Component
+from quantlab.core.component import Component
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.backend import XrBackend
@@ -964,7 +964,7 @@ class BaseDataset(Component, ABC):
 
         ``resolve_run_config`` prepares the config first (a ``FrameDataset``
         resolves a store recorded relative to the run directory), then the
-        component rule rebuilds it (``quantlab.base.component.Component``).
+        component rule rebuilds it (``quantlab.core.component.Component``).
 
         Parameters
         ----------

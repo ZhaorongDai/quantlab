@@ -767,7 +767,7 @@ def test_extended_window_store_is_granularity_independent(
 def test_rebuild_from_config_carries_nbbo_fields(mock_wrds_session, tmp_path):
     from quantlab.base.config import NbboDatasetConfig
     from quantlab.dataset.nbbo import NbboPanelDataset
-    from quantlab.utils.module import load_dataset_from_config
+    from quantlab.core.component import rebuild
 
     acq = _acquire(tmp_path, _two_day_rows(), symbols=("AAPL", "BRK.B"))
     cfg = _dataset_config(
@@ -776,7 +776,7 @@ def test_rebuild_from_config_carries_nbbo_fields(mock_wrds_session, tmp_path):
         session_start="10:00", session_end="15:30",
         drop_crossed=False, drop_locked=True, keep_qu_cond=("R",),
     )
-    rebuilt = load_dataset_from_config(NbboPanelDataset(cfg).get_config())
+    rebuilt = rebuild(NbboPanelDataset(cfg).get_config())
     assert isinstance(rebuilt, NbboPanelDataset)
     assert isinstance(rebuilt.config, NbboDatasetConfig)
     for field in (

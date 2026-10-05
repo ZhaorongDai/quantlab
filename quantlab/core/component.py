@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextvars
 import copy
 import dataclasses
+import importlib
 import os
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -322,7 +323,42 @@ def config_cls_of(cls: type) -> type:
     return config_cls
 
 
-def rebuild(config: Mapping[str, Any], run_dir: str | os.PathLike | None = None) -> Any:
+def get_cls_from_path(path: str):
+    """Import ``path`` (``"pkg.module.ClassName"``) and return the class.
+
+    Parameters
+    ----------
+    path : str
+        A dotted path whose last segment is the attribute to fetch.
+
+    Returns
+    -------
+    type
+        The attribute named by the final segment, normally a class.
+
+    Raises
+    ------
+    ModuleNotFoundError
+        If the module part cannot be imported. Configs written before a
+        module was moved or renamed are not remapped to the new path.
+    AttributeError
+        If the module has no such attribute.
+
+    Examples
+    --------
+    >>> get_cls_from_path("quantlab.dataset.stock.StockDataset")
+    <class 'quantlab.dataset.stock.StockDataset'>
+    """
+    module_path, class_name = path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    return getattr(module, class_name)
+
+
+def rebuild(
+    config: Mapping[str, Any],
+    run_dir: str | os.PathLike | None = None,
+    expected: type | None = None,
+) -> Any:
     """Rebuild the component a saved config names, and everything nested in it.
 
     The class named by ``config["name"]`` is imported, checked to declare a
@@ -337,6 +373,10 @@ def rebuild(config: Mapping[str, Any], run_dir: str | os.PathLike | None = None)
         The run directory the config was read from; a dataset recorded
         relative to it (``FrameDataset``) is resolved against it at any
         depth.
+    expected : type, optional
+        The class the rebuilt component must be an instance of, such as
+        ``BaseBacktester``. Checked on the named class before anything is
+        rebuilt.
 
     Returns
     -------
@@ -346,7 +386,8 @@ def rebuild(config: Mapping[str, Any], run_dir: str | os.PathLike | None = None)
     Raises
     ------
     TypeError
-        If the named class declares no config class.
+        If the named class declares no config class, or is not a subclass of
+        ``expected``.
     ValueError
         If the config, or a config nested in it, holds a key its config
         class does not have, or a dataset relative to a run directory is
@@ -358,10 +399,15 @@ def rebuild(config: Mapping[str, Any], run_dir: str | os.PathLike | None = None)
 
     >>> rebuild(label.get_config()) == label
     True
+    >>> rebuild(label.get_config(), expected=Forward) == label
+    True
     """
-    from quantlab.utils.module import get_cls_from_path
-
     cls = get_cls_from_path(config["name"])
+    if expected is not None and not (isinstance(cls, type) and issubclass(cls, expected)):
+        raise TypeError(
+            f"{config['name']} is not a {expected.__name__} subclass, so it cannot be "
+            f"rebuilt as one"
+        )
     config_cls_of(cls)
     return cls.from_config(config, run_dir=run_dir)
 

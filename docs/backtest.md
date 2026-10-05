@@ -869,10 +869,11 @@ ValueError: USEquityCrossectionSelectStockVectorBt: run_cv() requires config.cv_
 A recipe with a missing field is refused instead of being filled from current defaults:
 
 ```python
->>> from quantlab.utils.module import load_backtester_from_config
+>>> from quantlab.base.backtest import BaseBacktester
+>>> from quantlab.core.component import rebuild
 >>> recipe = backtester.get_config()
 >>> del recipe["constructor"]
->>> load_backtester_from_config(recipe)
+>>> rebuild(recipe, expected=BaseBacktester)
 Traceback (most recent call last):
   ...
 ValueError: quantlab.backtest.predefined.us_equity.USEquityCrossectionSelectStockVectorBt config is missing field(s) ['constructor']; refusing to fill them from the current dataclass defaults, which may differ from the values the stored backtest ran with

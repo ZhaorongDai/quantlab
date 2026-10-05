@@ -18,7 +18,7 @@ from quantlab.base.config import FactorConfig, FrameDatasetConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
-from quantlab.utils.module import load_dataset_from_config
+from quantlab.core.component import rebuild
 from tests.backtest_fixtures import ADJUSTED_COLUMNS, write_price_store
 
 
@@ -244,7 +244,7 @@ def test_to_zarr_of_a_resample_stores_the_resampled_bars(tmp_path):
 def test_a_path_backed_frame_dataset_round_trips_through_the_loader(tmp_path, store):
     on_disk = FrameDataset(store).to_zarr(tmp_path / "held.zarr")
 
-    rebuilt = load_dataset_from_config(on_disk.get_config())
+    rebuilt = rebuild(on_disk.get_config())
 
     assert type(rebuilt) is FrameDataset
     assert rebuilt == on_disk
@@ -252,7 +252,7 @@ def test_a_path_backed_frame_dataset_round_trips_through_the_loader(tmp_path, st
 
 def test_the_loader_refuses_a_frame_dataset_held_only_in_memory(store):
     with pytest.raises(ValueError, match="zarr_file_path"):
-        load_dataset_from_config(FrameDataset(store).get_config())
+        rebuild(FrameDataset(store).get_config())
 
 
 def test_a_path_backed_resample_stays_in_memory(tmp_path):

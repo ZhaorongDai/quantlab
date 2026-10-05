@@ -6,7 +6,7 @@ land on the object's own config, while the caller's config stays exactly as
 written. A saved ``config.json`` rebuilds into an object with an equal config.
 
 Everything here goes through public surfaces: the constructors, ``config``,
-``get_config`` and the ``quantlab.utils.module`` loaders.
+``get_config`` and the ``quantlab.core.component`` loaders.
 """
 
 import dataclasses
@@ -16,7 +16,7 @@ from typing import Callable
 
 import pytest
 
-import quantlab.utils.module as module_utils
+import quantlab.core.component as component_rule
 from quantlab.base.config import (
     ConstituentDatasetConfig,
     CrspDatasetConfig,
@@ -163,7 +163,7 @@ def test_a_dataset_rebuilds_from_config_json_into_an_equal_config(
     cls, config = dataset_cases[case]
     dataset = cls(config)
 
-    rebuilt = module_utils.load_dataset_from_config(_through_json(dataset.get_config()))
+    rebuilt = component_rule.rebuild(_through_json(dataset.get_config()))
 
     assert type(rebuilt) is cls
     assert rebuilt.config == dataset.config
@@ -338,7 +338,7 @@ def test_a_factor_rebuilds_from_config_json_into_an_equal_config(
     cls, config = factor_cases[case]
     factor = cls(config)
 
-    rebuilt = module_utils.load_factor_from_config(_through_json(factor.get_config()))
+    rebuilt = component_rule.rebuild(_through_json(factor.get_config()))
 
     assert type(rebuilt) is cls
     assert rebuilt.config == factor.config
@@ -415,7 +415,7 @@ def test_a_model_rebuilds_from_config_json_into_an_equal_config(
 ) -> None:
     model = cls(_model_config(config_cls, factor_cases, tmp_path))
 
-    rebuilt = module_utils.load_model_from_config(_through_json(model.get_config()))
+    rebuilt = component_rule.rebuild(_through_json(model.get_config()))
 
     assert type(rebuilt) is cls
     assert rebuilt.config == model.config
@@ -458,7 +458,7 @@ def test_a_validating_factor_rebuilds_from_config_json_into_an_equal_config(
     cls, config = build(tmp_path)
     factor = cls(config)
 
-    rebuilt = module_utils.load_factor_from_config(_through_json(factor.get_config()))
+    rebuilt = component_rule.rebuild(_through_json(factor.get_config()))
 
     assert type(rebuilt) is cls
     assert rebuilt.config == factor.config

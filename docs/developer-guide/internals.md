@@ -256,7 +256,7 @@ exception.
 `quantlab.utils.code_record.code_record` records the code a run used. The
 `run.json` of a backtest run and of a top trained unit holds it as `code`
 (`BacktestRun.code`, `TrainedRun.code`), built by
-`quantlab.base.component.code_of(root)` over the component tree:
+`quantlab.core.component.code_of(root)` over the component tree:
 
 - `git` holds the commit of the repository quantlab is imported from and
   `dirty`, which covers tracked files only. It is `None` outside a working

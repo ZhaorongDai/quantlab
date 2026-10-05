@@ -1,7 +1,7 @@
 """Components are serialised and rebuilt from one declaration (#130).
 
 A config dataclass marks which of its fields hold components with
-`quantlab.base.component.component`. One generic `to_dict` writes each declared field
+`quantlab.core.component.component`. One generic `to_dict` writes each declared field
 as the component's own config (its `"name"` the import path), and one generic
 `from_config(d, run_dir=None)` rebuilds by recursing along those fields only, threading
 `run_dir` to every level. What is locked here:
@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 import xarray as xr
 
-from quantlab.base.component import (
+from quantlab.core.component import (
     Component,
     component,
     rebuild,

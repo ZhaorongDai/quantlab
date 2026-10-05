@@ -37,7 +37,8 @@ import xarray as xr
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.runs.backtest_run import BacktestRun, Market
-from quantlab.utils.module import load_backtester_from_config
+from quantlab.core.component import rebuild
+from quantlab.base.backtest import BaseBacktester
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.backtest_fixtures import (
     SYMBOLS,
@@ -267,7 +268,7 @@ def test_config_without_a_model_serializes_and_rebuilds(stores):
     assert config["model"] is None
     assert config["model_mode"] is None
 
-    rebuilt = load_backtester_from_config(json.loads(json.dumps(config)))
+    rebuilt = rebuild(json.loads(json.dumps(config)), expected=BaseBacktester)
     assert rebuilt.config.model is None
 
 

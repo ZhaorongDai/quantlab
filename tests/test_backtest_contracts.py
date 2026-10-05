@@ -41,8 +41,7 @@ What is locked here, the decision each lock enforces, and what turns it red:
   `quantlab.config`. Relative spellings are resolved against the file's
   package, because a substring scan cannot see them.
 - **One-directional layering.** No quantlab module outside
-  `quantlab/backtest/`, `quantlab/base/backtest.py`,
-  `quantlab/utils/module.py` (the config loader) and `quantlab/api/` (the
+  `quantlab/backtest/`, `quantlab/base/backtest.py` and `quantlab/api/` (the
   frame facade above every layer, ADR 0011) imports the backtest layer.
 - **vectorbt stays inside the engine (D-31).** No quantlab module other than
   `quantlab/backtest/engine_vectorbt.py` imports vectorbt, with no exemption.
@@ -306,14 +305,9 @@ def test_backtest_layer_never_imports_config_factories():
 
 
 def test_no_lower_layer_imports_the_backtest_layer():
-    """Layering: the backtest layer is imported only by itself, by
-    `quantlab/utils/module.py`, the config loader that rebuilds a backtester
-    from its dotted path, and by `quantlab/api/`, the facade that sits above
-    every layer."""
-    allowed_files = {
-        REPO_ROOT / "quantlab/base/backtest.py",
-        REPO_ROOT / "quantlab/utils/module.py",
-    }
+    """Layering: the backtest layer is imported only by itself and by
+    `quantlab/api/`, the facade that sits above every layer."""
+    allowed_files = {REPO_ROOT / "quantlab/base/backtest.py"}
     backtest_pkg = REPO_ROOT / "quantlab/backtest"
     api_pkg = REPO_ROOT / "quantlab/api"
 

@@ -35,7 +35,7 @@ that uses it.
 
 Every configurable object records its class as a dotted import path in
 `config.name`, and saved configs are rebuilt from that path by
-`quantlab.utils.module`. A class defined in a notebook or a script cell can be
+`quantlab.core.component`. A class defined in a notebook or a script cell can be
 used, but its saved configs cannot be rebuilt in another process. Put classes
 you want to reuse in an importable module. A class is rebuilt with the config
 class it declares in its `config_cls` attribute; the base classes already set
@@ -903,7 +903,7 @@ goes in the config's `constructor` (see [portfolio construction](../portfolio.md
 for the per-bar contract). A new backtest parameter belongs on a new
 config dataclass derived from `BacktestConfig`, named in `config_cls`, so that the run's recipe records it
 and `BacktestRun.rebuild_backtester()` can rebuild the run; a field holding a component is declared with
-`quantlab.base.component.component()`. Construction-time checks
+`quantlab.core.component.component()`. Construction-time checks
 go in `_validate_config`, which runs at the end of the config setter.
 
 A different simulation engine is a sibling of `VectorBtBacktester`: subclass

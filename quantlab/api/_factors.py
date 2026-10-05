@@ -16,7 +16,7 @@ from quantlab.base.config import FactorConfig
 from quantlab.base.factor import Factor
 from quantlab.dataset.memory import FrameDataset
 from quantlab.utils.frame import to_panel
-from quantlab.utils.module import get_cls_from_path
+from quantlab.core.component import get_cls_from_path
 
 #: The canonical price and volume columns of a frame.
 CANONICAL_COLUMNS = ("open", "high", "low", "close", "volume")

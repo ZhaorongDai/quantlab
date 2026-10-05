@@ -28,7 +28,7 @@ from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.momentum import Momentum
 from quantlab.label.forward import Forward
-from quantlab.utils.module import load_factor_from_config
+from quantlab.core.component import rebuild
 
 
 class MaDeviation(FactorKunQuant):
@@ -182,7 +182,7 @@ def test_a_label_rebuilds_from_its_config(factor):
     label = Forward(ForwardConfig(factor=factor, span=3, delay=2))
 
     config = json.loads(json.dumps(label.get_config()))
-    rebuilt = load_factor_from_config(config)
+    rebuilt = rebuild(config)
 
     assert config["name"] == "quantlab.label.forward.Forward"
     assert rebuilt == label

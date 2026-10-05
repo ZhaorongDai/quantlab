@@ -23,7 +23,7 @@ import xarray as xr
 from quantlab.base.config import DatasetConfig, MarketFeatureConfig, PolarsFactorConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.market import MarketFeatures
-from quantlab.utils.module import load_factor_from_config
+from quantlab.core.component import rebuild
 from tests.backtest_fixtures import PastReturnFactor, write_price_store
 
 WINDOWS = (5, 10, 20, 30, 60)
@@ -361,7 +361,7 @@ def test_the_config_round_trips_through_the_class_path_loader(stores):
     assert list(saved["series"]) == ["spy", "qqq"]
     assert saved["series"]["spy"]["zarr_file_path"] == stores["spy"][0].zarr_file_path
 
-    rebuilt = load_factor_from_config(saved)
+    rebuilt = rebuild(saved)
     assert rebuilt == factor
     assert isinstance(rebuilt.config.series["qqq"], StockDataset)
     xr.testing.assert_allclose(

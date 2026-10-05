@@ -48,7 +48,7 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backend import XrBackend
-from quantlab.base.component import Component
+from quantlab.core.component import Component
 
 if TYPE_CHECKING:
     from quantlab.base.factor import Factor
@@ -421,7 +421,7 @@ class _Configured(Component):
     """A component built from one frozen config dataclass: a rule or a risk model.
 
     It is serialised and rebuilt by the component rule
-    (``quantlab.base.component``): a field holding another component (a
+    (``quantlab.core.component``): a field holding another component (a
     rule's risk model) is declared with ``component()`` on the config
     dataclass, and a free-form parameter dict is kept as data.
     """

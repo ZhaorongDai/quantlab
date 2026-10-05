@@ -103,7 +103,7 @@ def _small_frame() -> pd.DataFrame:
     ],
 )
 def test_equity_short_names_match_the_stock_classes_on_a_zarr_dataset(tmp_path, name, class_path):
-    from quantlab.utils.module import get_cls_from_path
+    from quantlab.core.component import get_cls_from_path
 
     frame, dataset = _equity_frame(tmp_path)
 
@@ -126,7 +126,7 @@ def test_equity_short_names_match_the_stock_classes_on_a_zarr_dataset(tmp_path, 
     ],
 )
 def test_crypto_short_names_match_the_spot_kline_classes(spot_kline_zarr, name, class_path):
-    from quantlab.utils.module import get_cls_from_path
+    from quantlab.core.component import get_cls_from_path
 
     frame, dataset = _crypto_frame(spot_kline_zarr)
 

@@ -27,7 +27,7 @@ from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline
 from quantlab.factor.predefined.momentum import Momentum
-from quantlab.utils.module import load_dataset_from_config, load_factor_from_config
+from quantlab.core.component import rebuild
 from quantlab.utils.resample import session_labels
 
 SYMBOLS = ["AAAUSDT", "BBBUSDT"]
@@ -282,7 +282,7 @@ def test_resampled_dataset_config_round_trips(minute_config: DatasetConfig):
     assert saved["resample_freq"] == "1d"
     assert saved["resample_how"] == OHLCV_HOW
 
-    rebuilt = load_dataset_from_config(saved)
+    rebuilt = rebuild(saved)
     assert rebuilt.config.resample_freq == "1d"
     assert rebuilt.panel(*WHOLE_STORE).sizes["timestamp"] == DAYS
 
@@ -366,7 +366,7 @@ def test_factor_resample_config_round_trips(minute_config: DatasetConfig, tmp_pa
     assert saved["resample_freq"] == "1d"
     assert saved["dataset"]["resample_freq"] is None
 
-    rebuilt = load_factor_from_config(saved)
+    rebuilt = rebuild(saved)
     assert rebuilt.config.resample_freq == "1d"
     assert compute_all(rebuilt).sizes["timestamp"] == DAYS
 

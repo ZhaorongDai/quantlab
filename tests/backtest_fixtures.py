@@ -14,7 +14,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.component import component, rebuild
+from quantlab.core.component import component, rebuild
 from quantlab.base.config import DatasetConfig, ForwardConfig, ModelConfig, PolarsFactorConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel

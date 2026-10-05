@@ -118,14 +118,14 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 ### Rebuild a factor from its config
 
-`get_config()` returns a dict describing the factor and its dataset, and `load_factor_from_config` rebuilds the factor from it.
+`get_config()` returns a dict describing the factor and its dataset, and `rebuild` rebuilds the factor from it.
 
 ```python
 >>> cfg = factor.get_config()
 >>> cfg["name"], cfg["kwargs"], cfg["dataset"]["market"]
 ('quantlab.factor.predefined.momentum.Momentum', {'n': 5}, 'crypto_spot')
->>> from quantlab.utils.module import load_factor_from_config
->>> rebuilt = load_factor_from_config(cfg)
+>>> from quantlab.core.component import rebuild
+>>> rebuilt = rebuild(cfg)
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
 ('Momentum', ('momentum_5',))
 ```
@@ -172,7 +172,7 @@ XrBackend()
 >>> cfg = factor_range.get_config()
 >>> cfg["dataset"]["name"], [d["zarr_file_path"] for d in cfg["dataset"]["datasets"]]
 ('quantlab.dataset.merged.MergedDataset', ['data/spot_half.zarr', 'data/stock_half.zarr'])
->>> load_factor_from_config(cfg) == factor_range
+>>> rebuild(cfg) == factor_range
 True
 ```
 
@@ -188,7 +188,7 @@ A merge never picks a value by input order. A cell holding a value in two inputs
 >>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.factor.predefined.market import MarketFeatures
->>> from quantlab.utils.module import load_factor_from_config
+>>> from quantlab.core.component import rebuild
 >>> market_days = pd.bdate_range("2024-01-01", periods=120)
 >>> market_rng = np.random.default_rng(1)
 >>> def market_write_store(path, symbols):
@@ -232,13 +232,13 @@ array([-0.00302, -0.00302, -0.00302, -0.00302, -0.00302, -0.00302],
 >>> market_cfg = json.loads(json.dumps(market_factor.get_config()))
 >>> list(market_cfg["series"]), market_cfg["series"]["spy"]["zarr_file_path"]
 (['spy', 'qqq'], 'data/spy.zarr')
->>> load_factor_from_config(market_cfg) == market_factor
+>>> rebuild(market_cfg) == market_factor
 True
 >>> market_factor.build("2024-03-01", "2024-04-30").store_range()
 ('2024-03-01', '2024-04-30')
 ```
 
-On each bar the values go to every target symbol that has a bar there, that is, whose `kwargs["presence_column"]` (default `close`) is not missing. `FFF` is therefore NaN before it lists, and a model does not see market features on a bar where a symbol had no data. The rolling windows run over each series' own bars, and a target bar that a series lacks is NaN. A window is defined only when all of its bars are. The standard deviations use `ddof=1`, as pandas and Qlib do, an amount of 0 gives NaN rather than an infinite ratio, and the panel is float32. The series columns are `kwargs["close_column"]` (default `adjClose`) and `kwargs["volume_column"]` (default `adjVolume`), looked up after the dataset's `COLUMN_MAP` renaming, so a crypto spot series is read as `close`, `volume` and `amount`. `get_config()` nests each series dataset's config under `series`, and `load_factor_from_config` rebuilds them. If the warm-up is short, the long windows stay NaN on the first bars and `compute` warns: `UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` A series store holding more than one symbol is refused when a panel is computed: `ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
+On each bar the values go to every target symbol that has a bar there, that is, whose `kwargs["presence_column"]` (default `close`) is not missing. `FFF` is therefore NaN before it lists, and a model does not see market features on a bar where a symbol had no data. The rolling windows run over each series' own bars, and a target bar that a series lacks is NaN. A window is defined only when all of its bars are. The standard deviations use `ddof=1`, as pandas and Qlib do, an amount of 0 gives NaN rather than an infinite ratio, and the panel is float32. The series columns are `kwargs["close_column"]` (default `adjClose`) and `kwargs["volume_column"]` (default `adjVolume`), looked up after the dataset's `COLUMN_MAP` renaming, so a crypto spot series is read as `close`, `volume` and `amount`. `get_config()` nests each series dataset's config under `series`, and `rebuild` rebuilds them. If the warm-up is short, the long windows stay NaN on the first bars and `compute` warns: `UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` A series store holding more than one symbol is refused when a panel is computed: `ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
 
 For US equities from WRDS, give each ETF its own CRSP store, as for a backtest benchmark. `scripts/wrds/etf.py --etf spy,qqq,iwm` downloads SPY, QQQ and IWM (the S&P 500, the Nasdaq-100 and the Russell 2000) into one store each, and `CrspDatasetConfig.etf_benchmark` keeps the ETF, which the default security filter drops as a fund:
 
@@ -313,7 +313,7 @@ timestamp
 (None, '1d')
 ```
 
-The copy has its own dataset object and an empty compiled state. `build()` writes to `store_path`, beside the source store, and `read()` on a copy opens that store when it exists and otherwise resamples the source factor's store. The request round-trips through `get_config()` and `load_factor_from_config`.
+The copy has its own dataset object and an empty compiled state. `build()` writes to `store_path`, beside the source store, and `read()` on a copy opens that store when it exists and otherwise resamples the source factor's store. The request round-trips through `get_config()` and `rebuild`.
 
 ```python
 >>> daily.store_path
@@ -325,7 +325,7 @@ Frozen({'timestamp': 2, 'symbol': 2})
 >>> cfg = daily.get_config()
 >>> cfg["resample_freq"], cfg["resample_how"], cfg["dataset"]["resample_freq"]
 ('1d', 'last', None)
->>> load_factor_from_config(cfg).compute("2024-01-02", "2024-01-03").sizes
+>>> rebuild(cfg).compute("2024-01-02", "2024-01-03").sizes
 Frozen({'symbol': 2, 'timestamp': 2})
 ```
 
@@ -348,7 +348,7 @@ Any factor becomes a label this way. Wrapping the 5-bar `Momentum` `factor` of t
 -0.012116
 >>> round(float(close[37, 0] / close[32, 0] - 1), 6)
 -0.012116
->>> load_factor_from_config(label.get_config()) == label
+>>> rebuild(label.get_config()) == label
 True
 ```
 
@@ -458,13 +458,13 @@ XrBackend()
 >>> sorted(os.listdir("data/analysis/momentum"))
 ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
 >>> import json
->>> from quantlab.utils.module import load_factor_from_config
+>>> from quantlab.core.component import rebuild
 >>> cfg = json.load(open("data/analysis/momentum/config.json"))
->>> list(cfg), type(load_factor_from_config(cfg["frets"][0])).__name__
+>>> list(cfg), type(rebuild(cfg["frets"][0])).__name__
 (['factor', 'frets'], 'Return')
 ```
 
-The result carries `pairs` (a `PairAnalysis` per `"<factor>__<fret>"`, with the IC series, its running sum `cumulative_ic`, quantile returns, turnover and a `summary` dict), `figures` (one matplotlib figure per pair, held only when no `output_dir` is given) and tidy tables from `summary_table()`, `ic_table()`, `monthly_ic_table()`, `quantile_returns_table()` and `turnover_table()`. `summary()` is the short table to sort and filter factors by, one row per pair: `factor`, `fret`, `ic` (mean Pearson IC), `rank_ic` (mean rank IC), `icir` and `rank_icir` (each mean over its standard deviation), `long_short_return` (mean per-period top-minus-bottom forward return, over the label's horizon) and `turnover` (the mean turnover of the top and bottom quantiles, averaged); every value is one of `summary_table()`'s. It is a pandas DataFrame. With `output_dir`, those tables are written as CSV, the scalar metrics as `summary.json`, each figure as `<factor>__<fret>.png`, and `config.json` holds the factor's and the labels' configs, each rebuildable with `load_factor_from_config` (an analysis from `quantlab.api.analyze_factors` involves no factor or label object and writes an empty `config.json`); the figures are then drawn on every CPU in parallel straight to the PNG files and not kept, since drawing dominates the cost of a report over a whole alpha library. Without `output_dir` nothing is written. The figures are built without `pyplot`, so they are never shown and need no closing; `fig.savefig(path)` writes one. The IC panel draws the cumulative IC on its right axis; the turnover and rank-autocorrelation panels draw each series as a translucent rolling range (minimum to maximum over `rolling_window` periods, 22 by default) with its rolling mean, not the raw per-period values. The metrics are computed with polars: every factor variable of a chunk (`chunk_size`, default 32) is one lazy plan over the long `(timestamp, symbol)` frame, collected once. The machinery lives in `quantlab.analysis.factor_report`, where `FactorAnalyzer.run(factor, frets, features=..., labels=[...], factor_names=None, output_dir=None)` takes the feature and label panels explicitly, and `FactorAnalyzer.analyze_panels(features, frets)` analyzes panels that come from no factor or label object, each forward-return panel given as a `Fret(panel, horizon, name)`.
+The result carries `pairs` (a `PairAnalysis` per `"<factor>__<fret>"`, with the IC series, its running sum `cumulative_ic`, quantile returns, turnover and a `summary` dict), `figures` (one matplotlib figure per pair, held only when no `output_dir` is given) and tidy tables from `summary_table()`, `ic_table()`, `monthly_ic_table()`, `quantile_returns_table()` and `turnover_table()`. `summary()` is the short table to sort and filter factors by, one row per pair: `factor`, `fret`, `ic` (mean Pearson IC), `rank_ic` (mean rank IC), `icir` and `rank_icir` (each mean over its standard deviation), `long_short_return` (mean per-period top-minus-bottom forward return, over the label's horizon) and `turnover` (the mean turnover of the top and bottom quantiles, averaged); every value is one of `summary_table()`'s. It is a pandas DataFrame. With `output_dir`, those tables are written as CSV, the scalar metrics as `summary.json`, each figure as `<factor>__<fret>.png`, and `config.json` holds the factor's and the labels' configs, each rebuildable with `rebuild` (an analysis from `quantlab.api.analyze_factors` involves no factor or label object and writes an empty `config.json`); the figures are then drawn on every CPU in parallel straight to the PNG files and not kept, since drawing dominates the cost of a report over a whole alpha library. Without `output_dir` nothing is written. The figures are built without `pyplot`, so they are never shown and need no closing; `fig.savefig(path)` writes one. The IC panel draws the cumulative IC on its right axis; the turnover and rank-autocorrelation panels draw each series as a translucent rolling range (minimum to maximum over `rolling_window` periods, 22 by default) with its rolling mean, not the raw per-period values. The metrics are computed with polars: every factor variable of a chunk (`chunk_size`, default 32) is one lazy plan over the long `(timestamp, symbol)` frame, collected once. The machinery lives in `quantlab.analysis.factor_report`, where `FactorAnalyzer.run(factor, frets, features=..., labels=[...], factor_names=None, output_dir=None)` takes the feature and label panels explicitly, and `FactorAnalyzer.analyze_panels(features, frets)` analyzes panels that come from no factor or label object, each forward-return panel given as a `Fret(panel, horizon, name)`.
 
 Every pair reports the Pearson IC beside the rank IC (`pearson_ic`, and `pearson_ic_mean`, `pearson_ic_std`, `pearson_ir`, `pearson_ic_t_stat` in the summary); a Pearson IC far from the rank IC means a few extreme values drive the linear relation. The mean IC has a Newey-West t-statistic, `ic_nw_t_stat` and `ic_nw_p_value`, with Bartlett weights over `ic_nw_lags` lags: the larger of `horizon - 1`, the autocorrelation overlapping multi-bar forward returns induce, and the rule of thumb `floor(4 * (n / 100) ** (2 / 9))`. For a label spanning several bars the plain `ic_t_stat` overstates significance; read `ic_nw_t_stat` instead. The rank autocorrelation is measured at every lag of `FactorAnalyzer(autocorrelation_lags=(1, 5, 10, 20))`: `rank_autocorrelations` holds one column per lag, the summary `rank_autocorrelation_lag<k>`, `turnover_table()` one column per lag, and the figure draws the rolling range and rolling mean of every lag in one panel, darker for shorter lags. The long-short portfolio is summarized by `long_short_annual_return`, `long_short_annual_volatility`, `long_short_sharpe` and `long_short_max_drawdown`, annualized with `periods_per_year`, which is measured from the data (about 252 for daily stock bars, 365 for daily crypto bars); a value that falls to zero stays there. With two or more frets, `ic_decay_table()` lists every pair's mean IC by horizon with its 95% Newey-West interval, `ic_decay.csv` holds it, and every pair figure includes a panel of the factor's mean IC against the horizon with the pair's own fret ringed. Read beside the autocorrelation panel, it shows how fast the signal fades and how slowly the factor changes, which together suggest a holding period. Pass frets of several horizons, for example `Return` labels with `n_forward_periods` of 1, 5 and 20, to get it.
 

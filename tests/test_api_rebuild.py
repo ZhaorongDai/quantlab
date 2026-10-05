@@ -29,7 +29,8 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.utils.module import load_backtester_from_config
+from quantlab.core.component import rebuild
+from quantlab.base.backtest import BaseBacktester
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import write_price_store
@@ -222,7 +223,7 @@ def test_the_rebuilt_config_round_trips_through_the_loader(tmp_path):
     run_dir = _report(tmp_path / "runs").raw.run_dir
     rebuilt = BacktestRun.open(run_dir).rebuild_backtester()
 
-    again = load_backtester_from_config(rebuilt.get_config())
+    again = rebuild(rebuilt.get_config(), expected=BaseBacktester)
 
     assert again.get_config() == rebuilt.get_config()
     assert again.config.price_dataset == rebuilt.config.price_dataset
@@ -235,4 +236,4 @@ def test_a_relative_input_path_needs_the_run_directory(tmp_path):
     run_dir = _report(tmp_path / "runs").raw.run_dir
 
     with pytest.raises(ValueError, match="relative to the run directory.*run_dir="):
-        load_backtester_from_config(_config(run_dir))
+        rebuild(_config(run_dir), expected=BaseBacktester)

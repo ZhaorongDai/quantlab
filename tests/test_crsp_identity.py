@@ -1170,7 +1170,7 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
 
     from quantlab.base.config import CrspDatasetConfig
     from quantlab.dataset.crsp import CrspStockDataset
-    from quantlab.utils.module import load_dataset_from_config
+    from quantlab.core.component import rebuild
 
     dataset = CrspStockDataset(
         CrspDatasetConfig(
@@ -1190,7 +1190,7 @@ def test_a_crsp_config_round_trips_through_json(mock_crsp_session, tmp_path):
     saved = dataset.get_config()
     serialized = json.loads(json.dumps(copy.deepcopy(saved)))
 
-    rebuilt = load_dataset_from_config(serialized)
+    rebuilt = rebuild(serialized)
 
     assert type(rebuilt) is CrspStockDataset
     assert type(rebuilt.config) is CrspDatasetConfig

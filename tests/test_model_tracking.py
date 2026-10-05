@@ -1,7 +1,7 @@
 """Model training and CV track through the config's tracker (ticket #101, ADR 0015).
 
 Every test puts a tracker in the model config and calls a public entry point
-(``train``, ``train_cv``, ``load_model_from_config``); what it asserts is what
+(``train``, ``train_cv``, ``rebuild``); what it asserts is what
 an outsider sees: the runs the tracker opened, how they ended and what the
 trained unit records (read through ``TrainedRun``).
 """
@@ -16,7 +16,7 @@ import pytest
 from quantlab.base.config import ModelConfig
 from quantlab.base.tracking import NullTracker
 from quantlab.tracking.wandb import WandbTracker
-from quantlab.utils.module import load_model_from_config
+from quantlab.core.component import rebuild
 from quantlab.runs.trained_run import TrainedRun
 from tests.test_backtest_contracts import REPO_ROOT, _python_files
 from tests.test_model_metrics_file import StubLibraryHead, _model
@@ -114,7 +114,7 @@ def test_the_tracker_round_trips_through_the_trained_units_config(tmp_path):
     saved["factors"] = []
     saved["labels"] = []
     saved["name"] = "tests.test_model_metrics_file.StubLibraryHead"
-    assert load_model_from_config(saved).config.tracker == tracker
+    assert rebuild(saved).config.tracker == tracker
 
 
 def test_training_with_the_default_config_imports_no_tracking_library(tmp_path):

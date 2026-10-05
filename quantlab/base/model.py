@@ -40,7 +40,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.backend import XrBackend
-from quantlab.base.component import Component, code_of, walk_components
+from quantlab.core.component import Component, code_of, walk_components
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.base.tracking import NullRun, Tracker, TrackingRun
 from quantlab.enums.constant import Date
@@ -625,7 +625,7 @@ class BaseModel(Component, ABC):
         """What the top unit records about its data and its code.
 
         ``data_fingerprint`` is ``training_record``; ``code`` the code record
-        of this model's tree (``quantlab.base.component.code_of``), taken
+        of this model's tree (``quantlab.core.component.code_of``), taken
         when the unit is written.
 
         Examples

@@ -190,13 +190,13 @@ def test_a_security_whose_type_changed_is_true_only_for_the_eligible_era(tmp_pat
 
 
 def test_the_panel_round_trips_through_its_saved_config(tmp_path):
-    """`quantlab/utils/module.py` rebuilds a dataset from its `config.json`.
+    """`quantlab.core.component.rebuild` rebuilds a dataset from its `config.json`.
 
     A class that cannot be rebuilt from its own recorded config is a store
     nobody can reproduce -- and `security_filter` living in `kwargs` is
     exactly what has to survive the trip.
     """
-    from quantlab.utils.module import get_cls_from_path
+    from quantlab.core.component import get_cls_from_path
 
     dataset = CrspMarketConstituentDataset(
         _panel_config(

@@ -10,7 +10,7 @@ a label.
 
 import dataclasses
 
-from quantlab.base.component import Component, component
+from quantlab.core.component import Component, component
 
 
 @dataclasses.dataclass(frozen=True)

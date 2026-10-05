@@ -18,7 +18,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 from quantlab.label.predefined.fret import Return, Volatility, _TrailingOpenVolatility
 from quantlab.model.predefined.xgb import XGBoostRegressor
-from quantlab.utils.module import load_factor_from_config
+from quantlab.core.component import rebuild
 
 
 def _config(dataset_config: DatasetConfig, tmp_path: Path, n: int, name: str = "vol") -> FactorConfig:
@@ -114,7 +114,7 @@ def test_volatility_rebuilds_from_its_factor_config(dataset_config, tmp_path):
     config = json.loads(json.dumps(label.get_config()))
 
     assert config["name"] == "quantlab.label.predefined.fret.Volatility"
-    assert load_factor_from_config(config) == label
+    assert rebuild(config) == label
 
 
 def test_a_model_trains_on_a_volatility_label(dataset_config, tmp_path, monkeypatch):

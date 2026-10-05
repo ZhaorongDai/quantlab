@@ -118,14 +118,14 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 ### 从配置重建因子
 
-`get_config()` 返回描述因子及其数据集的 dict，`load_factor_from_config` 可以据此重建因子。
+`get_config()` 返回描述因子及其数据集的 dict，`rebuild` 可以据此重建因子。
 
 ```python
 >>> cfg = factor.get_config()
 >>> cfg["name"], cfg["kwargs"], cfg["dataset"]["market"]
 ('quantlab.factor.predefined.momentum.Momentum', {'n': 5}, 'crypto_spot')
->>> from quantlab.utils.module import load_factor_from_config
->>> rebuilt = load_factor_from_config(cfg)
+>>> from quantlab.core.component import rebuild
+>>> rebuilt = rebuild(cfg)
 >>> type(rebuilt).__name__, rebuilt.get_factor_names()
 ('Momentum', ('momentum_5',))
 ```
@@ -172,7 +172,7 @@ XrBackend()
 >>> cfg = factor_range.get_config()
 >>> cfg["dataset"]["name"], [d["zarr_file_path"] for d in cfg["dataset"]["datasets"]]
 ('quantlab.dataset.merged.MergedDataset', ['data/spot_half.zarr', 'data/stock_half.zarr'])
->>> load_factor_from_config(cfg) == factor_range
+>>> rebuild(cfg) == factor_range
 True
 ```
 
@@ -188,7 +188,7 @@ True
 >>> from quantlab.base.config import DatasetConfig, MarketFeatureConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.factor.predefined.market import MarketFeatures
->>> from quantlab.utils.module import load_factor_from_config
+>>> from quantlab.core.component import rebuild
 >>> market_days = pd.bdate_range("2024-01-01", periods=120)
 >>> market_rng = np.random.default_rng(1)
 >>> def market_write_store(path, symbols):
@@ -232,13 +232,13 @@ array([-0.00302, -0.00302, -0.00302, -0.00302, -0.00302, -0.00302],
 >>> market_cfg = json.loads(json.dumps(market_factor.get_config()))
 >>> list(market_cfg["series"]), market_cfg["series"]["spy"]["zarr_file_path"]
 (['spy', 'qqq'], 'data/spy.zarr')
->>> load_factor_from_config(market_cfg) == market_factor
+>>> rebuild(market_cfg) == market_factor
 True
 >>> market_factor.build("2024-03-01", "2024-04-30").store_range()
 ('2024-03-01', '2024-04-30')
 ```
 
-每根 bar 上，这些值会给到目标中在该 bar 有数据的每个标的，即 `kwargs["presence_column"]`（默认 `close`）不缺失的标的。所以 `FFF` 在上市前是 NaN，模型不会在一个标的没有数据的 bar 上看到市场特征。滚动窗口在各序列自己的 bar 上计算，序列缺少的目标 bar 为 NaN。只有窗口内所有 bar 都有值时，窗口才有值。标准差和 pandas、Qlib 一样使用 `ddof=1`；成交额为 0 时得到 NaN 而不是无穷大的比值；面板为 float32。序列读取的列是 `kwargs["close_column"]`（默认 `adjClose`）和 `kwargs["volume_column"]`（默认 `adjVolume`），按数据集 `COLUMN_MAP` 改名后的名字查找，所以加密货币现货序列读的是 `close`、`volume` 和 `amount`。`get_config()` 把每个序列数据集的配置嵌套在 `series` 下，`load_factor_from_config` 会把它们重建出来。预热不足时，前几根 bar 上的长窗口保持 NaN，`compute` 会警告：`UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` 序列存储含有多于一个标的时，计算面板时会被拒绝：`ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
+每根 bar 上，这些值会给到目标中在该 bar 有数据的每个标的，即 `kwargs["presence_column"]`（默认 `close`）不缺失的标的。所以 `FFF` 在上市前是 NaN，模型不会在一个标的没有数据的 bar 上看到市场特征。滚动窗口在各序列自己的 bar 上计算，序列缺少的目标 bar 为 NaN。只有窗口内所有 bar 都有值时，窗口才有值。标准差和 pandas、Qlib 一样使用 `ddof=1`；成交额为 0 时得到 NaN 而不是无穷大的比值；面板为 float32。序列读取的列是 `kwargs["close_column"]`（默认 `adjClose`）和 `kwargs["volume_column"]`（默认 `adjVolume`），按数据集 `COLUMN_MAP` 改名后的名字查找，所以加密货币现货序列读的是 `close`、`volume` 和 `amount`。`get_config()` 把每个序列数据集的配置嵌套在 `series` 下，`rebuild` 会把它们重建出来。预热不足时，前几根 bar 上的长窗口保持 NaN，`compute` 会警告：`UserWarning: MarketFeatures.compute(): 60 warm-up bar(s) are needed before '2024-01-10' but StockDataset holds only 7; the first bars are short by 53 bar(s) of warm-up.` 序列存储含有多于一个标的时，计算面板时会被拒绝：`ValueError: MarketFeatures: series 'stocks' must hold one symbol, its StockDataset holds 6; give each series its own single-symbol dataset.`
 
 对来自 WRDS 的美股，像回测基准那样给每只 ETF 单独一个 CRSP 存储。`scripts/wrds/etf.py --etf spy,qqq,iwm` 把 SPY、QQQ 和 IWM（标普 500、纳斯达克 100 和罗素 2000）各下载到一个存储里，`CrspDatasetConfig.etf_benchmark` 会保留 ETF，而默认的证券过滤器会把它当作基金剔除：
 
@@ -313,7 +313,7 @@ timestamp
 (None, '1d')
 ```
 
-副本有自己的 dataset 对象和空的编译状态。`build()` 写到 `store_path`，即源 store 旁边的那个 store；副本上的 `read()` 在该 store 存在时直接打开它，否则对源因子的 store 做重采样。这次请求能经 `get_config()` 和 `load_factor_from_config` 往返重建。
+副本有自己的 dataset 对象和空的编译状态。`build()` 写到 `store_path`，即源 store 旁边的那个 store；副本上的 `read()` 在该 store 存在时直接打开它，否则对源因子的 store 做重采样。这次请求能经 `get_config()` 和 `rebuild` 往返重建。
 
 ```python
 >>> daily.store_path
@@ -325,7 +325,7 @@ Frozen({'timestamp': 2, 'symbol': 2})
 >>> cfg = daily.get_config()
 >>> cfg["resample_freq"], cfg["resample_how"], cfg["dataset"]["resample_freq"]
 ('1d', 'last', None)
->>> load_factor_from_config(cfg).compute("2024-01-02", "2024-01-03").sizes
+>>> rebuild(cfg).compute("2024-01-02", "2024-01-03").sizes
 Frozen({'symbol': 2, 'timestamp': 2})
 ```
 
@@ -348,7 +348,7 @@ Frozen({'symbol': 2, 'timestamp': 2})
 -0.012116
 >>> round(float(close[37, 0] / close[32, 0] - 1), 6)
 -0.012116
->>> load_factor_from_config(label.get_config()) == label
+>>> rebuild(label.get_config()) == label
 True
 ```
 
@@ -458,13 +458,13 @@ XrBackend()
 >>> sorted(os.listdir("data/analysis/momentum"))
 ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
 >>> import json
->>> from quantlab.utils.module import load_factor_from_config
+>>> from quantlab.core.component import rebuild
 >>> cfg = json.load(open("data/analysis/momentum/config.json"))
->>> list(cfg), type(load_factor_from_config(cfg["frets"][0])).__name__
+>>> list(cfg), type(rebuild(cfg["frets"][0])).__name__
 (['factor', 'frets'], 'Return')
 ```
 
-结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、其累计和 `cumulative_ic`、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图，只在不传 `output_dir` 时保留），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。`summary()` 是用来给因子排序、筛选的简表，每个配对一行：`factor`、`fret`、`ic`（Pearson IC 均值）、`rank_ic`（秩 IC 均值）、`icir` 和 `rank_icir`（各自的均值除以标准差）、`long_short_return`（每期最高分位减最低分位的前瞻收益均值，按标签的期限计）和 `turnover`（最高与最低分位平均换手率的平均）；每个值都取自 `summary_table()`。它返回 pandas DataFrame。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `load_factor_from_config` 重建（`quantlab.api.analyze_factors` 的分析不涉及因子或标签对象，写出的 `config.json` 为空）；此时各图在所有 CPU 上并行绘制并直接写成 PNG，不保留在内存里，因为对整个因子库做报告时画图是主要开销。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。IC 面板的右轴画累计 IC；换手率和排名自相关两个面板不画逐期原始值，而是画半透明的滚动区间（`rolling_window` 期内的最小到最大值，默认 22 期）和滚动均值线。指标用 polars 计算：每一批因子变量（`chunk_size`，默认 32）在 `(timestamp, symbol)` 长表上构成一个惰性计划，只 collect 一次。实现位于 `quantlab.analysis.factor_report`，其中 `FactorAnalyzer.run(factor, frets, features=..., labels=[...], factor_names=None, output_dir=None)` 显式接收特征面板和标签面板；`FactorAnalyzer.analyze_panels(features, frets)` 分析不来自任何因子或标签对象的面板，每个前瞻收益面板以 `Fret(panel, horizon, name)` 给出。
+结果对象包含 `pairs`（按 `"<factor>__<fret>"` 索引的 `PairAnalysis`，内有 IC 序列、其累计和 `cumulative_ic`、分位收益、换手和 `summary` 字典）、`figures`（每个配对一张 matplotlib 图，只在不传 `output_dir` 时保留），以及 `summary_table()`、`ic_table()`、`monthly_ic_table()`、`quantile_returns_table()`、`turnover_table()` 返回的整洁表。`summary()` 是用来给因子排序、筛选的简表，每个配对一行：`factor`、`fret`、`ic`（Pearson IC 均值）、`rank_ic`（秩 IC 均值）、`icir` 和 `rank_icir`（各自的均值除以标准差）、`long_short_return`（每期最高分位减最低分位的前瞻收益均值，按标签的期限计）和 `turnover`（最高与最低分位平均换手率的平均）；每个值都取自 `summary_table()`。它返回 pandas DataFrame。传入 `output_dir` 时，这些表写成 CSV，标量指标写成 `summary.json`，每张图写成 `<factor>__<fret>.png`，`config.json` 保存因子和各标签的配置，每一项都能用 `rebuild` 重建（`quantlab.api.analyze_factors` 的分析不涉及因子或标签对象，写出的 `config.json` 为空）；此时各图在所有 CPU 上并行绘制并直接写成 PNG，不保留在内存里，因为对整个因子库做报告时画图是主要开销。不传 `output_dir` 则不写任何文件。图不经过 `pyplot` 创建，因此不会弹出显示，也不需要关闭；`fig.savefig(path)` 即可保存。IC 面板的右轴画累计 IC；换手率和排名自相关两个面板不画逐期原始值，而是画半透明的滚动区间（`rolling_window` 期内的最小到最大值，默认 22 期）和滚动均值线。指标用 polars 计算：每一批因子变量（`chunk_size`，默认 32）在 `(timestamp, symbol)` 长表上构成一个惰性计划，只 collect 一次。实现位于 `quantlab.analysis.factor_report`，其中 `FactorAnalyzer.run(factor, frets, features=..., labels=[...], factor_names=None, output_dir=None)` 显式接收特征面板和标签面板；`FactorAnalyzer.analyze_panels(features, frets)` 分析不来自任何因子或标签对象的面板，每个前瞻收益面板以 `Fret(panel, horizon, name)` 给出。
 
 每个配对在秩 IC 之外报告 Pearson IC（`pearson_ic`，汇总里有 `pearson_ic_mean`、`pearson_ic_std`、`pearson_ir`、`pearson_ic_t_stat`）；Pearson IC 与秩 IC 差距大，说明线性关系由少数极端值驱动。IC 均值带有 Newey-West t 值 `ic_nw_t_stat` 和 `ic_nw_p_value`，用 Bartlett 权重，滞后阶数 `ic_nw_lags` 取 `horizon - 1`（重叠的多期前瞻收益带来的自相关）与经验规则 `floor(4 * (n / 100) ** (2 / 9))` 中的较大者。标签跨多根 bar 时，普通的 `ic_t_stat` 会高估显著性，应看 `ic_nw_t_stat`。秩自相关在 `FactorAnalyzer(autocorrelation_lags=(1, 5, 10, 20))` 的每个滞后阶上计算：`rank_autocorrelations` 每个滞后阶一列，汇总里是 `rank_autocorrelation_lag<k>`，`turnover_table()` 每个滞后阶一列，图里在同一个面板中画出每个滞后阶的滚动范围带和滚动均值，滞后越短颜色越深。多空组合用 `long_short_annual_return`、`long_short_annual_volatility`、`long_short_sharpe` 和 `long_short_max_drawdown` 概括，按从数据测出的 `periods_per_year` 年化（日频股票约 252，日频加密货币约 365）；净值跌到 0 后保持为 0。传入两个或以上的 fret 时，`ic_decay_table()` 按期限列出每个配对的 IC 均值及其 95% Newey-West 区间，写入 `ic_decay.csv`，每张配对图都有一个面板画出该因子 IC 均值随期限的变化，当前配对的 fret 用圆圈标出。和自相关面板一起看，就能知道信号衰减得多快、因子变化得多慢，两者一起提示合适的持有期。要得到它，传入多个期限的 fret，例如 `n_forward_periods` 为 1、5、20 的几个 `Return` 标签。
 

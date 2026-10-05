@@ -39,7 +39,7 @@ class IntervalMembership(IndexConstituentDataset):
     """A membership panel built from the class-level ``intervals``.
 
     Only ``from_raw_data()`` reads them; a rebuilt instance
-    (``load_dataset_from_config``) reads the saved store.
+    (``rebuild``) reads the saved store.
     """
 
     intervals: list[tuple] = []

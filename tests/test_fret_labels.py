@@ -17,7 +17,7 @@ from quantlab.base.config import DatasetConfig, FactorConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.forward import Forward
 from quantlab.label.predefined.fret import BinaryReturn, Return
-from quantlab.utils.module import load_factor_from_config
+from quantlab.core.component import rebuild
 
 N = 3
 
@@ -112,7 +112,7 @@ def test_a_return_label_rebuilds_from_its_factor_config(cls, dataset_config, tmp
     label = cls(_config(dataset_config, tmp_path, "ret"))
 
     config = json.loads(json.dumps(label.get_config()))
-    rebuilt = load_factor_from_config(config)
+    rebuilt = rebuild(config)
 
     assert config["name"] == f"quantlab.label.predefined.fret.{cls.__name__}"
     assert config["kwargs"] == {"n_forward_periods": N}

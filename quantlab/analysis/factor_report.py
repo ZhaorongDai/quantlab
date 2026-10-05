@@ -388,7 +388,7 @@ class FactorAnalysis:
         no closing; ``fig.savefig(path)`` writes one.
     config : dict
         ``{"factor": factor config, "frets": [fret configs]}``, the dicts
-        ``load_factor_from_config`` rebuilds each object from.
+        ``rebuild`` rebuilds each object from.
     correlation : FactorCorrelation or None
         The correlation between the analyzed factor variables, when there
         are two or more; ``None`` otherwise.

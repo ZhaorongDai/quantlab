@@ -256,7 +256,7 @@ timestamp
 (8, None)
 ```
 
-副本的 config 把这次请求记录在 `resample_freq` 和 `resample_how` 里，因此能经 `get_config()` 和 `load_dataset_from_config` 往返重建。带着这两个字段构造的 dataset 在重采样后的 bar 上应答。`save()` 把重采样后的面板写到 `store_path`：与源 store 同目录、名字里带 `_resample_<freq>` 的一个 store；什么都不持有的重采样 dataset 会写入其整个源 store 的重采样结果，并收窄到自身 config 的范围。这个 store 存在之后，带同样字段的 `panel()` 和 `bar_before()` 会直接打开它，而不再对源 store 重采样。
+副本的 config 把这次请求记录在 `resample_freq` 和 `resample_how` 里，因此能经 `get_config()` 和 `rebuild` 往返重建。带着这两个字段构造的 dataset 在重采样后的 bar 上应答。`save()` 把重采样后的面板写到 `store_path`：与源 store 同目录、名字里带 `_resample_<freq>` 的一个 store；什么都不持有的重采样 dataset 会写入其整个源 store 的重采样结果，并收窄到自身 config 的范围。这个 store 存在之后，带同样字段的 `panel()` 和 `bar_before()` 会直接打开它，而不再对源 store 重采样。
 
 ```python
 >>> daily.config.resample_freq, daily.config.resample_how
@@ -363,7 +363,7 @@ Traceback (most recent call last):
 ValueError: FrameDataset.update(): the panel is held in memory, handed over at construction; there are no raw files to build it from and no store of its own to write. Build a new FrameDataset from updated data, or write a copy with to_zarr(path).
 ```
 
-`to_zarr(path)` 把持有的面板写入一个新的 Zarr store（重采样后的 dataset 写的是重采样后的 bar），并返回一个从该 store 读回的 `FrameDataset`；已存在的路径会被拒绝。用 `zarr_file_path` 指向某个 store 的 `FrameDatasetConfig` 构造的 `FrameDataset`，会在构造时把该 store 一次性读入内存，之后与任何 `FrameDataset` 行为相同：依旧拒绝构建和保存，其 `resample()` 也留在内存中，`store_path` 为 `None`，不会写入或读取源 store 旁边的任何 store。回测运行目录就是这样保存输入面板的（见回测指南中的“重建一次给定权重的运行”），这种 dataset 的 `get_config()` 可以通过 `load_dataset_from_config` 重建。这由每个 dataset 都有的三个钩子承担，回测器和加载器因此无需任何特例：`persist_with_run(run_dir, store)` 在运行选定的 store 路径写出运行目录重建所需的内容（默认什么都不写；`FrameDataset` 把面板写到那里，并返回以相对运行目录的路径指向它的配置），类方法 `resolve_run_config(config, run_dir)` 把记录下来的配置还原成可以用来构造的配置（默认原样返回；`FrameDataset` 解析相对路径，没有 `run_dir` 时拒绝），`ticker_store()` 给出其 CRSP ticker 附属文件为标的命名的那个 store（默认是 dataset 自己的 store，`FrameDataset` 为 `None`）。
+`to_zarr(path)` 把持有的面板写入一个新的 Zarr store（重采样后的 dataset 写的是重采样后的 bar），并返回一个从该 store 读回的 `FrameDataset`；已存在的路径会被拒绝。用 `zarr_file_path` 指向某个 store 的 `FrameDatasetConfig` 构造的 `FrameDataset`，会在构造时把该 store 一次性读入内存，之后与任何 `FrameDataset` 行为相同：依旧拒绝构建和保存，其 `resample()` 也留在内存中，`store_path` 为 `None`，不会写入或读取源 store 旁边的任何 store。回测运行目录就是这样保存输入面板的（见回测指南中的“重建一次给定权重的运行”），这种 dataset 的 `get_config()` 可以通过 `rebuild` 重建。这由每个 dataset 都有的三个钩子承担，回测器和加载器因此无需任何特例：`persist_with_run(run_dir, store)` 在运行选定的 store 路径写出运行目录重建所需的内容（默认什么都不写；`FrameDataset` 把面板写到那里，并返回以相对运行目录的路径指向它的配置），类方法 `resolve_run_config(config, run_dir)` 把记录下来的配置还原成可以用来构造的配置（默认原样返回；`FrameDataset` 解析相对路径，没有 `run_dir` 时拒绝），`ticker_store()` 给出其 CRSP ticker 附属文件为标的命名的那个 store（默认是 dataset 自己的 store，`FrameDataset` 为 `None`）。
 
 ```python
 >>> import tempfile

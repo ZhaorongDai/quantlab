@@ -23,7 +23,7 @@ import pytest
 
 from quantlab.base.tracking import NullRun, NullTracker, Tracker
 from quantlab.tracking.wandb import WandbTracker
-from quantlab.utils.module import get_cls_from_path
+from quantlab.core.component import get_cls_from_path
 from tests.test_backtest_contracts import REPO_ROOT
 from tests.tracking_fixtures import RecordingTracker
 

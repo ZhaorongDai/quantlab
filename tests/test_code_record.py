@@ -21,7 +21,7 @@ from loguru import logger
 
 import quantlab.utils.code_record as code_record_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.component import code_of
+from quantlab.core.component import code_of
 from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun

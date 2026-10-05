@@ -27,7 +27,7 @@ from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.predefined.fret import Return
-from quantlab.utils.module import load_dataset_from_config, load_factor_from_config
+from quantlab.core.component import rebuild
 
 SPOT_TO_SHARED = {
     "Open": "open",
@@ -160,7 +160,7 @@ def test_config_json_records_the_list_and_rebuilds_an_equal_factor(
     factor = _ma_dev([left, right], tmp_path)
 
     saved = json.loads(json.dumps(factor.get_config()))
-    rebuilt = load_factor_from_config(saved)
+    rebuilt = rebuild(saved)
 
     assert [d["zarr_file_path"] for d in saved["dataset"]["datasets"]] == [
         left.config.zarr_file_path,
@@ -333,7 +333,7 @@ def test_the_merged_view_can_be_used_wherever_a_dataset_is_expected(
     whole = _stock(_write(shared, tmp_path / "whole.zarr"))
     merged = MergedDataset([left, right])
 
-    rebuilt = load_dataset_from_config(json.loads(json.dumps(merged.get_config())))
+    rebuilt = rebuild(json.loads(json.dumps(merged.get_config())))
     assert rebuilt == merged
     assert merged.bar_before("2024-01-10", 3) == whole.bar_before("2024-01-10", 3)
 

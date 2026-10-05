@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Self
 
 import xarray as xr
 
-from quantlab.base.component import component
+from quantlab.core.component import component
 from quantlab.model.ensemble import BaseEnsemble
 
 if TYPE_CHECKING:  # type hints only

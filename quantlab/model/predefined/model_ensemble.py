@@ -15,7 +15,7 @@ model.
 import dataclasses
 from typing import Self
 
-from quantlab.base.component import component
+from quantlab.core.component import component
 from quantlab.model.ensemble import BaseEnsemble
 
 

@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Self
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.component import Component, component
+from quantlab.core.component import Component, component
 
 if TYPE_CHECKING:  # type hints only
     from pathlib import Path

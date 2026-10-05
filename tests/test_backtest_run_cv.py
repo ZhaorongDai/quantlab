@@ -356,7 +356,7 @@ def test_a_failed_cv_persist_leaves_no_run_directory(tmp_path, cv_project, monke
     A failure in any later step (a zarr error, plotly, a full disk, Ctrl-C)
     left a directory holding a valid config.json but no metrics or
     fingerprint. Nobody could tell it from a finished run, and
-    `load_backtester_from_config` would happily "reproduce" it. Report
+    `rebuild` would happily "reproduce" it. Report
     writing is made to fail here: `output_dir` must end up empty, with no
     final directory and no staging leftover. Red on the old code.
     """

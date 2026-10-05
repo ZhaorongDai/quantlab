@@ -8,7 +8,7 @@ with ``dataclasses.replace``. The object's config setter normalises the
 config it is given into a new config, filling in derived values such as
 open-ended dates and the ``name`` field, which records the owning class's
 dotted import path so the object can be rebuilt from the serialised dict (see
-``quantlab.base.component``); the caller's config is never edited. ``to_dict()``
+``quantlab.core.component``); the caller's config is never edited. ``to_dict()``
 on each config produces that dict, each field declared with ``component()``
 written as its component's own config. Acquisition, universe and backtest configs
 are not frozen.
@@ -25,11 +25,11 @@ Fields are documented with ``#:`` comments so the meaning of each one sits
 beside its definition.
 """
 
-from dataclasses import asdict, dataclass, field, fields
-from types import UnionType
-from typing import TYPE_CHECKING, Literal, Union, get_args, get_origin
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Literal
 
-from quantlab.base.component import component, config_to_dict
+from quantlab.core.component import component
+from quantlab.core.config import FrozenConfig
 from quantlab.base.tracking import NullTracker, Tracker
 from quantlab.utils.execution import ExecutionSettings
 from quantlab.enums.data import (
@@ -47,56 +47,8 @@ if TYPE_CHECKING:
     from .portfolio import PortfolioConstructor, RiskModel
 
 
-def _allows_tuple(annotation) -> bool:
-    """Return whether a field annotation is a tuple, or a union with one."""
-    if annotation is tuple or get_origin(annotation) is tuple:
-        return True
-    if get_origin(annotation) in (Union, UnionType):
-        return any(_allows_tuple(arg) for arg in get_args(annotation))
-    return False
-
-
-class _FrozenConfig:
-    """Base of the frozen dataset, factor and model configs.
-
-    A list given to a tuple-typed field is stored as a tuple, so a config
-    rebuilt from JSON, where every tuple was written as a list, equals the
-    one that was saved.
-
-    Examples
-    --------
-    >>> cfg = BaseDatasetConfig(zarr_file_path="stock.zarr", symbols=["AAPL"])
-    >>> cfg.symbols
-    ('AAPL',)
-    >>> cfg.symbols = ("MSFT",)
-    Traceback (most recent call last):
-    dataclasses.FrozenInstanceError: cannot assign to field 'symbols'
-    """
-
-    def __post_init__(self):
-        """Store a list given to a tuple-typed field as a tuple."""
-        for spec in fields(self):
-            value = getattr(self, spec.name)
-            if isinstance(value, list) and _allows_tuple(spec.type):
-                object.__setattr__(self, spec.name, tuple(value))
-
-    def to_dict(self):
-        """Return the config as a plain dict, each component as its own config.
-
-        The fields declared with ``quantlab.base.component.component`` hold
-        their components' ``get_config()``; see
-        ``quantlab.base.component.config_to_dict``.
-
-        Examples
-        --------
-        >>> sorted(BaseDatasetConfig(zarr_file_path="stock.zarr").to_dict())
-        ['end_date', 'kwargs', 'name', 'resample_freq', 'resample_how', 'start_date', 'symbols', 'zarr_file_path']
-        """
-        return config_to_dict(self)
-
-
 @dataclass(kw_only=True, frozen=True)
-class BaseDatasetConfig(_FrozenConfig):
+class BaseDatasetConfig(FrozenConfig):
     """Fields every dataset shares, whatever it holds.
 
     Both market panels and constituent (index membership) panels build on
@@ -467,7 +419,7 @@ class ConstituentDatasetConfig(BaseDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
-class MergedDatasetConfig(_FrozenConfig):
+class MergedDatasetConfig(FrozenConfig):
     """Config of a merged dataset: the datasets it merges, in order.
 
     A merged dataset holds no store of its own, so this config has no path,
@@ -613,7 +565,7 @@ class UniverseConfig:
 
 
 @dataclass(kw_only=True, frozen=True)
-class BaseFactorConfig(_FrozenConfig):
+class BaseFactorConfig(FrozenConfig):
     """Fields every factor (and label) shares, whichever backend computes it.
 
     The config says what is computed, not when: the date range is an
@@ -738,7 +690,7 @@ class MarketFeatureConfig(BaseFactorConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
-class ForwardConfig(_FrozenConfig):
+class ForwardConfig(FrozenConfig):
     """Config of a ``Forward`` label: the factor it shifts and by how much.
 
     The label at bar t is ``factor`` at bar t + ``delay`` + ``span``. A
@@ -769,7 +721,7 @@ class ForwardConfig(_FrozenConfig):
 
 
 @dataclass(frozen=True)
-class TopNConfig(_FrozenConfig):
+class TopNConfig(FrozenConfig):
     """Config of ``TopNConstructor``: equal-weight top-n selection.
 
     Examples
@@ -790,7 +742,7 @@ class TopNConfig(_FrozenConfig):
 
 
 @dataclass(frozen=True)
-class LedoitWolfConfig(_FrozenConfig):
+class LedoitWolfConfig(FrozenConfig):
     """Config of ``LedoitWolfRiskModel``: a shrunk sample covariance of trailing returns.
 
     Examples
@@ -810,7 +762,7 @@ class LedoitWolfConfig(_FrozenConfig):
 
 
 @dataclass(frozen=True, kw_only=True)
-class MeanVarianceConfig(_FrozenConfig):
+class MeanVarianceConfig(FrozenConfig):
     """Config of ``MeanVarianceOptimizer``: Markowitz weights with a turnover penalty.
 
     The optimiser maximises ``w @ mu - risk_aversion / 2 * w @ Sigma @ w -
@@ -871,7 +823,7 @@ class MeanVarianceConfig(_FrozenConfig):
 
 
 @dataclass(frozen=True)
-class ModelConfig(_FrozenConfig):
+class ModelConfig(FrozenConfig):
     """Config of every model head, torch or library.
 
     It holds only what both variants read. Everything a variant or a head
@@ -1092,7 +1044,7 @@ class BacktestConfig:
         """Return the config as a plain dict, each component as its own config.
 
         The dataset, model, rule and tracker fields are declared with
-        ``quantlab.base.component.component`` and written as their
+        ``quantlab.core.component.component`` and written as their
         ``get_config()``; nothing is deep-copied through ``dataclasses.asdict``,
         so no panel or trained model is copied.
 

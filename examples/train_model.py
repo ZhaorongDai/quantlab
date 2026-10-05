@@ -53,7 +53,7 @@ from quantlab.dataset.stock import StockDataset
 from quantlab.label.predefined.fret import Return
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.utils.metrics import regression_panel_metrics
-from quantlab.utils.module import load_model_from_config
+from quantlab.core.component import rebuild
 from quantlab.runs.trained_run import TrainedRun
 
 # Only warnings and errors from the library, so the printed results stand out.
@@ -223,7 +223,7 @@ def main() -> None:
         # 3. Rebuild the model from its trained unit and reload the checkpoint
         print("trained_on symbols:", len(run.trained_on["symbols"]),
               "resolved eta:", run.resolved_hyperparameters["eta"])
-        reloaded = load_model_from_config(run.config).load(checkpoint)
+        reloaded = rebuild(run.config).load(checkpoint)
         again = reloaded.predict_panel(test[model.get_factor_names()])
         print("reloaded model predicts the same values:",
               bool(np.allclose(again["ret_1"].values, pred["ret_1"].values, equal_nan=True)))

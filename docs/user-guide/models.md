@@ -340,10 +340,10 @@ To use a trained model later, rebuild it from its config and load the
 weights:
 
 ```python
-from quantlab.utils.module import load_model_from_config
+from quantlab.core.component import rebuild
 
 run = TrainedRun.open(checkpoint)
-reloaded = load_model_from_config(run.config).load(checkpoint)
+reloaded = rebuild(run.config).load(checkpoint)
 ```
 
 `load()` first checks that the file suffix matches the head (`.joblib` or

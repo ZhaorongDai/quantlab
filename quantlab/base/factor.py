@@ -34,7 +34,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.component import Component
+from quantlab.core.component import Component
 from quantlab.base.config import BaseFactorConfig
 from quantlab.backend import XrBackend
 from quantlab.base.data import InsufficientHistoryError
@@ -797,7 +797,7 @@ class Factor(Component, ABC):
             ``factor_correlation_pairs.csv``, ``factor_clusters.csv`` and
             ``factor_correlation.png`` when two or more factor variables are
             analyzed. ``config.json`` holds ``{"factor": ..., "frets": [...]}``,
-            each rebuildable with ``load_factor_from_config``. When None,
+            each rebuildable with ``rebuild``. When None,
             nothing is written.
         quantiles : int, default 5
             Number of equal-count factor buckets per timestamp.

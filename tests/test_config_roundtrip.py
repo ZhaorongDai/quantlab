@@ -1,8 +1,8 @@
 """Persisted dataset/factor configs rebuild with the config class their class declares (D-26).
 
-Before this lock, `quantlab/utils/module.py` hardcoded the config class:
-`load_dataset_from_config` always built `DatasetConfig(**config)` and
-`load_factor_from_config` always built `FactorConfig(**config)`. Two shipped
+Before this lock, the config loaders (now `quantlab/core/component.py`) hardcoded the config class:
+`rebuild` always built `DatasetConfig(**config)` and
+`rebuild` always built `FactorConfig(**config)`. Two shipped
 hierarchies could therefore not be rebuilt from their own saved config, and
 03.7-CONTEXT.md D-26 records both TypeErrors verbatim:
 
@@ -42,7 +42,7 @@ from typing import Callable
 
 import pytest
 
-import quantlab.utils.module as module_utils
+import quantlab.core.component as component_rule
 from quantlab.base.config import (
     ConstituentDatasetConfig,
     DatasetConfig,
@@ -107,7 +107,7 @@ def test_polars_factor_round_trips_with_its_own_config_class(
 ) -> None:
     saved = _normalized(_momentum(spot_kline_zarr(), tmp_path).get_config())
 
-    rebuilt = module_utils.load_factor_from_config(copy.deepcopy(saved))
+    rebuilt = component_rule.rebuild(copy.deepcopy(saved))
 
     assert type(rebuilt) is Momentum
     assert type(rebuilt.config) is PolarsFactorConfig
@@ -119,7 +119,7 @@ def test_kunquant_factor_round_trips(
 ) -> None:
     saved = _normalized(_alpha101(stock_zarr(), tmp_path).get_config())
 
-    rebuilt = module_utils.load_factor_from_config(copy.deepcopy(saved))
+    rebuilt = component_rule.rebuild(copy.deepcopy(saved))
 
     assert type(rebuilt) is Alpha101Stock
     assert type(rebuilt.config) is FactorConfig
@@ -131,7 +131,7 @@ def test_market_dataset_round_trips(
 ) -> None:
     saved = _normalized(StockDataset(stock_zarr()).get_config())
 
-    rebuilt = module_utils.load_dataset_from_config(copy.deepcopy(saved))
+    rebuilt = component_rule.rebuild(copy.deepcopy(saved))
 
     assert type(rebuilt) is StockDataset
     assert type(rebuilt.config) is DatasetConfig
@@ -143,7 +143,7 @@ def test_constituent_dataset_round_trips(tmp_path: Path) -> None:
     `from_raw_data()` would reach the network, and nothing here calls it."""
     saved = _normalized(_sp500(tmp_path).get_config())
 
-    rebuilt = module_utils.load_dataset_from_config(copy.deepcopy(saved))
+    rebuilt = component_rule.rebuild(copy.deepcopy(saved))
 
     assert type(rebuilt) is SP500ConstituentDataset
     assert type(rebuilt.config) is ConstituentDatasetConfig
@@ -161,18 +161,18 @@ def test_loaders_do_not_mutate_their_input(
     leaves objects inside what should be JSON (RESEARCH Pitfall 9)."""
     dataset_saved = _normalized(StockDataset(stock_zarr()).get_config())
     before = copy.deepcopy(dataset_saved)
-    module_utils.load_dataset_from_config(dataset_saved)
+    component_rule.rebuild(dataset_saved)
     assert dataset_saved == before
 
     factor_saved = _normalized(_momentum(spot_kline_zarr(), tmp_path).get_config())
     before = copy.deepcopy(factor_saved)
-    module_utils.load_factor_from_config(factor_saved)
+    component_rule.rebuild(factor_saved)
     assert factor_saved == before
 
     # The stand-in panels of tests/test_model_hierarchy.py rebuild themselves.
     model_saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     before = copy.deepcopy(model_saved)
-    module_utils.load_model_from_config(model_saved)
+    component_rule.rebuild(model_saved)
     assert model_saved == before
 
 
@@ -188,9 +188,9 @@ def test_a_class_without_config_cls_is_refused_by_name(
     stock_zarr: Callable[..., DatasetConfig], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     bare_path = "tests.test_config_roundtrip._ClassWithoutConfigCls"
-    real_lookup = module_utils.get_cls_from_path
+    real_lookup = component_rule.get_cls_from_path
     monkeypatch.setattr(
-        module_utils,
+        component_rule,
         "get_cls_from_path",
         lambda path: _ClassWithoutConfigCls if path == bare_path else real_lookup(path),
     )
@@ -198,13 +198,13 @@ def test_a_class_without_config_cls_is_refused_by_name(
 
     bare_dataset = dict(dataset_saved, name=bare_path)
     with pytest.raises(TypeError, match="_ClassWithoutConfigCls"):
-        module_utils.load_dataset_from_config(bare_dataset)
+        component_rule.rebuild(bare_dataset)
 
     # The nested dataset resolves to the real StockDataset, so the refusal
     # below comes from the factor loader's own check, not the dataset's.
     bare_factor = {"name": bare_path, "warmup_bars": 5, "dataset": dataset_saved}
     with pytest.raises(TypeError, match="_ClassWithoutConfigCls"):
-        module_utils.load_factor_from_config(bare_factor)
+        component_rule.rebuild(bare_factor)
 
 
 def test_config_cls_is_a_plain_class_attribute() -> None:

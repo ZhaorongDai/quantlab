@@ -152,15 +152,15 @@ can serve several consumers.
 `get_config()` on any dataset, factor, model or backtester returns its config as a plain,
 JSON-friendly dict, with nested objects replaced by their own config dicts. The `name` entry
 holds the dotted import path of the class, for example
-`quantlab.dataset.stock.StockDataset`. The loaders in `quantlab.utils.module` reverse this:
-they import the named class, rebuild any nested objects first, and construct the object with
+`quantlab.dataset.stock.StockDataset`. `quantlab.core.component.rebuild` reverses this: it
+imports the named class, rebuilds any nested objects first, and constructs the object with
 the config class the class declares. In the example below, `root` is a directory holding a
 small `stock.zarr` store with 30 daily bars for three symbols, from 1 January 2024.
 
 ```python
 from quantlab.base.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
-from quantlab.utils.module import load_dataset_from_config
+from quantlab.core.component import rebuild
 
 dataset = StockDataset(DatasetConfig(
     zarr_file_path=str(root / "stock.zarr"),
@@ -170,7 +170,7 @@ dataset = StockDataset(DatasetConfig(
 ))
 config = dataset.get_config()
 print(config["name"], config["start_date"])
-rebuilt = load_dataset_from_config(config)
+rebuilt = rebuild(config)
 print(type(rebuilt).__name__, rebuilt.panel("2024-01-08", "2024-02-09").sizes)
 ```
 
@@ -179,10 +179,10 @@ quantlab.dataset.stock.StockDataset 2024-01-08
 StockDataset Frozen({'timestamp': 25, 'symbol': 3})
 ```
 
-There is one loader per layer: `load_dataset_from_config`, `load_factor_from_config`,
-`load_model_from_config` and `load_backtester_from_config`. A model is rebuilt by the
-`from_config` class method of the class its config names, so the backtester loader rebuilds any
-predictor the same way. A run directory is rebuilt through its reader, as the last step of the
+One function rebuilds every layer's objects. `rebuild(config, expected=BaseBacktester)` also
+checks the named class before rebuilding, here that it is a backtester. A model is rebuilt by
+the `from_config` class method of the class its config names, so a backtester's rebuild
+rebuilds any predictor the same way. A run directory is rebuilt through its reader, as the last step of the
 quickstart shows: `BacktestRun.open(run_dir).rebuild_backtester()` for a backtest,
 `TrainedRun.open(path).config` for a trained model's recipe (see below). The backtester rebuild
 insists that every config field is present in the recipe instead of filling gaps from current

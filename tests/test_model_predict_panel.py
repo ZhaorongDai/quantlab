@@ -31,7 +31,7 @@ import torch
 import torch.nn as nn
 import xarray as xr
 
-import quantlab.utils.module as module_utils
+import quantlab.core.component as component_rule
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.predefined.xgb import XGBoostRegressor
@@ -396,7 +396,7 @@ def test_train_cv_on_an_unsorted_backend_records_sorted_symbols_in_every_fold(
 
 
 def test_checkpoint_config_json_rebuilds_the_model(tmp_path):
-    """The checkpoint's `config.json` rebuilds the model: `load_model_from_config`
+    """The checkpoint's `config.json` rebuilds the model: `rebuild`
     refuses unknown keys, and the training record `trained_on` lives in
     `run.json`, not here, so the rebuilt config equals the one that trained.
     """
@@ -418,7 +418,7 @@ def test_checkpoint_config_json_rebuilds_the_model(tmp_path):
     saved = run.config
     assert "trained_on" not in saved
 
-    rebuilt = module_utils.load_model_from_config(saved)
+    rebuilt = component_rule.rebuild(saved)
 
     assert json.loads(json.dumps(rebuilt.get_config())) == json.loads(
         json.dumps(model.get_config())

@@ -39,8 +39,9 @@ import xarray as xr
 import zarr
 from loguru import logger
 
-import quantlab.base.component as component_rule
-import quantlab.utils.module as module_utils
+import quantlab.core.component as component_rule
+from quantlab.base.backtest import BaseBacktester
+import quantlab.core.component as component_rule
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
 from quantlab.utils.jsonable import to_jsonable
@@ -221,7 +222,7 @@ def test_rebuilt_backtester_has_the_same_class_config_class_and_config(tmp_path)
     )
     saved = _json(original.get_config())
 
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = component_rule.rebuild(saved, expected=BaseBacktester)
 
     assert type(rebuilt) is USEquityCrossectionSelectStockVectorBt
     assert type(rebuilt.config) is CrossSectionBacktestConfig
@@ -263,7 +264,7 @@ def test_the_recipe_holds_no_records_and_the_run_records_the_market(tmp_path):
     assert rebuilt.MARKET.fill_price_column == "adjOpen"
     config = _json(rebuilt.get_config())
     assert not {"market", "data_fingerprint", "trained_checkpoint"} & set(config)
-    assert _json(module_utils.load_backtester_from_config(config).get_config()) == config
+    assert _json(component_rule.rebuild(config, expected=BaseBacktester).get_config()) == config
 
 
 def test_backtest_config_path_fields_are_stored_absolute(tmp_path, monkeypatch):
@@ -305,7 +306,7 @@ def test_loader_does_not_mutate_its_input(tmp_path):
     )
     before = copy.deepcopy(saved)
 
-    module_utils.load_backtester_from_config(saved)
+    component_rule.rebuild(saved, expected=BaseBacktester)
 
     assert saved == before
 
@@ -329,12 +330,14 @@ def test_rebuild_refuses_a_config_missing_a_field(tmp_path, monkeypatch, field_n
     )
     del saved[field_name]
     built: list[dict] = []
+    # Stub the nested rebuilds; the backtester itself goes through the real rule.
+    rebuild = component_rule.rebuild
     monkeypatch.setattr(
         component_rule, "rebuild", lambda cfg, run_dir=None: built.append(cfg)
     )
 
     with pytest.raises(ValueError, match=field_name):
-        module_utils.load_backtester_from_config(saved)
+        rebuild(saved, expected=BaseBacktester)
 
     assert built == []
 
@@ -375,7 +378,7 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
         assert getattr(original.config, field.name) != field.default, field.name
 
     saved = _json(original.get_config())
-    rebuilt = module_utils.load_backtester_from_config(saved)
+    rebuilt = component_rule.rebuild(saved, expected=BaseBacktester)
 
     for field in fields(CrossSectionBacktestConfig):
         if field.name in ("price_dataset", "model", "benchmark_dataset"):
@@ -398,12 +401,14 @@ def test_non_backtester_class_is_refused_before_building_anything(
     tampered = dict(saved, name="quantlab.dataset.stock.StockDataset")
 
     built: list[dict] = []
+    # Stub the nested rebuilds; the backtester itself goes through the real rule.
+    rebuild = component_rule.rebuild
     monkeypatch.setattr(
         component_rule, "rebuild", lambda cfg, run_dir=None: built.append(cfg)
     )
 
     with pytest.raises(TypeError, match=r"quantlab\.dataset\.stock\.StockDataset"):
-        module_utils.load_backtester_from_config(tampered)
+        rebuild(tampered, expected=BaseBacktester)
 
     assert built == []
 
@@ -424,9 +429,9 @@ def _imported_modules(path: Path) -> set[str]:
 def test_backtester_rebuild_imports_no_config_factories():
     """D-32: neither the loader nor these locks reach `quantlab.config`."""
     # Positive control: the scan sees this file's own real imports.
-    assert "quantlab.utils.module" in _imported_modules(Path(__file__))
+    assert "quantlab.core.component" in _imported_modules(Path(__file__))
 
-    for path in (Path(__file__), REPO_ROOT / "quantlab/utils/module.py"):
+    for path in (Path(__file__), REPO_ROOT / "quantlab/core/component.py"):
         offending = sorted(
             name
             for name in _imported_modules(path)

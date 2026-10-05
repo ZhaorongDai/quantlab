@@ -21,7 +21,7 @@ What is locked here, and what turns it red:
   `epochs` that is not a positive integer fails when training starts;
 - the retired names stay retired (`hasattr`, not "no longer raises": a bypassed
   guard still answers `hasattr`), and `LibraryModel` references no `deepcopy`;
-- `load_model_from_config` rebuilds a trained model of either variant from
+- `rebuild` rebuilds a trained model of either variant from
   its trained unit's config (`TrainedRun.config`) alone;
 - `TorchModel.predict` accepts a float64 ndarray.
 
@@ -39,8 +39,8 @@ import torch
 import torch.nn as nn
 import xarray as xr
 
-import quantlab.utils.module as module_utils
-from quantlab.base.component import Component
+import quantlab.core.component as component_rule
+from quantlab.core.component import Component
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.base.model import (
@@ -76,7 +76,7 @@ class FakePanelConfig:
 class FakePanel(Component):
     """A stand-in for a factor/label object: only what `collect()` calls.
 
-    It is a component (`quantlab.base.component`), so a model config holding
+    It is a component (`quantlab.core.component`), so a model config holding
     it rebuilds it from its saved names, with fresh seed-0 values.
     """
 
@@ -412,7 +412,7 @@ def test_a_trained_model_is_rebuilt_and_loaded_from_its_config_alone(
     saved = TrainedRun.open(checkpoint).config
     assert saved["hyperparameters"] == hyper
 
-    rebuilt = module_utils.load_model_from_config(saved).load(checkpoint)
+    rebuilt = component_rule.rebuild(saved).load(checkpoint)
 
     assert type(rebuilt) is cls
     assert rebuilt.config.hyperparameters == hyper
@@ -427,7 +427,7 @@ def test_loader_rebuilds_a_torch_head(tmp_path, monkeypatch):
     saved = OneBarHead(ModelConfig(**_kwargs(tmp_path))).get_config()
     assert saved["name"] == "tests.torch_heads.OneBarHead"
 
-    model = module_utils.load_model_from_config(saved)
+    model = component_rule.rebuild(saved)
 
     assert isinstance(model, OneBarHead)
     assert type(model.config) is ModelConfig
@@ -436,14 +436,14 @@ def test_loader_rebuilds_a_torch_head(tmp_path, monkeypatch):
 def test_loader_rebuilds_a_library_head(tmp_path, monkeypatch):
     """The loader reads `config_cls` from the class, never a hardcoded config."""
     saved = StubLibraryHead(ModelConfig(**_kwargs(tmp_path))).get_config()
-    real = module_utils.get_cls_from_path
+    real = component_rule.get_cls_from_path
     monkeypatch.setattr(
-        module_utils,
+        component_rule,
         "get_cls_from_path",
         lambda path: StubLibraryHead if path == saved["name"] else real(path),
     )
 
-    model = module_utils.load_model_from_config(saved)
+    model = component_rule.rebuild(saved)
 
     assert isinstance(model, StubLibraryHead)
     assert type(model.config) is ModelConfig
@@ -455,7 +455,7 @@ def test_loader_rebuilds_the_shipped_xgboost_head(tmp_path, monkeypatch):
     saved = XGBoostRegressor(ModelConfig(**_kwargs(tmp_path))).get_config()
     assert saved["name"] == "quantlab.model.predefined.xgb.XGBoostRegressor"
 
-    model = module_utils.load_model_from_config(saved)
+    model = component_rule.rebuild(saved)
 
     assert isinstance(model, XGBoostRegressor)
     assert type(model.config) is ModelConfig
@@ -470,7 +470,7 @@ def test_loader_refuses_the_resolved_hyperparameters_record(tmp_path, monkeypatc
     saved["resolved_hyperparameters"] = {"eta": 0.3, "num_boost_round": 4}
 
     with pytest.raises(ValueError, match="resolved_hyperparameters"):
-        module_utils.load_model_from_config(saved)
+        component_rule.rebuild(saved)
 
 
 def test_loader_rejects_other_unknown_keys(tmp_path, monkeypatch):
@@ -478,7 +478,7 @@ def test_loader_rejects_other_unknown_keys(tmp_path, monkeypatch):
     saved["not_a_config_field"] = 1
 
     with pytest.raises(ValueError, match="not_a_config_field"):
-        module_utils.load_model_from_config(saved)
+        component_rule.rebuild(saved)
 
 
 def test_torch_config_json_has_no_resolved_hyperparameters_key(tmp_path):

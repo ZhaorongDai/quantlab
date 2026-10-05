@@ -43,7 +43,7 @@ class FrameDataset(MarketDataset):
     ``FrameDatasetConfig`` whose ``zarr_file_path`` names a store (one ``to_zarr``
     wrote, for example), the store is read into memory once, at construction, and
     resampled there when the config carries ``resample_freq``; the store is never
-    written. This is the form ``quantlab.utils.module.load_dataset_from_config``
+    written. This is the form ``quantlab.core.component.rebuild``
     rebuilds from ``get_config()``. Either way there are no raw files, so
     ``from_raw_data``, ``from_raw_data_chunked`` and ``update`` refuse, as does
     ``save``; a stream-mode factor refuses it too, since a stream is fed live bars

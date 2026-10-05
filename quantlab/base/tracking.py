@@ -29,7 +29,7 @@ from typing import Any, Self
 import numpy as np
 from loguru import logger
 
-from quantlab.base.component import Component
+from quantlab.core.component import Component
 from quantlab.utils.jsonable import to_jsonable
 
 __all__ = ["NullRun", "NullTracker", "Tracker", "TrackingRun", "flatten_metrics"]
@@ -347,7 +347,7 @@ class Tracker(Component, ABC):
         """Rebuild the tracker from the dict ``get_config()`` returned.
 
         A tracker is constructed from its fields, not from a config object;
-        an unknown key is refused (see ``quantlab.base.component``).
+        an unknown key is refused (see ``quantlab.core.component``).
 
         Parameters
         ----------

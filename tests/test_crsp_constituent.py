@@ -824,7 +824,7 @@ def test_both_crsp_universes_round_trip_through_their_saved_config(tmp_path):
         CompustatNasdaq100ConstituentDataset,
         CrspSP500ConstituentDataset,
     )
-    from quantlab.utils.module import load_dataset_from_config
+    from quantlab.core.component import rebuild
 
     for cls, name in (
         (CrspSP500ConstituentDataset, "crsp_sp500_constituent"),
@@ -833,7 +833,7 @@ def test_both_crsp_universes_round_trip_through_their_saved_config(tmp_path):
         dataset = cls(_panel_config(tmp_path, tmp_path / "_reference", name))
         saved = json.loads(json.dumps(dataset.get_config(), default=str))
 
-        rebuilt = load_dataset_from_config(json.loads(json.dumps(saved)))
+        rebuilt = rebuild(json.loads(json.dumps(saved)))
 
         assert type(rebuilt) is cls
         assert type(rebuilt.config) is ConstituentDatasetConfig
