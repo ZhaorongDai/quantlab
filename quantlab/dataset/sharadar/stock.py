@@ -32,10 +32,12 @@ of the ACTIONS table, with the CRSP panel's convention and names (``adjOpen``, `
 ``adjLow``, ``adjClose``, ``adjVolume``, ``divCash``, ``splitFactor``; see
 ``SharadarStockDataset._adjust``). The panel therefore carries the same
 twelve daily variables as a CRSP or Tiingo panel, and a factor, label or
-backtest reads it without knowing the vendor. ``tradable_bars`` and
-``delisting_bars`` are the ``MarketDataset`` defaults: a bar without a fill
-price is untradable, and a delisted security is settled at its last close,
-with no delisting return imputed (Sharadar gives none).
+backtest reads it without knowing the vendor. A bar without a fill price
+is untradable (the ``MarketDataset`` default), and so is a bar Sharadar
+carries forward through a trading halt: volume 0 and the previous close
+repeated (``SharadarStockDataset.tradable_bars``). ``delisting_bars`` is the
+default: a delisted security is settled at its last close, with no delisting
+return imputed (Sharadar gives none).
 
 Examples
 --------
@@ -62,7 +64,7 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.dataset.base import MarketDataset
+from quantlab.dataset.base import InsufficientHistoryError, MarketDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
@@ -286,9 +288,13 @@ class SharadarStockDataset(MarketDataset):
         - ``splitFactor`` is the split's new shares per old share on its
           effective date, 1.0 on other rows.
         - The day's total return is
-          ``(close * splitFactor + divCash) / close_prev - 1``, with
+          ``(close + divCash) * splitFactor / close_prev - 1``, with
           ``close_prev`` the last earlier positive raw close, so a halt is
-          spanned. ``adjClose`` is each permaticker's *anchor* (its first
+          spanned. On an ex-date that is also a split's effective date, the
+          distribution is cash per share after the split (DD on 2019-06-03:
+          a 1-for-3 reverse split and the Corteva spin-off), so the split
+          scales it with the close; this matches Sharadar's own ``closeadj``
+          on 280 of the 283 such events priced on the 2026-10-05 pull. ``adjClose`` is each permaticker's *anchor* (its first
           row in the window with a positive close) grown by the product of
           those returns since, and NaN where ``close`` is missing.
         - ``adjOpen``/``adjHigh``/``adjLow`` are scaled by
@@ -327,7 +333,7 @@ class SharadarStockDataset(MarketDataset):
         positive = pl.when(pl.col("close") > 0).then(pl.col("close"))
         close_prev = positive.shift(1).forward_fill().over("symbol")
         ret = (
-            pl.col("close") * pl.col("splitFactor") + pl.col("divCash")
+            (pl.col("close") + pl.col("divCash")) * pl.col("splitFactor")
         ) / close_prev - 1.0
         frame = frame.with_columns(
             (1.0 + ret.fill_null(0.0)).cum_prod().over("symbol").alias("_G"),
@@ -361,6 +367,55 @@ class SharadarStockDataset(MarketDataset):
             (pl.col("low") * factor).alias("adjLow"),
             (pl.col("volume") * pl.col("_S_anchor") / pl.col("_S")).alias("adjVolume"),
         )
+
+    def tradable_bars(self, prices: xr.Dataset, fill_column: str) -> xr.DataArray:
+        """Mark which symbols can be traded at each bar: a real fill price and a real trade.
+
+        The default (``MarketDataset.tradable_bars``: a fill price at the
+        bar), less the bars Sharadar carries forward through a halt: during
+        a trading halt it repeats the last close with volume 0 (SIVB from
+        2023-03-13 to 2023-03-27, before its first OTC print). A bar with
+        volume 0 whose close equals the previous bar's close had no trade,
+        so it is no fill price, and a holding there stays locked. Close and
+        volume are read from the store, the previous bar included, so the
+        judgement uses nothing later than the bar however few columns or
+        bars ``prices`` holds.
+
+        Parameters
+        ----------
+        prices : xr.Dataset
+            A panel of this dataset on ``(timestamp, symbol)``.
+        fill_column : str
+            The price orders fill at.
+
+        Returns
+        -------
+        xr.DataArray
+            Booleans on the panel's ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        A halted bar (volume 0, the previous close repeated) is untradable::
+
+            ds.tradable_bars(ds.panel("2023-03-10", "2023-03-28"), "adjOpen")
+        """
+        tradable = super().tradable_bars(prices, fill_column)
+        stamps = pd.DatetimeIndex(prices["timestamp"].values)
+        if not len(stamps):
+            return tradable
+        try:
+            start = self.bar_before(stamps[0], 1)
+        except InsufficientHistoryError:
+            start = stamps[0]
+        raw = (
+            self.panel(start, stamps[-1], variables=["close", "volume"])
+            .reindex(symbol=prices["symbol"].values)
+            .transpose("timestamp", "symbol")
+        )
+        close = raw["close"]
+        halted = (raw["volume"] == 0) & (close == close.shift(timestamp=1))
+        halted = halted.reindex(timestamp=stamps, fill_value=False)
+        return tradable & ~halted.values
 
     def _map_permatickers(
         self, prices: pl.DataFrame, mapping: pl.DataFrame

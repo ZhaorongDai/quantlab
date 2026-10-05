@@ -97,6 +97,36 @@ def test_a_spinoff_is_a_cash_distribution_of_the_spun_off_shares_value(tmp_path)
     np.testing.assert_allclose(panel["adjClose"].values, [100.0, 100.0])
 
 
+@pytest.mark.parametrize(
+    ("action", "split", "close", "cash"),
+    [
+        # A 1-for-4 reverse split and a spin-off worth $20 per new share on
+        # one ex-date, as DD's on 2019-06-03: one old share at $30 becomes a
+        # quarter of a new share at $100 plus a quarter of the $20.
+        ("spinoffdividend", 0.25, 100.0, 20.0),
+        # A 2:1 split and a $2 dividend per new share on one ex-date.
+        ("dividend", 2.0, 14.0, 1.0),
+    ],
+)
+def test_a_distribution_on_a_split_date_is_cash_per_new_share(
+    tmp_path, action, split, close, cash
+):
+    # Worth exactly the old close either way, so the total return is zero.
+    rows = [
+        sep_row("AAA", DAYS[0], 30.0),  # SYNTHETIC
+        sep_row("AAA", DAYS[1], close),  # SYNTHETIC
+    ]
+    actions = [
+        action_row(DAYS[1], "split", "AAA", split),  # SYNTHETIC
+        action_row(DAYS[1], action, "AAA", cash),  # SYNTHETIC
+    ]
+    ds = _build(tmp_path, rows, [tickers_row("SEP", 101, "AAA")], actions)  # SYNTHETIC
+    panel = ds.panel(DAYS[0], DAYS[1]).sel(symbol=101)
+    assert panel["divCash"].values.tolist() == [0.0, cash]
+    assert panel["splitFactor"].values.tolist() == [1.0, split]
+    np.testing.assert_allclose(panel["adjClose"].values, [30.0, 30.0])
+
+
 def test_other_actions_and_other_tickers_do_not_move_prices(tmp_path):
     panel = _dividend_then_split(
         tmp_path,
@@ -126,6 +156,35 @@ def test_a_symbol_without_a_fill_price_is_untradable_there(tmp_path):
     prices = ds.panel(DAYS[0], DAYS[2])
     tradable = ds.tradable_bars(prices, MARKET.fill_price_column)
     assert tradable.sel(symbol=101).values.tolist() == [True, False, True]
+
+
+def test_a_halted_bar_repeating_the_last_close_with_no_volume_is_untradable(tmp_path):
+    """Sharadar carries a halted security's last close forward with volume 0
+    (SIVB in March 2023): no trade happened, so the bar is no fill price.
+    """
+    from tests.test_backtest_engine import MARKET
+
+    rows = [
+        sep_row("AAA", DAYS[0], 100.0),  # SYNTHETIC
+        sep_row("AAA", DAYS[1], 50.0),  # SYNTHETIC, the last trade before the halt
+        sep_row("AAA", DAYS[2], 50.0, open=50.0, high=50.0, low=50.0, volume=0.0),  # SYNTHETIC, halted
+        sep_row("AAA", DAYS[3], 0.4, open=0.5, high=0.6, low=0.3),  # SYNTHETIC, first print after it
+        *(sep_row("BBB", day, 20.0) for day in DAYS[:2]),  # SYNTHETIC
+        # No volume but a new price: not a carried-forward close.
+        sep_row("BBB", DAYS[2], 21.0, volume=0.0),  # SYNTHETIC
+        sep_row("BBB", DAYS[3], 22.0),  # SYNTHETIC
+    ]
+    tickers = [tickers_row("SEP", 101, "AAA"), tickers_row("SEP", 202, "BBB")]  # SYNTHETIC
+    ds = _build(tmp_path, rows, tickers)
+    columns = [MARKET.fill_price_column, MARKET.valuation_price_column]
+
+    whole = ds.tradable_bars(ds.panel(DAYS[0], DAYS[3])[columns], MARKET.fill_price_column)
+    # A window starting on the halted bar is judged against the stored bar before it.
+    tail = ds.tradable_bars(ds.panel(DAYS[2], DAYS[3])[columns], MARKET.fill_price_column)
+
+    assert whole.sel(symbol=101).values.tolist() == [True, True, False, True]
+    assert whole.sel(symbol=202).values.tolist() == [True, True, True, True]
+    assert tail.sel(symbol=101).values.tolist() == [False, True]
 
 
 def test_a_backtest_settles_a_delisting_at_its_last_close(tmp_path):
