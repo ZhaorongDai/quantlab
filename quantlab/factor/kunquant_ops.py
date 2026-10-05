@@ -488,19 +488,28 @@ class _EWWindowOp(CompositiveOp, WindowedTrait):
         second loop (a two-pass estimate, which keeps its precision when the
         mean is large against the spread).
         """
+        mean_y, mean_x, cov, var_x, _ = self._regression_moments(b, with_var_y=False)
+        return mean_y, mean_x, cov, var_x
+
+    def _regression_moments(
+        self, b: Builder, with_var_y: bool = True
+    ) -> tuple[OpBase, OpBase, OpBase, OpBase, OpBase | None]:
+        """Return ``(mean_y, mean_x, cov_xy, var_x, var_y)`` over the bars where both are valid.
+
+        ``var_y`` is ``None`` unless ``with_var_y``. See ``_beta_parts``.
+        """
         y = _jointly(self.inputs[0], self.inputs[1])
         x = _jointly(self.inputs[1], self.inputs[0])
         mean_x, mean_y, total = self._means(b, x, y)
-        cross, square = self._weighted_sums(
-            b,
-            [x, y],
-            lambda values, weight: [
-                weight * (values[0] - mean_x) * (values[1] - mean_y),
-                weight * (values[0] - mean_x) * (values[0] - mean_x),
-            ],
-        )
+
+        def terms(values, weight):
+            dx, dy = values[0] - mean_x, values[1] - mean_y
+            return [weight * dx * dy, weight * dx * dx] + ([weight * dy * dy] if with_var_y else [])
+
+        sums = self._weighted_sums(b, [x, y], terms)
         filled = _window_filled(self.inputs[0] + self.inputs[1], self._window)
-        return mean_y + filled, mean_x + filled, cross / total + filled, square / total + filled
+        moments = [mean_y + filled, mean_x + filled] + [value / total + filled for value in sums]
+        return (*moments, None) if not with_var_y else tuple(moments)  # type: ignore[return-value]
 
 
 class EWSum(_EWWindowOp):
@@ -752,6 +761,166 @@ class EWAlpha(_EWWindowOp):
         return b.ops
 
 
+class EWResidualStd(_EWWindowOp):
+    """Standard deviation of the residual of ``EWBeta``'s fit of ``y`` on ``x``.
+
+    With ``alpha`` and ``beta`` the exponentially weighted least-squares
+    intercept and slope (see ``EWBeta``), the result is
+    ``sqrt(sum(w * (y - alpha - beta * x)**2) / sum(w))`` over the bars
+    where both are valid, computed in closed form as
+    ``sqrt(var_w(y) - cov_w(x, y)**2 / var_w(x))`` and floored at 0 before
+    the root. A weighted population figure, like ``EWVar``; USE4's HSIGMA
+    with ``(y, x)`` the stock's and the market's excess returns. NaN for the
+    first ``window - 1`` bars and when ``x`` does not vary over the valid
+    bars.
+
+    Parameters
+    ----------
+    y : OpBase
+        The regressand, such as a stock's excess return.
+    x : OpBase
+        The regressor, such as the market's excess return.
+    window : int
+        Number of trailing bars, the current one included.
+    half_life : float
+        Age in bars at which the weight is one half.
+
+    Raises
+    ------
+    ValueError
+        If ``window < 1`` or ``half_life <= 0``.
+
+    Examples
+    --------
+    >>> Output(EWResidualStd(Input("excess"), Input("market_excess"), 252, 63), "hsigma")
+    """
+
+    def __init__(self, y: OpBase, x: OpBase, window: int, half_life: float) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([y, x], window, half_life)
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into two window loops; KunQuant calls this while compiling."""
+        b = Builder(self.get_parent())
+        with b:
+            _, _, cov, var_x, var_y = self._regression_moments(b)
+            residual = var_y - cov * cov / var_x
+            Sqrt(Select(residual > 0.0, residual, residual * 0.0))
+        return b.ops
+
+
+class CMRA(CompositiveOp):
+    """USE4's cumulative range of monthly returns, from a series of daily log returns.
+
+    With ``Z(T)`` the sum of ``v`` over the last ``T * month_length`` bars,
+    ``T = 1 .. months``::
+
+        CMRA = log(1 + max_T Z(T)) - log(1 + min_T Z(T))
+
+    as in USE4's Residual Volatility (``v`` is the daily log excess return
+    ``log(1 + r) - log(1 + r_f)``, 12 months of 21 days). A missing value
+    adds nothing to a sum. NaN for the first ``months * month_length - 1``
+    bars, and where ``min_T Z(T) <= -1``, whose log is undefined. KunQuant's
+    ``Log`` is accurate to about 4e-10 absolute in double, so is the result.
+
+    Parameters
+    ----------
+    v : OpBase
+        Daily log (excess) returns.
+    months : int, default 12
+        Number of trailing months.
+    month_length : int, default 21
+        Bars in one month.
+
+    Raises
+    ------
+    ValueError
+        If ``months`` or ``month_length`` is below 1.
+
+    Examples
+    --------
+    >>> log_excess = Log(1.0 + Input("ret")) - Log(1.0 + Input("rf"))
+    >>> Output(CMRA(log_excess, 12, 21), "cmra")
+    """
+
+    def __init__(self, v: OpBase, months: int = 12, month_length: int = 21) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        months, month_length = int(months), int(month_length)
+        if months < 1 or month_length < 1:
+            raise ValueError(
+                f"CMRA: need months >= 1 and month_length >= 1, got {months}, {month_length}"
+            )
+        super().__init__([v], [("months", months), ("month_length", month_length)])
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into one window sum per month, a running max and min, and two logs."""
+        months: int = self.attrs["months"]  # type: ignore[assignment]
+        month_length: int = self.attrs["month_length"]  # type: ignore[assignment]
+        b = Builder(self.get_parent())
+        with b:
+            daily = _zero_where_missing(self.inputs[0])
+            sums = [WindowedSum(daily, month * month_length) for month in range(1, months + 1)]
+            highest, lowest = sums[0], sums[0]
+            for total in sums[1:]:
+                highest, lowest = Max(highest, total), Min(lowest, total)
+            # The longest sum is NaN until its window fills; adding it times
+            # zero keeps the result NaN until then, whatever Max and Min do with NaN.
+            cmra = Log(highest + 1.0) - Log(lowest + 1.0) + sums[-1] * 0.0
+            Select(lowest > -1.0, cmra, ConstantOp("nan"))
+        return b.ops
+
+
+class RenormalizedCombine(CompositiveOp):
+    """Fixed-weight sum of several values, renormalized over the ones present.
+
+    ``sum(w_k * v_k) / sum(w_k)`` over the ``k`` whose ``v_k`` is finite,
+    so a symbol missing one descriptor still gets the combination of the
+    others, as USE4 combines descriptors into a style. NaN when none is
+    present.
+
+    Parameters
+    ----------
+    values : list of OpBase
+        The values to combine, such as standardized descriptors.
+    weights : list of float
+        One positive weight per value.
+
+    Raises
+    ------
+    ValueError
+        If the lengths differ, no value is given, or a weight is not positive.
+
+    Examples
+    --------
+    >>> Output(RenormalizedCombine([dastd, cmra, hsigma], [0.75, 0.15, 0.10]), "resvol")
+    """
+
+    def __init__(self, values: list[OpBase], weights: list[float]) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        weights = [float(weight) for weight in weights]
+        if not values or len(values) != len(weights):
+            raise ValueError(
+                f"RenormalizedCombine: need one weight per value, got {len(values)} "
+                f"value(s) and {len(weights)} weight(s)"
+            )
+        if any(not weight > 0.0 for weight in weights):
+            raise ValueError(f"RenormalizedCombine: weights must be positive, got {weights}")
+        super().__init__(list(values), [("weights", tuple(weights))])
+
+    def decompose(self, options: dict) -> list[OpBase]:
+        """Expand into masked sums and one division."""
+        weights: tuple = self.attrs["weights"]  # type: ignore[assignment]
+        b = Builder(self.get_parent())
+        with b:
+            total: OpBase = ConstantOp(0.0)
+            present: OpBase = ConstantOp(0.0)
+            for value, weight in zip(self.inputs, weights):
+                total = total + _zero_where_missing(value) * weight
+                present = present + _present(value) * weight
+            Select(present > 0.0, total / present, ConstantOp("nan"))
+        return b.ops
+
+
 class CrossSectionalWeightedMean(GenericCrossSectionalOp):
     """Weighted mean of ``v`` across symbols per bar, broadcast to every symbol.
 
@@ -997,3 +1166,155 @@ class SigmaClip(CompositiveOp):
             )
             Select(Abs(v) > data_error, ConstantOp("nan"), clipped)
         return b.ops
+
+
+#: C++ of the residual ops' shared step: the weighted means over the fit sample.
+_WLS_MEANS = """
+        T sw = 0, swy = 0, swx1 = 0, swx2 = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            if (!fit(i)) continue;
+            T w = weight(i);
+            sw += w; swy += w * input_0[i]; swx1 += w * x1(i); swx2 += w * x2(i);
+        }
+        T my = sw > 0 ? swy / sw : NAN, m1 = sw > 0 ? swx1 / sw : NAN, m2 = sw > 0 ? swx2 / sw : NAN;
+        T s11 = 0, s12 = 0, s22 = 0, s1y = 0, s2y = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            if (!fit(i)) continue;
+            T w = weight(i), d1 = x1(i) - m1, d2 = x2(i) - m2, dy = input_0[i] - my;
+            s11 += w * d1 * d1; s12 += w * d1 * d2; s22 += w * d2 * d2;
+            s1y += w * d1 * dy; s2y += w * d2 * dy;
+        }
+"""
+
+#: C++ writing the residual of every symbol with a finite ``y``; a missing
+#: regressor is taken at its weighted mean, so it adjusts nothing.
+_WLS_WRITE = """
+        for (size_t i = 0; i < num_stocks; i++) {
+            T y = input_0[i];
+            if (!std::isfinite(y) || std::isnan(b1) || std::isnan(b2)) { output_0[i] = NAN; continue; }
+            T a1 = std::isfinite(x1(i)) ? x1(i) - m1 : 0, a2 = std::isfinite(x2(i)) ? x2(i) - m2 : 0;
+            output_0[i] = y - my - b1 * a1 - b2 * a2;
+        }
+"""
+
+
+class CrossSectionalWLSResidual(GenericCrossSectionalOp):
+    """Residual of a per-bar weighted least-squares fit of ``y`` on ``x``, with an intercept.
+
+    On each bar the fit uses the symbols where ``universe > 0``, ``y`` and
+    ``x`` are finite and ``w`` is finite and positive::
+
+        b   = sum(w (x - mx)(y - my)) / sum(w (x - mx)**2)
+        out = y - my - b (x - mx)          for EVERY symbol with a finite y
+
+    ``mx`` and ``my`` being the weighted means of the fit sample. The
+    residual has zero weighted covariance with ``x`` over the fit sample.
+    This orthogonalizes one style against another, as USE4 orthogonalizes
+    Non-linear Size against Size. A symbol whose ``x`` is missing is taken
+    at ``mx`` and so keeps ``y - my``. A bar with no fit sample, or where
+    ``x`` does not vary over it, is NaN for every symbol.
+
+    The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
+
+    Parameters
+    ----------
+    y : OpBase
+        The values to orthogonalize.
+    x : OpBase
+        The regressor.
+    w : OpBase
+        The regression weights, such as the square root of market cap.
+    universe : OpBase
+        A mask, positive for the symbols the fit uses.
+
+    Examples
+    --------
+    >>> Output(CrossSectionalWLSResidual(size_cubed, size, Sqrt(cap), estu), "nlsize")
+    """
+
+    def __init__(self, y: OpBase, x: OpBase, w: OpBase, universe: OpBase) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([y, x, w, universe], None)
+
+    def generate_head(self) -> str:
+        """Return the C++ preamble for the generated function, which is empty."""
+        return ""
+
+    def _accessors(self) -> str:
+        """Return the C++ accessors of the fit sample, declared in each bar's body."""
+        return """
+        auto x1 = [&](size_t i) -> T { return input_1[i]; };
+        auto x2 = [&](size_t i) -> T { return (T)0; };
+        auto weight = [&](size_t i) -> T { return input_2[i]; };
+        auto fit = [&](size_t i) -> bool {
+            T w = input_2[i];
+            return input_3[i] > 0 && std::isfinite(input_0[i]) && std::isfinite(input_1[i])
+                && std::isfinite(w) && w > 0;
+        };
+        """
+
+    def generate_body(self) -> str:
+        """Return the C++ that fits one bar and writes its residuals."""
+        return self._accessors() + _WLS_MEANS + """
+        T b1 = s11 > 0 ? s1y / s11 : NAN, b2 = 0;
+""" + _WLS_WRITE
+
+
+class CrossSectionalWLSResidual2(GenericCrossSectionalOp):
+    """Residual of a per-bar weighted least-squares fit of ``y`` on ``x1`` and ``x2``, with an intercept.
+
+    ``CrossSectionalWLSResidual`` with two regressors: the slopes solve the
+    weighted, mean-centred 2x2 normal equations over the fit sample (the
+    symbols where ``universe > 0``, ``y``, ``x1`` and ``x2`` are finite and
+    ``w`` is finite and positive), and every symbol with a finite ``y`` gets
+    ``y - my - b1 (x1 - m1) - b2 (x2 - m2)``, a missing regressor taken at
+    its mean. USE4 orthogonalizes Residual Volatility against Beta and Size
+    this way. A bar whose regressors are collinear over the fit sample is
+    NaN for every symbol.
+
+    The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
+
+    Parameters
+    ----------
+    y : OpBase
+        The values to orthogonalize.
+    x1, x2 : OpBase
+        The regressors.
+    w : OpBase
+        The regression weights.
+    universe : OpBase
+        A mask, positive for the symbols the fit uses.
+
+    Examples
+    --------
+    >>> Output(CrossSectionalWLSResidual2(resvol, beta, size, Sqrt(cap), estu), "resvol")
+    """
+
+    def __init__(self, y: OpBase, x1: OpBase, x2: OpBase, w: OpBase, universe: OpBase) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__([y, x1, x2, w, universe], None)
+
+    def generate_head(self) -> str:
+        """Return the C++ preamble for the generated function, which is empty."""
+        return ""
+
+    def _accessors(self) -> str:
+        """Return the C++ accessors of the fit sample, declared in each bar's body."""
+        return """
+        auto x1 = [&](size_t i) -> T { return input_1[i]; };
+        auto x2 = [&](size_t i) -> T { return input_2[i]; };
+        auto weight = [&](size_t i) -> T { return input_3[i]; };
+        auto fit = [&](size_t i) -> bool {
+            T w = input_3[i];
+            return input_4[i] > 0 && std::isfinite(input_0[i]) && std::isfinite(input_1[i])
+                && std::isfinite(input_2[i]) && std::isfinite(w) && w > 0;
+        };
+        """
+
+    def generate_body(self) -> str:
+        """Return the C++ that fits one bar and writes its residuals."""
+        return self._accessors() + _WLS_MEANS + """
+        T det = s11 * s22 - s12 * s12;
+        T b1 = det > 0 ? (s22 * s1y - s12 * s2y) / det : NAN;
+        T b2 = det > 0 ? (s11 * s2y - s12 * s1y) / det : NAN;
+""" + _WLS_WRITE

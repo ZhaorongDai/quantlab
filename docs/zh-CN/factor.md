@@ -477,7 +477,7 @@ XrBackend()
 
 该模块还有两个截面去极值算子。`CrossSectionalWinsorize(v, lower=0.01, upper=0.99)`（缩尾）在每个时间点把取值截到该时点所有标的的 `lower` 和 `upper` 分位数之间；`CrossSectionalTrim(v, lower=0.01, upper=0.99)`（截尾）把严格落在这两个分位数之外的值设为 NaN。分位数忽略 NaN，并按线性插值计算，与 `np.nanquantile` 一致。常见用法是 `CrossSectionalZScore(CrossSectionalWinsorize(v))`，避免少数极端标的主导均值和标准差。KunQuant 0.1.11 没有内置这两个算子：它的 `Clip` 按固定常数截断，`WindowedQuantile` 是沿时间方向的。
 
-指数加权窗口统计量以 `0.5 ** (age / half_life)` 给最近 `window` 根 bar 加权，当前 bar 的 `age` 为 0：`EWSum`、`EWMean`、`EWVar`（加权总体方差）、`EWCov`，以及 `EWBeta` / `EWAlpha`，即 `y` 对 `x` 加权最小二乘拟合的斜率和截距。NaN 值被跳过而不是传播，其权重也不计入权重和；历史不足 `window` 根 bar 时结果为 NaN。权重是精确构造的，没有用 KunQuant 的 `Exp`（一个精度约 1e-7 的多项式）。随之提供四个估计域算子：`CrossSectionalTopN(v, n)` 在每个时间点把最大的 `n` 个值标为 1（并列时排在前面的标的优先；每个 `n` 生成一个类），`CrossSectionalWeightedMean(v, w)` 广播按 `w` 加权的均值，`CapWeightedStandardize(v, w, universe)` 减去估计域内按 `w` 加权的均值、除以估计域内等权样本标准差，并对所有标的使用同一组数，`SigmaClip(z, data_error=10, clip=3)` 把超过 `data_error` 的标准化值设为 NaN，其余截到 `±clip`。`BarraStyle` 用到了 `EWBeta` 和这四个估计域算子。
+指数加权窗口统计量以 `0.5 ** (age / half_life)` 给最近 `window` 根 bar 加权，当前 bar 的 `age` 为 0：`EWSum`、`EWMean`、`EWVar`（加权总体方差）、`EWCov`，以及 `EWBeta` / `EWAlpha`，即 `y` 对 `x` 加权最小二乘拟合的斜率和截距。NaN 值被跳过而不是传播，其权重也不计入权重和；历史不足 `window` 根 bar 时结果为 NaN。权重是精确构造的，没有用 KunQuant 的 `Exp`（一个精度约 1e-7 的多项式）。随之提供四个估计域算子：`CrossSectionalTopN(v, n)` 在每个时间点把最大的 `n` 个值标为 1（并列时排在前面的标的优先；每个 `n` 生成一个类），`CrossSectionalWeightedMean(v, w)` 广播按 `w` 加权的均值，`CapWeightedStandardize(v, w, universe)` 减去估计域内按 `w` 加权的均值、除以估计域内等权样本标准差，并对所有标的使用同一组数，`SigmaClip(z, data_error=10, clip=3)` 把超过 `data_error` 的标准化值设为 NaN，其余截到 `±clip`。`EWResidualStd(y, x, window, half_life)` 是 `EWBeta` 拟合残差的加权标准差；`CMRA(v, months=12, month_length=21)` 是 USE4 的累计区间 `log(1 + max Z) - log(1 + min Z)`，`Z` 为 `v` 在最近 1 到 `months` 个月上的和（`min Z <= -1` 时为 NaN）。`CrossSectionalWLSResidual(y, x, w, universe)` 和 `CrossSectionalWLSResidual2(y, x1, x2, w, universe)` 每根 bar 在估计域内做带截距、按 `w` 加权的最小二乘回归，并给每个标的它的残差，缺失的回归变量按其均值处理；`RenormalizedCombine(values, weights)` 对存在的值加权求和，权重在存在的值上重新归一。KunQuant 的 `Log` 在双精度下绝对误差约 4e-10。`BarraStyle` 用到了这些算子。
 
 ### 已有的因子
 
@@ -487,7 +487,7 @@ XrBackend()
 | `Alpha101SpotKline`、`Alpha101Stock` | KunQuant | KunQuant 的 Alpha101 库；`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha101` 中的副本构建，没有数据的 bar 输出 NaN |
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
-| `BarraStyle` | KunQuant | USE4 风格暴露：标准化的 LNCAP、BETA 描述子，Size、Beta 风格因子和估计域标记，双精度计算；只支持批量 |
+| `BarraStyle` | KunQuant | USE4 风格暴露：标准化的 LNCAP、BETA、RSTR、DASTD、CMRA、HSIGMA、NLSIZE、NLBETA 描述子，Size、Beta、Momentum、Residual Volatility、Non-linear Size、Non-linear Beta 风格因子（后三个已正交化）和估计域标记，双精度计算；只支持批量 |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
 | `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
 | `Forward` | 任意 | 把一个因子向前平移成标签 |

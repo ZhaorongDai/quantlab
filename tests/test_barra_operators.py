@@ -3,8 +3,12 @@
 Each operator is compiled into one small graph and compared with an
 independent numpy reference written from its definition: the exponentially
 weighted window statistics (``EWSum``, ``EWMean``, ``EWVar``, ``EWCov``,
-``EWBeta``, ``EWAlpha``), the cross-sectional ``CrossSectionalWeightedMean``,
-``CrossSectionalTopN`` and ``CapWeightedStandardize``, and ``SigmaClip``.
+``EWBeta``, ``EWAlpha``, ``EWResidualStd``), ``CMRA``, the cross-sectional
+``CrossSectionalWeightedMean``, ``CrossSectionalTopN``,
+``CapWeightedStandardize`` and the weighted least-squares residuals
+(``CrossSectionalWLSResidual`` on one regressor, ``...2`` on two), and the
+elementwise ``SigmaClip`` and ``RenormalizedCombine``. The regression
+references solve with ``numpy.linalg.lstsq``, not the closed forms.
 
 The panel has scattered NaN and infinities, an all-NaN bar and an all-NaN
 symbol, and 13
@@ -26,15 +30,20 @@ from KunQuant.Stage import Function
 
 from quantlab.factor.kunquant import shared_executor
 from quantlab.factor.kunquant_ops import (
+    CMRA,
     CapWeightedStandardize,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
+    CrossSectionalWLSResidual,
+    CrossSectionalWLSResidual2,
     EWAlpha,
     EWBeta,
     EWCov,
     EWMean,
+    EWResidualStd,
     EWSum,
     EWVar,
+    RenormalizedCombine,
     SigmaClip,
 )
 
@@ -47,10 +56,13 @@ _TOP = 5
 _NAN_BAR = 30
 _NAN_SYMBOL = 4
 _TIE_BAR = 41
+_MONTHS, _MONTH_LENGTH = 3, 5
+_CRASH = 7  # a symbol whose cumulative log return falls below -1
+_COMBINE_WEIGHTS = (0.75, 0.15, 0.10)
 
 
 def _panel() -> dict[str, np.ndarray]:
-    """``y``, ``x``, ``w`` (positive weights) and ``u`` (a 0/1 universe) on ``[T, S]``."""
+    """``y``, ``x``, ``w`` (weights), ``u`` (a 0/1 universe), ``z`` and ``lr`` (log returns) on ``[T, S]``."""
     rng = np.random.default_rng(3)
     x = rng.normal(0.0005, 0.01, size=(_T, _S))
     y = 0.3 + 1.2 * x + rng.normal(0.0, 0.01, size=(_T, _S))
@@ -63,16 +75,19 @@ def _panel() -> dict[str, np.ndarray]:
     big = rng.normal(0.0, 1.0, size=(_T, _S)) * 6.0  # a z-like series with tails
     y[22, 1], y[35, 6] = np.inf, -np.inf  # infinities count as missing
     w[25, 2] = np.inf
-    for values in (x, y, w, big):
+    lr = rng.normal(0.0, 0.02, size=(_T, _S))
+    lr[rng.random((_T, _S)) < 0.05] = np.nan
+    lr[40:48, _CRASH] = -0.2  # Z falls below -1 for a while
+    for values in (x, y, w, big, lr):
         values[_NAN_BAR, :] = np.nan
         values[:, _NAN_SYMBOL] = np.nan
-    return {"x": x, "y": y, "w": w, "u": u, "z": big}
+    return {"x": x, "y": y, "w": w, "u": u, "z": big, "lr": lr}
 
 
 def _function() -> Function:
     b = Builder()
     with b:
-        x, y, w, u, z = (Input(name) for name in ("x", "y", "w", "u", "z"))
+        x, y, w, u, z, lr = (Input(name) for name in ("x", "y", "w", "u", "z", "lr"))
         Output(EWSum(x, _WINDOW, _HALF_LIFE), "ew_sum")
         Output(EWMean(x, _WINDOW, _HALF_LIFE), "ew_mean")
         Output(EWVar(x, _WINDOW, _HALF_LIFE), "ew_var")
@@ -84,12 +99,18 @@ def _function() -> Function:
         Output(CrossSectionalTopN(w, _TOP), "top")
         Output(CapWeightedStandardize(y, w, u), "standardized")
         Output(SigmaClip(z, 10.0, 3.0), "clipped")
+        Output(EWResidualStd(y, x, _WINDOW, _HALF_LIFE), "ew_resid_std")
+        Output(CMRA(lr, _MONTHS, _MONTH_LENGTH), "cmra")
+        Output(RenormalizedCombine([x, y, z], list(_COMBINE_WEIGHTS)), "combined")
+        Output(CrossSectionalWLSResidual(y, x, w, u), "wls1")
+        Output(CrossSectionalWLSResidual2(y, x, z, w, u), "wls2")
     return Function(b.ops)
 
 
 _OUTPUTS = (
     "ew_sum", "ew_mean", "ew_var", "ew_cov", "ew_beta", "ew_alpha", "ew_mean_short",
     "wmean", "top", "standardized", "clipped",
+    "ew_resid_std", "cmra", "combined", "wls1", "wls2",
 )
 
 
@@ -200,12 +221,68 @@ def _clip_reference(z: np.ndarray) -> np.ndarray:
     return np.where(np.abs(z) > 10.0, np.nan, np.clip(z, -3.0, 3.0))
 
 
-def _assert_matches(got: np.ndarray, want: np.ndarray, dtype: str, *, rtol: float) -> None:
+def _resid_std_reference(y: np.ndarray, x: np.ndarray, window: int, half_life: float) -> np.ndarray:
+    weights = _weights(window, half_life)
+    out = np.full(y.shape, np.nan)
+    for t in range(window - 1, y.shape[0]):
+        rows = slice(t - window + 1, t + 1)
+        for s in range(y.shape[1]):
+            ys, xs = y[rows, s], x[rows, s]
+            ok = np.isfinite(ys) & np.isfinite(xs)
+            if ok.sum() < 2:
+                continue
+            root = np.sqrt(weights[ok])
+            design = np.column_stack([np.ones(ok.sum()), xs[ok]])
+            coef, *_ = np.linalg.lstsq(design * root[:, None], ys[ok] * root, rcond=None)
+            residual = ys[ok] - design @ coef
+            out[t, s] = np.sqrt((weights[ok] * residual**2).sum() / weights[ok].sum())
+    return out
+
+
+def _cmra_reference(lr: np.ndarray, months: int, month_length: int) -> np.ndarray:
+    out = np.full(lr.shape, np.nan)
+    filled = np.where(np.isfinite(lr), lr, 0.0)
+    for t in range(months * month_length - 1, lr.shape[0]):
+        z = np.array([filled[t - k * month_length + 1 : t + 1].sum(axis=0) for k in range(1, months + 1)])
+        low, high = z.min(axis=0), z.max(axis=0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            out[t] = np.where(low > -1.0, np.log1p(high) - np.log1p(low), np.nan)
+    return out
+
+
+def _combine_reference(values: list[np.ndarray], weights) -> np.ndarray:
+    total = sum(np.where(np.isfinite(v), v, 0.0) * w for v, w in zip(values, weights))
+    present = sum(np.isfinite(v) * w for v, w in zip(values, weights))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(present > 0, total / present, np.nan)
+
+
+def _wls_residual_reference(y, regressors, w, u) -> np.ndarray:
+    out = np.full(y.shape, np.nan)
+    for t in range(y.shape[0]):
+        fit = (u[t] > 0) & np.isfinite(y[t]) & np.isfinite(w[t]) & (w[t] > 0)
+        for x in regressors:
+            fit &= np.isfinite(x[t])
+        if fit.sum() <= len(regressors):
+            continue
+        root = np.sqrt(w[t, fit])
+        design = np.column_stack([np.ones(fit.sum())] + [x[t, fit] for x in regressors])
+        coef, *_ = np.linalg.lstsq(design * root[:, None], y[t, fit] * root, rcond=None)
+        means = [np.average(x[t, fit], weights=w[t, fit]) for x in regressors]
+        filled = [np.where(np.isfinite(x[t]), x[t], m) for x, m in zip(regressors, means)]
+        fitted = coef[0] + sum(c * f for c, f in zip(coef[1:], filled))
+        out[t] = np.where(np.isfinite(y[t]), y[t] - fitted, np.nan)
+    return out
+
+
+def _assert_matches(
+    got: np.ndarray, want: np.ndarray, dtype: str, *, rtol: float, atol: float = 1e-12
+) -> None:
     np.testing.assert_array_equal(np.isnan(got), np.isnan(want))
     finite = np.isfinite(want)
     np.testing.assert_allclose(
         got[finite], want[finite], rtol=rtol if dtype == "double" else max(rtol, 2e-5),
-        atol=1e-12 if dtype == "double" else 1e-5,
+        atol=atol if dtype == "double" else max(atol, 1e-5),
     )
 
 
@@ -319,3 +396,63 @@ def test_sigma_clip_refuses_a_clip_beyond_the_data_error() -> None:
     with Builder():
         with pytest.raises(ValueError, match="clip <= data_error"):
             SigmaClip(Input("z"), 2.0, 3.0)
+
+
+def test_ew_residual_std_matches_a_weighted_lstsq_fit(run) -> None:
+    dtype, inputs, outputs = run
+    want = _resid_std_reference(inputs["y"], inputs["x"], _WINDOW, _HALF_LIFE)
+    _assert_matches(outputs["ew_resid_std"], want, dtype, rtol=1e-9)
+
+
+def test_cmra_matches_numpy_and_is_nan_where_the_range_leaves_the_log_domain(run) -> None:
+    dtype, inputs, outputs = run
+    want = _cmra_reference(inputs["lr"], _MONTHS, _MONTH_LENGTH)
+    # KunQuant's Log is accurate to about 4e-10 absolute in double.
+    _assert_matches(outputs["cmra"], want, dtype, rtol=1e-10, atol=1e-9)
+    assert np.isnan(outputs["cmra"][: _MONTHS * _MONTH_LENGTH - 1]).all()
+    assert np.isnan(outputs["cmra"][50, _CRASH]) and np.isfinite(outputs["cmra"][30, _CRASH])
+
+
+def test_renormalized_combine_uses_the_values_present(run) -> None:
+    dtype, inputs, outputs = run
+    values = [inputs["x"], inputs["y"], inputs["z"]]
+    want = _combine_reference(values, _COMBINE_WEIGHTS)
+    _assert_matches(outputs["combined"], want, dtype, rtol=1e-12)
+    one_missing = np.isnan(inputs["x"]) & np.isfinite(inputs["y"]) & np.isfinite(inputs["z"])
+    assert one_missing.any() and np.isfinite(outputs["combined"][one_missing]).all()
+
+
+@pytest.mark.parametrize("output, regressors", [("wls1", ("x",)), ("wls2", ("x", "z"))])
+def test_wls_residual_matches_lstsq_and_is_orthogonal_in_the_fit_sample(run, output, regressors) -> None:
+    dtype, inputs, outputs = run
+    xs = [inputs[name] for name in regressors]
+    want = _wls_residual_reference(inputs["y"], xs, inputs["w"], inputs["u"])
+    _assert_matches(outputs[output], want, dtype, rtol=1e-9)
+    got, w, u = outputs[output], inputs["w"], inputs["u"]
+    tol = 1e-10 if dtype == "double" else 1e-4
+    checked = 0
+    for t in range(_T):
+        fit = (u[t] > 0) & np.isfinite(inputs["y"][t]) & np.isfinite(w[t]) & (w[t] > 0)
+        for x in xs:
+            fit &= np.isfinite(x[t])
+        if fit.sum() <= len(xs) + 2:  # an exact fit leaves only rounding noise
+            continue
+        for x in xs:
+            dx = x[t, fit] - np.average(x[t, fit], weights=w[t, fit])
+            scale = np.sqrt(np.average(dx**2, weights=w[t, fit]) * np.average(got[t, fit] ** 2, weights=w[t, fit]))
+            assert abs(np.average(got[t, fit] * dx, weights=w[t, fit])) <= tol * scale
+        checked += 1
+    assert checked > _T // 2
+    # A symbol outside the fit sample with a missing regressor still gets a residual.
+    missing_x = np.isfinite(inputs["y"]) & np.isnan(inputs["x"]) & np.isfinite(want)
+    assert missing_x.any() and np.isfinite(got[missing_x]).all()
+
+
+def test_renormalized_combine_and_cmra_refuse_bad_parameters() -> None:
+    with Builder():
+        with pytest.raises(ValueError, match="one weight per value"):
+            RenormalizedCombine([Input("a")], [1.0, 2.0])
+        with pytest.raises(ValueError, match="positive"):
+            RenormalizedCombine([Input("a")], [0.0])
+        with pytest.raises(ValueError, match="months"):
+            CMRA(Input("a"), 0, 21)

@@ -113,7 +113,7 @@ The built-in sets are thin wrappers around KunQuant's predefined libraries:
 | `Alpha158SpotKline` | `quantlab.factor.predefined.alpha158` | crypto klines, as above | 169 Alpha158 features, z-scored along time |
 | `Alpha158Stock` | `quantlab.factor.predefined.alpha158` | US equities: `adjOpen` to `adjVolume` | 169 Alpha158 features, z-scored across symbols |
 | `ResidualMomentumFF3` | `quantlab.factor.predefined.residual_momentum` | US equities: `ret`, plus a Fama-French CSV | residual momentum and regression diagnostics |
-| `BarraStyle` | `quantlab.factor.predefined.barra` | US equities: `adjClose`, `marketcap`, `risk_free` | USE4-style Size and Beta exposures, standardized over the estimation universe |
+| `BarraStyle` | `quantlab.factor.predefined.barra` | US equities: `adjClose`, `marketcap`, `risk_free` | USE4-style price-based exposures (Size, Beta, Momentum, Residual Volatility, Non-linear Size, Non-linear Beta), standardized over the estimation universe |
 | `MarketFeatures` | `quantlab.factor.predefined.market` | single-symbol index or ETF stores: `adjClose`, `adjVolume` | 21 return and amount features per series, the same for every symbol with a bar |
 
 Alpha101 is the public list of 101 formulaic trading signals from
