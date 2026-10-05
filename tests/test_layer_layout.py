@@ -88,7 +88,7 @@ def test_only_the_mean_variance_optimizer_imports_a_solver():
 def test_the_tracking_root_module_imports_no_tracking_library():
     code = (
         "import sys\n"
-        "import quantlab.base.tracking\n"
+        "import quantlab.tracking.base\n"
         "print(sorted(name for name in ('wandb', 'mlflow') if name in sys.modules))\n"
     )
     result = subprocess.run(
@@ -159,9 +159,7 @@ MODULE_LAYERS = {
     "quantlab.core": "core",
     "quantlab.base.config": "core",
     "quantlab.backend": "backend",
-    "quantlab.base.backend": "backend",
     "quantlab.tracking": "tracking",
-    "quantlab.base.tracking": "tracking",
     "quantlab.execution": "execution",
     "quantlab.runs": "runs",
     "quantlab.universe": "universe",
@@ -195,7 +193,7 @@ PENDING_VIOLATIONS = {
     ("quantlab/base/config.py", "quantlab.base.factor"),
     ("quantlab/base/config.py", "quantlab.base.model"),
     ("quantlab/base/config.py", "quantlab.base.portfolio"),
-    ("quantlab/base/config.py", "quantlab.base.tracking"),
+    ("quantlab/base/config.py", "quantlab.tracking.base"),
     ("quantlab/base/config.py", "quantlab.utils.execution"),
     ("quantlab/dataset/crsp/rebuild.py", "quantlab.acquisition.wrds"),
     ("quantlab/dataset/crsp/rebuild.py", "quantlab.registry"),

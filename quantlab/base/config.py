@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Literal
 
 from quantlab.core.component import component
 from quantlab.core.config import FrozenConfig
-from quantlab.base.tracking import NullTracker, Tracker
+from quantlab.tracking.base import NullTracker, Tracker
 from quantlab.utils.execution import ExecutionSettings
 from quantlab.enums.data import (
     BarInterval,

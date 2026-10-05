@@ -6,7 +6,7 @@ A storage backend separates where data is kept from what the data means. Dataset
 
 ## The basics
 
-Every data backend implements `DataBackend` from `quantlab.base.backend`. It holds one object in its `data` attribute and offers `read`, `write`, `to_internal` (adopt an object that is already in memory), `filter_by_date`, `filter_by_symbol`, `resample`, `get_xarray_dataset`, `get_lazyframe` and `head`. Methods that change the backend return `self`, so calls can be chained.
+Every data backend implements `DataBackend` from `quantlab.backend.base`. It holds one object in its `data` attribute and offers `read`, `write`, `to_internal` (adopt an object that is already in memory), `filter_by_date`, `filter_by_symbol`, `resample`, `get_xarray_dataset`, `get_lazyframe` and `head`. Methods that change the backend return `self`, so calls can be chained.
 
 The two backends differ in what they hold and what they are used for.
 
@@ -21,7 +21,7 @@ A panel is written with `to_internal` followed by `write`, and loaded with `read
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.backend import XrBackend
+>>> from quantlab.backend.zarr import XrBackend
 >>> panel = xr.Dataset(
 ...     {"close": (["timestamp", "symbol"], np.arange(6.0).reshape(3, 2))},
 ...     coords={
@@ -94,7 +94,7 @@ FileNotFoundError: File data/missing.zarr does not exist.
 
 ```python
 >>> import polars as pl
->>> from quantlab.backend import PlBackend
+>>> from quantlab.backend.parquet import PlBackend
 >>> frame = pl.DataFrame({
 ...     "timestamp": [pd.Timestamp("2024-01-02")] * 2 + [pd.Timestamp("2024-01-03")] * 2,
 ...     "symbol": ["AAA", "BBB", "AAA", "BBB"],
@@ -242,7 +242,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.backend import DataBackend
+from quantlab.backend.base import DataBackend
 
 
 class CsvBackend(DataBackend):
@@ -336,7 +336,7 @@ shape: (2, 3)
 │ 2024-01-02 00:00:00 ┆ AAPL   ┆ 185.6 │
 │ 2024-01-02 00:00:00 ┆ MSFT   ┆ 374.7 │
 └─────────────────────┴────────┴───────┘
->>> from quantlab.base.backend import DataBackend
+>>> from quantlab.backend.base import DataBackend
 >>> class Incomplete(DataBackend):
 ...     def read(self, path, **kwargs): ...
 ...
@@ -387,4 +387,4 @@ If a crash leaves a `.superseded.tmp` directory next to a store, `widen_symbol_a
 
 ## See also
 
-`dataset.md` describes how datasets persist panels through `XrBackend`; `chunking.md` covers building a store window by window with `append`; `factor.md` shows how Polars factors consume `get_lazyframe`. Modules: `quantlab.base.backend` (`DataBackend`) and `quantlab.backend` (`XrBackend`, `PlBackend`).
+`dataset.md` describes how datasets persist panels through `XrBackend`; `chunking.md` covers building a store window by window with `append`; `factor.md` shows how Polars factors consume `get_lazyframe`. Modules: `quantlab.backend.base` (`DataBackend`), `quantlab.backend.zarr` (`XrBackend`) and `quantlab.backend.parquet` (`PlBackend`).

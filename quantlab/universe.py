@@ -37,7 +37,7 @@ import requests
 from loguru import logger
 
 from quantlab.base.config import UniverseConfig
-from quantlab.backend import PlBackend
+from quantlab.backend.parquet import PlBackend
 from quantlab.enums.data import TRADEABLE_TICKER_PATTERN, UniverseCategory
 
 #: Contact string sent in the ``User-Agent`` header when scraping Wikipedia,

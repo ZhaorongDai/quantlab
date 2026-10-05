@@ -61,7 +61,7 @@ import xarray as xr
 import zarr
 
 from conftest import symbol_coord
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

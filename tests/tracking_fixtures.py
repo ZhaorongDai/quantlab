@@ -9,7 +9,7 @@ each run ended. It lives in the tests, not the library (spec #99).
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from quantlab.base.tracking import Tracker, TrackingRun
+from quantlab.tracking.base import Tracker, TrackingRun
 
 
 class RecordedRun(TrackingRun):

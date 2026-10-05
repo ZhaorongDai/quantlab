@@ -364,7 +364,7 @@ class Tracker(Component, ABC):
 
         Examples
         --------
-        >>> NullTracker.from_config({"project": "p", "name": "quantlab.base.tracking.NullTracker"})
+        >>> NullTracker.from_config({"project": "p", "name": "quantlab.tracking.base.NullTracker"})
         NullTracker(project='p')
         """
         return cls(**cls._rebuilt_fields(config, run_dir))

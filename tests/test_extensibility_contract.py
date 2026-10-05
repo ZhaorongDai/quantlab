@@ -34,7 +34,7 @@ CORE_LAYER_FILES = (
     "quantlab/base/model.py",
     "quantlab/model/torch_model.py",
     "quantlab/model/library_model.py",
-    "quantlab/base/backend.py",
+    "quantlab/backend/base.py",
     "quantlab/base/backtest.py",
 )
 

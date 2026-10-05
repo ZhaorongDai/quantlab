@@ -42,7 +42,7 @@ from loguru import logger
 from quantlab.core.component import Component
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data
 from quantlab.enums.constant import Date
 from quantlab.utils.date_range import as_label, check_range, resample_padding

@@ -268,7 +268,7 @@ Four behaviours are worth knowing:
 
 A dataset delegates persistence to a *backend*, the object that knows how
 data is stored, as opposed to what it means. Both backends live in
-`quantlab.backend` and implement the `quantlab.base.backend.DataBackend`
+`quantlab.backend` and implement the `quantlab.backend.base.DataBackend`
 interface (`read`, `write`, `to_internal`, `filter_by_date`,
 `filter_by_symbol`, `get_xarray_dataset`, `get_lazyframe`, `head`).
 
@@ -285,7 +285,8 @@ used for long-format reference tables such as the universe catalog, where one
 row per record is the natural shape.
 
 ```python
-from quantlab.backend import PlBackend, XrBackend
+from quantlab.backend.parquet import PlBackend
+from quantlab.backend.zarr import XrBackend
 
 XrBackend().to_internal(panel).write("copy.zarr")
 backend = XrBackend().read("copy.zarr")
@@ -439,5 +440,5 @@ you (see [Factors](factors.md)).
 - [Extending quantlab](../developer-guide/extending.md): write a dataset for a
   new vendor by implementing `_raw_data_to_xr`.
 - The docstrings of `quantlab.base.data.BaseDataset`,
-  `quantlab.backend.XrBackend` and `quantlab.utils.chunking.ChunkLedger` for
+  `quantlab.backend.zarr.XrBackend` and `quantlab.utils.chunking.ChunkLedger` for
   every parameter.

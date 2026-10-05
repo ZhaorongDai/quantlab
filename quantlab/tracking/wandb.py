@@ -13,7 +13,7 @@ from typing import Literal, get_args
 
 import wandb
 
-from quantlab.base.tracking import Tracker, TrackingRun
+from quantlab.tracking.base import Tracker, TrackingRun
 
 __all__ = ["WandbRun", "WandbTracker"]
 

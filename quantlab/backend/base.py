@@ -4,7 +4,8 @@
 means": it is the contract a dataset or factor object talks to when it
 reads, writes, filters or converts its *panel* (an ``xarray.Dataset``
 indexed by ``timestamp`` and ``symbol``). Concrete implementations live in
-``quantlab/backend.py`` (``XrBackend`` for Zarr, ``PlBackend`` for Parquet).
+``quantlab.backend.zarr`` (``XrBackend``) and ``quantlab.backend.parquet``
+(``PlBackend``).
 The contract assumes no particular schema, so a backend can be swapped
 without touching the layers above it. See ``docs/backend.md``.
 """

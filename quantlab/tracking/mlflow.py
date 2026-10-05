@@ -38,7 +38,7 @@ import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from quantlab.base.tracking import Tracker, TrackingRun
+from quantlab.tracking.base import Tracker, TrackingRun
 
 __all__ = ["MlflowRun", "MlflowTracker"]
 

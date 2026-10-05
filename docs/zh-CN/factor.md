@@ -45,7 +45,7 @@ KunQuant 是主后端：现有的 alpha 因子库用到的滚动和截面算子�
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.backend import XrBackend
+>>> from quantlab.backend.zarr import XrBackend
 >>> from quantlab.base.config import DatasetConfig, PolarsFactorConfig
 >>> from quantlab.dataset.spot import SpotKlineDataset
 >>> from quantlab.factor.predefined.momentum import Momentum

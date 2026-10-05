@@ -205,7 +205,7 @@ class BinaryReturn(_OpenToOpenLabel):
     two later bars.
 
     >>> import numpy as np, pandas as pd, xarray as xr
-    >>> from quantlab.backend import XrBackend
+    >>> from quantlab.backend.zarr import XrBackend
     >>> from quantlab.base.config import DatasetConfig, FactorConfig
     >>> from quantlab.dataset.stock import StockDataset
     >>> from quantlab.label.predefined.fret import BinaryReturn, Return
@@ -273,7 +273,7 @@ class Volatility(_OpenToOpenLabel):
     window of two returns then holds one of each.
 
     >>> import numpy as np, pandas as pd, xarray as xr
-    >>> from quantlab.backend import XrBackend
+    >>> from quantlab.backend.zarr import XrBackend
     >>> from quantlab.base.config import DatasetConfig, FactorConfig
     >>> from quantlab.dataset.stock import StockDataset
     >>> from quantlab.label.predefined.fret import Volatility

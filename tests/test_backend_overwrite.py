@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 import xarray as xr
 
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 
 
 def _make_dataset(close_values: list[list[float]]) -> xr.Dataset:

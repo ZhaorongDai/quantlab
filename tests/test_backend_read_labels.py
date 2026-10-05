@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 
 
 def test_string_labels_come_back_as_object_strings(tmp_path):

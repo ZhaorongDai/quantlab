@@ -22,7 +22,7 @@ from loguru import logger
 from pytabkit import RealMLP_TD_Regressor
 from pytabkit.models.training.lightning_callbacks import Callback
 
-from quantlab.base.tracking import TrackingRun
+from quantlab.tracking.base import TrackingRun
 from quantlab.model.library_model import Rows
 from quantlab.model.predefined._support.devices import resolve_device, torch_default_device
 from quantlab.model.predefined._support.tabkit import TabkitRegressor, active_callbacks

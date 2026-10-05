@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from quantlab.base.config import BacktestConfig
-from quantlab.base.tracking import NullTracker
+from quantlab.tracking.base import NullTracker
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.tracking.wandb import WandbTracker
 from tests.test_backtest_contracts import REPO_ROOT

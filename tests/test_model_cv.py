@@ -61,7 +61,7 @@ from quantlab.model.library_model import LibraryModel
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.model.torch_model import TorchModel
 from tests.torch_heads import OneBarHead
-from quantlab.base.tracking import NullTracker
+from quantlab.tracking.base import NullTracker
 from quantlab.utils.walk_forward import Fold, walk_forward_folds
 from quantlab.utils.walk_forward_training import WalkForwardTrainable
 from tests.label_stubs import StubLabel

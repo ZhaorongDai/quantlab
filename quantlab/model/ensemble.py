@@ -72,7 +72,7 @@ import xarray as xr
 
 from quantlab.core.component import Component, code_of
 from quantlab.base.model import record_training_reads
-from quantlab.base.tracking import Tracker
+from quantlab.tracking.base import Tracker
 from quantlab.runs.trained_run import (
     TrainedRun,
     member_directory,

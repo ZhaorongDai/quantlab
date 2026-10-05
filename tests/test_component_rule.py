@@ -287,7 +287,7 @@ from quantlab.base.config import (
     WeightsBacktestConfig,
 )
 from quantlab.base.portfolio import _Configured
-from quantlab.base.tracking import NullTracker
+from quantlab.tracking.base import NullTracker
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble

@@ -45,7 +45,7 @@ from loguru import logger
 from quantlab.core.component import Component, config_cls_of, walk_components
 from quantlab.base.data import MarketDataset
 from quantlab.base.portfolio import LabelSpec, PredictionPanel
-from quantlab.base.tracking import TrackingRun
+from quantlab.tracking.base import TrackingRun
 # Importing this submodule also runs the `crsp` package `__init__` (the CRSP
 # converter and polars), which adds about a second of import time.
 from quantlab.dataset.crsp.tickers import CrspTickerLookup

@@ -307,7 +307,7 @@ the vendor's capability.
 ## A storage backend
 
 A backend is where a dataset or factor keeps its panel. `DataBackend`
-(`quantlab.base.backend`) has nine abstract methods: `read`, `write`,
+(`quantlab.backend.base`) has nine abstract methods: `read`, `write`,
 `to_internal`, `filter_by_date`, `filter_by_symbol`, `get_xarray_dataset`,
 `get_lazyframe`, `head` and `resample`. A class that leaves one out cannot be
 instantiated. Two details of the contract are easy to get wrong: the
@@ -316,7 +316,7 @@ must open the store at `path`, read at most `n` rows without loading the
 whole store, and leave the held data alone.
 
 When the medium still holds an `xarray.Dataset`, the simplest route is to
-subclass `XrBackend` (`quantlab.backend`) and replace only the input and
+subclass `XrBackend` (`quantlab.backend.zarr`) and replace only the input and
 output. This backend keeps a panel in a single NetCDF file:
 
 ```python
@@ -326,7 +326,7 @@ from typing import Self
 import polars as pl
 import xarray as xr
 
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 
 
 class NetcdfBackend(XrBackend):
@@ -390,7 +390,7 @@ take `get_xarray_dataset(["timestamp", "symbol"])`, and `copy()` and
 `resample()` give the copy a backend of the same type. The backend class
 must therefore construct without arguments. For a medium that does not
 hold an xarray object, implement all nine methods; `PlBackend` in
-`quantlab/backend.py` is the reference for a table-shaped medium, and its
+`quantlab/backend/parquet.py` is the reference for a table-shaped medium, and its
 `get_xarray_dataset(indexes)` shows how to turn the named columns into the
 dataset's dimensions. Chunked conversion and `Dataset.update()` also call
 `widen_and_append` (and, for a new listing, `widen_symbol_axis`), which exist

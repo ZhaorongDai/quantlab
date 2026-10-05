@@ -34,7 +34,8 @@ import pandas as pd
 import polars as pl
 from loguru import logger
 
-from quantlab.backend import PlBackend, XrBackend
+from quantlab.backend.parquet import PlBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.base.config import (
     ConstituentDatasetConfig,
     DatasetConfig,

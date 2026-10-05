@@ -1998,7 +1998,7 @@ def test_the_factor_base_does_not_import_the_crsp_module():
 
     The assertion is scoped to the `.crsp` SUBMODULE, not to
     `quantlab.dataset` as a whole: `base/factor.py` has imported
-    `quantlab.backend.XrBackend` since long before this phase. That
+    `quantlab.backend.zarr.XrBackend` since long before this phase. That
     is a known, pre-existing approximation of the layering, and the rule this
     test enforces is the narrower one -- do not DEEPEN it from a storage
     backend to a specific vendor Dataset subclass.

@@ -38,7 +38,7 @@ from loguru import logger
 
 from quantlab.base.config import ModelConfig
 from quantlab.model.library_model import LibraryModel
-from quantlab.base.tracking import NullTracker, Tracker
+from quantlab.tracking.base import NullTracker, Tracker
 from quantlab.model.predefined._support.devices import xgboost_default_device
 from quantlab.model.predefined.xgb import (
     XGBoostRegressor,

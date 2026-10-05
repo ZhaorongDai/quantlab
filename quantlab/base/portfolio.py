@@ -47,7 +47,7 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.core.component import Component
 
 if TYPE_CHECKING:

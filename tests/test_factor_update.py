@@ -37,7 +37,7 @@ from loguru import logger
 from conftest import assert_stored_symbol_encoding, symbol_coord
 from quantlab.base.config import BaseFactorConfig
 from quantlab.base.factor import Factor
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers

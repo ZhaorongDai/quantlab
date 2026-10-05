@@ -21,7 +21,8 @@ import pytest
 import xarray as xr
 
 from conftest import WHOLE_STORE, compute_all
-from quantlab.backend import PlBackend, XrBackend
+from quantlab.backend.parquet import PlBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.base.config import DatasetConfig, FactorConfig, PolarsFactorConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.spot import SpotKlineDataset

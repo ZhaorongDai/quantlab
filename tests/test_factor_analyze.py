@@ -24,7 +24,7 @@ import pytest
 import xarray as xr
 
 from quantlab.analysis.factor_report import FactorAnalyzer
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.base.config import (
     DatasetConfig,
     FactorConfig,

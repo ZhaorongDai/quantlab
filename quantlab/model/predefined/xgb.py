@@ -21,7 +21,7 @@ import xgboost as xgb
 from loguru import logger
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.tracking import TrackingRun
+from quantlab.tracking.base import TrackingRun
 from quantlab.model.library_model import LibraryModel
 from quantlab.model.library_model import Rows
 from quantlab.model.predefined._support.devices import resolve_device, xgboost_default_device

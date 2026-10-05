@@ -6,7 +6,7 @@
 
 ## 基础
 
-所有数据后端都实现 `quantlab.base.backend` 中的 `DataBackend`。后端把一个对象放在 `data` 属性里，并提供 `read`、`write`、`to_internal`（接管一个已在内存中的对象）、`filter_by_date`、`filter_by_symbol`、`resample`、`get_xarray_dataset`、`get_lazyframe` 和 `head`。会修改后端状态的方法都返回 `self`，因此可以链式调用。
+所有数据后端都实现 `quantlab.backend.base` 中的 `DataBackend`。后端把一个对象放在 `data` 属性里，并提供 `read`、`write`、`to_internal`（接管一个已在内存中的对象）、`filter_by_date`、`filter_by_symbol`、`resample`、`get_xarray_dataset`、`get_lazyframe` 和 `head`。会修改后端状态的方法都返回 `self`，因此可以链式调用。
 
 两个后端持有的对象和适用场景不同。
 
@@ -21,7 +21,7 @@
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.backend import XrBackend
+>>> from quantlab.backend.zarr import XrBackend
 >>> panel = xr.Dataset(
 ...     {"close": (["timestamp", "symbol"], np.arange(6.0).reshape(3, 2))},
 ...     coords={
@@ -94,7 +94,7 @@ FileNotFoundError: File data/missing.zarr does not exist.
 
 ```python
 >>> import polars as pl
->>> from quantlab.backend import PlBackend
+>>> from quantlab.backend.parquet import PlBackend
 >>> frame = pl.DataFrame({
 ...     "timestamp": [pd.Timestamp("2024-01-02")] * 2 + [pd.Timestamp("2024-01-03")] * 2,
 ...     "symbol": ["AAA", "BBB", "AAA", "BBB"],
@@ -242,7 +242,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.base.backend import DataBackend
+from quantlab.backend.base import DataBackend
 
 
 class CsvBackend(DataBackend):
@@ -336,7 +336,7 @@ shape: (2, 3)
 │ 2024-01-02 00:00:00 ┆ AAPL   ┆ 185.6 │
 │ 2024-01-02 00:00:00 ┆ MSFT   ┆ 374.7 │
 └─────────────────────┴────────┴───────┘
->>> from quantlab.base.backend import DataBackend
+>>> from quantlab.backend.base import DataBackend
 >>> class Incomplete(DataBackend):
 ...     def read(self, path, **kwargs): ...
 ...
@@ -387,4 +387,4 @@ ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store 
 
 ## 另请参阅
 
-`dataset.md` 介绍数据集如何通过 `XrBackend` 持久化面板；`chunking.md` 介绍用 `append` 按窗口构建存储；`factor.md` 介绍 Polars 因子如何使用 `get_lazyframe`。相关模块：`quantlab.base.backend`（`DataBackend`）和 `quantlab.backend`（`XrBackend`、`PlBackend`）。
+`dataset.md` 介绍数据集如何通过 `XrBackend` 持久化面板；`chunking.md` 介绍用 `append` 按窗口构建存储；`factor.md` 介绍 Polars 因子如何使用 `get_lazyframe`。相关模块：`quantlab.backend.base`（`DataBackend`）、`quantlab.backend.zarr`（`XrBackend`）和 `quantlab.backend.parquet`（`PlBackend`）。

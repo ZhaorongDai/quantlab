@@ -60,7 +60,7 @@ from conftest import (
     stored_symbol_encoding,
     symbol_coord,
 )
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -1084,7 +1084,7 @@ def test_widen_and_append_inherits_the_overlap_refusal_verbatim(
     makes this an enforcement of D-03 rather than a restatement of it.
 
     Also asserted: the ACCEPTED side effect, now recorded in
-    `quantlab/backend.py::XrBackend.widen_and_append`'s docstring. The
+    `quantlab/backend/zarr.py::XrBackend.widen_and_append`'s docstring. The
     widen COMMITS before the closing `append()` raises, so the store's symbol
     axis MAY have grown to A, B, C while its timestamp axis is still the
     original three labels -- unique, monotonic, and with A's and B's stored

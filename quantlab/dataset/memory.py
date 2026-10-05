@@ -20,7 +20,7 @@ import pandas as pd
 import polars as pl
 import xarray as xr
 
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.base.config import FrameDatasetConfig
 from quantlab.base.data import MarketDataset
 from quantlab.utils.date_range import as_label, check_range

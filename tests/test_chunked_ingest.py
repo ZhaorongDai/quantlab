@@ -38,7 +38,7 @@ from quantlab.utils.chunking import ChunkLedger, TimeChunkPlanner
 from quantlab.base.config import BaseDatasetConfig, DatasetConfig
 from quantlab.base.data import BaseDataset
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.stock import StockDataset
 
 # ---------------------------------------------------------------------------
@@ -604,7 +604,7 @@ def test_append_refuses_a_window_overlapping_the_stored_timestamps(
     reason.
 
     RED under: removing the append-dim check from
-    `quantlab/backend.py::XrBackend._assert_append_compatible`
+    `quantlab/backend/zarr.py::XrBackend._assert_append_compatible`
     (mutation M1).
     """
     path = str(tmp_path / "overlap.zarr")
@@ -650,7 +650,7 @@ def test_append_allows_a_gap_between_the_stored_end_and_the_incoming_start(
     the guard to contiguity: doing so reddens here, which is the point.
 
     RED under: extending the append-dim check in
-    `quantlab/backend.py::XrBackend._assert_append_compatible` to also
+    `quantlab/backend/zarr.py::XrBackend._assert_append_compatible` to also
     refuse a gap (mutation M5).
     """
     path = str(tmp_path / "gap.zarr")
@@ -787,7 +787,7 @@ def test_append_skips_the_overlap_check_without_an_append_dim_coordinate(
 
     RED under: dropping the `append_dim in self.data.coords and append_dim in
     existing.coords` presence check from
-    `quantlab/backend.py::XrBackend._assert_append_compatible`.
+    `quantlab/backend/zarr.py::XrBackend._assert_append_compatible`.
     """
 
     def _no_coord_panel(n: int, offset: float) -> xr.Dataset:

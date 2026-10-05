@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from quantlab.base.config import ModelConfig
-from quantlab.base.tracking import NullTracker
+from quantlab.tracking.base import NullTracker
 from quantlab.tracking.wandb import WandbTracker
 from quantlab.core.component import rebuild
 from quantlab.runs.trained_run import TrainedRun

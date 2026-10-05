@@ -36,7 +36,7 @@ import xarray as xr
 
 from quantlab.core.component import Component
 from quantlab.base.config import BaseFactorConfig
-from quantlab.backend import XrBackend
+from quantlab.backend.zarr import XrBackend
 from quantlab.base.data import InsufficientHistoryError
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.date_range import (
