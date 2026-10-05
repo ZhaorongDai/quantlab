@@ -99,6 +99,9 @@ CORRECTION_VARIABLES: tuple[str, ...] = (
 #: Suffix of the corrections report written beside the store.
 CORRECTIONS_SUFFIX = ".corrections.json"
 
+#: Suffix of the bulk-diff report written beside the store (``diff``).
+DIFF_SUFFIX = ".diff.json"
+
 #: Number of offending keys an error message lists.
 _ERROR_SAMPLE = 5
 
@@ -216,8 +219,9 @@ class SharadarStockDataset(MarketDataset):
         Raises
         ------
         ValueError
-            If a raw ticker has no permaticker, a ticker has two, two rows
-            share a permaticker and date, or the window holds no row.
+            If a raw ticker has no permaticker, a ticker has two, or two rows
+            share a permaticker and date. An empty window is not an error
+            here; a build refuses it (``_rows_to_build``).
         """
         if self._derivation_cache is not None:
             return self._derivation_cache
@@ -237,12 +241,6 @@ class SharadarStockDataset(MarketDataset):
             mapping = permaticker_mapping(root, self.config.table)
             frame = self._map_permatickers(prices, mapping)
             frame = frame.filter(pl.col("permaticker").is_in(self._universe()))
-            if frame.height == 0:
-                raise ValueError(
-                    f"{self.class_name}: no {self.config.table!r} row in "
-                    f"[{self.config.start_date}, {self.config.end_date}] for "
-                    f"the configured universe."
-                )
             self._assert_unique_keys(frame)
             ratio = (
                 pl.when(pl.col("close") > 0)
@@ -633,31 +631,12 @@ class SharadarStockDataset(MarketDataset):
     def _report_corrections(
         self, stored: xr.Dataset, overlap: pl.DataFrame, stored_symbols: list
     ) -> None:
-        """Write and log every stored value the vendor has since changed."""
+        """Write and log every stored value in ``overlap``'s dates the vendor has since changed."""
         if overlap.height == 0:
             return
-        stamps = overlap.get_column("timestamp").unique().sort().to_list()
-        old = stored[list(CORRECTION_VARIABLES)].sel(timestamp=stamps).load()
-        new = (
-            overlap.to_pandas().set_index(["timestamp", "symbol"]).to_xarray()
-            .reindex(timestamp=old["timestamp"].values, symbol=stored_symbols)
+        found = self._differences(
+            stored, overlap, stored_symbols, overlap.get_column("timestamp").unique().to_list()
         )
-        found = []
-        for name in CORRECTION_VARIABLES:
-            a = np.asarray(old[name].transpose("timestamp", "symbol").values, dtype=np.float64)
-            b = np.asarray(new[name].transpose("timestamp", "symbol").values, dtype=np.float64)
-            same = np.isclose(a, b, rtol=1e-9, atol=0.0) | (np.isnan(a) & np.isnan(b))
-            for i, j in zip(*np.nonzero(~same), strict=True):
-                found.append(
-                    {
-                        "table": self.config.table,
-                        "permaticker": int(stored_symbols[j]),
-                        "date": str(pd.Timestamp(old["timestamp"].values[i]).date()),
-                        "variable": name,
-                        "stored": None if np.isnan(a[i, j]) else float(a[i, j]),
-                        "vendor": None if np.isnan(b[i, j]) else float(b[i, j]),
-                    }
-                )
         if not found:
             return
         path = self.corrections_path()
@@ -670,11 +649,195 @@ class SharadarStockDataset(MarketDataset):
             f"and were not written, first {found[:_ERROR_SAMPLE]}."
         )
 
+    def _differences(
+        self, stored: xr.Dataset, derived: pl.DataFrame, symbols: list, stamps: list
+    ) -> list[dict]:
+        """Compare the store with a derivation of the raw tier over ``stamps`` and ``symbols``.
+
+        Only ``CORRECTION_VARIABLES`` are compared: the raw prices and the
+        events. The adjusted variables follow from them through the chain.
+        A date or security on one side only compares against NaN, so a bar
+        the vendor dropped (or added) is reported variable by variable.
+
+        Parameters
+        ----------
+        stored : xr.Dataset
+            The opened store.
+        derived : pl.DataFrame
+            Derivation rows (``_derivation``'s columns).
+        symbols : list
+            The permatickers to compare, normally the store's.
+        stamps : list
+            The dates to compare.
+
+        Returns
+        -------
+        list of dict
+            One entry per differing value: ``table``, ``permaticker``,
+            ``date``, ``variable``, ``stored`` and ``vendor`` (``None`` for
+            NaN), variable by variable.
+        """
+        stamps = pd.DatetimeIndex(sorted({pd.Timestamp(t) for t in stamps})).values
+        if not len(stamps) or not symbols:
+            return []
+        old = stored[list(CORRECTION_VARIABLES)].reindex(timestamp=stamps).sel(symbol=symbols).load()
+        # Typed keys: `is_in` over a list of numpy datetimes can infer an object dtype.
+        frame = (
+            derived.join(
+                pl.DataFrame({"timestamp": pl.Series(stamps).cast(pl.Datetime("ns"))}),
+                on="timestamp",
+                how="semi",
+            )
+            .join(
+                pl.DataFrame({"symbol": pl.Series([int(s) for s in symbols], dtype=pl.Int64)}),
+                on="symbol",
+                how="semi",
+            )
+            .select("timestamp", "symbol", *CORRECTION_VARIABLES)
+        )
+        new = (
+            frame.to_pandas().set_index(["timestamp", "symbol"]).to_xarray()
+            .reindex(timestamp=stamps, symbol=symbols)
+        )
+        found = []
+        for name in CORRECTION_VARIABLES:
+            a = np.asarray(old[name].transpose("timestamp", "symbol").values, dtype=np.float64)
+            b = np.asarray(new[name].transpose("timestamp", "symbol").values, dtype=np.float64)
+            same = np.isclose(a, b, rtol=1e-9, atol=0.0) | (np.isnan(a) & np.isnan(b))
+            for i, j in zip(*np.nonzero(~same), strict=True):
+                found.append(
+                    {
+                        "table": self.config.table,
+                        "permaticker": int(symbols[j]),
+                        "date": str(pd.Timestamp(stamps[i]).date()),
+                        "variable": name,
+                        "stored": None if np.isnan(a[i, j]) else float(a[i, j]),
+                        "vendor": None if np.isnan(b[i, j]) else float(b[i, j]),
+                    }
+                )
+        return found
+
+    # -- the periodic bulk diff ---------------------------------------------
+
+    def diff_path(self) -> Path:
+        """Return the bulk-diff report beside the store (``<store>.diff.json``).
+
+        Examples
+        --------
+        >>> SharadarStockDataset(config).diff_path().name
+        'sharadar_sep_1d.zarr.diff.json'
+        """
+        return Path(f"{self.store_path}{DIFF_SUFFIX}")
+
+    def diff(self, vendor_root: str | Path | None = None) -> list[dict]:
+        """Diff the store against a raw tier, report the differences, write nothing to the store.
+
+        The usual raw tier is a fresh full bulk pull into a separate download
+        directory, so the store's own raw tier stays the one it was built
+        from::
+
+            for code in ("sep", "tickers", "actions"):
+                client.bulk_table(code, "/data/quantlab/bulk_check")
+            differences = SharadarStockDataset(config).diff(
+                "/data/quantlab/bulk_check/sharadar"
+            )
+
+        Every stored security is compared over the store's dates (up to the
+        raw tier's watermark) on ``CORRECTION_VARIABLES``, one calendar year
+        at a time so memory stays bounded by a year of the panel. Securities
+        the raw tier has but the store lacks are not compared. The store, its
+        ledger and both raw tiers are left as they were; the report is
+        rewritten at ``diff_path()`` on every run.
+
+        Parameters
+        ----------
+        vendor_root : str or Path, optional
+            The ``sharadar`` directory of the raw tier to compare with,
+            holding the price table, TICKERS and ACTIONS. ``None`` uses the
+            store's own ``raw_data_dir_path`` (after a bulk pull has replaced
+            it).
+
+        Returns
+        -------
+        list of dict
+            The differences, sorted by date, permaticker and variable. Each
+            names ``table``, ``permaticker``, ``date`` and ``variable``, with
+            the ``stored`` and ``vendor`` values (``None`` for no value).
+
+        Raises
+        ------
+        FileNotFoundError
+            If the store does not exist.
+        """
+        if not Path(self.store_path).exists():
+            raise FileNotFoundError(f"{self.class_name}: no store at {self.store_path} to diff.")
+        root = str(vendor_root if vendor_root is not None else self.config.raw_data_dir_path)
+        stored = self._open_store(self.store_path)
+        stamps = pd.DatetimeIndex(stored["timestamp"].values)
+        symbols = stored["symbol"].values.tolist()
+        compare = dataclasses.replace(
+            self.config,
+            raw_data_dir_path=root,
+            permatickers=tuple(int(s) for s in symbols),
+            roster_universe=None,
+            category_filter=None,
+        )
+        last = min(stamps[-1].date(), type(self)(compare)._raw_through())
+        stamps = stamps[stamps <= pd.Timestamp(last)]
+        found: list[dict] = []
+        for year in sorted(set(stamps.year)):
+            first = max(stamps[0].date(), date(year, 1, 1))
+            end = min(last, date(year, 12, 31))
+            derived = type(self)(
+                dataclasses.replace(
+                    compare, start_date=first.isoformat(), end_date=end.isoformat()
+                )
+            )._derivation()
+            in_year = stamps[(stamps.year == year)].to_list()
+            found.extend(
+                self._differences(
+                    stored, derived, symbols, in_year + derived.get_column("timestamp").to_list()
+                )
+            )
+        found.sort(key=lambda d: (d["date"], d["permaticker"], d["variable"]))
+        write_json_atomically(
+            self.diff_path(),
+            {
+                "table": self.config.table,
+                "store": str(self.store_path),
+                "raw_data_dir_path": root,
+                "from": str(stamps[0].date()) if len(stamps) else None,
+                "to": str(last),
+                "differences": found,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        if found:
+            logger.warning(
+                f"{self.class_name}: {len(found)} stored value(s) differ from "
+                f"{root}; listed in {self.diff_path()}, first {found[:_ERROR_SAMPLE]}."
+            )
+        else:
+            logger.info(f"{self.class_name}: {self.store_path} matches {root}.")
+        return found
+
     # -- axes and windows ---------------------------------------------------
+
+    def _rows_to_build(self) -> pl.DataFrame:
+        """Return the derivation, refusing an empty one: a build never writes an empty store."""
+        derivation = self._derivation()
+        if derivation.height == 0:
+            raise ValueError(
+                f"{self.class_name}: no {self.config.table!r} row in "
+                f"[{self.config.start_date}, {self.config.end_date}] for "
+                f"the configured universe."
+            )
+        return derivation
 
     def _raw_axes_in_range(self) -> tuple[list, pd.DatetimeIndex]:
         """Return the permatickers (sorted) and the dates of the derivation."""
-        derivation = self._derivation()
+        derivation = self._rows_to_build()
         symbols = sort_symbol_axis(
             derivation.get_column("symbol").unique().to_list()
         )
@@ -711,6 +874,7 @@ class SharadarStockDataset(MarketDataset):
 
     def _raw_data_to_xr(self) -> xr.Dataset:
         """Return the dense panel for the whole configured window."""
+        self._rows_to_build()
         return self._raw_data_to_xr_window(
             self.config.start_date, self.config.end_date, symbols=None
         )

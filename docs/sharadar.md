@@ -123,3 +123,19 @@ SharadarStockDataset(config).update()
 - The last 10 stored bars are derived again from the raw tier. A raw price, `divCash` or `splitFactor` the vendor has since changed is listed in `<store>.corrections.json` (table, permaticker, date, variable, stored and vendor value) and logged; it is never written. Earlier rows of the store stay byte-identical.
 - Each security's new adjusted prices continue from its last stored `adjClose` and `adjVolume`, so the chain is never re-anchored, even for a security halted for longer than the overlap. On the 2026-10-05 pull, a store built through 2026-09-25 and updated to the end of the raw tier equals a store built in one go to within 7e-16.
 - A new security follows `BaseDataset.update`'s rule: a new listing is added with no history; a security new to the store that has bars inside its range (a roster change) rebuilds the store, the one case where earlier rows are rewritten.
+
+## Periodic bulk diff
+
+The daily update compares only the last 10 stored bars with the vendor. To find drift anywhere in a store, pull every input table in full into a separate download directory and diff the store against it:
+
+```python
+from quantlab.acquisition.sharadar.client import SharadarClient
+from quantlab.dataset.sharadar.stock import SharadarStockDataset
+
+client = SharadarClient()
+for code in ("sep", "tickers", "actions"):
+    client.bulk_table(code, "/data/quantlab/bulk_check")
+differences = SharadarStockDataset(config).diff("/data/quantlab/bulk_check/sharadar")
+```
+
+Pulling into a separate directory keeps the store's own raw tier as it was built; `diff()` with no argument compares with the store's own raw tier instead (after a bulk pull has replaced it). Every stored security is compared over the store's dates, up to the compared raw tier's watermark, on the raw prices, `divCash` and `splitFactor`, one calendar year at a time. Each difference names the table, permaticker, date and variable, with the stored and vendor values (`None` where one side has no value, as for a bar the vendor dropped). The differences are returned and written to `<store>.diff.json`, which every run rewrites; the store, its chunk ledger and both raw tiers are left unchanged. Securities the vendor has but the store lacks are not compared. On the 2026-10-05 raw tier, a store from 2025 diffs against its own raw tier in about 4 seconds with no difference.
