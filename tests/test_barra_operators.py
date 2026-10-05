@@ -86,6 +86,8 @@ def _panel() -> dict[str, np.ndarray]:
         values[:, _NAN_SYMBOL] = np.nan
     industry = rng.integers(0, 4, size=(_T, _S)).astype(np.float64)
     industry[:, 11] = 6.0  # an industry with no other member: never fitted
+    industry[:, 12] = 2.5  # not an integer code: missing
+    industry[3, 9] = 1.0e9  # beyond the largest code: missing
     industry[rng.random((_T, _S)) < 0.05] = np.nan
     eligible = (rng.random((_T, _S)) < 0.9).astype(np.float64)
     return {"x": x, "y": y, "w": w, "u": u, "z": big, "lr": lr, "ind": industry, "e": eligible}
@@ -294,12 +296,13 @@ def _fill_reference(y, size, industry, w, u, eligible, use_industry=True, use_si
     for t in range(y.shape[0]):
         ok = np.ones(y.shape[1], dtype=bool)
         if use_industry:
-            ok &= np.isfinite(industry[t])
+            codes_ok = np.isfinite(industry[t]) & (industry[t] >= 0) & (industry[t] <= 4096)
+            ok &= codes_ok & (industry[t] == np.floor(np.where(codes_ok, industry[t], 0)))
         if use_size:
             ok &= np.isfinite(size[t])
         fit = ok & (u[t] > 0) & np.isfinite(y[t]) & np.isfinite(w[t]) & (w[t] > 0)
         codes = sorted(set(industry[t, fit].astype(int))) if use_industry else [0]
-        group = (lambda i: int(industry[t, i]) if np.isfinite(industry[t, i]) else -1) if use_industry else (lambda i: 0)
+        group = (lambda i: int(industry[t, i]) if ok[i] else -1) if use_industry else (lambda i: 0)
         if not fit.any():
             continue
         columns = [[float(group(i) == c) for c in codes] for i in range(y.shape[1])]

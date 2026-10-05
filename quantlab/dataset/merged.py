@@ -205,7 +205,7 @@ class MergedDataset(MarketDataset):
             for other in arrays[1:]:
                 value = value.combine_first(other)
             combined[name] = value
-        return xr.Dataset(combined, coords=aligned[0].coords)
+        return xr.Dataset(combined, coords=aligned[0].coords, attrs=aligned[0].attrs)
 
     def _check_spacing(self) -> None:
         """Raise unless every input has the same most common bar spacing.

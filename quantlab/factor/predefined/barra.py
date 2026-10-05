@@ -1050,10 +1050,9 @@ class BarraStyle(FactorKunQuant):
         year ends) is exported as days since
         1970, NaN where it is NaT. The industry code goes in as
         ``INDUSTRY_INPUT``. The ``SPLIT_BASIS`` input is added: each
-        symbol's running product of
-        split factors along time, a missing or non-positive factor counting
-        as 1. Only its ratios between bars are used, so where it starts does
-        not matter.
+        symbol's running product of split factors along time, a missing or
+        non-positive factor counting as 1. Only its ratios between bars are
+        used, so where it starts does not matter.
         """
         params = self._parameters()
         panel = self.config.dataset.to_shared_names(inputs)

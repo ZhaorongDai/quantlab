@@ -1328,12 +1328,18 @@ class CrossSectionalWLSResidual2(GenericCrossSectionalOp):
 """ + _WLS_WRITE
 
 
+#: Largest industry code ``CrossSectionalIndustrySizeFill`` accepts; it sizes
+#: the per-industry accumulators.
+_MAX_INDUSTRY_CODE = 4096
+
+
 class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
     """Fill a missing value from a per-bar weighted regression on industry and size.
 
     On each bar the fit uses the symbols where ``universe > 0``, ``y`` is
     finite, ``w`` is finite and positive, and the regressors used are
-    finite (``industry`` an integer code >= 0). The model is one intercept
+    finite (``industry`` an integer code from 0 to 4096; any other code
+    counts as missing). An infinite ``y`` counts as missing. The model is one intercept
     per industry plus a common slope on ``size``, fitted by weighted least
     squares without a matrix solve (Frisch-Waugh-Lovell): ``y`` and ``size``
     are demeaned within each industry with the weights, the slope is
@@ -1419,10 +1425,16 @@ class CrossSectionalIndustrySizeFill(GenericCrossSectionalOp):
     def generate_body(self) -> str:
         """Return the C++ that fits one bar and fills its missing values."""
         industry = "(size_t)input_2[i]" if self._USE_INDUSTRY else "(size_t)0"
-        industry_ok = "std::isfinite(input_2[i]) && input_2[i] >= 0" if self._USE_INDUSTRY else "true"
+        industry_ok = (
+            "std::isfinite(input_2[i]) && input_2[i] >= 0 && input_2[i] <= MAX_INDUSTRY"
+            " && input_2[i] == std::floor(input_2[i])"
+            if self._USE_INDUSTRY
+            else "true"
+        )
         size_ok = "std::isfinite(input_1[i])" if self._USE_SIZE else "true"
         size = "input_1[i]" if self._USE_SIZE else "(T)0"
         return f"""
+        const T MAX_INDUSTRY = {_MAX_INDUSTRY_CODE};
         auto regressors_ok = [&](size_t i) -> bool {{ return ({industry_ok}) && ({size_ok}); }};
         auto fit = [&](size_t i) -> bool {{
             T w = input_3[i];
