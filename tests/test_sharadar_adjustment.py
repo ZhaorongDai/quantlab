@@ -78,6 +78,25 @@ def test_adjusted_prices_chain_across_a_dividend_and_a_split(tmp_path):
     np.testing.assert_allclose(panel["adjVolume"].values, [500.0] * 4)
 
 
+def test_a_spinoff_is_a_cash_distribution_of_the_spun_off_shares_value(tmp_path):
+    # AAA spins off half a share of a new company worth $30 per AAA share; the
+    # parent's raw price falls from 100 to 70. `spinoffdividend` carries the
+    # value (adjusted for later splits, like a dividend); `spinoff` the share
+    # ratio, which must not count twice.
+    rows = [
+        sep_row("AAA", DAYS[0], 100.0),  # SYNTHETIC
+        sep_row("AAA", DAYS[1], 70.0),  # SYNTHETIC
+    ]
+    actions = [
+        action_row(DAYS[1], "spinoffdividend", "AAA", 30.0),  # SYNTHETIC
+        action_row(DAYS[1], "spinoff", "AAA", 0.5),  # SYNTHETIC
+    ]
+    ds = _build(tmp_path, rows, [tickers_row("SEP", 101, "AAA")], actions)  # SYNTHETIC
+    panel = ds.panel(DAYS[0], DAYS[1]).sel(symbol=101)
+    assert panel["divCash"].values.tolist() == [0.0, 30.0]
+    np.testing.assert_allclose(panel["adjClose"].values, [100.0, 100.0])
+
+
 def test_other_actions_and_other_tickers_do_not_move_prices(tmp_path):
     panel = _dividend_then_split(
         tmp_path,

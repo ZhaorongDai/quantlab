@@ -27,8 +27,8 @@ rewrites a stored row:
 Sharadar's adjusted columns (``close`` and the other split-adjusted values,
 ``closeadj``) and ``lastupdated`` are not stored: the vendor rewrites them over
 the whole history on every ex-date. quantlab builds its own adjusted prices
-instead, from the raw prices and the dividend and split events of the ACTIONS
-table, with the CRSP panel's convention and names (``adjOpen``, ``adjHigh``,
+instead, from the raw prices and the dividend, spinoff-value and split events
+of the ACTIONS table, with the CRSP panel's convention and names (``adjOpen``, ``adjHigh``,
 ``adjLow``, ``adjClose``, ``adjVolume``, ``divCash``, ``splitFactor``; see
 ``SharadarStockDataset._adjust``). The panel therefore carries the same
 twelve daily variables as a CRSP or Tiingo panel, and a factor, label or
@@ -76,6 +76,10 @@ from quantlab.utils.timer import Timer
 #: The panel's variables: the twelve shared daily variables, in
 #: ``TiingoColumns.EOD`` order, as the CRSP panel holds them.
 PRICE_VARIABLES: tuple[str, ...] = tuple(TiingoColumns.EOD.split(","))
+
+#: ACTIONS types that pay cash per share on their date, as ``divCash``:
+#: ordinary dividends and the value of spun-off shares.
+DISTRIBUTIONS: tuple[str, ...] = ("dividend", "spinoffdividend")
 
 #: Number of offending keys an error message lists.
 _ERROR_SAMPLE = 5
@@ -259,13 +263,17 @@ class SharadarStockDataset(MarketDataset):
         return sorted(roster)
 
     def _events(self, mapping: pl.DataFrame, start, end) -> pl.DataFrame:
-        """Return the window's dividends and splits per permaticker and date.
+        """Return the window's cash distributions and splits per permaticker and date.
 
         ACTIONS is keyed by the same current ticker as the price table, so its
         rows are mapped through the price table's TICKERS rows; a row of a
         ticker outside the price table is another security and is dropped.
-        Several events of one kind on one date are summed (dividends) or
-        multiplied (splits).
+        The cash distributions are the ``DISTRIBUTIONS`` actions: dividends
+        and ``spinoffdividend``, the dollar value of the spun-off shares
+        issued per parent share (adjusted for later splits like a dividend).
+        The ``spinoff`` row of the same event gives the share ratio and is
+        not counted again. Several distributions on one date are summed,
+        several splits multiplied.
 
         Returns
         -------
@@ -278,7 +286,7 @@ class SharadarStockDataset(MarketDataset):
             scan_raw_table(self.config.raw_data_dir_path, "actions")
             .filter(
                 pl.col("date").is_between(pl.lit(start), pl.lit(end))
-                & pl.col("action").is_in(["dividend", "split"])
+                & pl.col("action").is_in([*DISTRIBUTIONS, "split"])
             )
             .collect()
             .join(mapping, on="ticker", how="inner")
@@ -287,9 +295,9 @@ class SharadarStockDataset(MarketDataset):
             pl.col("date").cast(pl.Datetime("ns")).alias("timestamp"),
             pl.col("permaticker").alias("symbol"),
         ).agg(
-            pl.col("value").filter(pl.col("action") == "dividend").sum().alias("_dividend"),
+            pl.col("value").filter(pl.col("action").is_in(DISTRIBUTIONS)).sum().alias("_dividend"),
             pl.col("value").filter(pl.col("action") == "split").product().alias("_split"),
-            (pl.col("action") == "dividend").any().alias("_has_dividend"),
+            pl.col("action").is_in(DISTRIBUTIONS).any().alias("_has_dividend"),
             (pl.col("action") == "split").any().alias("_has_split"),
         ).select(
             "timestamp",
@@ -326,7 +334,11 @@ class SharadarStockDataset(MarketDataset):
         frame = frame.join(events, on=["timestamp", "symbol"], how="left").sort(
             "symbol", "timestamp"
         )
+        # Only the panel's own securities: the events of one the universe
+        # filtered out are not dropped from anything.
         dropped = events.join(
+            frame.select("symbol").unique(), on="symbol", how="semi"
+        ).join(
             frame.filter(pl.col("close") > 0).select("timestamp", "symbol"),
             on=["timestamp", "symbol"],
             how="anti",

@@ -136,7 +136,25 @@ def test_a_member_that_left_and_rejoined_has_a_gap(tmp_path):
     assert _is_member(panel, 101, "2024-04-01")
 
 
-def test_a_member_ticker_without_a_permaticker_is_refused(tmp_path):
+def test_a_former_member_without_prices_is_dropped(tmp_path):
+    # The SP500 table goes back to 1957, Sharadar's prices to 1997-12-31: a
+    # member that left before then has no permaticker, and some that left
+    # soon after were never priced by Sharadar either.
+    sp500 = [
+        sp500_row("1957-03-04", "added", "OLD1"),  # SYNTHETIC
+        sp500_row("1990-05-01", "removed", "OLD1"),  # SYNTHETIC
+        sp500_row("1976-07-01", "added", "OLD2"),  # SYNTHETIC
+        sp500_row("1998-01-27", "removed", "OLD2"),  # SYNTHETIC
+        sp500_row("2024-06-28", "current", "AAA"),  # SYNTHETIC
+    ]
+    root = _pull(tmp_path / "downloads", PRICES, TICKERS, sp500)
+    panel = _membership(tmp_path, root, start_date="2024-01-01").from_raw_data().get_xarray_dataset()
+    assert panel.symbol.values.tolist() == [101]
+
+
+def test_a_current_member_without_a_permaticker_is_refused(tmp_path):
+    # A member to the table's end without a permaticker means TICKERS is
+    # older than SP500 (a ticker changed between the pulls).
     sp500 = [sp500_row("2024-06-28", "current", "ZZZ")]  # SYNTHETIC
     root = _pull(tmp_path / "downloads", PRICES, TICKERS, sp500)
     with pytest.raises(ValueError, match="ZZZ"):
