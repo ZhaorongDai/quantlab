@@ -565,8 +565,11 @@ class SharadarClient:
         """Download the pre-signed zip to ``archive`` in parallel byte ranges.
 
         A one-byte ``Range`` probe reads the size; the parts are then
-        fetched by ``download_workers`` threads, each retried like any
-        request, and written at their offsets. Storage that ignores
+        fetched by ``download_workers`` threads and written at their
+        offsets. A part whose stream breaks is asked again for only the
+        bytes it still lacks, and only a retry that delivers no new byte
+        counts against ``max_retries``: the vendor's storage drops long
+        streams, so a part may need many resumed requests. Storage that ignores
         ``Range`` (answers 200) is read as one stream instead. The
         pre-signed URL is the vendor's file storage: it carries its own
         signature and never gets the key.
@@ -591,25 +594,36 @@ class SharadarClient:
 
         def fetch(part: tuple[int, int]) -> None:
             first, last = part
-            for attempt in range(self._max_retries + 1):
+            start = first
+            attempt = 0
+            while True:
                 response = self._get(
-                    spec, url, params={}, headers={"Range": f"bytes={first}-{last}"}, keyed=False
+                    spec, url, params={}, headers={"Range": f"bytes={start}-{last}"}, keyed=False
                 )
                 if response.status != 206:
                     response.close()
                     raise SharadarHttpError(
-                        f"Sharadar table {spec.code!r}: bytes {first}-{last} of the "
+                        f"Sharadar table {spec.code!r}: bytes {start}-{last} of the "
                         f"bulk zip answered HTTP {response.status}, not 206."
                     )
                 try:
                     self._write_body(
-                        spec, response, archive, offset=first, length=last - first + 1
+                        spec, response, archive, offset=start, length=last - start + 1
                     )
                     return
-                except SharadarTransportError as exc:
+                except _BrokenBody as exc:
                     error = exc
-                if attempt < self._max_retries:
-                    self._back_off(spec, attempt, f"bytes {first}-{last}: {error}")
+                if error.written:
+                    # Progress: resume after it, with a fresh retry budget.
+                    start += error.written
+                    attempt = 0
+                elif attempt >= self._max_retries:
+                    break
+                else:
+                    attempt += 1
+                self._back_off(
+                    spec, max(attempt - 1, 0), f"bytes {first}-{last} ({start - first} kept): {error}"
+                )
             raise SharadarHttpError(
                 f"Sharadar table {spec.code!r}: bytes {first}-{last} of the bulk "
                 f"zip still broken after {self._max_retries} retries: {error}"
@@ -631,22 +645,28 @@ class SharadarClient:
 
         Raises
         ------
-        SharadarTransportError
-            If the stream breaks or ends short of ``length``.
+        _BrokenBody
+            If the stream breaks or ends short of ``length``; it carries the
+            bytes written before that.
         """
         written = 0
         try:
             with archive.open("r+b" if length is not None else "wb") as handle:
                 handle.seek(offset)
                 for chunk in response.body:
+                    if length is not None:
+                        chunk = chunk[: length - written]
                     handle.write(chunk)
                     written += len(chunk)
+        except SharadarTransportError as exc:
+            raise _BrokenBody(str(exc), written) from exc
         finally:
             response.close()
         if length is not None and written != length:
-            raise SharadarTransportError(
+            raise _BrokenBody(
                 f"Sharadar table {spec.code!r}: bytes {offset}-{offset + length - 1} "
-                f"of the bulk zip arrived as {written} bytes."
+                f"of the bulk zip arrived as {written} bytes.",
+                written,
             )
 
     def _get(
@@ -734,6 +754,14 @@ class SharadarClient:
         with target.open(newline="", encoding="utf-8") as handle:
             _check_header(spec, next(csv.reader(handle), []))
         return target
+
+
+class _BrokenBody(SharadarTransportError):
+    """A response body that broke or ended short, after ``written`` bytes were kept."""
+
+    def __init__(self, message: str, written: int):
+        super().__init__(message)
+        self.written = written
 
 
 def _range_total(response: Response) -> int | None:

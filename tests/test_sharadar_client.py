@@ -258,6 +258,38 @@ def test_a_part_whose_connection_breaks_is_downloaded_again(api_key, tmp_path):
     assert transport.closed == len(transport.calls)
 
 
+def test_a_broken_part_resumes_from_the_bytes_it_already_has(api_key, tmp_path):
+    routes = bulk_routes({"stocks": SEP_TEXT})
+    signed = next(url for url in routes if url != f"{API}/stocks")
+    zipped = routes[signed][0].body
+    routes[signed] = [Reply(200, zipped), Reply(200, zipped, breaks=True), Reply(200, zipped)]
+    transport = FakeTransport(routes)
+    frame = pl.read_parquet(
+        _client(transport, download_workers=1, part_bytes=1 << 20).bulk_table("sep", tmp_path)
+    )
+
+    assert frame["closeunadj"].to_list() == [10.0, 11.0]
+    ranges = [c.headers["Range"] for c in _signed_calls(transport)]
+    last = len(zipped) - 1
+    # The probe, the part that broke after its first half, then only the rest.
+    assert ranges == ["bytes=0-0", f"bytes=0-{last}", f"bytes={len(zipped) // 2}-{last}"]
+
+
+def test_breaks_that_keep_making_progress_do_not_use_up_the_retries(api_key, tmp_path):
+    routes = bulk_routes({"stocks": SEP_TEXT})
+    signed = next(url for url in routes if url != f"{API}/stocks")
+    zipped = routes[signed][0].body
+    # Every request drops half way, but each one delivers new bytes.
+    routes[signed] = [Reply(200, zipped)] + [Reply(200, zipped, breaks=True)] * 4 + [Reply(200, zipped)]
+    transport = FakeTransport(routes)
+    frame = pl.read_parquet(
+        _client(transport, max_retries=1, download_workers=1, part_bytes=1 << 20).bulk_table(
+            "sep", tmp_path
+        )
+    )
+    assert frame["closeunadj"].to_list() == [10.0, 11.0]
+
+
 def test_a_connection_that_keeps_breaking_raises_after_the_retries(api_key, tmp_path):
     from quantlab.acquisition.sharadar.client import SharadarHttpError
 
