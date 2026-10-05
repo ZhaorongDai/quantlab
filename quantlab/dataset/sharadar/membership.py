@@ -10,9 +10,10 @@ its present ticker and maps to one permaticker through TICKERS.
 A stock is a member from its ``added`` date and is no longer one on its
 ``removed`` date, so a spell ends the day before the removal. The changes go
 back to the index's launch in 1957, but Sharadar's prices (and so its
-permatickers) start on ``PIT_COVERAGE_START``, 1997-12-31: a member that left
-before then has no permaticker and is dropped, and the panel answers
-membership from that date. A former member Sharadar never priced is dropped
+permatickers) start on ``PIT_COVERAGE_START``, 1997-12-31: a spell that ended
+before then is dropped, whether or not the company kept trading, and the
+panel answers membership from that date. So a roster (``roster_universe``)
+is the same whether its window starts before or on that date. A former member Sharadar never priced is dropped
 with a warning naming it; a member to the table's end without a permaticker
 is refused, because it means TICKERS is older than SP500. A member whose first recorded change is a removal
 is taken as a member since ``PIT_COVERAGE_START``; a member with no change at
@@ -98,28 +99,32 @@ def sp500_intervals(vendor_root: str | Path) -> pl.DataFrame:
         schema={"ticker": pl.String, "start_date": pl.Date, "end_date": pl.Date},
         orient="row",
     )
+    # A spell that ended before the prices begin is outside every bar a
+    # store can hold, whether or not the company kept trading (and so has a
+    # permaticker): without this, a roster built from an open start would
+    # keep it and one built from the first priced day would not.
+    early = frame.filter(pl.col("end_date") < coverage)
+    frame = frame.filter(pl.col("end_date") >= coverage)
     mapping = permaticker_mapping(vendor_root, "sep")
-    # A former member without a permaticker has no Sharadar prices: every one
-    # that left before the prices begin, and a few that left soon after. Only
-    # a member to the table's end is left for `map_permatickers` to refuse,
-    # since a missing permaticker there means TICKERS is stale.
+    # A former member without a permaticker has no Sharadar prices (a few
+    # that left soon after they begin). Only a member to the table's end is
+    # left for `map_permatickers` to refuse, since a missing permaticker
+    # there means TICKERS is stale.
     unmapped = frame.join(mapping.select("ticker"), on="ticker", how="anti")
     last_end = unmapped.group_by("ticker").agg(pl.col("end_date").max())
     gone = last_end.filter(pl.col("end_date") < horizon)
-    if gone.height:
-        early = gone.filter(pl.col("end_date") < coverage).height
-        late = gone.filter(pl.col("end_date") >= coverage).sort("ticker")
+    if early.height:
         logger.info(
-            f"SharadarSP500ConstituentDataset: {early} former member(s) left "
-            f"the index before {PIT_COVERAGE_START}, when Sharadar's prices "
-            f"begin, and are dropped."
+            f"SharadarSP500ConstituentDataset: {early.height} membership "
+            f"spell(s) ended before {PIT_COVERAGE_START}, when Sharadar's "
+            f"prices begin, and are dropped."
         )
-        if late.height:
-            logger.warning(
-                f"SharadarSP500ConstituentDataset: {late.height} former "
-                f"member(s) have no Sharadar prices and are dropped: "
-                f"{late['ticker'].to_list()[:20]}."
-            )
+    if gone.height:
+        logger.warning(
+            f"SharadarSP500ConstituentDataset: {gone.height} former "
+            f"member(s) have no Sharadar prices and are dropped: "
+            f"{gone.sort('ticker')['ticker'].to_list()[:20]}."
+        )
         frame = frame.join(gone.select("ticker"), on="ticker", how="anti")
     frame = map_permatickers(
         frame,

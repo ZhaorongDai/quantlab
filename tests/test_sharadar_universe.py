@@ -212,6 +212,23 @@ def test_an_sp500_roster_keeps_every_member_whatever_its_category(tmp_path):
     assert panel.symbol.values.tolist() == [101, 404]
 
 
+def test_a_member_that_left_before_the_prices_begin_is_in_no_roster(tmp_path):
+    # BBB left the index in 1990, years before Sharadar's prices begin, but
+    # kept trading, so it has a permaticker. It was never a member on any
+    # bar a store can hold: the roster must not depend on whether the window
+    # starts before or on the first priced day (download.py vs update.py).
+    sp500 = [
+        sp500_row("1985-03-01", "added", "BBB"),  # SYNTHETIC
+        sp500_row("1990-05-01", "removed", "BBB"),  # SYNTHETIC
+        sp500_row("2024-06-28", "current", "AAA"),  # SYNTHETIC
+    ]
+    root = _pull(tmp_path / "downloads", MARKET_PRICES, MARKET_TICKERS, sp500)
+    open_start = _stock(tmp_path / "open", root, roster_universe="sp500")
+    priced_start = _stock(tmp_path / "priced", root, start_date="1997-12-31", roster_universe="sp500")
+
+    assert open_start.symbol.values.tolist() == priced_start.symbol.values.tolist() == [101]
+
+
 def test_an_unknown_roster_universe_is_refused(tmp_path):
     from quantlab.dataset.config import SharadarDatasetConfig
     from quantlab.dataset.sharadar.stock import SharadarStockDataset
