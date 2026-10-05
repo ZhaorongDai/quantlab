@@ -15,7 +15,6 @@ bounded by the size of one window.
 """
 
 from datetime import datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from typing import Optional
 
@@ -23,14 +22,11 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-from joblib import Parallel, delayed
-from tqdm import tqdm
 
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.base import MarketDataset
 from quantlab.dataset._support.cleaning import dedup_raw_frame
-from quantlab.enums.data import RAW_HIVE_KEYS, BinanceCSVHeaders
-from quantlab.dataset._support.file import file_date_filter
+from quantlab.enums.data import RAW_HIVE_KEYS
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 

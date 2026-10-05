@@ -37,16 +37,13 @@ import dataclasses
 import os
 
 from quantlab.acquisition.base import (
-    Acquisition,
     AcquisitionResult,
-    DataSourceRegistry,
     SourceDescriptor,
 )
 from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.base import ConversionResult
 from quantlab.utils.progress import CancelToken, ProgressReporter
-from quantlab.enums.data import Market
 
 
 def is_configured(descriptor: SourceDescriptor) -> bool:

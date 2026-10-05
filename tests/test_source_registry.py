@@ -776,7 +776,8 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     non-zero here.
     """
     child = _run_child(
-        "from quantlab.acquisition.registry import DataSourceRegistry\n"
+        "import quantlab.acquisition.registry\n"
+        "from quantlab.acquisition.base import DataSourceRegistry\n"
         "print(sorted(d.vendor for d in DataSourceRegistry.all()))\n"
     )
 

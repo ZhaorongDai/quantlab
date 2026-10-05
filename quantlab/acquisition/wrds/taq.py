@@ -46,13 +46,11 @@ from pathlib import Path
 
 import polars as pl
 import psycopg2
-from loguru import logger
 from psycopg2 import sql
 
 from quantlab.acquisition.base import Acquisition
 from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.config import get_data_root
-from quantlab.enums.data import TRADEABLE_TICKER_PATTERN
 
 #: The environment variable the WRDS username is read from.
 #:

@@ -4,7 +4,7 @@ A label (a forward-shifted factor, ADR 0005) is constructed from a ``ForwardConf
 its ``factor`` is declared with ``component()`` and written as its own config.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from quantlab.core.component import component

@@ -49,19 +49,24 @@
 ## 包结构
 
 ```text
-quantlab/
-  base/         每层最根的基类：数据集、因子、模型、回测器、采集
-  acquisition/  Tiingo、Alpaca、WRDS 下载器
-  dataset/      具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
-  factor/       因子框架（KunQuant、Polars 两种后端）；predefined/ 下是自带因子：Alpha101、Alpha158、动量等
-  label/        标签框架（Forward）；predefined/ 下是自带的未来收益标签
-  model/        模型框架（TorchModel、LibraryModel、BaseEnsemble）；predefined/ 下是自带模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成、异构模型集成
-  backtest/     vectorbt 引擎、TopN 选股；predefined/ 下是美股回测器
-  backend.py    Zarr 与 Parquet 存储后端
-  registry.py   数据源登记表，以及 run() 与 convert() 入口
+quantlab/       各层按一条链单向依赖（ADR 0022）：每层的根类在 <层>/base.py，配置在 <层>/config.py
+  utils/        通用工具：原子写入、JSON 转换、计时、进度、日期区间、重采样规则、标的轴、截面 z-score、脚本用的命令行辅助
+  core/         组件声明与按配置重建（component.py）、冻结配置基类（config.py）
+  backend/      存储后端：DataBackend（base.py）、Zarr（zarr.py）、Parquet（parquet.py）
+  tracking/     实验追踪：Tracker 与 W&B、MLflow 实现
+  execution/    成交规则（rules.py）：一根 bar 的订单如何成交，与 vectorbt 一致
+  runs/         运行目录：训练运行、回测运行、运行记录（数据指纹与代码记录）、预测面板、回测指标与报告
   universe.py   时点股票池
-  config/       配置工厂与随包发布的标的元数据
-  utils/        命令行辅助、指标、序列化、进度与下载台账、报告生成
+  dataset/      数据集根类与配置；具体数据集：现货 K 线、美股、CRSP、NBBO、指数成分，以及多数据集合并视图
+  config/       数据根目录与配置工厂
+  acquisition/  采集根类、数据源登记与 run()/convert() 入口（registry.py）；Tiingo、Alpaca、WRDS 下载器
+  analysis/     因子分析报告
+  factor/       因子根类与配置、因子框架（KunQuant、Polars 两种后端）、KunQuant 自定义算子；predefined/ 下是自带因子：Alpha101、Alpha158、动量等
+  label/        标签配置与标签框架（Forward）；predefined/ 下是自带的未来收益与波动率标签
+  model/        模型根类与配置、切分与滚动折、评估、模型框架（TorchModel、LibraryModel、BaseEnsemble）；predefined/ 下是自带模型：XGBoost、XGB-TD、RealMLP、GATs、MASTER、种子集成、异构模型集成
+  portfolio/    组合构建根类与配置、决策输入；predefined/ 下是 TopN、均值-方差、Ledoit-Wolf
+  backtest/     回测器根类与配置、vectorbt 引擎；predefined/ 下是美股回测器与权重回测器
+  api/          面向 DataFrame 的门面
 scripts/wrds/   WRDS 下载脚本：index.py、market.py、etf.py、nbbo.py
 scripts/fama_french.py  下载 Fama-French 三因子 CSV
 tests/          测试套件

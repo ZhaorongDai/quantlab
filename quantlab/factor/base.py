@@ -34,10 +34,12 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from quantlab.analysis.factor_report import FactorAnalyzer
 from quantlab.core.component import Component
 from quantlab.factor.config import BaseFactorConfig
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.base import InsufficientHistoryError
+from quantlab.dataset.merged import MergedDataset
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.date_range import (
     as_label,
@@ -62,9 +64,6 @@ if TYPE_CHECKING:
 def _as_one_dataset(dataset):
     """Return ``dataset``, or a ``MergedDataset`` of it when it is a list or tuple."""
     if isinstance(dataset, (list, tuple)):
-        # Imported here so the base layer does not import the dataset layer.
-        from quantlab.dataset.merged import MergedDataset
-
         return MergedDataset(dataset)
     return dataset
 
@@ -844,10 +843,6 @@ class Factor(Component, ABC):
         >>> sorted(os.listdir("data/analysis/momentum"))
         ['config.json', 'ic.csv', 'momentum_5__ret_1.png', 'monthly_ic.csv', 'quantile_returns.csv', 'summary.csv', 'summary.json', 'turnover.csv']
         """
-        # Imported here so the base layer does not depend on the analysis
-        # layer at import time; the report is an optional terminal step.
-        from quantlab.analysis.factor_report import FactorAnalyzer
-
         if data_strategy not in ("cal", "read"):
             raise ValueError(
                 f"{self.class_name}.analyze(): data_strategy must be \"cal\" "

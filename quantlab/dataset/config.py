@@ -19,7 +19,7 @@ Fields are documented with ``#:`` comments so the meaning of each one sits besid
 its definition.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from quantlab.core.component import component
 from quantlab.core.config import FrozenConfig

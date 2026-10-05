@@ -20,8 +20,12 @@ Zarr store, building a `DatasetConfig`), which are the same as in
 A handful of rules hold across all layers, and following them is what makes
 an extension work with the rest of the code.
 
-The root base class of each layer lives in `quantlab/base/`, and nothing else
-does. The classes an extension subclasses live at the top level of their layer:
+The layers form one chain, and a layer imports only the layers before it
+(ADR 0022; `tests/test_layer_layout.py` fails on an import against the order,
+one inside a function included). Each layer keeps its root class in
+`<layer>/base.py` and its configs in `<layer>/config.py`, for example
+`quantlab/factor/base.py` and `quantlab/factor/config.py`. The classes an
+extension subclasses live at the top level of their layer:
 `quantlab/factor/kunquant.py` and `polars.py`, `quantlab/label/forward.py`,
 `quantlab/model/torch_model.py`, `library_model.py` and `ensemble.py`,
 `quantlab/backtest/engine_vectorbt.py`. The implementations quantlab ships live
@@ -43,8 +47,8 @@ it, so you only need to override it when you introduce a new config class.
 
 Data moves between layers as a *panel*, an `xarray.Dataset` indexed by
 `timestamp` and `symbol`. Keep market-specific names (vendor column names,
-market literals) out of `quantlab/base/`; `tests/test_extensibility_contract.py`
-fails if one appears there. Credentials are read from environment variables,
+market literals) out of the root classes (`<layer>/base.py`);
+`tests/test_extensibility_contract.py` fails if one appears there. Credentials are read from environment variables,
 never from configs or source files.
 
 Package `__init__.py` files are empty on purpose (a few guarantees depend on

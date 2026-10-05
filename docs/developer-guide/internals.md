@@ -288,11 +288,9 @@ used (`expected_training_code`).
 A model and an ensemble are two different kinds of trained unit: an ensemble
 composes models and inherits from none of them (ADR 0013, 0017). They still
 score and cross-validate the same way, because each of the two procedures is
-one module in `quantlab/utils/`, used by both. The modules sit in `utils`
-rather than in the model layer because the base layer imports them and may
-not import the model layer (ADR 0010); `tests/test_layer_layout.py` locks
-that they import nothing above `quantlab.utils` except the trained-run
-module.
+one module of the model layer, used by both: `quantlab/model/evaluation.py`
+and `quantlab/model/walk_forward_training.py`. Neither knows ensembles: an
+ensemble adds its member agreement to `evaluate` through `extra_metrics`.
 
 ### Evaluation
 

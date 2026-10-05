@@ -318,7 +318,8 @@ def test_importing_wrds_crsp_first_registers_both_capabilities():
             "-c",
             "import json\n"
             "import quantlab.acquisition.wrds.crsp\n"
-            "from quantlab.acquisition.registry import DataSourceRegistry\n"
+            "import quantlab.acquisition.registry\n"
+            "from quantlab.acquisition.base import DataSourceRegistry\n"
             "d = DataSourceRegistry.get('wrds')\n"
             "print(json.dumps(sorted(\n"
             "    [c.market, c.frequency, c.data_type] for c in d.capabilities\n"

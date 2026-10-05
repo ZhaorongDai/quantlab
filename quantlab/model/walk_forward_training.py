@@ -18,7 +18,7 @@ procedure, so the two cannot drift apart:
    provenance.
 
 The module imports no quantlab layer above ``quantlab.utils`` except the
-trained-run module, so the base layer may import it.
+trained-run module.
 
 Examples
 --------

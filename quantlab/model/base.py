@@ -30,7 +30,6 @@ import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime
 from itertools import chain
 from pathlib import Path
 from typing import Self

@@ -4,11 +4,8 @@ What is locked here, and what turns it red:
 
 - every ``quantlab`` import, a function-level one included, follows the layer order
   ``LAYER_ORDER``: a module imports only modules of its own layer or of a layer before it.
-  Each module's layer is ``MODULE_LAYERS`` (longest dotted prefix wins); modules still on
-  their way to their layer (``quantlab/base``, the domain modules in ``quantlab/utils``) are
-  mapped to the layer they move to. While the move (#146) is under way, the violations
-  that remain are listed in ``PENDING_VIOLATIONS``: the test fails on a violation not in
-  the list and on a listed one that no longer exists, so the list only shrinks;
+  Each module's layer is ``MODULE_LAYERS`` (longest dotted prefix wins), and every module
+  has one. There is no exception list;
 - importing any layer's root class or configs loads no torch (the training target of both model
   variants lives in `quantlab/model/training_target.py`, not on `BaseModel`);
 - no layer's framework module (a top-level file of `quantlab/factor`, `quantlab/label`,
@@ -35,15 +32,12 @@ from tests.test_backtest_contracts import (
     _resolved_imports,
 )
 
-BASE = REPO_ROOT / "quantlab/base"
 LAYERS = ("factor", "label", "model", "backtest", "portfolio")
 
 
 def test_importing_the_root_classes_and_configs_loads_no_torch():
-    # Every layer's root class and configs (``<layer>/base.py``, ``<layer>/config.py``)
-    # and what is left in ``quantlab/base`` while #146 is under way.
+    # Every layer's root class and configs (``<layer>/base.py``, ``<layer>/config.py``).
     paths = [
-        *BASE.glob("*.py"),
         *(REPO_ROOT / "quantlab").glob("*/base.py"),
         *(REPO_ROOT / "quantlab").glob("*/config.py"),
     ]
@@ -142,9 +136,7 @@ LAYER_ORDER = (
     "api",
 )
 
-#: Dotted prefix -> layer; the longest matching prefix wins. The entries under
-#: ``quantlab.base`` and the domain modules under ``quantlab.utils`` name the layer the
-#: module moves to under #146, and are deleted as each module moves.
+#: Dotted prefix -> layer; the longest matching prefix wins.
 MODULE_LAYERS = {
     "quantlab.enums": "utils",
     "quantlab.utils": "utils",
@@ -165,10 +157,6 @@ MODULE_LAYERS = {
     "quantlab.backtest": "backtest",
     "quantlab.api": "api",
 }
-
-#: Imports that still go against the order while #146 is under way: (importing file,
-#: imported module). Only shrinks; deleted by the last ticket of #146.
-PENDING_VIOLATIONS: set[tuple[str, str]] = set()
 
 
 def _layer_of(name: str) -> str | None:
@@ -218,8 +206,8 @@ def test_every_module_has_a_layer():
         for path in _python_files(REPO_ROOT / "quantlab")
         if _layer_of(_module_name(path)) is None
     )
-    # Only the two namespace packages themselves (empty ``__init__`` files) have no layer.
-    assert unmapped == ["quantlab", "quantlab.base"]
+    # Only the top-level package itself (an empty ``__init__``) has no layer.
+    assert unmapped == ["quantlab"]
 
 
 def test_every_mapped_layer_is_in_the_order():
@@ -227,9 +215,7 @@ def test_every_mapped_layer_is_in_the_order():
 
 
 def test_imports_follow_the_layer_order():
-    found = _order_violations()
-    assert sorted(found - PENDING_VIOLATIONS) == [], "new imports against the layer order"
-    assert sorted(PENDING_VIOLATIONS - found) == [], "resolved: delete these pending entries"
+    assert sorted(_order_violations()) == []
 
 
 def test_an_upward_import_is_caught():

@@ -10,14 +10,11 @@ read it.
 
 import dataclasses
 import json
-from collections.abc import Sequence
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from typing import ClassVar, Self
 
-import numpy as np
-import pandas as pd
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend

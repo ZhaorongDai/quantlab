@@ -7,7 +7,7 @@ new one (dates, factor names, the ``name`` field the factor is rebuilt from; see
 factor's ``series``) is declared with ``component()`` and written as its own config.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from quantlab.core.component import component

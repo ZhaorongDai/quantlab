@@ -253,53 +253,59 @@ equity, settlements and metrics, its own data fingerprint and its own trained un
 
 ## Package layout
 
-The code follows one rule in three places. `quantlab/base/` holds the root base class of each
-layer and nothing else. Each layer's top level holds its extension framework: the classes you
-subclass to write your own factor, label, model or backtester. Each layer's `predefined/`
-package holds the implementations quantlab ships. To add a new model you subclass
-`quantlab.model.torch_model.TorchModel` or `quantlab.model.library_model.LibraryModel`; to
-add a KunQuant factor you subclass `quantlab.factor.kunquant.FactorKunQuant`; to add a data
-source you subclass `quantlab.acquisition.base.Acquisition` and register it. The
+The code follows one rule in four places. The layers form one chain, and a layer imports
+only the layers before it (ADR 0022): `utils` and `enums`, then `core`, `backend`, `tracking`,
+`execution`, `runs`, `universe`, `dataset`, `config`, `acquisition`, `analysis`, `factor`,
+`label`, `model`, `portfolio`, `backtest` and `api`. Each layer keeps its root class in
+`<layer>/base.py` and its configs in `<layer>/config.py`. Each layer's top level holds its
+extension framework: the classes you subclass to write your own factor, label, model or
+backtester. Each layer's `predefined/` package holds the implementations quantlab ships. To add
+a new model you subclass `quantlab.model.torch_model.TorchModel` or
+`quantlab.model.library_model.LibraryModel`; to add a KunQuant factor you subclass
+`quantlab.factor.kunquant.FactorKunQuant`; to add a data source you subclass
+`quantlab.acquisition.base.Acquisition` and register it. The
 [extending guide](../developer-guide/extending.md) walks through each case.
 
 ```text
 quantlab/
-    base/            the root base class of each layer
-        config.py        every config dataclass
-        acquisition.py   Acquisition: resumable vendor downloads
-        data.py          BaseDataset, MarketDataset: raw tier to Zarr panel
-        constituent.py   IndexConstituentDataset: index-membership panels
-        factor.py        Factor
-        model.py         BaseModel: the training lifecycle shared by every model
-        backtest.py      BaseBacktester, the Predictor protocol and the result types
-        backend.py       DataBackend: the storage interface
-        rebuild.py       BaseStoreRebuilder
-    acquisition/     one module per vendor: tiingo.py, alpaca.py, wrds/
-    dataset/         one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
-    factor/          kunquant.py (FactorKunQuant), polars.py (FactorPolars)
+    utils/           generic helpers: atomic writes, JSON conversion, timers, progress,
+                     date ranges, resampling rules, symbol axes, cross-sectional z-score,
+                     argparse helpers for the scripts
+    enums/           shared literal types (markets, frequencies, vendors)
+    core/            component.py (the component rule, rebuild), config.py (FrozenConfig)
+    backend/         base.py (DataBackend), zarr.py (XrBackend), parquet.py (PlBackend)
+    tracking/        base.py (Tracker), wandb.py, mlflow.py
+    execution/       rules.py: how the market executes a bar's orders (vectorbt's rules)
+    runs/            run directories: trained_run.py, backtest_run.py, directory.py; the run
+                     record (record.py: data fingerprints, code record); prediction_panel.py;
+                     backtest_stats.py and backtest_report.py (metrics.json, report.html)
+    universe.py      point-in-time symbol universe
+    dataset/         base.py (BaseDataset, MarketDataset, IndexConstituentDataset), config.py,
+                     then one entry per dataset: stock.py, spot.py, constituent.py, crsp/, nbbo/
+    config/          data-root resolution and config factories for the bundled datasets
+    acquisition/     base.py (Acquisition, source registration), config.py, registry.py,
+                     then one entry per vendor: tiingo.py, alpaca.py, wrds/
+    analysis/        factor reports
+    factor/          base.py (Factor), config.py, kunquant.py (FactorKunQuant),
+                     polars.py (FactorPolars), kunquant_ops.py (custom KunQuant operators)
         predefined/      Alpha101, Alpha158, literature alphas, momentum, residual momentum,
                          market features
-    label/           forward.py (Forward: a factor shifted into a label)
+    label/           config.py, forward.py (Forward: a factor shifted into a label)
         predefined/      fret.py: the forward-return and volatility labels
-    model/           torch_model.py (TorchModel), library_model.py (LibraryModel, Rows),
-                     ensemble.py (BaseEnsemble), training_target.py, torch_data.py,
-                     torch_training.py (target transforms, losses, stopping rules)
+    model/           base.py (BaseModel), config.py, split.py (purged splits, walk-forward
+                     folds), evaluation.py, walk_forward_training.py, torch_model.py,
+                     library_model.py, ensemble.py (BaseEnsemble), training_target.py,
+                     torch_data.py, torch_training.py
         predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
                          model_ensemble.py
-    backtest/        engine_vectorbt.py (VectorBtBacktester)
-        predefined/      us_equity.py: the US-equity backtester
-    portfolio/       portfolio construction: the rule from one bar's scores to weights;
+    portfolio/       base.py (PortfolioConstructor, RiskModel), config.py,
                      decision_inputs.py (DecisionInputs: the decision inputs and the
                      rebalance schedule)
-        predefined/      top_n.py: TopNConstructor
-    my_ops/          custom KunQuant operators
-    utils/           config loaders (module.py), metrics, progress, chunking, download ledgers,
-                     report, CLI helpers
-    config/          data-root resolution and config factories for the bundled datasets
-    enums/           shared literal types (markets, frequencies, vendors)
-    backend.py       XrBackend (Zarr) and PlBackend (parquet)
-    registry.py      DataSourceRegistry: which vendor serves which data
-    universe.py      point-in-time symbol universe
+        predefined/      top_n.py, mean_variance.py, ledoit_wolf.py
+    backtest/        base.py (BaseBacktester, the Predictor protocol), config.py,
+                     engine_vectorbt.py (VectorBtBacktester)
+        predefined/      us_equity.py, weights.py
+    api/             the frame facade above every layer
 scripts/             command-line entry points, one folder per vendor
     wrds/            index.py, market.py, etf.py, nbbo.py: download and convert WRDS data
 tests/               the pytest suite, fully offline

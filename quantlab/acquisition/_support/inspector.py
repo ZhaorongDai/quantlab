@@ -21,7 +21,6 @@ ledger or opens its own store and closes it before returning, so one query
 cannot restrict what a later query on the same inspector sees.
 """
 
-import json
 import os
 from pathlib import Path
 from typing import Sequence

@@ -11,7 +11,7 @@ without touching the layers above it. See ``docs/backend.md``.
 """
 
 from abc import ABC, abstractmethod
-from typing import Literal, Optional, Self
+from typing import Optional, Self
 
 import pandas as pd
 import polars as pl

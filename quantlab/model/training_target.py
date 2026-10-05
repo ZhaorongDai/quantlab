@@ -3,7 +3,8 @@
 ``TrainingTargetMixin`` gives ``TorchModel`` and ``LibraryModel`` the one ``_transform_target``
 hook and the code around it: the collected panel as a ``TrainingPanel`` of torch tensors, and
 each bar's raw labels turned into the training target and its mask. It lives in the model
-layer, not on ``BaseModel``, so the base layer never imports torch.
+layer, not on ``BaseModel``, so importing the root class (``quantlab.model.base``)
+never imports torch.
 """
 
 import torch

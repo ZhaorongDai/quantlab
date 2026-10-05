@@ -34,7 +34,6 @@ module imports no solver.
 """
 
 import dataclasses
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass

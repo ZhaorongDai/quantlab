@@ -12,13 +12,12 @@ Fields are documented with ``#:`` comments so the meaning of each one sits besid
 its definition.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from quantlab.core.component import component, config_to_dict
 from quantlab.tracking.base import NullTracker, Tracker
 from quantlab.execution.rules import ExecutionSettings
-from quantlab.enums.data import Market
 
 if TYPE_CHECKING:
     from quantlab.dataset.base import MarketDataset

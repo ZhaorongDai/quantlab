@@ -354,7 +354,8 @@ def test_enumeration_survives_any_import_order(first_module) -> None:
     """
     child = _run_child(
         f"import {first_module}\n"
-        "from quantlab.acquisition.registry import DataSourceRegistry\n"
+        "import quantlab.acquisition.registry\n"
+        "from quantlab.acquisition.base import DataSourceRegistry\n"
         "print(sorted(d.vendor for d in DataSourceRegistry.all()))\n"
     )
 
@@ -374,7 +375,8 @@ def test_the_moved_descriptor_is_registered_exactly_once() -> None:
     """
     child = _run_child(
         "import json\n"
-        "from quantlab.acquisition.registry import DataSourceRegistry\n"
+        "import quantlab.acquisition.registry\n"
+        "from quantlab.acquisition.base import DataSourceRegistry\n"
         "vendors = [d.vendor for d in DataSourceRegistry.SOURCES]\n"
         "print(json.dumps({'vendors': vendors}))\n"
     )

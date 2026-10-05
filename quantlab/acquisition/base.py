@@ -126,8 +126,9 @@ class AcquisitionResult:
     already had credential values removed; do not add a second path that
     carries raw vendor exception text.
 
-    The class lives here rather than beside the vendor registry because the
-    base layer must not import a module that constructs vendor clients.
+    The class lives here rather than beside the vendor registry because this
+    root module must not import a module that constructs vendor clients (the
+    registry imports every vendor).
 
     Attributes
     ----------
