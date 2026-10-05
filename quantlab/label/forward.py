@@ -144,6 +144,16 @@ class Forward(Component):
         """
         return self.config.span
 
+    def delay_bars(self) -> int:
+        """Return how many bars pass before the first bar the label counts: ``delay``.
+
+        Examples
+        --------
+        >>> label.delay_bars()
+        1
+        """
+        return self.config.delay
+
     def get_factor_names(self) -> tuple[str, ...]:
         """Return the names of the label's variables, which are the wrapped factor's.
 

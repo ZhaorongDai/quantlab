@@ -18,9 +18,9 @@
 
 模型分别是 `XGBoostRegressor`（`xgb.train`，原生早停）、`XGBTDRegressor`（pytabkit 调优默认参数的 XGBoost）、`RealMLPRegressor`（pytabkit 调优默认参数的 MLP），以及两个在每个 bar 的股票截面上学习的 torch 模型：`GATsRegressor`（Qlib 的 GATs：先用 LSTM 读每只股票最近 20 根 bar，再在当根 bar 的股票之间做注意力）和 `MASTERRegressor`（MASTER：SPY、QQQ、IWM 的市场特征对股票特征做门控，再在每只股票最近 8 根 bar 之内和当根 bar 的股票之间做注意力）；[docs/zh-CN/model.md](../../docs/zh-CN/model.md) 的“在截面上训练 GATs”和“用市场特征训练 MASTER”两节分别介绍了它们。每个模型 pipeline 都跑同样的五步：
 
-1. **数据读取**：读取已转换的 CRSP 数据仓库及其成分股面板，写出两个派生仓库（`prices`、`members`）。
+1. **数据读取**：读取已转换的 CRSP 数据仓库及其成分股面板，写出派生仓库 `prices`。
 2. **因子计算**：在复权价格上计算 `Alpha101Stock` 和 `Alpha158Stock`，用 `build(START, END)` 写成 Zarr 仓库。torch pipeline 从 `START` 之前 `WINDOW_BARS - 1` 根 bar 开始构建，让第一根训练 bar 就有完整的窗口；MASTER pipeline 还会加上 `MarketFeatures`：SPY、QQQ、IWM 各 21 个特征，当天有数据的每只股票取值相同。
-3. **标签**：`Return`，即 t+1 开盘到 t+1+`HORIZON` 开盘的收益，只在成分股行上计算。
+3. **标签**：`Return`，即 t+1 开盘到 t+1+`HORIZON` 开盘的收益，在 `prices.zarr` 上计算，并用 `MembershipMaskedLabel` 包装：只保留 t 时刻是指数成分股的样本。
 4. **模型训练**：在训练窗口上训练一次。
 5. **回测**：`USEquityCrossectionSelectStockVectorBt`，在样本外窗口上做截面 TopN 组合，并与买入持有的 SPY（S&P 500 和全市场）或 QQQ（Nasdaq-100）对比，记录到 Weights & Biases。
 
@@ -99,7 +99,7 @@ uv run python examples/wrds_us_equity/nasdaq100_factor_analysis.py
 所有内容都写在 `<数据根目录>/data/pipeline/wrds_<universe>/` 下：
 
 ```text
-prices.zarr, members.zarr     派生价格仓库（第 1 步；仅指数脚本）
+prices.zarr                   派生价格仓库（第 1 步；仅指数脚本）
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 factor/market_features.zarr   SPY/QQQ/IWM 市场特征（MASTER pipeline）
 models/<model>/...            训练单元：checkpoint、config.json、run.json
@@ -132,7 +132,7 @@ factor/residual_momentum.zarr 残差动量得分及其排名（market_residual_m
 ## 股票池的处理
 
 - **幸存者偏差**：CRSP 成分股名单包含窗口内任何时候是成分股的所有 PERMNO（含已退市的），CRSP 也带有退市收益。
-- **point-in-time 成分只遮蔽预测，从不遮蔽价格**：`members.zarr` 是把非成分股格子置为 NaN 的价格面板，只有标签读取它，所以训练样本只包含成分股行。因子读取 `prices.zarr`，滚动窗口能看到完整历史。回测用未遮蔽的指数仓库定价（`index_dataset()`，即 `wrds_crsp_<index>_1d.zarr` 上的 `CrspStockDataset`，含原始 open/close、`adjClose`、`splitFactor`、`divCash` 与退市记录），并把模型包装成 `MembershipMaskedPredictor(build_model(), index_membership())`：某日 PERMNO 不是成分股时，其预测置为 NaN。因此只能买入成分股；被剔除出指数的股票保留价格、仍可交易，持仓如何处理由规则决定（TopN 在下一个调仓 bar 卖出，均值-方差优化器按预期收益 0 持有）。运行目录中的 `predictions.zarr` 保存的是遮蔽后的预测。成分仓库必须覆盖全部回测日期：未覆盖的日期会被拒绝，而不是当作“非成分股”。
+- **point-in-time 成分只遮蔽标签和预测，从不遮蔽价格**：因子和标签都读取 `prices.zarr`，滚动窗口和收益都能看到完整历史。标签被包装成 `MembershipMaskedLabel(label, index_membership())`：t 日 PERMNO 不是成分股时标签置为 NaN，且不读取 t 之后的成分信息，所以在持有期内被剔除出指数的股票仍保留其 t 时刻的收益。若改为遮蔽价格，所有在标签终点前离开指数的样本都会丢失；这些股票通常因下跌而被剔除，训练目标就会带有幸存者偏差。回测用未遮蔽的指数仓库定价（`index_dataset()`，即 `wrds_crsp_<index>_1d.zarr` 上的 `CrspStockDataset`，含原始 open/close、`adjClose`、`splitFactor`、`divCash` 与退市记录），并把模型包装成 `MembershipMaskedPredictor(build_model(), index_membership())`：某日 PERMNO 不是成分股时，其预测置为 NaN。因此只能买入成分股；被剔除出指数的股票保留价格、仍可交易，持仓如何处理由规则决定（TopN 在下一个调仓 bar 卖出，均值-方差优化器按预期收益 0 持有）。运行目录中的 `predictions.zarr` 保存的是遮蔽后的预测。成分仓库必须覆盖全部回测日期：未覆盖的日期会被拒绝，而不是当作“非成分股”。
 
 ## 注意事项
 

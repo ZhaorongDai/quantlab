@@ -318,6 +318,32 @@ hyperparameters = {
 
 The training target mattered most: on the Nasdaq-100 every `cs_rank` candidate beat every `cs_zscore` one, and the tree parameters moved the result by less than the noise. On the Nasdaq-100 the signal held on the holdout, so `examples/wrds_us_equity/nasdaq100_xgb.py` uses this configuration. On the S&P 500 the same configuration has no signal in the CV or on the holdout, so the S&P 500 and whole-market examples keep the defaults. Neither result makes the long-only mean-variance portfolio beat its index: with a beta of 0.4 to 0.6 it trailed QQQ and SPY by 10 to 18 points a year over 2023-2024.
 
+### Mask a label by index membership
+
+On an index universe, a sample exists where the stock is an index member at t. Build the label on the unmasked prices and wrap it in `quantlab.label.predefined.membership_mask.MembershipMaskedLabel(label, membership)`, with `membership` an `IndexConstituentDataset` on the label's symbol axis. Its `read` and `compute` return the wrapped label's panel, NaN wherever `is_member` is false on t's date. They read no later membership, so a stock that leaves the index inside the horizon keeps its return at t. A label built on a price panel blanked off-membership loses that sample instead, because its return needs the price at t + `lookahead_bars()`. Stocks usually leave an index because they fell, so the target would be survivorship-biased. Every other label method (`get_factor_names`, `lookahead_bars`, `span_bars`, `delay_bars`, `kind`, `build`, `extend`, `store_range`) forwards to the wrapped label, so the wrapper drops into `ModelConfig.labels` and `Factor.analyze(frets=...)`. Its config records the label and the membership dataset, so `rebuild` restores it from a run's `config.json`. A symbol missing from the membership panel is not a member, and a date the panel does not cover raises `ValueError`. The membership is matched by calendar date, so the panel's daily axis serves any bar of that day. `MembershipMaskedPredictor` applies the same rule to predictions (see the backtest guide).
+
+With `ret` a 5-bar forward return over unmasked prices and `membership` a panel in which `BBB` is a member up to 2024-01-18 and `CCC` from 2024-02-12:
+
+```python
+>>> from quantlab.label.predefined.membership_mask import MembershipMaskedLabel
+>>> label = MembershipMaskedLabel(ret, membership)
+>>> label.lookahead_bars(), label.span_bars(), label.delay_bars()
+(6, 5, 1)
+>>> label.compute("2024-01-12", "2024-01-19")["fwd_ret_5"].sel(symbol=["AAA", "BBB", "CCC"]).to_pandas().round(4)
+symbol         AAA     BBB  CCC
+timestamp
+2024-01-12  0.0217  0.1032  NaN
+2024-01-15 -0.0070  0.0619  NaN
+2024-01-16 -0.0299  0.0523  NaN
+2024-01-17 -0.0735  0.0188  NaN
+2024-01-18 -0.0363 -0.0091  NaN
+2024-01-19 -0.0153     NaN  NaN
+>>> rebuild(label.get_config()) == label
+True
+```
+
+`BBB` keeps its return on 2024-01-15 although it leaves before that label's endpoint; `CCC` has none before it joins. The index examples (`examples/wrds_us_equity/sp500_*.py`, `nasdaq100_*.py` and `examples/sharadar_us_equity/sp500_xgb.py`) build their label this way.
+
 ### Cross-validate over walk-forward folds
 
 `train_cv(train_periods, expanding=False, test_periods=None)` slides a training window over the timestamps between `start_date` and `end_date`. Each fold trains on `train_periods` timestamps and tests on the `test_periods` timestamps right after them (`train_periods // 5` when `test_periods` is None); the next fold starts one test length later. Each fold is fitted like `train()` on its own dates, so its training window loses its last L bars before the test segment, and is split and purged into train and validation inside. Every fold gets its own checkpoint and its own tracking run.

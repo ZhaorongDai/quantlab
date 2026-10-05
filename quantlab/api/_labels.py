@@ -53,7 +53,7 @@ def forward_returns(frame, *, price, span, delay, binary, columns, as_xarray):
                 njobs=NJOBS,
             )
         )
-        if delay != label.config.delay:
+        if delay != label.delay_bars():
             label = Forward(ForwardConfig(factor=label.config.factor, span=span, delay=delay))
         return label
 

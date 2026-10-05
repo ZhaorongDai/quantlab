@@ -43,6 +43,7 @@ from quantlab.enums.constant import Date
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
+from quantlab.label.predefined.membership_mask import MembershipMaskedLabel
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
@@ -104,8 +105,10 @@ def index_membership() -> CompustatNasdaq100ConstituentDataset:
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects.
 
-    Factors read ``prices.zarr`` so rolling windows see no membership gaps;
-    the label reads ``members.zarr`` so returns exist on member rows only.
+    Factors and the label read ``prices.zarr``, so rolling windows and
+    returns see no membership gaps. The label is masked by index membership
+    on t's date only (``MembershipMaskedLabel``): a stock that leaves the
+    index inside the horizon keeps its return at t.
     """
     alpha101 = Alpha101Stock(FactorConfig(
         warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
@@ -118,19 +121,17 @@ def factors_and_label() -> tuple[list, list]:
         njobs=16,
     ))
     label = Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "members.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
         njobs=16,
     ))
-    return [alpha101, alpha158], [label]
+    return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
 
 
-# %% 1. Prices and members stores
+# %% 1. Prices store
 def prepare_stores() -> None:
-    """Write ``prices`` (full history of every member ever) and ``members``
-    (the same panel, NaN where the PERMNO was not a member that day).
-    """
+    """Write ``prices``: the full history of every member ever, unmasked."""
     crsp, membership = index_dataset(), index_membership()
     for store in (crsp.config.zarr_file_path, membership.config.zarr_file_path):
         if not Path(store).exists():
@@ -140,16 +141,9 @@ def prepare_stores() -> None:
             )
     # Every bar up to END: the factors warm up on the history before START.
     prices = crsp.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume", "ret"]]
-    member = (
-        membership.panel(Date.START_DATE, END)["is_member"]
-        .reindex(timestamp=prices.timestamp, symbol=prices.symbol)
-        .fillna(False)
-        .astype(bool)
-    )
     WORK.mkdir(parents=True, exist_ok=True)
     prices.to_zarr(WORK / "prices.zarr", mode="w")
-    prices.where(member).to_zarr(WORK / "members.zarr", mode="w")
-    logger.info(f"prices {dict(prices.sizes)}, member cells {int(member.sum())}")
+    logger.info(f"prices {dict(prices.sizes)}")
 
 
 # %% 2. Factors and 3. label
@@ -161,7 +155,7 @@ def compute_factors() -> None:
     for label in labels:
         # A label is stored as the factor it shifts forward.
         label.build(START, END)
-        logger.info(f"{type(label).__name__} -> {label.config.factor.config.file_path}")
+        logger.info(f"{type(label).__name__} -> {label.label.config.factor.config.file_path}")
 
 
 # %% 4. Model

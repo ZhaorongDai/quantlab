@@ -2584,3 +2584,73 @@ class IndexConstituentDataset(BaseDataset):
         The frame has ``symbol``, ``start_date`` and ``end_date`` columns; a
         null ``end_date`` means the symbol is still a member.
         """
+
+    def is_member_at(self, timestamps, symbols, *, owner: str | None = None) -> xr.DataArray:
+        """Return whether each symbol is a member on each timestamp's date.
+
+        Each timestamp is matched to the membership panel by its calendar
+        date, so the answer at bar t reads the membership of t's date and
+        nothing later. A symbol missing from the panel is not a member. A
+        date the panel does not cover (before its first or after its last
+        day) is refused, because unknown membership is not "not a member".
+
+        Parameters
+        ----------
+        timestamps : array-like of datetime64
+            The bars to answer for, such as a panel's ``timestamp`` axis.
+        symbols : array-like
+            The symbols to answer for, on the membership panel's symbol axis.
+        owner : str, optional
+            Who asks, named in the error message; defaults to this class.
+
+        Returns
+        -------
+        xr.DataArray
+            Booleans on ``(timestamp, symbol)`` with exactly the given
+            coordinates.
+
+        Raises
+        ------
+        ValueError
+            If a timestamp's date lies outside the membership panel.
+
+        Examples
+        --------
+        With ``membership`` a ``DemoPanel`` (as in the class docstring) in
+        which ``AAA`` is a member from 2024-01-01 on and ``BBB`` from
+        2024-01-01 to 2024-01-02, saved with ``as_of="2024-01-05"``:
+
+        >>> bars = pd.bdate_range("2024-01-02", periods=3)
+        >>> membership.is_member_at(bars, ["AAA", "BBB", "ZZZ"]).to_pandas()
+        symbol       AAA    BBB    ZZZ
+        timestamp
+        2024-01-02  True   True  False
+        2024-01-03  True  False  False
+        2024-01-04  True  False  False
+        """
+        timestamps = pd.DatetimeIndex(np.asarray(timestamps))
+        symbols = np.asarray(symbols)
+        if len(timestamps) == 0:
+            return xr.DataArray(
+                np.zeros((0, len(symbols)), dtype=bool),
+                dims=("timestamp", "symbol"),
+                coords={"timestamp": timestamps, "symbol": symbols},
+            )
+        days = timestamps.normalize()
+        is_member = self.panel(days.min(), days.max(), variables=["is_member"])["is_member"]
+        uncovered = days.unique().difference(pd.DatetimeIndex(is_member["timestamp"].values))
+        if len(uncovered):
+            raise ValueError(
+                f"{owner or type(self).__name__}: the membership panel of "
+                f"{type(self).__name__} does not cover {len(uncovered)} "
+                f"date(s) ({uncovered[0].date()}..{uncovered[-1].date()}); "
+                f"extend the membership store or narrow the window, since "
+                f"unknown membership is not 'not a member'"
+            )
+        return (
+            is_member.sel(timestamp=days)
+            .reindex(symbol=symbols)
+            .fillna(False)
+            .astype(bool)
+            .assign_coords(timestamp=timestamps.values)
+        )

@@ -2,7 +2,7 @@
 
 `sp500_xgb.py` is the pipeline of [`wrds_us_equity/sp500_xgb.py`](../wrds_us_equity/sp500_xgb.py) with every input read from a Sharadar store ([docs/sharadar.md](../../docs/sharadar.md)): the point-in-time S&P 500 from Sharadar's SP500 table, prices on the permaticker axis, and SPY from the fund prices as the benchmark. It reads no WRDS store and imports only quantlab, so it can be copied out and edited on its own.
 
-The steps, settings and outputs are those of the WRDS script; see [its README](../wrds_us_equity/README.md). What differs:
+The steps, settings and outputs are those of the WRDS script; see [its README](../wrds_us_equity/README.md). As there, the label is computed on the unmasked `prices.zarr` and wrapped in `MembershipMaskedLabel`, so a sample exists where the stock is an S&P 500 member at t, whatever its membership later. What differs:
 
 | | WRDS (`wrds_us_equity/sp500_xgb.py`) | Sharadar (`sharadar_us_equity/sp500_xgb.py`) |
 | --- | --- | --- |

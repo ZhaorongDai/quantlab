@@ -53,6 +53,7 @@ from quantlab.enums.constant import Date
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return, Volatility
+from quantlab.label.predefined.membership_mask import MembershipMaskedLabel
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.xgb import XGBoostRegressor
@@ -131,32 +132,32 @@ def factors() -> list:
     ]
 
 
-def return_label() -> Return:
-    """``ret_5``: the open-to-open return over the span, on member rows only."""
-    return Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "members.zarr"),
+def return_label() -> MembershipMaskedLabel:
+    """``ret_5``: the open-to-open return over the span, masked by index
+    membership at t only."""
+    return MembershipMaskedLabel(Return(FactorConfig(
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "prices.zarr"),
         mode="batch", data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
         njobs=16,
-    ))
+    )), index_membership())
 
 
-def volatility_label() -> Volatility:
+def volatility_label() -> MembershipMaskedLabel:
     """``vol_5``: the standard deviation of one-bar open-to-open returns over
-    the span, times ``sqrt(HORIZON)``, on member rows only."""
-    return Volatility(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "members.zarr"),
+    the span, times ``sqrt(HORIZON)``, masked by index membership at t
+    only."""
+    return MembershipMaskedLabel(Volatility(FactorConfig(
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "prices.zarr"),
         mode="batch", data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(WORK / "label" / f"vol_{HORIZON}.zarr"),
         njobs=16,
-    ))
+    )), index_membership())
 
 
-# %% 1. Prices and members stores
+# %% 1. Prices store
 def prepare_stores() -> None:
-    """Write ``prices`` (full history of every member ever) and ``members``
-    (the same panel, NaN where the PERMNO was not a member that day).
-    """
+    """Write ``prices``: the full history of every member ever, unmasked."""
     crsp, membership = index_dataset(), index_membership()
     for store in (crsp.config.zarr_file_path, membership.config.zarr_file_path):
         if not Path(store).exists():
@@ -166,16 +167,9 @@ def prepare_stores() -> None:
             )
     # Every bar up to END: the factors warm up on the history before START.
     prices = crsp.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume", "ret"]]
-    member = (
-        membership.panel(Date.START_DATE, END)["is_member"]
-        .reindex(timestamp=prices.timestamp, symbol=prices.symbol)
-        .fillna(False)
-        .astype(bool)
-    )
     WORK.mkdir(parents=True, exist_ok=True)
     prices.to_zarr(WORK / "prices.zarr", mode="w")
-    prices.where(member).to_zarr(WORK / "members.zarr", mode="w")
-    logger.info(f"prices {dict(prices.sizes)}, member cells {int(member.sum())}")
+    logger.info(f"prices {dict(prices.sizes)}")
 
 
 # %% 2. Factors and 3. labels
@@ -186,7 +180,7 @@ def compute_factors() -> None:
     for label in (return_label(), volatility_label()):
         # A label is stored as the factor it shifts forward.
         label.build(START, END)
-        logger.info(f"{type(label).__name__} -> {label.config.factor.config.file_path}")
+        logger.info(f"{type(label).__name__} -> {label.label.config.factor.config.file_path}")
 
 
 # %% 4. Models

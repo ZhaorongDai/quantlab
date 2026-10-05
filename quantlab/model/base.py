@@ -749,7 +749,7 @@ class BaseModel(Component, ABC):
         >>> model.label_delays
         (1,)
         """
-        return tuple(label.config.delay for label in self.config.labels)
+        return tuple(label.delay_bars() for label in self.config.labels)
 
     @property
     def label_scales(self) -> dict[str, str]:

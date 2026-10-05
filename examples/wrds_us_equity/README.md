@@ -18,9 +18,9 @@ One self-contained script per universe and model, plus one factor analysis per u
 
 The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDRegressor` (pytabkit tuned-default XGBoost), `RealMLPRegressor` (pytabkit tuned-default MLP), and two torch heads that learn on each bar's cross-section of stocks: `GATsRegressor` (Qlib's GATs: an LSTM over each stock's last 20 bars, then attention across the bar's stocks) and `MASTERRegressor` (MASTER: SPY, QQQ and IWM market features gate the stock features, then attention over each stock's last 8 bars and across the bar's stocks); [docs/model.md](../../docs/model.md) describes both under "Train GATs on the cross-section" and "Train MASTER with market features". Every model pipeline runs the same five steps:
 
-1. **Data**: read the converted CRSP store and its membership panel, then write two derived stores (`prices`, `members`).
+1. **Data**: read the converted CRSP store and its membership panel, then write the derived `prices` store.
 2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, written to Zarr stores with `build(START, END)`. The torch pipelines build them from `WINDOW_BARS - 1` bars before `START`, so the first training bar has a full window, and the MASTER pipelines add `MarketFeatures`, 21 features of each of SPY, QQQ and IWM, the same for every stock with a bar.
-3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on member rows only.
+3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on `prices.zarr` and wrapped in `MembershipMaskedLabel`, which keeps a sample only where the stock is an index member at t.
 4. **Model**: trained once on the training window.
 5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500 and market) or QQQ (Nasdaq-100), logged to Weights & Biases.
 
@@ -99,7 +99,7 @@ Everything lives at the top of each script, in this order:
 Everything is written under `<data root>/data/pipeline/wrds_<universe>/`:
 
 ```text
-prices.zarr, members.zarr     derived price stores (step 1; index scripts only)
+prices.zarr                   derived price store (step 1; index scripts only)
 factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
 factor/market_features.zarr   SPY/QQQ/IWM market features (MASTER pipelines)
 models/<model>/...            trained runs: checkpoint, config.json, run.json
@@ -132,7 +132,7 @@ A backtest run directory is read through `quantlab.runs.backtest_run.BacktestRun
 ## How the universe is handled
 
 - **Survivorship**: the CRSP roster contains every PERMNO that was a member at any time in the window, delisted ones included, and CRSP carries delisting returns.
-- **Point-in-time membership masks predictions, never prices**: `members.zarr` is the price panel with non-member cells set to NaN. Only the label reads it, so training rows are member rows only. Factors read `prices.zarr`, so their rolling windows see full history. The backtest prices from the unmasked index store (`index_dataset()`, a `CrspStockDataset` over `wrds_crsp_<index>_1d.zarr`, with raw open/close, `adjClose`, `splitFactor`, `divCash` and delistings) and wraps the model in `MembershipMaskedPredictor(build_model(), index_membership())`, which sets a prediction to NaN wherever the PERMNO is not a member that day. So only members can be entered; a stock that leaves the index keeps its prices and stays tradable, and the rule decides what happens to a holding (TopN sells it at the next rebalance, the mean-variance optimiser holds it at an expected return of 0). The run's `predictions.zarr` holds the masked predictions. The membership store must cover every backtest date: a date it does not cover is refused rather than read as "not a member".
+- **Point-in-time membership masks the label and the predictions, never prices**: factors and the label read `prices.zarr`, so rolling windows and returns see full history. The label is wrapped in `MembershipMaskedLabel(label, index_membership())`, which sets it to NaN wherever the PERMNO is not a member on t's date and reads no later membership, so a stock that leaves the index inside the horizon keeps its return at t. Masking the prices instead would also drop every sample whose symbol leaves before the label's endpoint; such stocks usually leave because they fell, so the target would be survivorship-biased. The backtest prices from the unmasked index store (`index_dataset()`, a `CrspStockDataset` over `wrds_crsp_<index>_1d.zarr`, with raw open/close, `adjClose`, `splitFactor`, `divCash` and delistings) and wraps the model in `MembershipMaskedPredictor(build_model(), index_membership())`, which sets a prediction to NaN wherever the PERMNO is not a member that day. So only members can be entered; a stock that leaves the index keeps its prices and stays tradable, and the rule decides what happens to a holding (TopN sells it at the next rebalance, the mean-variance optimiser holds it at an expected return of 0). The run's `predictions.zarr` holds the masked predictions. The membership store must cover every backtest date: a date it does not cover is refused rather than read as "not a member".
 
 ## Notes
 

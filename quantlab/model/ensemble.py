@@ -325,7 +325,7 @@ class BaseEnsemble(Component, ABC):
         >>> ensemble.label_delays
         (1,)
         """
-        return tuple(label.config.delay for label in self.labels)
+        return tuple(label.delay_bars() for label in self.labels)
 
     @property
     def model_save_dir(self) -> Path:

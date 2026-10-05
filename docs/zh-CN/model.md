@@ -318,6 +318,32 @@ hyperparameters = {
 
 影响最大的是训练目标：在纳指上每个 `cs_rank` 候选都胜过每个 `cs_zscore` 候选，树参数带来的差别小于噪声。纳指上的信号在 holdout 上保持住了，所以 `examples/wrds_us_equity/nasdaq100_xgb.py` 用这套配置；S&P 500 上同一配置在 CV 和 holdout 上都没有信号，所以 S&P 500 与全市场的示例保留默认设置。两个结果都没能让只做多的均值方差组合跑赢指数：它的 beta 只有 0.4 到 0.6，2023-2024 年每年落后 QQQ 和 SPY 10 到 18 个百分点。
 
+### 用指数成分遮蔽标签
+
+在指数 universe 上，样本是否存在只取决于 t 时刻该股票是不是指数成分股。在未遮蔽的价格上构建标签，再用 `quantlab.label.predefined.membership_mask.MembershipMaskedLabel(label, membership)` 包装，其中 `membership` 是与标签同一 symbol 轴的 `IndexConstituentDataset`。它的 `read` 和 `compute` 返回被包装标签的面板，凡是 t 日 `is_member` 为假的格子都置为 NaN。它不读取 t 之后的成分信息，所以在持有期内被剔除出指数的股票仍保留其 t 时刻的收益。若在把非成分股价格置空的面板上构建标签，这个样本就会丢失，因为它的收益需要 t + `lookahead_bars()` 时刻的价格。股票通常因下跌而被剔除，训练目标因此带有幸存者偏差。其余标签方法（`get_factor_names`、`lookahead_bars`、`span_bars`、`delay_bars`、`kind`、`build`、`extend`、`store_range`）都转发给被包装的标签，所以它可以直接放进 `ModelConfig.labels` 和 `Factor.analyze(frets=...)`。它的 config 记录标签和成分数据集，`rebuild` 能从运行目录的 `config.json` 还原它。成分面板中不存在的 symbol 视为非成分股；面板未覆盖的日期会抛出 `ValueError`。成分按日历日期匹配，所以面板的日轴适用于当天的任何 bar。`MembershipMaskedPredictor` 对预测应用同样的规则（见回测指南）。
+
+设 `ret` 是未遮蔽价格上的 5 bar 远期收益，`membership` 中 `BBB` 到 2024-01-18 为止是成分股，`CCC` 从 2024-02-12 起是成分股：
+
+```python
+>>> from quantlab.label.predefined.membership_mask import MembershipMaskedLabel
+>>> label = MembershipMaskedLabel(ret, membership)
+>>> label.lookahead_bars(), label.span_bars(), label.delay_bars()
+(6, 5, 1)
+>>> label.compute("2024-01-12", "2024-01-19")["fwd_ret_5"].sel(symbol=["AAA", "BBB", "CCC"]).to_pandas().round(4)
+symbol         AAA     BBB  CCC
+timestamp
+2024-01-12  0.0217  0.1032  NaN
+2024-01-15 -0.0070  0.0619  NaN
+2024-01-16 -0.0299  0.0523  NaN
+2024-01-17 -0.0735  0.0188  NaN
+2024-01-18 -0.0363 -0.0091  NaN
+2024-01-19 -0.0153     NaN  NaN
+>>> rebuild(label.get_config()) == label
+True
+```
+
+`BBB` 虽然在 2024-01-15 那个标签的终点之前离开指数，仍保留该日的收益；`CCC` 加入之前没有标签。指数示例（`examples/wrds_us_equity/sp500_*.py`、`nasdaq100_*.py` 和 `examples/sharadar_us_equity/sp500_xgb.py`）都这样构建标签。
+
 ### walk-forward 交叉验证
 
 `train_cv(train_periods, expanding=False, test_periods=None)` 在 `start_date` 到 `end_date` 之间的时间戳上滑动训练窗口。每一折在 `train_periods` 个时间戳上训练，在紧随其后的 `test_periods` 个时间戳上测试（`test_periods` 为 None 时取 `train_periods // 5`）；下一折晚一个测试段的长度开始。每一折都像 `train()` 一样在自己的日期上拟合，因此训练窗口在测试段之前丢掉最后 L 个 bar，内部再切分成训练段和验证段并做清除。每一折都有自己的检查点和自己的追踪 run。

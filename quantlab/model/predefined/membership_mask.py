@@ -17,7 +17,6 @@ masked panel.
 import dataclasses
 from typing import TYPE_CHECKING, Self
 
-import pandas as pd
 import xarray as xr
 
 from quantlab.core.component import Component, component
@@ -146,30 +145,14 @@ class MembershipMaskedPredictor(Component):
         >>> masked.mask(later)
         Traceback (most recent call last):
         ...
-        ValueError: MembershipMaskedPredictor: the membership panel of DemoPanel does not cover 1 prediction date(s) (2024-01-08..2024-01-08); extend the membership store or narrow the window, since unknown membership is not 'not a member'
+        ValueError: MembershipMaskedPredictor: the membership panel of DemoPanel does not cover 1 date(s) (2024-01-08..2024-01-08); extend the membership store or narrow the window, since unknown membership is not 'not a member'
         """
         if predictions.sizes.get("timestamp", 0) == 0:
             return predictions
-        days = pd.DatetimeIndex(predictions["timestamp"].values).normalize()
-        is_member = self.membership.panel(
-            days.min(), days.max(), variables=["is_member"]
-        )["is_member"]
-        uncovered = days.difference(pd.DatetimeIndex(is_member["timestamp"].values))
-        if len(uncovered):
-            raise ValueError(
-                f"MembershipMaskedPredictor: the membership panel of "
-                f"{type(self.membership).__name__} does not cover "
-                f"{len(uncovered)} prediction date(s) "
-                f"({uncovered[0].date()}..{uncovered[-1].date()}); extend the "
-                f"membership store or narrow the window, since unknown "
-                f"membership is not 'not a member'"
-            )
-        member = (
-            is_member.sel(timestamp=days)
-            .reindex(symbol=predictions["symbol"].values)
-            .fillna(False)
-            .astype(bool)
-            .assign_coords(timestamp=predictions["timestamp"].values)
+        member = self.membership.is_member_at(
+            predictions["timestamp"].values,
+            predictions["symbol"].values,
+            owner=type(self).__name__,
         )
         return predictions.where(member)
 
