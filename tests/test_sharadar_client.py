@@ -96,8 +96,8 @@ def test_a_bulk_pull_follows_the_redirect_and_writes_raw_parquet(api_key, tmp_pa
         c.url.startswith("https://bulk.example.invalid/stocks.csv.zip") for c in signed
     )
     assert not any("x-api-key" in c.headers for c in signed)
-    # Nothing but the parquet is left behind.
-    assert [p.name for p in path.parent.iterdir()] == [path.name]
+    # Nothing but the parquet and the table's watermark is left behind.
+    assert sorted(p.name for p in path.parent.iterdir()) == ["_watermark.json", path.name]
 
 
 def test_tickers_and_indicators_are_kept_as_parquet_sidecar_tables(api_key, tmp_path):

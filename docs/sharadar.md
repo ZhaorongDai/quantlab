@@ -99,3 +99,29 @@ spy = SharadarDatasetConfig.etf_benchmark(
 SharadarStockDataset(spy).from_raw_data().save()
 # then BacktestConfig(benchmark_dataset=SharadarStockDataset(spy), ...)
 ```
+
+## Daily update
+
+A bulk pull is the first download; every morning after it, refresh the raw tier with trailing date windows and append the new bars to the store:
+
+```python
+from quantlab.acquisition.sharadar.client import SharadarClient
+from quantlab.dataset.sharadar.stock import SharadarStockDataset
+
+client = SharadarClient()
+client.bulk_table("tickers", "/data/quantlab/downloads")  # new listings and ticker changes
+for code in ("sep", "sfp", "actions"):
+    client.window_table(code, "/data/quantlab/downloads")
+SharadarStockDataset(config).update()
+```
+
+**The raw tier.** `window_table` asks REST for every calendar day from the 10th most recent raw trading day on or before the table's watermark through today (US/Eastern), one request per day and page of 10,000 rows in ticker order. The rows are written as one file, `<code>/window_<pulled at>_<from>_<to>.parquet`, which is a complete copy of the table over those dates: reading the table (`quantlab.dataset.sharadar.tables.scan_raw_table`) keeps a row only from the newest file covering its date, so a vendor correction inside the window replaces the bulk row and a ticker change inside it cannot duplicate a security. Only after the file is written is the table's watermark, `<code>/_watermark.json`, moved to the window's last day; a failed pull leaves both as they were, and the next pull starts from the last watermark that was written. A new bulk pull deletes the windows it supersedes and sets the watermark to the day of the pull.
+
+**The store.** With a store in place, `SharadarStockDataset.update()` only appends (without one it builds the store, as `BaseDataset.update` does):
+
+- The new bars are those after the store's last bar and on or before the watermark of every input table (the price table and ACTIONS), so a bar is never stored before its dividends and splits are known. An update interrupted between the pulls stops at the older watermark and the next one continues from the store's last bar.
+- The last 10 stored bars are derived again from the raw tier. A raw price, `divCash` or `splitFactor` the vendor has since changed is listed in `<store>.corrections.json` (table, permaticker, date, variable, stored and vendor value) and logged; it is never written. Earlier rows of the store stay byte-identical.
+- Each security's new adjusted prices continue from its last stored `adjClose` and `adjVolume`, so the chain is never re-anchored, even for a security halted for longer than the overlap. On the 2026-10-05 pull, a store built through 2026-09-25 and updated to the end of the raw tier equals a store built in one go to within 7e-16.
+- A new listing is added with no history. A security new to the store that has bars inside its range is refused, because only a rebuild can store them.
+
+The chunk ledger of a chunked build is not extended by these appends.

@@ -27,10 +27,15 @@ PosixPath('/data/downloads/sharadar/sep')
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import polars as pl
+
+from quantlab.utils.atomic import write_json_atomically
 
 #: Directory under ``--download-dir`` holding every Sharadar raw table.
 VENDOR_DIR = "sharadar"
@@ -216,8 +221,49 @@ def raw_table_dir(vendor_root: str | Path, code: str) -> Path:
     return Path(vendor_root) / table(code).code
 
 
+def bulk_file(vendor_root: str | Path, code: str) -> Path:
+    """Return the path of a table's bulk pull, ``<code>/<code>.parquet``."""
+    return raw_table_dir(vendor_root, code) / f"{table(code).code}.parquet"
+
+
+def window_file(
+    vendor_root: str | Path, code: str, pulled_at: datetime, start: date, end: date
+) -> Path:
+    """Return the path a date-window pull of a table is written to.
+
+    A window pull is a complete copy of the table over ``start``..``end``
+    (both inclusive), so its rows replace every earlier row of those dates.
+    The name records when it was pulled, so names sort in pull order, and
+    the dates it covers.
+
+    Examples
+    --------
+    >>> window_file("/d/sharadar", "sep", datetime(2024, 1, 11, 8, 30),
+    ...             date(2024, 1, 2), date(2024, 1, 11)).name
+    'window_20240111T083000000000_2024-01-02_2024-01-11.parquet'
+    """
+    return raw_table_dir(vendor_root, code) / (
+        f"{WINDOW_PREFIX}{pulled_at:%Y%m%dT%H%M%S%f}_{start}_{end}.parquet"
+    )
+
+
+#: Filename prefix of a date-window pull (see ``window_file``).
+WINDOW_PREFIX = "window_"
+
+
+def _window_dates(path: Path) -> tuple[date, date]:
+    """Return the ``(start, end)`` dates a window file's name covers."""
+    _, _, start, end = path.stem.split("_")
+    return date.fromisoformat(start), date.fromisoformat(end)
+
+
 def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
-    """Scan every parquet file of one raw table.
+    """Scan one raw table: its bulk pull overlaid with its date-window pulls.
+
+    A window pull is a complete copy of the table over its dates, so a row
+    is kept only from the newest file covering its date: the bulk file's
+    rows of a window's dates, and an older window's rows of a newer
+    window's dates, are left out.
 
     Raises
     ------
@@ -230,13 +276,68 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
     ['table', 'permaticker', 'ticker']
     """
     directory = raw_table_dir(vendor_root, code)
-    files = sorted(directory.glob("*.parquet"))
+    windows = sorted(directory.glob(f"{WINDOW_PREFIX}*.parquet"))
+    files = [p for p in [bulk_file(vendor_root, code)] if p.exists()] + windows
     if not files:
         raise FileNotFoundError(
             f"no raw Sharadar {code!r} table under {directory}; pull it first "
             f"(SharadarClient.bulk_table({code!r}, <download-dir>))"
         )
-    return pl.scan_parquet(files)
+    if not windows:
+        return pl.scan_parquet(files)
+    covered = [_window_dates(path) for path in windows]
+    # The bulk file sits before every window (position -1 among them).
+    first_window = len(files) - len(windows)
+    frames = []
+    for index, path in enumerate(files):
+        frame = pl.scan_parquet(path)
+        for start, end in covered[max(index - first_window + 1, 0) :]:
+            frame = frame.filter(~pl.col("date").is_between(pl.lit(start), pl.lit(end)))
+        frames.append(frame)
+    return pl.concat(frames)
+
+
+#: Sharadar's time zone: its tables are updated on US/Eastern evenings, so a
+#: pull's "today" is the Eastern date.
+VENDOR_TZ = ZoneInfo("America/New_York")
+
+
+def vendor_today() -> date:
+    """Return today's date in Sharadar's time zone (``VENDOR_TZ``)."""
+    return datetime.now(VENDOR_TZ).date()
+
+
+#: Name of a table's watermark file, beside its parquet.
+WATERMARK_FILE = "_watermark.json"
+
+
+def read_watermark(vendor_root: str | Path, code: str) -> date | None:
+    """Return the day a table's raw tier is complete through, or ``None``.
+
+    The watermark is written after a bulk pull (the day of the pull) and
+    after each date-window pull (the window's last day), once its rows are
+    on disk; an interrupted pull leaves the previous one.
+
+    Examples
+    --------
+    >>> write_watermark(root, "sep", date(2024, 1, 11))
+    >>> read_watermark(root, "sep")
+    datetime.date(2024, 1, 11)
+    """
+    path = raw_table_dir(vendor_root, code) / WATERMARK_FILE
+    if not path.exists():
+        return None
+    return date.fromisoformat(json.loads(path.read_text())["through"])
+
+
+def write_watermark(vendor_root: str | Path, code: str, through: date) -> None:
+    """Record that a table's raw tier is complete through ``through``."""
+    write_json_atomically(
+        raw_table_dir(vendor_root, code) / WATERMARK_FILE,
+        {"table": table(code).code, "through": through.isoformat()},
+        indent=2,
+        sort_keys=True,
+    )
 
 
 #: Number of offending keys an error message lists.

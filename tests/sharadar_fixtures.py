@@ -299,3 +299,54 @@ def bulk_routes(tables: dict[str, str]) -> dict[str, list[Reply]]:
         routes[f"{API}/{api_table}"] = [Reply(302, headers={"Location": signed})]
         routes[signed.split("?")[0]] = [Reply(200, bulk_zip(f"{api_table}.csv", text))]
     return routes
+
+
+class FakeVendor:
+    """A Sharadar stand-in serving bulk zips and REST date windows from in-memory rows.
+
+    ``tables`` maps an API table name to ``(columns, rows)``. A test changes
+    the rows between pulls to play the vendor over time. A bulk request
+    (``years``) answers 302 then the whole table as a zip (ignoring
+    ``Range``); a REST request answers the rows dated within
+    ``from``..``to``, sorted by ``sort``'s field and paged by ``offset`` and
+    ``limit``. A request whose ``from`` is in ``fail_on`` answers HTTP 404.
+    """
+
+    def __init__(self, tables: dict[str, tuple[tuple[str, ...], list[dict]]]):
+        self.tables = tables
+        self.calls: list[Call] = []
+        self.fail_on: set[str] = set()
+
+    def __call__(self, url: str, *, params: dict, headers: dict):
+        from quantlab.acquisition.sharadar.client import Response
+
+        self.calls.append(Call(url, dict(params), dict(headers)))
+        route = url.split("?")[0]
+        if route.startswith("https://bulk.example.invalid/"):
+            api = route.rsplit("/", 1)[1].split(".")[0]
+            columns, rows = self.tables[api]
+            body = bulk_zip(f"{api}.csv", csv_text(columns, rows))
+            return Response(status=200, headers={}, body=iter([body]))
+        api = route.removeprefix(f"{API}/")
+        columns, rows = self.tables[api]
+        if "years" in params:
+            signed = SIGNED.format(table=api)
+            return Response(status=302, headers={"Location": signed}, body=iter([b""]))
+        if params["from"] in self.fail_on:
+            return Response(status=404, headers={}, body=iter([b"not found (SYNTHETIC)"]))
+        selected = [r for r in rows if params["from"] <= r["date"] <= params["to"]]
+        if "sort" in params:
+            field_name = params["sort"].split(".")[0]
+            selected.sort(key=lambda r: str(r[field_name]))
+        offset, limit = int(params.get("offset", 0)), int(params.get("limit", 10000))
+        page = selected[offset : offset + limit]
+        return Response(
+            status=200, headers={}, body=iter([csv_text(columns, page).encode()])
+        )
+
+    def window_calls(self, api: str) -> list[dict]:
+        """The params of every REST window request to one table, in order."""
+        return [
+            c.params for c in self.calls
+            if c.url == f"{API}/{api}" and "years" not in c.params
+        ]
