@@ -34,7 +34,7 @@ from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
-from quantlab.factor.kunquant_ops import CrossSectionalZScore
+from quantlab.factor.kunquant_cs import CrossSectionalZScore
 
 N_BARS = 120
 #: Symbol 1 lists at this bar: every input is NaN before it.

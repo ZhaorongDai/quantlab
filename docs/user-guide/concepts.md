@@ -287,7 +287,8 @@ quantlab/
                      then one entry per vendor: tiingo.py, alpaca.py, wrds/
     analysis/        factor reports
     factor/          base.py (Factor), config.py, kunquant.py (FactorKunQuant),
-                     polars.py (FactorPolars), kunquant_ops.py (custom KunQuant operators)
+                     polars.py (FactorPolars), kunquant_ts.py and kunquant_cs.py
+                     (custom time-series and cross-sectional KunQuant operators)
         predefined/      Alpha101, Alpha158, literature alphas, momentum, residual momentum,
                          market features
     label/           config.py, forward.py (Forward: a factor shifted into a label)

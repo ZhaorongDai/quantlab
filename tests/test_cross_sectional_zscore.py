@@ -1,6 +1,6 @@
 """Cross-sectional Z-score KunQuant operator tests (quick task 260915-ocw).
 
-Locks `quantlab/factor/kunquant_ops.py:CrossSectionalZScore`, a
+Locks `quantlab/factor/kunquant_cs.py:CrossSectionalZScore`, a
 `GenericCrossSectionalOp` that normalizes each time point across symbols:
 `(x - nanmean) / nanstd(ddof=1)`. The reference is pandas
 `df.sub(df.mean(axis=1), axis=0).div(df.std(axis=1, ddof=1), axis=0)` computed
@@ -37,7 +37,7 @@ from KunQuant.ops.MiscOp import GenericCrossSectionalOp
 from KunQuant.runner import KunRunner as kr
 
 from quantlab.factor.kunquant import shared_executor
-from quantlab.factor.kunquant_ops import CrossSectionalZScore
+from quantlab.factor.kunquant_cs import CrossSectionalZScore
 
 _N_TIMES = 40
 _N_SYMBOLS = 16

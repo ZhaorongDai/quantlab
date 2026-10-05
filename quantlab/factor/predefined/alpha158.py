@@ -24,7 +24,8 @@ from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.predefined._support import kunquant_alpha158
 from quantlab.factor.predefined._support.nan_preserving_ops import missing_bars_only
 from quantlab.factor.predefined._support.zscore import TimeSeriesZScoredFactor
-from quantlab.factor.kunquant_ops import CrossSectionalZScore, WindowedZScore
+from quantlab.factor.kunquant_cs import CrossSectionalZScore
+from quantlab.factor.kunquant_ts import WindowedZScore
 
 
 class Alpha158SpotKline(TimeSeriesZScoredFactor):

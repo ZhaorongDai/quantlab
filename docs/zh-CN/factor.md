@@ -473,7 +473,7 @@ XrBackend()
 
 ### 沿时间或跨标的做标准化
 
-`quantlab.factor.kunquant_ops` 提供下面这些 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`，窗口是 `kwargs["zscore_window"]` 根 bar（默认 20），与 `warmup_bars` 相互独立；要让第一个请求的 bar 完全标准化，`warmup_bars` 必须覆盖 alpha 自身的回看长度再加 `zscore_window - 1` 根 bar（完整的 Alpha158 最多是 60 + 19）。`zscore_window` 不是正整数时，构造因子就会被拒绝；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。当天没有 bar 的标的（尚未上市、已退市或全 NaN 的列）在这两个类的每个输出上都是 NaN，因此既不进入它们的排名，也不进入 z-score；在有数据的 bar 上，取值与 KunQuant 相同，包括它的公式对真实数据上无定义的值（例如窗口内取值恒定时的相关系数）给出的 0。“扩展”一节中的 KunQuant 因子同时用了两个算子。
+`quantlab.factor.kunquant_ts`（时序：每个标的沿自己的历史）和 `quantlab.factor.kunquant_cs`（截面：同一根 bar 上的所有标的，另含逐元素的 `SigmaClip` 和 `RenormalizedCombine`）提供下面这些 KunQuant 算子。`WindowedZScore` 让每个标的相对自己的滚动窗口做标准化，属于时间序列标准化；`CrossSectionalZScore` 在每个时间点上跨所有标的做标准化。用哪一个取决于使用该因子的策略。`Alpha101SpotKline` 和 `Alpha158SpotKline` 对每个输出应用 `WindowedZScore`，窗口是 `kwargs["zscore_window"]` 根 bar（默认 20），与 `warmup_bars` 相互独立；要让第一个请求的 bar 完全标准化，`warmup_bars` 必须覆盖 alpha 自身的回看长度再加 `zscore_window - 1` 根 bar（完整的 Alpha158 最多是 60 + 19）。`zscore_window` 不是正整数时，构造因子就会被拒绝；`Alpha101Stock` 和 `Alpha158Stock` 对每个输出应用 `CrossSectionalZScore`。当天没有 bar 的标的（尚未上市、已退市或全 NaN 的列）在这两个类的每个输出上都是 NaN，因此既不进入它们的排名，也不进入 z-score；在有数据的 bar 上，取值与 KunQuant 相同，包括它的公式对真实数据上无定义的值（例如窗口内取值恒定时的相关系数）给出的 0。“扩展”一节中的 KunQuant 因子同时用了两个算子。
 
 该模块还有两个截面去极值算子。`CrossSectionalWinsorize(v, lower=0.01, upper=0.99)`（缩尾）在每个时间点把取值截到该时点所有标的的 `lower` 和 `upper` 分位数之间；`CrossSectionalTrim(v, lower=0.01, upper=0.99)`（截尾）把严格落在这两个分位数之外的值设为 NaN。分位数忽略 NaN，并按线性插值计算，与 `np.nanquantile` 一致。常见用法是 `CrossSectionalZScore(CrossSectionalWinsorize(v))`，避免少数极端标的主导均值和标准差。KunQuant 0.1.11 没有内置这两个算子：它的 `Clip` 按固定常数截断，`WindowedQuantile` 是沿时间方向的。
 
@@ -589,7 +589,8 @@ features = factor.compute("2020-01-01", "2024-12-31")
 >>> from KunQuant.Stage import Function
 >>> from quantlab.factor.config import FactorConfig
 >>> from quantlab.factor.kunquant import FactorKunQuant
->>> from quantlab.factor.kunquant_ops import CrossSectionalZScore, WindowedZScore
+>>> from quantlab.factor.kunquant_cs import CrossSectionalZScore
+>>> from quantlab.factor.kunquant_ts import WindowedZScore
 >>> class MaDeviation(FactorKunQuant):
 ...     def _get_factor_names(self):
 ...         return ("ma_dev_5", "ma_dev_ts", "ma_dev_cs")
@@ -668,4 +669,4 @@ Polars 因子引用了存储中不存在的列时，构造对象就会失败，�
 
 ## 另请参阅
 
-`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.factor.base`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.backtest.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.predefined.fret` 和 `quantlab.factor.kunquant_ops`。
+`backend.md` 介绍 `XrBackend` 以及 `extend()` 背后的追加检查；`dataset.md` 介绍因子读取的数据集；`model.md` 介绍模型如何使用因子和标签以及每次切分时的清除；`backtest.md` 介绍标签延迟与引擎成交延迟的检查。相关模块：`quantlab.factor.base`（`Factor`、`FactorKunQuant`、`FactorPolars`）、`quantlab.backtest.config`（`FactorConfig`、`PolarsFactorConfig`、`MarketFeatureConfig`）、`quantlab.factor`、`quantlab.label.forward`、`quantlab.label.predefined.fret` 和 `quantlab.factor.kunquant_ts`、`quantlab.factor.kunquant_cs`。

@@ -1,4 +1,4 @@
-"""The Barra operators of ``quantlab/factor/kunquant_ops.py`` against float64 numpy.
+"""The Barra operators of ``quantlab/factor/kunquant_ts.py`` and ``kunquant_cs.py`` against float64 numpy.
 
 Each operator is compiled into one small graph and compared with an
 independent numpy reference written from its definition: the exponentially
@@ -29,14 +29,18 @@ from KunQuant.runner import KunRunner as kr
 from KunQuant.Stage import Function
 
 from quantlab.factor.kunquant import shared_executor
-from quantlab.factor.kunquant_ops import (
-    CMRA,
+from quantlab.factor.kunquant_cs import (
     CapWeightedStandardize,
     CrossSectionalIndustrySizeFill,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
     CrossSectionalWLSResidual,
     CrossSectionalWLSResidual2,
+    RenormalizedCombine,
+    SigmaClip,
+)
+from quantlab.factor.kunquant_ts import (
+    CMRA,
     EWAlpha,
     EWBeta,
     EWCov,
@@ -44,8 +48,6 @@ from quantlab.factor.kunquant_ops import (
     EWResidualStd,
     EWSum,
     EWVar,
-    RenormalizedCombine,
-    SigmaClip,
 )
 
 _T = 60

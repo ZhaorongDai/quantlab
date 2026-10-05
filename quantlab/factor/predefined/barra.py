@@ -73,20 +73,22 @@ from KunQuant.Stage import Function
 
 from quantlab.factor.config import FactorConfig
 from quantlab.factor.kunquant import FactorKunQuant
-from quantlab.factor.kunquant_ops import (
-    CMRA,
+from quantlab.factor.kunquant_cs import (
     CapWeightedStandardize,
     CrossSectionalIndustrySizeFill,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
     CrossSectionalWLSResidual,
     CrossSectionalWLSResidual2,
+    RenormalizedCombine,
+    SigmaClip,
+)
+from quantlab.factor.kunquant_ts import (
+    CMRA,
     EWBeta,
     EWMean,
     EWResidualStd,
     EWVar,
-    RenormalizedCombine,
-    SigmaClip,
 )
 
 #: Name of the graph input holding each symbol's running product of split

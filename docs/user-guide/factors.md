@@ -320,8 +320,9 @@ show larger graphs.
 ## Normalisation operators
 
 Raw factor values often live on very different scales, and a model or a
-ranking rule usually wants them standardised. `quantlab.factor.kunquant_ops`
-provides two KunQuant operators that standardise along different axes:
+ranking rule usually wants them standardised. `quantlab.factor.kunquant_ts`
+and `quantlab.factor.kunquant_cs` provide two KunQuant operators that
+standardise along different axes:
 
 - `WindowedZScore(x, window)` is a time-series z-score. Each symbol is
   compared with its own trailing `window` bars, `(x - rolling mean) / rolling
@@ -341,7 +342,8 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 from quantlab.factor.kunquant import FactorKunQuant
-from quantlab.factor.kunquant_ops import CrossSectionalZScore, WindowedZScore
+from quantlab.factor.kunquant_cs import CrossSectionalZScore
+from quantlab.factor.kunquant_ts import WindowedZScore
 
 class MaDeviation(FactorKunQuant):
     """Distance of the close from its 10-day mean, raw and normalised."""

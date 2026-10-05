@@ -3,7 +3,7 @@ FACTOR-01 / ROADMAP Phase 3 Success Criterion 1).
 
 Before 03-01, BOTH tests in this file raised
 `TypeError: WindowedZScore.decompose() takes 1 positional argument but 2 were
-given`: `factor/kunquant_ops.py` declared `decompose(self)` while the installed
+given`: `factor/kunquant_ops.py` (now `kunquant_ts.py`) declared `decompose(self)` while the installed
 KunQuant 0.1.11 declares the contract as
 `CompositiveOp.decompose(self, options: dict)` (`KunQuant/Op.py:292`) and
 invokes it positionally (`KunQuant/passes/Decompose.py:15`). Because both

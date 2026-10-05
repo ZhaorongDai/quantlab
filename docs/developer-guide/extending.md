@@ -534,8 +534,9 @@ overrides `_kunquant_inputs(inputs)`: it receives the dataset panel, calls
 the returned dict, as `quantlab/factor/predefined/residual_momentum.py` does with the
 Fama-French series. `compute()` runs the graph on what it returns.
 Existing operator compositions to reuse are in
-`quantlab/factor/predefined/alpha101.py`, `quantlab/factor/predefined/alpha158.py` and
-`quantlab/factor/kunquant_ops.py`.
+`quantlab/factor/predefined/alpha101.py`, `quantlab/factor/predefined/alpha158.py`,
+`quantlab/factor/kunquant_ts.py` (time-series operators) and
+`quantlab/factor/kunquant_cs.py` (cross-sectional operators).
 
 ## A label
 
