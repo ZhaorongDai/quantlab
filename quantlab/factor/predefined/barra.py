@@ -10,7 +10,8 @@ capitalization.
 
 Exposures are standardized over an *estimation universe* (ESTU), here the
 ``estimation_universe_size`` largest companies by the previous bar's market
-cap, re-ranked every bar inside the graph: on every bar the cap-weighted
+cap, each firm counted once (a secondary share class is never in it),
+re-ranked every bar inside the graph: on every bar the cap-weighted
 mean exposure of the universe is 0 and the equally weighted standard
 deviation is 1. Symbols outside the universe are shifted and scaled by the
 same numbers, so every symbol with data gets an exposure.
@@ -45,6 +46,11 @@ equally weighted mean is dropped as a data error and one beyond
 ``clip_sigma`` is trimmed to that bound. It is then standardized
 (§2.3, p.9, eq. 2.4).
 
+A secondary share class (GOOG beside GOOGL) has no market cap or
+fundamentals of its own in Sharadar; it takes its firm's, as named by
+``firm_column``, so its Size, valuation and growth exposures are the firm's
+while its returns, volume and dividends stay its own.
+
 A style still missing for a symbol (no descriptor at all) is imputed from
 a per-bar weighted regression of the style on industry and Size, fitted in
 the estimation universe, as USE4 does; every style is then standardized
@@ -70,6 +76,7 @@ import platform
 from dataclasses import dataclass, fields
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
@@ -112,6 +119,11 @@ SPLIT_BASIS = "_split_basis"
 #: Name of the graph input holding ``industry_column``: KunQuant refuses an
 #: output named like an input, and the code is passed through as ``industry``.
 INDUSTRY_INPUT = "_industry"
+
+#: Name of the graph input holding each symbol's own market cap, before a
+#: secondary share class takes its firm's: the estimation universe ranks on
+#: it, so a secondary class, having none, is never ranked.
+OWN_CAP = "_own_cap"
 
 #: The regression weights an orthogonalization may use, by config name.
 ORTHOGONALIZATION_WEIGHTINGS = ("sqrt_cap", "cap", "equal")
@@ -196,6 +208,16 @@ class BarraStyleParameters:
         Panel variable holding the point-in-time industry code, a
         non-negative integer (``SharadarIndustryDataset``'s Fama-French 48
         code); passed through as the ``industry`` output.
+    firm_column : str, default "firm"
+        Panel variable holding the symbol whose market cap and fundamentals
+        are this symbol's firm values (``SharadarShareClassDataset``): the
+        symbol itself, or for a secondary share class its firm's primary
+        class. A secondary class takes the firm's market cap, fundamentals
+        and fiscal-year history (``firm_value_columns``) and is never in the
+        estimation universe, so the firm is counted once (USE4's LNCAP is
+        the firm's total market cap, Empirical Notes p.51). NaN, or a symbol
+        not on the panel, leaves the symbol as its own firm. The symbol axis
+        must be integers (permatickers).
     estimation_universe_size : int, default 3000
         Number of largest companies, by the previous bar's market cap, in
         the estimation universe. Our choice: USE4 uses the MSCI USA IMI,
@@ -286,7 +308,7 @@ class BarraStyleParameters:
     >>> params.panel_columns[:7]
     ('adjClose', 'marketcap', 'risk_free', 'close', 'volume', 'divCash', 'splitFactor')
     >>> len(params.panel_columns)
-    31
+    32
     >>> params.warmup_bars
     526
     """
@@ -313,6 +335,7 @@ class BarraStyleParameters:
     growth_years: int = 5
     min_growth_years: int = 3
     industry_column: str = "industry"
+    firm_column: str = "firm"
     estimation_universe_size: int = 3000
     beta_window: int = 252
     beta_half_life: float = 63.0
@@ -415,6 +438,34 @@ class BarraStyleParameters:
             *self.history_columns(self.sales_prefix),
             *self.history_columns(self.fiscal_year_end_prefix),
             self.industry_column,
+            self.firm_column,
+        )
+
+    @property
+    def firm_value_columns(self) -> tuple[str, ...]:
+        """Panel variables a secondary share class takes from its firm.
+
+        The market cap, the SF1 fundamentals and the fiscal-year history;
+        prices, volume, dividends, splits and the industry stay its own.
+
+        Examples
+        --------
+        >>> BarraStyleParameters().firm_value_columns[:3]
+        ('marketcap', 'equity', 'debtnc')
+        """
+        return (
+            self.market_cap_column,
+            self.book_equity_column,
+            self.long_term_debt_column,
+            self.total_debt_column,
+            self.current_liabilities_column,
+            self.assets_column,
+            self.earnings_column,
+            self.depreciation_column,
+            self.fx_column,
+            *self.history_columns(self.eps_prefix),
+            *self.history_columns(self.sales_prefix),
+            *self.history_columns(self.fiscal_year_end_prefix),
         )
 
     def history_columns(self, prefix: str) -> tuple[str, ...]:
@@ -586,6 +637,37 @@ def _as_float64(values: np.ndarray) -> np.ndarray:
     return values.astype(np.float64)
 
 
+def _carry_firm_values(
+    arrays: dict[str, np.ndarray],
+    firm: np.ndarray,
+    symbols: np.ndarray,
+    params: BarraStyleParameters,
+) -> None:
+    """Copy each secondary share class's firm values onto it, in place.
+
+    ``firm[t, s]`` names the symbol whose ``firm_value_columns`` symbol
+    ``s`` takes on bar ``t``. Where it names another symbol on the axis,
+    those columns are copied from it; elsewhere (itself, NaN, or a symbol
+    not on the axis) nothing is copied.
+
+    Raises
+    ------
+    ValueError
+        If the symbol axis is not integers.
+    """
+    if not np.issubdtype(np.asarray(symbols).dtype, np.integer):
+        raise ValueError(
+            f"BarraStyle: firm_column {params.firm_column!r} names symbols by number, so it "
+            f"needs an integer symbol axis (permatickers); got dtype {np.asarray(symbols).dtype}"
+        )
+    own = np.broadcast_to(np.arange(len(symbols)), firm.shape)
+    known = np.isfinite(firm)
+    position = pd.Index(symbols).get_indexer(np.where(known, firm, -1).astype(np.int64).ravel())
+    position = np.where(known.ravel() & (position >= 0), position, own.ravel()).reshape(firm.shape)
+    for column in params.firm_value_columns:
+        arrays[column] = np.ascontiguousarray(np.take_along_axis(arrays[column], position, axis=1))
+
+
 def _growth(years: list[OpBase], ends: list[OpBase], least: int) -> OpBase:
     """Return the least-squares slope of ``years`` on time over their mean absolute value.
 
@@ -631,10 +713,15 @@ class BarraStyle(FactorKunQuant):
     a merge of a Sharadar price dataset, the DAILY dataset, the SF1 ART
     fundamentals dataset (whose balance-sheet items equal ARQ's on every
     filing), the fiscal-year history dataset and a risk-free series
-    broadcast across symbols. On every bar ``t``:
+    broadcast across symbols, and the share-class firm of each symbol. On
+    every bar ``t``:
 
+    - a secondary share class (``firm_column`` naming another symbol)
+      takes that symbol's market cap, fundamentals and fiscal-year history
+      before anything else is computed;
     - the estimation universe is the ``estimation_universe_size`` symbols
-      with the largest market cap at ``t-1``;
+      with the largest market cap at ``t-1``, secondary share classes left
+      out;
     - the market return is the universe's return, weighted by the market
       cap at ``t-1``;
     - returns are in excess of the risk-free rate of the bar before (the
@@ -656,8 +743,10 @@ class BarraStyle(FactorKunQuant):
       bars, ``T = 1 .. cmra_months``; NaN when ``min Z <= -1``;
     - a day's turnover is ``volume * close / marketcap``, its dollar volume
       over its market cap: the share count ``marketcap / close`` and the
-      volume are on that day's share basis, so a split moves neither.
-      STOM, STOQ and STOA are ``log(L * mean turnover)`` over the
+      volume are on that day's share basis, so a split moves neither. A
+      secondary share class's turnover is its dollar volume over its
+      firm's market cap, as Sharadar gives no per-class share count. STOM,
+      STOQ and STOA are ``log(L * mean turnover)`` over the
       last 1, ``stoq_months`` and ``stoa_months`` months of
       ``L = liquidity_month_length`` bars, which is USE4's
       ``log(sum over a month)`` and ``log(mean over months of exp(STOM))``
@@ -873,7 +962,12 @@ class BarraStyle(FactorKunQuant):
             risk_free = BackRef(Input(params.risk_free_column), 1)
 
             cap_before = BackRef(cap, 1)
-            estu = CrossSectionalTopN(cap_before, params.estimation_universe_size)
+            # Ranked on each symbol's own cap: a secondary share class, which
+            # carries its firm's cap but has none of its own, is never in the
+            # universe, so the firm enters it once.
+            estu = CrossSectionalTopN(
+                BackRef(Input(OWN_CAP), 1), params.estimation_universe_size
+            )
             stock_return = price / BackRef(price, 1) - 1.0
             market_return = CrossSectionalWeightedMean(stock_return, cap_before * estu)
             excess = stock_return - risk_free
@@ -1093,6 +1187,8 @@ class BarraStyle(FactorKunQuant):
             for column in self.config.data_columns
         }
         arrays[INDUSTRY_INPUT] = arrays.pop(params.industry_column)
+        arrays[OWN_CAP] = arrays[params.market_cap_column].copy()
+        _carry_firm_values(arrays, arrays.pop(params.firm_column), panel["symbol"].values, params)
         splits = arrays[params.split_column]
         arrays[SPLIT_BASIS] = np.ascontiguousarray(
             np.cumprod(np.where(np.isfinite(splits) & (splits > 0), splits, 1.0), axis=0)

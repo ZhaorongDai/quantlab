@@ -277,6 +277,27 @@ panel["industry"].attrs["names"]["35"]  # 'Comps'
 - **Thin industries.** `industry_merge` lists `(from_code, to_code)` pairs. Its default (`DEFAULT_INDUSTRY_MERGE`) merges the nine industries with on average fewer than 10 members of the top 3,000 domestic common stocks by the previous day's DAILY market cap, over 1998-12-02..2026-10-02. Each goes into the industry, among those with at least 10, whose cap-weighted daily return correlates most with its own: Agric to Whlsl, Soda, Beer and Smoke to Food, Txtls to BldMt, FabPr to Mach, Ships and Guns to Aero, and Gold to Mines. That leaves 39 codes. An unknown code, an industry merged into itself or into two targets, or a target that is itself merged away is refused. `()` merges nothing.
 - **Updates.** `update.py` pulls TICKERS whole and ACTIONS as a trailing window, then appends the new trading days. A stored day is never rewritten, so a change the vendor backdates reaches only the days appended after it.
 
+## Share classes
+
+A firm with several traded share classes has one SF1 security, the primary class. Its DAILY `marketcap` is the firm's total: GOOGL's $2,251B on 2024-06-28 counts every share of both classes, and BRK.B's $877B counts the A shares. A secondary class (TICKERS `category` ending in "Secondary Class": GOOG, BRK.A, FOX, ...) has SEP rows only, so it has no market cap or fundamentals of its own. `SharadarShareClassDataset` stores, for every SEP security, the permaticker whose DAILY and SF1 rows hold its firm's values.
+
+```python
+from quantlab.dataset.config import SharadarShareClassConfig
+from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
+
+config = SharadarShareClassConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_share_class_1d.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+)
+SharadarShareClassDataset(config).update()
+panel = SharadarShareClassDataset(config).panel("2024-01-02", "2024-12-31")
+panel["firm"].sel(symbol=119496).values[0]  # GOOG -> 195146.0, GOOGL
+```
+
+- **Mapping.** A security that is not a secondary class is its own firm. A secondary class's firm is the SF1 security with the same SEC CIK (the `CIK=` of TICKERS `secfilings`) priced on the day, between its `firstpricedate` and `lastpricedate`. A CIK can name successive issuers: OSGB follows the old Overseas Shipholding Group security through 2014-06-03 and the new one from 2015-12-18. On the 2026-10-05 pull, 1,334 of the 1,338 domestic secondary classes have exactly one SF1 security with their CIK; LGF.A, MCWEQ and XPDIU have no CIK. The CIK agrees with TICKERS `relatedtickers` on GOOG/GOOGL, BRK.A/BRK.B and FOX/FOXA. `relatedtickers` is not used: it names current tickers, which are reused.
+- **Variable.** `firm` holds the permaticker as a float. It is NaN on a day where no SF1 security with the CIK is priced or where two or more are, and outside the security's own first and last price dates. Each day is decided from the issuers priced on it, so the panel holds no look-ahead.
+- **Updates.** `update.py` pulls TICKERS whole and appends the new trading days.
+
 ## Scripts
 
 The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
@@ -289,7 +310,7 @@ uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloa
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, the industry store `sharadar_industry_1d.zarr` and the fiscal-year history store `sharadar_sf1_fiscal_years.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership, industry and fiscal-year panels.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, the industry store `sharadar_industry_1d.zarr`, the fiscal-year history store `sharadar_sf1_fiscal_years.zarr` and the share-class store `sharadar_share_class_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership, industry, fiscal-year and share-class panels.
 
 ## Daily update
 

@@ -38,7 +38,7 @@ or run the `# %%` cells one at a time. Every step is a function (`prepare_stores
 
 ## Barra style exposures
 
-`barra_style.py` builds `BarraStyle`, the Barra USE4-style exposures (12 styles, 20 descriptors, the industry code and the estimation-universe mask), for every Sharadar common stock over 2001-2026, prints each style's coverage of the estimation universe and writes a factor report of the styles against the 21-bar forward return. It reads the SEP, DAILY, SF1 ART, fiscal-year history and industry stores that `scripts/sharadar/download.py` builds, and downloads FRED's 3-month T-bill rate (no key) itself. Everything goes under `<data root>/pipeline/sharadar_barra/`. See [Style factors](../../docs/developer-guide/style-factors.md).
+`barra_style.py` builds `BarraStyle`, the Barra USE4-style exposures (12 styles, 20 descriptors, the industry code and the estimation-universe mask), for every Sharadar common stock over 2001-2026, prints each style's coverage of the estimation universe and writes a factor report of the styles against the 21-bar forward return. It reads the SEP, DAILY, SF1 ART, fiscal-year history, industry and share-class stores that `scripts/sharadar/download.py` builds, and downloads FRED's 3-month T-bill rate (no key) itself. Everything goes under `<data root>/pipeline/sharadar_barra/`. See [Style factors](../../docs/developer-guide/style-factors.md).
 
 ```bash
 QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/barra_style.py

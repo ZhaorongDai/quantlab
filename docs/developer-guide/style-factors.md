@@ -25,13 +25,20 @@ matrix and specific risk (a risk model) are not computed here.
   standardization and the regressions are fitted on: here the
   `estimation_universe_size` (3000) largest stocks by the previous bar's
   market cap, re-ranked on every bar inside the graph, with no buffer band.
+  A firm enters once: a secondary share class is never in it.
+- A **secondary share class** (GOOG beside GOOGL, BRK.A beside BRK.B) has
+  no DAILY or SF1 rows of its own. It takes its firm's market cap,
+  fundamentals and fiscal-year history from the primary class named by
+  `SharadarShareClassDataset`, so its Size and its valuation, leverage and
+  growth exposures are the firm's. Its prices, returns, volume and
+  dividends stay its own.
 - The **industry** is the stock's point-in-time Fama-French 48 code from
   `SharadarIndustryDataset`, thin industries merged.
 
 ## Inputs
 
-The factor reads `BarraStyleParameters().panel_columns`, 31 variables, from
-a merge of six datasets:
+The factor reads `BarraStyleParameters().panel_columns`, 32 variables, from
+a merge of seven datasets:
 
 | Dataset | Variables |
 |---|---|
@@ -40,6 +47,7 @@ a merge of six datasets:
 | `SharadarFundamentalsDataset`, dimension `ART` | `equity`, `debtnc`, `debt`, `liabilitiesc`, `assets`, `netinccmn`, `depamor`, `fxusd` |
 | `SharadarFiscalYearsDataset` | `eps_fy0..4`, `sps_fy0..4`, `reportperiod_fy0..4` |
 | `SharadarIndustryDataset` | `industry` |
+| `SharadarShareClassDataset` | `firm` |
 | `FredRateDataset` (DTB3) | `risk_free`, on the one symbol `DTB3` |
 
 The ART store alone carries the fundamentals: its balance-sheet items equal
@@ -61,7 +69,7 @@ from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
 params = BarraStyleParameters(risk_free_symbol="DTB3")
 factor = BarraStyle(FactorConfig(
     warmup_bars=params.warmup_bars,            # 526
-    dataset=MergedDataset([prices, daily, art, history, industry, dtb3]),
+    dataset=MergedDataset([prices, daily, art, history, industry, share_class, dtb3]),
     mode="batch",
     data_columns=params.panel_columns,
     file_path="barra_style.zarr",
@@ -72,8 +80,11 @@ factor.build("2001-01-02", "2026-10-02")
 
 ## Pipeline on each bar
 
-1. The ESTU is chosen from the previous bar's market cap. The market return
-   is the ESTU's return, weighted by the previous bar's cap.
+1. A secondary share class takes its firm's market cap, fundamentals and
+   fiscal-year history ([E] p.51: LNCAP is the firm's total market cap).
+   The ESTU is chosen from the previous bar's market cap, secondary classes
+   left out. The market return is the ESTU's return, weighted by the
+   previous bar's cap.
 2. Every descriptor is computed (next section).
 3. Each descriptor has its outliers treated on its own distribution
    ([M] §2.2, p.8): with `m` and `s` the equally weighted mean and standard
@@ -132,6 +143,11 @@ window, `age` 0 for the current bar.
 | Growth (0.20, 0.10) | EGRO | slope of a least-squares fit of the last five fiscal years' EPS on their fiscal year ends, over the mean absolute EPS (see Deviations) | 5 fiscal years |
 | | SGRO | the same with sales per share | 5 fiscal years |
 
+A day's turnover is its dollar volume over the firm's market cap. Sharadar
+gives no per-class share count, so for a firm with several traded classes
+each class's turnover, the primary's included, is its own trading as a
+share of the whole firm, lower than the class's own share turnover.
+
 `LD` is long-term debt (`debtnc`), or total debt where the balance sheet
 does not split current from non-current, as for a bank. An SF1 amount meets
 the USD market cap divided by `fxusd`.
@@ -188,6 +204,7 @@ Every window, half-life, lag, weight and threshold is a field of
 | `min_growth_years` | 3 | ours |
 | EGRO and SGRO over the mean absolute annual value | | ours (see Deviations) |
 | a missing regressor taken at its weighted mean in an orthogonalization | | ours |
+| turnover over the firm's market cap for every share class | | ours (no per-class share count in Sharadar) |
 
 ## On real data
 

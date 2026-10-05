@@ -251,5 +251,3 @@ def _days(column: pl.Series, missing: np.datetime64) -> np.ndarray:
     days = column.cast(pl.Date).to_numpy().astype("datetime64[D]")
     return np.where(np.isnat(days), missing, days)
 
-
-__all__ = ["ERROR_SAMPLE", "SpellPanelDataset"]

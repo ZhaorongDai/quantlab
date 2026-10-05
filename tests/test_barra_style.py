@@ -82,7 +82,12 @@ _KWARGS = {
 _RESVOL_WEIGHTS = (0.75, 0.15, 0.10)
 _LIQUIDITY_WEIGHTS = (0.35, 0.35, 0.30)
 _COLUMNS = ("adjClose", "marketcap", "risk_free", "close", "volume", "divCash", "splitFactor",
-            *_FUNDAMENTALS, *_HISTORY, "industry")
+            *_FUNDAMENTALS, *_HISTORY, "industry", "firm")
+
+
+def _symbol(index: int) -> int:
+    """The permaticker-like integer symbol of column ``index``."""
+    return 1000 + index
 
 
 def _inputs() -> dict[str, np.ndarray]:
@@ -159,6 +164,8 @@ def _inputs() -> dict[str, np.ndarray]:
     industry[:, _TWIN] = industry[:, _SPLIT]
     return {
         "industry": industry,
+        # Every symbol is its own firm (no share classes).
+        "firm": np.broadcast_to(np.array([_symbol(i) for i in range(_S)], dtype=np.float64), (_T, _S)).copy(),
         **fundamentals,
         **history,
         "adjClose": price,
@@ -175,7 +182,10 @@ def _store(tmp_path: Path, name: str, variables: dict[str, np.ndarray]) -> Stock
     timestamps = pd.bdate_range("2021-01-04", periods=_T)
     panel = xr.Dataset(
         {k: (("timestamp", "symbol"), v) for k, v in variables.items()},
-        coords={"timestamp": timestamps, "symbol": [f"S{i:02d}" for i in range(_S)]},
+        coords={
+            "timestamp": timestamps,
+            "symbol": [_symbol(i) for i in range(next(iter(variables.values())).shape[1])],
+        },
     )
     store = tmp_path / f"{name}.zarr"
     panel.to_zarr(store, mode="w")
@@ -189,17 +199,18 @@ def _store(tmp_path: Path, name: str, variables: dict[str, np.ndarray]) -> Stock
     ))
 
 
-def _config(tmp_path: Path, **overrides) -> FactorConfig:
-    inputs = _inputs()
+def _config(tmp_path: Path, inputs: dict[str, np.ndarray] | None = None, **overrides) -> FactorConfig:
+    inputs = _inputs() if inputs is None else inputs
     price_columns = ("adjClose", "risk_free", "close", "volume", "divCash", "splitFactor")
     prices = _store(tmp_path, "prices", {k: inputs[k] for k in price_columns})
     caps = _store(tmp_path, "caps", {"marketcap": inputs["marketcap"]})
     fundamentals = _store(tmp_path, "fundamentals", {k: inputs[k] for k in _FUNDAMENTALS})
     history = _store(tmp_path, "history", {k: inputs[k] for k in _HISTORY})
     industry = _store(tmp_path, "industry", {"industry": inputs["industry"]})
+    firm = _store(tmp_path, "firm", {"firm": inputs["firm"]})
     values = {
         "warmup_bars": 0,
-        "dataset": [prices, caps, fundamentals, history, industry],
+        "dataset": [prices, caps, fundamentals, history, industry, firm],
         "mode": "batch",
         "data_columns": _COLUMNS,
         "file_path": str(tmp_path / "barra.zarr"),
@@ -601,8 +612,8 @@ def test_a_split_leaves_turnover_and_dividend_yield_continuous(computed) -> None
     # share bases, so every descriptor and style agrees.
     for name in ("desc_stom", "desc_stoq", "desc_stoa", "desc_yild", "style_liquidity",
                  "style_dividend_yield"):
-        split = out[name].sel(symbol=f"S{_SPLIT:02d}").values
-        twin = out[name].sel(symbol=f"S{_TWIN:02d}").values
+        split = out[name].sel(symbol=_symbol(_SPLIT)).values
+        twin = out[name].sel(symbol=_symbol(_TWIN)).values
         np.testing.assert_allclose(split, twin, rtol=1e-12, atol=1e-12, equal_nan=True)
         assert np.isfinite(split[_SPLIT_BAR + _DIV_WINDOW :]).all()
 
@@ -656,18 +667,18 @@ def test_symbols_outside_the_universe_still_get_exposures(computed) -> None:
         exposed = outside & np.isfinite(got)
         assert exposed[_WINDOW:].sum() > 0
     # A clipped small cap outside the universe keeps an exposure.
-    clipped = out["desc_lncap"].sel(symbol=f"S{_CLIPPED:02d}").values[1:]
+    clipped = out["desc_lncap"].sel(symbol=_symbol(_CLIPPED)).values[1:]
     np.testing.assert_allclose(clipped, want["lncap_floor"][1:, _CLIPPED], rtol=1e-9)
-    assert np.isfinite(out["style_size"].sel(symbol=f"S{_CLIPPED:02d}").values[1:]).all()
+    assert np.isfinite(out["style_size"].sel(symbol=_symbol(_CLIPPED)).values[1:]).all()
 
 
 def test_a_descriptor_beyond_the_data_error_threshold_is_dropped_and_the_style_imputed(computed) -> None:
     _, out, want = computed
     # The micro cap sits about 20 standard deviations below the universe:
     # its LNCAP is dropped, and its Size is imputed from its industry.
-    assert np.isnan(out["desc_lncap"].sel(symbol=f"S{_TINY:02d}").values).all()
+    assert np.isnan(out["desc_lncap"].sel(symbol=_symbol(_TINY)).values).all()
     assert np.isnan(want["raw_style_size"][:, _TINY]).all()
-    assert np.isfinite(out["style_size"].sel(symbol=f"S{_TINY:02d}").values[1:]).all()
+    assert np.isfinite(out["style_size"].sel(symbol=_symbol(_TINY)).values[1:]).all()
 
 
 def test_a_missing_style_is_imputed_and_a_present_one_keeps_its_value(computed) -> None:
@@ -684,7 +695,7 @@ def test_a_missing_style_is_imputed_and_a_present_one_keeps_its_value(computed) 
             slope, intercept = np.polyfit(raw[t, kept], beta[t, kept], 1)
             np.testing.assert_allclose(beta[t, kept], slope * raw[t, kept] + intercept, atol=1e-9)
     # No industry and no fit: a symbol without an industry is not imputed.
-    no_industry = out["style_beta"].sel(symbol=f"S{_NO_INDUSTRY:02d}").values
+    no_industry = out["style_beta"].sel(symbol=_symbol(_NO_INDUSTRY)).values
     assert np.isnan(no_industry[np.isnan(want["raw_style_beta"][:, _NO_INDUSTRY])]).all()
 
 
@@ -796,7 +807,7 @@ def test_growth_needs_three_known_years_and_uses_three_four_or_five(computed) ->
 
 def test_leverage_falls_back_and_refuses_where_its_inputs_do(computed) -> None:
     _, out, _ = computed
-    sel = lambda name, symbol: out[name].sel(symbol=f"S{symbol:02d}").values  # noqa: E731
+    sel = lambda name, symbol: out[name].sel(symbol=_symbol(symbol)).values  # noqa: E731
     assert np.isnan(sel("desc_dtoa", _UNCLASSIFIED)).all()
     assert np.isfinite(sel("desc_mlev", _UNCLASSIFIED)[1:]).any()  # total debt instead
     assert np.isnan(sel("desc_blev", _NEGATIVE_BOOK)).all()
@@ -825,7 +836,7 @@ def test_growth_places_each_fiscal_year_at_its_year_end(computed) -> None:
     _, out, want = computed
     # The company that skipped an annual report has its older years a year
     # further back; the reference regresses on the true times as the factor does.
-    got = out["desc_egro"].sel(symbol=f"S{_SKIPPED_YEAR:02d}").values
+    got = out["desc_egro"].sel(symbol=_symbol(_SKIPPED_YEAR)).values
     np.testing.assert_allclose(got, want["desc_egro"][:, _SKIPPED_YEAR], rtol=1e-9, atol=1e-9, equal_nan=True)
     assert np.isfinite(got[_LISTING_BAR:]).any()
 
@@ -876,3 +887,98 @@ def test_an_unknown_risk_free_symbol_is_refused(tmp_path) -> None:
     factor = BarraStyle(_config(tmp_path, kwargs={**_KWARGS, "risk_free_symbol": "DGS10"}))
     with pytest.raises(ValueError, match="DGS10"):
         compute_all(factor)
+
+
+_FIRM_GAP = slice(80, 83)
+_STYLE_AND_DESCRIPTOR_OUTPUTS = tuple(name for name in BarraStyle._OUTPUTS if name != "industry")
+_FIRM_VALUED = ("desc_lncap", "desc_btop", "desc_etop", "desc_cetop", "desc_mlev", "desc_dtoa",
+                "desc_blev", "desc_egro", "desc_sgro", "style_size", "style_book_to_price",
+                "style_earnings_yield", "style_leverage", "style_growth")
+
+
+def _with_secondary_class(inputs: dict[str, np.ndarray], primary: int) -> dict[str, np.ndarray]:
+    """``inputs`` plus one more symbol: a second share class of ``primary``'s firm.
+
+    It trades on its own: its prices drift from the primary's, it has its
+    own volume and no dividends. Like a Sharadar secondary class it has no
+    market cap and no fundamentals of its own; its ``firm`` names the
+    primary.
+    """
+    rng = np.random.default_rng(29)
+    own_moves = np.exp(np.cumsum(rng.normal(0.0, 0.004, size=_T)))
+    price = inputs["adjClose"][:, primary] * own_moves
+    secondary = {
+        "adjClose": price,
+        "close": price.copy(),
+        "volume": inputs["volume"][:, primary] * 0.4,
+        "divCash": np.zeros(_T),
+        "splitFactor": np.ones(_T),
+        "risk_free": inputs["risk_free"][:, primary],
+        "industry": inputs["industry"][:, primary],
+        "firm": np.full(_T, float(_symbol(primary))),
+    }
+    # The mapping lapses for a few bars, as between two issuers of one CIK.
+    secondary["firm"][_FIRM_GAP] = np.nan
+    out = {}
+    for name, values in inputs.items():
+        column = secondary.get(name)
+        if column is None:
+            column = np.full(_T, np.datetime64("NaT"), dtype=values.dtype) if values.dtype.kind == "M" \
+                else np.full(_T, np.nan)
+        out[name] = np.concatenate([values, column[:, None].astype(values.dtype)], axis=1)
+    return out
+
+
+def test_a_secondary_share_class_carries_its_firm_and_stays_out_of_the_universe(computed, tmp_path) -> None:
+    _, base, want = computed
+    inputs = _inputs()
+    primary = int(np.nanargmax(inputs["marketcap"][1]))
+    assert want["estu"][1:, primary].all(), "the primary should be in the universe"
+    out = compute_all(BarraStyle(_config(tmp_path, inputs=_with_secondary_class(inputs, primary))))
+    secondary, firm = _symbol(_S), _symbol(primary)
+
+    # Outside the universe on every bar, so every other symbol is untouched.
+    assert (out["estu"].sel(symbol=secondary).values == 0).all()
+    for name in _STYLE_AND_DESCRIPTOR_OUTPUTS:
+        np.testing.assert_array_equal(
+            out[name].sel(symbol=base["symbol"].values).transpose("timestamp", "symbol").values,
+            base[name].transpose("timestamp", "symbol").values,
+            err_msg=name,
+        )
+    # Every style once the windows fill; the firm's own values where they are firm-level.
+    late = slice(_WINDOW + _MOM_LAG + _MOM_WINDOW, None)
+    mapped = np.ones(_T, dtype=bool)
+    mapped[_FIRM_GAP] = False
+    for name in _STYLES:
+        values = out[name].sel(symbol=secondary).values
+        assert np.isfinite(values[late][mapped[late]]).all(), name
+    for name in _FIRM_VALUED:
+        np.testing.assert_array_equal(
+            out[name].sel(symbol=secondary).values[mapped],
+            out[name].sel(symbol=firm).values[mapped],
+            err_msg=name,
+        )
+    # Its own trading: its returns and its volume.
+    # Without its firm for a few bars it has no cap and no LNCAP there.
+    assert np.isnan(out["desc_lncap"].sel(symbol=secondary).values[_FIRM_GAP]).all()
+    for name in ("desc_beta", "desc_rstr", "desc_stom", "desc_yild"):
+        own, primary_values = out[name].sel(symbol=secondary).values, out[name].sel(symbol=firm).values
+        assert not np.allclose(own[late], primary_values[late], equal_nan=True), name
+
+
+def test_a_firm_column_on_a_non_integer_symbol_axis_is_refused(tmp_path) -> None:
+    inputs = _inputs()
+    timestamps = pd.bdate_range("2021-01-04", periods=_T)
+    stores = []
+    for name, keys in (("all", [k for k in inputs if k != "firm"]), ("firm", ["firm"])):
+        store = tmp_path / f"{name}_named.zarr"
+        xr.Dataset(
+            {k: (("timestamp", "symbol"), inputs[k]) for k in keys},
+            coords={"timestamp": timestamps, "symbol": [f"S{i:02d}" for i in range(_S)]},
+        ).to_zarr(store, mode="w")
+        stores.append(StockDataset(DatasetConfig(
+            zarr_file_path=str(store), raw_data_dir_path=str(tmp_path / "raw"),
+            market="us_equity", frequency="1d",
+        )))
+    with pytest.raises(ValueError, match="integer symbol axis"):
+        compute_all(BarraStyle(_config(tmp_path, dataset=stores)))

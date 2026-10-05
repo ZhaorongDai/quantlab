@@ -693,6 +693,30 @@ class SharadarIndustryConfig(SharadarDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class SharadarShareClassConfig(SharadarDatasetConfig):
+    """Config of the share-class firm panel on the permaticker axis.
+
+    Each SEP security's ``firm`` is the permaticker whose DAILY and SF1 rows
+    hold its firm's values: itself, or for a secondary share class the SF1
+    security with the same SEC CIK priced on the day. The universe fields
+    work as for a price panel, on SEP's TICKERS rows; the default category
+    filter is domestic common stock, secondary classes included.
+
+    Examples
+    --------
+    >>> cfg = SharadarShareClassConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_share_class_1d.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table
+    'sep'
+    """
+
+    #: Always SEP: its TICKERS rows give the categories and CIKs, its dates the calendar.
+    table: str = "sep"
+
+
+@dataclass(kw_only=True, frozen=True)
 class FredRateConfig(DatasetConfig):
     """Config of a single-symbol panel of one FRED interest-rate series.
 

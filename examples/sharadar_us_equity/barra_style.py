@@ -1,7 +1,8 @@
 """Barra USE4-style exposures on every Sharadar common stock, and a factor report on them.
 
 Sharadar SEP prices + DAILY market cap + SF1 ART fundamentals + fiscal-year
-history + Fama-French 48 industry, FRED's 3-month T-bill rate ->
+history + Fama-French 48 industry + share-class firm, FRED's 3-month T-bill
+rate ->
 ``BarraStyle`` (12 style exposures, 20 descriptors, the industry code and
 the estimation-universe mask) -> per-style coverage of the estimation
 universe -> an alphalens-style report of every style against the 21-bar
@@ -32,6 +33,7 @@ from quantlab.dataset.config import (
     SharadarFiscalYearsConfig,
     SharadarFundamentalsConfig,
     SharadarIndustryConfig,
+    SharadarShareClassConfig,
 )
 from quantlab.dataset.fred import FredRateDataset
 from quantlab.dataset.merged import MergedDataset
@@ -39,6 +41,7 @@ from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
+from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 from quantlab.factor.config import FactorConfig
 from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
@@ -86,7 +89,11 @@ def sharadar_inputs() -> list:
     industry = SharadarIndustryDataset(SharadarIndustryConfig(
         zarr_file_path=str(STORES / "sharadar_industry_1d.zarr"), raw_data_dir_path=str(VENDOR),
     ))
-    return [prices, daily, fundamentals, history, industry]
+    # A secondary share class (GOOG) takes its firm's (GOOGL's) cap and fundamentals.
+    share_class = SharadarShareClassDataset(SharadarShareClassConfig(
+        zarr_file_path=str(STORES / "sharadar_share_class_1d.zarr"), raw_data_dir_path=str(VENDOR),
+    ))
+    return [prices, daily, fundamentals, history, industry, share_class]
 
 
 def risk_free() -> FredRateDataset:
