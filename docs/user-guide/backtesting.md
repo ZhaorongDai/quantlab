@@ -70,7 +70,8 @@ model's `collect()` and `train()` before predicting:
 
 ```python
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
 backtester = USEquityCrossectionSelectStockVectorBt(

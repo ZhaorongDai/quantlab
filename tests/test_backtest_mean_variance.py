@@ -37,8 +37,9 @@ from loguru import logger
 
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, LedoitWolfConfig, MeanVarianceConfig
-from quantlab.base.portfolio import PortfolioConstructionError, PortfolioConstructor
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
+from quantlab.portfolio.base import PortfolioConstructionError, PortfolioConstructor
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.factor.config import PolarsFactorConfig

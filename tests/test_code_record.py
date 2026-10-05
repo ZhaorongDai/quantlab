@@ -21,7 +21,8 @@ from loguru import logger
 
 import quantlab.runs.record as code_record_module
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.runs.record import code_of, code_record, compare
@@ -205,7 +206,7 @@ def test_a_changed_component_module_warns_naming_it_and_its_component(
     recorded = BacktestRun.open(first.run_dir).code["modules"]
     assert recorded[name]["framework"] is False
     assert recorded["quantlab.portfolio.predefined.top_n"]["framework"] is False
-    assert recorded["quantlab.base.portfolio"]["framework"] is True
+    assert recorded["quantlab.portfolio.base"]["framework"] is True
 
     source.write_text(source.read_text() + "\n# tuned after the run\n")
     warnings_logged.clear()

@@ -38,7 +38,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.dataset.base import InsufficientHistoryError, MarketDataset
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.execution.rules import ExecutionBook, ExecutionSettings
 
@@ -195,7 +195,7 @@ class DecisionInputs:
     Examples
     --------
     >>> import numpy as np, pandas as pd, xarray as xr
-    >>> from quantlab.base.config import TopNConfig
+    >>> from quantlab.portfolio.config import TopNConfig
     >>> from quantlab.dataset.memory import FrameDataset
     >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
     >>> ts = pd.bdate_range("2024-01-01", periods=4)

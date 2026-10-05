@@ -35,7 +35,8 @@ from pathlib import Path
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, LedoitWolfConfig, MeanVarianceConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
 from quantlab.model.config import ModelConfig
 from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import (

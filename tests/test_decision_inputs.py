@@ -33,8 +33,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
-from quantlab.base.portfolio import PortfolioContext
+from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.base import PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs, rebalance_mask
@@ -323,7 +323,7 @@ def test_the_callers_hold_no_assembly_wiring(caller):
 
 
 def test_the_rules_hold_no_assembly_code():
-    from quantlab.base.portfolio import PortfolioConstructor
+    from quantlab.portfolio.base import PortfolioConstructor
 
     assert not hasattr(PortfolioConstructor, "build_context")
     assert not hasattr(PortfolioConstructor, "construct_panel")

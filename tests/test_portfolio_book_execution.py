@@ -22,7 +22,7 @@ import xarray as xr
 
 from quantlab.backtest.predefined.weights import WeightsVectorBt
 from quantlab.base.config import WeightsBacktestConfig
-from quantlab.base.portfolio import PortfolioConstructor
+from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.execution.rules import ExecutionSettings

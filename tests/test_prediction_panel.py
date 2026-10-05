@@ -87,7 +87,7 @@ def test_a_panel_whose_variables_are_not_its_labels_is_refused():
 
 
 def test_top_n_binds_to_label_specs_and_refuses_an_unknown_score_label():
-    from quantlab.base.config import TopNConfig
+    from quantlab.portfolio.config import TopNConfig
     from quantlab.portfolio.predefined.top_n import TopNConstructor
 
     TopNConstructor(TopNConfig(direction="long_only", top_n=1, score_label="rank_1")).bind(
@@ -101,7 +101,7 @@ def test_top_n_binds_to_label_specs_and_refuses_an_unknown_score_label():
 
 
 def _optimizer(label: str):
-    from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
+    from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
     from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
     from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 
@@ -164,7 +164,8 @@ def _day(ts) -> str:
 def _model_run(root, *, frame=False):
     """One load-mode `run()` with a top-2 rule over a store-backed price dataset, or with
     ``frame`` over an in-memory copy of it with fees and valuation sizing."""
-    from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+    from quantlab.base.config import CrossSectionBacktestConfig
+    from quantlab.portfolio.config import TopNConfig
     from quantlab.backtest.predefined.us_equity import (
         USEquityCrossectionSelectStockVectorBt,
     )
@@ -231,7 +232,8 @@ def test_run_writes_the_window_predictions_and_their_label_specs(model_run):
 
 @pytest.mark.parametrize("run", ["model_run", "frame_run"])
 def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
-    from quantlab.base.config import BacktestConfig, TopNConfig
+    from quantlab.base.config import BacktestConfig
+    from quantlab.portfolio.config import TopNConfig
     from quantlab.portfolio.decision_inputs import DecisionInputs
     from quantlab.portfolio.predefined.top_n import TopNConstructor
     from quantlab.execution.rules import ExecutionSettings

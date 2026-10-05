@@ -22,8 +22,14 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.base.config import MeanVarianceConfig
-from quantlab.base.portfolio import CovarianceEstimate, FactorCovarianceEstimate, PortfolioConstructionError, PortfolioConstructor, PortfolioContext
+from quantlab.portfolio.config import MeanVarianceConfig
+from quantlab.portfolio.base import (
+    CovarianceEstimate,
+    FactorCovarianceEstimate,
+    PortfolioConstructionError,
+    PortfolioConstructor,
+    PortfolioContext,
+)
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.utils.cross_section import cross_sectional_zscore
 
@@ -273,7 +279,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     predictions 0.8, -0.1, -0.3 and 0.2. With a risk aversion of 5 on so small
     an expected return the book leans toward the low-volatility symbols:
 
-    >>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
+    >>> from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
     >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
     >>> optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
     ...     expected_return_label="ret_5",

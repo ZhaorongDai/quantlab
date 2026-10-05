@@ -20,8 +20,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import TopNConfig
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.portfolio.config import TopNConfig
+from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.portfolio.predefined.top_n import TopNConstructor

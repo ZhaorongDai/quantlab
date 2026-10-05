@@ -18,8 +18,13 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
-from quantlab.base.portfolio import CovarianceEstimate, FactorCovarianceEstimate, PortfolioContext, RiskModel
+from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.base import (
+    CovarianceEstimate,
+    FactorCovarianceEstimate,
+    PortfolioContext,
+    RiskModel,
+)
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer

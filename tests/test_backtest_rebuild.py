@@ -43,7 +43,8 @@ import quantlab.core.component as component_rule
 from quantlab.base.backtest import BaseBacktester
 import quantlab.core.component as component_rule
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
 from quantlab.model.config import ModelConfig
 from quantlab.utils.jsonable import to_jsonable
 from quantlab.portfolio.predefined.top_n import TopNConstructor

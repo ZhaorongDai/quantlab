@@ -166,7 +166,6 @@ MODULE_LAYERS = {
     "quantlab.label": "label",
     "quantlab.model": "model",
     "quantlab.portfolio": "portfolio",
-    "quantlab.base.portfolio": "portfolio",
     "quantlab.backtest": "backtest",
     "quantlab.base.backtest": "backtest",
     "quantlab.api": "api",
@@ -178,7 +177,7 @@ PENDING_VIOLATIONS = {
     ("quantlab/base/config.py", "quantlab.dataset.base"),
     ("quantlab/base/config.py", "quantlab.factor.base"),
     ("quantlab/base/config.py", "quantlab.model.base"),
-    ("quantlab/base/config.py", "quantlab.base.portfolio"),
+    ("quantlab/base/config.py", "quantlab.portfolio.base"),
     ("quantlab/base/config.py", "quantlab.tracking.base"),
     ("quantlab/base/config.py", "quantlab.execution.rules"),
 }

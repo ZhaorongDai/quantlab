@@ -4,7 +4,7 @@
 
 组合构建是模型和回测之间的一步。在每个调仓 bar 上，它拿到模型对这根 bar 的预测和当前持有的权重，返回这根 bar 之后要持有的权重，回测再去交易这些权重。
 
-每条规则都继承 `PortfolioConstructor`（`quantlab/base/portfolio.py`）。`quantlab/portfolio/predefined/` 里自带两条规则：
+每条规则都继承 `PortfolioConstructor`（`quantlab/portfolio/base.py`）。`quantlab/portfolio/predefined/` 里自带两条规则：
 
 - `TopNConstructor`：分数最高的 `top_n` 个标的等权，可以只做多，也可以多空。
 - `MeanVarianceOptimizer`：带换手惩罚的 Markowitz 权重，用 cvxpy 求解。它用风险模型给风险定价；自带的风险模型是 `LedoitWolfRiskModel`，即对历史收益样本协方差做 Ledoit-Wolf 收缩。
@@ -41,8 +41,8 @@
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.base.config import TopNConfig
->>> from quantlab.base.portfolio import PortfolioContext
+>>> from quantlab.portfolio.config import TopNConfig
+>>> from quantlab.portfolio.base import PortfolioContext
 >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> symbols = ["AAA", "BBB", "CCC", "DDD"]
 >>> def on_symbols(values):
@@ -195,7 +195,7 @@ array([False, False, False,  True])
 优化器需要知道它读取的标签的 span 和尺度，回测会通过 `bind` 以标签规格的形式交给它。这里的规格描述 5 根 bar 的收益 `ret_5` 和 5 根 bar 的波动率 `vol_5`，两者都以标签自身的单位预测（`"raw"`，见[校准](#校准)）。
 
 ```python
->>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
+>>> from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
 >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 >>> from quantlab.runs.prediction_panel import LabelSpec

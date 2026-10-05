@@ -13,7 +13,7 @@ import xarray as xr
 from quantlab.backtest.engine_vectorbt import VectorBtBacktester
 from quantlab.base.backtest import MarketSpec, label_specs
 from quantlab.base.config import CrossSectionBacktestConfig
-from quantlab.base.portfolio import PortfolioConstructor
+from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.portfolio.decision_inputs import DecisionInputs
 
 #: Price conventions for US equities. Orders fill at the split- and
@@ -56,7 +56,8 @@ class USEquityCrossectionSelectStockVectorBt(VectorBtBacktester):
 
     Examples
     --------
-    >>> from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+    >>> from quantlab.base.config import CrossSectionBacktestConfig
+    >>> from quantlab.portfolio.config import TopNConfig
     >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
     >>> backtester = USEquityCrossectionSelectStockVectorBt(
     ...     CrossSectionBacktestConfig(

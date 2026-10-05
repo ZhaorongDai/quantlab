@@ -273,14 +273,9 @@ def test_an_empty_component_field_stays_empty():
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.predefined.weights import WeightsVectorBt
-from quantlab.base.config import (
-    CrossSectionBacktestConfig,
-    LedoitWolfConfig,
-    MeanVarianceConfig,
-    TopNConfig,
-    WeightsBacktestConfig,
-)
-from quantlab.base.portfolio import _Configured
+from quantlab.base.config import CrossSectionBacktestConfig, WeightsBacktestConfig
+from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.base import _Configured
 from quantlab.tracking.base import NullTracker
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.model_ensemble import ModelEnsemble

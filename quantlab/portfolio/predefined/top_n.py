@@ -12,8 +12,8 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.base.config import TopNConfig
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.portfolio.config import TopNConfig
+from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 
 
@@ -52,8 +52,8 @@ class TopNConstructor(PortfolioConstructor):
     Examples
     --------
     >>> import numpy as np, pandas as pd, xarray as xr
-    >>> from quantlab.base.config import TopNConfig
-    >>> from quantlab.base.portfolio import PortfolioContext
+    >>> from quantlab.portfolio.config import TopNConfig
+    >>> from quantlab.portfolio.base import PortfolioContext
     >>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
     >>> symbols = ["AAA", "BBB", "CCC", "DDD"]
     >>> context = PortfolioContext(

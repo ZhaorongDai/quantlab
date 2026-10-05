@@ -63,7 +63,7 @@ class PortfolioConstructionError(RuntimeError):
     --------
     >>> raise PortfolioConstructionError("infeasible: 3 symbols under a 0.2 cap")
     Traceback (most recent call last):
-    quantlab.base.portfolio.PortfolioConstructionError: infeasible: 3 symbols under a 0.2 cap
+    quantlab.portfolio.base.PortfolioConstructionError: infeasible: 3 symbols under a 0.2 cap
     """
 
 
@@ -470,7 +470,7 @@ class RiskModel(_Configured, ABC):
 
     Examples
     --------
-    >>> from quantlab.base.config import LedoitWolfConfig
+    >>> from quantlab.portfolio.config import LedoitWolfConfig
     >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
     >>> risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60))
     >>> isinstance(risk, RiskModel), risk.lookback_bars
@@ -573,7 +573,7 @@ class PortfolioConstructor(_Configured, ABC):
 
     Examples
     --------
-    >>> from quantlab.base.config import TopNConfig
+    >>> from quantlab.portfolio.config import TopNConfig
     >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
     >>> rule = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
     >>> isinstance(rule, PortfolioConstructor), rule.config.top_n

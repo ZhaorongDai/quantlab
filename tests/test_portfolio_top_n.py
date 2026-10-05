@@ -46,8 +46,9 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.portfolio.decision_inputs import rebalance_mask
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
-from quantlab.base.portfolio import PortfolioConstructor, PortfolioContext
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
+from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt

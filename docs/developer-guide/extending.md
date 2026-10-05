@@ -899,7 +899,7 @@ only `MARKET`. To reuse the selection rule with another engine, call
 from `quantlab.portfolio.decision_inputs`, or its one-bar pair
 `rule.decide(inputs.context(t, ...))` from a bar handler; the portfolio layer depends on
 no simulation engine. A new rule from scores to weights subclasses
-`quantlab.base.portfolio.PortfolioConstructor` and implements `construct`; it
+`quantlab.portfolio.base.PortfolioConstructor` and implements `construct`; it
 goes in the config's `constructor` (see [portfolio construction](../portfolio.md)
 for the per-bar contract). A new backtest parameter belongs on a new
 config dataclass derived from `BacktestConfig`, named in `config_cls`, so that the run's recipe records it

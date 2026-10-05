@@ -241,7 +241,7 @@ def _selected(panel, prices_zone, scores, columns, config):
     not tradable keeps its current weight, the holdings replayed from the prices with
     ``config``'s sizing basis, fees and slippage on its rebalance schedule.
     """
-    from quantlab.base.config import TopNConfig
+    from quantlab.portfolio.config import TopNConfig
     from quantlab.runs.prediction_panel import LabelSpec
     from quantlab.portfolio.decision_inputs import DecisionInputs
     from quantlab.portfolio.predefined.top_n import TopNConstructor

@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/portfolio.md)
 
 Portfolio construction is the step between a model and a backtest. On every rebalance bar it takes the model's predictions for that bar and the weights currently held, and returns the weights to hold after the bar. The backtest then trades those weights.
 
-Every rule derives from `PortfolioConstructor` (`quantlab/base/portfolio.py`). Two rules ship in `quantlab/portfolio/predefined/`:
+Every rule derives from `PortfolioConstructor` (`quantlab/portfolio/base.py`). Two rules ship in `quantlab/portfolio/predefined/`:
 
 - `TopNConstructor`: equal weights on the `top_n` best scores, long-only or long-short.
 - `MeanVarianceOptimizer`: Markowitz weights with a turnover penalty, solved with cvxpy. It prices risk with a risk model. The shipped risk model is `LedoitWolfRiskModel`, a Ledoit-Wolf shrunk covariance of trailing returns.
@@ -41,8 +41,8 @@ A rule keeps no state between bars. Because it only ever sees one bar, it cannot
 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.base.config import TopNConfig
->>> from quantlab.base.portfolio import PortfolioContext
+>>> from quantlab.portfolio.config import TopNConfig
+>>> from quantlab.portfolio.base import PortfolioContext
 >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> symbols = ["AAA", "BBB", "CCC", "DDD"]
 >>> def on_symbols(values):
@@ -195,7 +195,7 @@ A held candidate without a prediction gets an expected return of 0.0, so its tur
 The optimiser needs to know the span and scale of the labels it reads, which a backtest hands it through `bind` as label specs. Here the specs describe a 5-bar return `ret_5` and a 5-bar volatility `vol_5`, both predicted in the labels' own units (`"raw"`, see [Calibration](#calibration)).
 
 ```python
->>> from quantlab.base.config import LedoitWolfConfig, MeanVarianceConfig
+>>> from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
 >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 >>> from quantlab.runs.prediction_panel import LabelSpec

@@ -41,7 +41,8 @@ from quantlab.backtest.predefined.us_equity import (
     US_EQUITY_MARKET,
     USEquityCrossectionSelectStockVectorBt,
 )
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
 from quantlab.factor.config import PolarsFactorConfig
 from quantlab.model.config import ModelConfig
 from quantlab.runs.prediction_panel import PredictionPanel

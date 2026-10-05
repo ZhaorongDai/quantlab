@@ -4,7 +4,7 @@ English | [简体中文](zh-CN/backtest.md)
 
 A backtest takes a trained return model and a price dataset and shows how the model's predictions would have traded. The model predicts a score for every symbol on every bar, a selection rule turns the scores into target weights, and a simulation engine trades those weights and records an equity curve. Each run writes a run directory with the weights, the equity curve, metrics, an HTML report and the configuration needed to rebuild it.
 
-The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the decision inputs and rebalance schedule (`DecisionInputs` and `rebalance_mask` in `quantlab/portfolio/decision_inputs.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/base/portfolio.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
+The main classes are `BaseBacktester` (`quantlab/base/backtest.py`), the vectorbt engine `VectorBtBacktester` (`quantlab/backtest/engine_vectorbt.py`), the decision inputs and rebalance schedule (`DecisionInputs` and `rebalance_mask` in `quantlab/portfolio/decision_inputs.py`), the portfolio construction rule that the config's `constructor` holds (a `PortfolioConstructor` from `quantlab/portfolio/base.py`: `TopNConstructor` here, or the mean-variance optimiser of [Portfolio construction](portfolio.md)) and the US-equity backtester `USEquityCrossectionSelectStockVectorBt` (`quantlab/backtest/predefined/us_equity.py`).
 
 ## Prerequisites
 
@@ -140,7 +140,8 @@ The first session trains a checkpoint and backtests a rule that holds the two hi
 >>> import xarray as xr
 >>> from demo_parts import *
 >>> from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
->>> from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+>>> from quantlab.base.config import CrossSectionBacktestConfig
+>>> from quantlab.portfolio.config import TopNConfig
 >>> from quantlab.portfolio.predefined.top_n import TopNConstructor
 >>> root = Path(tempfile.mkdtemp())
 >>> cfg = write_price_store(root, delist={"FFF": 36})
@@ -763,7 +764,7 @@ timestamp
 2024-02-19  0.037  0.647  0.000  0.16  0.0  0.156
 ```
 
-To keep the top-N rule with another score, `DecisionInputs(dataset, TopNConstructor(TopNConfig(direction, top_n)), fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...).weights(scores)` (`quantlab.portfolio.decision_inputs`) accepts any score panel (a dataset with one variable per label) and returns the same `weight` dataset, each bar handed the tradability of the price dataset and the holdings the simulation would carry. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.base.portfolio`) and implement `construct`. An executor with its own book decides one bar with `DecisionInputs.context` and the rule's `decide`, the pair `weights` loops (see [Portfolio construction](portfolio.md#one-bar-outside-a-backtest)). Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
+To keep the top-N rule with another score, `DecisionInputs(dataset, TopNConstructor(TopNConfig(direction, top_n)), fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...).weights(scores)` (`quantlab.portfolio.decision_inputs`) accepts any score panel (a dataset with one variable per label) and returns the same `weight` dataset, each bar handed the tradability of the price dataset and the holdings the simulation would carry. Its per-bar method `construct(context)` decides one bar from a `PortfolioContext`, which is how a rule is written: subclass `PortfolioConstructor` (`quantlab.portfolio.base`) and implement `construct`. An executor with its own book decides one bar with `DecisionInputs.context` and the rule's `decide`, the pair `weights` loops (see [Portfolio construction](portfolio.md#one-bar-outside-a-backtest)). Another market is a `MarketSpec` with its own fill and valuation columns and annualization constants.
 
 ### Backtest any predictor
 

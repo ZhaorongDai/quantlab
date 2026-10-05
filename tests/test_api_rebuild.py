@@ -26,7 +26,8 @@ from loguru import logger
 
 import quantlab.api as qa
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.core.component import rebuild

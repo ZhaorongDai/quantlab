@@ -22,7 +22,8 @@ import numpy as np
 import pytest
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig
+from quantlab.portfolio.config import TopNConfig
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import make_stock_dataset

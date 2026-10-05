@@ -16,8 +16,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import TopNConfig
-from quantlab.base.portfolio import (
+from quantlab.portfolio.config import TopNConfig
+from quantlab.portfolio.base import (
     PortfolioConstructionError,
     PortfolioConstructor,
     PortfolioContext,

@@ -12,8 +12,8 @@ import numpy as np
 import xarray as xr
 from sklearn.covariance import ledoit_wolf
 
-from quantlab.base.config import LedoitWolfConfig
-from quantlab.base.portfolio import CovarianceEstimate, PortfolioContext, RiskModel
+from quantlab.portfolio.config import LedoitWolfConfig
+from quantlab.portfolio.base import CovarianceEstimate, PortfolioContext, RiskModel
 
 
 class LedoitWolfRiskModel(RiskModel):
@@ -45,8 +45,8 @@ class LedoitWolfRiskModel(RiskModel):
     Examples
     --------
     >>> import numpy as np, pandas as pd, xarray as xr
-    >>> from quantlab.base.config import LedoitWolfConfig
-    >>> from quantlab.base.portfolio import PortfolioContext
+    >>> from quantlab.portfolio.config import LedoitWolfConfig
+    >>> from quantlab.portfolio.base import PortfolioContext
     >>> rng = np.random.default_rng(0)
     >>> symbols = ["AAA", "BBB", "CCC"]
     >>> window = rng.normal(0.0, 0.01, size=(60, 3))
