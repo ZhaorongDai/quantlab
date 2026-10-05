@@ -28,7 +28,8 @@ import torch
 import xarray as xr
 from scipy.stats import rankdata
 
-from quantlab.base.config import FactorConfig, ModelConfig
+from quantlab.base.config import ModelConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.model.library_model import LibraryModel
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline

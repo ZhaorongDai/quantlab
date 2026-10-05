@@ -50,7 +50,7 @@ from KunQuant.ops import (
 from KunQuant.Stage import Function
 from loguru import logger
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.kunquant import FactorKunQuant
 
 #: Columns of a Fama-French CSV besides ``date``, as ``scripts/fama_french.py``

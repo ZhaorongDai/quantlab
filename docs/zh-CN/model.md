@@ -778,7 +778,7 @@ Qlib 的序列模型（GRU、LSTM、ALSTM、Transformer）不按整个截面训�
 ```python
 from dataclasses import replace
 
-from quantlab.base.config import MarketFeatureConfig
+from quantlab.factor.config import MarketFeatureConfig
 from quantlab.factor.predefined.market import MarketFeatures
 from quantlab.model.predefined.master import MASTERRegressor
 

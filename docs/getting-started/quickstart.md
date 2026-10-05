@@ -103,7 +103,7 @@ dataset object can answer any number of requests.
 A factor is a number computed for every `(timestamp, symbol)` cell from data available at
 that time, for example a 20-day return or a volatility. A label is the quantity a model learns
 to predict, here the return over the next five bars. A factor is a subclass of
-`quantlab.base.factor.Factor`; a label is a factor shifted forward in time by
+`quantlab.factor.base.Factor`; a label is a factor shifted forward in time by
 `quantlab.label.forward.Forward`. Both produce a panel.
 
 We use two ready-made classes. `Alpha158Stock` computes the Alpha158 feature library (169
@@ -118,7 +118,7 @@ KunQuant, a library that compiles a declarative graph of operators to native cod
 ```python
 import dataclasses
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
 

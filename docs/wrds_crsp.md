@@ -344,7 +344,7 @@ A store is derived from the raw and reference tiers, so changed conversion code 
 `CrspStockDataset` subclasses `StockDataset` and carries all twelve Tiingo variables, so a factor that reads `adjClose` or `adjVolume` accepts either dataset. The differences are the integer `symbol` axis and the refusal of the ticker-side selection field `symbols` on the dataset config, which raises `ValueError`; use `permnos` instead. A factor takes the dataset as it is and selects no symbols of its own. Here an Alpha101 factor runs over the synthetic store, converted from 2020-06-01 so that the 20-bar warm-up has history; AAPL, with four rows, gets NaN:
 
 ```python
->>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.config import FactorConfig
 >>> from quantlab.factor.predefined.alpha101 import Alpha101Stock
 >>> since_june = replace(config, zarr_file_path="data/data/us_equity/1d/crsp_since_june.zarr",
 ...                      start_date="2020-06-01")

@@ -21,8 +21,8 @@ from KunQuant.Driver import KunCompilerConfig
 from KunQuant.jit import cfake
 from KunQuant.Stage import Function
 
-from quantlab.base.config import FactorConfig
-from quantlab.base.factor import Factor
+from quantlab.factor.config import FactorConfig
+from quantlab.factor.base import Factor
 from quantlab.utils.timer import Timer
 
 #: The multi-thread executors handed out by ``shared_executor``, one per thread count.

@@ -170,7 +170,7 @@ def _names_used(path: Path) -> set[str]:
 def test_no_code_outside_the_data_and_fingerprint_modules_knows_what_a_factor_reads():
     """The fingerprint methods are gone and nobody else asks a factor its read range."""
     owners = {
-        "_input_range": {"quantlab/base/factor.py"},
+        "_input_range": {"quantlab/factor/base.py"},
         "_later_end": {"quantlab/label/forward.py"},
         "_feature_start": {"quantlab/base/model.py"},
         "_dataset_fingerprint": {"quantlab/runs/record.py"},

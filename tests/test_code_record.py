@@ -118,14 +118,14 @@ def test_outside_a_repository_git_is_null(monkeypatch):
 def test_component_modules_are_listed_before_framework_modules(warnings_logged):
     record = {
         "modules": {
-            "quantlab.base.factor": {"sha256": "a", "framework": True, "components": ["factors.0"]},
+            "quantlab.factor.base": {"sha256": "a", "framework": True, "components": ["factors.0"]},
             "mine.factors": {"sha256": "b", "framework": False, "components": ["factors.0"]},
         },
         "libraries": {"numpy": "2.0"},
     }
     changed = {
         "modules": {
-            "quantlab.base.factor": {"sha256": "A", "framework": True, "components": ["factors.0"]},
+            "quantlab.factor.base": {"sha256": "A", "framework": True, "components": ["factors.0"]},
             "mine.factors": {"sha256": "B", "framework": False, "components": ["factors.0"]},
         },
         "libraries": {"numpy": "2.0"},
@@ -137,7 +137,7 @@ def test_component_modules_are_listed_before_framework_modules(warnings_logged):
 
     first, second = warnings_logged
     assert "component module 'mine.factors' (used by 'factors.0')" in first
-    assert "framework module 'quantlab.base.factor'" in second
+    assert "framework module 'quantlab.factor.base'" in second
 
 
 def test_a_run_and_its_trained_unit_record_their_code(tmp_path):

@@ -967,7 +967,7 @@ def _factor_config(dataset_config, *, factor_names, data_columns, tmp_path, **kw
     169-name Alpha158 default would compile for minutes), and `njobs=4` keeps
     the KunQuant executor from spawning the config default's 128 threads.
     """
-    from quantlab.base.config import FactorConfig
+    from quantlab.factor.config import FactorConfig
     from quantlab.dataset.crsp import CrspStockDataset
 
     return FactorConfig(

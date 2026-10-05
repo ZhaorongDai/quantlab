@@ -35,7 +35,7 @@ import pytest
 import torch
 import xarray as xr
 
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.utils.ensemble import average_predictions
 from quantlab.utils.metrics import ic_panel_metrics

@@ -18,7 +18,7 @@ import xarray as xr
 
 from conftest import WHOLE_STORE, compute_all
 from quantlab.analysis.factor_report import FactorAnalysis
-from quantlab.base.config import FactorConfig, PolarsFactorConfig
+from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.polars import FactorPolars
 from quantlab.label.predefined.fret import Return

@@ -35,8 +35,8 @@ import xarray as xr
 from loguru import logger
 
 from conftest import assert_stored_symbol_encoding, symbol_coord
-from quantlab.base.config import BaseFactorConfig
-from quantlab.base.factor import Factor
+from quantlab.factor.config import BaseFactorConfig
+from quantlab.factor.base import Factor
 from quantlab.backend.zarr import XrBackend
 
 # ---------------------------------------------------------------------------

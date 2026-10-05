@@ -49,7 +49,7 @@ from KunQuant.ops import (
 from KunQuant.Stage import Function
 from loguru import logger
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.predefined.residual_momentum import (
     FAMA_FRENCH_COLUMNS,

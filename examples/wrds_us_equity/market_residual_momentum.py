@@ -30,7 +30,7 @@ if sys.platform == "darwin":
 
 from loguru import logger
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.config import get_data_root
 from quantlab.dataset.crsp import CrspStockDataset

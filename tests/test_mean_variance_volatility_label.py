@@ -32,12 +32,11 @@ import xarray as xr
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
-    FactorConfig,
     LedoitWolfConfig,
     MeanVarianceConfig,
     ModelConfig,
-    PolarsFactorConfig,
 )
+from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.base.portfolio import PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.label.predefined.fret import Return, Volatility

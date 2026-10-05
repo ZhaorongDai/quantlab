@@ -693,7 +693,7 @@ def code_record(components: Iterable[tuple[str, object]]) -> dict:
     ['git', 'libraries', 'modules']
     >>> record["modules"]["tests.backtest_fixtures"]["framework"]
     False
-    >>> record["modules"]["quantlab.base.factor"]["framework"]
+    >>> record["modules"]["quantlab.factor.base"]["framework"]
     True
     """
     modules: dict[str, dict] = {}

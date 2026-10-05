@@ -12,7 +12,7 @@ config. Copy it as a starting point for a new Polars factor.
 
 import polars as pl
 
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.factor.polars import FactorPolars
 
 _DEFAULT_HORIZON = 20

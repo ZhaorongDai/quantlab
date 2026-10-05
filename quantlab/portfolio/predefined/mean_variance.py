@@ -28,7 +28,7 @@ from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.utils.ensemble import _cross_sectional_zscore
 
 if TYPE_CHECKING:
-    from quantlab.base.factor import Factor
+    from quantlab.factor.base import Factor
 
 _SOLVED = (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 

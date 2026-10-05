@@ -28,7 +28,8 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import FactorConfig, ForwardConfig
+from quantlab.factor.config import FactorConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.label.forward import Forward
 
@@ -206,7 +207,7 @@ class BinaryReturn(_OpenToOpenLabel):
 
     >>> import numpy as np, pandas as pd, xarray as xr
     >>> from quantlab.backend.zarr import XrBackend
-    >>> from quantlab.base.config import FactorConfig
+    >>> from quantlab.factor.config import FactorConfig
     >>> from quantlab.dataset.config import DatasetConfig
     >>> from quantlab.dataset.stock import StockDataset
     >>> from quantlab.label.predefined.fret import BinaryReturn, Return
@@ -275,7 +276,7 @@ class Volatility(_OpenToOpenLabel):
 
     >>> import numpy as np, pandas as pd, xarray as xr
     >>> from quantlab.backend.zarr import XrBackend
-    >>> from quantlab.base.config import FactorConfig
+    >>> from quantlab.factor.config import FactorConfig
     >>> from quantlab.dataset.config import DatasetConfig
     >>> from quantlab.dataset.stock import StockDataset
     >>> from quantlab.label.predefined.fret import Volatility

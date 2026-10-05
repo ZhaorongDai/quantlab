@@ -202,7 +202,7 @@ Traceback (most recent call last):
 ValueError: 'alpha158_crypto' needs column(s) 'amount', which the data does not have. Present columns: ['timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume']. Pass columns={'yours': 'amount'} to map one of yours onto it.
 ```
 
-也可以不用简称，直接传入任意 `quantlab.base.factor.Factor` 子类。目录中某个类的子类读取该简称对应的列。其他类构建在一个数据集上，该数据集以标准列名持有 frame 的每一列。例如一个 Polars 因子：
+也可以不用简称，直接传入任意 `quantlab.factor.base.Factor` 子类。目录中某个类的子类读取该简称对应的列。其他类构建在一个数据集上，该数据集以标准列名持有 frame 的每一列。例如一个 Polars 因子：
 
 ```python
 >>> from quantlab.factor.polars import FactorPolars

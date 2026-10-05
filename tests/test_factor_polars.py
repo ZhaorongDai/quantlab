@@ -31,7 +31,7 @@ import pytest
 import xarray as xr
 
 from conftest import compute_all
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset

@@ -25,7 +25,7 @@ vendor API --> acquisition --> raw tier --> dataset --> factors, labels --> mode
 |-------|-------|--------|------------|
 | Acquisition | a vendor API and an `AcquisitionConfig` | raw parquet files on disk | `quantlab.acquisition.base.Acquisition` |
 | Dataset | the raw files | a price panel in a Zarr store | `quantlab.dataset.base.BaseDataset` |
-| Factor and label | a price panel | a factor panel | `quantlab.base.factor.Factor` |
+| Factor and label | a price panel | a factor panel | `quantlab.factor.base.Factor` |
 | Model | factor and label panels | a prediction panel | `quantlab.base.model.BaseModel` |
 | Selection | a prediction panel | a target-weight panel | a strategy-specific class |
 | Backtest | target weights and prices | a simulation, metrics and a run directory | `quantlab.base.backtest.BaseBacktester` |

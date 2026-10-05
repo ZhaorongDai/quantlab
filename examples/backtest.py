@@ -33,13 +33,9 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import (
-    CrossSectionBacktestConfig,
-    ForwardConfig,
-    ModelConfig,
-    PolarsFactorConfig,
-    TopNConfig,
-)
+from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
+from quantlab.factor.config import PolarsFactorConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.model.library_model import LibraryModel

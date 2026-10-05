@@ -14,7 +14,7 @@ import xarray as xr
 from loguru import logger
 
 import quantlab.runs.record as fingerprint
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.stock import StockDataset
@@ -366,7 +366,7 @@ def test_a_merge_input_holding_none_of_the_variables_is_not_read():
 
 def test_a_kunquant_factor_reads_only_its_data_columns(spot_kline_zarr):
     from tests.test_factor_merge import MaDeviation
-    from quantlab.base.config import FactorConfig
+    from quantlab.factor.config import FactorConfig
     from quantlab.dataset.spot import SpotKlineDataset
 
     spot = SpotKlineDataset(spot_kline_zarr())

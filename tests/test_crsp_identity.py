@@ -1990,7 +1990,7 @@ def test_crsp_has_no_reader_of_config_symbols():
 
 
 def test_the_factor_base_does_not_import_the_crsp_module():
-    """`base/factor.py` must not gain a `quantlab.dataset.crsp` import.
+    """`factor/base.py` must not gain a `quantlab.dataset.crsp` import.
 
     CLAUDE.md records this repo's layering as one-directional,
     `base -> dataset/factor/label -> model -> backtest`, so the base never
@@ -2009,8 +2009,8 @@ def test_the_factor_base_does_not_import_the_crsp_module():
     source = (
         Path(__file__).resolve().parent.parent
         / "quantlab"
-        / "base"
-        / "factor.py"
+        / "factor"
+        / "base.py"
     )
     offenders = [
         f"{number}: {line.strip()}"

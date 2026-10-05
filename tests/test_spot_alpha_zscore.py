@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.factor.predefined.alpha101 import Alpha101SpotKline
 from quantlab.factor.predefined.alpha158 import Alpha158SpotKline

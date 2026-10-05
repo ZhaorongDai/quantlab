@@ -30,7 +30,7 @@ from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.base import MarketDataset
 
 CORE_LAYER_FILES = (
-    "quantlab/base/factor.py",
+    "quantlab/factor/base.py",
     "quantlab/base/model.py",
     "quantlab/model/torch_model.py",
     "quantlab/model/library_model.py",

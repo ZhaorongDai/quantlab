@@ -18,12 +18,12 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.predefined import Alpha101
 from KunQuant.Stage import Function
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.predefined._support import kunquant_alpha101
 from quantlab.factor.predefined._support.nan_preserving_ops import missing_bars_only
 from quantlab.factor.predefined._support.zscore import TimeSeriesZScoredFactor
-from quantlab.my_ops.preprocess import WindowedZScore, CrossSectionalZScore
+from quantlab.factor.kunquant_ops import WindowedZScore, CrossSectionalZScore
 
 
 class Alpha101SpotKline(TimeSeriesZScoredFactor):

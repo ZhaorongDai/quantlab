@@ -1,6 +1,6 @@
 """Cross-sectional winsorize (缩尾) and trim (截尾) KunQuant operator tests.
 
-Locks `quantlab/my_ops/preprocess.py:CrossSectionalWinsorize` and
+Locks `quantlab/factor/kunquant_ops.py:CrossSectionalWinsorize` and
 `CrossSectionalTrim`. At every timestamp the `lower`/`upper` quantiles are
 taken over the non-NaN symbols with linear interpolation; winsorize clips to
 those bounds and trim sets values strictly outside them to NaN. The reference
@@ -32,7 +32,7 @@ from KunQuant.ops.MiscOp import GenericCrossSectionalOp
 from KunQuant.runner import KunRunner as kr
 
 from quantlab.factor.kunquant import shared_executor
-from quantlab.my_ops.preprocess import (
+from quantlab.factor.kunquant_ops import (
     CrossSectionalTrim,
     CrossSectionalWinsorize,
     CrossSectionalZScore,

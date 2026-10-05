@@ -18,7 +18,7 @@ import pytest
 import xarray as xr
 
 from conftest import compute_all
-from quantlab.base.config import FactorConfig, PolarsFactorConfig
+from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.polars import FactorPolars

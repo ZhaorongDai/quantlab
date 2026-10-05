@@ -23,9 +23,9 @@ from typing import Self
 import numpy as np
 import xarray as xr
 
-from quantlab.base.config import MarketFeatureConfig
+from quantlab.factor.config import MarketFeatureConfig
 from quantlab.dataset.base import BaseDataset, InsufficientHistoryError, MarketDataset
-from quantlab.base.factor import Factor
+from quantlab.factor.base import Factor
 
 #: Rolling windows, in bars of the series, of the mean and standard deviation
 #: features. The longest one sets the default ``warmup_bars``.

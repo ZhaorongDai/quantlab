@@ -12,8 +12,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from quantlab.api._compute import NJOBS, compute_over, output_library
-from quantlab.base.config import FactorConfig
-from quantlab.base.factor import Factor
+from quantlab.factor.config import FactorConfig
+from quantlab.factor.base import Factor
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset._support.frame import to_panel
 from quantlab.core.component import get_cls_from_path

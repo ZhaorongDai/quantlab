@@ -28,13 +28,13 @@ from KunQuant.Op import Builder, Input, Output
 from KunQuant.predefined import Alpha101, Alpha158
 from KunQuant.Stage import Function
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
-from quantlab.my_ops.preprocess import CrossSectionalZScore
+from quantlab.factor.kunquant_ops import CrossSectionalZScore
 
 N_BARS = 120
 #: Symbol 1 lists at this bar: every input is NaN before it.

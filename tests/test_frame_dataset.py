@@ -14,7 +14,7 @@ import xarray as xr
 
 from conftest import compute_all
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import FrameDatasetConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.stock import StockDataset

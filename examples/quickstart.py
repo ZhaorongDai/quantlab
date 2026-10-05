@@ -37,7 +37,8 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
-from quantlab.base.config import CrossSectionBacktestConfig, FactorConfig, ModelConfig, TopNConfig
+from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, TopNConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.alpha158 import Alpha158Stock

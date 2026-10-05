@@ -29,7 +29,8 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import FactorConfig, ModelConfig, PolarsFactorConfig
+from quantlab.base.config import ModelConfig
+from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.label.forward import Forward
 from quantlab.label.predefined.fret import BinaryReturn, Return, Volatility
 from quantlab.model.ensemble import BaseEnsemble

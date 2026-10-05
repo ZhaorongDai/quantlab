@@ -33,12 +33,8 @@ from quantlab.core.component import (
     recorded_configs,
     walk_components,
 )
-from quantlab.base.config import (
-    FactorConfig,
-    ForwardConfig,
-    MarketFeatureConfig,
-    PolarsFactorConfig,
-)
+from quantlab.factor.config import FactorConfig, MarketFeatureConfig, PolarsFactorConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import ConstituentDatasetConfig, DatasetConfig, MergedDatasetConfig
 from quantlab.dataset.constituent import SP500ConstituentDataset
 from quantlab.dataset.memory import FrameDataset

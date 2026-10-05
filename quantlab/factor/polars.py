@@ -10,8 +10,8 @@ import polars as pl
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import PolarsFactorConfig
-from quantlab.base.factor import Factor
+from quantlab.factor.config import PolarsFactorConfig
+from quantlab.factor.base import Factor
 from quantlab.utils.timer import Timer
 
 

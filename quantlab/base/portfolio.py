@@ -49,7 +49,7 @@ from quantlab.core.component import Component
 from quantlab.runs.prediction_panel import LabelSpec
 
 if TYPE_CHECKING:
-    from quantlab.base.factor import Factor
+    from quantlab.factor.base import Factor
 
 class PortfolioConstructionError(RuntimeError):
     """A rule could not decide a bar: the optimisation failed, was infeasible or had no solution.

@@ -15,7 +15,8 @@ import polars as pl
 import xarray as xr
 
 from quantlab.api._compute import NJOBS, compute_over, output_library
-from quantlab.base.config import FactorConfig, ForwardConfig
+from quantlab.factor.config import FactorConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.label.forward import Forward
 from quantlab.dataset._support.frame import INDEX_COLUMNS, to_panel
 

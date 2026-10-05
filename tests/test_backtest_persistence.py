@@ -555,7 +555,8 @@ def test_changed_store_logs_a_fingerprint_warning_and_completes(tmp_path, warnin
 
 def _read_strategy_backtester(root, dataset_config, checkpoint, factor_store, *, tag):
     """Load mode whose model reads its features from a saved factor STORE."""
-    from quantlab.base.config import ModelConfig, PolarsFactorConfig
+    from quantlab.base.config import ModelConfig
+    from quantlab.factor.config import PolarsFactorConfig
     from tests.backtest_fixtures import (
         FirstFeatureHead,
         ForwardReturnLabel,
@@ -616,7 +617,7 @@ def test_read_strategy_fingerprints_the_factor_store_predictions_came_from(
     and weights. The store read is recorded under the factor's own component
     path, `model.factors.0`, and only it warns after one stored value changes.
     """
-    from quantlab.base.config import PolarsFactorConfig
+    from quantlab.factor.config import PolarsFactorConfig
     from tests.backtest_fixtures import PastReturnFactor
 
     dataset_config, checkpoint = _trained_store(tmp_path)

@@ -19,7 +19,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.core.component import Component
-from quantlab.base.config import ForwardConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.utils.date_range import as_label, check_range, last_moment
 
 

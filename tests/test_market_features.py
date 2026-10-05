@@ -20,7 +20,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.base.config import MarketFeatureConfig, PolarsFactorConfig
+from quantlab.factor.config import MarketFeatureConfig, PolarsFactorConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.factor.predefined.market import MarketFeatures

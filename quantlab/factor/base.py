@@ -35,7 +35,7 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.core.component import Component
-from quantlab.base.config import BaseFactorConfig
+from quantlab.factor.config import BaseFactorConfig
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.utils.atomic import write_json_atomically

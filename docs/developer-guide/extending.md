@@ -403,7 +403,7 @@ The executable version of the contract is in `tests/test_backend_head.py`,
 ## A Polars factor
 
 A factor turns a dataset's panel into feature columns. The Polars backend,
-`FactorPolars` (`quantlab.base.factor`), is batch-only and needs one method,
+`FactorPolars` (`quantlab.factor.base`), is batch-only and needs one method,
 `_get_factor_lazyframe`, which receives the dataset as a long-format
 `polars.LazyFrame` (one row per timestamp and symbol) and returns a lazy frame
 holding exactly `timestamp`, `symbol` and the factor columns. Factor names are
@@ -418,7 +418,7 @@ factor asks it for a date range and changes nothing on it.
 ```python
 import polars as pl
 
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.stock import StockDataset
 
@@ -481,7 +481,7 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.kunquant import FactorKunQuant
 
 
@@ -531,7 +531,7 @@ the returned dict, as `quantlab/factor/predefined/residual_momentum.py` does wit
 Fama-French series. `compute()` runs the graph on what it returns.
 Existing operator compositions to reuse are in
 `quantlab/factor/predefined/alpha101.py`, `quantlab/factor/predefined/alpha158.py` and
-`quantlab/my_ops/preprocess.py`.
+`quantlab/factor/kunquant_ops.py`.
 
 ## A label
 
@@ -543,7 +543,7 @@ every KunQuant graph does, then wrap it: the label at `t` is the factor at
 close-to-close return over the five bars after the fill bar:
 
 ```python
-from quantlab.base.config import ForwardConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.label.forward import Forward
 
 

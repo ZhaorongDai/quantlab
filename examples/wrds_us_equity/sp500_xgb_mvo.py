@@ -37,11 +37,11 @@ from loguru import logger
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.base.config import (
     CrossSectionBacktestConfig,
-    FactorConfig,
     LedoitWolfConfig,
     MeanVarianceConfig,
     ModelConfig,
 )
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import (
     SPY_PERMNO,
     ConstituentDatasetConfig,

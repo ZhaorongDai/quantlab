@@ -36,7 +36,9 @@ import xarray as xr
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 
-from quantlab.base.config import ModelConfig, FactorConfig, ForwardConfig
+from quantlab.base.config import ModelConfig
+from quantlab.factor.config import FactorConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.model.torch_model import TorchModel

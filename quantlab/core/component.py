@@ -29,7 +29,7 @@ Examples
 --------
 With ``momentum`` a ``Momentum`` factor over a ``SpotKlineDataset``:
 
->>> from quantlab.base.config import ForwardConfig
+>>> from quantlab.label.config import ForwardConfig
 >>> from quantlab.label.forward import Forward
 >>> label = Forward(ForwardConfig(factor=momentum, span=5))
 >>> saved = label.get_config()
@@ -113,7 +113,7 @@ def component_fields(config_cls: type) -> dict[str, bool]:
 
     Examples
     --------
-    >>> from quantlab.base.config import ForwardConfig
+    >>> from quantlab.label.config import ForwardConfig
     >>> from quantlab.dataset.config import MergedDatasetConfig
     >>> component_fields(ForwardConfig), component_fields(MergedDatasetConfig)
     ({'factor': False}, {'datasets': True})

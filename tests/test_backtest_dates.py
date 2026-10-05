@@ -45,13 +45,8 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.base.backtest import BaseBacktester
-from quantlab.base.config import (
-    CrossSectionBacktestConfig,
-    ModelConfig,
-    ModelConfig,
-    PolarsFactorConfig,
-    TopNConfig,
-)
+from quantlab.base.config import CrossSectionBacktestConfig, ModelConfig, ModelConfig, TopNConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from tests.torch_heads import MeanContextHead

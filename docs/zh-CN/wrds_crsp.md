@@ -342,7 +342,7 @@ store 是由原始层和参考层派生出来的，所以转换代码或过滤�
 `CrspStockDataset` 继承自 `StockDataset`，带有 Tiingo 的全部十二个变量，所以读取 `adjClose` 或 `adjVolume` 的因子可以接受任一数据集。区别在于整数的 `symbol` 轴，以及对数据集 config 上 ticker 侧选择字段 `symbols` 的拒绝，它会抛出 `ValueError`；应改用 `permnos`。因子按数据集原样使用它，自身不选择标的。下面在合成 store 上运行 Alpha101 因子，store 从 2020-06-01 起转换，使 20 根 bar 的预热有历史可用；AAPL 只有四行，结果为 NaN：
 
 ```python
->>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.config import FactorConfig
 >>> from quantlab.factor.predefined.alpha101 import Alpha101Stock
 >>> since_june = replace(config, zarr_file_path="data/data/us_equity/1d/crsp_since_june.zarr",
 ...                      start_date="2020-06-01")

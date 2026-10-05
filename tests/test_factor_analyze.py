@@ -25,7 +25,8 @@ import xarray as xr
 
 from quantlab.analysis.factor_report import FactorAnalyzer
 from quantlab.backend.zarr import XrBackend
-from quantlab.base.config import FactorConfig, ForwardConfig, PolarsFactorConfig
+from quantlab.factor.config import FactorConfig, PolarsFactorConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.dataset.config import DatasetConfig
 from quantlab.factor.polars import FactorPolars
 from quantlab.dataset.spot import SpotKlineDataset
@@ -296,7 +297,7 @@ def test_a_multi_bar_fret_compounds_the_per_bar_rate():
 
 
 def test_importing_the_factor_layer_does_not_import_matplotlib():
-    code = "import sys, quantlab.base.factor; print('matplotlib' in sys.modules)"
+    code = "import sys, quantlab.factor.base; print('matplotlib' in sys.modules)"
     output = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=True
     ).stdout

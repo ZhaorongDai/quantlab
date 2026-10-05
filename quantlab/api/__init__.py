@@ -65,7 +65,7 @@ def compute_factors(
         Bars in long form: ``timestamp``, ``symbol`` and the price and volume columns the
         factor reads.
     factor : str or type
-        A short name, or any ``quantlab.base.factor.Factor`` subclass:
+        A short name, or any ``quantlab.factor.base.Factor`` subclass:
 
         - ``"alpha158"``, ``"alpha101"``: the equity variants (``Alpha158Stock``,
           ``Alpha101Stock``), z-scored across symbols with VWAP taken as

@@ -289,7 +289,7 @@ def test_from_run_loads_no_model_factor_label_or_engine_module(model_run):
         f"inputs = DecisionInputs.from_run({str(model_run.run_dir)!r})\n"
         "print(type(inputs.constructor).__name__)\n"
         "banned = ('quantlab.model', 'quantlab.factor', 'quantlab.label',\n"
-        "          'quantlab.backtest', 'quantlab.base.model', 'quantlab.base.factor',\n"
+        "          'quantlab.backtest', 'quantlab.base.model', 'quantlab.factor.base',\n"
         "          'quantlab.base.backtest', 'torch', 'xgboost', 'KunQuant', 'vectorbt')\n"
         "print(sorted(m for m in sys.modules\n"
         "             if any(m == b or m.startswith(b + '.') for b in banned)))\n"

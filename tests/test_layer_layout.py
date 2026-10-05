@@ -160,8 +160,6 @@ MODULE_LAYERS = {
     "quantlab.acquisition": "acquisition",
     "quantlab.analysis": "analysis",
     "quantlab.factor": "factor",
-    "quantlab.my_ops": "factor",
-    "quantlab.base.factor": "factor",
     "quantlab.label": "label",
     "quantlab.model": "model",
     "quantlab.base.model": "model",
@@ -176,7 +174,7 @@ MODULE_LAYERS = {
 #: imported module). Only shrinks; deleted by the last ticket of #146.
 PENDING_VIOLATIONS = {
     ("quantlab/base/config.py", "quantlab.dataset.base"),
-    ("quantlab/base/config.py", "quantlab.base.factor"),
+    ("quantlab/base/config.py", "quantlab.factor.base"),
     ("quantlab/base/config.py", "quantlab.base.model"),
     ("quantlab/base/config.py", "quantlab.base.portfolio"),
     ("quantlab/base/config.py", "quantlab.tracking.base"),

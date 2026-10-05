@@ -24,7 +24,7 @@ bars. A label is a factor shifted forward in time: any factor wrapped in
 
 Every factor is configured by a dataclass and built around a dataset object.
 The config fields shared by both backends live on
-`quantlab.base.config.BaseFactorConfig`:
+`quantlab.factor.config.BaseFactorConfig`:
 
 - `warmup_bars`: bars of history, counted on the dataset's own calendar,
   that `compute(start, end)` reads before `start` so that rolling
@@ -132,7 +132,7 @@ across the symbols of the same bar (see
 Compute three Alpha158 features from February to the end of the store:
 
 ```python
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 
 alpha = Alpha158Stock(FactorConfig(
@@ -259,7 +259,7 @@ them separately:
 
 ```python
 import polars as pl
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from quantlab.factor.polars import FactorPolars
 
 class VolumeSurprise(FactorPolars):
@@ -319,7 +319,7 @@ show larger graphs.
 ## Normalisation operators
 
 Raw factor values often live on very different scales, and a model or a
-ranking rule usually wants them standardised. `quantlab.my_ops.preprocess`
+ranking rule usually wants them standardised. `quantlab.factor.kunquant_ops`
 provides two KunQuant operators that standardise along different axes:
 
 - `WindowedZScore(x, window)` is a time-series z-score. Each symbol is
@@ -340,7 +340,7 @@ import KunQuant.ops as op
 from KunQuant.Op import Builder, Input, Output
 from KunQuant.Stage import Function
 from quantlab.factor.kunquant import FactorKunQuant
-from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
+from quantlab.factor.kunquant_ops import CrossSectionalZScore, WindowedZScore
 
 class MaDeviation(FactorKunQuant):
     """Distance of the close from its 10-day mean, raw and normalised."""
@@ -383,7 +383,7 @@ needs a class of its own.
 
 A label is a factor shifted forward in time. `quantlab.label.forward.Forward`
 wraps any factor and places the factor's value at bar `t + delay + span` at
-bar `t`. It is configured by `quantlab.base.config.ForwardConfig`:
+bar `t`. It is configured by `quantlab.label.config.ForwardConfig`:
 
 - `factor`: the factor to shift. Its value at bar `t` must use only bars up
   to `t`. `Forward` relies on this and cannot check it.
@@ -467,7 +467,7 @@ Here a five-bar realised volatility, written as a Polars factor, becomes the
 volatility of the five returns after the fill bar:
 
 ```python
-from quantlab.base.config import ForwardConfig
+from quantlab.label.config import ForwardConfig
 from quantlab.label.forward import Forward
 
 class RealisedVol(FactorPolars):
@@ -575,5 +575,5 @@ feature only; Polars factors have no streaming mode.
 
 - [Models](models.md) for training on these panels.
 - [Universes](universes.md) for point-in-time universes.
-- The docstrings of `quantlab.base.factor.Factor`, `FactorKunQuant` and
+- The docstrings of `quantlab.factor.base.Factor`, `FactorKunQuant` and
   `FactorPolars` for every method and parameter.

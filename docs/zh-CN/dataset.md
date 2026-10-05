@@ -307,7 +307,7 @@ True
 
 ```python
 >>> import numpy as np
->>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.config import FactorConfig
 >>> from quantlab.factor.predefined.alpha158 import Alpha158Stock
 >>> days = pd.bdate_range("2024-01-01", periods=10)
 >>> close = 100 + np.arange(30.0).reshape(10, 3) * np.array([1.0, -0.5, 0.2])

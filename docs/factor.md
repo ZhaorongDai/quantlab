@@ -46,7 +46,7 @@ The session first writes a small synthetic spot store and defines a helper that 
 ```python
 >>> import numpy as np, pandas as pd, xarray as xr
 >>> from quantlab.backend.zarr import XrBackend
->>> from quantlab.base.config import PolarsFactorConfig
+>>> from quantlab.factor.config import PolarsFactorConfig
 >>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.spot import SpotKlineDataset
 >>> from quantlab.factor.predefined.momentum import Momentum
@@ -186,7 +186,7 @@ A merge never picks a value by input order. A cell holding a value in two inputs
 ```python
 >>> import json
 >>> import numpy as np, pandas as pd, xarray as xr
->>> from quantlab.base.config import MarketFeatureConfig
+>>> from quantlab.factor.config import MarketFeatureConfig
 >>> from quantlab.dataset.config import DatasetConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.factor.predefined.market import MarketFeatures
@@ -245,7 +245,7 @@ On each bar the values go to every target symbol that has a bar there, that is, 
 For US equities from WRDS, give each ETF its own CRSP store, as for a backtest benchmark. `scripts/wrds/etf.py --etf spy,qqq,iwm` downloads SPY, QQQ and IWM (the S&P 500, the Nasdaq-100 and the Russell 2000) into one store each, and `CrspDatasetConfig.etf_benchmark` keeps the ETF, which the default security filter drops as a fund:
 
 ```python
-from quantlab.base.config import MarketFeatureConfig
+from quantlab.factor.config import MarketFeatureConfig
 from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.market import MarketFeatures
@@ -339,7 +339,7 @@ A label is a factor shifted forward in time. `Forward(ForwardConfig(factor, span
 Any factor becomes a label this way. Wrapping the 5-bar `Momentum` `factor` of the first section with `span=5` gives the close-to-close return from bar t+1 to bar t+6. The label keeps the factor's variable names and rebuilds from its config like a factor.
 
 ```python
->>> from quantlab.base.config import ForwardConfig
+>>> from quantlab.label.config import ForwardConfig
 >>> from quantlab.label.forward import Forward
 >>> label = Forward(ForwardConfig(factor=factor, span=5))
 >>> label.lookahead_bars(), label.span_bars(), label.get_factor_names()
@@ -376,7 +376,7 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 `Return` and `BinaryReturn` in `quantlab.label.predefined.fret` are `Forward` labels over a private trailing-return KunQuant factor, and are labels only. `Return` at bar t is `adjOpen[t + n + 1] / adjOpen[t + 1] - 1`, the return of a position entered at the next bar's adjusted open and held for n bars, with n read from `kwargs["n_forward_periods"]`; `BinaryReturn` is 1.0 where that return is positive, 0.0 where it is zero or negative, and NaN where it is NaN, so it is NaN exactly where `Return` is: where an open inside the span is missing (a gap in the prices, a symbol not yet listed or already delisted) and where the later bars do not exist. Both have `span = n` and `delay = 1`, so their lookahead is n + 1. They read `adjOpen`, so the dataset must carry adjusted prices; a US equity dataset does, the crypto spot dataset does not. The session below starts at the store's first bar, so `compute` warns that the 5 warm-up bars are missing, and the store ends on 2024-01-30, so the last 3 bars have no label.
 
 ```python
->>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.config import FactorConfig
 >>> from quantlab.dataset.stock import StockDataset
 >>> from quantlab.label.predefined.fret import Return
 >>> px = 50 + np.cumsum(rng.normal(size=(30, 8)), axis=0)
@@ -427,7 +427,7 @@ Each pair gets:
 
 ```python
 >>> import os
->>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.config import FactorConfig
 >>> opens = xr.Dataset(
 ...     {"adjOpen": (["timestamp", "symbol"], close * 0.99)},
 ...     coords={"timestamp": pd.date_range("2024-01-01", periods=90), "symbol": symbols},
@@ -473,7 +473,7 @@ When two or more factor variables are analyzed, the result carries `correlation`
 
 ### Normalize over time or across symbols
 
-`quantlab.my_ops.preprocess` has four KunQuant operators. `WindowedZScore` standardizes each symbol against its own trailing window, a time-series normalization. `CrossSectionalZScore` standardizes each timestamp across all symbols. Which one is right depends on the strategy consuming the factor. `Alpha101SpotKline` and `Alpha158SpotKline` apply `WindowedZScore` to every output over `kwargs["zscore_window"]` bars (default 20), independent of `warmup_bars`; for the first requested bar to be fully normalized, `warmup_bars` must cover the alpha's own lookback plus `zscore_window - 1` bars (up to 60 + 19 for the full Alpha158 set). A `zscore_window` that is not a positive integer is refused when the factor is constructed; `Alpha101Stock` and `Alpha158Stock` apply `CrossSectionalZScore` to every output. A symbol with no bar that day (not yet listed, delisted, or an all-NaN column) is NaN in every output of these two classes, so it enters neither their ranks nor the z-score; on a bar with data their values are KunQuant's, including the 0 its formulas give a value undefined on real data, such as a correlation over a window of constant values. The KunQuant factor under Extending applies both operators.
+`quantlab.factor.kunquant_ops` has four KunQuant operators. `WindowedZScore` standardizes each symbol against its own trailing window, a time-series normalization. `CrossSectionalZScore` standardizes each timestamp across all symbols. Which one is right depends on the strategy consuming the factor. `Alpha101SpotKline` and `Alpha158SpotKline` apply `WindowedZScore` to every output over `kwargs["zscore_window"]` bars (default 20), independent of `warmup_bars`; for the first requested bar to be fully normalized, `warmup_bars` must cover the alpha's own lookback plus `zscore_window - 1` bars (up to 60 + 19 for the full Alpha158 set). A `zscore_window` that is not a positive integer is refused when the factor is constructed; `Alpha101Stock` and `Alpha158Stock` apply `CrossSectionalZScore` to every output. A symbol with no bar that day (not yet listed, delisted, or an all-NaN column) is NaN in every output of these two classes, so it enters neither their ranks nor the z-score; on a bar with data their values are KunQuant's, including the 0 its formulas give a value undefined on real data, such as a correlation over a window of constant values. The KunQuant factor under Extending applies both operators.
 
 The module also has two cross-sectional outlier operators. `CrossSectionalWinsorize(v, lower=0.01, upper=0.99)` (winsorizing) clips each timestamp's values to that bar's `lower` and `upper` quantiles across symbols, and `CrossSectionalTrim(v, lower=0.01, upper=0.99)` (trimming) sets values strictly outside those quantiles to NaN. Quantiles ignore NaN and interpolate linearly, like `np.nanquantile`. A common chain is `CrossSectionalZScore(CrossSectionalWinsorize(v))`, so a few extreme symbols do not dominate the mean and standard deviation. KunQuant 0.1.11 has no built-in operator for either: its `Clip` bounds by a fixed constant and `WindowedQuantile` works along time.
 
@@ -530,7 +530,7 @@ be split-adjusted, while Amihud dollar volume needs an as-traded close and raw
 share volume.
 
 ```python
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.factor.predefined.literature_alpha import LiteratureAlpha
 
 factor = LiteratureAlpha(FactorConfig(
@@ -589,9 +589,9 @@ Subclass `FactorKunQuant` and implement `_get_factor_names` and `_get_factor_fun
 >>> import KunQuant.ops as op
 >>> from KunQuant.Op import Builder, Input, Output
 >>> from KunQuant.Stage import Function
->>> from quantlab.base.config import FactorConfig
+>>> from quantlab.factor.config import FactorConfig
 >>> from quantlab.factor.kunquant import FactorKunQuant
->>> from quantlab.my_ops.preprocess import CrossSectionalZScore, WindowedZScore
+>>> from quantlab.factor.kunquant_ops import CrossSectionalZScore, WindowedZScore
 >>> class MaDeviation(FactorKunQuant):
 ...     def _get_factor_names(self):
 ...         return ("ma_dev_5", "ma_dev_ts", "ma_dev_cs")
@@ -670,4 +670,4 @@ A resampled factor is a view of its source panel: `extend()`, `init_stream()` an
 
 ## See also
 
-`backend.md` for `XrBackend` and the append checks behind `extend()`; `dataset.md` for the datasets factors read; `model.md` for how models consume factors and labels and purge each split; `backtest.md` for the check of a label's delay against the engine's fill delay. Modules: `quantlab.base.factor` (`Factor`, `FactorKunQuant`, `FactorPolars`), `quantlab.base.config` (`FactorConfig`, `PolarsFactorConfig`, `MarketFeatureConfig`), `quantlab.factor`, `quantlab.label.forward`, `quantlab.label.predefined.fret` and `quantlab.my_ops.preprocess`.
+`backend.md` for `XrBackend` and the append checks behind `extend()`; `dataset.md` for the datasets factors read; `model.md` for how models consume factors and labels and purge each split; `backtest.md` for the check of a label's delay against the engine's fill delay. Modules: `quantlab.factor.base` (`Factor`, `FactorKunQuant`, `FactorPolars`), `quantlab.base.config` (`FactorConfig`, `PolarsFactorConfig`, `MarketFeatureConfig`), `quantlab.factor`, `quantlab.label.forward`, `quantlab.label.predefined.fret` and `quantlab.factor.kunquant_ops`.

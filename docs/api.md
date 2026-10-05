@@ -202,7 +202,7 @@ Traceback (most recent call last):
 ValueError: 'alpha158_crypto' needs column(s) 'amount', which the data does not have. Present columns: ['timestamp', 'symbol', 'open', 'high', 'low', 'close', 'volume']. Pass columns={'yours': 'amount'} to map one of yours onto it.
 ```
 
-Any `quantlab.base.factor.Factor` subclass can be passed instead of a short name. A subclass of a catalog class reads the columns of its short name. Any other class is built on a dataset holding every column of the frame under its canonical name. A Polars factor, for example:
+Any `quantlab.factor.base.Factor` subclass can be passed instead of a short name. A subclass of a catalog class reads the columns of its short name. Any other class is built on a dataset holding every column of the frame under its canonical name. A Polars factor, for example:
 
 ```python
 >>> from quantlab.factor.polars import FactorPolars

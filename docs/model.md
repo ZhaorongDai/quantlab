@@ -778,7 +778,7 @@ Known differences from Qlib's implementation:
 ```python
 from dataclasses import replace
 
-from quantlab.base.config import MarketFeatureConfig
+from quantlab.factor.config import MarketFeatureConfig
 from quantlab.factor.predefined.market import MarketFeatures
 from quantlab.model.predefined.master import MASTERRegressor
 

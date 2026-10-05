@@ -13,7 +13,7 @@ import pytest
 import xarray as xr
 
 from conftest import compute_all
-from quantlab.base.config import FactorConfig
+from quantlab.factor.config import FactorConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.label.predefined.fret import BinaryReturn, Return
 from tests.backtest_fixtures import write_price_store

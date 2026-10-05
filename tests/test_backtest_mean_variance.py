@@ -41,7 +41,7 @@ from quantlab.base.config import CrossSectionBacktestConfig, LedoitWolfConfig, M
 from quantlab.base.portfolio import PortfolioConstructionError, PortfolioConstructor
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
-from quantlab.base.config import PolarsFactorConfig
+from quantlab.factor.config import PolarsFactorConfig
 from tests.backtest_fixtures import FirstFeatureHead, PastReturnFactor, make_model, make_stock_dataset, write_price_store
 
 N_BARS = 90
