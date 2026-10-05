@@ -149,6 +149,7 @@ def test_the_no_credentials_fixture_empties_every_declared_name(
         "APCA_API_KEY_ID",
         "APCA_API_SECRET_KEY",
         "WRDS_USERNAME",
+        "SHARADAR_API_KEY",
     )
 
     for name in no_credentials:
@@ -499,6 +500,10 @@ def test_direct_class_reference_is_the_class_object(isolated_registry) -> None:
     assert isolated_registry.get("tiingo").acquisition_cls is tiingo.TiingoAcquisition
     assert isolated_registry.get("alpaca").acquisition_cls is alpaca.AlpacaAcquisition
     for descriptor in isolated_registry.all():
+        # None only for a vendor its own scripts download (Sharadar).
+        if descriptor.acquisition_cls is None:
+            assert descriptor.vendor == "sharadar"
+            continue
         assert isinstance(descriptor.acquisition_cls, type)
         assert not isinstance(descriptor.acquisition_cls, str)
 
@@ -629,7 +634,9 @@ def test_enumeration_order_is_sorted_by_vendor(isolated_registry, monkeypatch) -
     against a registry whose registration order is deliberately the REVERSE of
     its sorted order; deleting the `sorted(...)` call turns this red.
     """
-    assert [d.vendor for d in DataSourceRegistry_all()] == ["alpaca", "tiingo", "wrds"]
+    assert [d.vendor for d in DataSourceRegistry_all()] == [
+        "alpaca", "sharadar", "tiingo", "wrds",
+    ]
 
     reversed_registration = (
         _fake_descriptor("zzz-last-alphabetically"),
@@ -730,6 +737,7 @@ _CHILD_CREDENTIALS = (
     "APCA_API_KEY_ID",
     "APCA_API_SECRET_KEY",
     "WRDS_USERNAME",
+    "SHARADAR_API_KEY",
 )
 
 
@@ -782,7 +790,7 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     )
 
     assert child.returncode == 0, child.stderr
-    assert child.stdout.strip() == "['alpaca', 'tiingo', 'wrds']", child.stdout
+    assert child.stdout.strip() == "['alpaca', 'sharadar', 'tiingo', 'wrds']", child.stdout
     assert "Traceback" not in child.stderr
 
 
@@ -1252,7 +1260,9 @@ def test_the_isolated_registry_fixture_restored_every_fake_vendor() -> None:
     """
     from quantlab.acquisition.base import DataSourceRegistry
 
-    assert [d.vendor for d in DataSourceRegistry.all()] == ["alpaca", "tiingo", "wrds"]
+    assert [d.vendor for d in DataSourceRegistry.all()] == [
+        "alpaca", "sharadar", "tiingo", "wrds",
+    ]
 
     registered = {d.vendor for d in DataSourceRegistry.SOURCES}
     for leaked in (

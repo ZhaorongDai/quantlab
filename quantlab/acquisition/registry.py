@@ -30,7 +30,7 @@ Examples
 >>> import quantlab.acquisition.registry
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'tiingo', 'wrds']
+['alpaca', 'sharadar', 'tiingo', 'wrds']
 """
 
 import dataclasses
@@ -149,6 +149,12 @@ def run(
         disk (a JSON file of failed symbols) accumulates across runs and may
         name more symbols; read it through ``SourceInspector.failures``.
 
+    Raises
+    ------
+    ValueError
+        If the source names no acquisition class (Sharadar): its own
+        scripts download it.
+
     Examples
     --------
     Needs the vendor's credential in the environment and network access::
@@ -173,6 +179,12 @@ def run(
     acquisition_cls = descriptor.acquisition_cls_for(
         config.market, config.frequency, (config.kwargs or {}).get("data_type")
     )
+    if acquisition_cls is None:
+        raise ValueError(
+            f"{descriptor.display_name} is not downloaded through run(): its "
+            f"raw tier is whole tables, pulled by the vendor's own client. Use "
+            f"scripts/{descriptor.vendor}/ (see docs/{descriptor.vendor}.md)."
+        )
     acquisition = acquisition_cls(config)
     acquisition.attach(reporter=reporter, cancel=cancel)
     if refresh:
@@ -381,3 +393,4 @@ def convert(
 from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
 from quantlab.acquisition import wrds as _wrds  # noqa: E402,F401
+from quantlab.acquisition.sharadar import source as _sharadar  # noqa: E402,F401

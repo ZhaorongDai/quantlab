@@ -100,6 +100,20 @@ SharadarStockDataset(spy).from_raw_data().save()
 # then BacktestConfig(benchmark_dataset=SharadarStockDataset(spy), ...)
 ```
 
+## Scripts
+
+The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
+
+```bash
+export SHARADAR_API_KEY=<your-sharadar-key>
+# once: every table as a bulk zip, then the SEP, SFP and S&P 500 membership stores
+uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+# every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, then append
+uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+```
+
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions` and `sp500` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr` and `sharadar_sp500_membership.zarr` with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP and SFP stores.
+
 ## Daily update
 
 A bulk pull is the first download; every morning after it, refresh the raw tier with trailing date windows and append the new bars to the store:

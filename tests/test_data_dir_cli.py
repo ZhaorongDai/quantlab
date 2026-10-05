@@ -246,3 +246,20 @@ def test_utils_cli_does_not_import_config_at_module_scope() -> None:
         "scope; D-04 keeps the dependency-light CLI module free of the "
         "dataset layer."
     )
+
+
+def test_inside_repository_names_the_directories_under_the_repository(tmp_path) -> None:
+    """Sharadar's scripts refuse any output directory inside the repository (#165)."""
+    from quantlab.utils.cli import inside_repository
+
+    repo = tmp_path / "repo"
+    (repo / "data").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    assert inside_repository([outside, tmp_path], repo) == []
+    assert inside_repository([repo, repo / "data", outside], repo) == [repo, repo / "data"]
+    # A symlink out of the repository is judged by where it lands.
+    (repo / "link").symlink_to(outside)
+    assert inside_repository([repo / "link"], repo) == []
+    (outside / "back").parent.mkdir(parents=True, exist_ok=True)
+    (outside / "back").symlink_to(repo / "data")
+    assert inside_repository([outside / "back"], repo) == [outside / "back"]

@@ -2096,13 +2096,16 @@ class SourceDescriptor:
         The vendor's short name, for example ``"tiingo"``.
     display_name : str
         A human-readable name for listings.
-    acquisition_cls : type[Acquisition]
+    acquisition_cls : type[Acquisition] or None
         The default class that downloads from this vendor. A capability may
-        name a different one.
-    config_factory : callable
+        name a different one. ``None`` for a vendor whose raw tier is not a
+        symbol-batched download (Sharadar's whole tables): its own client
+        and scripts download it, and ``run()`` refuses it.
+    config_factory : callable or None
         The default function that builds an ``AcquisitionConfig`` for this
         vendor, usually a ``functools.partial`` over the shared config
-        factory with ``vendor`` filled in.
+        factory with ``vendor`` filled in; ``None`` exactly when
+        ``acquisition_cls`` is.
     capabilities : tuple of Capability
         Every ``(market, frequency, data_type)`` combination the vendor
         serves. Must not be empty.
@@ -2139,8 +2142,8 @@ class SourceDescriptor:
 
     vendor: Vendor
     display_name: str
-    acquisition_cls: type[Acquisition]
-    config_factory: Callable[..., AcquisitionConfig]
+    acquisition_cls: type[Acquisition] | None
+    config_factory: Callable[..., AcquisitionConfig] | None
     capabilities: tuple[Capability, ...]
     required_env: tuple[str, ...]
     universe_categories: tuple[UniverseCategory, ...] = ()
@@ -2271,7 +2274,7 @@ class SourceDescriptor:
         market: Market,
         frequency: Frequency,
         data_type: str | None = None,
-    ) -> type[Acquisition]:
+    ) -> type[Acquisition] | None:
         """Return the ``Acquisition`` subclass that serves a request.
 
         This is the matching capability's ``acquisition_cls`` when it names
@@ -2288,8 +2291,9 @@ class SourceDescriptor:
 
         Returns
         -------
-        type[Acquisition]
-            The class to construct for the download.
+        type[Acquisition] or None
+            The class to construct for the download; ``None`` when the
+            vendor is not downloaded through an ``Acquisition``.
 
         Raises
         ------
@@ -2369,7 +2373,7 @@ class DataSourceRegistry:
     >>> import quantlab.acquisition.registry
     >>> from quantlab.acquisition.base import DataSourceRegistry
     >>> [d.vendor for d in DataSourceRegistry.all()]
-    ['alpaca', 'tiingo', 'wrds']
+    ['alpaca', 'sharadar', 'tiingo', 'wrds']
     >>> DataSourceRegistry.get("tiingo").display_name
     'Tiingo EOD'
     """
