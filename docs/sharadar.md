@@ -88,11 +88,11 @@ An `added` or `removed` row's date is the effective membership date, so a stock 
 SFP (funds: ETFs, closed-end funds, ETNs and the like) converts through the same path as SEP, adjusted prices included: pull `sfp` with `client.bulk_table("sfp", ...)` and set `table="sfp"`. Its TICKERS rows are labelled `SFP`, its default `category_filter` keeps every fund category (`ETF`, `CEF`, `ETD`, `ETN`, `CEF Preferred`, `UNIT`, `ETMF`, `IDX`, `MF` on the 2026-10-05 pull); a whole-table store is `sharadar_sfp_1d.zarr`. A backtest benchmark is a store holding one fund:
 
 ```python
-from quantlab.dataset.config import SharadarDatasetConfig
+from quantlab.dataset.config import SPY_PERMATICKER, SharadarDatasetConfig
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
 spy = SharadarDatasetConfig.etf_benchmark(
-    permaticker=118691,  # SPY's SFP permaticker in TICKERS
+    permaticker=SPY_PERMATICKER,  # 118691, SPY's SFP permaticker in TICKERS
     zarr_file_path="/data/quantlab/zarrs/sharadar_spy_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
@@ -106,13 +106,13 @@ The download and the daily update are two scripts, run from the repository root.
 
 ```bash
 export SHARADAR_API_KEY=<your-sharadar-key>
-# once: every table as a bulk zip, then the SEP, SFP and S&P 500 membership stores
+# once: every table as a bulk zip, then the price and membership stores
 uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 # every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, then append
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions` and `sp500` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr` and `sharadar_sp500_membership.zarr` with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP and SFP stores.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions` and `sp500` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`) and `sharadar_sp500_membership.zarr` with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds the SEP and SFP stores.
 
 ## Daily update
 

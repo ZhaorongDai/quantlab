@@ -8,9 +8,11 @@ Run every morning after ``download.py`` has built the stores. One run:
    ``--trading-days``-th most recent raw date before each table's watermark
    through today (US/Eastern), so a late vendor correction to a recent day is
    seen;
-3. runs ``update()`` on ``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``
-   and ``sharadar_sp500_membership.zarr`` in ``--zarr-dir``, each from the
-   first day it already holds: new bars are
+3. runs ``update()`` on every store ``download.py`` built in ``--zarr-dir``
+   (``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``,
+   ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr`` and
+   ``sharadar_sp500_membership.zarr``), each from the first day it already
+   holds: new bars are
    appended, earlier rows are never rewritten, and a vendor correction to a
    stored date is listed in ``<store>.corrections.json`` instead.
 
@@ -40,7 +42,11 @@ from quantlab.acquisition.sharadar.client import (
     SharadarClient,
     SharadarEntitlementError,
 )
-from quantlab.dataset.config import ConstituentDatasetConfig, SharadarDatasetConfig
+from quantlab.dataset.config import (
+    SPY_PERMATICKER,
+    ConstituentDatasetConfig,
+    SharadarDatasetConfig,
+)
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 from quantlab.dataset.sharadar.tables import VENDOR_DIR
@@ -59,7 +65,16 @@ WHOLE_TABLES = ("tickers", "sp500")
 #: Pulled as a trailing date window.
 WINDOW_TABLES = ("sep", "sfp", "actions")
 
-PRICE_STORES = {"sep": "sharadar_sep_1d.zarr", "sfp": "sharadar_sfp_1d.zarr"}
+#: Each price store and the config fields it is built with beyond its paths:
+#: the whole SEP and SFP tables, every permaticker ever an S&P 500 member
+#: with all its bars (the backtest's price dataset), and SPY alone (the
+#: benchmark).
+PRICE_STORES = {
+    "sharadar_sep_1d.zarr": {"table": "sep"},
+    "sharadar_sfp_1d.zarr": {"table": "sfp"},
+    "sharadar_sp500_1d.zarr": {"table": "sep", "roster_universe": "sp500"},
+    "sharadar_spy_1d.zarr": {"table": "sfp", "permatickers": (SPY_PERMATICKER,)},
+}
 MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 
 
@@ -113,7 +128,7 @@ if __name__ == "__main__":
         )
     vendor_root = download_dir / VENDOR_DIR
     missing = [
-        store for store in (*PRICE_STORES.values(), MEMBERSHIP_STORE)
+        store for store in (*PRICE_STORES, MEMBERSHIP_STORE)
         if not (zarr_dir / store).exists()
     ]
     if missing:
@@ -128,11 +143,11 @@ if __name__ == "__main__":
     except (SharadarEntitlementError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"{exc}\n")
 
-    for code, store in PRICE_STORES.items():
+    for store, fields in PRICE_STORES.items():
         config = SharadarDatasetConfig(
             zarr_file_path=str(zarr_dir / store),
             raw_data_dir_path=str(vendor_root),
-            table=code,
+            **fields,
             start_date=_store_start(zarr_dir / store),
         )
         dataset = SharadarStockDataset(config).update()
