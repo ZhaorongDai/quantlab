@@ -102,7 +102,7 @@ SharadarStockDataset(spy).from_raw_data().save()
 
 ## Fundamentals (SF1)
 
-SF1 holds one row per company, dimension and filing, with 105 indicators (income statement, balance sheet, cash flow, per-share values and ratios). Its raw tier keeps every dimension. A store holds one *as-reported* dimension: `ARQ` (each fiscal quarter) or `ART` (trailing twelve months). For those, `date` is the SEC filing date (the release date), and a filing that restates a period is a new row. The most-recent dimensions (`MRQ`, `MRY`, `MRT`) are dated at the period end and rewritten on restatement, so they would leak values one to three months early. `SharadarFundamentalsConfig` refuses them, and so does `ARY`.
+SF1 holds one row per company, dimension and filing, with 105 indicators (income statement, balance sheet, cash flow, per-share values and ratios). Its raw tier keeps every dimension. A store holds one *as-reported* dimension: `ARQ` (each fiscal quarter) or `ART` (trailing twelve months). For those, `date` is the SEC filing date (the release date), and a filing that restates a period is a new row. The most-recent dimensions (`MRQ`, `MRY`, `MRT`) are dated at the period end and rewritten on restatement, so they would leak values one to three months early. `SharadarFundamentalsConfig` refuses them, and so does `ARY`, which the [fiscal-year history](#fiscal-year-history-sf1-ary) panel reads instead.
 
 ```python
 from quantlab.dataset.config import SharadarFundamentalsConfig
@@ -134,6 +134,35 @@ Known limits:
 - A row the vendor re-files under a new `date` or `reportperiod` is a new key, so the old row stays beside it until the next bulk pull.
 - A row placed by an update reaches only the days after that update, while a rebuild places it at its release date. Both are free of look-ahead, but a rebuilt store and an updated one can differ on the days between.
 - Unlike the Compustat panel, there is no link end: a delisted company's last row is shown until it goes stale.
+
+## Fiscal-year history (SF1 ARY)
+
+The fundamentals panel shows only the latest period's row. Some measures need several years as known on one day, for example a growth rate regressed on the last five years' EPS. `SharadarFiscalYearsDataset` builds them from SF1's `ARY` rows (annual, as reported), which are dated at the 10-K filing date like `ARQ`.
+
+```python
+from quantlab.dataset.config import SharadarFiscalYearsConfig
+from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
+
+config = SharadarFiscalYearsConfig(
+    zarr_file_path="/data/quantlab/zarrs/sharadar_sf1_fiscal_years.zarr",
+    raw_data_dir_path="/data/quantlab/downloads/sharadar",
+    indicators=("eps", "sps"),  # the default
+    years=5,                    # the default: slots fy0..fy4
+)
+SharadarFiscalYearsDataset(config).update()
+panel = SharadarFiscalYearsDataset(config).panel("2024-01-02", "2024-12-31")
+panel["eps_fy0"]  # EPS of the latest fiscal year known on each day
+```
+
+- **Slots.** On each day, per security, `<indicator>_fy0` is the latest fiscal year whose row is available by then, `<indicator>_fy1` the one before, and so on to `fy<years - 1>`. When a new fiscal year is released, every year moves back one slot. A slot whose year is not known yet is NaN. `reportperiod_fy<k>` holds each slot's fiscal year end, NaT when empty, and `release_date` holds the filing date of the row shown in `fy0`.
+- **Placement and restatements.** A row is available from the first trading day on or after its release date, as in the fundamentals panel. Each slot shows its fiscal year's latest filing available that day. A restatement of any year, the newest or an older one, is shown from its own release date.
+- **Staleness.** When the row shown in `fy0` was released more than `stale_after_days` ago (548 by default, about 1.5 times the gap between two annual filings), the whole history of that security is hidden.
+- **Fiscal year.** A fiscal year is identified by its `reportperiod`. A company that moves its fiscal year end has two slots a few months apart.
+- **Calendar, axis and universe.** As for the fundamentals panel: SEP's trading days, the permaticker axis, and the same universe fields and default (domestic common stock).
+- **Updates.** `update.py` refreshes SF1 by `lastupdated` (see above) and appends the new trading days. A stored day is never rewritten, so, as for the fundamentals stores, a row placed by an update reaches only the days after that update and a rebuilt store can differ from an updated one on the days between.
+- **Per-share basis.** The values are as SF1 holds them now, and SF1 restates per-share values for later splits. Apple's fiscal 2019 EPS shows as 2.99, not the 11.97 its 10-K reported before the 2020 4-for-1 split, so all five slots share one split basis.
+
+On the 2026-10-05 pull, the default store holds 15,481 permatickers on 7,233 trading days from 1997-12-31. It builds in under 4 minutes with a 4.3 GB peak and is 83 MB on disk. On 2024-06-03, 5,073 companies show `eps_fy0` and 3,732 show all five years. No cell shows a row before its release date. Apple's fiscal 2023 10-K, filed 2023-11-03, shows from that day: `eps_fy0` goes from 6.15 to 6.16 and the older years move back one slot.
 
 ## Valuations (DAILY)
 
@@ -259,7 +288,7 @@ uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloa
 uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, and the industry store `sharadar_industry_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership and industry panels.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, the industry store `sharadar_industry_1d.zarr` and the fiscal-year history store `sharadar_sf1_fiscal_years.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership, industry and fiscal-year panels.
 
 ## Daily update
 

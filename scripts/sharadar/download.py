@@ -25,6 +25,8 @@ stores in ``--zarr-dir``:
   each quarter shown from quarter end + 45 days;
 - ``sharadar_industry_1d.zarr``, each security's point-in-time Fama-French
   48 industry, from its SIC history, thin industries merged;
+- ``sharadar_sf1_fiscal_years.zarr``, EPS and sales per share of each
+  company's latest five fiscal years (SF1 ARY), point in time;
 - ``sharadar_sp500_membership.zarr``, point-in-time S&P 500 membership.
 
 Each store is built with ``update()``, so it keeps the chunk ledger the daily
@@ -60,6 +62,7 @@ from quantlab.dataset.config import (
     SharadarDailyConfig,
     SharadarDatasetConfig,
     SharadarEventsConfig,
+    SharadarFiscalYearsConfig,
     SharadarFundamentalsConfig,
     SharadarHoldingsConfig,
     SharadarIndustryConfig,
@@ -67,6 +70,7 @@ from quantlab.dataset.config import (
 )
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.events import SharadarEventsDataset
+from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
 from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
@@ -105,12 +109,13 @@ MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
 #: The DAILY valuation store.
 DAILY_STORE = "sharadar_daily_1d.zarr"
-#: The stores of the filing, ownership and industry panels, with their config and dataset classes.
+#: The stores of the filing, ownership, industry and fiscal-year panels, with their config and dataset classes.
 PANEL_STORES = {
     "sharadar_events_1d.zarr": (SharadarEventsConfig, SharadarEventsDataset),
     "sharadar_insiders_1d.zarr": (SharadarInsidersConfig, SharadarInsidersDataset),
     "sharadar_holdings_1d.zarr": (SharadarHoldingsConfig, SharadarHoldingsDataset),
     "sharadar_industry_1d.zarr": (SharadarIndustryConfig, SharadarIndustryDataset),
+    "sharadar_sf1_fiscal_years.zarr": (SharadarFiscalYearsConfig, SharadarFiscalYearsDataset),
 }
 
 
@@ -119,7 +124,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Download every Sharadar table (bulk zips) and build the SEP, SFP, "
-            "S&P 500 roster, SPY, S&P 500 membership, SF1, DAILY, filing, ownership and industry Zarr stores. Requires SHARADAR_API_KEY in "
+            "S&P 500 roster, SPY, S&P 500 membership, SF1, DAILY, filing, ownership, industry and fiscal-year Zarr stores. Requires SHARADAR_API_KEY in "
             "the environment. Both directories must be outside this "
             "repository (the data is licensed); the script refuses otherwise."
         )

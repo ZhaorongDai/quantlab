@@ -513,6 +513,44 @@ class SharadarFundamentalsConfig(SharadarDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class SharadarFiscalYearsConfig(SharadarDatasetConfig):
+    """Config of the point-in-time fiscal-year history panel (SF1 ARY) on the permaticker axis.
+
+    On each day the panel shows, per security, the latest ``years`` fiscal
+    years whose annual as-reported rows are released by that day, newest
+    first: ``<indicator>_fy0`` is the latest fiscal year, ``<indicator>_fy1``
+    the one before, and so on. The universe fields work as for a price
+    panel; the default category filter is SF1's, domestic common stock.
+
+    Examples
+    --------
+    >>> cfg = SharadarFiscalYearsConfig(
+    ...     zarr_file_path="/data/zarrs/sharadar_sf1_fiscal_years.zarr",
+    ...     raw_data_dir_path="/data/downloads/sharadar",
+    ... )
+    >>> cfg.table, cfg.indicators, cfg.years, cfg.stale_after_days
+    ('sf1', ('eps', 'sps'), 5, 548)
+    """
+
+    #: Always SF1, whose ARY rows the panel is built from.
+    table: str = "sf1"
+
+    #: SF1 indicators the panel holds, one variable per indicator and slot.
+    #: The default, basic EPS and sales per share, is what the Growth style
+    #: factor regresses on time.
+    indicators: tuple[str, ...] = ("eps", "sps")
+
+    #: Number of fiscal years shown, the slots ``fy0`` .. ``fy<years - 1>``.
+    years: int = 5
+
+    #: Days after the release date of the row shown in ``fy0`` (the newest
+    #: fiscal year's latest filing) that a security's whole history stops
+    #: being shown. ``None`` shows it until replaced. The default is about
+    #: 1.5 times the gap between two annual filings.
+    stale_after_days: int | None = 548
+
+
+@dataclass(kw_only=True, frozen=True)
 class SharadarDailyConfig(SharadarDatasetConfig):
     """Config of the Sharadar DAILY valuation panel (market cap, EV, PE, PB, PS) on the permaticker axis.
 

@@ -18,7 +18,8 @@ Run every morning after ``download.py`` has built the stores. One run:
    ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr``,
    ``sharadar_sf1_art.zarr``, ``sharadar_daily_1d.zarr``,
    ``sharadar_events_1d.zarr``, ``sharadar_insiders_1d.zarr``,
-   ``sharadar_holdings_1d.zarr`` and ``sharadar_industry_1d.zarr``), each from the
+   ``sharadar_holdings_1d.zarr``, ``sharadar_industry_1d.zarr`` and
+   ``sharadar_sf1_fiscal_years.zarr``), each from the
    first day it already holds: new bars are appended and earlier rows are
    never rewritten. A vendor correction to a stored date of a price store is
    listed in ``<store>.corrections.json`` instead; one to SF1 or DAILY is not
@@ -60,6 +61,7 @@ from quantlab.dataset.config import (
     SharadarDailyConfig,
     SharadarDatasetConfig,
     SharadarEventsConfig,
+    SharadarFiscalYearsConfig,
     SharadarFundamentalsConfig,
     SharadarHoldingsConfig,
     SharadarIndustryConfig,
@@ -67,6 +69,7 @@ from quantlab.dataset.config import (
 )
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.events import SharadarEventsDataset
+from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
 from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
@@ -106,12 +109,13 @@ MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
 FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
 #: The DAILY valuation store.
 DAILY_STORE = "sharadar_daily_1d.zarr"
-#: The stores of the filing, ownership and industry panels, with their config and dataset classes.
+#: The stores of the filing, ownership, industry and fiscal-year panels, with their config and dataset classes.
 PANEL_STORES = {
     "sharadar_events_1d.zarr": (SharadarEventsConfig, SharadarEventsDataset),
     "sharadar_insiders_1d.zarr": (SharadarInsidersConfig, SharadarInsidersDataset),
     "sharadar_holdings_1d.zarr": (SharadarHoldingsConfig, SharadarHoldingsDataset),
     "sharadar_industry_1d.zarr": (SharadarIndustryConfig, SharadarIndustryDataset),
+    "sharadar_sf1_fiscal_years.zarr": (SharadarFiscalYearsConfig, SharadarFiscalYearsDataset),
 }
 
 
