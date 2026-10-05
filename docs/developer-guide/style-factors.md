@@ -192,41 +192,42 @@ Every window, half-life, lag, weight and threshold is a field of
 ## On real data
 
 `examples/sharadar_us_equity/barra_style.py` on the training server, on the
-2026-10-05 Sharadar pull and FRED's DTB3. These figures come from the build
-before #185 moved the outlier step ahead of standardization, reordered
-Non-linear Size and Beta, orthogonalized Residual Volatility on Beta only
-and made RSTR an unnormalized sum; they are pending a rebuild.
+2026-10-05 Sharadar pull and FRED's DTB3:
 
 - **Size and cost.** The store covers 6,476 trading days (2001-01-02 to
-  2026-10-02) of 17,090 permatickers and is 6.7 GB. Building it takes 5.6
+  2026-10-02) of 17,090 permatickers and is 7.0 GB. Building it takes 4.4
   minutes; the whole script, the coverage count and the factor report
-  included, takes 10.3 minutes with a 293 GB peak of memory on a 128-core
+  included, takes 9.1 minutes with a 300 GB peak of memory on a 128-core
   machine.
 - **Coverage.** Over the estimation universe (3,000 stocks every day), each
   of the 12 styles has a value in at least 99.92% of the cells in every
   year, and the industry code in 99.87%.
-- **Size** correlates with the log of DAILY's market cap at 0.996 (2005-06-30
-  and 2015-06-30) and 0.969 (2024-06-28) across the estimation universe.
+- **Size** correlates with the log of DAILY's market cap at 0.999, 1.000 and
+  0.999 (2005-06-30, 2015-06-30 and 2024-06-28) across the estimation
+  universe. The outlier step clips the largest companies, not the smallest:
+  29, 22 and 13 of the 3,000 are trimmed to 3 equally weighted standard
+  deviations above the equally weighted mean of LNCAP on those days (1.0%,
+  0.7% and 0.4%), and none at the lower bound.
 - **Beta.** A raw BETA recomputed independently in numpy has a cap-weighted
-  mean of 1.004, 1.006 and 1.033 over the estimation universe on those
-  days, and `style_beta` correlates with it at 0.990, 0.998 and 0.964.
+  mean of 1.005, 1.005 and 1.033 over the estimation universe on those
+  days, and `style_beta` correlates with it at 0.991, 0.998 and 0.973.
 - **Factor report** against the 21-bar forward open-to-open return, every
   stock, 2005-2025 (mean daily rank IC and its Newey-West t-statistic):
 
   | Style | IC | t | Lag-1 rank autocorrelation |
   |---|---|---|---|
-  | Size | 0.068 | 14.5 | 0.998 |
-  | Beta | 0.000 | 0.0 | 0.997 |
-  | Momentum | 0.054 | 8.9 | 0.991 |
-  | Residual Volatility | -0.090 | -13.7 | 0.995 |
-  | Non-linear Size | 0.066 | 14.8 | 0.998 |
-  | Non-linear Beta | 0.002 | 0.9 | 0.985 |
+  | Size | 0.081 | 15.4 | 1.000 |
+  | Beta | -0.000 | -0.0 | 0.997 |
+  | Momentum | 0.055 | 9.1 | 0.991 |
+  | Residual Volatility | -0.097 | -14.8 | 0.997 |
+  | Non-linear Size | 0.042 | 11.8 | 0.995 |
+  | Non-linear Beta | 0.003 | 0.9 | 0.986 |
   | Liquidity | -0.013 | -1.9 | 0.999 |
-  | Dividend Yield | 0.050 | 9.0 | 0.999 |
-  | Book-to-Price | 0.006 | 1.3 | 0.998 |
-  | Earnings Yield | 0.069 | 12.0 | 0.996 |
-  | Leverage | 0.000 | 0.0 | 0.999 |
-  | Growth | 0.013 | 4.9 | 0.998 |
+  | Dividend Yield | 0.050 | 9.1 | 0.999 |
+  | Book-to-Price | 0.005 | 1.1 | 0.998 |
+  | Earnings Yield | 0.072 | 12.4 | 0.997 |
+  | Leverage | 0.007 | 1.4 | 0.999 |
+  | Growth | 0.017 | 6.1 | 0.999 |
 
   Over all common stocks, micro caps included, the small, volatile and
   unprofitable stocks did worst, so Size, Earnings Yield and Dividend Yield
