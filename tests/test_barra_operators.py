@@ -5,9 +5,9 @@ independent numpy reference written from its definition: the exponentially
 weighted window statistics (``EWSum``, ``EWMean``, ``EWVar``, ``EWCov``,
 ``EWBeta``, ``EWAlpha``, ``EWResidualStd``), ``CMRA``, the cross-sectional
 ``CrossSectionalWeightedMean``, ``CrossSectionalTopN``,
-``CapWeightedStandardize`` and the weighted least-squares residuals
-(``CrossSectionalWLSResidual`` on one regressor, ``...2`` on two), and the
-elementwise ``SigmaClip`` and ``RenormalizedCombine``. The regression
+``CapWeightedStandardize``, ``CrossSectionalSigmaClip``, the weighted
+least-squares residual ``CrossSectionalWLSResidual``, and the elementwise
+``RenormalizedCombine``. The regression
 references solve with ``numpy.linalg.lstsq``, not the closed forms.
 
 The panel has scattered NaN and infinities, an all-NaN bar and an all-NaN
@@ -34,10 +34,9 @@ from quantlab.factor.kunquant_cs import (
     CrossSectionalIndustrySizeFill,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
+    CrossSectionalSigmaClip,
     CrossSectionalWLSResidual,
-    CrossSectionalWLSResidual2,
     RenormalizedCombine,
-    SigmaClip,
 )
 from quantlab.factor.kunquant_ts import (
     CMRA,
@@ -63,6 +62,7 @@ _MONTHS, _MONTH_LENGTH = 3, 5
 _CRASH = 7  # a symbol whose cumulative log return falls below -1
 _COMBINE_WEIGHTS = (0.75, 0.15, 0.10)
 _FLAT_BAR = 12  # a bar where x is the same for every symbol
+_DATA_ERROR, _CLIP = 4.0, 1.5  # low, so a small universe has values in both bands
 
 
 def _panel() -> dict[str, np.ndarray]:
@@ -76,7 +76,8 @@ def _panel() -> dict[str, np.ndarray]:
     w[rng.random((_T, _S)) < 0.05] = np.nan
     w[_TIE_BAR, :4] = w[_TIE_BAR, 6]  # ties at the top-N boundary
     u = (rng.random((_T, _S)) < 0.7).astype(np.float64)
-    big = rng.normal(0.0, 1.0, size=(_T, _S)) * 6.0  # a z-like series with tails
+    big = rng.normal(0.0, 1.0, size=(_T, _S)) * 6.0 + 20.0  # far from 0, with tails
+    big[u == 0] *= 2.0  # outside the universe: beyond the data-error bound now and then
     y[22, 1], y[35, 6] = np.inf, -np.inf  # infinities count as missing
     w[25, 2] = np.inf
     lr = rng.normal(0.0, 0.02, size=(_T, _S))
@@ -111,12 +112,11 @@ def _function() -> Function:
         Output(CrossSectionalWeightedMean(y, w * u), "wmean")
         Output(CrossSectionalTopN(w, _TOP), "top")
         Output(CapWeightedStandardize(y, w, u), "standardized")
-        Output(SigmaClip(z, 10.0, 3.0), "clipped")
+        Output(CrossSectionalSigmaClip(z, u, _DATA_ERROR, _CLIP), "clipped")
         Output(EWResidualStd(y, x, _WINDOW, _HALF_LIFE), "ew_resid_std")
         Output(CMRA(lr, _MONTHS, _MONTH_LENGTH), "cmra")
         Output(RenormalizedCombine([x, y, z], list(_COMBINE_WEIGHTS)), "combined")
         Output(CrossSectionalWLSResidual(y, x, w, u), "wls1")
-        Output(CrossSectionalWLSResidual2(y, x, z, w, u), "wls2")
         Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e), "fill_industry_size")
         Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e, use_size=False), "fill_industry")
         Output(CrossSectionalIndustrySizeFill(y, x, ind, w, u, e, use_industry=False), "fill_size")
@@ -126,7 +126,7 @@ def _function() -> Function:
 _OUTPUTS = (
     "ew_sum", "ew_mean", "ew_var", "ew_cov", "ew_beta", "ew_alpha", "ew_mean_short",
     "wmean", "top", "standardized", "clipped",
-    "ew_resid_std", "cmra", "combined", "wls1", "wls2",
+    "ew_resid_std", "cmra", "combined", "wls1",
     "fill_industry_size", "fill_industry", "fill_size",
 )
 
@@ -234,8 +234,17 @@ def _standardize_reference(v: np.ndarray, w: np.ndarray, u: np.ndarray) -> np.nd
     return out
 
 
-def _clip_reference(z: np.ndarray) -> np.ndarray:
-    return np.where(np.abs(z) > 10.0, np.nan, np.clip(z, -3.0, 3.0))
+def _sigma_clip_reference(v: np.ndarray, u: np.ndarray) -> np.ndarray:
+    out = np.full_like(v, np.nan)
+    for t in range(v.shape[0]):
+        inside = (u[t] > 0) & np.isfinite(v[t])
+        if inside.sum() < 2:
+            continue
+        mean, std = v[t, inside].mean(), v[t, inside].std(ddof=1)
+        far = np.abs(v[t] - mean) > _DATA_ERROR * std
+        clipped = np.clip(v[t], mean - _CLIP * std, mean + _CLIP * std)
+        out[t] = np.where(np.isfinite(v[t]) & ~far, clipped, np.nan)
+    return out
 
 
 def _resid_std_reference(y: np.ndarray, x: np.ndarray, window: int, half_life: float) -> np.ndarray:
@@ -425,12 +434,15 @@ def test_cap_weighted_standardize_gives_zero_weighted_mean_and_unit_std_in_the_u
         assert abs(got[t, inside].std(ddof=1) - 1.0) < tol
 
 
-def test_sigma_clip_drops_data_errors_and_clips_at_three(run) -> None:
+def test_sigma_clip_bounds_each_bar_by_the_universe_mean_and_std(run) -> None:
     dtype, inputs, outputs = run
-    _assert_matches(outputs["clipped"], _clip_reference(inputs["z"]), dtype, rtol=1e-12)
-    z = inputs["z"]
-    assert ((np.abs(z) > 10) & np.isfinite(z)).any(), "the fixture should hold a data error"
-    assert ((np.abs(z) > 3) & (np.abs(z) <= 10)).any(), "and a value to clip"
+    got, z, u = outputs["clipped"], inputs["z"], inputs["u"]
+    _assert_matches(got, _sigma_clip_reference(z, u), dtype, rtol=1e-12)
+    dropped = np.isfinite(z) & np.isnan(got)
+    changed = np.isfinite(got) & (got != z)
+    assert dropped[_NAN_BAR + 1 :].any(), "the fixture should hold a data error"
+    assert changed.any(), "and a value to clip"
+    assert (changed & (u > 0)).any() and (changed & (u == 0)).any()
 
 
 @pytest.mark.parametrize("window, half_life", [(0, 5.0), (10, 0.0), (10, -1.0)])
@@ -440,10 +452,18 @@ def test_ew_operators_refuse_an_unusable_window(window, half_life) -> None:
             EWMean(Input("x"), window, half_life)
 
 
-def test_sigma_clip_refuses_a_clip_beyond_the_data_error() -> None:
+def test_sigma_clip_refuses_a_clip_beyond_the_data_error_and_compiles_one_class_per_pair() -> None:
     with Builder():
+        z, u = Input("z"), Input("u")
         with pytest.raises(ValueError, match="clip <= data_error"):
-            SigmaClip(Input("z"), 2.0, 3.0)
+            CrossSectionalSigmaClip(z, u, 2.0, 3.0)
+        with pytest.raises(ValueError, match="clip <= data_error"):
+            CrossSectionalSigmaClip(z, u, float("inf"), 3.0)
+        a, b, c = (CrossSectionalSigmaClip(z, u, 10.0, 3.0), CrossSectionalSigmaClip(z, u, 10, 3),
+                   CrossSectionalSigmaClip(z, u, 4.0, 1.5))
+    assert type(a) is type(b) is not type(c)
+    assert isinstance(c, CrossSectionalSigmaClip)
+    assert type(a).__name__ == "CrossSectionalSigmaClip_10p0_3p0"
 
 
 def test_ew_residual_std_matches_a_weighted_lstsq_fit(run) -> None:
@@ -470,7 +490,7 @@ def test_renormalized_combine_uses_the_values_present(run) -> None:
     assert one_missing.any() and np.isfinite(outputs["combined"][one_missing]).all()
 
 
-@pytest.mark.parametrize("output, regressors", [("wls1", ("x",)), ("wls2", ("x", "z"))])
+@pytest.mark.parametrize("output, regressors", [("wls1", ("x",))])
 def test_wls_residual_matches_lstsq_and_is_orthogonal_in_the_fit_sample(run, output, regressors) -> None:
     dtype, inputs, outputs = run
     xs = [inputs[name] for name in regressors]
@@ -500,7 +520,6 @@ def test_wls_residual_is_nan_where_the_regressor_does_not_vary(run) -> None:
     _, _, outputs = run
     # Centring a constant leaves rounding, not a spread to fit.
     assert np.isnan(outputs["wls1"][_FLAT_BAR]).all()
-    assert np.isnan(outputs["wls2"][_FLAT_BAR]).all()
 
 
 def test_renormalized_combine_and_cmra_refuse_bad_parameters() -> None:

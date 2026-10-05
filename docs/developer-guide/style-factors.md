@@ -6,8 +6,10 @@ factor exposures in the manner of MSCI's USE4 model (Menchero, Orr and Wang,
 MSCI 2011) for every Sharadar common stock on every trading day. This page
 says what each style and descriptor is, where it departs from USE4, and
 which defaults are MSCI's published values and which are quantlab's own
-choices. It is written for anyone who changes the factor or builds on its
-exposures, such as a future factor risk model.
+choices. Page numbers cite the Methodology Notes (August 2011) as [M] and
+the Empirical Notes (September 2011) as [E]. It is written for anyone who
+changes the factor or builds on its exposures, such as a future factor
+risk model.
 
 The factor only produces exposures. Factor returns, a factor covariance
 matrix and specific risk (a risk model) are not computed here.
@@ -73,22 +75,34 @@ factor.build("2001-01-02", "2026-10-02")
 1. The ESTU is chosen from the previous bar's market cap. The market return
    is the ESTU's return, weighted by the previous bar's cap.
 2. Every descriptor is computed (next section).
-3. Each descriptor is standardized over the ESTU: the mean is weighted by
-   the previous bar's market cap and the standard deviation is equally
-   weighted, so a cap-weighted portfolio of the ESTU has zero exposure.
-   Stocks outside the ESTU are shifted and scaled by the same numbers. A
-   standardized value beyond `data_error_sigma` (10) is treated as a data
-   error and dropped; the rest are clipped to `clip_sigma` (3).
-4. A style is the fixed-weight sum of its descriptors, the weights
+3. Each descriptor has its outliers treated on its own distribution
+   ([M] §2.2, p.8): with `m` and `s` the equally weighted mean and standard
+   deviation of the raw descriptor over the ESTU, a value further than
+   `data_error_sigma * s` (10) from `m` is treated as a data error and
+   dropped, and one further than `clip_sigma * s` (3) is trimmed to that
+   bound. This applies to every stock, inside the ESTU or not.
+4. Each descriptor is then standardized over the ESTU ([M] §2.3, p.9, eq.
+   2.4): the mean is weighted by the previous bar's market cap and the
+   standard deviation is equally weighted, so a cap-weighted portfolio of
+   the ESTU has zero exposure. Stocks outside the ESTU are shifted and
+   scaled by the same numbers.
+5. A style is the fixed-weight sum of its descriptors, the weights
    renormalized over the descriptors a stock has, then standardized again.
-5. Residual Volatility is orthogonalized against Beta and Size, Non-linear
-   Size against Size, and Non-linear Beta against Beta: each is replaced by
-   its residual from a weighted least-squares regression with an intercept,
-   fitted on the ESTU and applied to every stock, then standardized again.
-6. A style still missing for a stock that has a market cap is imputed from a
+6. Residual Volatility is orthogonalized against Beta only ([E] p.16 and
+   p.52): it is replaced by its residual from a weighted least-squares
+   regression with an intercept, fitted on the ESTU with square-root-of-cap
+   weights ([E] Appendix B, p.56) and applied to every stock, then
+   standardized again.
+7. Non-linear Size follows [E] p.55: the standardized Size exposure is
+   cubed, orthogonalized against Size by the same regression, then has its
+   outliers treated and is standardized (steps 3 and 4). Non-linear Beta is
+   the same with Beta. Because the outlier step comes last, these two are
+   close to, not exactly, uncorrelated with their regressors.
+8. A style still missing for a stock that has a market cap is imputed from a
    weighted regression of the style on one intercept per industry and a
-   slope on Size (Size itself on industry alone), fitted on the ESTU.
-7. Every style is standardized once more, imputed values included.
+   slope on Size (Size itself on industry alone), fitted on the ESTU
+   ([M] p.9).
+9. Every style is standardized once more, imputed values included.
 
 ## Descriptors and styles
 
@@ -101,12 +115,12 @@ window, `age` 0 for the current bar.
 |---|---|---|---|
 | Size | LNCAP | `log(marketcap)` | |
 | Beta | BETA | slope of the exponentially weighted least-squares fit of `excess` on the market's excess return | 252, 63 |
-| Momentum | RSTR | exponentially weighted mean of `log_excess` over a window ending 21 bars ago | 504, 126, lag 21 |
+| Momentum | RSTR | exponentially weighted sum of `log_excess` over a window ending 21 bars ago, weights not normalized ([E] eq. A2, p.52); a bar without a return adds nothing | 504, 126, lag 21 |
 | Residual Volatility (0.75, 0.15, 0.10) | DASTD | exponentially weighted standard deviation of `excess` | 252, 42 |
 | | CMRA | `log(1 + max Z) - log(1 + min Z)`, `Z(T)` the sum of `log_excess` over the last `T` months of 21 bars, `T = 1..12`; NaN when `min Z <= -1` | 252 |
 | | HSIGMA | weighted standard deviation of the BETA fit's residual | 252, 63 |
-| Non-linear Size | NLSIZE | the Size exposure cubed, standardized and clipped | |
-| Non-linear Beta | NLBETA | the Beta exposure cubed, standardized and clipped | |
+| Non-linear Size | NLSIZE | the Size exposure cubed, orthogonalized against Size, outlier-treated and standardized ([E] p.55) | |
+| Non-linear Beta | NLBETA | the Beta exposure cubed, orthogonalized against Beta, outlier-treated and standardized ([E] p.55) | |
 | Liquidity (0.35, 0.35, 0.30) | STOM, STOQ, STOA | `log(21 * mean daily turnover)` over 1, 3 and 12 months; turnover is `volume * close / marketcap` | 21, 63, 252 |
 | Dividend Yield | YILD | cash dividends of the last 252 bars, each in today's share basis, over today's raw close | 252 |
 | Book-to-Price | BTOP | book equity over market cap | |
@@ -115,7 +129,7 @@ window, `age` 0 for the current bar.
 | Leverage (0.75, 0.15, 0.10) | MLEV | `1 + LD / market cap` | |
 | | DTOA | `(LD + current liabilities) / assets` | |
 | | BLEV | `1 + LD / book equity`; NaN at book equity <= 0 | |
-| Growth (0.20, 0.10) | EGRO | slope of a least-squares fit of the last five fiscal years' EPS on their fiscal year ends, over the mean absolute EPS | 5 fiscal years |
+| Growth (0.20, 0.10) | EGRO | slope of a least-squares fit of the last five fiscal years' EPS on their fiscal year ends, over the mean absolute EPS (see Deviations) | 5 fiscal years |
 | | SGRO | the same with sales per share | 5 fiscal years |
 
 `LD` is long-term debt (`debtnc`), or total debt where the balance sheet
@@ -133,6 +147,15 @@ Sharadar sells no analyst forecasts and has no preferred-equity field, so:
 - CETOP's cash earnings, which MSCI does not define, are trailing net
   income to common plus depreciation and amortization.
 - Preferred equity is taken as 0 in MLEV and BLEV.
+
+One deviation is a choice, not a data gap:
+
+- EGRO and SGRO divide the slope by the mean *absolute* annual value, not
+  by the signed "average annual earnings per share" of [E] p.53: a negative
+  average would flip the growth sign of a loss-making company.
+
+And the universe and the industries approximate MSCI's:
+
 - The ESTU approximates the MSCI USA IMI by the largest 3000 stocks; the
   industry is a single Fama-French 48 code from SIC, not GICS with
   multiple-industry weights.
@@ -152,10 +175,10 @@ Every window, half-life, lag, weight and threshold is a field of
 | `dividend_window` | 252 | USE4 |
 | `growth_years` | 5 | USE4 |
 | descriptor weights | as in the table above | USE4, renormalized where a descriptor is absent |
-| `clip_sigma` | 3 | USE4 |
+| `clip_sigma` | 3 | USE4 ([M] §2.2, p.8) |
 | `estimation_universe_size` | 3000 | ours (USE4 uses the MSCI USA IMI) |
 | `data_error_sigma` | 10 | ours (USE4 does not publish it) |
-| `orthogonalization_weighting` | `"sqrt_cap"` | ours (USE4's factor regression weight) |
+| `orthogonalization_weighting` | `"sqrt_cap"` | USE4 ("regression-weighted", [E] p.55; the regression weight, Appendix B, p.56) |
 | `imputation_regressors`, `imputation_weighting` | industry and Size, `"sqrt_cap"` | ours |
 | `beta_min_observations` | 63 | ours |
 | `momentum_min_observations` | 252 | ours |
@@ -163,13 +186,16 @@ Every window, half-life, lag, weight and threshold is a field of
 | `liquidity_min_fraction` | 0.5 | ours |
 | `dividend_min_observations` | 126 | ours |
 | `min_growth_years` | 3 | ours |
-| RSTR weights normalized to sum to 1 over the bars with a return | | ours (USE4 does not say) |
-| clip before orthogonalizing; a missing regressor taken at its mean | | ours |
+| EGRO and SGRO over the mean absolute annual value | | ours (see Deviations) |
+| a missing regressor taken at its weighted mean in an orthogonalization | | ours |
 
 ## On real data
 
 `examples/sharadar_us_equity/barra_style.py` on the training server, on the
-2026-10-05 Sharadar pull and FRED's DTB3:
+2026-10-05 Sharadar pull and FRED's DTB3. These figures come from the build
+before #185 moved the outlier step ahead of standardization, reordered
+Non-linear Size and Beta, orthogonalized Residual Volatility on Beta only
+and made RSTR an unnormalized sum; they are pending a rebuild.
 
 - **Size and cost.** The store covers 6,476 trading days (2001-01-02 to
   2026-10-02) of 17,090 permatickers and is 6.7 GB. Building it takes 5.6
@@ -180,8 +206,7 @@ Every window, half-life, lag, weight and threshold is a field of
   of the 12 styles has a value in at least 99.92% of the cells in every
   year, and the industry code in 99.87%.
 - **Size** correlates with the log of DAILY's market cap at 0.996 (2005-06-30
-  and 2015-06-30) and 0.969 (2024-06-28) across the estimation universe;
-  the largest companies are clipped at 3.
+  and 2015-06-30) and 0.969 (2024-06-28) across the estimation universe.
 - **Beta.** A raw BETA recomputed independently in numpy has a cap-weighted
   mean of 1.004, 1.006 and 1.033 over the estimation universe on those
   days, and `style_beta` correlates with it at 0.990, 0.998 and 0.964.
@@ -214,10 +239,10 @@ The factor is one KunQuant graph in double precision, built from operators
 in `quantlab.factor.kunquant_ts` (the time-series ones) and
 `quantlab.factor.kunquant_cs` (the cross-sectional and elementwise ones),
 each tested alone against a float64
-numpy reference: `EWMean`, `EWVar`, `EWBeta`, `EWResidualStd`, `CMRA`,
+numpy reference: `EWSum`, `EWVar`, `EWBeta`, `EWResidualStd`, `CMRA`,
 `CrossSectionalTopN`, `CrossSectionalWeightedMean`,
-`CapWeightedStandardize`, `SigmaClip`, `RenormalizedCombine`,
-`CrossSectionalWLSResidual` (one or two regressors) and
+`CrossSectionalSigmaClip`, `CapWeightedStandardize`,
+`RenormalizedCombine`, `CrossSectionalWLSResidual` and
 `CrossSectionalIndustrySizeFill`. The split basis of the dividends and the
 risk-free broadcast are prepared in numpy before the graph runs. KunQuant's
 `Log` is accurate to about 4e-10 absolute in double, so outputs built on log

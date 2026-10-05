@@ -20,14 +20,13 @@ outside them with NaN. They are typically applied before a cross-sectional
 z-score so that a few extreme symbols do not dominate its mean and spread.
 
 ``CrossSectionalWeightedMean``, ``CrossSectionalTopN``,
-``CapWeightedStandardize``, the weighted least-squares residuals
-(``CrossSectionalWLSResidual``, ``CrossSectionalWLSResidual2``) and
+``CrossSectionalSigmaClip``, ``CapWeightedStandardize``, the weighted
+least-squares residual ``CrossSectionalWLSResidual`` and
 ``CrossSectionalIndustrySizeFill`` are the estimation-universe tools of a
 Barra-style risk factor (``quantlab.factor.predefined.barra``), usable by
-any factor. ``SigmaClip`` and ``RenormalizedCombine`` are elementwise, with
-no time or symbol window; they are here because they are the per-bar steps
-of that same pipeline (clipping a standardized value, combining
-descriptors).
+any factor. ``RenormalizedCombine`` is elementwise, with no time or symbol
+window; it is here because it is a per-bar step of that same pipeline
+(combining descriptors).
 """
 
 from KunQuant.Op import Builder
@@ -128,8 +127,8 @@ class CrossSectionalZScore(GenericCrossSectionalOp):
         """
 
 
-def _quantile_tag(q: float) -> str:
-    """Spell a quantile as a C++-identifier-safe fragment, e.g. ``0.01 -> 0p01``."""
+def _float_tag(q: float) -> str:
+    """Spell a float as a C++-identifier-safe fragment, e.g. ``0.01 -> 0p01``."""
     return repr(float(q)).replace(".", "p").replace("-", "m").replace("+", "")
 
 
@@ -169,7 +168,7 @@ class _CrossSectionalQuantileBounds(GenericCrossSectionalOp):
         key = (base, lower, upper)
         variant = _CrossSectionalQuantileBounds._variants.get(key)
         if variant is None:
-            name = f"{base.__name__}_{_quantile_tag(lower)}_{_quantile_tag(upper)}"
+            name = f"{base.__name__}_{_float_tag(lower)}_{_float_tag(upper)}"
             variant = type(name, (base,), {"_LOWER": lower, "_UPPER": upper})
             variant.__module__ = base.__module__
             _CrossSectionalQuantileBounds._variants[key] = variant
@@ -556,93 +555,113 @@ class CapWeightedStandardize(GenericCrossSectionalOp):
         """
 
 
-class SigmaClip(CompositiveOp):
-    """Drop data errors and clip outliers of an already standardized value.
+class CrossSectionalSigmaClip(GenericCrossSectionalOp):
+    """Drop data errors and clip outliers at multiples of a universe's standard deviation.
 
-    A value whose magnitude exceeds ``data_error`` is treated as a data
-    error and becomes NaN; any other value is clipped to
-    ``[-clip, clip]``. NaN stays NaN. Apply it to a standardized exposure,
-    where both thresholds are in standard deviations (USE4 clips at 3).
+    On each bar, with ``U`` the symbols where ``universe > 0`` and ``v`` is
+    finite, ``m`` and ``s`` are the equally weighted mean and sample
+    standard deviation (``ddof=1``) of ``v`` over ``U``. Then, for every
+    symbol::
+
+        out = NaN                                 where |v - m| > data_error * s
+        out = clip(v, m - clip * s, m + clip * s) elsewhere
+
+    This is USE4's outlier step (Methodology Notes §2.2, p.8): a value so
+    extreme it is taken as a data error is removed, a large but legitimate
+    one is trimmed to ``clip`` standard deviations from the mean, the rest
+    pass unchanged. It runs on a raw descriptor, before
+    ``CapWeightedStandardize``, so the bounds sit around the descriptor's
+    own (equally weighted) centre. NaN and infinite inputs come out NaN; a
+    bar with fewer than two universe values or a zero ``s`` is NaN for every
+    symbol.
+
+    The C++ body cannot read an op parameter (see
+    ``_CrossSectionalQuantileBounds``), so each ``(data_error, clip)`` pair
+    gets a class of its own (``CrossSectionalSigmaClip_10p0_3p0``) with the
+    thresholds written in; ``isinstance`` still holds. The batch-start and
+    SIMD-width notes of ``CrossSectionalZScore`` apply.
 
     Parameters
     ----------
     v : OpBase
-        A standardized series, such as ``CapWeightedStandardize``'s output.
+        The raw values, such as a descriptor.
+    universe : OpBase
+        A mask, positive for the symbols the mean and std are taken over.
     data_error : float, default 10.0
-        Magnitude beyond which a value is dropped.
+        Standard deviations from the mean beyond which a value is dropped.
     clip : float, default 3.0
-        Magnitude values are clipped to, at most ``data_error``.
+        Standard deviations from the mean values are clipped to, at most
+        ``data_error``.
 
     Raises
     ------
     ValueError
-        If ``0 < clip <= data_error`` does not hold.
+        If ``0 < clip <= data_error`` does not hold or ``data_error`` is
+        not finite.
 
     Examples
     --------
-    >>> Output(SigmaClip(CapWeightedStandardize(raw, cap, estu)), "beta")
+    >>> estu = CrossSectionalTopN(BackRef(Input("marketcap"), 1), 3000)
+    >>> Output(CrossSectionalSigmaClip(Log(Input("marketcap")), estu, 10.0, 3.0), "lncap")
     """
 
-    def __init__(self, v: OpBase, data_error: float = 10.0, clip: float = 3.0) -> None:
-        """Initialize the operator; see the class docstring for parameters."""
+    _DATA_ERROR: float = 10.0
+    _CLIP: float = 3.0
+    _variants: dict = {}
+
+    def __new__(cls, v: OpBase, universe: OpBase, data_error: float = 10.0, clip: float = 3.0):
+        """Return an instance of the subclass specialized to ``(data_error, clip)``."""
         data_error, clip = float(data_error), float(clip)
-        if not 0.0 < clip <= data_error:
+        if not 0.0 < clip <= data_error < float("inf"):
             raise ValueError(
-                f"SigmaClip: need 0 < clip <= data_error, got clip={clip}, "
+                f"CrossSectionalSigmaClip: need 0 < clip <= data_error, got clip={clip}, "
                 f"data_error={data_error}"
             )
-        super().__init__([v], [("data_error", data_error), ("clip", clip)])
+        key = (data_error, clip)
+        variant = CrossSectionalSigmaClip._variants.get(key)
+        if variant is None:
+            name = f"CrossSectionalSigmaClip_{_float_tag(data_error)}_{_float_tag(clip)}"
+            variant = type(name, (CrossSectionalSigmaClip,), {"_DATA_ERROR": data_error, "_CLIP": clip})
+            variant.__module__ = CrossSectionalSigmaClip.__module__
+            CrossSectionalSigmaClip._variants[key] = variant
+        return super().__new__(variant)
 
-    def decompose(self, options: dict) -> list[OpBase]:
-        """Expand into comparisons and ``Select``; NaN compares false and passes through."""
-        data_error: float = self.attrs["data_error"]  # type: ignore[assignment]
-        clip: float = self.attrs["clip"]  # type: ignore[assignment]
-        b = Builder(self.get_parent())
-        with b:
-            v = self.inputs[0]
-            clipped = Select(
-                v > clip,
-                ConstantOp(clip),
-                Select(v < -clip, ConstantOp(-clip), v),
-            )
-            Select(Abs(v) > data_error, ConstantOp("nan"), clipped)
-        return b.ops
+    def __init__(
+        self, v: OpBase, universe: OpBase, data_error: float = 10.0, clip: float = 3.0
+    ) -> None:
+        """Initialize the operator; see the class docstring for parameters."""
+        super().__init__(
+            [v, universe], [("data_error", float(data_error)), ("clip", float(clip))]
+        )
 
+    def generate_head(self) -> str:
+        """Return the C++ preamble for the generated function, which is empty."""
+        return ""
 
-#: C++ of the residual ops' shared step: the weighted means and centred
-#: moments over the fit sample. ``WLS_TOLERANCE`` is the relative size below
-#: which a regressor's centred spread (or the two regressors' determinant) is
-#: taken as zero, so a constant or collinear regressor gives NaN, not a slope
-#: made of rounding.
-_WLS_MEANS = """
-        const T WLS_TOLERANCE = (T)1e-10;
-        T sw = 0, swy = 0, swx1 = 0, swx2 = 0, q1 = 0, q2 = 0;
-        for (size_t i = 0; i < num_stocks; i++) {
-            if (!fit(i)) continue;
-            T w = weight(i);
-            sw += w; swy += w * input_0[i]; swx1 += w * x1(i); swx2 += w * x2(i);
-            q1 += w * x1(i) * x1(i); q2 += w * x2(i) * x2(i);
-        }
-        T my = sw > 0 ? swy / sw : NAN, m1 = sw > 0 ? swx1 / sw : NAN, m2 = sw > 0 ? swx2 / sw : NAN;
-        T s11 = 0, s12 = 0, s22 = 0, s1y = 0, s2y = 0;
-        for (size_t i = 0; i < num_stocks; i++) {
-            if (!fit(i)) continue;
-            T w = weight(i), d1 = x1(i) - m1, d2 = x2(i) - m2, dy = input_0[i] - my;
-            s11 += w * d1 * d1; s12 += w * d1 * d2; s22 += w * d2 * d2;
-            s1y += w * d1 * dy; s2y += w * d2 * dy;
-        }
-"""
-
-#: C++ writing the residual of every symbol with a finite ``y``; a missing
-#: regressor is taken at its weighted mean, so it adjusts nothing.
-_WLS_WRITE = """
-        for (size_t i = 0; i < num_stocks; i++) {
-            T y = input_0[i];
-            if (!std::isfinite(y) || std::isnan(b1) || std::isnan(b2)) { output_0[i] = NAN; continue; }
-            T a1 = std::isfinite(x1(i)) ? x1(i) - m1 : 0, a2 = std::isfinite(x2(i)) ? x2(i) - m2 : 0;
-            output_0[i] = y - my - b1 * a1 - b2 * a2;
-        }
-"""
+    def generate_body(self) -> str:
+        """Return the C++ loops that bound one bar."""
+        return f"""
+        T sum = 0;
+        size_t n = 0;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            T v = input_0[i];
+            if (input_1[i] > 0 && std::isfinite(v)) {{ sum += v; n++; }}
+        }}
+        T mean = n > 0 ? sum / n : NAN;
+        T ss = 0;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            T v = input_0[i];
+            if (input_1[i] > 0 && std::isfinite(v)) {{ T d = v - mean; ss += d * d; }}
+        }}
+        T sd = n > 1 ? std::sqrt(ss / (n - 1)) : NAN;
+        T error = (T){self._DATA_ERROR!r} * sd;
+        T lo = mean - (T){self._CLIP!r} * sd, hi = mean + (T){self._CLIP!r} * sd;
+        for (size_t i = 0; i < num_stocks; i++) {{
+            T v = input_0[i];
+            if (!std::isfinite(v) || !(sd > 0) || std::abs(v - mean) > error) {{ output_0[i] = NAN; continue; }}
+            output_0[i] = v < lo ? lo : (v > hi ? hi : v);
+        }}
+        """
 
 
 class CrossSectionalWLSResidual(GenericCrossSectionalOp):
@@ -657,10 +676,11 @@ class CrossSectionalWLSResidual(GenericCrossSectionalOp):
     ``mx`` and ``my`` being the weighted means of the fit sample. The
     residual has zero weighted covariance with ``x`` over the fit sample.
     This orthogonalizes one style against another, as USE4 orthogonalizes
-    Non-linear Size against Size. A symbol whose ``x`` is missing is taken
-    at ``mx`` and so keeps ``y - my``. A bar with no fit sample, or where
-    ``x`` does not vary over it (its centred spread below 1e-10 of its
-    uncentred one), is NaN for every symbol.
+    Residual Volatility against Beta and Non-linear Size against Size. A
+    symbol whose ``x`` is missing is taken at ``mx`` and so keeps ``y -
+    my``. A bar with no fit sample, or where ``x`` does not vary over it
+    (its centred spread below 1e-10 of its uncentred one), is NaN for every
+    symbol.
 
     The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
 
@@ -688,87 +708,41 @@ class CrossSectionalWLSResidual(GenericCrossSectionalOp):
         """Return the C++ preamble for the generated function, which is empty."""
         return ""
 
-    def _accessors(self) -> str:
-        """Return the C++ accessors of the fit sample, declared in each bar's body."""
+    def generate_body(self) -> str:
+        """Return the C++ that fits one bar and writes its residuals.
+
+        ``tolerance`` is the relative size below which ``x``'s centred
+        spread is taken as zero, so a constant regressor gives NaN, not a
+        slope made of rounding.
+        """
         return """
-        auto x1 = [&](size_t i) -> T { return input_1[i]; };
-        auto x2 = [&](size_t i) -> T { return (T)0; };
-        auto weight = [&](size_t i) -> T { return input_2[i]; };
+        const T tolerance = (T)1e-10;
         auto fit = [&](size_t i) -> bool {
             T w = input_2[i];
             return input_3[i] > 0 && std::isfinite(input_0[i]) && std::isfinite(input_1[i])
                 && std::isfinite(w) && w > 0;
         };
+        T sw = 0, swy = 0, swx = 0, q = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            if (!fit(i)) continue;
+            T w = input_2[i], x = input_1[i];
+            sw += w; swy += w * input_0[i]; swx += w * x; q += w * x * x;
+        }
+        T my = sw > 0 ? swy / sw : NAN, mx = sw > 0 ? swx / sw : NAN;
+        T sxx = 0, sxy = 0;
+        for (size_t i = 0; i < num_stocks; i++) {
+            if (!fit(i)) continue;
+            T w = input_2[i], dx = input_1[i] - mx;
+            sxx += w * dx * dx; sxy += w * dx * (input_0[i] - my);
+        }
+        T b = sxx > tolerance * q && sxx > 0 ? sxy / sxx : NAN;
+        for (size_t i = 0; i < num_stocks; i++) {
+            T y = input_0[i];
+            if (!std::isfinite(y) || std::isnan(b)) { output_0[i] = NAN; continue; }
+            T dx = std::isfinite(input_1[i]) ? input_1[i] - mx : 0;
+            output_0[i] = y - my - b * dx;
+        }
         """
-
-    def generate_body(self) -> str:
-        """Return the C++ that fits one bar and writes its residuals."""
-        return self._accessors() + _WLS_MEANS + """
-        T b1 = s11 > WLS_TOLERANCE * q1 && s11 > 0 ? s1y / s11 : NAN, b2 = 0;
-""" + _WLS_WRITE
-
-
-class CrossSectionalWLSResidual2(GenericCrossSectionalOp):
-    """Residual of a per-bar weighted least-squares fit of ``y`` on ``x1`` and ``x2``, with an intercept.
-
-    ``CrossSectionalWLSResidual`` with two regressors: the slopes solve the
-    weighted, mean-centred 2x2 normal equations over the fit sample (the
-    symbols where ``universe > 0``, ``y``, ``x1`` and ``x2`` are finite and
-    ``w`` is finite and positive), and every symbol with a finite ``y`` gets
-    ``y - my - b1 (x1 - m1) - b2 (x2 - m2)``, a missing regressor taken at
-    its mean. USE4 orthogonalizes Residual Volatility against Beta and Size
-    this way. A bar where a regressor does not vary, or the two are
-    collinear (the determinant below 1e-10 of the product of the spreads),
-    over the fit sample is NaN for every symbol.
-
-    The batch-start and SIMD-width notes of ``CrossSectionalZScore`` apply.
-
-    Parameters
-    ----------
-    y : OpBase
-        The values to orthogonalize.
-    x1, x2 : OpBase
-        The regressors.
-    w : OpBase
-        The regression weights.
-    universe : OpBase
-        A mask, positive for the symbols the fit uses.
-
-    Examples
-    --------
-    >>> Output(CrossSectionalWLSResidual2(resvol, beta, size, Sqrt(cap), estu), "resvol")
-    """
-
-    def __init__(self, y: OpBase, x1: OpBase, x2: OpBase, w: OpBase, universe: OpBase) -> None:
-        """Initialize the operator; see the class docstring for parameters."""
-        super().__init__([y, x1, x2, w, universe], None)
-
-    def generate_head(self) -> str:
-        """Return the C++ preamble for the generated function, which is empty."""
-        return ""
-
-    def _accessors(self) -> str:
-        """Return the C++ accessors of the fit sample, declared in each bar's body."""
-        return """
-        auto x1 = [&](size_t i) -> T { return input_1[i]; };
-        auto x2 = [&](size_t i) -> T { return input_2[i]; };
-        auto weight = [&](size_t i) -> T { return input_3[i]; };
-        auto fit = [&](size_t i) -> bool {
-            T w = input_3[i];
-            return input_4[i] > 0 && std::isfinite(input_0[i]) && std::isfinite(input_1[i])
-                && std::isfinite(input_2[i]) && std::isfinite(w) && w > 0;
-        };
-        """
-
-    def generate_body(self) -> str:
-        """Return the C++ that fits one bar and writes its residuals."""
-        return self._accessors() + _WLS_MEANS + """
-        T det = s11 * s22 - s12 * s12;
-        bool solvable = s11 > WLS_TOLERANCE * q1 && s22 > WLS_TOLERANCE * q2
-            && det > WLS_TOLERANCE * s11 * s22 && det > 0;
-        T b1 = solvable ? (s22 * s1y - s12 * s2y) / det : NAN;
-        T b2 = solvable ? (s11 * s2y - s12 * s1y) / det : NAN;
-""" + _WLS_WRITE
 
 
 #: Largest industry code ``CrossSectionalIndustrySizeFill`` accepts; it sizes

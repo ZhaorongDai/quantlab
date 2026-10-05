@@ -232,19 +232,39 @@ def _wls_slope(y: np.ndarray, x: np.ndarray, weights: np.ndarray) -> float:
     return coefficients[1]
 
 
-def _standardize(values: np.ndarray, cap_before: np.ndarray, estu: np.ndarray) -> np.ndarray:
-    out = np.full_like(values, np.nan)
+def _moments(values: np.ndarray, cap_before: np.ndarray, estu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per-bar cap-weighted mean and equally weighted sample std over the universe."""
+    mean, std = np.full((_T, 1), np.nan), np.full((_T, 1), np.nan)
     for t in range(_T):
         inside = estu[t] & np.isfinite(values[t])
-        if inside.sum() < 2:
-            continue
-        mean = np.average(values[t, inside], weights=cap_before[t, inside])
-        out[t] = (values[t] - mean) / values[t, inside].std(ddof=1)
-    return out
+        if inside.sum() >= 2:
+            mean[t] = np.average(values[t, inside], weights=cap_before[t, inside])
+            std[t] = values[t, inside].std(ddof=1)
+    return mean, std
 
 
-def _clip(z: np.ndarray) -> np.ndarray:
-    return np.where(np.abs(z) > 10.0, np.nan, np.clip(z, -3.0, 3.0))
+def _standardize(values: np.ndarray, cap_before: np.ndarray, estu: np.ndarray) -> np.ndarray:
+    mean, std = _moments(values, cap_before, estu)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (values - mean) / std
+
+
+def _bounds(values: np.ndarray, estu: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per-bar equally weighted mean and sample std of ``values`` over the universe."""
+    mean, std = np.full(_T, np.nan), np.full(_T, np.nan)
+    for t in range(_T):
+        inside = estu[t] & np.isfinite(values[t])
+        if inside.sum() >= 2:
+            mean[t], std[t] = values[t, inside].mean(), values[t, inside].std(ddof=1)
+    return mean[:, None], std[:, None]
+
+
+def _clip(values: np.ndarray, estu: np.ndarray) -> np.ndarray:
+    """Drop values beyond 10 universe std of the universe mean, clip the rest at 3."""
+    mean, std = _bounds(values, estu)
+    with np.errstate(invalid="ignore"):
+        far = np.abs(values - mean) > 10.0 * std
+    return np.where(far, np.nan, np.clip(values, mean - 3.0 * std, mean + 3.0 * std))
 
 
 def _windowed(values: np.ndarray, window: int):
@@ -357,9 +377,7 @@ def _reference() -> dict[str, np.ndarray]:
     for t, rows in _windowed(lagged, _MOM_WINDOW):
         ok = np.isfinite(rows)
         weighted = np.where(ok, rows * momentum_weights, 0).sum(axis=0)
-        with np.errstate(invalid="ignore", divide="ignore"):
-            normalized = weighted / np.where(ok, momentum_weights, 0).sum(axis=0)
-        rstr[t] = np.where(ok.sum(axis=0) >= _MOM_MIN, normalized, np.nan)
+        rstr[t] = np.where(ok.sum(axis=0) >= _MOM_MIN, weighted, np.nan)
 
     dastd = np.full((_T, _S), np.nan)
     dastd_weights = _ew_weights(_DASTD_WINDOW, _DASTD_HALF_LIFE)
@@ -424,7 +442,7 @@ def _reference() -> dict[str, np.ndarray]:
         return out
 
     def descriptor(raw):
-        return _clip(_standardize(raw, cap_before, estu))
+        return _standardize(_clip(raw, estu), cap_before, estu)
 
     def standardize(value):
         return _standardize(value, cap_before, estu)
@@ -450,8 +468,9 @@ def _reference() -> dict[str, np.ndarray]:
         "sgro": descriptor(growth("sps_fy")),
     }
     style_size, style_beta = standardize(desc["lncap"]), standardize(desc["beta"])
-    desc["nlsize"] = descriptor(style_size**3)
-    desc["nlbeta"] = descriptor(style_beta**3)
+    root_cap = np.sqrt(cap_before)
+    desc["nlsize"] = descriptor(_residual(style_size**3, [style_size], root_cap, estu))
+    desc["nlbeta"] = descriptor(_residual(style_beta**3, [style_beta], root_cap, estu))
     parts = [desc["dastd"], desc["cmra"], desc["hsigma"]]
     total = sum(np.where(np.isfinite(d), d, 0.0) * w for d, w in zip(parts, _RESVOL_WEIGHTS))
     present = sum(np.isfinite(d) * w for d, w in zip(parts, _RESVOL_WEIGHTS))
@@ -462,17 +481,19 @@ def _reference() -> dict[str, np.ndarray]:
     liquidity_present = sum(np.isfinite(d) * w for d, w in zip(liquidity_parts, _LIQUIDITY_WEIGHTS))
     with np.errstate(invalid="ignore", divide="ignore"):
         liquidity = np.where(liquidity_present > 0, liquidity_total / liquidity_present, np.nan)
-    root_cap = np.sqrt(cap_before)
+    # Where the lower clip bound lands after standardization: the bound and
+    # the clipped LNCAP shifted and scaled by the same numbers.
+    lncap_mean, lncap_std = _bounds(np.log(cap), estu)
+    centre, scale = _moments(_clip(np.log(cap), estu), cap_before, estu)
+    lncap_floor = np.broadcast_to((lncap_mean - 3.0 * lncap_std - centre) / scale, (_T, _S))
     out = {f"desc_{name}": value for name, value in desc.items()}
     out.update({
         "style_size": style_size,
         "style_beta": style_beta,
         "style_momentum": standardize(desc["rstr"]),
-        "style_residual_volatility": standardize(
-            _residual(combined, [style_beta, style_size], root_cap, estu)
-        ),
-        "style_nonlinear_size": standardize(_residual(desc["nlsize"], [style_size], root_cap, estu)),
-        "style_nonlinear_beta": standardize(_residual(desc["nlbeta"], [style_beta], root_cap, estu)),
+        "style_residual_volatility": standardize(_residual(combined, [style_beta], root_cap, estu)),
+        "style_nonlinear_size": standardize(desc["nlsize"]),
+        "style_nonlinear_beta": standardize(desc["nlbeta"]),
         "style_liquidity": standardize(liquidity),
         "style_dividend_yield": standardize(desc["yild"]),
         "style_book_to_price": standardize(desc["btop"]),
@@ -485,6 +506,8 @@ def _reference() -> dict[str, np.ndarray]:
         "dastd_raw": dastd,
         "hsigma_raw": hsigma,
         "cmra_raw": cmra,
+        "lncap_floor": lncap_floor,
+        "lncap_unclipped": _standardize(np.log(cap), cap_before, estu),
     })
     live = np.isfinite(cap)
     for name in [name for name in out if name.startswith("style_")]:
@@ -530,8 +553,12 @@ def test_outputs_match_the_numpy_reference(computed, name) -> None:
     np.testing.assert_allclose(got[finite], want[name][finite], rtol=tolerance, atol=tolerance)
 
 
+# Non-linear Size and Beta have their outliers treated after the
+# orthogonalization ([E] p.55), which leaves a correlation only on a bar
+# where a cube is clipped or dropped; on this panel none is, so all three
+# are exact.
 _ORTHOGONALIZED = {
-    "style_residual_volatility": ("style_beta", "style_size"),
+    "style_residual_volatility": ("style_beta",),
     "style_nonlinear_size": ("style_size",),
     "style_nonlinear_beta": ("style_beta",),
 }
@@ -540,13 +567,14 @@ _ORTHOGONALIZED = {
 @pytest.mark.parametrize("name", list(_ORTHOGONALIZED))
 def test_orthogonalized_styles_have_no_weighted_correlation_with_their_regressors(computed, name) -> None:
     _, out, want = computed
+    names = _ORTHOGONALIZED[name]
     got = out[name].transpose("timestamp", "symbol").to_numpy()
-    regressors = [out[r].transpose("timestamp", "symbol").to_numpy() for r in _ORTHOGONALIZED[name]]
+    regressors = [out[r].transpose("timestamp", "symbol").to_numpy() for r in names]
     weights = np.sqrt(want["cap_before"])
     checked = 0
     # Imputation fills styles after the orthogonalization, and the
     # regressors are the styles before it: check the cells that were neither.
-    raws = [want[f"raw_{name}"]] + [want[f"raw_{r}"] for r in _ORTHOGONALIZED[name]]
+    raws = [want[f"raw_{name}"]] + [want[f"raw_{r}"] for r in names]
     for t in range(_T):
         fit = (want["estu"][t] > 0) & np.isfinite(got[t]) & np.isfinite(weights[t])
         for x in regressors:
@@ -593,7 +621,10 @@ def test_a_symbol_missing_a_descriptor_still_gets_residual_volatility(computed) 
 
 def test_the_fixture_exercises_clipping_late_listing_and_the_minimum_count(computed) -> None:
     _, _, want = computed
-    assert (want["desc_lncap"][1:, _CLIPPED] == -3.0).all()
+    # The small cap sits beyond 3 universe standard deviations below the
+    # universe's equally weighted mean: clipped to that bound, then standardized.
+    assert (want["lncap_unclipped"][1:, _CLIPPED] < want["lncap_floor"][1:, _CLIPPED]).all()
+    np.testing.assert_allclose(want["desc_lncap"][1:, _CLIPPED], want["lncap_floor"][1:, _CLIPPED])
     # BETA waits for _MIN_OBS returns after listing, then exists.
     first = _LISTING_BAR + 1 + _MIN_OBS - 1
     assert np.isnan(want["desc_beta"][:first, _LISTED_LATE]).all()
@@ -626,7 +657,7 @@ def test_symbols_outside_the_universe_still_get_exposures(computed) -> None:
         assert exposed[_WINDOW:].sum() > 0
     # A clipped small cap outside the universe keeps an exposure.
     clipped = out["desc_lncap"].sel(symbol=f"S{_CLIPPED:02d}").values[1:]
-    assert (clipped == -3.0).all()
+    np.testing.assert_allclose(clipped, want["lncap_floor"][1:, _CLIPPED], rtol=1e-9)
     assert np.isfinite(out["style_size"].sel(symbol=f"S{_CLIPPED:02d}").values[1:]).all()
 
 

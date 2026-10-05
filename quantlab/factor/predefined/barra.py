@@ -23,8 +23,8 @@ BLEV) and Growth (EGRO, SGRO), as described in Menchero, Orr and Wang, *The
 Barra US Equity Model (USE4), Methodology Notes* (MSCI, 2011), and its
 Empirical Notes, Appendix A.
 
-Deviations from USE4, all because Sharadar sells no analyst forecasts or
-preferred-equity field:
+Deviations from USE4, the first four because Sharadar sells no analyst
+forecasts or preferred-equity field:
 
 - Earnings Yield has no EPFWD (forward earnings): it is the trailing
   CETOP and ETOP only, their USE4 weights renormalized;
@@ -32,7 +32,18 @@ preferred-equity field:
   EGRO and SGRO only, their USE4 weights renormalized;
 - CETOP's cash earnings, which MSCI does not define, are trailing net
   income to common plus depreciation and amortization;
-- preferred equity is taken as 0 in MLEV and BLEV.
+- preferred equity is taken as 0 in MLEV and BLEV;
+- EGRO and SGRO divide the slope by the mean *absolute* annual value, not
+  the signed "average annual earnings per share" of the Empirical Notes
+  (p.53): a negative average would flip the growth sign of a loss-making
+  company. Our choice.
+
+Each descriptor first has its outliers treated on its own distribution
+(Methodology Notes §2.2, p.8): over the estimation universe, a value more
+than ``data_error_sigma`` equally weighted standard deviations from the
+equally weighted mean is dropped as a data error and one beyond
+``clip_sigma`` is trimmed to that bound. It is then standardized
+(§2.3, p.9, eq. 2.4).
 
 A style still missing for a symbol (no descriptor at all) is imputed from
 a per-bar weighted regression of the style on industry and Size, fitted in
@@ -41,12 +52,16 @@ once more. The symbol's point-in-time industry code is passed through.
 
 A style with several descriptors is their fixed-weight sum over the
 descriptors a symbol has, the weights renormalized over those present, so
-a symbol missing one descriptor still gets the style. Residual Volatility,
-Non-linear Size and Non-linear Beta are orthogonalized: each is replaced by
-its residual from a per-bar weighted least-squares regression, with an
-intercept, on Beta and Size, on Size, and on Beta respectively, fitted in
-the estimation universe and applied to every symbol, so each has zero
-weighted correlation with its regressors there.
+a symbol missing one descriptor still gets the style. Residual Volatility
+is orthogonalized to Beta (Empirical Notes p.16 and p.52): it is replaced
+by its residual from a per-bar weighted least-squares regression, with an
+intercept, on Beta, fitted in the estimation universe and applied to every
+symbol, so it has zero weighted correlation with Beta there. Non-linear
+Size follows the text's order (p.55): the Size exposure is cubed,
+orthogonalized to Size the same way, then has its outliers treated and is
+standardized; Non-linear Beta likewise with Beta. The outlier step comes
+after the orthogonalization, so these two are close to, not exactly,
+uncorrelated with their regressors.
 """
 
 from __future__ import annotations
@@ -76,18 +91,17 @@ from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.kunquant_cs import (
     CapWeightedStandardize,
     CrossSectionalIndustrySizeFill,
+    CrossSectionalSigmaClip,
     CrossSectionalTopN,
     CrossSectionalWeightedMean,
     CrossSectionalWLSResidual,
-    CrossSectionalWLSResidual2,
     RenormalizedCombine,
-    SigmaClip,
 )
 from quantlab.factor.kunquant_ts import (
     CMRA,
     EWBeta,
-    EWMean,
     EWResidualStd,
+    EWSum,
     EWVar,
 )
 
@@ -251,16 +265,20 @@ class BarraStyleParameters:
     orthogonalization_weighting : str, default "sqrt_cap"
         Regression weights of the orthogonalizations: ``"sqrt_cap"`` (the
         square root of the previous bar's market cap), ``"cap"`` or
-        ``"equal"``. Our choice: USE4 orthogonalizes "on a
-        regression-weighted basis" and its factor regression weights by the
-        square root of cap, but MSCI does not publish the weights of this
-        step.
+        ``"equal"``. The default follows USE4: NLSIZE and NLBETA are
+        orthogonalized "on a regression-weighted basis" (Empirical Notes
+        p.55), and the regression weight is the square root of cap
+        (Appendix B, p.56).
     data_error_sigma : float, default 10.0
-        Standardized descriptor magnitude beyond which a value is treated as
-        a data error and dropped. Our choice: USE4 drops data errors but does
-        not publish the threshold.
+        Distance from a descriptor's mean over the estimation universe, in
+        its standard deviations there (both equally weighted), beyond which
+        a value is treated as a data error and dropped. Our choice: USE4
+        drops data errors (Methodology Notes §2.2, p.8) but does not publish
+        the threshold.
     clip_sigma : float, default 3.0
-        Standardized descriptor magnitude descriptors are clipped to (USE4).
+        Distance from the same mean, in the same standard deviations, a
+        value beyond it is trimmed to, before standardizing (USE4: "three
+        standard deviations from the mean", §2.2, p.8).
 
     Examples
     --------
@@ -517,8 +535,8 @@ class BarraStyleParameters:
                 f"orthogonalization_weighting must be one of {ORTHOGONALIZATION_WEIGHTINGS}, "
                 f"got {self.orthogonalization_weighting!r}"
             )
-        if not 0 < self.clip_sigma <= self.data_error_sigma:
-            raise ValueError("need 0 < clip_sigma <= data_error_sigma")
+        if not 0 < self.clip_sigma <= self.data_error_sigma < float("inf"):
+            raise ValueError("need 0 < clip_sigma <= data_error_sigma, both finite")
         if any(not name for name in self.panel_columns):
             raise ValueError("BarraStyle input column names cannot be empty")
         if len(set(self.panel_columns)) != len(self.panel_columns):
@@ -629,8 +647,8 @@ class BarraStyle(FactorKunQuant):
       weighted standard deviation of that fit's residual;
     - RSTR is the exponentially weighted sum of ``log_excess`` over
       ``momentum_window`` bars ending ``momentum_lag`` bars ago (half-life
-      ``momentum_half_life``), the weights normalized to sum to 1 over the
-      bars with a return (our choice: USE4 does not say);
+      ``momentum_half_life``), the weights not normalized (Empirical Notes
+      eq. A2, p.52); a bar without a return adds nothing;
     - DASTD is the exponentially weighted standard deviation of ``excess``
       over ``dastd_window`` bars (half-life ``dastd_half_life``);
     - CMRA is ``log(1 + max Z) - log(1 + min Z)``, ``Z(T)`` the sum of
@@ -663,18 +681,23 @@ class BarraStyle(FactorKunQuant):
       or a moved year end keeps the spacing true), over the years known,
       divided by their mean absolute value; NaN with fewer than
       ``min_growth_years`` known years or a mean of 0. SGRO is the same
-      with sales per share;
+      with sales per share. Dividing by the mean absolute value, not the
+      signed mean of the text, is our choice;
     - a windowed descriptor is NaN with fewer valid values in its window
       than its ``*_min_observations`` (``liquidity_min_fraction`` of the
       window for Liquidity);
-    - each descriptor is standardized over the universe (market cap at
-      ``t-1`` weighted mean 0, equally weighted standard deviation 1), a
-      value beyond ``data_error_sigma`` becomes NaN, and the rest are
-      clipped to ``clip_sigma``;
+    - each descriptor has its outliers treated, then is standardized: with
+      ``m`` and ``s`` the equally weighted mean and standard deviation of
+      the raw descriptor over the universe, a value beyond ``m +-
+      data_error_sigma * s`` becomes NaN and the rest are clipped to ``m
+      +- clip_sigma * s`` (Methodology Notes §2.2, p.8); the result is
+      standardized over the universe (market cap at ``t-1`` weighted mean
+      0, equally weighted standard deviation 1; §2.3, p.9, eq. 2.4);
     - Size, Beta and Momentum are their one descriptor standardized again;
     - Residual Volatility is ``0.75 DASTD + 0.15 CMRA + 0.10 HSIGMA``
       (``*_weight``) over the descriptors present, standardized,
-      orthogonalized against Beta and Size and standardized again;
+      orthogonalized against Beta and standardized again (Empirical Notes
+      p.16, p.52);
     - Liquidity is ``0.35 STOM + 0.35 STOQ + 0.30 STOA`` over the
       descriptors present, standardized; Dividend Yield is YILD
       standardized again; Book-to-Price is BTOP standardized again;
@@ -689,12 +712,12 @@ class BarraStyle(FactorKunQuant):
       the slope times its Size. A symbol keeps NaN when its industry has no
       fitted member or a regressor of its own is missing. Every style is
       then standardized once more, imputed values included;
-    - the NLSIZE descriptor is the cube of the Size exposure, standardized
-      and clipped like any descriptor; Non-linear Size is it orthogonalized
-      against Size and standardized again. NLBETA and Non-linear Beta are
-      the same with Beta. The clip comes before the orthogonalization (our
-      choice), so the final styles stay exactly orthogonal to their
-      regressors;
+    - the NLSIZE descriptor is the cube of the Size exposure (before
+      imputation), orthogonalized against Size, then outlier-treated and
+      standardized like any descriptor; Non-linear Size is it standardized
+      again. NLBETA and Non-linear Beta are the same with Beta. This is
+      the text's order (Empirical Notes p.55), so the outlier step can
+      leave a small weighted correlation with the regressor;
     - an orthogonalization is a weighted least-squares regression with an
       intercept, weighted by ``orthogonalization_weighting`` and fitted in
       the universe; every symbol gets its residual, a symbol missing a
@@ -709,7 +732,7 @@ class BarraStyle(FactorKunQuant):
       ``desc_stom``, ``desc_stoq``, ``desc_stoa``, ``desc_yild``,
       ``desc_btop``, ``desc_etop``, ``desc_cetop``, ``desc_mlev``,
       ``desc_dtoa``, ``desc_blev``, ``desc_egro``, ``desc_sgro``: the
-      standardized, clipped descriptors;
+      outlier-treated, standardized descriptors;
     - ``style_size``, ``style_beta``, ``style_momentum``,
       ``style_residual_volatility``, ``style_nonlinear_size``,
       ``style_nonlinear_beta``, ``style_liquidity``,
@@ -873,8 +896,10 @@ class BarraStyle(FactorKunQuant):
                 return CapWeightedStandardize(value, cap_before, estu)
 
             def descriptor(raw: OpBase) -> OpBase:
-                """``raw`` standardized, data errors dropped and outliers clipped."""
-                return SigmaClip(standardize(raw), params.data_error_sigma, params.clip_sigma)
+                """``raw`` with data errors dropped and outliers clipped, then standardized."""
+                return standardize(CrossSectionalSigmaClip(
+                    raw, estu, params.data_error_sigma, params.clip_sigma
+                ))
 
             beta_window, beta_half_life = params.beta_window, params.beta_half_life
             joint = excess + market_excess
@@ -888,7 +913,7 @@ class BarraStyle(FactorKunQuant):
             )
             lagged = BackRef(log_excess, params.momentum_lag) if params.momentum_lag else log_excess
             rstr = counted(
-                EWMean(lagged, params.momentum_window, params.momentum_half_life),
+                EWSum(lagged, params.momentum_window, params.momentum_half_life),
                 lagged, params.momentum_window, params.momentum_min_observations,
             )
             dastd = counted(
@@ -976,8 +1001,12 @@ class BarraStyle(FactorKunQuant):
             }
             style_size = standardize(desc["lncap"])
             style_beta = standardize(desc["beta"])
-            desc["nlsize"] = descriptor(style_size * style_size * style_size)
-            desc["nlbeta"] = descriptor(style_beta * style_beta * style_beta)
+            desc["nlsize"] = descriptor(CrossSectionalWLSResidual(
+                style_size * style_size * style_size, style_size, regression_weight, estu
+            ))
+            desc["nlbeta"] = descriptor(CrossSectionalWLSResidual(
+                style_beta * style_beta * style_beta, style_beta, regression_weight, estu
+            ))
             residual_volatility = standardize(RenormalizedCombine(
                 [desc["dastd"], desc["cmra"], desc["hsigma"]],
                 [params.dastd_weight, params.cmra_weight, params.hsigma_weight],
@@ -987,15 +1016,11 @@ class BarraStyle(FactorKunQuant):
                 "style_size": style_size,
                 "style_beta": style_beta,
                 "style_momentum": standardize(desc["rstr"]),
-                "style_residual_volatility": standardize(CrossSectionalWLSResidual2(
-                    residual_volatility, style_beta, style_size, regression_weight, estu
+                "style_residual_volatility": standardize(CrossSectionalWLSResidual(
+                    residual_volatility, style_beta, regression_weight, estu
                 )),
-                "style_nonlinear_size": standardize(CrossSectionalWLSResidual(
-                    desc["nlsize"], style_size, regression_weight, estu
-                )),
-                "style_nonlinear_beta": standardize(CrossSectionalWLSResidual(
-                    desc["nlbeta"], style_beta, regression_weight, estu
-                )),
+                "style_nonlinear_size": standardize(desc["nlsize"]),
+                "style_nonlinear_beta": standardize(desc["nlbeta"]),
                 "style_liquidity": standardize(RenormalizedCombine(
                     [desc["stom"], desc["stoq"], desc["stoa"]],
                     [params.stom_weight, params.stoq_weight, params.stoa_weight],
