@@ -8,7 +8,8 @@ Run every morning after ``download.py`` has built the stores. One run:
    ``--trading-days``-th most recent raw date before each table's watermark
    through today (US/Eastern), so a late vendor correction to a recent day is
    seen; and every SF1 row the vendor changed since SF1's watermark (by
-   ``lastupdated``), new filings included;
+   ``lastupdated``), new filings included, or the whole of SF1 in bulk when
+   that query fails (Sharadar stops a query after 15 seconds);
 3. runs ``update()`` on every store ``download.py`` built in ``--zarr-dir``
    (``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``,
    ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr``,
@@ -43,6 +44,7 @@ import xarray as xr
 from quantlab.acquisition.sharadar.client import (
     SharadarClient,
     SharadarEntitlementError,
+    SharadarHttpError,
 )
 from quantlab.dataset.config import (
     SPY_PERMATICKER,
@@ -149,7 +151,14 @@ if __name__ == "__main__":
         for code in WINDOW_TABLES:
             print(f"{code}: {client.window_table(code, download_dir, trading_days=args.trading_days)}")
         for code in UPDATED_TABLES:
-            print(f"{code}: {client.updated_table(code, download_dir)}")
+            try:
+                print(f"{code}: {client.updated_table(code, download_dir)}")
+            except SharadarHttpError as exc:
+                # Sharadar stops a query after 15 seconds; after a mass
+                # re-stamp of lastupdated the changed rows are most of the
+                # table, and the bulk zip is the cheaper copy of them.
+                print(f"{code}: updated pull failed ({exc}); pulling it in bulk instead")
+                print(f"{code}: {client.bulk_table(code, download_dir)}")
     except (SharadarEntitlementError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"{exc}\n")
 

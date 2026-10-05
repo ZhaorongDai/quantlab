@@ -6,14 +6,14 @@ twelve months). Their ``date`` is the SEC filing date, the row's *release
 date*, and a later filing that restates a period is a new row rather than a
 rewrite of the old one. The most-recent dimensions (MRQ, MRY, MRT) are dated
 at the period end and rewritten on restatement, so they would leak a value
-one to three months early; they stay in the raw tier and never enter a store
-(see CONTEXT.md, Fundamentals).
+one to three months early; they stay in the raw tier and never enter a store.
 
 ``SharadarFundamentalsDataset`` places each row of one as-reported dimension
 at its *available date*, the first SEP trading day on or after its release
-date, and shows on every trading day the row the glossary's Point-in-time
-rule picks (ADR 0003): among the rows available by that day, the one with
-the latest fiscal period, and within that period the latest filing. So:
+date, and is *point-in-time* (as the Compustat panel of ADR 0003 is): on
+every trading day it shows, per security, the row with the latest fiscal
+period among the rows available by that day, and within that period the
+latest filing. So:
 
 - a restatement of a period is shown from its own release date, never
   earlier;
@@ -34,14 +34,15 @@ reaches only the days after the update.
 
 Examples
 --------
->>> config = SharadarFundamentalsConfig(
-...     zarr_file_path="/data/zarrs/sharadar_sf1_arq.zarr",
-...     raw_data_dir_path="/data/downloads/sharadar",
-... )
->>> SharadarFundamentalsDataset(config).update()
->>> panel = SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-03-28")
->>> panel["revenue"].attrs["unit"]
-'currency'
+Build the quarterly store from a downloaded raw tier and read a quarter::
+
+    config = SharadarFundamentalsConfig(
+        zarr_file_path="/data/quantlab/zarrs/sharadar_sf1_arq.zarr",
+        raw_data_dir_path="/data/quantlab/downloads/sharadar",
+    )
+    SharadarFundamentalsDataset(config).update()
+    panel = SharadarFundamentalsDataset(config).panel("2024-01-02", "2024-03-28")
+    panel["revenue"].attrs["unit"]  # 'currency'
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ import xarray as xr
 
 from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.config import DatasetConfig, SharadarFundamentalsConfig
-from quantlab.dataset.sharadar.stock import normalize_universe, universe
+from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
     SF1_INDICATORS,
     map_permatickers,
@@ -90,9 +91,11 @@ class SharadarFundamentalsDataset(BaseDataset):
 
     Examples
     --------
-    >>> ds = SharadarFundamentalsDataset(config).update()
-    >>> sorted(ds.panel("2024-01-02", "2024-01-05").data_vars)[:3]
-    ['accoci', 'assets', 'assetsavg']
+    With ``config`` as in the module example::
+
+        ds = SharadarFundamentalsDataset(config).update()
+        sorted(ds.panel("2024-01-02", "2024-01-05").data_vars)[:3]
+        # ['accoci', 'assets', 'assetsavg']
     """
 
     #: The config class used to rebuild this dataset from a saved config.
@@ -108,13 +111,14 @@ class SharadarFundamentalsDataset(BaseDataset):
         ValueError
             If ``table`` is not ``"sf1"``, ``dimension`` is not as reported,
             ``stale_after_days`` is below 1, or a universe field is invalid
-            (``quantlab.dataset.sharadar.stock.normalize_universe``).
+            (``quantlab.dataset.sharadar.universe.normalize_universe``).
 
         Examples
         --------
-        >>> SharadarFundamentalsDataset(dataclasses.replace(config, dimension="MRQ"))
-        Traceback (most recent call last):
-        ValueError: SharadarFundamentalsDataset: dimension 'MRQ' is not as reported ...
+        A most-recent dimension is refused::
+
+            SharadarFundamentalsDataset(dataclasses.replace(config, dimension="MRQ"))
+            # ValueError: SharadarFundamentalsDataset: dimension 'MRQ' is not as reported ...
         """
         config = super()._normalize_config(config)
         if not isinstance(config, SharadarFundamentalsConfig):
@@ -229,6 +233,8 @@ class SharadarFundamentalsDataset(BaseDataset):
             frame = (
                 frame.join(available, on="date", how="inner")
                 .filter(pl.col("available").is_not_null())
+                # A join does not keep row order; the last filing must be last.
+                .sort("permaticker", "date", "reportperiod")
                 .unique(subset=["permaticker", "available"], keep="last", maintain_order=True)
                 .select(
                     pl.col("permaticker").alias("symbol"),
@@ -323,9 +329,10 @@ class SharadarFundamentalsDataset(BaseDataset):
             visible = shown if last is None else shown.filter(pl.col("available") <= last)
             symbols = sort_symbol_axis(visible.get_column("symbol").unique().to_list())
         symbols = [int(s) for s in symbols]
-        grid = days.to_frame().join(
-            pl.DataFrame({"symbol": symbols}, schema={"symbol": pl.Int64}), how="cross"
-        )
+        grid = days.to_frame().with_row_index("_day").join(
+            pl.DataFrame({"symbol": symbols}, schema={"symbol": pl.Int64}).with_row_index("_column"),
+            how="cross",
+        ).sort("_day", "_column")
         cells = grid.join_asof(
             shown.filter(pl.col("symbol").is_in(symbols)),
             left_on="timestamp",
@@ -334,7 +341,7 @@ class SharadarFundamentalsDataset(BaseDataset):
             strategy="backward",
             # Both sides are sorted by time; polars cannot check that per group.
             check_sortedness=False,
-        )
+        ).sort("_day", "_column")
         if self.config.stale_after_days is not None:
             limit = timedelta(days=self.config.stale_after_days)
             fresh = (pl.col("timestamp") - pl.col("release_date")) <= pl.lit(limit)

@@ -380,10 +380,8 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
         )
     pulls = [base, *(pl.scan_parquet(path) for path in updates)]
     return (
-        pl.concat([frame.with_columns(pl.lit(i).alias("_pull")) for i, frame in enumerate(pulls)])
-        .sort("_pull", maintain_order=True)
-        .unique(subset=list(key), keep="last", maintain_order=True)
-        .drop("_pull")
+        # concat keeps the pulls in order, so the last row per key is the newest.
+        pl.concat(pulls).unique(subset=list(key), keep="last", maintain_order=True)
     )
 
 
