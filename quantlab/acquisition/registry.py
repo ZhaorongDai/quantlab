@@ -389,8 +389,9 @@ def convert(
 # Import the module objects, not names from them: if a caller imports a
 # vendor module first, that module is only partly initialised while this code
 # runs, and reading an attribute from it would fail. `wrds` holds the single
-# WRDS descriptor and imports the TAQ and CRSP modules itself.
+# WRDS descriptor and imports the TAQ and CRSP modules itself; `sharadar`
+# holds the Sharadar descriptor, as WRDS does.
 from quantlab.acquisition import alpaca as _alpaca  # noqa: E402,F401
 from quantlab.acquisition import tiingo as _tiingo  # noqa: E402,F401
 from quantlab.acquisition import wrds as _wrds  # noqa: E402,F401
-from quantlab.acquisition.sharadar import source as _sharadar  # noqa: E402,F401
+from quantlab.acquisition import sharadar as _sharadar  # noqa: E402,F401
