@@ -66,6 +66,16 @@ class MeanVarianceInputs:
         candidates.
     closed_without_risk : np.ndarray
         Held, tradable symbols the covariance estimator does not cover, closed.
+    exposures : np.ndarray
+        ``[k, candidates]``: each bounded exposure per candidate;
+        ``[0, candidates]`` without bounds.
+    locked_exposures : np.ndarray
+        ``[k]``: each bounded exposure of the locked positions, ``sum w * x``.
+    exposure_bounds : np.ndarray
+        ``[k, 2]``: each bounded exposure's ``(lower, upper)``, in the rows'
+        order.
+    closed_without_exposure : np.ndarray
+        Held, tradable symbols lacking a bounded exposure, closed.
 
     Examples
     --------
@@ -82,6 +92,10 @@ class MeanVarianceInputs:
     locked_weights: np.ndarray = field(default_factory=lambda: np.array([]))
     risk_locked_weights: np.ndarray = field(default_factory=lambda: np.array([]))
     closed_without_risk: np.ndarray = field(default_factory=lambda: np.array([]))
+    exposures: np.ndarray = field(default_factory=lambda: np.zeros((0, 0)))
+    locked_exposures: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    exposure_bounds: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
+    closed_without_exposure: np.ndarray = field(default_factory=lambda: np.array([]))
 
     @property
     def covariance(self) -> np.ndarray:
@@ -247,11 +261,14 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
     A bar whose candidates cannot hold their budget under ``weight_cap``, a
     long-short bar whose locked positions exceed a gross exposure of one,
-    and a bar the solver fails on or leaves unsolved raise
-    ``PortfolioConstructionError``: the backtest holds the current position
-    there and records the bar.
+    a bar the solver fails on or leaves unsolved (bounds the candidates
+    cannot reach among them), and a bar with a locked position lacking a
+    bounded exposure raise ``PortfolioConstructionError``: the backtest holds
+    the current position there and records the bar.
 
-    ``lookback_bars``, ``history_bars`` and ``required_factors()`` are the covariance estimator's.
+    ``lookback_bars`` and ``history_bars`` are the covariance estimator's;
+    ``required_factors()`` is the covariance estimator's followed by the
+    ``exposure_factors``, whose outputs must not repeat a name.
     ``bind`` reads the span from the label's ``LabelSpec``, so a backtest
     binds the optimiser when it is built.
 
@@ -346,6 +363,29 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             raise ValueError(
                 f"candidate_top_k must be a positive integer or None, got {top_k!r}"
             )
+        declared = [
+            name
+            for factor in [*config.covariance.required_factors(), *config.exposure_factors]
+            for name in factor.get_factor_names()
+        ] if config.exposure_factors else []
+        repeated = sorted({name for name in declared if declared.count(name) > 1})
+        if repeated:
+            raise ValueError(
+                f"the declared factors produce {repeated} more than once; "
+                f"context.factors holds one variable per name"
+            )
+        outputs = {name for factor in config.exposure_factors for name in factor.get_factor_names()}
+        for name, (lower, upper) in config.exposure_bounds.items():
+            if name not in outputs:
+                raise ValueError(
+                    f"exposure_bounds names {name!r}, which is not an output of the "
+                    f"exposure_factors ({sorted(outputs)})"
+                )
+            if not (np.isfinite(lower) and np.isfinite(upper) and lower <= upper):
+                raise ValueError(
+                    f"exposure_bounds[{name!r}] must be finite with its lower bound at most "
+                    f"its upper one, got ({lower}, {upper})"
+                )
         self._span: int | None = None
 
     @property
@@ -371,14 +411,14 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         return self.config.covariance.history_bars
 
     def required_factors(self) -> list["Factor"]:
-        """The covariance estimator's ``required_factors()``.
+        """The covariance estimator's ``required_factors()``, then the ``exposure_factors``.
 
         Examples
         --------
         >>> optimizer.required_factors()
         []
         """
-        return self.config.covariance.required_factors()
+        return [*self.config.covariance.required_factors(), *self.config.exposure_factors]
 
     @property
     def span(self) -> int | None:
@@ -512,7 +552,22 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         estimate = config.covariance.estimate(context, volatility).scaled(self._span)
         position = pd.Index(estimate.symbols).get_indexer(symbols)
         covered = position >= 0
-        free = tradable & ~locked & covered & (np.isfinite(prediction) | held)
+        bounded = list(config.exposure_bounds)
+        exposure_all = (
+            np.stack([
+                np.asarray(context.factors[name].sel(symbol=symbols).values, dtype=np.float64)
+                for name in bounded
+            ])
+            if bounded
+            else np.zeros((0, len(symbols)))
+        )
+        exposed = np.isfinite(exposure_all).all(axis=0)
+        if (locked & ~exposed).any():
+            raise PortfolioConstructionError(
+                f"the locked positions {symbols[locked & ~exposed].tolist()[:5]} lack a "
+                f"bounded exposure ({bounded}), so the book's exposure is unknown"
+            )
+        free = tradable & ~locked & covered & exposed & (np.isfinite(prediction) | held)
         index = np.flatnonzero(free)
         current = current_all[index]
         predicted = np.isfinite(prediction[index])
@@ -544,6 +599,12 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             locked_weights=current_all[locked_index],
             risk_locked_weights=current_all[risk_locked],
             closed_without_risk=symbols[tradable & ~locked & held & ~covered],
+            exposures=exposure_all[:, index],
+            locked_exposures=exposure_all[:, locked_index] @ current_all[locked_index],
+            exposure_bounds=np.array(
+                [config.exposure_bounds[name] for name in bounded], dtype=np.float64
+            ).reshape(len(bounded), 2),
+            closed_without_exposure=symbols[tradable & ~locked & held & covered & ~exposed],
         )
 
     def construct(self, context: PortfolioContext) -> xr.DataArray:
@@ -611,10 +672,13 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         row[inputs.symbols] = solution
         row[inputs.locked_symbols] = inputs.locked_weights
         weights = xr.DataArray(row.values, dims="symbol", coords={"symbol": context.symbols})
+        events = {}
         if len(inputs.closed_without_risk):
-            weights.attrs["events"] = {
-                "closed_without_risk": [str(s) for s in inputs.closed_without_risk]
-            }
+            events["closed_without_risk"] = [str(s) for s in inputs.closed_without_risk]
+        if len(inputs.closed_without_exposure):
+            events["closed_without_exposure"] = [str(s) for s in inputs.closed_without_exposure]
+        if events:
+            weights.attrs["events"] = events
         return weights
 
     def _solve(self, inputs: MeanVarianceInputs, total: float, gross: float = 1.0) -> np.ndarray:
@@ -644,6 +708,11 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 cp.norm1(w) <= gross,
                 cp.abs(w) <= config.weight_cap,
             ]
+        for (lower, upper), row, locked in zip(
+            inputs.exposure_bounds, inputs.exposures, inputs.locked_exposures
+        ):
+            exposure = row @ w + locked
+            constraints += [exposure >= lower, exposure <= upper]
         problem = cp.Problem(cp.Maximize(objective), constraints)
         try:
             problem.solve()

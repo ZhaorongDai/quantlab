@@ -146,6 +146,39 @@ class MarketFeatureConfig(BaseFactorConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class BenchmarkBetaConfig(BaseFactorConfig):
+    """Config of ``quantlab.factor.predefined.benchmark_beta.BenchmarkBeta``.
+
+    ``dataset`` holds the symbols' prices and ``benchmark`` a market dataset
+    with exactly one symbol, such as an index ETF; both are component
+    fields, so ``to_dict()`` nests their configs. ``warmup_bars`` is at least
+    ``lookback_bars``, so the first requested bar has a full window; its
+    default is the default window.
+
+    Examples
+    --------
+    With ``stocks`` a price dataset and ``vt`` a single-symbol one:
+
+    >>> cfg = BenchmarkBetaConfig(dataset=stocks, benchmark=vt)
+    >>> cfg.warmup_bars, cfg.lookback_bars, cfg.min_bars, cfg.price_column
+    (252, 252, 120, 'adjClose')
+    """
+
+    #: Bars read before the requested start; at least ``lookback_bars``.
+    warmup_bars: int = 252
+
+    #: The single-symbol market dataset the symbols' returns are regressed on.
+    benchmark: "MarketDataset" = component()
+    #: One-bar returns in each window, the bar's own included.
+    lookback_bars: int = 252
+    #: Fewest returns a window needs, with both the symbol's and the
+    #: benchmark's present; a window with fewer gives NaN.
+    min_bars: int = 120
+    #: The price variable, in both datasets, the returns are computed from.
+    price_column: str = "adjClose"
+
+
+@dataclass(kw_only=True, frozen=True)
 class NeutralizedConfig(BaseFactorConfig):
     """Config of ``quantlab.factor.predefined.neutralized.NeutralizedFactor``.
 

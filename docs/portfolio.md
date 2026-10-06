@@ -323,6 +323,39 @@ A universe of thousands of symbols is slow to optimise at every rebalance. `cand
 
 Symbols outside the pool get 0.0. The z-score of the Grinold calibration is taken over every candidate before the pool is cut, so `mu` does not depend on `candidate_top_k`.
 
+### Exposure bounds
+
+`exposure_bounds` holds the book's exposure to a factor between two bounds: for each named output `x` of the `exposure_factors`, `lower <= sum_i w_i * x_i <= upper`, the locked positions' exposure included (a locked symbol without one counts 0). The rule declares the `exposure_factors` in `required_factors()`, so a backtest computes them over its window and hands their values at the bar in `context.factors`. A candidate without an exposure gets no weight, and a held one is closed, listed in the bar's `closed_without_exposure` event. Bounds the candidates cannot reach make the bar infeasible, and the backtest holds it (see [In a backtest](#in-a-backtest)). The bounds hold to the solver's tolerance, about 1e-5.
+
+The common use is a beta near 1, so that a long-only book keeps the benchmark's market risk and its excess comes from the selection rather than from a lower beta. `BenchmarkBeta` (see the [factor guide](factor.md#benchmark-beta)) gives each symbol's beta on a single-symbol benchmark; with `stocks` the symbols' price dataset and `vt` the benchmark's:
+
+```python
+>>> from quantlab.factor.config import BenchmarkBetaConfig
+>>> from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
+>>> beta = BenchmarkBeta(BenchmarkBetaConfig(dataset=stocks, benchmark=vt))
+>>> bounded = MeanVarianceOptimizer(MeanVarianceConfig(
+...     expected_return_label="ret_5",
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
+...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
+...     exposure_factors=(beta,), exposure_bounds={"beta": (0.95, 1.05)},
+... ))
+>>> bounded.bind(specs)
+>>> bounded.required_factors() == [beta]
+True
+
+```
+
+On the context of [A first optimisation](#a-first-optimisation), whose book had a beta of 0.858 at these exposures, the bound lifts it to 0.95:
+
+```python
+>>> exposure = on_symbols([0.6, 0.8, 1.3, 1.5])
+>>> context = dataclasses.replace(context, factors=xr.Dataset({"beta": exposure}))
+>>> weights = bounded.construct(context)
+>>> weights.values.round(3), float((weights * exposure).sum().round(3))
+(array([0.4  , 0.248, 0.08 , 0.271]), 0.95)
+
+```
+
 ## Covariance estimators
 
 A covariance estimator (`CovarianceEstimator`) estimates the covariance of one-bar returns at one bar. Its `estimate(context, volatility=None)` returns a `CovarianceEstimate`: the symbols it covers and their covariance. It is not trained and has no checkpoint. A forecast that feeds it, such as predicted volatility, comes from a model through the predictor. It returns only a covariance, so any rule that needs one can hold it, not only the mean-variance optimiser.

@@ -115,6 +115,7 @@ The built-in sets are thin wrappers around KunQuant's predefined libraries:
 | `ResidualMomentumFF3` | `quantlab.factor.predefined.residual_momentum` | US equities: `ret`, plus a Fama-French CSV | residual momentum and regression diagnostics |
 | `BarraStyle` | `quantlab.factor.predefined.barra` | US equities: Sharadar prices, DAILY market cap, SF1 ART fundamentals, fiscal-year history and a risk-free rate (`BarraStyleParameters().panel_columns`) | USE4-style exposures to the 12 styles, standardized over the estimation universe |
 | `MarketFeatures` | `quantlab.factor.predefined.market` | single-symbol index or ETF stores: `adjClose`, `adjVolume` | 21 return and amount features per series, the same for every symbol with a bar |
+| `BenchmarkBeta` | `quantlab.factor.predefined.benchmark_beta` | prices (`adjClose`), plus a single-symbol benchmark store such as an index ETF | each symbol's rolling OLS beta on the benchmark |
 
 Alpha101 is the public list of 101 formulaic trading signals from
 Kakushadze (2016). Alpha158 is the feature library of Microsoft's Qlib

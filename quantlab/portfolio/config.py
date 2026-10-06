@@ -5,13 +5,14 @@ exposes it as ``self.config``. They are frozen; a rule's covariance estimator is
 ``component()`` and written as its own config.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from quantlab.core.component import component
 from quantlab.core.config import FrozenConfig
 
 if TYPE_CHECKING:
+    from quantlab.factor.base import Factor
     from quantlab.portfolio.base import CovarianceEstimator
     from quantlab.risk.base import FactorRiskModel
 
@@ -133,3 +134,33 @@ class MeanVarianceConfig(FrozenConfig):
     #: ``sigma`` is the prediction. ``None`` keeps the covariance estimator's own
     #: (historical) volatilities.
     volatility_label: str | None = None
+    #: Factors whose outputs ``exposure_bounds`` bounds, such as a
+    #: ``BenchmarkBeta``; the rule declares them in ``required_factors()``,
+    #: so the backtest hands their values at each bar in ``context.factors``.
+    exposure_factors: tuple["Factor", ...] = component(many=True, default=())
+    #: Output name of an ``exposure_factors`` factor to ``(lower, upper)``:
+    #: the book's exposure ``sum_i w_i * x_i``, the locked positions'
+    #: included, is held between the two, to the solver's tolerance (about
+    #: 1e-5). A candidate without an exposure gets no weight. Empty: no
+    #: exposure is bounded.
+    exposure_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Store the exposure factors as a tuple and each bound as a tuple of two floats.
+
+        Raises
+        ------
+        ValueError
+            If a bound is not a pair.
+        """
+        super().__post_init__()
+        # A rebuild hands the components over as a list.
+        object.__setattr__(self, "exposure_factors", tuple(self.exposure_factors))
+        bounds = {}
+        for name, pair in dict(self.exposure_bounds).items():
+            if len(pair) != 2:
+                raise ValueError(
+                    f"exposure_bounds[{name!r}] must be a pair (lower, upper), got {pair!r}"
+                )
+            bounds[str(name)] = (float(pair[0]), float(pair[1]))
+        object.__setattr__(self, "exposure_bounds", bounds)

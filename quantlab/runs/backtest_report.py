@@ -308,13 +308,19 @@ def _component_repr(config: dict) -> str:
     """The ``repr`` of a portfolio component, from its ``get_config()`` mapping.
 
     ``ClassName(field=value, ...)`` in the mapping's order, a nested
-    component (a mapping with a ``name``) written the same way.
+    component (a mapping with a ``name``) written the same way. A list, as
+    JSON holds a tuple field (several components, for example), is written
+    as the tuple the config holds.
     """
-    fields = ", ".join(
-        f"{key}={_component_repr(value) if isinstance(value, dict) and 'name' in value else repr(value)}"
-        for key, value in config.items()
-        if key != "name"
-    )
+    def value_repr(value) -> str:
+        if isinstance(value, dict) and "name" in value:
+            return _component_repr(value)
+        if isinstance(value, (list, tuple)):
+            items = [value_repr(item) for item in value]
+            return f"({items[0]},)" if len(items) == 1 else f"({', '.join(items)})"
+        return repr(value)
+
+    fields = ", ".join(f"{key}={value_repr(value)}" for key, value in config.items() if key != "name")
     return f"{str(config.get('name', '')).rsplit('.', 1)[-1]}({fields})"
 
 

@@ -502,6 +502,23 @@ alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
 ))
 ```
 
+### 基准 beta
+
+`BenchmarkBeta`（`quantlab.factor.predefined.benchmark_beta`）给出每个标的相对一个单标的基准（例如指数 ETF）的 beta：在截至当根 bar 的 `lookback_bars` 个收益上（默认 252），用带截距的普通最小二乘，把标的的单 bar 收益对基准的单 bar 收益回归，取斜率。任一价格缺失时单 bar 收益为 NaN，只统计两者收益都存在的 bar；不足 `min_bars` 个（默认 120）的窗口为 NaN。配置类是 `BenchmarkBetaConfig`：`dataset` 是各标的的价格，`benchmark` 是恰好只含一个标的的市场数据集，按同样的 bar 读取，`price_column`（默认 `"adjClose"`）是两者读取的价格列。`warmup_bars` 不能小于 `lookback_bars`，这样第一根请求的 bar 才有完整的窗口，默认为 252。唯一的输出是 `beta`，即均值-方差组合用 `exposure_bounds` 控制在 1 附近的那个暴露（见[暴露约束](portfolio.md#暴露约束)）。
+
+```python
+from quantlab.dataset.config import FrameDatasetConfig
+from quantlab.dataset.memory import FrameDataset
+from quantlab.factor.config import BenchmarkBetaConfig
+from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
+
+vt = FrameDataset(FrameDatasetConfig(zarr_file_path=str(STORES / "sharadar_vt_pr_1d.zarr")))
+beta = BenchmarkBeta(BenchmarkBetaConfig(
+    dataset=prices, benchmark=vt,
+    file_path=str(WORK / "factor" / "beta_vt.zarr"),
+))
+```
+
 ### 已有的因子
 
 | 类 | 后端 | 说明 |
@@ -511,6 +528,7 @@ alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
 | `Alpha158SpotKline`、`Alpha158Stock` | KunQuant | Alpha158 特征，`Stock` 类用 `quantlab.factor.predefined._support.kunquant_alpha158` 中的副本构建；试验时建议固定 `factor_names` |
 | `ResidualMomentumFF3` | KunQuant | Fama-French 三因子残差动量；因子序列来自 Fama-French CSV 或面板本身 |
 | `BarraStyle` | KunQuant | USE4 风格暴露：20 个标准化描述子和 12 个风格因子（Size、Beta、Momentum、Residual Volatility、Non-linear Size、Non-linear Beta、Liquidity、Dividend Yield、Book-to-Price、Earnings Yield、Leverage、Growth；Residual Volatility 和两个非线性因子已正交化）以及估计域标记，双精度计算。读取价格与分红（SEP）、市值（DAILY）、八个 SF1 ART 基本面字段、财年历史和无风险利率：见 `BarraStyleParameters().panel_columns`。缺失的风格因子按行业和 Size 插补，然后每个风格再标准化一次，并原样输出时点行业代码 `industry`。与 USE4 的偏离：Earnings Yield 和 Growth 用的是滚动与历史口径，没有分析师预测描述子；CETOP 的现金收益取 `netinccmn + depamor`；优先股取 0；只支持批量 |
+| `BenchmarkBeta` | xarray | 单 bar 收益对单标的基准的滚动 OLS beta；配置类 `BenchmarkBetaConfig` |
 | `LiteratureAlpha` | KunQuant | 覆盖价格、风险、流动性、基本面和盈利事件的 8 个原始值/排名因子 |
 | `MarketFeatures` | xarray | 每个指数或 ETF 序列 21 个收益和成交额特征，每个有 bar 的标的取值相同；配置类 `MarketFeatureConfig` |
 | `Forward` | 任意 | 把一个因子向前平移成标签 |

@@ -502,6 +502,23 @@ alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
 ))
 ```
 
+### Benchmark beta
+
+`BenchmarkBeta` (`quantlab.factor.predefined.benchmark_beta`) gives each symbol's beta on a single-symbol benchmark, such as an index ETF: the slope of the ordinary least-squares regression, with an intercept, of the symbol's one-bar returns on the benchmark's over the `lookback_bars` returns ending at the bar (default 252). A one-bar return is NaN when either price is missing, and only the bars where both returns are present count; a window with fewer than `min_bars` of them (default 120) is NaN. Its config is `BenchmarkBetaConfig`: `dataset` holds the symbols' prices, `benchmark` a market dataset with exactly one symbol, read over the same bars, and `price_column` (default `"adjClose"`) the price both are read from. `warmup_bars` must be at least `lookback_bars`, so the first requested bar has a full window, and defaults to 252. Its one output is `beta`, the exposure a mean-variance book holds near 1 with `exposure_bounds` (see [Exposure bounds](portfolio.md#exposure-bounds)).
+
+```python
+from quantlab.dataset.config import FrameDatasetConfig
+from quantlab.dataset.memory import FrameDataset
+from quantlab.factor.config import BenchmarkBetaConfig
+from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
+
+vt = FrameDataset(FrameDatasetConfig(zarr_file_path=str(STORES / "sharadar_vt_pr_1d.zarr")))
+beta = BenchmarkBeta(BenchmarkBetaConfig(
+    dataset=prices, benchmark=vt,
+    file_path=str(WORK / "factor" / "beta_vt.zarr"),
+))
+```
+
 ### Shipped factors
 
 | Class | Backend | Notes |
@@ -511,6 +528,7 @@ alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
 | `Alpha158SpotKline`, `Alpha158Stock` | KunQuant | Alpha158 features, the `Stock` class from the copy in `quantlab.factor.predefined._support.kunquant_alpha158`; pin `factor_names` while experimenting |
 | `ResidualMomentumFF3` | KunQuant | Fama-French three-factor residual momentum; the factor series come from a Fama-French CSV or from the panel |
 | `BarraStyle` | KunQuant | USE4-style exposures: 20 standardized descriptors and the 12 styles (Size, Beta, Momentum, Residual Volatility, Non-linear Size, Non-linear Beta, Liquidity, Dividend Yield, Book-to-Price, Earnings Yield, Leverage, Growth; Residual Volatility and the non-linear ones orthogonalized) and the estimation-universe mask, in double precision. Reads prices and dividends (SEP), market cap (DAILY), eight SF1 ART fundamentals, the fiscal-year history and a risk-free rate: `BarraStyleParameters().panel_columns`. Missing styles are imputed from industry and Size, then every style is standardized again, and the point-in-time `industry` code is passed through. Deviations from USE4: Earnings Yield and Growth are the trailing and historical versions, without the analyst-forecast descriptors; CETOP's cash earnings are `netinccmn + depamor`; preferred equity is 0; batch only |
+| `BenchmarkBeta` | xarray | rolling OLS beta of one-bar returns on a single-symbol benchmark; config class `BenchmarkBetaConfig` |
 | `LiteratureAlpha` | KunQuant | Eight raw/ranked equity characteristics spanning price, risk, liquidity, fundamentals and earnings events |
 | `MarketFeatures` | xarray | 21 return and amount features per index or ETF series, the same for every symbol with a bar; config class `MarketFeatureConfig` |
 | `Forward` | any | shifts a factor forward into a label |

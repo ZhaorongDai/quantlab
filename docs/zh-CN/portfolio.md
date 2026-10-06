@@ -323,6 +323,39 @@ array([ 0.4  , -0.212, -0.261,  0.073])
 
 候选池以外的标的权重为 0.0。Grinold 校准的 z-score 在截取候选池之前、对全部候选标的计算，所以 `mu` 不受 `candidate_top_k` 影响。
 
+### 暴露约束
+
+`exposure_bounds` 把组合对某个因子的暴露限制在两个界之间：对 `exposure_factors` 中每个被点名的输出 `x`，要求 `lower <= sum_i w_i * x_i <= upper`，被锁持仓的暴露也计入（没有暴露值的被锁标的按 0 计）。规则在 `required_factors()` 里声明这些 `exposure_factors`，所以回测会在窗口内计算它们，并把每根 bar 的取值放进 `context.factors`。没有暴露值的候选标的不分配权重；如果它当前已持有，就被平掉，并记在该 bar 的 `closed_without_exposure` 事件里。候选标的无法满足的界会让这根 bar 无解，回测会保持原持仓（见[在回测中](#在回测中)）。约束满足到求解器的精度，约 1e-5。
+
+最常见的用法是把 beta 控制在 1 附近，让只做多的组合保持和基准相同的市场风险，超额来自选股，而不是来自更低的 beta。`BenchmarkBeta`（见[因子指南](factor.md#基准-beta)）给出每个标的相对一个单标的基准的 beta；`stocks` 为各标的的价格数据集，`vt` 为基准的数据集：
+
+```python
+>>> from quantlab.factor.config import BenchmarkBetaConfig
+>>> from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
+>>> beta = BenchmarkBeta(BenchmarkBetaConfig(dataset=stocks, benchmark=vt))
+>>> bounded = MeanVarianceOptimizer(MeanVarianceConfig(
+...     expected_return_label="ret_5",
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
+...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
+...     exposure_factors=(beta,), exposure_bounds={"beta": (0.95, 1.05)},
+... ))
+>>> bounded.bind(specs)
+>>> bounded.required_factors() == [beta]
+True
+
+```
+
+在[第一次优化](#第一次优化)的 context 上，按这组暴露值，原来组合的 beta 是 0.858，加上约束后被抬到 0.95：
+
+```python
+>>> exposure = on_symbols([0.6, 0.8, 1.3, 1.5])
+>>> context = dataclasses.replace(context, factors=xr.Dataset({"beta": exposure}))
+>>> weights = bounded.construct(context)
+>>> weights.values.round(3), float((weights * exposure).sum().round(3))
+(array([0.4  , 0.248, 0.08 , 0.271]), 0.95)
+
+```
+
 ## 协方差估计器
 
 协方差估计器（`CovarianceEstimator`）在一根 bar 上估计单 bar 收益的协方差。它的 `estimate(context, volatility=None)` 返回一个 `CovarianceEstimate`：覆盖的标的及其协方差。它不需要训练，也没有 checkpoint。喂给它的预测（例如预测波动率）来自模型，经由预测器传入。它只返回协方差，所以任何需要协方差的规则都能持有它，不限于均值方差优化器。

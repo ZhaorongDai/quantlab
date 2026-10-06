@@ -622,3 +622,41 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
 
     np.testing.assert_array_equal(again.weights["weight"].values, weights)
     np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)
+
+
+def test_a_beta_bounded_backtest_holds_the_ex_ante_beta_inside_the_bounds_and_rebuilds(tmp_path):
+    """The benchmark is the stores' equal-weighted close, so every symbol's
+    beta is near 1 and [0.95, 1.05] is reachable on every rebalance bar."""
+    from quantlab.dataset.memory import FrameDataset
+    from quantlab.factor.config import BenchmarkBetaConfig
+    from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
+
+    def constructor(dataset_config):
+        close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"]
+        index = close.mean("symbol").expand_dims(symbol=["IDX"]).transpose("timestamp", "symbol")
+        benchmark = FrameDataset(xr.Dataset({"adjClose": index})).to_zarr(tmp_path / "index.zarr")
+        beta = BenchmarkBeta(BenchmarkBetaConfig(
+            warmup_bars=LOOKBACK, dataset=make_stock_dataset(dataset_config), benchmark=benchmark,
+            lookback_bars=LOOKBACK, min_bars=10,
+        ))
+        return _optimizer(exposure_factors=(beta,), exposure_bounds={"beta": (0.95, 1.05)})
+
+    backtester, _, bars = _backtester(tmp_path, constructor, output_dir=str(tmp_path / "runs"))
+    original = backtester.run()
+    assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
+
+    weights = original.weights["weight"]
+    rebalance = np.isfinite(weights.values).all(axis=1)
+    beta = backtester.config.constructor.config.exposure_factors[0].compute(
+        _day(bars[WINDOW[0]]), _day(bars[WINDOW[1]])
+    )["beta"].reindex_like(weights)
+    book = (weights * beta).sum("symbol").values[rebalance]
+    # Held to the solver's tolerance, about 1e-5.
+    assert ((book >= 0.95 - 1e-4) & (book <= 1.05 + 1e-4)).all(), book
+
+    # The in-memory benchmark is copied into the run, which rebuilds from that copy.
+    rebuilt = BacktestRun.open(original.run_dir).rebuild_backtester()
+    copied = rebuilt.config.constructor.config.exposure_factors[0].config.benchmark.config.zarr_file_path
+    assert copied.startswith(str(original.run_dir))
+    assert rebuilt.config.constructor.config.exposure_bounds == {"beta": (0.95, 1.05)}
+    np.testing.assert_array_equal(rebuilt.run().weights["weight"].values, weights.values)

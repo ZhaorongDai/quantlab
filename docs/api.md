@@ -173,7 +173,7 @@ Data variables:
 | `"alpha158_crypto"` | `Alpha158SpotKline` | the above and `amount` | z-score along time over 20 bars |
 | `"alpha101_crypto"` | `Alpha101SpotKline` | the above and `amount` | z-score along time over 20 bars |
 
-The equity sets are meant for split- and dividend-adjusted prices and take the VWAP as `(high + low + close) / 3`; the crypto sets read the traded value from `amount`. Factors that need fundamentals or factor-return series (`LiteratureAlpha`, `ResidualMomentumFF3`, `MarketFeatures`, `BarraStyle`) have no short name.
+The equity sets are meant for split- and dividend-adjusted prices and take the VWAP as `(high + low + close) / 3`; the crypto sets read the traded value from `amount`. Factors that need fundamentals or factor-return series (`LiteratureAlpha`, `ResidualMomentumFF3`, `MarketFeatures`, `BarraStyle`, `BenchmarkBeta`) have no short name.
 
 The whole frame is computed at once, with no history before its first bar, so the first bars of each rolling window are NaN rather than dropped. The factor values are float32.
 
