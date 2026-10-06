@@ -26,6 +26,7 @@ import xarray as xr
 from quantlab.factor.config import MarketFeatureConfig
 from quantlab.dataset.base import BaseDataset, InsufficientHistoryError, MarketDataset
 from quantlab.factor.base import Factor
+from quantlab.utils.returns import one_bar_returns
 
 #: Rolling windows, in bars of the series, of the mean and standard deviation
 #: features. The longest one sets the default ``warmup_bars``.
@@ -300,7 +301,7 @@ def _feature_suffixes() -> list[str]:
 def _series_features(series: xr.Dataset) -> dict[str, xr.DataArray]:
     """Return the 21 features of one series on its own bars."""
     close, amount = series["close"], series["amount"]
-    ret = close / close.shift(timestamp=1) - 1.0
+    ret = one_bar_returns(close)
     denominator = amount.where(amount != 0)
     features = {"ret": ret}
     for d in WINDOWS:

@@ -99,6 +99,7 @@ from quantlab.risk.predefined.use4 import Use4RiskModel
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.tracking.wandb import WandbTracker
 from quantlab.utils.cli import inside_repository
+from quantlab.utils.returns import one_bar_returns
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository.
 #: The stores are where ``scripts/sharadar/download.py --zarr-dir`` wrote
@@ -410,7 +411,7 @@ def forecasts(weights: xr.DataArray) -> xr.Dataset:
     )
     prices = close.values
     position = np.searchsorted(close["timestamp"].values, bars)
-    one_bar = prices[1:] / prices[:-1] - 1.0
+    one_bar = one_bar_returns(prices)[1:]
 
     model = risk_model()
     factor_risk = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))
@@ -472,7 +473,7 @@ def compare(run_dirs: dict) -> dict:
         realized = frame["realized"]
         # Daily statistics from the equity curve, annualized over 252 bars.
         value = run.equity()["value"].values
-        daily = value[1:] / value[:-1] - 1.0
+        daily = one_bar_returns(value)[1:]
         entry = {
             "total_return_pct": whole.get("Total Return [%]"),
             "annualized_return_pct": round(((value[-1] / value[0]) ** (252 / len(daily)) - 1) * 100, 2),

@@ -12,6 +12,7 @@ import xarray as xr
 
 from quantlab.factor.base import Factor
 from quantlab.factor.config import BenchmarkBetaConfig
+from quantlab.utils.returns import one_bar_returns
 
 #: The factor's one output.
 OUTPUT = "beta"
@@ -111,8 +112,8 @@ class BenchmarkBeta(Factor):
             )
         market = panel[column].isel(symbol=0).reindex(timestamp=timestamps).values.astype(np.float64)
         beta = rolling_beta(
-            _one_bar_returns(prices.values.astype(np.float64)),
-            _one_bar_returns(market[:, None])[:, 0],
+            one_bar_returns(prices.values.astype(np.float64)),
+            one_bar_returns(market),
             self.config.lookback_bars,
             self.config.min_bars,
         )
@@ -120,14 +121,6 @@ class BenchmarkBeta(Factor):
             {OUTPUT: (("timestamp", "symbol"), beta)},
             coords={"timestamp": timestamps, "symbol": prices["symbol"].values},
         )
-
-
-def _one_bar_returns(prices: np.ndarray) -> np.ndarray:
-    """Return ``prices[t] / prices[t - 1] - 1`` on ``[T, S]``, NaN on the first bar."""
-    returns = np.full(prices.shape, np.nan)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        returns[1:] = prices[1:] / prices[:-1] - 1.0
-    return returns
 
 
 def rolling_beta(returns, market, lookback: int, min_bars: int) -> np.ndarray:

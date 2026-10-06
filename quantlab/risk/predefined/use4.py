@@ -45,6 +45,7 @@ from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.risk.base import FactorRiskModel, covered_factors
 from quantlab.risk.config import REGRESSION_WEIGHTINGS, Use4RiskConfig
 from quantlab.utils.date_range import check_range
+from quantlab.utils.returns import one_bar_returns
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
@@ -164,9 +165,8 @@ def _newey_west_multiplier(
 
 def _excess_returns(price: np.ndarray, risk_free: np.ndarray) -> np.ndarray:
     """Return ``[T, S]`` excess returns; row 0 is NaN (no previous bar)."""
-    excess = np.full(price.shape, np.nan)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        excess[1:] = price[1:] / price[:-1] - 1.0 - risk_free[:-1]
+    excess = one_bar_returns(price)
+    excess[1:] -= risk_free[:-1]
     return excess
 
 

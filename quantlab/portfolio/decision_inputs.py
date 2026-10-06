@@ -41,6 +41,7 @@ from quantlab.dataset.base import InsufficientHistoryError, MarketDataset
 from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.execution.rules import ExecutionBook, ExecutionSettings
+from quantlab.utils.returns import one_bar_returns
 
 _DIMS = ("timestamp", "symbol")
 
@@ -102,7 +103,7 @@ def _price_window(
     n_rows = valuation_price.sizes["timestamp"]
     window = valuation_price.isel(timestamp=slice(max(0, n_rows - history_bars), n_rows))
     filled = window.ffill("timestamp")
-    returns = filled / filled.shift(timestamp=1) - 1.0
+    returns = one_bar_returns(filled)
     n_returns = returns.sizes["timestamp"]
     returns = returns.isel(timestamp=slice(n_returns - min(lookback_bars, n_returns), n_returns))
     priced = np.isfinite(np.asarray(window.values, dtype=np.float64))[::-1]
