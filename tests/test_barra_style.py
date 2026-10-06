@@ -353,8 +353,8 @@ def _impute(style, size, industry, weights, estu, live, use_size=True) -> np.nda
     return out
 
 
-def _reference() -> dict[str, np.ndarray]:
-    inputs = _inputs()
+def _reference(inputs: dict[str, np.ndarray] | None = None) -> dict[str, np.ndarray]:
+    inputs = _inputs() if inputs is None else inputs
     price, cap = inputs["adjClose"], inputs["marketcap"]
     stock_return = price / _lag(price) - 1.0
     risk_free = _lag(inputs["risk_free"])
@@ -526,6 +526,13 @@ def _reference() -> dict[str, np.ndarray]:
         imputed = _impute(out[name], style_size, inputs["industry"], root_cap, estu, live,
                           use_size=name != "style_size")
         out[name] = standardize(imputed)
+    # Every cross-sectional step above ran unmasked; only the outputs lose
+    # the bars without a price (#187). The values before the mask are kept
+    # to show what a windowed descriptor would otherwise leave behind.
+    unpriced = np.isnan(price)
+    for name in [name for name in out if name.startswith(("desc_", "style_"))]:
+        out[f"unmasked_{name}"] = out[name]
+        out[name] = np.where(unpriced, np.nan, out[name])
     return out
 
 
@@ -635,7 +642,7 @@ def test_the_fixture_exercises_clipping_late_listing_and_the_minimum_count(compu
     # The small cap sits beyond 3 universe standard deviations below the
     # universe's equally weighted mean: clipped to that bound, then standardized.
     assert (want["lncap_unclipped"][1:, _CLIPPED] < want["lncap_floor"][1:, _CLIPPED]).all()
-    np.testing.assert_allclose(want["desc_lncap"][1:, _CLIPPED], want["lncap_floor"][1:, _CLIPPED])
+    np.testing.assert_allclose(want["unmasked_desc_lncap"][1:, _CLIPPED], want["lncap_floor"][1:, _CLIPPED])
     # BETA waits for _MIN_OBS returns after listing, then exists.
     first = _LISTING_BAR + 1 + _MIN_OBS - 1
     assert np.isnan(want["desc_beta"][:first, _LISTED_LATE]).all()
@@ -666,10 +673,14 @@ def test_symbols_outside_the_universe_still_get_exposures(computed) -> None:
         got = out[name].transpose("timestamp", "symbol").to_numpy()
         exposed = outside & np.isfinite(got)
         assert exposed[_WINDOW:].sum() > 0
-    # A clipped small cap outside the universe keeps an exposure.
-    clipped = out["desc_lncap"].sel(symbol=_symbol(_CLIPPED)).values[1:]
-    np.testing.assert_allclose(clipped, want["lncap_floor"][1:, _CLIPPED], rtol=1e-9)
-    assert np.isfinite(out["style_size"].sel(symbol=_symbol(_CLIPPED)).values[1:]).all()
+    # A clipped small cap outside the universe keeps an exposure on every
+    # bar it has a price (bar 47 has none).
+    priced = np.isfinite(_inputs()["adjClose"][:, _CLIPPED])
+    priced[0] = False
+    assert priced.sum() == _T - 2
+    clipped = out["desc_lncap"].sel(symbol=_symbol(_CLIPPED)).values[priced]
+    np.testing.assert_allclose(clipped, want["lncap_floor"][priced, _CLIPPED], rtol=1e-9)
+    assert np.isfinite(out["style_size"].sel(symbol=_symbol(_CLIPPED)).values[priced]).all()
 
 
 def test_a_descriptor_beyond_the_data_error_threshold_is_dropped_and_the_style_imputed(computed) -> None:
@@ -982,3 +993,66 @@ def test_a_firm_column_on_a_non_integer_symbol_axis_is_refused(tmp_path) -> None
         )))
     with pytest.raises(ValueError, match="integer symbol axis"):
         compute_all(BarraStyle(_config(tmp_path, dataset=stores)))
+
+
+_DELISTED, _DELISTING_BAR = 1, 80  # prices and cap end at this bar; fundamentals stay
+_HALTED, _HALT = 15, slice(85, 88)  # no price for three bars, the cap carried through
+_EXPOSURES = tuple(name for name in BarraStyle._OUTPUTS if name.startswith(("desc_", "style_")))
+
+
+def _with_delisting_and_halt() -> dict[str, np.ndarray]:
+    """``_inputs()`` with one symbol delisted at ``_DELISTING_BAR`` and one halted."""
+    inputs = _inputs()
+    for name in ("adjClose", "close", "volume", "marketcap"):
+        inputs[name][_DELISTING_BAR:, _DELISTED] = np.nan
+    for name in ("adjClose", "close", "volume"):
+        inputs[name][_HALT, _HALTED] = np.nan
+    return inputs
+
+
+@pytest.fixture(scope="module")
+def delisted(tmp_path_factory) -> tuple[xr.Dataset, dict[str, np.ndarray]]:
+    inputs = _with_delisting_and_halt()
+    out = compute_all(BarraStyle(_config(tmp_path_factory.mktemp("delisted"), inputs=inputs)))
+    return out, _reference(inputs)
+
+
+def test_a_symbol_without_a_price_has_no_exposure(delisted) -> None:
+    out, want = delisted
+    for name in _EXPOSURES:
+        got = out[name].transpose("timestamp", "symbol").to_numpy()
+        assert np.isnan(got[_DELISTING_BAR:, _DELISTED]).all(), name
+        assert np.isnan(got[_HALT, _HALTED]).all(), name
+    # Without the mask they would linger: windowed descriptors still hold
+    # enough past returns, fundamentals are carried, and the halted symbol,
+    # still capped, would be imputed.
+    for name in ("desc_beta", "desc_rstr", "desc_dastd", "desc_stoa", "desc_egro", "desc_dtoa",
+                 "style_beta", "style_momentum", "style_growth"):
+        assert np.isfinite(want[f"unmasked_{name}"][_DELISTING_BAR:, _DELISTED]).any(), name
+    for name in ("desc_beta", "style_size", "style_beta", "style_leverage"):
+        assert np.isfinite(want[f"unmasked_{name}"][_HALT, _HALTED]).all(), name
+    # Once the halt ends the exposures come back.
+    after = out["style_beta"].sel(symbol=_symbol(_HALTED)).values[_HALT.stop :]
+    assert np.isfinite(after).all()
+    # ESTU and the industry code are not exposures: the delisted symbol leaves
+    # the universe the bar after its last cap, and keeps its industry.
+    estu = out["estu"].sel(symbol=_symbol(_DELISTED)).values
+    assert (estu[_DELISTING_BAR + 1 :] == 0).all()
+    np.testing.assert_array_equal(
+        out["industry"].sel(symbol=_symbol(_DELISTED)).values, want["industry"][:, _DELISTED]
+    )
+
+
+@pytest.mark.parametrize("name", _EXACT + _ON_LOGS)
+def test_priced_cells_keep_their_unmasked_values(delisted, name) -> None:
+    # The reference standardizes, regresses and imputes on the unmasked cross
+    # section, then masks only the outputs. Matching it on this panel, NaN
+    # pattern included, shows the mask touches no priced cell and changes no
+    # statistic the other symbols are standardized with: had the masked
+    # values entered a cross-sectional step, every symbol would move.
+    out, want = delisted
+    got = out[name].transpose("timestamp", "symbol").to_numpy()
+    np.testing.assert_array_equal(np.isnan(got), np.isnan(want[name]))
+    finite = np.isfinite(want[name])
+    tolerance = 1e-9 if name in _EXACT else 1e-7
+    np.testing.assert_allclose(got[finite], want[name][finite], rtol=tolerance, atol=tolerance)

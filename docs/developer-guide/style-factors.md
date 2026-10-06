@@ -114,6 +114,18 @@ factor.build("2001-01-02", "2026-10-02")
    slope on Size (Size itself on industry alone), fitted on the ESTU
    ([M] p.9).
 9. Every style is standardized once more, imputed values included.
+10. A stock with no price on the bar (`price_column` NaN) gets NaN in every
+    descriptor and style. Only the outputs are masked, after steps 1 to 9,
+    so the ESTU statistics and every priced stock's values are unchanged.
+    Without it a delisted stock kept exposures for months: a windowed
+    descriptor stays defined while its window still holds enough past
+    returns (RSTR's window and lag cover about two years) and the SF1
+    fundamentals are carried forward. The rule is the one `Alpha101Stock`,
+    `Alpha158Stock` and `MarketDataset.tradable_bars` use, and it reads
+    only the bar itself, so it looks nothing up ahead. A halted stock loses
+    its exposures on its halt days. `industry` and `estu` are not masked:
+    the industry code passes through, and a stock without a market cap is
+    never in the ESTU anyway.
 
 ## Descriptors and styles
 

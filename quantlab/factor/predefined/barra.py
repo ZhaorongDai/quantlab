@@ -68,6 +68,13 @@ orthogonalized to Size the same way, then has its outliers treated and is
 standardized; Non-linear Beta likewise with Beta. The outlier step comes
 after the orthogonalization, so these two are close to, not exactly,
 uncorrelated with their regressors.
+
+A symbol with no price on a bar (``price_column`` NaN) has NaN in every
+descriptor and style there, as in ``Alpha101Stock``/``Alpha158Stock`` and
+``MarketDataset.tradable_bars``. Only the outputs are masked, after every
+cross-sectional step, so a delisted security keeps no exposure while the
+estimation universe statistics and the priced symbols' values are unchanged.
+A halted stock loses its exposures on its halt days.
 """
 
 from __future__ import annotations
@@ -812,7 +819,14 @@ class BarraStyle(FactorKunQuant):
       the universe; every symbol gets its residual, a symbol missing a
       regressor being taken at that regressor's weighted mean (our
       choice). Standardizing afterwards keeps the weighted correlation
-      with the regressors at zero.
+      with the regressors at zero;
+    - last, a symbol whose ``price_column`` is NaN on the bar gets NaN in
+      every descriptor and style (not ``industry`` or ``estu``). Only the
+      outputs are masked, so nothing above sees the mask: a windowed
+      descriptor, which would stay defined while its window holds enough
+      past returns, and carried fundamentals end with the prices. This
+      reads bar ``t`` only, with no look-ahead; a halted stock has no
+      exposure on its halt days.
 
     Outputs, all on ``(timestamp, symbol)``:
 
@@ -828,7 +842,7 @@ class BarraStyle(FactorKunQuant):
       ``style_dividend_yield``, ``style_book_to_price``,
       ``style_earnings_yield``, ``style_leverage``, ``style_growth``: the
       style exposures;
-    - ``industry``: the industry code, unchanged;
+    - ``industry``: the industry code, unchanged, on every bar;
     - ``estu``: 1 inside the estimation universe of the bar, 0 outside.
 
     The graph runs in double precision. On 1000 bars of 3008 symbols, with
@@ -1149,6 +1163,15 @@ class BarraStyle(FactorKunQuant):
                         use_industry="industry" in regressors, use_size="size" in regressors,
                     )
                 outputs[name] = standardize(outputs[name])
+            # A symbol with no price on the bar has no exposure (#187): only
+            # the outputs are masked, after every cross-sectional step, so the
+            # priced symbols' values and the universe statistics are unchanged.
+            # The mask is 1.0 or NaN and multiplies, which leaves a priced value
+            # bit-identical; a boolean condition shared by outputs in different
+            # stages would have to be stored, and KunQuant cannot store one.
+            on_bar = price * 0.0 + 1.0
+            for name in outputs:
+                outputs[name] = outputs[name] * on_bar
             outputs.update({
                 "industry": industry * 1.0,
                 "estu": estu,
