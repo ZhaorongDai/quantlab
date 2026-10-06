@@ -659,18 +659,35 @@ class FactorRiskModel(Component):
                 if exc.available == 0:
                     return None
                 candidate, exhausted = dataset.bar_before(first, exc.available), True
-            prices = self._prices(candidate, first - pd.Timedelta(1, "ns"))
+            prices = self.prices(candidate, first - pd.Timedelta(1, "ns"))
             if prices.sizes["timestamp"]:
                 return pd.Timestamp(prices["timestamp"].values[-1])
             if exhausted:
                 return None
             back *= 2
 
-    def _prices(self, start, end) -> xr.Dataset:
+    def prices(self, start: Date, end: Date) -> xr.Dataset:
         """Return price, market cap and risk-free rate on the bars with a price.
 
         With ``risk_free_symbol`` the rate is that symbol's, forward-filled
         and broadcast across the others, and the symbol is dropped.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range, both inclusive.
+
+        Returns
+        -------
+        xr.Dataset
+            ``price_column``, ``market_cap_column`` and ``risk_free_column``
+            on ``(timestamp, symbol)``, only the bars where some symbol has a
+            price.
+
+        Examples
+        --------
+        >>> model.prices("2024-01-02", "2024-01-31")[model.config.market_cap_column].dims
+        ('timestamp', 'symbol')
         """
         config = self.config
         dataset = config.dataset
@@ -695,8 +712,26 @@ class FactorRiskModel(Component):
         priced = panel[config.price_column].notnull().any("symbol")
         return panel.sel(timestamp=priced)
 
-    def _exposures(self, start, end) -> xr.Dataset:
-        """Return the exposure variables from ``start`` to ``end``, read or computed."""
+    def exposures(self, start: Date, end: Date) -> xr.Dataset:
+        """Return the exposure variables from ``start`` to ``end``, read or computed.
+
+        Parameters
+        ----------
+        start, end : str, datetime.date or pd.Timestamp
+            The range, both inclusive.
+
+        Returns
+        -------
+        xr.Dataset
+            The styles, the industry code and the estimation-universe flag
+            (those the config names) of the exposures factor, read from its
+            store or computed per ``exposure_data_strategy``.
+
+        Examples
+        --------
+        >>> list(model.exposures("2024-01-02", "2024-01-31").data_vars)
+        ['value', 'quality']
+        """
         config = self.config
         factor = config.exposures
         if config.exposure_data_strategy == "read":
@@ -723,8 +758,8 @@ class FactorRiskModel(Component):
                 stacklevel=3,
             )
         read_from = first if previous is None else previous
-        prices = self._prices(read_from, end)
-        exposures = self._exposures(read_from, end)
+        prices = self.prices(read_from, end)
+        exposures = self.exposures(read_from, end)
         symbols = sort_symbol_axis(
             set(prices["symbol"].values.tolist()) & set(exposures["symbol"].values.tolist())
         )

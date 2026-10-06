@@ -45,3 +45,13 @@ QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/barra
 ```
 
 The full history needs a large machine: on the training server the build takes about 6 minutes and the whole script 10 minutes, with a peak of about 290 GB of memory. Narrow `START` for a smaller one.
+
+## Factor risk model and bias statistics
+
+`risk_model.py` builds `Use4RiskModel` on those exposures: the regression store (each bar's factor returns for the country, the Fama-French 48 industries and the 12 styles, and every symbol's specific return) from 2001, then the estimate store (factor covariance and specific risk, the raw exponentially weighted model with USE4S half-lives) from 2007, once the 1512-bar correlation window fits. It then prints the bias statistics (`quantlab.risk.bias.risk_model_bias_statistics`) of every pure factor, every symbol's specific risk and 100 random active portfolios, writes them to `bias_summary.json` and plots the rolling 252-bar mean, 5th/95th percentile and MRAD in `bias.png`. It reads the SEP, DAILY and FRED stores and the exposures of `barra_style.py`; everything goes under `<data root>/pipeline/sharadar_risk/`.
+
+```bash
+QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/risk_model.py
+```
+
+On the training server the whole script takes about 6 minutes, with a peak of about 25 GB of memory.
