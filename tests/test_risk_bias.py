@@ -240,3 +240,24 @@ def test_a_horizon_of_one_is_the_one_bar_test(model, stats):
 def test_the_horizon_must_be_positive(model):
     with pytest.raises(ValueError, match="horizon"):
         risk_model_bias_statistics(model, _day(FIRST), _day(_T - 1), horizon=0)
+
+
+def test_eigenfactor_outcomes_are_next_bar_eigenfactor_returns_over_their_volatility(model, stats):
+    estimate = model.estimate.read(_day(FIRST), _day(_T - 1))
+    regression = model.regression.read(_day(FIRST), _day(_T - 1))
+    eigen = stats["eigenfactor"]
+    assert eigen["outcome"].dims == ("timestamp", "eigenfactor")
+    assert eigen["eigenfactor"].values.tolist() == list(range(1, len(model.factor_names) + 1))
+    covariance = estimate["factor_covariance"].values
+    returns = regression["factor_return"].values
+    for t in range(eigen.sizes["timestamp"]):
+        kept = np.isfinite(np.diag(covariance[t]))  # no pair lacks a correlation here
+        block = covariance[t][np.ix_(kept, kept)]
+        values, vectors = np.linalg.eigh(block)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            expected = np.where(values > 0, returns[t + 1, kept] @ vectors / np.sqrt(values), np.nan)
+        np.testing.assert_allclose(
+            eigen["outcome"].values[t, : kept.sum()], expected, rtol=1e-9, err_msg=f"bar {t}"
+        )
+        assert np.isnan(eigen["outcome"].values[t, kept.sum():]).all()
+    assert np.isfinite(eigen["outcome"].values).sum() > 0

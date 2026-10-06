@@ -18,6 +18,7 @@ from quantlab.portfolio.base import (
     PortfolioContext,
 )
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
+from quantlab.risk.base import covered_factors
 
 
 class FactorRiskStoreEstimator(CovarianceEstimator):
@@ -120,7 +121,7 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
         specific = row["specific_risk"].reindex(symbol=symbols).values.astype(np.float64)
         covered &= np.isfinite(specific)
         covariance = row["factor_covariance"].sel(factor_i=names, factor_j=names).values
-        kept = self._finite_factors(covariance)
+        kept = covered_factors(covariance)
         # A symbol exposed to a factor without a covariance is not covered.
         covered &= ~(exposures[:, ~kept] != 0).any(axis=1)
         index = np.flatnonzero(covered)
@@ -130,20 +131,6 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
             factor_covariance=covariance[np.ix_(kept, kept)],
             specific_variance=specific[index] ** 2,
         )
-
-    @staticmethod
-    def _finite_factors(covariance: np.ndarray) -> np.ndarray:
-        """Return the factors kept, a set whose covariance is all finite.
-
-        A factor without a variance is dropped first; then, while a pair has
-        no correlation, the factor missing the most pairs (a greedy choice).
-        """
-        kept = np.isfinite(np.diag(covariance))
-        while True:
-            missing = ~np.isfinite(covariance) & kept[:, None] & kept[None, :]
-            if not missing.any():
-                return kept
-            kept[np.argmax(missing.sum(axis=1))] = False
 
     def _row(self, timestamp) -> xr.Dataset:
         """Return the estimate store's row at ``timestamp``.

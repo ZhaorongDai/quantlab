@@ -43,6 +43,8 @@ WINDOWS = dict(
     # tests/test_risk_specific.py.
     structural_model="off",
     shrinkage=0.0,
+    # No eigenfactor adjustment: it is checked in tests/test_risk_eigen.py.
+    eigen_simulations=0,
 )
 START = 1  # the first bar with a regression
 

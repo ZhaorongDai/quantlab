@@ -50,6 +50,27 @@ from quantlab.utils.timer import Timer
 Date = str | datetime.date | pd.Timestamp
 
 
+def covered_factors(covariance: np.ndarray) -> np.ndarray:
+    """Return the factors of a ``[K, K]`` covariance whose block is all finite.
+
+    A factor without a variance is dropped first; then, while a pair has no
+    covariance (too few common bars), the factor missing the most pairs (a
+    greedy choice, the first such factor on a tie).
+
+    Examples
+    --------
+    >>> covariance = np.array([[1.0, np.nan, 0.1], [np.nan, 2.0, 0.2], [0.1, 0.2, np.nan]])
+    >>> covered_factors(covariance)
+    array([False,  True, False])
+    """
+    kept = np.isfinite(np.diag(covariance))
+    while True:
+        missing = ~np.isfinite(covariance) & kept[:, None] & kept[None, :]
+        if not missing.any():
+            return kept
+        kept[np.argmax(missing.sum(axis=1))] = False
+
+
 class RiskStore:
     """One store of a factor risk model: rows per bar, written and read by date range.
 

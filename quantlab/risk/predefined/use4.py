@@ -42,7 +42,7 @@ import xarray as xr
 from joblib import Parallel, delayed
 
 from quantlab.dataset.base import InsufficientHistoryError
-from quantlab.risk.base import FactorRiskModel
+from quantlab.risk.base import FactorRiskModel, covered_factors
 from quantlab.risk.config import REGRESSION_WEIGHTINGS, Use4RiskConfig
 from quantlab.utils.date_range import check_range
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -171,7 +171,7 @@ def _excess_returns(price: np.ndarray, risk_free: np.ndarray) -> np.ndarray:
 
 
 class Use4RiskModel(FactorRiskModel):
-    """USE4-style factor risk model: country, industries and styles; EWMA and Newey-West.
+    """USE4-style factor risk model: country, industries and styles; EWMA, Newey-West, eigenfactors.
 
     See the module docstring for the regression; ``FactorRiskModel`` for the
     contract every factor risk model meets. This model's stores:
@@ -203,7 +203,14 @@ class Use4RiskModel(FactorRiskModel):
       from the last ``volatility_window`` factor returns weighted with
       ``volatility_half_life`` with ``volatility_lags`` Newey-West lags, the
       correlations ``rho`` from the last ``correlation_window`` weighted with
-      ``correlation_half_life`` with ``correlation_lags`` lags (USE4 §4.1);
+      ``correlation_half_life`` with ``correlation_lags`` lags (USE4 §4.1),
+      then the eigenfactor risk adjustment (USE4 §4.2, Appendix B): the
+      eigenvariances of ``F`` rescaled by the volatility bias of the
+      eigenfactors of ``eigen_simulations`` histories simulated from ``F``
+      and estimated the same way, as eq. B7, or with ``eigen_scale`` the
+      scaled eq. B8; each bar's draws are seeded by ``eigen_seed`` and the
+      bar, so a row is the same however the store is built. The adjusted
+      block is positive semi-definite (see ``_eigen_adjusted``);
     - ``specific_risk`` on ``(timestamp, symbol)`` (USE4 §5.1-5.2), for
       every symbol with a time-series value and, with a structural model,
       every symbol with exposures at the bar:
@@ -259,8 +266,10 @@ class Use4RiskModel(FactorRiskModel):
     weighted mean, normalised by the sum of the weights. A missing factor
     return (an industry left out of a bar) leaves its bar out: each
     correlation uses the bars both factors have (pairwise, our choice where
-    USE4 uses the EM algorithm), so the matrix need not be positive
-    semi-definite. A variance, a correlation or a specific volatility with
+    USE4 uses the EM algorithm), so the estimate need not be positive
+    semi-definite; the eigenfactor adjustment sets its negative
+    eigenvalues to 0, and with ``eigen_simulations=0`` it stays as it is.
+    A variance, a correlation or a specific volatility with
     fewer than ``min_observations`` bars is NaN. Its warm-up is the longest
     window less one bar, counted on the regression store's bars.
 
@@ -361,6 +370,12 @@ class Use4RiskModel(FactorRiskModel):
             )
         if not config.blending_outlier_bound > 0:
             raise ValueError(f"{owner}: blending_outlier_bound must be positive.")
+        if config.eigen_simulations < 0:
+            raise ValueError(f"{owner}: eigen_simulations must be at least 0.")
+        if config.eigen_scale is not None and not config.eigen_scale > 0:
+            raise ValueError(f"{owner}: eigen_scale must be positive or None.")
+        if config.eigen_fit_skip < 0:
+            raise ValueError(f"{owner}: eigen_fit_skip must be at least 0.")
         if config.shrinkage < 0 or config.shrinkage_groups < 1:
             raise ValueError(
                 f"{owner}: shrinkage must be at least 0 and shrinkage_groups at least 1."
@@ -478,9 +493,9 @@ class Use4RiskModel(FactorRiskModel):
         An autocorrelation window is read only when its Newey-West lags are
         not 0.
         """
-        windows = [config.volatility_window, config.correlation_window, config.specific_window]
-        if config.volatility_lags:
-            windows.append(Use4RiskModel._volatility_autocorrelation(config)[1])
+        windows = [
+            _covariance_window(_EstimateParameters.of(config)), config.specific_window
+        ]
         if config.specific_lags:
             windows.append(config.specific_autocorrelation_window)
         return tuple(windows)
@@ -756,6 +771,8 @@ class Use4RiskModel(FactorRiskModel):
             chunk for chunk in np.array_split(ends, min(count, config.njobs * 4) or 1)
             if len(chunk)
         ]
+        # A row's eigenfactor simulations draw from a stream of its own bar.
+        bar_seeds = timestamps.astype("datetime64[ns]").astype(np.int64)
         tasks = []
         for chunk in chunks:
             first = max(int(chunk[0]) - longest, 0)
@@ -763,6 +780,7 @@ class Use4RiskModel(FactorRiskModel):
                 factor_returns[first : chunk[-1]],
                 specific_returns[first : chunk[-1]],
                 chunk - first,
+                bar_seeds[chunk - offset - 1],
                 parameters,
             ))
         with Timer(f"{self.class_name}: estimate"):
@@ -873,6 +891,10 @@ class _EstimateParameters:
     blending_min_observations: int
     blending_ramp: int
     blending_outlier_bound: float
+    eigen_simulations: int
+    eigen_seed: int
+    eigen_scale: float | None
+    eigen_fit_skip: int
 
     @classmethod
     def of(cls, config: Use4RiskConfig) -> "_EstimateParameters":
@@ -891,13 +913,18 @@ def _estimate_rows(
     factor_returns: np.ndarray,
     specific_returns: np.ndarray,
     ends: np.ndarray,
+    bars: np.ndarray,
     parameters: _EstimateParameters,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return the factor covariances, time-series specific risks and blending coefficients.
 
-    One row per bar, each bar ending before one of ``ends``.
+    One row per bar, each bar ending before one of ``ends``; ``bars`` are
+    the rows' timestamps in nanoseconds, which seed their simulations.
     """
-    covariance = np.stack([_factor_covariance(factor_returns[:end], parameters) for end in ends])
+    covariance = np.stack([
+        _factor_covariance(factor_returns[:end], parameters, bar)
+        for end, bar in zip(ends, bars)
+    ])
     specific = np.stack([_specific_risk(specific_returns[:end], parameters) for end in ends])
     if parameters.structural_model != "off":
         blending = np.stack([_blending(specific_returns[:end], parameters) for end in ends])
@@ -906,8 +933,111 @@ def _estimate_rows(
     return covariance, specific, blending
 
 
-def _factor_covariance(history: np.ndarray, config: "_EstimateParameters") -> np.ndarray:
-    """Return the ``[K, K]`` factor covariance at the last row of ``history``."""
+def _factor_covariance(
+    history: np.ndarray, config: "_EstimateParameters", bar: int
+) -> np.ndarray:
+    """Return the ``[K, K]`` factor covariance at the last row of ``history``, at ``bar``.
+
+    The Newey-West estimate, then the eigenfactor risk adjustment.
+    """
+    covariance = _sample_factor_covariance(history, config)
+    if config.eigen_simulations:
+        covariance = _eigen_adjusted(covariance, len(history), config, bar)
+    return covariance
+
+
+def _covariance_window(config: "_EstimateParameters") -> int:
+    """Return the bars of factor returns ``_sample_factor_covariance`` reads, its longest window."""
+    windows = [config.volatility_window, config.correlation_window]
+    if config.volatility_lags:
+        windows.append(config.volatility_autocorrelation_window)
+    return max(windows)
+
+
+#: An eigenvalue at most this times the largest is taken as 0 by the
+#: eigenfactor risk adjustment (our choice).
+_EIGEN_TOLERANCE = 1e-10
+
+
+def _eigen_adjusted(
+    covariance: np.ndarray, available: int, config: "_EstimateParameters", bar: int
+) -> np.ndarray:
+    """Return ``covariance`` with the eigenfactor risk adjustment (USE4 Appendix B).
+
+    Over the factors whose covariances are all finite (``covered_factors``;
+    the others are left as they are): ``F0 = U0 D0 U0'`` (eq. B2), negative
+    eigenvalues of a pairwise estimate set to 0 (our choice), which makes
+    ``F0`` the covariance the simulations are drawn from. Each of
+    ``eigen_simulations`` simulations draws a complete history ``f_m = U0
+    b_m`` (eq. B3), ``b_m`` normal with variances ``D0``, of
+    ``min(available, longest window)`` bars (our choice: what the sample
+    estimate reads, not every bar of history), and estimates its covariance
+    ``F_m = U_m D_m U_m'`` with ``_sample_factor_covariance`` (eqs. B4-B5).
+    ``v(k) = sqrt(mean_m (U_m' F0 U_m)(k) / D_m(k))`` (eqs. B6-B7), the
+    eigenfactors numbered from the lowest variance; with ``eigen_scale``
+    ``a``, ``v`` is fitted by a parabola in ``k`` over the eigenfactors past
+    the first ``eigen_fit_skip`` and replaced by ``a (v_P - 1) + 1`` (eq.
+    B8; with fewer than three such eigenfactors, ``v`` itself is scaled).
+    The result is ``U0 v^2 D0 U0'`` (eqs. B9-B10), made exactly symmetric.
+    An eigenvalue of ``F0`` that is 0 stays 0; an eigenfactor whose
+    simulated eigenvalue is 0 in some simulation is not adjusted. A
+    simulation whose estimate is not all finite (Newey-West lag terms can
+    make a short window's variance negative) is left out of the mean (our
+    choices).
+    """
+    kept = covered_factors(covariance)
+    if not kept.any():
+        return covariance
+    block = covariance[np.ix_(kept, kept)]
+    block = (block + block.T) / 2
+    eigenvalues, eigenvectors = np.linalg.eigh(block)
+    eigenvalues = np.clip(eigenvalues, 0.0, None)
+    # The covariance the simulations are drawn from, their "truth" (eq. B6).
+    generating = (eigenvectors * eigenvalues) @ eigenvectors.T
+    positive = eigenvalues > eigenvalues.max() * _EIGEN_TOLERANCE
+    length = min(available, _covariance_window(config))
+    rng = np.random.default_rng([config.eigen_seed, int(bar) % 2**64])
+    ratio = np.zeros(len(eigenvalues))
+    usable = np.ones(len(eigenvalues), dtype=bool)
+    used = 0
+    scale = np.sqrt(eigenvalues)
+    for _ in range(config.eigen_simulations):
+        simulated = (rng.standard_normal((length, len(eigenvalues))) * scale) @ eigenvectors.T
+        estimated = _sample_factor_covariance(simulated, config)
+        if not np.isfinite(estimated).all():
+            continue
+        used += 1
+        variances, rotation = np.linalg.eigh((estimated + estimated.T) / 2)
+        true = np.einsum("jk,jl,lk->k", rotation, generating, rotation)
+        good = variances > variances.max() * _EIGEN_TOLERANCE
+        ratio += np.where(good, true / np.where(good, variances, 1.0), 0.0)
+        usable &= good
+    valid = positive & usable & (used > 0)
+    bias = np.where(valid, np.sqrt(ratio / max(used, 1)), 1.0)
+    if config.eigen_scale is not None:
+        scaled = config.eigen_scale * (_parabola(bias, valid, config.eigen_fit_skip) - 1.0) + 1.0
+        bias = np.where(valid, scaled, 1.0)
+    adjusted = (eigenvectors * np.where(positive, bias**2 * eigenvalues, 0.0)) @ eigenvectors.T
+    out = covariance.copy()
+    out[np.ix_(kept, kept)] = (adjusted + adjusted.T) / 2
+    return out
+
+
+def _parabola(values: np.ndarray, valid: np.ndarray, skip: int) -> np.ndarray:
+    """Return a parabola in ``k = 1, 2, ...`` fitted to ``values`` past the first ``skip``.
+
+    Only ``valid`` values are fitted; with fewer than three, ``values``
+    themselves are returned.
+    """
+    k = np.arange(1, len(values) + 1, dtype=np.float64)
+    fit = valid & (k > skip)
+    if fit.sum() < 3:
+        return values
+    return np.polyval(np.polyfit(k[fit], values[fit], 2), k)
+
+
+def _sample_factor_covariance(history: np.ndarray, config: "_EstimateParameters") -> np.ndarray:
+    """Return the Newey-West ``[K, K]`` factor covariance at the last row of ``history``."""
     least = config.min_observations
     volatility_window = np.ascontiguousarray(history[-config.volatility_window :])
     covariance, _, _, observed = _pairwise_moments(

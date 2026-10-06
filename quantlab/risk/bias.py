@@ -22,6 +22,10 @@ one-bar one:
 
 - **factor**: each factor's return over the next bar, the return of its pure
   factor portfolio, against the square root of its forecast variance;
+- **eigenfactor**: the eigenfactors of each bar's forecast covariance (USE4
+  Methodology Notes §4.2, Figure 4.1), numbered from the lowest variance:
+  the next bar's return of each, the factor returns weighted by its unit
+  eigenvector, against the square root of its eigenvalue;
 - **specific**: each symbol's specific return over the next bar against its
   forecast specific risk;
 - **random**: random active portfolios as in the USE4 Empirical Notes (§5,
@@ -36,7 +40,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.risk.base import Date, FactorRiskModel
+from quantlab.risk.base import Date, FactorRiskModel, covered_factors
 
 
 def bias_statistics(
@@ -184,6 +188,13 @@ def risk_model_bias_statistics(
     outcome missing one of its bars, has none. The exposures are the
     model's (``FactorRiskModel.exposures``).
 
+    The eigenfactors of a bar are those of the covariance block of the
+    factors ``covered_factors`` keeps, numbered from 1, the lowest
+    eigenvalue; with fewer factors kept, the last ones are missing that bar.
+    An eigenfactor has no outcome on a bar missing the return of a kept
+    factor, nor when its eigenvalue is not positive (a pairwise estimate
+    need not be positive semi-definite).
+
     A random active portfolio holds, at each bar, the ``portfolio_size``
     eligible stocks it ranks first, capitalization weighted, less every
     eligible stock capitalization weighted, held over the horizon. Each portfolio ranks the symbols
@@ -228,9 +239,9 @@ def risk_model_bias_statistics(
     Returns
     -------
     dict of str to xr.Dataset
-        ``"factor"`` on ``(timestamp, factor)``, ``"specific"`` on
-        ``(timestamp, symbol)`` and ``"random"`` on ``(timestamp,
-        portfolio)``, each as returned by ``bias_statistics``, ``timestamp``
+        ``"factor"`` on ``(timestamp, factor)``, ``"eigenfactor"`` on
+        ``(timestamp, eigenfactor)``, ``"specific"`` on ``(timestamp,
+        symbol)`` and ``"random"`` on ``(timestamp, portfolio)``, each as returned by ``bias_statistics``, ``timestamp``
         the forecast bar.
 
     Raises
@@ -294,8 +305,22 @@ def risk_model_bias_statistics(
     variance = np.diagonal(covariance, axis1=1, axis2=2)
     with np.errstate(invalid="ignore"):
         factor_volatility = np.sqrt(scale * variance)
-    factor = _named(
-        summed(factor_returns), factor_volatility, bars, "factor", list(model.factor_names)
+    factor_outcomes = summed(factor_returns)
+    factor = _named(factor_outcomes, factor_volatility, bars, "factor", list(model.factor_names))
+
+    n_factors = len(model.factor_names)
+    eigen_realized = np.full((len(bars), n_factors), np.nan)
+    eigen_forecast = np.full((len(bars), n_factors), np.nan)
+    for row in range(len(bars)):
+        kept = covered_factors(covariance[row])
+        if not kept.any():
+            continue
+        block = covariance[row][np.ix_(kept, kept)]
+        eigenvalues, eigenvectors = np.linalg.eigh((block + block.T) / 2)
+        eigen_realized[row, : kept.sum()] = factor_outcomes[row, kept] @ eigenvectors
+        eigen_forecast[row, : kept.sum()] = np.sqrt(scale * np.clip(eigenvalues, 0.0, None))
+    eigenfactor = _named(
+        eigen_realized, eigen_forecast, bars, "eigenfactor", np.arange(1, n_factors + 1)
     )
 
     symbols = estimate["symbol"].values
@@ -359,7 +384,10 @@ def risk_model_bias_statistics(
     return {
         name: bias_statistics(realized, forecast, window, min_observations)
         for name, (realized, forecast) in
-        {"factor": factor, "specific": specific, "random": random}.items()
+        {
+            "factor": factor, "eigenfactor": eigenfactor, "specific": specific,
+            "random": random,
+        }.items()
     }
 
 

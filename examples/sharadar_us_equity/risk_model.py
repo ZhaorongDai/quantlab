@@ -4,9 +4,11 @@
 prices + DAILY market cap + FRED's 3-month T-bill rate ->
 ``Use4RiskModel``'s regression store (factor returns and specific returns of
 country, 48 industries, 12 styles) -> its estimate store (factor covariance
-and specific risk: EWMA with Newey-West on the factors) -> bias statistics
-of factor portfolios, specific returns and random active portfolios over
-one-bar and 21-bar returns, printed, saved as JSON and plotted.
+and specific risk: EWMA with Newey-West and the eigenfactor risk adjustment
+on the factors; structural model and shrinkage on the specific risk) -> bias
+statistics of factor portfolios, eigenfactor portfolios, specific returns
+and random active portfolios over one-bar and 21-bar returns, printed, saved
+as JSON and plotted.
 
 Every setting is a constant or a quantlab config object at the top of the
 file; edit them and run ``uv run python examples/sharadar_us_equity/risk_model.py``
@@ -92,7 +94,8 @@ def barra_exposures() -> BarraStyle:
 
 
 def risk_model() -> Use4RiskModel:
-    """USE4 with its defaults: country, FF48 industries, 12 styles; EWMA 84/504/84, factor Newey-West."""
+    """USE4 with its defaults: country, FF48 industries, 12 styles; EWMA 84/504/84, factor
+    Newey-West, the simulated eigenfactor adjustment (1000 simulations)."""
     return Use4RiskModel(Use4RiskConfig(
         exposures=barra_exposures(),
         dataset=price_inputs(),
@@ -139,20 +142,22 @@ def bias(horizon: int) -> tuple[dict, dict]:
             "mean_rolling_bias": round(float(result["rolling_mean"].mean()), 3),
             "mean_rolling_mrad": round(float(result["rolling_mrad"].mean()), 3),
         }
-    factor = stats["factor"]
-    summary["factor_bias"] = {
-        str(name): round(float(value), 3)
-        for name, value in zip(factor["factor"].values, factor["bias"].values)
-    }
+    for group in ("factor", "eigenfactor"):
+        result = stats[group]
+        summary[f"{group}_bias"] = {
+            str(name): round(float(value), 3)
+            for name, value in zip(result[group].values, result["bias"].values)
+        }
     return stats, summary
 
 
 # %% 3. Figures
 def plot(stats: dict, horizon: int) -> None:
-    """Rolling one-year mean, 5th/95th percentile and MRAD per group; bias per factor."""
+    """Rolling one-year mean, 5th/95th percentile and MRAD per group; bias per (eigen)factor."""
     year = round(252 / horizon)
-    # One panel per group (factor, specific, random), then the factors' bias.
-    figure, axes = plt.subplots(4, 1, figsize=(12, 16))
+    # One panel per group (factor, eigenfactor, specific, random), then the
+    # bias of each factor and of each eigenfactor.
+    figure, axes = plt.subplots(6, 1, figsize=(12, 24))
     for axis, (group, result) in zip(axes, stats.items()):
         bars = result["timestamp"].values
         for name in ("rolling_mean", "rolling_p5", "rolling_p95", "rolling_mrad"):
@@ -162,15 +167,16 @@ def plot(stats: dict, horizon: int) -> None:
         axis.set_title(f"{group}, {horizon}-bar returns: rolling {year}-outcome bias statistics")
         axis.set_ylim(0, 2.5)
         axis.legend(loc="upper right", ncol=4)
-    factor = stats["factor"]
-    names = [str(n) for n in factor["factor"].values]
-    axes[3].bar(range(len(names)), factor["bias"].values)
-    axes[3].fill_between(
-        [-0.5, len(names) - 0.5], 1 - factor["band"].values.min(), 1 + factor["band"].values.min(),
-        color="grey", alpha=0.3,
-    )
-    axes[3].set_xticks(range(len(names)), names, rotation=90, fontsize=6)
-    axes[3].set_title(f"factor bias statistics of {horizon}-bar returns over the whole range")
+    for axis, group in zip(axes[4:], ("factor", "eigenfactor")):
+        result = stats[group]
+        names = [str(n) for n in result[group].values]
+        axis.bar(range(len(names)), result["bias"].values)
+        axis.fill_between(
+            [-0.5, len(names) - 0.5], 1 - result["band"].min().item(),
+            1 + result["band"].min().item(), color="grey", alpha=0.3,
+        )
+        axis.set_xticks(range(len(names)), names, rotation=90, fontsize=6)
+        axis.set_title(f"{group} bias statistics of {horizon}-bar returns over the whole range")
     figure.tight_layout()
     figure.savefig(WORK / f"bias_h{horizon}.png", dpi=120)
 
@@ -186,7 +192,7 @@ if __name__ == "__main__":
         plot(stats, horizon)
     (WORK / "bias_summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(
-        {k: {g: v for g, v in s.items() if g != "factor_bias"} if isinstance(s, dict) else s
+        {k: {g: v for g, v in s.items() if not g.endswith("_bias")} if isinstance(s, dict) else s
          for k, s in summary.items()},
         indent=2,
     ))

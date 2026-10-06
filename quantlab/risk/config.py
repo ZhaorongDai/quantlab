@@ -199,6 +199,26 @@ class Use4RiskConfig(FactorRiskConfig):
     #: Newey-West lags of the factor correlations (USE4S and USE4L: 2); 0 for
     #: none.
     correlation_lags: int = 2
+    #: Simulated factor-return histories of the eigenfactor risk adjustment
+    #: (USE4 §4.2, Appendix B); 0 for none. Each bar's covariance is
+    #: adjusted from simulations of its own: complete histories as long as
+    #: the longest window the covariance reads (our choice), normal with that
+    #: covariance, estimated with the same windows, half-lives and Newey-West
+    #: lags. USE4 publishes no count. Our choice: 1000.
+    eigen_simulations: int = 1000
+    #: Seed of the simulations. A bar's draws come from
+    #: ``numpy.random.default_rng([eigen_seed, bar])``, ``bar`` its timestamp
+    #: in nanoseconds modulo ``2**64``, so a row does not depend on the rows
+    #: computed with it.
+    eigen_seed: int = 0
+    #: ``a`` of USE4's scaled adjustment (eq. B8, USE4: 1.4): the simulated
+    #: volatility biases are fitted with a parabola in the eigenfactor
+    #: number and scaled to ``a (v_P - 1) + 1``. ``None`` is USE4's simulated
+    #: adjustment (eq. B7), which the USE4 model uses.
+    eigen_scale: float | None = None
+    #: Eigenfactors, from the lowest-volatility one, the parabola of the
+    #: scaled adjustment gives no weight (USE4: 15).
+    eigen_fit_skip: int = 15
     #: Newey-West lags of the specific volatilities; 0 for none. USE4S and
     #: USE4L: 5. Our choice: 0, as the adjustment worsened the specific bias
     #: statistics over 1- and 21-bar returns on the Sharadar history (#197).
