@@ -39,9 +39,9 @@ from loguru import logger
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
 from quantlab.portfolio.base import PortfolioConstructionError, PortfolioConstructor
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.factor.config import PolarsFactorConfig
 from tests.backtest_fixtures import FirstFeatureHead, PastReturnFactor, make_model, make_stock_dataset, write_price_store
@@ -264,7 +264,7 @@ def test_a_failing_bar_holds_is_logged_and_recorded(tmp_path):
 def _optimizer(**overrides):
     params = dict(
         expected_return_label="fwd_ret_1",
-        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
         ic=0.05,
         risk_aversion=5.0,
         turnover_penalty=0.001,
@@ -289,7 +289,7 @@ def test_a_mean_variance_backtest_is_fully_invested_and_rebuilds_identically(tmp
     run = BacktestRun.open(original.run_dir)
     recorded = run.rebuild("constructor")
     assert isinstance(recorded, MeanVarianceOptimizer)
-    assert recorded.config.risk_model.config.lookback_bars == LOOKBACK
+    assert recorded.config.covariance.config.lookback_bars == LOOKBACK
     rebuilt = run.rebuild_backtester()
     assert rebuilt.config.constructor == backtester.config.constructor
     again = rebuilt.run()
@@ -302,7 +302,7 @@ def test_a_predictor_without_the_expected_return_label_is_refused_at_constructio
     optimizer = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="fwd_ret_5",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
             ic=0.05,
             risk_aversion=5.0,
         )
@@ -342,7 +342,7 @@ def test_a_long_short_mean_variance_backtest_is_dollar_neutral_and_rebuilds(tmp_
 FACTORS_SEEN: list = []
 
 
-class _DeclaringRisk(LedoitWolfRiskModel):
+class _DeclaringRisk(LedoitWolfEstimator):
     """Ledoit-Wolf that declares one factor and records what it is handed."""
 
     def __init__(self, config, factor):
@@ -365,7 +365,7 @@ def test_a_declared_factor_reaches_the_risk_model_at_each_bar_only(tmp_path):
         factor = PastReturnFactor(
             PolarsFactorConfig(warmup_bars=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 3})
         )
-        return _optimizer(risk_model=_DeclaringRisk(LedoitWolfConfig(lookback_bars=LOOKBACK), factor))
+        return _optimizer(covariance=_DeclaringRisk(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK), factor))
 
     backtester, dataset_config, bars = _backtester(tmp_path, declaring)
 
@@ -588,13 +588,13 @@ def _factor_risk_model(tmp_path, dataset_config, bars):
 
 
 def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_path):
-    from quantlab.portfolio.config import FactorRiskReaderConfig
-    from quantlab.portfolio.predefined.factor_risk import FactorRiskReader
+    from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
+    from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
 
     def factor_risk(dataset_config):
         bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
         model = _factor_risk_model(tmp_path, dataset_config, bars)
-        return _optimizer(risk_model=FactorRiskReader(FactorRiskReaderConfig(risk_model=model)))
+        return _optimizer(covariance=FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model)))
 
     backtester, _, _ = _backtester(tmp_path, factor_risk, output_dir=str(tmp_path / "runs"))
 
@@ -608,11 +608,11 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
 
     run = BacktestRun.open(original.run_dir)
     recorded = run.rebuild("constructor")
-    assert isinstance(recorded.config.risk_model, FactorRiskReader)
+    assert isinstance(recorded.config.covariance, FactorRiskStoreEstimator)
     rebuilt = run.rebuild_backtester()
     # The frames are copied into the run directory, so only their paths differ.
-    risk_model = rebuilt.config.constructor.config.risk_model.config.risk_model
-    original_model = backtester.config.constructor.config.risk_model.config.risk_model
+    risk_model = rebuilt.config.constructor.config.covariance.config.risk_model
+    original_model = backtester.config.constructor.config.covariance.config.risk_model
     assert dataclasses.replace(
         risk_model.config, exposures=None, dataset=None
     ) == dataclasses.replace(original_model.config, exposures=None, dataset=None)

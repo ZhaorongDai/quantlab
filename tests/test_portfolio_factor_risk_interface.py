@@ -9,7 +9,7 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
   low-rank risk term: the optimiser never asks it for the dense covariance,
   and the solution equals the dense solution of the same covariance within
   solver tolerance, long-only and long-short.
-- `RiskModel.required_factors()` and `PortfolioConstructor.required_factors()`
+- `CovarianceEstimator.required_factors()` and `PortfolioConstructor.required_factors()`
   are empty by default; the optimiser declares its risk model's.
 """
 
@@ -18,15 +18,15 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.base import (
     CovarianceEstimate,
     FactorCovarianceEstimate,
     PortfolioContext,
-    RiskModel,
+    CovarianceEstimator,
 )
 from quantlab.runs.prediction_panel import LabelSpec
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
@@ -55,10 +55,10 @@ class _NoDense(FactorCovarianceEstimate):
         raise AssertionError("the optimiser asked a factor estimate for its dense covariance")
 
 
-class _FixedRisk(RiskModel):
+class _FixedRisk(CovarianceEstimator):
     """Returns one fixed one-bar estimate, dense or in factor form."""
 
-    config_cls = LedoitWolfConfig
+    config_cls = LedoitWolfEstimatorConfig
 
     def __init__(self, config, *, factor_form: bool, seed=0):
         super().__init__(config)
@@ -95,7 +95,7 @@ def _context(seed=1, current=None):
 def _optimizer(*, factor_form, **overrides):
     params = dict(
         expected_return_label="ret_5",
-        risk_model=_FixedRisk(LedoitWolfConfig(lookback_bars=2), factor_form=factor_form),
+        covariance=_FixedRisk(LedoitWolfEstimatorConfig(lookback_bars=2), factor_form=factor_form),
         ic=0.05,
         risk_aversion=20.0,
         weight_cap=0.35,
@@ -159,18 +159,18 @@ def test_the_low_rank_expected_return_uses_the_factor_variance():
 def test_required_factors_are_empty_by_default_and_the_optimizer_declares_its_risk_models():
     marker = object()
 
-    class _Declaring(LedoitWolfRiskModel):
+    class _Declaring(LedoitWolfEstimator):
         def required_factors(self):
             return [marker]
 
-    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=10))
+    risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=10))
     assert risk.required_factors() == []
     assert TopNConstructor(TopNConfig(direction="long_only", top_n=2)).required_factors() == []
     assert _optimizer(factor_form=False).required_factors() == []
     declaring = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
-            risk_model=_Declaring(LedoitWolfConfig(lookback_bars=10)),
+            covariance=_Declaring(LedoitWolfEstimatorConfig(lookback_bars=10)),
             ic=0.05,
             risk_aversion=5.0,
         )

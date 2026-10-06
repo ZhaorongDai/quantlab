@@ -1,6 +1,6 @@
 """A Ledoit-Wolf shrunk sample covariance of trailing one-bar returns.
 
-``LedoitWolfRiskModel`` estimates the covariance of one-bar returns at a bar
+``LedoitWolfEstimator`` estimates the covariance of one-bar returns at a bar
 from the ``lookback_bars`` returns ending there, shrunk toward a scaled
 identity with the Ledoit-Wolf coefficient, so the estimate stays well
 conditioned when there are more symbols than bars. The shrunk covariance is
@@ -12,11 +12,11 @@ import numpy as np
 import xarray as xr
 from sklearn.covariance import ledoit_wolf
 
-from quantlab.portfolio.config import LedoitWolfConfig
-from quantlab.portfolio.base import CovarianceEstimate, PortfolioContext, RiskModel
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig
+from quantlab.portfolio.base import CovarianceEstimate, PortfolioContext, CovarianceEstimator
 
 
-class LedoitWolfRiskModel(RiskModel):
+class LedoitWolfEstimator(CovarianceEstimator):
     """Ledoit-Wolf shrunk covariance of the trailing one-bar returns.
 
     A symbol is covered when every one of the ``lookback_bars`` returns in
@@ -34,7 +34,7 @@ class LedoitWolfRiskModel(RiskModel):
 
     Parameters
     ----------
-    config : LedoitWolfConfig
+    config : LedoitWolfEstimatorConfig
         ``lookback_bars``, at least 2, and ``max_stale_bars``, at least 0.
 
     Raises
@@ -45,7 +45,7 @@ class LedoitWolfRiskModel(RiskModel):
     Examples
     --------
     >>> import numpy as np, pandas as pd, xarray as xr
-    >>> from quantlab.portfolio.config import LedoitWolfConfig
+    >>> from quantlab.portfolio.config import LedoitWolfEstimatorConfig
     >>> from quantlab.portfolio.base import PortfolioContext
     >>> rng = np.random.default_rng(0)
     >>> symbols = ["AAA", "BBB", "CCC"]
@@ -59,7 +59,7 @@ class LedoitWolfRiskModel(RiskModel):
     ...     returns=xr.DataArray(window, dims=("timestamp", "symbol"), coords={
     ...         "timestamp": pd.bdate_range("2024-01-01", periods=60), "symbol": symbols}),
     ... )
-    >>> risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60))
+    >>> risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60))
     >>> estimate = risk.estimate(context)
     >>> estimate.symbols.tolist(), estimate.covariance.shape
     (['AAA', 'BBB'], (2, 2))
@@ -77,10 +77,10 @@ class LedoitWolfRiskModel(RiskModel):
     ['AAA']
     """
 
-    config_cls = LedoitWolfConfig
+    config_cls = LedoitWolfEstimatorConfig
 
-    def __init__(self, config: LedoitWolfConfig):
-        """Initialize the risk model; see the class docstring for parameters."""
+    def __init__(self, config: LedoitWolfEstimatorConfig):
+        """Initialize the covariance estimator; see the class docstring for parameters."""
         super().__init__(config)
         if config.lookback_bars < 2:
             raise ValueError(

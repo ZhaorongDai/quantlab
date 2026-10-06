@@ -31,14 +31,14 @@ import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
 from quantlab.model.config import ModelConfig
 from quantlab.factor.config import FactorConfig, PolarsFactorConfig
 from quantlab.portfolio.base import PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.label.predefined.fret import Return, Volatility
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.runs.backtest_run import BacktestRun
 from tests.backtest_fixtures import (
@@ -91,7 +91,7 @@ def _optimizer(specs=None, **overrides) -> MeanVarianceOptimizer:
     params = dict(
         expected_return_label="ret_5",
         volatility_label="vol_5",
-        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
         ic=0.05,
         risk_aversion=5.0,
         weight_cap=0.4,
@@ -113,7 +113,7 @@ def test_the_covariance_is_predicted_volatilities_around_historical_correlations
     covariance = _optimizer().problem_inputs(context).covariance
 
     np.testing.assert_allclose(np.diag(covariance), VOLS**2, rtol=1e-12)
-    historical = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)).estimate(context)
+    historical = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)).estimate(context)
     np.testing.assert_allclose(_correlation(covariance), _correlation(historical.covariance), rtol=1e-12)
     assert not np.allclose(np.diag(covariance), np.diag(historical.scaled(SPAN).covariance))
 
@@ -133,7 +133,7 @@ def test_without_a_volatility_label_the_historical_volatilities_are_used():
 
     covariance = _optimizer(volatility_label=None).problem_inputs(context).covariance
 
-    historical = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)).estimate(context)
+    historical = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)).estimate(context)
     np.testing.assert_allclose(covariance, historical.scaled(SPAN).covariance, rtol=1e-12)
 
 
@@ -244,7 +244,7 @@ def test_an_ensemble_of_a_return_and_a_volatility_model_backtests_and_rebuilds(t
         MeanVarianceConfig(
             expected_return_label=f"ret_{HORIZON}",
             volatility_label=f"vol_{HORIZON}",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20)),
             ic=0.05,
             risk_aversion=5.0,
             turnover_penalty=0.001,
@@ -307,7 +307,7 @@ def test_a_backtest_whose_labels_differ_in_span_is_refused_when_it_is_built(tmp_
         MeanVarianceConfig(
             expected_return_label=f"ret_{HORIZON}",
             volatility_label="vol_5",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20)),
             ic=0.05,
             risk_aversion=5.0,
         )

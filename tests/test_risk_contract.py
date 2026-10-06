@@ -18,8 +18,8 @@ import xarray as xr
 
 from quantlab.core.component import rebuild
 from quantlab.portfolio.base import PortfolioContext
-from quantlab.portfolio.config import FactorRiskReaderConfig
-from quantlab.portfolio.predefined.factor_risk import FactorRiskReader
+from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
+from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
 from quantlab.risk.base import FactorRiskModel
 from quantlab.risk.bias import risk_model_bias_statistics
 from quantlab.risk.config import FactorRiskConfig
@@ -135,7 +135,7 @@ def test_the_store_estimator_reads_any_factor_risk_model(model):
         current_weights=xr.DataArray(np.zeros(len(symbols)), **on_symbol),
         factors=exposures.isel(timestamp=bar, drop=True),
     )
-    reader = FactorRiskReader(FactorRiskReaderConfig(risk_model=model))
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))
     estimate = reader.estimate(context)
     row = model.estimate.read(_day(bar), _day(bar)).isel(timestamp=0)
     exposures_b, covariance, specific = estimate.factor_form()

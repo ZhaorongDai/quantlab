@@ -36,7 +36,7 @@ from loguru import logger
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
 from quantlab.model.config import ModelConfig
 from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import (
@@ -57,7 +57,7 @@ from quantlab.label.predefined.membership_mask import MembershipMaskedLabel
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.xgb import XGBoostRegressor
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.tracking.wandb import WandbTracker
 
@@ -242,7 +242,7 @@ def backtest(checkpoint: Path):
         # from the unmasked index store, so a stock joining the index already
         # has its history before joining and can be bought from its first
         # member day.
-        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=126)),
+        covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=126)),
         # mu = ic * sigma * z: the information coefficient of the return
         # model, for example the mean IC of a walk-forward CV run.
         ic=0.02,

@@ -20,17 +20,18 @@ the loop checks both. A rule holds no state between bars. A bar the rule
 cannot solve raises ``PortfolioConstructionError``, and the loop holds it
 instead.
 
-A *risk model* (``RiskModel``) estimates the covariance of one-bar returns
-at a bar, as a ``CovarianceEstimate``; a rule that prices risk, such as a
-mean-variance optimiser, holds one. The interface is shaped for a factor
-risk model, one reading the stores of ``quantlab.risk``: its estimate is a
+A *covariance estimator* (``CovarianceEstimator``) estimates the covariance
+of one-bar returns at a bar, as a ``CovarianceEstimate``; a rule that prices
+risk, such as a mean-variance optimiser, holds one. It is not a factor risk
+model (``quantlab.risk``), which is estimated ahead as stores; one estimator,
+``FactorRiskStoreEstimator``, reads those stores: its estimate is a
 ``FactorCovarianceEstimate`` whose ``factor_form()`` lets an optimiser build
-a low-rank risk term, and it declares the ``Factor`` panels it reads (its
+a low-rank risk term, and it declares the ``Factor`` panels it reads (the
 exposures) through ``required_factors()``, which the backtest reads and
 slices into each bar's context.
 
-Shipped rules and risk models live in ``quantlab/portfolio/predefined``; this
-module imports no solver.
+Shipped rules and covariance estimators live in
+``quantlab/portfolio/predefined``; this module imports no solver.
 """
 
 import dataclasses
@@ -194,11 +195,11 @@ class Decision:
 
 
 class _Configured(Component):
-    """A component built from one frozen config dataclass: a rule or a risk model.
+    """A component built from one frozen config dataclass: a rule or a covariance estimator.
 
     It is serialised and rebuilt by the component rule
     (``quantlab.core.component``): a field holding another component (a
-    rule's risk model) is declared with ``component()`` on the config
+    rule's covariance estimator) is declared with ``component()`` on the config
     dataclass, and a free-form parameter dict is kept as data.
     """
 
@@ -244,7 +245,7 @@ class _Configured(Component):
 
 @dataclass(frozen=True)
 class CovarianceEstimate:
-    """A risk model's covariance of returns at one bar, over the symbols it covers.
+    """A covariance estimator's covariance of returns at one bar, over the symbols it covers.
 
     Attributes
     ----------
@@ -328,7 +329,8 @@ class CovarianceEstimate:
 class FactorCovarianceEstimate:
     """A covariance of returns in factor form: ``B F B' + diag(D)``.
 
-    The estimate a factor risk model returns. With ``n`` symbols and ``k``
+    The estimate of a covariance estimator in factor form, such as
+    ``FactorRiskStoreEstimator`` reading a factor risk model. With ``n`` symbols and ``k``
     factors, ``B`` holds each symbol's exposures, ``F`` the factor returns'
     covariance and ``D`` each symbol's specific (idiosyncratic) variance.
     ``factor_form()``
@@ -438,23 +440,25 @@ class FactorCovarianceEstimate:
         return self.exposures, self.factor_covariance, self.specific_variance
 
 
-class RiskModel(_Configured, ABC):
-    """Base class of every risk model: the covariance of returns at one bar.
+class CovarianceEstimator(_Configured, ABC):
+    """Base class of every covariance estimator: the covariance of returns at one bar.
 
-    "Risk model" is the industry's name (a Barra-style risk model), not a
-    model in this project's sense: a risk model is not trained, has no
-    checkpoint and is not a ``BaseModel``. It is an estimator run afresh at
-    every bar from what the context holds, such as the trailing return
-    window. A forecast that feeds it, such as predicted volatility, comes
-    from a model in ``quantlab/model`` through the predictor; the risk model
-    only combines it with what it estimates.
+    A covariance estimator is what a rule that prices risk holds. It is not
+    trained, has no checkpoint and is not a ``BaseModel``: it is run at every
+    bar from what the context holds, such as the trailing return window
+    (Ledoit-Wolf), or reads a forecast stored ahead (a factor risk model's
+    stores, through ``FactorRiskStoreEstimator``). A forecast that feeds it,
+    such as predicted volatility, comes from a model in ``quantlab/model``
+    through the predictor; the estimator only combines it with what it
+    estimates. It returns a covariance and nothing else, so any rule that
+    needs one (mean-variance, minimum variance, risk parity) can hold it.
 
     Subclass it, set ``config_cls`` to a dataclass of the model's
     parameters (with a ``lookback_bars`` field when it reads a return
     window) and implement ``estimate``. The estimate is of one-bar returns;
     a rule scales it to its own horizon.
 
-    A factor risk model declares the ``Factor`` panels it reads, its
+    An estimator in factor form declares the ``Factor`` panels it reads, its
     exposures for example, in ``required_factors()``; the backtest reads
     them over its window, each warmed up like a model's features, and puts
     their values at the bar in ``context.factors``. It returns a
@@ -468,10 +472,10 @@ class RiskModel(_Configured, ABC):
 
     Examples
     --------
-    >>> from quantlab.portfolio.config import LedoitWolfConfig
-    >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
-    >>> risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60))
-    >>> isinstance(risk, RiskModel), risk.lookback_bars
+    >>> from quantlab.portfolio.config import LedoitWolfEstimatorConfig
+    >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
+    >>> risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60))
+    >>> isinstance(risk, CovarianceEstimator), risk.lookback_bars
     (True, 60)
     """
 
@@ -494,7 +498,7 @@ class RiskModel(_Configured, ABC):
 
         ``lookback_bars + 1`` by default: the last price before the window
         seeds its first return. A model whose coverage reads staleness
-        reaches further back (see ``LedoitWolfRiskModel``).
+        reaches further back (see ``LedoitWolfEstimator``).
 
         Examples
         --------
@@ -616,8 +620,8 @@ class PortfolioConstructor(_Configured, ABC):
         """The ``Factor`` panels whose values at each bar the rule reads from ``context.factors``.
 
         The backtest computes each over its window, warm-up included, and
-        slices it per bar. Empty by default; a rule holding a risk model
-        declares the risk model's.
+        slices it per bar. Empty by default; a rule holding a covariance estimator
+        declares the covariance estimator's.
 
         Examples
         --------

@@ -23,8 +23,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_report import (
@@ -70,7 +70,7 @@ def test_a_nested_rule_is_named_as_its_repr():
     rule = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
             risk_aversion=2.0,
             ic=0.05,
         )

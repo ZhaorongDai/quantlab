@@ -1,7 +1,7 @@
 """The configs of the portfolio layer.
 
-A portfolio construction rule or risk model is constructed from one of these and
-exposes it as ``self.config``. They are frozen; a rule's risk model is declared with
+A portfolio construction rule or covariance estimator is constructed from one of these and
+exposes it as ``self.config``. They are frozen; a rule's covariance estimator is declared with
 ``component()`` and written as its own config.
 """
 
@@ -12,7 +12,7 @@ from quantlab.core.component import component
 from quantlab.core.config import FrozenConfig
 
 if TYPE_CHECKING:
-    from quantlab.portfolio.base import RiskModel
+    from quantlab.portfolio.base import CovarianceEstimator
     from quantlab.risk.base import FactorRiskModel
 
 
@@ -38,12 +38,12 @@ class TopNConfig(FrozenConfig):
 
 
 @dataclass(frozen=True)
-class LedoitWolfConfig(FrozenConfig):
-    """Config of ``LedoitWolfRiskModel``: a shrunk sample covariance of trailing returns.
+class LedoitWolfEstimatorConfig(FrozenConfig):
+    """Config of ``LedoitWolfEstimator``: a shrunk sample covariance of trailing returns.
 
     Examples
     --------
-    >>> cfg = LedoitWolfConfig(lookback_bars=252)
+    >>> cfg = LedoitWolfEstimatorConfig(lookback_bars=252)
     >>> cfg.lookback_bars, cfg.max_stale_bars
     (252, 5)
     """
@@ -58,14 +58,14 @@ class LedoitWolfConfig(FrozenConfig):
 
 
 @dataclass(frozen=True)
-class FactorRiskReaderConfig(FrozenConfig):
-    """Config of ``FactorRiskReader``: the factor risk model whose stores it reads.
+class FactorRiskStoreEstimatorConfig(FrozenConfig):
+    """Config of ``FactorRiskStoreEstimator``: the factor risk model whose stores it reads.
 
     Examples
     --------
     With ``use4`` a ``Use4RiskModel`` whose estimate store is built:
 
-    >>> cfg = FactorRiskReaderConfig(risk_model=use4)
+    >>> cfg = FactorRiskStoreEstimatorConfig(risk_model=use4)
     >>> cfg.risk_model is use4
     True
     """
@@ -86,7 +86,7 @@ class MeanVarianceConfig(FrozenConfig):
     --------
     >>> cfg = MeanVarianceConfig(
     ...     expected_return_label="ret_5",
-    ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=252)),
+    ...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=252)),
     ...     ic=0.05, risk_aversion=10.0, weight_cap=0.05,
     ... )
     >>> cfg.direction, cfg.calibration, cfg.turnover_penalty, cfg.candidate_top_k
@@ -98,8 +98,8 @@ class MeanVarianceConfig(FrozenConfig):
     #: The label whose prediction gives the expected return; its span sets
     #: the horizon of the expected return and the covariance.
     expected_return_label: str
-    #: The risk model estimating the covariance of one-bar returns.
-    risk_model: "RiskModel" = component()
+    #: The covariance estimator estimating the covariance of one-bar returns.
+    covariance: "CovarianceEstimator" = component()
     #: Risk aversion ``lambda`` of the variance penalty.
     risk_aversion: float
     #: How the prediction becomes the expected return ``mu``.
@@ -129,7 +129,7 @@ class MeanVarianceConfig(FrozenConfig):
     #: The label whose prediction gives each symbol's volatility over the
     #: span, such as ``Volatility``; it must have the expected-return
     #: label's span and a ``"raw"`` scale. The covariance is then these
-    #: volatilities around the risk model's correlations, and the Grinold
-    #: ``sigma`` is the prediction. ``None`` keeps the risk model's own
+    #: volatilities around the covariance estimator's correlations, and the Grinold
+    #: ``sigma`` is the prediction. ``None`` keeps the covariance estimator's own
     #: (historical) volatilities.
     volatility_label: str | None = None

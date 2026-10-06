@@ -20,11 +20,11 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.portfolio.config import LedoitWolfConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig
 from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 
 SYMBOLS = ["AAA", "BBB"]
 
@@ -32,7 +32,7 @@ SYMBOLS = ["AAA", "BBB"]
 class _Watch(PortfolioConstructor):
     """Holds nothing and records every context."""
 
-    config_cls = LedoitWolfConfig
+    config_cls = LedoitWolfEstimatorConfig
     seen: list = []
 
     @property
@@ -55,7 +55,7 @@ def _run(prices, lookback, rebalance_at):
     """The contexts ``DecisionInputs.context`` builds at ``rebalance_at``, holding nothing."""
     inputs = DecisionInputs(
         FrameDataset(xr.Dataset({"open": prices, "close": prices})),
-        _Watch(LedoitWolfConfig(lookback_bars=lookback)),
+        _Watch(LedoitWolfEstimatorConfig(lookback_bars=lookback)),
         fill_column="open",
         valuation_column="close",
         rebalance_periods=1,
@@ -112,7 +112,7 @@ def _context(returns, staleness):
 
 def test_ledoit_wolf_leaves_out_symbols_staler_than_max_stale_bars():
     returns = np.random.default_rng(0).normal(0, 0.02, size=(30, 3))
-    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=30, max_stale_bars=5))
+    risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=30, max_stale_bars=5))
 
     estimate = risk.estimate(_context(returns, [0, 5, 6]))
 
@@ -124,21 +124,21 @@ def test_a_halt_inside_the_window_keeps_a_symbol_covered():
     values[4][1] = values[5][1] = np.nan  # BBB halts on bars 4-5
     context = _run(_prices(values), lookback=8, rebalance_at=[11])[0]
 
-    estimate = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=8)).estimate(context)
+    estimate = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=8)).estimate(context)
 
     assert estimate.symbols.tolist() == ["AAA", "BBB"]
 
 
 def test_max_stale_bars_defaults_to_five_and_round_trips():
-    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20, max_stale_bars=3))
+    risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20, max_stale_bars=3))
 
     config = json.loads(json.dumps(risk.get_config()))
 
-    assert LedoitWolfConfig(lookback_bars=20).max_stale_bars == 5
+    assert LedoitWolfEstimatorConfig(lookback_bars=20).max_stale_bars == 5
     assert config["max_stale_bars"] == 3
-    assert LedoitWolfRiskModel.from_config(config) == risk
+    assert LedoitWolfEstimator.from_config(config) == risk
 
 
 def test_a_negative_max_stale_bars_is_refused():
     with pytest.raises(ValueError, match="max_stale_bars"):
-        LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20, max_stale_bars=-1))
+        LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20, max_stale_bars=-1))

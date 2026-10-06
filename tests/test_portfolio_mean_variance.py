@@ -11,7 +11,7 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
   expected-return label's span.
 - An infeasible bar raises `PortfolioConstructionError`; so does an
   unbound optimiser's `problem_inputs` (RuntimeError) and bad parameters.
-- `LedoitWolfRiskModel` returns a symmetric positive-definite covariance;
+- `LedoitWolfEstimator` returns a symmetric positive-definite covariance;
   given volatilities become the square roots of its diagonal.
 - The optimiser and its risk model round-trip through `get_config`.
 - Long-short (#80) weights are dollar-neutral, of gross exposure at most one
@@ -30,10 +30,10 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
 from quantlab.portfolio.base import PortfolioConstructionError, PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 
 SYMBOLS = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
@@ -76,7 +76,7 @@ def _context(*, seed=0, eligible=None, current=None, prediction=None, returns=No
 def _optimizer(**overrides) -> MeanVarianceOptimizer:
     params = dict(
         expected_return_label="ret_5",
-        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
         ic=0.05,
         risk_aversion=5.0,
         weight_cap=0.3,
@@ -148,7 +148,7 @@ def test_the_grinold_expected_return_matches_a_hand_computation():
 
     inputs = optimizer.problem_inputs(context)
 
-    one_bar = optimizer.config.risk_model.estimate(context).covariance
+    one_bar = optimizer.config.covariance.estimate(context).covariance
     sigma = np.sqrt(np.diag(one_bar) * SPAN)
     prediction = context.predictions["ret_5"].values
     z = (prediction - prediction.mean()) / prediction.std(ddof=1)
@@ -161,7 +161,7 @@ def test_the_covariance_is_scaled_to_the_expected_return_labels_span():
 
     inputs = optimizer.problem_inputs(context)
 
-    one_bar = optimizer.config.risk_model.estimate(context).covariance
+    one_bar = optimizer.config.covariance.estimate(context).covariance
     np.testing.assert_allclose(inputs.covariance, one_bar * SPAN, rtol=1e-12)
     assert optimizer.span == SPAN
 
@@ -176,7 +176,7 @@ def test_bind_checks_the_label_and_reads_its_span():
     optimizer = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
             ic=0.05,
             risk_aversion=5.0,
         )
@@ -207,7 +207,7 @@ def test_bind_checks_the_label_and_reads_its_span():
 def test_bad_parameters_are_refused_at_construction(overrides, match):
     params = dict(
         expected_return_label="ret_5",
-        risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+        covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
         ic=0.05,
         risk_aversion=5.0,
     )
@@ -230,7 +230,7 @@ def test_ledoit_wolf_is_symmetric_positive_definite_with_more_symbols_than_bars(
             "timestamp": pd.bdate_range("2024-01-01", periods=10), **coords}),
     )
 
-    covariance = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=10)).estimate(context).covariance
+    covariance = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=10)).estimate(context).covariance
 
     np.testing.assert_allclose(covariance, covariance.T)
     assert (np.linalg.eigvalsh(covariance) > 0).all()
@@ -239,7 +239,7 @@ def test_ledoit_wolf_is_symmetric_positive_definite_with_more_symbols_than_bars(
 def test_given_volatilities_become_the_square_roots_of_the_diagonal():
     context = _context(seed=7)
     given = xr.DataArray(np.linspace(0.01, 0.06, len(SYMBOLS)), dims="symbol", coords={"symbol": SYMBOLS})
-    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK))
+    risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK))
 
     estimate = risk.estimate(context, volatility=given)
     historical = risk.estimate(context)
@@ -258,10 +258,10 @@ def test_the_optimizer_round_trips_through_its_config_with_its_risk_model():
     rebuilt = MeanVarianceOptimizer.from_config(config)
 
     assert config["name"] == "quantlab.portfolio.predefined.mean_variance.MeanVarianceOptimizer"
-    assert config["risk_model"] == {
+    assert config["covariance"] == {
         "lookback_bars": LOOKBACK,
         "max_stale_bars": 5,
-        "name": "quantlab.portfolio.predefined.ledoit_wolf.LedoitWolfRiskModel",
+        "name": "quantlab.portfolio.predefined.ledoit_wolf.LedoitWolfEstimator",
     }
     assert rebuilt == optimizer
     assert rebuilt.lookback_bars == LOOKBACK
@@ -271,7 +271,7 @@ def test_a_flat_price_is_left_out_of_the_risk_model():
     returns = np.random.default_rng(8).normal(0.0, 0.02, size=(LOOKBACK, len(SYMBOLS)))
     returns[:, 2] = 0.0  # CCC never moves
 
-    estimate = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)).estimate(
+    estimate = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)).estimate(
         _context(returns=returns)
     )
 
@@ -287,7 +287,7 @@ def test_a_constant_prediction_gives_no_expected_return():
     assert (inputs.expected_return == 0.0).all()
 
 
-class _NanRisk(LedoitWolfRiskModel):
+class _NanRisk(LedoitWolfEstimator):
     def estimate(self, context, volatility=None):
         estimate = super().estimate(context, volatility)
         covariance = estimate.covariance.copy()
@@ -296,7 +296,7 @@ class _NanRisk(LedoitWolfRiskModel):
 
 
 def test_non_finite_problem_data_is_a_construction_error_not_a_crash():
-    optimizer = _optimizer(risk_model=_NanRisk(LedoitWolfConfig(lookback_bars=LOOKBACK)))
+    optimizer = _optimizer(covariance=_NanRisk(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)))
 
     with pytest.raises(PortfolioConstructionError):
         optimizer.construct(_context())
@@ -362,7 +362,7 @@ def test_raw_calibration_uses_the_prediction_unchanged():
     optimizer = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
             calibration="raw",
             risk_aversion=5.0,
             weight_cap=0.3,
@@ -379,7 +379,7 @@ def test_raw_calibration_on_a_standardized_label_is_refused_at_bind_naming_the_l
     optimizer = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
             calibration="raw",
             risk_aversion=5.0,
         )

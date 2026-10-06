@@ -8,7 +8,7 @@ over long-only, fully invested weights, or dollar-neutral long-short
 weights of gross exposure at most one, under a per-symbol cap. The expected
 return ``mu`` is calibrated from a label's prediction (Grinold: ``ic *
 sigma * z``) or is the prediction itself (``raw``), the covariance ``Sigma``
-comes from a risk model, its volatilities optionally from a volatility
+comes from a covariance estimator, its volatilities optionally from a volatility
 label's prediction, and all are on the span of the expected-return label.
 This is the only quantlab module that imports cvxpy.
 """
@@ -47,13 +47,13 @@ class MeanVarianceInputs:
     ----------
     symbols : np.ndarray
         The candidates the optimiser sets: tradable, not locked, covered by
-        the risk model, and either with a finite expected-return prediction
+        the covariance estimator, and either with a finite expected-return prediction
         or held; with ``candidate_top_k``, only the pool.
     expected_return : np.ndarray
         ``mu`` per candidate, on the expected-return label's span; 0.0 for a
         held candidate without a prediction.
     estimate : CovarianceEstimate or FactorCovarianceEstimate
-        The risk model's estimate, on the same span, over the candidates
+        The covariance estimator's estimate, on the same span, over the candidates
         followed by the locked symbols it covers.
     current_weights : np.ndarray
         The weights currently held on the candidates.
@@ -65,7 +65,7 @@ class MeanVarianceInputs:
         The locked weights the estimate covers, in its order after the
         candidates.
     closed_without_risk : np.ndarray
-        Held, tradable symbols the risk model does not cover, closed.
+        Held, tradable symbols the covariance estimator does not cover, closed.
 
     Examples
     --------
@@ -180,7 +180,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     """Mean-variance weights with a turnover penalty, long-only or long-short.
 
     On each rebalance bar the candidates are the symbols the context marks
-    tradable, covered by the risk model (enough recent return history), and
+    tradable, covered by the covariance estimator (enough recent return history), and
     either with a finite prediction of ``expected_return_label`` or held; a
     held candidate without a prediction has an expected return of 0.0, so
     its turnover cost decides whether it is closed. A locked position (held,
@@ -205,12 +205,12 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     apply to the candidates only; the budget is what the locked positions
     leave: the candidates sum to ``1 - L`` long-only (nothing when ``L >=
     1``) and to ``-L`` long-short with ``|w|_1 <= 1 - |L|_1``, ``L`` the
-    locked weights. A locked position the risk model does not cover adds no
+    locked weights. A locked position the covariance estimator does not cover adds no
     variance. The long-short gross exposure is a ceiling, not an
     equality: when the expected returns do not pay for the risk and the
     turnover, part of the book stays uninvested, down to no position at all.
 
-    ``Sigma`` is the risk model's one-bar covariance times the span ``n`` of
+    ``Sigma`` is the covariance estimator's one-bar covariance times the span ``n`` of
     ``expected_return_label`` (variance is linear in time). When the risk
     model's estimate has a factor form (``B F B' + diag(D)``), the risk term
     is built as ``|F^(1/2) B' w|^2 + w' diag(D) w`` and the dense matrix is
@@ -226,7 +226,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
     With ``volatility_label`` set (a ``Volatility`` label, say), the
     volatilities come from a model: the label's prediction at the bar,
-    divided by ``sqrt(n)``, is handed to the risk model as the one-bar
+    divided by ``sqrt(n)``, is handed to the covariance estimator as the one-bar
     volatilities, so ``Sigma`` is the predicted volatilities around the risk
     model's historical correlations, its diagonal the squared predictions,
     and the Grinold ``sigma`` is the prediction itself. A symbol without a
@@ -251,14 +251,14 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     ``PortfolioConstructionError``: the backtest holds the current position
     there and records the bar.
 
-    ``lookback_bars``, ``history_bars`` and ``required_factors()`` are the risk model's.
+    ``lookback_bars``, ``history_bars`` and ``required_factors()`` are the covariance estimator's.
     ``bind`` reads the span from the label's ``LabelSpec``, so a backtest
     binds the optimiser when it is built.
 
     Parameters
     ----------
     config : MeanVarianceConfig
-        ``expected_return_label``, ``risk_model``, ``risk_aversion``,
+        ``expected_return_label``, ``covariance``, ``risk_aversion``,
         ``calibration``, ``ic``, ``turnover_penalty``, ``weight_cap``,
         ``direction``, ``candidate_top_k`` and ``volatility_label``.
 
@@ -279,11 +279,11 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     predictions 0.8, -0.1, -0.3 and 0.2. With a risk aversion of 5 on so small
     an expected return the book leans toward the low-volatility symbols:
 
-    >>> from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
-    >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+    >>> from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
+    >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
     >>> optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
     ...     expected_return_label="ret_5",
-    ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+    ...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
     ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
     ... ))
     >>> optimizer.lookback_bars
@@ -298,7 +298,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
     >>> long_short = MeanVarianceOptimizer(MeanVarianceConfig(
     ...     expected_return_label="ret_5",
-    ...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+    ...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
     ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
     ... ))
     >>> long_short.bind(specs)
@@ -350,35 +350,35 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
     @property
     def lookback_bars(self) -> int:
-        """The risk model's ``lookback_bars``.
+        """The covariance estimator's ``lookback_bars``.
 
         Examples
         --------
         >>> optimizer.lookback_bars
         60
         """
-        return self.config.risk_model.lookback_bars
+        return self.config.covariance.lookback_bars
 
     @property
     def history_bars(self) -> int:
-        """The risk model's ``history_bars``.
+        """The covariance estimator's ``history_bars``.
 
         Examples
         --------
         >>> optimizer.history_bars  # 60 + 1 + 5
         66
         """
-        return self.config.risk_model.history_bars
+        return self.config.covariance.history_bars
 
     def required_factors(self) -> list["Factor"]:
-        """The risk model's ``required_factors()``.
+        """The covariance estimator's ``required_factors()``.
 
         Examples
         --------
         >>> optimizer.required_factors()
         []
         """
-        return self.config.risk_model.required_factors()
+        return self.config.covariance.required_factors()
 
     @property
     def span(self) -> int | None:
@@ -505,11 +505,11 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         held = current_all != 0
         volatility = None
         if config.volatility_label is not None:
-            # The label is on the span; the risk model takes one-bar volatilities.
+            # The label is on the span; the covariance estimator takes one-bar volatilities.
             volatility = context.predictions[config.volatility_label].sel(
                 symbol=symbols
             ) / np.sqrt(self._span)
-        estimate = config.risk_model.estimate(context, volatility).scaled(self._span)
+        estimate = config.covariance.estimate(context, volatility).scaled(self._span)
         position = pd.Index(estimate.symbols).get_indexer(symbols)
         covered = position >= 0
         free = tradable & ~locked & covered & (np.isfinite(prediction) | held)

@@ -101,14 +101,14 @@ def test_top_n_binds_to_label_specs_and_refuses_an_unknown_score_label():
 
 
 def _optimizer(label: str):
-    from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
-    from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+    from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
+    from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
     from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 
     return MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label=label,
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20)),
             ic=0.05,
             risk_aversion=5.0,
         )

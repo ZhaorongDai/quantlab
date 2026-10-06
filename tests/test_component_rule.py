@@ -274,13 +274,13 @@ def test_an_empty_component_field_stays_empty():
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.predefined.weights import WeightsVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig, WeightsBacktestConfig
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.base import _Configured
 from quantlab.tracking.base import NullTracker
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.model_ensemble import ModelEnsemble
 from quantlab.model.predefined.seed_ensemble import SeedEnsemble
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.mlflow import MlflowTracker
@@ -310,7 +310,7 @@ def _mean_variance():
     return MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="fwd_ret_1",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20)),
             risk_aversion=1.0,
             ic=0.05,
         )
@@ -345,7 +345,7 @@ OTHER_KINDS = {
         _model(stock, tmp), _sp500(tmp)
     ),
     "top-n rule": lambda stock, tmp: TopNConstructor(TopNConfig(direction="long_only", top_n=2)),
-    "risk model": lambda stock, tmp: LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+    "risk model": lambda stock, tmp: LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20)),
     "mean-variance rule": lambda stock, tmp: _mean_variance(),
     "null tracker": lambda stock, tmp: NullTracker(project="p"),
     "wandb tracker": lambda stock, tmp: WandbTracker(project="p"),
@@ -399,7 +399,7 @@ def test_a_model_whose_factor_reads_a_recorded_frame_dataset_rebuilds_against_ru
 @dataclasses.dataclass(frozen=True)
 class _ParametrisedConfig:
     options: dict
-    risk_model: LedoitWolfRiskModel | None = component(default=None)
+    covariance: LedoitWolfEstimator | None = component(default=None)
 
 
 class _Parametrised(_Configured):
@@ -410,7 +410,7 @@ def test_a_portfolio_parameter_dict_holding_name_stays_data():
     options = {"name": "quantlab.portfolio.predefined.top_n.TopNConstructor", "top_n": 3}
     rule = _Parametrised(
         _ParametrisedConfig(
-            options=options, risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20))
+            options=options, covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20))
         )
     )
 

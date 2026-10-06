@@ -7,7 +7,7 @@ Portfolio construction is the step between a model and a backtest. On every reba
 Every rule derives from `PortfolioConstructor` (`quantlab/portfolio/base.py`). Two rules ship in `quantlab/portfolio/predefined/`:
 
 - `TopNConstructor`: equal weights on the `top_n` best scores, long-only or long-short.
-- `MeanVarianceOptimizer`: Markowitz weights with a turnover penalty, solved with cvxpy. It prices risk with a risk model. The shipped risk model is `LedoitWolfRiskModel`, a Ledoit-Wolf shrunk covariance of trailing returns.
+- `MeanVarianceOptimizer`: Markowitz weights with a turnover penalty, solved with cvxpy. It prices risk with a covariance estimator. Two ship: `LedoitWolfEstimator`, a Ledoit-Wolf shrunk covariance of trailing returns, and `FactorRiskStoreEstimator`, which reads a factor risk model's stores (`quantlab/risk/`).
 
 A backtest holds its rule in the `constructor` field of its config (see [Backtesting](backtest.md)).
 
@@ -87,13 +87,13 @@ A rule only decides. Its *decision inputs*, everything it may read at a bar exce
 - The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.execution.rules`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. The backtester passes its config's `execution` settings and the delisting marks it hands the engine; without settings the replay sizes at the fill price and charges no costs.
 - The rebalance bars are every `rebalance_periods`-th bar from the anchor; the last bar never rebalances, since an order decided there has no next bar to fill on (`rebalance_mask` in the same module).
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
-- Each bar reads only the last `history_bars` raw valuation prices up to and including it (`lookback_bars + 1` by default; Ledoit-Wolf `lookback_bars + 1 + max_stale_bars`; mean-variance its risk model's), so a decision does not depend on where the price history starts. The backtest's warm-up holds the `history_bars - 1` bars before its first bar, so that bar already has a full window.
+- Each bar reads only the last `history_bars` raw valuation prices up to and including it (`lookback_bars + 1` by default; Ledoit-Wolf `lookback_bars + 1 + max_stale_bars`; mean-variance its covariance estimator's), so a decision does not depend on where the price history starts. The backtest's warm-up holds the `history_bars - 1` bars before its first bar, so that bar already has a full window.
 
 The backtester calls the rule's `bind(labels)` when it is built, before any data is read or any model trained. `labels` holds one `LabelSpec(name, scale, delay, span)` per prediction variable, which the backtester derives from its predictor with `quantlab.backtest.base.label_specs`; `span` is `None` for a label that is not a `Forward` label. The specs are the only thing a rule may know about a prediction: it is never handed the model. This is where a rule checks the labels it needs, so a misconfigured rule fails at once.
 
 A bar the rule cannot decide raises `PortfolioConstructionError`, for example when an optimisation is infeasible or the solver fails. `decide` turns it into a hold of the current position on that bar and logs a warning. `metrics.json` lists every such bar under `portfolio_construction` (`failed_bar_count`, `failed_bars`), along with any event a rule reported, such as `tie_at_cutoff` above or `closed_without_risk` below, with its `count` (the symbols it involved over all its bars) and one record per bar.
 
-The run's recipe records the rule with all its parameters and its risk model; `BacktestRun.rebuild("constructor")` rebuilds the rule and `rebuild_backtester()` the whole backtester (see the backtest guide).
+The run's recipe records the rule with all its parameters and its covariance estimator; `BacktestRun.rebuild("constructor")` rebuilds the rule and `rebuild_backtester()` the whole backtester (see the backtest guide).
 
 ### A run's decision inputs without the model
 
@@ -185,7 +185,7 @@ The candidates are the symbols that pass all of these checks:
 
 - They are tradable.
 - They are not locked.
-- The risk model covers them.
+- The covariance estimator covers them.
 - They have a finite expected-return prediction or are held.
 
 A held candidate without a prediction gets an expected return of 0.0, so its turnover cost decides whether it is closed. Every other symbol gets 0.0.
@@ -195,8 +195,8 @@ A held candidate without a prediction gets an expected return of 0.0, so its tur
 The optimiser needs to know the span and scale of the labels it reads, which a backtest hands it through `bind` as label specs. Here the specs describe a 5-bar return `ret_5` and a 5-bar volatility `vol_5`, both predicted in the labels' own units (`"raw"`, see [Calibration](#calibration)).
 
 ```python
->>> from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
->>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+>>> from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
+>>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 >>> from quantlab.runs.prediction_panel import LabelSpec
 >>> specs = [
@@ -218,7 +218,7 @@ The optimiser needs to know the span and scale of the labels it reads, which a b
 ... )
 >>> optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
 >>> optimizer.bind(specs)
@@ -246,7 +246,7 @@ Every predictor reports, per label, whether its prediction is in the label's own
 >>> ranked = [dataclasses.replace(specs[0], scale="standardized"), specs[1]]
 >>> MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5", calibration="raw",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     risk_aversion=5.0,
 ... )).bind(ranked)
 Traceback (most recent call last):
@@ -257,11 +257,11 @@ ValueError: calibration='raw' reads the prediction of 'ret_5' as a return, but i
 
 ### Spans
 
-`mu`, `sigma` and `Sigma` are all expressed over the span of `expected_return_label`: 5 bars for `ret_5`. The span is read from the label's spec, never configured, and a label without a span (not a `Forward` label) is refused. A risk model estimates the covariance of one-bar returns, and the optimiser multiplies it by the span, because variance grows linearly with time:
+`mu`, `sigma` and `Sigma` are all expressed over the span of `expected_return_label`: 5 bars for `ret_5`. The span is read from the label's spec, never configured, and a label without a span (not a `Forward` label) is refused. A covariance estimator estimates the covariance of one-bar returns, and the optimiser multiplies it by the span, because variance grows linearly with time:
 
 ```python
 >>> inputs = optimizer.problem_inputs(context)
->>> one_bar = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)).estimate(context)
+>>> one_bar = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)).estimate(context)
 >>> bool(np.allclose(inputs.covariance, 5 * one_bar.covariance))
 True
 
@@ -273,7 +273,7 @@ Rebalancing every span (`rebalance_periods` equal to the span) makes the horizon
 
 Volatility moves fast and is fairly predictable. Correlations move slowly and are better estimated from history. With `volatility_label` set, the optimiser takes each symbol's volatility from a model's prediction:
 
-- The covariance becomes the predicted volatilities around the risk model's historical correlations: `Sigma = D C D`.
+- The covariance becomes the predicted volatilities around the covariance estimator's historical correlations: `Sigma = D C D`.
 - The Grinold `sigma` becomes the prediction itself.
 
 The volatility label, such as `Volatility`, is a span-scale volatility. It must have the span of the expected-return label and a `"raw"` scale, and `bind` checks both.
@@ -281,7 +281,7 @@ The volatility label, such as `Volatility`, is a span-scale volatility. It must 
 ```python
 >>> with_volatility = MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5", volatility_label="vol_5",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
 >>> with_volatility.bind(specs)
@@ -293,7 +293,7 @@ array([0.4  , 0.399, 0.   , 0.201])
 
 ```
 
-A symbol without a finite, positive volatility prediction has no risk estimate. It is treated like a symbol without enough history, as described under [Risk models](#risk-models).
+A symbol without a finite, positive volatility prediction has no risk estimate. It is treated like a symbol without enough history, as described under [Covariance estimators](#covariance-estimators).
 
 One predictor has to supply both labels. A `ModelEnsemble` of a return model and a volatility model does this: a label that only one member predicts is passed through unchanged and keeps that member's scale (see [Models](model.md)).
 
@@ -304,7 +304,7 @@ With `direction="long_short"` the book is dollar-neutral:
 ```python
 >>> long_short = MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
 ... ))
 >>> long_short.bind(specs)
@@ -323,11 +323,13 @@ A universe of thousands of symbols is slow to optimise at every rebalance. `cand
 
 Symbols outside the pool get 0.0. The z-score of the Grinold calibration is taken over every candidate before the pool is cut, so `mu` does not depend on `candidate_top_k`.
 
-## Risk models
+## Covariance estimators
 
-A risk model estimates the covariance of one-bar returns at one bar. Its `estimate(context, volatility=None)` returns a `CovarianceEstimate`: the symbols it covers and their covariance. A risk model is an estimator, run afresh at every bar from what the context holds. It is not trained and has no checkpoint. A forecast that feeds it, such as predicted volatility, comes from a model through the predictor.
+A covariance estimator (`CovarianceEstimator`) estimates the covariance of one-bar returns at one bar. Its `estimate(context, volatility=None)` returns a `CovarianceEstimate`: the symbols it covers and their covariance. It is not trained and has no checkpoint. A forecast that feeds it, such as predicted volatility, comes from a model through the predictor. It returns only a covariance, so any rule that needs one can hold it, not only the mean-variance optimiser.
 
-`LedoitWolfRiskModel` reads the last `lookback_bars` one-bar returns and shrinks their sample covariance toward a scaled identity with the Ledoit-Wolf coefficient (`sklearn.covariance.ledoit_wolf`), so the estimate stays well conditioned when there are more symbols than bars. It then splits the covariance into correlations and volatilities, and replaces the volatilities with the given ones when `volatility` is passed.
+It is not a factor risk model. A factor risk model (`quantlab/risk/`, ADR 0024) is estimated ahead of any backtest as stores of one row per bar; `FactorRiskStoreEstimator` is the covariance estimator that reads them.
+
+`LedoitWolfEstimator` reads the last `lookback_bars` one-bar returns and shrinks their sample covariance toward a scaled identity with the Ledoit-Wolf coefficient (`sklearn.covariance.ledoit_wolf`), so the estimate stays well conditioned when there are more symbols than bars. It then splits the covariance into correlations and volatilities, and replaces the volatilities with the given ones when `volatility` is passed.
 
 A symbol is covered only when all of these hold:
 
@@ -335,7 +337,7 @@ A symbol is covered only when all of these hold:
 - The returns are not all equal.
 - Its staleness is at most `max_stale_bars` (default 5).
 
-The other symbols are left out, and the optimiser never selects them. A held symbol that the risk model does not cover is closed, and the row reports it as a `closed_without_risk` event:
+The other symbols are left out, and the optimiser never selects them. A held symbol that the covariance estimator does not cover is closed, and the row reports it as a `closed_without_risk` event:
 
 ```python
 >>> short_history = window.copy()
@@ -354,14 +356,14 @@ array([0.4, 0.4, 0. , 0.2])
 
 ```
 
-### Reserved: factor risk models
+### Factor form: reading a factor risk model
 
-The interface leaves room for a factor risk model, which is not implemented yet:
+`FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))` reads the stores of a factor risk model (`quantlab.risk.base.FactorRiskModel`, for example `Use4RiskModel`):
 
-- A risk model can return a `FactorCovarianceEstimate`, the covariance in factor form `B F B' + diag(D)`: exposures `B`, factor covariance `F` and specific variances `D`. Its `factor_form()` makes the optimiser price risk as `|F^(1/2) B' w|^2 + w' diag(D) w`, without building the dense matrix.
-- A risk model can declare in `required_factors()` the `Factor` panels it reads, for example its exposures. The backtest computes them over its window, with each factor's own warm-up, and puts their values at the bar in `context.factors`.
+- It returns a `FactorCovarianceEstimate`, the covariance in factor form `B F B' + diag(D)`: exposures `B`, factor covariance `F` and specific variances `D`, from the estimate store's row at the bar. Its `factor_form()` makes the optimiser price risk as `|F^(1/2) B' w|^2 + w' diag(D) w`, without building the dense matrix.
+- It declares the model's exposures factor in `required_factors()`. The backtest computes it over its window, with the factor's own warm-up, and puts its values at the bar in `context.factors`.
 
-The optimiser, the driver and the backtester need no change for such a model.
+It covers the symbols with every exposure and a specific risk at the bar. It reads no return window, so it has no staleness filter, and a locked position is priced like any other. The model's stores must cover the backtest.
 
 ## A full example
 
@@ -391,7 +393,7 @@ A run on the training server (one GPU; commit `211b324`, 2026-09-30; about 8 min
 | Information ratio | -0.75 | |
 | Beta | 0.68 | |
 
-No rebalance failed and no order was rejected. On 10 rebalances, 11 holdings in all were closed because the risk model had no estimate for them (`closed_without_risk`).
+No rebalance failed and no order was rejected. On 10 rebalances, 11 holdings in all were closed because the covariance estimator had no estimate for them (`closed_without_risk`).
 
 Read these numbers as a working pipeline, not as a strategy. The return model has no out-of-sample skill: its test IC is zero. With no signal in `mu`, the risk term decides the weights, and the book becomes a low-volatility portfolio with a beta of 0.68, which trails the index in a rising market. The volatility model does carry information: its IC is the correlation of predicted with realised volatility, which measures how well it ranks risk, not alpha. The optimiser also constrains neither the tracking error nor the active weights against the index, so this is an index-member portfolio, not yet a controlled enhanced index.
 
@@ -405,9 +407,9 @@ Subclass `PortfolioConstructor`:
 
 Do not override `decide`: it is the one decision path a backtest and an executor share. A rule holds no assembly code; `DecisionInputs` builds its contexts.
 
-`get_config` and `from_config` serialise the rule as its config's fields plus the class's import path. A field holding another component, such as a risk model, is nested, so no extra code is needed to rebuild a run.
+`get_config` and `from_config` serialise the rule as its config's fields plus the class's import path. A field holding another component, such as a covariance estimator, is nested, so no extra code is needed to rebuild a run.
 
-A new risk model subclasses `RiskModel` in the same way and implements `estimate`. See [Extending quantlab](developer-guide/extending.md).
+A new covariance estimator subclasses `CovarianceEstimator` in the same way and implements `estimate`. See [Extending quantlab](developer-guide/extending.md).
 
 ## See also
 

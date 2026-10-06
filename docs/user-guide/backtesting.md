@@ -264,7 +264,7 @@ among those that can, and a warning names the bar.
 
 `MeanVarianceOptimizer` is the other shipped rule: it maximises expected
 return minus a risk penalty and a turnover penalty, with a covariance from a
-risk model and, optionally, volatilities predicted by a second model. See
+covariance estimator and, optionally, volatilities predicted by a second model. See
 [portfolio construction](../portfolio.md).
 
 ## Warm-up
@@ -602,7 +602,7 @@ see `docs/backtest.md`); there is no weighted or multi-asset benchmark. Borrow
 costs for short positions are not modelled. The rebalance schedule is anchored
 to the first bar of the window, so the whole book turns over on the same day
 and results can depend on which day the backtest starts. Portfolio
-construction is equal-weight top-N; there is no optimizer, risk model or
+construction is equal-weight top-N; there is no optimizer, covariance estimator or
 neutralization. On intraday data, `run_cv()` compares fold boundaries by
 calendar day, so two folds that meet within one day are rejected as
 overlapping. An event-driven engine is reserved but not implemented.

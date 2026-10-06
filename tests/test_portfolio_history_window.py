@@ -19,12 +19,12 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
@@ -37,7 +37,7 @@ MAX_STALE = 3
 class _Watch(PortfolioConstructor):
     """Holds nothing and records every context."""
 
-    config_cls = LedoitWolfConfig
+    config_cls = LedoitWolfEstimatorConfig
     seen: list = []
 
     @property
@@ -46,7 +46,7 @@ class _Watch(PortfolioConstructor):
 
     @property
     def history_bars(self):
-        return LedoitWolfRiskModel(self.config).history_bars
+        return LedoitWolfEstimator(self.config).history_bars
 
     def construct(self, context):
         type(self).seen.append(context)
@@ -66,7 +66,7 @@ def _prices():
 
 
 def _rule():
-    return _Watch(LedoitWolfConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
+    return _Watch(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
 
 
 def _inputs(rule, prices, start):
@@ -89,8 +89,8 @@ def _build(rule, prices, t, start):
 
 
 def test_history_bars_is_declared_by_the_rule():
-    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
-    optimizer = MeanVarianceOptimizer(MeanVarianceConfig(expected_return_label="ret", risk_model=risk, risk_aversion=5.0, ic=0.05))
+    risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
+    optimizer = MeanVarianceOptimizer(MeanVarianceConfig(expected_return_label="ret", covariance=risk, risk_aversion=5.0, ic=0.05))
 
     assert TopNConstructor(TopNConfig(direction="long_only", top_n=2)).history_bars == 1
     assert risk.history_bars == LOOKBACK + 1 + MAX_STALE
@@ -141,7 +141,7 @@ def test_a_symbol_unpriced_for_more_than_history_bars_has_nan_staleness_and_no_r
     assert np.isnan(_build(rule, prices, 44, 0).staleness.sel(symbol="EEE"))  # not yet listed
     assert _build(rule, prices, 58, 0).staleness.sel(symbol="DDD") == 4  # delisted after bar 54
 
-    estimate = LedoitWolfRiskModel(rule.config).estimate(context)
+    estimate = LedoitWolfEstimator(rule.config).estimate(context)
     assert "CCC" not in estimate.symbols.tolist()
     assert "BBB" in estimate.symbols.tolist()
 
@@ -157,8 +157,8 @@ def test_the_return_window_is_forward_filled_only_inside_the_bounded_window():
 
 
 def test_mean_variance_reads_its_risk_models_window():
-    risk = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
-    rule = MeanVarianceOptimizer(MeanVarianceConfig(expected_return_label="ret_5", risk_model=risk, risk_aversion=5.0, ic=0.05))
+    risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
+    rule = MeanVarianceOptimizer(MeanVarianceConfig(expected_return_label="ret_5", covariance=risk, risk_aversion=5.0, ic=0.05))
     rule.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])
     prices = _prices()
     t = 60

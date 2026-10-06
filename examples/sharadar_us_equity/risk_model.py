@@ -4,7 +4,7 @@
 prices + DAILY market cap + FRED's 3-month T-bill rate ->
 ``Use4RiskModel``'s regression store (factor returns and specific returns of
 country, 48 industries, 12 styles) -> its estimate store (factor covariance
-and specific risk, the raw exponentially weighted model) -> bias statistics
+and specific risk: EWMA with Newey-West, USE4S defaults) -> bias statistics
 of factor portfolios, specific returns and random active portfolios, printed,
 saved as JSON and plotted.
 
@@ -91,7 +91,7 @@ def barra_exposures() -> BarraStyle:
 
 
 def risk_model() -> Use4RiskModel:
-    """USE4S's raw model: country, FF48 industries, 12 styles; EWMA half-lives 84/504/84."""
+    """USE4 with USE4S defaults: country, FF48 industries, 12 styles; EWMA 84/504/84 with Newey-West."""
     return Use4RiskModel(Use4RiskConfig(
         exposures=barra_exposures(),
         dataset=price_inputs(),

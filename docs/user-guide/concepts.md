@@ -63,7 +63,7 @@ Portfolio construction turns predictions into target weights: for every symbol, 
 fraction of the portfolio it should hold. It decides one rebalance bar at a time, from that
 bar's predictions and the weights currently held. `TopNConstructor` holds the best `top_n`
 (and optionally shorts the worst `top_n`); `MeanVarianceOptimizer` trades expected return off
-against risk from a risk model and a turnover penalty. See
+against risk from a covariance estimator and a turnover penalty. See
 [portfolio construction](../portfolio.md).
 
 The backtester runs the model over a date window, asks the constructor for weights, simulates
@@ -299,7 +299,7 @@ quantlab/
                      torch_data.py, torch_training.py
         predefined/      xgb.py, xgb_td.py, realmlp.py, gats.py, master.py, seed_ensemble.py,
                          model_ensemble.py
-    portfolio/       base.py (PortfolioConstructor, RiskModel), config.py,
+    portfolio/       base.py (PortfolioConstructor, CovarianceEstimator), config.py,
                      decision_inputs.py (DecisionInputs: the decision inputs and the
                      rebalance schedule)
         predefined/      top_n.py, mean_variance.py, ledoit_wolf.py

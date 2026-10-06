@@ -7,7 +7,7 @@ truncated exponentially weighted moments written here directly from the
 definition, pair by pair over the bars both factors have, with small windows
 so the truncation, the half-lives and the missing returns all matter.
 
-``FactorRiskReader`` is checked on a hand-built context at a bar: its
+``FactorRiskStoreEstimator`` is checked on a hand-built context at a bar: its
 estimate covers exactly the symbols with every style, a model industry and a
 specific risk, in factor form, a locked position included.
 """
@@ -20,8 +20,8 @@ import pytest
 import xarray as xr
 
 from quantlab.portfolio.base import PortfolioContext
-from quantlab.portfolio.config import FactorRiskReaderConfig, LedoitWolfConfig, MeanVarianceConfig
-from quantlab.portfolio.predefined.factor_risk import FactorRiskReader
+from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig, LedoitWolfEstimatorConfig, MeanVarianceConfig
+from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.runs.prediction_panel import LabelSpec
 from tests.test_risk_regression import _INDUSTRIES, _STYLES, _SYMBOLS, _T, _day, _model, _plant
@@ -191,12 +191,12 @@ def _context(built, *, held=None, untradable=(), drop_style=None):
 
 
 def test_the_reader_declares_the_exposures_factor(built):
-    reader = FactorRiskReader(FactorRiskReaderConfig(risk_model=built))
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
     assert reader.required_factors() == [built.config.exposures]
 
 
 def test_the_reader_returns_the_bar_in_factor_form(built):
-    reader = FactorRiskReader(FactorRiskReaderConfig(risk_model=built))
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
     estimate = reader.estimate(_context(built, drop_style=_SYMBOLS[3]))
     row = built.estimate.read(_day(BAR), _day(BAR)).isel(timestamp=0)
     # Covered: every style, a model industry, a specific risk. Symbol 3 lost a
@@ -220,7 +220,7 @@ def test_the_reader_returns_the_bar_in_factor_form(built):
 
 def test_a_factor_without_a_variance_leaves_out_its_symbols(built):
     # Bar 28: industry 4 has too few returns in its volatility window.
-    reader = FactorRiskReader(FactorRiskReaderConfig(risk_model=built))
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
     context = dataclasses.replace(_context(built), timestamp=pd.Timestamp(_day(28)))
     estimate = reader.estimate(context)
     exposures, covariance, _ = estimate.factor_form()
@@ -235,10 +235,10 @@ def test_a_locked_position_is_priced_for_risk(built):
     locked = _SYMBOLS[7]
     context = _context(built, held=locked, untradable=[locked])
     assert bool(context.locked.sel(symbol=locked))
-    reader = FactorRiskReader(FactorRiskReaderConfig(risk_model=built))
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
     assert locked in reader.estimate(context).symbols.tolist()
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
-        expected_return_label="ret_1", risk_model=reader, ic=0.05,
+        expected_return_label="ret_1", covariance=reader, ic=0.05,
         risk_aversion=5.0, turnover_penalty=0.0, weight_cap=0.5,
     ))
     optimizer.bind([LabelSpec(name="ret_1", scale="raw", delay=1, span=1)])
@@ -250,7 +250,7 @@ def test_a_locked_position_is_priced_for_risk(built):
 
 
 def test_the_reader_refuses_a_bar_outside_the_store_and_volatilities(built):
-    reader = FactorRiskReader(FactorRiskReaderConfig(risk_model=built))
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
     context = _context(built)
     with pytest.raises(ValueError, match="no predicted volatilities"):
         reader.estimate(context, volatility=context.current_weights)

@@ -19,10 +19,10 @@ import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.record import _active_recorder as active_recorder
@@ -82,7 +82,7 @@ def test_the_rules_price_history_before_the_window_is_recorded(tmp_path):
     optimizer = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="fwd_ret_1",
-            risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=LOOKBACK)),
+            covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
             ic=0.05,
             risk_aversion=5.0,
         )

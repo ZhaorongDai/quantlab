@@ -33,12 +33,12 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig, TopNConfig
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.base import PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs, rebalance_mask
-from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 
@@ -125,7 +125,7 @@ def _rule(kind):
         rule = _MeanVariance(
             MeanVarianceConfig(
                 expected_return_label="ret_5",
-                risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=20)),
+                covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=20)),
                 ic=0.05,
                 risk_aversion=5.0,
                 turnover_penalty=0.002,

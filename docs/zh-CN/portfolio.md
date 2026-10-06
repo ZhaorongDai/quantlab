@@ -7,7 +7,7 @@
 每条规则都继承 `PortfolioConstructor`（`quantlab/portfolio/base.py`）。`quantlab/portfolio/predefined/` 里自带两条规则：
 
 - `TopNConstructor`：分数最高的 `top_n` 个标的等权，可以只做多，也可以多空。
-- `MeanVarianceOptimizer`：带换手惩罚的 Markowitz 权重，用 cvxpy 求解。它用风险模型给风险定价；自带的风险模型是 `LedoitWolfRiskModel`，即对历史收益样本协方差做 Ledoit-Wolf 收缩。
+- `MeanVarianceOptimizer`：带换手惩罚的 Markowitz 权重，用 cvxpy 求解。它用协方差估计器给风险定价。自带两个：`LedoitWolfEstimator`，即对历史收益样本协方差做 Ledoit-Wolf 收缩；`FactorRiskStoreEstimator`，读取因子风险模型（`quantlab/risk/`）的 store。
 
 回测把规则放在配置的 `constructor` 字段里（见[回测](backtest.md)）。
 
@@ -87,13 +87,13 @@ array([0.5, 0.5, 0. , 0. ])
 - 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.execution.rules`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。回测器传入自己 config 中的 `execution` 设置，以及交给引擎的同一份退市标记；不传设置时按成交价定仓位、不计成本。
 - 调仓 bar 是从锚点起每 `rebalance_periods` 根中的一根；最后一根 bar 从不调仓，因为在那里决定的订单没有下一根 bar 可以成交（同一模块中的 `rebalance_mask`）。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
-- 每根 bar 只读截至（含）它的最近 `history_bars` 个原始估值价格（默认 `lookback_bars + 1`；Ledoit-Wolf 为 `lookback_bars + 1 + max_stale_bars`；均值方差取其风险模型的值），所以决策与价格历史从哪里开始无关。回测的预热期包含第一根 bar 之前的 `history_bars - 1` 根 bar，所以第一根 bar 就有完整的窗口。
+- 每根 bar 只读截至（含）它的最近 `history_bars` 个原始估值价格（默认 `lookback_bars + 1`；Ledoit-Wolf 为 `lookback_bars + 1 + max_stale_bars`；均值方差取其协方差估计器的值），所以决策与价格历史从哪里开始无关。回测的预热期包含第一根 bar 之前的 `history_bars - 1` 根 bar，所以第一根 bar 就有完整的窗口。
 
 回测器在构造时调用规则的 `bind(labels)`，这时还没有读任何数据、也没有训练任何模型。`labels` 为每个预测变量给出一个 `LabelSpec(name, scale, delay, span)`，由回测器用 `quantlab.backtest.base.label_specs` 从预测器推导；不是 `Forward` 标签的 `span` 为 `None`。规则对预测能知道的只有这些规格，永远拿不到模型本身。规则在这里检查自己需要的标签，所以配置错误会立刻报错。
 
 规则无法决定的 bar 会抛出 `PortfolioConstructionError`，例如优化不可行或求解器失败。`decide` 把它变成在这根 bar 上保持当前仓位，并记一条警告。`metrics.json` 在 `portfolio_construction` 下列出所有这样的 bar（`failed_bar_count`、`failed_bars`），以及规则报告的事件，比如上文的 `tie_at_cutoff` 或下文的 `closed_without_risk`，带 `count`（所有 bar 上涉及的标的总数）和每个 bar 一条记录。
 
-运行的配方记录了规则的全部参数和它的风险模型；`BacktestRun.rebuild("constructor")` 重建规则，`rebuild_backtester()` 重建整个回测器（见回测指南）。
+运行的配方记录了规则的全部参数和它的协方差估计器；`BacktestRun.rebuild("constructor")` 重建规则，`rebuild_backtester()` 重建整个回测器（见回测指南）。
 
 ### 不加载模型重建一次运行的决策输入
 
@@ -185,7 +185,7 @@ array([False, False, False,  True])
 
 - 可交易；
 - 未被锁定；
-- 风险模型覆盖它；
+- 协方差估计器覆盖它；
 - 有有限的预期收益预测，或者当前持有。
 
 持有但没有预测的候选标的，预期收益记为 0.0，由它的换手成本决定是否平仓。其他标的权重都是 0.0。
@@ -195,8 +195,8 @@ array([False, False, False,  True])
 优化器需要知道它读取的标签的 span 和尺度，回测会通过 `bind` 以标签规格的形式交给它。这里的规格描述 5 根 bar 的收益 `ret_5` 和 5 根 bar 的波动率 `vol_5`，两者都以标签自身的单位预测（`"raw"`，见[校准](#校准)）。
 
 ```python
->>> from quantlab.portfolio.config import LedoitWolfConfig, MeanVarianceConfig
->>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfRiskModel
+>>> from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
+>>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 >>> from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 >>> from quantlab.runs.prediction_panel import LabelSpec
 >>> specs = [
@@ -218,7 +218,7 @@ array([False, False, False,  True])
 ... )
 >>> optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
 >>> optimizer.bind(specs)
@@ -246,7 +246,7 @@ array([0.4  , 0.4  , 0.009, 0.191])
 >>> ranked = [dataclasses.replace(specs[0], scale="standardized"), specs[1]]
 >>> MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5", calibration="raw",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     risk_aversion=5.0,
 ... )).bind(ranked)
 Traceback (most recent call last):
@@ -257,11 +257,11 @@ ValueError: calibration='raw' reads the prediction of 'ret_5' as a return, but i
 
 ### Span
 
-`mu`、`sigma` 和 `Sigma` 都以 `expected_return_label` 的 span 为时间尺度：`ret_5` 是 5 根 bar。span 从标签规格读取，不需要配置；没有 span 的标签（不是 `Forward` 标签）会被拒绝。风险模型估计的是单 bar 收益的协方差，优化器把它乘以 span，因为方差随时间线性增长：
+`mu`、`sigma` 和 `Sigma` 都以 `expected_return_label` 的 span 为时间尺度：`ret_5` 是 5 根 bar。span 从标签规格读取，不需要配置；没有 span 的标签（不是 `Forward` 标签）会被拒绝。协方差估计器估计的是单 bar 收益的协方差，优化器把它乘以 span，因为方差随时间线性增长：
 
 ```python
 >>> inputs = optimizer.problem_inputs(context)
->>> one_bar = LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)).estimate(context)
+>>> one_bar = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)).estimate(context)
 >>> bool(np.allclose(inputs.covariance, 5 * one_bar.covariance))
 True
 
@@ -273,7 +273,7 @@ True
 
 波动率变化快，也比较好预测；相关性变化慢，更适合用历史估计。设置 `volatility_label` 后，优化器从模型的预测中取每个标的的波动率：
 
-- 协方差变成预测波动率夹着风险模型的历史相关性：`Sigma = D C D`。
+- 协方差变成预测波动率夹着协方差估计器的历史相关性：`Sigma = D C D`。
 - Grinold 公式里的 `sigma` 就是这个预测值。
 
 波动率标签（例如 `Volatility`）是 span 尺度的波动率。它的 span 必须与预期收益标签相同，尺度必须是 `"raw"`，`bind` 会检查这两点。
@@ -281,7 +281,7 @@ True
 ```python
 >>> with_volatility = MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5", volatility_label="vol_5",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
 >>> with_volatility.bind(specs)
@@ -293,7 +293,7 @@ array([0.4  , 0.399, 0.   , 0.201])
 
 ```
 
-没有有限正值波动率预测的标的没有风险估计，处理方式和历史数据不足的标的相同，见[风险模型](#风险模型)。
+没有有限正值波动率预测的标的没有风险估计，处理方式和历史数据不足的标的相同，见[协方差估计器](#协方差估计器)。
 
 两个标签必须来自同一个预测器。一个由收益模型和波动率模型组成的 `ModelEnsemble` 就能做到：只有一个成员预测的标签会原样传出，并保留该成员的尺度（见[模型](model.md)）。
 
@@ -304,7 +304,7 @@ array([0.4  , 0.399, 0.   , 0.201])
 ```python
 >>> long_short = MeanVarianceOptimizer(MeanVarianceConfig(
 ...     expected_return_label="ret_5",
-...     risk_model=LedoitWolfRiskModel(LedoitWolfConfig(lookback_bars=60)),
+...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4, direction="long_short",
 ... ))
 >>> long_short.bind(specs)
@@ -323,11 +323,13 @@ array([ 0.4  , -0.212, -0.261,  0.073])
 
 候选池以外的标的权重为 0.0。Grinold 校准的 z-score 在截取候选池之前、对全部候选标的计算，所以 `mu` 不受 `candidate_top_k` 影响。
 
-## 风险模型
+## 协方差估计器
 
-风险模型在一根 bar 上估计单 bar 收益的协方差。它的 `estimate(context, volatility=None)` 返回一个 `CovarianceEstimate`：覆盖的标的及其协方差。风险模型是估计器，每根 bar 都根据 context 里的内容重新计算，不需要训练，也没有 checkpoint。喂给它的预测（例如预测波动率）来自模型，经由预测器传入。
+协方差估计器（`CovarianceEstimator`）在一根 bar 上估计单 bar 收益的协方差。它的 `estimate(context, volatility=None)` 返回一个 `CovarianceEstimate`：覆盖的标的及其协方差。它不需要训练，也没有 checkpoint。喂给它的预测（例如预测波动率）来自模型，经由预测器传入。它只返回协方差，所以任何需要协方差的规则都能持有它，不限于均值方差优化器。
 
-`LedoitWolfRiskModel` 读取最近 `lookback_bars` 个单 bar 收益，用 Ledoit-Wolf 系数把样本协方差向缩放的单位阵收缩（`sklearn.covariance.ledoit_wolf`），这样标的数多于 bar 数时估计仍然良态。然后它把协方差拆成相关性和波动率；传入 `volatility` 时用给定的波动率替换。
+它不是因子风险模型。因子风险模型（`quantlab/risk/`，ADR 0024）在任何回测之前就按每根 bar 一行估计成 store；`FactorRiskStoreEstimator` 是读取这些 store 的协方差估计器。
+
+`LedoitWolfEstimator` 读取最近 `lookback_bars` 个单 bar 收益，用 Ledoit-Wolf 系数把样本协方差向缩放的单位阵收缩（`sklearn.covariance.ledoit_wolf`），这样标的数多于 bar 数时估计仍然良态。然后它把协方差拆成相关性和波动率；传入 `volatility` 时用给定的波动率替换。
 
 标的只有同时满足以下条件才会被覆盖：
 
@@ -335,7 +337,7 @@ array([ 0.4  , -0.212, -0.261,  0.073])
 - 这些收益不全相等；
 - staleness 不超过 `max_stale_bars`（默认 5）。
 
-其他标的不在估计里，优化器也不会选它们。风险模型不覆盖的持仓会被平掉，并在这一行里报告为 `closed_without_risk` 事件：
+其他标的不在估计里，优化器也不会选它们。协方差估计器不覆盖的持仓会被平掉，并在这一行里报告为 `closed_without_risk` 事件：
 
 ```python
 >>> short_history = window.copy()
@@ -354,14 +356,14 @@ array([0.4, 0.4, 0. , 0.2])
 
 ```
 
-### 预留：因子风险模型
+### 因子形式：读取因子风险模型
 
-接口为因子风险模型留出了位置，但目前还没有实现：
+`FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))` 读取因子风险模型（`quantlab.risk.base.FactorRiskModel`，例如 `Use4RiskModel`）的 store：
 
-- 风险模型可以返回 `FactorCovarianceEstimate`，即因子形式的协方差 `B F B' + diag(D)`：暴露 `B`、因子协方差 `F` 和特异方差 `D`。它的 `factor_form()` 让优化器把风险写成 `|F^(1/2) B' w|^2 + w' diag(D) w`，不需要构造稠密矩阵。
-- 风险模型可以在 `required_factors()` 中声明它要读取的 `Factor` 面板，例如暴露。回测在自己的窗口上计算这些因子（各自带预热），并把它们在这根 bar 上的值放进 `context.factors`。
+- 它返回 `FactorCovarianceEstimate`，即因子形式的协方差 `B F B' + diag(D)`：暴露 `B`、因子协方差 `F` 和特异方差 `D`，取自估计 store 在这根 bar 上的那一行。它的 `factor_form()` 让优化器把风险写成 `|F^(1/2) B' w|^2 + w' diag(D) w`，不需要构造稠密矩阵。
+- 它在 `required_factors()` 中声明模型的暴露因子。回测在自己的窗口上计算它（带因子自己的预热），并把它在这根 bar 上的值放进 `context.factors`。
 
-接入这样的模型时，优化器、驱动循环和回测器都不需要改动。
+它覆盖在这根 bar 上有全部暴露和特异风险的标的。它不读收益窗口，所以没有停牌过滤，锁定的持仓和其他持仓一样计入风险。模型的 store 必须覆盖回测区间。
 
 ## 完整示例
 
@@ -391,7 +393,7 @@ array([0.4, 0.4, 0. , 0.2])
 | 信息比率 | -0.75 | |
 | Beta | 0.68 | |
 
-没有一次调仓失败，也没有订单被拒。有 10 次调仓一共平掉了 11 个持仓，原因是风险模型没有它们的估计（`closed_without_risk`）。
+没有一次调仓失败，也没有订单被拒。有 10 次调仓一共平掉了 11 个持仓，原因是协方差估计器没有它们的估计（`closed_without_risk`）。
 
 这些数字说明流程能跑通，不代表一个有效的策略。收益模型没有样本外预测能力：测试集 IC 为零。`mu` 里没有信号时，权重由风险项决定，组合变成一个 beta 为 0.68 的低波动组合，在上涨的市场里跑输指数。波动率模型确实有信息：它的 IC 是预测波动率与实际波动率的相关，衡量的是对风险的排序能力，而不是 alpha。此外，优化器既不约束跟踪误差，也不约束相对指数的主动权重，所以这是一个在指数成分股里选股的组合，还不是受控的指数增强。
 
@@ -405,9 +407,9 @@ array([0.4, 0.4, 0. , 0.2])
 
 不要重写 `decide`：它是回测与执行器共用的唯一决策路径。规则不含组装代码，它的 context 由 `DecisionInputs` 构造。
 
-`get_config` 和 `from_config` 把规则序列化为配置的各字段加上类的导入路径。字段里如果是另一个组件（例如风险模型），会嵌套序列化，所以重建一次运行不需要额外代码。
+`get_config` 和 `from_config` 把规则序列化为配置的各字段加上类的导入路径。字段里如果是另一个组件（例如协方差估计器），会嵌套序列化，所以重建一次运行不需要额外代码。
 
-新的风险模型同样继承 `RiskModel` 并实现 `estimate`。见[扩展 quantlab](../developer-guide/extending.md)。
+新的协方差估计器同样继承 `CovarianceEstimator` 并实现 `estimate`。见[扩展 quantlab](../developer-guide/extending.md)。
 
 ## 另请参阅
 

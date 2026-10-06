@@ -1,6 +1,6 @@
-"""A risk model reading a factor risk model's stores: ``B F B' + diag(D)`` at each bar.
+"""A covariance estimator reading a factor risk model's stores: ``B F B' + diag(D)`` at each bar.
 
-``FactorRiskReader`` estimates nothing itself (ADR 0024). At a bar it reads
+``FactorRiskStoreEstimator`` estimates nothing itself (ADR 0024). At a bar it reads
 the factor covariance ``F`` and the specific risks of that bar from the
 estimate store of a ``quantlab.risk.base.FactorRiskModel``, builds each
 symbol's exposures ``B`` from the bar's values of the model's exposures
@@ -12,14 +12,14 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.portfolio.base import FactorCovarianceEstimate, PortfolioContext, RiskModel
-from quantlab.portfolio.config import FactorRiskReaderConfig
+from quantlab.portfolio.base import FactorCovarianceEstimate, PortfolioContext, CovarianceEstimator
+from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
 
 
-class FactorRiskReader(RiskModel):
+class FactorRiskStoreEstimator(CovarianceEstimator):
     """The covariance at a bar from a factor risk model's estimate store.
 
-    ``required_factors()`` is the risk model's exposures factor, so the
+    ``required_factors()`` is the factor risk model's exposures factor, so the
     backtest computes it over its window and hands its values at the bar in
     ``context.factors``. ``estimate(context)`` reads the bar's row of the
     estimate store and returns ``B F B' + diag(D)`` in factor form, with
@@ -36,7 +36,7 @@ class FactorRiskReader(RiskModel):
 
     Parameters
     ----------
-    config : FactorRiskReaderConfig
+    config : FactorRiskStoreEstimatorConfig
         The factor risk model.
 
     Examples
@@ -44,7 +44,7 @@ class FactorRiskReader(RiskModel):
     With ``use4`` a ``Use4RiskModel`` whose stores are built and ``context``
     a backtest's context at a bar inside them:
 
-    >>> risk = FactorRiskReader(FactorRiskReaderConfig(risk_model=use4))
+    >>> risk = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=use4))
     >>> risk.required_factors() == [use4.config.exposures]
     True
     >>> estimate = risk.estimate(context)
@@ -53,10 +53,10 @@ class FactorRiskReader(RiskModel):
     True
     """
 
-    config_cls = FactorRiskReaderConfig
+    config_cls = FactorRiskStoreEstimatorConfig
 
     def required_factors(self) -> list:
-        """The risk model's exposures factor.
+        """The factor risk model's exposures factor.
 
         Examples
         --------
