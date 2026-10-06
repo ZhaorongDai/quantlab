@@ -534,8 +534,8 @@ def _factor_risk_model(tmp_path, dataset_config, bars):
     """
     from quantlab.dataset.memory import FrameDataset
     from quantlab.factor.config import BaseFactorConfig
-    from quantlab.risk.base import FactorRiskModel
-    from quantlab.risk.config import FactorRiskConfig
+    from quantlab.risk.config import Use4RiskConfig
+    from quantlab.risk.predefined.use4 import Use4RiskModel
     from tests.test_risk_regression import PassThrough
 
     close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].load()
@@ -563,7 +563,7 @@ def _factor_risk_model(tmp_path, dataset_config, bars):
     factor = PassThrough(BaseFactorConfig(
         warmup_bars=0, dataset=FrameDataset(exposures).to_zarr(root / "exposures.zarr"),
     ))
-    model = FactorRiskModel(FactorRiskConfig(
+    model = Use4RiskModel(Use4RiskConfig(
         exposures=factor,
         dataset=FrameDataset(prices).to_zarr(root / "prices.zarr"),
         exposure_data_strategy="cal",

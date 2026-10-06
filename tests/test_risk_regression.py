@@ -7,9 +7,8 @@ Estimation-universe members carry no specific return, so the weighted
 regression must give the planted factor returns back exactly; symbols
 outside the universe carry one, which must come back as their specific
 return. Everything goes through ``Use4RiskModel.regression``'s public
-lifecycle (``compute``, ``build``, ``extend``, ``read``). The model is the
-generic ``FactorRiskModel`` configured with this panel's factor set; USE4 is
-the same model with ``BarraStyle``'s factor set as defaults.
+lifecycle (``compute``, ``build``, ``extend``, ``read``), the model configured
+with this panel's factor set in place of ``BarraStyle``'s.
 
 The panel: 60 symbols, four industries (codes 1-4) and two styles. Industry 4
 has six members; on a few bars two of them leave the estimation universe, so
@@ -28,8 +27,9 @@ import xarray as xr
 from quantlab.dataset.memory import FrameDataset
 from quantlab.factor.base import Factor
 from quantlab.factor.config import BaseFactorConfig
+from quantlab.core.component import rebuild
 from quantlab.risk.base import FactorRiskModel
-from quantlab.risk.config import FF48_INDUSTRIES, USE4_STYLES, FactorRiskConfig, Use4RiskConfig
+from quantlab.risk.config import FF48_INDUSTRIES, USE4_STYLES, Use4RiskConfig
 from quantlab.risk.predefined.use4 import Use4RiskModel
 
 _T = 40
@@ -153,9 +153,9 @@ def _exposure_factor(exposures, store=None, stored=None) -> PassThrough:
 
 def _model(
     prices, exposures, path=None, strategy="cal", exposure_store=None, stored=None, **config
-) -> FactorRiskModel:
+) -> Use4RiskModel:
     fields = dict(industry_name="industry", industries=_INDUSTRIES, estu_name="estu")
-    return FactorRiskModel(FactorRiskConfig(
+    return Use4RiskModel(Use4RiskConfig(
         exposures=_exposure_factor(exposures, exposure_store, stored),
         dataset=_frame(prices, stored, "prices"),
         exposure_data_strategy=strategy,
@@ -319,7 +319,9 @@ def test_reading_outside_the_recorded_range_is_refused(planted, tmp_path):
 def test_the_model_rebuilds_from_its_config(planted, tmp_path):
     prices, exposures, _, _ = planted
     model = _model(prices, exposures, stored=tmp_path)
-    assert FactorRiskModel.from_config(model.get_config()) == model
+    assert Use4RiskModel.from_config(model.get_config()) == model
+    # By the class its config names, as a run's config.json is rebuilt.
+    assert rebuild(model.get_config()) == model
 
 
 def test_a_model_without_industries_or_universe_fits_every_symbol():
@@ -371,12 +373,12 @@ def test_invalid_parameters_are_refused(planted):
     config = _model(prices, exposures).config
 
     with pytest.raises(ValueError, match="min_industry_members"):
-        FactorRiskModel(dataclasses.replace(config, min_industry_members=0))
+        Use4RiskModel(dataclasses.replace(config, min_industry_members=0))
     with pytest.raises(ValueError, match="return_outlier_sigma"):
-        FactorRiskModel(dataclasses.replace(config, return_outlier_sigma=0.0))
+        Use4RiskModel(dataclasses.replace(config, return_outlier_sigma=0.0))
     with pytest.raises(ValueError, match="weighting"):
-        FactorRiskModel(dataclasses.replace(config, weighting="vol"))
+        Use4RiskModel(dataclasses.replace(config, weighting="vol"))
     with pytest.raises(ValueError, match="industry_name"):
-        FactorRiskModel(dataclasses.replace(config, industry_name=None))
+        Use4RiskModel(dataclasses.replace(config, industry_name=None))
     with pytest.raises(TypeError):
-        FactorRiskModel(object())
+        Use4RiskModel(object())
