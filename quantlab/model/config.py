@@ -108,7 +108,7 @@ class ModelConfig(FrozenConfig):
     test_end: str | None = None
     #: Where training runs are tracked (ADR 0015); the default
     #: ``NullTracker`` sends nothing anywhere.
-    tracker: Tracker = component(default=NullTracker())
+    tracker: Tracker = component(default_factory=NullTracker)
 
     #: Dotted import path of the model class; filled by the config setter.
     name: str | None = None

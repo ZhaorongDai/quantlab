@@ -147,7 +147,7 @@ buy-and-hold SPY.
 
 ```python
 backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
-    price_dataset=FrameDataset(stocks, columns=COLUMNS),
+    price_dataset=prices,
     benchmark_dataset=FrameDataset(spy, columns=COLUMNS),
     model=..., model_mode="load", checkpoint=str(checkpoint),
     start_date="2023-01-01", end_date="2024-12-31", output_dir=".../backtests",

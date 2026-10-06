@@ -562,6 +562,8 @@ WandbTracker(project='momentum_backtests', entity=None, mode='offline')
 
 运行的配置用点分导入路径记录每个类，所以 `rebuild_backtester()` 能重建出相同的回测器，包括它的价格数据集和模型，`run()` 会把这次回测重做一遍，写入新目录。运行的数据指纹成为重建后回测器的 `expected_fingerprint`（`run_cv()` 每一折的指纹成为 `expected_fold_fingerprints`，train 模式运行所用训练单元的指纹成为 `expected_training_fingerprint`）：如果自原始运行以来数据发生了变化，重建的运行会对每个变化的请求记录一条警告，写明数据集的组件路径（以及是哪一折），然后继续。重建时还会比对代码：模块或库版本有变化时记录警告，写明模块和使用它的组件路径，组件模块排在框架模块之前。`rebuild(field)` 单独重建一个组件字段。
 
+回测器在多个位置持有的同一个组件（例如同一个数据集既作为 `price_dataset`，又作为模型因子和标签的数据集），在 `config.json` 中每个位置各写一次，其配置带有 `shared_as` 标记（值为它的第一个组件路径），重建时仍还原为同一个对象，因此重建后的运行按与原始运行相同的组件路径记录数据读取。所有保存的配置都如此，包括训练单元的 `config.json`。
+
 ```python
 >>> run = BacktestRun.open(result.run_dir)
 >>> run.rebuild("constructor")

@@ -724,3 +724,80 @@ def test_run_cv_rebuild_names_the_fold_whose_data_changed(tmp_path, warning_mess
     named = {i for i in range(len(first.folds)) if any(f"fold {i}:" in m for m in changed)}
     assert named == {3, 4}, changed
     assert any(m.startswith("USEquityCrossectionSelectStockVectorBt: data") for m in changed)
+
+
+# --------------------------------------------------------------- shared components
+# #214: a dataset object held at several places of the tree (the price dataset
+# and the model's factor and label) is rebuilt as ONE object, so the rebuilt
+# run records its reads under the same keys as the original and an unchanged
+# run re-runs silently.
+
+
+def _shared_dataset_backtester(tmp_path: Path, shared):
+    dataset_config, checkpoint = _trained(tmp_path)
+    model = make_model(
+        tmp_path / "backtest", dataset_config, dataset=shared(dataset_config), **_model_dates()
+    )
+    return _backtester(
+        tmp_path,
+        dataset_config,
+        checkpoint=checkpoint,
+        price_dataset=model.config.factors[0].config.dataset,
+        model=model,
+    )
+
+
+def _datasets(backtester) -> list:
+    """Every dataset in the backtester's tree, once per place it is held."""
+    from quantlab.dataset.base import MarketDataset
+
+    return [
+        item
+        for _, item in component_rule.walk_components(backtester)
+        if isinstance(item, MarketDataset)
+    ]
+
+
+def _stock(dataset_config):
+    return make_stock_dataset(dataset_config)
+
+
+def _frame(dataset_config):
+    from quantlab.dataset.memory import FrameDataset
+
+    return FrameDataset(make_stock_dataset(dataset_config).panel("1900-01-01", "2100-01-01"))
+
+
+@pytest.mark.parametrize("shared", [_stock, _frame], ids=["StockDataset", "FrameDataset"])
+def test_a_shared_dataset_is_rebuilt_shared_and_reruns_silently(
+    tmp_path, warning_messages, shared
+):
+    first = _shared_dataset_backtester(tmp_path, shared).run()
+
+    rebuilt = _rebuilt(first.run_dir)
+    assert len(_datasets(rebuilt)) == 3  # price dataset, factor, label
+    assert len({id(dataset) for dataset in _datasets(rebuilt)}) == 1
+
+    second = rebuilt.run()
+    _assert_same_run_artifacts(first.run_dir, second.run_dir)
+    assert _fingerprint_warnings(warning_messages) == []
+
+
+def test_datasets_held_apart_are_rebuilt_apart(tmp_path):
+    dataset_config, checkpoint = _trained(tmp_path)
+    first = _backtester(tmp_path, dataset_config, checkpoint=checkpoint).run()
+
+    assert "shared_as" not in json.dumps(BacktestRun.open(first.run_dir).recipe())
+    rebuilt = _rebuilt(first.run_dir)
+    assert len({id(dataset) for dataset in _datasets(rebuilt)}) == 3
+
+
+def test_an_override_drops_the_sharing_it_replaces(tmp_path, warning_messages):
+    first = _shared_dataset_backtester(tmp_path, _stock).run()
+    dataset_config, checkpoint = _trained(tmp_path / "again")
+    model = make_model(tmp_path / "other", dataset_config, **_model_dates())
+
+    rebuilt = _rebuilt(first.run_dir, model=model, checkpoint=str(checkpoint))
+
+    assert rebuilt.config.model is model
+    assert len({id(dataset) for dataset in _datasets(rebuilt)}) == 3

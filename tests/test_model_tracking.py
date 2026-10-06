@@ -31,7 +31,7 @@ class FailingFitHead(StubLibraryHead):
 
 
 def test_the_default_config_tracks_nowhere():
-    assert ModelConfig.__dataclass_fields__["tracker"].default == NullTracker()
+    assert ModelConfig.__dataclass_fields__["tracker"].default_factory() == NullTracker()
 
 
 @pytest.mark.parametrize("cls", [StubLibraryHead, OneBarHead], ids=["library", "torch"])

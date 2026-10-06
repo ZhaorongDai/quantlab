@@ -21,7 +21,11 @@ The same declarations give the component tree: ``walk_components`` yields
 every component under a root with its path of field names, and inside
 ``recorded_configs`` a component found in a declared field is written as the
 config recorded for it instead of its own ``get_config()`` (a run directory
-records an in-memory dataset reading its copy under the run).
+records an in-memory dataset reading its copy under the run). A component
+held at several places of a tree is written at each place with a
+``"shared_as"`` key naming its first path, and one ``rebuild`` call builds
+every config carrying the same mark into one object, so a rebuilt tree
+shares what the saved one shared.
 Only a class that declares a config class is ever rebuilt, so a saved dict
 cannot instantiate an arbitrary importable callable.
 
@@ -49,6 +53,7 @@ import os
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Self
 
 
@@ -59,6 +64,20 @@ _METADATA_KEY = "quantlab.component"
 #: The configs ``recorded_configs`` substitutes, keyed by component identity.
 _RECORDED: contextvars.ContextVar[Mapping[int, dict] | None] = contextvars.ContextVar(
     "quantlab_recorded_configs", default=None
+)
+
+#: The key a saved config of a component held at several places carries;
+#: its value, the component's first path in the tree written, names it.
+_SHARED_KEY = "shared_as"
+
+#: While a tree is written, ``id`` to the mark of each component it shares.
+_MARKS: contextvars.ContextVar[Mapping[int, str] | None] = contextvars.ContextVar(
+    "quantlab_shared_marks", default=None
+)
+
+#: The components one ``rebuild`` call has built from marked configs, by mark.
+_SHARED: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "quantlab_shared_rebuilt", default=None
 )
 
 
@@ -134,6 +153,12 @@ def config_to_dict(config: Any) -> dict[str, Any]:
     a nested dataclass written as ``dataclasses.asdict``; a free-form dict is
     copied as data whatever keys it holds.
 
+    A component held at several places under ``config`` is written at each
+    of them with a ``"shared_as"`` key, its first path as ``walk_components``
+    spells it, and ``rebuild`` turns those configs back into one object. The
+    places are found once, by the outermost call; the ``get_config()`` calls
+    nested in it use the same marks.
+
     Parameters
     ----------
     config : dataclass instance
@@ -151,7 +176,22 @@ def config_to_dict(config: Any) -> dict[str, Any]:
     >>> saved = config_to_dict(factor.config)
     >>> saved["dataset"]["name"]
     'quantlab.dataset.stock.StockDataset'
+
+    With ``backtester`` whose price dataset is also its model's first
+    factor's dataset:
+
+    >>> saved = config_to_dict(backtester.config)
+    >>> saved["price_dataset"]["shared_as"]
+    'price_dataset'
+    >>> saved["model"]["factors"][0]["dataset"]["shared_as"]
+    'price_dataset'
     """
+    if _MARKS.get() is None:
+        token = _MARKS.set(_shared_marks(config))
+        try:
+            return config_to_dict(config)
+        finally:
+            _MARKS.reset(token)
     declared = component_fields(config)
     out = {}
     for spec in dataclasses.fields(config):
@@ -186,8 +226,19 @@ def _config_of(item: Any) -> dict:
     """Return the config recorded for ``item`` under ``recorded_configs``, else its own."""
     recorded = _RECORDED.get()
     if recorded is not None and id(item) in recorded:
-        return copy.deepcopy(recorded[id(item)])
-    return item.get_config()
+        config = copy.deepcopy(recorded[id(item)])
+    else:
+        config = item.get_config()
+    mark = (_MARKS.get() or {}).get(id(item))
+    return config if mark is None else {**config, _SHARED_KEY: mark}
+
+
+def _shared_marks(config: Any) -> dict[int, str]:
+    """Return ``id`` to first path of every component held at several places under ``config``."""
+    paths: dict[int, list[str]] = {}
+    for path, item in walk_components(SimpleNamespace(config=config)):
+        paths.setdefault(id(item), []).append(path)
+    return {key: found[0] for key, found in paths.items() if len(found) > 1}
 
 
 def walk_components(root: Any, path: str = "") -> Iterator[tuple[str, Any]]:
@@ -346,7 +397,10 @@ def rebuild(
 
     The class named by ``config["name"]`` is imported, checked to declare a
     config class, and asked to rebuild itself with ``from_config``.
-    ``config`` is not modified.
+    ``config`` is not modified. Within one call, every config carrying the
+    same ``"shared_as"`` mark (written by ``config_to_dict`` for a component
+    held at several places) is built once and returned as that one object
+    wherever it appears.
 
     Parameters
     ----------
@@ -392,7 +446,28 @@ def rebuild(
             f"rebuilt as one"
         )
     config_cls_of(cls)
-    return cls.from_config(config, run_dir=run_dir)
+    with _one_rebuild() as built:
+        mark = config.get(_SHARED_KEY)
+        if mark is None:
+            return cls.from_config(config, run_dir=run_dir)
+        if mark not in built:
+            unmarked = {key: value for key, value in config.items() if key != _SHARED_KEY}
+            built[mark] = cls.from_config(unmarked, run_dir=run_dir)
+        return built[mark]
+
+
+@contextmanager
+def _one_rebuild() -> Iterator[dict[str, Any]]:
+    """Yield the shared components built so far by the outermost rebuild, starting one."""
+    built = _SHARED.get()
+    if built is not None:
+        yield built
+        return
+    token = _SHARED.set({})
+    try:
+        yield _SHARED.get()
+    finally:
+        _SHARED.reset(token)
 
 
 def _rebuild_components(value: Any, many: bool, run_dir: Path | None) -> Any:
@@ -535,7 +610,8 @@ class Component:
             for key, value in config.items()
             if key in known
         }
-        for name, many in declared.items():
-            if name in fields:
-                fields[name] = _rebuild_components(fields[name], many, run_dir)
+        with _one_rebuild():
+            for name, many in declared.items():
+                if name in fields:
+                    fields[name] = _rebuild_components(fields[name], many, run_dir)
         return fields

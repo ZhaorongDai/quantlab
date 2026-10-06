@@ -562,6 +562,8 @@ With `mode="offline"` the run is written under `wandb/` (or `WANDB_DIR`) as the 
 
 The run's config names every class by its dotted import path, so `rebuild_backtester()` builds the same backtester, including its price dataset and model, and `run()` repeats the backtest into a new directory. The run's data fingerprint becomes the rebuilt backtester's `expected_fingerprint` (each `run_cv()` fold's its `expected_fold_fingerprints`, a train-mode run's trained unit's its `expected_training_fingerprint`): when the data changed since the original run, the rebuilt run logs a warning per changed request, naming the dataset's component path (and the fold), and continues. The rebuild also compares the code: a changed module or library version logs a warning naming the module and the component paths using it, component modules before framework modules. `rebuild(field)` rebuilds one component field alone.
 
+A component the backtester held at several places, such as one dataset passed as `price_dataset` and as the dataset of the model's factors and labels, is written in `config.json` at each place, its config marked with `shared_as` (its first component path), and rebuilt as one object again, so the rebuilt run records its reads under the same component paths as the original. Every saved config does this, a trained unit's `config.json` included.
+
 ```python
 >>> run = BacktestRun.open(result.run_dir)
 >>> run.rebuild("constructor")

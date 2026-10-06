@@ -215,20 +215,21 @@ def make_model(
     test_end: str,
     head: type[LibraryModel] = FirstFeatureHead,
     hyperparameters: dict | None = None,
+    dataset=None,
 ) -> LibraryModel:
     """A `head` (by default `FirstFeatureHead`) over one `PastReturnFactor` and one
-    `ForwardReturnLabel`."""
+    `ForwardReturnLabel`, each over its own dataset, or both over `dataset` when given."""
     factor = PastReturnFactor(
         PolarsFactorConfig(
             warmup_bars=warmup_bars,
-            dataset=make_stock_dataset(dataset_config),
+            dataset=dataset if dataset is not None else make_stock_dataset(dataset_config),
             kwargs={"n": n},
         )
     )
     label = ForwardReturnLabel(
         PolarsFactorConfig(
             warmup_bars=0,
-            dataset=make_stock_dataset(dataset_config),
+            dataset=dataset if dataset is not None else make_stock_dataset(dataset_config),
             kwargs={"n_forward_periods": n_forward_periods},
         )
     )

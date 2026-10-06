@@ -53,7 +53,7 @@ def _tracked(tmp_path, trained, tracker, **overrides):
 
 
 def test_the_default_config_tracks_nowhere():
-    assert BacktestConfig.__dataclass_fields__["tracker"].default == NullTracker()
+    assert BacktestConfig.__dataclass_fields__["tracker"].default_factory() == NullTracker()
     assert "use_wandb" not in BacktestConfig.__dataclass_fields__
 
 

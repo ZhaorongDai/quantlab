@@ -162,14 +162,11 @@ def main() -> None:
     print(f"2022 test: IC {test['test_ic']:.4f}, RankIC {test['test_rank_ic']:.4f}")
 
     # 4. Backtest out of sample against buy-and-hold SPY -----------------------
-    # Each component gets its own dataset object: the run directory records
-    # every dataset's reads under the component that made them, and a rebuilt
-    # run compares against that record.
     backtester = USEquityCrossectionSelectStockVectorBt(
         CrossSectionBacktestConfig(
-            price_dataset=FrameDataset(stocks, columns=COLUMNS),
+            price_dataset=prices,
             benchmark_dataset=FrameDataset(spy, columns=COLUMNS),
-            model=make_model(FrameDataset(stocks, columns=COLUMNS), OUTPUT),
+            model=make_model(prices, OUTPUT),
             model_mode="load",
             checkpoint=str(checkpoint),
             start_date="2023-01-01",

@@ -28,6 +28,7 @@ import xarray as xr
 
 from quantlab.core.component import (
     Component,
+    config_to_dict,
     component,
     rebuild,
     recorded_configs,
@@ -266,6 +267,76 @@ def test_an_empty_component_field_stays_empty():
 
     assert saved["leaf"] is None
     assert _Tree.from_config(saved) == _Tree(_TreeConfig())
+
+
+# -- a component held at several places (#214) ---------------------------------------------
+
+
+def _ids(root) -> dict[str, int]:
+    return {path: id(item) for path, item in walk_components(root)}
+
+
+def test_a_shared_component_is_rebuilt_as_one_object():
+    shared, alone, twin = _Leaf(_LeafConfig(1)), _Leaf(_LeafConfig(2)), _Leaf(_LeafConfig(1))
+    tree = _Tree(_TreeConfig(leaf=shared, leaves=[shared, alone, twin], named={"a": shared}))
+
+    saved = _json(tree.get_config())
+    again = rebuild(saved)
+
+    assert saved["leaf"]["shared_as"] == saved["named"]["a"]["shared_as"] == "leaf"
+    assert "shared_as" not in saved["leaves"][2]  # an equal config is not a shared object
+    ids = _ids(again)
+    assert ids["leaf"] == ids["leaves.0"] == ids["named.a"]
+    assert len({ids["leaf"], ids["leaves.1"], ids["leaves.2"]}) == 3
+    assert again == tree
+    assert _json(again.get_config()) == saved
+
+
+def test_a_shared_component_keeps_the_sharing_nested_in_it():
+    leaf = _Leaf(_LeafConfig(1))
+    inner = _Tree(_TreeConfig(leaf=leaf))
+    tree = _Tree(_TreeConfig(leaf=leaf, leaves=[inner, inner]))
+
+    ids = _ids(rebuild(_json(tree.get_config())))
+
+    assert ids["leaves.0"] == ids["leaves.1"]
+    assert ids["leaf"] == ids["leaves.0.leaf"] == ids["leaves.1.leaf"]
+
+
+def test_each_rebuild_call_builds_its_own_objects():
+    shared = _Leaf(_LeafConfig(1))
+    saved = _json(_Tree(_TreeConfig(leaf=shared, leaves=[shared])).get_config())
+
+    first, second = rebuild(saved), rebuild(saved)
+
+    assert first.config.leaf is first.config.leaves[0]
+    assert first.config.leaf is not second.config.leaf
+
+
+def test_nothing_shared_writes_no_mark():
+    tree = _Tree(_TreeConfig(leaf=_Leaf(_LeafConfig(1)), leaves=[_Leaf(_LeafConfig(1))]))
+
+    assert "shared_as" not in json.dumps(tree.get_config())
+
+
+def test_a_config_written_alone_marks_its_own_sharing():
+    shared = _Leaf(_LeafConfig(1))
+    config = _TreeConfig(leaf=shared, leaves=[shared])
+
+    saved = config_to_dict(config)
+
+    assert saved["leaf"]["shared_as"] == saved["leaves"][0]["shared_as"] == "leaf"
+
+
+def test_a_model_sharing_a_dataset_through_a_flattened_label_rebuilds_shared(stock, tmp_path):
+    """The label's `get_config()` flattens its inner factor; the mark still reaches the dataset."""
+    model = make_model(tmp_path / "m", stock.config, **_DATES, dataset=stock)
+
+    again = rebuild(_json(model.get_config()))
+
+    datasets = [item for _, item in walk_components(again) if isinstance(item, StockDataset)]
+    assert len(datasets) == 2  # the factor's and the label's
+    assert datasets[0] is datasets[1]
 
 
 # -- every other component: predictors, portfolio rules, trackers, backtesters (#131) -----
