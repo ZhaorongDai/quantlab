@@ -146,7 +146,7 @@ class BacktestConfig:
 
     #: Where each run's metrics and report are tracked (ADR 0015); the
     #: default ``NullTracker`` sends nothing anywhere.
-    tracker: Tracker = component(default_factory=NullTracker)
+    tracker: Tracker = component(default=NullTracker())
 
     #: Dotted import path of the backtester class; filled by the config setter.
     name: str | None = None
