@@ -63,13 +63,18 @@ class PassThrough(Factor):
 
 
 def _plant(
-    outlier: tuple[int, int, float] | None = None, seed: int = 194, industries: bool = True
+    outlier: tuple[int, int, float] | None = None,
+    seed: int = 194,
+    industries: bool = True,
+    autocorrelation: float = 0.0,
 ):
     """Return ``(prices, exposures, planted factor returns, planted specific returns)``.
 
     ``outlier`` is ``(bar, symbol position, return)``: that estimation-universe
     symbol's specific return on that bar. With ``industries=False`` no
-    industry return and no specific return is planted.
+    industry return and no specific return is planted. With
+    ``autocorrelation`` the country and style factor returns follow an AR(1)
+    with that coefficient.
     """
     rng = np.random.default_rng(seed)
     cap = rng.lognormal(22.0, 1.0, size=_N) * rng.lognormal(0.0, 0.02, size=(_T, _N))
@@ -84,7 +89,8 @@ def _plant(
     specific = np.zeros((_T, _N))
     excess = np.full((_T, _N), np.nan)
     for t in range(1, _T):
-        country = rng.normal(0, 0.01)
+        previous = np.nan_to_num(factor_returns[t - 1])
+        country = autocorrelation * previous[0] + rng.normal(0, 0.01)
         raw = rng.normal(0, 0.005, size=len(_INDUSTRIES))
         index = _CODES[:-1].astype(int) - 1
         in_fit = estu[t - 1, :-1] == 1.0
@@ -93,7 +99,9 @@ def _plant(
         industry_cap = np.bincount(index[in_fit], weights=cap[t - 1, :-1][in_fit], minlength=4)
         mean = (industry_cap * raw)[kept].sum() / industry_cap[kept].sum()
         industry = np.where(kept, raw - mean, np.nan) if industries else np.zeros(4)
-        style = rng.normal(0, 0.003, size=len(_STYLES))
+        style = autocorrelation * previous[-len(_STYLES):] + rng.normal(
+            0, 0.003, size=len(_STYLES)
+        )
         factor_returns[t] = np.concatenate([[country], industry, style])
         specific[t] = np.where(estu[t - 1] == 1.0, 0.0, rng.normal(0, 0.02, size=_N))
         if not industries:

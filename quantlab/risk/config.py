@@ -116,9 +116,25 @@ class FactorRiskConfig(FrozenConfig):
     #: Bars of specific returns the specific volatilities are estimated from.
     #: Our choice: three half-lives.
     specific_window: int = 252
+    #: Newey-West lags of the factor volatilities (USE4S and USE4L: 5); 0 for
+    #: none.
+    volatility_lags: int = 5
+    #: Newey-West lags of the factor correlations (USE4S and USE4L: 2); 0 for
+    #: none.
+    correlation_lags: int = 2
+    #: Newey-West lags of the specific volatilities (USE4S and USE4L: 5); 0
+    #: for none.
+    specific_lags: int = 5
+    #: Half-life, in bars, of the exponential weights of the specific returns'
+    #: autocorrelations behind the specific Newey-West adjustment (USE4S and
+    #: USE4L: 252 trading days).
+    specific_autocorrelation_half_life: float = 252.0
+    #: Bars of specific returns the autocorrelations are estimated from. Our
+    #: choice: three half-lives.
+    specific_autocorrelation_window: int = 756
     #: Fewest observations in its window for a factor variance, a pair's
-    #: correlation or a symbol's specific volatility to be estimated; NaN with
-    #: fewer. Our choice.
+    #: correlation, a symbol's specific volatility or a lagged autocorrelation
+    #: to be estimated; NaN with fewer (a lag term: none). Our choice.
     min_observations: int = 21
 
     #: Dotted import path of the risk model class; filled by the config setter.
@@ -154,8 +170,11 @@ class Use4RiskConfig(FactorRiskConfig):
     ``industry``, the 12 styles, fitted on ``estu`` with square-root-of-cap
     weights. The column fields default to ``BarraStyleParameters``' and must
     match the ones the exposures were computed with. The half-lives default
-    to USE4S's (Table 4.1, Table 5.1); USE4L is ``volatility_half_life=252``,
-    ``specific_half_life=252`` (and windows of three half-lives, 756).
+    to USE4S's (Table 4.1, Table 5.1), and so do the Newey-West lags (5 for
+    factor volatilities, 2 for correlations, 5 for specific volatilities with
+    an autocorrelation half-life of 252); USE4L is
+    ``volatility_half_life=252``, ``specific_half_life=252`` (and windows of
+    three half-lives, 756), with the same lags.
 
     Examples
     --------

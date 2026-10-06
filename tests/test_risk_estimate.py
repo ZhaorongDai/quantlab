@@ -34,6 +34,11 @@ WINDOWS = dict(
     specific_half_life=3.0,
     specific_window=8,
     min_observations=3,
+    # The raw model: Newey-West is checked in tests/test_risk_newey_west.py.
+    volatility_lags=0,
+    correlation_lags=0,
+    specific_lags=0,
+    specific_autocorrelation_window=8,
 )
 START = 1  # the first bar with a regression
 

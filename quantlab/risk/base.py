@@ -363,6 +363,39 @@ def _pairwise_moments(
     return covariance, variance_i, variance_j, present.T @ present
 
 
+def _bartlett_weights(lags: int) -> np.ndarray:
+    """Return the Newey-West (1987) weights ``1 - l / (lags + 1)`` of lags 1 to ``lags``."""
+    return 1.0 - np.arange(1, lags + 1) / (lags + 1)
+
+
+def _lagged_moments(
+    window: np.ndarray, half_life: float, lags: int, least: int
+) -> np.ndarray:
+    """Exponentially weighted lagged covariances of each pair of columns.
+
+    ``window`` is ``[L, K]`` with NaN where a value is missing, the last row
+    the latest. Returns ``[lags, K, K]``: entry ``[l - 1, i, j]`` is the
+    weighted mean of ``x_i(t) x_j(t - l)`` over the bars ``t`` where both are
+    present, each column taken about its weighted mean over the window, each
+    product weighted by the weight of ``t``. A lag with fewer than ``least``
+    such bars is 0.
+    """
+    weights = _exponential_weights(len(window), half_life)[:, None]
+    present = np.isfinite(window).astype(np.float64)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        centre = np.nansum(window * weights, axis=0) / (present * weights).sum(axis=0)
+    values = np.where(present > 0, window - np.nan_to_num(centre), 0.0)
+    moments = np.zeros((lags, window.shape[1], window.shape[1]))
+    for lag in range(1, min(lags, len(window) - 1) + 1):
+        later = weights[lag:]
+        total = (present[lag:] * later).T @ present[:-lag]
+        products = (values[lag:] * later).T @ values[:-lag]
+        count = present[lag:].T @ present[:-lag]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            moments[lag - 1] = np.where(count >= least, products / total, 0.0)
+    return moments
+
+
 def _excess_returns(price: np.ndarray, risk_free: np.ndarray) -> np.ndarray:
     """Return ``[T, S]`` excess returns; row 0 is NaN (no previous bar)."""
     excess = np.full(price.shape, np.nan)
@@ -403,11 +436,29 @@ class FactorRiskModel(Component):
     - ``factor_covariance`` on ``(timestamp, factor_i, factor_j)``: ``F_ij =
       rho_ij sigma_i sigma_j`` (USE4 eq. 4.1), the volatilities ``sigma``
       from the last ``volatility_window`` factor returns weighted with
-      ``volatility_half_life``, the correlations ``rho`` from the last
-      ``correlation_window`` weighted with ``correlation_half_life``;
+      ``volatility_half_life`` with ``volatility_lags`` Newey-West lags, the
+      correlations ``rho`` from the last ``correlation_window`` weighted with
+      ``correlation_half_life`` with ``correlation_lags`` lags (USE4 §4.1);
     - ``specific_risk`` on ``(timestamp, symbol)``: the volatility of the
       last ``specific_window`` specific returns weighted with
-      ``specific_half_life`` (USE4 eq. 5.2, without Newey-West).
+      ``specific_half_life``, times the square root of the Newey-West
+      multiplier ``C_NW`` (USE4 eq. 5.2).
+
+    Newey-West: a covariance becomes ``G_0 + sum_l (1 - l / (L + 1)) (G_l +
+    G_l')`` over lags 1 to ``L``, ``G_l[i, j]`` the weighted mean of ``x_i(t)
+    x_j(t - l)`` over the bars ``t`` of the window both have, each column
+    about its weighted mean over the window, weighted by the weight of ``t``.
+    ``G_0`` is the covariance described below; a correlation divides by each
+    factor's variance over the pair's bars plus its own lag terms. USE4 does
+    not publish its weights; these are Newey and West's (1987) Bartlett
+    weights (our choice). For specific risk ``C_NW = 1 + 2 sum_l (1 - l / (L
+    + 1)) rho_l``, ``rho_l`` the autocorrelation at lag ``l`` weighted with
+    ``specific_autocorrelation_half_life`` over the last
+    ``specific_autocorrelation_window`` specific returns, at least 0. A lag
+    with fewer than ``min_observations`` bars adds nothing. With 0 lags the
+    estimates are the plain exponentially weighted moments. The forecasts
+    stay one-bar: Newey-West turns a sum of serially correlated bars' returns
+    into a per-bar variance that scales linearly with the horizon.
 
     The weights halve every half-life back from the bar and stop at the
     window, so a row reads only its window. Moments are taken about the
@@ -537,12 +588,22 @@ class FactorRiskModel(Component):
             raise ValueError(f"{owner}: min_industry_members must be at least 1.")
         if not config.return_outlier_sigma > 0:
             raise ValueError(f"{owner}: return_outlier_sigma must be positive.")
-        for prefix in ("volatility", "correlation", "specific"):
+        for prefix in ("volatility", "correlation", "specific", "specific_autocorrelation"):
             if not getattr(config, f"{prefix}_half_life") > 0:
                 raise ValueError(f"{owner}: {prefix}_half_life must be positive.")
             if getattr(config, f"{prefix}_window") < 2:
                 raise ValueError(f"{owner}: {prefix}_window must be at least 2.")
-        windows = (config.volatility_window, config.correlation_window, config.specific_window)
+        for prefix, window in (
+            ("volatility", config.volatility_window),
+            ("correlation", config.correlation_window),
+            ("specific", config.specific_autocorrelation_window),
+        ):
+            if not 0 <= getattr(config, f"{prefix}_lags") < window:
+                raise ValueError(
+                    f"{owner}: {prefix}_lags must be at least 0 and below its window, "
+                    f"{window}; got {getattr(config, f'{prefix}_lags')}."
+                )
+        windows = self._estimate_windows(config)
         if not 2 <= config.min_observations <= min(windows):
             raise ValueError(
                 f"{owner}: min_observations must be at least 2 and at most the shortest "
@@ -632,12 +693,21 @@ class FactorRiskModel(Component):
         ('timestamp', 'factor_i', 'factor_j')
         """
         config = self.config
-        windows = (config.volatility_window, config.correlation_window, config.specific_window)
         return RiskStore(
             f"{self.class_name}.estimate",
             config.estimate_path,
             self._compute_estimate,
-            warmup_bars=max(windows) - 1,
+            warmup_bars=max(self._estimate_windows(config)) - 1,
+        )
+
+    @staticmethod
+    def _estimate_windows(config: FactorRiskConfig) -> tuple[int, ...]:
+        """Return the windows the estimate rows read, in bars."""
+        return (
+            config.volatility_window,
+            config.correlation_window,
+            config.specific_window,
+            config.specific_autocorrelation_window,
         )
 
     # ------------------------------------------------------------------
@@ -989,11 +1059,27 @@ class FactorRiskModel(Component):
         covariance, _, _, observed = _pairwise_moments(
             volatility_window, config.volatility_half_life
         )
-        variance = np.where(np.diag(observed) >= least, np.diag(covariance), np.nan)
+        variance = np.diag(covariance)
+        if config.volatility_lags:
+            lagged = _lagged_moments(
+                volatility_window, config.volatility_half_life, config.volatility_lags, least
+            )
+            weights = _bartlett_weights(config.volatility_lags)
+            variance = variance + 2.0 * np.einsum("l,lii->i", weights, lagged)
+        variance = np.where(np.diag(observed) >= least, variance, np.nan)
         correlation_window = np.ascontiguousarray(history[-config.correlation_window :])
         covariance, variance_i, variance_j, observed = _pairwise_moments(
             correlation_window, config.correlation_half_life
         )
+        if config.correlation_lags:
+            lagged = _lagged_moments(
+                correlation_window, config.correlation_half_life, config.correlation_lags, least
+            )
+            summed = np.einsum("l,lij->ij", _bartlett_weights(config.correlation_lags), lagged)
+            covariance = covariance + summed + summed.T
+            own = 2.0 * np.diag(summed)
+            variance_i = variance_i + own[:, None]
+            variance_j = variance_j + own[None, :]
         with np.errstate(divide="ignore", invalid="ignore"):
             correlation = covariance / np.sqrt(variance_i * variance_j)
         correlation[observed < least] = np.nan
@@ -1012,5 +1098,47 @@ class FactorRiskModel(Component):
         with np.errstate(divide="ignore", invalid="ignore"):
             mean = (weights * values).sum(axis=0) / total
             variance = (weights * present * (values - mean) ** 2).sum(axis=0) / total
+        if config.specific_lags:
+            variance = variance * self._specific_newey_west(history)
         enough = present.sum(axis=0) >= config.min_observations
         return np.where(enough, np.sqrt(variance), np.nan)
+
+    def _specific_newey_west(self, history: np.ndarray) -> np.ndarray:
+        """Return each symbol's Newey-West multiplier ``C_NW`` at the last row of ``history``.
+
+        ``C_NW = 1 + 2 sum_l (1 - l / (L + 1)) rho_l`` over lags 1 to ``L``,
+        ``rho_l`` the autocorrelation of the specific returns at lag ``l``
+        weighted with ``specific_autocorrelation_half_life`` over the last
+        ``specific_autocorrelation_window`` bars (USE4 eq. 5.2). A lag with
+        too few bars, or a symbol without a variance, adds nothing; a negative
+        multiplier is 0 (our choice).
+        """
+        config = self.config
+        least = config.min_observations
+        window = history[-config.specific_autocorrelation_window :]
+        multiplier = np.ones(window.shape[1])
+        # Only symbols with a specific return in the window can be adjusted.
+        active = np.flatnonzero(np.isfinite(window).any(axis=0))
+        window = np.ascontiguousarray(window[:, active])
+        weights = _exponential_weights(len(window), config.specific_autocorrelation_half_life)
+        present = np.isfinite(window)
+        mask = present.astype(np.float64)
+        total = weights @ mask
+        with np.errstate(divide="ignore", invalid="ignore"):
+            centre = (weights @ np.where(present, window, 0.0)) / total
+            values = np.where(present, window - np.nan_to_num(centre), 0.0)
+            variance = np.einsum("t,ts,ts->s", weights, values, values) / total
+        adjustment = np.ones(window.shape[1])
+        bartlett = _bartlett_weights(config.specific_lags)
+        for lag in range(1, min(config.specific_lags, len(window) - 1) + 1):
+            later = weights[lag:]
+            pairs = np.einsum("ts,ts->s", mask[lag:], mask[:-lag])
+            with np.errstate(divide="ignore", invalid="ignore"):
+                autocovariance = np.einsum(
+                    "t,ts,ts->s", later, values[lag:], values[:-lag]
+                ) / np.einsum("t,ts,ts->s", later, mask[lag:], mask[:-lag])
+                rho = autocovariance / variance
+            usable = (pairs >= least) & np.isfinite(rho) & (variance > 0)
+            adjustment += 2.0 * bartlett[lag - 1] * np.where(usable, rho, 0.0)
+        multiplier[active] = np.clip(adjustment, 0.0, None)
+        return multiplier
