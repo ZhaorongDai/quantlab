@@ -14,6 +14,8 @@ A *target-percent weight* is the fraction of portfolio value a symbol should
 hold after the order fills; a negative weight is a short position.
 """
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
@@ -173,8 +175,14 @@ class VectorBtBacktester(BaseBacktester):
         "sortino_ratio",
     )
 
+    def _simulate_without_costs(
+        self, weights: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray
+    ) -> SimulationResult:
+        """Return the simulation of ``weights`` with fees and slippage set to 0."""
+        return self._simulate(weights, prices, delisted=delisted, costs=False)
+
     def _simulate(
-        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None, *, delisted=None
+        self, weights: xr.Dataset, prices: xr.Dataset, dataset=None, *, delisted=None, costs: bool = True
     ) -> SimulationResult:
         """Simulate ``weights`` on ``prices`` with ``Portfolio.from_orders``.
 
@@ -186,6 +194,7 @@ class VectorBtBacktester(BaseBacktester):
         ``SimulationResult``. The bar interval is the most common difference
         between consecutive timestamps. ``delisted`` holds the delisting
         marks to settle; the price dataset's ``delisting_bars`` when omitted.
+        ``costs=False`` simulates without fees or slippage.
 
         Raises
         ------
@@ -238,7 +247,7 @@ class VectorBtBacktester(BaseBacktester):
             raw_fill,
             np.asarray(valuation.to_numpy(), dtype=np.float64),
             delisted,
-            cfg.execution,
+            cfg.execution if costs else dataclasses.replace(cfg.execution, fees=0.0, slippage=0.0),
         )
 
         def frame(values):

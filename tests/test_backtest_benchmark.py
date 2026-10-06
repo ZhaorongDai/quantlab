@@ -250,7 +250,10 @@ def test_a_run_without_a_benchmark_is_unchanged(tmp_path):
     result = USEquityCrossectionSelectStockVectorBt(config).run()
     assert result.benchmark is None
     assert "benchmark" not in result.metrics and "relative" not in result.metrics
-    assert set(BacktestRun.open(result.run_dir).equity().data_vars) == {"value", "returns"}
+    # A model run adds its attribution curves; nothing of the benchmark's.
+    assert set(BacktestRun.open(result.run_dir).equity().data_vars) == {
+        "value", "returns", "universe_value", "gross_value", "group_value"
+    }
 
 
 # --------------------------------------------------------------------------
@@ -267,6 +270,9 @@ def test_run_directory_carries_the_benchmark(benchmark_run):
         "returns",
         "benchmark_value",
         "benchmark_returns",
+        "universe_value",
+        "gross_value",
+        "group_value",
     }
     np.testing.assert_allclose(
         equity["benchmark_value"].values, result.benchmark.value.values

@@ -248,19 +248,21 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: All twelve were re-captured when decimals began to be rounded, after
 #: checking that the same code at full precision gives the old hashes back
 #: and that a Linux runner's output, rounded, gives the new ones.
+#: Re-recorded when model runs gained the ``attribution`` block and the
+#: Attribution tab; their metrics with that block removed hash as before.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "8c82484b36edf093ee91cfe049a3bdf8554878d12c73a808c10b7163b767f4e5",
-    "run_long_only_benchmark/metrics.json": "67e754641b89a5a99007ca69e64093e4f555a87a70b7539b27902da99a05f965",
-    "run_long_short_delisting/report.html": "1464d6a0d110496680a0c11d3fbd35ed23113df22f5c5185d2f0d8da15634ac7",
-    "run_long_short_delisting/metrics.json": "d1aecc507332b6616dd96e31bc716c648a56e4158a0988d144c1fa8378b1625b",
+    "run_long_only_benchmark/report.html": "47e8e4540c8fe8ae4aa15981314cc5507be5d66a01498f306beb4c41521db5dd",
+    "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
+    "run_long_short_delisting/report.html": "3b761f77f9e6eafe4e15bf87ec93855d7001bac961e7b223cfffd9da0706c482",
+    "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
     "run_weights_benchmark/report.html": "82e171cf20ce3dda4dc452b975b59c783faeaff9219539d32b81bbf982717d16",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
     "run_weights/report.html": "7bdd8d285ebca72ef91b02867c22750a8ea4f7e7d668826bcff316c7d5d8894f",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "6fffabe43720bb37f6617c8499b9732c0b6410da58ea5c480c97dfd5e1bf74b9",
-    "run_cv_benchmark/metrics.json": "d6889ddaf7373f430bdcbcae882ca4764d86c17baf457ee15dc34737972375b1",
-    "run_cv/report.html": "020d6aeca7f2cd2b83d91a07aba3568e56a6c47be24c26c47a2898772cc7ac71",
-    "run_cv/metrics.json": "52bea0786c6385d0230d6bd5e9fdce1679805645de9c67620de53537cdea2721",
+    "run_cv_benchmark/report.html": "06cff8c5c385416104abbe511e8c4c53d93df5888cf9141381e87e4b3f8ee7f1",
+    "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
+    "run_cv/report.html": "80b94dfe9d75c05b75f619747845cccd496b62781620ba70afaf4bb325d43895",
+    "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
 
 

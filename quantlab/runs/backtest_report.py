@@ -131,6 +131,7 @@ def write_backtest_report(
     bars_per_year: float | None = None,
     windows: dict | None = None,
     extra_tables: dict[str, dict] | None = None,
+    attribution: xr.Dataset | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -230,6 +231,14 @@ def write_backtest_report(
         magnitude, a percent when the label ends in ``[%]``, a string as
         it is). quantlab passes none; an executor adds the statistics only
         it has, such as an event-driven replay's commissions.
+    attribution : xr.Dataset | None
+        The attribution curves of a model run (``universe_value``,
+        ``gross_value``, ``group_value``; see
+        ``quantlab.runs.backtest_attribution``). With them and an
+        ``attribution`` block in ``metrics`` the page gets an Attribution tab:
+        the excess split into its parts, the cumulative log growth of the
+        strategy, before costs, the universe and the benchmark, and each
+        score group's annualised return.
 
     Examples
     --------
@@ -279,6 +288,10 @@ def write_backtest_report(
         if extra_fig is not None:
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
+    block = (metrics or {}).get("attribution")
+    if attribution is not None and block:
+        tabs.append(("Attribution", _attribution_table(block, name)
+                     + _figure_div(_attribution_figure(equity, attribution, reference, block, name))))
     Path(path).write_text(
         _document(title, summary, metrics, tabs, notes, benchmark_name=name, windows=windows,
                   extra_tables=extra_tables),
@@ -1670,6 +1683,73 @@ def _excess_figure(equity: pd.Series, reference: pd.Series, benchmark_name: str)
             ],
         }],
     )
+    return fig
+
+
+def _attribution_table(block: dict, benchmark_name: str | None) -> str:
+    """The excess split into its parts, as annualised log growth."""
+    parts = block.get("decomposition") or {}
+    against = benchmark_name or "the universe"
+    rows = [
+        _row(label, definition, [_format(100 * parts[key], "spct")])
+        for key, label, definition in (
+            ("universe", "Universe vs benchmark",
+             "The equal-weighted universe over the benchmark: earned or lost whatever is picked."),
+            ("selection", "Selection",
+             "The weights simulated without costs over the equal-weighted universe: what the scores and the rule add."),
+            ("costs", "Costs", "The strategy after fees and slippage over the same weights without them."),
+            ("total", "Total", f"The strategy over {against}; the sum of the rows above."),
+        )
+        if parts.get(key) is not None
+    ]
+    return _table(f"Attribution vs {against} (annualised log growth; {block.get('groups')} score groups "
+                  f"by {block.get('score_label')})", ["Part", "Log growth per year"], rows)
+
+
+def _attribution_figure(equity: pd.Series, attribution: xr.Dataset, reference: pd.Series | None,
+                        block: dict, benchmark_name: str | None) -> go.Figure:
+    """Draw the attribution curves, the score groups' curves and their annualised log growth.
+
+    The top panel is the cumulative log growth of the strategy, the same
+    weights before costs, the equal-weighted universe and the benchmark; the
+    middle one each score group's, from the lowest scores (lightest) to the
+    highest; the bottom one each group's annualised log growth.
+    """
+    fig = make_subplots(rows=3, cols=1, row_heights=[0.42, 0.33, 0.25], vertical_spacing=0.08)
+    curves = [("attribution_strategy", "strategy", equity, PORTFOLIO_COLOUR)]
+    if "gross_value" in attribution:
+        curves.append(("attribution_gross", "before costs", attribution["gross_value"].to_pandas(), GAIN_COLOUR))
+    curves.append(("attribution_universe", "equal-weighted universe",
+                   attribution["universe_value"].to_pandas(), EXCESS_COLOUR))
+    if reference is not None:
+        curves.append(("attribution_benchmark", str(benchmark_name), reference, BENCHMARK_COLOUR))
+    for trace, label, curve, colour in curves:
+        growth = np.log(curve / curve.iloc[0])
+        fig.add_trace(go.Scatter(
+            x=growth.index, y=growth.values, name=trace, mode="lines", line={"color": colour},
+            hovertemplate=f"%{{x}}<br>{html.escape(label)} log growth %{{y:.2%}}<extra></extra>",
+        ), row=1, col=1)
+    group_curves = attribution["group_value"]
+    count = group_curves.sizes["group"]
+    for i, group in enumerate(group_curves["group"].values):
+        curve = group_curves.sel(group=group).to_pandas()
+        growth = np.log(curve / curve.iloc[0])
+        shade = 0.25 + 0.75 * i / max(count - 1, 1)
+        fig.add_trace(go.Scatter(
+            x=growth.index, y=growth.values, name=f"attribution_group_{group}", mode="lines",
+            line={"color": PORTFOLIO_COLOUR, "width": 1}, opacity=shade, showlegend=False,
+            hovertemplate=f"%{{x}}<br>G{group} log growth %{{y:.2%}}<extra></extra>",
+        ), row=2, col=1)
+    growths = block.get("group_annualized_log_return") or []
+    fig.add_trace(go.Bar(
+        x=[f"G{i + 1}" for i in range(len(growths))], y=growths, name="group_annualized_log_return",
+        marker={"color": [GAIN_COLOUR if (g or 0) >= 0 else LOSS_COLOUR for g in growths]},
+        showlegend=False, hovertemplate="%{x}<br>annualised log growth %{y:.2%}<extra></extra>",
+    ), row=3, col=1)
+    fig.update_yaxes(title_text="cumulative log growth", tickformat=".0%", row=1, col=1)
+    fig.update_yaxes(title_text="score groups (G1 lowest)", tickformat=".0%", row=2, col=1)
+    fig.update_yaxes(title_text="log growth per year", tickformat=".0%", row=3, col=1)
+    fig.update_layout(height=900, showlegend=True, legend={"orientation": "h", "y": 1.06})
     return fig
 
 

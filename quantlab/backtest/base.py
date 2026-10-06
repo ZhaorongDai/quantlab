@@ -60,6 +60,11 @@ from quantlab.runs.backtest_run import (
 from quantlab.runs.trained_run import TrainedRun
 from quantlab.utils import date_range
 from quantlab.runs import backtest_stats
+from quantlab.runs.backtest_attribution import (
+    annualized_log_growth,
+    excess_decomposition,
+    rebalanced_group_values,
+)
 from quantlab.runs.backtest_report import (
     backtest_report_figure,
     report_chart_inputs,
@@ -306,7 +311,11 @@ class SimulationResult:
     and fees included, with the weight valued at the prices the order was
     sized against (the fill prices, or the signal bar's valuation prices
     for ``sizing_basis="valuation"``); ``None`` when nothing rebalanced. ``native`` is the engine's own result object and is read
-    only by the engine that produced it.
+    only by the engine that produced it. ``attribution`` is set by the
+    backtester after a model run: ``universe_value`` and ``gross_value`` on
+    ``timestamp`` and ``group_value`` on ``(group, timestamp)``, the curves
+    behind the ``attribution`` metrics, in the run's money (``init_cash`` at
+    the first bar); ``None`` for a ``run_weights()`` run.
 
     Examples
     --------
@@ -328,6 +337,7 @@ class SimulationResult:
     native: object | None = None
     rejected_orders: list[dict] = field(default_factory=list)
     max_target_deviation: float | None = None
+    attribution: xr.Dataset | None = None
 
 
 @dataclass
@@ -1034,6 +1044,8 @@ class BaseBacktester(Component, ABC):
                     fold["test_end"],
                     calendar,
                     *fold["_train_bounds"],
+                    # A fold's own curve is not attributed; the stitched one is.
+                    attribute=False,
                 )
             records.append(
                 {
@@ -1096,6 +1108,10 @@ class BaseBacktester(Component, ABC):
                     self._stitched_split(stitched_prices.timestamp.values, records),
                 )
                 stitched_metrics.update(self._signal_metrics())
+                stitched_metrics["attribution"] = self._attribution(
+                    stitched_predictions, stitched_prices, stitched_weights,
+                    stitched_simulation, stitched_benchmark, stitched_delisted,
+                )
         finally:
             # A failed pass still reports what it had read before failing.
             self._fingerprints = recorder.records
@@ -1678,6 +1694,8 @@ class BaseBacktester(Component, ABC):
         calendar: np.ndarray,
         train_start,
         train_end,
+        *,
+        attribute: bool = True,
     ) -> _BacktestWindow:
         """Run every step of one backtest window without persisting anything.
 
@@ -1688,7 +1706,8 @@ class BaseBacktester(Component, ABC):
         fitted training window ``[train_start, train_end]`` plus the labels'
         lookahead, generate and check the weights, simulate, simulate
         the benchmark (when one is configured, on the same bars) and compute
-        the metrics. The model must already be prepared.
+        the metrics, with the ``attribution`` block unless ``attribute`` is
+        False (a ``run_cv()`` fold). The model must already be prepared.
 
         Raises
         ------
@@ -1730,6 +1749,10 @@ class BaseBacktester(Component, ABC):
         )
         metrics = self._compute_metrics(simulation, benchmark, split)
         metrics.update(self._signal_metrics())
+        if attribute:
+            metrics["attribution"] = self._attribution(
+                predictions, prices, weights, simulation, benchmark, delisted
+            )
         return _BacktestWindow(
             predictions=predictions,
             prices=prices,
@@ -2120,6 +2143,102 @@ class BaseBacktester(Component, ABC):
         ``(timestamp, symbol)``, NaN where a symbol keeps its holding, with
         the gross exposure of each row's targets at most 1.
         """
+
+    #: Score groups of the attribution; a rebalance with fewer symbols holds them in cash.
+    ATTRIBUTION_GROUPS: ClassVar[int] = 10
+
+    def _attribution(
+        self,
+        predictions: xr.Dataset,
+        prices: xr.Dataset,
+        weights: xr.Dataset,
+        simulation: SimulationResult,
+        benchmark: SimulationResult | None,
+        delisted: xr.DataArray,
+    ) -> dict:
+        """Return the ``attribution`` metrics and set ``simulation.attribution`` to their curves.
+
+        The universe of a rebalance bar is every symbol with a finite score
+        and a fill price on the next bar, the score being the prediction the
+        portfolio rule ranks by (the constructor's ``score_label``, else the
+        first predicted label). The rebalance bars are the weight rows with a
+        finite target, so a bar the rule held after a failure is held here
+        too. ``quantlab.runs.backtest_attribution`` gives the equal-weighted
+        universe curve and the curves of ``ATTRIBUTION_GROUPS`` score groups,
+        delisted holdings settled at their last valuation as the engine
+        settles them, and splits the annualised log growth over the benchmark
+        (over the universe without one): ``universe`` (universe over
+        benchmark), ``selection`` (the weights simulated without costs, over
+        the universe) and ``costs`` (after costs over before; left out when
+        the engine cannot simulate without costs). A year is the market's
+        year over the bar interval, and the window counts one bar per
+        return, as ``backtest_stats.return_stats`` annualises. The block also
+        holds each curve's and each group's annualised log growth, lowest
+        scores first.
+        """
+        fill_column = self.MARKET.fill_price_column  # type: ignore[union-attr]
+        valuation_column = self.MARKET.valuation_price_column  # type: ignore[union-attr]
+        constructor = getattr(self.config, "constructor", None)
+        label = getattr(getattr(constructor, "config", None), "score_label", None)
+        label = label or next(iter(predictions.data_vars))
+        fill = prices[fill_column].transpose("timestamp", "symbol").values
+        valuation = prices[valuation_column].transpose("timestamp", "symbol").values
+        scores = predictions[label].transpose("timestamp", "symbol").values
+        rebalance = np.isfinite(weights["weight"].transpose("timestamp", "symbol").values).any(axis=1)
+        marks = (
+            delisted.transpose("timestamp", "symbol")
+            .reindex(timestamp=prices.timestamp.values, symbol=prices.symbol.values, fill_value=False)
+            .values
+        )
+        groups = self.ATTRIBUTION_GROUPS
+        (universe,) = rebalanced_group_values(fill, valuation, scores, rebalance, groups=1, delisted=marks)
+        group_values = rebalanced_group_values(fill, valuation, scores, rebalance, groups=groups, delisted=marks)
+
+        gross = self._simulate_without_costs(weights, prices, delisted)
+        years = simulation.value.sizes["timestamp"] * simulation.bar_interval / self.MARKET.year_freq(  # type: ignore[union-attr]
+            simulation.bar_interval
+        )
+        strategy = simulation.value.values
+        gross_values = None if gross is None else gross.value.values
+        benchmark_values = None if benchmark is None else benchmark.value.values
+
+        init_cash = float(strategy[0])
+        curves = {
+            "universe_value": ("timestamp", universe * init_cash),
+            "group_value": (("group", "timestamp"), group_values * init_cash),
+        }
+        if gross_values is not None:
+            curves["gross_value"] = ("timestamp", gross_values)
+        simulation.attribution = xr.Dataset(
+            curves,
+            coords={"timestamp": simulation.value.timestamp.values, "group": np.arange(1, groups + 1)},
+        )
+
+        def growth(curve) -> float | None:
+            return None if curve is None else annualized_log_growth(curve, years)
+
+        return {
+            "score_label": label,
+            "groups": groups,
+            "decomposition": excess_decomposition(strategy, gross_values, universe, benchmark_values, years),
+            "annualized_log_return": {
+                "strategy": growth(strategy),
+                "gross": growth(gross_values),
+                "universe": growth(universe),
+                "benchmark": growth(benchmark_values),
+            },
+            "group_annualized_log_return": [growth(curve) for curve in group_values],
+        }
+
+    def _simulate_without_costs(
+        self, weights: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray
+    ) -> SimulationResult | None:
+        """Simulate ``weights`` without fees or slippage, for the attribution's cost part.
+
+        The default returns ``None``: an engine that cannot leaves the cost
+        part out of the attribution.
+        """
+        return None
 
     def _signal_metrics(self) -> dict:
         """Return metrics about the last ``_generate_signals`` call, for ``metrics.json``.
@@ -2691,6 +2810,7 @@ class BaseBacktester(Component, ABC):
                 metrics=block,
                 **chart,
                 **self._report_portfolio_inputs(weights, simulation),
+                attribution=simulation.attribution,
             )
 
         return write_backtest_run(
@@ -2786,12 +2906,16 @@ class BaseBacktester(Component, ABC):
         """Return the equity curve a run directory records.
 
         ``value`` and ``returns``, plus ``benchmark_value`` and
-        ``benchmark_returns`` on the same ``timestamp`` axis with a benchmark.
+        ``benchmark_returns`` on the same ``timestamp`` axis with a benchmark,
+        and the attribution curves (``universe_value``, ``gross_value``,
+        ``group_value`` on ``(group, timestamp)``) after a model run.
         """
         equity = {"value": simulation.value, "returns": simulation.returns}
         if benchmark is not None:
             equity["benchmark_value"] = benchmark.value
             equity["benchmark_returns"] = benchmark.returns
+        if simulation.attribution is not None:
+            equity.update(simulation.attribution.data_vars)
         return xr.Dataset(equity)
 
     def _prediction_panel(self, predictions: xr.Dataset | None) -> PredictionPanel | None:

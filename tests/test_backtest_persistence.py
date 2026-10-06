@@ -244,8 +244,9 @@ def test_the_weights_round_trip_identically(overlap_run):
 def test_the_equity_curve_has_value_and_returns_on_timestamp(overlap_run):
     result = overlap_run["result"]
     equity = BacktestRun.open(result.run_dir).equity()
-    assert set(equity.data_vars) == {"value", "returns"}
-    for name in ("value", "returns"):
+    # Plus the attribution curves a model run records (test_backtest_attribution.py).
+    assert set(equity.data_vars) == {"value", "returns", "universe_value", "gross_value", "group_value"}
+    for name in ("value", "returns", "universe_value", "gross_value"):
         assert equity[name].dims == ("timestamp",)
     np.testing.assert_array_equal(
         equity["value"].values, result.simulation.value.values

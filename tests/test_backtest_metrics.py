@@ -406,7 +406,9 @@ def test_from_orders_runs_exactly_once_per_run_even_with_an_overlap(
     assert result.metrics["in_sample_range"] is not None
     assert result.metrics["in_sample"] is not None
     assert result.metrics["out_of_sample"] is not None
-    assert len(calls) == 1
+    # One simulation with costs, sliced afterwards; the second is the same
+    # weights without costs, for the attribution's cost part.
+    assert len(calls) == 2
 
 
 def test_slice_total_return_is_compounded_from_the_single_simulations_returns(

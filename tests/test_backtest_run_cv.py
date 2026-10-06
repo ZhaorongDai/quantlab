@@ -499,7 +499,9 @@ def test_stitched_curve_is_one_continuous_simulation(
 
     result = _backtester(tmp_path, cv_project).run_cv()
 
-    assert len(calls) == N_FOLDS + 1
+    # Every fold simulates once; the stitched pass once with costs and once
+    # without (the attribution's cost part).
+    assert len(calls) == N_FOLDS + 2
     for fold in range(N_FOLDS):
         np.testing.assert_array_equal(
             calls[fold].to_numpy().astype("datetime64[ns]"),
