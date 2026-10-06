@@ -203,6 +203,9 @@ class Use4RiskConfig(FactorRiskConfig):
     #: Bars of specific returns the autocorrelations are estimated from. Our
     #: choice: three half-lives.
     specific_autocorrelation_window: int = 756
+    #: Processes the estimate rows are computed in; 1 computes them in this
+    #: one. The rows do not depend on it.
+    njobs: int = 1
     #: Fewest observations in its window for a factor variance, a pair's
     #: correlation, a symbol's specific volatility or a lagged autocorrelation
     #: to be estimated; NaN with fewer (a lag term: none). Our choice.

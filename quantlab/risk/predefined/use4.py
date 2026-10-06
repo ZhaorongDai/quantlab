@@ -32,11 +32,14 @@ of the excess returns of ``t`` on the exposures of ``t-1``:
 
 """
 
+import dataclasses
 import warnings
+from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+from joblib import Parallel, delayed
 
 from quantlab.dataset.base import InsufficientHistoryError
 from quantlab.risk.base import FactorRiskModel
@@ -322,6 +325,8 @@ class Use4RiskModel(FactorRiskModel):
                     f"{owner}: {prefix}_lags must be at least 0 and below its window, "
                     f"{window}; got {getattr(config, f'{prefix}_lags')}."
                 )
+        if config.njobs < 1:
+            raise ValueError(f"{owner}: njobs must be at least 1, got {config.njobs}.")
         windows = self._estimate_windows(config)
         if not 2 <= config.min_observations <= min(windows):
             raise ValueError(
@@ -653,6 +658,7 @@ class Use4RiskModel(FactorRiskModel):
             If the regression store has no recorded range, or its recorded
             range does not contain the bars read (``RiskStore.read``).
         """
+        config = self.config
         owner = f"{self.class_name}.estimate.compute()"
         first, last = check_range(start, end, owner)
         regression = self.regression
@@ -686,11 +692,35 @@ class Use4RiskModel(FactorRiskModel):
         count = max(stop - begin, 0)
         covariance = np.full((count, len(names), len(names)), np.nan)
         specific_risk = np.full((count, specific_returns.shape[1]), np.nan)
+        parameters = _EstimateParameters.of(config)
+        longest = max(self._estimate_windows(config))
+        # Each row reads only its windows, so chunks of rows are independent
+        # and the result does not depend on njobs. A chunk gets the rows its
+        # windows reach, no more.
+        ends = offset + np.arange(count) + 1  # rows before ``end`` end at the bar
+        chunks = [
+            chunk for chunk in np.array_split(ends, min(count, config.njobs * 4) or 1)
+            if len(chunk)
+        ]
+        tasks = []
+        for chunk in chunks:
+            first = max(int(chunk[0]) - longest, 0)
+            tasks.append(delayed(_estimate_rows)(
+                factor_returns[first : chunk[-1]],
+                specific_returns[first : chunk[-1]],
+                chunk - first,
+                parameters,
+            ))
         with Timer(f"{self.class_name}: estimate"):
-            for row in range(count):
-                at = offset + row + 1  # rows before ``at`` end at the bar
-                covariance[row] = self._factor_covariance(factor_returns[:at])
-                specific_risk[row] = self._specific_risk(specific_returns[:at])
+            if config.njobs == 1:
+                results = [task[0](*task[1], **task[2]) for task in tasks]
+            else:
+                results = Parallel(n_jobs=config.njobs)(tasks)
+        row = 0
+        for chunk_covariance, chunk_specific in results:
+            covariance[row : row + len(chunk_covariance)] = chunk_covariance
+            specific_risk[row : row + len(chunk_specific)] = chunk_specific
+            row += len(chunk_covariance)
         return xr.Dataset(
             {
                 "factor_covariance": (("timestamp", "factor_i", "factor_j"), covariance),
@@ -704,61 +734,112 @@ class Use4RiskModel(FactorRiskModel):
             },
         )
 
-    def _factor_covariance(self, history: np.ndarray) -> np.ndarray:
-        """Return the ``[K, K]`` factor covariance at the last row of ``history``."""
-        config = self.config
-        least = config.min_observations
-        volatility_window = np.ascontiguousarray(history[-config.volatility_window :])
-        covariance, _, _, observed = _pairwise_moments(
-            volatility_window, config.volatility_half_life
-        )
-        variance = np.diag(covariance)
-        if config.volatility_lags:
-            half_life, window = self._volatility_autocorrelation(config)
-            variance = variance * _newey_west_multiplier(
-                history[-window:], half_life, config.volatility_lags, least
-            )
-        variance = np.where(np.diag(observed) >= least, variance, np.nan)
-        correlation_window = np.ascontiguousarray(history[-config.correlation_window :])
-        covariance, variance_i, variance_j, observed = _pairwise_moments(
-            correlation_window, config.correlation_half_life
-        )
-        if config.correlation_lags:
-            lagged = _lagged_moments(
-                correlation_window, config.correlation_half_life, config.correlation_lags, least
-            )
-            summed = np.einsum("l,lij->ij", _bartlett_weights(config.correlation_lags), lagged)
-            covariance = covariance + summed + summed.T
-            own = 2.0 * np.diag(summed)
-            variance_i = variance_i + own[:, None]
-            variance_j = variance_j + own[None, :]
-        with np.errstate(divide="ignore", invalid="ignore"):
-            correlation = covariance / np.sqrt(variance_i * variance_j)
-        correlation[observed < least] = np.nan
-        np.fill_diagonal(correlation, 1.0)
-        sigma = np.sqrt(np.clip(variance, 0.0, None))
-        return correlation * np.outer(sigma, sigma)
 
-    def _specific_risk(self, history: np.ndarray) -> np.ndarray:
-        """Return each symbol's specific volatility at the last row of ``history``."""
-        config = self.config
-        window = np.ascontiguousarray(history[-config.specific_window :])
-        weights = _exponential_weights(len(window), config.specific_half_life)[:, None]
-        present = np.isfinite(window)
-        values = np.where(present, window, 0.0)
-        total = (weights * present).sum(axis=0)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            mean = (weights * values).sum(axis=0) / total
-            variance = (weights * present * (values - mean) ** 2).sum(axis=0) / total
-        if config.specific_lags:
-            variance = variance * _newey_west_multiplier(
-                history[-config.specific_autocorrelation_window :],
-                config.specific_autocorrelation_half_life,
-                config.specific_lags,
-                config.min_observations,
-            )
-        enough = present.sum(axis=0) >= config.min_observations
-        return np.where(enough, np.sqrt(variance), np.nan)
+
+@dataclass(frozen=True)
+class _EstimateParameters:
+    """The numbers the estimate rows are computed from, without the model's components.
+
+    What a worker process receives in place of the config, whose exposures
+    factor and dataset need not pickle.
+    """
+
+    volatility_half_life: float
+    volatility_window: int
+    volatility_lags: int
+    volatility_autocorrelation_half_life: float
+    volatility_autocorrelation_window: int
+    correlation_half_life: float
+    correlation_window: int
+    correlation_lags: int
+    specific_half_life: float
+    specific_window: int
+    specific_lags: int
+    specific_autocorrelation_half_life: float
+    specific_autocorrelation_window: int
+    min_observations: int
+
+    @classmethod
+    def of(cls, config: Use4RiskConfig) -> "_EstimateParameters":
+        """Return the parameters of ``config``, its defaults resolved."""
+        half_life, window = Use4RiskModel._volatility_autocorrelation(config)
+        fields = {f.name for f in dataclasses.fields(cls)}
+        values = {name: getattr(config, name) for name in fields}
+        values.update(
+            volatility_autocorrelation_half_life=half_life,
+            volatility_autocorrelation_window=window,
+        )
+        return cls(**values)
+
+
+def _estimate_rows(
+    factor_returns: np.ndarray,
+    specific_returns: np.ndarray,
+    ends: np.ndarray,
+    parameters: _EstimateParameters,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the factor covariances and specific risks of the bars ending before each of ``ends``."""
+    covariance = np.stack([_factor_covariance(factor_returns[:end], parameters) for end in ends])
+    specific = np.stack([_specific_risk(specific_returns[:end], parameters) for end in ends])
+    return covariance, specific
+
+
+def _factor_covariance(history: np.ndarray, config: "_EstimateParameters") -> np.ndarray:
+    """Return the ``[K, K]`` factor covariance at the last row of ``history``."""
+    least = config.min_observations
+    volatility_window = np.ascontiguousarray(history[-config.volatility_window :])
+    covariance, _, _, observed = _pairwise_moments(
+        volatility_window, config.volatility_half_life
+    )
+    variance = np.diag(covariance)
+    if config.volatility_lags:
+        variance = variance * _newey_west_multiplier(
+            history[-config.volatility_autocorrelation_window :],
+            config.volatility_autocorrelation_half_life,
+            config.volatility_lags,
+            least,
+        )
+    variance = np.where(np.diag(observed) >= least, variance, np.nan)
+    correlation_window = np.ascontiguousarray(history[-config.correlation_window :])
+    covariance, variance_i, variance_j, observed = _pairwise_moments(
+        correlation_window, config.correlation_half_life
+    )
+    if config.correlation_lags:
+        lagged = _lagged_moments(
+            correlation_window, config.correlation_half_life, config.correlation_lags, least
+        )
+        summed = np.einsum("l,lij->ij", _bartlett_weights(config.correlation_lags), lagged)
+        covariance = covariance + summed + summed.T
+        own = 2.0 * np.diag(summed)
+        variance_i = variance_i + own[:, None]
+        variance_j = variance_j + own[None, :]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        correlation = covariance / np.sqrt(variance_i * variance_j)
+    correlation[observed < least] = np.nan
+    np.fill_diagonal(correlation, 1.0)
+    sigma = np.sqrt(np.clip(variance, 0.0, None))
+    return correlation * np.outer(sigma, sigma)
+
+
+def _specific_risk(history: np.ndarray, config: "_EstimateParameters") -> np.ndarray:
+    """Return each symbol's specific volatility at the last row of ``history``."""
+    window = np.ascontiguousarray(history[-config.specific_window :])
+    weights = _exponential_weights(len(window), config.specific_half_life)[:, None]
+    present = np.isfinite(window)
+    values = np.where(present, window, 0.0)
+    total = (weights * present).sum(axis=0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean = (weights * values).sum(axis=0) / total
+        variance = (weights * present * (values - mean) ** 2).sum(axis=0) / total
+    if config.specific_lags:
+        variance = variance * _newey_west_multiplier(
+            history[-config.specific_autocorrelation_window :],
+            config.specific_autocorrelation_half_life,
+            config.specific_lags,
+            config.min_observations,
+        )
+    enough = present.sum(axis=0) >= config.min_observations
+    return np.where(enough, np.sqrt(variance), np.nan)
 
 
 __all__ = ["Use4RiskModel"]

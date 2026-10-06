@@ -262,3 +262,15 @@ def test_factor_autocorrelations_can_use_their_own_half_life_and_window(tmp_path
             np.testing.assert_allclose(got[t, k], expected, rtol=1e-9, atol=1e-15, err_msg=f"{t},{k}")
     # The window counts in the warm-up.
     assert model.estimate_warmup_bars == max(12, WINDOWS["correlation_window"]) - 1
+
+
+def test_the_estimates_do_not_depend_on_njobs(tmp_path, planted):
+    stores = []
+    for njobs in (1, 3):
+        model = _risk_model(tmp_path, f"jobs{njobs}", planted=planted, **LAGS, njobs=njobs)
+        model.regression.build(_day(START), _day(_T - 1))
+        model.estimate.build(_day(START), _day(_T - 1))
+        stores.append(model.estimate.read(_day(START), _day(_T - 1)).load())
+    xr.testing.assert_identical(stores[0], stores[1])
+    with pytest.raises(ValueError, match="njobs"):
+        type(model)(dataclasses.replace(model.config, njobs=0))
