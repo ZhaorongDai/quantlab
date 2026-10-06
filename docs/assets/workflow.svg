@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+<defs>
+<filter id="sh" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.10"/></filter>
+<marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#64748b"/></marker>
+<marker id="arl" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#d97706"/></marker>
+<linearGradient id="spine" x1="0" x2="1"><stop offset="0" stop-color="#0e7490"/><stop offset="1" stop-color="#be185d"/></linearGradient>
+</defs>
+<rect width="1600" height="900" rx="24" fill="#f8fafc"/>
+<text x="40.0" y="70.0" font-size="32" fill="#0f172a" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">A quant research workflow with quantlab</text>
+<text x="40.0" y="106.0" font-size="17" fill="#475569" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">From raw market data to a reproducible backtest: six stages, one data contract, every run rebuildable</text>
+<rect x="40.0" y="150" width="230.0" height="330" rx="16" fill="#ffffff" stroke="#e2e8f0" filter="url(#sh)"/>
+<path d="M40.0,166 a16,16 0 0 1 16,-16 h198.0 a16,16 0 0 1 16,16 v48 h-230.0 z" fill="#0e7490"/>
+<circle cx="70.0" cy="182" r="15" fill="#ffffff" fill-opacity="0.22"/>
+<text x="70.0" y="188.0" font-size="17" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">1</text>
+<text x="94.0" y="189.0" font-size="19" fill="#ffffff" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Data sources</text>
+<circle cx="62.0" cy="245" r="3.5" fill="#0e7490"/>
+<text x="74.0" y="250.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">WRDS CRSP &amp; TAQ</text>
+<circle cx="62.0" cy="279" r="3.5" fill="#0e7490"/>
+<text x="74.0" y="284.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Sharadar · FRED</text>
+<circle cx="62.0" cy="313" r="3.5" fill="#0e7490"/>
+<text x="74.0" y="318.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Tiingo · Alpaca</text>
+<circle cx="62.0" cy="347" r="3.5" fill="#0e7490"/>
+<text x="74.0" y="352.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Your DataFrame</text>
+<circle cx="62.0" cy="381" r="3.5" fill="#0e7490"/>
+<text x="74.0" y="386.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">(Yahoo, CSV, …)</text>
+<rect x="54.0" y="422" width="202.0" height="40" rx="10" fill="#ecfeff" stroke="#0e7490" stroke-opacity="0.35"/>
+<text x="155.0" y="448.0" font-size="14" fill="#0e7490" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">resumable downloads</text>
+<line x1="273.0" y1="315.0" x2="295.0" y2="315.0" stroke="#64748b" stroke-width="2.5" marker-end="url(#ar)"/>
+<rect x="298.0" y="150" width="230.0" height="330" rx="16" fill="#ffffff" stroke="#e2e8f0" filter="url(#sh)"/>
+<path d="M298.0,166 a16,16 0 0 1 16,-16 h198.0 a16,16 0 0 1 16,16 v48 h-230.0 z" fill="#0369a1"/>
+<circle cx="328.0" cy="182" r="15" fill="#ffffff" fill-opacity="0.22"/>
+<text x="328.0" y="188.0" font-size="17" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">2</text>
+<text x="352.0" y="189.0" font-size="19" fill="#ffffff" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Dataset</text>
+<circle cx="320.0" cy="245" r="3.5" fill="#0369a1"/>
+<text x="332.0" y="250.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">MarketDataset</text>
+<circle cx="320.0" cy="279" r="3.5" fill="#0369a1"/>
+<text x="332.0" y="284.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">FrameDataset (memory)</text>
+<circle cx="320.0" cy="313" r="3.5" fill="#0369a1"/>
+<text x="332.0" y="318.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">point-in-time universe</text>
+<circle cx="320.0" cy="347" r="3.5" fill="#0369a1"/>
+<text x="332.0" y="352.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">delistings kept</text>
+<circle cx="320.0" cy="381" r="3.5" fill="#0369a1"/>
+<text x="332.0" y="386.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">resample · merge</text>
+<rect x="312.0" y="422" width="202.0" height="40" rx="10" fill="#f0f9ff" stroke="#0369a1" stroke-opacity="0.35"/>
+<text x="413.0" y="448.0" font-size="14" fill="#0369a1" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">price panel · Zarr</text>
+<line x1="531.0" y1="315.0" x2="553.0" y2="315.0" stroke="#64748b" stroke-width="2.5" marker-end="url(#ar)"/>
+<rect x="556.0" y="150" width="230.0" height="330" rx="16" fill="#ffffff" stroke="#e2e8f0" filter="url(#sh)"/>
+<path d="M556.0,166 a16,16 0 0 1 16,-16 h198.0 a16,16 0 0 1 16,16 v48 h-230.0 z" fill="#4338ca"/>
+<circle cx="586.0" cy="182" r="15" fill="#ffffff" fill-opacity="0.22"/>
+<text x="586.0" y="188.0" font-size="17" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">3</text>
+<text x="610.0" y="189.0" font-size="19" fill="#ffffff" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Factors &amp; labels</text>
+<circle cx="578.0" cy="245" r="3.5" fill="#4338ca"/>
+<text x="590.0" y="250.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Alpha158 · Alpha101</text>
+<circle cx="578.0" cy="279" r="3.5" fill="#4338ca"/>
+<text x="590.0" y="284.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Barra-style exposures</text>
+<circle cx="578.0" cy="313" r="3.5" fill="#4338ca"/>
+<text x="590.0" y="318.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">KunQuant / Polars</text>
+<circle cx="578.0" cy="347" r="3.5" fill="#4338ca"/>
+<text x="590.0" y="352.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">forward-return labels</text>
+<circle cx="578.0" cy="381" r="3.5" fill="#4338ca"/>
+<text x="590.0" y="386.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">neutralization</text>
+<rect x="570.0" y="422" width="202.0" height="40" rx="10" fill="#eef2ff" stroke="#4338ca" stroke-opacity="0.35"/>
+<text x="671.0" y="448.0" font-size="14" fill="#4338ca" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">factor panel · Zarr</text>
+<line x1="789.0" y1="315.0" x2="811.0" y2="315.0" stroke="#64748b" stroke-width="2.5" marker-end="url(#ar)"/>
+<rect x="814.0" y="150" width="230.0" height="330" rx="16" fill="#ffffff" stroke="#e2e8f0" filter="url(#sh)"/>
+<path d="M814.0,166 a16,16 0 0 1 16,-16 h198.0 a16,16 0 0 1 16,16 v48 h-230.0 z" fill="#6d28d9"/>
+<circle cx="844.0" cy="182" r="15" fill="#ffffff" fill-opacity="0.22"/>
+<text x="844.0" y="188.0" font-size="17" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">4</text>
+<text x="868.0" y="189.0" font-size="19" fill="#ffffff" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Return model</text>
+<circle cx="836.0" cy="245" r="3.5" fill="#6d28d9"/>
+<text x="848.0" y="250.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">XGBoost · PyTorch</text>
+<circle cx="836.0" cy="279" r="3.5" fill="#6d28d9"/>
+<text x="848.0" y="284.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">RealMLP · GATs · MASTER</text>
+<circle cx="836.0" cy="313" r="3.5" fill="#6d28d9"/>
+<text x="848.0" y="318.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">seed &amp; model ensembles</text>
+<circle cx="836.0" cy="347" r="3.5" fill="#6d28d9"/>
+<text x="848.0" y="352.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">purged walk-forward CV</text>
+<circle cx="836.0" cy="381" r="3.5" fill="#6d28d9"/>
+<text x="848.0" y="386.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">IC / RankIC metrics</text>
+<rect x="828.0" y="422" width="202.0" height="40" rx="10" fill="#f5f3ff" stroke="#6d28d9" stroke-opacity="0.35"/>
+<text x="929.0" y="448.0" font-size="14" fill="#6d28d9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">checkpoint + run.json</text>
+<line x1="1047.0" y1="315.0" x2="1069.0" y2="315.0" stroke="#64748b" stroke-width="2.5" marker-end="url(#ar)"/>
+<rect x="1072.0" y="150" width="230.0" height="330" rx="16" fill="#ffffff" stroke="#e2e8f0" filter="url(#sh)"/>
+<path d="M1072.0,166 a16,16 0 0 1 16,-16 h198.0 a16,16 0 0 1 16,16 v48 h-230.0 z" fill="#a21caf"/>
+<circle cx="1102.0" cy="182" r="15" fill="#ffffff" fill-opacity="0.22"/>
+<text x="1102.0" y="188.0" font-size="17" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">5</text>
+<text x="1126.0" y="189.0" font-size="19" fill="#ffffff" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Portfolio</text>
+<circle cx="1094.0" cy="245" r="3.5" fill="#a21caf"/>
+<text x="1106.0" y="250.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">TopN long / long-short</text>
+<circle cx="1094.0" cy="279" r="3.5" fill="#a21caf"/>
+<text x="1106.0" y="284.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">mean-variance (cvxpy)</text>
+<circle cx="1094.0" cy="313" r="3.5" fill="#a21caf"/>
+<text x="1106.0" y="318.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Ledoit-Wolf · USE4</text>
+<circle cx="1094.0" cy="347" r="3.5" fill="#a21caf"/>
+<text x="1106.0" y="352.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">risk model</text>
+<circle cx="1094.0" cy="381" r="3.5" fill="#a21caf"/>
+<text x="1106.0" y="386.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">exposure &amp; turnover</text>
+<rect x="1086.0" y="422" width="202.0" height="40" rx="10" fill="#fdf4ff" stroke="#a21caf" stroke-opacity="0.35"/>
+<text x="1187.0" y="448.0" font-size="14" fill="#a21caf" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">target weights</text>
+<line x1="1305.0" y1="315.0" x2="1327.0" y2="315.0" stroke="#64748b" stroke-width="2.5" marker-end="url(#ar)"/>
+<rect x="1330.0" y="150" width="230.0" height="330" rx="16" fill="#ffffff" stroke="#e2e8f0" filter="url(#sh)"/>
+<path d="M1330.0,166 a16,16 0 0 1 16,-16 h198.0 a16,16 0 0 1 16,16 v48 h-230.0 z" fill="#be185d"/>
+<circle cx="1360.0" cy="182" r="15" fill="#ffffff" fill-opacity="0.22"/>
+<text x="1360.0" y="188.0" font-size="17" fill="#ffffff" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">6</text>
+<text x="1384.0" y="189.0" font-size="19" fill="#ffffff" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Backtest</text>
+<circle cx="1352.0" cy="245" r="3.5" fill="#be185d"/>
+<text x="1364.0" y="250.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">vectorbt engine</text>
+<circle cx="1352.0" cy="279" r="3.5" fill="#be185d"/>
+<text x="1364.0" y="284.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">fill at next bar&#x27;s open</text>
+<circle cx="1352.0" cy="313" r="3.5" fill="#be185d"/>
+<text x="1364.0" y="318.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">benchmark &amp; excess</text>
+<circle cx="1352.0" cy="347" r="3.5" fill="#be185d"/>
+<text x="1364.0" y="352.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">in / out of sample</text>
+<circle cx="1352.0" cy="381" r="3.5" fill="#be185d"/>
+<text x="1364.0" y="386.0" font-size="15" fill="#1e293b" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">P&amp;L attribution</text>
+<rect x="1344.0" y="422" width="202.0" height="40" rx="10" fill="#fdf2f8" stroke="#be185d" stroke-opacity="0.35"/>
+<text x="1445.0" y="448.0" font-size="14" fill="#be185d" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">run dir + report.html</text>
+<rect x="40.0" y="524" width="1520.0" height="116" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-dasharray="6 5"/>
+<text x="62.0" y="560.0" font-size="19" fill="#b45309" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">↻ Research loop</text>
+<text x="62.0" y="588.0" font-size="14.5" fill="#78350f" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Evaluate at every stage,</text>
+<text x="62.0" y="609.0" font-size="14.5" fill="#78350f" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">then iterate on the hypothesis:</text>
+<text x="62.0" y="630.0" font-size="14.5" fill="#78350f" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">a new factor, label or model</text>
+<line x1="695.0" y1="484" x2="695.0" y2="520" stroke="#d97706" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arl)"/>
+<text x="695.0" y="574.0" font-size="16" fill="#b45309" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Factor report</text>
+<text x="695.0" y="600.0" font-size="14.5" fill="#78350f" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">IC · quantiles · turnover</text>
+<line x1="929.0" y1="484" x2="929.0" y2="520" stroke="#d97706" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arl)"/>
+<text x="929.0" y="574.0" font-size="16" fill="#b45309" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Walk-forward CV</text>
+<text x="929.0" y="600.0" font-size="14.5" fill="#78350f" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">fold IC · holdout test</text>
+<line x1="1445.0" y1="484" x2="1445.0" y2="520" stroke="#d97706" stroke-width="2" stroke-dasharray="4 4" marker-end="url(#arl)"/>
+<text x="1445.0" y="574.0" font-size="16" fill="#b45309" font-weight="700" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Attribution</text>
+<text x="1445.0" y="600.0" font-size="14.5" fill="#78350f" font-weight="400" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">universe · selection · costs</text>
+<line x1="596.0" y1="522" x2="596.0" y2="486" stroke="#d97706" stroke-width="2.5" marker-end="url(#arl)"/>
+<rect x="40" y="676" width="1520" height="52" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="40" y="676" width="8" height="52" rx="4" fill="#0e7490"/>
+<text x="66.0" y="709.0" font-size="17" fill="#0e7490" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">One data contract</text>
+<text x="340.0" y="709.0" font-size="15.5" fill="#334155" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">every stage exchanges an xarray.Dataset on (timestamp, symbol), stored as Zarr; no DataFrame hand-offs</text>
+<rect x="40" y="740" width="1520" height="52" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="40" y="740" width="8" height="52" rx="4" fill="#4338ca"/>
+<text x="66.0" y="773.0" font-size="17" fill="#4338ca" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Config-driven &amp; reproducible</text>
+<text x="340.0" y="773.0" font-size="15.5" fill="#334155" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">each run writes config.json, data fingerprints and code version; rebuild() reruns it exactly</text>
+<rect x="40" y="804" width="1520" height="52" rx="12" fill="#ffffff" stroke="#e2e8f0"/>
+<rect x="40" y="804" width="8" height="52" rx="4" fill="#be185d"/>
+<text x="66.0" y="837.0" font-size="17" fill="#be185d" font-weight="700" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">Pluggable</text>
+<text x="340.0" y="837.0" font-size="15.5" fill="#334155" font-weight="400" text-anchor="start" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK SC', Helvetica, Arial, sans-serif">each stage is a root class in &lt;layer&gt;/base.py: swap a data source, factor, model or optimizer without touching the rest</text>
+</svg>

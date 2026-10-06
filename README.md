@@ -15,10 +15,10 @@
 <p align="center">English | <a href="README.zh-CN.md">简体中文</a></p>
 
 quantlab is a Python backend for quantitative equity research. It takes you from raw market
-data to a backtested trading strategy in five stages: download prices, turn them into a
-clean panel, compute factors and labels, train a model that predicts future returns, and
-backtest the portfolio those predictions imply. Every stage is driven by a small
-configuration object, so any run can be saved, rebuilt and repeated exactly.
+data to a backtested portfolio in one pipeline: load prices into a clean panel, compute
+factors and labels, train a model that predicts future returns, turn the predictions into
+target weights, and backtest them. Every stage is driven by a small configuration object, so
+any run can be saved, rebuilt and repeated exactly.
 
 - **Documentation:** [docs/README.md](docs/README.md)
 - **Using your own DataFrames:** [docs/api.md](docs/api.md)
@@ -27,32 +27,53 @@ configuration object, so any run can be saved, rebuilt and repeated exactly.
 - **Bug reports:** https://github.com/ZhaorongDai/quantlab/issues
 - **Contributing:** [CONTRIBUTING.md](CONTRIBUTING.md)
 
-```text
- data source  ->  dataset  ->  factors and labels  ->  model  ->  backtest
- Tiingo,          raw files     KunQuant or             XGBoost,    target weights,
- Alpaca,          to a panel    Polars                  PyTorch,    vectorbt,
- WRDS                                                   pytabkit    HTML report
-```
+## The research workflow
 
-## What it offers
+<p align="center">
+  <img src="docs/assets/workflow.svg" alt="The quantlab research workflow: data sources, dataset, factors and labels, return model, portfolio and backtest, with a research loop feeding evaluation back into the factor stage" width="100%">
+</p>
 
-All stages exchange data in one format: an `xarray.Dataset` whose variables are laid out on
-the two dimensions `timestamp` and `symbol`. We call such a dataset a *panel*. Panels are
-stored on disk as Zarr, and models train on them directly, so there is no conversion to and
-from DataFrames between stages.
+A study in quantlab runs through six stages. Each stage is a root class in its own layer
+(`quantlab/<layer>/base.py`), takes the previous stage's output and hands on its own:
 
-Data comes from Tiingo, Alpaca and WRDS (CRSP daily stock files and TAQ quotes). Downloads
-can be interrupted and resumed. To avoid *survivorship bias*, the error of testing only on companies that
-still exist today, quantlab can build universes from historical index membership and from
-full-market listings that include delisted stocks.
+| Stage | What it does | Main classes | Output |
+|-------|--------------|--------------|--------|
+| 1. Data sources | Resumable downloads from WRDS (CRSP, TAQ), Sharadar, FRED, Tiingo and Alpaca, or your own DataFrame | `DataSourceRegistry`, `scripts/wrds/`, `scripts/sharadar/` | Raw files |
+| 2. Dataset | Turns raw bars into a panel; point-in-time universes, delisted stocks kept, resampling and merging | `MarketDataset`, `CrspStockDataset`, `FrameDataset` | Price panel |
+| 3. Factors and labels | Compiled factor graphs (Alpha158, Alpha101, Barra-style exposures, neutralization) and forward-return labels | `Alpha158Stock`, `BarraStyle`, `Return` | Factor panel |
+| 4. Return model | Tree models and neural networks behind one interface, seed and model ensembles, purged walk-forward CV | `XGBoostRegressor`, `RealMLPRegressor`, `GATsRegressor`, `SeedEnsemble` | Checkpoint, `run.json` |
+| 5. Portfolio | Predictions to target weights: TopN, or mean-variance with a Ledoit-Wolf or USE4 factor risk model | `TopNConstructor`, `MeanVarianceOptimizer` | Target weights |
+| 6. Backtest | vectorbt simulation with next-bar fills, fees, delisting settlement and a benchmark | `USEquityCrossectionSelectStockVectorBt` | Run directory, `report.html` |
 
-Factors are computed with [KunQuant](https://github.com/Menooker/KunQuant), which compiles
-factor formulas to native code and can run both on a history and bar by bar, or with Polars
-for quick batch experiments. A factor reads one dataset or several merged into one panel,
-such as an index store with an ETF store, or prices with quotes. Tree models and neural networks share one interface, with
-walk-forward cross-validation built in. The backtester, built on
-[vectorbt](https://vectorbt.dev/), reports in-sample and out-of-sample results separately and
-writes a run directory that can be rebuilt and re-run later.
+Research is rarely a straight line, so evaluation is built into three of the stages:
+`Factor.analyze()` writes an IC and quantile report for every factor, `train_cv` scores
+each walk-forward fold and a holdout, and every backtest splits its return into universe,
+selection and cost parts. What you learn there goes back into stage 3 as the next factor,
+label or model.
+
+## Why quantlab
+
+- **One data contract.** Every stage exchanges an `xarray.Dataset` on the two dimensions
+  `timestamp` and `symbol`, a *panel*, stored on disk as Zarr. Models train on panels
+  directly; there is no DataFrame conversion between stages, and any stage can be swapped
+  without touching the others.
+- **Free of look-ahead and survivorship bias by construction.** Universes come from
+  historical index membership or full-market listings that include delisted stocks; a
+  signal formed at bar t fills at bar t+1's open; a delisted holding is settled at its last
+  price; an order without a real fill price is rejected and the holding kept.
+- **Reproducible runs.** Each training and backtest run writes its configuration, data
+  fingerprints and code version next to its results. `rebuild()` turns a run directory
+  back into the objects that produced it and reruns them to the same equity curve.
+- **Fast factors.** [KunQuant](https://github.com/Menooker/KunQuant) compiles factor
+  formulas to native code and runs them over a whole history or bar by bar, so a factor
+  written for research can later run on live data. Polars is there for quick batch
+  experiments.
+- **Bring your own data.** A pandas or polars frame becomes a dataset through
+  `FrameDataset`, and `quantlab.api` offers factors, labels, a factor report and a
+  backtest as single function calls on frames.
+- **Research-grade reports.** An alphalens-style factor report, model metrics (IC, RankIC,
+  ICIR) per split and per fold, and an HTML backtest report with in-sample and
+  out-of-sample columns and a benchmark comparison.
 
 quantlab is a research backend. It has no web front end and does not send orders to a broker.
 
@@ -67,96 +88,127 @@ cd quantlab
 uv sync
 ```
 
-All model heads, neural-network and tree models alike, use a CUDA GPU when one is available and the CPU otherwise. See the
-[installation guide](docs/getting-started/installation.md) for GPU and macOS notes.
+All model heads, neural-network and tree models alike, use a CUDA GPU when one is available
+and the CPU otherwise. See the [installation guide](docs/getting-started/installation.md) for
+GPU and macOS notes.
 
-## Quick start
+## A pipeline on Yahoo Finance data
 
-The fastest way to see the whole pipeline is the end-to-end example. It builds a synthetic
-price panel, computes factors, trains an XGBoost model, backtests it and rebuilds the run from
-its saved configuration. It needs no network access and no credentials, and runs in about
-half a minute on a laptop.
+[`examples/yahoo_us_equity.py`](examples/yahoo_us_equity.py) runs the whole pipeline on free
+data, with no account and no credentials, in about twenty seconds on a laptop. It downloads
+ten years of daily bars for the 30 Dow Jones stocks and SPY with
+[yfinance](https://github.com/ranaroussi/yfinance), which is not a quantlab dependency:
+
+```bash
+uv run --with yfinance python examples/yahoo_us_equity.py
+```
+
+**1. Data.** yfinance returns a pandas frame. `FrameDataset` holds it in memory as a
+panel, renaming the columns to the split- and dividend-adjusted fields the stock factors and
+the US-equity backtester read. Nothing is written to a Zarr store.
+
+```python
+import yfinance as yf
+from quantlab.dataset.memory import FrameDataset
+
+wide = yf.download(DOW_30 + ["SPY"], start="2015-06-01", end="2025-01-01", auto_adjust=True)
+bars = wide.stack(level="Ticker", future_stack=True).reset_index().dropna(subset=["Close"])
+COLUMNS = {"Date": "timestamp", "Ticker": "symbol", "Open": "adjOpen", "High": "adjHigh",
+           "Low": "adjLow", "Close": "adjClose", "Volume": "adjVolume"}
+stocks, spy = bars[bars.Ticker != "SPY"], bars[bars.Ticker == "SPY"]
+prices = FrameDataset(stocks, columns=COLUMNS)
+```
+
+**2. Factors, label and model.** The 169 Alpha158 factors and the 5-bar open-to-open forward
+return are computed with KunQuant, and an XGBoost model is trained on 2016 to 2021 and tested
+on 2022.
+
+```python
+factor = Alpha158Stock(FactorConfig(dataset=prices, warmup_bars=60, mode="batch",
+                                    data_columns=ADJUSTED, file_path=".../alpha158.zarr"))
+label = Return(FactorConfig(dataset=prices, warmup_bars=0, mode="batch",
+                            data_columns=("adjOpen",), kwargs={"n_forward_periods": 5},
+                            file_path=".../ret_5.zarr"))
+model = XGBoostRegressor(ModelConfig(
+    factors=[factor], labels=[label], model_save_dir=".../models",
+    factor_data_strategy="cal", label_data_strategy="cal",
+    hyperparameters={"num_boost_round": 200, "max_depth": 3, "eta": 0.03},
+    val_size=0.2, start_date="2016-01-01", end_date="2022-12-31",
+    train_start="2016-01-01", train_end="2021-12-31",
+    test_start="2022-01-01", test_end="2022-12-31",
+))
+model.collect()
+checkpoint = model.train()
+```
+
+**3. Portfolio and backtest.** On 2023 and 2024, data the model never saw, every fifth bar
+the ten stocks with the highest predicted return are held in equal weights, against
+buy-and-hold SPY.
+
+```python
+backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    price_dataset=FrameDataset(stocks, columns=COLUMNS),
+    benchmark_dataset=FrameDataset(spy, columns=COLUMNS),
+    model=..., model_mode="load", checkpoint=str(checkpoint),
+    start_date="2023-01-01", end_date="2024-12-31", output_dir=".../backtests",
+    rebalance_periods=5,
+    constructor=TopNConstructor(TopNConfig(direction="long_only", top_n=10)),
+))
+result = backtester.run()
+```
+
+The script prints:
+
+```text
+72,420 rows for 30 stocks, 2,414 for SPY
+Price panel: {'timestamp': 2414, 'symbol': 30}
+169 factors; label ['ret_5']
+2022 test: IC 0.0537, RankIC 0.0365
+2023-2024             top-10       SPY
+Total Return [%]       35.02     57.11
+Sharpe Ratio            1.28      1.84
+Max Drawdown [%]        9.54      9.97
+Run directory, with the HTML report: output/yahoo_us_equity/backtests/USEquityCrossectionSelectStockVectorBt_<time>
+Rebuilt from its run directory, same equity curve: True
+```
+
+and writes the backtest report, shown here in part:
+
+<p align="center">
+  <img src="docs/assets/yahoo_backtest_report.png" alt="Backtest report of a top-10 Dow 30 strategy against buy-and-hold SPY, 2023 to 2024" width="820">
+</p>
+
+The strategy trails SPY over this window; the example is here to show the pipeline, not a
+strategy to trade. Its universe is today's Dow 30, so every stock in it is one that
+survived, and Yahoo's prices are not point-in-time. For research, use the CRSP or Sharadar
+universes below. Yahoo's adjusted prices also change in their last digits from one request
+to the next, so the script keeps the first download as `output/yahoo_us_equity/bars.parquet`
+and reads it on later runs.
+
+## More examples
+
+The offline [quick start](docs/getting-started/quickstart.md) builds a synthetic price panel
+and runs the same pipeline with no network access, in about half a minute:
 
 ```bash
 uv run python examples/quickstart.py
 ```
 
-The snippet below shows the two ideas everything else builds on: the registry of data sources
-and the panel format.
-
-```python
-import tempfile
-from pathlib import Path
-
-import numpy as np
-import pandas as pd
-import xarray as xr
-
-from quantlab.dataset.config import DatasetConfig
-from quantlab.dataset.stock import StockDataset
-from quantlab.acquisition.base import DataSourceRegistry
-from quantlab.acquisition.registry import credential_status
-
-# Which vendors can quantlab download from, and are their credentials set?
-for source in DataSourceRegistry.all():
-    print(source.vendor, credential_status(source))
-
-# Write a tiny panel: 5 business days x 3 symbols of adjusted close prices.
-root = Path(tempfile.mkdtemp())
-timestamps = pd.date_range("2024-01-01", periods=5, freq="B")
-symbols = ["AAPL", "MSFT", "NVDA"]
-close = 100 + np.random.default_rng(0).normal(size=(5, 3)).cumsum(axis=0)
-xr.Dataset(
-    {"adjClose": (("timestamp", "symbol"), close)},
-    coords={"timestamp": timestamps, "symbol": symbols},
-).to_zarr(root / "prices.zarr", mode="w")
-
-# Request a date range through a dataset object, the entry point of the pipeline.
-dataset = StockDataset(
-    DatasetConfig(
-        zarr_file_path=str(root / "prices.zarr"),
-        raw_data_dir_path=str(root / "raw"),
-        market="us_equity",
-        frequency="1d",
-    )
-)
-print(dataset.panel("2024-01-01", "2024-01-31"))
-```
-
-```text
-alpaca {'APCA_API_KEY_ID': False, 'APCA_API_SECRET_KEY': False}
-tiingo {'TIINGO_API_KEY': False}
-wrds {'WRDS_USERNAME': False}
-<xarray.Dataset> Size: 208B
-Dimensions:    (timestamp: 5, symbol: 3)
-Coordinates:
-  * timestamp  (timestamp) datetime64[ns] 40B 2024-01-01 ... 2024-01-05
-  * symbol     (symbol) <U4 48B 'AAPL' 'MSFT' 'NVDA'
-Data variables:
-    adjClose   (timestamp, symbol) float64 120B ...
-```
-
-`False` means that source's credentials are not set in your environment. The
-[quickstart guide](docs/getting-started/quickstart.md) walks through the full example step by
-step.
-
-## What the output looks like
-
-The two figures below come from the examples in
-[examples/wrds_us_equity/](examples/wrds_us_equity/README.md), run on CRSP daily bars from
-WRDS: the factor report on the full US market, the backtest on the point-in-time S&P 500.
+[examples/](examples/README.md) has one runnable script per topic (building panels, training
+models, backtesting, data sources) and, for point-in-time research,
+[`wrds_us_equity/`](examples/wrds_us_equity/README.md) (CRSP via WRDS) and
+[`sharadar_us_equity/`](examples/sharadar_us_equity/README.md) (Sharadar). The two figures
+below come from the WRDS examples.
 
 ### Factor report
 
 `Factor.analyze()` pairs every factor with every forward-return label and writes one
-alphalens-style figure per pair: the information coefficient (IC) over time, its distribution,
-monthly mean IC, returns by quantile, the long-short curve, turnover and rank autocorrelation,
-plus a summary table and tidy CSVs. With two or more factors it also clusters them by
-their mean rank correlation and draws a correlation map that stays readable for hundreds of
-factors. This is `MIN5` from the Alpha158 set, the 5-day low
-relative to the close, against the 5-day open-to-open forward return on every common stock
-in CRSP, about 7,200 symbols including the delisted ones, 2012 to 2024, from
-`market_factor_analysis.py`.
+alphalens-style figure per pair: the information coefficient (IC) over time, its
+distribution, monthly mean IC, returns by quantile, the long-short curve, turnover and rank
+autocorrelation, plus a summary table and tidy CSVs. With two or more factors it also
+clusters them by their mean rank correlation. This is `MIN5` from the Alpha158 set, the
+5-day low relative to the close, against the 5-day open-to-open forward return on every
+common stock in CRSP, about 7,200 symbols including the delisted ones, 2012 to 2024.
 
 <p align="center">
   <img src="docs/assets/factor_report.png" alt="Factor report for MIN5 against the 5-day forward return on the full US market" width="820">
@@ -164,13 +216,10 @@ in CRSP, about 7,200 symbols including the delisted ones, 2012 to 2024, from
 
 ### Backtest report
 
-Every backtest writes a run directory with the target weights, the equity curve, a metrics
-file and an HTML report. The report shows the equity curve against the benchmark, the excess
-return and excess drawdown, the drawdown, monthly returns and a monthly-return heatmap, followed
-by the metrics split into in-sample and out-of-sample columns. This is `sp500_xgb_td.py`: a
-long-only top-50 portfolio rebalanced every 5 bars from an XGBoost model trained on 2012 to
-2019, backtested out of sample on 2020 to 2024 against buy-and-hold SPY. Over this window the
-strategy trails SPY; the figure is here to show the report, not a result to copy.
+This is `sp500_xgb_td.py`: a long-only top-50 portfolio on the point-in-time S&P 500,
+rebalanced every 5 bars from an XGBoost model trained on 2012 to 2019, backtested out of
+sample on 2020 to 2024 against buy-and-hold SPY. Over this window the strategy trails SPY;
+the figure is here to show the report, not a result to copy.
 
 <p align="center">
   <img src="docs/assets/backtest_report.png" alt="Backtest report of a top-50 S&P 500 strategy against buy-and-hold SPY, 2020 to 2024" width="820">
@@ -183,30 +232,32 @@ command line and never written to a configuration file or a log.
 
 | Variable | Used for |
 |----------|----------|
+| `WRDS_USERNAME` | WRDS (CRSP and TAQ); the password is read from `~/.pgpass` |
+| `SHARADAR_API_KEY` | Sharadar US equity prices, fundamentals and index membership |
 | `TIINGO_API_KEY` | Tiingo end-of-day US stock prices |
 | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | Alpaca bars, quotes and trades |
-| `WRDS_USERNAME` | WRDS (CRSP and TAQ); the password is read from `~/.pgpass` |
 | `WANDB_API_KEY` | Optional Weights & Biases tracking, when a config names a `WandbTracker` |
 | `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` | Optional MLflow tracking on a server that asks for credentials, when a config names an `MlflowTracker` (`uv sync --extra mlflow`) |
-| `QUANTLAB_DATA_DIR` | Optional root directory the library's config factories derive data paths from; the WRDS scripts take `--download-dir` and `--zarr-dir` instead |
+| `QUANTLAB_DATA_DIR` | Optional root directory the library's config factories derive data paths from; the download scripts take `--download-dir` and `--zarr-dir` instead |
 
-The download scripts live in `scripts/wrds/` (`index.py`, `market.py`, `etf.py`, `nbbo.py`)
-and each prints its options with `--help`, for example
-`uv run python scripts/wrds/index.py --help`. Tiingo, Alpaca and Binance have library
-interfaces only. The [data sources guide](docs/user-guide/data-sources.md) explains where files
-are written and how to resume an interrupted download.
+The download scripts live in `scripts/wrds/` and `scripts/sharadar/`, and each prints its
+options with `--help`, for example `uv run python scripts/wrds/index.py --help`. Tiingo,
+Alpaca and Binance have library interfaces only. The
+[data sources guide](docs/user-guide/data-sources.md) explains where files are written and
+how to resume an interrupted download.
 
 ## Documentation
 
 The [documentation](docs/README.md) is organised in three parts. *Getting started* covers
 installation and the quick start. The *user guide* has one page per pipeline stage: data
-sources, WRDS, datasets, universes, factors, models and backtesting. The *developer guide*
-shows how to add your own data source, dataset, storage backend, factor, model or backtest
-rule, and explains the machinery that makes long jobs safe to interrupt.
+sources, WRDS, datasets, universes, factors, models, portfolio construction and backtesting.
+The *developer guide* shows how to add your own data source, dataset, storage backend,
+factor, model or backtest rule, and explains the machinery that makes long jobs safe to
+interrupt.
 
-If you already hold your data in pandas or polars DataFrames and want one capability, such as
-factors, forward returns, a factor report or a backtest, without the project's stores and
-configurations, start with the [frame API guide](docs/api.md) (`quantlab.api`).
+If you already hold your data in pandas or polars DataFrames and want one capability, such
+as factors, forward returns, a factor report or a backtest, without the project's stores
+and configurations, start with the [frame API guide](docs/api.md) (`quantlab.api`).
 
 Every public class and function also has a docstring in the
 [numpydoc](https://numpydoc.readthedocs.io/en/latest/format.html) format, readable with
