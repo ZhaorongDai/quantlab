@@ -169,10 +169,19 @@ def _style(fig: go.Figure, height: int) -> None:
         height=height, margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor="#fff", plot_bgcolor="#fff",
         font=dict(family="Inter, system-ui, -apple-system, sans-serif", size=12, color=INK2),
         hoverlabel=dict(bgcolor="#fff", bordercolor=GRID, font=dict(color=INK)),
-        legend=dict(orientation="h", y=-0.12, font=dict(size=11)),
+        legend=dict(orientation="h", x=0, y=1.0, xanchor="left", yanchor="bottom", font=dict(size=11),
+                    bgcolor="rgba(0,0,0,0)"),
     )
     fig.update_xaxes(gridcolor=GRID, zerolinecolor=AXIS, linecolor=AXIS, tickfont=dict(color=MUTED))
     fig.update_yaxes(gridcolor=GRID, zerolinecolor=AXIS, linecolor=AXIS, tickfont=dict(color=MUTED))
+
+
+def _padded(values, pad=1.45) -> list[float]:
+    """An x range holding the bars and their outside labels on both sides."""
+    lo = min(min(values), 0.0)
+    hi = max(max(values), 0.0)
+    span = (hi - lo) or 1.0
+    return [lo - span * (pad - 1) if lo < 0 else -span * 0.05, hi + span * (pad - 1) if hi > 0 else span * 0.05]
 
 
 def _div(fig: go.Figure) -> str:
@@ -251,7 +260,8 @@ def cumulative(attribution, height=380) -> go.Figure:
     for (y, text, ink, colour), at in zip(labels, placed):
         fig.add_annotation(x=last, y=at, text=f'<span style="color:{colour}">■</span> {text}', showarrow=False,
                            xanchor="left", xshift=8, font=dict(size=11, color=ink))
-    fig.update_layout(hovermode="x unified", margin=dict(l=10, r=120, t=10, b=10), showlegend=False)
+    fig.update_layout(hovermode="x unified", margin=dict(l=10, r=130, t=10, b=10), showlegend=False)
+    fig.update_xaxes(range=[parts["country"].index[0], last])
     fig.update_yaxes(tickformat=".0%")
     return fig
 
@@ -285,19 +295,23 @@ def styles(seg: dict, attribution, height=380) -> go.Figure:
     ex = [exposure[n] for n in names]
     gr = [growth[n] for n in names]
     fig.add_trace(go.Bar(y=labels, x=ex, orientation="h", marker=dict(color=[POS if v >= 0 else NEG for v in ex]),
-                         hovertemplate="%{y}: exposure %{x:.2f}<extra></extra>", name=""), row=1, col=1)
+                         text=[f"{v:+.2f}" for v in ex], textposition="outside", textfont=dict(color=INK2, size=11),
+                         cliponaxis=False, hovertemplate="%{y}: exposure %{x:.2f}<extra></extra>", name=""), row=1, col=1)
     fig.add_trace(go.Bar(y=labels, x=gr, orientation="h", marker=dict(color=[POS if v >= 0 else NEG for v in gr]),
                          text=[f"{v:+.1%}" for v in gr], textposition="outside", textfont=dict(color=INK2, size=11),
-                         hovertemplate="%{y}: %{x:+.2%} a year<extra></extra>", name=""), row=1, col=2)
-    fig.update_xaxes(tickformat=".0%", row=1, col=2)
-    fig.update_layout(showlegend=False, margin=dict(l=10, r=40, t=30, b=10))
+                         cliponaxis=False, hovertemplate="%{y}: %{x:+.2%} a year<extra></extra>", name=""), row=1, col=2)
+    fig.update_xaxes(range=_padded(ex), row=1, col=1)
+    fig.update_xaxes(tickformat=".0%", range=_padded(gr), row=1, col=2)
+    fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=30, b=10), bargap=0.3)
     fig.update_annotations(font=dict(size=11, color=MUTED))
     return fig
 
 
-def style_heatmap(attribution, height=360) -> go.Figure:
+def style_heatmap(attribution, height=360, seg: dict | None = None) -> go.Figure:
     group = attribution["group"].values
     names = [str(f) for f, g in zip(attribution["factor"].values, group) if g == "style"]
+    if seg is not None:
+        names.sort(key=lambda n: -seg["factor_annualized_log_return"][n])
     exposure = attribution["exposure"].sel(factor=names).to_pandas()
     weekly = exposure[attribution["gross_weight"].to_pandas() > 0].resample("W-FRI").mean()
     lim = float(np.nanpercentile(np.abs(weekly.values), 98)) or 1.0
@@ -322,19 +336,22 @@ def industries(seg: dict, attribution, n=10, height=440, key="factor_annualized_
         values = {k: seg[key][k] for k in names}
     exposure = attribution["exposure"].sel(factor=names).where(attribution["gross_weight"] > 0).mean("timestamp")
     exposure = dict(zip(names, exposure.values))
-    ranked = sorted(names, key=lambda k: values[k])
+    ranked = sorted(names, key=lambda k: -values[k])
     shown = ranked[:n] + ranked[-n:] if len(ranked) > 2 * n else ranked
     fig = _fig(height)
     xs = [values[k] for k in shown]
     fig.add_trace(go.Bar(
         y=[_label(k) for k in shown], x=xs, orientation="h",
         marker=dict(color=[POS if v >= 0 else NEG for v in xs]),
+        text=[f"{v:+.2%}" for v in xs], textposition="outside", cliponaxis=False,
+        textfont=dict(size=10, color=INK2),
         customdata=[exposure[k] for k in shown],
         hovertemplate="%{y}<br>" + fmt + "<br>mean exposure %{customdata:.1%}<extra></extra>", name="",
     ))
     fig.update_yaxes(tickvals=[_label(k) for k in shown],
                      ticktext=[f"{_label(k)}  <span style='color:{MUTED}'>{exposure[k]:.0%}</span>" for k in shown])
-    fig.update_xaxes(tickformat=".1%")
+    fig.update_xaxes(tickformat=".2%" if key == "risk" else ".1%", nticks=6, range=_padded(xs, 1.3))
+    fig.update_yaxes(autorange="reversed")
     fig.update_layout(showlegend=False, bargap=0.25)
     return fig
 
@@ -370,13 +387,18 @@ def return_vs_risk(seg: dict, height=330) -> go.Figure:
         ret.append(g[key] if key in g else a[key])
         risk.append(post["group_contribution"].get(key) if key in g else post["term_contribution"][key])
     fig = _fig(height)
+    risk = [r or 0.0 for r in risk]
     fig.add_trace(go.Bar(y=labels, x=ret, orientation="h", name="Return, log growth / yr",
-                         marker=dict(color=POS), hovertemplate="%{y} return %{x:+.2%}<extra></extra>"))
+                         marker=dict(color=POS), text=[f"{v:+.1%}" for v in ret], textposition="outside",
+                         cliponaxis=False, textfont=dict(size=10, color=INK2),
+                         hovertemplate="%{y} return %{x:+.2%}<extra></extra>"))
     fig.add_trace(go.Bar(y=labels, x=risk, orientation="h", name="Realized risk contribution",
-                         marker=dict(color="#86b6ef"), hovertemplate="%{y} risk %{x:.2%}<extra></extra>"))
-    fig.update_layout(barmode="group", bargap=0.3, legend=dict(y=-0.15))
+                         marker=dict(color="#86b6ef"), text=[f"{v:+.1%}" for v in risk], textposition="outside",
+                         cliponaxis=False, textfont=dict(size=10, color=INK2),
+                         hovertemplate="%{y} risk %{x:.2%}<extra></extra>"))
+    fig.update_layout(barmode="group", bargap=0.3, margin=dict(l=10, r=10, t=40, b=10))
     fig.update_yaxes(autorange="reversed")
-    fig.update_xaxes(tickformat=".0%")
+    fig.update_xaxes(tickformat=".0%", range=_padded(ret + risk, 1.15))
     return fig
 
 
@@ -406,14 +428,49 @@ def style_risk(seg: dict, attribution, height=380) -> go.Figure:
     risk = seg["ex_ante_risk"]["factor_contribution"]
     growth = seg["factor_annualized_log_return"]
     names.sort(key=lambda n: growth[n])
+    post = seg["ex_post_risk"]["factor_contribution"]
+    labels = [_label(n) for n in names]
     xs = [risk[n] for n in names]
+    ps = [post[n] or 0.0 for n in names]
+    fig = make_subplots(rows=1, cols=2, shared_yaxes=True, horizontal_spacing=0.04,
+                        subplot_titles=("Forecast (x-sigma-rho)", "Realized, cov(c, r) / sigma(r)"))
+    _style(fig, height)
+    for col, values, label in ((1, xs, "forecast"), (2, ps, "realized")):
+        fig.add_trace(go.Bar(y=labels, x=values, orientation="h",
+                             marker=dict(color=[POS if v >= 0 else NEG for v in values]),
+                             text=[f"{v:+.2%}" for v in values], textposition="outside", cliponaxis=False,
+                             textfont=dict(size=11, color=INK2),
+                             hovertemplate=f"%{{y}}: %{{x:+.2%}} of {label} vol<extra></extra>", name=""), row=1, col=col)
+        fig.update_xaxes(tickformat=".1%", range=_padded(values), row=1, col=col)
+    fig.update_layout(showlegend=False, margin=dict(l=10, r=10, t=30, b=10), bargap=0.3)
+    fig.update_annotations(font=dict(size=11, color=MUTED))
+    return fig
+
+
+def risk_waterfall(seg: dict, height=330) -> go.Figure:
+    """Forecast volatility built from its x-sigma-rho parts, beside the realized volatility."""
+    ante = seg["ex_ante_risk"]
+    values = [ante["group_contribution"].get(k, 0.0) for k, _, _ in PARTS[:3]] + [ante["contribution"]["specific"]]
+    labels = [label for _, label, _ in PARTS[:4]]
+    total = ante["volatility"]["total"]
+    realized = seg["ex_post_risk"]["volatility"]
     fig = _fig(height)
-    fig.add_trace(go.Bar(y=[_label(n) for n in names], x=xs, orientation="h",
-                         marker=dict(color=[POS if v >= 0 else NEG for v in xs]),
-                         text=[f"{v:.2%}" for v in xs], textposition="outside", textfont=dict(size=11, color=INK2),
-                         hovertemplate="%{y}: %{x:.2%} of forecast vol<extra></extra>", name=""))
-    fig.update_xaxes(tickformat=".1%")
-    fig.update_layout(showlegend=False, margin=dict(l=10, r=40, t=10, b=10))
+    fig.add_trace(go.Waterfall(
+        x=labels + ["Forecast"], y=values + [total], measure=["relative"] * len(values) + ["total"],
+        text=[f"{v:+.1%}" for v in values] + [f"{total:.1%}"], textposition="outside", textfont=dict(color=INK2),
+        increasing=dict(marker=dict(color="#86b6ef")), decreasing=dict(marker=dict(color=NEG)),
+        totals=dict(marker=dict(color=INK2)), connector=dict(line=dict(color=AXIS, width=1)),
+        hovertemplate="%{x}<br>%{y:.2%} of annualized volatility<extra></extra>", name="",
+    ))
+    if realized is not None:
+        fig.add_trace(go.Bar(x=["Realized"], y=[realized], marker=dict(color=INK), text=[f"{realized:.1%}"],
+                             textposition="outside", textfont=dict(color=INK2),
+                             hovertemplate="realized %{y:.2%}<extra></extra>", name=""))
+    running = np.cumsum(values)
+    top = max(float(running.max()), total, realized or 0.0)
+    bottom = min(float(running.min()), 0.0)
+    fig.update_yaxes(tickformat=".0%", range=[bottom - (top - bottom) * 0.1, top * 1.15])
+    fig.update_layout(showlegend=False)
     return fig
 
 
@@ -522,28 +579,19 @@ def f1(block, attribution, metrics) -> str:
 
 def f2(block, attribution, metrics) -> str:
     name, seg = _headline(block, metrics)
+    pair = lambda left, right: f'<div class="row">{left}{right}</div>'
     return f"""<div class="fa">{_CSS}{tiles(seg, name)}
 <div class="row"><div class="colhead">Return</div><div class="colhead">Risk</div></div>
-<div class="row">
-{_card("Return by part", f"Annualized log growth, {name}.", _div(waterfall(seg)))}
-{_card("Forecast risk by part", "x-sigma-rho contribution per segment; adds up to the forecast volatility.", _div(risk_split(block, height=330)))}
-</div>
-<div class="row">
-{_card("Return over time", "Cumulative log contribution; black: log NAV.", _div(cumulative(attribution)))}
-{_card("Risk over time", "Forecast volatility by part (monthly mean) against realized.", _div(risk_over_time(attribution, height=380)))}
-</div>
-<div class="row">
-{_card("Styles: exposure and return", "Mean net exposure and annualized contribution.", _div(styles(seg, attribution)))}
-{_card("Styles: risk", "Each style's contribution to forecast volatility, same order.", _div(style_risk(seg, attribution)))}
-</div>
-<div class="row">
-{_card("Industries: return", "Top and bottom 10 by annualized contribution.", _div(industries(seg, attribution)))}
-{_card("Industries: risk", "Top and bottom 10 by contribution to forecast volatility.", _div(industries(seg, attribution, key="risk", fmt="%{x:.2%} of forecast vol")))}
-</div>
-<div class="row">
-{_card("Return against realized risk", "Per part.", _div(return_vs_risk(seg)))}
-{_card("Style exposure over time", "Weekly mean net exposure.", _div(style_heatmap(attribution)))}
-</div>
+{pair(_card("Where did the return come from?", f"Annualized log growth by part, {name}; the bars add up to the total.", _div(waterfall(seg))),
+      _card("Where did the risk come from?", "Forecast volatility built from each part's x-sigma-rho contribution, against the realized volatility.", _div(risk_waterfall(seg))))}
+{pair(_card("Return over time", "Cumulative log contribution of each part; black: log NAV.", _div(cumulative(attribution))),
+      _card("Risk over time", "Forecast volatility by part, monthly mean (bars add up to the forecast); dotted: realized 63-bar volatility.", _div(risk_over_time(attribution, height=380))))}
+{pair(_card("Styles: exposure and return", "Mean net exposure and annualized contribution, sorted by contribution.", _div(styles(seg, attribution))),
+      _card("Styles: risk", "Each style's contribution to forecast and to realized volatility, same order.", _div(style_risk(seg, attribution))))}
+{pair(_card("Industries: return", "Best and worst 10 by annualized contribution; grey: the book's mean net weight.", _div(industries(seg, attribution))),
+      _card("Industries: risk", "Largest and smallest 10 contributions to forecast volatility; grey: mean net weight.", _div(industries(seg, attribution, key="risk", fmt="%{x:.2%} of forecast vol"))))}
+{_card("How did the style bets move?", "Weekly mean net exposure per style; blue long, red short. Exposure drives both columns.", _div(style_heatmap(attribution, seg=seg)))}
+{_card("Was the risk paid?", "Each part's annualized return against its contribution to realized volatility.", _div(return_vs_risk(seg)))}
 </div>"""
 
 
