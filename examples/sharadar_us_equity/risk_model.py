@@ -5,8 +5,8 @@ prices + DAILY market cap + FRED's 3-month T-bill rate ->
 ``Use4RiskModel``'s regression store (factor returns and specific returns of
 country, 48 industries, 12 styles) -> its estimate store (factor covariance
 and specific risk: EWMA with Newey-West, USE4S defaults) -> bias statistics
-of factor portfolios, specific returns and random active portfolios, printed,
-saved as JSON and plotted.
+of factor portfolios, specific returns and random active portfolios over
+one-bar and 21-bar returns, printed, saved as JSON and plotted.
 
 Every setting is a constant or a quantlab config object at the top of the
 file; edit them and run ``uv run python examples/sharadar_us_equity/risk_model.py``
@@ -57,8 +57,9 @@ REGRESSION_START, END = "2001-01-03", "2026-10-02"
 #: The estimates' range: the correlation window (1512 bars) of regression
 #: rows fits before it, so no estimate uses a shortened window.
 ESTIMATE_START = "2007-01-11"
-#: Rolling window of the bias statistics (12 months of daily bars, as USE4).
-WINDOW = 252
+#: Bars per outcome of the bias statistics: one bar, and a month as USE4 tests.
+#: Each rolls over about a year of outcomes (252 / horizon), as USE4's 12 months.
+HORIZONS = (1, 21)
 #: The risk-free rate is DTB3's, broadcast across the symbols, as for the exposures.
 PARAMETERS = BarraStyleParameters(risk_free_symbol="DTB3")
 
@@ -118,15 +119,16 @@ def build_stores() -> dict:
 
 
 # %% 2. Bias statistics
-def bias() -> tuple[dict, dict]:
-    """Return the bias statistics of every group and a summary of each."""
+def bias(horizon: int) -> tuple[dict, dict]:
+    """Return the bias statistics of every group over ``horizon`` bars and a summary of each."""
     began = time.perf_counter()
-    stats = risk_model_bias_statistics(risk_model(), ESTIMATE_START, END, window=WINDOW)
+    stats = risk_model_bias_statistics(risk_model(), ESTIMATE_START, END, horizon=horizon)
     summary = {"bias_minutes": round((time.perf_counter() - began) / 60, 1)}
+    year = round(252 / horizon)
     for group, result in stats.items():
         whole, band = result["bias"], result["band"]
         # A symbol with less than a year of outcomes is left out of the summary.
-        tested = whole.notnull() & (result["count"] >= WINDOW)
+        tested = whole.notnull() & (result["count"] >= year)
         inside = (abs(whole - 1.0) <= band) & tested
         summary[group] = {
             "portfolios": int(tested.sum()),
@@ -145,17 +147,18 @@ def bias() -> tuple[dict, dict]:
 
 
 # %% 3. Figures
-def plot(stats: dict) -> None:
-    """Rolling 12-month mean, 5th/95th percentile and MRAD per group; bias per factor."""
+def plot(stats: dict, horizon: int) -> None:
+    """Rolling one-year mean, 5th/95th percentile and MRAD per group; bias per factor."""
+    year = round(252 / horizon)
     # One panel per group (factor, specific, random), then the factors' bias.
     figure, axes = plt.subplots(4, 1, figsize=(12, 16))
     for axis, (group, result) in zip(axes, stats.items()):
         bars = result["timestamp"].values
         for name in ("rolling_mean", "rolling_p5", "rolling_p95", "rolling_mrad"):
             axis.plot(bars, result[name].values, label=name.removeprefix("rolling_"), lw=0.8)
-        for level in (0.0, 1.0 - np.sqrt(2 / WINDOW), 1.0, 1.0 + np.sqrt(2 / WINDOW)):
+        for level in (0.0, 1.0 - np.sqrt(2 / year), 1.0, 1.0 + np.sqrt(2 / year)):
             axis.axhline(level, color="grey", ls="--", lw=0.5)
-        axis.set_title(f"{group}: rolling {WINDOW}-bar bias statistics")
+        axis.set_title(f"{group}, {horizon}-bar returns: rolling {year}-outcome bias statistics")
         axis.set_ylim(0, 2.5)
         axis.legend(loc="upper right", ncol=4)
     factor = stats["factor"]
@@ -166,9 +169,9 @@ def plot(stats: dict) -> None:
         color="grey", alpha=0.3,
     )
     axes[3].set_xticks(range(len(names)), names, rotation=90, fontsize=6)
-    axes[3].set_title("factor bias statistics over the whole range")
+    axes[3].set_title(f"factor bias statistics of {horizon}-bar returns over the whole range")
     figure.tight_layout()
-    figure.savefig(WORK / "bias.png", dpi=120)
+    figure.savefig(WORK / f"bias_h{horizon}.png", dpi=120)
 
 
 # %% Run
@@ -176,9 +179,13 @@ if __name__ == "__main__":
     if inside_repository([DATA_ROOT], Path(__file__).resolve().parents[2]):
         raise SystemExit(f"{DATA_ROOT} is inside the repository; the data is licensed.")
     WORK.mkdir(parents=True, exist_ok=True)
-    timing = build_stores()
-    stats, summary = bias()
-    summary = {**timing, **summary}
+    summary = build_stores()
+    for horizon in HORIZONS:
+        stats, summary[f"h{horizon}"] = bias(horizon)
+        plot(stats, horizon)
     (WORK / "bias_summary.json").write_text(json.dumps(summary, indent=2))
-    print(json.dumps({k: v for k, v in summary.items() if k != "factor_bias"}, indent=2))
-    plot(stats)
+    print(json.dumps(
+        {k: {g: v for g, v in s.items() if g != "factor_bias"} if isinstance(s, dict) else s
+         for k, s in summary.items()},
+        indent=2,
+    ))

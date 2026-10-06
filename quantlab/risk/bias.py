@@ -15,7 +15,10 @@ percentiles and mean absolute deviation from 1 (MRAD, A6) summarise each
 window.
 
 ``bias_statistics`` computes these from any realized returns and forecasts.
-``risk_model_bias_statistics`` reads them from a factor risk model's stores:
+``risk_model_bias_statistics`` reads them from a factor risk model's stores,
+over one bar or a ``horizon`` of several (USE4 tests monthly), the outcome
+then the sum of the bars' returns and the forecast ``sqrt(h)`` times the
+one-bar one:
 
 - **factor**: each factor's return over the next bar, the return of its pure
   factor portfolio, against the square root of its forecast variance;
@@ -161,7 +164,8 @@ def risk_model_bias_statistics(
     start: Date,
     end: Date,
     *,
-    window: int | None = 252,
+    horizon: int = 1,
+    window: int | None = None,
     min_observations: int | None = None,
     random_portfolios: int = 100,
     portfolio_size: int = 500,
@@ -169,26 +173,33 @@ def risk_model_bias_statistics(
 ) -> dict[str, xr.Dataset]:
     """Return the bias statistics of a factor risk model's forecasts from its stores.
 
-    Every estimate row from ``start`` to ``end`` is a forecast made at its
-    bar ``t``; its outcome is the regression row of the next bar of the
-    regression store, so the last estimate bar of the store has none. The
-    exposures are the model's (``FactorRiskModel.exposures``).
+    Every estimate row is a forecast made at its bar ``t`` of the next bar.
+    Over a ``horizon`` of ``h`` bars, a forecast is taken every ``h``
+    estimate bars from ``start`` (the outcomes do not overlap), its outcome
+    is the sum of the next ``h`` bars' returns in the regression store, and
+    its forecast volatility ``sqrt(h)`` times the one-bar one: the one-bar
+    forecasts are of the variance per bar of a multi-bar return, which is
+    what Newey-West adjusts, so a horizon longer than one bar tests that
+    adjustment. A forecast without ``h`` regression bars after it, or an
+    outcome missing one of its bars, has none. The exposures are the
+    model's (``FactorRiskModel.exposures``).
 
     A random active portfolio holds, at each bar, the ``portfolio_size``
     eligible stocks it ranks first, capitalization weighted, less every
-    eligible stock capitalization weighted. Each portfolio ranks the symbols
+    eligible stock capitalization weighted, held over the horizon. Each portfolio ranks the symbols
     of the estimate store at random once, from ``seed`` (our choice: a stock
     is kept while it stays eligible, and models sharing a regression store
     get the same portfolios). A stock is eligible at ``t`` when it is in the
     estimation universe, has every exposure, a market cap, a specific risk
-    and a specific return over the next bar (our choice: the stores hold no
-    return for a stock that stops trading, so it leaves the portfolios the
-    bar before), and every factor it is exposed to has a forecast variance.
-    Its forecast variance is ``x' F x + sum h^2 s^2`` with ``x`` the
-    portfolio's factor exposures, a correlation without enough bars counted
-    as 0 (our choice); its realized return is ``sum h (X f + u)`` over the
-    next bar, the stocks' excess returns, a factor without a return on that
-    bar contributing nothing.
+    and a return over every bar of the horizon (our choice: the stores hold
+    no return for a stock that stops trading, so it leaves the portfolios
+    before), and every factor it is exposed to has a forecast variance.
+    Its forecast variance is ``h (x' F x + sum w^2 s^2)`` with ``w`` its
+    active weights and ``x`` its factor exposures, a correlation without
+    enough bars counted as 0 (our choice); its realized return is ``sum w (X
+    f + u)`` summed over the horizon's bars, the stocks' excess returns (each
+    bar's ``X`` the exposures of the bar before it), a factor without a
+    return on a bar contributing nothing.
 
     Parameters
     ----------
@@ -198,9 +209,13 @@ def risk_model_bias_statistics(
         forecast to have an outcome).
     start, end : str, datetime.date or pd.Timestamp
         The forecast bars, both inclusive, inside the estimate store's range.
-    window, min_observations : int, optional
-        The rolling window and its fewest outcomes (``bias_statistics``);
-        ``window=None`` for no rolling statistics.
+    horizon : int, default 1
+        Bars per outcome. USE4 tests monthly (21 daily bars).
+    window : int, optional
+        Outcomes per rolling window (``bias_statistics``); by default about
+        a year, ``round(252 / horizon)`` (USE4: 12 months).
+    min_observations : int, optional
+        Fewest outcomes in a rolling window (``bias_statistics``).
     random_portfolios : int, default 100
         Random active portfolios (USE4 Empirical Notes: 100).
     portfolio_size : int, default 500
@@ -221,8 +236,8 @@ def risk_model_bias_statistics(
     Raises
     ------
     ValueError
-        If a store has no recorded range or does not cover the range
-        (``RiskStore.read``).
+        If ``horizon`` is below 1, or a store has no recorded range or does
+        not cover the range (``RiskStore.read``).
 
     Examples
     --------
@@ -230,6 +245,8 @@ def risk_model_bias_statistics(
     >>> stats["factor"]["bias"].sel(factor="style_beta")  # doctest: +SKIP
     >>> stats["random"]["rolling_mean"].plot()  # doctest: +SKIP
     """
+    if horizon < 1:
+        raise ValueError(f"risk_model_bias_statistics(): horizon must be at least 1, got {horizon}.")
     config = model.config
     estimate = model.estimate.read(start, end).load()
     recorded = model.regression.store_range()
@@ -251,63 +268,94 @@ def risk_model_bias_statistics(
             f"risk_model_bias_statistics(): estimate bar {missing} is not a bar of the "
             f"regression store; rebuild the estimate store from it."
         )
-    has_next = position + 1 < len(regression_bars)
-    bars, following = bars[has_next], position[has_next] + 1
-    if not len(bars):
+    # Non-overlapping outcomes: a forecast every ``horizon`` bars, each with
+    # the ``horizon`` regression bars after it.
+    complete = np.flatnonzero(position + horizon < len(regression_bars))
+    picks = complete[::horizon]
+    if not len(picks):
         raise ValueError(
-            f"risk_model_bias_statistics(): no estimate bar from {start} to {end} has a "
-            f"next bar in the regression store, so no forecast has an outcome."
+            f"risk_model_bias_statistics(): no estimate bar from {start} to {end} has "
+            f"{horizon} bar(s) after it in the regression store, so no forecast has an "
+            f"outcome."
         )
+    bars, origin = bars[picks], position[picks]
     estimate = estimate.sel(timestamp=bars)
+    scale = float(horizon)
 
-    factor_returns = regression["factor_return"].transpose("timestamp", "factor").values[following]
+    def summed(values: np.ndarray) -> np.ndarray:
+        """Sum the rows after each origin over the horizon; NaN when one is missing."""
+        total = np.zeros((len(origin), *values.shape[1:]))
+        for step in range(1, horizon + 1):
+            total += values[origin + step]
+        return total
+
+    factor_returns = regression["factor_return"].transpose("timestamp", "factor").values
     covariance = estimate["factor_covariance"].transpose("timestamp", "factor_i", "factor_j").values
     variance = np.diagonal(covariance, axis1=1, axis2=2)
     with np.errstate(invalid="ignore"):
-        factor_volatility = np.sqrt(variance)
+        factor_volatility = np.sqrt(scale * variance)
     factor = _named(
-        factor_returns, factor_volatility, bars, "factor", list(model.factor_names)
+        summed(factor_returns), factor_volatility, bars, "factor", list(model.factor_names)
     )
 
     symbols = estimate["symbol"].values
     specific_risk = estimate["specific_risk"].transpose("timestamp", "symbol").values
     specific_returns = (
-        regression["specific_return"]
-        .reindex(symbol=symbols)
-        .transpose("timestamp", "symbol")
-        .values[following]
+        regression["specific_return"].reindex(symbol=symbols).transpose("timestamp", "symbol").values
     )
-    specific = _named(specific_returns, specific_risk, bars, "symbol", symbols)
+    specific = _named(
+        summed(specific_returns), np.sqrt(scale) * specific_risk, bars, "symbol", symbols
+    )
 
-    exposures = model.exposures(bars[0], bars[-1]).reindex(timestamp=bars, symbol=symbols).load()
+    # Each stock's excess return over bar ``r`` of the regression store is its
+    # exposures of the bar before times the factor returns of ``r`` plus its
+    # specific return; a factor without a return on the bar adds nothing.
+    exposure_bars = regression_bars[origin[0] : origin[-1] + horizon]
+    exposures = (
+        model.exposures(exposure_bars[0], exposure_bars[-1])
+        .reindex(timestamp=exposure_bars, symbol=symbols)
+        .load()
+    )
     cap = (
         model.prices(bars[0], bars[-1])[config.market_cap_column]
         .reindex(timestamp=bars, symbol=symbols)
         .transpose("timestamp", "symbol")
         .values
     )
+    if config.estu_name is None:
+        estu = np.ones((len(exposure_bars), len(symbols)), dtype=bool)
+    else:
+        estu = exposures[config.estu_name].transpose("timestamp", "symbol").values == 1.0
     ranking = np.random.default_rng(seed).random((random_portfolios, len(symbols)))
     realized = np.full((len(bars), random_portfolios), np.nan)
     forecast = np.full((len(bars), random_portfolios), np.nan)
-    if config.estu_name is None:
-        estu = np.ones(cap.shape, dtype=bool)
-    else:
-        estu = exposures[config.estu_name].transpose("timestamp", "symbol").values == 1.0
-    for row in range(len(bars)):
-        matrix, covered = model.exposure_matrix(exposures.isel(timestamp=row))
+    for row, at in enumerate(origin):
+        first = at - origin[0]  # the origin's row of ``exposures``
+        matrix, covered = model.exposure_matrix(exposures.isel(timestamp=first))
+        stock_returns = np.zeros(len(symbols))
+        for step in range(horizon):
+            bar_matrix = (
+                matrix if step == 0
+                else model.exposure_matrix(exposures.isel(timestamp=first + step))[0]
+            )
+            stock_returns += (
+                bar_matrix @ np.nan_to_num(factor_returns[at + step + 1])
+                + specific_returns[at + step + 1]
+            )
         realized[row], forecast[row] = _random_active(
             matrix,
-            covered & estu[row],
+            covered & estu[first],
             cap[row],
-            covariance[row],
-            specific_risk[row],
-            factor_returns[row],
-            specific_returns[row],
+            scale * covariance[row],
+            np.sqrt(scale) * specific_risk[row],
+            stock_returns,
             ranking,
             portfolio_size,
         )
     random = _named(realized, forecast, bars, "portfolio", np.arange(random_portfolios))
 
+    if window is None:
+        window = max(2, round(252 / horizon))
     return {
         name: bias_statistics(realized, forecast, window, min_observations)
         for name, (realized, forecast) in
@@ -330,8 +378,7 @@ def _random_active(
     cap: np.ndarray,
     covariance: np.ndarray,
     specific_risk: np.ndarray,
-    factor_returns: np.ndarray,
-    specific_returns: np.ndarray,
+    stock_returns: np.ndarray,
     ranking: np.ndarray,
     size: int,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -346,7 +393,7 @@ def _random_active(
     has_variance = np.isfinite(np.diagonal(covariance))
     eligible = (
         candidates & np.isfinite(cap) & (cap > 0)
-        & np.isfinite(specific_risk) & np.isfinite(specific_returns)
+        & np.isfinite(specific_risk) & np.isfinite(stock_returns)
         & ~((matrix != 0) & ~has_variance).any(axis=1)
     )
     n_portfolios = len(ranking)
@@ -354,7 +401,7 @@ def _random_active(
         return np.full(n_portfolios, np.nan), np.full(n_portfolios, np.nan)
     members = np.flatnonzero(eligible)
     exposure, risk, member_cap = matrix[members], specific_risk[members], cap[members]
-    stock_returns = exposure @ np.nan_to_num(factor_returns) + specific_returns[members]
+    stock_returns = stock_returns[members]
 
     # Each portfolio's top ``size`` members by its ranking, cap weighted,
     # less the cap-weighted universe of eligible stocks.

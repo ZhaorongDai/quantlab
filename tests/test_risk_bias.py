@@ -175,3 +175,68 @@ def test_a_portfolio_of_the_whole_universe_has_no_active_risk(model):
     )["random"]
     assert np.isnan(random["outcome"].values).all()
     np.testing.assert_allclose(random["realized"].values, 0.0, atol=1e-15)
+
+
+# ----------------------------------------------------------------------
+# Over a horizon
+# ----------------------------------------------------------------------
+
+HORIZON = 3
+
+
+@pytest.fixture(scope="module")
+def horizon_stats(model):
+    return risk_model_bias_statistics(
+        model, _day(FIRST), _day(_T - 1), horizon=HORIZON, window=4, random_portfolios=4,
+        portfolio_size=10,
+    )
+
+
+def test_a_horizon_sums_the_next_bars_against_sqrt_h_times_the_forecast(model, horizon_stats):
+    estimate = model.estimate.read(_day(FIRST), _day(_T - 1))
+    regression = model.regression.read(_day(FIRST), _day(_T - 1))
+    bars = estimate["timestamp"].values
+    # A forecast every HORIZON bars that has HORIZON bars after it.
+    picks = np.arange(0, len(bars) - HORIZON, HORIZON)
+    factor = horizon_stats["factor"]
+    assert factor["timestamp"].values.tolist() == bars[picks].tolist()
+    variance = np.diagonal(estimate["factor_covariance"].values, axis1=1, axis2=2)[picks]
+    returns = regression["factor_return"].values
+    summed = np.stack([returns[p + 1 : p + 1 + HORIZON].sum(axis=0) for p in picks])
+    np.testing.assert_allclose(
+        factor["outcome"].values, summed / np.sqrt(HORIZON * variance), rtol=1e-12
+    )
+
+    specific = horizon_stats["specific"]
+    symbols = specific["symbol"].values
+    risk = estimate["specific_risk"].sel(symbol=symbols).values[picks]
+    u = regression["specific_return"].sel(symbol=symbols).values
+    summed = np.stack([u[p + 1 : p + 1 + HORIZON].sum(axis=0) for p in picks])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        expected = np.where(risk > 0, summed / (np.sqrt(HORIZON) * risk), np.nan)
+    np.testing.assert_allclose(specific["outcome"].values, expected, rtol=1e-12)
+
+
+def test_random_portfolios_over_a_horizon(model, horizon_stats):
+    random = horizon_stats["random"]
+    assert random.sizes["timestamp"] == horizon_stats["factor"].sizes["timestamp"]
+    assert np.isfinite(random["outcome"].values).all()
+    whole = risk_model_bias_statistics(
+        model, _day(FIRST), _day(_T - 1), horizon=HORIZON, random_portfolios=2,
+        portfolio_size=1000,
+    )["random"]
+    np.testing.assert_allclose(whole["realized"].values, 0.0, atol=1e-15)
+
+
+def test_a_horizon_of_one_is_the_one_bar_test(model, stats):
+    one = risk_model_bias_statistics(
+        model, _day(FIRST), _day(_T - 1), horizon=1, window=8, random_portfolios=4,
+        portfolio_size=10,
+    )
+    for group in ("factor", "specific", "random"):
+        xr.testing.assert_allclose(one[group], stats[group], rtol=1e-12)
+
+
+def test_the_horizon_must_be_positive(model):
+    with pytest.raises(ValueError, match="horizon"):
+        risk_model_bias_statistics(model, _day(FIRST), _day(_T - 1), horizon=0)
