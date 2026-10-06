@@ -537,13 +537,13 @@ sorted(parts)
 
 - **关键指标**：总收益、超额收益、信息比率、胜率、Sharpe、最大回撤、beta 和年化换手，每项下面给出基准的对应值或相关数字。没有基准时是总收益、年化收益、胜率、Sharpe、最大回撤、波动率和换手。胜率是跑赢基准的持有期（从一个有成交的 bar 到下一个有成交的 bar 之前）所占的比例，下面附跑赢基准的自然月比例；没有基准时是收益为正的比例。
 - **表格**（左侧）："Windows" 时间轴，画出训练窗口和回测窗口（样本外交易的 bar 为绿色，落在训练窗口内交易的 bar 为红色，训练窗口为浅蓝色）：`run()` 只有一行；`run_cv()` 最上面是回测窗口，下面每折一行；鼠标悬停显示各窗口的日期；"Setup"，只列表格里没有的设置（bar 间隔、基准、最深回撤的日期、模型模式、调仓、组合构建、费用）；"Strategy vs *基准*"，按收益、风险、风险调整后指标分组，策略旁边列出基准和差值（百分比指标的差值用百分点）；"Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）；"Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）；运行带 in-sample 部分时还有 "In-sample vs out-of-sample"，并列样本内、样本外、两者之差和整个窗口。鼠标悬停在指标名上会显示它的定义。页面不认识的指标，无论来自策略、基准还是 relative 块，都列在 "Other" 下。
-- **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）；*Attribution*，带模型的运行才有（超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长；见[超额归因](#超额归因)）。
+- **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）；*Attribution*，带模型的运行才有（超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长；见[超额归因](#超额归因)）；*Factor attribution*，给了 `risk_model` 才有（各分段中 country、industry、style 三组以及 specific、uncovered、risk_free、trading 各项的年化对数增长和累计曲线，累计曲线加起来就是对数净值；各风格因子的贡献与暴露；贡献最高和最低的行业；事前风险随时间的拆分及按组、按因子的表；事后风险贡献；以及覆盖率）。
 
 运行带 in-sample 部分时，关键指标和主表取样本外部分，也就是模型没见过的 bar，并且所有图都用灰色标出 in-sample 区间。页面上所有回撤都是负数。超额回撤（相对净值从高点的回落）只画在 Excess 标签页上，不和两条净值自身的回撤放在一起，因为两者的数值不可比。
 
 ### 追踪一次回测
 
-回测通过配置里的 `tracker` 追踪，与模型相同（见模型指南的“实验追踪”）。默认的 `NullTracker()` 什么都不发送。`run()`、`run_cv()` 和 `run_weights()` 每次打开一个 run：项目是 `<类名>_backtest`（tracker 设置了 `project` 时用它），run 名就是运行目录名，并带上回测的配置以及运行的 `market` 和 `data_fingerprint`。摘要里是 `whole`、`in_sample` 和 `out_of_sample` 三个块，键名形如 `whole/<metric>`；跑了基准时另有 `benchmark` 和 `relative`；`run_cv()` 记录的是拼接后的指标。在 MLflow 上，键名里它不接受的字符会换成 `_`，所以 `whole/Total Return [%]` 记为 `whole/Total Return ___`。有运行目录时，`report.html` 作为附件上传；只在内存中运行的回测照样追踪，只是没有报告。run 在回测开始前打开，所以抛错的回测会被记为失败。`model_mode="train"` 时，模型训练走模型配置自己的 tracker。tracker 是运行配置的一部分，用 `rebuild("tracker")` 重建。
+回测通过配置里的 `tracker` 追踪，与模型相同（见模型指南的“实验追踪”）。默认的 `NullTracker()` 什么都不发送。`run()`、`run_cv()` 和 `run_weights()` 每次打开一个 run：项目是 `<类名>_backtest`（tracker 设置了 `project` 时用它），run 名就是运行目录名，并带上回测的配置以及运行的 `market` 和 `data_fingerprint`。摘要里是 `whole`、`in_sample` 和 `out_of_sample` 三个块，键名形如 `whole/<metric>`；跑了基准时另有 `benchmark` 和 `relative`；给了风险模型时另有 `factor_attribution` 的标量项（如 `factor_attribution/whole/annualized_log_return/total`）；`run_cv()` 记录的是拼接后的指标。在 MLflow 上，键名里它不接受的字符会换成 `_`，所以 `whole/Total Return [%]` 记为 `whole/Total Return ___`。有运行目录时，`report.html` 作为附件上传；只在内存中运行的回测照样追踪，只是没有报告。run 在回测开始前打开，所以抛错的回测会被记为失败。`model_mode="train"` 时，模型训练走模型配置自己的 tracker。tracker 是运行配置的一部分，用 `rebuild("tracker")` 重建。
 
 ```python
 >>> backtester.config.tracker

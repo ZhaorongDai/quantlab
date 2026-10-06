@@ -2762,7 +2762,9 @@ class BaseBacktester(Component, ABC):
         ]
 
     #: Metric blocks a tracking run's summary receives, when present.
-    _TRACKED_BLOCKS = ("whole", "in_sample", "out_of_sample", "benchmark", "relative")
+    _TRACKED_BLOCKS = (
+        "whole", "in_sample", "out_of_sample", "benchmark", "relative", "factor_attribution"
+    )
 
     @contextmanager
     def _tracking_run(self) -> Iterator[TrackingRun]:
@@ -2792,7 +2794,10 @@ class BaseBacktester(Component, ABC):
         (``data_fingerprint``), as the run directory's ``run.json`` holds
         them. The summary holds the ``whole``, ``in_sample`` and
         ``out_of_sample`` blocks as ``whole/<metric>`` and so on (plus
-        ``benchmark`` and ``relative`` when a benchmark ran), and
+        ``benchmark`` and ``relative`` when a benchmark ran, and the scalar
+        ``factor_attribution`` entries, such as
+        ``factor_attribution/whole/annualized_log_return/total``, when a
+        risk model ran), and
         ``report.html`` is attached. A run kept in memory (``run_dir`` is
         ``None``) has no report to attach.
         """
@@ -2923,8 +2928,9 @@ class BaseBacktester(Component, ABC):
         (equity, drawdown and monthly returns with the in-sample range
         shaded and the deepest drawdown marked, the benchmark beside the
         portfolio), Excess (with a benchmark), Rolling and Portfolio
-        (turnover, holdings and exposure per rebalance), followed by the
-        notes. A ``run_cv`` report shades no in-sample range (the several
+        (turnover, holdings and exposure per rebalance), Attribution (a
+        model run) and Factor attribution (a run with a ``risk_model``),
+        followed by the notes. A ``run_cv`` report shades no in-sample range (the several
         in-sample ranges are listed in the summary lines and the notes). A
         metric the report does not know is still shown, so a change in the
         metric set cannot make the report raise and discard the staged run.
@@ -2955,6 +2961,7 @@ class BaseBacktester(Component, ABC):
                 **chart,
                 **self._report_portfolio_inputs(weights, simulation),
                 attribution=simulation.attribution,
+                factor_attribution=simulation.factor_attribution,
             )
 
         return write_backtest_run(

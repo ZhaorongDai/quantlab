@@ -538,8 +538,9 @@ config's `tracker`, for example
 `quantlab.tracking.wandb`. Each run opens one tracking run in the project
 `{ClassName}_backtest` (or the tracker's `project`), named after the run
 directory, with the `whole`, `in_sample` and `out_of_sample` blocks (and
-`benchmark` and `relative`) in its summary as `whole/<metric>` and so on,
-and `report.html` attached. The default `NullTracker()` sends nothing
+`benchmark` and `relative`, and the scalar `factor_attribution` entries
+with a risk model) in its summary as `whole/<metric>` and so on, and
+`report.html` attached. The default `NullTracker()` sends nothing
 anywhere. See [Track a backtest](../backtest.md#track-a-backtest).
 
 ## Rebuilding and re-running a backtest

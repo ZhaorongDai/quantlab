@@ -12,7 +12,10 @@ tables show the out-of-sample slice whenever the run has both. The tabs are
 Performance (equity, drawdown, monthly returns and their year-by-month
 heatmap), Excess (cumulative excess return and excess drawdown), Rolling
 (one-year rolling statistics) and Portfolio (turnover, holdings and exposure
-per rebalance). ``backtest_report_figure`` returns the Performance chart
+per rebalance), plus Attribution for a model run and Factor attribution for a
+run with a risk model, the latter drawn from the run's metrics and per-bar
+``factor_attribution.zarr`` only (this layer imports no risk model).
+``backtest_report_figure`` returns the Performance chart
 alone, as a plotly figure.
 
 The module holds a catalogue of the metrics it knows, with each one's
@@ -134,6 +137,7 @@ def write_backtest_report(
     windows: dict | None = None,
     extra_tables: dict[str, dict] | None = None,
     attribution: xr.Dataset | None = None,
+    factor_attribution: xr.Dataset | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -144,10 +148,11 @@ def write_backtest_report(
     in-sample part) and the charts on the right in tabs: Performance (NAV,
     drawdown, monthly returns and the monthly heatmap), Excess (cumulative
     excess return with a log / arithmetic toggle, and the excess drawdown),
-    Rolling (one-year panels) and Portfolio (turnover, holdings and
-    exposure per rebalance). The headline numbers and the main tables are
-    the out-of-sample slice when the run has an in-sample part, else the
-    whole window. Drawdown is ``value / running max - 1``, negative below a
+    Rolling (one-year panels), Portfolio (turnover, holdings and
+    exposure per rebalance), Attribution and Factor attribution (see
+    ``attribution`` and ``factor_attribution``). The headline numbers and
+    the main tables are the out-of-sample slice when the run has an
+    in-sample part, else the whole window. Drawdown is ``value / running max - 1``, negative below a
     peak, in every table, card and chart. Everything after ``title`` is
     optional; a section, card or tab whose input is missing is left off the
     page, and a metric the page does not know is still shown, in an "Other"
@@ -241,6 +246,18 @@ def write_backtest_report(
         the excess split into its parts, the cumulative log growth of the
         strategy, before costs, the universe and the benchmark, and each
         score group's annualised return.
+    factor_attribution : xr.Dataset | None
+        The per-bar factor attribution of a run with a risk model
+        (``factor_attribution.zarr``: ``log_contribution``,
+        ``factor_log_contribution``, ``exposure``, the ex-ante variances and
+        ``covered_weight``, its ``factor`` axis carrying each factor's
+        ``group``). With it and a ``factor_attribution`` block in ``metrics``
+        the page gets a Factor attribution tab: the annualised log growth of
+        each factor group and term per segment, the cumulative log
+        contribution curves (adding up to log NAV), the styles'
+        contributions and exposures, the top and bottom industries, the
+        ex-ante risk split over time with its group and factor tables, the
+        ex-post risk contributions, and the coverage.
 
     Examples
     --------
@@ -294,6 +311,11 @@ def write_backtest_report(
     if attribution is not None and block:
         tabs.append(("Attribution", _attribution_table(block, name)
                      + _figure_div(_attribution_figure(equity, attribution, reference, block, name))))
+    factor_block = (metrics or {}).get("factor_attribution")
+    if factor_attribution is not None and factor_block:
+        tabs.append(("Factor attribution", _factor_attribution_tables(factor_block, factor_attribution, metrics)
+                     + _figure_div(_factor_attribution_figure(factor_block, factor_attribution, bars_per_year,
+                                                              in_sample_range))))
     Path(path).write_text(
         _document(title, summary, metrics, tabs, notes, benchmark_name=name, windows=windows,
                   extra_tables=extra_tables),
@@ -1761,6 +1783,251 @@ def _attribution_figure(equity: pd.Series, attribution: xr.Dataset, reference: p
     return fig
 
 
+#: The parts the Factor attribution tab splits the NAV log growth into, in its
+#: order: ``(key, label, definition, colour)``. The factor groups come first
+#: (a model without a group draws none for it), then the other terms.
+_FACTOR_GROUPS = (
+    ("country", "Country", "The book's net exposure to the country factor times its factor return.", "#1f77b4"),
+    ("industry", "Industry", "The book's net industry exposures times the industries' factor returns.", "#8c564b"),
+    ("style", "Style", "The book's net style exposures times the styles' factor returns.", "#9467bd"),
+)
+_FACTOR_TERMS = (
+    ("specific", "Specific", "The covered holdings times their specific returns.", "#2ca02c"),
+    ("uncovered", "Uncovered", "Held symbols the risk model does not cover, times their own returns.", "#d9822b"),
+    ("risk_free", "Risk-free", "The covered holdings times the risk-free rate.", "#17becf"),
+    ("trading", "Trading", "The rest: fills at the open, fees, slippage and idle cash.", "#7f7f7f"),
+)
+_FACTOR_SEGMENTS = (("whole", "Whole"), ("in_sample", "In-sample"), ("out_of_sample", "Out-of-sample"))
+_SEGMENT_OPACITY = {"whole": 1.0, "in_sample": 0.45, "out_of_sample": 0.75}
+
+
+def _factor_segments(block: dict) -> list[tuple[str, str, dict]]:
+    """The segments of a ``factor_attribution`` block that ran, as ``(key, label, summary)``."""
+    return [(key, label, block[key]) for key, label in _FACTOR_SEGMENTS if isinstance(block.get(key), dict)]
+
+
+def _factor_groups_of(attribution: xr.Dataset) -> list[tuple[str, str, str, str]]:
+    """The entries of ``_FACTOR_GROUPS`` the risk model has a factor in."""
+    present = {str(group) for group in attribution["group"].values}
+    return [entry for entry in _FACTOR_GROUPS if entry[0] in present]
+
+
+def _fraction(value: object, unit: str = "pct") -> str:
+    """A fraction shown as a percent in ``unit`` (``pct`` or the signed ``spct``)."""
+    number = _number(value)
+    return _format(None if number is None else 100 * number, unit)
+
+
+def _segment_rows(segments, label: str, definition: str, value, unit: str = "spct") -> str:
+    """One row across the segments; ``value`` reads the number off a segment's summary."""
+    return _row(label, definition, [_fraction(value(summary), unit) for _, _, summary in segments])
+
+
+def _dig(mapping: object, *keys):
+    """``mapping[k0][k1]...``, or None where a level is missing or not a mapping."""
+    for key in keys:
+        if not isinstance(mapping, dict):
+            return None
+        mapping = mapping.get(key)
+    return mapping
+
+
+def _factor_attribution_tables(block: dict, attribution: xr.Dataset, metrics: dict) -> str:
+    """The tables of the Factor attribution tab, a column per segment that ran."""
+    segments = _factor_segments(block)
+    header = ["", *(label for _, label, _ in segments)]
+    groups = _factor_groups_of(attribution)
+
+    growth = [
+        _segment_rows(segments, label, definition,
+                      lambda s, key=key: _dig(s, "group_annualized_log_return", key))
+        for key, label, definition, _ in groups
+    ] + [
+        _segment_rows(segments, label, definition,
+                      lambda s, key=key: _dig(s, "annualized_log_return", key))
+        for key, label, definition, _ in _FACTOR_TERMS
+    ] + [
+        _segment_rows(segments, "Total", "The NAV log growth per year; the sum of the rows above.",
+                      lambda s: _dig(s, "annualized_log_return", "total")),
+    ]
+    out = _table("Factor attribution (annualised log growth)", header, growth)
+
+    headline = block.get("out_of_sample") if _has_in_sample(metrics) else block.get("whole")
+    industries = []
+    for side, label in (("top", "Top"), ("bottom", "Bottom")):
+        entries = _dig(headline, "industries", side) or []
+        if entries:
+            industries.append(_group_row(label, 3))
+        industries += [
+            _row(str(entry.get("factor")), "The industry's log growth per year and the book's mean net exposure.",
+                 [_fraction(entry.get("annualized_log_return"), "spct"),
+                  _format(entry.get("mean_exposure"), "ratio")])
+            for entry in entries
+        ]
+    out += _table(f"Top and bottom industries{_suffix(metrics)}",
+                  ["Industry", "Log growth per year", "Mean exposure"], industries)
+
+    ex_ante = [
+        _segment_rows(segments, "Volatility", "The mean annualised forecast volatility of the covered book.",
+                      lambda s: _dig(s, "ex_ante_risk", "volatility", "total"), "pct"),
+        _segment_rows(segments, "Factor volatility", "The factor part alone: sqrt(x'Fx), annualised.",
+                      lambda s: _dig(s, "ex_ante_risk", "volatility", "factor"), "pct"),
+        _segment_rows(segments, "Specific volatility", "The specific part alone, annualised.",
+                      lambda s: _dig(s, "ex_ante_risk", "volatility", "specific"), "pct"),
+        _group_row("Contribution (x-sigma-rho)", len(header)),
+        _segment_rows(segments, "Factor", "The factors' contribution to the forecast volatility.",
+                      lambda s: _dig(s, "ex_ante_risk", "contribution", "factor")),
+        *(
+            _segment_rows(segments, f"of which {label}",
+                          f"The {label.lower()} factors' contribution to the forecast volatility.",
+                          lambda s, key=key: _dig(s, "ex_ante_risk", "group_contribution", key))
+            for key, label, _, _ in groups
+        ),
+        _segment_rows(segments, "Specific", "The specific risk's contribution to the forecast volatility.",
+                      lambda s: _dig(s, "ex_ante_risk", "contribution", "specific")),
+    ]
+    out += _table("Ex-ante risk by group", header, ex_ante)
+
+    group_of = dict(zip((str(f) for f in attribution["factor"].values),
+                        (str(g) for g in attribution["group"].values)))
+    by_factor = []
+    for key, label, _, _ in groups:
+        by_factor.append(_group_row(label, len(header)))
+        by_factor += [
+            _segment_rows(segments, factor, "The factor's mean x-sigma-rho contribution to the forecast volatility.",
+                          lambda s, factor=factor: _dig(s, "ex_ante_risk", "factor_contribution", factor))
+            for factor, group in group_of.items() if group == key
+        ]
+    out += _table("Ex-ante risk by factor", header, by_factor)
+
+    ex_post = [
+        _segment_rows(segments, "Volatility", "The annualised realised volatility of the NAV return.",
+                      lambda s: _dig(s, "ex_post_risk", "volatility"), "pct"),
+        _group_row("Contribution, cov(c, r) / sigma(r)", len(header)),
+        _segment_rows(segments, "Factor", "The factor term's contribution to the realised volatility.",
+                      lambda s: _dig(s, "ex_post_risk", "term_contribution", "factor")),
+        *(
+            _segment_rows(segments, f"of which {label}", f"The {label.lower()} factors' contribution.",
+                          lambda s, key=key: _dig(s, "ex_post_risk", "group_contribution", key))
+            for key, label, _, _ in groups
+        ),
+        *(
+            _segment_rows(segments, label, definition,
+                          lambda s, key=key: _dig(s, "ex_post_risk", "term_contribution", key))
+            for key, label, definition, _ in _FACTOR_TERMS
+        ),
+    ]
+    out += _table("Ex-post risk contribution", header, ex_post)
+
+    coverage = [
+        _segment_rows(segments, "Mean covered weight", "The covered share of the gross held weight, on average.",
+                      lambda s: _dig(s, "coverage", "mean_covered_weight"), "pct"),
+        _segment_rows(segments, "Minimum covered weight", "The lowest covered share on a bar holding something.",
+                      lambda s: _dig(s, "coverage", "min_covered_weight"), "pct"),
+    ]
+    out += _table("Coverage", header, coverage)
+
+    notes = [
+        f"{label}: {note}" for _, label, summary in segments
+        if (note := _dig(summary, "coverage", "note"))
+    ]
+    return out + (_notes_list(notes) if notes else "")
+
+
+def _notes_list(notes: list[str]) -> str:
+    """The notes as a list, without a heading."""
+    items = "\n".join(f"    <li>{_escape(note)}</li>" for note in notes)
+    return f'  <ul class="notes">\n{items}\n  </ul>\n'
+
+
+def _factor_attribution_figure(block: dict, attribution: xr.Dataset, bars_per_year: float | None,
+                               in_sample_range: tuple[str, str] | None) -> go.Figure:
+    """Draw the Factor attribution tab's charts.
+
+    From the top: the cumulative log contribution of each group and term and
+    their total (log NAV growth); each style's annualised log growth per
+    segment; each style's mean net exposure per segment; the styles' net
+    exposure over time; the annualised forecast volatility over time, total
+    and its factor and specific parts; the covered share of the gross held
+    weight. The in-sample range is shaded on the panels over time.
+    """
+    segments = _factor_segments(block)
+    timestamps = attribution["timestamp"].values
+    group = attribution["group"]
+    styles = [str(f) for f in attribution["factor"].values[(group == "style").values]]
+    fig = make_subplots(rows=6, cols=1, row_heights=[0.26, 0.13, 0.13, 0.16, 0.16, 0.16],
+                        vertical_spacing=0.05)
+
+    factor_log = attribution["factor_log_contribution"]
+    curves = [(key, label, factor_log.where(group == key, 0.0).sum("factor"), colour)
+              for key, label, _, colour in _factor_groups_of(attribution)]
+    curves += [(key, label, attribution["log_contribution"].sel(term=key), colour)
+               for key, label, _, colour in _FACTOR_TERMS]
+    curves.append(("total", "Total", attribution["log_contribution"].sum("term"), "#1a1a1a"))
+    for key, label, values, colour in curves:
+        fig.add_trace(go.Scatter(
+            x=timestamps, y=values.cumsum("timestamp").values, name=f"factor_attribution_{key}",
+            mode="lines", line={"color": colour, "width": 2.5 if key == "total" else 1.5},
+            hovertemplate=f"%{{x}}<br>{html.escape(label)} %{{y:.2%}}<extra></extra>",
+        ), row=1, col=1)
+
+    for key, label, summary in segments:
+        growth = summary.get("factor_annualized_log_return") or {}
+        exposure = summary.get("style_mean_exposure") or {}
+        common = {"x": styles, "marker": {"color": PORTFOLIO_COLOUR, "opacity": _SEGMENT_OPACITY[key]},
+                  "text": [label] * len(styles), "textposition": "inside", "showlegend": False}
+        fig.add_trace(go.Bar(
+            y=[growth.get(name) for name in styles], name=f"style_contribution_{key}",
+            hovertemplate=f"%{{x}}<br>{label} log growth per year %{{y:.2%}}<extra></extra>", **common,
+        ), row=2, col=1)
+        fig.add_trace(go.Bar(
+            y=[exposure.get(name) for name in styles], name=f"style_mean_exposure_{key}",
+            hovertemplate=f"%{{x}}<br>{label} mean exposure %{{y:.2f}}<extra></extra>", **common,
+        ), row=3, col=1)
+
+    holding = attribution["gross_weight"].values > 0
+    for name in styles:
+        exposure = np.where(holding, attribution["exposure"].sel(factor=name).values, np.nan)
+        fig.add_trace(go.Scatter(
+            x=timestamps, y=exposure, name=f"style_exposure_{name}", mode="lines", line={"width": 1},
+            showlegend=False, hovertemplate=f"%{{x}}<br>{html.escape(name)} exposure %{{y:.2f}}<extra></extra>",
+        ), row=4, col=1)
+
+    scale = math.sqrt(bars_per_year or TRADING_BARS_PER_YEAR)
+    forecast = np.isfinite(attribution["factor_risk_contribution"].values).all(axis=1)
+    factor_variance = attribution["ex_ante_factor_variance"].values
+    specific_variance = attribution["ex_ante_specific_variance"].values
+    for key, variance, colour in (
+        ("total", factor_variance + specific_variance, "#1a1a1a"),
+        ("factor", factor_variance, "#9467bd"),
+        ("specific", specific_variance, "#2ca02c"),
+    ):
+        fig.add_trace(go.Scatter(
+            x=timestamps, y=np.where(forecast, np.sqrt(variance) * scale, np.nan), name=f"ex_ante_{key}",
+            mode="lines", line={"color": colour, "width": 1.5}, showlegend=False,
+            hovertemplate=f"%{{x}}<br>ex-ante {key} volatility %{{y:.2%}}<extra></extra>",
+        ), row=5, col=1)
+
+    fig.add_trace(go.Scatter(
+        x=timestamps, y=attribution["covered_weight"].values, name="covered_weight", mode="lines",
+        line={"color": PORTFOLIO_COLOUR, "width": 1.5}, showlegend=False,
+        hovertemplate="%{x}<br>covered weight %{y:.1%}<extra></extra>",
+    ), row=6, col=1)
+
+    if in_sample_range is not None:
+        for row in (1, 4, 5, 6):
+            fig.add_vrect(x0=in_sample_range[0], x1=in_sample_range[1], row=row, col=1,
+                          fillcolor="grey", opacity=0.2, line_width=0)
+    fig.update_yaxes(title_text="cumulative log contribution", tickformat=".0%", row=1, col=1)
+    fig.update_yaxes(title_text="style log growth / yr", tickformat=".0%", row=2, col=1)
+    fig.update_yaxes(title_text="style mean exposure", row=3, col=1)
+    fig.update_yaxes(title_text="style exposure", row=4, col=1)
+    fig.update_yaxes(title_text="ex-ante volatility", tickformat=".0%", row=5, col=1)
+    fig.update_yaxes(title_text="covered weight", tickformat=".0%", rangemode="tozero", row=6, col=1)
+    fig.update_layout(height=1500, barmode="group", showlegend=True, legend={"orientation": "h", "y": 1.04})
+    return fig
+
+
 def _rolling_figure(equity: pd.Series, reference: pd.Series | None, bars_per_year: float | None,
                     benchmark_name: str) -> go.Figure | None:
     """Rolling one-year panels: excess return, IR and beta against the benchmark,
@@ -2114,13 +2381,7 @@ def _notes_section(notes: list[str] | None) -> str:
     """Render the notes list, or the empty string when there are none."""
     if not notes:
         return ""
-    items = "\n".join(f"    <li>{_escape(note)}</li>" for note in notes)
-    return (
-        "  <h2>Notes</h2>\n"
-        '  <ul class="notes">\n'
-        f"{items}\n"
-        "  </ul>\n"
-    )
+    return "  <h2>Notes</h2>\n" + _notes_list(notes)
 
 
 def _extra_section(extra_tables: dict[str, dict] | None) -> str:
