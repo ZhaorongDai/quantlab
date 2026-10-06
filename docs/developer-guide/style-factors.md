@@ -230,7 +230,7 @@ Every window, half-life, lag, weight and threshold is a field of
   count and the factor report included, takes 9.3 minutes with a 280 GB
   peak of memory on a 128-core machine.
 - **Coverage.** Over the estimation universe (3,000 stocks every day), each
-  of the 12 styles has a value in at least 99.92% of the cells in every
+  of the 12 styles has a value in at least 99.90% of the cells in every
   year, and the industry code in 99.87%.
 - **Size** correlates with the log of DAILY's market cap at 0.999, 1.000 and
   0.999 (2005-06-30, 2015-06-30 and 2024-06-28) across the estimation
@@ -253,17 +253,17 @@ Every window, half-life, lag, weight and threshold is a field of
   | Style | IC | t | Lag-1 rank autocorrelation |
   |---|---|---|---|
   | Size | 0.079 | 15.2 | 1.000 |
-  | Beta | -0.000 | -0.0 | 0.997 |
-  | Momentum | 0.055 | 9.1 | 0.991 |
+  | Beta | -0.000 | -0.0 | 0.996 |
+  | Momentum | 0.055 | 9.1 | 0.990 |
   | Residual Volatility | -0.097 | -14.9 | 0.997 |
   | Non-linear Size | 0.040 | 10.5 | 0.995 |
-  | Non-linear Beta | 0.003 | 0.9 | 0.986 |
+  | Non-linear Beta | 0.003 | 0.9 | 0.985 |
   | Liquidity | -0.014 | -2.0 | 0.999 |
   | Dividend Yield | 0.050 | 9.1 | 0.999 |
   | Book-to-Price | 0.003 | 0.6 | 0.998 |
   | Earnings Yield | 0.070 | 12.5 | 0.997 |
   | Leverage | 0.004 | 0.7 | 0.999 |
-  | Growth | 0.016 | 5.7 | 0.999 |
+  | Growth | 0.016 | 5.7 | 0.998 |
 
   Over all common stocks, micro caps included, the small, volatile and
   unprofitable stocks did worst, so Size, Earnings Yield and Dividend Yield
