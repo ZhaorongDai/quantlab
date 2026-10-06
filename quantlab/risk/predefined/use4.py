@@ -204,10 +204,29 @@ class Use4RiskModel(FactorRiskModel):
       ``volatility_half_life`` with ``volatility_lags`` Newey-West lags, the
       correlations ``rho`` from the last ``correlation_window`` weighted with
       ``correlation_half_life`` with ``correlation_lags`` lags (USE4 §4.1);
-    - ``specific_risk`` on ``(timestamp, symbol)``: the volatility of the
-      last ``specific_window`` specific returns weighted with
-      ``specific_half_life``, times the square root of the Newey-West
-      multiplier ``C_NW`` (USE4 eq. 5.2).
+    - ``specific_risk`` on ``(timestamp, symbol)`` (USE4 §5.1-5.2), for
+      every symbol with a time-series value and, with a structural model,
+      every symbol with exposures at the bar:
+
+      1. the time-series volatility: the last ``specific_window`` specific
+         returns weighted with ``specific_half_life``, times the square root
+         of the Newey-West multiplier ``C_NW`` (eq. 5.2);
+      2. combined with a structural volatility (eqs. 5.3-5.5): a blending
+         coefficient per symbol from how many returns it has and how
+         fat-tailed they are, a daily regression of the log time-series
+         volatility on the exposures over the symbols whose coefficient is
+         1, and ``structural_bias`` times the exponential of each symbol's
+         fitted value; ``structural_model="fill"`` (the default) gives it to
+         the symbols without a time-series value, ``"blend"`` blends every
+         symbol as USE4 eq. 5.5 (see ``Use4RiskConfig.structural_model``
+         and ``blending_min_observations``);
+      3. shrunk toward the cap-weighted mean of the symbol's size group with
+         intensity ``q |s - m| / (d + q |s - m|)`` (eqs. 5.6-5.9, ``q`` the
+         ``shrinkage``).
+
+      The time series and the blending coefficient read only the window;
+      the structural fit and the shrinkage use the exposures and market caps
+      of the bar.
 
     Newey-West, with Newey and West's (1987) Bartlett weights ``b_l = 1 - l
     / (L + 1)`` over lags 1 to ``L`` (USE4 publishes no weights; our
@@ -326,8 +345,26 @@ class Use4RiskModel(FactorRiskModel):
                     f"{owner}: {prefix}_lags must be at least 0 and below its window, "
                     f"{window}; got {getattr(config, f'{prefix}_lags')}."
                 )
+        if config.structural_model not in ("fill", "blend", "off"):
+            raise ValueError(
+                f"{owner}: structural_model must be 'fill', 'blend' or 'off', got "
+                f"{config.structural_model!r}."
+            )
         if config.njobs < 1:
             raise ValueError(f"{owner}: njobs must be at least 1, got {config.njobs}.")
+        if not config.structural_bias > 0:
+            raise ValueError(f"{owner}: structural_bias must be positive.")
+        if config.blending_min_observations < 0 or config.blending_ramp < 1:
+            raise ValueError(
+                f"{owner}: blending_min_observations must be at least 0 and blending_ramp "
+                f"at least 1."
+            )
+        if not config.blending_outlier_bound > 0:
+            raise ValueError(f"{owner}: blending_outlier_bound must be positive.")
+        if config.shrinkage < 0 or config.shrinkage_groups < 1:
+            raise ValueError(
+                f"{owner}: shrinkage must be at least 0 and shrinkage_groups at least 1."
+            )
         windows = self._estimate_windows(config)
         if not 2 <= config.min_observations <= min(windows):
             raise ValueError(
@@ -690,12 +727,25 @@ class Use4RiskModel(FactorRiskModel):
             rows = regression.read(recorded[0], recorded[0]).isel(timestamp=slice(0, 0))
         else:
             rows = regression.read(bars[read_from], end).load()
-        factor_returns = rows["factor_return"].transpose("timestamp", "factor").values
-        specific_returns = rows["specific_return"].transpose("timestamp", "symbol").values
         offset = begin - read_from
         count = max(stop - begin, 0)
+        timestamps = rows["timestamp"].values[offset : offset + count]
+        symbols = rows["symbol"].values
+        structural = count and config.structural_model != "off"
+        refine = count and (structural or config.shrinkage > 0)
+        if structural:
+            # A symbol with exposures has a specific risk, a return or not.
+            exposures = self.exposures(timestamps[0], timestamps[-1])
+            symbols = np.asarray(sort_symbol_axis(
+                set(symbols.tolist()) | set(exposures["symbol"].values.tolist())
+            ))
+        factor_returns = rows["factor_return"].transpose("timestamp", "factor").values
+        specific_returns = (
+            rows["specific_return"].reindex(symbol=symbols).transpose("timestamp", "symbol").values
+        )
         covariance = np.full((count, len(names), len(names)), np.nan)
-        specific_risk = np.full((count, specific_returns.shape[1]), np.nan)
+        specific_risk = np.full((count, len(symbols)), np.nan)
+        blending = np.full((count, len(symbols)), np.nan)
         parameters = _EstimateParameters.of(config)
         longest = max(self._estimate_windows(config))
         # Each row reads only its windows, so chunks of rows are independent
@@ -721,23 +771,80 @@ class Use4RiskModel(FactorRiskModel):
             else:
                 results = Parallel(n_jobs=config.njobs)(tasks)
         row = 0
-        for chunk_covariance, chunk_specific in results:
+        for chunk_covariance, chunk_specific, chunk_blending in results:
             covariance[row : row + len(chunk_covariance)] = chunk_covariance
             specific_risk[row : row + len(chunk_specific)] = chunk_specific
+            blending[row : row + len(chunk_blending)] = chunk_blending
             row += len(chunk_covariance)
+        if refine:
+            if structural:
+                exposures = exposures.reindex(timestamp=timestamps, symbol=symbols).load()
+            cap = (
+                self.prices(timestamps[0], timestamps[-1])[config.market_cap_column]
+                .reindex(timestamp=timestamps, symbol=symbols)
+                .transpose("timestamp", "symbol")
+                .values
+            )
+            with Timer(f"{self.class_name}: specific risk refinements"):
+                for row in range(count):
+                    matrix, covered = (
+                        self.exposure_matrix(exposures.isel(timestamp=row)) if structural
+                        else (None, None)
+                    )
+                    specific_risk[row] = self._refined_specific_risk(
+                        specific_risk[row], blending[row], matrix, covered, cap[row]
+                    )
         return xr.Dataset(
             {
                 "factor_covariance": (("timestamp", "factor_i", "factor_j"), covariance),
                 "specific_risk": (("timestamp", "symbol"), specific_risk),
             },
             coords={
-                "timestamp": rows["timestamp"].values[offset : offset + count],
+                "timestamp": timestamps,
                 "factor_i": names,
                 "factor_j": names,
-                "symbol": rows["symbol"].values,
+                "symbol": symbols,
             },
         )
 
+    def _refined_specific_risk(
+        self,
+        time_series: np.ndarray,
+        blending: np.ndarray,
+        matrix: np.ndarray,
+        covered: np.ndarray,
+        cap: np.ndarray,
+    ) -> np.ndarray:
+        """Return one bar's specific volatilities: structural blend, then shrinkage.
+
+        ``time_series`` and ``blending`` are each symbol's time-series
+        volatility and blending coefficient, ``matrix`` and ``covered`` its
+        exposures (``exposure_matrix``) and ``cap`` its market cap. See
+        ``Use4RiskConfig.structural_model`` and ``shrinkage``.
+        """
+        config = self.config
+        sigma = time_series.copy()
+        if config.structural_model != "off":
+            structural = _structural_volatility(
+                time_series, blending, matrix, covered, cap, config.weighting,
+                config.structural_bias,
+            )
+            # A symbol without a time series is all structural.
+            gamma = np.where(np.isfinite(time_series), np.nan_to_num(blending), 0.0)
+            if config.structural_model == "blend":
+                # USE4 eq. 5.5.
+                blended = np.where(
+                    gamma >= 1.0,
+                    time_series,
+                    gamma * np.nan_to_num(time_series) + (1 - gamma) * structural,
+                )
+            else:
+                blended = np.where(np.isfinite(time_series), time_series, structural)
+            # Where no structural value exists the time series stands.
+            sigma = np.where(np.isfinite(blended), blended, time_series)
+        if config.shrinkage > 0:
+            sigma = _shrunk(sigma, cap, config.shrinkage, config.shrinkage_groups)
+        return sigma
 
 
 @dataclass(frozen=True)
@@ -762,6 +869,10 @@ class _EstimateParameters:
     specific_autocorrelation_half_life: float
     specific_autocorrelation_window: int
     min_observations: int
+    structural_model: str
+    blending_min_observations: int
+    blending_ramp: int
+    blending_outlier_bound: float
 
     @classmethod
     def of(cls, config: Use4RiskConfig) -> "_EstimateParameters":
@@ -781,11 +892,18 @@ def _estimate_rows(
     specific_returns: np.ndarray,
     ends: np.ndarray,
     parameters: _EstimateParameters,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the factor covariances and specific risks of the bars ending before each of ``ends``."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the factor covariances, time-series specific risks and blending coefficients.
+
+    One row per bar, each bar ending before one of ``ends``.
+    """
     covariance = np.stack([_factor_covariance(factor_returns[:end], parameters) for end in ends])
     specific = np.stack([_specific_risk(specific_returns[:end], parameters) for end in ends])
-    return covariance, specific
+    if parameters.structural_model != "off":
+        blending = np.stack([_blending(specific_returns[:end], parameters) for end in ends])
+    else:
+        blending = np.ones_like(specific)
+    return covariance, specific, blending
 
 
 def _factor_covariance(history: np.ndarray, config: "_EstimateParameters") -> np.ndarray:
@@ -844,6 +962,96 @@ def _specific_risk(history: np.ndarray, config: "_EstimateParameters") -> np.nda
         )
     enough = present.sum(axis=0) >= config.min_observations
     return np.where(enough, np.sqrt(variance), np.nan)
+
+
+def _blending(history: np.ndarray, config: "_EstimateParameters") -> np.ndarray:
+    """Return each symbol's blending coefficient at the last row of ``history``.
+
+    ``min(1, max(0, (h - m) / r)) * min(1, max(0, exp(1 - Z)))`` over the
+    last ``specific_window`` specific returns; see
+    ``Use4RiskConfig.blending_min_observations``. A symbol whose returns
+    have no interquartile range is 0.
+    """
+    window = history[-config.specific_window :]
+    gamma = np.zeros(window.shape[1])
+    active = np.flatnonzero(np.isfinite(window).sum(axis=0) > config.blending_min_observations)
+    if not len(active):
+        return gamma
+    window = window[:, active]
+    count = np.isfinite(window).sum(axis=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        low, high = np.nanpercentile(window, [25, 75], axis=0)
+        robust = (high - low) / 1.35
+        bound = config.blending_outlier_bound * robust
+        spread = np.nanstd(np.clip(window, -bound, bound), axis=0, ddof=1)
+        tails = np.abs(spread / robust - 1.0)
+        coverage = np.clip((count - config.blending_min_observations) / config.blending_ramp, 0.0, 1.0)
+        value = coverage * np.clip(np.exp(1.0 - tails), 0.0, 1.0)
+    gamma[active] = np.where(np.isfinite(value) & (robust > 0), value, 0.0)
+    return gamma
+
+
+def _structural_volatility(
+    time_series: np.ndarray,
+    blending: np.ndarray,
+    matrix: np.ndarray,
+    covered: np.ndarray,
+    cap: np.ndarray,
+    weighting: str,
+    bias: float,
+) -> np.ndarray:
+    """Return each covered symbol's structural specific volatility (USE4 eqs. 5.3-5.4).
+
+    The log time-series volatility of the symbols with a blending
+    coefficient of 1 and a market cap is regressed on their exposures,
+    weighted as ``weighting``; a covered symbol's structural volatility is
+    ``bias`` times the exponential of its fitted value. NaN for every symbol
+    when there are no more such symbols than factors.
+    """
+    structural = np.full(len(time_series), np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        fit = (
+            covered & (np.nan_to_num(blending) >= 1.0) & np.isfinite(time_series)
+            & (time_series > 0) & np.isfinite(cap) & (cap > 0)
+        )
+    if fit.sum() <= matrix.shape[1]:
+        return structural
+    weight = {"sqrt_cap": np.sqrt(cap[fit]), "cap": cap[fit], "equal": np.ones(fit.sum())}[weighting]
+    root = np.sqrt(weight)
+    coefficients = np.linalg.lstsq(
+        matrix[fit] * root[:, None], np.log(time_series[fit]) * root, rcond=None
+    )[0]
+    structural[covered] = bias * np.exp(matrix[covered] @ coefficients)
+    return structural
+
+
+def _shrunk(sigma: np.ndarray, cap: np.ndarray, q: float, groups: int) -> np.ndarray:
+    """Return the specific volatilities shrunk toward their size group's mean (USE4 eqs. 5.6-5.9).
+
+    The symbols with a volatility and a market cap are cut into ``groups``
+    equal-count groups by market cap. Within a group, the target is the
+    cap-weighted mean ``m``, ``d`` the population standard deviation of the
+    volatilities, and a volatility ``s`` moves to ``v m + (1 - v) s`` with
+    ``v = q |s - m| / (d + q |s - m|)``. A symbol without a market cap is
+    left as it is.
+    """
+    shrunk = sigma.copy()
+    usable = np.flatnonzero(np.isfinite(sigma) & np.isfinite(cap) & (cap > 0))
+    order = usable[np.argsort(cap[usable], kind="stable")]
+    for group in np.array_split(order, groups):
+        if not len(group):
+            continue
+        weight = cap[group] / cap[group].sum()
+        target = weight @ sigma[group]
+        distance = np.abs(sigma[group] - target)
+        spread = np.sqrt(np.mean((sigma[group] - target) ** 2))
+        with np.errstate(divide="ignore", invalid="ignore"):
+            intensity = np.where(
+                spread + q * distance > 0, q * distance / (spread + q * distance), 0.0
+            )
+        shrunk[group] = intensity * target + (1.0 - intensity) * sigma[group]
+    return shrunk
 
 
 __all__ = ["Use4RiskModel"]

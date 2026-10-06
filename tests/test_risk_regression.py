@@ -67,6 +67,7 @@ def _plant(
     seed: int = 194,
     industries: bool = True,
     autocorrelation: float = 0.0,
+    specific_everywhere: float = 0.0,
 ):
     """Return ``(prices, exposures, planted factor returns, planted specific returns)``.
 
@@ -74,9 +75,14 @@ def _plant(
     symbol's specific return on that bar. With ``industries=False`` no
     industry return and no specific return is planted. With
     ``autocorrelation`` the country and style factor returns follow an AR(1)
-    with that coefficient.
+    with that coefficient. With ``specific_everywhere`` every symbol,
+    estimation universe included, gets a specific return of that typical
+    size times a volatility of its own (the factor returns are then no
+    longer recovered exactly).
     """
     rng = np.random.default_rng(seed)
+    noise = np.random.default_rng(seed + 1)
+    specific_scale = specific_everywhere * noise.lognormal(0.0, 0.5, size=_N)
     cap = rng.lognormal(22.0, 1.0, size=_N) * rng.lognormal(0.0, 0.02, size=(_T, _N))
     styles = rng.normal(size=(_T, _N, len(_STYLES)))
     estu = np.ones((_T, _N))
@@ -106,6 +112,8 @@ def _plant(
         specific[t] = np.where(estu[t - 1] == 1.0, 0.0, rng.normal(0, 0.02, size=_N))
         if not industries:
             specific[t] = 0.0
+        if specific_everywhere:
+            specific[t] = specific_scale * noise.standard_normal(_N)
         if outlier is not None and outlier[0] == t:
             specific[t, outlier[1]] = outlier[2]
         industry_part = np.append(np.nan_to_num(industry)[index], 0.0)

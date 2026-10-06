@@ -210,6 +210,48 @@ class Use4RiskConfig(FactorRiskConfig):
     #: Bars of specific returns the autocorrelations are estimated from. Our
     #: choice: three half-lives.
     specific_autocorrelation_window: int = 756
+    #: How the specific volatilities use a structural model (USE4 §5.1, eqs.
+    #: 5.3-5.5): each bar, the log time-series volatility of the symbols with
+    #: a blending coefficient of 1 is regressed on their exposures (weighted
+    #: as ``weighting``), and a symbol's structural volatility is
+    #: ``structural_bias`` times the exponential of its fitted value.
+    #: ``"blend"`` is USE4's, ``gamma`` times the time series plus ``1 -
+    #: gamma`` times the structural value; ``"fill"`` gives the structural
+    #: value only to the symbols without a time-series value (fewer than
+    #: ``min_observations`` returns in the window) and keeps every other
+    #: symbol's time series; ``"off"`` uses none. Either of the first two
+    #: gives every symbol with exposures a specific risk (a new listing
+    #: included) whenever enough symbols are fitted. Our choice: ``"fill"``,
+    #: for that coverage; on the Sharadar history the structural values run
+    #: low, so the blend worsened the specific bias statistics and the fill
+    #: costs some calibration of portfolios holding new listings (#199).
+    structural_model: Literal["fill", "blend", "off"] = "fill"
+    #: ``E_0`` of USE4 eq. 5.4, "slightly greater than 1", which removes the
+    #: bias of exponentiating the residuals. USE4 publishes no value; 1.05,
+    #: as third-party replications of the Barra models use (our choice).
+    structural_bias: float = 1.05
+    #: The blending coefficient is ``min(1, max(0, (h - m) / r)) * min(1,
+    #: max(0, exp(1 - Z)))`` with ``h`` the specific returns in the last
+    #: ``specific_window`` bars, ``m`` this value and ``r``
+    #: ``blending_ramp``; ``Z = |s / s_robust - 1|``, ``s_robust`` the
+    #: interquartile range over 1.35 and ``s`` the standard deviation of the
+    #: returns clipped to ``blending_outlier_bound`` times ``s_robust``. USE4
+    #: publishes only that it is 1 for few missing returns and thin tails and
+    #: 0 for many or fat; these values (60, 120, 10) are third-party
+    #: replications' (our choice).
+    blending_min_observations: int = 60
+    #: See ``blending_min_observations``.
+    blending_ramp: int = 120
+    #: See ``blending_min_observations``.
+    blending_outlier_bound: float = 10.0
+    #: Bayesian shrinkage parameter ``q`` of the specific volatilities toward
+    #: the cap-weighted mean of their size group (USE4 §5.2, eqs. 5.6-5.9;
+    #: USE4S and USE4L: 0.1); 0 for none.
+    shrinkage: float = 0.1
+    #: Size groups of the shrinkage, equal-count market-cap groups of the
+    #: symbols with a specific volatility and a market cap at the bar (USE4:
+    #: deciles).
+    shrinkage_groups: int = 10
     #: Processes the estimate rows are computed in; 1 computes them in this
     #: one. The rows do not depend on it.
     njobs: int = 1

@@ -39,6 +39,10 @@ WINDOWS = dict(
     correlation_lags=0,
     specific_lags=0,
     specific_autocorrelation_window=8,
+    # The time-series specific risk alone: the refinements are checked in
+    # tests/test_risk_specific.py.
+    structural_model="off",
+    shrinkage=0.0,
 )
 START = 1  # the first bar with a regression
 
