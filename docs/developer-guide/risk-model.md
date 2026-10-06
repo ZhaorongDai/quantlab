@@ -332,10 +332,13 @@ expected return with `ic=0.02`, risk aversion 10, turnover penalty 0.001,
 rebalanced every 5 bars, fees and slippage of 5 bp each). Only the
 covariance differs: `LedoitWolfEstimator` over 126 one-bar returns, or
 `FactorRiskStoreEstimator` on the estimate store above. Neither backtest
-failed a rebalance. Run alone, the factor-model backtest takes 4.2 minutes
-with a 32 GB peak, most of it computing `BarraStyle` over the window, and
-the Ledoit-Wolf one 3.3 minutes; the whole script takes 8.9 minutes with
-a 38 GB peak.
+failed a rebalance. Both backtests also pass `Use4RiskModel` as their
+`risk_model` and attribute their holdings to its factors (see below). On
+the training server the factor-model backtest takes 5.5 minutes, most of it
+computing `BarraStyle` over the window, and the Ledoit-Wolf one 3.1
+minutes; the whole script takes 11 minutes. Before factor attribution was
+added, the two took 4.2 and 3.3 minutes, with a 38 GB peak for the
+script.
 
 | | Ledoit-Wolf | USE4 factor model |
 |---|---|---|
@@ -370,3 +373,27 @@ realized over 40%. The factor model forecasts both portfolios within the
 band, including the one it did not choose.
 
 ![Value of both backtests, and each one's forecast volatility against realized](../assets/risk_model/xgb_mvo_comparison.png)
+
+The factor attribution of the two backtests (the `factor_attribution`
+block of each run's metrics, 2020-2024, annualized log growth; see
+[Attribute returns and risk to factors](../backtest.md#attribute-returns-and-risk-to-factors))
+says where the return came from. The terms add up to each run's log NAV
+on every bar (largest gap 5e-16), and the model covers at least 98% of the
+held weight on every bar:
+
+| | Ledoit-Wolf | USE4 factor model |
+|---|---|---|
+| Country | 9.7% | 9.7% |
+| Industry | -0.5% | -1.0% |
+| Style | -4.3% | -4.8% |
+| Specific | 0.1% | -0.1% |
+| Risk-free | 2.5% | 2.5% |
+| Trading | -0.4% | -0.4% |
+| Total | 7.1% | 5.9% |
+| Ex-ante volatility (factor / specific) | 15.1% (14.8% / 3.1%) | 14.2% (13.9% / 2.7%) |
+| Ex-post volatility | 15.9% | 16.0% |
+
+Both books earned the market and lost on their style exposures. The
+specific return, the part the return model should add, is about zero, in
+line with a weak model. The 1.2-point gap in total return between the two
+is mostly style and industry, not stock selection.

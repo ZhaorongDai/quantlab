@@ -15,9 +15,10 @@ but the covariance:
 Each backtest also attributes its holdings' returns and risk to the USE4
 factors (``risk_model``; see "Attribute returns and risk to factors" in
 docs/backtest.md). Then, for each backtest's holdings on every rebalance
-bar, the volatility both risk models forecast for the next ``HORIZON`` bars against the return
-the holdings made over them (``quantlab.risk.bias.bias_statistics``), and
-the two backtests' returns, volatility and turnover side by side.
+bar, the volatility both risk models forecast for the next ``HORIZON``
+bars against the return the holdings made over them
+(``quantlab.risk.bias.bias_statistics``), and the two backtests' returns,
+volatility, turnover and factor attribution side by side.
 
 Every setting is a constant or a quantlab config object at the top of the
 file; edit them and run ``uv run python examples/sharadar_us_equity/sp500_xgb_mvo.py``
@@ -391,8 +392,7 @@ def backtest(checkpoint: Path, covariance: str):
         f"{whole.get('Sharpe Ratio')}, {failed} failed rebalance(s); run: {result.run_dir}"
     )
     logger.info(
-        f"{covariance}: annualized log growth by term "
-        f"{ {term: round(value, 4) for term, value in attributed['annualized_log_return'].items()} }, "
+        f"{covariance}: annualized log growth by term {attributed['annualized_log_return']}, "
         f"by group {attributed['group_annualized_log_return']}, mean covered weight "
         f"{attributed['coverage']['mean_covered_weight']}"
     )

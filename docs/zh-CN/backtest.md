@@ -563,7 +563,7 @@ bool(np.allclose(per_bar["contribution"].sum("term"), attributed.simulation.retu
 
 **风险。** `ex_ante_risk` 对 bar 开始时组合的预测风险做归因。对第 t 根 bar 的预测取估计 store 中 t-1 那一行：记 `x` 为被覆盖持仓在有协方差的因子上的净暴露，`F` 为因子协方差，`s` 为特异风险，方差为 `x'Fx + sum w^2 s^2`。每个因子的 x-sigma-rho 贡献 `x_k (Fx)_k / sigma` 加上特异部分等于 `sigma`。这个块给出年化 `volatility`（`total`、`factor`、`specific`）、`contribution` 拆分以及每个因子和每组贡献在各分段上的均值。未被覆盖的持仓不进入预测，只体现在覆盖率里。`ex_post_risk` 拆的则是实现波动率：每项、每个因子和每组在该分段逐 bar 贡献上的 `cov(c, r) / sigma(r)`，年化；各项加起来等于 `volatility`。
 
-**分段与覆盖率。** `run()` 和 `run_cv()` 给出 `whole`、`in_sample` 和 `out_of_sample`，范围与其他指标相同；`run_weights()` 只给 `whole`。`coverage` 给出在有持仓的 bar 上被覆盖部分占总持仓权重的均值和最小值，均值低于 90% 时还有一条 `note`。
+**分段与覆盖率。** `run()` 和 `run_cv()` 给出 `whole`、`in_sample` 和 `out_of_sample`，范围与其他指标相同；`run_weights()` 只给 `whole`。没有 bar 的分段为 `None`。`coverage` 给出在有持仓的 bar 上被覆盖部分占总持仓权重的均值和最小值，均值低于 90% 时还有一条 `note`。
 
 **拒绝的情况。** 回测从不构建风险 store（构建很耗时）。在模拟之前，它会拒绝回归 store 不覆盖窗口、或估计 store 不覆盖到倒数第二根 bar 的风险模型（请先构建或扩展），以及 bar 间隔与回测不同的风险模型。模拟之后，如果有持仓却从未有任何持仓被覆盖，它也会拒绝：这说明组合和风险模型用的是不同的标的轴（例如 PERMNO 对 permaticker）。
 
