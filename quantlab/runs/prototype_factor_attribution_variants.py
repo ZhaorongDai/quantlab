@@ -184,6 +184,12 @@ def _padded(values, pad=1.45) -> list[float]:
     return [lo - span * (pad - 1) if lo < 0 else -span * 0.05, hi + span * (pad - 1) if hi > 0 else span * 0.05]
 
 
+def _zero_line(fig: go.Figure) -> None:
+    """A solid baseline at 0 drawn over the grid, so bars visibly start from it."""
+    fig.update_yaxes(zeroline=False)
+    fig.add_hline(y=0, line=dict(color=INK2, width=1.2), layer="above")
+
+
 def _div(fig: go.Figure) -> str:
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True, "displaylogo": False})
 
@@ -234,7 +240,8 @@ def waterfall(seg: dict, height=330) -> go.Figure:
     top = max(float(running.max()), a["total"], 0.0)
     bottom = min(float(running.min()), a["total"], 0.0)
     pad = (top - bottom) * 0.15
-    fig.update_yaxes(tickformat=".0%", zeroline=True, range=[bottom - pad, top + pad])
+    fig.update_yaxes(tickformat=".0%", range=[bottom - pad if bottom < 0 else 0.0, top + pad])
+    _zero_line(fig)
     fig.update_layout(showlegend=False)
     return fig
 
@@ -469,7 +476,9 @@ def risk_waterfall(seg: dict, height=330) -> go.Figure:
     running = np.cumsum(values)
     top = max(float(running.max()), total, realized or 0.0)
     bottom = min(float(running.min()), 0.0)
-    fig.update_yaxes(tickformat=".0%", range=[bottom - (top - bottom) * 0.1, top * 1.15])
+    pad = (top - bottom) * 0.15
+    fig.update_yaxes(tickformat=".0%", range=[bottom - pad if bottom < 0 else 0.0, top + pad])
+    _zero_line(fig)
     fig.update_layout(showlegend=False)
     return fig
 
@@ -582,16 +591,16 @@ def f2(block, attribution, metrics) -> str:
     pair = lambda left, right: f'<div class="row">{left}{right}</div>'
     return f"""<div class="fa">{_CSS}{tiles(seg, name)}
 <div class="row"><div class="colhead">Return</div><div class="colhead">Risk</div></div>
-{pair(_card("Where did the return come from?", f"Annualized log growth by part, {name}; the bars add up to the total.", _div(waterfall(seg))),
-      _card("Where did the risk come from?", "Forecast volatility built from each part's x-sigma-rho contribution, against the realized volatility.", _div(risk_waterfall(seg))))}
+{pair(_card("Return by part", f"Annualized log growth, {name}; the bars add up to the total.", _div(waterfall(seg))),
+      _card("Risk by part", "Forecast volatility built from each part's x-sigma-rho contribution, and the realized volatility.", _div(risk_waterfall(seg))))}
 {pair(_card("Return over time", "Cumulative log contribution of each part; black: log NAV.", _div(cumulative(attribution))),
       _card("Risk over time", "Forecast volatility by part, monthly mean (bars add up to the forecast); dotted: realized 63-bar volatility.", _div(risk_over_time(attribution, height=380))))}
 {pair(_card("Styles: exposure and return", "Mean net exposure and annualized contribution, sorted by contribution.", _div(styles(seg, attribution))),
       _card("Styles: risk", "Each style's contribution to forecast and to realized volatility, same order.", _div(style_risk(seg, attribution))))}
 {pair(_card("Industries: return", "Best and worst 10 by annualized contribution; grey: the book's mean net weight.", _div(industries(seg, attribution))),
       _card("Industries: risk", "Largest and smallest 10 contributions to forecast volatility; grey: mean net weight.", _div(industries(seg, attribution, key="risk", fmt="%{x:.2%} of forecast vol"))))}
-{_card("How did the style bets move?", "Weekly mean net exposure per style; blue long, red short. Exposure drives both columns.", _div(style_heatmap(attribution, seg=seg)))}
-{_card("Was the risk paid?", "Each part's annualized return against its contribution to realized volatility.", _div(return_vs_risk(seg)))}
+{_card("Style exposure over time", "Weekly mean net exposure per style; blue long, red short.", _div(style_heatmap(attribution, seg=seg)))}
+{_card("Return against realized risk", "Each part's annualized log growth and its contribution to realized volatility.", _div(return_vs_risk(seg)))}
 </div>"""
 
 
