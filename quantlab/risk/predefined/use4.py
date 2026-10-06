@@ -446,8 +446,8 @@ class Use4RiskModel(FactorRiskModel):
 
         Examples
         --------
-        >>> model.factor_names
-        ('country', 'value', 'quality')
+        >>> model.factor_names[:3], model.factor_names[-1], len(model.factor_names)
+        (('country', 'industry_1', 'industry_2'), 'style_growth', 61)
         """
         config = self.config
         country = ("country",) if config.country else ()

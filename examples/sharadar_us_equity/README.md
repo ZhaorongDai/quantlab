@@ -54,4 +54,16 @@ The full history needs a large machine: on the training server the build takes a
 QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/risk_model.py
 ```
 
-On the training server the whole script takes about 10 minutes (the estimate store in 32 processes, about 2 minutes), with a peak of about 25 GB of memory.
+On the training server the whole script takes about 25 minutes: the regression store 2.6 minutes, the estimate store 19.5 minutes in 32 processes (mostly the eigenfactor simulations), the bias statistics about 3 minutes.
+
+See [Factor risk model](../../docs/developer-guide/risk-model.md) for the method and the numbers.
+
+## Mean-variance: Ledoit-Wolf against the factor risk model
+
+`sp500_xgb_mvo.py` trains the XGBoost return model of `sp500_xgb.py` (it shares that script's prices store, factors and `ret_5` label under `<data root>/pipeline/sharadar_sp500/`) and backtests it twice over 2020-2024 with the same `MeanVarianceOptimizer` (Grinold expected return, `ic=0.02`, risk aversion 10, turnover penalty, 2% weight cap, long only, rebalanced every 5 bars), once with `LedoitWolfEstimator` (126 one-bar returns) and once with `FactorRiskStoreEstimator` reading the estimate store of `risk_model.py`. The backtest computes the `BarraStyle` exposures over its window itself. It then takes each backtest's holdings on every rebalance bar, forecasts their volatility over the next 5 bars with both risk models (`ledoit_wolf_covariance` and the estimate store) and compares the forecasts with the return the holdings made (`bias_statistics`). The two backtests' statistics and the forecasts are printed and written to `backtests/xgb_mvo_comparison.json`, the value curves and forecast volatilities plotted in `backtests/xgb_mvo_comparison.png`. It needs the stores of `barra_style.py` and `risk_model.py`.
+
+```bash
+QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/sp500_xgb_mvo.py
+```
+
+On the training server the whole script takes about 9 minutes with a peak of about 38 GB of memory, most of it the factor-model backtest computing `BarraStyle` over its window. Running it again gives the same backtests.

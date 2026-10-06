@@ -88,13 +88,26 @@ def bias_statistics(
 
     Examples
     --------
-    With ``returns`` drawn with exactly the volatility ``sigma``:
+    Twenty portfolios over 1000 bars, their returns drawn with exactly the
+    forecast volatility ``sigma``:
 
+    >>> import numpy as np, pandas as pd, xarray as xr
+    >>> rng = np.random.default_rng(0)
+    >>> sigma = xr.DataArray(
+    ...     np.full((1000, 20), 0.01), dims=("timestamp", "portfolio"),
+    ...     coords={"timestamp": pd.bdate_range("2020-01-01", periods=1000)},
+    ... )
+    >>> returns = sigma * rng.standard_normal((1000, 20))
     >>> stats = bias_statistics(returns, sigma, window=252)
-    >>> float(stats["bias"].mean())  # doctest: +SKIP
-    1.003
-    >>> float(bias_statistics(returns, sigma / 2)["bias"].mean())  # doctest: +SKIP
-    2.006
+    >>> round(float(stats["bias"].mean()), 2), round(float(stats["band"][0]), 3)
+    (1.0, 0.045)
+    >>> round(float(stats["rolling_mean"].isel(timestamp=-1)), 2)
+    0.99
+
+    A forecast of half the volatility underpredicts risk by two:
+
+    >>> round(float(bias_statistics(returns, sigma / 2)["bias"].mean()), 2)
+    1.99
     """
     if realized.dims != forecast.dims or realized.dims[0] != "timestamp" or realized.ndim != 2:
         raise ValueError(
@@ -252,9 +265,17 @@ def risk_model_bias_statistics(
 
     Examples
     --------
-    >>> stats = risk_model_bias_statistics(model, "2010-01-04", "2025-12-31")
-    >>> stats["factor"]["bias"].sel(factor="style_beta")  # doctest: +SKIP
-    >>> stats["random"]["rolling_mean"].plot()  # doctest: +SKIP
+    With ``model`` the ``Use4RiskModel`` of
+    ``examples/sharadar_us_equity/risk_model.py``, its stores built over the
+    Sharadar history:
+
+    >>> stats = risk_model_bias_statistics(model, "2007-07-13", "2026-10-02")
+    >>> sorted(stats)
+    ['eigenfactor', 'factor', 'random', 'specific']
+    >>> round(float(stats["random"]["bias"].mean()), 3)
+    1.003
+    >>> round(float(stats["factor"]["bias"].sel(factor="style_beta")), 3)
+    1.119
     """
     if horizon < 1:
         raise ValueError(f"risk_model_bias_statistics(): horizon must be at least 1, got {horizon}.")

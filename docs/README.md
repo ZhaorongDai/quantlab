@@ -62,6 +62,11 @@ working example.
 USE4-style exposures: every style and descriptor, the deviations from USE4, which defaults are
 MSCI's and which are ours, and what a full-history run on Sharadar data gives.
 
+[Factor risk model](developer-guide/risk-model.md) documents `Use4RiskModel`, the USE4-style
+factor risk model on those exposures: the regression, each adjustment of the factor covariance
+and the specific risk, the deviations from USE4, which defaults are MSCI's and which are ours,
+its bias statistics on Sharadar data and a mean-variance comparison with Ledoit-Wolf.
+
 [Internals](developer-guide/internals.md) describes the machinery that makes long jobs safe to
 interrupt: resumable downloads and conversions, rebuilds, the volume check, atomic writes and
 data fingerprints and code records.

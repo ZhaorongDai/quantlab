@@ -396,7 +396,7 @@ array([0.4, 0.4, 0. , 0.2])
 - It returns a `FactorCovarianceEstimate`, the covariance in factor form `B F B' + diag(D)`: exposures `B`, factor covariance `F` and specific variances `D`, from the estimate store's row at the bar. Its `factor_form()` makes the optimiser price risk as `|F^(1/2) B' w|^2 + w' diag(D) w`, without building the dense matrix.
 - It declares the model's exposures factor in `required_factors()`. The backtest computes it over its window, with the factor's own warm-up, and puts its values at the bar in `context.factors`.
 
-It covers the symbols with every exposure and a specific risk at the bar. It reads no return window, so it has no staleness filter, and a locked position is priced like any other. The model's stores must cover the backtest.
+It covers the symbols with every exposure and a specific risk at the bar. It reads no return window, so it has no staleness filter, and a locked position is priced like any other. The model's stores must cover the backtest. [Factor risk model](developer-guide/risk-model.md) describes `Use4RiskModel` and compares it with Ledoit-Wolf in a mean-variance backtest.
 
 ## A full example
 

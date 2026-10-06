@@ -101,7 +101,7 @@ class RiskStore:
     >>> store.extend("2024-04-30").store_range()
     ('2024-01-01', '2024-04-30')
     >>> dict(store.read("2024-04-01", "2024-04-30").sizes)["timestamp"]
-    21
+    22
     """
 
     #: Appended to ``path`` to name the JSON file recording the store's range.
@@ -541,8 +541,8 @@ class FactorRiskModel(Component, ABC):
 
         Examples
         --------
-        >>> model.estimate_warmup_bars
-        1511
+        >>> model.estimate_warmup_bars  # Use4RiskModel's default
+        1637
         """
 
     @abstractmethod

@@ -6,11 +6,12 @@ identity with the Ledoit-Wolf coefficient, so the estimate stays well
 conditioned when there are more symbols than bars. The shrunk covariance is
 split into correlations and volatilities, and the volatilities can be
 replaced by given ones (a model's forecast) before it is put back together.
+The estimate itself is ``quantlab.risk.predefined.ledoit_wolf``'s
+``ledoit_wolf_covariance``; this module decides which symbols a bar covers.
 """
 
 import numpy as np
 import xarray as xr
-from sklearn.covariance import ledoit_wolf
 
 from quantlab.portfolio.base import (
     CovarianceEstimate,
@@ -18,6 +19,7 @@ from quantlab.portfolio.base import (
     PortfolioContext,
 )
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig
+from quantlab.risk.predefined.ledoit_wolf import ledoit_wolf_covariance
 
 
 class LedoitWolfEstimator(CovarianceEstimator):
@@ -29,12 +31,13 @@ class LedoitWolfEstimator(CovarianceEstimator):
     carries one); the others have too little history, no measurable risk or
     no recent price, and are left out of the estimate. A halt inside the
     window shows as zero returns and then the gap, so a short one keeps the
-    symbol covered. The covered symbols' sample
-    covariance is shrunk (``sklearn.covariance.ledoit_wolf``), converted to
-    correlations ``C`` and scaled back by volatilities ``D``: the given
-    ones where ``volatility`` is passed (a symbol without a finite positive
-    one is left out), else the shrunk covariance's own. The estimate is
-    ``D C D``, of one-bar returns; ``factor_form()`` is ``None``.
+    symbol covered. The estimate is ``ledoit_wolf_covariance`` of the
+    covered symbols' window: their sample covariance shrunk with the
+    Ledoit-Wolf coefficient, converted to correlations ``C`` and scaled back
+    by volatilities ``D``, the given ones where ``volatility`` is passed (a
+    symbol without a finite positive one is left out), else the shrunk
+    covariance's own. It is ``D C D``, of one-bar returns; ``factor_form()``
+    is ``None``.
 
     Parameters
     ----------
@@ -166,9 +169,7 @@ class LedoitWolfEstimator(CovarianceEstimator):
         if index.size == 0:
             return CovarianceEstimate(symbols=symbols[:0], covariance=np.empty((0, 0)))
 
-        shrunk, _ = ledoit_wolf(window[:, index])
-        sd = np.sqrt(np.diag(shrunk))
-        correlation = shrunk / np.outer(sd, sd)
-        scale = given[index] if volatility is not None else sd
-        covariance = correlation * np.outer(scale, scale)
+        covariance = ledoit_wolf_covariance(
+            window[:, index], None if volatility is None else given[index]
+        )
         return CovarianceEstimate(symbols=symbols[index], covariance=covariance)
