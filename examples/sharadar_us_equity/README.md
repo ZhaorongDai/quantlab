@@ -48,10 +48,10 @@ The full history needs a large machine: on the training server the build takes a
 
 ## Factor risk model and bias statistics
 
-`risk_model.py` builds `Use4RiskModel` on those exposures: the regression store (each bar's factor returns for the country, the Fama-French 48 industries and the 12 styles, and every symbol's specific return) from 2001, then the estimate store (factor covariance and specific risk: exponentially weighted with USE4S half-lives and Newey-West lags) from 2007, once the 1512-bar correlation window fits. It then prints the bias statistics (`quantlab.risk.bias.risk_model_bias_statistics`) of every pure factor, every symbol's specific risk and 100 random active portfolios, over one-bar returns and over non-overlapping 21-bar returns (USE4 tests monthly; Newey-West adjusts for the latter), writes them to `bias_summary.json` and plots the rolling one-year mean, 5th/95th percentile and MRAD in `bias_h1.png` and `bias_h21.png`. It reads the SEP, DAILY and FRED stores and the exposures of `barra_style.py`; everything goes under `<data root>/pipeline/sharadar_risk/`.
+`risk_model.py` builds `Use4RiskModel` on those exposures: the regression store (each bar's factor returns for the country, the Fama-French 48 industries and the 12 styles, and every symbol's specific return) from 2001, then the estimate store (factor covariance and specific risk: exponentially weighted with USE4S half-lives, Newey-West on the factors) from 2007, once the 1512-bar correlation window fits. It then prints the bias statistics (`quantlab.risk.bias.risk_model_bias_statistics`) of every pure factor, every symbol's specific risk and 100 random active portfolios, over one-bar returns and over non-overlapping 21-bar returns (USE4 tests monthly; Newey-West adjusts for the latter), writes them to `bias_summary.json` and plots the rolling one-year mean, 5th/95th percentile and MRAD in `bias_h1.png` and `bias_h21.png`. It reads the SEP, DAILY and FRED stores and the exposures of `barra_style.py`; everything goes under `<data root>/pipeline/sharadar_risk/`.
 
 ```bash
 QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/risk_model.py
 ```
 
-On the training server the whole script takes 10 to 20 minutes depending on the machine's load, most of it the estimate store, with a peak of about 25 GB of memory.
+On the training server the whole script takes about 10 minutes (the estimate store in 32 processes, about 2 minutes), with a peak of about 25 GB of memory.

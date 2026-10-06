@@ -216,10 +216,11 @@ class Use4RiskModel(FactorRiskModel):
     - a factor variance and a specific variance are multiplied by ``C_NW =
       1 + 2 sum_l b_l rho_l``, at least 0, ``rho_l`` the autocorrelation at
       lag ``l`` (USE4 eq. 5.2), weighted with its own half-life over its own
-      window: ``volatility_autocorrelation_half_life`` and ``_window`` (by
-      default the volatilities'; a longer one estimates the
-      autocorrelations from more bars, so the multiplier is less noisy) and
-      ``specific_autocorrelation_half_life`` and ``_window``;
+      window: ``volatility_autocorrelation_half_life`` and ``_window``
+      (504 and 1512 by default, longer than the volatilities' so the
+      multiplier is less noisy) and ``specific_autocorrelation_half_life``
+      and ``_window`` (the specific adjustment is off by default,
+      ``specific_lags=0``; see ``Use4RiskConfig``);
     - a correlation is that of the covariance ``G_0 + sum_l b_l (G_l +
       G_l')``, ``G_l[i, j]`` the weighted mean of ``x_i(t) x_j(t - l)`` over
       the bars ``t`` of the correlation window both have, each column about
@@ -435,14 +436,17 @@ class Use4RiskModel(FactorRiskModel):
 
     @staticmethod
     def _estimate_windows(config: Use4RiskConfig) -> tuple[int, ...]:
-        """Return the windows the estimate rows read, in bars."""
-        return (
-            Use4RiskModel._volatility_autocorrelation(config)[1],
-            config.volatility_window,
-            config.correlation_window,
-            config.specific_window,
-            config.specific_autocorrelation_window,
-        )
+        """Return the windows the estimate rows read, in bars.
+
+        An autocorrelation window is read only when its Newey-West lags are
+        not 0.
+        """
+        windows = [config.volatility_window, config.correlation_window, config.specific_window]
+        if config.volatility_lags:
+            windows.append(Use4RiskModel._volatility_autocorrelation(config)[1])
+        if config.specific_lags:
+            windows.append(config.specific_autocorrelation_window)
+        return tuple(windows)
 
     # ------------------------------------------------------------------
     # Inputs

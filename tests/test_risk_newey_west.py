@@ -21,6 +21,10 @@ from tests.test_risk_estimate import START, WINDOWS, _risk_model
 from tests.test_risk_regression import _STYLES, _T, _day, _plant
 
 LAGS = dict(
+    # The factor autocorrelations on the volatilities' own weights: the
+    # additive form the hand formula below writes.
+    volatility_autocorrelation_half_life=None,
+    volatility_autocorrelation_window=None,
     volatility_lags=2,
     correlation_lags=1,
     specific_lags=2,
@@ -245,7 +249,7 @@ def _multiplier(x, lags, half_life):
 
 def test_factor_autocorrelations_can_use_their_own_half_life_and_window(tmp_path, planted):
     own = dict(volatility_autocorrelation_half_life=8.0, volatility_autocorrelation_window=12)
-    model = _risk_model(tmp_path, "own", planted=planted, **LAGS, **own)
+    model = _risk_model(tmp_path, "own", planted=planted, **{**LAGS, **own})
     model.regression.build(_day(START), _day(_T - 1))
     model.estimate.build(_day(START), _day(_T - 1))
     returns = model.regression.read(_day(START), _day(_T - 1))["factor_return"].values

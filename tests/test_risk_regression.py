@@ -365,6 +365,16 @@ def test_use4_is_the_model_with_barra_style_defaults(planted, tmp_path):
     assert model.config.industries == FF48_INDUSTRIES
     assert (model.config.industry_name, model.config.estu_name) == ("industry", "estu")
     assert model.config.weighting == "sqrt_cap"
+    # Newey-West: USE4's factor lags; our choices for the factor
+    # autocorrelations' half-life and no specific adjustment (#197).
+    assert (model.config.volatility_lags, model.config.correlation_lags) == (5, 2)
+    assert model.config.volatility_autocorrelation_half_life == 504.0
+    assert model.config.specific_lags == 0
+    assert model.estimate_warmup_bars == 1511
+    with_specific = dataclasses.replace(model.config, specific_lags=5)
+    assert Use4RiskModel(with_specific).estimate_warmup_bars == 1511
+    longer = dataclasses.replace(with_specific, specific_autocorrelation_window=2000)
+    assert Use4RiskModel(longer).estimate_warmup_bars == 1999
     assert Use4RiskModel.from_config(model.get_config()) == model
 
 

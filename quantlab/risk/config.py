@@ -108,12 +108,18 @@ class Use4RiskConfig(FactorRiskConfig):
     outputs can stand in (``style_names``, ``industry_name``,
     ``industries``, ``country``). The column fields default to
     ``BarraStyleParameters``' and must match the ones the exposures were
-    computed with. The half-lives default to USE4S's (Table 4.1, Table 5.1),
-    and so do the Newey-West lags (5 for factor volatilities, 2 for
-    correlations, 5 for specific volatilities with an autocorrelation
-    half-life of 252); USE4L is ``volatility_half_life=252``,
-    ``specific_half_life=252`` (and windows of three half-lives, 756), with
-    the same lags.
+    computed with. The half-lives default to USE4S's (Table 4.1, Table 5.1);
+    USE4L is ``volatility_half_life=252``, ``specific_half_life=252`` (and
+    windows of three half-lives, 756). The Newey-West lags of the factor
+    volatilities and correlations are USE4's (5 and 2); two defaults are
+    our choice, measured on the Sharadar history with bias statistics over
+    1- and 21-bar returns (#197): the factor volatilities' autocorrelations
+    use a 504-bar half-life (with the volatilities' own 84 the multiplier is
+    so noisy that calibration worsens), and the specific volatilities have
+    no Newey-West adjustment (USE4: 5 lags, half-life 252; it worsened the
+    specific bias at both horizons). ``specific_lags=5``,
+    ``specific_autocorrelation_half_life=252`` and
+    ``volatility_autocorrelation_half_life=None`` give USE4's.
 
     Examples
     --------
@@ -183,19 +189,20 @@ class Use4RiskConfig(FactorRiskConfig):
     volatility_lags: int = 5
     #: Half-life, in bars, of the exponential weights of the factor returns'
     #: autocorrelations behind the volatilities' Newey-West adjustment;
-    #: ``None`` for ``volatility_half_life``. USE4 publishes none for factors;
-    #: a longer one than the volatilities' estimates the autocorrelations from
-    #: more bars (our choice).
-    volatility_autocorrelation_half_life: float | None = None
+    #: ``None`` for ``volatility_half_life``, as USE4 (which publishes no
+    #: separate one). Our choice: 504, as the correlations, so the multiplier
+    #: is estimated from more bars (#197).
+    volatility_autocorrelation_half_life: float | None = 504.0
     #: Bars of factor returns those autocorrelations are estimated from;
-    #: ``None`` for ``volatility_window``. Our choice.
-    volatility_autocorrelation_window: int | None = None
+    #: ``None`` for ``volatility_window``. Our choice: three half-lives.
+    volatility_autocorrelation_window: int | None = 1512
     #: Newey-West lags of the factor correlations (USE4S and USE4L: 2); 0 for
     #: none.
     correlation_lags: int = 2
-    #: Newey-West lags of the specific volatilities (USE4S and USE4L: 5); 0
-    #: for none.
-    specific_lags: int = 5
+    #: Newey-West lags of the specific volatilities; 0 for none. USE4S and
+    #: USE4L: 5. Our choice: 0, as the adjustment worsened the specific bias
+    #: statistics over 1- and 21-bar returns on the Sharadar history (#197).
+    specific_lags: int = 0
     #: Half-life, in bars, of the exponential weights of the specific returns'
     #: autocorrelations behind the specific Newey-West adjustment (USE4S and
     #: USE4L: 252 trading days).
