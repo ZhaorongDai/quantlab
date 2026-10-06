@@ -3,7 +3,7 @@
 What is locked here, and what turns it red (hand-built panels, no vectorbt):
 
 - A rule declares ``history_bars``: ``lookback_bars + 1`` by default,
-  ``lookback_bars + 1 + max_stale_bars`` for Ledoit-Wolf, the risk model's
+  ``lookback_bars + 1 + max_stale_bars`` for Ledoit-Wolf, the covariance estimator's
   for mean-variance.
 - A context's ``returns`` and ``staleness`` at t are identical wherever the
   price dataset's history starts, as long as it holds at least
@@ -156,7 +156,7 @@ def test_the_return_window_is_forward_filled_only_inside_the_bounded_window():
     assert np.isnan(ccc[:7]).all() and np.isfinite(ccc[7:]).all()
 
 
-def test_mean_variance_reads_its_risk_models_window():
+def test_mean_variance_reads_its_covariance_estimators_window():
     risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
     rule = MeanVarianceOptimizer(MeanVarianceConfig(expected_return_label="ret_5", covariance=risk, risk_aversion=5.0, ic=0.05))
     rule.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])

@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from quantlab.dataset.base import MarketDataset
     from quantlab.factor.base import Factor
 
-#: The regression weights a factor risk model may use, by config name.
+#: The regression weights ``Use4RiskConfig.weighting`` may name.
 REGRESSION_WEIGHTINGS = ("sqrt_cap", "cap", "equal")
 
 

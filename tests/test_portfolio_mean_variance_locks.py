@@ -9,7 +9,7 @@ What is locked here, and what turns it red (hand-built contexts, no vectorbt):
 - Long-short with a locked gross above one cannot be decided.
 - A held, tradable symbol without a prediction stays a candidate with an
   expected return of zero: a large turnover penalty keeps it, none closes it.
-- A held, tradable symbol the risk model does not cover is closed and the
+- A held, tradable symbol the covariance estimator does not cover is closed and the
   row says so in `attrs["events"]["closed_without_risk"]`.
 """
 

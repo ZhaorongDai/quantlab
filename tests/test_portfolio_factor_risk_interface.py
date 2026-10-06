@@ -5,12 +5,12 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
 - A `FactorCovarianceEstimate` (exposures B, factor covariance F, specific
   variances D) reports `factor_form()`, a dense covariance B F B' + diag(D),
   its diagonal as the variance, and scales and subsets in factor form.
-- A risk model whose estimate has a factor form drives the optimiser's
+- A covariance estimator whose estimate has a factor form drives the optimiser's
   low-rank risk term: the optimiser never asks it for the dense covariance,
   and the solution equals the dense solution of the same covariance within
   solver tolerance, long-only and long-short.
 - `CovarianceEstimator.required_factors()` and `PortfolioConstructor.required_factors()`
-  are empty by default; the optimiser declares its risk model's.
+  are empty by default; the optimiser declares its covariance estimator's.
 """
 
 import numpy as np
@@ -156,7 +156,7 @@ def test_the_low_rank_expected_return_uses_the_factor_variance():
     np.testing.assert_allclose(low_rank.expected_return, dense.expected_return, rtol=1e-12)
 
 
-def test_required_factors_are_empty_by_default_and_the_optimizer_declares_its_risk_models():
+def test_required_factors_are_empty_by_default_and_the_optimizer_declares_its_covariance_estimators():
     marker = object()
 
     class _Declaring(LedoitWolfEstimator):

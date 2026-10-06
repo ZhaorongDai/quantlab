@@ -12,7 +12,11 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.portfolio.base import FactorCovarianceEstimate, PortfolioContext, CovarianceEstimator
+from quantlab.portfolio.base import (
+    CovarianceEstimator,
+    FactorCovarianceEstimate,
+    PortfolioContext,
+)
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
 
 
@@ -23,15 +27,16 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
     backtest computes it over its window and hands its values at the bar in
     ``context.factors``. ``estimate(context)`` reads the bar's row of the
     estimate store and returns ``B F B' + diag(D)`` in factor form, with
-    ``B`` on the model's factors (``FactorRiskModel.factor_names``): 1 on the
-    country factor, 1 on the symbol's industry, its style exposures. The
+    ``B`` on the model's factors (``FactorRiskModel.factor_names``) as the
+    model's ``exposure_matrix`` gives them. It reads only what every factor
+    risk model provides, so it works with any (``Use4RiskModel``: 1 on the
+    country factor, 1 on the symbol's industry, its style exposures). The
     estimate is of one-bar returns.
 
-    A symbol is covered when it has every style exposure, an industry among
-    the model's (when the model has industries) and a specific risk at the
-    bar. A factor whose variance is not known at the bar (an industry with
-    too few observations) is left out of ``F``, and so is every symbol
-    exposed to it. There is no staleness filter: the model reads no return
+    A symbol is covered when the model's ``exposure_matrix`` covers it and it
+    has a specific risk at the bar. A factor whose variance is not known at
+    the bar (a USE4 industry with too few observations, for example) is left
+    out of ``F``, and so is every symbol exposed to it. There is no staleness filter: the model reads no return
     window, and a locked position is priced like any other.
 
     Parameters

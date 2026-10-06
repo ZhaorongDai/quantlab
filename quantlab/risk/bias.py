@@ -183,11 +183,12 @@ def risk_model_bias_statistics(
     estimation universe, has every exposure, a market cap, a specific risk
     and a specific return over the next bar (our choice: the stores hold no
     return for a stock that stops trading, so it leaves the portfolios the
-    bar before), and every factor it is exposed to has a forecast variance. Its forecast variance is ``x' F x + sum h^2
-    s^2`` with ``x`` the portfolio's factor exposures, a correlation without
-    enough bars counted as 0 (our choice); its realized return is ``sum h (X
-    f + u)`` over the next bar, the stocks' excess returns, an industry left
-    out of that bar's regression contributing nothing.
+    bar before), and every factor it is exposed to has a forecast variance.
+    Its forecast variance is ``x' F x + sum h^2 s^2`` with ``x`` the
+    portfolio's factor exposures, a correlation without enough bars counted
+    as 0 (our choice); its realized return is ``sum h (X f + u)`` over the
+    next bar, the stocks' excess returns, a factor without a return on that
+    bar contributing nothing.
 
     Parameters
     ----------

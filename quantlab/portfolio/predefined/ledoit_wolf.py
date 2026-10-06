@@ -12,8 +12,12 @@ import numpy as np
 import xarray as xr
 from sklearn.covariance import ledoit_wolf
 
+from quantlab.portfolio.base import (
+    CovarianceEstimate,
+    CovarianceEstimator,
+    PortfolioContext,
+)
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig
-from quantlab.portfolio.base import CovarianceEstimate, PortfolioContext, CovarianceEstimator
 
 
 class LedoitWolfEstimator(CovarianceEstimator):

@@ -130,7 +130,7 @@ class Use4RiskModel(FactorRiskModel):
     """USE4-style factor risk model: country, industries and styles; EWMA and Newey-West.
 
     See the module docstring for the regression; ``FactorRiskModel`` for the
-    stores every factor risk model holds. This model's:
+    contract every factor risk model meets. This model's stores:
 
     The regression store (``regression``) holds:
 
@@ -584,7 +584,6 @@ class Use4RiskModel(FactorRiskModel):
             If the regression store has no recorded range, or its recorded
             range does not contain the bars read (``RiskStore.read``).
         """
-        config = self.config
         owner = f"{self.class_name}.estimate.compute()"
         first, last = check_range(start, end, owner)
         regression = self.regression
@@ -597,7 +596,7 @@ class Use4RiskModel(FactorRiskModel):
         bars = regression.read(*recorded)["timestamp"].values
         begin = int(np.searchsorted(bars, first.to_datetime64(), side="left"))
         stop = int(np.searchsorted(bars, last.to_datetime64(), side="right"))
-        warmup = self.estimate.warmup_bars
+        warmup = self.estimate_warmup_bars
         if begin < warmup:
             warnings.warn(
                 f"{owner}: {warmup} warm-up bar(s) are needed before {start!r} but the "

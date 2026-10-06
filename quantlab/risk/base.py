@@ -403,7 +403,7 @@ class FactorRiskModel(Component, ABC):
         Examples
         --------
         >>> model.class_name
-        'FactorRiskModel'
+        'Use4RiskModel'
         """
         return type(self).__name__
 
@@ -416,7 +416,7 @@ class FactorRiskModel(Component, ABC):
         >>> model.config is config
         False
         >>> model.config.name
-        'quantlab.risk.base.FactorRiskModel'
+        'quantlab.risk.predefined.use4.Use4RiskModel'
         """
         return self._config
 
@@ -658,8 +658,8 @@ class FactorRiskModel(Component, ABC):
 
         Examples
         --------
-        >>> list(model.exposures("2024-01-02", "2024-01-31").data_vars)
-        ['value', 'quality', 'estu']
+        >>> list(model.exposures("2024-01-02", "2024-01-31").data_vars)[-2:]
+        ['industry', 'estu']
         """
         config = self.config
         factor = config.exposures

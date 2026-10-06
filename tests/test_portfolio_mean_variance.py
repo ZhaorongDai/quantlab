@@ -1,4 +1,4 @@
-"""The mean-variance optimiser and the Ledoit-Wolf risk model on hand-built contexts (#79).
+"""The mean-variance optimiser and the Ledoit-Wolf covariance estimator on hand-built contexts (#79).
 
 What is locked here, and what turns it red (no store, no model, no vectorbt):
 
@@ -7,13 +7,13 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
 - A larger turnover penalty moves the solution toward the current weights.
 - The Grinold expected return is `ic * sigma * z` by hand, `sigma` from the
   span-scaled covariance.
-- The covariance is the risk model's one-bar covariance times the
+- The covariance is the covariance estimator's one-bar covariance times the
   expected-return label's span.
 - An infeasible bar raises `PortfolioConstructionError`; so does an
   unbound optimiser's `problem_inputs` (RuntimeError) and bad parameters.
 - `LedoitWolfEstimator` returns a symmetric positive-definite covariance;
   given volatilities become the square roots of its diagonal.
-- The optimiser and its risk model round-trip through `get_config`.
+- The optimiser and its covariance estimator round-trip through `get_config`.
 - Long-short (#80) weights are dollar-neutral, of gross exposure at most one
   (a ceiling: a flat book is allowed) and within the cap.
 - With `candidate_top_k` (#80) only the pool (top k by mu, by |mu|
@@ -251,7 +251,7 @@ def test_given_volatilities_become_the_square_roots_of_the_diagonal():
     assert (np.linalg.eigvalsh(estimate.covariance) > 0).all()
 
 
-def test_the_optimizer_round_trips_through_its_config_with_its_risk_model():
+def test_the_optimizer_round_trips_through_its_config_with_its_covariance_estimator():
     optimizer = _optimizer(turnover_penalty=0.002)
 
     config = json.loads(json.dumps(optimizer.get_config()))
@@ -267,7 +267,7 @@ def test_the_optimizer_round_trips_through_its_config_with_its_risk_model():
     assert rebuilt.lookback_bars == LOOKBACK
 
 
-def test_a_flat_price_is_left_out_of_the_risk_model():
+def test_a_flat_price_is_left_out_of_the_covariance_estimator():
     returns = np.random.default_rng(8).normal(0.0, 0.02, size=(LOOKBACK, len(SYMBOLS)))
     returns[:, 2] = 0.0  # CCC never moves
 

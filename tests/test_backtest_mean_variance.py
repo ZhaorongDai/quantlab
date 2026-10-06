@@ -15,12 +15,12 @@ What is locked here, and what turns it red:
 - A bar whose construction raises `PortfolioConstructionError` holds (an
   all-NaN row), is logged, and is listed in `metrics.json`.
 - A `MeanVarianceOptimizer` backtest is fully invested on every rebalance
-  bar, and its `config.json` (optimiser and risk model) rebuilds a
+  bar, and its `config.json` (optimiser and covariance estimator) rebuilds a
   backtester that re-runs identically.
 - A long-short `MeanVarianceOptimizer` backtest (#80) is dollar-neutral with
   gross exposure at most one on every rebalance bar, and rebuilds from its
   `config.json`.
-- A risk model declaring a `Factor` in `required_factors()` (#82, a Polars
+- A covariance estimator declaring a `Factor` in `required_factors()` (#82, a Polars
   factor here) receives that factor's values at each rebalance bar, and
   only at it, in `context.factors`, warmed up like a model's features.
 
@@ -357,7 +357,7 @@ class _DeclaringRisk(LedoitWolfEstimator):
         return super().estimate(context, volatility)
 
 
-def test_a_declared_factor_reaches_the_risk_model_at_each_bar_only(tmp_path):
+def test_a_declared_factor_reaches_the_covariance_estimator_at_each_bar_only(tmp_path):
     FACTORS_SEEN.clear()
 
     def declaring(dataset_config):
