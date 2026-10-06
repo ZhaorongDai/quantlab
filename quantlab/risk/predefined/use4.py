@@ -454,6 +454,20 @@ class Use4RiskModel(FactorRiskModel):
         industries = tuple(f"industry_{code}" for code in config.industries)
         return (*country, *industries, *config.style_names)
 
+    def factor_groups(self) -> dict[str, str]:
+        """Return ``country`` for the country factor, ``industry`` for the industries, ``style`` for the styles.
+
+        Examples
+        --------
+        >>> groups = model.factor_groups()
+        >>> groups["country"], groups["industry_1"], groups["style_growth"]
+        ('country', 'industry', 'style')
+        """
+        config = self.config
+        country = {"country": "country"} if config.country else {}
+        industries = {f"industry_{code}": "industry" for code in config.industries}
+        return {**country, **industries, **{name: "style" for name in config.style_names}}
+
     def exposure_matrix(self, exposures: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
         """Return each symbol's exposures to ``factor_names`` and whether it has them all.
 

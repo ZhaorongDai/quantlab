@@ -338,12 +338,18 @@ ESTIMATE_VARIABLES = {
 }
 
 
+#: The groups a factor can belong to (``FactorRiskModel.factor_groups``), in
+#: the order the factor attribution reports them.
+FACTOR_GROUPS = ("country", "industry", "style")
+
+
 class FactorRiskModel(Component, ABC):
     """A factor risk model: the stores estimated ahead of a backtest.
 
     The interface every factor risk model presents, whatever its method:
 
-    - ``factor_names``: the factor axis;
+    - ``factor_names``: the factor axis, and ``factor_groups``: each
+      factor's group (country, industry or style; style by default);
     - ``exposure_names`` and ``exposure_matrix(exposures)``: the outputs of
       the exposures factor (``config.exposures``) it reads, and each
       symbol's exposures to ``factor_names`` at a bar, with whether it has
@@ -522,6 +528,28 @@ class FactorRiskModel(Component, ABC):
         >>> matrix.shape[1] == len(model.factor_names)
         True
         """
+
+    def factor_groups(self) -> dict[str, str]:
+        """Return each factor's group, one of ``FACTOR_GROUPS``, keyed by factor name.
+
+        The factor attribution of a backtest (``quantlab.risk.attribution``)
+        sums its factors' contributions and risk by group. By default every
+        factor is a ``"style"``; a model with a country (market) factor or
+        industry factors says so by overriding this method.
+
+        Returns
+        -------
+        dict
+            ``{factor: group}`` in ``factor_names`` order.
+
+        Examples
+        --------
+        >>> set(model.factor_groups().values()) <= set(FACTOR_GROUPS)
+        True
+        >>> model.factor_groups()["country"]  # a Use4RiskModel
+        'country'
+        """
+        return {name: "style" for name in self.factor_names}
 
     @property
     @abstractmethod

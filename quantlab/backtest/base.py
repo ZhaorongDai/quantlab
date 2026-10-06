@@ -1036,6 +1036,10 @@ class BaseBacktester(Component, ABC):
         folds = self._select_folds(self._read_cv_folds())
         calendar = self._price_calendar(folds[-1]["test_end"])
         self._assert_contiguous_folds(folds, calendar)
+        # Refuse a risk model that cannot attribute the stitched span before any fold runs.
+        self._check_risk_model(calendar[backtest_stats.in_ranges(
+            calendar, [(folds[0]["test_start"], folds[-1]["test_end"])]
+        )])
 
         expected_folds = self.expected_fold_fingerprints or {}
         records: list[dict] = []
@@ -1100,6 +1104,7 @@ class BaseBacktester(Component, ABC):
                     stitched_predictions, stitched_prices, stitched_delisted
                 )
                 self._assert_weights_contract(stitched_weights, stitched_prices)
+                self._check_risk_model(stitched_prices.timestamp.values)
                 stitched_simulation = self._simulate(
                     stitched_weights, stitched_prices, delisted=stitched_delisted
                 )
@@ -1108,16 +1113,20 @@ class BaseBacktester(Component, ABC):
                     if stitched_benchmark_prices is None
                     else self._simulate_benchmark(stitched_benchmark_prices)
                 )
+                stitched_split = self._stitched_split(stitched_prices.timestamp.values, records)
                 stitched_metrics = self._compute_metrics(
-                    stitched_simulation,
-                    stitched_benchmark,
-                    self._stitched_split(stitched_prices.timestamp.values, records),
+                    stitched_simulation, stitched_benchmark, stitched_split
                 )
                 stitched_metrics.update(self._signal_metrics())
                 stitched_metrics["attribution"] = self._attribution(
                     stitched_predictions, stitched_prices, stitched_weights,
                     stitched_simulation, stitched_benchmark, stitched_delisted,
                 )
+                if self.config.risk_model is not None:
+                    # The account actually run is attributed once; its folds are not.
+                    stitched_metrics["factor_attribution"] = self._factor_attribution(
+                        stitched_prices, stitched_simulation, stitched_split
+                    )
         finally:
             # A failed pass still reports what it had read before failing.
             self._fingerprints = recorder.records
@@ -1429,7 +1438,7 @@ class BaseBacktester(Component, ABC):
         )
         weights = self._align_weights(weights, prices)
         self._assert_weights_contract(weights, prices)
-        self._check_risk_model(prices)
+        self._check_risk_model(prices.timestamp.values)
         with Timer(f"{self.class_name}: simulate"):
             simulation = self._simulate(weights, prices)
         benchmark = (
@@ -1439,9 +1448,7 @@ class BaseBacktester(Component, ABC):
         )
         metrics = self._compute_metrics(simulation, benchmark, None)
         if self.config.risk_model is not None:
-            metrics["factor_attribution"] = {
-                "whole": self._factor_attribution(prices, simulation)
-            }
+            metrics["factor_attribution"] = self._factor_attribution(prices, simulation, None)
         return _BacktestWindow(
             predictions=None,
             prices=prices,
@@ -1718,8 +1725,10 @@ class BaseBacktester(Component, ABC):
         fitted training window ``[train_start, train_end]`` plus the labels'
         lookahead, generate and check the weights, simulate, simulate
         the benchmark (when one is configured, on the same bars) and compute
-        the metrics, with the ``attribution`` block unless ``attribute`` is
-        False (a ``run_cv()`` fold). The model must already be prepared.
+        the metrics, with the ``attribution`` block, and the
+        ``factor_attribution`` block when the config has a ``risk_model``,
+        unless ``attribute`` is False (a ``run_cv()`` fold). The model must
+        already be prepared.
 
         Raises
         ------
@@ -1751,6 +1760,8 @@ class BaseBacktester(Component, ABC):
         delisted = self._delisting_marks(prices)
         weights = self._generate_signals(predictions, prices, delisted)
         self._assert_weights_contract(weights, prices)
+        if attribute:
+            self._check_risk_model(prices.timestamp.values)
 
         with Timer(f"{self.class_name}: simulate"):
             simulation = self._simulate(weights, prices, delisted=delisted)
@@ -1765,6 +1776,10 @@ class BaseBacktester(Component, ABC):
             metrics["attribution"] = self._attribution(
                 predictions, prices, weights, simulation, benchmark, delisted
             )
+            if self.config.risk_model is not None:
+                metrics["factor_attribution"] = self._factor_attribution(
+                    prices, simulation, split
+                )
         return _BacktestWindow(
             predictions=predictions,
             prices=prices,
@@ -2242,22 +2257,24 @@ class BaseBacktester(Component, ABC):
             "group_annualized_log_return": [growth(curve) for curve in group_values],
         }
 
-    def _check_risk_model(self, prices: xr.Dataset) -> None:
-        """Refuse a ``risk_model`` that cannot attribute the window, before simulating.
+    def _check_risk_model(self, timestamps: np.ndarray) -> None:
+        """Refuse a ``risk_model`` that cannot attribute the bars ``timestamps``, before simulating.
 
         Raises
         ------
         ValueError
             If the risk model's regression store does not cover the window's
-            bars (build or extend it first; a backtest never builds it), or
-            its bar interval differs from the window's.
+            bars or its estimate store the bars before the last (build or
+            extend them first; a backtest never builds them), or its bar
+            interval differs from the window's.
         """
         risk_model = self.config.risk_model
-        if risk_model is None:
+        if risk_model is None or timestamps.size == 0:
             return
-        timestamps = prices.timestamp.values
         store = risk_model.regression
         store.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-1]))
+        if timestamps.size > 1:
+            risk_model.estimate.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-2]))
         recorded = store.read(*store.store_range())["timestamp"].values
         if recorded.size < 2 or timestamps.size < 2:
             return
@@ -2270,16 +2287,22 @@ class BaseBacktester(Component, ABC):
                 f"needs a risk model on the backtest's bar interval."
             )
 
-    def _factor_attribution(self, prices: xr.Dataset, simulation: SimulationResult) -> dict:
-        """Return the factor attribution summary and set ``simulation.factor_attribution``.
+    def _factor_attribution(
+        self, prices: xr.Dataset, simulation: SimulationResult, split: dict | None
+    ) -> dict:
+        """Return the ``factor_attribution`` metrics and set ``simulation.factor_attribution``.
 
         The holdings at the start of each bar are what the engine held at the
         close of the bar before, derived from the simulation's orders and
         delisting settlements (so rejected orders keep a holding and a
         settlement closes it), as signed fractions of the NAV at the
         valuation prices. ``quantlab.risk.attribution`` splits the NAV
-        return over ``config.risk_model``; the summary is annualized like
-        the ``attribution`` block (ADR 0026).
+        return and the risk over ``config.risk_model`` once over the whole
+        simulation, and summarizes it per slice: ``whole``, and with a
+        ``split`` ``in_sample`` and ``out_of_sample`` over the same ranges
+        as the other metrics (None for a slice without a bar). A year is
+        the market's year over the bar interval, as the ``attribution``
+        block annualizes (ADR 0026).
         """
         valuation = (
             prices[self.MARKET.valuation_price_column]  # type: ignore[union-attr]
@@ -2304,10 +2327,17 @@ class BaseBacktester(Component, ABC):
             self.config.risk_model,
         )
         simulation.factor_attribution = attribution
-        years = timestamps.size * simulation.bar_interval / self.MARKET.year_freq(  # type: ignore[union-attr]
-            simulation.bar_interval
-        )
-        return attribution_summary(attribution, years)
+        bars_per_year = self.MARKET.year_freq(simulation.bar_interval) / simulation.bar_interval  # type: ignore[union-attr]
+        block = {"whole": attribution_summary(attribution, bars_per_year)}
+        for name, ranges in self._split_slices(split).items():
+            block[name] = (
+                attribution_summary(
+                    attribution, bars_per_year, backtest_stats.in_ranges(timestamps, ranges)
+                )
+                if ranges
+                else None
+            )
+        return block
 
     @staticmethod
     def _held_shares(
@@ -2597,16 +2627,7 @@ class BaseBacktester(Component, ABC):
             },
         }
 
-        # The slices other than `whole`, by name; none without a split.
-        slices: dict[str, list[tuple[str, str]]] = {}
-        if split is not None:
-            if "in_sample_ranges" in split:
-                slices["in_sample"] = list(split["in_sample_ranges"])
-            else:
-                in_sample_range = split["in_sample_range"]
-                slices["in_sample"] = [in_sample_range] if in_sample_range else []
-            slices["out_of_sample"] = list(split["out_of_sample_ranges"])
-
+        slices = self._split_slices(split)
         for name, ranges in slices.items():
             metrics[name] = (
                 {
@@ -2648,6 +2669,23 @@ class BaseBacktester(Component, ABC):
             }
         metrics.update(split or {})
         return metrics
+
+    @staticmethod
+    def _split_slices(split: dict | None) -> dict[str, list[tuple[str, str]]]:
+        """Return the ranges of the slices other than ``whole``, by name; none without a split.
+
+        ``in_sample`` comes from ``split["in_sample_ranges"]`` when present
+        (the stitched curve) and from the single ``split["in_sample_range"]``
+        otherwise; ``out_of_sample`` from ``split["out_of_sample_ranges"]``.
+        A slice without a bar has no range.
+        """
+        if split is None:
+            return {}
+        if "in_sample_ranges" in split:
+            in_sample = list(split["in_sample_ranges"])
+        else:
+            in_sample = [split["in_sample_range"]] if split["in_sample_range"] else []
+        return {"in_sample": in_sample, "out_of_sample": list(split["out_of_sample_ranges"])}
 
     @staticmethod
     def _win_rates(

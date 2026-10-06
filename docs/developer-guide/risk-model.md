@@ -64,7 +64,10 @@ model.estimate.build("2007-07-13", "2026-10-02")   # after the 1637-bar warm-up
 
 `quantlab.risk.base.FactorRiskModel` is the contract every factor risk
 model meets: the variables of both stores, `factor_names`,
-`exposure_names`, `exposure_matrix` and the two warm-ups. The USE4 method
+`exposure_names`, `exposure_matrix` and the two warm-ups. It also has
+`factor_groups()`, which gives each factor's group (`country`, `industry`
+or `style`) for a backtest's factor attribution. By default every factor is
+a `style`. `Use4RiskModel` overrides it from its config. The USE4 method
 lives entirely in `Use4RiskModel`.
 
 A portfolio rule reads the estimate store through

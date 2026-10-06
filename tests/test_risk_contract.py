@@ -7,6 +7,9 @@ window. Nothing of USE4 is involved, yet its stores work with the bias
 statistics and the portfolio-side store estimator, which read only the
 contract of ``FactorRiskModel``. A model whose rows break the contract is
 refused when it computes them.
+
+Every factor is a style by default (``factor_groups``); USE4 groups its
+country factor, industries and styles (#211).
 """
 
 import dataclasses
@@ -20,10 +23,19 @@ from quantlab.core.component import rebuild
 from quantlab.portfolio.base import PortfolioContext
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
 from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
-from quantlab.risk.base import FactorRiskModel
+from quantlab.risk.base import FACTOR_GROUPS, FactorRiskModel
 from quantlab.risk.bias import risk_model_bias_statistics
 from quantlab.risk.config import FactorRiskConfig
-from tests.test_risk_regression import _SYMBOLS, _T, _day, _exposure_factor, _frame, _plant
+from quantlab.risk.predefined.use4 import Use4RiskModel
+from tests.test_risk_regression import (
+    _SYMBOLS,
+    _T,
+    _day,
+    _exposure_factor,
+    _frame,
+    _plant,
+)
+from tests.test_risk_regression import _model as _use4
 
 WINDOW = 5
 
@@ -177,3 +189,29 @@ def test_the_root_class_cannot_be_constructed(model):
             exposures=model.config.exposures, dataset=model.config.dataset,
             exposure_data_strategy="cal",
         ))
+
+
+def test_every_factor_is_a_style_by_default(model):
+    assert model.factor_groups() == {"market": "style"}
+
+
+def test_use4_groups_its_country_industries_and_styles(planted_use4):
+    model = planted_use4
+    groups = model.factor_groups()
+    assert list(groups) == list(model.factor_names)
+    assert set(groups.values()) <= set(FACTOR_GROUPS)
+    assert groups["country"] == "country"
+    assert [name for name, group in groups.items() if group == "industry"] == [
+        f"industry_{code}" for code in model.config.industries
+    ]
+    assert [name for name, group in groups.items() if group == "style"] == list(
+        model.config.style_names
+    )
+    without_country = Use4RiskModel(dataclasses.replace(model.config, country=False))
+    assert "country" not in without_country.factor_groups().values()
+
+
+@pytest.fixture(scope="module")
+def planted_use4():
+    prices, exposures, _, _ = _plant()
+    return _use4(prices, exposures)

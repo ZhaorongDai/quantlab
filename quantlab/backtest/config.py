@@ -130,19 +130,23 @@ class BacktestConfig:
     benchmark_dataset: "MarketDataset | None" = component(default=None)
 
     #: A factor risk model (``quantlab.risk.base.FactorRiskModel``) whose
-    #: factors the run's return is attributed to (factor attribution, ADR
-    #: 0026): each bar's NAV return split into factor, specific, uncovered,
-    #: risk-free and trading terms over the holdings the engine held at the
-    #: start of the bar, in the metrics' ``factor_attribution`` block and the
-    #: run directory's ``factor_attribution.zarr``. Its regression store must
-    #: already cover the window; the backtest reads it and never builds it.
-    #: Only ``run_weights()`` attributes so far; ``run()`` and ``run_cv()``
-    #: ignore it. ``None`` (the default) attributes nothing.
+    #: factors the run's return and risk are attributed to (factor
+    #: attribution, ADR 0026): each bar's NAV return split into factor,
+    #: specific, uncovered, risk-free and trading terms over the holdings the
+    #: engine held at the start of the bar, the book's forecast (ex-ante) and
+    #: realized (ex-post) volatility split over factors and specific risk,
+    #: grouped into country, industry and style, in the metrics'
+    #: ``factor_attribution`` block (``whole``, ``in_sample`` and
+    #: ``out_of_sample`` like the other metrics; ``whole`` only for
+    #: ``run_weights()``; the stitched curve only for ``run_cv()``) and the
+    #: run directory's ``factor_attribution.zarr``. Its regression and
+    #: estimate stores must already cover the window; the backtest reads
+    #: them and never builds them. ``None`` (the default) attributes nothing.
     risk_model: "FactorRiskModel | None" = component(default=None)
 
     #: Where each run's metrics and report are tracked (ADR 0015); the
     #: default ``NullTracker`` sends nothing anywhere.
-    tracker: Tracker = component(default=NullTracker())
+    tracker: Tracker = component(default_factory=NullTracker)
 
     #: Dotted import path of the backtester class; filled by the config setter.
     name: str | None = None

@@ -19,9 +19,26 @@ it exactly:
 
 The terms are linked over time as log contributions, each bar's terms times
 ``ln(1+r)/r``, so the cumulative sums over bars and terms are log NAV at every
-bar, and no bar's value depends on the bars after it. ``attribution_summary``
-gives each term's and each factor's annualized log growth and the coverage of
-a run of bars.
+bar, and no bar's value depends on the bars after it.
+
+The risk of the same book is attributed too:
+
+- ex ante, at bar t, from the estimate store's row of t-1 (the forecast made
+  at t-1 for bar t): the covered holdings' net exposures x, the factor
+  covariance F over the factors that have one (``covered_factors``) and the
+  specific risks s give the forecast variance ``x'Fx + sum w^2 s^2``; each
+  factor's x-sigma-rho contribution ``x_k (Fx)_k / sigma`` and the specific
+  part ``sum w^2 s^2 / sigma`` sum to sigma. Uncovered holdings are left out
+  (they show in the coverage), and a covered holding without a specific risk
+  adds no specific variance;
+- ex post, over a run of bars, each term's ``cov(c_j, r) / sigma(r)`` on the
+  per-bar (arithmetic) contributions, which sum to the realized volatility.
+
+Factors are grouped by ``FactorRiskModel.factor_groups`` (country, industry,
+style). ``attribution_summary`` gives, for a run of bars (a segment), each
+term's, factor's and group's annualized log growth, the styles' mean
+exposures, the top and bottom industries, the ex-ante and ex-post risk
+contributions and the coverage.
 
 The module reads a ``FactorRiskModel``'s stores and inputs only; it builds
 nothing (ADR 0024) and imports nothing of the portfolio, backtest or runs
@@ -35,7 +52,7 @@ With ``holdings``, ``nav_returns`` and ``symbol_returns`` a book's panels and
 >>> attribution = factor_attribution(holdings, nav_returns, symbol_returns, model)
 >>> bool(np.allclose(attribution["contribution"].sum("term"), nav_returns))
 True
->>> sorted(attribution_summary(attribution, years=1.0)["annualized_log_return"])
+>>> sorted(attribution_summary(attribution, bars_per_year=252)["annualized_log_return"])
 ['factor', 'risk_free', 'specific', 'total', 'trading', 'uncovered']
 """
 
@@ -43,7 +60,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.risk.base import FactorRiskModel
+from quantlab.risk.base import FACTOR_GROUPS, FactorRiskModel, covered_factors
 
 #: The terms a bar's NAV return is split into, in the order of the ``term`` axis.
 TERMS = ("factor", "specific", "uncovered", "risk_free", "trading")
@@ -53,6 +70,9 @@ _FACTOR, _SPECIFIC, _UNCOVERED, _RISK_FREE, _TRADING = range(len(TERMS))
 #: Below this mean covered weight, ``attribution_summary`` adds a coverage note.
 LOW_COVERAGE = 0.9
 
+#: How many industries ``attribution_summary`` lists at the top and at the bottom.
+TOP_INDUSTRIES = 5
+
 
 def factor_attribution(
     holdings: xr.DataArray,
@@ -60,7 +80,7 @@ def factor_attribution(
     symbol_returns: xr.DataArray,
     risk_model: FactorRiskModel,
 ) -> xr.Dataset:
-    """Split each bar's NAV return over ``risk_model``'s factors (see the module docstring).
+    """Split each bar's NAV return and risk over ``risk_model``'s factors (see the module docstring).
 
     Parameters
     ----------
@@ -75,36 +95,54 @@ def factor_attribution(
         Each symbol's own return of each bar, on ``(timestamp, symbol)``, for
         the uncovered term; NaN counts as 0.
     risk_model : FactorRiskModel
-        The model whose regression store, exposures and risk-free rate are
-        read over the window; its stores must cover it.
+        The model whose regression and estimate stores, exposures and
+        risk-free rate are read over the window; its stores must cover it
+        (the estimate store up to the bar before the last).
 
     Returns
     -------
     xr.Dataset
-        On the holdings' ``timestamp``: ``contribution`` on ``(timestamp,
-        term)`` (``TERMS``) and ``log_contribution`` (each bar's terms times
-        ``ln(1+r)/r``), ``factor_contribution`` and
-        ``factor_log_contribution`` on ``(timestamp, factor)``, ``return``
-        (the NAV return), ``covered_weight`` (the covered share of the gross
-        held weight, NaN on a bar holding nothing) and ``gross_weight``.
+        On the holdings' ``timestamp``, with the ``factor`` axis carrying
+        each factor's ``group`` (``FactorRiskModel.factor_groups``):
+
+        - ``contribution`` on ``(timestamp, term)`` (``TERMS``) and
+          ``log_contribution`` (each bar's terms times ``ln(1+r)/r``),
+          ``factor_contribution`` and ``factor_log_contribution`` on
+          ``(timestamp, factor)``, ``return`` (the NAV return);
+        - ``exposure`` on ``(timestamp, factor)``: the covered holdings' net
+          exposures (the exposures of t-1);
+        - ``ex_ante_factor_variance`` and ``ex_ante_specific_variance``: the
+          one-bar forecast variances of the covered book; and
+          ``factor_risk_contribution`` on ``(timestamp, factor)`` and
+          ``specific_risk_contribution``: the one-bar x-sigma-rho
+          contributions, NaN where the forecast volatility is 0;
+        - ``covered_weight`` (the covered share of the gross held weight,
+          NaN on a bar holding nothing) and ``gross_weight``.
 
     Raises
     ------
     ValueError
-        If the regression store does not cover the window (build or extend
-        it first), or symbols were held but none was ever covered (the
-        book's and the risk model's symbol axes may differ).
+        If the regression or estimate store does not cover the window
+        (build or extend it first), or symbols were held but none was ever
+        covered (the book's and the risk model's symbol axes may differ).
 
     Examples
     --------
     >>> attribution = factor_attribution(holdings, nav_returns, symbol_returns, model)
     >>> attribution["factor_contribution"].dims
     ('timestamp', 'factor')
+    >>> sigma = np.sqrt(
+    ...     attribution["ex_ante_factor_variance"] + attribution["ex_ante_specific_variance"]
+    ... )
+    >>> parts = attribution["factor_risk_contribution"].sum("factor")
+    >>> bool(np.allclose((parts + attribution["specific_risk_contribution"])[1:], sigma[1:]))
+    True
     """
     holdings = holdings.transpose("timestamp", "symbol")
     timestamps = holdings["timestamp"].values
     symbols = [str(s) for s in holdings["symbol"].values]
     factors = list(risk_model.factor_names)
+    groups = risk_model.factor_groups()
     first, last = pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-1])
     regression = risk_model.regression.read(first, last)
 
@@ -122,10 +160,16 @@ def factor_attribution(
         risk_model.prices(first, last)[risk_model.config.risk_free_column], timestamps, symbols
     )
     exposures, has_exposures = _exposures(risk_model, timestamps, symbols)
+    covariance, specific_risk = _estimates(risk_model, timestamps, symbols)
 
-    n_bars = timestamps.size
+    n_bars, n_factors = timestamps.size, len(factors)
     contribution = np.zeros((n_bars, len(TERMS)))
-    factor_part = np.zeros((n_bars, len(factors)))
+    factor_part = np.zeros((n_bars, n_factors))
+    exposure = np.zeros((n_bars, n_factors))
+    factor_variance = np.zeros(n_bars)
+    specific_variance = np.zeros(n_bars)
+    factor_risk = np.full((n_bars, n_factors), np.nan)
+    specific_risk_part = np.full(n_bars, np.nan)
     covered_weight = np.full(n_bars, np.nan)
     held = weight != 0.0
     for t in range(1, n_bars):
@@ -134,13 +178,26 @@ def factor_attribution(
         )
         uncovered = held[t] & ~covered
         w = weight[t]
-        factor_part[t] = (w[covered] @ exposures[t - 1][covered]) * factor_return[t]
+        exposure[t] = w[covered] @ exposures[t - 1][covered]
+        factor_part[t] = exposure[t] * factor_return[t]
         contribution[t, _SPECIFIC] = w[covered] @ specific[t][covered]
         contribution[t, _UNCOVERED] = w[uncovered] @ own[t][uncovered]
         contribution[t, _RISK_FREE] = w[covered] @ risk_free[t - 1][covered]
         gross = np.abs(w[held[t]]).sum()
         if gross > 0:
             covered_weight[t] = np.abs(w[covered]).sum() / gross
+
+        # Ex ante: the forecast made at t-1 for bar t, of the covered book.
+        kept = covered_factors(covariance[t - 1])
+        x = np.where(kept, exposure[t], 0.0)
+        fx = np.zeros(n_factors)
+        fx[kept] = covariance[t - 1][np.ix_(kept, kept)] @ x[kept]
+        factor_variance[t] = x @ fx
+        specific_variance[t] = (w[covered] ** 2) @ np.nan_to_num(specific_risk[t - 1][covered] ** 2)
+        sigma = np.sqrt(factor_variance[t] + specific_variance[t])
+        if sigma > 0:
+            factor_risk[t] = x * fx / sigma
+            specific_risk_part[t] = specific_variance[t] / sigma
     contribution[:, _FACTOR] = factor_part.sum(axis=1)
     contribution[:, _TRADING] = returns - np.delete(contribution, _TRADING, axis=1).sum(axis=1)
 
@@ -155,49 +212,124 @@ def factor_attribution(
     link = _link(returns)[:, None]
     gross = np.abs(weight).sum(axis=1)
     gross[0] = 0.0
+    on_factor = ("timestamp", "factor")
     return xr.Dataset(
         {
             "contribution": (("timestamp", "term"), contribution),
             "log_contribution": (("timestamp", "term"), contribution * link),
-            "factor_contribution": (("timestamp", "factor"), factor_part),
-            "factor_log_contribution": (("timestamp", "factor"), factor_part * link),
+            "factor_contribution": (on_factor, factor_part),
+            "factor_log_contribution": (on_factor, factor_part * link),
             "return": ("timestamp", returns),
+            "exposure": (on_factor, exposure),
+            "ex_ante_factor_variance": ("timestamp", factor_variance),
+            "ex_ante_specific_variance": ("timestamp", specific_variance),
+            "factor_risk_contribution": (on_factor, factor_risk),
+            "specific_risk_contribution": ("timestamp", specific_risk_part),
             "covered_weight": ("timestamp", covered_weight),
             "gross_weight": ("timestamp", gross),
         },
-        coords={"timestamp": timestamps, "term": list(TERMS), "factor": factors},
+        coords={
+            "timestamp": timestamps,
+            "term": list(TERMS),
+            "factor": factors,
+            "group": ("factor", [groups[name] for name in factors]),
+        },
     )
 
 
-def attribution_summary(attribution: xr.Dataset, years: float) -> dict:
-    """Return the annualized log growth of each term and factor, and the coverage.
+def attribution_summary(
+    attribution: xr.Dataset, bars_per_year: float, segment: np.ndarray | None = None
+) -> dict:
+    """Summarize a run of bars (a segment) of ``factor_attribution``'s dataset.
 
     Parameters
     ----------
     attribution : xr.Dataset
-        ``factor_attribution``'s dataset, or a run of its bars.
-    years : float
-        The years the bars span, to annualize by.
+        ``factor_attribution``'s dataset.
+    bars_per_year : float
+        Bars in a year, to annualize by: growth by ``bars_per_year / n``
+        over ``n`` bars, volatilities by its square root.
+    segment : np.ndarray, optional
+        Booleans on ``timestamp``: the bars of the segment; every bar when
+        omitted.
 
     Returns
     -------
     dict
-        ``annualized_log_return``: each term's, and ``total``, their sum
-        (the NAV's annualized log growth); ``factor_annualized_log_return``:
-        each factor's; ``coverage``: ``mean_covered_weight`` and
-        ``min_covered_weight`` over the bars holding something, and a
-        ``note`` when the mean is below ``LOW_COVERAGE`` (else None).
+        - ``annualized_log_return``: each term's, and ``total``, their sum
+          (the segment's annualized NAV log growth);
+          ``factor_annualized_log_return``: each factor's;
+          ``group_annualized_log_return``: each group's (the groups the
+          model has, in ``FACTOR_GROUPS`` order), summing to the factor term;
+        - ``style_mean_exposure``: each style factor's mean net exposure, and
+          ``industries``: ``top`` and ``bottom`` (each at most
+          ``TOP_INDUSTRIES``, highest and lowest first, never the same
+          industry twice) industries by annualized log growth, each a
+          ``{"factor", "annualized_log_return", "mean_exposure"}``, the means
+          over the bars holding something;
+        - ``ex_ante_risk``: the means, over the bars with a forecast, of the
+          annualized forecast volatility (``volatility``: ``total``,
+          ``factor``, ``specific``), of its x-sigma-rho split
+          (``contribution``: ``factor`` and ``specific``, summing to the
+          total) and of each factor's and group's contribution;
+        - ``ex_post_risk``: the annualized realized volatility
+          (``volatility``) and each term's, factor's and group's
+          ``cov(c, r) / sigma(r)`` contribution to it (the terms summing to
+          it); None with fewer than two bars or a flat return;
+        - ``coverage``: ``mean_covered_weight`` and ``min_covered_weight``
+          over the bars holding something, and a ``note`` when the mean is
+          below ``LOW_COVERAGE`` (else None).
+
+        A value without a bar to average over is None.
 
     Examples
     --------
-    >>> summary = attribution_summary(attribution, years=1.0)
-    >>> sorted(summary)
-    ['annualized_log_return', 'coverage', 'factor_annualized_log_return']
+    >>> summary = attribution_summary(attribution, bars_per_year=252)
+    >>> sorted(summary)  # doctest: +NORMALIZE_WHITESPACE
+    ['annualized_log_return', 'coverage', 'ex_ante_risk', 'ex_post_risk',
+     'factor_annualized_log_return', 'group_annualized_log_return', 'industries',
+     'style_mean_exposure']
     """
-    terms = attribution["log_contribution"].sum("timestamp") / years
-    factors = attribution["factor_log_contribution"].sum("timestamp") / years
-    growth = {str(term): float(terms.sel(term=term)) for term in attribution["term"].values}
+    if segment is not None:
+        attribution = attribution.isel(timestamp=np.flatnonzero(segment))
+    years = attribution.sizes["timestamp"] / bars_per_year
+    factor_names = [str(name) for name in attribution["factor"].values]
+    group_of = dict(zip(factor_names, (str(g) for g in attribution["group"].values)))
+    groups = [group for group in FACTOR_GROUPS if group in group_of.values()]
+
+    def by_group(values: dict) -> dict:
+        if any(values[name] is None for name in factor_names):
+            return {group: None for group in groups}
+        return {
+            group: float(sum(values[name] for name in factor_names if group_of[name] == group))
+            for group in groups
+        }
+
+    terms = attribution["log_contribution"].sum("timestamp").values / years
+    growth = {term: float(terms[j]) for j, term in enumerate(TERMS)}
     growth["total"] = float(terms.sum())
+    factor_growth = dict(
+        zip(factor_names, (attribution["factor_log_contribution"].sum("timestamp").values / years).tolist())
+    )
+
+    holding = attribution["gross_weight"].values > 0
+    exposure = attribution["exposure"].values[holding]
+    mean_exposure = dict(zip(factor_names, (_mean(column) for column in exposure.T)))
+    ranked = sorted(
+        (name for name in factor_names if group_of[name] == "industry"),
+        key=lambda name: factor_growth[name],
+        reverse=True,
+    )
+    top = ranked[:TOP_INDUSTRIES]
+    bottom = ranked[len(top):][-TOP_INDUSTRIES:][::-1]
+
+    def industry(name: str) -> dict:
+        return {
+            "factor": name,
+            "annualized_log_return": factor_growth[name],
+            "mean_exposure": mean_exposure[name],
+        }
+
     covered = attribution["covered_weight"].values
     covered = covered[np.isfinite(covered)]
     mean = float(covered.mean()) if covered.size else None
@@ -209,15 +341,79 @@ def attribution_summary(attribution: xr.Dataset, years: float) -> dict:
         )
     return {
         "annualized_log_return": growth,
-        "factor_annualized_log_return": {
-            str(name): float(factors.sel(factor=name)) for name in attribution["factor"].values
+        "factor_annualized_log_return": factor_growth,
+        "group_annualized_log_return": by_group(factor_growth),
+        "style_mean_exposure": {
+            name: mean_exposure[name] for name in factor_names if group_of[name] == "style"
         },
+        "industries": {
+            "top": [industry(name) for name in top],
+            "bottom": [industry(name) for name in bottom],
+        },
+        "ex_ante_risk": _ex_ante_summary(attribution, bars_per_year, factor_names, by_group),
+        "ex_post_risk": _ex_post_summary(attribution, bars_per_year, factor_names, by_group),
         "coverage": {
             "mean_covered_weight": mean,
             "min_covered_weight": float(covered.min()) if covered.size else None,
             "note": note,
         },
     }
+
+
+def _ex_ante_summary(attribution: xr.Dataset, bars_per_year: float, factor_names, by_group) -> dict:
+    """Return the segment means of the annualized ex-ante volatility and its contributions."""
+    scale = np.sqrt(bars_per_year)
+    factor_risk = attribution["factor_risk_contribution"].values
+    forecast = np.isfinite(factor_risk).all(axis=1)
+    factor_variance = attribution["ex_ante_factor_variance"].values[forecast]
+    specific_variance = attribution["ex_ante_specific_variance"].values[forecast]
+    factor_risk = factor_risk[forecast] * scale
+    factor_contribution = dict(zip(factor_names, (_mean(column) for column in factor_risk.T)))
+    return {
+        "volatility": {
+            "total": _mean(np.sqrt(factor_variance + specific_variance) * scale),
+            "factor": _mean(np.sqrt(factor_variance) * scale),
+            "specific": _mean(np.sqrt(specific_variance) * scale),
+        },
+        "contribution": {
+            "factor": _mean(factor_risk.sum(axis=1)),
+            "specific": _mean(attribution["specific_risk_contribution"].values[forecast] * scale),
+        },
+        "factor_contribution": factor_contribution,
+        "group_contribution": by_group(factor_contribution),
+    }
+
+
+def _ex_post_summary(attribution: xr.Dataset, bars_per_year: float, factor_names, by_group) -> dict:
+    """Return the annualized realized volatility and each part's ``cov(c, r) / sigma(r)``."""
+    returns = attribution["return"].values
+    sigma = float(returns.std(ddof=1)) if returns.size > 1 else 0.0
+    if not sigma > 0:
+        return {
+            "volatility": None,
+            "term_contribution": {term: None for term in TERMS},
+            "factor_contribution": {name: None for name in factor_names},
+            "group_contribution": by_group({name: None for name in factor_names}),
+        }
+    scale = np.sqrt(bars_per_year) / sigma
+    centred = returns - returns.mean()
+
+    def contribution(parts: np.ndarray) -> list[float]:
+        covariance = (parts - parts.mean(axis=0)).T @ centred / (returns.size - 1)
+        return (covariance * scale).tolist()
+
+    factor_contribution = dict(zip(factor_names, contribution(attribution["factor_contribution"].values)))
+    return {
+        "volatility": sigma * np.sqrt(bars_per_year),
+        "term_contribution": dict(zip(TERMS, contribution(attribution["contribution"].values))),
+        "factor_contribution": factor_contribution,
+        "group_contribution": by_group(factor_contribution),
+    }
+
+
+def _mean(values: np.ndarray) -> float | None:
+    """Return the mean of ``values``, or None when there are none."""
+    return float(np.mean(values)) if np.size(values) else None
 
 
 def _link(returns: np.ndarray) -> np.ndarray:
@@ -236,6 +432,30 @@ def _on_axes(panel: xr.DataArray, timestamps: np.ndarray, symbols: list[str]) ->
         panel.reindex(timestamp=timestamps, symbol=symbols).transpose("timestamp", "symbol").values,
         dtype=np.float64,
     )
+
+
+def _estimates(
+    risk_model: FactorRiskModel, timestamps: np.ndarray, symbols: list[str]
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the forecast factor covariance ``[T, K, K]`` and specific risk ``[T, S]`` at each bar.
+
+    Read from the estimate store over the bars before the last (the forecast
+    of row t attributes bar t+1); NaN where the store has no forecast.
+    """
+    n_bars, n_factors = timestamps.size, len(risk_model.factor_names)
+    covariance = np.full((n_bars, n_factors, n_factors), np.nan)
+    specific_risk = np.full((n_bars, len(symbols)), np.nan)
+    if n_bars < 2:
+        return covariance, specific_risk
+    rows = risk_model.estimate.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-2]))
+    covariance[:-1] = (
+        rows["factor_covariance"]
+        .reindex(timestamp=timestamps[:-1])
+        .transpose("timestamp", "factor_i", "factor_j")
+        .values.astype(np.float64)
+    )
+    specific_risk[:-1] = _on_axes(rows["specific_risk"], timestamps[:-1], symbols)
+    return covariance, specific_risk
 
 
 def _exposures(
