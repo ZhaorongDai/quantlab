@@ -181,6 +181,15 @@ class Use4RiskConfig(FactorRiskConfig):
     #: Newey-West lags of the factor volatilities (USE4S and USE4L: 5); 0 for
     #: none.
     volatility_lags: int = 5
+    #: Half-life, in bars, of the exponential weights of the factor returns'
+    #: autocorrelations behind the volatilities' Newey-West adjustment;
+    #: ``None`` for ``volatility_half_life``. USE4 publishes none for factors;
+    #: a longer one than the volatilities' estimates the autocorrelations from
+    #: more bars (our choice).
+    volatility_autocorrelation_half_life: float | None = None
+    #: Bars of factor returns those autocorrelations are estimated from;
+    #: ``None`` for ``volatility_window``. Our choice.
+    volatility_autocorrelation_window: int | None = None
     #: Newey-West lags of the factor correlations (USE4S and USE4L: 2); 0 for
     #: none.
     correlation_lags: int = 2

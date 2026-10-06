@@ -223,3 +223,42 @@ def test_lags_must_fit_their_window(built):
         type(built)(dataclasses.replace(built.config, volatility_lags=WINDOWS["volatility_window"]))
     with pytest.raises(ValueError, match="specific_lags"):
         type(built)(dataclasses.replace(built.config, specific_lags=-1))
+
+
+def _multiplier(x, lags, half_life):
+    """``1 + 2 sum_l b_l rho_l`` of one column, at least 0, from the definition."""
+    present = np.isfinite(x)
+    if not present.any():
+        return 1.0
+    w = _weights(len(x), half_life)
+    c = _centred(x, half_life)
+    gamma0 = (w[present] * c[present] ** 2).sum() / w[present].sum()
+    multiplier = 1.0
+    for lag, b in enumerate(_bartlett(lags), start=1):
+        a, d = c[lag:], c[:-lag]
+        both = np.isfinite(a) & np.isfinite(d)
+        if both.sum() >= LEAST and gamma0 > 0:
+            wl = w[lag:][both]
+            multiplier += 2 * b * ((wl * a[both] * d[both]).sum() / wl.sum()) / gamma0
+    return max(multiplier, 0.0)
+
+
+def test_factor_autocorrelations_can_use_their_own_half_life_and_window(tmp_path, planted):
+    own = dict(volatility_autocorrelation_half_life=8.0, volatility_autocorrelation_window=12)
+    model = _risk_model(tmp_path, "own", planted=planted, **LAGS, **own)
+    model.regression.build(_day(START), _day(_T - 1))
+    model.estimate.build(_day(START), _day(_T - 1))
+    returns = model.regression.read(_day(START), _day(_T - 1))["factor_return"].values
+    covariance = model.estimate.read(_day(START), _day(_T - 1))["factor_covariance"].values
+    got = np.diagonal(covariance, axis1=1, axis2=2)
+    for t in range(len(returns)):
+        history = returns[: t + 1]
+        vol = history[-WINDOWS["volatility_window"]:]
+        auto = history[-12:]
+        for k in range(returns.shape[1]):
+            expected = _moment(vol[:, k], vol[:, k], WINDOWS["volatility_half_life"]) * _multiplier(
+                auto[:, k], LAGS["volatility_lags"], 8.0
+            )
+            np.testing.assert_allclose(got[t, k], expected, rtol=1e-9, atol=1e-15, err_msg=f"{t},{k}")
+    # The window counts in the warm-up.
+    assert model.estimate_warmup_bars == max(12, WINDOWS["correlation_window"]) - 1
