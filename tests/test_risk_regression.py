@@ -68,6 +68,7 @@ def _plant(
     industries: bool = True,
     autocorrelation: float = 0.0,
     specific_everywhere: float = 0.0,
+    jump: tuple[int, float] | None = None,
 ):
     """Return ``(prices, exposures, planted factor returns, planted specific returns)``.
 
@@ -78,7 +79,8 @@ def _plant(
     with that coefficient. With ``specific_everywhere`` every symbol,
     estimation universe included, gets a specific return of that typical
     size times a volatility of its own (the factor returns are then no
-    longer recovered exactly).
+    longer recovered exactly). ``jump`` is ``(bar, factor)``: from that bar
+    on, every factor return and specific return is that many times larger.
     """
     rng = np.random.default_rng(seed)
     noise = np.random.default_rng(seed + 1)
@@ -114,6 +116,10 @@ def _plant(
             specific[t] = 0.0
         if specific_everywhere:
             specific[t] = specific_scale * noise.standard_normal(_N)
+        if jump is not None and t >= jump[0]:
+            factor_returns[t] *= jump[1]
+            country, industry, style = country * jump[1], industry * jump[1], style * jump[1]
+            specific[t] *= jump[1]
         if outlier is not None and outlier[0] == t:
             specific[t, outlier[1]] = outlier[2]
         industry_part = np.append(np.nan_to_num(industry)[index], 0.0)
@@ -378,11 +384,14 @@ def test_use4_is_the_model_with_barra_style_defaults(planted, tmp_path):
     assert (model.config.volatility_lags, model.config.correlation_lags) == (5, 2)
     assert model.config.volatility_autocorrelation_half_life == 504.0
     assert model.config.specific_lags == 0
-    assert model.estimate_warmup_bars == 1511
+    # The 1512-bar correlation window, then the 126 bars of the volatility
+    # regime adjustment's bias statistics.
+    assert model.estimate_warmup_bars == 1511 + 126
     with_specific = dataclasses.replace(model.config, specific_lags=5)
-    assert Use4RiskModel(with_specific).estimate_warmup_bars == 1511
+    assert Use4RiskModel(with_specific).estimate_warmup_bars == 1511 + 126
     longer = dataclasses.replace(with_specific, specific_autocorrelation_window=2000)
-    assert Use4RiskModel(longer).estimate_warmup_bars == 1999
+    assert Use4RiskModel(longer).estimate_warmup_bars == 1999 + 126
+    assert Use4RiskModel(dataclasses.replace(model.config, vra_half_life=None)).estimate_warmup_bars == 1511
     assert Use4RiskModel.from_config(model.get_config()) == model
 
 

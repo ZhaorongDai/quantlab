@@ -45,6 +45,8 @@ WINDOWS = dict(
     shrinkage=0.0,
     # No eigenfactor adjustment: it is checked in tests/test_risk_eigen.py.
     eigen_simulations=0,
+    # No volatility regime adjustment: it is checked in tests/test_risk_vra.py.
+    vra_half_life=None,
 )
 START = 1  # the first bar with a regression
 

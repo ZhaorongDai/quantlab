@@ -5,7 +5,8 @@ prices + DAILY market cap + FRED's 3-month T-bill rate ->
 ``Use4RiskModel``'s regression store (factor returns and specific returns of
 country, 48 industries, 12 styles) -> its estimate store (factor covariance
 and specific risk: EWMA with Newey-West and the eigenfactor risk adjustment
-on the factors; structural model and shrinkage on the specific risk) -> bias
+on the factors; structural model and shrinkage on the specific risk; the
+volatility regime adjustment on both) -> bias
 statistics of factor portfolios, eigenfactor portfolios, specific returns
 and random active portfolios over one-bar and 21-bar returns, printed, saved
 as JSON and plotted.
@@ -56,9 +57,10 @@ WORK = DATA_ROOT / "pipeline" / "sharadar_risk"
 #: The regression's range: from the second bar of the exposures store (the
 #: first regression reads the exposures of the bar before) to its end.
 REGRESSION_START, END = "2001-01-03", "2026-10-02"
-#: The estimates' range: the correlation window (1512 bars) of regression
-#: rows fits before it, so no estimate uses a shortened window.
-ESTIMATE_START = "2007-01-11"
+#: The estimates' range: the correlation window (1512 bars) and the volatility
+#: regime adjustment's 126 bars of regression rows fit before it, so no
+#: estimate uses a shortened window.
+ESTIMATE_START = "2007-07-13"
 #: Bars per outcome of the bias statistics: one bar, and a month as USE4 tests.
 #: Each rolls over about a year of outcomes (252 / horizon), as USE4's 12 months.
 HORIZONS = (1, 21)
@@ -95,7 +97,8 @@ def barra_exposures() -> BarraStyle:
 
 def risk_model() -> Use4RiskModel:
     """USE4 with its defaults: country, FF48 industries, 12 styles; EWMA 84/504/84, factor
-    Newey-West, the simulated eigenfactor adjustment (1000 simulations)."""
+    Newey-West, the simulated eigenfactor adjustment (1000 simulations), the volatility
+    regime adjustment (half-life 42)."""
     return Use4RiskModel(Use4RiskConfig(
         exposures=barra_exposures(),
         dataset=price_inputs(),
@@ -181,6 +184,19 @@ def plot(stats: dict, horizon: int) -> None:
     figure.savefig(WORK / f"bias_h{horizon}.png", dpi=120)
 
 
+def plot_multipliers() -> None:
+    """The volatility regime multipliers of the factors and the specific risk (USE4 Figures 4.6, 5.3)."""
+    estimate = risk_model().estimate.read(ESTIMATE_START, END)
+    figure, axis = plt.subplots(figsize=(12, 4))
+    for name in ("factor_volatility_multiplier", "specific_volatility_multiplier"):
+        axis.plot(estimate["timestamp"].values, estimate[name].values, label=name, lw=0.8)
+    axis.axhline(1.0, color="grey", ls="--", lw=0.5)
+    axis.set_title("volatility regime multipliers")
+    axis.legend(loc="upper right")
+    figure.tight_layout()
+    figure.savefig(WORK / "multipliers.png", dpi=120)
+
+
 # %% Run
 if __name__ == "__main__":
     if inside_repository([DATA_ROOT], Path(__file__).resolve().parents[2]):
@@ -190,6 +206,7 @@ if __name__ == "__main__":
     for horizon in HORIZONS:
         stats, summary[f"h{horizon}"] = bias(horizon)
         plot(stats, horizon)
+    plot_multipliers()
     (WORK / "bias_summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(
         {k: {g: v for g, v in s.items() if not g.endswith("_bias")} if isinstance(s, dict) else s

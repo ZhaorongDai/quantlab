@@ -219,6 +219,23 @@ class Use4RiskConfig(FactorRiskConfig):
     #: Eigenfactors, from the lowest-volatility one, the parabola of the
     #: scaled adjustment gives no weight (USE4: 15).
     eigen_fit_skip: int = 15
+    #: Half-life, in bars, of the volatility regime adjustment (USE4 §4.3,
+    #: §5.3; USE4S: 42 trading days, USE4L: 168), the same for the factor
+    #: volatilities and the specific risk, as USE4; ``None`` for none. Each
+    #: bar's forecasts are scaled by ``sqrt(sum_t w_t B_t^2)``, ``B_t`` the
+    #: cross-sectional bias statistic of bar ``t``'s returns against the
+    #: forecasts of the bar before (the factors' root mean square over the
+    #: factors with a forecast and a return, where USE4 divides by every
+    #: factor; the specific returns' weighted by the market caps of the bar
+    #: before over its estimation universe, where USE4 names no bar or
+    #: universe: our choices), ``w_t`` exponential weights normalised to 1 over the last
+    #: ``vra_window`` bars; the factor covariance by its square, so the
+    #: correlations do not move. With fewer than ``min_observations`` bias
+    #: statistics in the window a multiplier is 1 (our choice).
+    vra_half_life: float | None = 42.0
+    #: Bars of bias statistics the multipliers are estimated from. Our
+    #: choice: three half-lives.
+    vra_window: int = 126
     #: Newey-West lags of the specific volatilities; 0 for none. USE4S and
     #: USE4L: 5. Our choice: 0, as the adjustment worsened the specific bias
     #: statistics over 1- and 21-bar returns on the Sharadar history (#197).
@@ -277,6 +294,8 @@ class Use4RiskConfig(FactorRiskConfig):
     njobs: int = 1
     #: Fewest observations in its window for a factor variance, a pair's
     #: correlation, a symbol's specific volatility or a lagged autocorrelation
-    #: to be estimated; NaN with fewer (a lag term: none). Our choice.
+    #: to be estimated; NaN with fewer (a lag term: none). Also the fewest
+    #: bias statistics a volatility regime multiplier needs (1 with fewer).
+    #: Our choice.
     min_observations: int = 21
 

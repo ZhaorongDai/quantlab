@@ -581,6 +581,8 @@ def _factor_risk_model(tmp_path, dataset_config, bars):
         specific_half_life=5.0,
         specific_window=10,
         min_observations=5,
+        vra_half_life=5.0,
+        vra_window=10,
     ))
     model.regression.build(_day(bars[1]), _day(bars[-1]))
     model.estimate.build(_day(bars[WINDOW[0]]), _day(bars[-1]))

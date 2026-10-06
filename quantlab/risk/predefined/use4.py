@@ -171,7 +171,7 @@ def _excess_returns(price: np.ndarray, risk_free: np.ndarray) -> np.ndarray:
 
 
 class Use4RiskModel(FactorRiskModel):
-    """USE4-style factor risk model: country, industries and styles; EWMA, Newey-West, eigenfactors.
+    """USE4-style factor risk model: country, industries and styles; EWMA, Newey-West, eigenfactors, VRA.
 
     See the module docstring for the regression; ``FactorRiskModel`` for the
     contract every factor risk model meets. This model's stores:
@@ -210,7 +210,9 @@ class Use4RiskModel(FactorRiskModel):
       and estimated the same way, as eq. B7, or with ``eigen_scale`` the
       scaled eq. B8; each bar's draws are seeded by ``eigen_seed`` and the
       bar, so a row is the same however the store is built. The adjusted
-      block is positive semi-definite (see ``_eigen_adjusted``);
+      block is positive semi-definite (see ``_eigen_adjusted``); then the
+      volatility regime adjustment, the whole matrix times ``lambda_F^2``
+      (USE4 §4.3, eqs. 4.3-4.5), which leaves the correlations alone;
     - ``specific_risk`` on ``(timestamp, symbol)`` (USE4 §5.1-5.2), for
       every symbol with a time-series value and, with a structural model,
       every symbol with exposures at the bar:
@@ -229,11 +231,24 @@ class Use4RiskModel(FactorRiskModel):
          and ``blending_min_observations``);
       3. shrunk toward the cap-weighted mean of the symbol's size group with
          intensity ``q |s - m| / (d + q |s - m|)`` (eqs. 5.6-5.9, ``q`` the
-         ``shrinkage``).
+         ``shrinkage``);
+      4. times ``lambda_S``, the volatility regime adjustment (§5.3, eqs.
+         5.10-5.12).
 
       The time series and the blending coefficient read only the window;
       the structural fit and the shrinkage use the exposures and market caps
       of the bar.
+
+    - with the volatility regime adjustment (``vra_half_life``),
+      ``factor_volatility_multiplier`` and ``specific_volatility_multiplier``
+      on ``timestamp``: ``lambda_F`` and ``lambda_S``, each the root of the
+      exponentially weighted mean square of the cross-sectional bias
+      statistics of the last ``vra_window`` bars, a bar's returns against
+      the forecasts of the bar before (see ``Use4RiskConfig.vra_half_life``).
+      The forecasts it reads are the store's before the adjustment, so a
+      row reads the ``vra_window`` rows before it as well; the specific ones
+      include Newey-West when ``specific_lags`` is set, where USE4 removes it
+      (our choice; off by default).
 
     Newey-West, with Newey and West's (1987) Bartlett weights ``b_l = 1 - l
     / (L + 1)`` over lags 1 to ``L`` (USE4 publishes no weights; our
@@ -271,7 +286,8 @@ class Use4RiskModel(FactorRiskModel):
     eigenvalues to 0, and with ``eigen_simulations=0`` it stays as it is.
     A variance, a correlation or a specific volatility with
     fewer than ``min_observations`` bars is NaN. Its warm-up is the longest
-    window less one bar, counted on the regression store's bars.
+    window less one bar, plus ``vra_window`` with the volatility regime
+    adjustment, counted on the regression store's bars.
 
     Parameters
     ----------
@@ -337,6 +353,7 @@ class Use4RiskModel(FactorRiskModel):
             "specific",
             "specific_autocorrelation",
             "volatility_autocorrelation",
+            "vra",
         ):
             half_life = getattr(config, f"{prefix}_half_life")
             window = getattr(config, f"{prefix}_window")
@@ -413,14 +430,15 @@ class Use4RiskModel(FactorRiskModel):
 
     @property
     def estimate_warmup_bars(self) -> int:
-        """The longest estimate window less one bar.
+        """The longest estimate window less one bar, plus ``vra_window`` with the regime adjustment.
 
         Examples
         --------
-        >>> model.estimate_warmup_bars  # the 1512-bar correlation window
-        1511
+        >>> model.estimate_warmup_bars  # the 1512-bar correlation window, 126 VRA bars
+        1637
         """
-        return max(self._estimate_windows(self.config)) - 1
+        config = self.config
+        return max(self._estimate_windows(config)) - 1 + self._regime_window(config)
 
     @property
     def factor_names(self) -> tuple[str, ...]:
@@ -485,6 +503,11 @@ class Use4RiskModel(FactorRiskModel):
             config.volatility_half_life if half_life is None else half_life,
             config.volatility_window if window is None else window,
         )
+
+    @staticmethod
+    def _regime_window(config: Use4RiskConfig) -> int:
+        """Return the bars of bias statistics the volatility regime adjustment reads, 0 without it."""
+        return config.vra_window if config.vra_half_life is not None else 0
 
     @staticmethod
     def _estimate_windows(config: Use4RiskConfig) -> tuple[int, ...]:
@@ -742,8 +765,12 @@ class Use4RiskModel(FactorRiskModel):
             rows = regression.read(recorded[0], recorded[0]).isel(timestamp=slice(0, 0))
         else:
             rows = regression.read(bars[read_from], end).load()
-        offset = begin - read_from
-        count = max(stop - begin, 0)
+        # The volatility regime multipliers read the forecasts of the
+        # ``vra_window`` bars before the first row, computed here too and
+        # dropped at the end.
+        lead = min(self._regime_window(config), begin) if begin < stop else 0
+        offset = begin - lead - read_from
+        count = max(stop - begin, 0) + lead
         timestamps = rows["timestamp"].values[offset : offset + count]
         symbols = rows["symbol"].values
         structural = count and config.structural_model != "off"
@@ -794,15 +821,17 @@ class Use4RiskModel(FactorRiskModel):
             specific_risk[row : row + len(chunk_specific)] = chunk_specific
             blending[row : row + len(chunk_blending)] = chunk_blending
             row += len(chunk_covariance)
-        if refine:
-            if structural:
-                exposures = exposures.reindex(timestamp=timestamps, symbol=symbols).load()
+        regime = count and self._regime_window(config) > 0
+        if refine or regime:
             cap = (
                 self.prices(timestamps[0], timestamps[-1])[config.market_cap_column]
                 .reindex(timestamp=timestamps, symbol=symbols)
                 .transpose("timestamp", "symbol")
                 .values
             )
+        if refine:
+            if structural:
+                exposures = exposures.reindex(timestamp=timestamps, symbol=symbols).load()
             with Timer(f"{self.class_name}: specific risk refinements"):
                 for row in range(count):
                     matrix, covered = (
@@ -812,13 +841,45 @@ class Use4RiskModel(FactorRiskModel):
                     specific_risk[row] = self._refined_specific_risk(
                         specific_risk[row], blending[row], matrix, covered, cap[row]
                     )
+        variables = {}
+        if regime:
+            if config.estu_name is None:
+                estu = np.ones((count, len(symbols)), dtype=bool)
+            else:
+                estu = (
+                    self.exposures(timestamps[0], timestamps[-1])[config.estu_name]
+                    .reindex(timestamp=timestamps, symbol=symbols)
+                    .transpose("timestamp", "symbol")
+                    .values
+                    == 1.0
+                )
+            factor_multiplier, specific_multiplier = _regime_multipliers(
+                covariance,
+                specific_risk,
+                factor_returns[offset : offset + count],
+                specific_returns[offset : offset + count],
+                cap,
+                estu,
+                config.vra_half_life,
+                config.vra_window,
+                config.min_observations,
+            )
+            covariance = covariance * factor_multiplier[:, None, None] ** 2
+            specific_risk = specific_risk * specific_multiplier[:, None]
+            variables = {
+                "factor_volatility_multiplier": (("timestamp",), factor_multiplier[lead:]),
+                "specific_volatility_multiplier": (("timestamp",), specific_multiplier[lead:]),
+            }
         return xr.Dataset(
             {
-                "factor_covariance": (("timestamp", "factor_i", "factor_j"), covariance),
-                "specific_risk": (("timestamp", "symbol"), specific_risk),
+                "factor_covariance": (
+                    ("timestamp", "factor_i", "factor_j"), covariance[lead:]
+                ),
+                "specific_risk": (("timestamp", "symbol"), specific_risk[lead:]),
+                **variables,
             },
             coords={
-                "timestamp": timestamps,
+                "timestamp": timestamps[lead:],
                 "factor_i": names,
                 "factor_j": names,
                 "symbol": symbols,
@@ -1021,6 +1082,69 @@ def _eigen_adjusted(
     out = covariance.copy()
     out[np.ix_(kept, kept)] = (adjusted + adjusted.T) / 2
     return out
+
+
+def _regime_multipliers(
+    covariance: np.ndarray,
+    specific_risk: np.ndarray,
+    factor_returns: np.ndarray,
+    specific_returns: np.ndarray,
+    cap: np.ndarray,
+    estu: np.ndarray,
+    half_life: float,
+    window: int,
+    least: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return each row's factor and specific volatility multipliers (USE4 eqs. 4.3-4.4, 5.10-5.11).
+
+    Row ``t`` of every array is one bar: its forecasts (``covariance``,
+    ``specific_risk``), the returns realized over it, and the market caps and
+    estimation universe of the bar. The bias statistic of bar ``t`` compares
+    its returns with the forecasts of row ``t - 1``: ``B_F`` is the root mean
+    square of the standardized factor returns over the factors with both,
+    ``B_S`` that of the specific returns weighted by the caps of ``t - 1``
+    over its estimation universe. A row's multiplier is ``sqrt(sum_t w_t
+    B_t^2)`` over the bias statistics of the last ``window`` bars up to and
+    including it, ``w_t`` halving every ``half_life`` bars back and
+    normalised to 1; 1 with fewer than ``least`` of them.
+    """
+    count = len(covariance)
+    factor_bias = np.full(count, np.nan)
+    specific_bias = np.full(count, np.nan)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        volatility = np.sqrt(np.diagonal(covariance, axis1=1, axis2=2))
+        factor_outcome = factor_returns[1:] / volatility[:-1]
+        specific_outcome = specific_returns[1:] / specific_risk[:-1]
+    factor_ok = np.isfinite(factor_outcome) & (volatility[:-1] > 0)
+    squares = np.where(factor_ok, factor_outcome, 0.0) ** 2
+    with np.errstate(divide="ignore", invalid="ignore"):
+        factor_bias[1:] = np.sqrt(squares.sum(axis=1) / factor_ok.sum(axis=1))
+    weight = np.where(
+        np.isfinite(specific_outcome) & (specific_risk[:-1] > 0)
+        & np.isfinite(cap[:-1]) & (cap[:-1] > 0) & estu[:-1],
+        cap[:-1],
+        0.0,
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        specific_bias[1:] = np.sqrt(
+            (weight * np.nan_to_num(specific_outcome) ** 2).sum(axis=1) / weight.sum(axis=1)
+        )
+
+    def multipliers(bias: np.ndarray) -> np.ndarray:
+        out = np.ones(count)
+        decay = _exponential_weights(window, half_life)
+        for row in range(count):
+            first = max(row - window + 1, 0)
+            values = bias[first : row + 1]
+            weights = decay[window - len(values) :]
+            present = np.isfinite(values)
+            if present.sum() >= least:
+                out[row] = np.sqrt(
+                    (weights[present] * values[present] ** 2).sum() / weights[present].sum()
+                )
+        return out
+
+    return multipliers(factor_bias), multipliers(specific_bias)
 
 
 def _parabola(values: np.ndarray, valid: np.ndarray, skip: int) -> np.ndarray:
