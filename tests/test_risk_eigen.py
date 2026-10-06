@@ -23,6 +23,8 @@ import pytest
 import xarray as xr
 
 from tests.test_risk_estimate import START, WINDOWS, _expected_covariance, _risk_model
+from tests.test_risk_newey_west import LAGS
+from tests.test_risk_newey_west import _expected_covariance as _newey_west_covariance
 from tests.test_risk_regression import _T, _day
 
 SIMULATIONS = 15
@@ -61,9 +63,12 @@ def _parabola(v, valid, skip):
     return np.polyval(np.polyfit(k[fit], v[fit], 2), k)
 
 
-def _expected(history, timestamp, seed=7, simulations=SIMULATIONS, scale=None, skip=15):
-    """USE4 eqs. B1-B10 at the last row of ``history``."""
-    raw = _expected_covariance(history)
+def _expected(
+    history, timestamp, seed=7, simulations=SIMULATIONS, scale=None, skip=15,
+    estimator=_expected_covariance,
+):
+    """USE4 eqs. B1-B10 at the last row of ``history``, ``estimator`` the sample covariance."""
+    raw = estimator(history)
     kept = _covered(raw)
     out = raw.copy()
     if not kept.any():
@@ -78,15 +83,20 @@ def _expected(history, timestamp, seed=7, simulations=SIMULATIONS, scale=None, s
     rng = np.random.default_rng([seed, pd.Timestamp(timestamp).value])
     ratio = np.zeros(len(d0))
     count = np.zeros(len(d0))
-    for _ in range(simulations):
+    used = 0
+    # With no more bars than factors the simulated covariances are singular.
+    for _ in range(simulations if length > len(d0) else 0):
         b = rng.standard_normal((length, len(d0))) * np.sqrt(d0)
-        fm = _expected_covariance(b @ u0.T)
+        fm = estimator(b @ u0.T)
+        if not np.isfinite(fm).all():
+            continue  # a negative Newey-West variance: left out
+        used += 1
         dm, um = np.linalg.eigh(fm)
         true = np.array([um[:, k] @ f0 @ um[:, k] for k in range(len(d0))])
         good = dm > dm.max() * TINY
         ratio += np.where(good, true / np.where(good, dm, 1.0), 0.0)
         count += good
-    valid = positive & (count == simulations)
+    valid = positive & (count == used) & (used > 0)
     v = np.where(valid, np.sqrt(ratio / np.maximum(count, 1)), 1.0)
     if scale is not None:
         v = np.where(valid, scale * (_parabola(v, valid, skip) - 1.0) + 1.0, 1.0)
@@ -95,19 +105,17 @@ def _expected(history, timestamp, seed=7, simulations=SIMULATIONS, scale=None, s
     return out
 
 
-def _check(model, **expected):
+def _check(model, rtol=1e-9, **expected):
     regression = model.regression.read(_day(START), _day(_T - 1))
     factor_returns = regression["factor_return"].values
     bars = regression["timestamp"].values
     got = model.estimate.read(_day(START), _day(_T - 1))["factor_covariance"].values
+    estimator = expected.get("estimator", _expected_covariance)
     adjusted = 0
     for t in range(len(factor_returns)):
         want = _expected(factor_returns[: t + 1], bars[t], **expected)
-        # With fewer bars than factors the covariances are singular and the
-        # smallest simulated eigenvalues amplify round-off.
-        rtol = 1e-9 if t + 1 > factor_returns.shape[1] else 1e-5
         np.testing.assert_allclose(got[t], want, rtol=rtol, atol=1e-15, err_msg=f"bar {t}")
-        raw = _expected_covariance(factor_returns[: t + 1])
+        raw = estimator(factor_returns[: t + 1])
         adjusted += not np.allclose(want, raw, equal_nan=True)
     # The adjustment does change the covariance.
     assert adjusted > len(factor_returns) // 2
@@ -115,6 +123,13 @@ def _check(model, **expected):
 
 def test_the_simulated_adjustment_matches_eq_b7(simulated):
     _check(simulated)
+
+
+def test_the_simulations_use_the_newey_west_estimator(tmp_path):
+    model = _built(tmp_path, "newey_west", **LAGS)
+    # A bar just past as many bars as factors has nearly singular simulated
+    # covariances, whose smallest eigenvalues amplify round-off.
+    _check(model, rtol=1e-7, estimator=_newey_west_covariance)
 
 
 def test_the_scaled_adjustment_matches_eq_b8(tmp_path):

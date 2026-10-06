@@ -1019,6 +1019,11 @@ def _covariance_window(config: "_EstimateParameters") -> int:
 #: eigenfactor risk adjustment (our choice).
 _EIGEN_TOLERANCE = 1e-10
 
+#: Simulated histories of the eigenfactor risk adjustment estimated together:
+#: 16 histories of 1512 bars of 61 factors are about 12 MB a copy (our
+#: choice; the results do not depend on it beyond rounding).
+_EIGEN_BATCH = 16
+
 
 def _eigen_adjusted(
     covariance: np.ndarray, available: int, config: "_EstimateParameters", bar: int
@@ -1043,8 +1048,10 @@ def _eigen_adjusted(
     An eigenvalue of ``F0`` that is 0 stays 0; an eigenfactor whose
     simulated eigenvalue is 0 in some simulation is not adjusted. A
     simulation whose estimate is not all finite (Newey-West lag terms can
-    make a short window's variance negative) is left out of the mean (our
-    choices).
+    make a short window's variance negative) is left out of the mean; with
+    no more bars than factors there are no simulations, as every simulated
+    covariance would be singular (our choices). The simulations run
+    ``_EIGEN_BATCH`` at a time (``_complete_factor_covariances``).
     """
     kept = covered_factors(covariance)
     if not kept.any():
@@ -1057,22 +1064,26 @@ def _eigen_adjusted(
     generating = (eigenvectors * eigenvalues) @ eigenvectors.T
     positive = eigenvalues > eigenvalues.max() * _EIGEN_TOLERANCE
     length = min(available, _covariance_window(config))
+    n_factors = len(eigenvalues)
     rng = np.random.default_rng([config.eigen_seed, int(bar) % 2**64])
-    ratio = np.zeros(len(eigenvalues))
-    usable = np.ones(len(eigenvalues), dtype=bool)
+    ratio = np.zeros(n_factors)
+    usable = np.ones(n_factors, dtype=bool)
     used = 0
     scale = np.sqrt(eigenvalues)
-    for _ in range(config.eigen_simulations):
-        simulated = (rng.standard_normal((length, len(eigenvalues))) * scale) @ eigenvectors.T
-        estimated = _sample_factor_covariance(simulated, config)
-        if not np.isfinite(estimated).all():
-            continue
-        used += 1
-        variances, rotation = np.linalg.eigh((estimated + estimated.T) / 2)
-        true = np.einsum("jk,jl,lk->k", rotation, generating, rotation)
-        good = variances > variances.max() * _EIGEN_TOLERANCE
-        ratio += np.where(good, true / np.where(good, variances, 1.0), 0.0)
-        usable &= good
+    # With no more bars than factors every simulated covariance is singular.
+    simulations = config.eigen_simulations if length > n_factors else 0
+    for first in range(0, simulations, _EIGEN_BATCH):
+        # One draw of [batch, length, K] gives the numbers of that many
+        # draws of [length, K] in turn.
+        draws = rng.standard_normal((min(_EIGEN_BATCH, simulations - first), length, n_factors))
+        estimated = _complete_factor_covariances((draws * scale) @ eigenvectors.T, config)
+        estimated = estimated[np.isfinite(estimated).all(axis=(1, 2))]
+        used += len(estimated)
+        variances, rotation = np.linalg.eigh((estimated + estimated.swapaxes(1, 2)) / 2)
+        true = (rotation * (generating @ rotation)).sum(axis=1)
+        good = variances > variances.max(axis=1, keepdims=True) * _EIGEN_TOLERANCE
+        ratio += np.where(good, true / np.where(good, variances, 1.0), 0.0).sum(axis=0)
+        usable &= good.all(axis=0)
     valid = positive & usable & (used > 0)
     bias = np.where(valid, np.sqrt(ratio / max(used, 1)), 1.0)
     if config.eigen_scale is not None:
@@ -1145,6 +1156,96 @@ def _regime_multipliers(
         return out
 
     return multipliers(factor_bias), multipliers(specific_bias)
+
+
+def _complete_moments(
+    histories: np.ndarray, half_life: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return ``[B, L, K]`` complete histories (no value missing) about their weighted means, and the weights.
+
+    The weights halve every ``half_life`` bars back from the last row and are
+    normalised to sum to 1.
+    """
+    weights = _exponential_weights(histories.shape[1], half_life)
+    weights = weights / weights.sum()
+    centred = histories - (weights @ histories)[:, None, :]
+    return centred, weights
+
+
+def _complete_lag_sum(
+    centred: np.ndarray, weights: np.ndarray, lags: int, least: int
+) -> np.ndarray:
+    """Return ``sum_l b_l G_l`` of ``_lagged_moments`` for ``[B, L, K]`` complete histories."""
+    length = centred.shape[1]
+    total = np.zeros((len(centred), centred.shape[2], centred.shape[2]))
+    bartlett = _bartlett_weights(lags)
+    for lag in range(1, min(lags, length - 1) + 1):
+        if length - lag < least:
+            break
+        later = weights[lag:]
+        moment = (centred[:, lag:] * later[:, None]).swapaxes(1, 2) @ centred[:, :-lag]
+        total += bartlett[lag - 1] * moment / later.sum()
+    return total
+
+
+def _complete_newey_west_multiplier(
+    histories: np.ndarray, half_life: float, lags: int, least: int
+) -> np.ndarray:
+    """Return ``_newey_west_multiplier`` of each column of ``[B, L, K]`` complete histories."""
+    centred, weights = _complete_moments(histories, half_life)
+    variance = weights @ centred**2
+    adjustment = np.ones_like(variance)
+    bartlett = _bartlett_weights(lags)
+    for lag in range(1, min(lags, histories.shape[1] - 1) + 1):
+        if histories.shape[1] - lag < least:
+            break
+        later = weights[lag:]
+        autocovariance = later @ (centred[:, lag:] * centred[:, :-lag]) / later.sum()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rho = autocovariance / variance
+        adjustment += 2.0 * bartlett[lag - 1] * np.where(
+            np.isfinite(rho) & (variance > 0), rho, 0.0
+        )
+    return np.clip(adjustment, 0.0, None)
+
+
+def _complete_factor_covariances(
+    histories: np.ndarray, config: "_EstimateParameters"
+) -> np.ndarray:
+    """Return ``_sample_factor_covariance`` of each of ``[B, L, K]`` complete histories.
+
+    The same estimator: with no value missing, every pair of factors shares
+    every bar, so the moments are batched matrix products; the results agree
+    up to rounding.
+    """
+    least = config.min_observations
+    volatility = histories[:, -config.volatility_window :]
+    centred, weights = _complete_moments(volatility, config.volatility_half_life)
+    variance = weights @ centred**2
+    if config.volatility_lags:
+        variance = variance * _complete_newey_west_multiplier(
+            histories[:, -config.volatility_autocorrelation_window :],
+            config.volatility_autocorrelation_half_life,
+            config.volatility_lags,
+            least,
+        )
+    if volatility.shape[1] < least:
+        variance[:] = np.nan
+    correlation_window = histories[:, -config.correlation_window :]
+    centred, weights = _complete_moments(correlation_window, config.correlation_half_life)
+    covariance = (centred * weights[:, None]).swapaxes(1, 2) @ centred
+    if config.correlation_lags:
+        summed = _complete_lag_sum(centred, weights, config.correlation_lags, least)
+        covariance = covariance + summed + summed.swapaxes(1, 2)
+    own = np.diagonal(covariance, axis1=1, axis2=2)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        correlation = covariance / np.sqrt(own[:, :, None] * own[:, None, :])
+    if correlation_window.shape[1] < least:
+        correlation[:] = np.nan
+    index = np.arange(histories.shape[2])
+    correlation[:, index, index] = 1.0
+    sigma = np.sqrt(np.clip(variance, 0.0, None))
+    return correlation * sigma[:, :, None] * sigma[:, None, :]
 
 
 def _parabola(values: np.ndarray, valid: np.ndarray, skip: int) -> np.ndarray:
