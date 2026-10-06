@@ -327,6 +327,42 @@ class RiskStore:
 MAD_TO_SIGMA = 1.4826
 
 
+def _exponential_weights(length: int, half_life: float) -> np.ndarray:
+    """Return ``length`` weights halving every ``half_life`` bars, the last one 1."""
+    return 0.5 ** (np.arange(length - 1, -1, -1) / half_life)
+
+
+def _pairwise_moments(
+    window: np.ndarray, half_life: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Exponentially weighted moments of each pair of columns over their common bars.
+
+    ``window`` is ``[L, K]`` with NaN where a value is missing, the last row
+    the latest. For each pair ``(i, j)`` the weights are those of the bars
+    where both are present. Returns the covariance, the variance of ``i``
+    and of ``j`` over those bars (``[K, K]`` each, about the weighted means,
+    normalised by the sum of the weights) and the count of those bars.
+    """
+    weights = _exponential_weights(len(window), half_life)[:, None]
+    present = np.isfinite(window).astype(np.float64)
+    # Moments do not change with a shift; centring each column on its own
+    # weighted mean first keeps the one-pass formulas below from cancelling.
+    with np.errstate(divide="ignore", invalid="ignore"):
+        centre = np.nansum(window * weights, axis=0) / (present * weights).sum(axis=0)
+    values = np.where(present > 0, window - np.nan_to_num(centre), 0.0)
+    weighted = values * weights
+    total = (present * weights).T @ present
+    sums = weighted.T @ present  # [i, j]: sum of w x_i over the bars with x_j
+    squares = (weighted * values).T @ present
+    products = weighted.T @ values
+    with np.errstate(divide="ignore", invalid="ignore"):
+        mean_i, mean_j = sums / total, sums.T / total
+        covariance = products / total - mean_i * mean_j
+        variance_i = squares / total - mean_i**2
+        variance_j = squares.T / total - mean_j**2
+    return covariance, variance_i, variance_j, present.T @ present
+
+
 def _excess_returns(price: np.ndarray, risk_free: np.ndarray) -> np.ndarray:
     """Return ``[T, S]`` excess returns; row 0 is NaN (no previous bar)."""
     excess = np.full(price.shape, np.nan)
@@ -360,6 +396,28 @@ class FactorRiskModel(Component):
     Its warm-up is one bar: row ``t`` reads the exposures and the price of
     the previous priced bar. A bar has no regression (all NaN, a count of 0)
     when it has no more fitted symbols than factors to fit.
+
+    The estimate store (``estimate``) is computed from the regression store
+    and holds forecasts of the next one-bar return:
+
+    - ``factor_covariance`` on ``(timestamp, factor_i, factor_j)``: ``F_ij =
+      rho_ij sigma_i sigma_j`` (USE4 eq. 4.1), the volatilities ``sigma``
+      from the last ``volatility_window`` factor returns weighted with
+      ``volatility_half_life``, the correlations ``rho`` from the last
+      ``correlation_window`` weighted with ``correlation_half_life``;
+    - ``specific_risk`` on ``(timestamp, symbol)``: the volatility of the
+      last ``specific_window`` specific returns weighted with
+      ``specific_half_life`` (USE4 eq. 5.2, without Newey-West).
+
+    The weights halve every half-life back from the bar and stop at the
+    window, so a row reads only its window. Moments are taken about the
+    weighted mean, normalised by the sum of the weights. A missing factor
+    return (an industry left out of a bar) leaves its bar out: each
+    correlation uses the bars both factors have (pairwise, our choice where
+    USE4 uses the EM algorithm), so the matrix need not be positive
+    semi-definite. A variance, a correlation or a specific volatility with
+    fewer than ``min_observations`` bars is NaN. Its warm-up is the longest
+    window less one bar, counted on the regression store's bars.
 
     Parameters
     ----------
@@ -479,6 +537,17 @@ class FactorRiskModel(Component):
             raise ValueError(f"{owner}: min_industry_members must be at least 1.")
         if not config.return_outlier_sigma > 0:
             raise ValueError(f"{owner}: return_outlier_sigma must be positive.")
+        for prefix in ("volatility", "correlation", "specific"):
+            if not getattr(config, f"{prefix}_half_life") > 0:
+                raise ValueError(f"{owner}: {prefix}_half_life must be positive.")
+            if getattr(config, f"{prefix}_window") < 2:
+                raise ValueError(f"{owner}: {prefix}_window must be at least 2.")
+        windows = (config.volatility_window, config.correlation_window, config.specific_window)
+        if not 2 <= config.min_observations <= min(windows):
+            raise ValueError(
+                f"{owner}: min_observations must be at least 2 and at most the shortest "
+                f"window, {min(windows)}; got {config.min_observations}."
+            )
 
     @property
     def factor_names(self) -> tuple[str, ...]:
@@ -494,6 +563,46 @@ class FactorRiskModel(Component):
         industries = tuple(f"industry_{code}" for code in config.industries)
         return (*country, *industries, *config.style_names)
 
+    def exposure_matrix(self, exposures: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
+        """Return each symbol's exposures to ``factor_names`` and whether it has them all.
+
+        Parameters
+        ----------
+        exposures : xr.Dataset
+            The exposures factor's values at one bar, on ``symbol``.
+
+        Returns
+        -------
+        matrix : np.ndarray
+            ``[n_symbols, n_factors]``: 1 on the country factor, 1 on the
+            symbol's industry and 0 on the others, its style exposures.
+        covered : np.ndarray
+            Booleans: every style finite and, with industries, an industry
+            among ``config.industries``.
+
+        Examples
+        --------
+        >>> matrix, covered = model.exposure_matrix(style.compute(day, day).isel(timestamp=0))
+        >>> matrix.shape[1] == len(model.factor_names)
+        True
+        """
+        config = self.config
+        n = exposures.sizes["symbol"]
+        styles = np.column_stack(
+            [np.asarray(exposures[name].values, dtype=np.float64) for name in config.style_names]
+            or [np.zeros((n, 0))]
+        )
+        parts = [np.ones((n, 1))] if config.country else []
+        covered = np.isfinite(styles).all(axis=1)
+        if config.industry_name is not None:
+            codes = np.asarray(exposures[config.industry_name].values, dtype=np.float64)
+            industries = np.asarray(config.industries, dtype=np.float64)
+            dummies = (codes[:, None] == industries[None, :]).astype(np.float64)
+            covered &= dummies.any(axis=1)
+            parts.append(dummies)
+        parts.append(styles)
+        return np.column_stack(parts), covered
+
     @property
     def regression(self) -> RiskStore:
         """The regression store (see the class docstring).
@@ -508,6 +617,27 @@ class FactorRiskModel(Component):
             self.config.regression_path,
             self._compute_regression,
             warmup_bars=1,
+        )
+
+    @property
+    def estimate(self) -> RiskStore:
+        """The estimate store, read from the regression store (see the class docstring).
+
+        Examples
+        --------
+        >>> model.regression.build("2012-01-01", "2024-12-31")
+        >>> model.estimate.build("2018-01-01", "2024-12-31")
+        >>> rows = model.estimate.read("2024-12-31", "2024-12-31")
+        >>> rows["factor_covariance"].dims
+        ('timestamp', 'factor_i', 'factor_j')
+        """
+        config = self.config
+        windows = (config.volatility_window, config.correlation_window, config.specific_window)
+        return RiskStore(
+            f"{self.class_name}.estimate",
+            config.estimate_path,
+            self._compute_estimate,
+            warmup_bars=max(windows) - 1,
         )
 
     # ------------------------------------------------------------------
@@ -750,3 +880,102 @@ class FactorRiskModel(Component):
             count=int(fit.sum()),
         )
         return result
+
+    # ------------------------------------------------------------------
+    # Estimates
+    # ------------------------------------------------------------------
+
+    def _compute_estimate(self, start, end) -> xr.Dataset:
+        """Return the estimate rows of the regression store's bars from ``start`` to ``end``.
+
+        Raises
+        ------
+        ValueError
+            If the regression store has no recorded range, or its recorded
+            range does not contain the bars read (``RiskStore.read``).
+        """
+        config = self.config
+        owner = f"{self.class_name}.estimate.compute()"
+        first, last = check_range(start, end, owner)
+        regression = self.regression
+        recorded = regression.store_range()
+        if recorded is None:
+            raise ValueError(
+                f"{owner}: the regression store has no recorded range; build it with "
+                f"regression.build(start, end) first."
+            )
+        bars = regression.read(*recorded)["timestamp"].values
+        begin = int(np.searchsorted(bars, first.to_datetime64(), side="left"))
+        stop = int(np.searchsorted(bars, last.to_datetime64(), side="right"))
+        warmup = self.estimate.warmup_bars
+        if begin < warmup:
+            warnings.warn(
+                f"{owner}: {warmup} warm-up bar(s) are needed before {start!r} but the "
+                f"regression store holds only {begin}; the first rows use shorter "
+                f"windows.",
+                UserWarning,
+                stacklevel=3,
+            )
+        read_from = max(begin - warmup, 0)
+        names = list(self.factor_names)
+        if begin >= stop:
+            rows = regression.read(recorded[0], recorded[0]).isel(timestamp=slice(0, 0))
+        else:
+            rows = regression.read(bars[read_from], end).load()
+        factor_returns = rows["factor_return"].transpose("timestamp", "factor").values
+        specific_returns = rows["specific_return"].transpose("timestamp", "symbol").values
+        offset = begin - read_from
+        count = max(stop - begin, 0)
+        covariance = np.full((count, len(names), len(names)), np.nan)
+        specific_risk = np.full((count, specific_returns.shape[1]), np.nan)
+        with Timer(f"{self.class_name}: estimate"):
+            for row in range(count):
+                at = offset + row + 1  # rows before ``at`` end at the bar
+                covariance[row] = self._factor_covariance(factor_returns[:at])
+                specific_risk[row] = self._specific_risk(specific_returns[:at])
+        return xr.Dataset(
+            {
+                "factor_covariance": (("timestamp", "factor_i", "factor_j"), covariance),
+                "specific_risk": (("timestamp", "symbol"), specific_risk),
+            },
+            coords={
+                "timestamp": rows["timestamp"].values[offset : offset + count],
+                "factor_i": names,
+                "factor_j": names,
+                "symbol": rows["symbol"].values,
+            },
+        )
+
+    def _factor_covariance(self, history: np.ndarray) -> np.ndarray:
+        """Return the ``[K, K]`` factor covariance at the last row of ``history``."""
+        config = self.config
+        least = config.min_observations
+        volatility_window = np.ascontiguousarray(history[-config.volatility_window :])
+        covariance, _, _, observed = _pairwise_moments(
+            volatility_window, config.volatility_half_life
+        )
+        variance = np.where(np.diag(observed) >= least, np.diag(covariance), np.nan)
+        correlation_window = np.ascontiguousarray(history[-config.correlation_window :])
+        covariance, variance_i, variance_j, observed = _pairwise_moments(
+            correlation_window, config.correlation_half_life
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            correlation = covariance / np.sqrt(variance_i * variance_j)
+        correlation[observed < least] = np.nan
+        np.fill_diagonal(correlation, 1.0)
+        sigma = np.sqrt(np.clip(variance, 0.0, None))
+        return correlation * np.outer(sigma, sigma)
+
+    def _specific_risk(self, history: np.ndarray) -> np.ndarray:
+        """Return each symbol's specific volatility at the last row of ``history``."""
+        config = self.config
+        window = np.ascontiguousarray(history[-config.specific_window :])
+        weights = _exponential_weights(len(window), config.specific_half_life)[:, None]
+        present = np.isfinite(window)
+        values = np.where(present, window, 0.0)
+        total = (weights * present).sum(axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            mean = (weights * values).sum(axis=0) / total
+            variance = (weights * present * (values - mean) ** 2).sum(axis=0) / total
+        enough = present.sum(axis=0) >= config.min_observations
+        return np.where(enough, np.sqrt(variance), np.nan)

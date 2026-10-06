@@ -23,7 +23,7 @@ instead.
 A *risk model* (``RiskModel``) estimates the covariance of one-bar returns
 at a bar, as a ``CovarianceEstimate``; a rule that prices risk, such as a
 mean-variance optimiser, holds one. The interface is shaped for a factor
-risk model, which none of the shipped ones is: its estimate is a
+risk model, one reading the stores of ``quantlab.risk``: its estimate is a
 ``FactorCovarianceEstimate`` whose ``factor_form()`` lets an optimiser build
 a low-rank risk term, and it declares the ``Factor`` panels it reads (its
 exposures) through ``required_factors()``, which the backtest reads and
@@ -328,10 +328,10 @@ class CovarianceEstimate:
 class FactorCovarianceEstimate:
     """A covariance of returns in factor form: ``B F B' + diag(D)``.
 
-    The estimate a factor risk model returns (reserved: no shipped risk
-    model returns one). With ``n`` symbols and ``k`` factors, ``B`` holds
-    each symbol's exposures, ``F`` the factor returns' covariance and ``D``
-    each symbol's specific (idiosyncratic) variance. ``factor_form()``
+    The estimate a factor risk model returns. With ``n`` symbols and ``k``
+    factors, ``B`` holds each symbol's exposures, ``F`` the factor returns'
+    covariance and ``D`` each symbol's specific (idiosyncratic) variance.
+    ``factor_form()``
     returns the three, and an optimiser that finds them prices risk as
     ``|F^(1/2) B' w|^2 + w' diag(D) w``, which costs ``O(n k)`` rather than
     the ``O(n^2)`` of the dense matrix. It is used wherever a
@@ -454,9 +454,8 @@ class RiskModel(_Configured, ABC):
     window) and implement ``estimate``. The estimate is of one-bar returns;
     a rule scales it to its own horizon.
 
-    The interface is reserved for a factor risk model, which is not
-    implemented yet. Such a model declares the ``Factor`` panels it reads,
-    its exposures for example, in ``required_factors()``; the backtest reads
+    A factor risk model declares the ``Factor`` panels it reads, its
+    exposures for example, in ``required_factors()``; the backtest reads
     them over its window, each warmed up like a model's features, and puts
     their values at the bar in ``context.factors``. It returns a
     ``FactorCovarianceEstimate``, whose ``factor_form()`` makes the

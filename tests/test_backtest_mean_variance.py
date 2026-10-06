@@ -27,6 +27,7 @@ What is locked here, and what turns it red:
 Everything is synthetic, CPU-only and offline.
 """
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
@@ -523,3 +524,99 @@ def test_a_constructors_events_reach_metrics_json(tmp_path):
         "count": len(rebalances),
         "bars": [{"bar": bar, "symbols": ["BBB"]} for bar in rebalances],
     }
+
+
+def _factor_risk_model(tmp_path, dataset_config, bars):
+    """A factor risk model over the price store: country, two industries, two styles.
+
+    Its prices, caps and rate, and its exposures, are Zarr-backed frames, so a
+    run's ``config.json`` rebuilds it. Both stores are built over the backtest.
+    """
+    from quantlab.dataset.memory import FrameDataset
+    from quantlab.factor.config import BaseFactorConfig
+    from quantlab.risk.base import FactorRiskModel
+    from quantlab.risk.config import FactorRiskConfig
+    from tests.test_risk_regression import PassThrough
+
+    close = xr.open_zarr(dataset_config.zarr_file_path)["adjClose"].load()
+    rng = np.random.default_rng(195)
+    shape = close.shape
+    symbols = close["symbol"].values
+    prices = xr.Dataset(
+        {
+            "adjClose": close,
+            "marketcap": (close.dims, np.tile(rng.lognormal(20, 1, size=shape[1]), (shape[0], 1))),
+            "risk_free": (close.dims, np.zeros(shape)),
+        },
+    )
+    codes = np.where(np.arange(shape[1]) < shape[1] // 2, 1.0, 2.0)
+    exposures = xr.Dataset(
+        {
+            "style_a": (close.dims, rng.normal(size=shape)),
+            "style_b": (close.dims, rng.normal(size=shape)),
+            "industry": (close.dims, np.tile(codes, (shape[0], 1))),
+            "estu": (close.dims, np.ones(shape)),
+        },
+        coords={"timestamp": close["timestamp"].values, "symbol": symbols},
+    )
+    root = tmp_path / "risk"
+    factor = PassThrough(BaseFactorConfig(
+        warmup_bars=0, dataset=FrameDataset(exposures).to_zarr(root / "exposures.zarr"),
+    ))
+    model = FactorRiskModel(FactorRiskConfig(
+        exposures=factor,
+        dataset=FrameDataset(prices).to_zarr(root / "prices.zarr"),
+        exposure_data_strategy="cal",
+        style_names=("style_a", "style_b"),
+        industry_name="industry",
+        industries=(1, 2),
+        estu_name="estu",
+        min_industry_members=2,
+        regression_path=str(root / "regression.zarr"),
+        estimate_path=str(root / "estimate.zarr"),
+        volatility_half_life=5.0,
+        volatility_window=10,
+        correlation_half_life=10.0,
+        correlation_window=15,
+        specific_half_life=5.0,
+        specific_window=10,
+        min_observations=5,
+    ))
+    model.regression.build(_day(bars[1]), _day(bars[-1]))
+    model.estimate.build(_day(bars[WINDOW[0]]), _day(bars[-1]))
+    return model
+
+
+def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_path):
+    from quantlab.portfolio.config import FactorRiskReaderConfig
+    from quantlab.portfolio.predefined.factor_risk import FactorRiskReader
+
+    def factor_risk(dataset_config):
+        bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+        model = _factor_risk_model(tmp_path, dataset_config, bars)
+        return _optimizer(risk_model=FactorRiskReader(FactorRiskReaderConfig(risk_model=model)))
+
+    backtester, _, _ = _backtester(tmp_path, factor_risk, output_dir=str(tmp_path / "runs"))
+
+    original = backtester.run()
+
+    weights = original.weights["weight"].values
+    rebalance = np.isfinite(weights).all(axis=1)
+    assert rebalance.sum() == len(range(0, WINDOW[1] - WINDOW[0], REBALANCE))
+    np.testing.assert_allclose(weights[rebalance].sum(axis=1), 1.0, atol=1e-9)
+    assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
+
+    run = BacktestRun.open(original.run_dir)
+    recorded = run.rebuild("constructor")
+    assert isinstance(recorded.config.risk_model, FactorRiskReader)
+    rebuilt = run.rebuild_backtester()
+    # The frames are copied into the run directory, so only their paths differ.
+    risk_model = rebuilt.config.constructor.config.risk_model.config.risk_model
+    original_model = backtester.config.constructor.config.risk_model.config.risk_model
+    assert dataclasses.replace(
+        risk_model.config, exposures=None, dataset=None
+    ) == dataclasses.replace(original_model.config, exposures=None, dataset=None)
+    again = rebuilt.run()
+
+    np.testing.assert_array_equal(again.weights["weight"].values, weights)
+    np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)

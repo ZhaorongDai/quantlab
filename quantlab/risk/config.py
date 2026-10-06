@@ -95,6 +95,31 @@ class FactorRiskConfig(FrozenConfig):
     #: estimated as 1.4826 times the median absolute deviation, beyond which a
     #: fitted return is trimmed to that bound for the fit. Our choice.
     return_outlier_sigma: float = 5.0
+    #: Path of the Zarr store of the estimates (factor covariance and specific
+    #: risk), computed from the regression store.
+    estimate_path: str | None = None
+    #: Half-life, in bars, of the exponential weights of the factor
+    #: volatilities (USE4S: 84 trading days; USE4L: 252).
+    volatility_half_life: float = 84.0
+    #: Bars of factor returns the factor volatilities are estimated from, the
+    #: exponential weights truncated there. Our choice: three half-lives.
+    volatility_window: int = 252
+    #: Half-life, in bars, of the exponential weights of the factor
+    #: correlations (USE4S and USE4L: 504 trading days).
+    correlation_half_life: float = 504.0
+    #: Bars of factor returns the factor correlations are estimated from. Our
+    #: choice: three half-lives.
+    correlation_window: int = 1512
+    #: Half-life, in bars, of the exponential weights of the specific
+    #: volatilities (USE4S: 84 trading days; USE4L: 252).
+    specific_half_life: float = 84.0
+    #: Bars of specific returns the specific volatilities are estimated from.
+    #: Our choice: three half-lives.
+    specific_window: int = 252
+    #: Fewest observations in its window for a factor variance, a pair's
+    #: correlation or a symbol's specific volatility to be estimated; NaN with
+    #: fewer. Our choice.
+    min_observations: int = 21
 
     #: Dotted import path of the risk model class; filled by the config setter.
     name: str | None = None
@@ -128,7 +153,9 @@ class Use4RiskConfig(FactorRiskConfig):
     outputs as defaults: a country factor, the Fama-French 48 industries of
     ``industry``, the 12 styles, fitted on ``estu`` with square-root-of-cap
     weights. The column fields default to ``BarraStyleParameters``' and must
-    match the ones the exposures were computed with.
+    match the ones the exposures were computed with. The half-lives default
+    to USE4S's (Table 4.1, Table 5.1); USE4L is ``volatility_half_life=252``,
+    ``specific_half_life=252`` (and windows of three half-lives, 756).
 
     Examples
     --------

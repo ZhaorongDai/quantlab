@@ -13,6 +13,7 @@ from quantlab.core.config import FrozenConfig
 
 if TYPE_CHECKING:
     from quantlab.portfolio.base import RiskModel
+    from quantlab.risk.base import FactorRiskModel
 
 
 @dataclass(frozen=True)
@@ -54,6 +55,23 @@ class LedoitWolfConfig(FrozenConfig):
     #: may have at the bar and still be covered; a halt no longer than this
     #: stays in the estimate, flat returns and then its gap.
     max_stale_bars: int = 5
+
+
+@dataclass(frozen=True)
+class FactorRiskReaderConfig(FrozenConfig):
+    """Config of ``FactorRiskReader``: the factor risk model whose stores it reads.
+
+    Examples
+    --------
+    With ``use4`` a ``Use4RiskModel`` whose estimate store is built:
+
+    >>> cfg = FactorRiskReaderConfig(risk_model=use4)
+    >>> cfg.risk_model is use4
+    True
+    """
+
+    #: The factor risk model; its estimate store must cover the backtest.
+    risk_model: "FactorRiskModel" = component()
 
 
 @dataclass(frozen=True, kw_only=True)
