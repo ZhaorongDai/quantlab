@@ -531,13 +531,51 @@ sorted(parts)
 
 一年按市场的年长度除以 bar 间隔计，窗口按每个收益一根 bar 计数，与其他年化统计一致。没有基准时不给 `universe`，`total` 相对股票池计算；引擎无法做不计成本的模拟时不给 `costs`，成本计入 `selection`。该块还包括四条曲线的 `annualized_log_return`，以及 `group_annualized_log_return`：每次调仓把股票池按分数切成 `groups`（10）组，各组同样持有，分数最低的组在前；某次调仓的标的少于 10 个时，各组持有现金直到下一次调仓。模型的信息如果集中在分数最低的几组，即使只做多的 Top N 用不上，也会在这里显示出来。`equity()` 保存这些曲线（`universe_value`、`gross_value`，以及维度为 `(group, timestamp)` 的 `group_value`），报告在 Attribution 标签页上画出它们。纯函数在 `quantlab.runs.backtest_attribution` 中：`rebalanced_group_values`、`excess_decomposition` 和 `annualized_log_growth`。
 
+### 把收益和风险归因到因子
+
+上面的归因回答超额来自股票池、来自选股还是被成本吃掉，但回答不了策略是靠承担哪些风险赚的钱。给了因子风险模型时，即任意回测配置上的 `risk_model`（一个 `FactorRiskModel`，例如 `Use4RiskModel`；默认 `None`），回测还会对自己的持仓做*因子归因*：归因的是总收益，不是相对基准的主动收益。`run()`、`run_weights()` 和 `run_cv()` 都支持；`run_cv()` 只对拼接后的曲线归因一次，各 fold 不归因。不给风险模型时一切照旧。
+
+```python
+attributed = USEquityCrossectionSelectStockVectorBt(
+    dataclasses.replace(backtester.config, risk_model=model)
+).run()
+block = attributed.metrics["factor_attribution"]
+sorted(block)
+# ['in_sample', 'out_of_sample', 'whole']
+sorted(block["whole"]["annualized_log_return"])
+# ['factor', 'risk_free', 'specific', 'total', 'trading', 'uncovered']
+per_bar = BacktestRun.open(attributed.run_dir).factor_attribution()
+bool(np.allclose(per_bar["contribution"].sum("term"), attributed.simulation.returns))
+# True
+```
+
+这里的 `model` 是一个回归 store 和估计 store 都覆盖回测窗口的因子风险模型（见[风险模型指南](../developer-guide/risk-model.md)）；`run_cv()` 的这个块在 `metrics["stitched"]["factor_attribution"]`。
+
+**收益分项。** 第 t 根 bar 开始时的持仓，是引擎在 t-1 收盘时实际持有的仓位：由它的订单和退市结算推出（被拒的订单保留持仓，结算会清掉持仓），按估值价格换算成占净值的带符号比例；多空或带杠杆的组合保留符号和杠杆。每根 bar 的净值收益被拆成五项，加起来恰好等于它：
+
+- `factor`：对每个因子，持仓乘以 t-1 的暴露、再乘以回归 store 中第 t 根 bar 的因子收益（即用这些暴露做出的那次回归）；某根 bar 上没有收益的因子（成员太少的行业）贡献为 0，这部分已经包含在其成员的特异收益里；
+- `specific`：被覆盖的持仓乘以它们第 t 根 bar 的特异收益；
+- `uncovered`：t-1 没有完整暴露、t 没有特异收益或 t-1 没有无风险利率的持仓，乘以它们自己在第 t 根 bar 的收益，这样它们身上的系统性收益不会被算成选股；
+- `risk_free`：被覆盖的持仓乘以 t-1 的无风险利率（回归针对的是超额收益）；
+- `trading`：其余部分，即 t 开盘的成交、手续费、滑点和闲置现金。
+
+**单位。** 每根 bar 的各项都乘以 `ln(1+r)/r`（收益 `r` 为 0 时乘 1），所以各项的累计和在每根 bar 上都加总为对数净值，而且任何一根 bar 的数值都不依赖它之后的 bar。指标给出每项的年化对数增长，与[超额归因](#超额归因)同一单位：`annualized_log_return` 按项给出并带 `total`，`factor_annualized_log_return` 按因子，`group_annualized_log_return` 按组。组来自风险模型的 `factor_groups()`：`country`、`industry` 和 `style`（模型不另说明时每个因子都算 style；`Use4RiskModel` 会把国家因子、各行业和各风格分开），各组加起来等于 `factor` 项。`style_mean_exposure` 是每个风格的平均净暴露，`industries` 是按贡献排前五和后五的行业及其平均净暴露。
+
+**风险。** `ex_ante_risk` 对 bar 开始时组合的预测风险做归因。对第 t 根 bar 的预测取估计 store 中 t-1 那一行：记 `x` 为被覆盖持仓在有协方差的因子上的净暴露，`F` 为因子协方差，`s` 为特异风险，方差为 `x'Fx + sum w^2 s^2`。每个因子的 x-sigma-rho 贡献 `x_k (Fx)_k / sigma` 加上特异部分等于 `sigma`。这个块给出年化 `volatility`（`total`、`factor`、`specific`）、`contribution` 拆分以及每个因子和每组贡献在各分段上的均值。未被覆盖的持仓不进入预测，只体现在覆盖率里。`ex_post_risk` 拆的则是实现波动率：每项、每个因子和每组在该分段逐 bar 贡献上的 `cov(c, r) / sigma(r)`，年化；各项加起来等于 `volatility`。
+
+**分段与覆盖率。** `run()` 和 `run_cv()` 给出 `whole`、`in_sample` 和 `out_of_sample`，范围与其他指标相同；`run_weights()` 只给 `whole`。`coverage` 给出在有持仓的 bar 上被覆盖部分占总持仓权重的均值和最小值，均值低于 90% 时还有一条 `note`。
+
+**拒绝的情况。** 回测从不构建风险 store（构建很耗时）。在模拟之前，它会拒绝回归 store 不覆盖窗口、或估计 store 不覆盖到倒数第二根 bar 的风险模型（请先构建或扩展），以及 bar 间隔与回测不同的风险模型。模拟之后，如果有持仓却从未有任何持仓被覆盖，它也会拒绝：这说明组合和风险模型用的是不同的标的轴（例如 PERMNO 对 permaticker）。
+
+运行目录把逐 bar 的归因存在 `factor_attribution.zarr` 里（`BacktestRun` 的 `factor_attribution()`）：`(timestamp, term)` 上的 `contribution` 和 `log_contribution`，`(timestamp, factor)` 上的 `factor_contribution`、`factor_log_contribution`、`exposure` 和 `factor_risk_contribution`（带每个因子的 `group`），事前方差，`covered_weight` 和 `gross_weight`。报告在 Factor attribution 标签页上画出它，tracker 摘要里也会记下这个块的数值（`factor_attribution/whole/annualized_log_return/total` 等）。从 `config.json` 重建会一并重建风险模型并复现归因结果。纯函数是 `quantlab.risk.attribution.factor_attribution`，由 `attribution_summary` 汇总。`examples/sharadar_us_equity/sp500_xgb_mvo.py` 用它的 USE4 模型对两个均值-方差回测做了归因。
+
 ### 报告页面
 
 `report.html` 是一个页面，分三部分：
 
 - **关键指标**：总收益、超额收益、信息比率、胜率、Sharpe、最大回撤、beta 和年化换手，每项下面给出基准的对应值或相关数字。没有基准时是总收益、年化收益、胜率、Sharpe、最大回撤、波动率和换手。胜率是跑赢基准的持有期（从一个有成交的 bar 到下一个有成交的 bar 之前）所占的比例，下面附跑赢基准的自然月比例；没有基准时是收益为正的比例。
 - **表格**（左侧）："Windows" 时间轴，画出训练窗口和回测窗口（样本外交易的 bar 为绿色，落在训练窗口内交易的 bar 为红色，训练窗口为浅蓝色）：`run()` 只有一行；`run_cv()` 最上面是回测窗口，下面每折一行；鼠标悬停显示各窗口的日期；"Setup"，只列表格里没有的设置（bar 间隔、基准、最深回撤的日期、模型模式、调仓、组合构建、费用）；"Strategy vs *基准*"，按收益、风险、风险调整后指标分组，策略旁边列出基准和差值（百分比指标的差值用百分点）；"Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）；"Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）；运行带 in-sample 部分时还有 "In-sample vs out-of-sample"，并列样本内、样本外、两者之差和整个窗口。鼠标悬停在指标名上会显示它的定义。页面不认识的指标，无论来自策略、基准还是 relative 块，都列在 "Other" 下。
-- **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）；*Attribution*，带模型的运行才有（超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长；见[超额归因](#超额归因)）；*Factor attribution*，给了 `risk_model` 才有（各分段中 country、industry、style 三组以及 specific、uncovered、risk_free、trading 各项的年化对数增长和累计曲线，累计曲线加起来就是对数净值；各风格因子的贡献与暴露；贡献最高和最低的行业；事前风险随时间的拆分及按组、按因子的表；事后风险贡献；以及覆盖率）。
+- **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）；*Attribution*，带模型的运行才有（超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长；见[超额归因](#超额归因)）；*Factor attribution*，给了 `risk_model` 才有（各分段中 country、industry、style 三组以及 specific、uncovered、risk_free、trading 各项的年化对数增长和累计曲线，累计曲线加起来就是对数净值；各风格因子的贡献与暴露；贡献最高和最低的行业；事前风险随时间的拆分及按组、按因子的表；事后风险贡献；以及覆盖率；见[把收益和风险归因到因子](#把收益和风险归因到因子)）。
 
 运行带 in-sample 部分时，关键指标和主表取样本外部分，也就是模型没见过的 bar，并且所有图都用灰色标出 in-sample 区间。页面上所有回撤都是负数。超额回撤（相对净值从高点的回落）只画在 Excess 标签页上，不和两条净值自身的回撤放在一起，因为两者的数值不可比。
 

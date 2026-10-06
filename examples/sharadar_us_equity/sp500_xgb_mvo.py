@@ -12,8 +12,10 @@ but the covariance:
   store of ``Use4RiskModel`` (the store ``risk_model.py`` builds), the
   exposures ``B`` computed by the backtest from ``BarraStyle``.
 
-Then, for each backtest's holdings on every rebalance bar, the volatility
-both risk models forecast for the next ``HORIZON`` bars against the return
+Each backtest also attributes its holdings' returns and risk to the USE4
+factors (``risk_model``; see "Attribute returns and risk to factors" in
+docs/backtest.md). Then, for each backtest's holdings on every rebalance
+bar, the volatility both risk models forecast for the next ``HORIZON`` bars against the return
 the holdings made over them (``quantlab.risk.bias.bias_statistics``), and
 the two backtests' returns, volatility and turnover side by side.
 
@@ -375,13 +377,24 @@ def backtest(checkpoint: Path, covariance: str):
         constructor=optimizer,
         fees=0.0005, slippage=0.0005, init_cash=1_000_000.0,
         tracker=TRACKER, benchmark_dataset=benchmark,
+        # Factor attribution of the holdings over the USE4 model, whichever
+        # covariance the optimiser used: the metrics' factor_attribution
+        # block, factor_attribution.zarr and the report's Factor attribution tab.
+        risk_model=risk_model(),
     ))
     result = backtester.run()
     whole = result.metrics["whole"]
     failed = result.metrics["portfolio_construction"]["failed_bar_count"]
+    attributed = result.metrics["factor_attribution"]["whole"]
     logger.info(
         f"{covariance}: total return {whole.get('Total Return [%]')}%, Sharpe "
         f"{whole.get('Sharpe Ratio')}, {failed} failed rebalance(s); run: {result.run_dir}"
+    )
+    logger.info(
+        f"{covariance}: annualized log growth by term "
+        f"{ {term: round(value, 4) for term, value in attributed['annualized_log_return'].items()} }, "
+        f"by group {attributed['group_annualized_log_return']}, mean covered weight "
+        f"{attributed['coverage']['mean_covered_weight']}"
     )
     return result
 
@@ -487,6 +500,14 @@ def compare(run_dirs: dict) -> dict:
             "failed_rebalances": metrics["portfolio_construction"]["failed_bar_count"],
             "rebalances": int(realized.notnull().sum()),
             "realized_volatility_pct": round(float(realized.std()) * annual * 100, 2),
+        }
+        attributed = metrics["factor_attribution"]["whole"]
+        entry["factor_attribution"] = {
+            "annualized_log_return": attributed["annualized_log_return"],
+            "group_annualized_log_return": attributed["group_annualized_log_return"],
+            "ex_ante_volatility": attributed["ex_ante_risk"]["volatility"],
+            "ex_post_volatility": attributed["ex_post_risk"]["volatility"],
+            "mean_covered_weight": attributed["coverage"]["mean_covered_weight"],
         }
         for model in COVARIANCES:
             stats = bias_statistics(
