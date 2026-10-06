@@ -75,6 +75,8 @@ from quantlab.runs.backtest_report import (
 )
 from quantlab.runs.record import DataRecorder, compare, unrecorded
 from quantlab.model.split import in_sample_window, split_ranges
+from quantlab.risk.attribution import attribution_summary, factor_attribution
+from quantlab.utils.returns import one_bar_returns
 from quantlab.utils.timer import Timer
 
 from quantlab.backtest.config import BacktestConfig
@@ -316,6 +318,9 @@ class SimulationResult:
     ``timestamp`` and ``group_value`` on ``(group, timestamp)``, the curves
     behind the ``attribution`` metrics, in the run's money (``init_cash`` at
     the first bar); ``None`` for a ``run_weights()`` run.
+    ``factor_attribution`` is set by the backtester when the config has a
+    ``risk_model``: ``quantlab.risk.attribution.factor_attribution``'s per-bar
+    dataset; ``None`` otherwise.
 
     Examples
     --------
@@ -338,6 +343,7 @@ class SimulationResult:
     rejected_orders: list[dict] = field(default_factory=list)
     max_target_deviation: float | None = None
     attribution: xr.Dataset | None = None
+    factor_attribution: xr.Dataset | None = None
 
 
 @dataclass
@@ -1423,6 +1429,7 @@ class BaseBacktester(Component, ABC):
         )
         weights = self._align_weights(weights, prices)
         self._assert_weights_contract(weights, prices)
+        self._check_risk_model(prices)
         with Timer(f"{self.class_name}: simulate"):
             simulation = self._simulate(weights, prices)
         benchmark = (
@@ -1430,13 +1437,18 @@ class BaseBacktester(Component, ABC):
             if benchmark_prices is None
             else self._simulate_benchmark(benchmark_prices)
         )
+        metrics = self._compute_metrics(simulation, benchmark, None)
+        if self.config.risk_model is not None:
+            metrics["factor_attribution"] = {
+                "whole": self._factor_attribution(prices, simulation)
+            }
         return _BacktestWindow(
             predictions=None,
             prices=prices,
             weights=weights,
             simulation=simulation,
             split=None,
-            metrics=self._compute_metrics(simulation, benchmark, None),
+            metrics=metrics,
             benchmark=benchmark,
         )
 
@@ -2230,6 +2242,100 @@ class BaseBacktester(Component, ABC):
             "group_annualized_log_return": [growth(curve) for curve in group_values],
         }
 
+    def _check_risk_model(self, prices: xr.Dataset) -> None:
+        """Refuse a ``risk_model`` that cannot attribute the window, before simulating.
+
+        Raises
+        ------
+        ValueError
+            If the risk model's regression store does not cover the window's
+            bars (build or extend it first; a backtest never builds it), or
+            its bar interval differs from the window's.
+        """
+        risk_model = self.config.risk_model
+        if risk_model is None:
+            return
+        timestamps = prices.timestamp.values
+        store = risk_model.regression
+        store.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-1]))
+        recorded = store.read(*store.store_range())["timestamp"].values
+        if recorded.size < 2 or timestamps.size < 2:
+            return
+        risk_interval = pd.Series(np.diff(recorded)).mode().iloc[0]
+        bar_interval = pd.Series(np.diff(timestamps)).mode().iloc[0]
+        if risk_interval != bar_interval:
+            raise ValueError(
+                f"{self.class_name}: the risk model {risk_model.class_name} has bars of "
+                f"{risk_interval}, the backtest bars of {bar_interval}; factor attribution "
+                f"needs a risk model on the backtest's bar interval."
+            )
+
+    def _factor_attribution(self, prices: xr.Dataset, simulation: SimulationResult) -> dict:
+        """Return the factor attribution summary and set ``simulation.factor_attribution``.
+
+        The holdings at the start of each bar are what the engine held at the
+        close of the bar before, derived from the simulation's orders and
+        delisting settlements (so rejected orders keep a holding and a
+        settlement closes it), as signed fractions of the NAV at the
+        valuation prices. ``quantlab.risk.attribution`` splits the NAV
+        return over ``config.risk_model``; the summary is annualized like
+        the ``attribution`` block (ADR 0026).
+        """
+        valuation = (
+            prices[self.MARKET.valuation_price_column]  # type: ignore[union-attr]
+            .transpose("timestamp", "symbol")
+            .to_pandas()
+            .ffill()
+        )
+        timestamps = simulation.value.timestamp.values
+        valuation = valuation.reindex(index=timestamps)
+        shares = self._held_shares(simulation, timestamps, valuation.columns.to_numpy())
+        price = valuation.to_numpy(dtype=np.float64)
+        worth = np.where(shares != 0.0, shares * np.nan_to_num(price), 0.0)
+        at_close = worth / simulation.value.values[:, None]
+        start_of_bar = np.zeros_like(at_close)
+        start_of_bar[1:] = at_close[:-1]
+        axes = {"timestamp": timestamps, "symbol": valuation.columns.to_numpy()}
+        own_returns = one_bar_returns(price)
+        attribution = factor_attribution(
+            xr.DataArray(start_of_bar, dims=("timestamp", "symbol"), coords=axes),
+            simulation.returns,
+            xr.DataArray(own_returns, dims=("timestamp", "symbol"), coords=axes),
+            self.config.risk_model,
+        )
+        simulation.factor_attribution = attribution
+        years = timestamps.size * simulation.bar_interval / self.MARKET.year_freq(  # type: ignore[union-attr]
+            simulation.bar_interval
+        )
+        return attribution_summary(attribution, years)
+
+    @staticmethod
+    def _held_shares(
+        simulation: SimulationResult, timestamps: np.ndarray, symbols: np.ndarray
+    ) -> np.ndarray:
+        """Return the shares held after each bar ``[T, S]``, from the orders and settlements.
+
+        A ``Buy`` adds its size and a ``Sell`` subtracts it; a settled
+        holding is 0 from its settlement bar on, whether or not the engine
+        recorded the settlement as an order.
+        """
+        column = {str(s): j for j, s in enumerate(symbols)}
+        change = np.zeros((timestamps.size, len(symbols)))
+        orders = simulation.orders
+        if orders.sizes.get("order", 0) > 0:
+            bars = np.searchsorted(timestamps, orders["timestamp"].values.astype("datetime64[ns]"))
+            columns = [column[str(s)] for s in orders["symbol"].values]
+            sign = np.where(orders["side"].values.astype(str) == "Buy", 1.0, -1.0)
+            np.add.at(change, (bars, columns), sign * orders["size"].values)
+        shares = np.cumsum(change, axis=0)
+        for record in sorted(simulation.settlements, key=lambda r: r["settlement_timestamp"]):
+            bar = int(np.searchsorted(
+                timestamps, np.datetime64(pd.Timestamp(record["settlement_timestamp"]), "ns")
+            ))
+            j = column[str(record["axis_symbol"])]
+            shares[bar:, j] -= shares[bar, j]
+        return shares
+
     def _simulate_without_costs(
         self, weights: xr.Dataset, prices: xr.Dataset, delisted: xr.DataArray
     ) -> SimulationResult | None:
@@ -2835,6 +2941,7 @@ class BaseBacktester(Component, ABC):
             metrics=metrics,
             write_report=_report,
             predictions=self._prediction_panel(predictions),
+            factor_attribution=simulation.factor_attribution,
             folds=[
                 FoldArtifacts(
                     index=record["fold"],

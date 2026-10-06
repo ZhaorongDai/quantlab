@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from quantlab.dataset.base import MarketDataset
     from quantlab.model.base import BaseModel
     from quantlab.portfolio.base import PortfolioConstructor
+    from quantlab.risk.base import FactorRiskModel
 
 
 @dataclass(kw_only=True)
@@ -127,6 +128,17 @@ class BacktestConfig:
     #: against it (``benchmark`` and ``relative`` metric blocks, the
     #: benchmark NAV and the excess-return and excess-drawdown charts).
     benchmark_dataset: "MarketDataset | None" = component(default=None)
+
+    #: A factor risk model (``quantlab.risk.base.FactorRiskModel``) whose
+    #: factors the run's return is attributed to (factor attribution, ADR
+    #: 0026): each bar's NAV return split into factor, specific, uncovered,
+    #: risk-free and trading terms over the holdings the engine held at the
+    #: start of the bar, in the metrics' ``factor_attribution`` block and the
+    #: run directory's ``factor_attribution.zarr``. Its regression store must
+    #: already cover the window; the backtest reads it and never builds it.
+    #: Only ``run_weights()`` attributes so far; ``run()`` and ``run_cv()``
+    #: ignore it. ``None`` (the default) attributes nothing.
+    risk_model: "FactorRiskModel | None" = component(default=None)
 
     #: Where each run's metrics and report are tracked (ADR 0015); the
     #: default ``NullTracker`` sends nothing anywhere.

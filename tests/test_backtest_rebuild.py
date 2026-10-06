@@ -350,8 +350,9 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
     A round trip that uses a field's default cannot detect that the field was
     dropped: the loader would fill in the same default. So every defaulted
     field gets a value different from its default, verified at the top of
-    the test, except `benchmark_dataset` (a live object, round-tripped in
-    `test_backtest_benchmark.py`) and
+    the test, except `benchmark_dataset` and `risk_model` (live objects,
+    round-tripped in `test_backtest_benchmark.py` and
+    `test_backtest_factor_attribution.py`) and
     `name` (rebuilt from the class). Every scalar field must then come back
     equal. This is a lock rather than a red-first test: it passes before the
     fix too, and goes red if `to_dict`/`get_config` ever drops a field or the
@@ -375,7 +376,7 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
         rebalance_periods=3,
     )
     for field in fields(CrossSectionBacktestConfig):
-        if field.default is MISSING or field.name in ("benchmark_dataset", "name"):
+        if field.default is MISSING or field.name in ("benchmark_dataset", "risk_model", "name"):
             continue
         assert getattr(original.config, field.name) != field.default, field.name
 
@@ -383,7 +384,7 @@ def test_rebuild_round_trips_every_field_with_non_default_values(tmp_path):
     rebuilt = component_rule.rebuild(saved, expected=BaseBacktester)
 
     for field in fields(CrossSectionBacktestConfig):
-        if field.name in ("price_dataset", "model", "benchmark_dataset"):
+        if field.name in ("price_dataset", "model", "benchmark_dataset", "risk_model"):
             continue
         assert getattr(rebuilt.config, field.name) == getattr(
             original.config, field.name

@@ -24,8 +24,9 @@ written last. Its kinds are ``"run"``, ``"run_cv"``, ``"run_weights"`` and
   mode, the walk-forward unit for ``run_cv``; none for ``run_weights``) and
   the folds.
 - The weights, the equity curve, the metrics, the settlements, the report,
-  the prediction panel (a run with a model) and each fold's own files are
-  files of the directory, named by this module only.
+  the prediction panel (a run with a model), the per-bar factor attribution
+  (a run with a risk model) and each fold's own files are files of the
+  directory, named by this module only.
 
 ``BacktestRun.open`` (or ``quantlab.runs.directory.open_run``) reads a run:
 typed properties, readers that return loaded objects, ``trained_run()``,
@@ -82,6 +83,7 @@ _REPORT_FILE = "report.html"
 _FOLDS_DIR = "folds"
 _INPUTS_DIR = "inputs"
 _PREDICTIONS_FILE = "predictions.zarr"
+_FACTOR_ATTRIBUTION_FILE = "factor_attribution.zarr"
 
 
 @dataclass(frozen=True)
@@ -157,6 +159,7 @@ def write_backtest_run(
     metrics: dict,
     write_report: Callable[[Path], None],
     predictions: PredictionPanel | None = None,
+    factor_attribution: xr.Dataset | None = None,
     folds: Sequence[FoldArtifacts] = (),
 ) -> Path:
     """Write a backtest run directory at ``final``, staged, with ``run.json`` last.
@@ -194,6 +197,9 @@ def write_backtest_run(
         Writes the HTML report at the path it is given.
     predictions : PredictionPanel, optional
         The predictions the rule read, for a run with a model.
+    factor_attribution : xarray.Dataset, optional
+        The per-bar factor attribution, for a run with a risk model
+        (``quantlab.risk.attribution.factor_attribution``).
     folds : sequence of FoldArtifacts, optional
         A ``run_cv`` run's folds.
 
@@ -226,6 +232,10 @@ def write_backtest_run(
         _write_simulation(staging, weights, equity, settlements, metrics)
         if predictions is not None:
             predictions.write(staging / _PREDICTIONS_FILE)
+        if factor_attribution is not None:
+            XrBackend().to_internal(factor_attribution).write(
+                str(staging / _FACTOR_ATTRIBUTION_FILE)
+            )
         write_report(staging / _REPORT_FILE)
         children = []
         for fold in folds:
@@ -688,6 +698,17 @@ class BacktestRun:
         ['fwd_ret_1']
         """
         return PredictionPanel.read(self.path / _PREDICTIONS_FILE) if self.has_predictions else None
+
+    def factor_attribution(self) -> xr.Dataset | None:
+        """The per-bar factor attribution, or None for a run without a risk model.
+
+        Examples
+        --------
+        >>> BacktestRun.open(run_dir).factor_attribution()["contribution"].dims
+        ('timestamp', 'term')
+        """
+        path = self.path / _FACTOR_ATTRIBUTION_FILE
+        return XrBackend().read(path).data.load() if path.exists() else None
 
     def metrics(self) -> dict:
         """The run's metrics, as the backtester returned them (NaN as None).
