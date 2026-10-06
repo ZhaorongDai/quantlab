@@ -31,27 +31,32 @@ from quantlab.execution.rules import FILL_DELAY_BARS, OrderPlan, plan_orders
 _WORTHLESS_PRICE = float(np.finfo(np.float64).tiny)
 
 
-def _price_scales(valuation: pd.DataFrame) -> np.ndarray:
-    """Return each column's price scale: the power of 2 nearest 1 over its first valuation.
+def _price_scales(valuation: pd.DataFrame, fill: np.ndarray) -> np.ndarray:
+    """Return each column's price scale: the power of 2 nearest 1 over its lowest price.
 
     Adjusted prices are anchored at a security's first bar, so a serial
     reverse-splitter ends far below a cent (ASTI's 2024 adjusted close is
     1.6e-13), and vectorbt refuses any order, even a target of 0, at a price
-    below about 1e-12. Scaled by its power of 2 a column's first finite
-    positive valuation lies within a factor of sqrt(2) of 1, and multiplying or dividing by a
-    power of 2 is exact in floating point, so a column already near 1 is
-    untouched and every other one is moved without rounding. A column with
-    no such valuation keeps a scale of 1.
+    below about 1e-12. A long window can hold both ends of the fall (a
+    stitched ``run_cv`` curve over ten years), so the scale is taken from the
+    column's lowest finite positive price, valuation or fill, not its first:
+    scaled by its power of 2 that price lies within a factor of sqrt(2) of 1
+    and every other price is above it. Multiplying or dividing by a power of 2
+    is exact in floating point, so a column already near 1 is untouched and
+    every other one is moved without rounding. A column with no such price
+    keeps a scale of 1.
 
     Examples
     --------
-    >>> _price_scales(pd.DataFrame({"A": [np.nan, 1e-13], "B": [10.0, 11.0], "C": [np.nan, np.nan]})).tolist()
+    >>> valuation = pd.DataFrame({"A": [np.nan, 1e-13], "B": [10.0, 11.0], "C": [np.nan, np.nan]})
+    >>> fill = np.array([[np.nan, 12.0, np.nan], [2e-13, 9.0, np.nan]])
+    >>> _price_scales(valuation, fill).tolist()
     [8796093022208.0, 0.125, 1.0]
     """
-    values = valuation.to_numpy(dtype=np.float64)
+    values = np.concatenate([valuation.to_numpy(dtype=np.float64), np.asarray(fill, dtype=np.float64)])
     usable = np.isfinite(values) & (values > 0)
-    first = np.argmax(usable, axis=0)
-    level = np.where(usable.any(axis=0), values[first, np.arange(values.shape[1])], 1.0)
+    level = np.where(usable, values, np.inf).min(axis=0)
+    level = np.where(np.isfinite(level), level, 1.0)
     return np.exp2(-np.round(np.log2(level)))
 
 
@@ -239,11 +244,11 @@ class VectorBtBacktester(BaseBacktester):
         def frame(values):
             return pd.DataFrame(values, index=valuation.index, columns=valuation.columns)
 
-        # vectorbt sees every column at a price level near 1 (_price_scales):
+        # vectorbt sees every column with its lowest price near 1 (_price_scales):
         # prices times the column's scale, shares divided by it, so values,
         # cash, fees and P&L are unchanged; the order records are mapped back
         # to the panel's units below.
-        scales = _price_scales(valuation)
+        scales = _price_scales(valuation, raw_fill)
 
         # vectorbt refuses an order priced at 0, which a settlement at a last
         # valuation of 0 (a -100% delisting return) is. It is sent at the

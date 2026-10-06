@@ -235,6 +235,43 @@ def test_a_symbol_priced_near_1e_13_simulates_exactly_like_the_same_symbol_at_a_
         assert t["fees"] == pytest.approx(n["fees"], rel=1e-12)
 
 
+def _collapsing_price_case(scale: float):
+    """B starts at a normal price and falls by 1e14 inside the window, trading all the way.
+
+    A serial reverse-splitter over a long window: a us3000 security's adjusted
+    price fell from 0.125 in 2016 to 3e-13 in 2025, so the stitched 10-year
+    run_cv window, but no one-year fold, held both ends.
+    """
+    ts = _timestamps(6)
+    a = np.array([10.0, 10.2, 10.1, 10.4, 10.3, 10.6])
+    b = np.array([20.0, 2e-2, 2e-5, 2e-8, 2e-11, 2e-13]) * scale
+    fill = np.column_stack([a, b])
+    valuation = np.column_stack([a * 1.01, b * 1.01])
+    weights = _weights(
+        [[0.5, 0.5], [NAN, NAN], [0.7, 0.3], [NAN, NAN], [0.4, 0.6], [NAN, NAN]], ts, ["A", "B"]
+    )
+    return weights, _panel(fill, valuation, ts, ["A", "B"])
+
+
+def test_a_symbol_whose_price_falls_by_1e14_inside_the_window_simulates_like_a_rescaled_copy(
+    tmp_path,
+):
+    """#192 over a long window: the per-symbol rescale must keep every bar's price in
+    vectorbt's range, not only the first one. A constant power-of-2 rescale of B's
+    whole series changes nothing, so the run equals the copy priced 2**40 higher."""
+    backtester = _backtester(tmp_path)
+    collapsing = backtester._simulate(*_collapsing_price_case(1.0))
+    shifted = backtester._simulate(*_collapsing_price_case(2.0**40))
+
+    np.testing.assert_allclose(collapsing.value.values, shifted.value.values, rtol=1e-12)
+    low, high = _orders_for(collapsing.orders, "B"), _orders_for(shifted.orders, "B")
+    assert len(low) == len(high) == 3
+    assert low[-1]["timestamp"] == _timestamps(6)[5]
+    for lo, hi in zip(low, high):
+        assert lo["price"] == pytest.approx(hi["price"] / 2.0**40, rel=1e-12)
+        assert lo["size"] == pytest.approx(hi["size"] * 2.0**40, rel=1e-12)
+
+
 def test_a_zero_target_on_a_symbol_priced_near_1e_13_is_no_error(tmp_path):
     """#192: a symbol the strategy never holds still gets explicit 0 targets."""
     backtester = _backtester(tmp_path)
