@@ -88,6 +88,8 @@ _STYLE = """
                      font-weight: 600; color: #444; white-space: nowrap; }
   table.summary td { padding: 3px 0; font-variant-numeric: tabular-nums;
                      overflow-wrap: anywhere; }
+  table.summary td .scroll { max-height: 4.8em; overflow-y: auto; font-size: 12px;
+                             padding-right: 4px; }
   table.metrics { border-collapse: collapse; font-size: 13px; }
   table.metrics th, table.metrics td { padding: 3px 16px 3px 0;
                                        border-bottom: 1px solid #eee;
@@ -2080,12 +2082,24 @@ def _timeline_section(windows: dict | None) -> str:
     )
 
 
+#: Setup rows whose value can run to many lines (a rule with a factor risk
+#: model in its parameters): shown in a box of a few lines that scrolls.
+_SCROLLED_SUMMARY_LABELS = frozenset({"Portfolio construction"})
+
+
 def _summary_section(summary: dict[str, str] | None) -> str:
     """Render the setup table, or the empty string when there is none."""
     if not summary:
         return ""
+
+    def cell(label: str, text: str) -> str:
+        value = _escape(text)
+        if label in _SCROLLED_SUMMARY_LABELS:
+            value = f'<div class="scroll">{value}</div>'
+        return f"<td>{value}</td>"
+
     rows = "\n".join(
-        f"      <tr><th>{_escape(label)}</th><td>{_escape(text)}</td></tr>"
+        f"      <tr><th>{_escape(label)}</th>{cell(label, text)}</tr>"
         for label, text in summary.items()
     )
     return (

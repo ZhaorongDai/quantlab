@@ -103,6 +103,20 @@ def test_the_summary_labels_and_values_appear_on_the_page(tmp_path):
     assert positions == sorted(positions)
 
 
+def test_the_portfolio_construction_parameters_scroll_in_a_short_box(tmp_path):
+    """A long rule (a mean-variance optimiser with a factor risk model) does
+    not take over the setup table: its full text is on the page, inside a box
+    of bounded height that scrolls; the other rows are plain cells."""
+    rule = "MeanVarianceOptimizer(" + ", ".join(f"field_{i}={i}" for i in range(400)) + ")"
+    html = _write(tmp_path, summary={"Rebalance every": "5 bars", "Portfolio construction": rule})
+
+    assert f'<td><div class="scroll">{rule}</div></td>' in html
+    assert "<td>5 bars</td>" in html
+    css = html[html.index(".scroll {"):]
+    css = css[: css.index("}")]
+    assert "max-height" in css and "overflow-y: auto" in css
+
+
 def test_the_page_states_the_notes_as_text(tmp_path):
     notes = ["first note", "second note"]
     html = _write(tmp_path, notes=notes)
