@@ -34,7 +34,7 @@ from loguru import logger
 from quantlab.config import get_data_root
 from quantlab.dataset.config import FredRateConfig, SharadarDailyConfig, SharadarDatasetConfig
 from quantlab.dataset.fred import FredRateDataset
-from quantlab.dataset.merged import MergedDataset
+from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 from quantlab.factor.config import FactorConfig
@@ -68,9 +68,13 @@ HORIZONS = (1, 21)
 PARAMETERS = BarraStyleParameters(risk_free_symbol="DTB3")
 
 
-def price_inputs() -> MergedDataset:
-    """Adjusted close, market cap and the risk-free rate, on the permaticker axis."""
-    return MergedDataset([
+def price_inputs() -> BadPrintMaskedDataset:
+    """Adjusted close, market cap and the risk-free rate, on the permaticker axis.
+
+    A bad print (a one-bar price on ordinary volume, #223) has no price, so
+    the returns into and out of it are no specific returns.
+    """
+    return BadPrintMaskedDataset([
         SharadarStockDataset(SharadarDatasetConfig(
             zarr_file_path=str(STORES / "sharadar_sep_1d.zarr"), raw_data_dir_path=str(VENDOR),
         )),

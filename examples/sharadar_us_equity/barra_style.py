@@ -36,7 +36,7 @@ from quantlab.dataset.config import (
     SharadarShareClassConfig,
 )
 from quantlab.dataset.fred import FredRateDataset
-from quantlab.dataset.merged import MergedDataset
+from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
@@ -104,10 +104,10 @@ def risk_free() -> FredRateDataset:
 
 
 def barra() -> BarraStyle:
-    """The factor over the merge of every input, its store under ``WORK``."""
+    """The factor over the merge of every input, bad prints masked (#223), its store under ``WORK``."""
     return BarraStyle(FactorConfig(
         warmup_bars=PARAMETERS.warmup_bars,
-        dataset=MergedDataset([*sharadar_inputs(), risk_free()]),
+        dataset=BadPrintMaskedDataset([*sharadar_inputs(), risk_free()]),
         mode="batch",
         data_columns=PARAMETERS.panel_columns,
         file_path=str(WORK / "barra_style.zarr"),

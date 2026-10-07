@@ -866,6 +866,40 @@ class MergedDatasetConfig(FrozenConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class BadPrintMaskedDatasetConfig(MergedDatasetConfig):
+    """Config of a merged dataset whose bad prints are masked (#223).
+
+    The inputs as for ``MergedDatasetConfig``, plus the rule of
+    ``quantlab.dataset._support.cleaning.bad_print_mask`` and the variables
+    it reads and masks, all in the merged panel's shared names.
+
+    Examples
+    --------
+    >>> cfg = BadPrintMaskedDatasetConfig(datasets=[sep, daily])
+    >>> cfg.jump, cfg.volume_ratio, cfg.lookback
+    (5.0, 20.0, 20)
+    """
+
+    #: Fold move beyond which a bar is a candidate (``bad_print_mask``).
+    jump: float = 5.0
+    #: A candidate on less than this many times its lookback's mean volume is
+    #: a bad print.
+    volume_ratio: float = 20.0
+    #: Bars before a bar the rule reads.
+    lookback: int = 20
+    #: The adjusted price the rule reads.
+    price_variable: str = "adjClose"
+    #: The volume the rule reads, on the adjusted price's share basis.
+    volume_variable: str = "adjVolume"
+    #: Variables set to NaN at a bad print, where the panel holds them: the
+    #: prices and the market cap, which is a price times shares.
+    masked_variables: tuple[str, ...] = (
+        "open", "high", "low", "close", "adjOpen", "adjHigh", "adjLow", "adjClose",
+        "marketcap",
+    )
+
+
+@dataclass(kw_only=True, frozen=True)
 class FrameDatasetConfig(BaseDatasetConfig):
     """Config of a dataset held in memory, built from a caller's frame or panel.
 

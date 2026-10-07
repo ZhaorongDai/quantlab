@@ -416,7 +416,13 @@ WARNING: flag_anomalies: flagged 1 anomalous (timestamp, symbol) data point(s) (
 ```
 
 Decide downstream what a flagged cell means for your research, for example by
-masking it before computing factors. Two details apply to chunked
+masking it before computing factors. For one-bar vendor errors there is a
+ready mask. `BadPrintMaskedDataset` (`quantlab.dataset.bad_prints`) merges
+datasets like `MergedDataset` and sets the prices of a bad print to NaN. A
+bad print is a move of more than 5 times on ordinary volume, judged only from
+the bar and the 20 bars before it, so a live feed and a backtest agree. Pass
+it to a consumer in place of the merged dataset. See
+[Sharadar daily stocks](../sharadar.md). Two details apply to chunked
 conversions: cleaning runs per window, so a jump that straddles a window
 boundary is not flagged (a warning says how many boundaries were involved),
 and integer variables are promoted to float64 so that later windows can hold

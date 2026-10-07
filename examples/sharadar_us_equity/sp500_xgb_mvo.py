@@ -67,7 +67,7 @@ from quantlab.dataset.config import (
     SharadarShareClassConfig,
 )
 from quantlab.dataset.fred import FredRateDataset
-from quantlab.dataset.merged import MergedDataset
+from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
@@ -194,9 +194,9 @@ def factors_and_label() -> tuple[list, list]:
     return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
 
 
-def price_inputs() -> MergedDataset:
+def price_inputs() -> BadPrintMaskedDataset:
     """Adjusted close, market cap and the risk-free rate, as risk_model.py reads them."""
-    return MergedDataset([
+    return BadPrintMaskedDataset([
         SharadarStockDataset(SharadarDatasetConfig(
             zarr_file_path=str(STORES / "sharadar_sep_1d.zarr"), raw_data_dir_path=str(VENDOR),
         )),
@@ -210,14 +210,14 @@ def price_inputs() -> MergedDataset:
 
 
 def barra_exposures() -> BarraStyle:
-    """BarraStyle over every input it reads, as barra_style.py builds it.
+    """BarraStyle over every input it reads, bad prints masked, as barra_style.py builds it.
 
     The backtest computes it over its window (the risk model's
     ``required_factors()``); the risk model's own reads come from the store.
     """
     return BarraStyle(FactorConfig(
         warmup_bars=PARAMETERS.warmup_bars,
-        dataset=MergedDataset([
+        dataset=BadPrintMaskedDataset([
             SharadarStockDataset(SharadarDatasetConfig(
                 zarr_file_path=str(STORES / "sharadar_sep_1d.zarr"),
                 raw_data_dir_path=str(VENDOR),
