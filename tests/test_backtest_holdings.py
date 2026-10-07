@@ -15,7 +15,7 @@ locked here, through real ``run()`` calls and the run directory they write:
   from its settlement bar;
 - the report's Holdings tab embeds, per bar, the holdings of
   ``holdings.zarr``, the targets of the last rebalance before the bar and the
-  cash, and its summary figures are the Performance tab's.
+  cash; its tiles repeat none of the headline figures.
 
 Nothing here recomputes a holding from vectorbt: the position values come
 from the order records and the price store. Everything is synthetic,
@@ -258,14 +258,6 @@ def holdings_data(page: str) -> dict:
     return json.loads(match.group(1))
 
 
-def _kpi(page: str, label: str) -> str:
-    match = re.search(
-        rf'<div class="kl">{re.escape(label)}</div><div class="kv[^"]*">([^<]*)</div>', page
-    )
-    assert match, label
-    return match.group(1)
-
-
 @pytest.mark.parametrize("scenario", ["long_only", "long_short"])
 def test_the_holdings_tab_embeds_holdings_targets_and_cash_of_every_bar(scenario, request):
     result, _ = request.getfixturevalue(scenario)
@@ -304,9 +296,9 @@ def test_the_holdings_tab_embeds_holdings_targets_and_cash_of_every_bar(scenario
 
 
 @pytest.mark.parametrize("scenario", ["long_only", "long_short"])
-def test_the_holdings_summary_figures_are_the_performance_tab_figures(scenario, request):
+def test_the_holdings_tiles_count_bars_rebalances_and_holdings(scenario, request):
     result, _ = request.getfixturevalue(scenario)
     page = _open(result).report()
     summary = dict(holdings_data(page)["summary"])
-    for label in ("Total return", "Annualised return", "Max drawdown"):
-        assert summary[label] == _kpi(page, label)
+    assert list(summary) == ["Bars", "Rebalances", "Holdings per bar"]
+    assert summary["Bars"] == str(len(holdings_data(page)["days"]))

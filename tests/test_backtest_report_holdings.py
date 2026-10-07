@@ -104,11 +104,9 @@ def test_dust_targets_are_folded_into_other(tmp_path):
     assert days[0]["other"] == [0, 0, 0]
 
 
-def test_the_summary_figures_are_the_headline_metrics(tmp_path):
-    summary = dict(_data(_page(tmp_path, holdings=HOLDINGS))["summary"])
-    assert summary["Total return"] == "3.00%"
-    assert summary["Annualised return"] == "12.50%"
-    assert summary["Max drawdown"] == "-1.98%"
+def test_the_tiles_repeat_no_headline_figure(tmp_path):
+    summary = _data(_page(tmp_path, holdings=HOLDINGS))["summary"]
+    assert [label for label, _ in summary] == ["Bars", "Rebalances", "Holdings per bar"]
 
 
 def test_symbols_without_names_are_labelled_by_their_id(tmp_path):

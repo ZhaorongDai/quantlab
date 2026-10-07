@@ -385,7 +385,7 @@ def write_backtest_report(
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
     if holdings is not None:
-        tabs.append(("Holdings", _holdings_section(holdings, weights, holding_names, metrics)))
+        tabs.append(("Holdings", _holdings_section(holdings, weights, holding_names)))
     block = (metrics or {}).get("attribution")
     if attribution is not None and block:
         tabs.append(("Attribution", _attribution_table(block, name)
@@ -2133,7 +2133,6 @@ def _holdings_data(
     holdings: xr.DataArray,
     weights: xr.DataArray | None,
     names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
-    metrics: dict | None,
 ) -> dict:
     """The JSON the Holdings tab embeds.
 
@@ -2142,7 +2141,7 @@ def _holdings_data(
     target and holding of the dust) and ``h``, one ``[name, target,
     holding]`` row per other symbol held or targeted, largest holding first;
     ``name`` indexes ``names``, ``[ticker, company, symbol id]`` rows.
-    ``summary`` holds the headline figures, formatted as the cards are.
+    ``summary`` holds the tab's tiles: bars, rebalances and holdings per bar.
     """
     held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
     targets, since = _targets_in_force(weights, holdings)
@@ -2180,11 +2179,7 @@ def _holdings_data(
             "h": [[name(j, day), float(t[j]), float(h[j])] for j in kept],
         })
     traded = [int(np.count_nonzero(held[i])) for i in range(len(days)) if since[i] is not None]
-    headline = _headline(metrics, metrics) if isinstance(metrics, dict) else {}
     summary = [
-        ["Total return", _format(headline.get("Total Return [%]"), "pct")],
-        ["Annualised return", _format(headline.get("Annualized Return [%]"), "pct")],
-        ["Max drawdown", _format(headline.get("Max Drawdown [%]"), "neg_pct")],
         ["Bars", f"{len(days):,}"],
         ["Rebalances", f"{len({r for r in since if r is not None}):,}"],
         ["Holdings per bar", f"{min(traded)}–{max(traded)} (avg {np.mean(traded):.0f})" if traded else DASH],
@@ -2196,7 +2191,6 @@ def _holdings_section(
     holdings: xr.DataArray,
     weights: xr.DataArray | None,
     names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
-    metrics: dict | None,
 ) -> str:
     """The Holdings tab: summary tiles, day controls, the day's table, its data and script.
 
@@ -2204,7 +2198,7 @@ def _holdings_section(
     no name can close the script element; the page's own small script draws
     the selected day from it.
     """
-    data = _holdings_data(holdings, weights, names, metrics)
+    data = _holdings_data(holdings, weights, names)
     payload = json.dumps(data, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
     tiles = "".join(
         f'<div class="tile"><div class="kl">{_escape(label)}</div><div class="kv">{_escape(value)}</div></div>'
