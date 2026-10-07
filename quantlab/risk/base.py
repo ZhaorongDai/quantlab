@@ -72,6 +72,209 @@ def covered_factors(covariance: np.ndarray) -> np.ndarray:
         kept[np.argmax(missing.sum(axis=1))] = False
 
 
+@dataclasses.dataclass(frozen=True)
+class FactorRiskForecast:
+    """A factor risk model's forecast at one bar: the covariance of the next bar's returns.
+
+    ``B F B' + diag(D)`` over the ``n`` symbols the forecast covers, with
+    ``k`` factors: ``B`` holds each symbol's exposures, ``F`` the factor
+    covariance and ``D`` each symbol's specific variance, all of one-bar
+    returns. ``FactorRiskModel.forecast`` builds it, and decides which
+    symbols and factors it covers, for every user: the portfolio's
+    covariance estimator (an optimiser prices risk as ``|F^(1/2) B' w|^2 +
+    w' diag(D) w`` from ``factor_form()``, never building the dense matrix),
+    factor attribution and the bias statistics. A book's risk is read with
+    ``exposure``, ``portfolio_variance`` and ``risk_contributions``, its
+    weights on ``symbols``.
+
+    Attributes
+    ----------
+    symbols : np.ndarray
+        The ``n`` symbols covered, the order of ``exposures``' rows and
+        ``specific_variance``.
+    factor_names : tuple of str
+        The ``k`` factors, the columns of ``exposures``: the model's
+        ``factor_names`` that have a covariance at the bar.
+    exposures : np.ndarray
+        ``B``, ``[n, k]``.
+    factor_covariance : np.ndarray
+        ``F``, ``[k, k]``.
+    specific_variance : np.ndarray
+        ``D``, ``[n]``.
+
+    Examples
+    --------
+    >>> forecast = FactorRiskForecast(
+    ...     symbols=np.array(["AAA", "BBB"]),
+    ...     factor_names=("market",),
+    ...     exposures=np.array([[1.0], [0.5]]),
+    ...     factor_covariance=np.array([[0.04]]),
+    ...     specific_variance=np.array([0.01, 0.02]),
+    ... )
+    >>> forecast.covariance
+    array([[0.05, 0.02],
+           [0.02, 0.03]])
+    >>> forecast.variance
+    array([0.05, 0.03])
+    """
+
+    symbols: np.ndarray
+    factor_names: tuple[str, ...]
+    exposures: np.ndarray
+    factor_covariance: np.ndarray
+    specific_variance: np.ndarray
+
+    @property
+    def covariance(self) -> np.ndarray:
+        """The dense ``[n, n]`` covariance ``B F B' + diag(D)``.
+
+        Examples
+        --------
+        >>> forecast.covariance.shape
+        (2, 2)
+        """
+        b = self.exposures
+        return b @ self.factor_covariance @ b.T + np.diag(self.specific_variance)
+
+    @property
+    def variance(self) -> np.ndarray:
+        """Each symbol's variance, ``diag(B F B') + D``, without the dense matrix.
+
+        Examples
+        --------
+        >>> forecast.variance
+        array([0.05, 0.03])
+        """
+        b = self.exposures
+        return np.einsum("ij,jk,ik->i", b, self.factor_covariance, b) + self.specific_variance
+
+    def scaled(self, factor: float) -> Self:
+        """Return the forecast with ``F`` and ``D`` multiplied by ``factor``.
+
+        Variance is linear in time, so a one-bar forecast times ``h`` is the
+        forecast of ``h``-bar returns.
+
+        Examples
+        --------
+        >>> forecast.scaled(5).variance
+        array([0.25, 0.15])
+        """
+        return dataclasses.replace(
+            self,
+            factor_covariance=self.factor_covariance * factor,
+            specific_variance=self.specific_variance * factor,
+        )
+
+    def subset(self, rows: np.ndarray) -> Self:
+        """Return the forecast over the symbols at positions ``rows``, in that order.
+
+        Examples
+        --------
+        >>> forecast.subset(np.array([1])).variance
+        array([0.03])
+        """
+        rows = np.asarray(rows, dtype=np.intp)
+        return dataclasses.replace(
+            self,
+            symbols=self.symbols[rows],
+            exposures=self.exposures[rows],
+            specific_variance=self.specific_variance[rows],
+        )
+
+    def factor_form(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return ``(exposures, factor_covariance, specific_variance)``.
+
+        Examples
+        --------
+        >>> exposures, factor_covariance, specific = forecast.factor_form()
+        >>> specific
+        array([0.01, 0.02])
+        """
+        return self.exposures, self.factor_covariance, self.specific_variance
+
+    def exposure(self, weights: np.ndarray) -> np.ndarray:
+        """Return a book's net exposures ``w B``, ``[..., k]``.
+
+        Parameters
+        ----------
+        weights : np.ndarray
+            ``[..., n]``: one book, or several, on ``symbols``.
+
+        Examples
+        --------
+        >>> forecast.exposure(np.array([0.5, 0.5]))
+        array([0.75])
+        """
+        return self._weights(weights) @ self.exposures
+
+    def portfolio_variance(self, weights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Return a book's factor variance ``x' F x`` and specific variance ``sum w^2 D``.
+
+        Parameters
+        ----------
+        weights : np.ndarray
+            ``[..., n]``: one book, or several, on ``symbols``.
+
+        Returns
+        -------
+        factor, specific : np.ndarray
+            ``[...]`` each; their sum is ``w' (B F B' + diag(D)) w``.
+
+        Examples
+        --------
+        >>> factor, specific = forecast.portfolio_variance(np.array([0.5, 0.5]))
+        >>> float(factor), float(specific)
+        (0.0225, 0.0075)
+        """
+        weights = self._weights(weights)
+        x = weights @ self.exposures
+        factor = np.einsum("...i,ij,...j->...", x, self.factor_covariance, x)
+        return factor, (weights**2) @ self.specific_variance
+
+    def risk_contributions(self, weights: np.ndarray) -> tuple[np.ndarray, float]:
+        """Return each factor's and the specific part's contribution to one book's volatility.
+
+        The x-sigma-rho split: factor ``j`` contributes ``x_j (F x)_j /
+        sigma`` and the specific part ``sum w^2 D / sigma``, which sum to
+        ``sigma``. NaN for a book without risk.
+
+        Parameters
+        ----------
+        weights : np.ndarray
+            ``[n]``: one book on ``symbols``.
+
+        Returns
+        -------
+        factor : np.ndarray
+            ``[k]``.
+        specific : float
+
+        Examples
+        --------
+        >>> factor, specific = forecast.risk_contributions(np.array([0.5, 0.5]))
+        >>> round(float(factor.sum() + specific), 4)
+        0.1732
+        """
+        weights = self._weights(weights)
+        x = weights @ self.exposures
+        fx = self.factor_covariance @ x
+        specific = float((weights**2) @ self.specific_variance)
+        sigma = np.sqrt(float(x @ fx) + specific)
+        if not sigma > 0:
+            return np.full(len(self.factor_names), np.nan), np.nan
+        return x * fx / sigma, specific / sigma
+
+    def _weights(self, weights) -> np.ndarray:
+        """Return ``weights`` as floats, refusing a last axis that is not ``symbols``."""
+        weights = np.asarray(weights, dtype=np.float64)
+        if weights.shape[-1:] != (len(self.symbols),):
+            raise ValueError(
+                f"the weights' last axis has {weights.shape[-1:]} entries, the forecast "
+                f"{len(self.symbols)} symbols"
+            )
+        return weights
+
+
 class RiskStore:
     """One store of a factor risk model: rows per bar, written and read by date range.
 
@@ -544,6 +747,64 @@ class FactorRiskModel(Component, ABC):
         >>> matrix.shape[1] == len(model.factor_names)
         True
         """
+
+    def forecast(self, estimate: xr.Dataset, exposures: xr.Dataset) -> FactorRiskForecast:
+        """Return the forecast at one bar from its estimate row and the exposures at the bar.
+
+        The one coverage rule of the model's forecasts. A symbol of
+        ``exposures`` is covered when ``exposure_matrix`` gives it every
+        exposure, finite on the kept factors, and the row a specific risk. A
+        factor without a covariance at the bar (``covered_factors``: no
+        variance, or too few common bars with another) is left out of the
+        forecast, and so is every symbol exposed to it.
+
+        Parameters
+        ----------
+        estimate : xr.Dataset
+            The estimate store's row at the bar (``factor_covariance`` on
+            ``(factor_i, factor_j)``, ``specific_risk`` on ``symbol``), as
+            ``estimate.read(t, t).isel(timestamp=0)`` gives it.
+        exposures : xr.Dataset
+            The exposures at the bar on ``symbol`` (``exposure_names``), as
+            ``exposures(t, t)`` gives them: the symbols the forecast may
+            cover, in its order. The caller chooses them, so a decision can
+            be handed exposures an executor injects.
+
+        Returns
+        -------
+        FactorRiskForecast
+
+        Examples
+        --------
+        >>> row = model.estimate.read(day, day).isel(timestamp=0)
+        >>> forecast = model.forecast(row, model.exposures(day, day).isel(timestamp=0))
+        >>> set(forecast.factor_names) <= set(model.factor_names)
+        True
+        """
+        symbols = np.asarray(exposures["symbol"].values)
+        names = list(self.factor_names)
+        matrix, covered = self.exposure_matrix(exposures)
+        covered = np.asarray(covered, dtype=bool)
+        specific = np.asarray(
+            estimate["specific_risk"].reindex(symbol=symbols).values, dtype=np.float64
+        )
+        covariance = np.asarray(
+            estimate["factor_covariance"].sel(factor_i=names, factor_j=names).values,
+            dtype=np.float64,
+        )
+        kept = covered_factors(covariance)
+        covered &= np.isfinite(specific)
+        covered &= np.isfinite(matrix[:, kept]).all(axis=1)
+        # A symbol exposed to a factor without a covariance is not covered.
+        covered &= ~(np.nan_to_num(matrix[:, ~kept], nan=1.0) != 0).any(axis=1)
+        index = np.flatnonzero(covered)
+        return FactorRiskForecast(
+            symbols=symbols[index],
+            factor_names=tuple(name for name, keep in zip(names, kept) if keep),
+            exposures=matrix[np.ix_(index, np.flatnonzero(kept))],
+            factor_covariance=covariance[np.ix_(kept, kept)],
+            specific_variance=specific[index] ** 2,
+        )
 
     def factor_groups(self) -> dict[str, str]:
         """Return each factor's group, one of ``FACTOR_GROUPS``, keyed by factor name.

@@ -2,8 +2,8 @@
 
 What is locked here, and what turns it red (no store, no model, no vectorbt):
 
-- A `FactorCovarianceEstimate` (exposures B, factor covariance F, specific
-  variances D) reports `factor_form()`, a dense covariance B F B' + diag(D),
+- A `FactorRiskForecast` (exposures B, factor covariance F, specific
+  variances D, from `quantlab.risk.base`) reports `factor_form()`, a dense covariance B F B' + diag(D),
   its diagonal as the variance, and scales and subsets in factor form.
 - A covariance estimator whose estimate has a factor form drives the optimiser's
   low-rank risk term: the optimiser never asks it for the dense covariance,
@@ -23,10 +23,10 @@ import xarray as xr
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.base import (
     CovarianceEstimate,
-    FactorCovarianceEstimate,
     PortfolioContext,
     CovarianceEstimator,
 )
+from quantlab.risk.base import FactorRiskForecast
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
@@ -49,7 +49,7 @@ def _factor_parts(seed=0):
     return exposures, factor_covariance, specific
 
 
-class _NoDense(FactorCovarianceEstimate):
+class _NoDense(FactorRiskForecast):
     """A factor estimate that refuses to be densified."""
 
     @property
@@ -72,6 +72,7 @@ class _FixedRisk(CovarianceEstimator):
         if self._factor_form:
             return _NoDense(
                 symbols=symbols,
+                factor_names=tuple(f"f{j}" for j in range(exposures.shape[1])),
                 exposures=exposures,
                 factor_covariance=factor_covariance,
                 specific_variance=specific,
@@ -110,8 +111,9 @@ def _optimizer(*, factor_form, **overrides):
 
 def test_a_factor_estimate_densifies_to_b_f_bt_plus_d():
     exposures, factor_covariance, specific = _factor_parts()
-    estimate = FactorCovarianceEstimate(
+    estimate = FactorRiskForecast(
         symbols=np.array(SYMBOLS),
+        factor_names=tuple(f"f{j}" for j in range(exposures.shape[1])),
         exposures=exposures,
         factor_covariance=factor_covariance,
         specific_variance=specific,

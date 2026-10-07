@@ -4,21 +4,17 @@
 the factor covariance ``F`` and the specific risks of that bar from the
 estimate store of a ``quantlab.risk.base.FactorRiskModel``, builds each
 symbol's exposures ``B`` from the bar's exposures as the model gives them
-(``context.risk_exposures``) and returns a ``FactorCovarianceEstimate``,
-which the mean-variance optimiser turns into a low-rank risk term.
+(``context.risk_exposures``) and returns the model's forecast
+(``FactorRiskModel.forecast``, a ``FactorRiskForecast``), which the
+mean-variance optimiser turns into a low-rank risk term.
 """
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.portfolio.base import (
-    CovarianceEstimator,
-    FactorCovarianceEstimate,
-    PortfolioContext,
-)
+from quantlab.portfolio.base import CovarianceEstimator, PortfolioContext
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
-from quantlab.risk.base import FactorRiskModel, covered_factors
+from quantlab.risk.base import FactorRiskForecast, FactorRiskModel
 
 
 class FactorRiskStoreEstimator(CovarianceEstimator):
@@ -30,18 +26,14 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
     computed under ``"cal"``), exactly as its stores, factor attribution and
     bias statistics do, and hand their values at the bar in
     ``context.risk_exposures``. ``estimate(context)`` reads the bar's row
-    of the estimate store and returns ``B F B' + diag(D)`` in factor form, with
-    ``B`` on the model's factors (``FactorRiskModel.factor_names``) as the
-    model's ``exposure_matrix`` gives them. It reads only what every factor
-    risk model provides, so it works with any (``Use4RiskModel``: 1 on the
-    country factor, 1 on the symbol's industry, its style exposures). The
-    estimate is of one-bar returns.
-
-    A symbol is covered when the model's ``exposure_matrix`` covers it and it
-    has a specific risk at the bar. A factor whose variance is not known at
-    the bar (a USE4 industry with too few observations, for example) is left
-    out of ``F``, and so is every symbol exposed to it. There is no staleness filter: the model reads no return
-    window, and a locked position is priced like any other.
+    of the estimate store and returns the model's forecast from it and those
+    exposures (``FactorRiskModel.forecast``): ``B F B' + diag(D)`` of
+    one-bar returns, in factor form, over the symbols the model covers at
+    the bar (coverage is the model's rule, shared with factor attribution
+    and the bias statistics). It reads only what every factor risk model
+    provides, so it works with any. There is no staleness filter: the model
+    reads no return window, and a locked position is priced like any
+    other.
 
     Parameters
     ----------
@@ -76,7 +68,7 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
 
     def estimate(
         self, context: PortfolioContext, volatility: xr.DataArray | None = None
-    ) -> FactorCovarianceEstimate:
+    ) -> FactorRiskForecast:
         """Return ``B F B' + diag(D)`` at the context's bar over the covered symbols.
 
         See the class docstring for the coverage.
@@ -91,8 +83,9 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
 
         Returns
         -------
-        FactorCovarianceEstimate
-            The estimate in factor form, of one-bar returns.
+        FactorRiskForecast
+            The model's forecast at the bar over the context's symbols it
+            covers, of one-bar returns.
 
         Raises
         ------
@@ -116,24 +109,9 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
                 f"{type(self).__name__}: the context has no risk exposures; the decision "
                 f"inputs take them from required_risk_model()."
             )
-        row = self._row(context.timestamp)
         model = self.config.risk_model
-        names = list(model.factor_names)
-        symbols = context.symbols
-        exposures, covered = model.exposure_matrix(context.risk_exposures.reindex(symbol=symbols))
-
-        specific = row["specific_risk"].reindex(symbol=symbols).values.astype(np.float64)
-        covered &= np.isfinite(specific)
-        covariance = row["factor_covariance"].sel(factor_i=names, factor_j=names).values
-        kept = covered_factors(covariance)
-        # A symbol exposed to a factor without a covariance is not covered.
-        covered &= ~(exposures[:, ~kept] != 0).any(axis=1)
-        index = np.flatnonzero(covered)
-        return FactorCovarianceEstimate(
-            symbols=symbols[index],
-            exposures=np.nan_to_num(exposures[np.ix_(index, np.flatnonzero(kept))]),
-            factor_covariance=covariance[np.ix_(kept, kept)],
-            specific_variance=specific[index] ** 2,
+        return model.forecast(
+            self._row(context.timestamp), context.risk_exposures.reindex(symbol=context.symbols)
         )
 
     def _row(self, timestamp) -> xr.Dataset:

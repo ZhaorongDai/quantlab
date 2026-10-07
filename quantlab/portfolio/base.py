@@ -24,9 +24,9 @@ A *covariance estimator* (``CovarianceEstimator``) estimates the covariance
 of one-bar returns at a bar, as a ``CovarianceEstimate``; a rule that prices
 risk, such as a mean-variance optimiser, holds one. It is not a factor risk
 model (``quantlab.risk``), which is estimated ahead as stores; one estimator,
-``FactorRiskStoreEstimator``, reads those stores: its estimate is a
-``FactorCovarianceEstimate`` whose ``factor_form()`` lets an optimiser build
-a low-rank risk term, and it declares its risk model through
+``FactorRiskStoreEstimator``, reads those stores: its estimate is the
+model's forecast (``quantlab.risk.base.FactorRiskForecast``), whose
+``factor_form()`` lets an optimiser build a low-rank risk term, and it declares its risk model through
 ``required_risk_model()``, whose exposures at the bar the decision inputs
 take from the model itself (read or computed per its
 ``exposure_data_strategy``) and put in each bar's context. A covariance
@@ -324,8 +324,8 @@ class CovarianceEstimate:
     def factor_form(self):
         """Return the factor form of the covariance, or ``None`` when it has none.
 
-        A dense estimate such as Ledoit-Wolf has none. A
-        ``FactorCovarianceEstimate`` returns ``(exposures,
+        A dense estimate such as Ledoit-Wolf has none. A factor risk
+        model's ``FactorRiskForecast`` returns ``(exposures,
         factor_covariance, specific_variance)``, from which an optimiser
         builds a low-rank risk term instead of the dense one.
 
@@ -335,121 +335,6 @@ class CovarianceEstimate:
         True
         """
         return None
-
-
-@dataclass(frozen=True)
-class FactorCovarianceEstimate:
-    """A covariance of returns in factor form: ``B F B' + diag(D)``.
-
-    The estimate of a covariance estimator in factor form, such as
-    ``FactorRiskStoreEstimator`` reading a factor risk model. With ``n`` symbols and ``k``
-    factors, ``B`` holds each symbol's exposures, ``F`` the factor returns'
-    covariance and ``D`` each symbol's specific (idiosyncratic) variance.
-    ``factor_form()``
-    returns the three, and an optimiser that finds them prices risk as
-    ``|F^(1/2) B' w|^2 + w' diag(D) w``, which costs ``O(n k)`` rather than
-    the ``O(n^2)`` of the dense matrix. It is used wherever a
-    ``CovarianceEstimate`` is: ``covariance`` builds the dense matrix on
-    demand.
-
-    Attributes
-    ----------
-    symbols : np.ndarray
-        The ``n`` symbols the estimate covers, the order of ``exposures``'
-        rows and ``specific_variance``.
-    exposures : np.ndarray
-        ``B``, ``[n, k]``.
-    factor_covariance : np.ndarray
-        ``F``, ``[k, k]``, symmetric positive semi-definite.
-    specific_variance : np.ndarray
-        ``D``, ``[n]``, non-negative.
-
-    Examples
-    --------
-    >>> estimate = FactorCovarianceEstimate(
-    ...     symbols=np.array(["AAA", "BBB"]),
-    ...     exposures=np.array([[1.0], [0.5]]),
-    ...     factor_covariance=np.array([[0.04]]),
-    ...     specific_variance=np.array([0.01, 0.02]),
-    ... )
-    >>> estimate.covariance
-    array([[0.05, 0.02],
-           [0.02, 0.03]])
-    >>> estimate.variance
-    array([0.05, 0.03])
-    >>> [part.shape for part in estimate.factor_form()]
-    [(2, 1), (1, 1), (2,)]
-    """
-
-    symbols: np.ndarray
-    exposures: np.ndarray
-    factor_covariance: np.ndarray
-    specific_variance: np.ndarray
-
-    @property
-    def covariance(self) -> np.ndarray:
-        """The dense ``[n, n]`` covariance ``B F B' + diag(D)``.
-
-        Examples
-        --------
-        >>> estimate.covariance.shape
-        (2, 2)
-        """
-        b = self.exposures
-        return b @ self.factor_covariance @ b.T + np.diag(self.specific_variance)
-
-    @property
-    def variance(self) -> np.ndarray:
-        """Each symbol's variance, ``diag(B F B') + D``, without the dense matrix.
-
-        Examples
-        --------
-        >>> estimate.variance
-        array([0.05, 0.03])
-        """
-        b = self.exposures
-        return np.einsum("ij,jk,ik->i", b, self.factor_covariance, b) + self.specific_variance
-
-    def scaled(self, factor: float) -> Self:
-        """Return the estimate with ``F`` and ``D`` multiplied by ``factor``.
-
-        Examples
-        --------
-        >>> estimate.scaled(5).variance
-        array([0.25, 0.15])
-        """
-        return dataclasses.replace(
-            self,
-            factor_covariance=self.factor_covariance * factor,
-            specific_variance=self.specific_variance * factor,
-        )
-
-    def subset(self, rows: np.ndarray) -> Self:
-        """Return the estimate over the symbols at positions ``rows``, in that order.
-
-        Examples
-        --------
-        >>> estimate.subset(np.array([1])).variance
-        array([0.03])
-        """
-        rows = np.asarray(rows, dtype=np.intp)
-        return dataclasses.replace(
-            self,
-            symbols=self.symbols[rows],
-            exposures=self.exposures[rows],
-            specific_variance=self.specific_variance[rows],
-        )
-
-    def factor_form(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return ``(exposures, factor_covariance, specific_variance)``.
-
-        Examples
-        --------
-        >>> exposures, factor_covariance, specific = estimate.factor_form()
-        >>> specific
-        array([0.01, 0.02])
-        """
-        return self.exposures, self.factor_covariance, self.specific_variance
 
 
 class CovarianceEstimator(_Configured, ABC):
@@ -475,8 +360,8 @@ class CovarianceEstimator(_Configured, ABC):
     exposures from the model itself (``FactorRiskModel.exposures``, so a
     decision, the model's stores, attribution and bias statistics share one
     source) and put their values at the bar in ``context.risk_exposures``.
-    An estimator in factor form returns a
-    ``FactorCovarianceEstimate``, whose ``factor_form()`` makes the
+    An estimator in factor form returns a ``FactorRiskForecast``
+    (``quantlab.risk.base``), whose ``factor_form()`` makes the
     mean-variance optimiser build a low-rank risk term.
 
     Parameters
@@ -552,7 +437,7 @@ class CovarianceEstimator(_Configured, ABC):
 
         Returns
         -------
-        CovarianceEstimate or FactorCovarianceEstimate
+        CovarianceEstimate or FactorRiskForecast
             The covariance over the symbols with enough history; in factor
             form when the model has one.
 

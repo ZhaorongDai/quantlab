@@ -25,7 +25,6 @@ import xarray as xr
 from quantlab.portfolio.config import MeanVarianceConfig
 from quantlab.portfolio.base import (
     CovarianceEstimate,
-    FactorCovarianceEstimate,
     PortfolioConstructionError,
     PortfolioConstructor,
     PortfolioContext,
@@ -35,7 +34,7 @@ from quantlab.utils.cross_section import cross_sectional_zscore
 
 if TYPE_CHECKING:
     from quantlab.factor.base import Factor
-    from quantlab.risk.base import FactorRiskModel
+    from quantlab.risk.base import FactorRiskForecast, FactorRiskModel
 
 _SOLVED = (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 
@@ -53,9 +52,10 @@ class MeanVarianceInputs:
     expected_return : np.ndarray
         ``mu`` per candidate, on the expected-return label's span; 0.0 for a
         held candidate without a prediction.
-    estimate : CovarianceEstimate or FactorCovarianceEstimate
-        The covariance estimator's estimate, on the same span, over the candidates
-        followed by the locked symbols it covers.
+    estimate : CovarianceEstimate or FactorRiskForecast
+        The covariance estimator's estimate, on the same span, over the
+        candidates, then the locked symbols it covers, then, with a
+        reference book, the reference's other symbols it covers.
     current_weights : np.ndarray
         The weights currently held on the candidates.
     locked_symbols : np.ndarray
@@ -77,6 +77,12 @@ class MeanVarianceInputs:
         order.
     closed_without_exposure : np.ndarray
         Held, tradable symbols lacking a bounded exposure, closed.
+    reference_weights : np.ndarray
+        The reference book ``b`` on ``estimate``'s symbols, the risk term
+        pricing ``w - b``; empty without one (``reference_weights``).
+    reference_without_risk : np.ndarray
+        Symbols of the reference book the estimate does not cover, left out
+        of it.
 
     Examples
     --------
@@ -87,7 +93,7 @@ class MeanVarianceInputs:
 
     symbols: np.ndarray
     expected_return: np.ndarray
-    estimate: CovarianceEstimate | FactorCovarianceEstimate
+    estimate: "CovarianceEstimate | FactorRiskForecast"
     current_weights: np.ndarray
     locked_symbols: np.ndarray = field(default_factory=lambda: np.array([]))
     locked_weights: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -97,6 +103,8 @@ class MeanVarianceInputs:
     locked_exposures: np.ndarray = field(default_factory=lambda: np.zeros(0))
     exposure_bounds: np.ndarray = field(default_factory=lambda: np.zeros((0, 2)))
     closed_without_exposure: np.ndarray = field(default_factory=lambda: np.array([]))
+    reference_weights: np.ndarray = field(default_factory=lambda: np.array([]))
+    reference_without_risk: np.ndarray = field(default_factory=lambda: np.array([]))
 
     @property
     def covariance(self) -> np.ndarray:
@@ -110,15 +118,31 @@ class MeanVarianceInputs:
         return self.estimate.covariance
 
 
-def _exposure(context: PortfolioContext, name: str) -> xr.DataArray:
-    """Return a bounded exposure at the bar: a declared factor's output, else a risk model's exposure."""
+def _bounded_exposure(context: PortfolioContext, estimate, name: str, symbols) -> np.ndarray:
+    """Return a bounded exposure per symbol: a declared factor's output, else a risk factor's ``B`` column.
+
+    A risk factor's exposure is the forecast's (``FactorRiskForecast``): NaN
+    for a symbol it does not cover, 0 on a factor it left out at the bar (no
+    covered symbol is exposed to it).
+    """
     if context.factors is not None and name in context.factors:
-        return context.factors[name]
-    if context.risk_exposures is not None and name in context.risk_exposures:
-        return context.risk_exposures[name]
-    raise ValueError(
-        f"the context holds no exposure {name!r} in its factors or risk exposures"
+        return np.asarray(context.factors[name].sel(symbol=symbols).values, dtype=np.float64)
+    names = getattr(estimate, "factor_names", None)
+    if names is None:
+        raise ValueError(
+            f"the context holds no factor output {name!r} and the covariance estimate "
+            f"has no risk factors"
+        )
+    position = pd.Index(estimate.symbols).get_indexer(symbols)
+    covered = position >= 0
+    column = (
+        estimate.exposures[:, list(names).index(name)]
+        if name in names
+        else np.zeros(len(estimate.symbols))
     )
+    values = np.full(len(symbols), np.nan)
+    values[covered] = column[position[covered]]
+    return values
 
 
 def _zscore(values: np.ndarray) -> np.ndarray:
@@ -388,17 +412,17 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 f"context.factors holds one variable per name"
             )
         risk_model = self.required_risk_model() if config.exposure_bounds else None
-        risk_names = set() if risk_model is None else set(risk_model.exposure_names)
+        risk_names = set() if risk_model is None else set(risk_model.factor_names)
         for name, (lower, upper) in config.exposure_bounds.items():
             if name in declared and name in risk_names:
                 raise ValueError(
                     f"exposure_bounds names {name!r}, which is both an output of the "
-                    f"declared factors and an exposure of the risk model; name it once"
+                    f"declared factors and a factor of the risk model; name it once"
                 )
             if name not in declared and name not in risk_names:
                 raise ValueError(
                     f"exposure_bounds names {name!r}, which is not an output of the "
-                    f"declared factors ({sorted(declared)}) or an exposure of the risk "
+                    f"declared factors ({sorted(declared)}) or a factor of the risk "
                     f"model ({sorted(risk_names)})"
                 )
             if not (np.isfinite(lower) and np.isfinite(upper) and lower <= upper):
@@ -449,6 +473,60 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         True
         """
         return self.config.covariance.required_risk_model()
+
+    def reference_weights(self, context: PortfolioContext) -> xr.DataArray | None:
+        """The book the risk term measures against at the bar, or ``None`` for total risk.
+
+        An extension point: with a reference book ``b`` (a benchmark, say)
+        the risk term prices ``(w - b)' Sigma (w - b)``, the active risk,
+        instead of ``w' Sigma w``; the expected return, turnover, budget,
+        cap and exposure bounds are unchanged. ``b`` is read on the bar's
+        symbols (NaN counts as 0); a symbol of it the covariance estimator
+        does not cover is left out of it and reported in the row's
+        ``reference_without_risk`` event. ``None`` by default.
+
+        Parameters
+        ----------
+        context : PortfolioContext
+            The bar's context.
+
+        Returns
+        -------
+        xr.DataArray or None
+            Weights on ``symbol``.
+
+        Examples
+        --------
+        >>> optimizer.reference_weights(context) is None
+        True
+        """
+        return None
+
+    def risk_constraints(self, risk) -> list:
+        """Constraints on the bar's risk term, the forecast variance over the span.
+
+        An extension point: ``risk`` is the cvxpy expression of ``w' Sigma
+        w`` (of ``w - b`` with a reference book), locked positions included,
+        on the expected-return label's span; a rule capping it returns, for
+        example, ``[risk <= cap**2]``. A cap the candidates cannot meet
+        makes the bar infeasible, and the backtest holds it. Empty by
+        default.
+
+        Parameters
+        ----------
+        risk : cvxpy.Expression
+            The risk term.
+
+        Returns
+        -------
+        list of cvxpy constraints
+
+        Examples
+        --------
+        >>> optimizer.risk_constraints(None)
+        []
+        """
+        return []
 
     @property
     def span(self) -> int | None:
@@ -584,10 +662,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         covered = position >= 0
         bounded = list(config.exposure_bounds)
         exposure_all = (
-            np.stack([
-                np.asarray(_exposure(context, name).sel(symbol=symbols).values, dtype=np.float64)
-                for name in bounded
-            ])
+            np.stack([_bounded_exposure(context, estimate, name, symbols) for name in bounded])
             if bounded
             else np.zeros((0, len(symbols)))
         )
@@ -620,10 +695,21 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             index, expected, current = index[pool], expected[pool], current[pool]
         locked_index = np.flatnonzero(locked)
         risk_locked = locked_index[covered[locked_index]]
+        rows = np.concatenate([index, risk_locked])
+        reference_weights, reference_without_risk = np.array([]), np.array([])
+        reference = self.reference_weights(context)
+        if reference is not None:
+            b = np.nan_to_num(
+                np.asarray(reference.reindex(symbol=symbols).values, dtype=np.float64)
+            )
+            others = np.setdiff1d(np.flatnonzero((b != 0) & covered), rows)
+            rows = np.concatenate([rows, others])
+            reference_weights = b[rows]
+            reference_without_risk = symbols[(b != 0) & ~covered]
         return MeanVarianceInputs(
             symbols=symbols[index],
             expected_return=expected,
-            estimate=estimate.subset(np.concatenate([position[index], position[risk_locked]])),
+            estimate=estimate.subset(position[rows]),
             current_weights=current,
             locked_symbols=symbols[locked_index],
             locked_weights=current_all[locked_index],
@@ -635,6 +721,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 [config.exposure_bounds[name] for name in bounded], dtype=np.float64
             ).reshape(len(bounded), 2),
             closed_without_exposure=symbols[tradable & ~locked & held & covered & ~exposed],
+            reference_weights=reference_weights,
+            reference_without_risk=reference_without_risk,
         )
 
     def construct(self, context: PortfolioContext) -> xr.DataArray:
@@ -707,6 +795,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             events["closed_without_risk"] = [str(s) for s in inputs.closed_without_risk]
         if len(inputs.closed_without_exposure):
             events["closed_without_exposure"] = [str(s) for s in inputs.closed_without_exposure]
+        if len(inputs.reference_without_risk):
+            events["reference_without_risk"] = [str(s) for s in inputs.reference_without_risk]
         if events:
             weights.attrs["events"] = events
         return weights
@@ -721,9 +811,14 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             if len(inputs.risk_locked_weights)
             else w
         )
-        objective = inputs.expected_return @ w - config.risk_aversion / 2 * _risk_term(
-            held, inputs.estimate
-        )
+        if len(inputs.reference_weights):
+            # The reference's other symbols are held at 0; risk is that of w - b.
+            others = len(inputs.reference_weights) - n - len(inputs.risk_locked_weights)
+            if others:
+                held = cp.hstack([held, np.zeros(others)])
+            held = held - inputs.reference_weights
+        risk = _risk_term(held, inputs.estimate)
+        objective = inputs.expected_return @ w - config.risk_aversion / 2 * risk
         if config.turnover_penalty:
             # Added only for a non-zero penalty: even multiplied by 0 the term
             # changes the solver's path, and with it the weights' last digits.
@@ -743,6 +838,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         ):
             exposure = row @ w + locked
             constraints += [exposure >= lower, exposure <= upper]
+        constraints += list(self.risk_constraints(risk))
         problem = cp.Problem(cp.Maximize(objective), constraints)
         try:
             problem.solve()

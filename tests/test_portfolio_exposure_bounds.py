@@ -21,6 +21,7 @@ from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
 from quantlab.portfolio.base import PortfolioConstructionError
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
+from quantlab.risk.base import FactorRiskForecast
 from tests.test_portfolio_mean_variance import LOOKBACK, SYMBOLS, _context, _optimizer
 
 #: The best predictions sit on the highest exposures, so an unconstrained
@@ -163,32 +164,53 @@ def test_the_optimizer_round_trips_through_its_config_with_its_exposure_factors(
 
 
 class _RiskModel:
-    """Stands in for a factor risk model whose one exposure is ``beta``."""
+    """Stands in for a factor risk model with the factors ``market`` and ``beta``."""
 
-    exposure_names = ("beta",)
+    factor_names = ("market", "beta")
 
 
 class _WithRiskModel(LedoitWolfEstimator):
-    """A covariance estimator declaring a factor risk model, as ``FactorRiskStoreEstimator`` does."""
+    """Ledoit-Wolf's risk as a factor risk model's forecast whose ``beta`` column is ``EXPOSURE``.
+
+    The last symbol is not covered; ``market`` has no covariance at the bar.
+    """
 
     def required_risk_model(self):
         return _RiskModel()
 
+    def estimate(self, context, volatility=None):
+        dense = super().estimate(context, volatility)
+        covered = np.isin(dense.symbols, SYMBOLS[:-1])
+        index = np.flatnonzero(covered)
+        position = [SYMBOLS.index(s) for s in dense.symbols[index]]
+        return FactorRiskForecast(
+            symbols=dense.symbols[index],
+            factor_names=("beta",),
+            exposures=EXPOSURE[position][:, None],
+            factor_covariance=np.array([[1e-6]]),
+            specific_variance=dense.variance[index],
+        )
 
-def test_an_exposure_of_the_risk_model_can_be_bounded_without_declaring_a_factor():
-    """The bounded exposure arrives in context.risk_exposures (#230)."""
+
+def test_a_factor_of_the_risk_model_can_be_bounded_without_declaring_a_factor():
+    """The bounded exposure is the forecast's column of B."""
     optimizer = _optimizer(
         risk_aversion=1.0,
         covariance=_WithRiskModel(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
         exposure_bounds={"beta": (0.9, 1.1)},
     )
     assert optimizer.required_factors() == []
-    context = _with_exposure(_context(prediction=PREDICTION), EXPOSURE)
-    context = dataclasses.replace(context, factors=None, risk_exposures=context.factors)
-    weights = optimizer.construct(context)
+    weights = optimizer.construct(_context(prediction=PREDICTION))
     assert 0.9 - 1e-6 <= _exposure(weights, EXPOSURE) <= 1.1 + 1e-6
-    with pytest.raises(ValueError, match="holds no exposure 'beta'"):
-        optimizer.construct(dataclasses.replace(context, risk_exposures=None))
+    # The uncovered symbol has no exposure, so it gets no weight.
+    assert float(weights.sel(symbol=SYMBOLS[-1])) == 0.0
+    # A factor the forecast left out at the bar: no covered symbol is exposed to it.
+    market = _optimizer(
+        risk_aversion=1.0,
+        covariance=_WithRiskModel(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
+        exposure_bounds={"market": (-0.1, 0.1)},
+    )
+    assert float(market.construct(_context(prediction=PREDICTION)).sum()) == pytest.approx(1.0)
 
 
 def test_a_bound_on_a_name_both_a_factor_and_the_risk_model_produce_is_refused():
@@ -197,3 +219,5 @@ def test_a_bound_on_a_name_both_a_factor_and_the_risk_model_produce_is_refused()
         _optimizer(covariance=covariance, exposure_factors=(_beta(),), exposure_bounds={"beta": (0.9, 1.1)})
     # Declaring the factor without bounding the shared name is fine.
     _optimizer(covariance=covariance, exposure_factors=(_beta(),))
+    with pytest.raises(ValueError, match="not an output"):
+        _optimizer(covariance=covariance, exposure_bounds={"industry": (0.0, 0.1)})
