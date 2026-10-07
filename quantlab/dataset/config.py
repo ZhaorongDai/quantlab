@@ -871,7 +871,10 @@ class BadPrintMaskedDatasetConfig(MergedDatasetConfig):
 
     The inputs as for ``MergedDatasetConfig``, plus the rule of
     ``quantlab.dataset._support.cleaning.bad_print_mask`` and the variables
-    it reads and masks, all in the merged panel's shared names.
+    it reads and masks, all in the merged panel's shared names. The defaults
+    name the Sharadar panels' variables (SEP's ``adjClose`` and
+    ``adjVolume``, DAILY's ``marketcap``); name another input's own, or the
+    panel raises ``KeyError`` for a variable the rule reads and none holds.
 
     Examples
     --------

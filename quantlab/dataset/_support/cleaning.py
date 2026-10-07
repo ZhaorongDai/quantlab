@@ -166,6 +166,24 @@ def flag_anomalies(data: xr.Dataset) -> xr.Dataset:
     return data.assign(anomaly_flag=anomaly)
 
 
+def check_bad_print_rule(jump: float, volume_ratio: float, lookback: int) -> None:
+    """Raise ``ValueError`` for a parameter ``bad_print_mask`` cannot use.
+
+    Examples
+    --------
+    >>> check_bad_print_rule(5.0, 20.0, 20)
+    >>> check_bad_print_rule(1.0, 20.0, 20)
+    Traceback (most recent call last):
+    ValueError: bad print rule: jump must be above 1, got 1.0.
+    """
+    if not jump > 1:
+        raise ValueError(f"bad print rule: jump must be above 1, got {jump}.")
+    if not volume_ratio > 0:
+        raise ValueError(f"bad print rule: volume_ratio must be positive, got {volume_ratio}.")
+    if lookback < 1:
+        raise ValueError(f"bad print rule: lookback must be at least 1, got {lookback}.")
+
+
 def bad_print_mask(
     price: np.ndarray,
     volume: np.ndarray,
@@ -176,25 +194,37 @@ def bad_print_mask(
 ) -> np.ndarray:
     """Return where a bar is a bad print: a large one-bar move on ordinary volume.
 
-    Bar ``t`` of a symbol is flagged when its price moves more than ``jump``
-    times, up or down, from the symbol's last priced bar among the
-    ``lookback`` bars before it, and its volume is below ``volume_ratio``
-    times the mean volume of those bars (a bar without a volume, or whose
-    lookback has no positive mean volume, counts as below). A vendor's bad
+    A bar of a symbol is a *candidate* when its price moves more than
+    ``jump`` times, up or down, from the symbol's last priced bar among the
+    ``lookback`` bars before it, on a volume below ``volume_ratio`` times the
+    mean volume of those bars (a halted bar's 0 counted in the mean). A
+    candidate is a bad print unless that last priced bar is itself a
+    candidate: then it is the price coming back, a real one. A vendor's bad
     print (a close of $0.01 between two of $7 and $9) trades like any other
-    day; a real jump of that size trades many times its usual volume. Row
-    ``t`` reads only rows ``t - lookback`` to ``t``, so a live feed and a
-    backtest flag the same bars, and any window starting ``lookback`` rows
-    earlier gives the same flags. The bar back from a bad print is a move as
-    large from the bad price, and is flagged on ordinary volume too.
+    day, while a real jump of that size trades many times its usual volume.
+    A bar whose lookback has no traded bar (a halt longer than the lookback)
+    is never flagged: there is no volume to judge it by. Row ``t`` reads only
+    rows ``t - 2 lookback`` to ``t``, so a live feed and a backtest flag the
+    same bars, and any window starting ``2 lookback`` rows earlier gives the
+    same flags.
 
-    The defaults are our choice (#223). On the Sharadar SEP history
-    (adjusted close and adjusted volume, 7,233 bars of 17,067 permatickers)
-    they flag 718 bars of 374 permatickers: 73 of the 75 one-bar moves of
-    more than 5 times that return within 0.8 to 1.25 times the previous
-    close the next bar, and 645 of the 1,101 that do not, among them bad
-    prints lasting several bars and real moves of thinly traded stocks. Real jumps such as TPST on 2023-10-11
-    (40 times, on 246 times the mean volume) are not flagged.
+    A bad print lasting several bars has only its first bar flagged: the
+    bars after it move little from it and keep their price. The bar back
+    from its last bar is flagged as well when it is a candidate, since the
+    bar before it is not.
+
+    The defaults are our choice (#223). On the Sharadar SEP history (adjusted
+    close and adjusted volume, 7,233 daily bars across 17,067 permatickers)
+    they flag 535 bars of 321 permatickers. Of the 75 one-bar moves of more
+    than 5 times that return within 0.8 to 1.25 times the previous close
+    the next bar, 63 are flagged: most of the rest belong to one series that
+    swings between two levels 800 times apart every bar (permaticker 116211
+    in 2002), where every other bar is taken as the price coming back. Of
+    the 1,101 such moves that do not return, 472 are flagged, among them bad
+    prints lasting several bars and real moves of thinly traded stocks. Real
+    jumps such as TPST on 2023-10-11 (40 times, on
+    246 times the mean volume) and SIVB's first print after its halt on
+    2023-03-28 (265 times lower, on 33 times the mean) are not flagged.
 
     Parameters
     ----------
@@ -206,10 +236,10 @@ def bad_print_mask(
     jump : float, default 5.0
         Fold move, above 1, beyond which a bar is a candidate.
     volume_ratio : float, default 20.0
-        A candidate on less than this many times the lookback's mean volume
-        is flagged. Positive.
+        A candidate trades less than this many times the lookback's mean
+        volume. Positive.
     lookback : int, default 20
-        Bars before ``t`` the previous price and the mean volume are read
+        Bars before a bar the previous price and the mean volume are read
         from. At least 1.
 
     Returns
@@ -225,37 +255,37 @@ def bad_print_mask(
 
     Examples
     --------
-    One bar at a hundredth of the price, on its usual volume:
+    One bar at a hundredth of the price, on its usual volume; the bar back
+    is real:
 
     >>> price = np.array([[10.0], [10.1], [0.1], [10.2], [10.1]])
     >>> volume = np.full((5, 1), 1_000.0)
     >>> bad_print_mask(price, volume).ravel().tolist()
-    [False, False, True, True, False]
+    [False, False, True, False, False]
 
-    The same move on a hundred times the volume is a real jump:
+    A hundredfold rise that stays, on a hundred times the volume, is real:
 
+    >>> price = np.array([[10.0], [10.1], [1010.0], [1020.0], [1015.0]])
     >>> volume[2] = 100_000.0
     >>> bad_print_mask(price, volume).ravel().tolist()
-    [False, False, False, True, False]
+    [False, False, False, False, False]
     """
-    if not jump > 1:
-        raise ValueError(f"bad_print_mask(): jump must be above 1, got {jump}.")
-    if not volume_ratio > 0:
-        raise ValueError(f"bad_print_mask(): volume_ratio must be positive, got {volume_ratio}.")
-    if lookback < 1:
-        raise ValueError(f"bad_print_mask(): lookback must be at least 1, got {lookback}.")
+    check_bad_print_rule(jump, volume_ratio, lookback)
     price = np.asarray(price, dtype=np.float64)
     volume = np.asarray(volume, dtype=np.float64)
-    # The last priced bar among the ``lookback`` before each bar.
-    previous = pd.DataFrame(price).shift(1).ffill(limit=lookback - 1).to_numpy()
-    mean_volume = (
-        pd.DataFrame(volume).shift(1).rolling(lookback, min_periods=1).mean().to_numpy()
-    )
+
+    def at_last_priced_bar(values: np.ndarray) -> np.ndarray:
+        """Each bar's ``values`` at the last priced bar among the ``lookback`` before it."""
+        priced = pd.DataFrame(np.where(np.isfinite(price), values, np.nan))
+        return priced.shift(1).ffill(limit=lookback - 1).to_numpy()
+
+    before = pd.DataFrame(volume).shift(1).rolling(lookback, min_periods=1)
+    mean_volume, most_volume = before.mean().to_numpy(), before.max().to_numpy()
     with np.errstate(divide="ignore", invalid="ignore"):
-        move = price / previous
-        ordinary = ~(mean_volume > 0) | ~(volume >= volume_ratio * mean_volume)
-    large = np.isfinite(move) & ((move > jump) | (move < 1.0 / jump))
-    return large & ordinary
+        move = price / at_last_priced_bar(price)
+        ordinary = (most_volume > 0) & ~(volume >= volume_ratio * mean_volume)
+    candidate = np.isfinite(move) & ((move > jump) | (move < 1.0 / jump)) & ordinary
+    return candidate & ~(at_last_priced_bar(candidate.astype(np.float64)) == 1.0)
 
 
 def validate_schema(

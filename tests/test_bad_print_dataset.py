@@ -76,12 +76,12 @@ def test_the_rule_flags_a_low_volume_spike_and_nothing_else():
     adj, _, volume = _arrays()
     flags = bad_print_mask(adj, volume)
     assert flags[SPIKE_BAR, BAD]
-    # The bar back is a 100-fold move from the bad print on ordinary volume.
-    assert flags[SPIKE_BAR + 1, BAD]
+    # The bar back is a 100-fold move from the bad print, but its price is real.
+    assert not flags[SPIKE_BAR + 1, BAD]
     assert not flags[:, JUMP].any(), "a jump on heavy volume is real"
     assert not flags[:, SPLIT].any(), "a split leaves the adjusted close smooth"
     assert not flags[:, QUIET].any()
-    assert flags.sum() == 2
+    assert flags.sum() == 1
 
 
 def test_the_rule_reads_nothing_after_the_bar():
@@ -92,12 +92,14 @@ def test_the_rule_reads_nothing_after_the_bar():
         np.testing.assert_array_equal(cut, whole[: end + 1])
 
 
-def test_the_rule_reads_only_its_lookback():
-    """Rows from ``t - lookback`` on decide row ``t``: any window gives the same flags."""
+@pytest.mark.parametrize("first", [SPIKE_BAR, SPIKE_BAR + 1])
+def test_the_rule_reads_only_twice_its_lookback(first):
+    """Rows from ``t - 2 lookback`` on decide row ``t``: any window gives the same flags."""
     adj, _, volume = _arrays()
     whole = bad_print_mask(adj, volume, lookback=10)
-    tail = bad_print_mask(adj[SPIKE_BAR - 10 :], volume[SPIKE_BAR - 10 :], lookback=10)
-    np.testing.assert_array_equal(tail[10:], whole[SPIKE_BAR:])
+    start = first - 20
+    tail = bad_print_mask(adj[start:], volume[start:], lookback=10)
+    np.testing.assert_array_equal(tail[20:], whole[first:])
 
 
 def test_a_gap_compares_with_the_last_priced_bar_of_the_lookback():
@@ -108,11 +110,25 @@ def test_a_gap_compares_with_the_last_priced_bar_of_the_lookback():
     assert not bad_print_mask(adj, volume, lookback=3)[SPIKE_BAR, BAD]
 
 
-def test_a_jump_with_no_volume_history_is_flagged():
+def test_a_move_after_a_halt_longer_than_the_lookback_is_kept():
+    """No traded bar in the lookback: nothing to judge the volume by, so no flag."""
     adj, _, volume = _arrays()
     volume[SPIKE_BAR - 20 : SPIKE_BAR, BAD] = 0.0
     volume[SPIKE_BAR, BAD] = 500.0
-    assert bad_print_mask(adj, volume)[SPIKE_BAR, BAD]
+    assert not bad_print_mask(adj, volume)[SPIKE_BAR, BAD]
+
+
+def test_a_crash_after_a_short_halt_is_kept():
+    """SIVB 2023-03-28: 11 halted bars (volume 0, the close repeated), then a
+    265-fold fall on 33 times the lookback's mean volume, the halt counted as 0."""
+    adj, _, volume = _arrays()
+    adj[SPIKE_BAR - 11 : SPIKE_BAR, BAD] = adj[SPIKE_BAR - 12, BAD]
+    volume[SPIKE_BAR - 11 : SPIKE_BAR, BAD] = 0.0
+    volume[SPIKE_BAR - 13 : SPIKE_BAR - 11, BAD] = [8.4e6, 2.9e6]
+    volume[:SPIKE_BAR - 13, BAD] = 1.5e5
+    adj[SPIKE_BAR:, BAD] = adj[SPIKE_BAR - 1, BAD] / 265
+    volume[SPIKE_BAR, BAD] = 20.8e6
+    assert not bad_print_mask(adj, volume)[:, BAD].any()
 
 
 def test_the_thresholds_are_parameters():
@@ -141,28 +157,27 @@ def test_the_view_masks_the_price_variables_of_a_flagged_bar():
     plain = _panel().reindex(symbol=panel["symbol"].values)
     for name in ("adjClose", "close", "marketcap"):
         assert np.isnan(panel[name].sel(symbol="BAD", timestamp=DAYS[SPIKE_BAR]).item()), name
-        assert np.isnan(panel[name].sel(symbol="BAD", timestamp=DAYS[SPIKE_BAR + 1]).item()), name
-    # Volume stays; every other cell is the input's.
+    # Volume stays; every other cell is the input's, the bar back included.
     xr.testing.assert_equal(panel["volume"], plain["volume"])
-    unflagged = panel.drop_sel(timestamp=DAYS[SPIKE_BAR : SPIKE_BAR + 2])
+    unflagged = panel.drop_sel(timestamp=DAYS[SPIKE_BAR])
     xr.testing.assert_equal(
-        unflagged["adjClose"], plain["adjClose"].drop_sel(timestamp=DAYS[SPIKE_BAR : SPIKE_BAR + 2])
+        unflagged["adjClose"], plain["adjClose"].drop_sel(timestamp=DAYS[SPIKE_BAR])
     )
     xr.testing.assert_equal(panel["adjClose"].sel(symbol="JUMP"), plain["adjClose"].sel(symbol="JUMP"))
 
 
 def test_returns_into_and_out_of_a_bad_print_are_missing():
     returns = one_bar_returns(_view().panel(DAYS[0], DAYS[-1])["adjClose"].sel(symbol="BAD").values)
-    assert np.isnan(returns[SPIKE_BAR : SPIKE_BAR + 3]).all()
-    assert np.isfinite(returns[SPIKE_BAR + 3 :]).all()
+    assert np.isnan(returns[SPIKE_BAR : SPIKE_BAR + 2]).all()
+    assert np.isfinite(returns[SPIKE_BAR + 2 :]).all()
     assert np.nanmax(np.abs(returns)) < 0.1
 
 
 def test_a_window_reads_the_lookback_before_it():
-    """The bar after the spike flags the same whether or not the spike is in the window."""
-    view = _view()
+    """The bar back is kept whether or not the spike is in the window."""
+    view = _view(lookback=5)
     whole = view.panel(DAYS[0], DAYS[-1])
-    for start in (SPIKE_BAR, SPIKE_BAR + 1, SPIKE_BAR + 2):
+    for start in (SPIKE_BAR - 4, SPIKE_BAR, SPIKE_BAR + 1, SPIKE_BAR + 2):
         part = view.panel(DAYS[start], DAYS[-1])
         xr.testing.assert_identical(part, whole.sel(timestamp=slice(DAYS[start], None)))
 
@@ -177,7 +192,7 @@ def test_the_view_keeps_the_requested_variables_and_symbols():
 def test_the_flags_are_readable():
     flags = _view().bad_prints(DAYS[0], DAYS[-1])
     assert flags.dims == ("timestamp", "symbol")
-    assert int(flags.sum()) == 2
+    assert int(flags.sum()) == 1
     assert bool(flags.sel(symbol="BAD", timestamp=DAYS[SPIKE_BAR]))
 
 

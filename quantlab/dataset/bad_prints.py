@@ -1,8 +1,8 @@
 """Several datasets merged into one panel, with their bad prints masked (#223).
 
 A *bad print* is a vendor's wrong price for one bar: Sharadar SEP holds
-closes of $0.01 between two of $7 and $9, each a one-bar return of about
--99.9% and then +10,000% that flows into every return-based statistic. It
+closes of $0.01 between two of $7 and $9 (CNYD on 2009-06-19), a one-bar
+return of -99.9% and then +89,900% that flows into every return-based statistic. It
 can only be told from a real crash or jump by what is known at the bar,
 since the price returning the next bar is not known live:
 ``quantlab.dataset._support.cleaning.bad_print_mask`` flags a move of more
@@ -16,13 +16,13 @@ stores are never changed, and a consumer given the plain dataset sees every
 price.
 """
 
+import dataclasses
 from typing import Self, Sequence
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.dataset._support.cleaning import bad_print_mask
+from quantlab.dataset._support.cleaning import bad_print_mask, check_bad_print_rule
 from quantlab.dataset.base import BaseDataset, InsufficientHistoryError
 from quantlab.dataset.config import BadPrintMaskedDatasetConfig
 from quantlab.dataset.merged import MergedDataset
@@ -58,7 +58,7 @@ class BadPrintMaskedDataset(MergedDataset):
     >>> prices = BadPrintMaskedDataset([sep, daily])
     >>> panel = prices.panel("2009-06-18", "2009-06-23", symbols=[120127])
     >>> panel["close"].values.ravel().tolist()
-    [7.2, nan, nan, 9.0]
+    [7.2, nan, 9.0, 9.0]
     >>> MergedDataset([sep, daily]).panel("2009-06-18", "2009-06-23", symbols=[120127])["close"].values.ravel().tolist()
     [7.2, 0.01, 9.0, 9.0]
     """
@@ -87,18 +87,13 @@ class BadPrintMaskedDataset(MergedDataset):
     ) -> BadPrintMaskedDatasetConfig:
         """Check the inputs as ``MergedDataset`` does, then the rule's parameters."""
         merged = super()._normalize_config(config)
-        # Raises for a parameter the rule refuses.
-        bad_print_mask(
-            np.zeros((1, 1)), np.zeros((1, 1)),
-            jump=config.jump, volume_ratio=config.volume_ratio, lookback=config.lookback,
+        check_bad_print_rule(config.jump, config.volume_ratio, config.lookback)
+        return dataclasses.replace(
+            config,
+            datasets=merged.datasets,
+            name=merged.name,
+            masked_variables=tuple(config.masked_variables),
         )
-        fields = {
-            name: getattr(config, name)
-            for name in BadPrintMaskedDatasetConfig.__dataclass_fields__
-            if name not in ("datasets", "name")
-        }
-        fields["masked_variables"] = tuple(config.masked_variables)
-        return BadPrintMaskedDatasetConfig(datasets=merged.datasets, name=merged.name, **fields)
 
     def panel(
         self,
@@ -109,9 +104,9 @@ class BadPrintMaskedDataset(MergedDataset):
     ) -> xr.Dataset:
         """Return the merged panel from ``start`` to ``end`` with its bad prints masked.
 
-        The bars are read from ``lookback`` bars before ``start`` (or the
-        first bar), so the flags of a bar do not depend on where the window
-        starts. Of a flagged bar, every variable of ``masked_variables`` the
+        The bars are read from twice ``lookback`` bars before ``start`` (or
+        the first bar), so the flags of a bar do not depend on where the
+        window starts. Of a flagged bar, every variable of ``masked_variables`` the
         panel holds is NaN; the others are the inputs'.
 
         Parameters
@@ -138,7 +133,7 @@ class BadPrintMaskedDataset(MergedDataset):
         Examples
         --------
         >>> prices.panel("2009-06-18", "2009-06-23", symbols=[120127], variables=["adjClose"])["adjClose"].isnull().values.ravel().tolist()
-        [False, True, True, False]
+        [False, True, False, False]
         """
         check_range(start, end, f"{self.class_name}.panel()")
         flags, data = self._flagged(start, end, symbols, variables)
@@ -167,7 +162,7 @@ class BadPrintMaskedDataset(MergedDataset):
         --------
         >>> flags = prices.bad_prints("2009-06-18", "2009-06-23", symbols=[120127])
         >>> flags.values.ravel().tolist()
-        [False, True, True, False]
+        [False, True, False, False]
         """
         check_range(start, end, f"{self.class_name}.bad_prints()")
         return self._flagged(start, end, symbols, [])[0]
@@ -199,9 +194,9 @@ class BadPrintMaskedDataset(MergedDataset):
         return flags.sel(timestamp=keep), data.sel(timestamp=keep)
 
     def _first_read(self, start) -> pd.Timestamp:
-        """Return the bar ``lookback`` bars before ``start``, or the first bar."""
+        """Return the bar twice ``lookback`` bars before ``start``, or the first bar."""
         try:
-            return self.bar_before(start, self.config.lookback)
+            return self.bar_before(start, 2 * self.config.lookback)
         except InsufficientHistoryError:
             calendar = self._calendar()
             return calendar[0] if len(calendar) else pd.Timestamp(start)
@@ -215,12 +210,9 @@ class BadPrintMaskedDataset(MergedDataset):
         >>> other == prices, other.datasets[0] is prices.datasets[0]
         (True, False)
         """
-        fields = {
-            name: getattr(self.config, name)
-            for name in BadPrintMaskedDatasetConfig.__dataclass_fields__
-            if name not in ("datasets", "name")
-        }
-        return type(self)([dataset.copy() for dataset in self.datasets], **fields)
+        return type(self)(dataclasses.replace(
+            self.config, datasets=tuple(dataset.copy() for dataset in self.datasets)
+        ))
 
 
 __all__ = ["BadPrintMaskedDataset"]
