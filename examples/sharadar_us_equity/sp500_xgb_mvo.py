@@ -454,7 +454,7 @@ def forecasts(weights: xr.DataArray) -> xr.Dataset:
             predictions=xr.Dataset(coords={"symbol": held_symbols}),
             tradable=xr.DataArray(np.ones(len(held), bool), coords={"symbol": held_symbols}),
             current_weights=xr.DataArray(w[held], coords={"symbol": held_symbols}),
-            factors=exposures.isel(timestamp=row, drop=True).sel(symbol=held_symbols),
+            risk_exposures=exposures.isel(timestamp=row, drop=True).sel(symbol=held_symbols),
         )
         estimate = factor_risk.estimate(context)
         w_covered = pd.Series(w[held], index=held_symbols)[estimate.symbols].values
