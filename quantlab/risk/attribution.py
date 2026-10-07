@@ -103,7 +103,8 @@ def factor_attribution(
     -------
     xr.Dataset
         On the holdings' ``timestamp``, with the ``factor`` axis carrying
-        each factor's ``group`` (``FactorRiskModel.factor_groups``):
+        each factor's ``group`` (``FactorRiskModel.factor_groups``) and
+        display ``label`` (``FactorRiskModel.factor_labels``):
 
         - ``contribution`` on ``(timestamp, term)`` (``TERMS``) and
           ``log_contribution`` (each bar's terms times ``ln(1+r)/r``),
@@ -143,6 +144,7 @@ def factor_attribution(
     symbols = [str(s) for s in holdings["symbol"].values]
     factors = list(risk_model.factor_names)
     groups = risk_model.factor_groups()
+    labels = risk_model.factor_labels()
     first, last = pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-1])
     regression = risk_model.regression.read(first, last)
 
@@ -233,6 +235,7 @@ def factor_attribution(
             "term": list(TERMS),
             "factor": factors,
             "group": ("factor", [groups[name] for name in factors]),
+            "label": ("factor", [labels[name] for name in factors]),
         },
     )
 

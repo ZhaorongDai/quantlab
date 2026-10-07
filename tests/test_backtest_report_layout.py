@@ -1,4 +1,4 @@
-"""The backtest report page: KPI cards, grouped comparison tables, tabbed charts.
+"""The backtest report page: KPI cards, grouped comparison tables, a sidebar of chart sections.
 
 What is locked here, and what turns it red:
 
@@ -10,11 +10,12 @@ What is locked here, and what turns it red:
   differences, ratios with two decimals, money with thousands separators,
   durations in days, counts as integers; never ``e+06`` or a raw timedelta.
 - Drawdowns are negative in every table and card.
-- Every known metric carries its definition; a metric the page does not know,
+- Every known metric, KPI card and chart carries a plain explanation, shown
+  on hover; a metric the page does not know,
   from the strategy, the benchmark or the relative block, renders in an
   "Other" group, and nothing raises.
-- KPI cards, the "Excess" tab and the relative tables appear with a benchmark
-  and are left out without one; the "Rolling" tab then shows return,
+- KPI cards, the "Excess" section and the relative tables appear with a
+  benchmark and are left out without one; the "Rolling" section then shows return,
   volatility and Sharpe instead of excess return, IR and beta.
 - The cumulative excess figure carries a log and an arithmetic curve with a
   toggle between them; exp(final log) - 1 is the geometric excess, and a
@@ -215,6 +216,18 @@ def test_every_known_metric_has_a_definition(tmp_path):
     assert names and all(title.strip() for title, _ in names)
 
 
+def test_every_kpi_card_and_chart_explains_itself_on_hover(tmp_path):
+    html, _ = _page(tmp_path)
+
+    cards = re.findall(r'<div class="kpi"( title="[^"]+")?><div class="kl">([^<]+)</div>', html)
+    assert cards and all(title for title, _ in cards), [label for title, label in cards if not title]
+    charts = re.findall(r'<h3 title="([^"]*)">([^<]+) <span class="i">', html)
+    assert [label for _, label in charts] == ["Performance", "Excess", "Rolling", "Portfolio"]
+    assert all(title.strip() for title, _ in charts)
+    # The page script shows every title as a styled tooltip.
+    assert 'id="tip"' in html and "dataset.tip" in html
+
+
 def test_an_unknown_metric_renders_in_the_other_group_and_nothing_raises(tmp_path):
     html, _ = _page(tmp_path, extra={"Mystery Score": 1234567.891, "Odd [%]": 3.14159, "Blob": {"a": 1}})
 
@@ -314,7 +327,7 @@ def test_without_a_benchmark_the_relative_cards_tables_and_tab_are_left_out(tmp_
     assert _table(html, "Strategy")[0] == ["", "Strategy"]
     assert "Relative to" not in html
     tabs = re.findall(r'<button class="tab[^"]*" data-tab="[^"]+">([^<]+)</button>', html)
-    assert tabs == ["Performance", "Rolling", "Portfolio"]
+    assert tabs == ["Overview", "Rolling", "Portfolio", "Setup &amp; notes"]
 
 
 # --------------------------------------------------------------------- charts
@@ -324,7 +337,7 @@ def test_the_tabs_with_a_benchmark(tmp_path):
     html, _ = _page(tmp_path)
 
     tabs = re.findall(r'<button class="tab[^"]*" data-tab="[^"]+">([^<]+)</button>', html)
-    assert tabs == ["Performance", "Excess", "Rolling", "Portfolio"]
+    assert tabs == ["Overview", "Excess", "Rolling", "Portfolio", "Setup &amp; notes"]
 
 
 def test_the_cumulative_excess_has_a_log_and_an_arithmetic_curve_and_a_toggle(tmp_path):
@@ -438,7 +451,7 @@ def test_without_weights_or_turnover_the_portfolio_tab_is_left_out(tmp_path):
     html, _ = _page(tmp_path, portfolio=False)
 
     tabs = re.findall(r'<button class="tab[^"]*" data-tab="[^"]+">([^<]+)</button>', html)
-    assert tabs == ["Performance", "Excess", "Rolling"]
+    assert tabs == ["Overview", "Excess", "Rolling", "Setup &amp; notes"]
 
 
 def test_the_performance_figure_and_the_heatmap_stay_the_first_two_figures(tmp_path):

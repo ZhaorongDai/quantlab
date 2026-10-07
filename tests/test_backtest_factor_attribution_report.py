@@ -1,12 +1,12 @@
 """Factor attribution in the backtest report and the tracker summary (#212, ADR 0026).
 
-With a risk model, a run's ``report.html`` gains a "Factor attribution" tab
-drawn from its ``metrics.json`` block and ``factor_attribution.zarr`` only:
-the cumulative log contribution curves by group (Country, Industry, Style,
-Specific, Uncovered, Risk-free, Trading and their total), the per-style
-contribution bars by segment, the style exposures (segment means and time
-series), the industry top/bottom table, the ex-ante risk split over time with
-its group and factor tables, the ex-post risk table and the coverage series.
+With a risk model, a run's ``report.html`` gains a "Factor attribution"
+section drawn from its ``metrics.json`` block and ``factor_attribution.zarr``
+only (#215): six tiles, then return and risk side by side (by part as bars
+from the zero axis, over time, styles, industries), the style exposure
+heatmap and each part's return against its realized risk, every tile and
+chart explained in its ``title``. Factors are named by the store's ``label``
+coordinate, or by their names without one.
 Without a risk model no such tab appears (the page bytes are locked by
 ``tests.test_backtest_report_lock``). The tracker summary holds the scalar
 ``factor_attribution`` entries beside the whole / in-sample / out-of-sample
@@ -19,12 +19,14 @@ Everything is synthetic, CPU-only and offline.
 """
 
 import json
+import re
 
 import numpy as np
 import pytest
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.runs.backtest_run import BacktestRun
+from quantlab.runs.factor_attribution_report import factor_attribution_section
 from tests.backtest_fixtures import make_model, train_checkpoint
 from tests.test_backtest_factor_attribution import (
     _backtester,
@@ -82,50 +84,96 @@ def _pane(page: str, label: str) -> str:
     return page[start:] if end < 0 else page[start:end]
 
 
-def test_a_run_with_a_risk_model_has_the_factor_attribution_tab(tracked):
+TRACES = ("return_by_part", "risk_by_part", "cumulative_total", "style_exposure", "style_contribution",
+          "style_forecast_risk", "style_realized_risk", "industry_return", "industry_risk",
+          "style_exposure_heatmap", "Realized (63-bar)")
+CARDS = ("Return by part", "Risk by part", "Return over time", "Risk over time",
+         "Styles: exposure and return", "Styles: risk", "Industries: return", "Industries: risk",
+         "Style exposure over time", "Return against realized risk")
+TILES = ("Log growth / yr", "From factors", "Risk-free + trading", "Forecast vol", "Realized vol", "Coverage")
+
+
+def test_a_run_with_a_risk_model_has_the_factor_attribution_section(tracked):
     result, _ = tracked
     page = _page(result)
     assert TAB in page
     pane = _pane(page, "Factor attribution")
-    for curve in GROUP_CURVES:
-        assert f'"name":"factor_attribution_{curve}"' in pane, curve
-    for trace in ("style_contribution_whole", "style_contribution_in_sample",
-                  "style_contribution_out_of_sample", "style_mean_exposure_whole",
-                  "style_exposure_style", "ex_ante_total", "ex_ante_factor",
-                  "ex_ante_specific", "covered_weight"):
+    for curve in GROUP_CURVES[:-1]:
+        assert f'"name":"cumulative_{curve}"' in pane, curve
+    for trace in TRACES:
         assert f'"name":"{trace}"' in pane, trace
-    for heading in ("Factor attribution (annualised log growth)", "Top and bottom industries",
-                    "Ex-ante risk by group", "Ex-ante risk by factor", "Ex-post risk contribution",
-                    "Coverage"):
-        assert f"<h2>{heading}" in pane, heading
-    for row in (">Country</th>", ">Industry</th>", ">Style</th>", ">Specific</th>", ">of which Country</th>",
-                ">Uncovered</th>", ">Risk-free</th>", ">Trading</th>", ">Total</th>"):
-        assert row in pane, row
+    for card in CARDS:
+        assert re.search(rf'<h3 title="[^"]+">{re.escape(card)} ', pane), card
+    for tile in TILES:
+        assert re.search(rf'<div class="tile" title="[^"]+"><div class="kl">{re.escape(tile)}</div>', pane), tile
+    # Every bar of the "by part" charts starts from the zero axis (no waterfall).
+    assert '"type":"waterfall"' not in pane
 
 
-def test_the_tab_shows_the_metrics_numbers(tracked):
+def test_the_section_shows_the_headline_segment(tracked):
     result, _ = tracked
     pane = _pane(_page(result), "Factor attribution")
-    block = result.metrics["factor_attribution"]
-    for segment in ("whole", "in_sample", "out_of_sample"):
-        total = block[segment]["annualized_log_return"]["total"]
-        assert f"{100 * total:+,.2f}%" in pane, segment
-    top = block["out_of_sample"]["industries"]["top"][0]["factor"]
-    assert f">{top}</th>" in pane
+    out_of_sample = result.metrics["factor_attribution"]["out_of_sample"]
+    total = out_of_sample["annualized_log_return"]["total"]
+    assert f"{100 * total:+.2f}%" in pane
+    assert f"{total:+.1%}" in pane  # the Total bar's label
+    assert "out-of-sample" in pane
 
 
-def test_run_weights_tab_has_the_whole_segment_only(weights_run):  # noqa: F811
+def test_run_weights_section_summarizes_the_whole_window(weights_run):  # noqa: F811
     pane = _pane(_page(weights_run), "Factor attribution")
-    assert '"name":"style_contribution_whole"' in pane
-    assert "style_contribution_in_sample" not in pane
-    assert "style_contribution_out_of_sample" not in pane
+    total = weights_run.metrics["factor_attribution"]["whole"]["annualized_log_return"]["total"]
+    assert f"{100 * total:+.2f}%" in pane
+    assert "whole window" in pane
 
 
-def test_run_cv_tab_draws_the_stitched_attribution(cv):  # noqa: F811
+def test_run_cv_section_draws_the_stitched_attribution(cv):  # noqa: F811
     pane = _pane(_page(cv), "Factor attribution")
-    total = cv.metrics["stitched"]["factor_attribution"]["whole"]["annualized_log_return"]["total"]
-    assert f"{100 * total:+,.2f}%" in pane
-    assert '"name":"factor_attribution_total"' in pane
+    stitched = cv.metrics["stitched"]["factor_attribution"]
+    segment = stitched["out_of_sample"] or stitched["whole"]
+    assert f"{100 * segment['annualized_log_return']['total']:+.2f}%" in pane
+    assert '"name":"cumulative_total"' in pane
+
+
+def test_factors_are_named_by_the_store_label_and_by_their_name_without_one(weights_run):  # noqa: F811
+    run = BacktestRun.open(weights_run.run_dir)
+    block = run.metrics()["factor_attribution"]
+    stored = run.factor_attribution()
+    named = stored.assign_coords(label=("factor", [f"Name of {f}" for f in stored["factor"].values]))
+    with_labels = factor_attribution_section(block, named, out_of_sample=False)
+    assert "Name of industry_1" in with_labels and "Name of style" in with_labels
+    without = factor_attribution_section(block, stored.drop_vars("label"), out_of_sample=False)
+    assert "Name of" not in without and "industry_1" in without
+
+
+def test_a_model_without_country_or_industries_draws_only_the_groups_it_has(weights_run):  # noqa: F811
+    run = BacktestRun.open(weights_run.run_dir)
+    block, stored = run.metrics()["factor_attribution"], run.factor_attribution()
+    styles_only = stored.assign_coords(group=("factor", ["style"] * stored.sizes["factor"]))
+    page = factor_attribution_section(block, styles_only, out_of_sample=False)
+    assert "Industries: return" not in page and "cumulative_country" not in page
+    assert '"name":"cumulative_style"' in page
+
+
+def test_a_value_that_could_not_be_computed_is_a_dash_not_a_zero(weights_run):  # noqa: F811
+    run = BacktestRun.open(weights_run.run_dir)
+    block, stored = run.metrics()["factor_attribution"], run.factor_attribution()
+    whole = dict(block["whole"])
+    whole["ex_post_risk"] = {
+        "volatility": None,
+        "term_contribution": {term: None for term in whole["ex_post_risk"]["term_contribution"]},
+        "factor_contribution": {name: None for name in whole["ex_post_risk"]["factor_contribution"]},
+        "group_contribution": {name: None for name in whole["ex_post_risk"]["group_contribution"]},
+    }
+    page = factor_attribution_section({"whole": whole}, stored, out_of_sample=False)
+    assert '<div class="kl">Realized vol</div><div class="kv">—</div>' in page
+    assert '"\\u2014"' in page  # the realized bars' labels, in plotly's JSON
+
+
+def test_a_block_without_a_segment_is_a_note(weights_run):  # noqa: F811
+    stored = BacktestRun.open(weights_run.run_dir).factor_attribution()
+    page = factor_attribution_section({"whole": None}, stored, out_of_sample=False)
+    assert page.startswith('<p class="note">') and "plotly" not in page
 
 
 def test_without_a_risk_model_there_is_no_tab(planted, tmp_path):  # noqa: F811

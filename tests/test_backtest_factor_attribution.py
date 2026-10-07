@@ -606,6 +606,8 @@ def test_the_run_directory_holds_the_exposures_with_their_groups(run):
     stored = BacktestRun.open(run.run_dir).factor_attribution()
     assert stored["exposure"].dims == ("timestamp", "factor")
     assert dict(zip(stored["factor"].values, stored["group"].values)) == GROUPS
+    # Labels default to the factor names (#215).
+    assert list(stored["label"].values) == list(FACTORS)
 
 
 def test_risk_contributions_are_reported_per_group(run):

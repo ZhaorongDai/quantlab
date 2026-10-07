@@ -292,7 +292,7 @@ out_of_sample -5.61 -4.27 13
 | `folds` | `run_cv()` 运行的各折，每折是一个 kind 为 `"fold"` 的 `BacktestRun`。 |
 | `rebuild(field)`、`rebuild_backtester(**overrides)` | 某个配置字段持有的组件，以及回测器本身（见[重建一次运行](#重建一次运行)）。 |
 
-运行的配置（重建时读取的配方）只保存回测器的 `get_config()`；运行的记录（市场、指纹、训练单元）都在 `run.json` 里。保存在内存中的数据集（`FrameDataset`）没有自己的 store，所以运行会保存一份它的面板副本，按数据集的组件路径命名（`price_dataset`、`model.factors.0.dataset`），同一个对象无论被多少个字段持有都只写一次，配方以相对运行目录的路径指向这份副本（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。`report.html` 包含关键指标、分组的指标表，以及业绩、超额收益、滚动一年统计和组合结构的图表标签页（见[报告页面](#报告页面)）。用别的格式版本写出、或者缺少 `run.json` 的运行目录会被拒绝，并提示重新运行。
+运行的配置（重建时读取的配方）只保存回测器的 `get_config()`；运行的记录（市场、指纹、训练单元）都在 `run.json` 里。保存在内存中的数据集（`FrameDataset`）没有自己的 store，所以运行会保存一份它的面板副本，按数据集的组件路径命名（`price_dataset`、`model.factors.0.dataset`），同一个对象无论被多少个字段持有都只写一次，配方以相对运行目录的路径指向这份副本（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。`report.html` 包含关键指标和左侧分区导航，各分区把图表（业绩、超额收益、滚动一年统计、组合结构、归因）与解释它们的分组指标表放在一起（见[报告页面](#报告页面)）。用别的格式版本写出、或者缺少 `run.json` 的运行目录会被拒绝，并提示重新运行。
 
 ```python
 >>> run.market
@@ -460,7 +460,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: the weight bars must be exac
 (True, -5.87)
 ```
 
-`report_figure(result)` 以 plotly 图形返回 `report.html` 中 Performance 标签页的那张图（净值、回撤、月度收益，设置了基准时基准与组合并列），因此只在内存中运行的结果也能查看。它接受 `run()` 或 `run_weights()` 的结果。
+`report_figure(result)` 以 plotly 图形返回 `report.html` 中 Performance 那张图（净值、回撤、月度收益，设置了基准时基准与组合并列），因此只在内存中运行的结果也能查看。它接受 `run()` 或 `run_weights()` 的结果。
 
 ```python
 >>> figure = weights_backtester.report_figure(in_memory)
@@ -511,7 +511,7 @@ sorted(benchmarked.metrics["relative"]["whole"])[:4]
 - `benchmark`：基准的 `symbol` 及其自身的收益统计（总收益、年化收益、波动率、Sharpe、最大回撤等）；
 - `relative`：组合相对基准的表现，命名沿用 vectorbt 的风格，所有带 `[%]` 的行都是百分数。*相对净值* = 组合净值 / 基准净值。`Excess Return [%]` 是期末相对净值减 1（即通常所说的超额收益 alpha），`Annualized Excess Return [%]` 为其年化值，`Excess Max Drawdown [%]` 是相对净值从其历史高点的最大回落（*超额回撤*，为负数或 0），另有 `Strategy Total Return [%]`、`Benchmark Total Return [%]`、`Total Return Difference [%]`、`Tracking Error [%]`、`Information Ratio`、`Beta`、`Correlation`、`CAPM Alpha [%]`（年化回归截距）和 `Win Rate vs Benchmark [%]`（收益高于基准的 bar 所占比例）、`Rebalance Win Rate vs Benchmark [%]`（复利收益跑赢基准的持有期所占比例，持有期从一个有成交的 bar 到下一个有成交的 bar 之前）和 `Monthly Win Rate vs Benchmark [%]`（按自然月计算的同一比例）。策略自己的各分段还有 `Rebalance Win Rate [%]` 和 `Monthly Win Rate [%]`，即收益为正的比例，有没有基准都会计算。
 
-`report.html` 在 Performance 标签页上把基准（灰色虚线）画在组合旁边（净值、回撤、月度收益），基准出现在 "Strategy vs" 表的第二列，并增加 "Relative to" 表和 Excess 标签页；Rolling 标签页改为超额收益、信息比率和 beta（见[报告页面](#报告页面)）。运行的 `equity()` 额外包含 `benchmark_value` 和 `benchmark_returns`，它的 `data_fingerprint` 在 `benchmark_dataset` 下记录基准数据指纹，`rebuild_backtester()` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
+`report.html` 在 Performance 图上把基准（灰色虚线）画在组合旁边（净值、回撤、月度收益），基准出现在 "Strategy vs" 表的第二列，并增加带 "Relative to" 表的 Excess 分区；Rolling 分区改为超额收益、信息比率和 beta（见[报告页面](#报告页面)）。运行的 `equity()` 额外包含 `benchmark_value` 和 `benchmark_returns`，它的 `data_fingerprint` 在 `benchmark_dataset` 下记录基准数据指纹，`rebuild_backtester()` 可以重建基准。`run_cv()` 对拼接曲线和每个 fold 做同样的对比。
 
 ### 超额归因
 
@@ -529,7 +529,7 @@ sorted(parts)
 - `selection`：同一组目标权重在不计手续费和滑点时的模拟，相对等权股票池：分数和组合规则带来的部分；
 - `costs`：策略相对不计成本的同一组权重。
 
-一年按市场的年长度除以 bar 间隔计，窗口按每个收益一根 bar 计数，与其他年化统计一致。没有基准时不给 `universe`，`total` 相对股票池计算；引擎无法做不计成本的模拟时不给 `costs`，成本计入 `selection`。该块还包括四条曲线的 `annualized_log_return`，以及 `group_annualized_log_return`：每次调仓把股票池按分数切成 `groups`（10）组，各组同样持有，分数最低的组在前；某次调仓的标的少于 10 个时，各组持有现金直到下一次调仓。模型的信息如果集中在分数最低的几组，即使只做多的 Top N 用不上，也会在这里显示出来。`equity()` 保存这些曲线（`universe_value`、`gross_value`，以及维度为 `(group, timestamp)` 的 `group_value`），报告在 Attribution 标签页上画出它们。纯函数在 `quantlab.runs.backtest_attribution` 中：`rebalanced_group_values`、`excess_decomposition` 和 `annualized_log_growth`。
+一年按市场的年长度除以 bar 间隔计，窗口按每个收益一根 bar 计数，与其他年化统计一致。没有基准时不给 `universe`，`total` 相对股票池计算；引擎无法做不计成本的模拟时不给 `costs`，成本计入 `selection`。该块还包括四条曲线的 `annualized_log_return`，以及 `group_annualized_log_return`：每次调仓把股票池按分数切成 `groups`（10）组，各组同样持有，分数最低的组在前；某次调仓的标的少于 10 个时，各组持有现金直到下一次调仓。模型的信息如果集中在分数最低的几组，即使只做多的 Top N 用不上，也会在这里显示出来。`equity()` 保存这些曲线（`universe_value`、`gross_value`，以及维度为 `(group, timestamp)` 的 `group_value`），报告在 Attribution 分区里画出它们。纯函数在 `quantlab.runs.backtest_attribution` 中：`rebalanced_group_values`、`excess_decomposition` 和 `annualized_log_growth`。
 
 ### 把收益和风险归因到因子
 
@@ -567,17 +567,22 @@ bool(np.allclose(per_bar["contribution"].sum("term"), attributed.simulation.retu
 
 **拒绝的情况。** 回测从不构建风险 store（构建很耗时）。在模拟之前，它会拒绝回归 store 不覆盖窗口、或估计 store 不覆盖到倒数第二根 bar 的风险模型（请先构建或扩展），以及 bar 间隔与回测不同的风险模型。模拟之后，如果有持仓却从未有任何持仓被覆盖，它也会拒绝：这说明组合和风险模型用的是不同的标的轴（例如 PERMNO 对 permaticker）。
 
-运行目录把逐 bar 的归因存在 `factor_attribution.zarr` 里（`BacktestRun` 的 `factor_attribution()`）：`(timestamp, term)` 上的 `contribution` 和 `log_contribution`，`(timestamp, factor)` 上的 `factor_contribution`、`factor_log_contribution`、`exposure` 和 `factor_risk_contribution`（带每个因子的 `group`），事前方差，`covered_weight` 和 `gross_weight`。报告在 Factor attribution 标签页上画出它，tracker 摘要里也会记下这个块的数值（`factor_attribution/whole/annualized_log_return/total` 等）。从 `config.json` 重建会一并重建风险模型并复现归因结果。纯函数是 `quantlab.risk.attribution.factor_attribution`，由 `attribution_summary` 汇总。`examples/sharadar_us_equity/sp500_xgb_mvo.py` 用它的 USE4 模型对两个均值-方差回测做了归因。
+运行目录把逐 bar 的归因存在 `factor_attribution.zarr` 里（`BacktestRun` 的 `factor_attribution()`）：`(timestamp, term)` 上的 `contribution` 和 `log_contribution`，`(timestamp, factor)` 上的 `factor_contribution`、`factor_log_contribution`、`exposure` 和 `factor_risk_contribution`（带每个因子的 `group` 和显示名 `label`，即 `FactorRiskModel.factor_labels()`，默认是因子名），事前方差，`covered_weight` 和 `gross_weight`。报告在 Factor attribution 分区里画出它，tracker 摘要里也会记下这个块的数值（`factor_attribution/whole/annualized_log_return/total` 等）。从 `config.json` 重建会一并重建风险模型并复现归因结果。纯函数是 `quantlab.risk.attribution.factor_attribution`，由 `attribution_summary` 汇总。`examples/sharadar_us_equity/sp500_xgb_mvo.py` 用它的 USE4 模型对两个均值-方差回测做了归因。
 
 ### 报告页面
 
-`report.html` 是一个页面，分三部分：
+`report.html` 是一个页面：深色页头写明运行名、窗口和基准，左侧是分区导航，上方是一排关键指标，每个分区里用卡片把图表和解释它的表格并排放在一起。鼠标悬停在关键指标、指标名、因子归因的数字卡片或图表标题旁的 ⓘ 上，会显示一段通俗的英文说明。
 
 - **关键指标**：总收益、超额收益、信息比率、胜率、Sharpe、最大回撤、beta 和年化换手，每项下面给出基准的对应值或相关数字。没有基准时是总收益、年化收益、胜率、Sharpe、最大回撤、波动率和换手。胜率是跑赢基准的持有期（从一个有成交的 bar 到下一个有成交的 bar 之前）所占的比例，下面附跑赢基准的自然月比例；没有基准时是收益为正的比例。
-- **表格**（左侧）："Windows" 时间轴，画出训练窗口和回测窗口（样本外交易的 bar 为绿色，落在训练窗口内交易的 bar 为红色，训练窗口为浅蓝色）：`run()` 只有一行；`run_cv()` 最上面是回测窗口，下面每折一行；鼠标悬停显示各窗口的日期；"Setup"，只列表格里没有的设置（bar 间隔、基准、最深回撤的日期、模型模式、调仓、组合构建、费用）；"Strategy vs *基准*"，按收益、风险、风险调整后指标分组，策略旁边列出基准和差值（百分比指标的差值用百分点）；"Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）；"Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）；运行带 in-sample 部分时还有 "In-sample vs out-of-sample"，并列样本内、样本外、两者之差和整个窗口。鼠标悬停在指标名上会显示它的定义。页面不认识的指标，无论来自策略、基准还是 relative 块，都列在 "Other" 下。
-- **图表**（右侧，分标签页）：*Performance*（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）；*Excess*，有基准时显示（累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤）；*Rolling*（滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe）；*Portfolio*（每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口）；*Attribution*，带模型的运行才有（超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长；见[超额归因](#超额归因)）；*Factor attribution*，给了 `risk_model` 才有（各分段中 country、industry、style 三组以及 specific、uncovered、risk_free、trading 各项的年化对数增长和累计曲线，累计曲线加起来就是对数净值；各风格因子的贡献与暴露；贡献最高和最低的行业；事前风险随时间的拆分及按组、按因子的表；事后风险贡献；以及覆盖率；见[把收益和风险归因到因子](#把收益和风险归因到因子)）。
+- **Overview**："Windows" 时间轴，画出训练窗口和回测窗口（样本外交易的 bar 为绿色，落在训练窗口内交易的 bar 为红色，训练窗口为浅蓝色）：`run()` 只有一行；`run_cv()` 最上面是回测窗口，下面每折一行；鼠标悬停显示各窗口的日期；运行带 in-sample 部分时还有 "In-sample vs out-of-sample"，并列样本内、样本外、两者之差和整个窗口；*Performance* 图（带线性/对数切换的净值、回撤、月度收益和按年按月的热力图）旁边是 "Strategy vs *基准*"，按收益、风险、风险调整后指标分组，策略旁边列出基准和差值（百分比指标的差值用百分点）。页面不认识的指标，无论来自策略、基准还是 relative 块，都列在 "Other" 下。
+- **Excess**，有基准时显示：累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤；旁边是 "Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）。
+- **Rolling**：滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe。
+- **Portfolio**：每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口；旁边是 "Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）。
+- **Attribution**，带模型的运行才有：超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长（见[超额归因](#超额归因)）。
+- **Factor attribution**，给了 `risk_model` 才有（见[把收益和风险归因到因子](#把收益和风险归因到因子)）：六个数字卡片（年化对数增长、来自因子的部分、无风险加交易、预测与实现波动率、覆盖率），然后收益与风险左右并排：各部分的年化对数增长画成从 0 轴起的柱，加起来等于合计，旁边是各部分对预测波动率的贡献、预测波动率和实现波动率；各部分的累计对数贡献（加起来等于对数净值），旁边是按月、按部分的预测波动率与 63 根 bar 的实现波动率；各风格的平均暴露与贡献，旁边是它们的预测与实现风险；贡献最好和最差的各 10 个行业，旁边是按预测风险排序的行业；最后是各风格每周暴露的热力图，以及各部分收益与实现风险的对比。行业和风格用风险模型的 `factor_labels()` 命名（`Use4RiskModel` 用 Fama-French 48 行业名）。
+- **Setup & notes**："Setup" 只列表格里没有的设置（bar 间隔、基准、最深回撤的日期、模型模式、调仓、组合构建、费用），以及说明。
 
-运行带 in-sample 部分时，关键指标和主表取样本外部分，也就是模型没见过的 bar，并且所有图都用灰色标出 in-sample 区间。页面上所有回撤都是负数。超额回撤（相对净值从高点的回落）只画在 Excess 标签页上，不和两条净值自身的回撤放在一起，因为两者的数值不可比。
+运行带 in-sample 部分时，关键指标和主表取样本外部分，也就是模型没见过的 bar，并且所有随时间变化的图都用灰色标出 in-sample 区间。页面上所有回撤都是负数。超额回撤（相对净值从高点的回落）只画在 Excess 分区里，不和两条净值自身的回撤放在一起，因为两者的数值不可比。
 
 ### 追踪一次回测
 
@@ -739,7 +744,7 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 | `report_summary(config, block, *, bar_interval, drawdown_span=None, benchmark_source=None)` | `summary`，即 "Setup" 各行，来自回测器的配置映射（`get_config()`）及其指标块 |
 | `report_windows(timestamps, block, folds=None)` | `windows`，即时间线；`folds` 是 `run_cv()` 运行的各折行（`fold`、`training_window`、`traded`、`in_sample_range`） |
 | `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | 图表与基准参数 |
-| `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`、`turnover` 和 `bars_per_year`，即 Portfolio 与 Rolling 标签页 |
+| `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`、`turnover` 和 `bars_per_year`，即 Portfolio 与 Rolling 分区 |
 
 给 summary 的某个键赋值即可替换该行且位置不变；`write_backtest_report(..., extra_tables={标题: {行名: 值}})` 在指标表之后追加带标题的表格，用于只有执行器才有的统计量。接上文：
 

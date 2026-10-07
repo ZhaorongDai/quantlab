@@ -22,6 +22,7 @@ its definition.
 from dataclasses import dataclass
 
 from quantlab.core.component import component
+from quantlab.dataset._support.ff48 import FF48_INDUSTRIES
 from quantlab.core.config import FrozenConfig
 from quantlab.enums.data import (
     BarInterval,
@@ -192,6 +193,11 @@ SPY_PERMNO: str = "84398"
 #: Sharadar permaticker of SPY in the SFP table (TICKERS, 2026-10-05 pull),
 #: the S&P 500 benchmark on the Sharadar axis.
 SPY_PERMATICKER: int = 118691
+
+#: Each Fama-French 48 industry's long name, keyed by its code: the industry
+#: codes ``SharadarIndustryDataset`` stores and ``Use4RiskModel`` names
+#: (``FF48_INDUSTRY_NAMES[34] == "Business Services"``).
+FF48_INDUSTRY_NAMES: dict[int, str] = {industry.code: industry.name for industry in FF48_INDUSTRIES}
 
 #: PERMNO of the IWM ETF (iShares Russell 2000 ETF), the small-cap series of
 #: the market-feature factor.

@@ -9,7 +9,9 @@ contract of ``FactorRiskModel``. A model whose rows break the contract is
 refused when it computes them.
 
 Every factor is a style by default (``factor_groups``); USE4 groups its
-country factor, industries and styles (#211).
+country factor, industries and styles (#211). Every factor is labelled by its
+name by default (``factor_labels``); USE4 names its industries and drops the
+``style_`` prefix (#215).
 """
 
 import dataclasses
@@ -209,6 +211,24 @@ def test_use4_groups_its_country_industries_and_styles(planted_use4):
     )
     without_country = Use4RiskModel(dataclasses.replace(model.config, country=False))
     assert "country" not in without_country.factor_groups().values()
+
+
+def test_every_factor_is_labelled_by_its_name_by_default(model):
+    assert model.factor_labels() == {"market": "market"}
+
+
+def test_use4_labels_industries_by_name_and_styles_without_their_prefix(planted_use4):
+    labels = planted_use4.factor_labels()
+    assert list(labels) == list(planted_use4.factor_names)
+    assert labels["country"] == "Country"
+    assert [labels[f"industry_{code}"] for code in planted_use4.config.industries] == [
+        "Agriculture", "Food Products", "Candy & Soda", "Beer & Liquor"
+    ]
+    assert labels["style_a"] == "a"
+    renamed = Use4RiskModel(dataclasses.replace(
+        planted_use4.config, style_names=("style_residual_volatility", "style_b")
+    ))
+    assert renamed.factor_labels()["style_residual_volatility"] == "residual volatility"
 
 
 @pytest.fixture(scope="module")

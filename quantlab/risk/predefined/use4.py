@@ -42,6 +42,7 @@ import xarray as xr
 from joblib import Parallel, delayed
 
 from quantlab.dataset.base import InsufficientHistoryError
+from quantlab.dataset.config import FF48_INDUSTRY_NAMES
 from quantlab.risk.base import FactorRiskModel, covered_factors
 from quantlab.risk.config import REGRESSION_WEIGHTINGS, Use4RiskConfig
 from quantlab.utils.date_range import check_range
@@ -467,6 +468,26 @@ class Use4RiskModel(FactorRiskModel):
         country = {"country": "country"} if config.country else {}
         industries = {f"industry_{code}": "industry" for code in config.industries}
         return {**country, **industries, **{name: "style" for name in config.style_names}}
+
+    def factor_labels(self) -> dict[str, str]:
+        """Return ``Country``, each industry's Fama-French 48 name and each style without ``style_``.
+
+        Examples
+        --------
+        >>> labels = model.factor_labels()
+        >>> labels["country"], labels["industry_34"], labels["style_residual_volatility"]
+        ('Country', 'Business Services', 'residual volatility')
+        """
+        config = self.config
+        country = {"country": "Country"} if config.country else {}
+        industries = {
+            f"industry_{code}": FF48_INDUSTRY_NAMES.get(code, f"industry {code}")
+            for code in config.industries
+        }
+        styles = {
+            name: name.removeprefix("style_").replace("_", " ") for name in config.style_names
+        }
+        return {**country, **industries, **styles}
 
     def exposure_matrix(self, exposures: xr.Dataset) -> tuple[np.ndarray, np.ndarray]:
         """Return each symbol's exposures to ``factor_names`` and whether it has them all.

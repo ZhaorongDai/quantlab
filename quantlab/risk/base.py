@@ -551,6 +551,28 @@ class FactorRiskModel(Component, ABC):
         """
         return {name: "style" for name in self.factor_names}
 
+    def factor_labels(self) -> dict[str, str]:
+        """Return each factor's display name, keyed by factor name.
+
+        The backtest report names factors by these labels (stored as the
+        ``label`` coordinate of a backtest's factor attribution). By default
+        a factor is labelled by its name; a model with coded factor names
+        (``industry_34``) overrides this method.
+
+        Returns
+        -------
+        dict
+            ``{factor: label}`` in ``factor_names`` order.
+
+        Examples
+        --------
+        >>> list(model.factor_labels()) == list(model.factor_names)
+        True
+        >>> model.factor_labels()["industry_34"]  # a Use4RiskModel
+        'Business Services'
+        """
+        return {name: name for name in self.factor_names}
+
     @property
     @abstractmethod
     def regression_warmup_bars(self) -> int:

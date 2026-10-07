@@ -1,22 +1,28 @@
 """HTML report writer for one backtest run.
 
-``write_backtest_report`` renders a single self-contained page for a run. A
-row of headline cards sits on top; below it, the metric tables are on the
-left and the charts on the right, in tabs. The tables compare the strategy
+``write_backtest_report`` renders a single self-contained page for a run: a
+dark header naming the run, its window and benchmark, a sidebar of sections,
+a row of headline cards and, per section, cards holding each chart beside
+the tables that explain it. The tables compare the strategy
 with the benchmark by group (returns, risk, risk-adjusted), list the excess
 over the benchmark and the trading statistics, and, when the run has an
 in-sample part, set the in-sample and out-of-sample slices side by side.
 *In-sample* means the bars the model was trained on; *out-of-sample* means
 the bars it never saw, which are the honest test, so the cards and the main
-tables show the out-of-sample slice whenever the run has both. The tabs are
-Performance (equity, drawdown, monthly returns and their year-by-month
-heatmap), Excess (cumulative excess return and excess drawdown), Rolling
-(one-year rolling statistics) and Portfolio (turnover, holdings and exposure
-per rebalance), plus Attribution for a model run and Factor attribution for a
-run with a risk model, the latter drawn from the run's metrics and per-bar
-``factor_attribution.zarr`` only (this layer imports no risk model).
-``backtest_report_figure`` returns the Performance chart
-alone, as a plotly figure.
+tables show the out-of-sample slice whenever the run has both. The sections
+are Overview (the windows, in-sample against out-of-sample, the Performance
+chart of equity, drawdown, monthly returns and their year-by-month heatmap,
+and strategy against benchmark), Excess (cumulative excess return and excess
+drawdown, and the relative table), Rolling (one-year rolling statistics),
+Portfolio (turnover, holdings and exposure per rebalance, and the trading
+table), Attribution for a model run, Factor attribution for a run with a
+risk model (``quantlab.runs.factor_attribution_report``, drawn from the run's
+metrics and per-bar ``factor_attribution.zarr`` only: this layer imports no
+risk model) and Setup & notes. Every headline card, metric row and chart
+carries a plain-English explanation in its ``title``, which the page shows
+as a tooltip on hover. Charts are drawn on a white plot area with a light
+grid. ``backtest_report_figure`` returns the Performance chart alone, as a
+plotly figure.
 
 The module holds a catalogue of the metrics it knows, with each one's
 group, label, unit and definition, but it renders every metric it is given:
@@ -34,10 +40,10 @@ executor that simulates elsewhere (an event-driven replay of a quantlab run)
 writes a page in exactly this format: ``report_summary`` (the "Setup"
 lines, from a run's config mapping), ``report_windows`` (the timeline),
 ``report_chart_inputs`` (the chart and benchmark arguments) and
-``report_portfolio_inputs`` (the Portfolio and Rolling tabs).
+``report_portfolio_inputs`` (the Portfolio and Rolling sections).
 ``quantlab.backtest.base`` builds its own pages through them. This module
-imports only the standard library, numpy, pandas, xarray, plotly and
-``quantlab.runs.backtest_stats``.
+imports only the standard library, numpy, pandas, xarray, plotly,
+``quantlab.runs.backtest_stats`` and ``quantlab.runs.factor_attribution_report``.
 """
 
 import html
@@ -53,6 +59,9 @@ from plotly.subplots import make_subplots
 
 from quantlab.utils import date_range
 from quantlab.runs import backtest_stats
+from quantlab.runs.factor_attribution_report import (
+    AXIS, CHART_FONT, GRID, INK2, MUTED, factor_attribution_section,
+)
 
 __all__ = [
     "backtest_report_figure",
@@ -68,51 +77,88 @@ __all__ = [
 DASH = "—"
 
 _STYLE = """
-  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif;
-         margin: 24px; color: #1a1a1a; }
-  h1 { font-size: 20px; margin: 0 0 12px 0; word-break: break-all; }
-  h2 { font-size: 15px; margin: 20px 0 8px 0; color: #444; }
-  .kpis { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 8px 0; }
-  .kpi { border: 1px solid #e5e5e5; border-radius: 8px; padding: 8px 12px; min-width: 120px; }
-  .kl { font-size: 11px; color: #777; text-transform: uppercase; letter-spacing: .04em; }
-  .kv { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .kv.pos { color: #1b8a5a; } .kv.neg { color: #e03b30; }
-  .ks { font-size: 11px; color: #777; }
-  .layout { display: flex; flex-wrap: wrap; gap: 28px; align-items: flex-start; }
-  .tables { flex: 0 1 440px; min-width: 320px; max-width: 100%; overflow-x: auto; }
-  .charts { flex: 1 1 720px; min-width: 0; }
-  .tabs { display: flex; gap: 4px; border-bottom: 1px solid #e5e5e5; margin-top: 20px; }
-  .tab { border: 0; background: none; padding: 6px 12px; cursor: pointer; color: #555;
-         border-bottom: 2px solid transparent; font-size: 13px; }
-  .tab.on { color: #1a1a1a; border-bottom-color: #1f77b4; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4f5f7; color: #111827; font-size: 13px;
+         font-family: Inter, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  header { position: sticky; top: 0; z-index: 5; background: #0f172a; color: #fff; padding: 12px 24px;
+           display: flex; align-items: baseline; gap: 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis;
+       white-space: nowrap; }
+  header .sub { color: #94a3b8; font-size: 12px; white-space: nowrap; }
+  h2 { font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 10px; }
+  .card h2 ~ h2, .card table + h2, .card ul + h2 { margin-top: 18px; }
+  h3 { font-size: 13px; font-weight: 600; color: #111827; margin: 0 0 2px; }
+  h3 .i { color: #9ca3af; font-weight: 400; }
+  p.sub { font-size: 12px; color: #6b7280; margin: 0 0 6px; }
+  .shell { display: flex; min-height: calc(100vh - 46px); }
+  nav { width: 200px; flex: none; padding: 20px 12px; position: sticky; top: 46px;
+        height: calc(100vh - 46px); border-right: 1px solid #e5e7eb; background: #fff; }
+  .tab { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 9px 12px;
+         border-radius: 8px; font: inherit; color: #374151; cursor: pointer; margin-bottom: 2px; }
+  .tab:hover { background: #f3f4f6; }
+  .tab.on { background: #eff6ff; color: #2563eb; font-weight: 600; }
+  main { flex: 1; min-width: 0; padding: 20px 24px 60px; }
   .pane { display: none; } .pane.on { display: block; }
-  table.summary { border-collapse: collapse; font-size: 13px; }
-  table.summary th { text-align: left; padding: 3px 16px 3px 0;
-                     font-weight: 600; color: #444; white-space: nowrap; }
-  table.summary td { padding: 3px 0; font-variant-numeric: tabular-nums;
-                     overflow-wrap: anywhere; }
-  table.summary td .scroll { max-height: 4.8em; overflow-y: auto; font-size: 12px;
-                             padding-right: 4px; }
-  table.metrics { border-collapse: collapse; font-size: 13px; }
-  table.metrics th, table.metrics td { padding: 3px 16px 3px 0;
-                                       border-bottom: 1px solid #eee;
+  .kpis, .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;
+                  margin-bottom: 20px; }
+  .tiles { margin-bottom: 0; }
+  .kpi, .tile { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px 16px;
+                box-shadow: 0 1px 2px rgba(0,0,0,.05); }
+  .kl { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; }
+  .kv { font-size: 22px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .kv.pos { color: #059669; } .kv.neg { color: #dc2626; }
+  .ks { font-size: 12px; color: #6b7280; margin-top: 2px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; align-items: start;
+          margin-bottom: 16px; }
+  .grid2, .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px;
+                  align-items: start; margin-bottom: 16px; }
+  .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px 18px;
+          box-shadow: 0 1px 2px rgba(0,0,0,.05); min-width: 0; overflow-x: auto; margin-bottom: 16px; }
+  .grid > .card, .grid2 > .card, .pair > .card { margin-bottom: 0; }
+  .fa { display: flex; flex-direction: column; gap: 16px; }
+  .fa .pair, .fa .card { margin-bottom: 0; }
+  .pair.heads { margin-bottom: -8px; }
+  .colhead { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .08em; font-weight: 600; }
+  p.note { font-size: 12px; color: #6b7280; margin: 0; }
+  table.summary { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.summary th { text-align: left; padding: 5px 16px 5px 0; font-weight: 500; color: #6b7280;
+                     white-space: nowrap; border-bottom: 1px solid #f1f2f4; vertical-align: top; }
+  table.summary td { padding: 5px 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere;
+                     border-bottom: 1px solid #f1f2f4; }
+  table.summary td .scroll { max-height: 4.8em; overflow-y: auto; font-size: 12px; padding-right: 4px; }
+  table.metrics { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  table.metrics th, table.metrics td { padding: 5px 10px 5px 0; border-bottom: 1px solid #f1f2f4;
                                        white-space: nowrap; }
-  table.metrics thead th { text-align: right; color: #444; }
+  table.metrics thead th { text-align: right; color: #6b7280; font-weight: 500; font-size: 11px;
+                           text-transform: uppercase; letter-spacing: .04em; }
   table.metrics thead th:first-child { text-align: left; }
-  table.metrics tbody th { text-align: left; font-weight: 400; color: #333;
-                           cursor: help; text-decoration: underline dotted #bbb; }
+  table.metrics tbody th { text-align: left; font-weight: 400; color: #374151; }
   table.metrics td { text-align: right; font-variant-numeric: tabular-nums; }
-  table.metrics td.better { font-weight: 600; color: #146c43; background: #e8f5ee; }
-  table.metrics tr.group td { text-align: left; font-size: 11px; color: #777;
-                              text-transform: uppercase; letter-spacing: .05em;
-                              padding-top: 10px; border-bottom: 1px solid #ccc; }
-  ul.notes { font-size: 13px; color: #444; padding-left: 20px; }
+  table.metrics td.better { font-weight: 600; color: #059669; }
+  table.metrics tr.group td { text-align: left; font-size: 10.5px; color: #6b7280; text-transform: uppercase;
+                              letter-spacing: .06em; padding-top: 12px; border-bottom: 1px solid #e5e7eb; }
+  [data-tip], [title] { cursor: help; }
+  table.metrics tbody th[data-tip] { text-decoration: underline dotted #9ca3af; text-underline-offset: 3px; }
+  .kpi[data-tip]:hover, .tile[data-tip]:hover { border-color: #93c5fd; }
+  #tip { position: fixed; z-index: 100; max-width: 340px; background: #0f172a; color: #f8fafc;
+         font-size: 13px; line-height: 1.5; padding: 10px 12px; border-radius: 8px; pointer-events: none;
+         box-shadow: 0 8px 24px rgba(0,0,0,.25); display: none; }
+  #tip b { display: block; margin-bottom: 4px; font-weight: 600; }
+  ul.notes { color: #4b5563; padding-left: 18px; line-height: 1.55; margin: 0; }
   .timeline { font-size: 12px; color: #333; }
-  .timeline .caption { color: #555; margin: 0 0 6px; }
-  .timeline svg text { font-size: 10px; fill: #555; }
-  .timeline .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #555; margin-top: 4px; }
+  .timeline .caption { color: #6b7280; margin: 0 0 6px; }
+  .timeline svg text { font-size: 10px; fill: #6b7280; }
+  .timeline .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #6b7280; margin-top: 4px; }
   .timeline .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px;
                   vertical-align: -1px; margin-right: 4px; }
+  @media (max-width: 900px) {
+    .shell { flex-direction: column; }
+    nav { width: auto; height: auto; position: static; display: flex; overflow-x: auto; padding: 8px 12px;
+          border-right: 0; border-bottom: 1px solid #e5e7eb; }
+    .tab { width: auto; white-space: nowrap; }
+    main { padding: 16px; }
+    .grid, .grid2, .pair { grid-template-columns: 1fr; }
+  }
 """
 
 
@@ -141,22 +187,24 @@ def write_backtest_report(
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
-    The page opens with a row of headline numbers, then the tables on the
-    left (a timeline of the run's windows, the setup, strategy against the
-    benchmark by group, the excess over it,
-    trading, and in-sample against out-of-sample when the run has an
-    in-sample part) and the charts on the right in tabs: Performance (NAV,
-    drawdown, monthly returns and the monthly heatmap), Excess (cumulative
-    excess return with a log / arithmetic toggle, and the excess drawdown),
-    Rolling (one-year panels), Portfolio (turnover, holdings and
-    exposure per rebalance), Attribution and Factor attribution (see
-    ``attribution`` and ``factor_attribution``). The headline numbers and
-    the main tables are the out-of-sample slice when the run has an
-    in-sample part, else the whole window. Drawdown is ``value / running max - 1``, negative below a
-    peak, in every table, card and chart. Everything after ``title`` is
-    optional; a section, card or tab whose input is missing is left off the
-    page, and a metric the page does not know is still shown, in an "Other"
-    table.
+    The page opens with a header (the run, its window and benchmark), a
+    sidebar of sections and a row of headline numbers. Each section holds
+    its charts beside the tables that explain them: Overview (the windows
+    timeline, in-sample against out-of-sample when the run has an in-sample
+    part, the Performance chart of NAV, drawdown, monthly returns and the
+    monthly heatmap, and the strategy against the benchmark by group),
+    Excess (cumulative excess return with a log / arithmetic toggle, the
+    excess drawdown, and the excess over the benchmark), Rolling (one-year
+    panels), Portfolio (turnover, holdings and exposure per rebalance, and
+    trading), Attribution, Factor attribution (see ``attribution`` and
+    ``factor_attribution``) and Setup & notes. Every headline number, metric
+    row and chart explains itself on hover. The headline numbers and the
+    main tables are the out-of-sample slice when the run has an in-sample
+    part, else the whole window. Drawdown is ``value / running max - 1``,
+    negative below a peak, in every table, card and chart. Everything after
+    ``title`` is optional; a section, card or table whose input is missing
+    is left off the page, and a metric the page does not know is still
+    shown, in an "Other" table.
 
     Parameters
     ----------
@@ -242,7 +290,7 @@ def write_backtest_report(
         The attribution curves of a model run (``universe_value``,
         ``gross_value``, ``group_value``; see
         ``quantlab.runs.backtest_attribution``). With them and an
-        ``attribution`` block in ``metrics`` the page gets an Attribution tab:
+        ``attribution`` block in ``metrics`` the page gets an Attribution section:
         the excess split into its parts, the cumulative log growth of the
         strategy, before costs, the universe and the benchmark, and each
         score group's annualised return.
@@ -251,13 +299,14 @@ def write_backtest_report(
         (``factor_attribution.zarr``: ``log_contribution``,
         ``factor_log_contribution``, ``exposure``, the ex-ante variances and
         ``covered_weight``, its ``factor`` axis carrying each factor's
-        ``group``). With it and a ``factor_attribution`` block in ``metrics``
-        the page gets a Factor attribution tab: the annualised log growth of
-        each factor group and term per segment, the cumulative log
-        contribution curves (adding up to log NAV), the styles'
-        contributions and exposures, the top and bottom industries, the
-        ex-ante risk split over time with its group and factor tables, the
-        ex-post risk contributions, and the coverage.
+        ``group`` and, when the risk model gave them, display ``label``).
+        With it and a ``factor_attribution`` block in ``metrics`` the page
+        gets a Factor attribution section (``factor_attribution_section``):
+        six tiles, then return and risk side by side by part, over time, for
+        the styles and for the industries, the styles' exposure over time and
+        each part's return against its realized risk. Its tiles and charts
+        summarize the out-of-sample segment when the run has an in-sample
+        part, else the whole window.
 
     Examples
     --------
@@ -295,6 +344,7 @@ def write_backtest_report(
     equity = value.to_pandas()
     reference = _aligned_benchmark(benchmark_value, equity)
     name = str(benchmark_name) if reference is not None else None
+    _clean(fig)
     tabs = [("Performance", fig.to_html(full_html=False, include_plotlyjs="cdn",
                                         config={"responsive": True})
              + _heatmap_block(_monthly_heatmap_div(returns)))]
@@ -313,9 +363,10 @@ def write_backtest_report(
                      + _figure_div(_attribution_figure(equity, attribution, reference, block, name))))
     factor_block = (metrics or {}).get("factor_attribution")
     if factor_attribution is not None and factor_block:
-        tabs.append(("Factor attribution", _factor_attribution_tables(factor_block, factor_attribution, metrics)
-                     + _figure_div(_factor_attribution_figure(factor_block, factor_attribution, bars_per_year,
-                                                              in_sample_range))))
+        tabs.append(("Factor attribution", factor_attribution_section(
+            factor_block, factor_attribution, out_of_sample=_has_in_sample(metrics), bars_per_year=bars_per_year,
+            in_sample_range=in_sample_range,
+        )))
     Path(path).write_text(
         _document(title, summary, metrics, tabs, notes, benchmark_name=name, windows=windows,
                   extra_tables=extra_tables),
@@ -1121,6 +1172,7 @@ def _monthly_heatmap_div(returns: xr.DataArray | None) -> str:
     )
     fig.update_xaxes(type="category", title_text="month")
     fig.update_yaxes(type="category", autorange="reversed", title_text="year")
+    _clean(fig)
     return fig.to_html(full_html=False, include_plotlyjs=False)
 
 
@@ -1178,34 +1230,34 @@ def _flatten(value: dict, prefix: str = "") -> dict:
 #: key the catalogue does not know is still shown, in the "Other" group, with
 #: a unit guessed from its name and type (see ``_guess_unit``).
 _STRATEGY_METRICS: dict[str, tuple[str, str, str, str]] = {
-    "Start Value": ("Returns", "Start value", "money", "Portfolio value at the first bar."),
+    "Start Value": ("Returns", "Start value", "money", "The portfolio's value at the first bar."),
     "End Value": ("Returns", "End value", "money", "Portfolio value at the last bar."),
-    "Total Return [%]": ("Returns", "Total return", "pct", "Compounded return over the window."),
-    "Annualized Return [%]": ("Returns", "Annualised return", "pct", "Total return compounded to one year."),
+    "Total Return [%]": ("Returns", "Total return", "pct", "How much the portfolio grew over the whole window, compounding included: 42% means 1.00 became 1.42."),
+    "Annualized Return [%]": ("Returns", "Annualised return", "pct", "The yearly growth rate that compounds to the same total return over the window."),
     "Annualized Volatility [%]": ("Risk", "Annualised volatility", "pct",
-                                  "Standard deviation of the per-bar returns, annualised."),
+                                  "How much the daily returns swing, scaled to a year: the standard deviation of the per-bar returns, annualised."),
     "Max Drawdown [%]": ("Risk", "Max drawdown", "neg_pct",
-                         "Deepest fall of the value from its running peak; negative."),
+                         "The worst fall from a previous high to a later low: what buying at the worst moment would have lost. Negative."),
     "Max Drawdown Duration": ("Risk", "Longest drawdown", "days",
-                              "Longest time spent below a previous peak, in calendar days."),
-    "Value at Risk": ("Risk", "Value at risk (95%)", "frac_pct", "5th percentile of the per-bar returns."),
-    "Skew": ("Risk", "Skew", "ratio", "Skewness of the per-bar returns."),
-    "Kurtosis": ("Risk", "Kurtosis", "ratio", "Excess kurtosis of the per-bar returns."),
+                              "The longest time the portfolio stayed below a previous high before getting back to it, in calendar days."),
+    "Value at Risk": ("Risk", "Value at risk (95%)", "frac_pct", "A bad day: on 95% of bars the return was better than this; the worst 5% were worse (the 5th percentile)."),
+    "Skew": ("Risk", "Skew", "ratio", "Whether big moves tend to be gains (positive) or losses (negative). Negative skew means occasional sharp drops."),
+    "Kurtosis": ("Risk", "Kurtosis", "ratio", "How often extreme bars happen compared with a normal distribution; above 0 means fatter tails, more surprises."),
     "Sharpe Ratio": ("Risk-adjusted", "Sharpe ratio", "ratio",
-                     "Annualised mean over annualised volatility of the per-bar returns (no risk-free rate)."),
+                     "Return per unit of risk: the annualised mean return over the annualised volatility (no risk-free rate subtracted). Higher is better; about 1 is good."),
     "Sortino Ratio": ("Risk-adjusted", "Sortino ratio", "ratio",
-                      "Like the Sharpe ratio, with the downside deviation in the denominator."),
-    "Calmar Ratio": ("Risk-adjusted", "Calmar ratio", "ratio", "Annualised return over the max drawdown."),
+                      "Like the Sharpe ratio, but only the downside swings count as risk, so upside volatility is not penalised."),
+    "Calmar Ratio": ("Risk-adjusted", "Calmar ratio", "ratio", "The annualised return over the max drawdown: how much was earned per unit of worst loss."),
     "Omega Ratio": ("Risk-adjusted", "Omega ratio", "ratio",
-                    "Probability-weighted gains over probability-weighted losses of the per-bar returns."),
+                    "All the gains over all the losses of the per-bar returns. Above 1, gains outweighed losses."),
     "Tail Ratio": ("Risk-adjusted", "Tail ratio", "ratio",
-                   "95th percentile of the per-bar returns over the absolute 5th percentile."),
-    "Common Sense Ratio": ("Risk-adjusted", "Common sense ratio", "ratio", "Profit factor times the tail ratio."),
+                   "The size of the best 5% of bars against the worst 5% (95th percentile over the absolute 5th). Above 1, big up bars were larger than big down bars."),
+    "Common Sense Ratio": ("Risk-adjusted", "Common sense ratio", "ratio", "The profit factor times the tail ratio; above 1 suggests the edge survives the bad days."),
     "Rebalance Win Rate [%]": ("Win rates", "Rebalances with a gain", "pct1",
-                               "Share of holding periods (fill bar to the bar before the next fill) with a "
-                               "positive compounded return."),
+                               "The share of holding periods (from one rebalance to the next) that ended "
+                               "with a gain."),
     "Monthly Win Rate [%]": ("Win rates", "Months with a gain", "pct1",
-                             "Share of calendar months with a positive compounded return."),
+                             "The share of calendar months that ended with a gain."),
 }
 
 #: Which side of a strategy-vs-benchmark row is better: +1 when the larger
@@ -1225,56 +1277,56 @@ _WITHOUT_BENCHMARK_ONLY = frozenset({"Rebalance Win Rate [%]", "Monthly Win Rate
 #: The strategy's trading rows, from the same slice as the strategy metrics.
 _TRADING_METRICS: dict[str, tuple[str, str, str]] = {
     "Annualized Turnover [%]": ("Annualised turnover", "pct0",
-                                "Buys plus sells per year, as a share of the portfolio value."),
+                                "How much is bought and sold in a year, as a share of the portfolio value."),
     "Turnover per Rebalance [%]": ("Turnover per rebalance", "pct0",
-                                   "Mean of buys plus sells per fill bar over the previous bar's value: "
-                                   "buying a full book from cash is 100%, replacing the whole book about 200%."),
-    "Total Turnover [%]": ("Total turnover", "pct0", "Buys plus sells over the window, as a share of the portfolio value."),
-    "Traded Notional": ("Traded notional", "money", "Value of every fill over the window."),
-    "Total Fees Paid": ("Fees paid", "money", "Fees and slippage the simulation charged."),
-    "Max Gross Exposure [%]": ("Max gross exposure", "pct0", "Largest gross exposure held."),
-    "Total Orders": ("Orders filled", "int", "Fills that happened over the window."),
-    "Total Trades": ("Round trips", "int", "Entry-to-flat round trips per symbol, open ones included."),
-    "Total Closed Trades": ("Round trips closed", "int", "Round trips that ended flat."),
-    "Total Open Trades": ("Round trips open", "int", "Round trips still open at the last bar."),
-    "Open Trade PnL": ("Open round-trip P&L", "money", "Unrealised profit of the open round trips."),
-    "Win Rate [%]": ("Round-trip win rate", "pct0", "Share of closed round trips with a profit."),
-    "Best Trade [%]": ("Best round trip", "pct", "Return of the best closed round trip."),
-    "Worst Trade [%]": ("Worst round trip", "pct", "Return of the worst closed round trip."),
-    "Avg Winning Trade [%]": ("Avg winning round trip", "pct", "Mean return of the winning round trips."),
-    "Avg Losing Trade [%]": ("Avg losing round trip", "pct", "Mean return of the losing round trips."),
+                                   "Buys plus sells at a typical fill, as a share of the portfolio: buying a full book "
+                                   "from cash is 100%, replacing the whole book about 200%."),
+    "Total Turnover [%]": ("Total turnover", "pct0", "Everything bought and sold over the window, as a share of the portfolio value."),
+    "Traded Notional": ("Traded notional", "money", "The total value of every fill over the window."),
+    "Total Fees Paid": ("Fees paid", "money", "The fees and slippage the simulation charged, in money."),
+    "Max Gross Exposure [%]": ("Max gross exposure", "pct0", "The largest total of long plus short positions held, as a share of the portfolio value."),
+    "Total Orders": ("Orders filled", "int", "The number of fills that actually happened over the window."),
+    "Total Trades": ("Round trips", "int", "How many times a symbol was bought and later fully sold (entry to flat), open ones included."),
+    "Total Closed Trades": ("Round trips closed", "int", "Round trips that ended with the position fully sold."),
+    "Total Open Trades": ("Round trips open", "int", "Round trips still held at the last bar."),
+    "Open Trade PnL": ("Open round-trip P&L", "money", "The profit, not yet taken, on the positions still held."),
+    "Win Rate [%]": ("Round-trip win rate", "pct0", "The share of finished round trips that made money."),
+    "Best Trade [%]": ("Best round trip", "pct", "The return of the best finished round trip."),
+    "Worst Trade [%]": ("Worst round trip", "pct", "The return of the worst finished round trip."),
+    "Avg Winning Trade [%]": ("Avg winning round trip", "pct", "The average return of the round trips that made money."),
+    "Avg Losing Trade [%]": ("Avg losing round trip", "pct", "The average return of the round trips that lost money."),
     "Avg Winning Trade Duration": ("Avg winning round-trip duration", "days1",
-                                   "Mean holding time of the winning round trips."),
+                                   "How long the winning positions were held, on average."),
     "Avg Losing Trade Duration": ("Avg losing round-trip duration", "days1",
-                                  "Mean holding time of the losing round trips."),
-    "Profit Factor": ("Profit factor", "ratio", "Gross profit over gross loss of the closed round trips."),
-    "Expectancy": ("Expectancy", "money", "Mean profit per closed round trip."),
+                                  "How long the losing positions were held, on average."),
+    "Profit Factor": ("Profit factor", "ratio", "Money made on winning round trips over money lost on losing ones. Above 1, the trading made money."),
+    "Expectancy": ("Expectancy", "money", "The average profit of a finished round trip, in money."),
 }
 
 #: The relative rows, from ``metrics["relative"]``.
 _RELATIVE_METRICS: dict[str, tuple[str, str, str]] = {
     "Excess Return [%]": ("Excess return (geometric)", "spct",
-                          "Strategy value over benchmark value, minus 1, at the last bar."),
+                          "How far the portfolio ended ahead of (or behind) the benchmark: strategy value over benchmark value, minus 1, at the last bar."),
     "Annualized Excess Return [%]": ("Annualised excess return", "spct",
-                                     "The geometric excess compounded to one year."),
+                                     "The excess over the benchmark expressed per year (the geometric excess compounded to one year)."),
     "Total Return Difference [%]": ("Total return difference (arithmetic)", "spct",
-                                    "Strategy total return minus benchmark total return; differs from "
-                                    "the geometric excess by compounding."),
+                                    "The strategy's total return minus the benchmark's; it differs from the "
+                                    "geometric excess because of compounding."),
     "Excess Max Drawdown [%]": ("Excess max drawdown", "pct",
-                                "Deepest fall of the relative value (strategy over benchmark) from its "
-                                "running peak, which starts at 1; negative."),
-    "Tracking Error [%]": ("Tracking error", "pct", "Annualised standard deviation of the per-bar excess r - b."),
-    "Information Ratio": ("Information ratio", "ratio", "Annualised mean of r - b over the tracking error."),
-    "Beta": ("Beta", "ratio", "Slope of the strategy's per-bar returns on the benchmark's."),
-    "Correlation": ("Correlation", "ratio", "Correlation of the per-bar returns with the benchmark's."),
-    "CAPM Alpha [%]": ("CAPM alpha", "spct", "Annualised intercept of that regression: return beta does not explain."),
-    "Win Rate vs Benchmark [%]": ("Bars beating the benchmark", "pct0", "Share of bars with r > b."),
+                                "The worst stretch of falling behind the benchmark: the deepest fall of "
+                                "strategy value over benchmark value from its high. Negative."),
+    "Tracking Error [%]": ("Tracking error", "pct", "How much the portfolio's returns wander from the benchmark's: the annualised standard deviation of the per-bar difference r - b."),
+    "Information Ratio": ("Information ratio", "ratio", "Excess return per unit of tracking error: how consistently the portfolio beat the benchmark (the annualised mean of r - b over the tracking error). Above 0.5 is good."),
+    "Beta": ("Beta", "ratio", "How much the portfolio moves when the benchmark moves 1%: the slope of its per-bar returns on the benchmark's."),
+    "Correlation": ("Correlation", "ratio", "How closely the per-bar returns move with the benchmark's, from -1 (opposite) to 1 (in lockstep)."),
+    "CAPM Alpha [%]": ("CAPM alpha", "spct", "The yearly return that moving with the benchmark does not explain: the annualised intercept of the beta regression."),
+    "Win Rate vs Benchmark [%]": ("Bars beating the benchmark", "pct0", "The share of bars on which the portfolio did better than the benchmark."),
     "Rebalance Win Rate vs Benchmark [%]": ("Rebalances beating the benchmark", "pct1",
-                                            "Share of holding periods (fill bar to the bar before the next "
-                                            "fill) whose compounded return beats the benchmark's."),
+                                            "The share of holding periods (from one rebalance to the next) in "
+                                            "which the portfolio did better than the benchmark."),
     "Monthly Win Rate vs Benchmark [%]": ("Months beating the benchmark", "pct1",
-                                          "Share of calendar months whose compounded return beats the "
-                                          "benchmark's."),
+                                          "The share of calendar months in which the portfolio did better than "
+                                          "the benchmark."),
 }
 
 #: Keys every run carries that the page shows elsewhere (the dates-and-setup
@@ -1559,13 +1611,16 @@ def _trading_section(metrics: dict) -> str:
     ]
     execution = metrics.get("execution")
     if isinstance(execution, dict) and execution.get("rejected_order_count") is not None:
-        rows.append(_row("Orders rejected", "Orders without a fill price at the next bar; the holding was kept.",
+        rows.append(_row("Orders rejected",
+                         "Orders that could not be filled because the symbol had no price at the next bar; "
+                         "the holding was kept.",
                          [_format(execution["rejected_order_count"], "int")]))
     construction = metrics.get("portfolio_construction")
     if isinstance(construction, dict):
         if construction.get("failed_bar_count") is not None:
             rows.append(_row("Rebalances held after a failure",
-                             "Rebalance bars the portfolio constructor could not decide; the backtest held the position.",
+                             "Rebalances on which the portfolio rule failed (for example, the optimiser "
+                             "found no solution), so the backtest kept the previous holdings.",
                              [_format(construction["failed_bar_count"], "int")]))
         for event, record in construction.items():
             if isinstance(record, dict) and "count" in record:
@@ -1605,11 +1660,36 @@ def _split_section(metrics: dict, benchmark_name: str | None) -> str:
     return _table("In-sample vs out-of-sample", ["", "In-sample", "Out-of-sample", "Difference", "Whole"], rows)
 
 
+#: What each headline card means, shown on hover.
+_KPI_TIPS = {
+    "Total return": "How much the portfolio grew over the window, compounding included: 42% means 1.00 "
+                    "became 1.42. The note is the benchmark's, or the end value.",
+    "Annualised return": "The yearly growth rate that compounds to the same total return.",
+    "Excess return": "How far the portfolio ended ahead of (or behind) the benchmark: strategy value over "
+                     "benchmark value, minus 1. The note is the same per year.",
+    "Information ratio": "Excess return per unit of tracking error: how consistently the portfolio beat the "
+                         "benchmark. Above 0.5 is good; negative means it lagged.",
+    "Win rate": "The share of holding periods (rebalance to rebalance) that beat the benchmark, or made "
+                "money without one. The note is the same per calendar month.",
+    "Sharpe ratio": "Return per unit of risk: the annualised mean return over the annualised volatility. "
+                    "Higher is better; about 1 is good.",
+    "Max drawdown": "The worst fall from a previous high to a later low: what buying at the worst moment "
+                    "would have lost.",
+    "Beta": "How much the portfolio moves when the benchmark moves 1%. The note is how closely they move "
+            "together (correlation, -1 to 1).",
+    "Volatility": "How much the daily returns swing, scaled to a year.",
+    "Turnover / year": "How much is bought and sold in a year, as a share of the portfolio: 700% replaces "
+                       "the book about 3.5 times a year. The note is the fees and slippage paid.",
+}
+
+
 def _card(label: str, value: str, note: str, sign: float | None = None) -> str:
-    """One KPI card; ``sign`` colours the value green above zero, red below."""
+    """One KPI card, its explanation in ``title``; ``sign`` colours the value green above zero, red below."""
     cls = "" if sign is None or sign == 0 else (" pos" if sign > 0 else " neg")
+    tip = _KPI_TIPS.get(label)
+    attribute = f' title="{_escape(tip)}"' if tip else ""
     return (
-        f'<div class="kpi"><div class="kl">{_escape(label)}</div>'
+        f'<div class="kpi"{attribute}><div class="kl">{_escape(label)}</div>'
         f'<div class="kv{cls}">{_escape(value)}</div><div class="ks">{_escape(note)}</div></div>'
     )
 
@@ -1783,250 +1863,11 @@ def _attribution_figure(equity: pd.Series, attribution: xr.Dataset, reference: p
     return fig
 
 
-#: The parts the Factor attribution tab splits the NAV log growth into, in its
-#: order: ``(key, label, definition, colour)``. The factor groups come first
-#: (a model without a group draws none for it), then the other terms.
-_FACTOR_GROUPS = (
-    ("country", "Country", "The book's net exposure to the country factor times its factor return.", "#1f77b4"),
-    ("industry", "Industry", "The book's net industry exposures times the industries' factor returns.", "#8c564b"),
-    ("style", "Style", "The book's net style exposures times the styles' factor returns.", "#9467bd"),
-)
-_FACTOR_TERMS = (
-    ("specific", "Specific", "The covered holdings times their specific returns.", "#2ca02c"),
-    ("uncovered", "Uncovered", "Held symbols the risk model does not cover, times their own returns.", "#d9822b"),
-    ("risk_free", "Risk-free", "The covered holdings times the risk-free rate.", "#17becf"),
-    ("trading", "Trading", "The rest: fills at the open, fees, slippage and idle cash.", "#7f7f7f"),
-)
-_FACTOR_SEGMENTS = (("whole", "Whole"), ("in_sample", "In-sample"), ("out_of_sample", "Out-of-sample"))
-_SEGMENT_OPACITY = {"whole": 1.0, "in_sample": 0.45, "out_of_sample": 0.75}
-
-
-def _factor_segments(block: dict) -> list[tuple[str, str, dict]]:
-    """The segments of a ``factor_attribution`` block that ran, as ``(key, label, summary)``."""
-    return [(key, label, block[key]) for key, label in _FACTOR_SEGMENTS if isinstance(block.get(key), dict)]
-
-
-def _factor_groups_of(attribution: xr.Dataset) -> list[tuple[str, str, str, str]]:
-    """The entries of ``_FACTOR_GROUPS`` the risk model has a factor in."""
-    present = {str(group) for group in attribution["group"].values}
-    return [entry for entry in _FACTOR_GROUPS if entry[0] in present]
-
-
-def _fraction(value: object, unit: str = "pct") -> str:
-    """A fraction shown as a percent in ``unit`` (``pct`` or the signed ``spct``)."""
-    number = _number(value)
-    return _format(None if number is None else 100 * number, unit)
-
-
-def _segment_rows(segments, label: str, definition: str, value, unit: str = "spct") -> str:
-    """One row across the segments; ``value`` reads the number off a segment's summary."""
-    return _row(label, definition, [_fraction(value(summary), unit) for _, _, summary in segments])
-
-
-def _dig(mapping: object, *keys):
-    """``mapping[k0][k1]...``, or None where a level is missing or not a mapping."""
-    for key in keys:
-        if not isinstance(mapping, dict):
-            return None
-        mapping = mapping.get(key)
-    return mapping
-
-
-def _factor_attribution_tables(block: dict, attribution: xr.Dataset, metrics: dict) -> str:
-    """The tables of the Factor attribution tab, a column per segment that ran."""
-    segments = _factor_segments(block)
-    header = ["", *(label for _, label, _ in segments)]
-    groups = _factor_groups_of(attribution)
-
-    growth = [
-        _segment_rows(segments, label, definition,
-                      lambda s, key=key: _dig(s, "group_annualized_log_return", key))
-        for key, label, definition, _ in groups
-    ] + [
-        _segment_rows(segments, label, definition,
-                      lambda s, key=key: _dig(s, "annualized_log_return", key))
-        for key, label, definition, _ in _FACTOR_TERMS
-    ] + [
-        _segment_rows(segments, "Total", "The NAV log growth per year; the sum of the rows above.",
-                      lambda s: _dig(s, "annualized_log_return", "total")),
-    ]
-    out = _table("Factor attribution (annualised log growth)", header, growth)
-
-    headline = block.get("out_of_sample") if _has_in_sample(metrics) else block.get("whole")
-    industries = []
-    for side, label in (("top", "Top"), ("bottom", "Bottom")):
-        entries = _dig(headline, "industries", side) or []
-        if entries:
-            industries.append(_group_row(label, 3))
-        industries += [
-            _row(str(entry.get("factor")), "The industry's log growth per year and the book's mean net exposure.",
-                 [_fraction(entry.get("annualized_log_return"), "spct"),
-                  _format(entry.get("mean_exposure"), "ratio")])
-            for entry in entries
-        ]
-    out += _table(f"Top and bottom industries{_suffix(metrics)}",
-                  ["Industry", "Log growth per year", "Mean exposure"], industries)
-
-    ex_ante = [
-        _segment_rows(segments, "Volatility", "The mean annualised forecast volatility of the covered book.",
-                      lambda s: _dig(s, "ex_ante_risk", "volatility", "total"), "pct"),
-        _segment_rows(segments, "Factor volatility", "The factor part alone: sqrt(x'Fx), annualised.",
-                      lambda s: _dig(s, "ex_ante_risk", "volatility", "factor"), "pct"),
-        _segment_rows(segments, "Specific volatility", "The specific part alone, annualised.",
-                      lambda s: _dig(s, "ex_ante_risk", "volatility", "specific"), "pct"),
-        _group_row("Contribution (x-sigma-rho)", len(header)),
-        _segment_rows(segments, "Factor", "The factors' contribution to the forecast volatility.",
-                      lambda s: _dig(s, "ex_ante_risk", "contribution", "factor")),
-        *(
-            _segment_rows(segments, f"of which {label}",
-                          f"The {label.lower()} factors' contribution to the forecast volatility.",
-                          lambda s, key=key: _dig(s, "ex_ante_risk", "group_contribution", key))
-            for key, label, _, _ in groups
-        ),
-        _segment_rows(segments, "Specific", "The specific risk's contribution to the forecast volatility.",
-                      lambda s: _dig(s, "ex_ante_risk", "contribution", "specific")),
-    ]
-    out += _table("Ex-ante risk by group", header, ex_ante)
-
-    group_of = dict(zip((str(f) for f in attribution["factor"].values),
-                        (str(g) for g in attribution["group"].values)))
-    by_factor = []
-    for key, label, _, _ in groups:
-        by_factor.append(_group_row(label, len(header)))
-        by_factor += [
-            _segment_rows(segments, factor, "The factor's mean x-sigma-rho contribution to the forecast volatility.",
-                          lambda s, factor=factor: _dig(s, "ex_ante_risk", "factor_contribution", factor))
-            for factor, group in group_of.items() if group == key
-        ]
-    out += _table("Ex-ante risk by factor", header, by_factor)
-
-    ex_post = [
-        _segment_rows(segments, "Volatility", "The annualised realised volatility of the NAV return.",
-                      lambda s: _dig(s, "ex_post_risk", "volatility"), "pct"),
-        _group_row("Contribution, cov(c, r) / sigma(r)", len(header)),
-        _segment_rows(segments, "Factor", "The factor term's contribution to the realised volatility.",
-                      lambda s: _dig(s, "ex_post_risk", "term_contribution", "factor")),
-        *(
-            _segment_rows(segments, f"of which {label}", f"The {label.lower()} factors' contribution.",
-                          lambda s, key=key: _dig(s, "ex_post_risk", "group_contribution", key))
-            for key, label, _, _ in groups
-        ),
-        *(
-            _segment_rows(segments, label, definition,
-                          lambda s, key=key: _dig(s, "ex_post_risk", "term_contribution", key))
-            for key, label, definition, _ in _FACTOR_TERMS
-        ),
-    ]
-    out += _table("Ex-post risk contribution", header, ex_post)
-
-    coverage = [
-        _segment_rows(segments, "Mean covered weight", "The covered share of the gross held weight, on average.",
-                      lambda s: _dig(s, "coverage", "mean_covered_weight"), "pct"),
-        _segment_rows(segments, "Minimum covered weight", "The lowest covered share on a bar holding something.",
-                      lambda s: _dig(s, "coverage", "min_covered_weight"), "pct"),
-    ]
-    out += _table("Coverage", header, coverage)
-
-    notes = [
-        f"{label}: {note}" for _, label, summary in segments
-        if (note := _dig(summary, "coverage", "note"))
-    ]
-    return out + (_notes_list(notes) if notes else "")
-
 
 def _notes_list(notes: list[str]) -> str:
     """The notes as a list, without a heading."""
     items = "\n".join(f"    <li>{_escape(note)}</li>" for note in notes)
     return f'  <ul class="notes">\n{items}\n  </ul>\n'
-
-
-def _factor_attribution_figure(block: dict, attribution: xr.Dataset, bars_per_year: float | None,
-                               in_sample_range: tuple[str, str] | None) -> go.Figure:
-    """Draw the Factor attribution tab's charts.
-
-    From the top: the cumulative log contribution of each group and term and
-    their total (log NAV growth); each style's annualised log growth per
-    segment; each style's mean net exposure per segment; the styles' net
-    exposure over time; the annualised forecast volatility over time, total
-    and its factor and specific parts; the covered share of the gross held
-    weight. The in-sample range is shaded on the panels over time.
-    """
-    segments = _factor_segments(block)
-    timestamps = attribution["timestamp"].values
-    group = attribution["group"]
-    styles = [str(f) for f in attribution["factor"].values[(group == "style").values]]
-    fig = make_subplots(rows=6, cols=1, row_heights=[0.26, 0.13, 0.13, 0.16, 0.16, 0.16],
-                        vertical_spacing=0.05)
-
-    factor_log = attribution["factor_log_contribution"]
-    curves = [(key, label, factor_log.where(group == key, 0.0).sum("factor"), colour)
-              for key, label, _, colour in _factor_groups_of(attribution)]
-    curves += [(key, label, attribution["log_contribution"].sel(term=key), colour)
-               for key, label, _, colour in _FACTOR_TERMS]
-    curves.append(("total", "Total", attribution["log_contribution"].sum("term"), "#1a1a1a"))
-    for key, label, values, colour in curves:
-        fig.add_trace(go.Scatter(
-            x=timestamps, y=values.cumsum("timestamp").values, name=f"factor_attribution_{key}",
-            mode="lines", line={"color": colour, "width": 2.5 if key == "total" else 1.5},
-            hovertemplate=f"%{{x}}<br>{html.escape(label)} %{{y:.2%}}<extra></extra>",
-        ), row=1, col=1)
-
-    for key, label, summary in segments:
-        growth = summary.get("factor_annualized_log_return") or {}
-        exposure = summary.get("style_mean_exposure") or {}
-        common = {"x": styles, "marker": {"color": PORTFOLIO_COLOUR, "opacity": _SEGMENT_OPACITY[key]},
-                  "text": [label] * len(styles), "textposition": "inside", "showlegend": False}
-        fig.add_trace(go.Bar(
-            y=[growth.get(name) for name in styles], name=f"style_contribution_{key}",
-            hovertemplate=f"%{{x}}<br>{label} log growth per year %{{y:.2%}}<extra></extra>", **common,
-        ), row=2, col=1)
-        fig.add_trace(go.Bar(
-            y=[exposure.get(name) for name in styles], name=f"style_mean_exposure_{key}",
-            hovertemplate=f"%{{x}}<br>{label} mean exposure %{{y:.2f}}<extra></extra>", **common,
-        ), row=3, col=1)
-
-    holding = attribution["gross_weight"].values > 0
-    for name in styles:
-        exposure = np.where(holding, attribution["exposure"].sel(factor=name).values, np.nan)
-        fig.add_trace(go.Scatter(
-            x=timestamps, y=exposure, name=f"style_exposure_{name}", mode="lines", line={"width": 1},
-            showlegend=False, hovertemplate=f"%{{x}}<br>{html.escape(name)} exposure %{{y:.2f}}<extra></extra>",
-        ), row=4, col=1)
-
-    scale = math.sqrt(bars_per_year or TRADING_BARS_PER_YEAR)
-    forecast = np.isfinite(attribution["factor_risk_contribution"].values).all(axis=1)
-    factor_variance = attribution["ex_ante_factor_variance"].values
-    specific_variance = attribution["ex_ante_specific_variance"].values
-    for key, variance, colour in (
-        ("total", factor_variance + specific_variance, "#1a1a1a"),
-        ("factor", factor_variance, "#9467bd"),
-        ("specific", specific_variance, "#2ca02c"),
-    ):
-        fig.add_trace(go.Scatter(
-            x=timestamps, y=np.where(forecast, np.sqrt(variance) * scale, np.nan), name=f"ex_ante_{key}",
-            mode="lines", line={"color": colour, "width": 1.5}, showlegend=False,
-            hovertemplate=f"%{{x}}<br>ex-ante {key} volatility %{{y:.2%}}<extra></extra>",
-        ), row=5, col=1)
-
-    fig.add_trace(go.Scatter(
-        x=timestamps, y=attribution["covered_weight"].values, name="covered_weight", mode="lines",
-        line={"color": PORTFOLIO_COLOUR, "width": 1.5}, showlegend=False,
-        hovertemplate="%{x}<br>covered weight %{y:.1%}<extra></extra>",
-    ), row=6, col=1)
-
-    if in_sample_range is not None:
-        for row in (1, 4, 5, 6):
-            fig.add_vrect(x0=in_sample_range[0], x1=in_sample_range[1], row=row, col=1,
-                          fillcolor="grey", opacity=0.2, line_width=0)
-    fig.update_yaxes(title_text="cumulative log contribution", tickformat=".0%", row=1, col=1)
-    fig.update_yaxes(title_text="style log growth / yr", tickformat=".0%", row=2, col=1)
-    fig.update_yaxes(title_text="style mean exposure", row=3, col=1)
-    fig.update_yaxes(title_text="style exposure", row=4, col=1)
-    fig.update_yaxes(title_text="ex-ante volatility", tickformat=".0%", row=5, col=1)
-    fig.update_yaxes(title_text="covered weight", tickformat=".0%", rangemode="tozero", row=6, col=1)
-    fig.update_layout(height=1500, barmode="group", showlegend=True, legend={"orientation": "h", "y": 1.04})
-    return fig
-
 
 def _rolling_figure(equity: pd.Series, reference: pd.Series | None, bars_per_year: float | None,
                     benchmark_name: str) -> go.Figure | None:
@@ -2164,8 +2005,17 @@ TRADING_BARS_PER_YEAR = 252
 
 
 def _figure_div(fig: go.Figure) -> str:
-    """A figure as an HTML fragment reusing the plotly.js the page loads."""
+    """A figure as an HTML fragment reusing the plotly.js the page loads, on the page's chart style."""
+    _clean(fig)
     return fig.to_html(full_html=False, include_plotlyjs=False, config={"responsive": True})
+
+
+def _clean(fig: go.Figure) -> None:
+    """Draw ``fig`` on a white plot area with a light grid and the page's font."""
+    fig.update_layout(paper_bgcolor="#ffffff", plot_bgcolor="#ffffff",
+                      font={"family": CHART_FONT, "color": INK2})
+    for axes in (fig.update_xaxes, fig.update_yaxes):
+        axes(gridcolor=GRID, linecolor=AXIS, zerolinecolor=AXIS, tickfont={"color": MUTED})
 
 #: The timeline's bar kinds: ``(fold key, colour, legend text)``. A fold's
 #: ``training`` window, the bars it ``traded`` out-of-sample and its
@@ -2400,6 +2250,43 @@ def _heatmap_block(heatmap: str) -> str:
     return f"\n  <h2>{_escape(HEATMAP_CAPTION)}</h2>\n{heatmap}\n" if heatmap else ""
 
 
+#: What each chart section shows, on hover of its title.
+_CHART_TIPS = {
+    "Performance": "The portfolio's value (and the benchmark's, dashed), its drawdown below the running high, "
+                   "and each month's return. The grey band is the in-sample part; the triangles mark the "
+                   "deepest drawdown's valley and recovery.",
+    "Excess": "How far ahead of or behind the benchmark the portfolio was over time (switch between log and "
+              "arithmetic), and the worst stretches of falling behind it.",
+    "Rolling": "One-year rolling statistics, to see whether the result was steady or came in bursts: excess "
+               "return, information ratio and beta against the benchmark, or return, volatility and Sharpe "
+               "ratio without one.",
+    "Portfolio": "Turnover at each fill, the number of holdings and the gross exposure on each rebalance.",
+    "Attribution": "Where the excess came from: the universe against the benchmark, the selection against "
+                   "the universe, and the costs; and how each score group of the universe did.",
+}
+
+#: The sidebar's sections, in order.
+_SECTIONS = ("Overview", "Excess", "Rolling", "Portfolio", "Attribution", "Factor attribution", "Setup & notes")
+
+
+def _section_card(label: str, body: str) -> str:
+    """A chart tab's html in a card titled by the tab, its explanation on hover."""
+    tip = _CHART_TIPS.get(label, "")
+    return (f'<div class="card"><h3 title="{_escape(tip)}">{_escape(label)} <span class="i">ⓘ</span></h3>\n'
+            f"{body}\n</div>")
+
+
+def _cards(*bodies: str, layout: str = "grid2") -> str:
+    """The non-empty bodies as cards side by side, or nothing."""
+    cards = [body if body.startswith('<div class="card">') else f'<div class="card">\n{body}</div>'
+             for body in bodies if body.strip()]
+    if not cards:
+        return ""
+    if len(cards) == 1:
+        return cards[0] + "\n"
+    return f'<div class="{layout}">\n' + "\n".join(cards) + "\n</div>\n"
+
+
 def _document(
     title: str,
     summary: dict[str, str] | None,
@@ -2411,53 +2298,83 @@ def _document(
     windows: dict | None = None,
     extra_tables: dict[str, dict] | None = None,
 ) -> str:
-    """Assemble the page: headline cards, the tables beside the chart tabs, the notes.
+    """Assemble the page: a header, a sidebar of sections, the KPI cards and each section's cards.
 
     ``tabs`` are ``(label, html)`` pairs whose html is plotly's own fragments,
-    inserted verbatim; everything else comes from the run and is escaped. The
-    first tab is shown; a tab switch asks plotly to resize the figures it
-    reveals, which were laid out while hidden.
+    inserted verbatim; everything else comes from the run and is escaped.
+    Each chart tab becomes a section holding its chart beside the tables
+    that explain it: Overview (the windows, in-sample against out-of-sample,
+    the Performance chart and strategy against benchmark), Excess (and the
+    relative table), Rolling, Portfolio (and the trading and extra tables),
+    Attribution, Factor attribution, and Setup & notes. A section without
+    input is left out; a table whose chart is missing moves to Overview. The
+    first section is shown; a switch asks plotly to resize the figures it
+    reveals, which were laid out while hidden. Every element with a
+    ``title`` shows it as a styled explanation on hover.
     """
-    tables = ""
-    if isinstance(metrics, dict):
-        tables = (
-            _comparison_section(metrics, benchmark_name)
-            + _relative_section(metrics, benchmark_name)
-            + _trading_section(metrics)
-            + _split_section(metrics, benchmark_name)
-        )
-    tables += _extra_section(extra_tables)
+    m = metrics if isinstance(metrics, dict) else {}
+    charts = dict(tabs)
+    comparison = (_comparison_section(m, benchmark_name)) if m else ""
+    relative = _relative_section(m, benchmark_name) if m else ""
+    trading = (_trading_section(m) if m else "") + _extra_section(extra_tables)
+    split = _split_section(m, benchmark_name) if m else ""
+    overview = _cards(_timeline_section(windows), split)
+    if "Performance" in charts:
+        overview += _cards(_section_card("Performance", charts["Performance"]), comparison, layout="grid")
+    else:
+        overview += _cards(comparison)
+    if "Excess" not in charts:
+        overview += _cards(relative)
+    if "Portfolio" not in charts:
+        overview += _cards(trading)
+    sections = {
+        "Overview": overview,
+        "Excess": _cards(_section_card("Excess", charts["Excess"]), relative, layout="grid")
+        if "Excess" in charts else "",
+        "Rolling": _cards(_section_card("Rolling", charts["Rolling"])) if "Rolling" in charts else "",
+        "Portfolio": _cards(_section_card("Portfolio", charts["Portfolio"]), trading, layout="grid")
+        if "Portfolio" in charts else "",
+        "Attribution": _cards(_section_card("Attribution", charts["Attribution"]))
+        if "Attribution" in charts else "",
+        "Factor attribution": charts.get("Factor attribution", ""),
+        "Setup & notes": _cards(_summary_section(summary), _notes_section(notes)),
+    }
+    shown = [(label, sections[label]) for label in _SECTIONS if sections[label].strip()]
     buttons = "".join(
         f'<button class="tab{" on" if i == 0 else ""}" data-tab="tab{i}">{_escape(label)}</button>'
-        for i, (label, _) in enumerate(tabs)
+        for i, (label, _) in enumerate(shown)
     )
     panes = "".join(
         f'\n  <div class="pane{" on" if i == 0 else ""}" id="tab{i}">\n{body}\n  </div>'
-        for i, (_, body) in enumerate(tabs)
+        for i, (_, body) in enumerate(shown)
     )
+    span = _span((windows or {}).get("backtest"))
+    window = f"{span[0].date()} → {span[1].date()}" if span else ""
+    against = f" · vs {benchmark_name}" if benchmark_name else ""
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en">\n'
         "<head>\n"
         '  <meta charset="utf-8">\n'
+        '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"  <title>{_escape(title)}</title>\n"
         f"  <style>{_STYLE}  </style>\n"
         "</head>\n"
         "<body>\n"
-        f"  <h1>{_escape(title)}</h1>\n"
-        f"{_kpi_section(metrics, benchmark_name)}"
-        '  <div class="layout">\n'
-        f'  <div class="tables">\n{_timeline_section(windows)}{_summary_section(summary)}{tables}  </div>\n'
-        f'  <div class="charts">\n  <div class="tabs">{buttons}</div>{panes}\n  </div>\n'
+        f'  <header><h1>{_escape(title)}</h1><span class="sub">{_escape(window + against)}</span></header>\n'
+        '  <div class="shell">\n'
+        f"  <nav>{buttons}</nav>\n"
+        f"  <main>\n{_kpi_section(metrics, benchmark_name)}{panes}\n  </main>\n"
         "  </div>\n"
-        f"{_notes_section(notes)}"
+        '  <div id="tip"></div>\n'
         f"  <script>{_TAB_SCRIPT}</script>\n"
         "</body>\n"
         "</html>\n"
     )
 
 
-#: Switches the chart tabs and resizes the figures a switch reveals.
+#: Switches the sections, resizes the figures a switch reveals, and shows every
+#: ``title`` as a styled explanation on hover.
 _TAB_SCRIPT = """
 document.querySelectorAll('.tab').forEach(function (tab) {
   tab.addEventListener('click', function () {
@@ -2469,6 +2386,34 @@ document.querySelectorAll('.tab').forEach(function (tab) {
         pane.querySelectorAll('.plotly-graph-div').forEach(function (div) { Plotly.Plots.resize(div); });
       }
     });
+    window.scrollTo(0, 0);
   });
 });
+var tip = document.getElementById('tip');
+document.querySelectorAll('main [title]').forEach(function (el) {
+  if (el.closest('svg')) return;
+  el.dataset.tip = el.getAttribute('title');
+  el.removeAttribute('title');
+});
+function show(event) {
+  var el = event.target.closest && event.target.closest('[data-tip]');
+  if (!el || !el.dataset.tip) { tip.style.display = 'none'; return; }
+  var head = el.querySelector('.kl') || (el.tagName === 'TH' || el.tagName === 'H3' ? el : null);
+  var name = head ? head.textContent.replace('ⓘ', '').trim() : '';
+  tip.textContent = '';
+  if (name) { var b = document.createElement('b'); b.textContent = name; tip.appendChild(b); }
+  tip.appendChild(document.createTextNode(el.dataset.tip));
+  tip.style.display = 'block';
+  place(event);
+}
+function place(event) {
+  if (tip.style.display !== 'block') return;
+  var r = tip.getBoundingClientRect(), x = event.clientX + 14, y = event.clientY + 14;
+  if (x + r.width > innerWidth - 8) x = Math.max(8, event.clientX - r.width - 14);
+  if (y + r.height > innerHeight - 8) y = Math.max(8, event.clientY - r.height - 14);
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+document.addEventListener('mouseover', show);
+document.addEventListener('mousemove', place);
+document.addEventListener('click', show);
 """

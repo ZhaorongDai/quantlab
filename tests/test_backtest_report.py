@@ -170,13 +170,13 @@ def test_the_report_is_one_self_contained_file_loading_plotly_from_the_cdn(tmp_p
 
 
 def test_the_module_is_a_leaf():
-    """The only `quantlab.*` imports of the report module are `backtest_stats`
-    and `date_range`.
+    """The only `quantlab.*` imports of the report module are `backtest_stats`,
+    `date_range` and `factor_attribution_report`.
 
-    Both are leaves (numpy, pandas, xarray; `backtest_stats` also reads the
-    numpy-only Execution rules), so the report module still drags in no
+    All are leaves (numpy, pandas, xarray, plotly; `backtest_stats` also reads
+    the numpy-only Execution rules), so the report module still drags in no
     quantlab layer (#115: its public builders label bars and compute turnover
-    through them).
+    through them; #215: the Factor attribution section).
     """
     import pathlib
 
@@ -188,9 +188,18 @@ def test_the_module_is_a_leaf():
         for line in source.splitlines()
         if line.startswith(("from quantlab", "import quantlab"))
         and line
-        not in ("from quantlab.utils import date_range", "from quantlab.runs import backtest_stats")
+        not in (
+            "from quantlab.utils import date_range",
+            "from quantlab.runs import backtest_stats",
+            "from quantlab.runs.factor_attribution_report import (",
+        )
     ]
     assert offenders == []
+    section = pathlib.Path(module.__file__).with_name("factor_attribution_report.py")
+    assert not [
+        line for line in section.read_text(encoding="utf-8").splitlines()
+        if line.startswith(("from quantlab", "import quantlab"))
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -713,15 +722,15 @@ def test_the_heatmap_height_grows_with_the_number_of_years(tmp_path):
 
 
 def test_the_heatmap_div_sits_under_the_performance_figure_before_the_notes(tmp_path):
-    """Picture, heatmap, then the notes -- and it loads no second plotly.js."""
+    """Picture, heatmap, the strategy table beside them, then the notes -- and no second plotly.js."""
     html = _write(
         tmp_path, returns=_multi_year_returns(), metrics={"whole": {"Total Return [%]": 1.0}}
     )
 
     first = html.index("Plotly.newPlot(")
     second = html.index("Plotly.newPlot(", first + 1)
-    assert html.index("<h2>Strategy</h2>") < first < html.index("Monthly returns by year") < second
-    assert second < html.index("<h2>Notes</h2>")
+    assert first < html.index("Monthly returns by year") < second < html.index("<h2>Strategy</h2>")
+    assert html.index("<h2>Strategy</h2>") < html.index("<h2>Notes</h2>")
     assert html.count("cdn.plot.ly") == 1
 
 

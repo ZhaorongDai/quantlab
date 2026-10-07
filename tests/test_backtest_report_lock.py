@@ -253,18 +253,21 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: The six reports were re-recorded when the Portfolio construction setup
 #: row became a scrolling box (d0e4a0cd); removing that box's CSS rule and
 #: wrapper gives the old hashes back. The metrics did not change.
+#: The six reports were re-recorded for the dashboard page (#215): header,
+#: sidebar sections, cards, chart styling, hover explanations and the plain
+#: metric definitions. The metrics did not change.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "0574a4ed1ef54f2dd3503bcf58e2820826fc4dbc2760d335057ebfd427d36ebc",
+    "run_long_only_benchmark/report.html": "8caaa6219ea786273f1c8a00032708572e0fc572c5f57cd198702279ba330d15",
     "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
-    "run_long_short_delisting/report.html": "77b55c2d2becce30878afe0e29857ef2b06d310af313dfe4e36cbffa0d5c196d",
+    "run_long_short_delisting/report.html": "54b3cea2423d40c569b90d5a32a141c8fdcf218c2fe83b3b34ee45a06ad5907f",
     "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
-    "run_weights_benchmark/report.html": "4bf6f869f67287cffecbb4d6da2b535f46fd94cec24ca87c6829b7d186b0d858",
+    "run_weights_benchmark/report.html": "dd91414c66fc9013ceb3b93b5ae80465ea2404684ac6e0427fe83859977888fe",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
-    "run_weights/report.html": "68b2e4bc476e4820e2b6c1fbe3c66eb3a0de7deb74a5aa080c9e77b87e2731c3",
+    "run_weights/report.html": "dd2b7cc3db804b68b16afbf9020ac0aa963a053e18c1bcca717a80c6476b056d",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "1c456595ba106a044a7c335fa0da5f52302827113ee1e47db94202e413c392d6",
+    "run_cv_benchmark/report.html": "100bcf7d9935a5e8f090e7d6700214ffc1f9d88e4062db923b8b286d8122203f",
     "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
-    "run_cv/report.html": "23d1edf05b0dbc7e955637b78cb34f851878d9e800ec41a992e30f5a6a491d71",
+    "run_cv/report.html": "cbd7443db5f3d1384a370e01f2d85dc4b3443a9f961c9afb7fe82e502f67d89a",
     "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
 
