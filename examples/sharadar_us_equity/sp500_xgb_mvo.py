@@ -212,8 +212,8 @@ def price_inputs() -> BadPrintMaskedDataset:
 def barra_exposures() -> BarraStyle:
     """BarraStyle over every input it reads, bad prints masked, as barra_style.py builds it.
 
-    The backtest computes it over its window (the risk model's
-    ``required_factors()``); the risk model's own reads come from the store.
+    The risk model reads it from its store (``exposure_data_strategy="read"``),
+    for its own stores and for the backtest's decisions alike.
     """
     return BarraStyle(FactorConfig(
         warmup_bars=PARAMETERS.warmup_bars,

@@ -30,6 +30,7 @@
 | `returns` | 截至这根 bar 的最近 `lookback_bars` 个单 bar 收益，由规则最近 `history_bars` 个原始估值价格在该窗口内前向填充后算出。`lookback_bars` 为 0 的规则拿到的是空窗口。 |
 | `staleness` | 每个标的在最近 `history_bars` 根 bar 内距上一个真实价格已过了多少根 bar；窗口内没有真实价格时为 NaN。 |
 | `factors` | 规则在 `required_factors()` 中声明的因子在这根 bar 上的值；没有声明时为 `None`。 |
+| `risk_exposures` | 规则在 `required_risk_model()` 中声明的因子风险模型在这根 bar 上的暴露，按模型给出的口径（`FactorRiskModel.exposures`：按 `exposure_data_strategy` 读暴露因子的 store 或现算）；没有声明时为 `None`。 |
 
 规则为每个标的返回一个权重：
 
@@ -83,7 +84,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 规则只负责决策。它的*决策输入*，即在一根 bar 上能读到的除持仓以外的一切，由同一个模块组装：`quantlab/portfolio/decision_inputs.py` 中的 `DecisionInputs`，回测和执行器都用它。它由价格数据集、成交价列和估值价列、已绑定的规则、调仓周期、*锚点*（预测面板的第一根 bar，调仓日程从它开始计数）以及执行设置构造。向量化回测调用它的 `weights(predictions, delisted=...)`，它在调仓 bar 上逐根调用规则的单 bar 决策（`decide`，见[回测之外决定一根 bar](#回测之外决定一根-bar)），并为每根 bar 构造 context：
 
-- 可交易性取自价格数据集的 `tradable_bars`；因子值是规则的 `required_factors()` 在窗口上计算的结果，各带自己的预热期。
+- 可交易性取自价格数据集的 `tradable_bars`；因子值是规则的 `required_factors()` 在窗口上计算的结果，各带自己的预热期；风险暴露是规则的 `required_risk_model()` 的 `exposures` 在窗口上的一次请求。
 - 当前权重是之前各次调仓实际留下的持仓，由执行模块（`quantlab.execution.rules`）按模拟引擎完全相同的方式重放，包括被拒订单、退市结算、sizing basis、手续费和滑点。回测器传入自己 config 中的 `execution` 设置，以及交给引擎的同一份退市标记；不传设置时按成交价定仓位、不计成本。
 - 调仓 bar 是从锚点起每 `rebalance_periods` 根中的一根；最后一根 bar 从不调仓，因为在那里决定的订单没有下一根 bar 可以成交（同一模块中的 `rebalance_mask`）。
 - 收益窗口用每个标的最后已知的价格计算，所以一次停牌表现为若干个零收益，然后在复牌当天出现整段涨跌。
@@ -325,7 +326,7 @@ array([ 0.4  , -0.212, -0.261,  0.073])
 
 ### 暴露约束
 
-`exposure_bounds` 把组合对某个因子的暴露限制在两个界之间：对 `exposure_factors` 中每个被点名的输出 `x`，要求 `lower <= sum_i w_i * x_i <= upper`，被锁持仓的暴露也计入（没有暴露值的被锁标的按 0 计）。规则在 `required_factors()` 里声明这些 `exposure_factors`，所以回测会在窗口内计算它们，并把每根 bar 的取值放进 `context.factors`。没有暴露值的候选标的不分配权重；如果它当前已持有，就被平掉，并记在该 bar 的 `closed_without_exposure` 事件里。协方差估计器声明的输出也可以直接约束，不必重复声明：以因子风险模型为协方差时，`exposure_bounds={"style_beta": (-0.1, 0.1)}` 把组合的 USE4 Beta 暴露控制在市值加权估计域的水平（即 0）附近。两边都声明的同一个因子只计算一次。候选标的无法满足的界会让这根 bar 无解，回测会保持原持仓（见[在回测中](#在回测中)）。约束满足到求解器的精度，约 1e-5。
+`exposure_bounds` 把组合对某个因子的暴露限制在两个界之间：对 `exposure_factors` 中每个被点名的输出 `x`，要求 `lower <= sum_i w_i * x_i <= upper`，被锁持仓的暴露也计入（没有暴露值的被锁标的按 0 计）。规则在 `required_factors()` 里声明这些 `exposure_factors`，所以回测会在窗口内计算它们，并把每根 bar 的取值放进 `context.factors`。没有暴露值的候选标的不分配权重；如果它当前已持有，就被平掉，并记在该 bar 的 `closed_without_exposure` 事件里。协方差估计器所用因子风险模型的暴露（`exposure_names` 之一，从 `context.risk_exposures` 读取）也可以直接约束，不必声明因子：以因子风险模型为协方差时，`exposure_bounds={"style_beta": (-0.1, 0.1)}` 把组合的 USE4 Beta 暴露控制在市值加权估计域的水平（即 0）附近。被约束的名字如果既是 `exposure_factors` 的输出又是风险模型的暴露，会被拒绝。候选标的无法满足的界会让这根 bar 无解，回测会保持原持仓（见[在回测中](#在回测中)）。约束满足到求解器的精度，约 1e-5。
 
 最常见的用法是把 beta 控制在 1 附近，让只做多的组合保持和基准相同的市场风险，超额来自选股，而不是来自更低的 beta。`BenchmarkBeta`（见[因子指南](factor.md#基准-beta)）给出每个标的相对一个单标的基准的 beta；`stocks` 为各标的的价格数据集，`vt` 为基准的数据集：
 
@@ -394,7 +395,7 @@ array([0.4, 0.4, 0. , 0.2])
 `FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))` 读取因子风险模型（`quantlab.risk.base.FactorRiskModel`，例如 `Use4RiskModel`）的 store：
 
 - 它返回 `FactorCovarianceEstimate`，即因子形式的协方差 `B F B' + diag(D)`：暴露 `B`、因子协方差 `F` 和特异方差 `D`，取自估计 store 在这根 bar 上的那一行。它的 `factor_form()` 让优化器把风险写成 `|F^(1/2) B' w|^2 + w' diag(D) w`，不需要构造稠密矩阵。
-- 它在 `required_factors()` 中声明模型的暴露因子。回测在自己的窗口上计算它（带因子自己的预热），并把它在这根 bar 上的值放进 `context.factors`。
+- 它在 `required_risk_model()` 中声明模型，不声明任何因子。回测从模型本身取暴露，即 `model.exposures(start, end)`，与模型的 store、因子归因和偏差统计同一来源：`exposure_data_strategy="read"` 时读暴露因子的 store（此时 store 须覆盖回测区间），`"cal"` 时现算。它把这根 bar 上的值放进 `context.risk_exposures`。
 
 它覆盖在这根 bar 上有全部暴露和特异风险的标的。它不读收益窗口，所以没有停牌过滤，锁定的持仓和其他持仓一样计入风险。模型的 store 必须覆盖回测区间。
 
@@ -436,7 +437,7 @@ array([0.4, 0.4, 0. , 0.2])
 
 1. 把 `config_cls` 设为规则参数的 frozen dataclass。
 2. 实现 `construct`。
-3. 规则读取收益窗口时重写 `lookback_bars`（需要多于 `lookback_bars + 1` 个原始价格时再重写 `history_bars`），读取因子面板时重写 `required_factors`，需要检查标签规格时重写 `bind`。
+3. 规则读取收益窗口时重写 `lookback_bars`（需要多于 `lookback_bars + 1` 个原始价格时再重写 `history_bars`），读取因子面板时重写 `required_factors`，读取因子风险模型的暴露时重写 `required_risk_model`，需要检查标签规格时重写 `bind`。
 
 不要重写 `decide`：它是回测与执行器共用的唯一决策路径。规则不含组装代码，它的 context 由 `DecisionInputs` 构造。
 

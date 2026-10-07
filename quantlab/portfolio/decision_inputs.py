@@ -3,7 +3,8 @@
 A rule decides one bar from its *decision inputs*: the predictions at the
 bar, which symbols are tradable there, the recent valuation prices (as a
 return window and each symbol's staleness), the values of the factors it
-declares, and the weights currently held. ``DecisionInputs`` assembles them
+declares, the exposures of the factor risk model it declares, and the
+weights currently held. ``DecisionInputs`` assembles them
 from a price dataset for the research backtester and for an event-driven
 executor alike, so a rule holds no assembly code and only decides
 (``PortfolioConstructor.construct`` / ``decide``).
@@ -23,6 +24,12 @@ prediction panel a run decided on), the last bar never.
 
 ``DecisionInputs.from_run`` rebuilds the inputs of a recorded backtest run,
 read through ``quantlab.runs.backtest_run.BacktestRun``.
+
+A factor risk model's exposures are taken from the model
+(``FactorRiskModel.exposures``: its exposures factor's store under
+``exposure_data_strategy="read"``, computed under ``"cal"``), the source its
+stores, factor attribution and bias statistics read, never from
+``required_factors()``.
 
 This module imports the portfolio and data base classes, the Execution
 module and the backtest-run reader, never the backtest, model, factor or
@@ -374,13 +381,15 @@ class DecisionInputs:
         ``history_bars - 1`` bars before the panel's first bar to its last
         (a warning names the shortfall when the dataset holds fewer, and the
         first windows are short), the tradability (``tradable_bars``) of the
-        panel's bars, and the rule's ``required_factors()`` over the panel,
-        each with its own warm-up. It then loops ``decide`` over the
-        rebalance bars in time order. Each bar's context holds its
-        predictions, its tradability, the return window and staleness of its
-        last ``history_bars`` valuation prices, its factor values, and the
-        weights currently held: the earlier targets replayed by the
-        Execution module under the ``execution`` settings, exactly as the
+        panel's bars, the rule's ``required_factors()`` over the panel,
+        each with its own warm-up, and the exposures of its
+        ``required_risk_model()`` over the panel, in one request. It then
+        loops ``decide`` over the rebalance bars in time order. Each bar's
+        context holds its predictions, its tradability, the return window
+        and staleness of its last ``history_bars`` valuation prices, its
+        factor values, its risk exposures, and the weights currently held:
+        the earlier targets replayed by the Execution module under the
+        ``execution`` settings, exactly as the
         simulation trades them (filled at the next bar's fill price,
         rejected without a raw price, a holding marked in ``delisted``
         settled at its last valuation on the next bar, sells before buys,
@@ -418,8 +427,9 @@ class DecisionInputs:
         ------
         ValueError
             If the panel starts before the anchor, a prediction bar is not a
-            price bar, or ``construct`` returns a row breaking the weights
-            contract.
+            price bar, the risk model's exposures store does not cover the
+            panel (under ``"read"``), or ``construct`` returns a row
+            breaking the weights contract.
 
         Examples
         --------
@@ -461,6 +471,9 @@ class DecisionInputs:
         factors = self._factor_panels(first, last, symbols)
         if factors is not None:
             factors = factors.reindex(timestamp=timestamps).load()
+        risk_exposures = self._risk_exposures(first, last, symbols)
+        if risk_exposures is not None:
+            risk_exposures = risk_exposures.reindex(timestamp=timestamps).load()
         valuation = prices[self.valuation_column]
         book = _Book(
             np.asarray(prices[self.fill_column].values, dtype=np.float64),
@@ -482,6 +495,7 @@ class DecisionInputs:
                 book.weights_at(position),
                 valuation.isel(timestamp=slice(max(0, position + 1 - history_bars), position + 1)),
                 None if factors is None else factors.isel(timestamp=t, drop=True),
+                None if risk_exposures is None else risk_exposures.isel(timestamp=t, drop=True),
             )
             decision = self.constructor.decide(context)
             label = pd.Timestamp(timestamps[t]).isoformat()
@@ -516,7 +530,8 @@ class DecisionInputs:
         and stays locked where it cannot trade). The tradability, the return
         window and staleness of the last ``history_bars`` valuation prices
         up to ``t``, and the rule's factor values at ``t`` (each computed up
-        to ``t`` with its own warm-up) are read from the dataset; with the
+        to ``t`` with its own warm-up) are read from the dataset, and its
+        risk model's exposures at ``t`` from the model; with the
         holdings the panel entry replayed, the context equals the one
         ``weights`` built at ``t``. No warning is given for a short history.
 
@@ -540,8 +555,9 @@ class DecisionInputs:
         ------
         ValueError
             If an input is not on ``symbol`` alone or repeats a symbol, a
-            current weight is not finite, or ``t`` is not a bar of the
-            dataset.
+            current weight is not finite, ``t`` is not a bar of the
+            dataset, or the risk model's exposures store does not cover
+            ``t`` (under ``"read"``).
 
         Examples
         --------
@@ -577,9 +593,16 @@ class DecisionInputs:
         factors = self._factor_panels(t, t, symbols)
         if factors is not None:
             factors = factors.reindex(timestamp=[t]).isel(timestamp=0, drop=True).load()
-        return self._context(t, predictions, tradable, current, prices[self.valuation_column], factors)
+        risk_exposures = self._risk_exposures(t, t, symbols)
+        if risk_exposures is not None:
+            risk_exposures = risk_exposures.reindex(timestamp=[t]).isel(timestamp=0, drop=True).load()
+        return self._context(
+            t, predictions, tradable, current, prices[self.valuation_column], factors, risk_exposures
+        )
 
-    def _context(self, timestamp, predictions, tradable, current, valuation_price, factors) -> PortfolioContext:
+    def _context(
+        self, timestamp, predictions, tradable, current, valuation_price, factors, risk_exposures
+    ) -> PortfolioContext:
         """Build a context from checked inputs: the one builder of both entries.
 
         ``tradable`` and ``current`` are arrays in the order of the
@@ -600,6 +623,7 @@ class DecisionInputs:
             returns=returns,
             factors=factors,
             staleness=staleness,
+            risk_exposures=risk_exposures,
         )
 
     def _schedule(self, timestamps: np.ndarray) -> np.ndarray:
@@ -663,3 +687,16 @@ class DecisionInputs:
                 f"their computed panels lack"
             )
         return panels.transpose(*_DIMS).reindex(symbol=symbols)
+
+    def _risk_exposures(self, first: pd.Timestamp, last: pd.Timestamp, symbols) -> xr.Dataset | None:
+        """Return the exposures of the rule's ``required_risk_model()`` from ``first`` to ``last`` on ``symbols``, or None.
+
+        One ``FactorRiskModel.exposures`` request, which reads the exposures
+        factor's store or computes it per the model's
+        ``exposure_data_strategy``; a symbol the model has no exposures for
+        is NaN.
+        """
+        model = self.constructor.required_risk_model()
+        if model is None:
+            return None
+        return model.exposures(first, last).transpose(*_DIMS).reindex(symbol=symbols)

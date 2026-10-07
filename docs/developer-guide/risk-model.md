@@ -383,8 +383,9 @@ covariance differs: `LedoitWolfEstimator` over 126 one-bar returns, or
 `FactorRiskStoreEstimator` on the estimate store above. Neither backtest
 failed a rebalance. Both backtests also pass `Use4RiskModel` as their
 `risk_model` and attribute their holdings to its factors (see below). On
-the training server the factor-model backtest takes 5.5 minutes, most of it
-computing `BarraStyle` over the window, and the Ledoit-Wolf one 3.1
+the training server the factor-model backtest took 5.5 minutes, most of it
+computing `BarraStyle` over the window (measured before the backtest read
+the exposures from their store, #230), and the Ledoit-Wolf one 3.1
 minutes; the whole script takes 11 minutes. Before factor attribution was
 added, the two took 4.2 and 3.3 minutes, with a 38 GB peak for the
 script.

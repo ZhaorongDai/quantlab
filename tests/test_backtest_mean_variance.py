@@ -20,15 +20,22 @@ What is locked here, and what turns it red:
 - A long-short `MeanVarianceOptimizer` backtest (#80) is dollar-neutral with
   gross exposure at most one on every rebalance bar, and rebuilds from its
   `config.json`.
-- A covariance estimator declaring a `Factor` in `required_factors()` (#82, a Polars
-  factor here) receives that factor's values at each rebalance bar, and
-  only at it, in `context.factors`, warmed up like a model's features.
+- A `Factor` the rule declares in `required_factors()` (#82, a Polars
+  factor here, an `exposure_factors` one) reaches the covariance estimator
+  at each rebalance bar, and only at it, in `context.factors`, warmed up
+  like a model's features.
+- A `FactorRiskStoreEstimator` decision takes its exposures from the risk
+  model (#230): under `"read"` the exposures factor is never computed, the
+  store is read once over the panel, and the weights equal those of `"cal"`;
+  a bound may name one of the model's exposures. Under `"cal"` the weights
+  equal `tests/factor_risk_cal_reference.npz`, captured before #230.
 
 Everything is synthetic, CPU-only and offline.
 """
 
 import dataclasses
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -338,26 +345,19 @@ def test_a_long_short_mean_variance_backtest_is_dollar_neutral_and_rebuilds(tmp_
     np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)
 
 
-#: `context.factors` seen by every `_DeclaringRisk`, in call order.
+#: `context.factors` seen by every `_RecordingRisk`, in call order.
 FACTORS_SEEN: list = []
 
 
-class _DeclaringRisk(LedoitWolfEstimator):
-    """Ledoit-Wolf that declares one factor and records what it is handed."""
-
-    def __init__(self, config, factor):
-        super().__init__(config)
-        self._factor = factor
-
-    def required_factors(self):
-        return [self._factor]
+class _RecordingRisk(LedoitWolfEstimator):
+    """Ledoit-Wolf that records the factors it is handed."""
 
     def estimate(self, context, volatility=None):
         FACTORS_SEEN.append((context.timestamp, context.factors))
         return super().estimate(context, volatility)
 
 
-def test_a_declared_factor_reaches_the_covariance_estimator_at_each_bar_only(tmp_path):
+def test_a_declared_factor_reaches_the_context_at_each_bar_only(tmp_path):
     FACTORS_SEEN.clear()
 
     def declaring(dataset_config):
@@ -365,7 +365,10 @@ def test_a_declared_factor_reaches_the_covariance_estimator_at_each_bar_only(tmp
         factor = PastReturnFactor(
             PolarsFactorConfig(warmup_bars=5, dataset=make_stock_dataset(dataset_config), kwargs={"n": 3})
         )
-        return _optimizer(covariance=_DeclaringRisk(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK), factor))
+        return _optimizer(
+            covariance=_RecordingRisk(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
+            exposure_factors=(factor,),
+        )
 
     backtester, dataset_config, bars = _backtester(tmp_path, declaring)
 
@@ -526,11 +529,13 @@ def test_a_constructors_events_reach_metrics_json(tmp_path):
     }
 
 
-def _factor_risk_model(tmp_path, dataset_config, bars):
+def _factor_risk_model(tmp_path, dataset_config, bars, strategy="cal"):
     """A factor risk model over the price store: country, two industries, two styles.
 
     Its prices, caps and rate, and its exposures, are Zarr-backed frames, so a
-    run's ``config.json`` rebuilds it. Both stores are built over the backtest.
+    run's ``config.json`` rebuilds it. Both stores are built over the backtest;
+    with ``strategy="read"`` the exposures factor's store is built first, over
+    every bar.
     """
     from quantlab.dataset.memory import FrameDataset
     from quantlab.factor.config import BaseFactorConfig
@@ -562,11 +567,14 @@ def _factor_risk_model(tmp_path, dataset_config, bars):
     root = tmp_path / "risk"
     factor = PassThrough(BaseFactorConfig(
         warmup_bars=0, dataset=FrameDataset(exposures).to_zarr(root / "exposures.zarr"),
+        file_path=str(root / "exposures_factor.zarr"),
     ))
+    if strategy == "read":
+        factor.build(_day(bars[0]), _day(bars[-1]))
     model = Use4RiskModel(Use4RiskConfig(
         exposures=factor,
         dataset=FrameDataset(prices).to_zarr(root / "prices.zarr"),
-        exposure_data_strategy="cal",
+        exposure_data_strategy=strategy,
         style_names=("style_a", "style_b"),
         industry_name="industry",
         industries=(1, 2),
@@ -603,6 +611,11 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
     original = backtester.run()
 
     weights = original.weights["weight"].values
+    # The weights before the decision took its exposures from the risk model
+    # (#230), captured on macOS arm64 under "cal": bit-identical there. The
+    # solver may round differently on another machine, hence the tolerance.
+    reference = np.load(Path(__file__).with_name("factor_risk_cal_reference.npz"))["weights"]
+    np.testing.assert_allclose(weights, reference, rtol=0, atol=1e-10)
     rebalance = np.isfinite(weights).all(axis=1)
     assert rebalance.sum() == len(range(0, WINDOW[1] - WINDOW[0], REBALANCE))
     np.testing.assert_allclose(weights[rebalance].sum(axis=1), 1.0, atol=1e-9)
@@ -634,6 +647,70 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
     np.testing.assert_array_equal(again.weights["weight"].values, weights)
     np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)
     assert [m for m in messages if "mismatch" in m] == []
+
+
+def _factor_risk_run(tmp_path, strategy, **overrides):
+    from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
+    from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
+
+    def factor_risk(dataset_config):
+        bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
+        model = _factor_risk_model(tmp_path, dataset_config, bars, strategy)
+        return _optimizer(
+            covariance=FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model)),
+            **overrides,
+        )
+
+    backtester, _, _ = _backtester(tmp_path, factor_risk, output_dir=str(tmp_path / "runs"))
+    return backtester
+
+
+def test_a_factor_risk_decision_reads_the_exposures_store_under_read(tmp_path, monkeypatch):
+    """#230: the decision takes its exposures from the risk model, so under
+    ``"read"`` the exposures factor is never computed, and the weights equal
+    those of ``"cal"`` over the same exposures."""
+    from tests.test_risk_regression import PassThrough
+
+    computed = _factor_risk_run(tmp_path / "cal", "cal").run()
+    backtester = _factor_risk_run(tmp_path / "read", "read")  # its stores are built
+
+    def refuse(self, start, end):
+        raise AssertionError("the exposures factor was computed under 'read'")
+
+    monkeypatch.setattr(PassThrough, "compute", refuse)
+    read = backtester.run()
+
+    np.testing.assert_array_equal(read.weights["weight"].values, computed.weights["weight"].values)
+    # One request over the prediction panel, recorded under the factor's own key.
+    run = BacktestRun.open(read.run_dir)
+    entry, = run.data_fingerprint["constructor.covariance.risk_model.exposures"]
+    panel = read.weights.timestamp.values
+    assert (entry["request"]["start"], entry["request"]["end"]) == (
+        pd.Timestamp(panel[0]).isoformat(), pd.Timestamp(panel[-1]).isoformat()
+    )
+
+
+def test_a_read_exposures_store_not_covering_the_panel_fails(tmp_path):
+    backtester = _factor_risk_run(tmp_path, "read")
+    exposures = backtester.config.constructor.required_risk_model().config.exposures
+    bars = xr.open_zarr(exposures.config.dataset.config.zarr_file_path).timestamp.values
+    exposures.build(_day(bars[0]), _day(bars[WINDOW[1] - 3]))  # ends before the panel
+    with pytest.raises(ValueError, match="does not contain"):
+        backtester.run()
+
+
+def test_a_factor_risk_models_exposure_can_be_bounded(tmp_path):
+    """A bound on a style exposure reads the risk model's exposures, no factor declared."""
+    backtester = _factor_risk_run(tmp_path, "cal", exposure_bounds={"style_a": (-0.1, 0.1)})
+    result = backtester.run()
+    assert backtester.config.constructor.required_factors() == []
+    assert result.metrics["portfolio_construction"]["failed_bar_count"] == 0
+    weights = result.weights["weight"]
+    rebalance = np.isfinite(weights.values).all(axis=1)
+    model = backtester.config.constructor.config.covariance.config.risk_model
+    style = model.exposures(weights.timestamp.values[0], weights.timestamp.values[-1])["style_a"]
+    book = (weights * style.reindex_like(weights)).sum("symbol").values[rebalance]
+    assert (np.abs(book) <= 0.1 + 1e-4).all(), book
 
 
 def test_a_beta_bounded_backtest_holds_the_ex_ante_beta_inside_the_bounds_and_rebuilds(tmp_path):

@@ -3,8 +3,8 @@
 ``FactorRiskStoreEstimator`` estimates nothing itself (ADR 0024). At a bar it reads
 the factor covariance ``F`` and the specific risks of that bar from the
 estimate store of a ``quantlab.risk.base.FactorRiskModel``, builds each
-symbol's exposures ``B`` from the bar's values of the model's exposures
-factor (``context.factors``) and returns a ``FactorCovarianceEstimate``,
+symbol's exposures ``B`` from the bar's exposures as the model gives them
+(``context.risk_exposures``) and returns a ``FactorCovarianceEstimate``,
 which the mean-variance optimiser turns into a low-rank risk term.
 """
 
@@ -18,16 +18,19 @@ from quantlab.portfolio.base import (
     PortfolioContext,
 )
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
-from quantlab.risk.base import covered_factors
+from quantlab.risk.base import FactorRiskModel, covered_factors
 
 
 class FactorRiskStoreEstimator(CovarianceEstimator):
     """The covariance at a bar from a factor risk model's estimate store.
 
-    ``required_factors()`` is the factor risk model's exposures factor, so the
-    backtest computes it over its window and hands its values at the bar in
-    ``context.factors``. ``estimate(context)`` reads the bar's row of the
-    estimate store and returns ``B F B' + diag(D)`` in factor form, with
+    ``required_risk_model()`` is the factor risk model, so the decision
+    inputs take its exposures from it (``FactorRiskModel.exposures``: the
+    exposures factor's store under ``exposure_data_strategy="read"``,
+    computed under ``"cal"``), exactly as its stores, factor attribution and
+    bias statistics do, and hand their values at the bar in
+    ``context.risk_exposures``. ``estimate(context)`` reads the bar's row
+    of the estimate store and returns ``B F B' + diag(D)`` in factor form, with
     ``B`` on the model's factors (``FactorRiskModel.factor_names``) as the
     model's ``exposure_matrix`` gives them. It reads only what every factor
     risk model provides, so it works with any (``Use4RiskModel``: 1 on the
@@ -51,7 +54,7 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
     a backtest's context at a bar inside them:
 
     >>> risk = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=use4))
-    >>> risk.required_factors() == [use4.config.exposures]
+    >>> risk.required_risk_model() is use4
     True
     >>> estimate = risk.estimate(context)
     >>> exposures, factor_covariance, specific_variance = estimate.factor_form()
@@ -61,15 +64,15 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
 
     config_cls = FactorRiskStoreEstimatorConfig
 
-    def required_factors(self) -> list:
-        """The factor risk model's exposures factor.
+    def required_risk_model(self) -> FactorRiskModel:
+        """The factor risk model, whose exposures ``estimate`` reads from ``context.risk_exposures``.
 
         Examples
         --------
-        >>> risk.required_factors() == [use4.config.exposures]
+        >>> risk.required_risk_model() is use4
         True
         """
-        return [self.config.risk_model.config.exposures]
+        return self.config.risk_model
 
     def estimate(
         self, context: PortfolioContext, volatility: xr.DataArray | None = None
@@ -81,7 +84,8 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
         Parameters
         ----------
         context : PortfolioContext
-            The bar's context; its ``factors`` hold the exposures at the bar.
+            The bar's context; its ``risk_exposures`` hold the model's
+            exposures at the bar.
         volatility : None
             Refused: a factor risk model takes no predicted volatilities.
 
@@ -93,8 +97,8 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
         Raises
         ------
         ValueError
-            If ``volatility`` is given, the context has no ``factors`` or the
-            estimate store does not cover the bar.
+            If ``volatility`` is given, the context has no
+            ``risk_exposures`` or the estimate store does not cover the bar.
 
         Examples
         --------
@@ -107,16 +111,16 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
                 f"{type(self).__name__} takes no predicted volatilities: its risk is the "
                 f"factor risk model's; leave the optimiser's volatility_label unset."
             )
-        if context.factors is None:
+        if context.risk_exposures is None:
             raise ValueError(
-                f"{type(self).__name__}: the context has no factors; the exposures come "
-                f"from required_factors()."
+                f"{type(self).__name__}: the context has no risk exposures; the decision "
+                f"inputs take them from required_risk_model()."
             )
         row = self._row(context.timestamp)
         model = self.config.risk_model
         names = list(model.factor_names)
         symbols = context.symbols
-        exposures, covered = model.exposure_matrix(context.factors.reindex(symbol=symbols))
+        exposures, covered = model.exposure_matrix(context.risk_exposures.reindex(symbol=symbols))
 
         specific = row["specific_risk"].reindex(symbol=symbols).values.astype(np.float64)
         covered &= np.isfinite(specific)

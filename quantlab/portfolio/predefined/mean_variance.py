@@ -35,6 +35,7 @@ from quantlab.utils.cross_section import cross_sectional_zscore
 
 if TYPE_CHECKING:
     from quantlab.factor.base import Factor
+    from quantlab.risk.base import FactorRiskModel
 
 _SOLVED = (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 
@@ -107,6 +108,17 @@ class MeanVarianceInputs:
         (4, 4)
         """
         return self.estimate.covariance
+
+
+def _exposure(context: PortfolioContext, name: str) -> xr.DataArray:
+    """Return a bounded exposure at the bar: a declared factor's output, else a risk model's exposure."""
+    if context.factors is not None and name in context.factors:
+        return context.factors[name]
+    if context.risk_exposures is not None and name in context.risk_exposures:
+        return context.risk_exposures[name]
+    raise ValueError(
+        f"the context holds no exposure {name!r} in its factors or risk exposures"
+    )
 
 
 def _zscore(values: np.ndarray) -> np.ndarray:
@@ -266,11 +278,12 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     bounded exposure raise ``PortfolioConstructionError``: the backtest holds
     the current position there and records the bar.
 
-    ``lookback_bars`` and ``history_bars`` are the covariance estimator's;
-    ``required_factors()`` is the covariance estimator's followed by the
-    ``exposure_factors`` not among them, whose outputs must not repeat a
-    name. ``exposure_bounds`` may bound any of their outputs, a factor risk
-    model's exposures included.
+    ``lookback_bars``, ``history_bars`` and ``required_risk_model()`` are the
+    covariance estimator's; ``required_factors()`` is the
+    ``exposure_factors``, whose outputs must not repeat a name.
+    ``exposure_bounds`` may bound any of their outputs or any of the risk
+    model's ``exposure_names`` (read from ``context.risk_exposures``); a
+    bounded name must come from one of the two, not both.
     ``bind`` reads the span from the label's ``LabelSpec``, so a backtest
     binds the optimiser when it is built.
 
@@ -365,22 +378,28 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             raise ValueError(
                 f"candidate_top_k must be a positive integer or None, got {top_k!r}"
             )
-        declared = (
-            [name for factor in self.required_factors() for name in factor.get_factor_names()]
-            if config.exposure_factors or config.exposure_bounds
-            else []
-        )
+        declared = [
+            name for factor in config.exposure_factors for name in factor.get_factor_names()
+        ]
         repeated = sorted({name for name in declared if declared.count(name) > 1})
         if repeated:
             raise ValueError(
                 f"the declared factors produce {repeated} more than once; "
                 f"context.factors holds one variable per name"
             )
+        risk_model = self.required_risk_model() if config.exposure_bounds else None
+        risk_names = set() if risk_model is None else set(risk_model.exposure_names)
         for name, (lower, upper) in config.exposure_bounds.items():
-            if name not in declared:
+            if name in declared and name in risk_names:
+                raise ValueError(
+                    f"exposure_bounds names {name!r}, which is both an output of the "
+                    f"declared factors and an exposure of the risk model; name it once"
+                )
+            if name not in declared and name not in risk_names:
                 raise ValueError(
                     f"exposure_bounds names {name!r}, which is not an output of the "
-                    f"declared factors ({sorted(declared)})"
+                    f"declared factors ({sorted(declared)}) or an exposure of the risk "
+                    f"model ({sorted(risk_names)})"
                 )
             if not (np.isfinite(lower) and np.isfinite(upper) and lower <= upper):
                 raise ValueError(
@@ -412,21 +431,24 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         return self.config.covariance.history_bars
 
     def required_factors(self) -> list["Factor"]:
-        """The covariance estimator's ``required_factors()``, then the ``exposure_factors`` not among them.
-
-        A factor both declare (a factor risk model's exposures also bounded)
-        is listed once.
+        """The ``exposure_factors``.
 
         Examples
         --------
         >>> optimizer.required_factors()
         []
         """
-        factors = list(self.config.covariance.required_factors())
-        for factor in self.config.exposure_factors:
-            if not any(factor == other for other in factors):
-                factors.append(factor)
-        return factors
+        return list(self.config.exposure_factors)
+
+    def required_risk_model(self) -> "FactorRiskModel | None":
+        """The covariance estimator's ``required_risk_model()``.
+
+        Examples
+        --------
+        >>> optimizer.required_risk_model() is None  # Ledoit-Wolf
+        True
+        """
+        return self.config.covariance.required_risk_model()
 
     @property
     def span(self) -> int | None:
@@ -563,7 +585,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         bounded = list(config.exposure_bounds)
         exposure_all = (
             np.stack([
-                np.asarray(context.factors[name].sel(symbol=symbols).values, dtype=np.float64)
+                np.asarray(_exposure(context, name).sel(symbol=symbols).values, dtype=np.float64)
                 for name in bounded
             ])
             if bounded

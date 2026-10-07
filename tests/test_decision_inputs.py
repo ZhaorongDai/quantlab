@@ -5,7 +5,8 @@ halt, a late listing and a delisting; no vectorbt):
 
 - On every rebalance bar, the context ``weights()`` built equals ``context()``
   at that bar given the replayed holdings, value for value (top-n,
-  mean-variance with Ledoit-Wolf, and a rule declaring a factor), and
+  mean-variance with Ledoit-Wolf, a rule declaring a factor and one reading a
+  factor risk model's exposures), and
   ``decide`` on it returns the panel's row.
 - ``context()`` puts a held symbol without a prediction on the bar's symbols,
   locked where it cannot trade.
@@ -97,6 +98,16 @@ class _LogPrice:
         return xr.Dataset({"size": np.log(_price()).sel(timestamp=slice(first, last))})
 
 
+class _RiskModel:
+    """Stands in for a ``FactorRiskModel``: its exposures are the log close, read once per call."""
+
+    calls: list
+
+    def exposures(self, first, last):
+        self.calls.append((pd.Timestamp(first), pd.Timestamp(last)))
+        return xr.Dataset({"size": np.log(_price()).sel(timestamp=slice(first, last))})
+
+
 class _Recording:
     """Records every context ``construct`` is handed."""
 
@@ -120,6 +131,13 @@ class _WithFactor(_TopN):
         return [_LogPrice()]
 
 
+class _WithRiskModel(_TopN):
+    risk = None
+
+    def required_risk_model(self):
+        return self.risk
+
+
 def _rule(kind):
     if kind == "mean_variance":
         rule = _MeanVariance(
@@ -133,7 +151,12 @@ def _rule(kind):
             )
         )
     else:
-        rule = (_WithFactor if kind == "factor" else _TopN)(TopNConfig(direction="long_only", top_n=3))
+        rule = {"factor": _WithFactor, "risk": _WithRiskModel}.get(kind, _TopN)(
+            TopNConfig(direction="long_only", top_n=3)
+        )
+    if kind == "risk":
+        rule.risk = _RiskModel()
+        rule.risk.calls = []
     rule.bind(SPECS)
     rule.seen = []
     return rule
@@ -141,7 +164,7 @@ def _rule(kind):
 
 def _assert_same_context(built: PortfolioContext, looped: PortfolioContext):
     assert built.timestamp == looped.timestamp
-    for name in ("predictions", "tradable", "current_weights", "returns", "staleness", "factors"):
+    for name in ("predictions", "tradable", "current_weights", "returns", "staleness", "factors", "risk_exposures"):
         a, b = getattr(built, name), getattr(looped, name)
         if b is None:
             assert a is None, name
@@ -149,7 +172,7 @@ def _assert_same_context(built: PortfolioContext, looped: PortfolioContext):
             xr.testing.assert_identical(a, b)
 
 
-@pytest.mark.parametrize("kind", ["top_n", "mean_variance", "factor"])
+@pytest.mark.parametrize("kind", ["top_n", "mean_variance", "factor", "risk"])
 def test_context_reproduces_every_rebalance_bar_of_weights(kind):
     rule = _rule(kind)
     inputs = _inputs(rule)
@@ -172,6 +195,29 @@ def test_context_reproduces_every_rebalance_bar_of_weights(kind):
         assert all(c.returns.sizes["timestamp"] == 20 for c in looped)
     if kind == "factor":
         assert all(c.factors is not None for c in looped)
+    if kind == "risk":
+        assert all(c.factors is None and c.risk_exposures is not None for c in looped)
+    else:
+        assert all(c.risk_exposures is None for c in looped)
+
+
+def test_a_risk_models_exposures_are_read_once_over_the_panel_and_reindexed():
+    rule = _rule("risk")
+    predictions = _predictions()
+    _inputs(rule).weights(predictions)
+    # One request over the panel's bars, never one per bar.
+    assert rule.risk.calls == [(TS[WARMUP], TS[-1])]
+    for context in rule.seen:
+        assert context.risk_exposures["size"].dims == ("symbol",)
+        assert context.risk_exposures.symbol.values.tolist() == SYMBOLS
+
+    # A held symbol without a prediction joins the bar with its exposure.
+    t = TS[WARMUP + 3]
+    held = xr.DataArray([0.4], dims="symbol", coords={"symbol": ["S1"]})
+    context = _inputs(rule).context(t, predictions.sel(timestamp=t).drop_sel(symbol="S1"), held)
+    assert rule.risk.calls[-1] == (t, t)
+    assert context.risk_exposures.symbol.values.tolist() == context.symbols.tolist()
+    assert context.risk_exposures["size"].sel(symbol="S1") == np.log(_price()).sel(timestamp=t, symbol="S1")
 
 
 def test_a_held_symbol_without_a_prediction_joins_the_bar_locked():

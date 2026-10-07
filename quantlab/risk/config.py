@@ -53,7 +53,9 @@ class FactorRiskConfig(FrozenConfig):
     #: The dataset holding ``price_column``, ``market_cap_column`` and
     #: ``risk_free_column``, or a list of datasets, merged into one.
     dataset: "MarketDataset | tuple" = component()
-    #: ``"read"`` reads the exposures from their store, ``"cal"`` computes them.
+    #: ``"read"`` reads the exposures from their store, ``"cal"`` computes them:
+    #: for the model's stores, factor attribution, bias statistics and the
+    #: decisions of a rule reading the model (``FactorRiskStoreEstimator``).
     exposure_data_strategy: Literal["read", "cal"]
     #: Path of the Zarr store of the regression (factor returns, specific
     #: returns and diagnostics).

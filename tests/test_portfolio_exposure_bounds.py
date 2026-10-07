@@ -162,35 +162,38 @@ def test_the_optimizer_round_trips_through_its_config_with_its_exposure_factors(
     assert again.required_factors()[0].get_config() == beta.get_config()
 
 
-class _DeclaringLedoitWolf(LedoitWolfEstimator):
-    """A covariance estimator that declares a factor, as a factor risk model declares its exposures."""
+class _RiskModel:
+    """Stands in for a factor risk model whose one exposure is ``beta``."""
 
-    declared: list = []
-
-    def required_factors(self):
-        return list(self.declared)
+    exposure_names = ("beta",)
 
 
-def _declaring_covariance(factor):
-    estimator = _DeclaringLedoitWolf(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK))
-    estimator.declared = [factor]
-    return estimator
+class _WithRiskModel(LedoitWolfEstimator):
+    """A covariance estimator declaring a factor risk model, as ``FactorRiskStoreEstimator`` does."""
+
+    def required_risk_model(self):
+        return _RiskModel()
 
 
-def test_an_output_the_covariance_estimator_declares_can_be_bounded_without_declaring_it_again():
-    """A factor risk model's exposures (USE4's style_beta) are in context.factors already."""
-    beta = _beta()
+def test_an_exposure_of_the_risk_model_can_be_bounded_without_declaring_a_factor():
+    """The bounded exposure arrives in context.risk_exposures (#230)."""
     optimizer = _optimizer(
-        risk_aversion=1.0, covariance=_declaring_covariance(beta), exposure_bounds={"beta": (0.9, 1.1)}
+        risk_aversion=1.0,
+        covariance=_WithRiskModel(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
+        exposure_bounds={"beta": (0.9, 1.1)},
     )
-    assert optimizer.required_factors() == [beta]
-    weights = optimizer.construct(_with_exposure(_context(prediction=PREDICTION), EXPOSURE))
+    assert optimizer.required_factors() == []
+    context = _with_exposure(_context(prediction=PREDICTION), EXPOSURE)
+    context = dataclasses.replace(context, factors=None, risk_exposures=context.factors)
+    weights = optimizer.construct(context)
     assert 0.9 - 1e-6 <= _exposure(weights, EXPOSURE) <= 1.1 + 1e-6
+    with pytest.raises(ValueError, match="holds no exposure 'beta'"):
+        optimizer.construct(dataclasses.replace(context, risk_exposures=None))
 
 
-def test_a_factor_declared_by_both_the_covariance_and_the_bounds_is_declared_once():
-    beta = _beta()
-    optimizer = _optimizer(
-        covariance=_declaring_covariance(beta), exposure_factors=(beta,), exposure_bounds={"beta": (0.9, 1.1)}
-    )
-    assert optimizer.required_factors() == [beta]
+def test_a_bound_on_a_name_both_a_factor_and_the_risk_model_produce_is_refused():
+    covariance = _WithRiskModel(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK))
+    with pytest.raises(ValueError, match="both an output"):
+        _optimizer(covariance=covariance, exposure_factors=(_beta(),), exposure_bounds={"beta": (0.9, 1.1)})
+    # Declaring the factor without bounding the shared name is fine.
+    _optimizer(covariance=covariance, exposure_factors=(_beta(),))

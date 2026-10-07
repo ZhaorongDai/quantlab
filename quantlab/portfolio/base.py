@@ -26,9 +26,12 @@ risk, such as a mean-variance optimiser, holds one. It is not a factor risk
 model (``quantlab.risk``), which is estimated ahead as stores; one estimator,
 ``FactorRiskStoreEstimator``, reads those stores: its estimate is a
 ``FactorCovarianceEstimate`` whose ``factor_form()`` lets an optimiser build
-a low-rank risk term, and it declares the ``Factor`` panels it reads (the
-exposures) through ``required_factors()``, which the backtest reads and
-slices into each bar's context.
+a low-rank risk term, and it declares its risk model through
+``required_risk_model()``, whose exposures at the bar the decision inputs
+take from the model itself (read or computed per its
+``exposure_data_strategy``) and put in each bar's context. A covariance
+estimator declares no ``Factor`` panels; a rule does, in
+``required_factors()``.
 
 Shipped rules and covariance estimators live in
 ``quantlab/portfolio/predefined``; this module imports no solver.
@@ -50,6 +53,7 @@ from quantlab.runs.prediction_panel import LabelSpec
 
 if TYPE_CHECKING:
     from quantlab.factor.base import Factor
+    from quantlab.risk.base import FactorRiskModel
 
 class PortfolioConstructionError(RuntimeError):
     """A rule could not decide a bar: the optimisation failed, was infeasible or had no solution.
@@ -110,9 +114,16 @@ class PortfolioContext:
         prices.
     factors : xr.Dataset or None
         The values at the bar of the ``Factor`` panels the rule declares in
-        ``required_factors()`` (a factor risk model's exposures, for
-        example): one variable per factor name, on ``symbol``, NaN where a
-        symbol has none. ``None`` when the rule declares none.
+        ``required_factors()`` (a benchmark beta, for example): one variable
+        per factor name, on ``symbol``, NaN where a symbol has none.
+        ``None`` when the rule declares none.
+    risk_exposures : xr.Dataset or None
+        The exposures at the bar of the factor risk model the rule declares
+        in ``required_risk_model()``, as ``FactorRiskModel.exposures`` gives
+        them (read from the exposures factor's store or computed, per the
+        model's ``exposure_data_strategy``): its ``exposure_names`` and
+        estimation-universe flag, on ``symbol``, NaN where a symbol has
+        none. ``None`` when the rule declares no risk model.
 
     Examples
     --------
@@ -137,6 +148,7 @@ class PortfolioContext:
     returns: xr.DataArray | None = None
     factors: xr.Dataset | None = None
     staleness: xr.DataArray | None = None
+    risk_exposures: xr.Dataset | None = None
 
     @property
     def symbols(self) -> np.ndarray:
@@ -458,10 +470,12 @@ class CovarianceEstimator(_Configured, ABC):
     window) and implement ``estimate``. The estimate is of one-bar returns;
     a rule scales it to its own horizon.
 
-    An estimator in factor form declares the ``Factor`` panels it reads, its
-    exposures for example, in ``required_factors()``; the backtest reads
-    them over its window, each warmed up like a model's features, and puts
-    their values at the bar in ``context.factors``. It returns a
+    An estimator reading a factor risk model declares it in
+    ``required_risk_model()``; the decision inputs take the model's
+    exposures from the model itself (``FactorRiskModel.exposures``, so a
+    decision, the model's stores, attribution and bias statistics share one
+    source) and put their values at the bar in ``context.risk_exposures``.
+    An estimator in factor form returns a
     ``FactorCovarianceEstimate``, whose ``factor_form()`` makes the
     mean-variance optimiser build a low-rank risk term.
 
@@ -507,20 +521,20 @@ class CovarianceEstimator(_Configured, ABC):
         """
         return self.lookback_bars + 1
 
-    def required_factors(self) -> list["Factor"]:
-        """The ``Factor`` panels ``estimate`` reads from ``context.factors``.
+    def required_risk_model(self) -> "FactorRiskModel | None":
+        """The factor risk model whose exposures ``estimate`` reads from ``context.risk_exposures``.
 
-        Any ``Factor`` qualifies (KunQuant, Polars, or a plain one such as
-        a one-hot industry exposure). The backtest computes each over its
-        window, the factor's own ``warmup_bars`` before it included, and
-        hands ``estimate`` their values at the bar. Empty by default.
+        The decision inputs take the exposures from the model
+        (``FactorRiskModel.exposures``), which reads its exposures factor's
+        store or computes it per ``exposure_data_strategy``. ``None`` by
+        default.
 
         Examples
         --------
-        >>> risk.required_factors()
-        []
+        >>> risk.required_risk_model() is None
+        True
         """
-        return []
+        return None
 
     @abstractmethod
     def estimate(
@@ -556,8 +570,9 @@ class PortfolioConstructor(_Configured, ABC):
     and implement ``construct``; override ``bind`` to check the label specs
     and read what the rule needs from them, ``lookback_bars`` when the rule
     reads a return window, ``history_bars`` when it reads more raw prices
-    than ``lookback_bars + 1``, and ``required_factors`` when it reads
-    factor panels. ``decide`` makes the one-bar decision on a
+    than ``lookback_bars + 1``, ``required_factors`` when it reads
+    factor panels and ``required_risk_model`` when it reads a factor risk
+    model's exposures. ``decide`` makes the one-bar decision on a
     context ``DecisionInputs`` assembles.
     ``get_config`` and ``from_config`` serialise the rule as its config's
     fields plus the class's import path under ``"name"``, which a
@@ -619,9 +634,10 @@ class PortfolioConstructor(_Configured, ABC):
     def required_factors(self) -> list["Factor"]:
         """The ``Factor`` panels whose values at each bar the rule reads from ``context.factors``.
 
-        The backtest computes each over its window, warm-up included, and
-        slices it per bar. Empty by default; a rule holding a covariance estimator
-        declares the covariance estimator's.
+        Any ``Factor`` qualifies (KunQuant, Polars, or a plain one such as
+        a one-hot industry exposure). The backtest computes each over its
+        window, the factor's own ``warmup_bars`` before it included, and
+        slices it per bar. Empty by default.
 
         Examples
         --------
@@ -629,6 +645,21 @@ class PortfolioConstructor(_Configured, ABC):
         []
         """
         return []
+
+    def required_risk_model(self) -> "FactorRiskModel | None":
+        """The factor risk model whose exposures at each bar the rule reads from ``context.risk_exposures``.
+
+        The decision inputs take them from the model
+        (``FactorRiskModel.exposures``), never from ``required_factors()``.
+        ``None`` by default; a rule holding a covariance estimator declares
+        the covariance estimator's.
+
+        Examples
+        --------
+        >>> rule.required_risk_model() is None
+        True
+        """
+        return None
 
     def bind(self, labels: Sequence[LabelSpec]) -> None:
         """Check the label specs and read from them what the rule needs.

@@ -9,8 +9,10 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
   low-rank risk term: the optimiser never asks it for the dense covariance,
   and the solution equals the dense solution of the same covariance within
   solver tolerance, long-only and long-short.
-- `CovarianceEstimator.required_factors()` and `PortfolioConstructor.required_factors()`
-  are empty by default; the optimiser declares its covariance estimator's.
+- `PortfolioConstructor.required_factors()` and `required_risk_model()` are
+  empty by default; the optimiser declares its `exposure_factors` and its
+  covariance estimator's risk model, and a covariance estimator declares no
+  factors (#230).
 """
 
 import numpy as np
@@ -156,23 +158,26 @@ def test_the_low_rank_expected_return_uses_the_factor_variance():
     np.testing.assert_allclose(low_rank.expected_return, dense.expected_return, rtol=1e-12)
 
 
-def test_required_factors_are_empty_by_default_and_the_optimizer_declares_its_covariance_estimators():
+def test_declarations_are_empty_by_default_and_the_optimizer_declares_its_covariance_estimators_risk_model():
     marker = object()
 
-    class _Declaring(LedoitWolfEstimator):
-        def required_factors(self):
-            return [marker]
+    class _WithRiskModel(LedoitWolfEstimator):
+        def required_risk_model(self):
+            return marker
 
     risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=10))
-    assert risk.required_factors() == []
-    assert TopNConstructor(TopNConfig(direction="long_only", top_n=2)).required_factors() == []
+    assert not hasattr(risk, "required_factors")
+    assert risk.required_risk_model() is None
+    top_n = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
+    assert top_n.required_factors() == [] and top_n.required_risk_model() is None
     assert _optimizer(factor_form=False).required_factors() == []
     declaring = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
-            covariance=_Declaring(LedoitWolfEstimatorConfig(lookback_bars=10)),
+            covariance=_WithRiskModel(LedoitWolfEstimatorConfig(lookback_bars=10)),
             ic=0.05,
             risk_aversion=5.0,
         )
     )
-    assert declaring.required_factors() == [marker]
+    assert declaring.required_factors() == []
+    assert declaring.required_risk_model() is marker

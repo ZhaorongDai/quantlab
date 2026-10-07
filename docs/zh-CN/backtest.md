@@ -240,7 +240,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 模型的因子需要 `start_date` 之前的历史。回测器按日期范围向每个因子请求窗口：`"cal"` 策略下调用 `compute(start_date, end_date)`，`"read"` 策略下调用 `read(start_date, end_date)`。计算型因子会在 `start_date` 之前读取自身的 `warmup_bars` 根 bar，按其数据集自己的日历计数，而不是按日历天数。因此回测与对同一窗口单独调用 `compute` 得到的因子值相同。数据集中的 bar 不够时，因子从第一根 bar 开始计算，并发出一条给出 bar 缺口数的 `UserWarning`。回测不修改任何数据集、因子或标签的 config，所以价格数据集可以与某个因子的数据集是同一个对象。预测恰好覆盖窗口内的 bar；没有预测的价格标的分数为 NaN，不会被选中。
 
-组合构建规则也有自己的预热：每根 bar 读取最近 `history_bars` 个原始估值价格（见[组合构建](portfolio.md#在回测中)），所以 `DecisionInputs` 会在 `start_date` 之前读取 `history_bars - 1` 根价格 bar，按价格数据集的日历计数；数据集中的 bar 不够时同样发出 `UserWarning`。规则的 `required_factors()` 在窗口上计算，与模型的因子一样各带自己的 `warmup_bars`。
+组合构建规则也有自己的预热：每根 bar 读取最近 `history_bars` 个原始估值价格（见[组合构建](portfolio.md#在回测中)），所以 `DecisionInputs` 会在 `start_date` 之前读取 `history_bars - 1` 根价格 bar，按价格数据集的日历计数；数据集中的 bar 不够时同样发出 `UserWarning`。规则的 `required_factors()` 在窗口上计算，与模型的因子一样各带自己的 `warmup_bars`；规则的 `required_risk_model()` 的暴露由模型按其 `exposure_data_strategy` 读取或计算。
 
 ### 样本内与样本外
 

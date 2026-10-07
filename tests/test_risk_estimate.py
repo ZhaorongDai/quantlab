@@ -9,7 +9,9 @@ so the truncation, the half-lives and the missing returns all matter.
 
 ``FactorRiskStoreEstimator`` is checked on a hand-built context at a bar: its
 estimate covers exactly the symbols with every style, a model industry and a
-specific risk, in factor form, a locked position included.
+specific risk, in factor form, a locked position included. It declares no
+factors: the decision inputs hand it the bar's exposures as its risk model
+gives them (#230), in ``context.risk_exposures``.
 """
 
 import dataclasses
@@ -177,9 +179,9 @@ BAR = 30
 
 def _context(built, *, held=None, untradable=(), drop_style=None):
     _, exposures, _, _ = _plant()
-    factors = exposures.isel(timestamp=BAR, drop=True).copy(deep=True)
+    risk_exposures = exposures.isel(timestamp=BAR, drop=True).copy(deep=True)
     if drop_style is not None:
-        factors[_STYLES[0]].loc[{"symbol": drop_style}] = np.nan
+        risk_exposures[_STYLES[0]].loc[{"symbol": drop_style}] = np.nan
     symbols = np.array(_SYMBOLS)
     weights = np.zeros(len(symbols))
     if held is not None:
@@ -194,13 +196,20 @@ def _context(built, *, held=None, untradable=(), drop_style=None):
         ),
         tradable=xr.DataArray(tradable, **on_symbol),
         current_weights=xr.DataArray(weights, **on_symbol),
-        factors=factors,
+        risk_exposures=risk_exposures,
     )
 
 
-def test_the_reader_declares_the_exposures_factor(built):
+def test_the_reader_declares_its_risk_model_and_no_factor(built):
     reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
-    assert reader.required_factors() == [built.config.exposures]
+    assert not hasattr(reader, "required_factors")
+    assert reader.required_risk_model() is built
+    optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
+        expected_return_label="ret_1", covariance=reader, ic=0.05,
+        risk_aversion=5.0, turnover_penalty=0.0, weight_cap=0.5,
+    ))
+    assert optimizer.required_factors() == []
+    assert optimizer.required_risk_model() is built
 
 
 def test_the_reader_returns_the_bar_in_factor_form(built):
@@ -264,3 +273,16 @@ def test_the_reader_refuses_a_bar_outside_the_store_and_volatilities(built):
         reader.estimate(context, volatility=context.current_weights)
     with pytest.raises(ValueError, match="does not contain"):
         reader.estimate(dataclasses.replace(context, timestamp=pd.Timestamp("2030-01-01")))
+    with pytest.raises(ValueError, match="no risk exposures"):
+        reader.estimate(dataclasses.replace(context, risk_exposures=None))
+
+
+def test_a_bound_named_by_a_factor_and_the_risk_model_is_refused(built):
+    reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
+    with pytest.raises(ValueError, match="both an output"):
+        MeanVarianceOptimizer(MeanVarianceConfig(
+            expected_return_label="ret_1", covariance=reader, ic=0.05,
+            risk_aversion=5.0, turnover_penalty=0.0, weight_cap=0.5,
+            exposure_factors=(built.config.exposures,),
+            exposure_bounds={_STYLES[0]: (-0.1, 0.1)},
+        ))

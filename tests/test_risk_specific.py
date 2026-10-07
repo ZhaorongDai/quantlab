@@ -193,7 +193,7 @@ def test_every_symbol_with_exposures_has_a_specific_risk(blended):
         predictions=xr.Dataset(coords={"symbol": symbols}),
         tradable=xr.DataArray(np.ones(len(symbols), dtype=bool), **on_symbol),
         current_weights=xr.DataArray(np.zeros(len(symbols)), **on_symbol),
-        factors=exposures.sel(timestamp=_day(30), drop=True),
+        risk_exposures=exposures.sel(timestamp=_day(30), drop=True),
     )
     estimator = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))
     assert NEW in estimator.estimate(context).symbols.tolist()
