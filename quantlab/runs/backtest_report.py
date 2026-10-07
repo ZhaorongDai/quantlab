@@ -2250,7 +2250,7 @@ _HOLDINGS_STYLE = """
   .hd-bar span { position: absolute; left: 0; height: 4px; border-radius: 2px; }
   .hd-spark { display: block; }
   .hd-bar .t { top: 0; background: #93c5fd; } .hd-bar .h { top: 6px; background: #2563eb; }
-  .hd-bar .neg { background: #dc2626; }
+  .hd-bar .t.neg { background: #fca5a5; } .hd-bar .h.neg { background: #dc2626; }
 """
 
 #: Draws the selected day of the Holdings tab from its JSON: stepping by bar,
