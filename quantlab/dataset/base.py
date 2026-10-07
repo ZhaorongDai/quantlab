@@ -1190,7 +1190,9 @@ class BaseDataset(Component, ABC):
         A backtester and a membership report label symbols through it (see
         ``BaseBacktester.ticker_lookup``). A dataset whose vendor records
         tickers beside its store overrides this (a CRSP store returns a
-        ``CrspTickerLookup`` over its ``.crsp_tickers.json`` sidecar). The
+        ``CrspTickerLookup`` over its ``.crsp_tickers.json`` sidecar, a
+        Sharadar price store a ``SharadarTickerLookup`` over its
+        ``.sharadar_tickers.json``). The
         default is ``None``: no lookup applies, and the symbols are shown as
         they are.
 

@@ -299,6 +299,24 @@ panel["firm"].sel(symbol=119496).values[0]  # GOOG -> 195146.0, GOOGL
 - **Variable.** `firm` holds the permaticker as a float. It is NaN on a day where no SF1 security with the CIK is priced or where two or more are, and outside the security's own first and last price dates. Each day is decided from the issuers priced on it, so the panel holds no look-ahead.
 - **Updates.** `update.py` pulls TICKERS whole and appends the new trading days.
 
+## Tickers and companies
+
+The panel's `symbol` axis is the permaticker. Every conversion of a `SharadarStockDataset`, an update included, also writes `<store>.sharadar_tickers.json` beside the store, naming each of the store's permatickers from the raw tier: the current ticker and company from its TICKERS rows of the store's table, and each earlier ticker and company from ACTIONS' `tickerchangefrom` rows (on the row's `date`, `contraticker`/`contraname` became `ticker`). `ticker_lookup()` returns a `SharadarTickerLookup` over it, so a backtest shows the ticker and company in use on each day in its Holdings tab and its settlement and rejected-order records:
+
+```python
+from datetime import date
+
+lookup = SharadarStockDataset(config).ticker_lookup()
+lookup.names([194817], date(2022, 6, 8))  # [SymbolName(ticker='FB', company='FACEBOOK INC')]
+lookup.label([194817], date(2022, 6, 9))  # ['META']
+```
+
+The sidecar is rewritten on every update, so a ticker change after the store was built shows once TICKERS and ACTIONS have been pulled. A permaticker without a TICKERS row of the store's table, and every permaticker of a store without a sidecar, reads as its id. A change row goes to the security that later changed away from its ticker, or else to the ticker's current owner; one that maps to no permaticker of the table is left out, and an earlier ticker without a `contraname` has no company. `write_ticker_sidecar()` writes the sidecar of an existing store from the download directory's tables and only reads the store; `scripts/sharadar/ticker_sidecar.py` runs it for every price store `download.py` builds that exists, with no download:
+
+```bash
+uv run python scripts/sharadar/ticker_sidecar.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+```
+
 ## Scripts
 
 The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.

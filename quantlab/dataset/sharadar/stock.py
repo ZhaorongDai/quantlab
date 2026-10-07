@@ -39,6 +39,11 @@ repeated (``SharadarStockDataset.tradable_bars``). ``delisting_bars`` is the
 default: a delisted security is settled at its last close, with no delisting
 return imputed (Sharadar gives none).
 
+Every conversion, an update included, also writes the ticker sidecar
+``<store>.sharadar_tickers.json`` beside the store from TICKERS and ACTIONS
+(``quantlab.dataset.sharadar.tickers``), and ``ticker_lookup()`` reads it, so
+a backtest shows each permaticker as the ticker and company in use that day.
+
 Examples
 --------
 >>> config = SharadarDatasetConfig(
@@ -66,6 +71,11 @@ from loguru import logger
 
 from quantlab.dataset.base import InsufficientHistoryError, MarketDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
+from quantlab.dataset.sharadar.tickers import (
+    TICKER_SIDECAR_SUFFIX,
+    SharadarTickerLookup,
+    ticker_sidecar_payload,
+)
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
     map_permatickers,
@@ -444,6 +454,90 @@ class SharadarStockDataset(MarketDataset):
                 f"security's price; refusing rather than choosing one."
             )
 
+    # -- the ticker sidecar -------------------------------------------------
+
+    def ticker_sidecar_path(self) -> Path:
+        """Return the ticker sidecar beside the store (``<store>.sharadar_tickers.json``).
+
+        Examples
+        --------
+        >>> SharadarStockDataset(config).ticker_sidecar_path().name
+        'sharadar_sep_1d.zarr.sharadar_tickers.json'
+        """
+        return Path(f"{self.config.zarr_file_path}{TICKER_SIDECAR_SUFFIX}")
+
+    def ticker_lookup(self) -> SharadarTickerLookup | None:
+        """Return the lookup over the ticker sidecar beside the store.
+
+        A backtest labels this dataset's permatickers through it. The file
+        is read on first use; a store converted before sidecars existed
+        reads as its ids until ``write_ticker_sidecar`` is run. ``None``
+        without a store path.
+
+        Examples
+        --------
+        >>> SharadarStockDataset(config).ticker_lookup()
+        SharadarTickerLookup('/data/zarrs/sharadar_sep_1d.zarr.sharadar_tickers.json')
+        """
+        if self.config.zarr_file_path is None:
+            return None
+        return SharadarTickerLookup(self.ticker_sidecar_path())
+
+    def write_ticker_sidecar(self) -> Path:
+        """Write the ticker sidecar of the existing store from the raw tier, and return its path.
+
+        The store's permatickers are named from ``config.raw_data_dir_path``'s
+        TICKERS and ACTIONS, as a conversion names them; the store itself is
+        only read. ``scripts/sharadar/ticker_sidecar.py`` runs this for a
+        store converted before sidecars existed.
+
+        Returns
+        -------
+        Path
+            ``ticker_sidecar_path()``.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the store does not exist.
+
+        Examples
+        --------
+        >>> SharadarStockDataset(config).write_ticker_sidecar().name
+        'sharadar_sep_1d.zarr.sharadar_tickers.json'
+        """
+        store = str(self.config.zarr_file_path)
+        if not Path(store).exists():
+            raise FileNotFoundError(
+                f"{self.class_name}: no store at {store!r} to write a ticker sidecar for."
+            )
+        return self._write_ticker_sidecar(self._stored_symbols())
+
+    def _stored_symbols(self) -> list:
+        """Return the permatickers of the existing store, none without a store."""
+        store = str(self.config.zarr_file_path)
+        if not Path(store).exists():
+            return []
+        return self._open_store(store)["symbol"].values.tolist()
+
+    def _write_ticker_sidecar(self, symbols) -> Path:
+        """Write the sidecar naming ``symbols``.
+
+        A conversion calls it once its derivation has succeeded, with the
+        derivation's permatickers and the existing store's, so it is
+        rewritten from the latest TICKERS and ACTIONS on every update and a
+        ticker change after the store was built still shows.
+        """
+        named = {int(s) for s in symbols}
+        path = self.ticker_sidecar_path()
+        write_json_atomically(
+            path,
+            ticker_sidecar_payload(self.config.raw_data_dir_path, self.config.table, named),
+            indent=2,
+            sort_keys=True,
+        )
+        return path
+
     # -- the daily update ---------------------------------------------------
 
     def corrections_path(self) -> Path:
@@ -820,6 +914,7 @@ class SharadarStockDataset(MarketDataset):
             derivation.get_column("symbol").unique().to_list()
         )
         timestamps = derivation.get_column("timestamp").unique().sort().to_list()
+        self._write_ticker_sidecar([*symbols, *self._stored_symbols()])
         return symbols, pd.DatetimeIndex(timestamps)
 
     def _raw_data_to_xr_window(
@@ -851,8 +946,11 @@ class SharadarStockDataset(MarketDataset):
         return data.sortby("timestamp")
 
     def _raw_data_to_xr(self) -> xr.Dataset:
-        """Return the dense panel for the whole configured window."""
-        self._rows_to_build()
+        """Return the dense panel for the whole configured window, and write the ticker sidecar."""
+        derivation = self._rows_to_build()
+        self._write_ticker_sidecar(
+            [*derivation.get_column("symbol").unique().to_list(), *self._stored_symbols()]
+        )
         return self._raw_data_to_xr_window(
             self.config.start_date, self.config.end_date, symbols=None
         )
