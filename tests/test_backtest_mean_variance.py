@@ -609,6 +609,12 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
     assert original.metrics["portfolio_construction"]["failed_bar_count"] == 0
 
     run = BacktestRun.open(original.run_dir)
+    # The estimator's one-row reads at each rebalance bar are one recorded request (#207).
+    estimate, = run.data_fingerprint["constructor.covariance.risk_model.estimate"]
+    read = original.weights.timestamp.values[rebalance]
+    assert (estimate["request"]["start"], estimate["request"]["end"]) == (
+        pd.Timestamp(read[0]).isoformat(), pd.Timestamp(read[-1]).isoformat()
+    )
     recorded = run.rebuild("constructor")
     assert isinstance(recorded.config.covariance, FactorRiskStoreEstimator)
     rebuilt = run.rebuild_backtester()
@@ -618,10 +624,16 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
     assert dataclasses.replace(
         risk_model.config, exposures=None, dataset=None
     ) == dataclasses.replace(original_model.config, exposures=None, dataset=None)
-    again = rebuilt.run()
+    messages: list[str] = []
+    handler = logger.add(messages.append, level="WARNING", format="{message}")
+    try:
+        again = rebuilt.run()
+    finally:
+        logger.remove(handler)
 
     np.testing.assert_array_equal(again.weights["weight"].values, weights)
     np.testing.assert_array_equal(again.simulation.value.values, original.simulation.value.values)
+    assert [m for m in messages if "mismatch" in m] == []
 
 
 def test_a_beta_bounded_backtest_holds_the_ex_ante_beta_inside_the_bounds_and_rebuilds(tmp_path):

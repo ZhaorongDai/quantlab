@@ -202,17 +202,30 @@ canonical. The blocks of a variable are fed to its digest in order, so
 neither the thread count nor the block size changes a digest.
 
 Nothing decides what to fingerprint. The data is recorded where it is read
-(ADR 0021). A run opens a `DataRecorder`, and the two read seams log every
+(ADR 0021). A run opens a `DataRecorder`, and the three read seams log every
 request made while it is open:
 
 - `BaseDataset.panel(start, end, symbols=None, variables=None)` on a leaf
   dataset, a store or a panel held in memory;
-- `Factor.read(start, end)`, a factor store.
+- `Factor.read(start, end)`, a factor store;
+- `RiskStore.read(start, end)`, the regression or estimate store of a factor
+  risk model. Both its readers go through it: the covariance estimator
+  (`FactorRiskStoreEstimator`), which reads the estimate row of each bar, and
+  the backtest's factor attribution, which reads both stores over its window.
+  A risk store is keyed by the model's path and the store
+  (`risk_model.regression`, `risk_model.estimate`), and its reads that differ
+  only in their range are one request, over the first to the last bar read,
+  so a row read per bar costs one entry and one hash. The bars between reads
+  are hashed too. The rows are not a `(timestamp, symbol)` panel: the labels
+  of the read variables' other axes (`factor`, `factor_i`, `factor_j`) enter the digest
+  after the symbols, and each variable is hashed `timestamp` first. A panel
+  has no other axis, so its digest is unchanged.
 
 Each call ends with `record_read(...)`. Outside every recorder that call
 returns at once, so research reads cost nothing. With recorders nested, only
 the innermost logs. `unrecorded()` keeps a block out of all of them; the
-backtester uses it around its training step. A `MergedDataset` asks each
+backtester uses it around its training step and around the read of the whole
+regression store that only checks the risk model's bar interval. A `MergedDataset` asks each
 input for its own names of the requested variables and records nothing
 itself. A resampled dataset without its own store records the source store
 it read.

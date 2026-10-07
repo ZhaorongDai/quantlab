@@ -41,6 +41,7 @@ from quantlab.backend.zarr import XrBackend
 from quantlab.core.component import Component
 from quantlab.dataset.merged import MergedDataset
 from quantlab.risk.config import FactorRiskConfig
+from quantlab.runs.record import record_read
 from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.date_range import as_label, check_range, last_moment, range_text
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -80,10 +81,18 @@ class RiskStore:
     symbols with a value somewhere in the rows are kept, so the axis does not
     depend on how a range was split between ``build`` and ``extend``.
 
+    A ``read`` inside an open ``quantlab.runs.record.DataRecorder`` is
+    recorded under the model's key and the store's ``part``
+    (``risk_model.estimate``); one store's reads are merged into one request
+    over the first to the last bar read, so a reader taking a row per bar
+    costs one record.
+
     Parameters
     ----------
-    owner : str
-        The ``Class.store`` named in log and error messages.
+    model : FactorRiskModel
+        The risk model owning the store: the source of its recorded reads.
+    part : str
+        The store's name in the model, ``"regression"`` or ``"estimate"``.
     path : str or None
         The Zarr store; the date range is recorded in
         ``<path>.range.json``.
@@ -109,13 +118,17 @@ class RiskStore:
 
     def __init__(
         self,
-        owner: str,
+        model: "FactorRiskModel",
+        part: str,
         path: str | None,
         compute: Callable[[object, object], xr.Dataset],
         warmup_bars: int,
     ):
         """Initialize the store; see the class docstring for parameters."""
-        self.owner = owner
+        self.model = model
+        self.part = part
+        #: The ``Class.store`` named in log and error messages.
+        self.owner = f"{model.class_name}.{part}"
         self.path = path
         self._compute = compute
         self.warmup_bars = warmup_bars
@@ -249,7 +262,8 @@ class RiskStore:
         """Return the store from ``start`` to ``end``, both inclusive.
 
         The store is opened lazily. The range must lie inside the one
-        recorded beside it (``store_range``).
+        recorded beside it (``store_range``). The read is recorded by an open
+        ``DataRecorder`` (see the class docstring).
 
         Parameters
         ----------
@@ -290,7 +304,9 @@ class RiskStore:
                 f"{recorded_end}, which does not contain {start} to {end}. Extend it "
                 f"with extend(end) or rebuild it with build(start, end)."
             )
-        return xr.open_zarr(path).sel(timestamp=slice(as_label(start), as_label(end)))
+        rows = xr.open_zarr(path).sel(timestamp=slice(as_label(start), as_label(end)))
+        record_read(self.model, rows, part=self.part, store=path, reread_range=self.read)
+        return rows
 
     def store_range(self) -> tuple[str, str] | None:
         """Return the ``(start, end)`` the store was built for, or ``None``.
@@ -617,7 +633,8 @@ class FactorRiskModel(Component, ABC):
         ('2024-01-01', '2024-03-31')
         """
         return RiskStore(
-            f"{self.class_name}.regression",
+            self,
+            "regression",
             self.config.regression_path,
             lambda start, end: self._checked(
                 self._compute_regression(start, end), REGRESSION_VARIABLES, "regression"
@@ -637,7 +654,8 @@ class FactorRiskModel(Component, ABC):
         ('timestamp', 'factor_i', 'factor_j')
         """
         return RiskStore(
-            f"{self.class_name}.estimate",
+            self,
+            "estimate",
             self.config.estimate_path,
             lambda start, end: self._checked(
                 self._compute_estimate(start, end), ESTIMATE_VARIABLES, "estimate"

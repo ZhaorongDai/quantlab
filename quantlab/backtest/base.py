@@ -2275,7 +2275,8 @@ class BaseBacktester(Component, ABC):
         store.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-1]))
         if timestamps.size > 1:
             risk_model.estimate.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-2]))
-        recorded = store.read(*store.store_range())["timestamp"].values
+        with unrecorded():  # the bar interval only: the window's rows are recorded above
+            recorded = store.read(*store.store_range())["timestamp"].values
         if recorded.size < 2 or timestamps.size < 2:
             return
         risk_interval = pd.Series(np.diff(recorded)).mode().iloc[0]

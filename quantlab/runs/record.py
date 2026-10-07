@@ -4,8 +4,9 @@ A run is reproducible from its config, its data and its code. This module record
 the last two and compares them with an earlier run's record. Its interface:
 
 - ``DataRecorder``, the context a run opens to learn what it read, and
-  ``record_read``, which the two read seams (``BaseDataset.panel`` and
-  ``Factor.read``) call; ``unrecorded`` hides reads from every open recorder;
+  ``record_read``, which the read seams (``BaseDataset.panel``,
+  ``Factor.read`` and a factor risk model's ``RiskStore.read``) call;
+  ``unrecorded`` hides reads from every open recorder;
 - ``code_record`` and ``code_of``, the code a component tree ran;
 - ``compare``, which compares two provenance records
   (``{"data_fingerprint": ..., "code": ...}``) and logs one warning per difference.
@@ -124,7 +125,8 @@ def _canonical_buffer(values) -> "bytes | np.ndarray":
 
 def _block_rows(variable: xr.DataArray) -> int:
     """Return how many bars of ``variable`` one block holds (see ``_BLOCK_BYTES``)."""
-    row_bytes = max(1, variable.sizes["symbol"] * variable.dtype.itemsize)
+    cells = math.prod(size for dim, size in variable.sizes.items() if dim != "timestamp")
+    row_bytes = max(1, cells * variable.dtype.itemsize)
     rows = max(1, _BLOCK_BYTES // row_bytes)
     chunk = variable.encoding.get("preferred_chunks", {}).get("timestamp")
     if chunk:  # a whole number of the store's chunks: fewer chunks decoded twice
@@ -133,10 +135,13 @@ def _block_rows(variable: xr.DataArray) -> int:
 
 
 def _variable_digest(variable: xr.DataArray, block_rows: int | None) -> str:
-    """Return the sha256 of one ``(timestamp, symbol)`` variable, read block by block."""
-    variable = variable.transpose("timestamp", "symbol")
-    rows = block_rows or _block_rows(variable)
+    """Return the sha256 of one variable on ``timestamp`` first, read block by block."""
     digest = hashlib.sha256()
+    if "timestamp" not in variable.dims:  # a store's variable without bars: one block
+        digest.update(_canonical_buffer(variable.values))
+        return digest.hexdigest()
+    variable = variable.transpose("timestamp", ...)
+    rows = block_rows or _block_rows(variable)
     for first in range(0, variable.sizes["timestamp"], rows):
         block = variable.isel(timestamp=slice(first, first + rows)).values
         digest.update(_canonical_buffer(block))
@@ -150,18 +155,25 @@ def _dataset_fingerprint(
     workers: int | None = None,
     block_rows: int | None = None,
 ) -> dict:
-    """Fingerprint ``variables`` of a ``(timestamp, symbol)`` dataset.
+    """Fingerprint ``variables`` of a dataset on ``timestamp`` and its other axes.
 
-    The dataset is sorted by timestamp and symbol first, so the digest does not
-    depend on axis order. Each variable has its own sha256 over its values on
-    ``(timestamp, symbol)`` in the dtype they are stored in, never up-cast: a
-    float variable after NaN and signed-zero canonicalisation in its own
-    precision, a datetime one as its int64 ticks, an object one as its text,
-    any other as it is. The digest is the sha256 of, in order: the int64
-    nanosecond timestamps, the NUL-joined symbol names, then for each variable
-    in sorted order its name, its dtype and its own digest. A variable whose
-    dtype changed therefore has another digest; relabelled axes change the
-    digest but no variable's.
+    A panel is on ``(timestamp, symbol)``; a factor risk store's rows also
+    have ``factor`` axes (``(timestamp, factor)``, ``(timestamp, factor_i,
+    factor_j)``). The dataset is sorted by timestamp and symbol first, so the
+    digest does not depend on their order; another axis is hashed in the
+    order it is stored, which is its meaning (the factor order). Each
+    variable has its own sha256 over its values, ``timestamp`` first and its
+    other axes in their own order, in the dtype they are stored in, never
+    up-cast: a float variable after NaN and signed-zero canonicalisation in
+    its own precision, a datetime one as its int64 ticks, an object one as
+    its text, any other as it is. The digest is the sha256 of, in order: the
+    int64 nanosecond timestamps, the NUL-joined symbol names, for each other
+    axis of the variables in sorted order its name and its NUL-joined labels
+    (none on a panel's variables, so a panel's digest is that of its
+    timestamps and symbols), then
+    for each variable in sorted order its name, its dtype and its own digest.
+    A variable whose dtype changed therefore has another digest; relabelled
+    axes change the digest but no variable's.
 
     Variables are hashed in parallel threads, each read and hashed in blocks
     of whole bars (``_BLOCK_BYTES``), so a lazily read store never sits in
@@ -170,7 +182,8 @@ def _dataset_fingerprint(
     Parameters
     ----------
     ds : xr.Dataset
-        A panel indexed by ``timestamp`` and ``symbol``.
+        A panel indexed by ``timestamp`` and ``symbol``, or rows on
+        ``timestamp`` and other axes.
     variables : list[str]
         Names of the data variables to include.
     workers : int, optional
@@ -209,8 +222,9 @@ def _dataset_fingerprint(
             f"(data variables: {sorted(ds.data_vars)})"
         )
 
-    if not all(ds.indexes[dim].is_monotonic_increasing for dim in ("timestamp", "symbol")):
-        ds = ds.sortby(["timestamp", "symbol"])  # a store is sorted already: no copy then
+    sorted_dims = [dim for dim in ("timestamp", "symbol") if dim in ds.dims]
+    if not all(ds.indexes[dim].is_monotonic_increasing for dim in sorted_dims):
+        ds = ds.sortby(sorted_dims)  # a store is sorted already: no copy then
     if workers is None:
         small = sum(ds[name].nbytes for name in names) < _BLOCK_BYTES
         workers = 1 if small else min(len(names), os.cpu_count() or 1, _HASH_WORKERS)
@@ -226,7 +240,12 @@ def _dataset_fingerprint(
     timestamps = ds["timestamp"].values.astype("datetime64[ns]")
     digest = hashlib.sha256()
     digest.update(np.ascontiguousarray(timestamps.astype("int64")).tobytes())
-    digest.update("\x00".join(map(str, ds["symbol"].values.tolist())).encode())
+    symbols = ds["symbol"].values.tolist() if "symbol" in ds.dims else []
+    digest.update("\x00".join(map(str, symbols)).encode())
+    axes = {dim for name in names for dim in ds[name].dims}
+    for dim in sorted(axes - {"timestamp", "symbol"}):
+        digest.update(dim.encode())
+        digest.update("\x00".join(map(str, ds[dim].values.tolist())).encode())
     for name in names:
         digest.update(name.encode())
         digest.update(variable_dtypes[name].encode())
@@ -241,7 +260,7 @@ def _dataset_fingerprint(
         "start": _iso(timestamps[0]) if timestamps.size else None,
         "end": _iso(timestamps[-1]) if timestamps.size else None,
         "n_timestamps": int(ds.sizes["timestamp"]),
-        "n_symbols": int(ds.sizes["symbol"]),
+        "n_symbols": int(ds.sizes.get("symbol", 0)),
     }
 
 
@@ -288,19 +307,22 @@ def record_read(
     *,
     symbols=None,
     variables=None,
-    reread: Callable[[], xr.Dataset],
+    reread: Callable[[], xr.Dataset] | None = None,
     store: str | None = None,
+    part: str | None = None,
+    reread_range: Callable[[pd.Timestamp, pd.Timestamp], xr.Dataset] | None = None,
 ) -> None:
     """Log a read of ``source`` to the innermost open recorder, if there is one.
 
     Called by the read seams only (``BaseDataset.panel`` on a leaf dataset,
-    ``Factor.read``) after a successful read. Outside a recorder it returns at
-    once; nothing is kept and nothing is hashed.
+    ``Factor.read``, ``RiskStore.read``) after a successful read. Outside a
+    recorder it returns at once; nothing is kept and nothing is hashed.
 
     Parameters
     ----------
-    source : BaseDataset or Factor
-        The leaf dataset or the factor whose store was read.
+    source : BaseDataset, Factor or FactorRiskModel
+        The leaf dataset, the factor whose store was read, or the factor risk
+        model one of whose stores was read.
     panel : xr.Dataset
         What the read returned. Its first and last bar are the request's
         range, so two requests spelled differently (``"2020-01-01"`` and the
@@ -310,13 +332,23 @@ def record_read(
         The requested symbols; ``None`` for every symbol.
     variables : sequence of str, optional
         The requested variables; ``None`` for every variable.
-    reread : callable
+    reread : callable, optional
         Returns the same panel again; the recorder calls it once per distinct
-        request when it closes, to hash it.
+        request when it closes, to hash it. Exactly one of ``reread`` and
+        ``reread_range`` is given.
     store : str, optional
         The store actually read, for the fallback key of an unmapped source;
         defaults to ``source.store_path``. A resampled dataset reading its
         source store passes that store.
+    part : str, optional
+        The part of ``source`` read, appended to its key as ``<key>.<part>``:
+        the ``regression`` or ``estimate`` store of a factor risk model.
+    reread_range : callable, optional
+        For a store read a bar at a time (a risk model's estimate row at each
+        bar): the requests of the key that differ only in their range are one
+        request, over the first to the last bar of them all, re-read once
+        with ``reread_range(first, last)`` when the recorder closes. Bars between
+        reads that were not read are hashed too. An empty read is not logged.
 
     Examples
     --------
@@ -327,12 +359,16 @@ def record_read(
             reread=lambda: self.panel(start, end, symbols, variables),
         )
     """
+    if (reread is None) == (reread_range is None):
+        raise TypeError("record_read() takes exactly one of reread and reread_range")
     recorder = _ACTIVE.get()
     if recorder is None:
         return
     bars = panel["timestamp"].values
+    if reread_range is not None and not bars.size:
+        return
     start, end = (bars.min(), bars.max()) if bars.size else (None, None)
-    recorder._log(source, start, end, symbols, variables, reread, store)
+    recorder._log(source, start, end, symbols, variables, reread, store, part, reread_range)
 
 
 def _text(value) -> str | None:
@@ -418,10 +454,13 @@ class DataRecorder:
 
     A run opens one around everything it reads: a trained unit, a backtest
     run, a ``run_cv`` fold. While it is the innermost open recorder, every
-    read through ``BaseDataset.panel`` and ``Factor.read`` is logged as a
-    request; nested recorders log to the innermost only. Only leaf datasets
-    record (a store or a held panel): a ``MergedDataset`` records nothing
-    itself, its inputs do.
+    read through ``BaseDataset.panel``, ``Factor.read`` and a factor risk
+    model's ``RiskStore.read`` is logged as a request; nested recorders log
+    to the innermost only. Only leaf datasets record (a store or a held
+    panel): a ``MergedDataset`` records nothing itself, its inputs do. A risk
+    store is recorded under its model's key and the store
+    (``risk_model.estimate``), its reads merged into one request over the
+    first to the last bar read (``record_read``'s ``reread_range``).
 
     When the context closes, each distinct request is read once more and
     hashed with ``_dataset_fingerprint`` over the requested variables (every
@@ -442,7 +481,8 @@ class DataRecorder:
     Parameters
     ----------
     keys : iterable of (object, str) pairs, optional
-        The key each dataset or factor is recorded under, matched by identity;
+        The key each dataset, factor or risk model is recorded under,
+        matched by identity;
         a source given twice takes its first key. An unmapped source is
         recorded under ``"<ClassName>:<store path>"``, so two unmapped
         in-memory datasets share ``"FrameDataset:None"``; map them.
@@ -523,11 +563,11 @@ class DataRecorder:
                 pass
         return False
 
-    def _key(self, source, store: str | None) -> str:
-        """Return the key ``source`` is recorded under."""
+    def _key(self, source, store: str | None, part: str | None = None) -> str:
+        """Return the key ``source`` (or its ``part``) is recorded under."""
         key = self._keys.get(id(source))
         if key is not None:
-            return key
+            return key if part is None else f"{key}.{part}"
         if store is None:
             try:
                 store = source.store_path
@@ -535,16 +575,34 @@ class DataRecorder:
                 pass
         return f"{type(source).__name__}:{store}"
 
-    def _log(self, source, start, end, symbols, variables, reread, store) -> None:
-        """Log one request of ``source``; a repeated request is kept once."""
+    def _log(
+        self, source, start, end, symbols, variables, reread, store, part=None,
+        reread_range=None,
+    ) -> None:
+        """Log one request of ``source``; a repeated request is kept once.
+
+        A ``reread_range`` request is merged with the earlier ones of its key that
+        differ only in their range, into one over the first to the last bar.
+        """
         request = {
             "start": _text(start),
             "end": _text(end),
             "symbols": None if symbols is None else [_plain(s) for s in symbols],
             "variables": None if variables is None else sorted(variables),
         }
-        requests = self._requests.setdefault(self._key(source, store), {})
-        requests.setdefault(_request_id(request), (request, reread))
+        requests = self._requests.setdefault(self._key(source, store, part), {})
+        if reread_range is None:
+            requests.setdefault(_request_id(request), (request, reread))
+            return
+        # Any range: the requests differing only in it are one.
+        merged_id = _request_id({**request, "start": None, "end": None})
+        first, last = pd.Timestamp(start), pd.Timestamp(end)
+        if merged_id in requests:
+            earlier, _ = requests[merged_id]
+            first = min(first, pd.Timestamp(earlier["start"]))
+            last = max(last, pd.Timestamp(earlier["end"]))
+        request.update(start=_text(first), end=_text(last))
+        requests[merged_id] = (request, lambda: reread_range(first, last))
 
     def _close(self, *, partial: bool) -> None:
         """Hash every logged request once, then compare with ``expected``."""
