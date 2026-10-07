@@ -2931,7 +2931,7 @@ class BaseBacktester(Component, ABC):
         ``stitched``, ``folds`` and ``notes``, the report reads
         ``metrics["stitched"]`` and the fold ``records``, and each record is
         written as a child run of kind ``"fold"`` (its weights, equity curve,
-        settlements and metrics), with ``units`` giving each fold's trained
+        holdings, settlements and metrics), with ``units`` giving each fold's trained
         unit in record order.
 
         ``report.html`` is self-contained: headline numbers, a timeline
@@ -3003,11 +3003,7 @@ class BaseBacktester(Component, ABC):
             write_report=_report,
             predictions=self._prediction_panel(predictions),
             factor_attribution=simulation.factor_attribution,
-            holdings=(
-                None
-                if simulation.holdings is None
-                else xr.Dataset({"holding": simulation.holdings})
-            ),
+            holdings=self._holdings(simulation),
             folds=[
                 FoldArtifacts(
                     index=record["fold"],
@@ -3017,10 +3013,18 @@ class BaseBacktester(Component, ABC):
                     metrics=record["metrics"],
                     trained_run=unit,
                     data_fingerprint=record["data_fingerprint"],
+                    holdings=self._holdings(record["simulation"]),
                 )
                 for record, unit in zip(records, units, strict=True)
             ],
         )
+
+    @staticmethod
+    def _holdings(simulation: SimulationResult) -> xr.Dataset | None:
+        """Return ``simulation.holdings`` as the ``holding`` dataset a run writes, or None."""
+        if simulation.holdings is None:
+            return None
+        return xr.Dataset({"holding": simulation.holdings})
 
     def _market(self) -> Market:
         """Return the price columns of ``MARKET``, recorded with every run."""

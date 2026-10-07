@@ -134,6 +134,9 @@ class FoldArtifacts:
         The fold's trained unit.
     data_fingerprint : Mapping
         What the fold read, as its ``DataRecorder`` recorded it.
+    holdings : xarray.Dataset or None
+        The fold's own simulated holdings, a ``holding`` variable on
+        ``(timestamp, symbol)``; None when the engine supplies none.
     """
 
     index: int
@@ -143,6 +146,7 @@ class FoldArtifacts:
     metrics: dict
     trained_run: Path | str
     data_fingerprint: Mapping = field(default_factory=dict)
+    holdings: xr.Dataset | None = None
 
 
 def write_backtest_run(
@@ -236,9 +240,7 @@ def write_backtest_run(
         write_json_atomically(
             staging / _CONFIG_FILE, to_jsonable(_recipe(backtester, staging)), indent=2
         )
-        _write_simulation(staging, weights, equity, settlements, metrics)
-        if holdings is not None:
-            XrBackend().to_internal(holdings).write(str(staging / _HOLDINGS_FILE))
+        _write_simulation(staging, weights, equity, settlements, metrics, holdings)
         if predictions is not None:
             predictions.write(staging / _PREDICTIONS_FILE)
         if factor_attribution is not None:
@@ -251,7 +253,12 @@ def write_backtest_run(
             directory = staging / _FOLDS_DIR / f"fold_{fold.index}"
             directory.mkdir(parents=True)
             _write_simulation(
-                directory, fold.weights, fold.equity, fold.settlements, fold.metrics
+                directory,
+                fold.weights,
+                fold.equity,
+                fold.settlements,
+                fold.metrics,
+                fold.holdings,
             )
             write_record(
                 directory,
@@ -310,10 +317,13 @@ def _write_simulation(
     equity: xr.Dataset,
     settlements: list,
     metrics: dict,
+    holdings: xr.Dataset | None,
 ) -> None:
-    """Write the weights, equity curve, settlements and metrics of one simulation."""
+    """Write the weights, equity curve, holdings, settlements and metrics of one simulation."""
     XrBackend().to_internal(weights).write(str(directory / _WEIGHTS_FILE))
     XrBackend().to_internal(equity).write(str(directory / _EQUITY_FILE))
+    if holdings is not None:
+        XrBackend().to_internal(holdings).write(str(directory / _HOLDINGS_FILE))
     write_json_atomically(
         directory / _SETTLEMENTS_FILE, to_jsonable(settlements), indent=2
     )

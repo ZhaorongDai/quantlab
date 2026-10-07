@@ -511,7 +511,7 @@ trained unit included); only the run layer names its files.
 | `settlements.json` | One record per delisting settlement (for `run_cv()`, those of the stitched pass). | `settlements()` |
 | `predictions.zarr` | `run()` and `run_cv()` only (a run with a model): the predictions the portfolio construction rule read, with their label specs (a `PredictionPanel`; for `run_cv()` the concatenated fold predictions). `quantlab.portfolio.decision_inputs.DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs (the bound rule, the price dataset, the market columns, the execution settings, the rebalance period and the anchor) through `BacktestRun` without loading the model. | `predictions()` |
 | `report.html` | The human-readable report. | |
-| `folds/` | `run_cv()` only: one child run per fold, with its own weights, equity curve, settlements, metrics and `run.json`. | `folds` |
+| `folds/` | `run_cv()` only: one child run per fold, with its own weights, equity curve, holdings, settlements, metrics and `run.json`. | `folds` |
 | `inputs/` | Only for a dataset held in memory (`FrameDataset`), wherever it sits in the backtester (price, benchmark, a factor's or label's dataset): a copy of its panel, named by its component path and written once however many fields hold the object; the recipe names it relative to the run directory, so the directory can be moved. | `rebuild_backtester()` |
 
 All JSON files are strict JSON: NaN and infinities are written as `null` and

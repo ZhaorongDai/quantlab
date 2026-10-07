@@ -285,7 +285,7 @@ out_of_sample -5.61 -4.27 13
 | `code` | 运行所用的代码：quantlab 的 git commit 以及已跟踪文件是否有改动，回测器组件树中每个定义了类的模块的 SHA-256（区分框架模块与组件模块，并列出使用它的组件路径），以及 numpy、pandas、xarray、polars、xgboost、torch、vectorbt、KunQuant 和 cvxpy 的版本。 |
 | `trained_run()` | 回测所用的训练单元，即一个 `TrainedRun`：train 模式下是训练出的单元，load 模式下是 checkpoint 所在的单元，`run_cv()` 是 walk-forward 单元，一折则是该折自己的单元；`run_weights()` 为 `None`。 |
 | `weights()`、`equity()` | `(timestamp, symbol)` 上的目标权重；`timestamp` 上的组合 `value` 与每根 bar 的 `returns`，跑了基准时另有 `benchmark_value` 和 `benchmark_returns`。 |
-| `holdings()` | 引擎模拟出的持仓（`holdings.zarr`），`(timestamp, symbol)` 上的 `holding` 面板：每根 bar 收盘时各标的的市值占组合净值（含现金）的比例，覆盖窗口内每根 bar，空头为负，没有持仓处为 0。调仓成交时持仓等于目标权重（扣除成本），之后随价格漂移到下一次调仓；被拒订单和退市结算也体现在其中。不带持仓写出的运行（`run_cv()` 的折）为 `None`。 |
+| `holdings()` | 引擎模拟出的持仓（`holdings.zarr`），`(timestamp, symbol)` 上的 `holding` 面板：每根 bar 收盘时各标的的市值占组合净值（含现金）的比例，覆盖窗口内每根 bar，空头为负，没有持仓处为 0。调仓成交时持仓等于目标权重（扣除成本），之后随价格漂移到下一次调仓；被拒订单和退市结算也体现在其中。`run_cv()` 的每个折各自保存本折的持仓。不带持仓写出的运行（引擎不提供持仓）为 `None`。 |
 | `metrics()` | 与 `result.metrics` 相同的映射，按 JSON 保存的形式：NaN 和无穷大变为 `None`，元组变为列表。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
 | `settlements()` | 退市结算记录。 |
 | `report()`、`log_report(tracking_run)` | HTML 报告的文本；把它附到追踪 run 上。 |

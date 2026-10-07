@@ -37,7 +37,7 @@ What is locked here, and what turns it red:
   also gets its own backtest that starts flat from `init_cash`.
 - **D-24 / D-35, the run directory.** The top-level artifacts describe the
   stitched curve, and each fold is a child run of kind `fold` (`BacktestRun.folds`,
-  #133) holding its own weights, equity, settlements and metrics. Results are
+  #133) holding its own weights, equity, holdings, settlements and metrics. Results are
   read through `BacktestRun`; run file names appear only where the subject is
   the layout itself (the directory listing) or a record is edited to check a
   refusal (`_edited_project`).
@@ -67,6 +67,7 @@ from quantlab.portfolio.base import PortfolioConstructor
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.runs.backtest_run import BacktestRun, Market
+from quantlab.utils.date_range import bar_label
 from tests.backtest_fixtures import (
     make_model,
     make_stock_dataset,
@@ -685,6 +686,100 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
     assert run.rebuild_backtester().config.cv_project_dir == str(cv_project.project_dir)
     assert run.market == Market(fill_price_column="adjOpen", valuation_price_column="adjClose")
     assert run.trained_run().path == cv_project.project_dir
+
+
+def _book_identity(run: BacktestRun, simulation, prices: xr.Dataset) -> None:
+    """Holdings of ``run`` are the order records' positions over the value, plus cash one.
+
+    The positions and cash come from ``simulation.orders`` and the price
+    store alone, as in tests/test_backtest_holdings.py (#225); on each fill
+    bar the holdings valued at the fill prices are the targets (no costs).
+    """
+    holdings = run.holdings()["holding"]
+    bars = holdings.timestamp.values
+    symbols = [str(s) for s in holdings.symbol.values]
+    np.testing.assert_array_equal(bars, run.equity().timestamp.values)
+    assert symbols == [str(s) for s in run.weights().symbol.values]
+    orders = simulation.orders
+    shares = np.zeros((bars.size, len(symbols)))
+    cash = np.zeros(bars.size)
+    rows = np.searchsorted(bars, orders["timestamp"].values.astype("datetime64[ns]"))
+    columns = [symbols.index(str(s)) for s in orders["symbol"].values]
+    sign = np.where(orders["side"].values.astype(str) == "Buy", 1.0, -1.0)
+    size = orders["size"].values
+    np.add.at(shares, (rows, columns), sign * size)
+    np.add.at(cash, rows, -sign * size * orders["price"].values - orders["fees"].values)
+    shares, cash = np.cumsum(shares, axis=0), INIT_CASH + np.cumsum(cash)
+
+    def panel(name):
+        return (
+            prices[name].transpose("timestamp", "symbol")
+            .sel(timestamp=bars, symbol=symbols).values.astype(np.float64)
+        )
+
+    close, fill_open = panel("adjClose"), panel("adjOpen")
+    holding = holdings.values
+    value = run.equity()["value"].values
+    position = np.where(shares != 0.0, shares * close, 0.0)
+    np.testing.assert_allclose(holding * value[:, None], position, rtol=1e-9, atol=1e-6)
+    np.testing.assert_allclose(holding.sum(axis=1) + cash / value, 1.0, rtol=0, atol=1e-9)
+    weights = run.weights()["weight"].transpose("timestamp", "symbol").values
+    for signal in np.flatnonzero(np.isfinite(weights).any(axis=1)):
+        fill = signal + 1
+        if fill >= bars.size:
+            continue
+        at_open = np.where(shares[fill] != 0.0, shares[fill] * fill_open[fill], 0.0)
+        np.testing.assert_allclose(
+            at_open / (cash[fill] + at_open.sum()),
+            np.where(np.isfinite(weights[signal]), weights[signal], 0.0),
+            atol=1e-9,
+        )
+
+
+def test_run_cv_writes_holdings_for_the_stitched_run_and_every_fold(tmp_path, cv_project):
+    from tests.test_backtest_holdings import holdings_data
+
+    result = _backtester(tmp_path, cv_project).run_cv()
+    run = BacktestRun.open(result.run_dir)
+    prices = xr.open_zarr(cv_project.dataset_config.zarr_file_path).load()
+
+    # Each fold's holdings are its own simulation's.
+    assert len(run.folds) == N_FOLDS
+    for fold, record in zip(run.folds, result.folds):
+        assert (fold.path / "holdings.zarr").exists()
+        xr.testing.assert_equal(
+            fold.holdings()["holding"], record["simulation"].holdings.rename("holding")
+        )
+        _book_identity(fold, record["simulation"], prices)
+
+    # The stitched holdings are the stitched simulation's, with no reset at a
+    # fold boundary: the book entering fold 1 is still invested.
+    _book_identity(run, result.simulation, prices)
+    stitched = run.holdings()["holding"]
+    boundary = pd.Timestamp(_test_bars(cv_project, 1)[0])
+    assert float(np.abs(stitched.sel(timestamp=boundary)).sum()) == pytest.approx(1.0, abs=1e-6)
+    assert float(np.abs(run.folds[1].holdings()["holding"].sel(timestamp=boundary)).sum()) == 0.0
+
+    # The stitched report's Holdings tab covers every stitched bar, from holdings.zarr.
+    data = holdings_data(run.report())
+    days = data["days"]
+    assert [day["d"] for day in days] == [
+        bar_label(b) for b in run.equity().timestamp.values
+    ]
+    assert len(days) == LAST_TEST_BAR - FIRST_TEST_BAR + 1
+    names = data["names"]
+    symbols = [str(s) for s in stitched.symbol.values]
+    for i, day in enumerate(days):
+        row = stitched.values[i]
+        shown = {names[k][2]: h for k, _, h in day["h"]}
+        assert shown == {s: row[j] for j, s in enumerate(symbols) if s in shown}
+        assert {s for j, s in enumerate(symbols) if row[j] != 0.0} <= shown.keys()
+        assert day["cash"] == pytest.approx(1.0 - row.sum(), abs=1e-12)
+    summary = dict(data["summary"])
+    assert summary["Bars"] == str(len(days))
+    assert run.metrics()["stitched"]["whole"]["Total Return [%]"] == pytest.approx(
+        (float(run.equity()["value"].values[-1]) / INIT_CASH - 1.0) * 100.0
+    )
 
 
 #: Contexts every `_Recorder` saw, in call order.
