@@ -286,7 +286,9 @@ monthly (`h = 21`).
 
 `examples/sharadar_us_equity/risk_model.py` on the training server, on the
 2026-10-05 Sharadar pull, the exposures of `barra_style.py` and FRED's
-DTB3, with every default:
+DTB3, with every default. The figures and numbers below come from the
+example before it read its prices through `BadPrintMaskedDataset` (#223).
+The last subsection gives the bias statistics with bad prints masked.
 
 - **Size and cost.** The regression store covers 6,475 bars (2001-01-03
   to 2026-10-02) of 14,772 permatickers and is 256 MB. It builds in 2.6
@@ -345,6 +347,28 @@ rolling one-year mean absolute deviation from 1.
 ![Rolling and whole-range bias statistics over one-bar returns](../assets/risk_model/bias_h1.png)
 
 ![Rolling and whole-range bias statistics over 21-bar returns](../assets/risk_model/bias_h21.png)
+
+**With bad prints masked (#223).** This is the example as it stands. The
+exposures and the risk model read their prices through
+`BadPrintMaskedDataset`, which flags 535 bars of 321 permatickers.
+
+| Group | 1 bar: mean | median | in band | MRAD | 21 bars: mean | median | in band | MRAD |
+|---|---|---|---|---|---|---|---|---|
+| Factors | 1.004 | 1.006 | 40% | 0.075 | 1.099 | 1.069 | 58% | 0.234 |
+| Eigenfactors | 1.084 | 1.076 | 0% | 0.101 | 1.184 | 1.136 | 31% | 0.257 |
+| Specific | 1.092 | 1.026 | 28% | 0.156 | 1.036 | 0.985 | 57% | 0.296 |
+| Random active | 1.005 | 1.009 | 23% | 0.092 | 1.004 | 1.007 | 68% | 0.213 |
+
+- **Specific risk.** The mean bias falls from 1.106 to 1.092 over one bar
+  and from 1.057 to 1.036 over 21. The pooled bias of the top
+  forecast-volatility decile falls from about 2.5 to 1.26 over one bar,
+  and from 3.6 to 1.10 over 21. Within the estimation universe that
+  decile goes from 2.69 (one bad print) to 0.88 over one bar.
+- **What is left of the tail.** It is mostly real jumps the rule keeps by
+  design, such as TPST on 2023-10-11 and ORBS on 2025-09-08, and moves
+  after halts longer than the rule's lookback.
+- **Factors and random portfolios** barely move; the regression's outlier
+  trimming had already kept the bad prints out of the factor returns.
 
 ## Mean-variance with Ledoit-Wolf and with the factor model
 
