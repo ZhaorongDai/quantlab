@@ -164,7 +164,10 @@ Each stock's specific risk is built in four steps ([M] §5):
    `"blend"` is USE4's `gamma * time series + (1 - gamma) * structural`.
 3. **Bayesian shrinkage** ([M] §5.2, eqs. 5.6-5.9) toward the cap-weighted
    mean of the stock's size decile, with intensity `q |s - m| / (d + q |s -
-   m|)`, `q = 0.1`.
+   m|)`, `q = 0.1`. On the Sharadar history a larger `q` flattened the
+   21-bar bias statistics across forecast-volatility deciles but worsened
+   the one-bar ones and the random active portfolios', so USE4's value
+   stands (#203).
 4. **Volatility regime adjustment** ([M] §5.3): times `lambda_S`, the same
    construction as `lambda_F` over the cap-weighted cross-sectional bias
    statistics of the estimation universe's specific returns. It is stored
@@ -218,7 +221,8 @@ departures:
   - `E_0` estimated each bar by smearing (Duan, 1983), where replications
     use a fixed 1.05.
 
-  Smearing alone, on USE4's fit set, was slightly worse. The blending
+  With the other two changes, a fixed 1.05 in place of smearing gives
+  1.10. The blending
   coefficient's parameters (60, 120, 10) are not published; these are the
   values third-party replications of the Barra models use.
 
@@ -318,8 +322,8 @@ rolling one-year mean absolute deviation from 1.
 |---|---|---|---|---|---|---|---|---|---|
 | Factors | 52 | 1.004 | 1.006 | 42% | 0.074 | 1.099 | 1.068 | 58% | 0.234 |
 | Eigenfactors | 52 | 1.084 | 1.078 | 0% | 0.101 | 1.185 | 1.135 | 35% | 0.260 |
-| Specific | 10,584 | 1.111 | 1.028 | 27% | 0.161 | 1.060 | 0.988 | 57% | 0.303 |
-| Random active | 100 | 1.003 | 1.004 | 26% | 0.093 | 1.003 | 1.006 | 68% | 0.214 |
+| Specific | 10,584 | 1.106 | 1.026 | 28% | 0.160 | 1.057 | 0.987 | 57% | 0.303 |
+| Random active | 100 | 1.003 | 1.005 | 26% | 0.093 | 1.003 | 1.007 | 68% | 0.214 |
 
 - The random active portfolios, the closest to what a portfolio rule
   holds, are calibrated at both horizons: 1.003 on average.
@@ -329,9 +333,14 @@ rolling one-year mean absolute deviation from 1.
 - The eigenfactors are still underpredicted after the adjustment, the
   lowest-variance ones the most (about 1.2 for the first six over one
   bar).
-- Specific risk is right for the median stock (1.028 over one bar). The
-  mean, 1.111, is pulled up by a tail of stocks whose risk is
-  underpredicted.
+- Specific risk is right for the median stock (1.026 over one bar). The
+  mean, 1.106, is pulled up by a tail of stocks whose risk is
+  underpredicted. Pooled by forecast-volatility decile, the top decile
+  looks heavily underpredicted (about 2.5 over one bar and 3.6 over 21). Ten
+  outcomes outside the estimation universe make up most of it: one-bar
+  bad prints such as a close of $0.01 between two of $7 to $9 (#223), and
+  real micro-cap jumps. Within the estimation universe, priced at $5 or
+  more, the top decile is overpredicted (about 0.8 at both horizons), as in USE4.
 
 ![Rolling and whole-range bias statistics over one-bar returns](../assets/risk_model/bias_h1.png)
 

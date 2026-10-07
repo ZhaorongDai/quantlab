@@ -35,6 +35,7 @@ of the excess returns of ``t`` on the exposures of ``t-1``:
 import dataclasses
 import warnings
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import pandas as pd
@@ -384,8 +385,9 @@ class Use4RiskModel(FactorRiskModel):
             )
         if config.njobs < 1:
             raise ValueError(f"{owner}: njobs must be at least 1, got {config.njobs}.")
-        if config.structural_bias != "smearing" and not (
-            isinstance(config.structural_bias, (int, float)) and config.structural_bias > 0
+        bias = config.structural_bias
+        if bias != "smearing" and not (
+            isinstance(bias, (int, float)) and not isinstance(bias, bool) and bias > 0
         ):
             raise ValueError(
                 f"{owner}: structural_bias must be positive or 'smearing', got "
@@ -396,8 +398,14 @@ class Use4RiskModel(FactorRiskModel):
                 f"{owner}: structural_fit must be 'blending' or 'series', got "
                 f"{config.structural_fit!r}."
             )
-        if config.structural_history_window is not None and config.structural_history_window < 1:
-            raise ValueError(f"{owner}: structural_history_window must be at least 1 or None.")
+        window = config.structural_history_window
+        if window is not None and not (
+            isinstance(window, int) and not isinstance(window, bool) and window >= 1
+        ):
+            raise ValueError(
+                f"{owner}: structural_history_window must be an integer of at least 1 or "
+                f"None, got {window!r}."
+            )
         if config.blending_min_observations < 0 or config.blending_ramp < 1:
             raise ValueError(
                 f"{owner}: blending_min_observations must be at least 0 and blending_ramp "
@@ -965,7 +973,7 @@ class Use4RiskModel(FactorRiskModel):
         sigma = time_series.copy()
         if config.structural_model != "off":
             if _history_window(config):
-                matrix = np.column_stack([matrix, np.log1p(history / 252.0)])
+                matrix = np.column_stack([matrix, np.log1p(history / _BARS_PER_YEAR)])
             structural = _structural_volatility(
                 time_series, blending, matrix, covered, cap, config.weighting,
                 config.structural_bias, config.structural_fit,
@@ -1065,7 +1073,7 @@ def _estimate_rows(
     return covariance, specific, blending, history.astype(np.float64)
 
 
-def _history_window(config) -> int | None:
+def _history_window(config: "Use4RiskConfig | _EstimateParameters") -> int | None:
     """Return the history-length regressor's window, ``None`` when it is not used."""
     if config.structural_model == "off":
         return None
@@ -1092,6 +1100,10 @@ def _covariance_window(config: "_EstimateParameters") -> int:
         windows.append(config.volatility_autocorrelation_window)
     return max(windows)
 
+
+#: Bars per year of the history-length regressor ``log(1 + h / 252)``: the
+#: model's half-lives and windows are in daily bars.
+_BARS_PER_YEAR = 252.0
 
 #: An eigenvalue at most this times the largest is taken as 0 by the
 #: eigenfactor risk adjustment (our choice).
@@ -1432,8 +1444,8 @@ def _structural_volatility(
     covered: np.ndarray,
     cap: np.ndarray,
     weighting: str,
-    bias: float | str,
-    fit_set: str,
+    bias: float | Literal["smearing"],
+    fit_set: Literal["blending", "series"],
 ) -> np.ndarray:
     """Return each covered symbol's structural specific volatility (USE4 eqs. 5.3-5.4).
 

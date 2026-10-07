@@ -276,7 +276,9 @@ class Use4RiskConfig(FactorRiskConfig):
     #: bias of exponentiating the residuals: a number, or ``"smearing"``,
     #: each bar's mean of ``exp(residual)`` over the fitted symbols (Duan's
     #: 1983 smearing estimate, unweighted). USE4 publishes no value;
-    #: third-party replications use 1.05. Our choice: ``"smearing"`` (#203).
+    #: third-party replications use 1.05. Our choice: ``"smearing"``; with
+    #: the two choices below, 1.05 left the symbols the fill covers slightly
+    #: more underpredicted on the Sharadar history (#203).
     structural_bias: float | Literal["smearing"] = "smearing"
     #: Bars of the history-length regressor of the structural regression:
     #: ``log(1 + h / 252)``, ``h`` the symbol's specific returns in the last
@@ -303,7 +305,11 @@ class Use4RiskConfig(FactorRiskConfig):
     blending_outlier_bound: float = 10.0
     #: Bayesian shrinkage parameter ``q`` of the specific volatilities toward
     #: the cap-weighted mean of their size group (USE4 §5.2, eqs. 5.6-5.9;
-    #: USE4S and USE4L: 0.1); 0 for none.
+    #: USE4S and USE4L: 0.1); 0 for none. On the Sharadar history a larger
+    #: ``q`` flattened the 21-bar bias statistics across forecast-volatility
+    #: deciles but worsened the one-bar ones and the random active
+    #: portfolios', and 0 left the lowest decile underpredicted, so USE4's
+    #: value stands (#203).
     shrinkage: float = 0.1
     #: Size groups of the shrinkage, equal-count market-cap groups of the
     #: symbols with a specific volatility and a market cap at the bar (USE4:

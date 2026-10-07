@@ -262,7 +262,8 @@ def test_invalid_refinement_parameters_are_refused(blended):
     model, _, _ = blended
     for field, value in (
         ("structural_bias", 0.0), ("structural_bias", "mean"), ("structural_fit", "all"),
-        ("structural_history_window", 0), ("blending_ramp", 0), ("blending_outlier_bound", 0.0),
+        ("structural_bias", True), ("structural_history_window", 0),
+        ("structural_history_window", 2.5), ("blending_ramp", 0), ("blending_outlier_bound", 0.0),
         ("shrinkage", -0.1), ("shrinkage_groups", 0),
     ):
         with pytest.raises(ValueError, match=field):
