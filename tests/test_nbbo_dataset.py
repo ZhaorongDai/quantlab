@@ -504,7 +504,7 @@ def test_multi_day_chunked_conversion_is_granularity_independent_and_resumable(
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
-    from quantlab.dataset.nbbo import FILTER_STATS_SUFFIX
+    from quantlab.dataset.nbbo.panel import FILTER_STATS_SUFFIX
 
     acq = _acquire(tmp_path, _two_day_rows(), symbols=("AAPL", "BRK.B"))
     permnos = (str(AAPL), str(BRK_B))
