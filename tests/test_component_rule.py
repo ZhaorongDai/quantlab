@@ -501,17 +501,26 @@ def test_an_unknown_key_in_a_backtest_or_model_config_is_refused(stock, tmp_path
 
 
 def test_no_rebuild_outside_the_component_rule_dispatches_on_a_name_key():
-    """Only the component rule turns a dict's ``"name"`` into a class to rebuild."""
+    """Only the component rule turns a dict's ``"name"`` into a class to rebuild.
+
+    A module that only reads a config's ``"name"`` to display it (the report's
+    portfolio-construction line) rebuilds nothing, so a name check counts only
+    in a module that also rebuilds (``from_config`` or ``rebuild(``).
+    """
     root = Path(__file__).resolve().parents[1] / "quantlab"
+
+    def dispatches(text: str) -> bool:
+        rebuilds = ".from_config(" in text or "rebuild(" in text
+        return (
+            '["name"]).from_config' in text
+            or "_OBJECT_FIELDS" in text
+            or ('and "name" in value' in text and rebuilds)
+        )
+
     offenders = sorted(
         str(path.relative_to(root))
         for path in root.rglob("*.py")
-        if path.name != "component.py"
-        and (
-            '["name"]).from_config' in (text := path.read_text())
-            or "_OBJECT_FIELDS" in text
-            or 'and "name" in value' in text
-        )
+        if path.name != "component.py" and dispatches(path.read_text())
     )
     assert offenders == []
 
