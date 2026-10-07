@@ -11,6 +11,7 @@ conversion, against the tick path on the same records.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -384,6 +385,26 @@ def test_each_page_logs_day_batch_rows_and_seconds(mock_wrds_session, tmp_path):
     (line,) = [message for message in messages if "bar row(s)" in message]
     assert "2024-01-24 batch of 3 symbol(s) AAPL..MSFT: 1170 bar row(s) in" in line
     assert line.rstrip().endswith("s")
+
+
+def test_a_page_holds_at_most_ten_symbols(mock_wrds_session, tmp_path):
+    # Pages stay small so each statement finishes before a route that cuts
+    # silent connections does; see DEFAULT_BATCH_SIZE.
+    _, start, end = _serve(
+        mock_wrds_session,
+        {key: value for key, value in _rows().items() if key[0] == DAY},
+    )
+    tickers = [f"T{index:02d}" for index in range(12)]
+    _download_bars(tmp_path, tickers, start, end)
+
+    batches = sorted(
+        re.search(r"sym_root = ANY\(ARRAY\[([^]]*)\]\)", call["sql"]).group(1)
+        for call in mock_wrds_session.bars_calls
+    )
+    assert batches == [
+        ", ".join(f"'T{index:02d}'" for index in range(10)),
+        "'T10', 'T11'",
+    ]
 
 
 def test_the_registry_resolves_the_bars_capability():

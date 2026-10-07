@@ -101,6 +101,13 @@ class WrdsTaqNbboBarsAcquisition(WrdsTaqNbboAcquisition):
     #: The raw tier is laid out like the tick tier, whatever the bar size.
     HIVE_KEYS = ("date", "symbol")
 
+    #: Symbols per day-table statement. A statement returns nothing until
+    #: the server has built every bar, and some routes to WRDS cut a
+    #: connection that is silent for about 60 s; a page of 10 S&P 500
+    #: tickers takes up to about 40 s, one of 25 can take a minute.
+    #: Overridable through ``kwargs["batch_size"]``.
+    DEFAULT_BATCH_SIZE = 10
+
     RAW_COLUMNS = (
         "timestamp",
         "symbol",

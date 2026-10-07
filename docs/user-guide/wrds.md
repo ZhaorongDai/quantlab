@@ -520,6 +520,11 @@ listed above for resampling, step by step. What changes:
   tickers that resolve to one PERMNO on a date; bars cannot be merged
   exactly, so such a date is refused, naming the tickers.
 - **One-minute bars only, for now.**
+- **Ten tickers per page.** A statement sends nothing until every bar of
+  its page is built, and some routes (the training server's proxy among
+  them) cut a connection that is silent for about a minute. A 2024 page of
+  ten S&P 500 tickers takes up to about 40 seconds on the server. Pass
+  `kwargs={"batch_size": n}` to `build_config` to change it.
 
 Everything else is computed on the server exactly as the tick path computes
 it: the time-weighted `tw_spread`, `tw_bid_size` and `tw_ask_size`, the

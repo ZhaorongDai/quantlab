@@ -39,6 +39,13 @@ reproduces ``quantlab.dataset.nbbo.resample.NbboResampler`` step by step:
    records of the day, as ``NbboResampler.resample_with_stats`` counts them,
    are set on the ticker's bar 1 row and NULL on its other rows.
 
+Steps 4 and 5 share one ordering of the kept records by ticker, time and
+scan order: a record is the last at its instant when the next record is
+later, and the last in its bar when the next record is in a later bar, so
+the server sorts the day's records once. Only records sharing their instant
+with a neighbour are grouped by instant for ``n_ambiguous_ties``, and only
+quotes in force across a bar edge are split into pieces per bar.
+
 Times are compared as nanoseconds since midnight on TAQ's ``time_m`` clock
 (New York); the client computes the session bounds from the XNYS calendar
 and passes them in, so the server needs no calendar. The bar labels are
@@ -100,9 +107,6 @@ WITH raw AS (
     FROM {table}
     WHERE {where}
 ),
-pairs AS (
-    SELECT DISTINCT sym_root, sym_suffix FROM raw
-),
 typed AS (
     SELECT sym_root, sym_suffix, ord, t_ns, qu_cond,
            nullif(best_bid::float8, 'NaN') AS bid,
@@ -141,7 +145,21 @@ kept AS (
     FROM judged
     WHERE t_ns <= {close_ns} AND reason IS NULL
 ),
-instants AS (
+ordered AS (
+    SELECT sym_root, sym_suffix, t_ns, bar, bid, bid_size, ask, ask_size,
+           lag(t_ns) OVER record AS t_prev,
+           lead(t_ns) OVER record AS t_next,
+           lead(bar) OVER record AS bar_next
+    FROM kept
+    WINDOW record AS (PARTITION BY sym_root, sym_suffix ORDER BY t_ns, ord)
+),
+updates AS (
+    SELECT sym_root, sym_suffix, bar, count(*) AS n_updates
+    FROM ordered
+    WHERE bar >= 1
+    GROUP BY sym_root, sym_suffix, bar
+),
+tied_instants AS (
     SELECT sym_root, sym_suffix, bar,
            count(*) AS n_records,
            count(DISTINCT bid) > 1 OR count(bid) NOT IN (0, count(*))
@@ -149,52 +167,54 @@ instants AS (
            OR count(DISTINCT ask) > 1 OR count(ask) NOT IN (0, count(*))
            OR count(DISTINCT ask_size) > 1 OR count(ask_size) NOT IN (0, count(*))
                AS several_states
-    FROM kept
-    WHERE bar >= 1
+    FROM ordered
+    WHERE bar >= 1 AND (t_prev = t_ns OR t_next = t_ns)
     GROUP BY sym_root, sym_suffix, bar, t_ns
 ),
-updates AS (
-    SELECT sym_root, sym_suffix, bar,
-           sum(n_records) AS n_updates,
-           coalesce(sum(n_records) FILTER (WHERE several_states), 0) AS n_ambiguous_ties
-    FROM instants
+ambiguous AS (
+    SELECT sym_root, sym_suffix, bar, sum(n_records) AS n_ambiguous_ties
+    FROM tied_instants
+    WHERE several_states
     GROUP BY sym_root, sym_suffix, bar
 ),
-last_in_bar AS (
-    SELECT DISTINCT ON (sym_root, sym_suffix, bar)
-           sym_root, sym_suffix, bar, bid, bid_size, ask, ask_size
-    FROM kept
-    ORDER BY sym_root, sym_suffix, bar, t_ns DESC, ord DESC
-),
 in_force AS (
-    SELECT DISTINCT ON (sym_root, sym_suffix, t_ns)
-           sym_root, sym_suffix, t_ns, bid, bid_size, ask, ask_size
-    FROM kept
-    ORDER BY sym_root, sym_suffix, t_ns, ord DESC
+    SELECT sym_root, sym_suffix, t_ns, bar, bid, bid_size, ask, ask_size,
+           t_next, bar_next
+    FROM ordered
+    WHERE t_next IS NULL OR t_next > t_ns
+),
+last_in_bar AS (
+    SELECT sym_root, sym_suffix, bar, bid, bid_size, ask, ask_size
+    FROM in_force
+    WHERE bar_next IS NULL OR bar_next > bar
 ),
 spans AS (
-    SELECT sym_root, sym_suffix, bid_size, ask_size,
-           ask - bid AS spread,
-           greatest(t_ns, {open_ns}) AS t_from,
-           coalesce(t_next, {close_ns}) AS t_to
+    SELECT sym_root, sym_suffix, spread, bid_size, ask_size, t_from, t_to,
+           (t_from - {open_ns}) / {bar_ns} + 1 AS bar_from,
+           (t_to - {open_ns} + {bar_ns} - 1) / {bar_ns} AS bar_to
     FROM (
-        SELECT in_force.*,
-               lead(t_ns) OVER (PARTITION BY sym_root, sym_suffix ORDER BY t_ns) AS t_next
+        SELECT sym_root, sym_suffix, bid_size, ask_size,
+               ask - bid AS spread,
+               greatest(t_ns, {open_ns}) AS t_from,
+               coalesce(t_next, {close_ns}) AS t_to
         FROM in_force
-    ) AS ordered
-    WHERE t_ns > {open_ns} OR t_next IS NULL OR t_next > {open_ns}
+        WHERE t_ns > {open_ns} OR t_next IS NULL OR t_next > {open_ns}
+    ) AS bounded
+    WHERE t_to > t_from
 ),
 pieces AS (
+    SELECT sym_root, sym_suffix, bar_from AS bar,
+           spread, bid_size, ask_size, (t_to - t_from)::float8 AS dur
+    FROM spans
+    WHERE bar_from = bar_to
+    UNION ALL
     SELECT spans.sym_root, spans.sym_suffix, k AS bar,
            spans.spread, spans.bid_size, spans.ask_size,
            (least(spans.t_to, {open_ns} + k * {bar_ns})
             - greatest(spans.t_from, {open_ns} + (k - 1) * {bar_ns}))::float8 AS dur
     FROM spans
-    CROSS JOIN LATERAL generate_series(
-        (spans.t_from - {open_ns}) / {bar_ns} + 1,
-        (spans.t_to - {open_ns} + {bar_ns} - 1) / {bar_ns}
-    ) AS k
-    WHERE spans.t_to > spans.t_from
+    CROSS JOIN LATERAL generate_series(spans.bar_from, spans.bar_to) AS k
+    WHERE spans.bar_from < spans.bar_to
 ),
 time_weighted AS (
     SELECT sym_root, sym_suffix, bar,
@@ -208,8 +228,8 @@ time_weighted AS (
     GROUP BY sym_root, sym_suffix, bar
 ),
 grid AS (
-    SELECT pairs.sym_root, pairs.sym_suffix, k AS bar
-    FROM pairs CROSS JOIN generate_series(0, {n_bars}) AS k
+    SELECT filter_stats.sym_root, filter_stats.sym_suffix, k AS bar
+    FROM filter_stats CROSS JOIN generate_series(0, {n_bars}) AS k
 ),
 marked AS (
     SELECT grid.sym_root, grid.sym_suffix, grid.bar,
@@ -236,7 +256,7 @@ SELECT s.sym_root, s.sym_suffix, s.bar,
        s.bid, s.bid_size, s.ask, s.ask_size,
        coalesce(u.n_updates, 0) AS n_updates,
        w.tw_spread, w.tw_bid_size, w.tw_ask_size,
-       coalesce(u.n_ambiguous_ties, 0) AS n_ambiguous_ties,
+       coalesce(a.n_ambiguous_ties, 0) AS n_ambiguous_ties,
        {filter_counts},
        count(*) OVER () AS page_rows
 FROM snapshots AS s
@@ -244,6 +264,10 @@ LEFT JOIN updates AS u
     ON u.sym_root = s.sym_root
    AND u.sym_suffix = s.sym_suffix
    AND u.bar = s.bar
+LEFT JOIN ambiguous AS a
+    ON a.sym_root = s.sym_root
+   AND a.sym_suffix = s.sym_suffix
+   AND a.bar = s.bar
 LEFT JOIN time_weighted AS w
     ON w.sym_root = s.sym_root
    AND w.sym_suffix = s.sym_suffix
