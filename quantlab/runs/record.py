@@ -45,6 +45,7 @@ import contextvars
 import hashlib
 import importlib.metadata
 import inspect
+import json
 import math
 import os
 import subprocess
@@ -264,6 +265,44 @@ def _dataset_fingerprint(
     }
 
 
+def _with_settings(record: dict, settings: Mapping | None) -> dict:
+    """Return a fingerprint record with the store's build settings folded in.
+
+    With ``settings`` given, the record gains ``settings`` (as given) and its
+    ``digest`` becomes the sha256 of the values' digest followed by the
+    settings as sorted, compact JSON, so other settings give another digest
+    even over identical values. Without, the record is returned unchanged.
+
+    Parameters
+    ----------
+    record : dict
+        A ``_dataset_fingerprint`` record.
+    settings : mapping or None
+        JSON-ready build settings, from ``record_read``.
+
+    Returns
+    -------
+    dict
+        The record, with ``settings`` and the combined ``digest`` when
+        ``settings`` is given.
+
+    Examples
+    --------
+    >>> record = {"digest": "00" * 32}
+    >>> _with_settings(record, None) is record
+    True
+    >>> one = _with_settings(record, {"drop_locked": False})
+    >>> two = _with_settings(record, {"drop_locked": True})
+    >>> one["settings"], one["digest"] != two["digest"]
+    ({'drop_locked': False}, True)
+    """
+    if settings is None:
+        return record
+    digest = hashlib.sha256(bytes.fromhex(record["digest"]))
+    digest.update(json.dumps(settings, sort_keys=True, separators=(",", ":")).encode())
+    return {**record, "settings": dict(settings), "digest": digest.hexdigest()}
+
+
 def _active_recorder() -> "DataRecorder | None":
     """Return the innermost open ``DataRecorder``, or ``None`` outside every one.
 
@@ -311,6 +350,7 @@ def record_read(
     store: str | None = None,
     part: str | None = None,
     reread_range: Callable[[pd.Timestamp, pd.Timestamp], xr.Dataset] | None = None,
+    settings: Mapping | None = None,
 ) -> None:
     """Log a read of ``source`` to the innermost open recorder, if there is one.
 
@@ -349,6 +389,12 @@ def record_read(
         request, over the first to the last bar of them all, re-read once
         with ``reread_range(first, last)`` when the recorder closes. Bars between
         reads that were not read are hashed too. An empty read is not logged.
+    settings : mapping, optional
+        The settings the store was built with when they are not visible in
+        its values, such as the session window and quote filters of NBBO bars
+        resampled on the WRDS server. JSON-ready; recorded with the entry
+        and folded into its digest (``_with_settings``), so other settings
+        give another digest even over identical values.
 
     Examples
     --------
@@ -368,7 +414,10 @@ def record_read(
     if reread_range is not None and not bars.size:
         return
     start, end = (bars.min(), bars.max()) if bars.size else (None, None)
-    recorder._log(source, start, end, symbols, variables, reread, store, part, reread_range)
+    recorder._log(
+        source, start, end, symbols, variables, reread, store, part, reread_range,
+        settings,
+    )
 
 
 def _text(value) -> str | None:
@@ -412,7 +461,8 @@ def _mismatch_causes(old: dict, new: dict) -> str:
     Returns
     -------
     str
-        The causes, ``"; "``-joined: variables added or missing (a request of
+        The causes, ``"; "``-joined: changed build settings (``settings``,
+        see ``record_read``), variables added or missing (a request of
         every variable) and changed dtypes, then either another extent (a
         different bar range or size changes every variable, so values are not
         blamed), changed values, or, when every variable is the same, changed
@@ -422,6 +472,10 @@ def _mismatch_causes(old: dict, new: dict) -> str:
     old_dtypes, new_dtypes = old["variable_dtypes"], new["variable_dtypes"]
     shared = sorted(set(old_digests) & set(new_digests))
     causes = []
+    if old.get("settings") != new.get("settings"):
+        causes.append(
+            f"build settings changed from {old.get('settings')} to {new.get('settings')}"
+        )
     if added := sorted(set(new_digests) - set(old_digests)):
         causes.append(f"variables added {added}")
     if missing := sorted(set(old_digests) - set(new_digests)):
@@ -497,7 +551,8 @@ class DataRecorder:
         ``{key: [entry, ...]}``, filled when the context closes. Each entry is
         a ``_dataset_fingerprint`` record plus ``request``: the first and last
         bar read (``start``, ``end``), the requested ``symbols`` and
-        ``variables`` (``None`` for all).
+        ``variables`` (``None`` for all); a source that reports its build
+        settings adds ``settings``, folded into ``digest``.
 
     Examples
     --------
@@ -538,7 +593,7 @@ class DataRecorder:
         self.expected = expected
         self.owner = owner
         self.records: dict[str, list[dict]] = {}
-        self._requests: dict[str, dict[tuple, tuple[dict, Callable]]] = {}
+        self._requests: dict[str, dict[tuple, tuple[dict, Callable, Mapping | None]]] = {}
         self._token: contextvars.Token | None = None
 
     def __enter__(self) -> "DataRecorder":
@@ -577,7 +632,7 @@ class DataRecorder:
 
     def _log(
         self, source, start, end, symbols, variables, reread, store, part=None,
-        reread_range=None,
+        reread_range=None, settings=None,
     ) -> None:
         """Log one request of ``source``; a repeated request is kept once.
 
@@ -592,17 +647,17 @@ class DataRecorder:
         }
         requests = self._requests.setdefault(self._key(source, store, part), {})
         if reread_range is None:
-            requests.setdefault(_request_id(request), (request, reread))
+            requests.setdefault(_request_id(request), (request, reread, settings))
             return
         # Any range: the requests differing only in it are one.
         merged_id = _request_id({**request, "start": None, "end": None})
         first, last = pd.Timestamp(start), pd.Timestamp(end)
         if merged_id in requests:
-            earlier, _ = requests[merged_id]
+            earlier, _, _ = requests[merged_id]
             first = min(first, pd.Timestamp(earlier["start"]))
             last = max(last, pd.Timestamp(earlier["end"]))
         request.update(start=_text(first), end=_text(last))
-        requests[merged_id] = (request, lambda: reread_range(first, last))
+        requests[merged_id] = (request, lambda: reread_range(first, last), settings)
 
     def _close(self, *, partial: bool) -> None:
         """Hash every logged request once, then compare with ``expected``."""
@@ -610,11 +665,14 @@ class DataRecorder:
         try:
             for key, requests in self._requests.items():
                 entries = self.records.setdefault(key, [])
-                for request, reread in requests.values():
+                for request, reread, settings in requests.values():
                     panel = reread()
                     names = request["variables"] or list(panel.data_vars)
                     entries.append(
-                        {"request": request, **_dataset_fingerprint(panel, names)}
+                        {
+                            "request": request,
+                            **_with_settings(_dataset_fingerprint(panel, names), settings),
+                        }
                     )
         finally:
             _ACTIVE.reset(token)

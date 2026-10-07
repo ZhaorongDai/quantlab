@@ -36,6 +36,7 @@ from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.config import NbboBarsDatasetConfig
 from quantlab.dataset.nbbo.panel import NbboPanelBase
 from quantlab.dataset.nbbo.resample import (
+    FILTER_STATS_COUNTS,
     NbboFilterPolicy,
     snapshot_derived_variables,
 )
@@ -452,8 +453,10 @@ class NbboBarsDataset(NbboPanelBase):
       one PERMNO on a date, but bars cannot be merged exactly, so such a
       date is refused, naming the tickers.
 
-    The server does not yet count the dropped records, so the filter-stats
-    sidecar lists each converted session with no per-PERMNO counts.
+    The server counts the records each filter dropped per ``(date, ticker)``
+    and the acquisition keeps the counts on each ticker's first bar; the
+    conversion puts them on the PERMNO axis and merges them into the
+    filter-stats sidecar, so the sidecar equals the tick path's.
 
     Parameters
     ----------
@@ -523,6 +526,37 @@ class NbboBarsDataset(NbboPanelBase):
         """Return ``config.frequency``: the raw data are already bars."""
         return self.config.frequency
 
+    def _build_settings(self) -> dict:
+        """Return the request the store's bars were cut with, recorded with every read.
+
+        The bar size, the session window and the quote filters were applied
+        on the WRDS server, so the values alone may not show them (a filter
+        that matched no record changes nothing). They are taken from the
+        store's filter-stats sidecar, which the conversion writes with the
+        settings it checked against the raw tier, so they describe the
+        store whatever config reads it; without a sidecar, from the config.
+        Folded into the store's data fingerprint.
+
+        Returns
+        -------
+        dict
+            The ``NbboBarsRequest.as_record()`` fields.
+
+        Examples
+        --------
+        With ``config`` an ``NbboBarsDatasetConfig`` left at its defaults
+        and no store converted yet:
+
+        >>> NbboBarsDataset(config)._build_settings()["session_start"]
+        '09:30'
+        """
+        path = Path(self.filter_stats_path)
+        if path.exists():
+            recorded = json.loads(path.read_text()).get("config")
+            if recorded is not None:
+                return NbboBarsRequest.from_record(recorded).as_record()
+        return NbboBarsRequest.from_config(self.config).as_record()
+
     def _request_root(self) -> Path:
         """Return the ``nbbo_bars`` watermark directory, a sibling of the raw root.
 
@@ -585,8 +619,10 @@ class NbboBarsDataset(NbboPanelBase):
             Columns ``date``, ``timestamp``, ``symbol`` (the PERMNO as a
             digit string) and the ``NBBO_PANEL_VARIABLES``, or ``None`` when
             no bar was read.
-        stats : None
-            The server reports no drop counts yet.
+        stats : pl.DataFrame or None
+            Columns ``date``, ``symbol`` (the PERMNO as a digit string) and
+            the ``FILTER_STATS_COUNTS``, one row per ``(date, PERMNO)`` read,
+            or ``None`` when no bar was read.
 
         Raises
         ------
@@ -618,6 +654,14 @@ class NbboBarsDataset(NbboPanelBase):
         )
         if not bars.height:
             return None, None
+        # The counts sit on each (date, ticker)'s first bar only, and one
+        # ticker maps to each (date, PERMNO), so the sum is that ticker's.
+        stats = (
+            bars.filter(pl.col("records_in").is_not_null())
+            .group_by(["date", "symbol"])
+            .agg(pl.col(name).sum().cast(pl.Int64) for name in FILTER_STATS_COUNTS)
+            .sort(["date", "symbol"])
+        )
         bars = bars.with_columns(
             *[pl.col(name).cast(pl.Float64) for name in SERVER_BAR_VARIABLES]
         )
@@ -630,5 +674,5 @@ class NbboBarsDataset(NbboPanelBase):
                 "symbol",
                 *NBBO_PANEL_VARIABLES,
             ),
-            None,
+            stats,
         )

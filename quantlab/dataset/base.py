@@ -682,8 +682,8 @@ class BaseDataset(Component, ABC):
 
         This is the dataset read seam: inside an open
         ``quantlab.runs.record.DataRecorder`` the request is logged
-        and fingerprinted when the recorder closes; outside one nothing is
-        recorded.
+        and fingerprinted when the recorder closes, together with the
+        store's ``_build_settings``; outside one nothing is recorded.
 
         A date-only ``end`` such as ``"2024-01-05"`` includes every bar of
         that day. A resampled dataset answers on its resampled bars: from
@@ -746,7 +746,7 @@ class BaseDataset(Component, ABC):
             record_read(
                 self, source, symbols=symbols,
                 variables=variables, store=self.config.zarr_file_path,
-                reread=lambda: source,
+                reread=lambda: source, settings=self._build_settings(),
             )
         else:
             data = self._open_store(self.store_path).sel(timestamp=window)
@@ -761,8 +761,30 @@ class BaseDataset(Component, ABC):
             record_read(
                 self, panel, symbols=symbols, variables=variables,
                 reread=lambda: self.panel(start, end, symbols, variables),
+                settings=self._build_settings(),
             )
         return panel
+
+    def _build_settings(self) -> dict | None:
+        """Return the settings the store was built with that its values do not show.
+
+        Recorded with every read's data fingerprint and folded into its
+        digest (``quantlab.runs.record.record_read``). ``None`` by default:
+        a store's values are its identity. A dataset whose raw data were
+        already shaped by settings fixed at download time overrides it, so
+        two stores built with different settings never share a digest.
+
+        Returns
+        -------
+        dict or None
+            JSON-ready settings, or ``None``.
+
+        Examples
+        --------
+        >>> ds._build_settings() is None
+        True
+        """
+        return None
 
     def calendar(
         self,

@@ -373,8 +373,13 @@ store 名是 `wrds_nbbo_server_{bar}_{开始}-{结束}.zarr`，带 `server` 标�
 - **同一天一个 PERMNO 只能对应一个 ticker。** 逐笔路径会把两个 ticker 的记录合并后再重采样；
   bar 无法精确合并，所以这样的日期直接拒绝，并点名这些 ticker。
 - **目前只有 1 分钟 bar。**
-- **尚未完整。** 时间加权变量（`tw_spread`、`tw_bid_size`、`tw_ask_size`）和 `n_ambiguous_ties` 暂为 NaN，
-  过滤统计旁车文件只列出会话、没有计数；后续版本由服务器补上。
+
+其余全部在服务器上按逐笔路径的口径计算：时间加权的 `tw_spread`、`tw_bid_size`、`tw_ask_size`，
+`n_ambiguous_ties`，以及每个（会话，ticker）的过滤计数（随该 ticker 的第一根 bar 返回，写进过滤统计旁车文件，
+与逐笔路径一致）。四条过滤规则都可配置：把 `drop_crossed`、`drop_locked`、`drop_nonpositive_price`、
+`keep_qu_cond` 传给 `WrdsTaqNbboBarsAcquisition.build_config`，并在 `NbboBarsDatasetConfig` 里给相同的值。
+这些设置在入库前就决定了 bar，所以服务器 bar store 的数据指纹也记录它们：设置不同的两个 store
+即使数值恰好相同（某条过滤规则一条记录都没命中）也不会有相同的摘要。
 
 ---
 

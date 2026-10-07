@@ -583,3 +583,27 @@ def test_a_mismatch_names_a_changed_dtype(warnings_logged):
 
     assert "dtype of 'count' <i8 -> <i4" in message
     assert "values of" not in message
+
+
+def test_build_settings_are_recorded_and_decide_the_digest(prices, warnings_logged, monkeypatch):
+    monkeypatch.setattr(StockDataset, "_build_settings", lambda self: {"window": "a"})
+    expected = _record(prices, ("2024-01-02", "2024-01-05"))
+    (entry,) = expected["data"]
+    assert entry["settings"] == {"window": "a"}
+
+    _compare(prices, expected, ("2024-01-02", "2024-01-05"))
+    assert warnings_logged == []
+
+    monkeypatch.setattr(StockDataset, "_build_settings", lambda self: {"window": "b"})
+    recorder = _compare(prices, expected, ("2024-01-02", "2024-01-05"))
+    (changed,) = recorder.records["data"]
+    assert changed["variable_digests"] == entry["variable_digests"]
+    assert changed["digest"] != entry["digest"]
+    (message,) = warnings_logged
+    assert "build settings changed from {'window': 'a'} to {'window': 'b'}" in message
+    assert "values of" not in message
+
+
+def test_a_dataset_without_build_settings_records_none(prices):
+    (entry,) = _record(prices, ("2024-01-02", "2024-01-05"))["data"]
+    assert "settings" not in entry

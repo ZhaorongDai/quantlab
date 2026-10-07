@@ -296,8 +296,8 @@ class FakeWrdsSession:
         The stored records of the day and batch are resampled with the
         REFERENCE implementation, `NbboResampler`, and returned in the
         statement's result layout: one row per `(ticker, bar)` for every
-        ticker with a record, the snapshot and `n_updates`, the variables
-        not computed yet as NULL, and `page_rows`. This fakes the server's
+        ticker with a record, every server variable, the ticker's filter
+        counts on its bar 1 row, and `page_rows`. This fakes the server's
         answer; the SQL itself is accepted against `NbboResampler` on WRDS.
         """
         from quantlab.acquisition.wrds.nbbo_bars_sql import RESULT_COLUMNS
@@ -362,11 +362,12 @@ def reference_server_bars(records: list[dict], query) -> pl.DataFrame:
     sessions = pl.DataFrame(
         {"date": [session.day], "open": [session.open], "close": [session.close]}
     )
-    panel = NbboResampler(
+    panel, stats = NbboResampler(
         query.request.bar_interval, query.request.policy
-    ).resample(frame, sessions)
+    ).resample_with_stats(frame, sessions)
     seconds = query.request.bar_seconds
     bars = panel.select(
+        "symbol",
         pl.col("symbol").str.split("|").list.get(0).alias("sym_root"),
         pl.col("symbol").str.split("|").list.get(1).alias("sym_suffix"),
         (
@@ -379,11 +380,21 @@ def reference_server_bars(records: list[dict], query) -> pl.DataFrame:
         "ask",
         "ask_size",
         pl.col("n_updates").cast(pl.Int64),
-        pl.lit(None, dtype=pl.Float64).alias("tw_spread"),
-        pl.lit(None, dtype=pl.Float64).alias("tw_bid_size"),
-        pl.lit(None, dtype=pl.Float64).alias("tw_ask_size"),
-        pl.lit(None, dtype=pl.Int64).alias("n_ambiguous_ties"),
-    ).sort(["sym_root", "sym_suffix", "bar"])
+        "tw_spread",
+        "tw_bid_size",
+        "tw_ask_size",
+        pl.col("n_ambiguous_ties").cast(pl.Int64),
+    )
+    # The day's filter counts of each ticker ride on its bar 1 row only.
+    bars = (
+        bars.join(
+            stats.drop("date").with_columns(pl.lit(1, dtype=pl.Int64).alias("bar")),
+            on=["symbol", "bar"],
+            how="left",
+        )
+        .drop("symbol")
+        .sort(["sym_root", "sym_suffix", "bar"])
+    )
     return bars.with_columns(pl.lit(bars.height).alias("page_rows"))
 
 

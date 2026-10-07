@@ -35,7 +35,7 @@ from quantlab.dataset.nbbo.bars import (
     NbboBarsRequest,
     NbboBarsSession,
 )
-from quantlab.dataset.nbbo.resample import NbboFilterPolicy
+from quantlab.dataset.nbbo.resample import FILTER_STATS_COUNTS, NbboFilterPolicy
 from quantlab.enums.data import BAR_INTERVAL_SECONDS
 
 #: The ``config.kwargs`` keys that hold the request settings besides the bar
@@ -61,9 +61,11 @@ class WrdsTaqNbboBarsAcquisition(WrdsTaqNbboAcquisition):
 
     The raw tier is ``.../wrds/nbbo_bars/date=/symbol=/``, laid out like the
     tick tier whatever the bar size, with ``timestamp`` the bar's end in
-    naive UTC, ``symbol`` the ticker, ``vendor`` and the
-    ``SERVER_BAR_VARIABLES``. The watermarks, and the request settings
-    (``_request.json``), go to ``.../_watermarks/wrds/nbbo_bars/``.
+    naive UTC, ``symbol`` the ticker, ``vendor``, the
+    ``SERVER_BAR_VARIABLES`` and the ticker's ``FILTER_STATS_COUNTS`` for
+    the day, set on its first bar's row and null on the others. The
+    watermarks, and the request settings (``_request.json``), go to
+    ``.../_watermarks/wrds/nbbo_bars/``.
 
     Parameters
     ----------
@@ -99,7 +101,13 @@ class WrdsTaqNbboBarsAcquisition(WrdsTaqNbboAcquisition):
     #: The raw tier is laid out like the tick tier, whatever the bar size.
     HIVE_KEYS = ("date", "symbol")
 
-    RAW_COLUMNS = ("timestamp", "symbol", "vendor", *SERVER_BAR_VARIABLES)
+    RAW_COLUMNS = (
+        "timestamp",
+        "symbol",
+        "vendor",
+        *SERVER_BAR_VARIABLES,
+        *FILTER_STATS_COUNTS,
+    )
 
     RAW_SCHEMA = {
         "timestamp": pl.Datetime("ns"),
@@ -114,6 +122,7 @@ class WrdsTaqNbboBarsAcquisition(WrdsTaqNbboAcquisition):
         "tw_bid_size": pl.Float64,
         "tw_ask_size": pl.Float64,
         "n_ambiguous_ties": pl.Int64,
+        **{name: pl.Int64 for name in FILTER_STATS_COUNTS},
     }
 
     def __init__(self, config: AcquisitionConfig):
@@ -233,7 +242,7 @@ class WrdsTaqNbboBarsAcquisition(WrdsTaqNbboAcquisition):
             pl.col("bar").cast(pl.Int64),
             *[
                 pl.col(name).cast(self.RAW_SCHEMA[name])
-                for name in SERVER_BAR_VARIABLES
+                for name in (*SERVER_BAR_VARIABLES, *FILTER_STATS_COUNTS)
             ],
         )
         self._assert_bars_belong(frame, pairs, session)

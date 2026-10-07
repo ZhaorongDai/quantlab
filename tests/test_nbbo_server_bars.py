@@ -32,22 +32,18 @@ HALF_DAY = date(2024, 11, 29)
 #: Before 2018: no `time_m_nano`, so ties at a microsecond follow scan order.
 OLD_DAY = date(2016, 3, 1)
 
-#: The snapshot variables and counts the server computes in this slice, plus
-#: the four the conversion derives from the snapshot.
-COMPARED = (
-    "bid", "ask", "bid_size", "ask_size", "mid", "spread", "spread_bps",
-    "imbalance", "n_updates",
-)
-#: Not computed by the server yet: NaN in a server-bar panel.
-NOT_YET = ("tw_spread", "tw_bid_size", "tw_ask_size", "n_ambiguous_ties")
+#: A non-default filter policy: locked quotes dropped and a quote-condition
+#: whitelist, beside the default rules.
+STRICT = {"drop_locked": True, "keep_qu_cond": ("R",)}
 
 
 def _rows() -> dict:
     """Records over three sessions and three tickers, with every edge the
     resampler handles: seed before the open, records on bar edges and on the
     close, after-close records, ties at one instant, a crossed quote (dropped
-    by the default policy), one-sided and both-null quotes, a NaN price, a
-    half day and a pre-2018 day."""
+    by the default policy), a locked quote and one under another condition
+    (dropped by STRICT), identical duplicates, a zero price, one-sided and
+    both-null quotes, a NaN price, a half day and a pre-2018 day."""
     day, half, old = DAY.isoformat(), HALF_DAY.isoformat(), OLD_DAY.isoformat()
     return {
         (DAY, "AAPL"): [
@@ -60,6 +56,18 @@ def _rows() -> dict:
             taq_row("09:32:15.000000", 194.01, 300, 194.05, 100, nano=500, day=day),
             # Crossed: dropped, the previous quote stays in force.
             taq_row("09:40:00.000000", 194.10, 100, 194.00, 100, nano=0, day=day),
+            # Locked: kept by default, dropped by STRICT.
+            taq_row("09:50:00.000000", 194.05, 100, 194.05, 200, nano=0, day=day),
+            # Another quote condition: dropped by STRICT's whitelist.
+            taq_row("09:55:00.000000", 194.06, 100, 194.08, 100, nano=0, day=day,
+                    qu_cond="Y"),
+            # Identical duplicates at one instant: no ambiguous tie.
+            taq_row("09:57:00.000000", 194.07, 100, 194.09, 100, nano=0, day=day),
+            taq_row("09:57:00.000000", 194.07, 100, 194.09, 100, nano=0, day=day),
+            # A zero bid under another condition: counted as non-positive,
+            # the first rule it matches.
+            taq_row("09:58:00.000000", 0, 100, 194.09, 100, nano=0, day=day,
+                    qu_cond="Y"),
             # One-sided, then both sides null, then a NaN bid.
             taq_row("10:00:00.000000", None, None, 194.20, 100, nano=0, day=day),
             taq_row("10:05:00.000000", None, None, None, None, nano=0, day=day),
@@ -162,13 +170,15 @@ def _bars_config(tmp_path, acq_cfg, start, end, **fields):
 # -- the highest seam: the same panel as the tick path ---------------------------
 
 
+@pytest.mark.parametrize("policy", [{}, STRICT], ids=["default", "strict"])
 def test_server_bars_convert_to_the_tick_panel_on_the_same_records(
-    mock_wrds_session, tmp_path
+    mock_wrds_session, tmp_path, policy
 ):
     import quantlab.config as config
     from quantlab.acquisition import registry
     from quantlab.acquisition.wrds import WRDS_SOURCE
     from quantlab.acquisition.wrds.taq import WrdsTaqNbboAcquisition
+    from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES
     from quantlab.dataset.config import NbboDatasetConfig
     from quantlab.dataset.nbbo import NbboPanelDataset
     from quantlab.dataset.nbbo.bars import NbboBarsDataset
@@ -189,12 +199,13 @@ def test_server_bars_convert_to_the_tick_panel_on_the_same_records(
         start_date=start,
         end_date=end,
         permnos=permnos,
+        **policy,
     )
     registry.convert(WRDS_SOURCE, tick_cfg, data_type="nbbo", granularity="day")
 
     # The server path: bars downloaded, converted.
-    bars_acq = _download_bars(tmp_path / "bars", tickers, start, end)
-    bars_cfg = _bars_config(tmp_path, bars_acq, start, end, permnos=permnos)
+    bars_acq = _download_bars(tmp_path / "bars", tickers, start, end, **policy)
+    bars_cfg = _bars_config(tmp_path, bars_acq, start, end, permnos=permnos, **policy)
     registry.convert(WRDS_SOURCE, bars_cfg, granularity="day")
 
     ticks = NbboPanelDataset(tick_cfg).panel(*WHOLE_STORE)
@@ -202,29 +213,38 @@ def test_server_bars_convert_to_the_tick_panel_on_the_same_records(
 
     np.testing.assert_array_equal(ticks["timestamp"].values, bars["timestamp"].values)
     np.testing.assert_array_equal(ticks["symbol"].values, bars["symbol"].values)
-    assert set(bars.data_vars) == set(ticks.data_vars)
-    for name in COMPARED:
+    assert set(bars.data_vars) == set(ticks.data_vars) == set(NBBO_PANEL_VARIABLES)
+    for name in NBBO_PANEL_VARIABLES:
         np.testing.assert_array_equal(
             bars[name].values, ticks[name].values, err_msg=name
         )
-    for name in NOT_YET:
-        assert np.isnan(bars[name].values).all(), name
 
-    # The fixture exercises what it claims to: quotes, quiet bars, no quote.
+    # The fixture exercises what it claims to: quotes, quiet bars, no quote,
+    # ambiguous ties, time weights that differ from the bar's snapshot.
     assert np.nansum(bars["n_updates"].values) > 10
     assert (bars["n_updates"].values == 0).any()
     assert np.isnan(bars["bid"].values).any()
+    assert np.nansum(bars["n_ambiguous_ties"].values) > 0
+    assert np.isfinite(bars["tw_spread"].values).any()
+    assert np.isnan(bars["tw_spread"].values).any()
+    differs = bars["tw_bid_size"].values != bars["bid_size"].values
+    assert (differs & np.isfinite(bars["tw_bid_size"].values)).any()
 
-    # The same sidecars beside the store.
+    # The same sidecars beside the store, filter counts included.
     tick_ds, bar_ds = NbboPanelDataset(tick_cfg), NbboBarsDataset(bars_cfg)
     assert json.loads(bar_ds.ticker_sidecar_path().read_text()) == json.loads(
         tick_ds.ticker_sidecar_path().read_text()
     )
     tick_stats = json.loads(Path(tick_ds.filter_stats_path).read_text())
     bar_stats = json.loads(Path(bar_ds.filter_stats_path).read_text())
-    assert bar_stats["config"] == tick_stats["config"]
-    assert sorted(bar_stats["by_session"]) == sorted(tick_stats["by_session"])
-    assert bar_stats["unmapped"] == tick_stats["unmapped"]
+    assert bar_stats == tick_stats
+    totals = bar_stats["totals"]
+    assert totals["dropped_crossed"] > 0 and totals["dropped_nonpositive_price"] > 0
+    assert totals["one_sided_kept"] > 0 and totals["both_null_kept"] > 0
+    if policy:
+        assert totals["dropped_locked"] > 0 and totals["dropped_condition"] > 0
+    else:
+        assert totals["dropped_locked"] == totals["dropped_condition"] == 0
 
 
 # -- the raw tier ------------------------------------------------------------------
@@ -400,6 +420,133 @@ def test_build_config_and_construction_refuse_bad_settings(mock_wrds_session, tm
     assert Path(cfg.raw_data_dir_path).parts[-4:] == ("us_equity", "1m", "wrds_taq", "wrds")
 
 
+# -- request identity and the store's fingerprint -------------------------------
+
+#: One change to each request setting.
+SETTING_CHANGES = {
+    "bar_interval": "5m",
+    "session_start": "10:00",
+    "session_end": "15:00",
+    "drop_crossed": False,
+    "drop_locked": True,
+    "drop_nonpositive_price": False,
+    "keep_qu_cond": ["R"],
+}
+
+
+@pytest.mark.parametrize("field", sorted(SETTING_CHANGES))
+def test_every_setting_is_part_of_the_recorded_request(tmp_path, field):
+    from quantlab.dataset.nbbo.bars import NbboBarsRequest
+
+    default = NbboBarsRequest("1m")
+    changed = NbboBarsRequest.from_record(
+        {**default.as_record(), field: SETTING_CHANGES[field]}
+    )
+    assert changed != default
+    default.record(tmp_path, "demo")
+    with pytest.raises(ValueError, match=field):
+        changed.record(tmp_path, "demo")
+    with pytest.raises(ValueError, match=field):
+        changed.assert_recorded(tmp_path, "demo")
+
+
+def _fingerprint(dataset) -> dict:
+    """The data fingerprint entry of one whole-store read of `dataset`."""
+    from quantlab.runs.record import DataRecorder
+
+    with DataRecorder(keys=[(dataset, "nbbo")]) as recorder:
+        dataset.panel(*WHOLE_STORE)
+    (entry,) = recorder.records["nbbo"]
+    return entry
+
+
+def test_store_fingerprint_carries_the_settings_values_do_not_show(
+    mock_wrds_session, tmp_path
+):
+    from quantlab.dataset.nbbo.bars import NbboBarsDataset, NbboBarsRequest
+
+    # BRK.B's records are all condition R and never locked: the strict
+    # filters drop nothing, so both stores hold the same values.
+    rows = {(DAY, "BRK.B"): _rows()[(DAY, "BRK.B")]}
+    tickers, start, end = _serve(mock_wrds_session, rows)
+    stores = {}
+    for name, policy in (("default", {}), ("strict", STRICT)):
+        acq = _download_bars(tmp_path / name, tickers, start, end, **policy)
+        cfg = replace(
+            _bars_config(tmp_path, acq, start, end, permnos=(str(BRK_B),), **policy),
+            zarr_file_path=str(tmp_path / f"{name}.zarr"),
+        )
+        NbboBarsDataset(cfg).from_raw_data_chunked(granularity="day")
+        stores[name] = (cfg, _fingerprint(NbboBarsDataset(cfg)))
+
+    (default_cfg, default), (_, strict) = stores["default"], stores["strict"]
+    assert default["variable_digests"] == strict["variable_digests"]
+    assert default["digest"] != strict["digest"]
+    assert default["settings"] == NbboBarsRequest.from_config(default_cfg).as_record()
+    assert strict["settings"]["keep_qu_cond"] == ["R"]
+    # Reading again gives the same fingerprint.
+    assert _fingerprint(NbboBarsDataset(default_cfg)) == default
+
+
+def _convert_store(tmp_path, name, tickers, start, end, **settings):
+    """Download server bars cut with `settings` and convert them into `<name>.zarr`."""
+    import quantlab.config as config
+    from quantlab.acquisition.wrds.taq_bars import WrdsTaqNbboBarsAcquisition
+    from quantlab.dataset.nbbo.bars import NbboBarsDataset
+
+    config.set_data_root(tmp_path / name)
+    acq = WrdsTaqNbboBarsAcquisition.build_config(
+        tuple(tickers), start_date=start, end_date=end, **settings
+    )
+    WrdsTaqNbboBarsAcquisition(acq).download()
+    fields = {
+        ("frequency" if key == "bar_interval" else key): value
+        for key, value in settings.items()
+    }
+    cfg = replace(
+        _bars_config(tmp_path, acq, start, end, permnos=(str(BRK_B),), **fields),
+        zarr_file_path=str(tmp_path / f"{name}.zarr"),
+    )
+    NbboBarsDataset(cfg).from_raw_data_chunked(granularity="day")
+    return cfg
+
+
+@pytest.mark.parametrize("field", sorted(SETTING_CHANGES))
+def test_every_setting_changes_the_store_fingerprint(mock_wrds_session, tmp_path, field):
+    from quantlab.dataset.nbbo.bars import NbboBarsDataset
+
+    tickers, start, end = _serve(
+        mock_wrds_session, {(DAY, "BRK.B"): _rows()[(DAY, "BRK.B")]}
+    )
+    baseline = _fingerprint(
+        NbboBarsDataset(_convert_store(tmp_path, "default", tickers, start, end))
+    )
+    value = SETTING_CHANGES[field]
+    changed_cfg = _convert_store(
+        tmp_path, "changed", tickers, start, end,
+        **{field: tuple(value) if isinstance(value, list) else value},
+    )
+    changed = _fingerprint(NbboBarsDataset(changed_cfg))
+    assert changed["digest"] != baseline["digest"]
+    assert changed["settings"][field] == value
+    assert baseline["settings"][field] != value
+
+
+def test_the_fingerprint_records_the_store_settings_whatever_config_reads_it(
+    mock_wrds_session, tmp_path
+):
+    from quantlab.dataset.nbbo.bars import NbboBarsDataset
+
+    tickers, start, end = _serve(
+        mock_wrds_session, {(DAY, "BRK.B"): _rows()[(DAY, "BRK.B")]}
+    )
+    strict_cfg = _convert_store(tmp_path, "strict", tickers, start, end, **STRICT)
+    strict = _fingerprint(NbboBarsDataset(strict_cfg))
+    reader = replace(strict_cfg, drop_locked=False, keep_qu_cond=None)
+    assert _fingerprint(NbboBarsDataset(reader)) == strict
+    assert strict["settings"]["drop_locked"] is True
+
+
 # -- the conversion's own refusals -----------------------------------------------
 
 
@@ -498,6 +645,9 @@ def test_statement_is_composed_and_restricted_by_the_pairs():
     assert "+ 60000000000 - 1) / 60000000000" in text
     assert "generate_series(0, 390)" in text
     assert "row_number() OVER () AS ord" in text
+    # Every server variable is computed; none is a NULL placeholder.
+    assert "NULL::float8" not in text and "NULL::bigint" not in text
+    assert "w.tw_spread, w.tw_bid_size, w.tw_ask_size" in text
     assert "coalesce(time_m_nano, 0)" in text
     assert "time_m_nano" not in render_composed(_query(day=OLD_DAY, has_nano=False).statement())
 
@@ -508,28 +658,64 @@ def test_statement_half_day_bounds_come_from_the_calendar():
     assert "generate_series(0, 210)" in text
 
 
-def test_statement_filter_rules_appear_only_when_enabled():
+#: Each filter rule: the policy field enabling it, its condition in the
+#: statement, and the count column it fills.
+RULES = {
+    "nonpositive_price": (
+        {"drop_nonpositive_price": True},
+        "coalesce(bid <= 0, false) OR coalesce(ask <= 0, false)",
+    ),
+    "condition": (
+        {"keep_qu_cond": ("R", "C")},
+        "NOT coalesce(qu_cond::text = ANY(ARRAY['R', 'C']::text[]), false)",
+    ),
+    "crossed": ({"drop_crossed": True}, "coalesce(bid > ask, false)"),
+    "locked": ({"drop_locked": True}, "coalesce(bid = ask, false)"),
+}
+
+#: Every rule off.
+NO_RULES = {
+    "drop_crossed": False,
+    "drop_locked": False,
+    "drop_nonpositive_price": False,
+    "keep_qu_cond": None,
+}
+
+PAIRS_CONDITION = (
+    "WHERE sym_root = ANY(ARRAY['AAPL', 'BRK']) AND "
+    "(sym_root, coalesce(sym_suffix, '')) IN (('AAPL', ''), ('BRK', 'B'))"
+)
+
+
+@pytest.mark.parametrize("rule", sorted(RULES))
+def test_statement_filter_rule_appears_only_when_enabled(rule):
     from quantlab.dataset.nbbo.resample import NbboFilterPolicy
 
-    default = render_composed(_query().statement())
-    assert "coalesce(bid <= 0, false)" in default
-    assert "coalesce(bid > ask, false)" in default
-    assert "bid = ask" not in default
-    assert "qu_cond::text" not in default
+    enable, condition = RULES[rule]
+    alone = render_composed(_query(NbboFilterPolicy(**{**NO_RULES, **enable})).statement())
+    assert f"WHEN {condition} THEN '{rule}'" in alone
+    assert f"count(*) FILTER (WHERE reason = '{rule}') AS \"dropped_{rule}\"" in alone
+    for other, (_, other_condition) in RULES.items():
+        if other != rule:
+            assert other_condition not in alone, other
+            assert f'0::bigint AS "dropped_{other}"' in alone
+    assert PAIRS_CONDITION in alone
 
-    everything = render_composed(
+    nothing = render_composed(_query(NbboFilterPolicy(**NO_RULES)).statement())
+    assert condition not in nothing
+    assert "NULL::text AS reason" in nothing
+    assert PAIRS_CONDITION in nothing
+
+
+def test_statement_applies_the_rules_in_the_policy_priority_order():
+    from quantlab.dataset.nbbo.resample import NbboFilterPolicy
+
+    text = render_composed(
         _query(NbboFilterPolicy(drop_locked=True, keep_qu_cond=("R", "C"))).statement()
     )
-    assert "coalesce(bid = ask, false)" in everything
-    assert "qu_cond::text = ANY(ARRAY['R', 'C']::text[])" in everything
-
-    nothing = render_composed(
-        _query(
-            NbboFilterPolicy(drop_crossed=False, drop_nonpositive_price=False)
-        ).statement()
-    )
-    assert "NOT (false)" in nothing
-    assert "bid <= 0" not in nothing and "bid > ask" not in nothing
+    positions = [text.index(f"THEN '{rule}'") for rule in RULES]
+    assert positions == sorted(positions)
+    assert PAIRS_CONDITION in text
 
 
 def test_statement_values_reach_the_query_only_as_literals():

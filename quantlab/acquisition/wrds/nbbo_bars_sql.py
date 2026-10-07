@@ -12,28 +12,41 @@ reproduces ``quantlab.dataset.nbbo.resample.NbboResampler`` step by step:
    ``time_m_nano`` from 2018 on), then by that number, which before 2018 is
    the only way to order records sharing a microsecond.
 2. **Normalise.** A null or NaN price nulls its side and that side's size.
-3. **Filter.** The rules of ``NbboFilterPolicy`` that are enabled; a dropped
-   record is ignored completely. Records after the session close are
-   dropped too.
+3. **Filter.** The rules of ``NbboFilterPolicy`` that are enabled, in its
+   priority order (non-positive price, condition, crossed, locked); a
+   dropped record is ignored completely and counted under its first
+   matching rule. Records after the session close are dropped too.
 4. **Bars.** Bar ``k`` covers ``(open + (k-1)d, open + kd]``; a record at or
    before the open falls in bar 0, the seed. The snapshot of bar ``k`` is
    the last kept record at or before its end, so records sharing an instant
    collapse to the last one and a bar with no update carries the quote in
    force. ``n_updates`` counts every kept record inside bar ``k``, tied ones
-   included.
-5. **Grid.** Every ``(ticker, k)`` for ``k = 1..N`` is returned for every
+   included; ``n_ambiguous_ties`` counts those of them whose instant holds
+   more than one distinct (bid, bid size, ask, ask size) state, so identical
+   duplicates count zero.
+5. **Time weights.** After ties collapse, each quote is in force from its
+   instant (the seed from the open) to the next quote or the close. Each
+   such span is cut at the bar edges; ``tw_spread``, ``tw_bid_size`` and
+   ``tw_ask_size`` of bar ``k`` are the sum of value times duration over
+   the pieces in bar ``k`` where the value is defined, divided by the sum of
+   their durations, and NULL when the value was never defined in the bar.
+6. **Grid.** Every ``(ticker, k)`` for ``k = 1..N`` is returned for every
    ticker with a record that day, also when all its records were dropped,
    so the result has exactly ``tickers x N`` rows. ``page_rows``, the row
    count the server computed, is on every row, so the client can tell a
    truncated transfer from a complete one.
+7. **Filter counts.** The ``FILTER_STATS_COUNTS`` of each ticker over all its
+   records of the day, as ``NbboResampler.resample_with_stats`` counts them,
+   are set on the ticker's bar 1 row and NULL on its other rows.
 
 Times are compared as nanoseconds since midnight on TAQ's ``time_m`` clock
 (New York); the client computes the session bounds from the XNYS calendar
 and passes them in, so the server needs no calendar. The bar labels are
 computed by the client from ``k``. ``mid``, ``spread``, ``spread_bps`` and
-``imbalance`` are derived by the client from the snapshot. The
-time-weighted variables and ``n_ambiguous_ties`` are returned as NULL for
-now.
+``imbalance`` are derived by the client from the snapshot. An instant holds
+several states when, in any of the four columns, its records hold more than
+one distinct value or mix null and non-null ones; values are compared as
+numbers, never through their text form.
 
 Every value enters the statement as a ``psycopg2.sql.Literal`` and every
 name as a ``psycopg2.sql.Identifier``; nothing is pasted in as text. The
@@ -55,16 +68,25 @@ from quantlab.dataset.nbbo.bars import (
     NbboBarsRequest,
     NbboBarsSession,
 )
+from quantlab.dataset.nbbo.resample import FILTER_STATS_COUNTS
 
-#: The CSV columns the statement returns, in order.
-RESULT_COLUMNS = ("sym_root", "sym_suffix", "bar", *SERVER_BAR_VARIABLES, "page_rows")
+#: The CSV columns the statement returns, in order. The filter counts are
+#: per ticker for the whole day, so they are set on each ticker's bar 1 row
+#: only and empty on the others.
+RESULT_COLUMNS = (
+    "sym_root",
+    "sym_suffix",
+    "bar",
+    *SERVER_BAR_VARIABLES,
+    *FILTER_STATS_COUNTS,
+    "page_rows",
+)
 
-#: The server variables not computed yet; returned as NULL of these types.
-_NOT_YET_COMPUTED = {
-    "tw_spread": "float8",
-    "tw_bid_size": "float8",
-    "tw_ask_size": "float8",
-    "n_ambiguous_ties": "bigint",
+#: Each ``NbboFilterPolicy`` drop reason, in priority order, with the
+#: ``FILTER_STATS_COUNTS`` column that counts it.
+_REASON_COLUMNS = {
+    reason: f"dropped_{reason}"
+    for reason in ("nonpositive_price", "condition", "crossed", "locked")
 }
 
 _STATEMENT = """COPY (
@@ -95,12 +117,48 @@ quotes AS (
            CASE WHEN ask IS NOT NULL THEN ask_size END AS ask_size
     FROM typed
 ),
+judged AS (
+    SELECT quotes.*, {reason} AS reason
+    FROM quotes
+),
+filter_stats AS (
+    SELECT sym_root, sym_suffix,
+           count(*) AS records_in,
+           {dropped_counts},
+           count(*) FILTER (
+               WHERE reason IS NULL AND (bid IS NULL) <> (ask IS NULL)
+           ) AS one_sided_kept,
+           count(*) FILTER (
+               WHERE reason IS NULL AND bid IS NULL AND ask IS NULL
+           ) AS both_null_kept
+    FROM judged
+    GROUP BY sym_root, sym_suffix
+),
 kept AS (
     SELECT sym_root, sym_suffix, ord, t_ns, bid, bid_size, ask, ask_size,
            CASE WHEN t_ns <= {open_ns} THEN 0
                 ELSE (t_ns - {open_ns} + {bar_ns} - 1) / {bar_ns} END AS bar
-    FROM quotes
-    WHERE t_ns <= {close_ns} AND NOT ({dropped})
+    FROM judged
+    WHERE t_ns <= {close_ns} AND reason IS NULL
+),
+instants AS (
+    SELECT sym_root, sym_suffix, bar,
+           count(*) AS n_records,
+           count(DISTINCT bid) > 1 OR count(bid) NOT IN (0, count(*))
+           OR count(DISTINCT bid_size) > 1 OR count(bid_size) NOT IN (0, count(*))
+           OR count(DISTINCT ask) > 1 OR count(ask) NOT IN (0, count(*))
+           OR count(DISTINCT ask_size) > 1 OR count(ask_size) NOT IN (0, count(*))
+               AS several_states
+    FROM kept
+    WHERE bar >= 1
+    GROUP BY sym_root, sym_suffix, bar, t_ns
+),
+updates AS (
+    SELECT sym_root, sym_suffix, bar,
+           sum(n_records) AS n_updates,
+           coalesce(sum(n_records) FILTER (WHERE several_states), 0) AS n_ambiguous_ties
+    FROM instants
+    GROUP BY sym_root, sym_suffix, bar
 ),
 last_in_bar AS (
     SELECT DISTINCT ON (sym_root, sym_suffix, bar)
@@ -108,10 +166,45 @@ last_in_bar AS (
     FROM kept
     ORDER BY sym_root, sym_suffix, bar, t_ns DESC, ord DESC
 ),
-updates AS (
-    SELECT sym_root, sym_suffix, bar, count(*) AS n_updates
+in_force AS (
+    SELECT DISTINCT ON (sym_root, sym_suffix, t_ns)
+           sym_root, sym_suffix, t_ns, bid, bid_size, ask, ask_size
     FROM kept
-    WHERE bar >= 1
+    ORDER BY sym_root, sym_suffix, t_ns, ord DESC
+),
+spans AS (
+    SELECT sym_root, sym_suffix, bid_size, ask_size,
+           ask - bid AS spread,
+           greatest(t_ns, {open_ns}) AS t_from,
+           coalesce(t_next, {close_ns}) AS t_to
+    FROM (
+        SELECT in_force.*,
+               lead(t_ns) OVER (PARTITION BY sym_root, sym_suffix ORDER BY t_ns) AS t_next
+        FROM in_force
+    ) AS ordered
+    WHERE t_ns > {open_ns} OR t_next IS NULL OR t_next > {open_ns}
+),
+pieces AS (
+    SELECT spans.sym_root, spans.sym_suffix, k AS bar,
+           spans.spread, spans.bid_size, spans.ask_size,
+           (least(spans.t_to, {open_ns} + k * {bar_ns})
+            - greatest(spans.t_from, {open_ns} + (k - 1) * {bar_ns}))::float8 AS dur
+    FROM spans
+    CROSS JOIN LATERAL generate_series(
+        (spans.t_from - {open_ns}) / {bar_ns} + 1,
+        (spans.t_to - {open_ns} + {bar_ns} - 1) / {bar_ns}
+    ) AS k
+    WHERE spans.t_to > spans.t_from
+),
+time_weighted AS (
+    SELECT sym_root, sym_suffix, bar,
+           sum(spread * dur) FILTER (WHERE spread IS NOT NULL)
+               / sum(dur) FILTER (WHERE spread IS NOT NULL) AS tw_spread,
+           sum(bid_size * dur) FILTER (WHERE bid_size IS NOT NULL)
+               / sum(dur) FILTER (WHERE bid_size IS NOT NULL) AS tw_bid_size,
+           sum(ask_size * dur) FILTER (WHERE ask_size IS NOT NULL)
+               / sum(dur) FILTER (WHERE ask_size IS NOT NULL) AS tw_ask_size
+    FROM pieces
     GROUP BY sym_root, sym_suffix, bar
 ),
 grid AS (
@@ -142,13 +235,23 @@ snapshots AS (
 SELECT s.sym_root, s.sym_suffix, s.bar,
        s.bid, s.bid_size, s.ask, s.ask_size,
        coalesce(u.n_updates, 0) AS n_updates,
-       {not_yet_computed},
+       w.tw_spread, w.tw_bid_size, w.tw_ask_size,
+       coalesce(u.n_ambiguous_ties, 0) AS n_ambiguous_ties,
+       {filter_counts},
        count(*) OVER () AS page_rows
 FROM snapshots AS s
 LEFT JOIN updates AS u
     ON u.sym_root = s.sym_root
    AND u.sym_suffix = s.sym_suffix
    AND u.bar = s.bar
+LEFT JOIN time_weighted AS w
+    ON w.sym_root = s.sym_root
+   AND w.sym_suffix = s.sym_suffix
+   AND w.bar = s.bar
+LEFT JOIN filter_stats AS f
+    ON f.sym_root = s.sym_root
+   AND f.sym_suffix = s.sym_suffix
+   AND s.bar = 1
 WHERE s.bar >= 1
 ) TO STDOUT WITH (FORMAT csv, HEADER true)"""
 
@@ -219,32 +322,66 @@ class NbboBarsQuery:
                 f"table for {self.day}."
             )
 
-    def _dropped(self) -> sql.Composable:
-        """Return the condition true for a record the filter policy drops.
+    def _rules(self) -> list[tuple[str, sql.Composable]]:
+        """Return ``(reason, condition)`` for each enabled rule, in priority order.
 
         Only the enabled rules appear. A null side is never a price, so each
         comparison with a null side counts as false.
         """
         policy = self.request.policy
-        rules: list[sql.Composable] = []
+        rules: list[tuple[str, sql.Composable]] = []
         if policy.drop_nonpositive_price:
             rules.append(
-                sql.SQL("coalesce(bid <= 0, false) OR coalesce(ask <= 0, false)")
+                (
+                    "nonpositive_price",
+                    sql.SQL("coalesce(bid <= 0, false) OR coalesce(ask <= 0, false)"),
+                )
             )
         if policy.keep_qu_cond is not None:
             rules.append(
-                sql.SQL("NOT coalesce(qu_cond::text = ANY({codes}::text[]), false)").format(
-                    codes=sql.Literal(list(policy.keep_qu_cond))
+                (
+                    "condition",
+                    sql.SQL(
+                        "NOT coalesce(qu_cond::text = ANY({codes}::text[]), false)"
+                    ).format(codes=sql.Literal(list(policy.keep_qu_cond))),
                 )
             )
         if policy.drop_crossed:
-            rules.append(sql.SQL("coalesce(bid > ask, false)"))
+            rules.append(("crossed", sql.SQL("coalesce(bid > ask, false)")))
         if policy.drop_locked:
-            rules.append(sql.SQL("coalesce(bid = ask, false)"))
+            rules.append(("locked", sql.SQL("coalesce(bid = ask, false)")))
+        return rules
+
+    def _reason(self) -> sql.Composable:
+        """Return the expression naming a record's drop reason, NULL when it is kept.
+
+        A record matching several rules gets the first, as in
+        ``NbboFilterPolicy.reason``.
+        """
+        rules = self._rules()
         if not rules:
-            return sql.SQL("false")
-        return sql.SQL(" OR ").join(
-            sql.SQL("({})").format(rule) for rule in rules
+            return sql.SQL("NULL::text")
+        return sql.SQL("CASE {whens} END").format(
+            whens=sql.SQL(" ").join(
+                sql.SQL("WHEN {condition} THEN {reason}").format(
+                    condition=condition, reason=sql.Literal(reason)
+                )
+                for reason, condition in rules
+            )
+        )
+
+    def _dropped_counts(self) -> sql.Composable:
+        """Return the ``dropped_*`` count columns; a disabled rule counts 0."""
+        enabled = {reason for reason, _ in self._rules()}
+        return sql.SQL(", ").join(
+            (
+                sql.SQL("count(*) FILTER (WHERE reason = {reason}) AS {name}").format(
+                    reason=sql.Literal(reason), name=sql.Identifier(name)
+                )
+                if reason in enabled
+                else sql.SQL("0::bigint AS {name}").format(name=sql.Identifier(name))
+            )
+            for reason, name in _REASON_COLUMNS.items()
         )
 
     def statement(self) -> sql.Composed:
@@ -267,12 +404,6 @@ class NbboBarsQuery:
         nano = (
             sql.SQL("coalesce(time_m_nano, 0)") if self.has_nano else sql.SQL("0")
         )
-        not_yet_computed = sql.SQL(", ").join(
-            sql.SQL("NULL::{kind} AS {name}").format(
-                kind=sql.SQL(kind), name=sql.Identifier(name)
-            )
-            for name, kind in _NOT_YET_COMPUTED.items()
-        )
         return sql.SQL(_STATEMENT).format(
             nano=nano,
             table=WrdsSession.table_identifier(self.day),
@@ -281,6 +412,9 @@ class NbboBarsQuery:
             close_ns=sql.Literal(_nanoseconds(self.session.close_clock)),
             bar_ns=sql.Literal(bar_ns),
             n_bars=sql.Literal(self.session.n_bars),
-            dropped=self._dropped(),
-            not_yet_computed=not_yet_computed,
+            reason=self._reason(),
+            dropped_counts=self._dropped_counts(),
+            filter_counts=sql.SQL(", ").join(
+                sql.Identifier("f", name) for name in FILTER_STATS_COUNTS
+            ),
         )

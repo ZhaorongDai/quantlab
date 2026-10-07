@@ -520,10 +520,34 @@ listed above for resampling, step by step. What changes:
   tickers that resolve to one PERMNO on a date; bars cannot be merged
   exactly, so such a date is refused, naming the tickers.
 - **One-minute bars only, for now.**
-- **Not complete yet.** The time-weighted variables (`tw_spread`,
-  `tw_bid_size`, `tw_ask_size`) and `n_ambiguous_ties` are NaN, and the
-  filter-statistics sidecar lists each session without counts; the server
-  computes them in a later release.
+
+Everything else is computed on the server exactly as the tick path computes
+it: the time-weighted `tw_spread`, `tw_bid_size` and `tw_ask_size`, the
+`n_ambiguous_ties` count, and the per-session, per-ticker filter counts,
+which come back with each ticker's first bar and fill the
+filter-statistics sidecar (`*.nbbo_filter_stats.json`) as the tick path
+would. Every rule of the filter policy is configurable: pass
+`drop_crossed`, `drop_locked`, `drop_nonpositive_price` and `keep_qu_cond`
+to `WrdsTaqNbboBarsAcquisition.build_config`, and the same values to
+`NbboBarsDatasetConfig`:
+
+```python
+from quantlab.acquisition import registry
+from quantlab.acquisition.wrds import WRDS_SOURCE
+from quantlab.acquisition.wrds.taq_bars import WrdsTaqNbboBarsAcquisition
+
+cfg = WrdsTaqNbboBarsAcquisition.build_config(
+    ("AAPL", "MSFT"), start_date="2024-01-22", end_date="2024-01-26",
+    drop_locked=True, keep_qu_cond=("R",),
+)
+registry.run(WRDS_SOURCE, cfg)
+```
+
+Because the settings shaped the bars before they were stored, a server-bar
+store also records them in its data fingerprint: a run that reads the store
+logs the bar size, session window and filters with the read, and two stores
+built with different settings never share a digest, even where their values
+happen to be equal (a filter that matched no record).
 
 Use ticks when you want to re-cut the same data with different settings, or
 need the records themselves; use server bars for long histories over a slow
