@@ -435,9 +435,27 @@ def _risk_over_time(attribution: xr.Dataset, groups: tuple, scale: float) -> go.
                              line=dict(color=INK, width=2, dash="dot"),
                              hovertemplate="%{x|%Y-%m-%d} realized %{y:.1%}<extra></extra>"))
     fig.update_layout(barmode="relative", bargap=0.1, showlegend=True, margin=dict(l=10, r=10, t=40, b=10))
-    fig.update_yaxes(tickformat=".0%", title=dict(text="annualized volatility", font=dict(size=11, color=MUTED)))
+    low = float(np.nan_to_num(monthly.clip(upper=0).sum(axis=1).min(), posinf=0, neginf=0))
+    high = max(float(np.nan_to_num(monthly.clip(lower=0).sum(axis=1).max(), posinf=0, neginf=0)),
+               float(np.nan_to_num(realized.max(), posinf=0, neginf=0)))
+    bounds, step = _ticked_range(low, high)
+    fig.update_yaxes(tickformat=".0%", tick0=0, dtick=step, range=bounds,
+                     title=dict(text="annualized volatility", font=dict(size=11, color=MUTED)))
     fig.add_hline(y=0, line=dict(color=INK2, width=1.2), layer="above")
     return fig
+
+
+def _ticked_range(low: float, high: float, ticks: int = 8) -> tuple[list[float], float]:
+    """An axis range from ``low`` <= 0 to ``high`` >= 0 and its round tick spacing (#216).
+
+    A part below 0 (a hedge) is small beside the market's spikes, so the range reaches a whole
+    tick below 0 and the hedge gets a labelled tick; rounding noise below 0 does not count.
+    """
+    span = (high - low) or 1.0
+    power = 10.0 ** np.floor(np.log10(span / ticks))
+    step = float(next(m for m in (1, 2, 5, 10) if m * power >= span / ticks) * power)
+    bottom = -step * np.ceil(-low / step) if low < -1e-9 * span else 0.0
+    return [float(bottom), high * 1.05 or step], step
 
 
 def _sorted_styles(segment: dict, attribution: xr.Dataset) -> list[str]:

@@ -10,7 +10,8 @@ coordinate, or by their names without one.
 Without a risk model no such tab appears (the page bytes are locked by
 ``tests.test_backtest_report_lock``). The tracker summary holds the scalar
 ``factor_attribution`` entries beside the whole / in-sample / out-of-sample
-blocks.
+blocks. The Risk over time chart's axis gives a hedging part a labelled tick
+below 0 (#216).
 
 The runs are the stub-risk-model backtests of
 ``tests.test_backtest_factor_attribution`` (``run_weights()``, whole only) and
@@ -22,11 +23,13 @@ import json
 import re
 
 import numpy as np
+import pandas as pd
 import pytest
+import xarray as xr
 
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.runs.backtest_run import BacktestRun
-from quantlab.runs.factor_attribution_report import factor_attribution_section
+from quantlab.runs.factor_attribution_report import _groups, _risk_over_time, factor_attribution_section
 from tests.backtest_fixtures import make_model, train_checkpoint
 from tests.test_backtest_factor_attribution import (
     _backtester,
@@ -196,3 +199,35 @@ def test_the_tracker_summary_holds_the_scalar_factor_attribution(tracked):
         assert isinstance(value, (int, float)) and not isinstance(value, bool), key
         assert np.isfinite(value), key
     json.dumps(run.summary, allow_nan=False)
+
+
+def _hedged_attribution():
+    """Two years of bars: the market part dominant with one spike, a style part that hedges it (#216)."""
+    index = pd.bdate_range("2020-01-01", periods=504)
+    market = np.full(len(index), 0.10 / np.sqrt(252))
+    market[250:270] = 0.60 / np.sqrt(252)
+    style = np.full(len(index), -0.02 / np.sqrt(252))
+    return xr.Dataset(
+        {
+            "factor_risk_contribution": (("timestamp", "factor"), np.stack([market, style], axis=1)),
+            "specific_risk_contribution": ("timestamp", np.full(len(index), 0.005 / np.sqrt(252))),
+            "return": ("timestamp", np.random.default_rng(0).normal(0, 0.01, len(index))),
+        },
+        coords={"timestamp": index, "factor": ["country", "style_beta"], "group": ("factor", ["country", "style"])},
+    )
+
+
+def test_risk_over_time_shows_a_negative_tick_for_a_hedging_part():
+    attribution = _hedged_attribution()
+    fig = _risk_over_time(attribution, _groups(attribution), float(np.sqrt(252)))
+    axis = fig.layout.yaxis
+    low, high = axis.range
+    step = axis.dtick
+    # The axis reaches at least one whole tick below 0, so a negative label is drawn,
+    # and holds the hedging stack and the spike's monthly mean.
+    assert low <= -step < 0
+    spike = max(trace.y.max() for trace in fig.data if trace.name == "Country")
+    assert low <= -0.02 and high >= spike > 0.3
+    # Without a negative part the axis starts at 0.
+    positive = attribution.assign(factor_risk_contribution=abs(attribution["factor_risk_contribution"]))
+    assert _risk_over_time(positive, _groups(positive), float(np.sqrt(252))).layout.yaxis.range[0] == 0
