@@ -1376,18 +1376,21 @@ class CrspStockDataset(StockDataset):
         """
         return Path(str(self.config.zarr_file_path) + TICKER_SIDECAR_SUFFIX)
 
-    def ticker_lookup(self) -> CrspTickerLookup:
+    def ticker_lookup(self) -> CrspTickerLookup | None:
         """Return the lookup over the ticker sidecar beside the store.
 
         The backtester labels this dataset's PERMNOs through it. The file is
         read on first use, so a store converted before the sidecar existed
-        still gets a lookup; it falls back to the PERMNO digits.
+        still gets a lookup; it falls back to the PERMNO digits. A dataset
+        with no store has no sidecar and gets ``None``.
 
         Examples
         --------
         >>> ds.ticker_lookup()
         CrspTickerLookup('/data/crsp.zarr.crsp_tickers.json')
         """
+        if self.config.zarr_file_path is None:
+            return None
         return CrspTickerLookup(self.ticker_sidecar_path())
 
     def _build_ticker_intervals(self, derived: pl.DataFrame) -> dict:

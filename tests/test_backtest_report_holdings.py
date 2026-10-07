@@ -118,11 +118,14 @@ def test_symbols_without_names_are_labelled_by_their_id(tmp_path):
 
 def test_a_renamed_symbol_shows_the_ticker_in_use_on_each_bar(tmp_path):
     def label(symbols, day):
-        return ["NEW" if s == "10002" and str(day) >= "2024-01-03" else f"T{s}" for s in symbols]
+        return [
+            ("NEW", "New Co") if s == "10002" and str(day) >= "2024-01-03" else (f"T{s}", None)
+            for s in symbols
+        ]
 
     inputs = report_holdings_inputs(HOLDINGS, WEIGHTS, label=label)
     assert inputs["holding_names"]["10002"] == [
-        ("2024-01-02", "T10002", ""), ("2024-01-03", "NEW", ""),
+        ("2024-01-02", "T10002", ""), ("2024-01-03", "NEW", "New Co"),
     ]
     data = _data(_page(tmp_path, **inputs))
 

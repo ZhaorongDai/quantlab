@@ -591,6 +591,17 @@ class BaseBacktester(Component, ABC):
             return [str(symbol) for symbol in symbols]
         return lookup.label(symbols, day)
 
+    def _symbol_names(self, symbols, day) -> list[tuple[str, str | None]]:
+        """Return ``(ticker, company)`` of price-dataset ``symbols`` as of ``day``.
+
+        Through ``ticker_lookup`` when the price dataset names one, and each
+        symbol itself (as ``str``) with no company otherwise.
+        """
+        lookup = self.ticker_lookup
+        if lookup is None:
+            return [(str(symbol), None) for symbol in symbols]
+        return [(name.ticker, name.company) for name in lookup.names(symbols, day)]
+
     @property
     @abstractmethod
     def config_cls(self) -> type:
@@ -3066,14 +3077,14 @@ class BaseBacktester(Component, ABC):
     ) -> dict:
         """Return the Holdings tab inputs: ``report_holdings_inputs`` of this run.
 
-        Symbols are named as ``_symbol_labels`` names them on each bar;
+        Symbols are named as ``_symbol_names`` names them on each bar;
         nothing is returned when the engine supplied no holdings, so the
         page has no Holdings tab.
         """
         if simulation.holdings is None:
             return {}
         return report_holdings_inputs(
-            simulation.holdings, weights["weight"], label=self._symbol_labels
+            simulation.holdings, weights["weight"], label=self._symbol_names
         )
 
     @staticmethod

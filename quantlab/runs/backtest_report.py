@@ -725,14 +725,14 @@ def report_holdings_inputs(
     holdings: xr.DataArray,
     weights: xr.DataArray,
     *,
-    label: Callable[[list, datetime.date], list[str]] | None = None,
+    label: Callable[[list, datetime.date], list[tuple[str, str | None]]] | None = None,
 ) -> dict:
     """Return the Holdings tab arguments of ``write_backtest_report``.
 
     The tab shows, on each bar, every symbol held or targeted by the last
     rebalance before it; ``label`` names those symbols as of each bar, and
     the names are handed to the page as spans, a new span wherever a
-    symbol's label changes (a ticker change).
+    symbol's name changes (a ticker change).
 
     Parameters
     ----------
@@ -744,17 +744,17 @@ def report_holdings_inputs(
         (all-NaN on a bar that holds), as ``write_backtest_report`` takes
         them.
     label : callable, optional
-        ``label(symbols, day)`` returns a readable label for each of
-        ``symbols`` as of the date ``day``. Without it the page shows each
-        symbol by its id.
+        ``label(symbols, day)`` returns a ``(ticker, company)`` pair for
+        each of ``symbols`` as of the date ``day``, the company ``None``
+        when unknown. Without it the page shows each symbol by its id.
 
     Returns
     -------
     dict
         ``holdings`` and ``holding_names`` (``None`` without ``label``):
         per symbol id (as ``str``), ``(first bar label, ticker, company)``
-        spans in time order, each in use until the next; the company is
-        empty, since a label carries none.
+        spans in time order, each in use until the next; an unknown
+        company is empty.
 
     Examples
     --------
@@ -764,9 +764,10 @@ def report_holdings_inputs(
     >>> weights = xr.DataArray([[0.5], [np.nan], [np.nan]], dims=("timestamp", "symbol"),
     ...                        coords={"timestamp": bars, "symbol": [13407]})
     >>> def label(symbols, day):
-    ...     return ["FB" if str(day) < "2024-01-03" else "META" for _ in symbols]
+    ...     ticker = "FB" if str(day) < "2024-01-03" else "META"
+    ...     return [(ticker, "Meta Platforms") for _ in symbols]
     >>> report_holdings_inputs(holdings, weights, label=label)["holding_names"]
-    {'13407': [('2024-01-02', 'FB', ''), ('2024-01-03', 'META', '')]}
+    {'13407': [('2024-01-02', 'FB', 'Meta Platforms'), ('2024-01-03', 'META', 'Meta Platforms')]}
     """
     names = None
     if label is not None:
@@ -779,10 +780,11 @@ def report_holdings_inputs(
             if shown.size == 0:
                 continue
             day = pd.Timestamp(bar).date()
-            for j, name in zip(shown, label([symbols[j] for j in shown], day)):
+            for j, (ticker, company) in zip(shown, label([symbols[j] for j in shown], day)):
+                span = (str(ticker), company or "")
                 spans = names.setdefault(str(symbols[j]), [])
-                if not spans or spans[-1][1] != str(name):
-                    spans.append((date_range.bar_label(bar), str(name), ""))
+                if not spans or spans[-1][1:] != span:
+                    spans.append((date_range.bar_label(bar), *span))
     return {"holdings": holdings, "holding_names": names}
 
 

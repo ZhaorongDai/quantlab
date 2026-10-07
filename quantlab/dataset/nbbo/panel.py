@@ -268,17 +268,19 @@ class NbboPanelBase(StockDataset):
         """
         return Path(f"{self.config.zarr_file_path}{TICKER_SIDECAR_SUFFIX}")
 
-    def ticker_lookup(self) -> CrspTickerLookup:
+    def ticker_lookup(self) -> CrspTickerLookup | None:
         """Return the lookup over the CRSP ticker sidecar beside the store.
 
         The panel's symbol axis is the PERMNO, so its symbols are named as on
-        a CRSP store.
+        a CRSP store; ``None`` when the dataset has no store.
 
         Examples
         --------
         >>> ds.ticker_lookup()
         CrspTickerLookup('data/us_equity/tick/wrds_nbbo_1m.zarr.crsp_tickers.json')
         """
+        if self.config.zarr_file_path is None:
+            return None
         return CrspTickerLookup(self.ticker_sidecar_path())
 
     @property
