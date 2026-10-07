@@ -262,18 +262,21 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: The six reports were re-recorded for the Holdings tab (#225); the same
 #: runs written without holdings give the #215 hashes back
 #: (`WITHOUT_HOLDINGS`). The metrics did not change.
+#: Re-recorded when Top-10 holding became the ten largest holdings by size
+#: (shorts included) and the tab's explanation gained that and the cash
+#: definition. The metrics did not change.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "353dd2596f2425416ccc561c09dacde7b843dd28abbd595820ae533566d8aee4",
+    "run_long_only_benchmark/report.html": "29a7b9036430f9e77127a203a7614fce7fa7bc99249c05c4e901c73c189f8e70",
     "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
-    "run_long_short_delisting/report.html": "6f4860bbe78bcf425881fd0351498c89bf25d5bb1bf553c2486639428414bac2",
+    "run_long_short_delisting/report.html": "8df82c53b75767ab3ad09017cedd85723c0e5df16580a873357d2b5dbc7ee7ad",
     "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
-    "run_weights_benchmark/report.html": "fe6407a601cae3a4a743df6f8bd61f2d9097eae95b2851dbc8fe7db599575876",
+    "run_weights_benchmark/report.html": "e549d46584dc624ae0e55a8a1a7ecbbaaf08b22fc92102444c4695e5f1295685",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
-    "run_weights/report.html": "03e9e540f331e3b78c4c0ae9da38b5cbcc085a6fdd65f8687a2257588644d494",
+    "run_weights/report.html": "cf9d7ab21f094ecd0a882dbed25820a062dcd6f94c11c96a2269045a3add2ed1",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "6c4a9232b9e2a6a6223908c5697aaf3bfae92b1f574c0202d31e85137f79d6cc",
+    "run_cv_benchmark/report.html": "0a065fec8eb88b9230b0244d3c7babe99708a0fd9b21cee9557085f430106605",
     "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
-    "run_cv/report.html": "101ebed4bd8c1825cb5c21607e2ce1ef36c12002e2760a84037cf77a0981f5f4",
+    "run_cv/report.html": "a59c6a323d1cfd8ae9581bfcedd699a3d810f2b1aeca2ba129b4e080a9bb3483",
     "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
 

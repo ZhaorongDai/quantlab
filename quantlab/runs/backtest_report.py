@@ -2303,7 +2303,7 @@ _HOLDINGS_SCRIPT = """
     var current = own.length ? targeted(own[own.length - 1]) : {};
     var all = rowsOf(cur);
     var held = all.filter(function (r) { return r.h !== 0; }).length + day.other[0];
-    var top = all.map(function (r) { return r.h; }).sort(function (a, b) { return b - a; })
+    var top = all.map(function (r) { return Math.abs(r.h); }).sort(function (a, b) { return b - a; })
       .slice(0, 10).reduce(function (s, x) { return s + x; }, 0);
     var added = previous ? Object.keys(current).filter(function (k) { return !previous[k]; }).length : null;
     var bits = [['Date', day.d], ['Targets from', day.r === null ? 'no rebalance yet' : day.r],
@@ -2695,7 +2695,9 @@ _CHART_TIPS = {
                    "the universe, and the costs; and how each score group of the universe did.",
     "Holdings": "What the book held at each day's close: each symbol's target weight from the last rebalance "
                 "before the day, and its holding, its value over the whole book with cash. Rejected orders, "
-                "delisting settlements, costs and price moves make the two differ.",
+                "delisting settlements, costs and price moves make the two differ. Top-10 holding is the sum "
+                "of the ten largest holdings by size, shorts included; cash is one less the net holdings, so "
+                "a short sale's proceeds raise it above 100%.",
 }
 
 #: The sidebar's sections, in order.
