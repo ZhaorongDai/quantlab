@@ -2221,8 +2221,10 @@ def _holdings_section(
         '<th data-k="ticker">Ticker</th><th data-k="company">Company</th><th data-k="symbol">Symbol</th>'
         '<th data-k="t" title="The weight the last rebalance before the day asked for.">Target weight</th>'
         '<th data-k="h" title="The share of the book, cash included, at the day\'s close.">Holding</th>'
-        '<th data-k="h" title="Upper, light bar: the target weight. Lower, dark bar: the holding.">'
-        '<span class="hd-key t"></span>Target / <span class="hd-key h"></span>holding</th>'
+        '<th data-k="h" title="Upper, light bar: the target weight. Lower, dark bar: the holding. Blue is '
+        'long, red short.">Target <span class="hd-key t"></span><span class="hd-key t neg"></span> / holding '
+        '<span class="hd-key h"></span><span class="hd-key h neg"></span><br><span class="hd-keynote">'
+        'blue long, red short</span></th>'
         '<th title="The holding on each day the targets of this rebalance are in force, from the fill to the day '
         'before the next rebalance fills; the dot is the selected day.">Path in period</th></tr></thead>'
         '<tbody id="hd-rows"></tbody><tfoot id="hd-foot"></tfoot></table>\n'
@@ -2251,8 +2253,10 @@ _HOLDINGS_STYLE = """
   .hd-bar span { position: absolute; left: 0; height: 4px; border-radius: 2px; }
   .hd-spark { display: block; }
   .hd-bar .t { top: 0; background: #93c5fd; } .hd-bar .h { top: 6px; background: #2563eb; }
-  .hd-key { display: inline-block; width: 14px; height: 4px; border-radius: 2px; margin: 0 4px 2px 0; }
+  .hd-key { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin: 0 2px 2px 0; }
   .hd-key.t { background: #93c5fd; } .hd-key.h { background: #2563eb; }
+  .hd-key.t.neg { background: #fca5a5; } .hd-key.h.neg { background: #dc2626; }
+  .hd-keynote { font-weight: 400; text-transform: none; letter-spacing: 0; font-size: 11px; }
   .hd-bar .t.neg { background: #fca5a5; } .hd-bar .h.neg { background: #dc2626; }
 """
 
