@@ -97,7 +97,6 @@ from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.risk.bias import bias_statistics
 from quantlab.risk.config import Use4RiskConfig
-from quantlab.risk.predefined.ledoit_wolf import ledoit_wolf_covariance
 from quantlab.risk.predefined.use4 import Use4RiskModel
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.tracking.wandb import WandbTracker
@@ -407,12 +406,12 @@ def forecasts(weights: xr.DataArray) -> xr.Dataset:
     with a finite weight (NaN, a locked position kept, counts as 0). The
     realized return is that of the targets held from the bar's close for
     ``HORIZON`` bars, each stock's adjusted close forward-filled (a delisted
-    holding keeps its last valuation). Ledoit-Wolf's forecast is
-    ``ledoit_wolf_covariance`` of the ``LOOKBACK_BARS`` one-bar returns
-    ending at the bar, over the held stocks whose window is complete and
-    not constant (``LedoitWolfEstimator`` also drops a stock without a recent
-    price); the factor model's is ``FactorRiskStoreEstimator``'s estimate at
-    the bar from the stored exposures. Both are scaled to ``HORIZON`` bars;
+    holding keeps its last valuation). Each model's forecast is its
+    covariance estimator's at the bar, from a context holding the held
+    stocks: ``LedoitWolfEstimator``'s from the ``LOOKBACK_BARS`` one-bar
+    returns ending at the bar (no staleness is given, so it covers the
+    stocks whose window is complete and not constant),
+    ``FactorRiskStoreEstimator``'s from the stored exposures. Both are scaled to ``HORIZON`` bars;
     ``covered`` is the weight each model covers.
     """
     weights = weights.where(weights.notnull().any("symbol"), drop=True).fillna(0.0)
@@ -427,7 +426,9 @@ def forecasts(weights: xr.DataArray) -> xr.Dataset:
     one_bar = one_bar_returns(prices)[1:]
 
     model = risk_model()
+    ledoit_wolf = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK_BARS))
     factor_risk = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))
+    timestamps = close["timestamp"].values
     exposures = model.exposures(bars[0], bars[-1]).reindex(timestamp=bars, symbol=symbols).load()
 
     rows = {"realized": [], "ledoit_wolf": [], "use4": [],
@@ -441,29 +442,31 @@ def forecasts(weights: xr.DataArray) -> xr.Dataset:
             float(np.nansum(w[held] * moved)) if end == at + HORIZON else np.nan
         )
 
-        window = one_bar[at - LOOKBACK_BARS : at][:, held]
-        full = np.isfinite(window).all(axis=0) & (np.ptp(window, axis=0) > 0)
-        lw = ledoit_wolf_covariance(window[:, full])
-        rows["ledoit_wolf"].append(float(np.sqrt(HORIZON * w[held][full] @ lw @ w[held][full])))
-        rows["ledoit_wolf_covered"].append(float(w[held][full].sum()))
-
-        # The estimator reads only the bar and the exposures from a context.
+        # Each estimator reads only the held stocks' return window, or their
+        # exposures, from a context.
         held_symbols = symbols[held]
         context = PortfolioContext(
             timestamp=pd.Timestamp(bar),
             predictions=xr.Dataset(coords={"symbol": held_symbols}),
             tradable=xr.DataArray(np.ones(len(held), bool), coords={"symbol": held_symbols}),
             current_weights=xr.DataArray(w[held], coords={"symbol": held_symbols}),
+            returns=xr.DataArray(
+                one_bar[at - LOOKBACK_BARS : at][:, held],
+                coords={"timestamp": timestamps[at - LOOKBACK_BARS + 1 : at + 1], "symbol": held_symbols},
+                dims=("timestamp", "symbol"),
+            ),
             risk_exposures=exposures.isel(timestamp=row, drop=True).sel(symbol=held_symbols),
         )
-        estimate = factor_risk.estimate(context)
-        w_covered = pd.Series(w[held], index=held_symbols)[estimate.symbols].values
-        loading = estimate.exposures.T @ w_covered
-        variance = (
-            loading @ estimate.factor_covariance @ loading
-            + w_covered**2 @ estimate.specific_variance
-        )
-        rows["use4"].append(float(np.sqrt(HORIZON * variance)))
+        weight = pd.Series(w[held], index=held_symbols)
+        lw = ledoit_wolf.estimate(context).scaled(HORIZON)
+        w_covered = weight[lw.symbols].values
+        rows["ledoit_wolf"].append(float(np.sqrt(w_covered @ lw.covariance @ w_covered)))
+        rows["ledoit_wolf_covered"].append(float(w_covered.sum()))
+
+        forecast = factor_risk.estimate(context).scaled(HORIZON)
+        w_covered = weight[forecast.symbols].values
+        factor, specific = forecast.portfolio_variance(w_covered)
+        rows["use4"].append(float(np.sqrt(factor + specific)))
         rows["use4_covered"].append(float(w_covered.sum()))
     return xr.Dataset({name: ("timestamp", values) for name, values in rows.items()},
                       coords={"timestamp": bars})

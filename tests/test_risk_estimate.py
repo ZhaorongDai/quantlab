@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.portfolio.base import PortfolioContext
+from quantlab.portfolio.base import InputDeclaration, PortfolioContext
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig, LedoitWolfEstimatorConfig, MeanVarianceConfig
 from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
@@ -202,14 +202,13 @@ def _context(built, *, held=None, untradable=(), drop_style=None):
 
 def test_the_reader_declares_its_risk_model_and_no_factor(built):
     reader = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=built))
-    assert not hasattr(reader, "required_factors")
-    assert reader.required_risk_model() is built
+    assert reader.declared_inputs() == InputDeclaration(risk_model=built)
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(
         expected_return_label="ret_1", covariance=reader, ic=0.05,
         risk_aversion=5.0, turnover_penalty=0.0, weight_cap=0.5,
     ))
-    assert optimizer.required_factors() == []
-    assert optimizer.required_risk_model() is built
+    assert optimizer.declared_inputs().factors == ()
+    assert optimizer.declared_inputs().risk_model is built
 
 
 def test_the_reader_returns_the_bar_in_factor_form(built):

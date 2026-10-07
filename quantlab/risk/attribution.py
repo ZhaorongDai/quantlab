@@ -23,14 +23,15 @@ bar, and no bar's value depends on the bars after it.
 
 The risk of the same book is attributed too:
 
-- ex ante, at bar t, from the estimate store's row of t-1 (the forecast made
-  at t-1 for bar t): the covered holdings' net exposures x, the factor
-  covariance F over the factors that have one (``covered_factors``) and the
-  specific risks s give the forecast variance ``x'Fx + sum w^2 s^2``; each
-  factor's x-sigma-rho contribution ``x_k (Fx)_k / sigma`` and the specific
-  part ``sum w^2 s^2 / sigma`` sum to sigma. Uncovered holdings are left out
-  (they show in the coverage), and a covered holding without a specific risk
-  adds no specific variance;
+- ex ante, at bar t, from the model's forecast made at t-1 for bar t
+  (``FactorRiskModel.forecast`` on the estimate row and exposures of t-1,
+  the coverage rule the portfolio's covariance estimator uses): the held
+  symbols it covers give the forecast variance ``x'Fx + sum w^2 s^2``, x
+  their net exposures, F the factor covariance and s their specific risks;
+  each factor's x-sigma-rho contribution ``x_k (Fx)_k / sigma`` and the
+  specific part ``sum w^2 s^2 / sigma`` sum to sigma, a factor the forecast
+  leaves out at the bar contributing 0. Holdings it does not cover are left
+  out;
 - ex post, over a run of bars, each term's ``cov(c_j, r) / sigma(r)`` on the
   per-bar (arithmetic) contributions, which sum to the realized volatility.
 
@@ -40,7 +41,7 @@ term's, factor's and group's annualized log growth, the styles' mean
 exposures, the top and bottom industries, the ex-ante and ex-post risk
 contributions and the coverage.
 
-The module reads a ``FactorRiskModel``'s stores and inputs only; it builds
+The module reads a ``FactorRiskModel``'s ``forecast_window`` only; it builds
 nothing (ADR 0024) and imports nothing of the portfolio, backtest or runs
 layers.
 
@@ -60,7 +61,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from quantlab.risk.base import FACTOR_GROUPS, FactorRiskModel, covered_factors
+from quantlab.risk.base import FACTOR_GROUPS, FactorRiskModel
 
 #: The terms a bar's NAV return is split into, in the order of the ``term`` axis.
 TERMS = ("factor", "specific", "uncovered", "risk_free", "trading")
@@ -146,24 +147,19 @@ def factor_attribution(
     groups = risk_model.factor_groups()
     labels = risk_model.factor_labels()
     first, last = pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-1])
-    regression = risk_model.regression.read(first, last)
+    window = risk_model.forecast_window(timestamps)
+    window = window.assign_coords(symbol=[str(s) for s in window["symbol"].values]).reindex(
+        symbol=symbols
+    )
 
     weight = np.nan_to_num(np.asarray(holdings.values, dtype=np.float64))
     returns = np.nan_to_num(np.asarray(nav_returns.sel(timestamp=timestamps).values, dtype=np.float64))
     own = np.nan_to_num(_on_axes(symbol_returns, timestamps, symbols))
     factor_return = np.nan_to_num(
-        regression["factor_return"]
-        .reindex(timestamp=timestamps)
-        .transpose("timestamp", "factor")
-        .values.astype(np.float64)
+        window["factor_return"].transpose("timestamp", "factor").values.astype(np.float64)
     )
-    specific = _on_axes(regression["specific_return"], timestamps, symbols)
-    risk_free = _on_axes(
-        risk_model.prices(first, last)[risk_model.config.risk_free_column], timestamps, symbols
-    )
-    exposures, has_exposures = _exposures(risk_model, timestamps, symbols)
-    covariance, specific_risk = _estimates(risk_model, timestamps, symbols)
-
+    specific = _values(window["specific_return"])
+    risk_free = _values(window["risk_free"])
     n_bars, n_factors = timestamps.size, len(factors)
     contribution = np.zeros((n_bars, len(TERMS)))
     factor_part = np.zeros((n_bars, n_factors))
@@ -173,33 +169,36 @@ def factor_attribution(
     factor_risk = np.full((n_bars, n_factors), np.nan)
     specific_risk_part = np.full(n_bars, np.nan)
     covered_weight = np.full(n_bars, np.nan)
+    symbol_position, factor_position = pd.Index(symbols), pd.Index(factors)
     held = weight != 0.0
     for t in range(1, n_bars):
-        covered = (
-            held[t] & has_exposures[t - 1] & np.isfinite(specific[t]) & np.isfinite(risk_free[t - 1])
-        )
+        row = window.isel(timestamp=t)
+        matrix, has = risk_model.exposure_matrix(row)
+        has = np.asarray(has, dtype=bool) & np.isfinite(matrix).all(axis=1)
+        covered = held[t] & has & np.isfinite(specific[t]) & np.isfinite(risk_free[t])
         uncovered = held[t] & ~covered
         w = weight[t]
-        exposure[t] = w[covered] @ exposures[t - 1][covered]
+        exposure[t] = w[covered] @ matrix[covered]
         factor_part[t] = exposure[t] * factor_return[t]
         contribution[t, _SPECIFIC] = w[covered] @ specific[t][covered]
         contribution[t, _UNCOVERED] = w[uncovered] @ own[t][uncovered]
-        contribution[t, _RISK_FREE] = w[covered] @ risk_free[t - 1][covered]
+        contribution[t, _RISK_FREE] = w[covered] @ risk_free[t][covered]
         gross = np.abs(w[held[t]]).sum()
         if gross > 0:
             covered_weight[t] = np.abs(w[covered]).sum() / gross
 
-        # Ex ante: the forecast made at t-1 for bar t, of the covered book.
-        kept = covered_factors(covariance[t - 1])
-        x = np.where(kept, exposure[t], 0.0)
-        fx = np.zeros(n_factors)
-        fx[kept] = covariance[t - 1][np.ix_(kept, kept)] @ x[kept]
-        factor_variance[t] = x @ fx
-        specific_variance[t] = (w[covered] ** 2) @ np.nan_to_num(specific_risk[t - 1][covered] ** 2)
-        sigma = np.sqrt(factor_variance[t] + specific_variance[t])
-        if sigma > 0:
-            factor_risk[t] = x * fx / sigma
-            specific_risk_part[t] = specific_variance[t] / sigma
+        # Ex ante: the forecast made at t-1 for bar t, of the holdings it covers.
+        if not held[t].any():
+            continue
+        forecast = risk_model.forecast(row, row)
+        book = w[symbol_position.get_indexer(forecast.symbols)]
+        factor_variance[t], specific_variance[t] = forecast.portfolio_variance(book)
+        by_factor, by_specific = forecast.risk_contributions(book)
+        if np.isfinite(by_specific):
+            kept = factor_position.get_indexer(list(forecast.factor_names))
+            factor_risk[t] = 0.0
+            factor_risk[t, kept] = by_factor
+            specific_risk_part[t] = by_specific
     contribution[:, _FACTOR] = factor_part.sum(axis=1)
     contribution[:, _TRADING] = returns - np.delete(contribution, _TRADING, axis=1).sum(axis=1)
 
@@ -437,49 +436,6 @@ def _on_axes(panel: xr.DataArray, timestamps: np.ndarray, symbols: list[str]) ->
     )
 
 
-def _estimates(
-    risk_model: FactorRiskModel, timestamps: np.ndarray, symbols: list[str]
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the forecast factor covariance ``[T, K, K]`` and specific risk ``[T, S]`` at each bar.
-
-    Read from the estimate store over the bars before the last (the forecast
-    of row t attributes bar t+1); NaN where the store has no forecast.
-    """
-    n_bars, n_factors = timestamps.size, len(risk_model.factor_names)
-    covariance = np.full((n_bars, n_factors, n_factors), np.nan)
-    specific_risk = np.full((n_bars, len(symbols)), np.nan)
-    if n_bars < 2:
-        return covariance, specific_risk
-    rows = risk_model.estimate.read(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-2]))
-    covariance[:-1] = (
-        rows["factor_covariance"]
-        .reindex(timestamp=timestamps[:-1])
-        .transpose("timestamp", "factor_i", "factor_j")
-        .values.astype(np.float64)
-    )
-    specific_risk[:-1] = _on_axes(rows["specific_risk"], timestamps[:-1], symbols)
-    return covariance, specific_risk
-
-
-def _exposures(
-    risk_model: FactorRiskModel, timestamps: np.ndarray, symbols: list[str]
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the exposures ``[T, S, K]`` at each bar and whether each symbol has them all.
-
-    Only the bars before the last are read: the last bar's exposures attribute
-    nothing in the window.
-    """
-    n_bars, n_symbols, n_factors = timestamps.size, len(symbols), len(risk_model.factor_names)
-    matrix = np.zeros((n_bars, n_symbols, n_factors))
-    covered = np.zeros((n_bars, n_symbols), dtype=bool)
-    if n_bars < 2:
-        return matrix, covered
-    panel = risk_model.exposures(pd.Timestamp(timestamps[0]), pd.Timestamp(timestamps[-2]))
-    panel = panel.assign_coords(symbol=[str(s) for s in panel["symbol"].values])
-    panel = panel.reindex(timestamp=timestamps[:-1], symbol=symbols).load()
-    for t in range(n_bars - 1):
-        rows, has = risk_model.exposure_matrix(panel.isel(timestamp=t, drop=True))
-        has = np.asarray(has, dtype=bool) & np.isfinite(rows).all(axis=1)
-        matrix[t] = np.where(has[:, None], rows, 0.0)
-        covered[t] = has
-    return matrix, covered
+def _values(panel: xr.DataArray) -> np.ndarray:
+    """Return a window's ``(timestamp, symbol)`` variable as floats."""
+    return np.asarray(panel.transpose("timestamp", "symbol").values, dtype=np.float64)

@@ -25,6 +25,7 @@ import xarray as xr
 from quantlab.portfolio.config import MeanVarianceConfig
 from quantlab.portfolio.base import (
     CovarianceEstimate,
+    InputDeclaration,
     PortfolioConstructionError,
     PortfolioConstructor,
     PortfolioContext,
@@ -33,8 +34,7 @@ from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.utils.cross_section import cross_sectional_zscore
 
 if TYPE_CHECKING:
-    from quantlab.factor.base import Factor
-    from quantlab.risk.base import FactorRiskForecast, FactorRiskModel
+    from quantlab.risk.base import FactorRiskForecast
 
 _SOLVED = (cp.OPTIMAL, cp.OPTIMAL_INACCURATE)
 
@@ -302,8 +302,15 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     bounded exposure raise ``PortfolioConstructionError``: the backtest holds
     the current position there and records the bar.
 
-    ``lookback_bars``, ``history_bars`` and ``required_risk_model()`` are the
-    covariance estimator's; ``required_factors()`` is the
+    Two extension points let a rule built on the optimiser change what risk
+    means: ``reference_weights`` (the risk term prices ``w - b`` against a
+    reference book, a benchmark say) and ``risk_constraints`` (constraints
+    on the risk term, a tracking-error cap say). Both are unused by default,
+    and the problem is then exactly the one above. ``scripts/active_risk.py``
+    builds a benchmark-relative rule on them.
+
+    ``declared_inputs()`` is the covariance estimator's declaration (its
+    return window, its factor risk model) merged with the
     ``exposure_factors``, whose outputs must not repeat a name.
     ``exposure_bounds`` may bound any of their outputs or any of the risk
     model's ``exposure_names`` (read from ``context.risk_exposures``); a
@@ -342,7 +349,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     ...     covariance=LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60)),
     ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
     ... ))
-    >>> optimizer.lookback_bars
+    >>> optimizer.declared_inputs().lookback_bars
     60
     >>> optimizer.bind(specs)
     >>> weights = optimizer.construct(context)
@@ -411,7 +418,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 f"the declared factors produce {repeated} more than once; "
                 f"context.factors holds one variable per name"
             )
-        risk_model = self.required_risk_model() if config.exposure_bounds else None
+        risk_model = self.declared_inputs().risk_model if config.exposure_bounds else None
         risk_names = set() if risk_model is None else set(risk_model.factor_names)
         for name, (lower, upper) in config.exposure_bounds.items():
             if name in declared and name in risk_names:
@@ -432,47 +439,17 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 )
         self._span: int | None = None
 
-    @property
-    def lookback_bars(self) -> int:
-        """The covariance estimator's ``lookback_bars``.
+    def declared_inputs(self) -> InputDeclaration:
+        """The covariance estimator's declaration, merged with the ``exposure_factors``.
 
         Examples
         --------
-        >>> optimizer.lookback_bars
-        60
-        """
-        return self.config.covariance.lookback_bars
-
-    @property
-    def history_bars(self) -> int:
-        """The covariance estimator's ``history_bars``.
-
-        Examples
-        --------
-        >>> optimizer.history_bars  # 60 + 1 + 5
+        >>> optimizer.declared_inputs().history_bars  # Ledoit-Wolf: 60 + 1 + 5
         66
         """
-        return self.config.covariance.history_bars
-
-    def required_factors(self) -> list["Factor"]:
-        """The ``exposure_factors``.
-
-        Examples
-        --------
-        >>> optimizer.required_factors()
-        []
-        """
-        return list(self.config.exposure_factors)
-
-    def required_risk_model(self) -> "FactorRiskModel | None":
-        """The covariance estimator's ``required_risk_model()``.
-
-        Examples
-        --------
-        >>> optimizer.required_risk_model() is None  # Ledoit-Wolf
-        True
-        """
-        return self.config.covariance.required_risk_model()
+        return self.config.covariance.declared_inputs().merged(
+            InputDeclaration(factors=tuple(self.config.exposure_factors))
+        )
 
     def reference_weights(self, context: PortfolioContext) -> xr.DataArray | None:
         """The book the risk term measures against at the bar, or ``None`` for total risk.

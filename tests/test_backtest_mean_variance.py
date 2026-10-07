@@ -20,7 +20,7 @@ What is locked here, and what turns it red:
 - A long-short `MeanVarianceOptimizer` backtest (#80) is dollar-neutral with
   gross exposure at most one on every rebalance bar, and rebuilds from its
   `config.json`.
-- A `Factor` the rule declares in `required_factors()` (#82, a Polars
+- A `Factor` the rule declares in `declared_inputs()` (#82, a Polars
   factor here, an `exposure_factors` one) reaches the covariance estimator
   at each rebalance bar, and only at it, in `context.factors`, warmed up
   like a model's features.
@@ -47,7 +47,7 @@ from quantlab.runs.backtest_run import BacktestRun
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig
-from quantlab.portfolio.base import PortfolioConstructionError, PortfolioConstructor
+from quantlab.portfolio.base import InputDeclaration, PortfolioConstructionError, PortfolioConstructor
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 from quantlab.factor.config import PolarsFactorConfig
@@ -79,9 +79,8 @@ class Recorder(PortfolioConstructor):
 
     config_cls = RecorderConfig
 
-    @property
-    def lookback_bars(self):
-        return self.config.lookback_bars
+    def declared_inputs(self):
+        return InputDeclaration(lookback_bars=self.config.lookback_bars)
 
     def construct(self, context):
         SEEN.append(context)
@@ -161,9 +160,8 @@ def test_the_first_backtest_bar_has_a_full_return_window(tmp_path):
 class _LongHistoryRecorder(Recorder):
     """A recorder reading 100 raw prices per bar, more than the store holds before the window."""
 
-    @property
-    def history_bars(self):
-        return 100
+    def declared_inputs(self):
+        return InputDeclaration(lookback_bars=self.config.lookback_bars, history_bars=100)
 
 
 def test_the_warm_up_is_the_constructors_history_bars(tmp_path):
@@ -692,7 +690,7 @@ def test_a_factor_risk_decision_reads_the_exposures_store_under_read(tmp_path, m
 
 def test_a_read_exposures_store_not_covering_the_panel_fails(tmp_path):
     backtester = _factor_risk_run(tmp_path, "read")
-    exposures = backtester.config.constructor.required_risk_model().config.exposures
+    exposures = backtester.config.constructor.declared_inputs().risk_model.config.exposures
     bars = xr.open_zarr(exposures.config.dataset.config.zarr_file_path).timestamp.values
     exposures.build(_day(bars[0]), _day(bars[WINDOW[1] - 3]))  # ends before the panel
     with pytest.raises(ValueError, match="does not contain"):
@@ -703,7 +701,7 @@ def test_a_factor_risk_models_exposure_can_be_bounded(tmp_path):
     """A bound on a style exposure reads the risk model's exposures, no factor declared."""
     backtester = _factor_risk_run(tmp_path, "cal", exposure_bounds={"style_a": (-0.1, 0.1)})
     result = backtester.run()
-    assert backtester.config.constructor.required_factors() == []
+    assert backtester.config.constructor.declared_inputs().factors == ()
     assert result.metrics["portfolio_construction"]["failed_bar_count"] == 0
     weights = result.weights["weight"]
     rebalance = np.isfinite(weights.values).all(axis=1)

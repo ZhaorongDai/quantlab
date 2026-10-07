@@ -100,7 +100,7 @@ def test_the_rules_price_history_before_the_window_is_recorded(tmp_path):
     history = [e for e in entries if pd.Timestamp(e["start"]) < window_start]
     assert history, entries
     assert all(e["variables"] == PRICE_COLUMNS for e in history)
-    first = pd.Timestamp(bars[WINDOW[0] - (optimizer.history_bars - 1)])
+    first = pd.Timestamp(bars[WINDOW[0] - (optimizer.declared_inputs().history_bars - 1)])
     assert min(pd.Timestamp(e["start"]) for e in history) == first
 
 

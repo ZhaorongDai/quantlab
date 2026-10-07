@@ -26,12 +26,15 @@ risk, such as a mean-variance optimiser, holds one. It is not a factor risk
 model (``quantlab.risk``), which is estimated ahead as stores; one estimator,
 ``FactorRiskStoreEstimator``, reads those stores: its estimate is the
 model's forecast (``quantlab.risk.base.FactorRiskForecast``), whose
-``factor_form()`` lets an optimiser build a low-rank risk term, and it declares its risk model through
-``required_risk_model()``, whose exposures at the bar the decision inputs
-take from the model itself (read or computed per its
-``exposure_data_strategy``) and put in each bar's context. A covariance
-estimator declares no ``Factor`` panels; a rule does, in
-``required_factors()``.
+``factor_form()`` lets an optimiser build a low-rank risk term, and it
+declares its risk model, whose exposures at the bar the decision inputs take
+from the model itself (read or computed per its ``exposure_data_strategy``)
+and put in each bar's context.
+
+What a rule reads at each bar besides its predictions and holdings is one
+value, its ``InputDeclaration`` (``declared_inputs()``): the return window
+and the prices behind it, the ``Factor`` panels, the factor risk model. A
+rule holding a covariance estimator merges the estimator's into its own.
 
 Shipped rules and covariance estimators live in
 ``quantlab/portfolio/predefined``; this module imports no solver.
@@ -99,9 +102,10 @@ class PortfolioContext:
         nothing is held, all 0.0 before the first rebalance.
     returns : xr.DataArray or None
         The trailing window of one-bar returns ending at the bar, on
-        ``(timestamp, symbol)``, of the rule's ``lookback_bars`` length (no
-        bars for a rule that needs none), read from the rule's last
-        ``history_bars`` raw valuation prices up to and including the bar.
+        ``(timestamp, symbol)``, of the rule's declared ``lookback_bars``
+        length (no bars for a rule that needs none), read from its last
+        declared ``history_bars`` raw valuation prices up to and including
+        the bar.
         Each return is computed from the last valuation price known at its
         bar within those, so a halt shows as zero returns and then the whole
         gap on the bar the symbol trades again; NaN before a symbol's first
@@ -109,17 +113,17 @@ class PortfolioContext:
         context built by hand for a rule that reads none.
     staleness : xr.DataArray or None
         Bars since each symbol's last real valuation price within the
-        rule's last ``history_bars`` bars, on ``symbol``: 0 when it has one
+        rule's last declared ``history_bars`` bars, on ``symbol``: 0 when it has one
         at the bar, NaN when it has none in those bars. ``None`` without
         prices.
     factors : xr.Dataset or None
-        The values at the bar of the ``Factor`` panels the rule declares in
-        ``required_factors()`` (a benchmark beta, for example): one variable
+        The values at the bar of the ``Factor`` panels the rule declares
+        (``InputDeclaration.factors``; a benchmark beta, for example): one variable
         per factor name, on ``symbol``, NaN where a symbol has none.
         ``None`` when the rule declares none.
     risk_exposures : xr.Dataset or None
         The exposures at the bar of the factor risk model the rule declares
-        in ``required_risk_model()``, as ``FactorRiskModel.exposures`` gives
+        (``InputDeclaration.risk_model``), as ``FactorRiskModel.exposures`` gives
         them (read from the exposures factor's store or computed, per the
         model's ``exposure_data_strategy``): its ``exposure_names`` and
         estimation-universe flag, on ``symbol``, NaN where a symbol has
@@ -204,6 +208,102 @@ class Decision:
     weights: xr.DataArray
     failure: str | None = None
     events: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class InputDeclaration:
+    """What a rule reads at each bar besides its predictions and holdings: its decision inputs, declared.
+
+    One value a rule (and a covariance estimator) gives through
+    ``declared_inputs()``; ``DecisionInputs`` builds every context from it
+    alone. A rule holding parts merges their declarations (``merged``).
+
+    Attributes
+    ----------
+    lookback_bars : int
+        Bars of one-bar returns each context's ``returns`` window holds.
+    history_bars : int
+        Raw valuation prices up to and including a bar that its context is
+        built from: the window's prices are forward-filled within these
+        alone, and a symbol without a real price in them has NaN staleness,
+        so a decision does not depend on where the caller's history starts.
+        ``DecisionInputs`` reads the ``history_bars - 1`` bars before a
+        panel as its warm-up. At least ``lookback_bars + 1``, the default
+        (the window's first return needs the price before it).
+    factors : tuple of Factor
+        The ``Factor`` panels whose values at each bar the rule reads from
+        ``context.factors``; each is computed over the window with its own
+        ``warmup_bars``. Any ``Factor`` qualifies (KunQuant, Polars, a plain
+        one such as a one-hot industry exposure).
+    risk_model : FactorRiskModel or None
+        The factor risk model whose exposures at each bar the rule reads
+        from ``context.risk_exposures``, taken from the model
+        (``FactorRiskModel.exposures``), never computed as a factor.
+
+    Raises
+    ------
+    ValueError
+        If ``lookback_bars`` is negative or ``history_bars`` below
+        ``lookback_bars + 1``.
+
+    Examples
+    --------
+    >>> InputDeclaration(lookback_bars=60).history_bars
+    61
+    >>> InputDeclaration(lookback_bars=60, history_bars=66).merged(
+    ...     InputDeclaration(lookback_bars=20)
+    ... ).history_bars
+    66
+    """
+
+    lookback_bars: int = 0
+    history_bars: int | None = None
+    factors: "tuple[Factor, ...]" = ()
+    risk_model: "FactorRiskModel | None" = None
+
+    def __post_init__(self):
+        """Default ``history_bars`` to ``lookback_bars + 1`` and check both."""
+        if self.lookback_bars < 0:
+            raise ValueError(f"lookback_bars must be >= 0, got {self.lookback_bars}")
+        if self.history_bars is None:
+            object.__setattr__(self, "history_bars", self.lookback_bars + 1)
+        if self.history_bars < self.lookback_bars + 1:
+            raise ValueError(
+                f"history_bars must be at least lookback_bars + 1 = {self.lookback_bars + 1}, "
+                f"got {self.history_bars}"
+            )
+        object.__setattr__(self, "factors", tuple(self.factors))
+
+    def merged(self, other: "InputDeclaration") -> "InputDeclaration":
+        """Return the declaration of what either reads.
+
+        The longer window and price history, the factors of both (one
+        declared by both is listed once), and the risk model either names.
+
+        Raises
+        ------
+        ValueError
+            If both name a risk model and they differ.
+
+        Examples
+        --------
+        >>> InputDeclaration(lookback_bars=5).merged(InputDeclaration(lookback_bars=9)).lookback_bars
+        9
+        """
+        factors = list(self.factors)
+        for factor in other.factors:
+            if not any(factor == mine for mine in factors):
+                factors.append(factor)
+        if self.risk_model is not None and other.risk_model is not None and not (
+            self.risk_model == other.risk_model
+        ):
+            raise ValueError("two different factor risk models are declared; a rule reads one")
+        return InputDeclaration(
+            lookback_bars=max(self.lookback_bars, other.lookback_bars),
+            history_bars=max(self.history_bars, other.history_bars),
+            factors=tuple(factors),
+            risk_model=self.risk_model if self.risk_model is not None else other.risk_model,
+        )
 
 
 class _Configured(Component):
@@ -356,7 +456,7 @@ class CovarianceEstimator(_Configured, ABC):
     a rule scales it to its own horizon.
 
     An estimator reading a factor risk model declares it in
-    ``required_risk_model()``; the decision inputs take the model's
+    ``declared_inputs()``; the decision inputs take the model's
     exposures from the model itself (``FactorRiskModel.exposures``, so a
     decision, the model's stores, attribution and bias statistics share one
     source) and put their values at the bar in ``context.risk_exposures``.
@@ -374,52 +474,25 @@ class CovarianceEstimator(_Configured, ABC):
     >>> from quantlab.portfolio.config import LedoitWolfEstimatorConfig
     >>> from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
     >>> risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=60))
-    >>> isinstance(risk, CovarianceEstimator), risk.lookback_bars
+    >>> isinstance(risk, CovarianceEstimator), risk.declared_inputs().lookback_bars
     (True, 60)
     """
 
-    @property
-    def lookback_bars(self) -> int:
-        """Bars of one-bar returns ``estimate`` reads, ending at the bar.
+    def declared_inputs(self) -> InputDeclaration:
+        """What ``estimate`` reads from a context: its return window, its risk model.
 
-        ``config.lookback_bars`` when the config has one, else 0.
+        By default a ``lookback_bars``-bar return window when the config has
+        a ``lookback_bars`` field (none otherwise), from ``lookback_bars +
+        1`` prices. A model whose coverage reads staleness reaches further
+        back (``LedoitWolfEstimator``); one reading a factor risk model
+        declares it (``FactorRiskStoreEstimator``).
 
         Examples
         --------
-        >>> risk.lookback_bars
+        >>> risk.declared_inputs().lookback_bars
         60
         """
-        return int(getattr(self._config, "lookback_bars", 0))
-
-    @property
-    def history_bars(self) -> int:
-        """Raw valuation prices up to and including a bar that the model reads there.
-
-        ``lookback_bars + 1`` by default: the last price before the window
-        seeds its first return. A model whose coverage reads staleness
-        reaches further back (see ``LedoitWolfEstimator``).
-
-        Examples
-        --------
-        >>> risk.history_bars
-        66
-        """
-        return self.lookback_bars + 1
-
-    def required_risk_model(self) -> "FactorRiskModel | None":
-        """The factor risk model whose exposures ``estimate`` reads from ``context.risk_exposures``.
-
-        The decision inputs take the exposures from the model
-        (``FactorRiskModel.exposures``), which reads its exposures factor's
-        store or computes it per ``exposure_data_strategy``. ``None`` by
-        default.
-
-        Examples
-        --------
-        >>> risk.required_risk_model() is None
-        True
-        """
-        return None
+        return InputDeclaration(lookback_bars=int(getattr(self._config, "lookback_bars", 0)))
 
     @abstractmethod
     def estimate(
@@ -453,12 +526,10 @@ class PortfolioConstructor(_Configured, ABC):
 
     Subclass it, set ``config_cls`` to a dataclass of the rule's parameters
     and implement ``construct``; override ``bind`` to check the label specs
-    and read what the rule needs from them, ``lookback_bars`` when the rule
-    reads a return window, ``history_bars`` when it reads more raw prices
-    than ``lookback_bars + 1``, ``required_factors`` when it reads
-    factor panels and ``required_risk_model`` when it reads a factor risk
-    model's exposures. ``decide`` makes the one-bar decision on a
-    context ``DecisionInputs`` assembles.
+    and read what the rule needs from them, and ``declared_inputs`` when it
+    reads a return window, factor panels or a factor risk model's exposures.
+    ``decide`` makes the one-bar decision on a context ``DecisionInputs``
+    assembles.
     ``get_config`` and ``from_config`` serialise the rule as its config's
     fields plus the class's import path under ``"name"``, which a
     backtest's ``config.json`` records.
@@ -482,69 +553,21 @@ class PortfolioConstructor(_Configured, ABC):
     (True, 2)
     """
 
-    @property
-    def lookback_bars(self) -> int:
-        """Bars of one-bar returns each context's ``returns`` window holds.
+    def declared_inputs(self) -> InputDeclaration:
+        """What the rule reads at each bar besides its predictions and holdings.
 
-        It sets the default ``history_bars``, the prices a context is built
-        from. 0 by default.
-
-        Examples
-        --------
-        >>> rule.lookback_bars
-        0
-        """
-        return 0
-
-    @property
-    def history_bars(self) -> int:
-        """Raw valuation prices up to and including a bar that each context there is built from.
-
-        A context's ``returns`` and ``staleness`` read only these: the
-        prices are forward-filled within this window alone, and a symbol
-        without a real price in it has NaN staleness, so a decision does not
-        depend on the first bar of the caller's history, however far back it
-        goes. ``DecisionInputs`` reads the ``history_bars - 1`` bars before
-        a panel as its warm-up.
-        ``lookback_bars + 1`` by default (the window's first return needs
-        the price before it).
+        ``DecisionInputs`` builds each context from it: the return window
+        and the prices behind it, the factors' values and the risk model's
+        exposures. None of them by default; a rule holding a covariance
+        estimator declares the estimator's, merged with its own
+        (``InputDeclaration.merged``).
 
         Examples
         --------
-        >>> rule.history_bars
-        1
+        >>> rule.declared_inputs()
+        InputDeclaration(lookback_bars=0, history_bars=1, factors=(), risk_model=None)
         """
-        return self.lookback_bars + 1
-
-    def required_factors(self) -> list["Factor"]:
-        """The ``Factor`` panels whose values at each bar the rule reads from ``context.factors``.
-
-        Any ``Factor`` qualifies (KunQuant, Polars, or a plain one such as
-        a one-hot industry exposure). The backtest computes each over its
-        window, the factor's own ``warmup_bars`` before it included, and
-        slices it per bar. Empty by default.
-
-        Examples
-        --------
-        >>> rule.required_factors()
-        []
-        """
-        return []
-
-    def required_risk_model(self) -> "FactorRiskModel | None":
-        """The factor risk model whose exposures at each bar the rule reads from ``context.risk_exposures``.
-
-        The decision inputs take them from the model
-        (``FactorRiskModel.exposures``), never from ``required_factors()``.
-        ``None`` by default; a rule holding a covariance estimator declares
-        the covariance estimator's.
-
-        Examples
-        --------
-        >>> rule.required_risk_model() is None
-        True
-        """
-        return None
+        return InputDeclaration()
 
     def bind(self, labels: Sequence[LabelSpec]) -> None:
         """Check the label specs and read from them what the rule needs.

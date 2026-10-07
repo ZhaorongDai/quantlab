@@ -806,6 +806,115 @@ class FactorRiskModel(Component, ABC):
             specific_variance=specific[index] ** 2,
         )
 
+    def require_window(self, timestamps, forecasts_through=None) -> None:
+        """Refuse bars the stores cannot serve: the outcome and forecast rows of ``forecast_window``.
+
+        Reads lazily, so it is cheap enough to call before a backtest
+        simulates.
+
+        Parameters
+        ----------
+        timestamps : array-like of datetime64
+            The bars, in order.
+        forecasts_through : datetime-like, optional
+            The last bar whose forecast is needed; every bar before the last
+            by default.
+
+        Raises
+        ------
+        ValueError
+            If the regression store does not cover the bars, or the estimate
+            store the forecast bars (``RiskStore.read``).
+
+        Examples
+        --------
+        >>> model.require_window(bars)  # stores built over the bars
+        """
+        timestamps = pd.DatetimeIndex(timestamps)
+        if not len(timestamps):
+            return
+        self.regression.read(timestamps[0], timestamps[-1])
+        forecast = self._forecast_bars(timestamps, forecasts_through)
+        if len(forecast):
+            self.estimate.read(forecast[0], forecast[-1])
+
+    def forecast_window(self, timestamps, forecasts_through=None) -> xr.Dataset:
+        """Return each bar's outcome beside the forecast inputs of the bar before it.
+
+        Row ``i`` holds the regression store's ``factor_return`` and
+        ``specific_return`` of ``timestamps[i]``, and, of ``timestamps[i -
+        1]``: the estimate store's ``factor_covariance`` and
+        ``specific_risk``, the exposures (``exposures``), the risk-free rate
+        (``risk_free``) and market cap (``market_cap``) from ``prices``, and
+        ``estimation_universe`` (the estimation-universe flag, every symbol
+        without ``estu_name``). That is the forecast made at the bar before
+        and what the bar then did. Row 0 has no forecast inputs (NaN). A row
+        is what ``forecast`` reads, as both its arguments.
+
+        Parameters
+        ----------
+        timestamps : array-like of datetime64
+            Consecutive bars, in order: a backtest's, or the regression
+            store's.
+        forecasts_through : datetime-like, optional
+            The last bar whose forecast is needed: the estimate rows after it
+            are not read (NaN), so the estimate store need not reach the
+            outcomes of a multi-bar horizon. Every bar before the last by
+            default.
+
+        Returns
+        -------
+        xr.Dataset
+            On ``timestamps``, ``symbol``, ``factor`` and ``factor_i``/``factor_j``.
+
+        Raises
+        ------
+        ValueError
+            As ``require_window``, or if the exposures or prices do not cover
+            the bars before the last.
+
+        Examples
+        --------
+        >>> window = model.forecast_window(bars)
+        >>> forecast = model.forecast(window.isel(timestamp=5), window.isel(timestamp=5))
+        """
+        timestamps = pd.DatetimeIndex(timestamps)
+        self.require_window(timestamps, forecasts_through)
+        config = self.config
+        regression = self.regression.read(timestamps[0], timestamps[-1])
+        window = regression[["factor_return", "specific_return"]].reindex(timestamp=timestamps)
+        if len(timestamps) < 2:
+            return window.load()
+        before = timestamps[:-1]
+        parts = []
+        forecast = self._forecast_bars(timestamps, forecasts_through)
+        if len(forecast):
+            estimate = self.estimate.read(forecast[0], forecast[-1])
+            parts.append(estimate[["factor_covariance", "specific_risk"]].reindex(timestamp=before))
+        exposures = self.exposures(before[0], before[-1]).reindex(timestamp=before)
+        prices = self.prices(before[0], before[-1]).reindex(timestamp=before)
+        universe = (
+            exposures[config.estu_name] == 1.0
+            if config.estu_name is not None
+            else xr.ones_like(prices[config.market_cap_column], dtype=bool)
+        )
+        parts += [
+            exposures.drop_vars([config.estu_name] if config.estu_name is not None else []),
+            prices[config.risk_free_column].rename("risk_free"),
+            prices[config.market_cap_column].rename("market_cap"),
+            universe.rename("estimation_universe"),
+        ]
+        inputs = xr.merge(parts, join="outer").assign_coords(timestamp=timestamps[1:])
+        return xr.merge([window, inputs], join="outer").reindex(timestamp=timestamps).load()
+
+    @staticmethod
+    def _forecast_bars(timestamps: pd.DatetimeIndex, forecasts_through) -> pd.DatetimeIndex:
+        """Return the bars of ``timestamps`` whose forecast a window reads."""
+        before = timestamps[:-1]
+        if forecasts_through is None:
+            return before
+        return before[before <= pd.Timestamp(forecasts_through)]
+
     def factor_groups(self) -> dict[str, str]:
         """Return each factor's group, one of ``FACTOR_GROUPS``, keyed by factor name.
 

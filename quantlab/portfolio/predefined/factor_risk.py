@@ -12,16 +12,16 @@ mean-variance optimiser turns into a low-rank risk term.
 import pandas as pd
 import xarray as xr
 
-from quantlab.portfolio.base import CovarianceEstimator, PortfolioContext
+from quantlab.portfolio.base import CovarianceEstimator, InputDeclaration, PortfolioContext
 from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig
-from quantlab.risk.base import FactorRiskForecast, FactorRiskModel
+from quantlab.risk.base import FactorRiskForecast
 
 
 class FactorRiskStoreEstimator(CovarianceEstimator):
     """The covariance at a bar from a factor risk model's estimate store.
 
-    ``required_risk_model()`` is the factor risk model, so the decision
-    inputs take its exposures from it (``FactorRiskModel.exposures``: the
+    It declares the factor risk model (``declared_inputs()``), so the
+    decision inputs take its exposures from it (``FactorRiskModel.exposures``: the
     exposures factor's store under ``exposure_data_strategy="read"``,
     computed under ``"cal"``), exactly as its stores, factor attribution and
     bias statistics do, and hand their values at the bar in
@@ -46,7 +46,7 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
     a backtest's context at a bar inside them:
 
     >>> risk = FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=use4))
-    >>> risk.required_risk_model() is use4
+    >>> risk.declared_inputs().risk_model is use4
     True
     >>> estimate = risk.estimate(context)
     >>> exposures, factor_covariance, specific_variance = estimate.factor_form()
@@ -56,15 +56,15 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
 
     config_cls = FactorRiskStoreEstimatorConfig
 
-    def required_risk_model(self) -> FactorRiskModel:
-        """The factor risk model, whose exposures ``estimate`` reads from ``context.risk_exposures``.
+    def declared_inputs(self) -> InputDeclaration:
+        """The factor risk model, whose exposures ``estimate`` reads from ``context.risk_exposures``; no return window.
 
         Examples
         --------
-        >>> risk.required_risk_model() is use4
+        >>> risk.declared_inputs().risk_model is use4
         True
         """
-        return self.config.risk_model
+        return InputDeclaration(risk_model=self.config.risk_model)
 
     def estimate(
         self, context: PortfolioContext, volatility: xr.DataArray | None = None
@@ -107,7 +107,7 @@ class FactorRiskStoreEstimator(CovarianceEstimator):
         if context.risk_exposures is None:
             raise ValueError(
                 f"{type(self).__name__}: the context has no risk exposures; the decision "
-                f"inputs take them from required_risk_model()."
+                f"inputs take them from the declared risk model."
             )
         model = self.config.risk_model
         return model.forecast(

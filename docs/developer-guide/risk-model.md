@@ -73,8 +73,21 @@ config: its industries are named by their Fama-French 48 names and its
 styles without the `style_` prefix. The USE4 method
 lives entirely in `Use4RiskModel`.
 
-A portfolio rule reads the estimate store through
-`FactorRiskStoreEstimator` (see [Portfolio construction](../portfolio.md#factor-form-reading-a-factor-risk-model)).
+`forecast(row, exposures)` turns one estimate row and the exposures at
+that bar into a `FactorRiskForecast`, `B F B' + diag(D)` over the symbols it
+covers, with a book's exposures, variance and x-sigma-rho contributions. It
+is the one coverage rule: a symbol with every exposure and a specific risk,
+not exposed to a factor without a covariance at the bar (`covered_factors`).
+A portfolio rule reads it through `FactorRiskStoreEstimator` (see
+[Portfolio construction](../portfolio.md#factor-form-reading-a-factor-risk-model)),
+and factor attribution and the random portfolios of the bias statistics
+build it too. `forecast_window(timestamps)` reads, for consecutive bars,
+each bar's factor and specific returns beside the forecast inputs of the
+bar before it (estimate row, exposures, risk-free rate, market cap,
+estimation universe); factor attribution and the bias statistics read it,
+the latter with `forecasts_through` so the estimate store need only reach
+the last forecast bar. `require_window(timestamps)` checks the stores cover
+them, as a backtest does before it simulates.
 
 ## The regression
 

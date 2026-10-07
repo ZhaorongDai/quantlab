@@ -18,7 +18,7 @@ from quantlab.core.component import rebuild
 from quantlab.dataset.memory import FrameDataset
 from quantlab.factor.config import BenchmarkBetaConfig
 from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
-from quantlab.portfolio.base import PortfolioConstructionError
+from quantlab.portfolio.base import InputDeclaration, PortfolioConstructionError
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
 from quantlab.risk.base import FactorRiskForecast
@@ -152,7 +152,7 @@ def test_two_different_declared_factors_with_one_output_name_are_refused():
 
 def test_the_rule_declares_its_exposure_factors():
     beta = _beta()
-    assert _optimizer(exposure_factors=(beta,), exposure_bounds={"beta": (0.9, 1.1)}).required_factors() == [beta]
+    assert _optimizer(exposure_factors=(beta,), exposure_bounds={"beta": (0.9, 1.1)}).declared_inputs().factors == (beta,)
 
 
 def test_the_optimizer_round_trips_through_its_config_with_its_exposure_factors(tmp_path):
@@ -160,7 +160,7 @@ def test_the_optimizer_round_trips_through_its_config_with_its_exposure_factors(
     optimizer = _optimizer(exposure_factors=(beta,), exposure_bounds={"beta": (0.9, 1.1)})
     again = rebuild(optimizer.get_config())
     assert again.config.exposure_bounds == {"beta": (0.9, 1.1)}
-    assert again.required_factors()[0].get_config() == beta.get_config()
+    assert again.declared_inputs().factors[0].get_config() == beta.get_config()
 
 
 class _RiskModel:
@@ -175,8 +175,8 @@ class _WithRiskModel(LedoitWolfEstimator):
     The last symbol is not covered; ``market`` has no covariance at the bar.
     """
 
-    def required_risk_model(self):
-        return _RiskModel()
+    def declared_inputs(self):
+        return super().declared_inputs().merged(InputDeclaration(risk_model=_RiskModel()))
 
     def estimate(self, context, volatility=None):
         dense = super().estimate(context, volatility)
@@ -199,7 +199,7 @@ def test_a_factor_of_the_risk_model_can_be_bounded_without_declaring_a_factor():
         covariance=_WithRiskModel(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK)),
         exposure_bounds={"beta": (0.9, 1.1)},
     )
-    assert optimizer.required_factors() == []
+    assert optimizer.declared_inputs().factors == ()
     weights = optimizer.construct(_context(prediction=PREDICTION))
     assert 0.9 - 1e-6 <= _exposure(weights, EXPOSURE) <= 1.1 + 1e-6
     # The uncovered symbol has no exposure, so it gets no weight.

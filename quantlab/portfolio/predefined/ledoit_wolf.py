@@ -6,20 +6,19 @@ identity with the Ledoit-Wolf coefficient, so the estimate stays well
 conditioned when there are more symbols than bars. The shrunk covariance is
 split into correlations and volatilities, and the volatilities can be
 replaced by given ones (a model's forecast) before it is put back together.
-The estimate itself is ``quantlab.risk.predefined.ledoit_wolf``'s
-``ledoit_wolf_covariance``; this module decides which symbols a bar covers.
 """
 
 import numpy as np
 import xarray as xr
+from sklearn.covariance import ledoit_wolf
 
 from quantlab.portfolio.base import (
     CovarianceEstimate,
     CovarianceEstimator,
+    InputDeclaration,
     PortfolioContext,
 )
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig
-from quantlab.risk.predefined.ledoit_wolf import ledoit_wolf_covariance
 
 
 class LedoitWolfEstimator(CovarianceEstimator):
@@ -31,9 +30,10 @@ class LedoitWolfEstimator(CovarianceEstimator):
     carries one); the others have too little history, no measurable risk or
     no recent price, and are left out of the estimate. A halt inside the
     window shows as zero returns and then the gap, so a short one keeps the
-    symbol covered. The estimate is ``ledoit_wolf_covariance`` of the
-    covered symbols' window: their sample covariance shrunk with the
-    Ledoit-Wolf coefficient, converted to correlations ``C`` and scaled back
+    symbol covered. The estimate is the covered symbols' sample covariance
+    (of the demeaned window, divided by ``T``) shrunk toward a scaled
+    identity with the Ledoit-Wolf (2004) coefficient
+    (``sklearn.covariance.ledoit_wolf``), converted to correlations ``C`` and scaled back
     by volatilities ``D``, the given ones where ``volatility`` is passed (a
     symbol without a finite positive one is left out), else the shrunk
     covariance's own. It is ``D C D``, of one-bar returns; ``factor_form()``
@@ -99,21 +99,24 @@ class LedoitWolfEstimator(CovarianceEstimator):
                 f"max_stale_bars must be >= 0, got {config.max_stale_bars}"
             )
 
-    @property
-    def history_bars(self) -> int:
-        """``lookback_bars + 1 + max_stale_bars``: the window plus its seed, reaching past the longest tolerated halt.
+    def declared_inputs(self) -> InputDeclaration:
+        """A ``lookback_bars`` return window from ``lookback_bars + 1 + max_stale_bars`` prices.
 
         A symbol is covered with a staleness of at most ``max_stale_bars``,
-        so its last real price before such a halt still falls in the bars
+        so its last real price before such a halt still falls in the prices
         read, and its return window is forward-filled as with an unbounded
         history.
 
         Examples
         --------
-        >>> risk.history_bars  # 60 + 1 + 5
+        >>> risk.declared_inputs().history_bars  # 60 + 1 + 5
         66
         """
-        return self.config.lookback_bars + 1 + self.config.max_stale_bars
+        config = self.config
+        return InputDeclaration(
+            lookback_bars=config.lookback_bars,
+            history_bars=config.lookback_bars + 1 + config.max_stale_bars,
+        )
 
     def estimate(
         self, context: PortfolioContext, volatility: xr.DataArray | None = None
@@ -169,7 +172,21 @@ class LedoitWolfEstimator(CovarianceEstimator):
         if index.size == 0:
             return CovarianceEstimate(symbols=symbols[:0], covariance=np.empty((0, 0)))
 
-        covariance = ledoit_wolf_covariance(
+        covariance = _shrunk_covariance(
             window[:, index], None if volatility is None else given[index]
         )
         return CovarianceEstimate(symbols=symbols[index], covariance=covariance)
+
+
+def _shrunk_covariance(returns: np.ndarray, volatility: np.ndarray | None) -> np.ndarray:
+    """Return ``D C D``: the Ledoit-Wolf shrunk correlations ``C`` of ``returns`` scaled by ``D``.
+
+    ``returns`` is ``[T, N]``, every value finite and no column constant;
+    ``D`` is ``volatility`` when given (finite and positive), else the
+    shrunk covariance's own volatilities.
+    """
+    shrunk, _ = ledoit_wolf(returns)
+    sd = np.sqrt(np.diag(shrunk))
+    correlation = shrunk / np.outer(sd, sd)
+    scale = sd if volatility is None else volatility
+    return correlation * np.outer(scale, scale)

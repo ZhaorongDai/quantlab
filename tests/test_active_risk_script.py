@@ -4,7 +4,7 @@ What is locked here, and what turns it red:
 
 - The script loads by path and its ``ActiveRiskOptimizer`` subclasses
   ``MeanVarianceOptimizer`` through its documented extension points only
-  (``required_factors``, ``reference_weights``, ``risk_constraints``).
+  (``declared_inputs``, ``reference_weights``, ``risk_constraints``).
 - On a hand-built bar, a large risk aversion holds the book at the
   benchmark, and a tracking-error cap holds the forecast active volatility
   under it however strong the predictions; a benchmark symbol the
@@ -104,12 +104,12 @@ def _active_volatility(rule, context, weights, benchmark=BENCHMARK) -> float:
 def test_the_rule_is_a_mean_variance_optimizer_on_its_extension_points(active_risk):
     rule = _hand_rule(active_risk)
     assert isinstance(rule, MeanVarianceOptimizer)
-    assert rule.required_factors() == [rule.config.benchmark]
+    assert rule.declared_inputs().factors == (rule.config.benchmark,)
     overridden = {
         name for name, value in vars(active_risk.ActiveRiskOptimizer).items()
         if callable(value) and name != "config_cls"
     }
-    assert overridden == {"__init__", "required_factors", "reference_weights", "risk_constraints"}
+    assert overridden == {"__init__", "declared_inputs", "reference_weights", "risk_constraints"}
     with pytest.raises(ValueError, match="benchmark factor"):
         _hand_rule(active_risk, benchmark=None)
     with pytest.raises(ValueError, match="tracking_error"):

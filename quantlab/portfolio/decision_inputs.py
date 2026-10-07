@@ -10,7 +10,9 @@ executor alike, so a rule holds no assembly code and only decides
 (``PortfolioConstructor.construct`` / ``decide``).
 
 Each bar reads a bounded window: the last ``history_bars`` raw valuation
-prices up to and including it, a number the rule declares. The return
+prices up to and including it, a number the rule declares. What a rule
+reads is one value, its ``InputDeclaration`` (``declared_inputs()``), asked
+once. The return
 window is forward-filled within it and a symbol's staleness counted within
 it, so a decision depends only on what is known at its bar, never on where
 a longer price history starts.
@@ -28,8 +30,8 @@ read through ``quantlab.runs.backtest_run.BacktestRun``.
 A factor risk model's exposures are taken from the model
 (``FactorRiskModel.exposures``: its exposures factor's store under
 ``exposure_data_strategy="read"``, computed under ``"cal"``), the source its
-stores, factor attribution and bias statistics read, never from
-``required_factors()``.
+stores, factor attribution and bias statistics read, never computed as a
+declared factor.
 
 This module imports the portfolio and data base classes, the Execution
 module and the backtest-run reader, never the backtest, model, factor or
@@ -263,6 +265,8 @@ class DecisionInputs:
             raise ValueError(f"rebalance_periods must be >= 1, got {rebalance_periods}")
         self.dataset = dataset
         self.constructor = constructor
+        # What the rule reads at each bar, asked once: every context is built from it.
+        self.declared = constructor.declared_inputs()
         self.fill_column = fill_column
         self.valuation_column = valuation_column
         self.rebalance_periods = int(rebalance_periods)
@@ -381,9 +385,9 @@ class DecisionInputs:
         ``history_bars - 1`` bars before the panel's first bar to its last
         (a warning names the shortfall when the dataset holds fewer, and the
         first windows are short), the tradability (``tradable_bars``) of the
-        panel's bars, the rule's ``required_factors()`` over the panel,
+        panel's bars, the rule's declared factors over the panel,
         each with its own warm-up, and the exposures of its
-        ``required_risk_model()`` over the panel, in one request. It then
+        declared risk model over the panel, in one request. It then
         loops ``decide`` over the rebalance bars in time order. Each bar's
         context holds its predictions, its tradability, the return window
         and staleness of its last ``history_bars`` valuation prices, its
@@ -481,7 +485,7 @@ class DecisionInputs:
             marks,
             self.execution,
         )
-        history_bars = self.constructor.history_bars
+        history_bars = self.declared.history_bars
 
         weights = np.full((len(timestamps), len(symbols)), np.nan)
         failed = []
@@ -611,7 +615,7 @@ class DecisionInputs:
         """
         symbols = predictions.symbol.values
         returns, staleness = _price_window(
-            valuation_price, self.constructor.history_bars, self.constructor.lookback_bars
+            valuation_price, self.declared.history_bars, self.declared.lookback_bars
         )
         return PortfolioContext(
             timestamp=timestamp,
@@ -648,7 +652,7 @@ class DecisionInputs:
         On ``symbols`` (NaN where the dataset has none). With ``warn``, a
         shortfall of bars before ``first`` is reported once.
         """
-        warmup = self.constructor.history_bars - 1
+        warmup = self.declared.history_bars - 1
         try:
             start = self.dataset.bar_before(first, warmup)
         except InsufficientHistoryError as exc:
@@ -670,12 +674,12 @@ class DecisionInputs:
         )
 
     def _factor_panels(self, first: pd.Timestamp, last: pd.Timestamp, symbols) -> xr.Dataset | None:
-        """Return the rule's ``required_factors()`` from ``first`` to ``last`` on ``symbols``, or None.
+        """Return the rule's declared factors from ``first`` to ``last`` on ``symbols``, or None.
 
         Each factor is computed with ``Factor.compute``, which reads its own
         warm-up before ``first``. Refused: values lacking a declared name.
         """
-        factors = self.constructor.required_factors()
+        factors = self.declared.factors
         if not factors:
             return None
         panels = xr.merge([factor.compute(first, last) for factor in factors], join="outer")
@@ -689,14 +693,14 @@ class DecisionInputs:
         return panels.transpose(*_DIMS).reindex(symbol=symbols)
 
     def _risk_exposures(self, first: pd.Timestamp, last: pd.Timestamp, symbols) -> xr.Dataset | None:
-        """Return the exposures of the rule's ``required_risk_model()`` from ``first`` to ``last`` on ``symbols``, or None.
+        """Return the exposures of the rule's declared risk model from ``first`` to ``last`` on ``symbols``, or None.
 
         One ``FactorRiskModel.exposures`` request, which reads the exposures
         factor's store or computes it per the model's
         ``exposure_data_strategy``; a symbol the model has no exposures for
         is NaN.
         """
-        model = self.constructor.required_risk_model()
+        model = self.declared.risk_model
         if model is None:
             return None
         return model.exposures(first, last).transpose(*_DIMS).reindex(symbol=symbols)

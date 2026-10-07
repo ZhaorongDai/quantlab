@@ -40,13 +40,8 @@ class _Watch(PortfolioConstructor):
     config_cls = LedoitWolfEstimatorConfig
     seen: list = []
 
-    @property
-    def lookback_bars(self):
-        return self.config.lookback_bars
-
-    @property
-    def history_bars(self):
-        return LedoitWolfEstimator(self.config).history_bars
+    def declared_inputs(self):
+        return LedoitWolfEstimator(self.config).declared_inputs()
 
     def construct(self, context):
         type(self).seen.append(context)
@@ -92,15 +87,15 @@ def test_history_bars_is_declared_by_the_rule():
     risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK, max_stale_bars=MAX_STALE))
     optimizer = MeanVarianceOptimizer(MeanVarianceConfig(expected_return_label="ret", covariance=risk, risk_aversion=5.0, ic=0.05))
 
-    assert TopNConstructor(TopNConfig(direction="long_only", top_n=2)).history_bars == 1
-    assert risk.history_bars == LOOKBACK + 1 + MAX_STALE
-    assert optimizer.history_bars == LOOKBACK + 1 + MAX_STALE
+    assert TopNConstructor(TopNConfig(direction="long_only", top_n=2)).declared_inputs().history_bars == 1
+    assert risk.declared_inputs().history_bars == LOOKBACK + 1 + MAX_STALE
+    assert optimizer.declared_inputs().history_bars == LOOKBACK + 1 + MAX_STALE
 
 
 @pytest.mark.parametrize("t", [30, 42, 46, 47, 50, 56, 60, 79])
 def test_context_ignores_where_the_history_starts(t):
     prices, rule = _prices(), _rule()
-    shortest = t + 1 - rule.history_bars
+    shortest = t + 1 - rule.declared_inputs().history_bars
     contexts = [_build(rule, prices, t, start) for start in (0, shortest // 2, shortest)]
 
     for other in contexts[1:]:
@@ -117,7 +112,7 @@ def _panel(prices, start):
 
 def test_weights_ignore_where_the_history_starts():
     prices = _prices()
-    shortest = 30 - _rule().history_bars + 1
+    shortest = 30 - _rule().declared_inputs().history_bars + 1
     full, cut = _panel(prices, 0), _panel(prices, shortest)
 
     assert len(full) == len(cut) == N - 30 - 1  # the last bar never rebalances
@@ -162,7 +157,7 @@ def test_mean_variance_reads_its_covariance_estimators_window():
     rule.bind([LabelSpec(name="ret_5", scale="raw", delay=1, span=5)])
     prices = _prices()
     t = 60
-    shortest = t + 1 - rule.history_bars
+    shortest = t + 1 - rule.declared_inputs().history_bars
     a = _build(rule, prices, t, 0)
     b = _build(rule, prices, t, shortest)
 

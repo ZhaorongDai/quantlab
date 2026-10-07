@@ -21,7 +21,7 @@ import pytest
 import xarray as xr
 
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig
-from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
+from quantlab.portfolio.base import InputDeclaration, PortfolioConstructor, PortfolioContext
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs
 from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
@@ -35,9 +35,8 @@ class _Watch(PortfolioConstructor):
     config_cls = LedoitWolfEstimatorConfig
     seen: list = []
 
-    @property
-    def lookback_bars(self):
-        return self.config.lookback_bars
+    def declared_inputs(self):
+        return InputDeclaration(lookback_bars=self.config.lookback_bars)
 
     def construct(self, context):
         type(self).seen.append(context)

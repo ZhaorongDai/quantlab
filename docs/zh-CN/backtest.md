@@ -240,7 +240,7 @@ ValueError: USEquityCrossectionSelectStockVectorBt: labels[0] Forward ('open_ret
 
 模型的因子需要 `start_date` 之前的历史。回测器按日期范围向每个因子请求窗口：`"cal"` 策略下调用 `compute(start_date, end_date)`，`"read"` 策略下调用 `read(start_date, end_date)`。计算型因子会在 `start_date` 之前读取自身的 `warmup_bars` 根 bar，按其数据集自己的日历计数，而不是按日历天数。因此回测与对同一窗口单独调用 `compute` 得到的因子值相同。数据集中的 bar 不够时，因子从第一根 bar 开始计算，并发出一条给出 bar 缺口数的 `UserWarning`。回测不修改任何数据集、因子或标签的 config，所以价格数据集可以与某个因子的数据集是同一个对象。预测恰好覆盖窗口内的 bar；没有预测的价格标的分数为 NaN，不会被选中。
 
-组合构建规则也有自己的预热：每根 bar 读取最近 `history_bars` 个原始估值价格（见[组合构建](portfolio.md#在回测中)），所以 `DecisionInputs` 会在 `start_date` 之前读取 `history_bars - 1` 根价格 bar，按价格数据集的日历计数；数据集中的 bar 不够时同样发出 `UserWarning`。规则的 `required_factors()` 在窗口上计算，与模型的因子一样各带自己的 `warmup_bars`；规则的 `required_risk_model()` 的暴露由模型按其 `exposure_data_strategy` 读取或计算。
+组合构建规则也有自己的预热：每根 bar 读取最近 `history_bars` 个原始估值价格（见[组合构建](portfolio.md#在回测中)），所以 `DecisionInputs` 会在 `start_date` 之前读取 `history_bars - 1` 根价格 bar，按价格数据集的日历计数；数据集中的 bar 不够时同样发出 `UserWarning`。规则声明的因子（`declared_inputs()`）在窗口上计算，与模型的因子一样各带自己的 `warmup_bars`；规则声明的风险模型的暴露由模型按其 `exposure_data_strategy` 读取或计算。
 
 ### 样本内与样本外
 
@@ -562,7 +562,7 @@ bool(np.allclose(per_bar["contribution"].sum("term"), attributed.simulation.retu
 
 **单位。** 每根 bar 的各项都乘以 `ln(1+r)/r`（收益 `r` 为 0 时乘 1），所以各项的累计和在每根 bar 上都加总为对数净值，而且任何一根 bar 的数值都不依赖它之后的 bar。指标给出每项的年化对数增长，与[超额归因](#超额归因)同一单位：`annualized_log_return` 按项给出并带 `total`，`factor_annualized_log_return` 按因子，`group_annualized_log_return` 按组。组来自风险模型的 `factor_groups()`：`country`、`industry` 和 `style`（模型不另说明时每个因子都算 style；`Use4RiskModel` 会把国家因子、各行业和各风格分开），各组加起来等于 `factor` 项。`style_mean_exposure` 是每个风格的平均净暴露，`industries` 是按贡献排前五和后五的行业及其平均净暴露。
 
-**风险。** `ex_ante_risk` 对 bar 开始时组合的预测风险做归因。对第 t 根 bar 的预测取估计 store 中 t-1 那一行：记 `x` 为被覆盖持仓在有协方差的因子上的净暴露，`F` 为因子协方差，`s` 为特异风险，方差为 `x'Fx + sum w^2 s^2`。每个因子的 x-sigma-rho 贡献 `x_k (Fx)_k / sigma` 加上特异部分等于 `sigma`。这个块给出年化 `volatility`（`total`、`factor`、`specific`）、`contribution` 拆分以及每个因子和每组贡献在各分段上的均值。未被覆盖的持仓不进入预测，只体现在覆盖率里。`ex_post_risk` 拆的则是实现波动率：每项、每个因子和每组在该分段逐 bar 贡献上的 `cov(c, r) / sigma(r)`，年化；各项加起来等于 `volatility`。
+**风险。** `ex_ante_risk` 对 bar 开始时组合的预测风险做归因。对第 t 根 bar 的预测是风险模型在 t-1 做出的预测（`FactorRiskModel.forecast`，取估计 store 中 t-1 那一行和 t-1 的暴露，覆盖规则与组合的协方差估计器相同）：记 `x` 为它覆盖的持仓的净暴露，`F` 为因子协方差，`s` 为特异风险，方差为 `x'Fx + sum w^2 s^2`。每个因子的 x-sigma-rho 贡献 `x_k (Fx)_k / sigma` 加上特异部分等于 `sigma`。这个块给出年化 `volatility`（`total`、`factor`、`specific`）、`contribution` 拆分以及每个因子和每组贡献在各分段上的均值。预测未覆盖的持仓不进入预测；预测一个持仓都不覆盖的 bar 没有贡献，也不计入均值。`ex_post_risk` 拆的则是实现波动率：每项、每个因子和每组在该分段逐 bar 贡献上的 `cov(c, r) / sigma(r)`，年化；各项加起来等于 `volatility`。
 
 **分段与覆盖率。** `run()` 和 `run_cv()` 给出 `whole`、`in_sample` 和 `out_of_sample`，范围与其他指标相同；`run_weights()` 只给 `whole`。没有 bar 的分段为 `None`。`coverage` 给出在有持仓的 bar 上被覆盖部分占总持仓权重的均值和最小值，均值低于 90% 时还有一条 `note`。
 

@@ -264,7 +264,7 @@ def test_the_optimizer_round_trips_through_its_config_with_its_covariance_estima
         "name": "quantlab.portfolio.predefined.ledoit_wolf.LedoitWolfEstimator",
     }
     assert rebuilt == optimizer
-    assert rebuilt.lookback_bars == LOOKBACK
+    assert rebuilt.declared_inputs().lookback_bars == LOOKBACK
 
 
 def test_a_flat_price_is_left_out_of_the_covariance_estimator():

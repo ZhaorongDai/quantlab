@@ -29,8 +29,8 @@ A rule has one method to implement, `construct(context)`. The `PortfolioContext`
 | `current_weights` | The weights held now, valued at the bar. They are all 0.0 before the first rebalance. |
 | `returns` | The last `lookback_bars` one-bar returns, ending at the bar, from the rule's last `history_bars` raw valuation prices forward-filled within that window. It is empty for a rule with `lookback_bars` of 0. |
 | `staleness` | Bars since each symbol's last real price within the last `history_bars` bars; NaN when it has none there. |
-| `factors` | The values at the bar of the factors the rule declares in `required_factors()`, or `None`. |
-| `risk_exposures` | The exposures at the bar of the factor risk model the rule declares in `required_risk_model()`, as the model gives them (`FactorRiskModel.exposures`: read from the exposures factor's store or computed, per `exposure_data_strategy`), or `None`. |
+| `factors` | The values at the bar of the factors the rule declares (`declared_inputs().factors`), or `None`. |
+| `risk_exposures` | The exposures at the bar of the factor risk model the rule declares (`declared_inputs().risk_model`), as the model gives them (`FactorRiskModel.exposures`: read from the exposures factor's store or computed, per `exposure_data_strategy`), or `None`. |
 
 A rule returns one weight per symbol:
 
@@ -84,7 +84,7 @@ array([0.5, 0.5, 0. , 0. ])
 
 A rule only decides. Its *decision inputs*, everything it may read at a bar except the holdings, are assembled by one module, `DecisionInputs` in `quantlab/portfolio/decision_inputs.py`, for the backtest and for an executor alike. It is built from the price dataset, the fill and valuation columns, the bound rule, the rebalance period, the *anchor* (the first bar of the prediction panel, from which the rebalance schedule counts) and the execution settings. The vectorised backtest calls its `weights(predictions, delisted=...)`, which loops the rule's one-bar decision (`decide`, see [One bar outside a backtest](#one-bar-outside-a-backtest)) over the rebalance bars and builds each bar's context:
 
-- The tradability is the price dataset's `tradable_bars`, the factor values are the rule's `required_factors()` computed over the window with their own warm-up, and the risk exposures are its `required_risk_model()`'s `exposures` over the window, one request.
+- The tradability is the price dataset's `tradable_bars`, the factor values are the rule's declared factors computed over the window with their own warm-up, and the risk exposures are its declared risk model's `exposures` over the window, one request. All of it comes from one value the rule gives, `declared_inputs()` (an `InputDeclaration`: `lookback_bars`, `history_bars`, `factors`, `risk_model`), asked once.
 - The current weights are the holdings the earlier rebalances really left. They are replayed by the Execution module (`quantlab.execution.rules`) exactly as the simulation trades them, including rejected orders, delisting settlements, the sizing basis, fees and slippage. The backtester passes its config's `execution` settings and the delisting marks it hands the engine; without settings the replay sizes at the fill price and charges no costs.
 - The rebalance bars are every `rebalance_periods`-th bar from the anchor; the last bar never rebalances, since an order decided there has no next bar to fill on (`rebalance_mask` in the same module).
 - The return window comes from the last known price of each symbol, so a halt shows as zero returns and then the whole move on the day trading resumes.
@@ -223,7 +223,7 @@ The optimiser needs to know the span and scale of the labels it reads, which a b
 ...     ic=0.05, risk_aversion=5.0, weight_cap=0.4,
 ... ))
 >>> optimizer.bind(specs)
->>> optimizer.lookback_bars, optimizer.span
+>>> optimizer.declared_inputs().lookback_bars, optimizer.span
 (60, 5)
 >>> weights = optimizer.construct(context)
 >>> weights.values.round(3)
@@ -326,7 +326,7 @@ Symbols outside the pool get 0.0. The z-score of the Grinold calibration is take
 
 ### Exposure bounds
 
-`exposure_bounds` holds the book's exposure to a factor between two bounds: for each named output `x` of the `exposure_factors`, `lower <= sum_i w_i * x_i <= upper`, the locked positions' exposure included (a locked symbol without one counts 0). The rule declares the `exposure_factors` in `required_factors()`, so a backtest computes them over its window and hands their values at the bar in `context.factors`. A candidate without an exposure gets no weight, and a held one is closed, listed in the bar's `closed_without_exposure` event. An exposure of the covariance estimator's factor risk model (one of its `exposure_names`, read from `context.risk_exposures`) can be bounded too, without declaring a factor: with a factor risk model as the covariance, `exposure_bounds={"style_beta": (-0.1, 0.1)}` holds the book's USE4 Beta exposure near the cap-weighted estimation universe's, which is 0. A bounded name that is both an `exposure_factors` output and a risk model exposure is refused. Bounds the candidates cannot reach make the bar infeasible, and the backtest holds it (see [In a backtest](#in-a-backtest)). The bounds hold to the solver's tolerance, about 1e-5.
+`exposure_bounds` holds the book's exposure to a factor between two bounds: for each named output `x` of the `exposure_factors`, `lower <= sum_i w_i * x_i <= upper`, the locked positions' exposure included (a locked symbol without one counts 0). The rule declares the `exposure_factors` among its factors (`declared_inputs()`), so a backtest computes them over its window and hands their values at the bar in `context.factors`. A candidate without an exposure gets no weight, and a held one is closed, listed in the bar's `closed_without_exposure` event. A factor of the covariance estimator's factor risk model (one of its `factor_names`) can be bounded too, without declaring a factor: its exposures are the forecast's column of `B`, so a symbol the forecast does not cover has none. With a factor risk model as the covariance, `exposure_bounds={"style_beta": (-0.1, 0.1)}` holds the book's USE4 Beta exposure near the cap-weighted estimation universe's, which is 0, and an industry factor can be bounded the same way. A bounded name that is both an `exposure_factors` output and a factor of the risk model is refused. Bounds the candidates cannot reach make the bar infeasible, and the backtest holds it (see [In a backtest](#in-a-backtest)). The bounds hold to the solver's tolerance, about 1e-5.
 
 The common use is a beta near 1, so that a long-only book keeps the benchmark's market risk and its excess comes from the selection rather than from a lower beta. `BenchmarkBeta` (see the [factor guide](factor.md#benchmark-beta)) gives each symbol's beta on a single-symbol benchmark; with `stocks` the symbols' price dataset and `vt` the benchmark's:
 
@@ -341,7 +341,7 @@ The common use is a beta near 1, so that a long-only book keeps the benchmark's 
 ...     exposure_factors=(beta,), exposure_bounds={"beta": (0.95, 1.05)},
 ... ))
 >>> bounded.bind(specs)
->>> bounded.required_factors() == [beta]
+>>> bounded.declared_inputs().factors == (beta,)
 True
 
 ```
@@ -394,10 +394,10 @@ array([0.4, 0.4, 0. , 0.2])
 
 `FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model))` reads the stores of a factor risk model (`quantlab.risk.base.FactorRiskModel`, for example `Use4RiskModel`):
 
-- It returns a `FactorCovarianceEstimate`, the covariance in factor form `B F B' + diag(D)`: exposures `B`, factor covariance `F` and specific variances `D`, from the estimate store's row at the bar. Its `factor_form()` makes the optimiser price risk as `|F^(1/2) B' w|^2 + w' diag(D) w`, without building the dense matrix.
-- It declares the model in `required_risk_model()`, and no factor. The backtest takes the model's exposures from the model, `model.exposures(start, end)`, the source its stores, factor attribution and bias statistics read: from the exposures factor's store under `exposure_data_strategy="read"`, which must then cover the backtest, computed under `"cal"`. It puts their values at the bar in `context.risk_exposures`.
+- It returns the model's forecast at the bar, `model.forecast(row, exposures)`, a `FactorRiskForecast` (`quantlab.risk.base`): the covariance in factor form `B F B' + diag(D)`, exposures `B`, factor covariance `F` and specific variances `D`, from the estimate store's row at the bar and the context's risk exposures. Its `factor_form()` makes the optimiser price risk as `|F^(1/2) B' w|^2 + w' diag(D) w`, without building the dense matrix.
+- It declares the model (`declared_inputs().risk_model`), and no factor. The backtest takes the model's exposures from the model, `model.exposures(start, end)`, the source its stores, factor attribution and bias statistics read: from the exposures factor's store under `exposure_data_strategy="read"`, which must then cover the backtest, computed under `"cal"`. It puts their values at the bar in `context.risk_exposures`.
 
-It covers the symbols with every exposure and a specific risk at the bar. It reads no return window, so it has no staleness filter, and a locked position is priced like any other. The model's stores must cover the backtest. [Factor risk model](developer-guide/risk-model.md) describes `Use4RiskModel` and compares it with Ledoit-Wolf in a mean-variance backtest.
+Coverage is the model's rule, the one factor attribution and the bias statistics use: a symbol with every exposure and a specific risk at the bar, not exposed to a factor without a covariance there (such a factor leaves the forecast). It reads no return window, so it has no staleness filter, and a locked position is priced like any other. The model's stores must cover the backtest. [Factor risk model](developer-guide/risk-model.md) describes `Use4RiskModel` and compares it with Ledoit-Wolf in a mean-variance backtest.
 
 ## A full example
 
@@ -437,7 +437,9 @@ Subclass `PortfolioConstructor`:
 
 1. Set `config_cls` to a frozen dataclass of the rule's parameters.
 2. Implement `construct`.
-3. Override `lookback_bars` when the rule reads a return window (and `history_bars` when it needs more raw prices than `lookback_bars + 1`), `required_factors` when it reads factor panels, `required_risk_model` when it reads a factor risk model's exposures, and `bind` to check the label specs.
+3. Override `declared_inputs` when the rule reads a return window, factor panels or a factor risk model's exposures: it returns an `InputDeclaration` (`lookback_bars`, `history_bars` when it needs more raw prices than `lookback_bars + 1`, `factors`, `risk_model`); a rule holding parts merges theirs with `InputDeclaration.merged`. Override `bind` to check the label specs.
+
+`MeanVarianceOptimizer` has two extension points for a rule built on it. `reference_weights(context)` returns the book the risk term measures against, so the optimiser prices `(w - b)' Sigma (w - b)`, the active risk, instead of `w' Sigma w`; a benchmark symbol the covariance estimator does not cover is left out and reported in the `reference_without_risk` event. `risk_constraints(risk)` returns constraints on that risk term, a cvxpy expression on the expected-return label's span, such as `[risk <= cap**2]`. Both are unused by default, and the problem is then unchanged. `scripts/active_risk.py` builds `ActiveRiskOptimizer` on them: a benchmark-relative mean-variance rule whose benchmark weights come from a declared factor, with an optional tracking-error cap.
 
 Do not override `decide`: it is the one decision path a backtest and an executor share. A rule holds no assembly code; `DecisionInputs` builds its contexts.
 

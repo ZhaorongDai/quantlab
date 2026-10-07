@@ -9,7 +9,7 @@ What is locked here, and what turns it red (no store, no model, no vectorbt):
   low-rank risk term: the optimiser never asks it for the dense covariance,
   and the solution equals the dense solution of the same covariance within
   solver tolerance, long-only and long-short.
-- `PortfolioConstructor.required_factors()` and `required_risk_model()` are
+- A rule's and a covariance estimator's `declared_inputs()` are
   empty by default; the optimiser declares its `exposure_factors` and its
   covariance estimator's risk model, and a covariance estimator declares no
   factors (#230).
@@ -23,6 +23,7 @@ import xarray as xr
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.base import (
     CovarianceEstimate,
+    InputDeclaration,
     PortfolioContext,
     CovarianceEstimator,
 )
@@ -164,15 +165,15 @@ def test_declarations_are_empty_by_default_and_the_optimizer_declares_its_covari
     marker = object()
 
     class _WithRiskModel(LedoitWolfEstimator):
-        def required_risk_model(self):
-            return marker
+        def declared_inputs(self):
+            return super().declared_inputs().merged(InputDeclaration(risk_model=marker))
 
     risk = LedoitWolfEstimator(LedoitWolfEstimatorConfig(lookback_bars=10))
-    assert not hasattr(risk, "required_factors")
-    assert risk.required_risk_model() is None
+    declared = risk.declared_inputs()
+    assert (declared.lookback_bars, declared.factors, declared.risk_model) == (10, (), None)
     top_n = TopNConstructor(TopNConfig(direction="long_only", top_n=2))
-    assert top_n.required_factors() == [] and top_n.required_risk_model() is None
-    assert _optimizer(factor_form=False).required_factors() == []
+    assert top_n.declared_inputs() == InputDeclaration()
+    assert _optimizer(factor_form=False).declared_inputs().factors == ()
     declaring = MeanVarianceOptimizer(
         MeanVarianceConfig(
             expected_return_label="ret_5",
@@ -181,5 +182,6 @@ def test_declarations_are_empty_by_default_and_the_optimizer_declares_its_covari
             risk_aversion=5.0,
         )
     )
-    assert declaring.required_factors() == []
-    assert declaring.required_risk_model() is marker
+    assert declaring.declared_inputs().factors == ()
+    assert declaring.declared_inputs().risk_model is marker
+    assert declaring.declared_inputs().lookback_bars == 10

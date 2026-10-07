@@ -35,7 +35,7 @@ import pytest
 import xarray as xr
 
 from quantlab.portfolio.config import LedoitWolfEstimatorConfig, MeanVarianceConfig, TopNConfig
-from quantlab.portfolio.base import PortfolioContext
+from quantlab.portfolio.base import InputDeclaration, PortfolioContext
 from quantlab.runs.prediction_panel import LabelSpec
 from quantlab.dataset.memory import FrameDataset
 from quantlab.portfolio.decision_inputs import DecisionInputs, rebalance_mask
@@ -127,15 +127,15 @@ class _MeanVariance(_Recording, MeanVarianceOptimizer):
 
 
 class _WithFactor(_TopN):
-    def required_factors(self):
-        return [_LogPrice()]
+    def declared_inputs(self):
+        return InputDeclaration(factors=(_LogPrice(),))
 
 
 class _WithRiskModel(_TopN):
     risk = None
 
-    def required_risk_model(self):
-        return self.risk
+    def declared_inputs(self):
+        return InputDeclaration(risk_model=self.risk)
 
 
 def _rule(kind):
@@ -319,8 +319,8 @@ def test_factor_panels_lacking_a_declared_name_are_refused():
             return ["beta"]
 
     class _Declares(_TopN):
-        def required_factors(self):
-            return [_Other()]
+        def declared_inputs(self):
+            return InputDeclaration(factors=(_Other(),))
 
     rule = _Declares(TopNConfig(direction="long_only", top_n=1))
     rule.seen = []
@@ -334,7 +334,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE = "quantlab/portfolio/decision_inputs.py"
 CALLERS = ("quantlab/backtest/predefined/us_equity.py", "quantlab/backtest/base.py", "quantlab/api/_backtest.py")
 #: Names only the module may use to assemble decision inputs.
-ASSEMBLY = {"tradable_bars", "rebalance_mask", "bar_before", "required_factors", "history_bars", "lookback_bars", "ExecutionBook"}
+ASSEMBLY = {"tradable_bars", "rebalance_mask", "bar_before", "declared_inputs", "history_bars", "lookback_bars", "ExecutionBook"}
 
 
 def _names(path: Path) -> set[str]:

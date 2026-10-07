@@ -460,27 +460,35 @@ def test_a_risk_model_covering_no_held_symbol_is_refused(planted, tmp_path):
 
 
 def _ex_ante_by_hand(planted) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Forecast factor and specific variance and per-factor x-sigma-rho of each bar, from row t-1."""
+    """Forecast factor and specific variance and per-factor x-sigma-rho of each bar, from row t-1.
+
+    The forecast's coverage (``FactorRiskModel.forecast``): a held symbol
+    with every exposure and a specific risk at t-1, not exposed to a factor
+    without a covariance there.
+    """
     prices, exposures, regression, estimate = planted
     holdings = _start_of_bar_holdings(prices)
-    specific = regression["specific_return"].values
     covariance = estimate["factor_covariance"].values
     specific_risk = estimate["specific_risk"].values
     factor_variance, specific_variance = np.zeros(T), np.zeros(T)
     contribution = np.full((T, len(FACTORS)), np.nan)
     for t in range(1, T):
-        covered = (holdings[t] != 0) & np.isfinite(INDUSTRY) & np.isfinite(specific[t])
         x_all = np.column_stack(
             [np.ones(len(SYMBOLS)), INDUSTRY == 1.0, INDUSTRY == 2.0, exposures["style"].values[t - 1]]
         )
-        x = holdings[t][covered] @ x_all[covered]
         kept = np.isfinite(np.diag(covariance[t - 1]))
-        x = np.where(kept, x, 0.0)
+        covered = (
+            (holdings[t] != 0) & np.isfinite(INDUSTRY) & np.isfinite(specific_risk[t - 1])
+            & ~(x_all[:, ~kept] != 0).any(axis=1)
+        )
+        x = np.where(kept, holdings[t][covered] @ x_all[covered], 0.0)
         fx = np.zeros(len(FACTORS))
         fx[kept] = covariance[t - 1][np.ix_(kept, kept)] @ x[kept]
         factor_variance[t] = x @ fx
         specific_variance[t] = (holdings[t][covered] ** 2) @ (specific_risk[t - 1][covered] ** 2)
-        contribution[t] = x * fx / np.sqrt(factor_variance[t] + specific_variance[t])
+        sigma = np.sqrt(factor_variance[t] + specific_variance[t])
+        if sigma > 0:
+            contribution[t] = x * fx / sigma
     return factor_variance, specific_variance, contribution
 
 
@@ -490,10 +498,12 @@ def test_the_ex_ante_forecast_of_bar_t_is_the_estimate_row_of_t_minus_1(planted,
     np.testing.assert_allclose(attribution["ex_ante_factor_variance"].values, factor_variance, atol=1e-16)
     np.testing.assert_allclose(attribution["ex_ante_specific_variance"].values, specific_variance, atol=1e-16)
     np.testing.assert_allclose(attribution["factor_risk_contribution"].values, contribution, atol=1e-14)
-    # Bar 1 holds nothing; row 1 has no covariance, so bar 2's forecast is specific only.
+    # Bar 1 holds nothing; row 1 has no covariance, so bar 2's forecast covers no holding.
     assert factor_variance[1] == specific_variance[1] == 0.0
-    assert factor_variance[2] == 0.0 and specific_variance[2] > 0.0
-    # industry_2 has no covariance in row NO_COVARIANCE_BAR: it adds no risk to the next bar.
+    assert factor_variance[2] == specific_variance[2] == 0.0
+    assert np.isnan(attribution["factor_risk_contribution"].values[2]).all()
+    # industry_2 has no covariance in row NO_COVARIANCE_BAR: it and its holdings
+    # (C, D, E) add no risk to the next bar.
     assert contribution[NO_COVARIANCE_BAR + 1, 2] == 0.0
     assert np.abs(contribution[NO_COVARIANCE_BAR + 2:, 2]).sum() > 0
 
@@ -508,7 +518,8 @@ def test_ex_ante_contributions_sum_to_the_forecast_volatility(run):
         + attribution["specific_risk_contribution"]
     ).values
     forecast = sigma > 0
-    assert forecast[2:].all()
+    # Row 1 has no covariance: bar 2's forecast covers no holding.
+    assert not forecast[2] and forecast[3:].all()
     np.testing.assert_allclose(parts[forecast], sigma[forecast], rtol=1e-12)
     # A bar without a forecast (nothing held) has no contributions.
     assert np.isnan(parts[~forecast]).all()

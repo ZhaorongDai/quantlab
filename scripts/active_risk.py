@@ -3,8 +3,8 @@
 A portfolio construction rule written outside the package, on the extension
 points of ``MeanVarianceOptimizer``. The benchmark is a ``Factor`` whose
 output ``benchmark_weight`` holds each symbol's weight in it at a bar (an
-index's capitalization weights, say); the rule declares it in
-``required_factors()``, so a backtest computes it and an executor injects
+index's capitalization weights, say); the rule declares it among its factors
+(``declared_inputs()``), so a backtest computes it and an executor injects
 it like any other factor value. Over the candidates the rule solves
 
     maximise    w @ mu - risk_aversion / 2 * (w - b) @ Sigma @ (w - b)
@@ -47,7 +47,7 @@ import xarray as xr
 
 from quantlab.core.component import component
 from quantlab.factor.base import Factor
-from quantlab.portfolio.base import PortfolioContext
+from quantlab.portfolio.base import InputDeclaration, PortfolioContext
 from quantlab.portfolio.config import MeanVarianceConfig
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
 
@@ -90,12 +90,9 @@ class ActiveRiskOptimizer(MeanVarianceOptimizer):
         if config.tracking_error is not None and not config.tracking_error > 0:
             raise ValueError(f"tracking_error must be positive, got {config.tracking_error}")
 
-    def required_factors(self) -> list[Factor]:
-        """The optimiser's ``exposure_factors``, then the benchmark."""
-        factors = super().required_factors()
-        if not any(self.config.benchmark == factor for factor in factors):
-            factors.append(self.config.benchmark)
-        return factors
+    def declared_inputs(self) -> InputDeclaration:
+        """The optimiser's declaration, and the benchmark among the factors."""
+        return super().declared_inputs().merged(InputDeclaration(factors=(self.config.benchmark,)))
 
     def reference_weights(self, context: PortfolioContext) -> xr.DataArray:
         """The benchmark's weights at the bar."""
