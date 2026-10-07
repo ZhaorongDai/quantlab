@@ -145,3 +145,52 @@ def test_a_name_cannot_close_the_data_script(tmp_path):
     page = _page(tmp_path, holdings=HOLDINGS, holding_names=names)
     data = _data(page)
     assert ["</script><b>x", "A & B", "10001"] in data["names"]
+
+
+def test_each_day_carries_its_holdings_count_and_top_ten_holding(tmp_path):
+    shorted = HOLDINGS.copy()
+    shorted[2, 1] = -0.38
+    days = _data(_page(tmp_path, holdings=shorted))["days"]
+    # Every non-zero holding counts, dust included; a short counts by its size.
+    assert [day["n"] for day in days] == [
+        int(np.count_nonzero(row)) for row in shorted.values
+    ]
+    assert [day["top"] for day in days] == [
+        float(np.sort(np.abs(row))[::-1][:10].sum()) for row in shorted.values
+    ]
+    assert days[2]["top"] == 0.61 + 0.38 + 0.00005
+
+
+def test_names_new_since_the_previous_rebalance_are_listed_on_every_day_of_its_period(
+    tmp_path,
+):
+    # 10003 goes from a dust target to a real one, 10001 is dropped.
+    weights = _panel([
+        [0.6, 0.4 - DUST_THRESHOLD / 2, DUST_THRESHOLD / 2],
+        [np.nan] * 3,
+        [0.0, 0.5, 0.5],
+        [np.nan] * 3,
+        [np.nan] * 3,
+    ])
+    holdings = _panel([
+        [0.0, 0.0, 0.0],
+        [0.59, 0.39, 0.00004],
+        [0.61, 0.38, 0.00005],
+        [0.0, 0.49, 0.49],
+        [0.0, 0.52, 0.47],
+    ])
+    path = tmp_path / "report.html"
+    write_backtest_report(
+        _value(), path, in_sample_range=None, notes=[], title="run",
+        metrics={"whole": {"Total Return [%]": 3.0}}, weights=weights, holdings=holdings,
+    )
+    data = _data(path.read_text(encoding="utf-8"))
+
+    def new(day):
+        return None if day["new"] is None else sorted(
+            data["names"][day["h"][k][0]][2] for k in day["new"]
+        )
+
+    # Before the first rebalance fills and during its period there is no
+    # previous rebalance to compare with.
+    assert [new(day) for day in data["days"]] == [None, None, None, ["10003"], ["10003"]]

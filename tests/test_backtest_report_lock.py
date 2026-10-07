@@ -271,18 +271,21 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: Re-recorded when a short's target bar became light red beside its dark red holding bar.
 #: Re-recorded when the target / holding header gained a key of the two bars,
 #: long and short colours of each (which is which on hover only).
+#: Re-recorded when each Holdings day embedded its summary (holdings count,
+#: top-10 holding, new names since the previous rebalance) for the page to read
+#: (#228). The metrics did not change.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "dbe21b18a5dfe2dcf2a15e1b1032c147ceba54221571c7d0d76edcd0901a38b5",
+    "run_long_only_benchmark/report.html": "f7d745caa15194c295e35b00c709723e0603fe3bc2c8069cf24e9ebdd9a56e5a",
     "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
-    "run_long_short_delisting/report.html": "d5c9a38f8ec8320b1334f14639309bdd94c463239cc219afef1bc709dee10211",
+    "run_long_short_delisting/report.html": "a3575aa25295e894df006d7ac381498ba96085503f6d19f5f1c2f738f2a18bfe",
     "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
-    "run_weights_benchmark/report.html": "0c4067d0b1e1e74b9f195f96cff80bb26ecdb76ea01f4f2960d4424e10803f99",
+    "run_weights_benchmark/report.html": "f3a09c7e860de234281a3f581acbd3bf2f52b0e206c870e32c92ad7254908806",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
-    "run_weights/report.html": "6f68cb313440cd163d5e954d3bfd8576947250d88741a3036c8f9be8dce4e109",
+    "run_weights/report.html": "717b5b66dd26f3904f643f6c304bfcf921b1d8d058241be60a340ef81f67d38e",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "00fc44e4b0bb10506a3ff89e5fc82b00f314bc8ea523e010dd3260ff4b870bac",
+    "run_cv_benchmark/report.html": "e7be944dda490bc91cf1314c5fdce7a6d288502ed96c0b26dc5beea862464e0c",
     "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
-    "run_cv/report.html": "e5bf1958945404bb75719ba428dec04a264821abc066b22358b03efbf6d8c4eb",
+    "run_cv/report.html": "ba104362504000bdf29ef01bf53eac281a98dbe957d21537d36649c73bda34d8",
     "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
 

@@ -323,8 +323,9 @@ def write_backtest_report(
         gets a Holdings section that steps through the bars (by bar, by
         rebalance, by date, by slider and by the arrow keys) and shows each
         symbol held or targeted: its target weight (from ``weights``, the
-        last rebalance before the bar), its holding, the cash and the
-        headline figures of the cards; targets of at most
+        last rebalance before the bar) and its holding, with the day's
+        summary embedded per bar (cash, number of holdings, top-ten holding,
+        the rebalance and the names new since the previous one); targets of at most
         ``DUST_THRESHOLD`` are folded into one "Other" line. The table sorts
         by any column, filters by ticker or company and exports the day as
         CSV. Its data is embedded in the page as JSON. Without holdings the
@@ -2141,6 +2142,12 @@ def _holdings_data(
     target and holding of the dust) and ``h``, one ``[name, target,
     holding]`` row per other symbol held or targeted, largest holding first;
     ``name`` indexes ``names``, ``[ticker, company, symbol id]`` rows.
+    Each day also carries its summary: ``n``, the number of non-zero
+    holdings (dust included); ``top``, the ten largest holdings by size
+    summed (a short counts by its size); and ``new``, the positions in
+    ``h`` of the names the day's rebalance targets that the previous one
+    did not (a target counts when it is above ``DUST_THRESHOLD`` in size),
+    ``None`` while there is no previous rebalance to compare with.
     ``summary`` holds the tab's tiles: bars, rebalances and holdings per bar.
     """
     held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
@@ -2164,17 +2171,29 @@ def _holdings_data(
         return index[key]
 
     days = []
+    # The targets of the rebalance before the one in force: None until a
+    # second rebalance is in force.
+    previous: np.ndarray | None = None
     for i, bar in enumerate(holdings.timestamp.values):
         day = date_range.bar_label(bar)
         h, t = held[i], targets[i]
+        if i > 0 and since[i] != since[i - 1]:
+            previous = None if since[i - 1] is None else targets[i - 1]
         shown = (h != 0.0) | (t != 0.0)
         dust = shown & (t != 0.0) & (np.abs(t) <= DUST_THRESHOLD)
         kept = np.flatnonzero(shown & ~dust)
         kept = kept[np.argsort(-h[kept], kind="stable")]
+        new = None
+        if previous is not None:
+            added = (np.abs(t) > DUST_THRESHOLD) & ~(np.abs(previous) > DUST_THRESHOLD)
+            new = [k for k, j in enumerate(kept) if added[j]]
         days.append({
             "d": day,
             "r": since[i],
             "cash": float(1.0 - h.sum()),
+            "n": int(np.count_nonzero(h)),
+            "top": float(np.sort(np.abs(h))[::-1][:10].sum()),
+            "new": new,
             "other": [int(dust.sum()), float(t[dust].sum()), float(h[dust].sum())],
             "h": [[name(j, day), float(t[j]), float(h[j])] for j in kept],
         })
@@ -2273,9 +2292,11 @@ _HOLDINGS_SCRIPT = """
   days.forEach(function (d, i) { if (d.r !== null && (i === 0 || d.r !== days[i - 1].r)) rebIdx.push(i); });
   var cur = days.length - 1, sortKey = 'h', sortDir = -1;
   function rowsOf(i) {
-    return days[i].h.map(function (r) {
+    var fresh = {};
+    (days[i].new || []).forEach(function (k) { fresh[k] = true; });
+    return days[i].h.map(function (r, k) {
       var n = N[r[0]];
-      return { ticker: n[0], company: n[1], symbol: n[2], t: r[1], h: r[2] };
+      return { ticker: n[0], company: n[1], symbol: n[2], t: r[1], h: r[2], isNew: !!fresh[k] };
     });
   }
   var byDay = [];
@@ -2312,11 +2333,6 @@ _HOLDINGS_SCRIPT = """
     svg.appendChild(line); svg.appendChild(dot);
     return svg;
   }
-  function targeted(i) {
-    var s = {};
-    days[i].h.forEach(function (r) { if (r[1] !== 0) s[N[r[0]][2]] = true; });
-    return s;
-  }
   function el(tag, text, cls) {
     var e = document.createElement(tag);
     if (text !== undefined) e.textContent = text;
@@ -2334,18 +2350,11 @@ _HOLDINGS_SCRIPT = """
   }
   function render() {
     var day = days[cur];
-    var own = rebIdx.filter(function (r) { return r <= cur; });
-    var previous = own.length > 1 ? targeted(own[own.length - 2]) : null;
-    var current = own.length ? targeted(own[own.length - 1]) : {};
     var all = rowsOf(cur);
-    var held = all.filter(function (r) { return r.h !== 0; }).length + day.other[0];
-    var top = all.map(function (r) { return Math.abs(r.h); }).sort(function (a, b) { return b - a; })
-      .slice(0, 10).reduce(function (s, x) { return s + x; }, 0);
-    var added = previous ? Object.keys(current).filter(function (k) { return !previous[k]; }).length : null;
     var bits = [['Date', day.d], ['Targets from', day.r === null ? 'no rebalance yet' : day.r],
-                ['Holdings', String(held)], ['Top-10 holding', pct(top, 1)], ['Cash', pct(day.cash)],
+                ['Holdings', String(day.n)], ['Top-10 holding', pct(day.top, 1)], ['Cash', pct(day.cash)],
                 ['Other (dust)', pct(day.other[2], 3)]];
-    if (added !== null) bits.push(['New names since previous rebalance', String(added)]);
+    if (day.new !== null) bits.push(['New names since previous rebalance', String(day.new.length)]);
     var daybar = $('hd-daybar');
     daybar.textContent = '';
     bits.forEach(function (b, i) {
@@ -2372,7 +2381,7 @@ _HOLDINGS_SCRIPT = """
     rows.forEach(function (r) {
       var tr = el('tr');
       var tk = el('td', r.ticker, 'l');
-      if (previous && r.t !== 0 && !previous[r.symbol]) tk.appendChild(el('span', 'new', 'hd-tag new'));
+      if (r.isNew) tk.appendChild(el('span', 'new', 'hd-tag new'));
       tr.appendChild(tk);
       tr.appendChild(el('td', r.company, 'l co'));
       tr.appendChild(el('td', r.symbol, 'l'));
