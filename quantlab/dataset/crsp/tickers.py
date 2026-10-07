@@ -12,7 +12,10 @@ the sidecar, and ``CrspTickerLookup`` answers "which ticker did this PERMNO
 have on this day" from it.
 
 The lookup has three entry points, each with a deliberate way of handling a
-sidecar that is missing, unparseable or wrongly shaped:
+sidecar that is missing, unparseable or wrongly shaped. It implements the
+dataset layer's ``TickerLookup`` interface (``names`` and ``label``), which is
+how a backtest labels symbols without naming this class; a CRSP dataset
+returns one from ``ticker_lookup()``.
 
 - ``as_of(permno, day)`` is strict. It raises a clear error (naming the
   class, the path and the rebuild that fixes it) in all three cases, so
@@ -22,14 +25,14 @@ sidecar that is missing, unparseable or wrongly shaped:
   the interval table. A sidecar with broken intervals can still say which
   CRSP data version it was built from, and one that records no version
   returns ``None``.
-- ``label(permnos, day)`` is the display entry point and never raises. With
-  an unusable sidecar it falls back to the PERMNO digits, and logs one
-  warning per lookup object, so a broken sidecar can be told apart from a
-  store that never had one.
+- ``names(permnos, day)`` and ``label(permnos, day)`` are the display entry
+  points and never raise. With an unusable sidecar they fall back to the
+  PERMNO digits, and log one warning per lookup object, so a broken sidecar
+  can be told apart from a store that never had one. The sidecar records no
+  company, so every name's ``company`` is ``None``.
 
-At import time the module loads only the standard library and ``loguru``,
-so any layer may import it. The sidecar suffix constant is imported inside
-``beside_store``, so that a log call never loads the whole converter.
+The sidecar suffix constant is imported inside ``beside_store``, where the
+parent package is fully initialized.
 """
 
 from __future__ import annotations
@@ -41,6 +44,8 @@ from pathlib import Path
 
 from loguru import logger
 
+from quantlab.dataset.base import SymbolName, TickerLookup
+
 __all__ = ["CrspTickerLookup"]
 
 #: The exceptions an unusable sidecar raises. Every file problem goes
@@ -49,12 +54,12 @@ __all__ = ["CrspTickerLookup"]
 #: does not parse), so these two types cover all damage read from disk.
 #: ``KeyError``, ``AttributeError`` and ``TypeError`` are left out on
 #: purpose: after the shape checks they can only be a bug in this module,
-#: and ``label`` must let such a bug reach the caller rather than print
+#: and ``names`` must let such a bug reach the caller rather than print
 #: digits that look like a real answer.
 _UNUSABLE = (FileNotFoundError, ValueError)
 
 
-class CrspTickerLookup:
+class CrspTickerLookup(TickerLookup):
     """Look up the ticker a PERMNO had on a given day, from one ``{zarr}.crsp_tickers.json``.
 
     The file is read lazily, on first use. The callers are display code deep
@@ -65,8 +70,9 @@ class CrspTickerLookup:
     Parameters
     ----------
     sidecar_path : str or Path
-        Path of the ticker sidecar. Use ``beside_store`` to derive it from
-        the store path.
+        Path of the ticker sidecar. A CRSP or NBBO dataset's
+        ``ticker_lookup()`` builds one over its own sidecar, and
+        ``beside_store`` derives it from a store path.
 
     Attributes
     ----------
@@ -82,6 +88,8 @@ class CrspTickerLookup:
     ('FB', 'META')
     >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
     ['FB', 'AAPL', '99999']
+    >>> lookup.names([13407], date(2022, 6, 9))
+    [SymbolName(ticker='META', company=None)]
     """
 
     def __init__(self, sidecar_path: str | Path) -> None:
@@ -102,8 +110,9 @@ class CrspTickerLookup:
     def beside_store(cls, zarr_file_path: str | Path) -> "CrspTickerLookup":
         """Return the lookup for the sidecar written next to ``zarr_file_path``.
 
-        This is the one place on the read side that appends the sidecar
-        suffix, so display code does not repeat ``".crsp_tickers.json"``.
+        For a caller holding only a store path. A caller holding the dataset
+        asks it instead (``CrspStockDataset.ticker_lookup()``), which is how
+        a backtest and a membership report get it.
 
         The import is inside the function on purpose.
         ``quantlab.dataset.crsp`` defines the constant and also loads polars
@@ -208,13 +217,13 @@ class CrspTickerLookup:
     def _degrade(self, exc: BaseException) -> None:
         """Warn, once per object, that the sidecar is unusable.
 
-        The digits ``label`` falls back to are also the normal output for a
+        The digits ``names`` falls back to are also the normal output for a
         store with no sidecar at all, so without this warning a broken
         sidecar would go unnoticed. It also warns when the file is missing,
         for the same reason.
 
         It warns only once per object because one caller passes a whole batch
-        of settlement records to a single ``label`` call and would
+        of settlement records to a single ``names`` call and would
         otherwise log hundreds of identical lines. The ``_degraded`` flag
         never affects a return value, so a race between threads can at most
         cause a duplicate log line.
@@ -357,17 +366,18 @@ class CrspTickerLookup:
                 return str(span["ticker"])
         return None
 
-    def label(self, permnos: Sequence, day: date) -> list[str]:
-        """Return a readable label for each of ``permnos``, in order.
+    def names(self, permnos: Sequence, day: date) -> list[SymbolName]:
+        """Return the ticker of each of ``permnos`` on ``day``, in order.
 
-        This is the entry point for display code. It takes a batch because
-        every caller prints a list (a missing-member report, a dropped-symbol
-        warning, the settlement records of one date).
+        This is the entry point for display code (see ``TickerLookup``). It
+        takes a batch because every caller prints a list (a missing-member
+        report, a dropped-symbol warning, the settlement records of one
+        date). ``company`` is always ``None``: the sidecar records no
+        company name.
 
         It never raises. An unknown PERMNO falls back to its own digits, and
         so does every PERMNO when the sidecar is missing, unparseable or
-        wrongly shaped. A store from a vendor with no sidecar therefore
-        prints plain ids. Every fallback caused by the file goes through
+        wrongly shaped. Every fallback caused by the file goes through
         ``_degrade``, which warns once per object. A value that is not an
         integer at all (a string symbol from another vendor) is passed
         through unchanged and does not count as a fallback.
@@ -390,15 +400,15 @@ class CrspTickerLookup:
 
         Returns
         -------
-        list of str
-            One label per input, in the input's order.
+        list of SymbolName
+            One name per input, in the input's order.
 
         Examples
         --------
-        >>> lookup.label([13407, 14593, 99999], date(2020, 1, 1))
-        ['FB', 'AAPL', '99999']
-        >>> lookup.label(["AAPL", "MSFT"], date(2020, 1, 1))
-        ['AAPL', 'MSFT']
+        >>> lookup.names([13407, 99999], date(2022, 6, 8))
+        [SymbolName(ticker='FB', company=None), SymbolName(ticker='99999', company=None)]
+        >>> lookup.names(["AAPL"], date(2020, 1, 1))
+        [SymbolName(ticker='AAPL', company=None)]
         """
         try:
             intervals = self._intervals()
@@ -406,11 +416,11 @@ class CrspTickerLookup:
             self._degrade(exc)
             intervals = {}
 
-        labels: list[str] = []
+        names: list[SymbolName] = []
         for value in permnos:
             spelled = str(value)
             if not intervals:
-                labels.append(spelled)
+                names.append(SymbolName(spelled))
                 continue
             try:
                 permno = int(value)
@@ -419,11 +429,11 @@ class CrspTickerLookup:
                 # vendor, so pass it through. The sidecar is fine, so there
                 # is no `_degrade` call; warning here would fire on every
                 # ticker-keyed panel.
-                labels.append(spelled)
+                names.append(SymbolName(spelled))
                 continue
             try:
-                labels.append(self.as_of(permno, day) or spelled)
+                names.append(SymbolName(self.as_of(permno, day) or spelled))
             except _UNUSABLE as exc:
                 self._degrade(exc)
-                labels.append(spelled)
-        return labels
+                names.append(SymbolName(spelled))
+        return names

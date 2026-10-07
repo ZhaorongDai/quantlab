@@ -475,8 +475,19 @@ def test_a_ticker_sidecar_names_the_settled_permno(tmp_path):
     2015 bar would read FB, which is the entire reason the sidecar stores
     intervals rather than one name per security.
     """
-    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0)
-    _write_ticker_sidecar(backtester.config.price_dataset.config)
+    from quantlab.dataset.config import CrspDatasetConfig
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    stock = _config(tmp_path).price_dataset.config
+    # The price dataset says which lookup applies (#226): a CRSP dataset over
+    # the fixture store names the sidecar beside it.
+    crsp = CrspStockDataset(CrspDatasetConfig(
+        zarr_file_path=stock.zarr_file_path,
+        raw_data_dir_path=stock.raw_data_dir_path,
+        reference_dir=str(tmp_path / "reference"),
+    ))
+    backtester = _backtester(tmp_path, fees=0.0, slippage=0.0, price_dataset=crsp)
+    _write_ticker_sidecar(crsp.config)
     ts, symbols, fill, valuation, weights = _permno_delisting_case()
 
     simulation = backtester._simulate(weights, _panel(fill, valuation, ts, symbols))

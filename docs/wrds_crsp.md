@@ -271,7 +271,7 @@ The conversion writes `<store>.crsp_tickers.json`, a table of `{PERMNO: [{ticker
 ['META', 'BRK.B', '99999']
 ```
 
-`as_of` raises if the sidecar is missing or unreadable. `label` never raises and falls back to the PERMNO digits, which suits log lines and reports.
+`as_of` raises if the sidecar is missing or unreadable. `label` never raises and falls back to the PERMNO digits, which suits log lines and reports. `CrspTickerLookup` implements the dataset layer's `TickerLookup` interface: `names` returns a `SymbolName(ticker, company)` per PERMNO (`company` is `None`, since the sidecar records none), and `CrspStockDataset.ticker_lookup()` returns the lookup over the store's own sidecar, which is how a backtest labels its settlement and rejected-order records and its benchmark.
 
 ### Select an index universe or the market
 

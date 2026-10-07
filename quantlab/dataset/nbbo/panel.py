@@ -31,6 +31,7 @@ from quantlab.dataset._support.cleaning import NBBO_PANEL_VARIABLES, clean_nbbo_
 from quantlab.dataset.crsp import TICKER_SIDECAR_SUFFIX
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
+from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.dataset.nbbo.resample import (
     FILTER_STATS_COUNTS,
     NbboFilterPolicy,
@@ -258,7 +259,7 @@ class NbboPanelBase(StockDataset):
         """Return the path of the ticker sidecar written next to the store.
 
         It is the same file the CRSP conversion writes, so
-        ``CrspTickerLookup.beside_store`` reads it for an NBBO store too.
+        ``ticker_lookup()`` reads it with a ``CrspTickerLookup``.
 
         Examples
         --------
@@ -266,6 +267,19 @@ class NbboPanelBase(StockDataset):
         PosixPath('data/us_equity/tick/wrds_nbbo_1m.zarr.crsp_tickers.json')
         """
         return Path(f"{self.config.zarr_file_path}{TICKER_SIDECAR_SUFFIX}")
+
+    def ticker_lookup(self) -> CrspTickerLookup:
+        """Return the lookup over the CRSP ticker sidecar beside the store.
+
+        The panel's symbol axis is the PERMNO, so its symbols are named as on
+        a CRSP store.
+
+        Examples
+        --------
+        >>> ds.ticker_lookup()
+        CrspTickerLookup('data/us_equity/tick/wrds_nbbo_1m.zarr.crsp_tickers.json')
+        """
+        return CrspTickerLookup(self.ticker_sidecar_path())
 
     @property
     def _filter_policy(self) -> NbboFilterPolicy:

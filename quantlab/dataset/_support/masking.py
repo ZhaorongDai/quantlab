@@ -21,7 +21,6 @@ import pandas as pd
 import xarray as xr
 from loguru import logger
 
-from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.utils.symbol_axis import sort_symbol_axis
 
 if TYPE_CHECKING:  # type hints only, so no import cycle at runtime
@@ -29,6 +28,7 @@ if TYPE_CHECKING:  # type hints only, so no import cycle at runtime
 
     from quantlab.dataset.base import IndexConstituentDataset
     from quantlab.dataset.base import MarketDataset
+    from quantlab.dataset.base import TickerLookup
 
 
 class UniverseMask:
@@ -54,10 +54,11 @@ class UniverseMask:
         A market panel on ``(timestamp, symbol)``.
     membership : xr.Dataset
         A panel with a boolean ``is_member`` variable.
-    ticker_lookup : CrspTickerLookup, optional
+    ticker_lookup : TickerLookup, optional
         Only used to print readable tickers in ``report()``'s warning when
-        the symbol axis holds CRSP PERMNOs (CRSP's permanent integer
-        security ids). ``None`` prints the axis labels as they are.
+        the symbol axis holds ids rather than tickers (a CRSP PERMNO, CRSP's
+        permanent integer security id). ``None`` prints the axis labels as
+        they are.
 
     Attributes
     ----------
@@ -65,7 +66,7 @@ class UniverseMask:
         The market panel as given.
     membership : xr.Dataset
         The membership panel as given.
-    ticker_lookup : CrspTickerLookup or None
+    ticker_lookup : TickerLookup or None
         The lookup used for readable labels.
 
     Raises
@@ -92,7 +93,7 @@ class UniverseMask:
         self,
         market: xr.Dataset,
         membership: xr.Dataset,
-        ticker_lookup: Optional[CrspTickerLookup] = None,
+        ticker_lookup: Optional["TickerLookup"] = None,
     ) -> None:
         """Initialize the mask; see the class docstring for parameters."""
         if "is_member" not in membership.data_vars:
@@ -123,11 +124,11 @@ class UniverseMask:
     ) -> "UniverseMask":
         """Build a mask from two persisted datasets over ``start`` to ``end``.
 
-        This is the only constructor that knows where the market store
-        lives, so it attaches the ticker *sidecar* (a small file stored next
-        to the Zarr store that maps PERMNOs to tickers) if there is one.
-        Without a sidecar the lookup falls back to the axis labels
-        themselves, so this works for any vendor.
+        This is the only constructor that has the market dataset, so it
+        attaches the ticker lookup the dataset names
+        (``MarketDataset.ticker_lookup()``, a CRSP store's reads the
+        ``.crsp_tickers.json`` sidecar beside it). A dataset that names none
+        prints the axis labels themselves, so this works for any vendor.
 
         Parameters
         ----------
@@ -154,12 +155,10 @@ class UniverseMask:
         >>> mask.missing_members
         ['DDD']
         """
-        # A market dataset held in memory has no store, so no ticker sidecar.
-        path = market_dataset.config.zarr_file_path
         return cls(
             market_dataset.panel(start, end),
             constituent_dataset.panel(start, end),
-            ticker_lookup=None if path is None else CrspTickerLookup.beside_store(path),
+            ticker_lookup=market_dataset.ticker_lookup(),
         )
 
     @property

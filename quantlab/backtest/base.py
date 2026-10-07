@@ -43,12 +43,9 @@ import xarray as xr
 from loguru import logger
 
 from quantlab.core.component import Component, config_cls_of, walk_components
-from quantlab.dataset.base import MarketDataset
+from quantlab.dataset.base import MarketDataset, TickerLookup
 from quantlab.runs.prediction_panel import LabelSpec, PredictionPanel
 from quantlab.tracking.base import TrackingRun
-# Importing this submodule also runs the `crsp` package `__init__` (the CRSP
-# converter and polars), which adds about a second of import time.
-from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.enums.constant import Date
 from quantlab.runs.backtest_run import (
     Annualization,
@@ -80,6 +77,10 @@ from quantlab.utils.returns import one_bar_returns
 from quantlab.utils.timer import Timer
 
 from quantlab.backtest.config import BacktestConfig
+
+#: Marks ``BaseBacktester._ticker_lookup`` as not yet asked of the price
+#: dataset, which may answer ``None``.
+_UNSET = object()
 
 class Predictor(Protocol):
     """What the backtester needs from a model: the whole contract between the two.
@@ -517,8 +518,9 @@ class BaseBacktester(Component, ABC):
         # the walk-forward unit of run_cv); None before any run and for
         # run_weights.
         self._trained_unit: Path | None = None
-        # Built on first use by the ticker_lookup property.
-        self._ticker_lookup: "CrspTickerLookup | None" = None
+        # Asked of the price dataset on first use by the ticker_lookup
+        # property; `_UNSET` until then, since the answer may be None.
+        self._ticker_lookup: TickerLookup | None | object = _UNSET
         # The benchmark's symbol-axis label, set by `_load_benchmark_prices`.
         self._benchmark_axis_symbol: str | None = None
         self.config = config
@@ -546,43 +548,36 @@ class BaseBacktester(Component, ABC):
         return dict(self._fingerprints)
 
     @property
-    def ticker_lookup(self) -> CrspTickerLookup | None:
-        """Lookup that turns symbol ids into readable ticker names.
+    def ticker_lookup(self) -> TickerLookup | None:
+        """Lookup that names the price dataset's symbol ids as of a day.
 
-        It reads the ``.crsp_tickers.json`` file stored next to the price
-        store. For CRSP data (the Center for Research in Security Prices),
-        symbols are PERMNOs, permanent numeric security ids, and this file
-        records which ticker each PERMNO traded under on each date. The
-        backtester is the only layer that knows where the price store is, so
-        it owns the lookup: the engine uses it for settlement and
-        rejected-order records and
-        the model for its lists of missing or extra symbols. The lookup is
-        built on first access and reset whenever a new config is assigned.
-        When no such file exists, ``label()`` returns each symbol unchanged,
-        so panels from other vendors are unaffected. The price dataset names
-        the store to look beside (``ticker_store()``); a dataset for which no
-        sidecar can apply (a ``FrameDataset``, even one read back from a run
-        directory) names none: the property is ``None`` and
+        The price dataset says which lookup applies
+        (``MarketDataset.ticker_lookup()``): for CRSP data (the Center for
+        Research in Security Prices), whose symbols are PERMNOs, permanent
+        numeric security ids, it reads the ``.crsp_tickers.json`` sidecar
+        beside the store, which records which ticker each PERMNO traded
+        under on each date. The engine labels its settlement and
+        rejected-order records through it. It is asked of the dataset on
+        first access, kept so a sidecar is read once per run, and reset
+        whenever a new config is assigned. A dataset that names no lookup (a
+        ``FrameDataset``, even one read back from a run directory, or a
+        vendor without tickers) makes the property ``None``, and
         ``_symbol_labels`` shows its symbols as they are.
 
         Examples
         --------
-        >>> from datetime import date
-        >>> backtester.ticker_lookup.label(["AAA", "BBB"], date(2024, 3, 1))
-        ['AAA', 'BBB']
+        >>> backtester.ticker_lookup is None  # its price dataset names no lookup
+        True
         """
-        path = self.config.price_dataset.ticker_store()
-        if path is None:
-            return None
-        if self._ticker_lookup is None:
-            self._ticker_lookup = CrspTickerLookup.beside_store(path)
+        if self._ticker_lookup is _UNSET:
+            self._ticker_lookup = self.config.price_dataset.ticker_lookup()
         return self._ticker_lookup
 
     def _symbol_labels(self, symbols, day) -> list[str]:
         """Return readable labels of price-dataset ``symbols`` as of ``day``.
 
-        Through ``ticker_lookup`` when the price dataset has a store, and the
-        symbols themselves (as ``str``) for a dataset held in memory.
+        Through ``ticker_lookup`` when the price dataset names one, and the
+        symbols themselves (as ``str``) otherwise.
         """
         lookup = self.ticker_lookup
         if lookup is None:
@@ -752,8 +747,8 @@ class BaseBacktester(Component, ABC):
 
         self._config = config
         self._config.name = self.import_path
-        # The cached lookup describes the previous config's price store.
-        self._ticker_lookup = None
+        # The cached lookup describes the previous config's price dataset.
+        self._ticker_lookup = _UNSET
         self._validate_config()
 
     def _validate_config(self) -> None:
@@ -2712,19 +2707,18 @@ class BaseBacktester(Component, ABC):
         )
 
     def _benchmark_display_name(self, axis_symbol: str, as_of) -> str:
-        """Return the benchmark's readable name, its ticker when the store has one.
+        """Return the benchmark's readable name, its ticker when one is known.
 
         A CRSP benchmark store is keyed by PERMNO, a bare number, so the
-        ticker sidecar beside the benchmark's own store (not the price
-        store, as ``ticker_store()`` names it) names it as of the window's last
-        bar. Without a sidecar, or when the dataset names no store to look
-        beside (a ``FrameDataset``), the axis label is returned unchanged.
+        lookup the benchmark dataset names (not the price dataset's) names it
+        as of the window's last bar. When the dataset names no lookup (a
+        ``FrameDataset``), or the lookup does not know the symbol, the axis
+        label is returned unchanged.
         """
         dataset = self.config.benchmark_dataset
-        store = None if dataset is None else dataset.ticker_store()
-        if store is None or not axis_symbol:
+        lookup = None if dataset is None else dataset.ticker_lookup()
+        if lookup is None or not axis_symbol:
             return axis_symbol
-        lookup = CrspTickerLookup.beside_store(store)
         return str(lookup.label([axis_symbol], pd.Timestamp(as_of).date())[0])
 
     def _relative_stats(

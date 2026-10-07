@@ -598,7 +598,9 @@ def test_ticker_sidecar_is_written_beside_the_store_and_read_by_the_crsp_lookup(
     # Only the panel's PERMNOs, not the whole reference table.
     assert sorted(payload["intervals"]) == sorted([str(AAPL), str(BRK_B)])
 
-    lookup = CrspTickerLookup.beside_store(cfg.zarr_file_path)
+    lookup = dataset.ticker_lookup()
+    assert isinstance(lookup, CrspTickerLookup)
+    assert lookup.sidecar_path == sidecar
     assert lookup.as_of(BRK_B, DAY) == "BRK.B"
     assert lookup.label([AAPL, BRK_B], DAY) == ["AAPL", "BRK.B"]
 

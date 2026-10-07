@@ -38,31 +38,10 @@ CORE_LAYER_FILES = (
     "quantlab/backtest/base.py",
 )
 
-# Why `CrspTickerLookup` is deliberately NOT in this tuple (G-03.11-1):
-# `quantlab/backtest/base.py:15` carries a named vendor import
-# (`from quantlab.dataset.crsp.tickers import CrspTickerLookup`) -- a concrete
-# dataset-layer class name living in `base/`. `base/factor.py` solved the same
-# problem the other way (the dataset declares a constant, `base/` only reads
-# it, zero vendor class names), so one phase ended up with two patterns. The
-# operator ruled (b) in `03.11-UAT.md` test 1: ACCEPT that dependency as-is,
-# do NOT refactor it in this phase (option (a), refactoring the import, was
-# rejected), and instead put the file behind this gate so *future*
-# market-literal leaks into `base/backtest.py` turn red.
-# Measured fact at the time of the ruling: none of the four substrings below
-# occurs in `quantlab/backtest/base.py`, so widening the gate is green today
-# rather than an owed debt.
-#
-# What this gate sees, and what it does not. It sees exactly the four legacy
-# market literals listed below, on non-comment lines -- nothing else. It does
-# NOT see either of the two concrete couplings `quantlab/backtest/base.py`
-# already carries: the named vendor import at `:15` (excluded on purpose per
-# ruling (b) above), nor the concrete market class name that appears in prose
-# at `:153`. Docstring lines ARE scanned, but that class name is CamelCase
-# while the corresponding entry below is a lowercase dotted module path, so
-# the two never match. Both facts are outside this gate's reach by
-# construction. "This gate is green" and "this file is proven free of
-# market-specific coupling" are therefore two different claims: the first is
-# true, the second is not, and widening the gate did not make it true.
+# What this gate sees: exactly the four legacy market literals listed below,
+# on non-comment lines, and nothing else. A vendor class reached through a
+# dataset (a ticker lookup) is checked by
+# `test_no_backtest_module_names_the_crsp_ticker_lookup` instead.
 FORBIDDEN_SUBSTRINGS = (
     "SpotKlineDataset",
     "StockDataset",
@@ -107,6 +86,19 @@ def test_core_layer_purity_no_market_specific_logic() -> None:
         "Core layers must not reference concrete Dataset subclasses or "
         "market-specific literals (DATA-03):\n" + "\n".join(violations)
     )
+
+
+def test_no_backtest_module_names_the_crsp_ticker_lookup() -> None:
+    """#226: the backtester labels symbols through the dataset layer's
+    `TickerLookup`, which the price or benchmark dataset names; no backtest
+    module names the CRSP implementation, so a new vendor's lookup needs no
+    backtest change."""
+    offenders = [
+        str(path)
+        for path in sorted(Path("quantlab/backtest").rglob("*.py"))
+        if "CrspTickerLookup" in path.read_text()
+    ]
+    assert offenders == []
 
 
 class FakeDataset(MarketDataset):

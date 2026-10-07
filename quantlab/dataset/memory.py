@@ -370,24 +370,6 @@ class FrameDataset(MarketDataset):
             )
         return {**config, "zarr_file_path": str(Path(run_dir) / path)}
 
-    def ticker_store(self) -> None:
-        """Return ``None``: a caller's symbols are shown as they are.
-
-        The panel came from a caller, not from a CRSP store, so no ticker sidecar
-        applies, even when it was read back from a run directory's copy.
-
-        Examples
-        --------
-        >>> import pandas as pd
-        >>> from quantlab.dataset.memory import FrameDataset
-        >>> frame = pd.DataFrame({
-        ...     "timestamp": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"],
-        ...     "close": [10.0]})
-        >>> FrameDataset(frame).ticker_store() is None
-        True
-        """
-        return None
-
     def resample(self, freq: str, how: Mapping[str, str] | str) -> Self:
         """Return a dataset holding this panel resampled onto ``freq``, in memory.
 

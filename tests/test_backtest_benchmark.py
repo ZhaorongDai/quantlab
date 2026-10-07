@@ -195,6 +195,28 @@ def test_metrics_carry_benchmark_and_relative_blocks(benchmark_run):
     assert "Total Return [%]" in metrics["benchmark"]["whole"]
 
 
+def test_the_benchmark_is_named_by_its_dataset_ticker_lookup(tmp_path, monkeypatch):
+    """#226: the benchmark's name comes from the lookup its dataset names, as
+    of the window's last bar; the axis label is kept beside it."""
+    from quantlab.dataset.base import SymbolName, TickerLookup
+    from quantlab.dataset.stock import StockDataset
+
+    asked = []
+
+    class Named(TickerLookup):
+        def names(self, symbols, day):
+            asked.append(day)
+            return [SymbolName(f"{s}-NAMED", "Fund") for s in symbols]
+
+    monkeypatch.setattr(StockDataset, "ticker_lookup", lambda self: Named())
+
+    result = USEquityCrossectionSelectStockVectorBt(_config(tmp_path)).run()
+
+    assert result.metrics["benchmark"]["symbol"] == "QQQ-NAMED"
+    assert result.metrics["benchmark"]["axis_symbol"] == "QQQ"
+    assert asked[-1] == _bars()[WINDOW_END].date()
+
+
 def test_whole_excess_return_and_drawdown_match_the_value_ratio(benchmark_run):
     _, result = benchmark_run
     value = result.simulation.value.values

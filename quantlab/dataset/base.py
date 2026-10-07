@@ -21,6 +21,9 @@ A concrete dataset lives under ``quantlab/dataset/`` and implements
 ``panel(start, end)`` and counts warm-up with ``bar_before(date, n)``;
 ``quantlab.dataset.merged.MergedDataset`` answers the same requests for
 several datasets merged into one panel.
+
+``TickerLookup`` names a dataset's symbol ids as of a day (ticker and
+company); a dataset says which one applies with ``ticker_lookup()``.
 """
 
 import copy
@@ -141,6 +144,103 @@ class ConversionResult:
     #: with ``cancelled``. When set, ``windows_written`` and ``rows_written``
     #: describe work that no longer exists on disk.
     rebuild_rolled_back: bool = False
+
+
+@dataclass(frozen=True)
+class SymbolName:
+    """The readable name of one symbol on one day: its ticker and company.
+
+    ``TickerLookup.names`` returns one per symbol. A symbol the lookup cannot
+    name gets its own id as ``ticker``, so a name is never missing.
+
+    Examples
+    --------
+    >>> SymbolName(ticker="META", company=None)
+    SymbolName(ticker='META', company=None)
+    """
+
+    #: The ticker the symbol traded under that day, or the symbol id as a
+    #: string when none is known.
+    ticker: str
+    #: The company's name that day, or ``None`` when the lookup records none.
+    company: str | None = None
+
+
+class TickerLookup(ABC):
+    """Names a dataset's symbol ids as of a day: the ticker and company in use.
+
+    A panel's ``symbol`` axis can hold an id meant for code (a CRSP PERMNO, a
+    Sharadar permaticker) rather than the ticker a person reads. A dataset
+    names the lookup that applies to its symbols with
+    ``BaseDataset.ticker_lookup()``, and display code (a backtest's
+    settlement and rejected-order records, its benchmark name, a membership
+    report) labels symbols through this interface without knowing the
+    vendor. A ticker can change while the id stays (FB, then META), so every
+    answer is as of one day.
+
+    A subclass implements ``names``; ``label`` is the ticker alone.
+
+    Examples
+    --------
+    >>> from datetime import date
+    >>> class Fixed(TickerLookup):
+    ...     def names(self, symbols, day):
+    ...         known = {13407: SymbolName("META", "Meta Platforms")}
+    ...         return [known.get(s, SymbolName(str(s))) for s in symbols]
+    >>> Fixed().label([13407, 99999], date(2024, 1, 2))
+    ['META', '99999']
+    """
+
+    @abstractmethod
+    def names(self, symbols: Sequence, day: datetime.date) -> list[SymbolName]:
+        """Return the name of each of ``symbols`` on ``day``, in order.
+
+        Never raises for a symbol it cannot name or a source it cannot read:
+        such a symbol gets ``SymbolName(str(symbol), None)``, because the
+        callers are display code that must not fail for lack of a name.
+
+        Parameters
+        ----------
+        symbols : Sequence
+            Symbol ids as on the panel's ``symbol`` axis.
+        day : datetime.date
+            The date whose names to use.
+
+        Returns
+        -------
+        list of SymbolName
+            One name per input, in the input's order.
+
+        Examples
+        --------
+        >>> Fixed().names([13407, 99999], date(2024, 1, 2))
+        [SymbolName(ticker='META', company='Meta Platforms'), SymbolName(ticker='99999', company=None)]
+        """
+
+    def label(self, symbols: Sequence, day: datetime.date) -> list[str]:
+        """Return the ticker of each of ``symbols`` on ``day``, in order.
+
+        The ``ticker`` of ``names``, so it never raises and an unknown symbol
+        reads as its own id.
+
+        Parameters
+        ----------
+        symbols : Sequence
+            Symbol ids as on the panel's ``symbol`` axis.
+        day : datetime.date
+            The date whose tickers to use.
+
+        Returns
+        -------
+        list of str
+            One label per input, in the input's order.
+
+        Examples
+        --------
+        >>> Fixed().label([13407, 99999], date(2024, 1, 2))
+        ['META', '99999']
+        """
+        return [name.ticker for name in self.names(symbols, day)]
 
 
 class BaseDataset(Component, ABC):
@@ -1084,19 +1184,20 @@ class BaseDataset(Component, ABC):
         """
         return config
 
-    def ticker_store(self) -> str | None:
-        """Return the store whose CRSP ticker sidecar names this dataset's symbols.
+    def ticker_lookup(self) -> TickerLookup | None:
+        """Return the lookup that names this dataset's symbols, or ``None``.
 
-        A backtester labels symbols through the ``.crsp_tickers.json`` sidecar
-        beside this store when one exists there (see
-        ``BaseBacktester.ticker_lookup``). The default is the dataset's own
-        store; ``None`` means no sidecar can apply and symbols are shown as
-        they are, without looking for one.
+        A backtester and a membership report label symbols through it (see
+        ``BaseBacktester.ticker_lookup``). A dataset whose vendor records
+        tickers beside its store overrides this (a CRSP store returns a
+        ``CrspTickerLookup`` over its ``.crsp_tickers.json`` sidecar). The
+        default is ``None``: no lookup applies, and the symbols are shown as
+        they are.
 
         Returns
         -------
-        str or None
-            The store path, or ``None``.
+        TickerLookup or None
+            The lookup, or ``None``.
 
         Examples
         --------
@@ -1106,10 +1207,10 @@ class BaseDataset(Component, ABC):
         ...     zarr_file_path="data/us_equity/1d/us_all.zarr",
         ...     raw_data_dir_path="downloads/us_equity/1d/us_all/tiingo",
         ...     market="us_equity", frequency="1d", vendor="tiingo",
-        ... )).ticker_store()
-        'data/us_equity/1d/us_all.zarr'
+        ... )).ticker_lookup() is None
+        True
         """
-        return self.config.zarr_file_path
+        return None
 
     def get_lazyframe(self) -> pl.LazyFrame:
         """Return the built panel as a long-format polars ``LazyFrame``.

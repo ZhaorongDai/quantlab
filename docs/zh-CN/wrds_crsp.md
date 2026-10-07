@@ -271,7 +271,7 @@ timestamp
 ['META', 'BRK.B', '99999']
 ```
 
-边车文件缺失或无法读取时，`as_of` 会抛出异常；`label` 从不抛异常，而是退回到 PERMNO 数字，适合日志和报告。
+边车文件缺失或无法读取时，`as_of` 会抛出异常；`label` 从不抛异常，而是退回到 PERMNO 数字，适合日志和报告。`CrspTickerLookup` 实现了数据集层的 `TickerLookup` 接口：`names` 为每个 PERMNO 返回一个 `SymbolName(ticker, company)`（边车文件不记录公司名，所以 `company` 为 `None`），`CrspStockDataset.ticker_lookup()` 返回读取该 store 自己边车文件的查找，回测就是通过它为结算记录、被拒订单记录和基准命名的。
 
 ### 选择指数股票池或整个市场
 

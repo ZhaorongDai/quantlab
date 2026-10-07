@@ -662,7 +662,7 @@ True
 True
 ```
 
-The rebuilt `FrameDataset` reads the copy into memory; the replay keeps its own copy again, so its directory rebuilds on its own too. Its symbols are shown as they are: a `FrameDataset` names no store for a CRSP ticker sidecar (`ticker_store()` is `None`), even when read back from a run's copy.
+The rebuilt `FrameDataset` reads the copy into memory; the replay keeps its own copy again, so its directory rebuilds on its own too. Its symbols are shown as they are: a `FrameDataset` names no ticker lookup (`ticker_lookup()` is `None`), even when read back from a run's copy.
 
 ### Compute the statistics without a backtester
 

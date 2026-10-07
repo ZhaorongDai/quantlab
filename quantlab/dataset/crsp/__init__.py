@@ -64,6 +64,7 @@ from loguru import logger
 from quantlab.dataset.config import CrspDatasetConfig, DatasetConfig
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
+from quantlab.dataset.crsp.tickers import CrspTickerLookup
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.data import TiingoColumns
 from quantlab.utils.atomic import write_json_atomically
@@ -1374,6 +1375,20 @@ class CrspStockDataset(StockDataset):
         PosixPath('/data/crsp.zarr.crsp_tickers.json')
         """
         return Path(str(self.config.zarr_file_path) + TICKER_SIDECAR_SUFFIX)
+
+    def ticker_lookup(self) -> CrspTickerLookup:
+        """Return the lookup over the ticker sidecar beside the store.
+
+        The backtester labels this dataset's PERMNOs through it. The file is
+        read on first use, so a store converted before the sidecar existed
+        still gets a lookup; it falls back to the PERMNO digits.
+
+        Examples
+        --------
+        >>> ds.ticker_lookup()
+        CrspTickerLookup('/data/crsp.zarr.crsp_tickers.json')
+        """
+        return CrspTickerLookup(self.ticker_sidecar_path())
 
     def _build_ticker_intervals(self, derived: pl.DataFrame) -> dict:
         """Build the ticker sidecar payload for the PERMNOs in ``derived``.

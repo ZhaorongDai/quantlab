@@ -271,10 +271,58 @@ def test_an_existing_store_blocks_the_write(tmp_path):
 
 
 def _lookup(converted):
+    """The lookup the CRSP dataset names, so the read-side tests go through it."""
     from quantlab.dataset.crsp import CrspStockDataset
-    from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
-    return CrspTickerLookup(CrspStockDataset(converted).ticker_sidecar_path())
+    return CrspStockDataset(converted).ticker_lookup()
+
+
+def test_a_crsp_dataset_names_a_ticker_lookup_over_its_sidecar(converted):
+    """#226: the dataset tells a caller which lookup applies, as the interface."""
+    from quantlab.dataset.base import TickerLookup
+    from quantlab.dataset.crsp import CrspStockDataset
+
+    dataset = CrspStockDataset(converted)
+    lookup = dataset.ticker_lookup()
+
+    assert isinstance(lookup, TickerLookup)
+    assert lookup.sidecar_path == dataset.ticker_sidecar_path()
+
+
+def test_names_gives_ticker_and_company_and_falls_back_to_the_id(converted):
+    """#226: `names` answers ticker and company as of a day; the CRSP sidecar
+    records no company, and an unknown PERMNO is named by its own digits."""
+    from quantlab.dataset.base import SymbolName
+
+    lookup = _lookup(converted)
+
+    assert lookup.names([13407, 99999], date(2022, 6, 8)) == [
+        SymbolName(ticker="FB", company=None),
+        SymbolName(ticker="99999", company=None),
+    ]
+    assert lookup.names([13407], date(2022, 6, 9)) == [SymbolName("META", None)]
+
+
+def test_a_dataset_without_a_ticker_sidecar_names_no_lookup(tmp_path):
+    """#226: a store-backed dataset of another vendor and one held in memory
+    both name no lookup, so their symbols are shown as they are."""
+    import pandas as pd
+
+    from quantlab.dataset.config import DatasetConfig
+    from quantlab.dataset.memory import FrameDataset
+    from quantlab.dataset.stock import StockDataset
+
+    stock = StockDataset(DatasetConfig(
+        zarr_file_path=str(tmp_path / "us_all.zarr"),
+        raw_data_dir_path=str(tmp_path / "raw"),
+        market="us_equity", frequency="1d", vendor="tiingo",
+    ))
+    frame = FrameDataset(pd.DataFrame({
+        "timestamp": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"],
+        "close": [10.0]}))
+
+    assert stock.ticker_lookup() is None
+    assert frame.ticker_lookup() is None
 
 
 def test_as_of_answers_fb_and_meta_on_either_side_of_the_rename(converted):
@@ -947,10 +995,8 @@ def test_product_end_refuses_an_unparseable_sidecar_too(tmp_path, payload):
 
 
 def test_beside_store_builds_the_lookup_from_a_store_path(converted):
-    """The one place the suffix is appended for a reader, so the two production
-    construction sites (`quantlab/dataset/_support/masking.py:115`,
-    `quantlab/backtest/base.py:198`) do not each spell `".crsp_tickers.json"`
-    for themselves."""
+    """For a caller holding only a store path: the suffix is appended here,
+    not spelled by the caller."""
     from quantlab.dataset.crsp.tickers import CrspTickerLookup
 
     lookup = CrspTickerLookup.beside_store(converted.zarr_file_path)

@@ -662,7 +662,7 @@ True
 True
 ```
 
-重建出的 `FrameDataset` 把副本读进内存；重放会再保存一份自己的副本，所以它的目录同样可以独立重建。它的标的按原样显示：`FrameDataset` 不指定任何用于查找 CRSP ticker 附属文件的 store（`ticker_store()` 为 `None`），即使它是从运行的副本读回来的。
+重建出的 `FrameDataset` 把副本读进内存；重放会再保存一份自己的副本，所以它的目录同样可以独立重建。它的标的按原样显示：`FrameDataset` 不指定任何 ticker 查找（`ticker_lookup()` 为 `None`），即使它是从运行的副本读回来的。
 
 ### 不用回测器计算统计量
 
