@@ -2221,7 +2221,9 @@ def _holdings_section(
         '<th data-k="ticker">Ticker</th><th data-k="company">Company</th><th data-k="symbol">Symbol</th>'
         '<th data-k="t" title="The weight the last rebalance before the day asked for.">Target weight</th>'
         '<th data-k="h" title="The share of the book, cash included, at the day\'s close.">Holding</th>'
-        '<th data-k="h">Target / holding</th></tr></thead>'
+        '<th data-k="h">Target / holding</th>'
+        '<th title="The holding on each day the targets of this rebalance are in force, from the fill to the day '
+        'before the next rebalance fills; the dot is the selected day.">Path in period</th></tr></thead>'
         '<tbody id="hd-rows"></tbody><tfoot id="hd-foot"></tfoot></table>\n'
         f'<script type="application/json" id="holdings-data">{payload}</script>\n'
         f"<script>{_HOLDINGS_SCRIPT}</script>"
@@ -2246,6 +2248,7 @@ _HOLDINGS_STYLE = """
   table.hd-table tfoot td { color: #6b7280; }
   .hd-bar { position: relative; width: 140px; height: 10px; }
   .hd-bar span { position: absolute; left: 0; height: 4px; border-radius: 2px; }
+  .hd-spark { display: block; }
   .hd-bar .t { top: 0; background: #93c5fd; } .hd-bar .h { top: 6px; background: #2563eb; }
   .hd-bar .neg { background: #dc2626; }
 """
@@ -2269,6 +2272,40 @@ _HOLDINGS_SCRIPT = """
       var n = N[r[0]];
       return { ticker: n[0], company: n[1], symbol: n[2], t: r[1], h: r[2] };
     });
+  }
+  var byDay = [];
+  function heldOn(i) {
+    if (!byDay[i]) {
+      byDay[i] = {};
+      days[i].h.forEach(function (r) { byDay[i][N[r[0]][2]] = r[2]; });
+    }
+    return byDay[i];
+  }
+  function period(i) {
+    if (days[i].r === null) return null;
+    var a = i, b = i;
+    while (a > 0 && days[a - 1].r === days[i].r) a--;
+    while (b < days.length - 1 && days[b + 1].r === days[i].r) b++;
+    return [a, b];
+  }
+  function spark(symbol, span, mark) {
+    var ns = 'http://www.w3.org/2000/svg', w = 90, ht = 18, v = [];
+    for (var i = span[0]; i <= span[1]; i++) v.push(heldOn(i)[symbol] || 0);
+    var lo = Math.min.apply(null, v), hi = Math.max.apply(null, v);
+    if (hi === lo) { hi += 1e-9; }
+    var x = function (k) { return v.length > 1 ? k / (v.length - 1) * w : w / 2; };
+    var y = function (u) { return ht - 2 - (u - lo) / (hi - lo) * (ht - 4); };
+    var svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('width', w); svg.setAttribute('height', ht); svg.setAttribute('class', 'hd-spark');
+    var line = document.createElementNS(ns, 'polyline');
+    line.setAttribute('fill', 'none'); line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('stroke', v[mark - span[0]] < 0 ? '#dc2626' : '#2563eb');
+    line.setAttribute('points', v.map(function (u, k) { return x(k).toFixed(1) + ',' + y(u).toFixed(1); }).join(' '));
+    var dot = document.createElementNS(ns, 'circle');
+    dot.setAttribute('cx', x(mark - span[0]).toFixed(1)); dot.setAttribute('cy', y(v[mark - span[0]]).toFixed(1));
+    dot.setAttribute('r', '2.5'); dot.setAttribute('fill', '#111827');
+    svg.appendChild(line); svg.appendChild(dot);
+    return svg;
   }
   function targeted(i) {
     var s = {};
@@ -2324,6 +2361,7 @@ _HOLDINGS_SCRIPT = """
     var scale = Math.max(1e-9, Math.max.apply(null, all.map(function (r) {
       return Math.max(Math.abs(r.t), Math.abs(r.h));
     }).concat([0])));
+    var span = period(cur);
     var body = $('hd-rows');
     body.textContent = '';
     rows.forEach(function (r) {
@@ -2338,6 +2376,9 @@ _HOLDINGS_SCRIPT = """
       var cell = el('td');
       cell.appendChild(bar(r.t, r.h, scale));
       tr.appendChild(cell);
+      var path = el('td');
+      if (span) path.appendChild(spark(r.symbol, span, cur));
+      tr.appendChild(path);
       body.appendChild(tr);
     });
     var foot = $('hd-foot');
@@ -2352,6 +2393,7 @@ _HOLDINGS_SCRIPT = """
       tr.appendChild(el('td', '', 'l'));
       tr.appendChild(el('td', x[2] === null ? '' : pct(x[2], 3)));
       tr.appendChild(el('td', pct(x[3], x[2] === null ? 2 : 3)));
+      tr.appendChild(el('td'));
       tr.appendChild(el('td'));
       foot.appendChild(tr);
     });
@@ -2689,7 +2731,8 @@ _CHART_TIPS = {
                    "the universe, and the costs; and how each score group of the universe did.",
     "Holdings": "What the book held at each day's close: each symbol's target weight from the last rebalance "
                 "before the day, and its holding, its value over the whole book with cash. Rejected orders, "
-                "delisting settlements, costs and price moves make the two differ. Top-10 holding is the sum "
+                "delisting settlements, costs and price moves make the two differ; the path shows how each "
+                "holding moved from its rebalance's fill to the selected day and on to the next rebalance. Top-10 holding is the sum "
                 "of the ten largest holdings by size, shorts included; cash is one less the net holdings, so "
                 "a short sale's proceeds raise it above 100%.",
 }
