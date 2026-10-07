@@ -268,7 +268,9 @@ class MeanVarianceOptimizer(PortfolioConstructor):
 
     ``lookback_bars`` and ``history_bars`` are the covariance estimator's;
     ``required_factors()`` is the covariance estimator's followed by the
-    ``exposure_factors``, whose outputs must not repeat a name.
+    ``exposure_factors`` not among them, whose outputs must not repeat a
+    name. ``exposure_bounds`` may bound any of their outputs, a factor risk
+    model's exposures included.
     ``bind`` reads the span from the label's ``LabelSpec``, so a backtest
     binds the optimiser when it is built.
 
@@ -363,23 +365,22 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             raise ValueError(
                 f"candidate_top_k must be a positive integer or None, got {top_k!r}"
             )
-        declared = [
-            name
-            for factor in [*config.covariance.required_factors(), *config.exposure_factors]
-            for name in factor.get_factor_names()
-        ] if config.exposure_factors else []
+        declared = (
+            [name for factor in self.required_factors() for name in factor.get_factor_names()]
+            if config.exposure_factors or config.exposure_bounds
+            else []
+        )
         repeated = sorted({name for name in declared if declared.count(name) > 1})
         if repeated:
             raise ValueError(
                 f"the declared factors produce {repeated} more than once; "
                 f"context.factors holds one variable per name"
             )
-        outputs = {name for factor in config.exposure_factors for name in factor.get_factor_names()}
         for name, (lower, upper) in config.exposure_bounds.items():
-            if name not in outputs:
+            if name not in declared:
                 raise ValueError(
                     f"exposure_bounds names {name!r}, which is not an output of the "
-                    f"exposure_factors ({sorted(outputs)})"
+                    f"declared factors ({sorted(declared)})"
                 )
             if not (np.isfinite(lower) and np.isfinite(upper) and lower <= upper):
                 raise ValueError(
@@ -411,14 +412,21 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         return self.config.covariance.history_bars
 
     def required_factors(self) -> list["Factor"]:
-        """The covariance estimator's ``required_factors()``, then the ``exposure_factors``.
+        """The covariance estimator's ``required_factors()``, then the ``exposure_factors`` not among them.
+
+        A factor both declare (a factor risk model's exposures also bounded)
+        is listed once.
 
         Examples
         --------
         >>> optimizer.required_factors()
         []
         """
-        return [*self.config.covariance.required_factors(), *self.config.exposure_factors]
+        factors = list(self.config.covariance.required_factors())
+        for factor in self.config.exposure_factors:
+            if not any(factor == other for other in factors):
+                factors.append(factor)
+        return factors
 
     @property
     def span(self) -> int | None:

@@ -325,7 +325,7 @@ array([ 0.4  , -0.212, -0.261,  0.073])
 
 ### 暴露约束
 
-`exposure_bounds` 把组合对某个因子的暴露限制在两个界之间：对 `exposure_factors` 中每个被点名的输出 `x`，要求 `lower <= sum_i w_i * x_i <= upper`，被锁持仓的暴露也计入（没有暴露值的被锁标的按 0 计）。规则在 `required_factors()` 里声明这些 `exposure_factors`，所以回测会在窗口内计算它们，并把每根 bar 的取值放进 `context.factors`。没有暴露值的候选标的不分配权重；如果它当前已持有，就被平掉，并记在该 bar 的 `closed_without_exposure` 事件里。候选标的无法满足的界会让这根 bar 无解，回测会保持原持仓（见[在回测中](#在回测中)）。约束满足到求解器的精度，约 1e-5。
+`exposure_bounds` 把组合对某个因子的暴露限制在两个界之间：对 `exposure_factors` 中每个被点名的输出 `x`，要求 `lower <= sum_i w_i * x_i <= upper`，被锁持仓的暴露也计入（没有暴露值的被锁标的按 0 计）。规则在 `required_factors()` 里声明这些 `exposure_factors`，所以回测会在窗口内计算它们，并把每根 bar 的取值放进 `context.factors`。没有暴露值的候选标的不分配权重；如果它当前已持有，就被平掉，并记在该 bar 的 `closed_without_exposure` 事件里。协方差估计器声明的输出也可以直接约束，不必重复声明：以因子风险模型为协方差时，`exposure_bounds={"style_beta": (-0.1, 0.1)}` 把组合的 USE4 Beta 暴露控制在市值加权估计域的水平（即 0）附近。两边都声明的同一个因子只计算一次。候选标的无法满足的界会让这根 bar 无解，回测会保持原持仓（见[在回测中](#在回测中)）。约束满足到求解器的精度，约 1e-5。
 
 最常见的用法是把 beta 控制在 1 附近，让只做多的组合保持和基准相同的市场风险，超额来自选股，而不是来自更低的 beta。`BenchmarkBeta`（见[因子指南](factor.md#基准-beta)）给出每个标的相对一个单标的基准的 beta；`stocks` 为各标的的价格数据集，`vt` 为基准的数据集：
 

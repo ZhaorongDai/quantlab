@@ -138,7 +138,9 @@ class MeanVarianceConfig(FrozenConfig):
     #: ``BenchmarkBeta``; the rule declares them in ``required_factors()``,
     #: so the backtest hands their values at each bar in ``context.factors``.
     exposure_factors: tuple["Factor", ...] = component(many=True, default=())
-    #: Output name of an ``exposure_factors`` factor to ``(lower, upper)``:
+    #: Output name of a declared factor (an ``exposure_factors`` one, or one
+    #: the covariance estimator declares, such as a factor risk model's
+    #: ``style_beta``) to ``(lower, upper)``:
     #: the book's exposure ``sum_i w_i * x_i``, the locked positions'
     #: included, is held between the two, to the solver's tolerance (about
     #: 1e-5). A candidate without an exposure gets no weight. Empty: no

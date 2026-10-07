@@ -19,7 +19,9 @@ from quantlab.dataset.memory import FrameDataset
 from quantlab.factor.config import BenchmarkBetaConfig
 from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
 from quantlab.portfolio.base import PortfolioConstructionError
-from tests.test_portfolio_mean_variance import SYMBOLS, _context, _optimizer
+from quantlab.portfolio.config import LedoitWolfEstimatorConfig
+from quantlab.portfolio.predefined.ledoit_wolf import LedoitWolfEstimator
+from tests.test_portfolio_mean_variance import LOOKBACK, SYMBOLS, _context, _optimizer
 
 #: The best predictions sit on the highest exposures, so an unconstrained
 #: book's exposure is well above 1.
@@ -137,9 +139,14 @@ def test_bad_exposure_bounds_are_refused_at_construction(overrides, match):
         _optimizer(exposure_factors=(_beta(),), **overrides)
 
 
-def test_two_declared_factors_with_one_output_name_are_refused():
+def test_two_different_declared_factors_with_one_output_name_are_refused():
+    """Two betas over different windows both name their output ``beta``; an
+    equal factor declared twice is one (test below)."""
+    longer = BenchmarkBeta(BenchmarkBetaConfig(
+        warmup_bars=20, dataset=_prices(), benchmark=_prices(), lookback_bars=20, min_bars=5,
+    ))
     with pytest.raises(ValueError, match="more than once"):
-        _optimizer(exposure_factors=(_beta(), _beta()), exposure_bounds={"beta": (0.9, 1.1)})
+        _optimizer(exposure_factors=(_beta(), longer), exposure_bounds={"beta": (0.9, 1.1)})
 
 
 def test_the_rule_declares_its_exposure_factors():
@@ -153,3 +160,37 @@ def test_the_optimizer_round_trips_through_its_config_with_its_exposure_factors(
     again = rebuild(optimizer.get_config())
     assert again.config.exposure_bounds == {"beta": (0.9, 1.1)}
     assert again.required_factors()[0].get_config() == beta.get_config()
+
+
+class _DeclaringLedoitWolf(LedoitWolfEstimator):
+    """A covariance estimator that declares a factor, as a factor risk model declares its exposures."""
+
+    declared: list = []
+
+    def required_factors(self):
+        return list(self.declared)
+
+
+def _declaring_covariance(factor):
+    estimator = _DeclaringLedoitWolf(LedoitWolfEstimatorConfig(lookback_bars=LOOKBACK))
+    estimator.declared = [factor]
+    return estimator
+
+
+def test_an_output_the_covariance_estimator_declares_can_be_bounded_without_declaring_it_again():
+    """A factor risk model's exposures (USE4's style_beta) are in context.factors already."""
+    beta = _beta()
+    optimizer = _optimizer(
+        risk_aversion=1.0, covariance=_declaring_covariance(beta), exposure_bounds={"beta": (0.9, 1.1)}
+    )
+    assert optimizer.required_factors() == [beta]
+    weights = optimizer.construct(_with_exposure(_context(prediction=PREDICTION), EXPOSURE))
+    assert 0.9 - 1e-6 <= _exposure(weights, EXPOSURE) <= 1.1 + 1e-6
+
+
+def test_a_factor_declared_by_both_the_covariance_and_the_bounds_is_declared_once():
+    beta = _beta()
+    optimizer = _optimizer(
+        covariance=_declaring_covariance(beta), exposure_factors=(beta,), exposure_bounds={"beta": (0.9, 1.1)}
+    )
+    assert optimizer.required_factors() == [beta]
