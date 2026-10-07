@@ -104,6 +104,7 @@ DELIST_BAR = OVERLAP_START_BAR + 3
 D24_ARTIFACTS = [
     "config.json",
     "equity.zarr",
+    "holdings.zarr",
     "metrics.json",
     "predictions.zarr",
     "report.html",
@@ -500,7 +501,9 @@ def test_the_config_stays_the_recipe_after_a_run(overlap_run):
 
 
 def _fingerprint_warnings(messages: list[str]) -> list[str]:
-    return [m for m in messages if "fingerprint" in m]
+    # The warning's own words, not "fingerprint": a test's temporary
+    # directory may be named after it and show in other warnings' paths.
+    return [m for m in messages if "data fingerprint mismatch" in m]
 
 
 def test_matching_expected_fingerprint_logs_no_warning(tmp_path, warnings_sink):

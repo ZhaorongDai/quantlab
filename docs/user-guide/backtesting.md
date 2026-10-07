@@ -106,7 +106,7 @@ run directory: USEquityCrossectionSelectStockVectorBt_20261004_110228_949268
   in-sample range     ('2023-09-04', '2023-09-08')
   out-of-sample       [('2023-09-11', '2024-02-23')]
   out-of-sample Sharpe 1.736
-files: ['config.json', 'equity.zarr', 'metrics.json', 'predictions.zarr', 'report.html', 'run.json', 'settlements.json', 'weights.zarr']
+files: ['config.json', 'equity.zarr', 'holdings.zarr', 'metrics.json', 'predictions.zarr', 'report.html', 'run.json', 'settlements.json', 'weights.zarr']
 first rebalance: {'S08': 0.3333, 'S10': 0.3333, 'S11': 0.3333}
 delisting settlement: S08 delisted 2023-12-15 settled 2023-12-18 at 71.30
 rejected orders: 0
@@ -470,7 +470,7 @@ run directory: USEquityCrossectionSelectStockVectorBt_20261004_110232_370274
   fold 0: 2023-05-22..2023-06-16 return   3.26%
   fold 1: 2023-06-19..2023-07-14 return  -0.24%
   fold 2: 2023-07-17..2023-08-11 return   1.31%
-files: ['config.json', 'equity.zarr', 'folds', 'metrics.json', 'predictions.zarr', 'report.html', 'run.json', 'settlements.json', 'weights.zarr']
+files: ['config.json', 'equity.zarr', 'folds', 'holdings.zarr', 'metrics.json', 'predictions.zarr', 'report.html', 'run.json', 'settlements.json', 'weights.zarr']
 ```
 
 `train_cv` purges the last L bars of every fold's training segment and
@@ -506,6 +506,7 @@ trained unit included); only the run layer names its files.
 | `run.json` | Written last: the format version, the kind (`run`, `run_cv`, `run_weights`, or `fold` for a fold of a `run_cv()` run), the window, the `market` (fill and valuation price columns, for tools that read the run without importing the backtester class), the config fields that hold components, the data fingerprints, the code record and the trained unit the backtest used. A directory of another format version, or without `run.json`, is refused with a message to re-run it. | `kind`, `window`, `market`, `data_fingerprint`, `code`, `trained_run()` |
 | `weights.zarr` | The target weights on `(timestamp, symbol)`. | `weights()` |
 | `equity.zarr` | Portfolio `value` and per-bar `returns` on `timestamp`. | `equity()` |
+| `holdings.zarr` | The simulated holdings, `holding` on `(timestamp, symbol)`: each symbol's value at each bar's close over the book's value, cash included, on every bar of the window (negative for a short, 0 where nothing is held). The weights are what was asked; the holdings are what was held. | `holdings()` |
 | `metrics.json` | The metric blocks described above. | `metrics()` |
 | `settlements.json` | One record per delisting settlement (for `run_cv()`, those of the stitched pass). | `settlements()` |
 | `predictions.zarr` | `run()` and `run_cv()` only (a run with a model): the predictions the portfolio construction rule read, with their label specs (a `PredictionPanel`; for `run_cv()` the concatenated fold predictions). `quantlab.portfolio.decision_inputs.DecisionInputs.from_run(run_dir)` rebuilds the run's decision inputs (the bound rule, the price dataset, the market columns, the execution settings, the rebalance period and the anchor) through `BacktestRun` without loading the model. | `predictions()` |
@@ -524,8 +525,9 @@ the benchmark; trading; and in-sample against out-of-sample when the run has
 an in-sample part), and the charts on the right in tabs: Performance (equity,
 drawdown and monthly returns with a year-by-month heatmap), Excess (the
 cumulative excess return, log or arithmetic, and the excess drawdown), Rolling
-(one-year statistics) and Portfolio (turnover, holdings and exposure per
-rebalance). With an in-sample part the headline numbers are out-of-sample, and
+(one-year statistics), Portfolio (turnover, holdings and exposure per
+rebalance) and Holdings (day by day, each symbol's target weight and holding
+and the cash, with navigation, sorting, filtering and a CSV export). With an in-sample part the headline numbers are out-of-sample, and
 every chart shades the in-sample range; two triangles mark the deepest
 drawdown from its lowest point to its recovery. See
 [the report page](../backtest.md#the-report-page). The page loads plotly.js from a CDN, so

@@ -23,7 +23,8 @@ written last. Its kinds are ``"run"``, ``"run_cv"``, ``"run_weights"`` and
   the backtest used: the one trained in train mode, the checkpoint's in load
   mode, the walk-forward unit for ``run_cv``; none for ``run_weights``) and
   the folds.
-- The weights, the equity curve, the metrics, the settlements, the report,
+- The weights, the equity curve, the holdings (when the engine supplies
+  them), the metrics, the settlements, the report,
   the prediction panel (a run with a model), the per-bar factor attribution
   (a run with a risk model) and each fold's own files are files of the
   directory, named by this module only.
@@ -77,6 +78,7 @@ _KINDS = ("run", "run_cv", "run_weights", "fold")
 _CONFIG_FILE = "config.json"
 _WEIGHTS_FILE = "weights.zarr"
 _EQUITY_FILE = "equity.zarr"
+_HOLDINGS_FILE = "holdings.zarr"
 _METRICS_FILE = "metrics.json"
 _SETTLEMENTS_FILE = "settlements.json"
 _REPORT_FILE = "report.html"
@@ -160,6 +162,7 @@ def write_backtest_run(
     write_report: Callable[[Path], None],
     predictions: PredictionPanel | None = None,
     factor_attribution: xr.Dataset | None = None,
+    holdings: xr.Dataset | None = None,
     folds: Sequence[FoldArtifacts] = (),
 ) -> Path:
     """Write a backtest run directory at ``final``, staged, with ``run.json`` last.
@@ -200,6 +203,10 @@ def write_backtest_run(
     factor_attribution : xarray.Dataset, optional
         The per-bar factor attribution, for a run with a risk model
         (``quantlab.risk.attribution.factor_attribution``).
+    holdings : xarray.Dataset, optional
+        The simulated holdings, a ``holding`` variable on ``(timestamp,
+        symbol)`` covering every bar of the window; written as
+        ``holdings.zarr`` beside the weights when the engine supplies them.
     folds : sequence of FoldArtifacts, optional
         A ``run_cv`` run's folds.
 
@@ -230,6 +237,8 @@ def write_backtest_run(
             staging / _CONFIG_FILE, to_jsonable(_recipe(backtester, staging)), indent=2
         )
         _write_simulation(staging, weights, equity, settlements, metrics)
+        if holdings is not None:
+            XrBackend().to_internal(holdings).write(str(staging / _HOLDINGS_FILE))
         if predictions is not None:
             predictions.write(staging / _PREDICTIONS_FILE)
         if factor_attribution is not None:
@@ -677,6 +686,21 @@ class BacktestRun:
         ['returns', 'value']
         """
         return XrBackend().read(self.path / _EQUITY_FILE).data.load()
+
+    def holdings(self) -> xr.Dataset | None:
+        """The simulated holdings, or None for a run written without them.
+
+        A ``holding`` panel on ``(timestamp, symbol)``: each symbol's value
+        at each bar's close over the book's value, cash included, on every
+        bar of the window; 0 where nothing is held.
+
+        Examples
+        --------
+        >>> BacktestRun.open(run_dir).holdings()["holding"].dims
+        ('timestamp', 'symbol')
+        """
+        path = self.path / _HOLDINGS_FILE
+        return XrBackend().read(path).data.load() if path.exists() else None
 
     @property
     def has_predictions(self) -> bool:

@@ -285,6 +285,7 @@ out_of_sample -5.61 -4.27 13
 | `code` | 运行所用的代码：quantlab 的 git commit 以及已跟踪文件是否有改动，回测器组件树中每个定义了类的模块的 SHA-256（区分框架模块与组件模块，并列出使用它的组件路径），以及 numpy、pandas、xarray、polars、xgboost、torch、vectorbt、KunQuant 和 cvxpy 的版本。 |
 | `trained_run()` | 回测所用的训练单元，即一个 `TrainedRun`：train 模式下是训练出的单元，load 模式下是 checkpoint 所在的单元，`run_cv()` 是 walk-forward 单元，一折则是该折自己的单元；`run_weights()` 为 `None`。 |
 | `weights()`、`equity()` | `(timestamp, symbol)` 上的目标权重；`timestamp` 上的组合 `value` 与每根 bar 的 `returns`，跑了基准时另有 `benchmark_value` 和 `benchmark_returns`。 |
+| `holdings()` | 引擎模拟出的持仓（`holdings.zarr`），`(timestamp, symbol)` 上的 `holding` 面板：每根 bar 收盘时各标的的市值占组合净值（含现金）的比例，覆盖窗口内每根 bar，空头为负，没有持仓处为 0。调仓成交时持仓等于目标权重（扣除成本），之后随价格漂移到下一次调仓；被拒订单和退市结算也体现在其中。不带持仓写出的运行（`run_cv()` 的折）为 `None`。 |
 | `metrics()` | 与 `result.metrics` 相同的映射，按 JSON 保存的形式：NaN 和无穷大变为 `None`，元组变为列表。每次运行都记录 `execution`（被拒订单和最大目标偏差）。`run()`、`run_cv()` 的每个折以及 `run_cv()` 的拼接过程还记录 `portfolio_construction`：`failed_bar_count` 和 `failed_bars`，即组合构建规则无法决定（优化失败或不可行）、回测改为维持原仓位的调仓 bar，以及组合构建规则报告的事件，例如均值-方差优化器的 `closed_without_risk`（因风险模型没有估计而被平仓的持仓），或 top-n 规则的 `tie_at_cutoff`（截断点落在并列分数中间时被排除的并列标的，说明入选是按标的顺序而不是按分数决定的），带 `count`（所有 bar 上的标的总数）和 `bars`，每个 bar 一条记录，记录列出涉及的标的，`tie_at_cutoff` 则只记数量。 |
 | `settlements()` | 退市结算记录。 |
 | `report()`、`log_report(tracking_run)` | HTML 报告的文本；把它附到追踪 run 上。 |
@@ -292,7 +293,7 @@ out_of_sample -5.61 -4.27 13
 | `folds` | `run_cv()` 运行的各折，每折是一个 kind 为 `"fold"` 的 `BacktestRun`。 |
 | `rebuild(field)`、`rebuild_backtester(**overrides)` | 某个配置字段持有的组件，以及回测器本身（见[重建一次运行](#重建一次运行)）。 |
 
-运行的配置（重建时读取的配方）只保存回测器的 `get_config()`；运行的记录（市场、指纹、训练单元）都在 `run.json` 里。保存在内存中的数据集（`FrameDataset`）没有自己的 store，所以运行会保存一份它的面板副本，按数据集的组件路径命名（`price_dataset`、`model.factors.0.dataset`），同一个对象无论被多少个字段持有都只写一次，配方以相对运行目录的路径指向这份副本（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。`report.html` 包含关键指标和左侧分区导航，各分区把图表（业绩、超额收益、滚动一年统计、组合结构、归因）与解释它们的分组指标表放在一起（见[报告页面](#报告页面)）。用别的格式版本写出、或者缺少 `run.json` 的运行目录会被拒绝，并提示重新运行。
+运行的配置（重建时读取的配方）只保存回测器的 `get_config()`；运行的记录（市场、指纹、训练单元）都在 `run.json` 里。保存在内存中的数据集（`FrameDataset`）没有自己的 store，所以运行会保存一份它的面板副本，按数据集的组件路径命名（`price_dataset`、`model.factors.0.dataset`），同一个对象无论被多少个字段持有都只写一次，配方以相对运行目录的路径指向这份副本（见[重建一次给定权重的运行](#重建一次给定权重的运行)）。`report.html` 包含关键指标和左侧分区导航，各分区把图表（业绩、超额收益、滚动一年统计、组合结构、每日持仓、归因）与解释它们的分组指标表放在一起（见[报告页面](#报告页面)）。用别的格式版本写出、或者缺少 `run.json` 的运行目录会被拒绝，并提示重新运行。
 
 ```python
 >>> run.market
@@ -578,6 +579,7 @@ bool(np.allclose(per_bar["contribution"].sum("term"), attributed.simulation.retu
 - **Excess**，有基准时显示：累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤；旁边是 "Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）。
 - **Rolling**：滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe。
 - **Portfolio**：每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口；旁边是 "Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）。
+- **Holdings**：逐日列出持有或被目标权重选中的每个标的，按代码显示（价格 store 旁有代码 sidecar 时用当天在用的代码，否则用标的 id），给出上一次调仓的目标权重、当天持仓和并列的条形图，以及当天的现金、持股数、前十大持仓占比、目标来自哪次调仓、相比上一次调仓新增的名字。目标不超过 1e-4（`DUST_THRESHOLD`）的持仓合并为一行 "Other"。可以按按钮、按调仓、按日期、拖动滑块或用方向键逐日切换；可按任意列排序、按代码或公司名筛选，并把当天导出为 CSV。其上的总收益、年化收益和最大回撤与关键指标完全一致。数据以 JSON 嵌入页面（十年日频、几百个标的约增加几 MB）。
 - **Attribution**，带模型的运行才有：超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长（见[超额归因](#超额归因)）。
 - **Factor attribution**，给了 `risk_model` 才有（见[把收益和风险归因到因子](#把收益和风险归因到因子)）：六个数字卡片（年化对数增长、来自因子的部分、无风险加交易、预测与实现波动率、覆盖率），然后收益与风险左右并排：各部分的年化对数增长画成从 0 轴起的柱，加起来等于合计，旁边是各部分对预测波动率的贡献、预测波动率和实现波动率；各部分的累计对数贡献（加起来等于对数净值），旁边是按月、按部分的预测波动率与 63 根 bar 的实现波动率；各风格的平均暴露与贡献，旁边是它们的预测与实现风险；贡献最好和最差的各 10 个行业，旁边是按预测风险排序的行业；最后是各风格每周暴露的热力图，以及各部分收益与实现风险的对比。行业和风格用风险模型的 `factor_labels()` 命名（`Use4RiskModel` 用 Fama-French 48 行业名）。
 - **Setup & notes**："Setup" 只列表格里没有的设置（bar 间隔、基准、最深回撤的日期、模型模式、调仓、组合构建、费用），以及说明。
@@ -745,6 +747,7 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 | `report_windows(timestamps, block, folds=None)` | `windows`，即时间线；`folds` 是 `run_cv()` 运行的各折行（`fold`、`training_window`、`traded`、`in_sample_range`） |
 | `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | 图表与基准参数 |
 | `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`、`turnover` 和 `bars_per_year`，即 Portfolio 与 Rolling 分区 |
+| `report_holdings_inputs(holdings, weights, *, label=None)` | `holdings` 和 `holding_names`（每个标的由 `label(symbols, day)` 得到的 `(起始 bar, 代码, 公司)` 区间），即 Holdings 分区；不传持仓时页面没有 Holdings 分区 |
 
 给 summary 的某个键赋值即可替换该行且位置不变；`write_backtest_report(..., extra_tables={标题: {行名: 值}})` 在指标表之后追加带标题的表格，用于只有执行器才有的统计量。接上文：
 

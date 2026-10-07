@@ -357,6 +357,18 @@ class VectorBtBacktester(BaseBacktester):
             else self._max_target_deviation(plan, held, cash)
         )
 
+        # Each position's value at the bar's close over the book's value, cash
+        # included. vectorbt's asset value is close times shares, NaN before a
+        # symbol lists, so a symbol not held is 0 rather than computed.
+        book = value_da.values[:, None]
+        asset_value = np.asarray(pf.asset_value(group_by=False).to_numpy(), dtype=np.float64)
+        position = np.where(np.asarray(pf.assets().to_numpy()) != 0.0, asset_value, 0.0)
+        holdings = xr.DataArray(
+            np.divide(position, book, out=np.zeros_like(position), where=book != 0.0),
+            dims=("timestamp", "symbol"),
+            coords={"timestamp": timestamps, "symbol": prices.symbol.values},
+        )
+
         return SimulationResult(
             value=value_da,
             returns=returns_da,
@@ -367,6 +379,7 @@ class VectorBtBacktester(BaseBacktester):
             bar_interval=bar_interval,
             trades=trades,
             native=pf,
+            holdings=holdings,
         )
 
     def _execution_records(

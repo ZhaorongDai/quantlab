@@ -56,6 +56,7 @@ WINDOW_END = 55
 RUN_DIR_ARTIFACTS = [
     "config.json",
     "equity.zarr",
+    "holdings.zarr",
     "metrics.json",
     "report.html",
     "run.json",

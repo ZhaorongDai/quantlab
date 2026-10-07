@@ -41,6 +41,7 @@ CANONICAL = ("open", "high", "low", "close", "volume")
 RUN_DIR_ARTIFACTS = [
     "config.json",
     "equity.zarr",
+    "holdings.zarr",
     "inputs",
     "metrics.json",
     "report.html",

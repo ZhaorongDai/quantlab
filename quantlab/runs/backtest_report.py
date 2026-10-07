@@ -15,7 +15,9 @@ chart of equity, drawdown, monthly returns and their year-by-month heatmap,
 and strategy against benchmark), Excess (cumulative excess return and excess
 drawdown, and the relative table), Rolling (one-year rolling statistics),
 Portfolio (turnover, holdings and exposure per rebalance, and the trading
-table), Attribution for a model run, Factor attribution for a run with a
+table), Holdings when the run's holdings are given (each bar's targets,
+holdings and cash, stepped through by its own small script from data
+embedded in the page as JSON), Attribution for a model run, Factor attribution for a run with a
 risk model (``quantlab.runs.factor_attribution_report``, drawn from the run's
 metrics and per-bar ``factor_attribution.zarr`` only: this layer imports no
 risk model) and Setup & notes. Every headline card, metric row and chart
@@ -39,16 +41,21 @@ The inputs of the page have public builders taking plain data, so an
 executor that simulates elsewhere (an event-driven replay of a quantlab run)
 writes a page in exactly this format: ``report_summary`` (the "Setup"
 lines, from a run's config mapping), ``report_windows`` (the timeline),
-``report_chart_inputs`` (the chart and benchmark arguments) and
-``report_portfolio_inputs`` (the Portfolio and Rolling sections).
+``report_chart_inputs`` (the chart and benchmark arguments),
+``report_portfolio_inputs`` (the Portfolio and Rolling sections) and
+``report_holdings_inputs`` (the Holdings section).
 ``quantlab.backtest.base`` builds its own pages through them. This module
 imports only the standard library, numpy, pandas, xarray, plotly,
 ``quantlab.runs.backtest_stats`` and ``quantlab.runs.factor_attribution_report``.
 """
 
+import bisect
+import datetime
 import html
+import json
 import math
 import numbers
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -66,6 +73,7 @@ from quantlab.runs.factor_attribution_report import (
 __all__ = [
     "backtest_report_figure",
     "report_chart_inputs",
+    "report_holdings_inputs",
     "report_portfolio_inputs",
     "report_summary",
     "report_windows",
@@ -184,6 +192,8 @@ def write_backtest_report(
     extra_tables: dict[str, dict] | None = None,
     attribution: xr.Dataset | None = None,
     factor_attribution: xr.Dataset | None = None,
+    holdings: xr.DataArray | None = None,
+    holding_names: Mapping[str, Sequence[tuple[str, str, str]]] | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -307,6 +317,23 @@ def write_backtest_report(
         each part's return against its realized risk. Its tiles and charts
         summarize the out-of-sample segment when the run has an in-sample
         part, else the whole window.
+    holdings : xr.DataArray | None
+        The holdings on ``(timestamp, symbol)``: each symbol's value at each
+        bar's close over the book's value, cash included. With them the page
+        gets a Holdings section that steps through the bars (by bar, by
+        rebalance, by date, by slider and by the arrow keys) and shows each
+        symbol held or targeted: its target weight (from ``weights``, the
+        last rebalance before the bar), its holding, the cash and the
+        headline figures of the cards; targets of at most
+        ``DUST_THRESHOLD`` are folded into one "Other" line. The table sorts
+        by any column, filters by ticker or company and exports the day as
+        CSV. Its data is embedded in the page as JSON. Without holdings the
+        section is left out.
+    holding_names : Mapping | None
+        The names the Holdings section shows symbols by, from
+        ``report_holdings_inputs``: per symbol id, ``(first bar label,
+        ticker, company)`` spans in time order. A symbol without a name is
+        shown by its id.
 
     Examples
     --------
@@ -357,6 +384,8 @@ def write_backtest_report(
         if extra_fig is not None:
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
+    if holdings is not None:
+        tabs.append(("Holdings", _holdings_section(holdings, weights, holding_names, metrics)))
     block = (metrics or {}).get("attribution")
     if attribution is not None and block:
         tabs.append(("Attribution", _attribution_table(block, name)
@@ -690,6 +719,71 @@ def report_portfolio_inputs(
         "turnover": backtest_stats.turnover(orders, value, init_cash),
         "bars_per_year": year / interval,
     }
+
+
+def report_holdings_inputs(
+    holdings: xr.DataArray,
+    weights: xr.DataArray,
+    *,
+    label: Callable[[list, datetime.date], list[str]] | None = None,
+) -> dict:
+    """Return the Holdings tab arguments of ``write_backtest_report``.
+
+    The tab shows, on each bar, every symbol held or targeted by the last
+    rebalance before it; ``label`` names those symbols as of each bar, and
+    the names are handed to the page as spans, a new span wherever a
+    symbol's label changes (a ticker change).
+
+    Parameters
+    ----------
+    holdings : xarray.DataArray
+        The holdings on ``(timestamp, symbol)``: each symbol's value at
+        each bar's close over the book's value, cash included.
+    weights : xarray.DataArray
+        The target weights on ``(timestamp, symbol)``, a row per signal bar
+        (all-NaN on a bar that holds), as ``write_backtest_report`` takes
+        them.
+    label : callable, optional
+        ``label(symbols, day)`` returns a readable label for each of
+        ``symbols`` as of the date ``day``. Without it the page shows each
+        symbol by its id.
+
+    Returns
+    -------
+    dict
+        ``holdings`` and ``holding_names`` (``None`` without ``label``):
+        per symbol id (as ``str``), ``(first bar label, ticker, company)``
+        spans in time order, each in use until the next; the company is
+        empty, since a label carries none.
+
+    Examples
+    --------
+    >>> bars = pd.bdate_range("2024-01-01", periods=3)
+    >>> holdings = xr.DataArray([[0.0], [0.5], [0.6]], dims=("timestamp", "symbol"),
+    ...                         coords={"timestamp": bars, "symbol": [13407]})
+    >>> weights = xr.DataArray([[0.5], [np.nan], [np.nan]], dims=("timestamp", "symbol"),
+    ...                        coords={"timestamp": bars, "symbol": [13407]})
+    >>> def label(symbols, day):
+    ...     return ["FB" if str(day) < "2024-01-03" else "META" for _ in symbols]
+    >>> report_holdings_inputs(holdings, weights, label=label)["holding_names"]
+    {'13407': [('2024-01-02', 'FB', ''), ('2024-01-03', 'META', '')]}
+    """
+    names = None
+    if label is not None:
+        names = {}
+        held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
+        targets, _ = _targets_in_force(weights, holdings)
+        symbols = holdings.symbol.values
+        for i, bar in enumerate(holdings.timestamp.values):
+            shown = np.flatnonzero((held[i] != 0.0) | (targets[i] != 0.0))
+            if shown.size == 0:
+                continue
+            day = pd.Timestamp(bar).date()
+            for j, name in zip(shown, label([symbols[j] for j in shown], day)):
+                spans = names.setdefault(str(symbols[j]), [])
+                if not spans or spans[-1][1] != str(name):
+                    spans.append((date_range.bar_label(bar), str(name), ""))
+    return {"holdings": holdings, "holding_names": names}
 
 
 def backtest_report_figure(
@@ -1993,6 +2087,340 @@ def _portfolio_figure(weights: xr.DataArray | None, turnover: xr.DataArray | Non
     return fig
 
 
+# ---------------------------------------------------------------------------
+# holdings
+# ---------------------------------------------------------------------------
+
+
+#: Holdings whose target weight is not zero but at most this in absolute value
+#: are folded into one "Other" line of the Holdings tab: an optimiser leaves
+#: such dust on symbols it does not want. A constant of the report rather than
+#: a config field, so it never changes a run's identity.
+DUST_THRESHOLD = 1e-4
+
+
+def _targets_in_force(
+    weights: xr.DataArray | None, holdings: xr.DataArray
+) -> tuple[np.ndarray, list[str | None]]:
+    """Return the targets in force on each bar of ``holdings`` and the rebalance they came from.
+
+    A row of ``weights`` with a finite cell is a rebalance; a signal at bar
+    t fills at t + 1, so its targets are in force from the first bar after
+    it, a NaN cell keeping that symbol's previous target. Before the first
+    rebalance every target is 0 and the rebalance is ``None``.
+    """
+    bars = holdings.timestamp.values
+    targets = np.zeros((bars.size, holdings.sizes["symbol"]))
+    since: list[str | None] = [None] * bars.size
+    if weights is None:
+        return targets, since
+    weights = weights.transpose("timestamp", "symbol").reindex(symbol=holdings.symbol.values)
+    rows = weights.values.astype(np.float64)
+    rebalances = np.flatnonzero(np.isfinite(rows).any(axis=1))
+    starts = np.searchsorted(bars, weights.timestamp.values[rebalances], side="right")
+    current = np.zeros(rows.shape[1])
+    for n, (k, start) in enumerate(zip(rebalances, starts)):
+        current = np.where(np.isfinite(rows[k]), rows[k], current)
+        end = starts[n + 1] if n + 1 < len(starts) else bars.size
+        targets[start:end] = current
+        since[start:end] = [date_range.bar_label(weights.timestamp.values[k])] * (end - start)
+    return targets, since
+
+
+def _holdings_data(
+    holdings: xr.DataArray,
+    weights: xr.DataArray | None,
+    names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
+    metrics: dict | None,
+) -> dict:
+    """The JSON the Holdings tab embeds.
+
+    ``days`` holds, per bar, its label ``d``, the rebalance its targets came
+    from ``r``, the ``cash`` (1 less the holdings), ``other`` (the count,
+    target and holding of the dust) and ``h``, one ``[name, target,
+    holding]`` row per other symbol held or targeted, largest holding first;
+    ``name`` indexes ``names``, ``[ticker, company, symbol id]`` rows.
+    ``summary`` holds the headline figures, formatted as the cards are.
+    """
+    held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
+    targets, since = _targets_in_force(weights, holdings)
+    targets = np.nan_to_num(targets)
+    symbols = [str(symbol) for symbol in holdings.symbol.values]
+    spans = {str(key): list(value) for key, value in (names or {}).items()}
+    starts = {key: [str(span[0]) for span in value] for key, value in spans.items()}
+    index: dict[tuple[str, str, str], int] = {}
+    table: list[list[str]] = []
+
+    def name(j: int, day: str) -> int:
+        symbol, ticker, company = symbols[j], symbols[j], ""
+        k = bisect.bisect_right(starts.get(symbol, []), day) - 1
+        if k >= 0:
+            ticker, company = str(spans[symbol][k][1]), str(spans[symbol][k][2])
+        key = (ticker, company, symbol)
+        if key not in index:
+            index[key] = len(table)
+            table.append(list(key))
+        return index[key]
+
+    days = []
+    for i, bar in enumerate(holdings.timestamp.values):
+        day = date_range.bar_label(bar)
+        h, t = held[i], targets[i]
+        shown = (h != 0.0) | (t != 0.0)
+        dust = shown & (t != 0.0) & (np.abs(t) <= DUST_THRESHOLD)
+        kept = np.flatnonzero(shown & ~dust)
+        kept = kept[np.argsort(-h[kept], kind="stable")]
+        days.append({
+            "d": day,
+            "r": since[i],
+            "cash": float(1.0 - h.sum()),
+            "other": [int(dust.sum()), float(t[dust].sum()), float(h[dust].sum())],
+            "h": [[name(j, day), float(t[j]), float(h[j])] for j in kept],
+        })
+    traded = [int(np.count_nonzero(held[i])) for i in range(len(days)) if since[i] is not None]
+    headline = _headline(metrics, metrics) if isinstance(metrics, dict) else {}
+    summary = [
+        ["Total return", _format(headline.get("Total Return [%]"), "pct")],
+        ["Annualised return", _format(headline.get("Annualized Return [%]"), "pct")],
+        ["Max drawdown", _format(headline.get("Max Drawdown [%]"), "neg_pct")],
+        ["Bars", f"{len(days):,}"],
+        ["Rebalances", f"{len({r for r in since if r is not None}):,}"],
+        ["Holdings per bar", f"{min(traded)}–{max(traded)} (avg {np.mean(traded):.0f})" if traded else DASH],
+    ]
+    return {"days": days, "names": table, "summary": summary, "dust": DUST_THRESHOLD}
+
+
+def _holdings_section(
+    holdings: xr.DataArray,
+    weights: xr.DataArray | None,
+    names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
+    metrics: dict | None,
+) -> str:
+    """The Holdings tab: summary tiles, day controls, the day's table, its data and script.
+
+    The data is embedded as JSON, uncompressed, with every ``<`` escaped so
+    no name can close the script element; the page's own small script draws
+    the selected day from it.
+    """
+    data = _holdings_data(holdings, weights, names, metrics)
+    payload = json.dumps(data, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
+    tiles = "".join(
+        f'<div class="tile"><div class="kl">{_escape(label)}</div><div class="kv">{_escape(value)}</div></div>'
+        for label, value in data["summary"]
+    )
+    return (
+        f"<style>{_HOLDINGS_STYLE}</style>\n"
+        f'<div class="tiles hd-tiles">{tiles}</div>\n'
+        '<div class="hd-controls">'
+        '<button id="hd-prev-reb" title="The first bar of the previous rebalance">&laquo; Rebalance</button>'
+        '<button id="hd-prev" title="The previous bar (left arrow)">&lsaquo; Day</button>'
+        '<input type="date" id="hd-date">'
+        '<button id="hd-next" title="The next bar (right arrow)">Day &rsaquo;</button>'
+        '<button id="hd-next-reb" title="The first bar of the next rebalance">Rebalance &raquo;</button>'
+        '<input type="search" id="hd-filter" placeholder="Filter ticker or company">'
+        '<button id="hd-csv">Download day as CSV</button></div>\n'
+        '<input type="range" id="hd-slider" min="0" step="1">\n'
+        '<div class="hd-daybar" id="hd-daybar"></div>\n'
+        '<table class="metrics hd-table"><thead><tr>'
+        '<th data-k="ticker">Ticker</th><th data-k="company">Company</th><th data-k="symbol">Symbol</th>'
+        '<th data-k="t" title="The weight the last rebalance before the day asked for.">Target weight</th>'
+        '<th data-k="h" title="The share of the book, cash included, at the day\'s close.">Holding</th>'
+        '<th data-k="h">Target / holding</th></tr></thead>'
+        '<tbody id="hd-rows"></tbody><tfoot id="hd-foot"></tfoot></table>\n'
+        f'<script type="application/json" id="holdings-data">{payload}</script>\n'
+        f"<script>{_HOLDINGS_SCRIPT}</script>"
+    )
+
+
+_HOLDINGS_STYLE = """
+  .hd-tiles { margin-bottom: 14px; }
+  .hd-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .hd-controls button, .hd-controls input { font: inherit; color: #111827; background: #fff;
+    border: 1px solid #e5e7eb; border-radius: 6px; padding: 5px 10px; }
+  .hd-controls button { cursor: pointer; } .hd-controls button:hover { border-color: #2563eb; }
+  #hd-slider { width: 100%; accent-color: #2563eb; margin: 4px 0 10px; }
+  .hd-daybar { display: flex; flex-wrap: wrap; gap: 6px 20px; color: #6b7280; margin-bottom: 10px; }
+  .hd-daybar b { color: #111827; font-variant-numeric: tabular-nums; }
+  .hd-tag { display: inline-block; font-size: 10.5px; padding: 0 6px; border-radius: 4px; margin-left: 6px;
+    background: #eff6ff; color: #2563eb; }
+  .hd-tag.new { background: none; color: #059669; border: 1px solid #059669; }
+  table.hd-table thead th { cursor: pointer; user-select: none; }
+  table.hd-table td.l, table.hd-table thead th:nth-child(-n+3) { text-align: left; }
+  table.hd-table td.l.co { white-space: normal; min-width: 160px; }
+  table.hd-table tfoot td { color: #6b7280; }
+  .hd-bar { position: relative; width: 140px; height: 10px; }
+  .hd-bar span { position: absolute; left: 0; height: 4px; border-radius: 2px; }
+  .hd-bar .t { top: 0; background: #93c5fd; } .hd-bar .h { top: 6px; background: #2563eb; }
+  .hd-bar .neg { background: #dc2626; }
+"""
+
+#: Draws the selected day of the Holdings tab from its JSON: stepping by bar,
+#: by rebalance, by date, by slider and by the arrow keys (while the tab is
+#: shown), sorting by any column, filtering by ticker or company and the
+#: day's CSV. Text from the data is set with ``textContent``, never as markup.
+_HOLDINGS_SCRIPT = """
+(function () {
+  var D = JSON.parse(document.getElementById('holdings-data').textContent);
+  var days = D.days, N = D.names;
+  var $ = function (id) { return document.getElementById(id); };
+  if (!days.length) return;
+  var pct = function (x, p) { return (x * 100).toFixed(p === undefined ? 2 : p) + '%'; };
+  var rebIdx = [];
+  days.forEach(function (d, i) { if (d.r !== null && (i === 0 || d.r !== days[i - 1].r)) rebIdx.push(i); });
+  var cur = days.length - 1, sortKey = 'h', sortDir = -1;
+  function rowsOf(i) {
+    return days[i].h.map(function (r) {
+      var n = N[r[0]];
+      return { ticker: n[0], company: n[1], symbol: n[2], t: r[1], h: r[2] };
+    });
+  }
+  function targeted(i) {
+    var s = {};
+    days[i].h.forEach(function (r) { if (r[1] !== 0) s[N[r[0]][2]] = true; });
+    return s;
+  }
+  function el(tag, text, cls) {
+    var e = document.createElement(tag);
+    if (text !== undefined) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+  function bar(t, h, scale) {
+    var div = el('div', undefined, 'hd-bar');
+    [['t', t], ['h', h]].forEach(function (p) {
+      var s = el('span', undefined, p[0] + (p[1] < 0 ? ' neg' : ''));
+      s.style.width = (Math.abs(p[1]) / scale * 100).toFixed(1) + '%';
+      div.appendChild(s);
+    });
+    return div;
+  }
+  function render() {
+    var day = days[cur];
+    var own = rebIdx.filter(function (r) { return r <= cur; });
+    var previous = own.length > 1 ? targeted(own[own.length - 2]) : null;
+    var current = own.length ? targeted(own[own.length - 1]) : {};
+    var all = rowsOf(cur);
+    var held = all.filter(function (r) { return r.h !== 0; }).length + day.other[0];
+    var top = all.map(function (r) { return r.h; }).sort(function (a, b) { return b - a; })
+      .slice(0, 10).reduce(function (s, x) { return s + x; }, 0);
+    var added = previous ? Object.keys(current).filter(function (k) { return !previous[k]; }).length : null;
+    var bits = [['Date', day.d], ['Targets from', day.r === null ? 'no rebalance yet' : day.r],
+                ['Holdings', String(held)], ['Top-10 holding', pct(top, 1)], ['Cash', pct(day.cash)],
+                ['Other (dust)', pct(day.other[2], 3)]];
+    if (added !== null) bits.push(['New names since previous rebalance', String(added)]);
+    var daybar = $('hd-daybar');
+    daybar.textContent = '';
+    bits.forEach(function (b, i) {
+      var span = el('span', b[0] + ' ');
+      span.appendChild(el('b', b[1]));
+      if (i === 0 && rebIdx.indexOf(cur) >= 0) span.appendChild(el('span', 'rebalance filled', 'hd-tag'));
+      daybar.appendChild(span);
+    });
+    var q = $('hd-filter').value.trim().toLowerCase();
+    var rows = all.filter(function (r) {
+      return !q || r.ticker.toLowerCase().indexOf(q) >= 0 || r.company.toLowerCase().indexOf(q) >= 0
+        || r.symbol.toLowerCase().indexOf(q) >= 0;
+    });
+    rows.sort(function (a, b) {
+      var x = a[sortKey], y = b[sortKey];
+      return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+    });
+    var scale = Math.max(1e-9, Math.max.apply(null, all.map(function (r) {
+      return Math.max(Math.abs(r.t), Math.abs(r.h));
+    }).concat([0])));
+    var body = $('hd-rows');
+    body.textContent = '';
+    rows.forEach(function (r) {
+      var tr = el('tr');
+      var tk = el('td', r.ticker, 'l');
+      if (previous && r.t !== 0 && !previous[r.symbol]) tk.appendChild(el('span', 'new', 'hd-tag new'));
+      tr.appendChild(tk);
+      tr.appendChild(el('td', r.company, 'l co'));
+      tr.appendChild(el('td', r.symbol, 'l'));
+      tr.appendChild(el('td', pct(r.t)));
+      tr.appendChild(el('td', pct(r.h)));
+      var cell = el('td');
+      cell.appendChild(bar(r.t, r.h, scale));
+      tr.appendChild(cell);
+      body.appendChild(tr);
+    });
+    var foot = $('hd-foot');
+    foot.textContent = '';
+    var extra = [['Cash', '', null, day.cash]];
+    if (day.other[0]) extra.unshift(['Other', day.other[0] + ' holdings with a target of at most ' + D.dust,
+                                     day.other[1], day.other[2]]);
+    extra.forEach(function (x) {
+      var tr = el('tr');
+      tr.appendChild(el('td', x[0], 'l'));
+      tr.appendChild(el('td', x[1], 'l co'));
+      tr.appendChild(el('td', '', 'l'));
+      tr.appendChild(el('td', x[2] === null ? '' : pct(x[2], 3)));
+      tr.appendChild(el('td', pct(x[3], x[2] === null ? 2 : 3)));
+      tr.appendChild(el('td'));
+      foot.appendChild(tr);
+    });
+    $('hd-date').value = day.d.slice(0, 10);
+    $('hd-slider').value = cur;
+  }
+  function select(i) { cur = Math.max(0, Math.min(days.length - 1, i)); render(); }
+  $('hd-slider').max = days.length - 1;
+  $('hd-slider').addEventListener('input', function (e) { select(+e.target.value); });
+  $('hd-date').min = days[0].d.slice(0, 10);
+  $('hd-date').max = days[days.length - 1].d.slice(0, 10);
+  $('hd-date').addEventListener('change', function (e) {
+    var v = e.target.value;
+    if (!v) return;
+    var k = days.findIndex(function (d) { return d.d.slice(0, 10) >= v; });
+    select(k < 0 ? days.length - 1 : k);
+  });
+  $('hd-prev').addEventListener('click', function () { select(cur - 1); });
+  $('hd-next').addEventListener('click', function () { select(cur + 1); });
+  $('hd-prev-reb').addEventListener('click', function () {
+    var k = rebIdx.filter(function (r) { return r < cur; });
+    select(k.length ? k[k.length - 1] : 0);
+  });
+  $('hd-next-reb').addEventListener('click', function () {
+    var k = rebIdx.find(function (r) { return r > cur; });
+    select(k === undefined ? days.length - 1 : k);
+  });
+  $('hd-filter').addEventListener('input', render);
+  document.addEventListener('keydown', function (e) {
+    if (!$('hd-rows').offsetParent) return;
+    var t = e.target;
+    if (t.tagName === 'INPUT' && t.type !== 'range') return;
+    if (e.key === 'ArrowLeft') { select(cur - 1); e.preventDefault(); }
+    if (e.key === 'ArrowRight') { select(cur + 1); e.preventDefault(); }
+  });
+  document.querySelectorAll('.hd-table th[data-k]').forEach(function (th) {
+    th.addEventListener('click', function () {
+      var k = th.dataset.k;
+      if (sortKey === k) sortDir = -sortDir;
+      else { sortKey = k; sortDir = (k === 't' || k === 'h') ? -1 : 1; }
+      render();
+    });
+  });
+  $('hd-csv').addEventListener('click', function () {
+    var day = days[cur];
+    var quote = function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; };
+    var lines = ['date,rebalance,ticker,company,symbol,target_weight,holding'];
+    var line = function (a, b, c, t, h) {
+      return [day.d, day.r === null ? '' : day.r, quote(a), quote(b), quote(c), t, h].join(',');
+    };
+    rowsOf(cur).forEach(function (r) { lines.push(line(r.ticker, r.company, r.symbol, r.t, r.h)); });
+    if (day.other[0]) lines.push(line('Other', '', '', day.other[1], day.other[2]));
+    lines.push(line('Cash', '', '', '', day.cash));
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\\n') + '\\n'], { type: 'text/csv' }));
+    a.download = 'holdings_' + day.d.replace(/[^0-9A-Za-z-]/g, '_') + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+  render();
+})();
+"""
+
+
 def _shade(fig: go.Figure, in_sample_range) -> None:
     """Shade the in-sample range on every row, as the Performance figure does."""
     if in_sample_range is not None:
@@ -2263,10 +2691,14 @@ _CHART_TIPS = {
     "Portfolio": "Turnover at each fill, the number of holdings and the gross exposure on each rebalance.",
     "Attribution": "Where the excess came from: the universe against the benchmark, the selection against "
                    "the universe, and the costs; and how each score group of the universe did.",
+    "Holdings": "What the book held at each day's close: each symbol's target weight from the last rebalance "
+                "before the day, and its holding, its value over the whole book with cash. Rejected orders, "
+                "delisting settlements, costs and price moves make the two differ.",
 }
 
 #: The sidebar's sections, in order.
-_SECTIONS = ("Overview", "Excess", "Rolling", "Portfolio", "Attribution", "Factor attribution", "Setup & notes")
+_SECTIONS = ("Overview", "Excess", "Rolling", "Portfolio", "Holdings", "Attribution", "Factor attribution",
+             "Setup & notes")
 
 
 def _section_card(label: str, body: str) -> str:
@@ -2334,6 +2766,7 @@ def _document(
         "Rolling": _cards(_section_card("Rolling", charts["Rolling"])) if "Rolling" in charts else "",
         "Portfolio": _cards(_section_card("Portfolio", charts["Portfolio"]), trading, layout="grid")
         if "Portfolio" in charts else "",
+        "Holdings": _cards(_section_card("Holdings", charts["Holdings"])) if "Holdings" in charts else "",
         "Attribution": _cards(_section_card("Attribution", charts["Attribution"]))
         if "Attribution" in charts else "",
         "Factor attribution": charts.get("Factor attribution", ""),

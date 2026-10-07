@@ -65,6 +65,7 @@ from quantlab.runs.backtest_attribution import (
 from quantlab.runs.backtest_report import (
     backtest_report_figure,
     report_chart_inputs,
+    report_holdings_inputs,
     report_portfolio_inputs,
     report_summary,
     report_windows,
@@ -322,6 +323,11 @@ class SimulationResult:
     ``factor_attribution`` is set by the backtester when the config has a
     ``risk_model``: ``quantlab.risk.attribution.factor_attribution``'s per-bar
     dataset; ``None`` otherwise.
+    ``holdings`` is each symbol's holding after each bar, on ``(timestamp,
+    symbol)``: the position's value at the bar's valuation price over the
+    book's value, cash included, as the fills left it (negative for a
+    short, 0 where nothing is held); ``None`` from an engine that does not
+    supply them.
 
     Examples
     --------
@@ -345,6 +351,7 @@ class SimulationResult:
     max_target_deviation: float | None = None
     attribution: xr.Dataset | None = None
     factor_attribution: xr.Dataset | None = None
+    holdings: xr.DataArray | None = None
 
 
 @dataclass
@@ -2902,7 +2909,8 @@ class BaseBacktester(Component, ABC):
         ``output_dir/{ClassName}_{timestamp}/`` is written through
         ``quantlab.runs.backtest_run.write_backtest_run`` (staged, complete or
         absent): the recipe, the weights, the equity curve (with the
-        benchmark's when one ran), the settlements, the metrics, the report,
+        benchmark's when one ran), the holdings (when the engine supplies
+        them), the settlements, the metrics, the report,
         the prediction panel when ``predictions`` is given (a run with a
         model) and ``run.json`` recording the market, the data fingerprints
         and the trained unit used.
@@ -2923,7 +2931,8 @@ class BaseBacktester(Component, ABC):
         (equity, drawdown and monthly returns with the in-sample range
         shaded and the deepest drawdown marked, the benchmark beside the
         portfolio), Excess (with a benchmark), Rolling and Portfolio
-        (turnover, holdings and exposure per rebalance), Attribution (a
+        (turnover, holdings and exposure per rebalance), Holdings (each
+        bar's targets, holdings and cash, with the engine's holdings), Attribution (a
         model run) and Factor attribution (a run with a ``risk_model``),
         followed by the notes. A ``run_cv`` report shades no in-sample range (the several
         in-sample ranges are listed in the summary lines and the notes). A
@@ -2955,6 +2964,7 @@ class BaseBacktester(Component, ABC):
                 metrics=block,
                 **chart,
                 **self._report_portfolio_inputs(weights, simulation),
+                **self._report_holdings_inputs(weights, simulation),
                 attribution=simulation.attribution,
                 factor_attribution=simulation.factor_attribution,
             )
@@ -2982,6 +2992,11 @@ class BaseBacktester(Component, ABC):
             write_report=_report,
             predictions=self._prediction_panel(predictions),
             factor_attribution=simulation.factor_attribution,
+            holdings=(
+                None
+                if simulation.holdings is None
+                else xr.Dataset({"holding": simulation.holdings})
+            ),
             folds=[
                 FoldArtifacts(
                     index=record["fold"],
@@ -3044,6 +3059,21 @@ class BaseBacktester(Component, ABC):
             bar_interval=simulation.bar_interval,
             trading_days_per_year=self.MARKET.trading_days_per_year,  # type: ignore[union-attr]
             session_minutes_per_day=self.MARKET.session_minutes_per_day,  # type: ignore[union-attr]
+        )
+
+    def _report_holdings_inputs(
+        self, weights: xr.Dataset, simulation: SimulationResult
+    ) -> dict:
+        """Return the Holdings tab inputs: ``report_holdings_inputs`` of this run.
+
+        Symbols are named as ``_symbol_labels`` names them on each bar;
+        nothing is returned when the engine supplied no holdings, so the
+        page has no Holdings tab.
+        """
+        if simulation.holdings is None:
+            return {}
+        return report_holdings_inputs(
+            simulation.holdings, weights["weight"], label=self._symbol_labels
         )
 
     @staticmethod

@@ -601,6 +601,7 @@ def test_run_cv_run_directory_contents(tmp_path, cv_project):
         "config.json",
         "weights.zarr",
         "equity.zarr",
+        "holdings.zarr",
         "metrics.json",
         "settlements.json",
         "run.json",

@@ -39,7 +39,7 @@ OWNERS = tuple(sorted((REPO_ROOT / "quantlab/runs").glob("*.py")))
 
 _RUN_FILES = (
     "run.json", "cv_folds.json", "ensemble.json", "ic_series.csv", "test_predictions.zarr",
-    "config.json", "metrics.json", "weights.zarr", "equity.zarr", "settlements.json",
+    "config.json", "metrics.json", "weights.zarr", "equity.zarr", "holdings.zarr", "settlements.json",
     "predictions.zarr", "report.html", "fingerprint.json",
 )
 #: Lines outside the run layer that name a run file for a directory of their own:

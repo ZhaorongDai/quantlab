@@ -21,6 +21,9 @@ on a Linux runner, from the 13th significant digit on. Ten digits keep every
 change a reader of the report could see. The bytes still depend on the
 installed plotly, numpy and vectorbt; a version bump that changes them shows
 up here first.
+The same runs with the holdings left out of ``write_backtest_report`` (the
+quantlab-trader call path) must give the reports' bytes from before the
+Holdings tab (#225).
 Beside the hashes, the recipe ``report_windows`` documents for building
 ``run_cv()`` fold rows from ``metrics.json`` is checked against the bars each
 fold traded.
@@ -256,37 +259,75 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: The six reports were re-recorded for the dashboard page (#215): header,
 #: sidebar sections, cards, chart styling, hover explanations and the plain
 #: metric definitions. The metrics did not change.
+#: The six reports were re-recorded for the Holdings tab (#225); the same
+#: runs written without holdings give the #215 hashes back
+#: (`WITHOUT_HOLDINGS`). The metrics did not change.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "8caaa6219ea786273f1c8a00032708572e0fc572c5f57cd198702279ba330d15",
+    "run_long_only_benchmark/report.html": "353dd2596f2425416ccc561c09dacde7b843dd28abbd595820ae533566d8aee4",
     "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
-    "run_long_short_delisting/report.html": "54b3cea2423d40c569b90d5a32a141c8fdcf218c2fe83b3b34ee45a06ad5907f",
+    "run_long_short_delisting/report.html": "6f4860bbe78bcf425881fd0351498c89bf25d5bb1bf553c2486639428414bac2",
     "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
-    "run_weights_benchmark/report.html": "dd91414c66fc9013ceb3b93b5ae80465ea2404684ac6e0427fe83859977888fe",
+    "run_weights_benchmark/report.html": "fe6407a601cae3a4a743df6f8bd61f2d9097eae95b2851dbc8fe7db599575876",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
-    "run_weights/report.html": "dd2b7cc3db804b68b16afbf9020ac0aa963a053e18c1bcca717a80c6476b056d",
+    "run_weights/report.html": "03e9e540f331e3b78c4c0ae9da38b5cbcc085a6fdd65f8687a2257588644d494",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "100bcf7d9935a5e8f090e7d6700214ffc1f9d88e4062db923b8b286d8122203f",
+    "run_cv_benchmark/report.html": "6c4a9232b9e2a6a6223908c5697aaf3bfae92b1f574c0202d31e85137f79d6cc",
     "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
-    "run_cv/report.html": "cbd7443db5f3d1384a370e01f2d85dc4b3443a9f961c9afb7fe82e502f67d89a",
+    "run_cv/report.html": "101ebed4bd8c1825cb5c21607e2ce1ef36c12002e2760a84037cf77a0981f5f4",
     "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
+
+
+#: The six reports as they were before the Holdings tab (#225), the hashes
+#: recorded for #215. A report written without holdings, as quantlab-trader
+#: writes one, must still be these bytes.
+WITHOUT_HOLDINGS: dict[str, str] = {
+    "run_long_only_benchmark/report.html": "8caaa6219ea786273f1c8a00032708572e0fc572c5f57cd198702279ba330d15",
+    "run_long_short_delisting/report.html": "54b3cea2423d40c569b90d5a32a141c8fdcf218c2fe83b3b34ee45a06ad5907f",
+    "run_weights_benchmark/report.html": "dd91414c66fc9013ceb3b93b5ae80465ea2404684ac6e0427fe83859977888fe",
+    "run_weights/report.html": "dd2b7cc3db804b68b16afbf9020ac0aa963a053e18c1bcca717a80c6476b056d",
+    "run_cv_benchmark/report.html": "100bcf7d9935a5e8f090e7d6700214ffc1f9d88e4062db923b8b286d8122203f",
+    "run_cv/report.html": "cbd7443db5f3d1384a370e01f2d85dc4b3443a9f961c9afb7fe82e502f67d89a",
+}
+
+
+def _assert_hashes(tmp_path: Path, cv_project, expected: dict[str, str]) -> None:
+    """Run every scenario and compare the normalized files named in ``expected``."""
+    got = {}
+    for name, (run_dir, roots) in scenarios(tmp_path, cv_project).items():
+        for file, text in run_files(run_dir, roots).items():
+            key = f"{name}/{file}"
+            if key not in expected:
+                continue
+            got[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            (tmp_path / f"{name}.normalized.{file}").write_text(text, encoding="utf-8")
+    changed = sorted(key for key in expected if got.get(key) != expected[key])
+    assert not changed, (
+        f"changed against the recorded bytes: {changed}; the normalized files are "
+        f"under {tmp_path}. Recorded hashes now: {json.dumps(got, indent=1)}"
+    )
+    assert sorted(got) == sorted(expected)
 
 
 def test_report_and_metrics_are_byte_identical_to_before_the_public_builders(
     tmp_path, cv_project
 ):
-    got = {}
-    for name, (run_dir, roots) in scenarios(tmp_path, cv_project).items():
-        for file, text in run_files(run_dir, roots).items():
-            key = f"{name}/{file}"
-            got[key] = hashlib.sha256(text.encode("utf-8")).hexdigest()
-            (tmp_path / f"{name}.normalized.{file}").write_text(text, encoding="utf-8")
-    changed = sorted(key for key in EXPECTED if got.get(key) != EXPECTED[key])
-    assert not changed, (
-        f"changed against the recorded bytes: {changed}; the normalized files are "
-        f"under {tmp_path}. Recorded hashes now: {json.dumps(got, indent=1)}"
-    )
-    assert sorted(got) == sorted(EXPECTED)
+    _assert_hashes(tmp_path, cv_project, EXPECTED)
+
+
+def test_without_holdings_the_report_is_byte_identical_to_before_the_holdings_tab(
+    tmp_path, cv_project, monkeypatch
+):
+    """The quantlab-trader call path: ``write_backtest_report`` given no holdings."""
+    import quantlab.backtest.base as base
+
+    write = base.write_backtest_report
+
+    def without_holdings(*args, holdings=None, holding_names=None, **kwargs):
+        write(*args, **kwargs)
+
+    monkeypatch.setattr(base, "write_backtest_report", without_holdings)
+    _assert_hashes(tmp_path, cv_project, WITHOUT_HOLDINGS)
 
 
 def test_fold_rows_built_from_metrics_json_are_the_bars_each_fold_traded(tmp_path, cv_project):
