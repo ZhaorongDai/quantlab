@@ -128,8 +128,9 @@ def test_the_simulated_adjustment_matches_eq_b7(simulated):
 def test_the_simulations_use_the_newey_west_estimator(tmp_path):
     model = _built(tmp_path, "newey_west", **LAGS)
     # A bar just past as many bars as factors has nearly singular simulated
-    # covariances, whose smallest eigenvalues amplify round-off.
-    _check(model, rtol=1e-7, estimator=_newey_west_covariance)
+    # covariances, whose smallest eigenvalues amplify round-off; it differs
+    # between BLAS builds (1.15e-7 measured on Linux OpenBLAS).
+    _check(model, rtol=1e-6, estimator=_newey_west_covariance)
 
 
 def test_the_scaled_adjustment_matches_eq_b8(tmp_path):
