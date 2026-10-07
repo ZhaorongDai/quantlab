@@ -23,7 +23,7 @@ import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.config import MergedDatasetConfig
-from quantlab.dataset.base import BaseDataset, MarketDataset
+from quantlab.dataset.base import BaseDataset, MarketDataset, SymbolName, TickerLookup
 from quantlab.utils.date_range import check_range
 
 
@@ -79,6 +79,37 @@ class MergedDataset(MarketDataset):
         True
         """
         return self.config.datasets
+
+    def ticker_lookup(self) -> TickerLookup | None:
+        """Return the lookup naming the merged symbols through the inputs' lookups.
+
+        The view has no store and so no sidecar of its own: each symbol is
+        named by the first input, in order, whose lookup knows it, and by its
+        id when none does. A merged CRSP index and ETF, or a bad-print
+        masked view of a CRSP store, is labelled as its stores are.
+
+        Returns
+        -------
+        TickerLookup or None
+            The single input lookup when only one input names one, a lookup
+            over all of them when several do, ``None`` when none does.
+
+        Examples
+        --------
+        ``index`` and ``etf`` are CRSP datasets whose ticker sidecars name
+        PERMNO 14593 AAPL and PERMNO 84398 SPY:
+
+        >>> MergedDataset([index, etf]).ticker_lookup().label([14593, 84398], date(2024, 1, 2))
+        ['AAPL', 'SPY']
+        """
+        lookups = [
+            lookup
+            for lookup in (dataset.ticker_lookup() for dataset in self.datasets)
+            if lookup is not None
+        ]
+        if len(lookups) <= 1:
+            return lookups[0] if lookups else None
+        return _FirstKnownLookup(lookups)
 
     def _normalize_config(self, config: MergedDatasetConfig) -> MergedDatasetConfig:
         """Return ``config`` with ``name`` set, refusing an empty or non-dataset input."""
@@ -431,3 +462,25 @@ def _own_names(dataset: BaseDataset, variables) -> "list[str] | None":
 def _describe(dataset: BaseDataset) -> str:
     """Return ``ClassName(store)`` for an input, for error messages."""
     return f"{dataset.class_name}({dataset._calendar_source()})"
+
+
+class _FirstKnownLookup(TickerLookup):
+    """Names each symbol through the first of ``lookups`` that knows it."""
+
+    def __init__(self, lookups: Sequence[TickerLookup]):
+        self.lookups = tuple(lookups)
+
+    def names(self, symbols, day) -> list[SymbolName]:
+        """Return each symbol's name from the first lookup not falling back to its id."""
+        symbols = list(symbols)
+        names = [SymbolName(str(symbol)) for symbol in symbols]
+        pending = list(range(len(symbols)))
+        for lookup in self.lookups:
+            if not pending:
+                break
+            answers = lookup.names([symbols[i] for i in pending], day)
+            for i, name in zip(pending, answers):
+                if name != SymbolName(str(symbols[i])):
+                    names[i] = name
+            pending = [i for i in pending if names[i] == SymbolName(str(symbols[i]))]
+        return names
