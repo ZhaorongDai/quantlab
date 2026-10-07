@@ -31,20 +31,29 @@ REFINE = dict(
     blending_min_observations=6,
     blending_ramp=6,
     structural_model="blend",
+    structural_fit="blending",
     structural_bias=1.05,
+    structural_history_window=None,
     shrinkage=0.0,
 )
+LATE = (np.arange(8, 20), 14)  # symbol positions first priced at this bar (#203)
+HISTORY = 15  # the history-length regressor's window in the #203 tests
 BARS = (22, 30, 38)
 
 
-def _panel():
+def _panel(late=False):
     prices, exposures, _, _ = _plant(outlier=SPIKE, specific_everywhere=0.02)
+    if late:
+        positions, first = LATE
+        price = prices["adjClose"].values.copy()
+        price[:first, positions] = np.nan
+        prices = prices.assign(adjClose=(prices["adjClose"].dims, price))
     new = exposures.isel(symbol=[5]).assign_coords(symbol=[NEW])
     return prices, xr.concat([exposures, new], dim="symbol")
 
 
-def _built(tmp_path, name, **config):
-    prices, exposures = _panel()
+def _built(tmp_path, name, late=False, **config):
+    prices, exposures = _panel(late)
     model = _model(
         prices, exposures,
         path=str(tmp_path / f"{name}_regression.zarr"),
@@ -85,8 +94,17 @@ def _gamma(u):
     return np.array(out)
 
 
-def _expected(model, prices, exposures, t, shrinkage=0.0, groups=10, structural="blend"):
-    """The specific risk of every symbol at bar ``t`` from USE4 eqs. 5.3-5.9."""
+def _expected(
+    model, prices, exposures, t, shrinkage=0.0, groups=10, structural="blend",
+    fit_set="blending", bias=REFINE["structural_bias"], history=None,
+):
+    """The specific risk of every symbol at bar ``t`` from USE4 eqs. 5.3-5.9.
+
+    ``fit_set`` is ``"blending"`` (USE4: the symbols with a coefficient of 1)
+    or ``"series"`` (every symbol with a time series); ``bias`` a number or
+    ``"smearing"``; ``history`` the window of the history-length regressor
+    ``log(1 + h / 252)``, ``h`` the symbol's specific returns in it (#203).
+    """
     symbols, sigma_ts, u = _time_series(model, t)
     gamma = _gamma(u)
     all_symbols = np.array(sorted(set(symbols) | {NEW}, key=int))
@@ -96,10 +114,19 @@ def _expected(model, prices, exposures, t, shrinkage=0.0, groups=10, structural=
     matrix, covered = model.exposure_matrix(at)
     cap = prices["marketcap"].sel(timestamp=_day(t)).reindex(symbol=all_symbols).values
     if structural != "off":
-        fit = covered & (gamma >= 1) & np.isfinite(sigma) & (sigma > 0) & np.isfinite(cap)
+        if history is not None:
+            returns = model.regression.read(_day(START), _day(t))["specific_return"]
+            h = np.isfinite(returns.values[-history:]).sum(axis=0)
+            h = pd.Series(h, index=returns["symbol"].values).reindex(all_symbols).fillna(0).values
+            matrix = np.column_stack([matrix, np.log1p(h / 252)])
+        fit = covered & np.isfinite(sigma) & (sigma > 0) & np.isfinite(cap)
+        if fit_set == "blending":
+            fit &= gamma >= 1
         root = np.sqrt(np.sqrt(cap[fit]))
         b = np.linalg.lstsq(matrix[fit] * root[:, None], np.log(sigma[fit]) * root, rcond=None)[0]
-        structural_risk = np.where(covered, REFINE["structural_bias"] * np.exp(matrix @ b), np.nan)
+        if bias == "smearing":
+            bias = np.mean(np.exp(np.log(sigma[fit]) - matrix[fit] @ b))
+        structural_risk = np.where(covered, bias * np.exp(matrix @ b), np.nan)
         if structural == "blend":
             blended = np.where(
                 gamma >= 1, sigma, gamma * np.nan_to_num(sigma) + (1 - gamma) * structural_risk
@@ -194,6 +221,9 @@ def test_the_default_fills_and_shrinks(blended):
     defaults = type(model.config)(exposures=model.config.exposures, dataset=model.config.dataset,
                                   exposure_data_strategy="cal")
     assert (defaults.structural_model, defaults.shrinkage, defaults.shrinkage_groups) == ("fill", 0.1, 10)
+    assert (
+        defaults.structural_fit, defaults.structural_bias, defaults.structural_history_window
+    ) == ("series", "smearing", 756)
     with pytest.raises(ValueError, match="structural_model"):
         type(model)(dataclasses.replace(model.config, structural_model="yes"))
 
@@ -231,7 +261,8 @@ def test_the_refined_store_does_not_depend_on_njobs(tmp_path, blended):
 def test_invalid_refinement_parameters_are_refused(blended):
     model, _, _ = blended
     for field, value in (
-        ("structural_bias", 0.0), ("blending_ramp", 0), ("blending_outlier_bound", 0.0),
+        ("structural_bias", 0.0), ("structural_bias", "mean"), ("structural_fit", "all"),
+        ("structural_history_window", 0), ("blending_ramp", 0), ("blending_outlier_bound", 0.0),
         ("shrinkage", -0.1), ("shrinkage_groups", 0),
     ):
         with pytest.raises(ValueError, match=field):
@@ -269,3 +300,66 @@ def test_shrinkage_pulls_every_forecast_toward_its_group_mean_without_crossing(t
     assert ((after - target).abs() <= (before - target).abs() + 1e-15).all()
     assert (np.sign(after - target) == np.sign(before - target)).all()
     assert ((after - target).abs() < (before - target).abs()).sum() > len(before) // 2
+
+
+#: The #203 structural model: fitted on every symbol with a time series,
+#: smearing ``E_0`` and the history-length regressor.
+CALIBRATED = dict(
+    structural_model="fill", structural_fit="series", structural_bias="smearing",
+    structural_history_window=HISTORY,
+)
+
+
+def test_the_calibrated_structural_model_matches_its_definition(tmp_path):
+    model, prices, exposures = _built(tmp_path, "calibrated", late=True, **CALIBRATED)
+    rows = model.estimate.read(_day(START), _day(_T - 1))["specific_risk"]
+    positions, first = LATE
+    # Before a late listing has min_observations returns it is structural only.
+    for t in (first + 1, first + 2, *BARS):
+        expected, _ = _expected(
+            model, prices, exposures, t, structural="fill", fit_set="series",
+            bias="smearing", history=HISTORY,
+        )
+        got = rows.sel(timestamp=_day(t)).to_series().reindex(expected.index)
+        np.testing.assert_allclose(got.values, expected.values, rtol=1e-9, err_msg=f"bar {t}")
+    late = [_SYMBOLS[i] for i in positions]
+    assert rows.sel(timestamp=_day(first + 1), symbol=late).notnull().all()
+
+
+def test_the_history_regressor_raises_a_short_history_s_structural_value(tmp_path):
+    """Late listings move more than their exposures say only through the regressor."""
+    with_history, _, _ = _built(tmp_path, "with", late=True, **CALIBRATED)
+    without, _, _ = _built(
+        tmp_path, "without", late=True, **{**CALIBRATED, "structural_history_window": None}
+    )
+    _, first = LATE
+    a = with_history.estimate.read(_day(first + 1), _day(first + 1))["specific_risk"]
+    b = without.estimate.read(_day(first + 1), _day(first + 1))["specific_risk"]
+    assert not np.allclose(a.values, b.values, equal_nan=True)
+
+
+def test_build_then_extend_equals_build_with_the_calibrated_structural_model(tmp_path):
+    once, _, _ = _built(tmp_path, "once", late=True, **CALIBRATED)
+    prices, exposures = _panel(late=True)
+    twice = _model(
+        prices, exposures,
+        path=str(tmp_path / "twice_regression.zarr"),
+        estimate_path=str(tmp_path / "twice_estimate.zarr"),
+        **{**WINDOWS, **REFINE, **CALIBRATED},
+    )
+    twice.regression.build(_day(START), _day(25))
+    twice.estimate.build(_day(START), _day(22))
+    twice.regression.extend(_day(_T - 1))
+    twice.estimate.extend(_day(31)).extend(_day(_T - 1))
+    a = once.estimate.read(_day(START), _day(_T - 1)).load()
+    b = twice.estimate.read(_day(START), _day(_T - 1)).load()
+    xr.testing.assert_identical(a, b)
+
+
+def test_the_calibrated_store_does_not_depend_on_njobs(tmp_path):
+    one, _, _ = _built(tmp_path, "one", late=True, **CALIBRATED)
+    three, _, _ = _built(tmp_path, "three", late=True, njobs=3, **CALIBRATED)
+    xr.testing.assert_identical(
+        one.estimate.read(_day(START), _day(_T - 1)).load(),
+        three.estimate.read(_day(START), _day(_T - 1)).load(),
+    )

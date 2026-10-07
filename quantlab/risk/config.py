@@ -248,8 +248,9 @@ class Use4RiskConfig(FactorRiskConfig):
     #: choice: three half-lives.
     specific_autocorrelation_window: int = 756
     #: How the specific volatilities use a structural model (USE4 §5.1, eqs.
-    #: 5.3-5.5): each bar, the log time-series volatility of the symbols with
-    #: a blending coefficient of 1 is regressed on their exposures (weighted
+    #: 5.3-5.5): each bar, the log time-series volatility of the symbols
+    #: ``structural_fit`` names is regressed on their exposures and, with
+    #: ``structural_history_window``, the history-length regressor (weighted
     #: as ``weighting``), and a symbol's structural volatility is
     #: ``structural_bias`` times the exponential of its fitted value.
     #: ``"blend"`` is USE4's, ``gamma`` times the time series plus ``1 -
@@ -259,14 +260,33 @@ class Use4RiskConfig(FactorRiskConfig):
     #: symbol's time series; ``"off"`` uses none. Either of the first two
     #: gives every symbol with exposures a specific risk (a new listing
     #: included) whenever enough symbols are fitted. Our choice: ``"fill"``,
-    #: for that coverage; on the Sharadar history the structural values run
-    #: low, so the blend worsened the specific bias statistics and the fill
-    #: costs some calibration of portfolios holding new listings (#199).
+    #: for that coverage; on the Sharadar history the blend worsened the
+    #: specific bias statistics, with USE4's structural model (#199) and with
+    #: the calibrated one (#203).
     structural_model: Literal["fill", "blend", "off"] = "fill"
+    #: The symbols the structural regression is fitted on: ``"blending"``,
+    #: those whose blending coefficient is 1 (USE4 §5.1); ``"series"``,
+    #: every symbol with a time-series value. Our choice: ``"series"``. The
+    #: well-behaved symbols of USE4's fit underpredict the short-history and
+    #: fat-tailed symbols the structural value is given to; fitting on every
+    #: series lowered the bias statistic of the symbols the fill covers on
+    #: the Sharadar history (#203).
+    structural_fit: Literal["blending", "series"] = "series"
     #: ``E_0`` of USE4 eq. 5.4, "slightly greater than 1", which removes the
-    #: bias of exponentiating the residuals. USE4 publishes no value; 1.05,
-    #: as third-party replications of the Barra models use (our choice).
-    structural_bias: float = 1.05
+    #: bias of exponentiating the residuals: a number, or ``"smearing"``,
+    #: each bar's mean of ``exp(residual)`` over the fitted symbols (Duan's
+    #: 1983 smearing estimate, unweighted). USE4 publishes no value;
+    #: third-party replications use 1.05. Our choice: ``"smearing"`` (#203).
+    structural_bias: float | Literal["smearing"] = "smearing"
+    #: Bars of the history-length regressor of the structural regression:
+    #: ``log(1 + h / 252)``, ``h`` the symbol's specific returns in the last
+    #: this many bars (years of daily bars, at most this window), so a new
+    #: listing gets the higher volatility short histories have. ``None`` for
+    #: none, USE4's regression on the exposures alone. Our choice: 756,
+    #: three years (#203: on the Sharadar history the symbols the fill covers
+    #: had a 21-bar bias statistic of 1.36 without it, 1.09 with it and the
+    #: two choices above). A row reads this many bars of specific returns.
+    structural_history_window: int | None = 756
     #: The blending coefficient is ``min(1, max(0, (h - m) / r)) * min(1,
     #: max(0, exp(1 - Z)))`` with ``h`` the specific returns in the last
     #: ``specific_window`` bars, ``m`` this value and ``r``

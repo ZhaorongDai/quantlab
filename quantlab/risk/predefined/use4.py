@@ -224,9 +224,13 @@ class Use4RiskModel(FactorRiskModel):
       2. combined with a structural volatility (eqs. 5.3-5.5): a blending
          coefficient per symbol from how many returns it has and how
          fat-tailed they are, a daily regression of the log time-series
-         volatility on the exposures over the symbols whose coefficient is
-         1, and ``structural_bias`` times the exponential of each symbol's
-         fitted value; ``structural_model="fill"`` (the default) gives it to
+         volatility on the exposures and the history length ``log(1 + h /
+         252)`` over every symbol with a time series (USE4 fits the
+         symbols whose coefficient is 1 on the exposures alone; see
+         ``structural_fit`` and ``structural_history_window``), and
+         ``structural_bias`` (by default the smearing estimate) times the
+         exponential of each symbol's fitted value;
+         ``structural_model="fill"`` (the default) gives it to
          the symbols without a time-series value, ``"blend"`` blends every
          symbol as USE4 eq. 5.5 (see ``Use4RiskConfig.structural_model``
          and ``blending_min_observations``);
@@ -236,7 +240,8 @@ class Use4RiskModel(FactorRiskModel):
       4. times ``lambda_S``, the volatility regime adjustment (§5.3, eqs.
          5.10-5.12).
 
-      The time series and the blending coefficient read only the window;
+      The time series, the blending coefficient and the history length
+      read only their windows;
       the structural fit and the shrinkage use the exposures and market caps
       of the bar.
 
@@ -379,8 +384,20 @@ class Use4RiskModel(FactorRiskModel):
             )
         if config.njobs < 1:
             raise ValueError(f"{owner}: njobs must be at least 1, got {config.njobs}.")
-        if not config.structural_bias > 0:
-            raise ValueError(f"{owner}: structural_bias must be positive.")
+        if config.structural_bias != "smearing" and not (
+            isinstance(config.structural_bias, (int, float)) and config.structural_bias > 0
+        ):
+            raise ValueError(
+                f"{owner}: structural_bias must be positive or 'smearing', got "
+                f"{config.structural_bias!r}."
+            )
+        if config.structural_fit not in ("blending", "series"):
+            raise ValueError(
+                f"{owner}: structural_fit must be 'blending' or 'series', got "
+                f"{config.structural_fit!r}."
+            )
+        if config.structural_history_window is not None and config.structural_history_window < 1:
+            raise ValueError(f"{owner}: structural_history_window must be at least 1 or None.")
         if config.blending_min_observations < 0 or config.blending_ramp < 1:
             raise ValueError(
                 f"{owner}: blending_min_observations must be at least 0 and blending_ramp "
@@ -549,13 +566,15 @@ class Use4RiskModel(FactorRiskModel):
         """Return the windows the estimate rows read, in bars.
 
         An autocorrelation window is read only when its Newey-West lags are
-        not 0.
+        not 0, the history-length window only with a structural model.
         """
         windows = [
             _covariance_window(_EstimateParameters.of(config)), config.specific_window
         ]
         if config.specific_lags:
             windows.append(config.specific_autocorrelation_window)
+        if _history_window(config):
+            windows.append(config.structural_history_window)
         return tuple(windows)
 
     # ------------------------------------------------------------------
@@ -823,6 +842,7 @@ class Use4RiskModel(FactorRiskModel):
         covariance = np.full((count, len(names), len(names)), np.nan)
         specific_risk = np.full((count, len(symbols)), np.nan)
         blending = np.full((count, len(symbols)), np.nan)
+        history = np.zeros((count, len(symbols)))
         parameters = _EstimateParameters.of(config)
         longest = max(self._estimate_windows(config))
         # Each row reads only its windows, so chunks of rows are independent
@@ -851,10 +871,11 @@ class Use4RiskModel(FactorRiskModel):
             else:
                 results = Parallel(n_jobs=config.njobs)(tasks)
         row = 0
-        for chunk_covariance, chunk_specific, chunk_blending in results:
+        for chunk_covariance, chunk_specific, chunk_blending, chunk_history in results:
             covariance[row : row + len(chunk_covariance)] = chunk_covariance
             specific_risk[row : row + len(chunk_specific)] = chunk_specific
             blending[row : row + len(chunk_blending)] = chunk_blending
+            history[row : row + len(chunk_history)] = chunk_history
             row += len(chunk_covariance)
         regime = count and self._regime_window(config) > 0
         if refine or regime:
@@ -874,7 +895,8 @@ class Use4RiskModel(FactorRiskModel):
                         else (None, None)
                     )
                     specific_risk[row] = self._refined_specific_risk(
-                        specific_risk[row], blending[row], matrix, covered, cap[row]
+                        specific_risk[row], blending[row], matrix, covered, cap[row],
+                        history[row],
                     )
         variables = {}
         if regime:
@@ -928,20 +950,25 @@ class Use4RiskModel(FactorRiskModel):
         matrix: np.ndarray,
         covered: np.ndarray,
         cap: np.ndarray,
+        history: np.ndarray,
     ) -> np.ndarray:
         """Return one bar's specific volatilities: structural blend, then shrinkage.
 
         ``time_series`` and ``blending`` are each symbol's time-series
         volatility and blending coefficient, ``matrix`` and ``covered`` its
-        exposures (``exposure_matrix``) and ``cap`` its market cap. See
-        ``Use4RiskConfig.structural_model`` and ``shrinkage``.
+        exposures (``exposure_matrix``), ``cap`` its market cap and
+        ``history`` its specific returns in the history-length window. See
+        ``Use4RiskConfig.structural_model``, ``structural_fit``,
+        ``structural_bias``, ``structural_history_window`` and ``shrinkage``.
         """
         config = self.config
         sigma = time_series.copy()
         if config.structural_model != "off":
+            if _history_window(config):
+                matrix = np.column_stack([matrix, np.log1p(history / 252.0)])
             structural = _structural_volatility(
                 time_series, blending, matrix, covered, cap, config.weighting,
-                config.structural_bias,
+                config.structural_bias, config.structural_fit,
             )
             # A symbol without a time series is all structural.
             gamma = np.where(np.isfinite(time_series), np.nan_to_num(blending), 0.0)
@@ -984,6 +1011,7 @@ class _EstimateParameters:
     specific_autocorrelation_window: int
     min_observations: int
     structural_model: str
+    structural_history_window: int | None
     blending_min_observations: int
     blending_ramp: int
     blending_outlier_bound: float
@@ -1011,11 +1039,13 @@ def _estimate_rows(
     ends: np.ndarray,
     bars: np.ndarray,
     parameters: _EstimateParameters,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return the factor covariances, time-series specific risks and blending coefficients.
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return the factor covariances, time-series specific risks, blending coefficients and history lengths.
 
     One row per bar, each bar ending before one of ``ends``; ``bars`` are
-    the rows' timestamps in nanoseconds, which seed their simulations.
+    the rows' timestamps in nanoseconds, which seed their simulations. A
+    history length is a symbol's specific returns in the last
+    ``structural_history_window`` rows, 0 without that window.
     """
     covariance = np.stack([
         _factor_covariance(factor_returns[:end], parameters, bar)
@@ -1026,7 +1056,20 @@ def _estimate_rows(
         blending = np.stack([_blending(specific_returns[:end], parameters) for end in ends])
     else:
         blending = np.ones_like(specific)
-    return covariance, specific, blending
+    window = _history_window(parameters)
+    if window:
+        present = np.isfinite(specific_returns)
+        history = np.stack([present[max(end - window, 0) : end].sum(axis=0) for end in ends])
+    else:
+        history = np.zeros_like(specific)
+    return covariance, specific, blending, history.astype(np.float64)
+
+
+def _history_window(config) -> int | None:
+    """Return the history-length regressor's window, ``None`` when it is not used."""
+    if config.structural_model == "off":
+        return None
+    return config.structural_history_window
 
 
 def _factor_covariance(
@@ -1389,29 +1432,37 @@ def _structural_volatility(
     covered: np.ndarray,
     cap: np.ndarray,
     weighting: str,
-    bias: float,
+    bias: float | str,
+    fit_set: str,
 ) -> np.ndarray:
     """Return each covered symbol's structural specific volatility (USE4 eqs. 5.3-5.4).
 
-    The log time-series volatility of the symbols with a blending
-    coefficient of 1 and a market cap is regressed on their exposures,
-    weighted as ``weighting``; a covered symbol's structural volatility is
-    ``bias`` times the exponential of its fitted value. NaN for every symbol
-    when there are no more such symbols than factors.
+    The log time-series volatility of the covered symbols with a time-series
+    value and a market cap (``fit_set="blending"``: and a blending
+    coefficient of 1) is regressed on the columns of ``matrix``, weighted as
+    ``weighting``; a covered symbol's structural volatility is ``bias``
+    times the exponential of its fitted value, ``bias="smearing"`` the
+    unweighted mean of ``exp(residual)`` over the fitted symbols. NaN for
+    every symbol when there are no more such symbols than columns.
     """
     structural = np.full(len(time_series), np.nan)
     with np.errstate(divide="ignore", invalid="ignore"):
         fit = (
-            covered & (np.nan_to_num(blending) >= 1.0) & np.isfinite(time_series)
+            covered & np.isfinite(time_series)
             & (time_series > 0) & np.isfinite(cap) & (cap > 0)
         )
+    if fit_set == "blending":
+        fit &= np.nan_to_num(blending) >= 1.0
     if fit.sum() <= matrix.shape[1]:
         return structural
     weight = {"sqrt_cap": np.sqrt(cap[fit]), "cap": cap[fit], "equal": np.ones(fit.sum())}[weighting]
     root = np.sqrt(weight)
+    log_volatility = np.log(time_series[fit])
     coefficients = np.linalg.lstsq(
-        matrix[fit] * root[:, None], np.log(time_series[fit]) * root, rcond=None
+        matrix[fit] * root[:, None], log_volatility * root, rcond=None
     )[0]
+    if bias == "smearing":
+        bias = float(np.mean(np.exp(log_volatility - matrix[fit] @ coefficients)))
     structural[covered] = bias * np.exp(matrix[covered] @ coefficients)
     return structural
 

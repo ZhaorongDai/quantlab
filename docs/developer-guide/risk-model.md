@@ -153,9 +153,11 @@ Each stock's specific risk is built in four steps ([M] §5):
    its last 252 specific returns, half-life 84, with no Newey-West
    adjustment by default (see [Defaults](#defaults)).
 2. **Structural model** ([M] eqs. 5.3-5.5). On each bar the log
-   time-series volatility of the well-behaved stocks (blending coefficient
-   1) is regressed on their exposures, and a stock's structural volatility
-   is 1.05 times the exponential of its fitted value. With the default
+   time-series volatility of every stock with a time series is regressed on
+   its exposures and its history length, `log(1 + h / 252)` with `h` its
+   specific returns in the last 756 bars. A stock's structural volatility
+   is `E_0` times the exponential of its fitted value, `E_0` the smearing
+   estimate: the mean of `exp(residual)` over the fitted stocks. With the default
    `structural_model="fill"`, a stock without a time-series value (fewer
    than 21 returns in the window, a new listing for example) gets its
    structural value, and every other stock keeps its time series.
@@ -204,12 +206,21 @@ departures:
   USE4 divides by every factor. The specific one is weighted by the market
   caps of the bar before, over its estimation universe; USE4 names no bar
   or universe.
-- **Structural model.** USE4 blends every stock. The default fills only
-  the stocks without a time series: on the Sharadar history the
-  structural values run low, so blending worsened the specific bias
-  statistics. `E_0` (1.05) and the blending coefficient's parameters (60,
-  120, 10) are not published; these are the values third-party
-  replications of the Barra models use.
+- **Structural model.** USE4 fits the well-behaved stocks (blending
+  coefficient 1) on their exposures alone, and blends every stock. The
+  default fills only the stocks without a time series, mostly new
+  listings, since blending worsened the specific bias statistics on the
+  Sharadar history. USE4's structural values ran low for those stocks:
+  their 21-bar bias statistic was 1.36 with outcomes of more than 100% in
+  one bar left out. Three changes bring it to 1.09 (#203):
+  - fit on every stock with a time series;
+  - a history-length regressor, the main gain;
+  - `E_0` estimated each bar by smearing (Duan, 1983), where replications
+    use a fixed 1.05.
+
+  Smearing alone, on USE4's fit set, was slightly worse. The blending
+  coefficient's parameters (60, 120, 10) are not published; these are the
+  values third-party replications of the Barra models use.
 
 ## Defaults
 
@@ -235,7 +246,9 @@ model, is `volatility_half_life=252`, `specific_half_life=252`,
 | `specific_lags` | 0 | ours (USE4: 5) |
 | `specific_autocorrelation_half_life`, `_window` | 252, 756 | USE4 half-life; window ours |
 | `structural_model` | `"fill"` | ours (USE4: blend) |
-| `structural_bias` | 1.05 | third-party replications |
+| `structural_fit` | `"series"` | ours (USE4: blending coefficient 1) |
+| `structural_bias` | `"smearing"` | ours (replications: 1.05) |
+| `structural_history_window` | 756 | ours (USE4: none) |
 | `blending_min_observations`, `blending_ramp`, `blending_outlier_bound` | 60, 120, 10 | third-party replications |
 | `shrinkage`, `shrinkage_groups` | 0.1, 10 | USE4 |
 | `min_observations` | 21 | ours |
