@@ -3,7 +3,7 @@
 ``backtest_stats.round_trips`` turns fill records (timestamp, symbol, signed
 quantity, price, fee) into position round trips, flat to flat per symbol,
 and ``round_trip_stats`` summarizes them as the trade rows of a run's
-``whole`` block. An executor without vectorbt (quantlab-trader) reports the
+``whole`` block. An executor without vectorbt (quantlab-ibkr) reports the
 same rows from its own fills, adding the cash a position received while open
 (dividends, distributions) to that round trip's PnL. What is locked here:
 

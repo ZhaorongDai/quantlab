@@ -481,7 +481,7 @@ def test_one_dataset_read_by_two_consumers_is_recorded_once(tmp_path):
 def test_the_run_records_the_market_price_columns(overlap_run):
     """#106: an executor learns the fill and valuation columns from the run.
 
-    quantlab-trader reads a run directory without importing the backtester
+    quantlab-ibkr reads a run directory without importing the backtester
     class (which loads vectorbt), so the columns the run filled and valued at
     are recorded in its run.json, read as `BacktestRun.market` (#133).
     """

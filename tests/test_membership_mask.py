@@ -1,4 +1,4 @@
-"""Index membership masks the predictions, never the prices (quantlab-trader ADR 0006).
+"""Index membership masks the predictions, never the prices (quantlab-ibkr ADR 0006).
 
 What is locked here, and what turns it red:
 

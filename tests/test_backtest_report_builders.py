@@ -4,7 +4,7 @@ A backtest run's ``report.html`` is drawn from plain data: the run's config
 mapping, its metric block, its value and returns, its weights and fills and,
 for ``run_cv()``, its fold rows. The builders turning that data into the
 inputs of ``write_backtest_report`` are public so another executor
-(quantlab-trader) writes a page in exactly quantlab's format; quantlab's own
+(quantlab-ibkr) writes a page in exactly quantlab's format; quantlab's own
 pages go through them too (locked byte for byte in
 ``tests/test_backtest_report_lock.py``). What is locked here:
 

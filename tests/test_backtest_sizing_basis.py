@@ -1,4 +1,4 @@
-"""The vectorbt engine's sizing basis (#109, quantlab-trader ADR 0007, rung L1).
+"""The vectorbt engine's sizing basis (#109, quantlab-ibkr ADR 0007, rung L1).
 
 A target weight is turned into a share count against a price: by default
 (``sizing_basis="fill"``) the fill price of the bar the order executes on,

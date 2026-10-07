@@ -21,9 +21,9 @@ on a Linux runner, from the 13th significant digit on. Ten digits keep every
 change a reader of the report could see. The bytes still depend on the
 installed plotly, numpy and vectorbt; a version bump that changes them shows
 up here first.
-The same runs with the holdings left out of ``write_backtest_report`` (the
-quantlab-trader call path) must give the reports' bytes from before the
-Holdings tab (#225).
+The same runs with the holdings left out of ``write_backtest_report`` (a
+caller with no holdings to show) must give the reports' bytes from before
+the Holdings tab (#225).
 Beside the hashes, the recipe ``report_windows`` documents for building
 ``run_cv()`` fold rows from ``metrics.json`` is checked against the bars each
 fold traded.
@@ -291,8 +291,8 @@ EXPECTED: dict[str, str] = {
 
 
 #: The six reports as they were before the Holdings tab (#225), the hashes
-#: recorded for #215. A report written without holdings, as quantlab-trader
-#: writes one, must still be these bytes.
+#: recorded for #215. A report written without holdings must still be these
+#: bytes.
 WITHOUT_HOLDINGS: dict[str, str] = {
     "run_long_only_benchmark/report.html": "8caaa6219ea786273f1c8a00032708572e0fc572c5f57cd198702279ba330d15",
     "run_long_short_delisting/report.html": "54b3cea2423d40c569b90d5a32a141c8fdcf218c2fe83b3b34ee45a06ad5907f",
@@ -330,7 +330,7 @@ def test_report_and_metrics_are_byte_identical_to_before_the_public_builders(
 def test_without_holdings_the_report_is_byte_identical_to_before_the_holdings_tab(
     tmp_path, cv_project, monkeypatch
 ):
-    """The quantlab-trader call path: ``write_backtest_report`` given no holdings."""
+    """A caller with no holdings to show: ``write_backtest_report`` given none."""
     import quantlab.backtest.base as base
 
     write = base.write_backtest_report

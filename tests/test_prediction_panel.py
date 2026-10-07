@@ -1,4 +1,4 @@
-"""Label specs and the prediction panel file (#107, ADR 0005 of quantlab-trader).
+"""Label specs and the prediction panel file (#107, ADR 0005 of quantlab-ibkr).
 
 What is locked here, and what turns it red:
 

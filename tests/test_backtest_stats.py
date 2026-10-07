@@ -2,7 +2,7 @@
 
 The returns-based statistics and the turnover rows of ``metrics.json`` are
 public functions of a light module, so a tool that simulates elsewhere
-(quantlab-trader) computes them exactly as quantlab does without importing
+(quantlab-ibkr) computes them exactly as quantlab does without importing
 the model layer, the dataset layer or vectorbt. What is locked here:
 
 - ``return_stats`` gives the rows vectorbt's ``ReturnsAccessor.stats`` gave
