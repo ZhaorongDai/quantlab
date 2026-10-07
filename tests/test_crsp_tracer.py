@@ -335,6 +335,7 @@ def test_importing_wrds_crsp_first_registers_both_capabilities():
     assert "Traceback" not in child.stderr, child.stderr
     assert json.loads(child.stdout) == [
         ["us_equity", "1d", "crsp_daily"],
+        ["us_equity", "1m", "nbbo_bars"],
         ["us_equity", "tick", "nbbo"],
     ], child.stdout
 

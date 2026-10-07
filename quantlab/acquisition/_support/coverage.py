@@ -269,8 +269,9 @@ class CoverageLedger:
         """Yield, in sorted order, every symbol with a watermark sidecar.
 
         Only the top level of ``watermark_root`` is scanned. The failure
-        manifest and the page-ledger directory are skipped so that neither is
-        reported as a symbol.
+        manifest, the page-ledger directory and any other bookkeeping file
+        whose name starts with ``_`` (a ticker never does) are skipped so that
+        none is reported as a symbol.
 
         Yields
         ------
@@ -287,7 +288,7 @@ class CoverageLedger:
             return
         skip = {FAILURE_MANIFEST_NAME, PAGE_LEDGER_DIR_NAME}
         for path in sorted(root.glob("*.json")):
-            if path.name in skip or path.stem in skip:
+            if path.name in skip or path.stem in skip or path.name.startswith("_"):
                 continue
             if not path.is_file():
                 continue

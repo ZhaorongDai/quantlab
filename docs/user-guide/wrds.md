@@ -15,8 +15,9 @@ watermarks and resuming that WRDS downloads share with the other vendors.
 *WRDS* (Wharton Research Data Services) is a university-run service that gives
 subscribers access to licensed financial databases through a PostgreSQL
 server. One WRDS login reaches every product your institution subscribes to;
-quantlab uses two of them, registered as one source, `wrds`, with two
-capabilities:
+quantlab uses two of them, registered as one source, `wrds`, with three
+capabilities (TAQ quotes come as raw records or as bars resampled on the WRDS
+server):
 
 ```python
 from quantlab.acquisition.base import DataSourceRegistry
@@ -28,6 +29,7 @@ for cap in wrds.capabilities:
 
 ```text
 tick nbbo 2003-09-10 | WRDS NYSE TAQ millisecond subscription
+1m nbbo_bars 2003-09-10 | WRDS NYSE TAQ millisecond subscription
 1d crsp_daily 1925-12-31 | WRDS CRSP annual-update Stock v2 (crsp_a_stock)
 ```
 
@@ -476,6 +478,56 @@ shape: (3, 7)
 
 The 14:32 bar has no new record, so it carries the 14:30:30 quote with
 `n_updates = 0`; the crossed record at 14:31:00 never took effect.
+
+## Bars resampled on the WRDS server
+
+Downloading every record is slow when the link to WRDS is slow: a decade of
+S&P 500 NBBO records is about 9 TB of CSV, weeks of transfer at a few MB/s.
+`--server-bars` moves the resampling into SQL on the WRDS server (ADR 0027):
+each
+trading day and batch of tickers runs one statement that builds the bars, so
+only bars cross the network, about two hundred times less data.
+
+```bash
+# Point-in-time S&P 500 members, one-minute bars built on the server
+uv run python scripts/wrds/nbbo.py --index sp500 \
+    --start 2016-01-04 --end 2025-12-31 --server-bars --max-workers 6
+```
+
+Every other option works as for the tick download. The bars land in their
+own raw tier, `<download-dir>/wrds/nbbo_bars/date=YYYY-MM-DD/symbol=AAPL/`,
+one row per ticker and bar, with watermarks under
+`<download-dir>/_watermarks/wrds/nbbo_bars/`. The store is
+`<zarr-dir>/wrds_nbbo_server_{interval}_{start}-{end}.zarr`; the `server`
+marker keeps it apart from a store built from ticks with the same interval
+and session. Each page logs its day, batch, rows and seconds, which is how
+to estimate the rest of a multi-day run, and an interrupted run resumes from
+the recorded pages like the tick download.
+
+The panel is the one the tick path builds from the same records: the same
+variables, session grid, PERMNO axis, cleaning and sidecars, through
+`NbboBarsDataset` and `NbboBarsDatasetConfig`. The server follows the rules
+listed above for resampling, step by step. What changes:
+
+- **Settings are fixed at download time.** The bar size, the session window
+  and the quote filters are applied on the server, so they are recorded with
+  the download (`_watermarks/wrds/nbbo_bars/_request.json`). A later download with other
+  settings into the same `--download-dir` is refused, and so is a conversion
+  whose `NbboBarsDatasetConfig` differs from them. To try another session
+  window, download into another directory; with ticks, you would only
+  re-convert.
+- **One ticker per PERMNO and day.** The tick path merges the records of two
+  tickers that resolve to one PERMNO on a date; bars cannot be merged
+  exactly, so such a date is refused, naming the tickers.
+- **One-minute bars only, for now.**
+- **Not complete yet.** The time-weighted variables (`tw_spread`,
+  `tw_bid_size`, `tw_ask_size`) and `n_ambiguous_ties` are NaN, and the
+  filter-statistics sidecar lists each session without counts; the server
+  computes them in a later release.
+
+Use ticks when you want to re-cut the same data with different settings, or
+need the records themselves; use server bars for long histories over a slow
+link.
 
 ## Common errors
 

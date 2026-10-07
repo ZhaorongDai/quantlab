@@ -10,6 +10,16 @@ written as ``wrds_nbbo_{interval}_{HHMM-HHMM}.zarr`` into ``--zarr-dir``
 with its filter-statistics and ticker sidecars. The raw rows go to
 ``<download-dir>/wrds/nbbo/``; both directories default to the current one.
 
+``--server-bars`` resamples on the WRDS server instead (ADR 0027): each
+trading day and ticker batch runs one SQL statement that builds the bars, so
+only bars cross the network, which over a slow link is days instead of weeks
+for a decade of S&P 500 data. The bars land in ``<download-dir>/wrds/nbbo_bars/``
+and the store is named ``wrds_nbbo_server_{interval}_{HHMM-HHMM}.zarr``, so
+it never overwrites a store built from ticks. The interval, session window
+and quote filters are fixed when the bars are downloaded and recorded with
+them; a later run with other settings into the same ``--download-dir`` is
+refused. Server bars are one-minute bars for now.
+
 The panel's ``symbol`` axis is the CRSP PERMNO, the same axis as the CRSP
 stores ``index.py``, ``market.py`` and ``etf.py`` write. TAQ itself is keyed
 by ticker, so the roster is resolved through the CRSP reference tables
@@ -38,6 +48,8 @@ Usage::
         --interval 5m --session 09:30-16:00 --refresh
     uv run python scripts/wrds/nbbo.py --permnos 14593 --start 2024-01-02 \\
         --download-dir /data/taq/raw --zarr-dir /data/taq/zarr
+    uv run python scripts/wrds/nbbo.py --index sp500 --start 2016-01-04 \\
+        --end 2025-12-31 --server-bars --max-workers 6
 
 ``--end`` defaults to today and is clipped to the last trading day TAQ has
 published. ``--refresh`` continues each ticker from its recorded watermark
@@ -56,8 +68,9 @@ import polars as pl
 
 from quantlab.acquisition.base import DataSourceRegistry
 from quantlab.acquisition.registry import convert, run
-from quantlab.dataset.config import NbboDatasetConfig
+from quantlab.dataset.config import NbboBarsDatasetConfig, NbboDatasetConfig
 from quantlab.dataset.nbbo import NbboPanelDataset
+from quantlab.dataset.nbbo.bars import NbboBarsDataset
 from quantlab.dataset._support.session_calendar import XnysSessionCalendar
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference
@@ -73,6 +86,7 @@ from quantlab.utils.cli import (
 
 SOURCE = DataSourceRegistry.get("wrds")
 NBBO_CAPABILITY = ("us_equity", "tick", "nbbo")
+NBBO_BARS_CAPABILITY = ("us_equity", "1m", "nbbo_bars")
 CRSP_CAPABILITY = ("us_equity", "1d", "crsp_daily")
 ACQ = SOURCE.acquisition_cls_for(*NBBO_CAPABILITY)
 
@@ -85,6 +99,14 @@ INDEXES: dict[str, str] = {
 BAR_INTERVALS: tuple[str, ...] = typing.get_args(BarInterval)
 
 STORE_TEMPLATE = "wrds_nbbo_{interval}_{session_start}-{session_end}.zarr"
+
+#: The store of bars resampled on the WRDS server; ``server`` keeps it apart
+#: from a tick-built store with the same interval and session.
+SERVER_STORE_TEMPLATE = "wrds_nbbo_server_{interval}_{session_start}-{session_end}.zarr"
+
+#: The bar sizes ``--server-bars`` serves: one capability per size is
+#: registered, one minute so far.
+SERVER_BAR_INTERVALS: tuple[str, ...] = (NBBO_BARS_CAPABILITY[1],)
 
 #: The first year with TAQ millisecond tables on WRDS.
 TAQ_FIRST_YEAR = 2003
@@ -151,6 +173,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--refresh",
         action="store_true",
         help="Continue each ticker from its watermark instead of re-downloading.",
+    )
+    parser.add_argument(
+        "--server-bars",
+        action="store_true",
+        help=(
+            "Resample on the WRDS server and download only bars (ADR 0027), "
+            "into <download-dir>/wrds/nbbo_bars/ and a store named "
+            "wrds_nbbo_server_*. The interval, session and filters are fixed "
+            "at download time. One-minute bars only for now."
+        ),
     )
     add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
     add_output_dir_args(parser)
@@ -264,6 +296,12 @@ if __name__ == "__main__":
     args = parser.parse_args()
     download_dir, zarr_dir = resolve_output_dirs(args)
     calendar = _parse_session(parser, args.session)
+    if args.server_bars and args.interval not in SERVER_BAR_INTERVALS:
+        parser.error(
+            f"--server-bars serves --interval {list(SERVER_BAR_INTERVALS)} only; "
+            f"got {args.interval!r}."
+        )
+    capability = NBBO_BARS_CAPABILITY if args.server_bars else NBBO_CAPABILITY
     explicit = _parse_permnos(parser, args.permnos) if args.permnos else None
     requested_end = args.end or date.today().isoformat()
 
@@ -313,12 +351,20 @@ if __name__ == "__main__":
         )
 
         # 3. Download, by ticker: that is the only key TAQ has.
+        session_start = calendar.session_start.strftime("%H:%M")
+        session_end = calendar.session_end.strftime("%H:%M")
+        factory_kwargs = (
+            {"session_start": session_start, "session_end": session_end}
+            if args.server_bars
+            else {}
+        )
         acq_config = place_downloads(
-            SOURCE.config_factory_for(*NBBO_CAPABILITY)(
+            SOURCE.config_factory_for(*capability)(
                 symbols=symbols,
                 start_date=start,
                 end_date=end,
                 kwargs={"max_workers": args.max_workers},
+                **factory_kwargs,
             ),
             download_dir,
         )
@@ -327,24 +373,29 @@ if __name__ == "__main__":
         print(f"{len(result.succeeded)} ticker(s) succeeded, {len(result.failures)} failed")
         print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
-        # 4. Resample into the bar panel, keyed by PERMNO.
-        store_name = STORE_TEMPLATE.format(
+        # 4. Build the bar panel, keyed by PERMNO: resample the ticks, or
+        #    convert the server's bars.
+        store_name = (SERVER_STORE_TEMPLATE if args.server_bars else STORE_TEMPLATE).format(
             interval=args.interval,
             session_start=calendar.session_start.strftime("%H%M"),
             session_end=calendar.session_end.strftime("%H%M"),
         )
-        ds_config = NbboDatasetConfig(
+        common = dict(
             zarr_file_path=str(zarr_dir / store_name),
             raw_data_dir_path=acq_config.raw_data_dir_path,
             reference_dir=str(reference_dir),
             start_date=start,
             end_date=end,
             permnos=tuple(str(permno) for permno in permnos),
-            bar_interval=args.interval,
-            session_start=calendar.session_start.strftime("%H:%M"),
-            session_end=calendar.session_end.strftime("%H:%M"),
+            session_start=session_start,
+            session_end=session_end,
         )
-        probe = NbboPanelDataset(replace(ds_config, permnos=None))
+        if args.server_bars:
+            ds_config = NbboBarsDatasetConfig(frequency=args.interval, **common)
+            probe = NbboBarsDataset(replace(ds_config, permnos=None))
+        else:
+            ds_config = NbboDatasetConfig(bar_interval=args.interval, **common)
+            probe = NbboPanelDataset(replace(ds_config, permnos=None))
         if not probe.has_raw_data():
             parser.exit(
                 1,
@@ -352,8 +403,13 @@ if __name__ == "__main__":
                 f"{acq_config.raw_data_dir_path} ({len(result.failures)} ticker(s) "
                 f"failed this run). No store was written.\n",
             )
-        print(f"Resampling to {args.interval} bars over {args.session} ET")
-        print_conversion_result(convert(SOURCE, ds_config, data_type="nbbo", granularity="day"))
+        if args.server_bars:
+            print(f"Converting {args.interval} server bars over {args.session} ET")
+        else:
+            print(f"Resampling to {args.interval} bars over {args.session} ET")
+        print_conversion_result(
+            convert(SOURCE, ds_config, data_type=capability[2], granularity="day")
+        )
         print(f"Filter statistics sidecar: {probe.filter_stats_path}")
         print(f"Ticker sidecar: {probe.ticker_sidecar_path()}")
     finally:

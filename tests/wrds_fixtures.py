@@ -160,6 +160,12 @@ class FakeWrdsSession:
       and then raises, consuming no data;
     - `count_adjust` -- `{day: delta}` added to that day's `count_rows`
       answer, to fake a page whose COPY disagrees with its count;
+    - `bars_calls` -- every `copy_nbbo_bars_csv` call, recorded as a dict
+      with the `NbboBarsQuery` and its REAL statement, rendered;
+    - `bars_raise_on` -- `{bars call index: exception}`, as `raise_on`;
+    - `bars_short_by` -- `{day: n}` drops the last `n` rows of that day's bar
+      page while keeping the server's `page_rows`, to fake a truncated
+      transfer;
     - `connections` -- how many sessions were constructed (a real one would be
       a connection, and each connection can push Duo);
     - `instance` -- the shared instance, or `None`.
@@ -173,6 +179,9 @@ class FakeWrdsSession:
     entitled_years: set[int] | None = None
     raise_on: dict[int, BaseException] = {}
     count_adjust: dict[date, int] = {}
+    bars_calls: list[dict] = []
+    bars_raise_on: dict[int, BaseException] = {}
+    bars_short_by: dict[date, int] = {}
     connections: int = 0
     instance: "FakeWrdsSession | None" = None
 
@@ -190,6 +199,9 @@ class FakeWrdsSession:
         cls.entitled_years = None
         cls.raise_on = {}
         cls.count_adjust = {}
+        cls.bars_calls = []
+        cls.bars_raise_on = {}
+        cls.bars_short_by = {}
         cls.connections = 0
         cls.instance = None
 
@@ -277,6 +289,102 @@ class FakeWrdsSession:
             else pl.DataFrame(schema=schema)
         )
         return frame.write_csv(null_value="").encode()
+
+    def copy_nbbo_bars_csv(self, query) -> bytes:
+        """Answer a server-bar statement the way the server is meant to.
+
+        The stored records of the day and batch are resampled with the
+        REFERENCE implementation, `NbboResampler`, and returned in the
+        statement's result layout: one row per `(ticker, bar)` for every
+        ticker with a record, the snapshot and `n_updates`, the variables
+        not computed yet as NULL, and `page_rows`. This fakes the server's
+        answer; the SQL itself is accepted against `NbboResampler` on WRDS.
+        """
+        from quantlab.acquisition.wrds.nbbo_bars_sql import RESULT_COLUMNS
+
+        index = len(FakeWrdsSession.bars_calls)
+        FakeWrdsSession.bars_calls.append(
+            {
+                "day": query.day,
+                "pairs": list(query.pairs),
+                "query": query,
+                "sql": render_composed(query.statement()),
+            }
+        )
+        failure = self.bars_raise_on.get(index)
+        if failure is not None:
+            raise failure
+        bars = reference_server_bars(
+            self._stored(query.day, query.pairs), query
+        )
+        short = self.bars_short_by.get(query.day, 0)
+        if short:
+            bars = bars.head(max(bars.height - short, 0))
+        return bars.select(RESULT_COLUMNS).write_csv(null_value="").encode()
+
+
+def reference_server_bars(records: list[dict], query) -> pl.DataFrame:
+    """What the bar statement returns for `records`, computed by `NbboResampler`.
+
+    `records` are `taq_row` dicts in physical order; the result has the
+    statement's `RESULT_COLUMNS` (sym_suffix "" for none).
+    """
+    from quantlab.acquisition.wrds.nbbo_bars_sql import RESULT_COLUMNS
+    from quantlab.dataset.nbbo.resample import NbboResampler
+
+    if not records:
+        return pl.DataFrame(schema={name: pl.String for name in RESULT_COLUMNS})
+    frame = pl.DataFrame(
+        records, schema={name: pl.String for name in TAQ_COLUMNS_2018_ON}
+    ).with_row_index("wrds_row_ord")
+    nano = (
+        pl.col("time_m_nano").cast(pl.Int64).fill_null(0)
+        if query.has_nano
+        else pl.lit(0, dtype=pl.Int64)
+    )
+    frame = frame.with_columns(
+        pl.col("date").str.to_date("%Y-%m-%d"),
+        pl.col("sym_suffix").fill_null(""),
+    ).with_columns(
+        (
+            pl.col("date").dt.combine(
+                pl.col("time_m").str.to_time("%H:%M:%S%.f"), time_unit="ns"
+            )
+            + pl.duration(nanoseconds=nano)
+        )
+        .dt.replace_time_zone("America/New_York")
+        .dt.convert_time_zone("UTC")
+        .dt.replace_time_zone(None)
+        .alias("timestamp"),
+        (pl.col("sym_root") + pl.lit("|") + pl.col("sym_suffix")).alias("symbol"),
+    )
+    session = query.session
+    sessions = pl.DataFrame(
+        {"date": [session.day], "open": [session.open], "close": [session.close]}
+    )
+    panel = NbboResampler(
+        query.request.bar_interval, query.request.policy
+    ).resample(frame, sessions)
+    seconds = query.request.bar_seconds
+    bars = panel.select(
+        pl.col("symbol").str.split("|").list.get(0).alias("sym_root"),
+        pl.col("symbol").str.split("|").list.get(1).alias("sym_suffix"),
+        (
+            (pl.col("timestamp") - pl.lit(session.open, dtype=pl.Datetime("ns")))
+            .dt.total_seconds()
+            // seconds
+        ).alias("bar"),
+        "bid",
+        "bid_size",
+        "ask",
+        "ask_size",
+        pl.col("n_updates").cast(pl.Int64),
+        pl.lit(None, dtype=pl.Float64).alias("tw_spread"),
+        pl.lit(None, dtype=pl.Float64).alias("tw_bid_size"),
+        pl.lit(None, dtype=pl.Float64).alias("tw_ask_size"),
+        pl.lit(None, dtype=pl.Int64).alias("n_ambiguous_ties"),
+    ).sort(["sym_root", "sym_suffix", "bar"])
+    return bars.with_columns(pl.lit(bars.height).alias("page_rows"))
 
 
 # -- psycopg2 doubles for the REAL `WrdsSession` (plan 03.9-04) ---------------

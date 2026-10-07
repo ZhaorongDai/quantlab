@@ -348,6 +348,34 @@ uv run python scripts/wrds/nbbo.py --permnos 14593,10107,83443 --start 2024-01-2
 `reference_dir` 指向 `<download-dir>/_reference`，`permnos` 给 PERMNO 名单或留 `None` 取原始目录里能解析到的全部）
 并调用 `quantlab.acquisition.registry.convert(DataSourceRegistry.get("wrds"), cfg, data_type="nbbo", granularity="day")`。
 
+### 在 WRDS 服务器上重采样（`--server-bars`）
+
+到 WRDS 的链路慢时，逐笔下载太慢：S&P 500 十年的 NBBO 记录约 9 TB CSV，几 MB/s 要传几周。
+`--server-bars` 把重采样搬到 WRDS 服务器上的 SQL 里（ADR 0027）：每个（交易日，批次）一条语句在服务器上切好 bar，
+只把 bar 传回来，数据量约为逐笔的两百分之一。
+
+```bash
+uv run python scripts/wrds/nbbo.py --index sp500 --start 2016-01-04 --end 2025-12-31 \
+    --server-bars --max-workers 6
+```
+
+其余参数与逐笔下载相同。bar 落在自己的原始目录 `<download-dir>/wrds/nbbo_bars/date=.../symbol=.../`
+（每个 ticker 每根 bar 一行），水位在 `<download-dir>/_watermarks/wrds/nbbo_bars/`；
+store 名是 `wrds_nbbo_server_{bar}_{开始}-{结束}.zarr`，带 `server` 标记，不会和同参数的逐笔 store 互相覆盖。
+每页日志写明日期、批次、行数和秒数，便于估计多日运行的剩余时间；中断后按已记录的页续跑。
+
+转换（`NbboBarsDataset`、`NbboBarsDatasetConfig`）得到的面板与逐笔路径在同样记录上得到的一致：
+同样的变量、会话网格、PERMNO 轴、清洗和旁车文件。不同之处：
+
+- **设置在下载时就定死。** bar 大小、会话窗口和过滤规则在服务器上生效，所以下载时记录在
+  `_watermarks/wrds/nbbo_bars/_request.json`；之后用别的设置往同一个 `--download-dir` 下载会被拒绝，
+  `NbboBarsDatasetConfig` 与记录不符的转换也会被拒绝。想换窗口就下载到另一个目录。
+- **同一天一个 PERMNO 只能对应一个 ticker。** 逐笔路径会把两个 ticker 的记录合并后再重采样；
+  bar 无法精确合并，所以这样的日期直接拒绝，并点名这些 ticker。
+- **目前只有 1 分钟 bar。**
+- **尚未完整。** 时间加权变量（`tw_spread`、`tw_bid_size`、`tw_ask_size`）和 `n_ambiguous_ties` 暂为 NaN，
+  过滤统计旁车文件只列出会话、没有计数；后续版本由服务器补上。
+
 ---
 
 ## 常见坑

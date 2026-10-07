@@ -8,7 +8,10 @@ acquisition class.
 ``quantlab.acquisition.wrds.taq`` downloads NYSE TAQ ("Trade and Quote")
 millisecond data, specifically the NBBO (National Best Bid and Offer: the
 highest bid and lowest ask across all US exchanges at each instant), through
-``WrdsTaqNbboAcquisition``. ``quantlab.acquisition.wrds.crsp`` downloads CRSP
+``WrdsTaqNbboAcquisition``. ``quantlab.acquisition.wrds.taq_bars`` downloads
+the same quotes already resampled into bars on the WRDS server (ADR 0027),
+through ``WrdsTaqNbboBarsAcquisition``, with the statement built by
+``quantlab.acquisition.wrds.nbbo_bars_sql``. ``quantlab.acquisition.wrds.crsp`` downloads CRSP
 (Center for Research in Security Prices) Stock v2 daily bars through
 ``WrdsCrspDailyAcquisition``.
 
@@ -33,15 +36,16 @@ Examples
 >>> from quantlab.acquisition.wrds import WRDS_SOURCE
 >>> sorted((c.market, c.frequency, c.data_type)
 ...        for c in WRDS_SOURCE.capabilities)
-[('us_equity', '1d', 'crsp_daily'), ('us_equity', 'tick', 'nbbo')]
+[('us_equity', '1d', 'crsp_daily'), ('us_equity', '1m', 'nbbo_bars'), ('us_equity', 'tick', 'nbbo')]
 >>> WRDS_SOURCE.required_env
 ('WRDS_USERNAME',)
 """
 
-from quantlab.acquisition.wrds import crsp, taq
+from quantlab.acquisition.wrds import crsp, taq, taq_bars
 from quantlab.acquisition.base import Capability, SourceDescriptor, register_source
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.nbbo import NbboPanelDataset
+from quantlab.dataset.nbbo.bars import NbboBarsDataset
 
 #: The registered descriptor for the WRDS account.
 #:
@@ -67,6 +71,19 @@ WRDS_SOURCE = register_source(
                 entitlement="WRDS NYSE TAQ millisecond subscription",
                 acquisition_cls=taq.WrdsTaqNbboAcquisition,
                 config_factory=taq.WrdsTaqNbboAcquisition.build_config,
+            ),
+            # The same NBBO records, resampled into one-minute bars on the
+            # WRDS server (ADR 0027): the frequency is the bar size, and the
+            # raw tier is its own `nbbo_bars` directory.
+            Capability(
+                market="us_equity",
+                frequency="1m",
+                data_type="nbbo_bars",
+                dataset_cls=NbboBarsDataset,
+                earliest_available="2003-09-10",
+                entitlement="WRDS NYSE TAQ millisecond subscription",
+                acquisition_cls=taq_bars.WrdsTaqNbboBarsAcquisition,
+                config_factory=taq_bars.WrdsTaqNbboBarsAcquisition.build_config,
             ),
             # CRSP Stock v2 daily: a second acquisition class and config
             # factory under the same vendor. ``earliest_available`` is the

@@ -63,6 +63,38 @@ _TW_SOURCES = {
 }
 
 
+def snapshot_derived_variables() -> list[pl.Expr]:
+    """Return the expressions deriving ``mid``, ``spread_bps`` and ``imbalance``.
+
+    They read a bar's snapshot columns ``bid``, ``ask``, ``spread``,
+    ``bid_size`` and ``ask_size``; a null input gives a null output. Every
+    NBBO bar panel derives these three the same way, whether it resamples
+    records here or reads bars built elsewhere.
+
+    Returns
+    -------
+    list of pl.Expr
+        ``mid``, ``spread_bps`` and ``imbalance``, in that order.
+
+    Examples
+    --------
+    >>> pl.DataFrame({
+    ...     "bid": [100.0], "ask": [100.2], "spread": [0.2],
+    ...     "bid_size": [300.0], "ask_size": [100.0],
+    ... }).select(snapshot_derived_variables()).row(0)
+    (100.1, 19.980019980019982, 0.5)
+    """
+    mid = (pl.col("bid") + pl.col("ask")) / 2.0
+    return [
+        mid.alias("mid"),
+        (1e4 * pl.col("spread") / mid).alias("spread_bps"),
+        (
+            (pl.col("bid_size") - pl.col("ask_size"))
+            / (pl.col("bid_size") + pl.col("ask_size"))
+        ).alias("imbalance"),
+    ]
+
+
 @dataclass(frozen=True)
 class NbboFilterPolicy:
     """Filter applied to NBBO records before resampling.
@@ -696,15 +728,7 @@ class NbboResampler:
             ]
         ).filter(pl.col("edge") > pl.col("open"))
 
-        mid = (pl.col("bid") + pl.col("ask")) / 2.0
-        joined = joined.with_columns(
-            mid.alias("mid"),
-            (1e4 * pl.col("spread") / mid).alias("spread_bps"),
-            (
-                (pl.col("bid_size") - pl.col("ask_size"))
-                / (pl.col("bid_size") + pl.col("ask_size"))
-            ).alias("imbalance"),
-        )
+        joined = joined.with_columns(snapshot_derived_variables())
 
         joined = joined.join(
             updates, on=["symbol", "date", "edge"], how="left"

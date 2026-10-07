@@ -436,7 +436,11 @@ def test_wrds_descriptor_serves_nbbo_and_crsp_daily_capabilities() -> None:
 
     assert {
         (c.market, c.frequency, c.data_type) for c in source.capabilities
-    } == {("us_equity", "tick", "nbbo"), ("us_equity", "1d", "crsp_daily")}
+    } == {
+        ("us_equity", "tick", "nbbo"),
+        ("us_equity", "1m", "nbbo_bars"),
+        ("us_equity", "1d", "crsp_daily"),
+    }
 
     by_key = {
         (c.market, c.frequency, c.data_type): c for c in source.capabilities

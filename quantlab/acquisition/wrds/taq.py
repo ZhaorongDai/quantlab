@@ -945,6 +945,28 @@ class WrdsSession:
         """
         return self.copy_csv(self.copy_query(day, pairs, columns))
 
+    def copy_nbbo_bars_csv(self, query) -> bytes:
+        """Run a server-side bar resampling statement and return the CSV bytes.
+
+        Parameters
+        ----------
+        query : quantlab.acquisition.wrds.nbbo_bars_sql.NbboBarsQuery
+            One day table and one symbol batch; its ``statement()`` is run
+            unchanged.
+
+        Returns
+        -------
+        bytes
+            The CSV output, starting with a header line.
+
+        Examples
+        --------
+        Needs a live session::
+
+            raw = session.copy_nbbo_bars_csv(query)
+        """
+        return self.copy_csv(query.statement())
+
 
 def trading_days_between(session, start: date, end: date) -> list[date]:
     """Return the trading days in ``[start, end]``, ascending.
@@ -1304,6 +1326,48 @@ class WrdsTaqNbboAcquisition(Acquisition):
         """Return an empty frame with the raw schema and column order."""
         return pl.DataFrame(schema=self.RAW_SCHEMA).select(self.RAW_COLUMNS)
 
+    def _page_day(
+        self, start_date: str, end_date: str, page_token: str | None
+    ) -> tuple[date, str | None] | None:
+        """Return the day a page reads and the next page's token.
+
+        Parameters
+        ----------
+        start_date, end_date : str
+            The window, inclusive.
+        page_token : str or None
+            The ISO date of the day to read, or ``None`` for the window's
+            first trading day.
+
+        Returns
+        -------
+        tuple of (datetime.date, str or None) or None
+            The day and the next trading day's ISO date (``None`` after the
+            window's last trading day), or ``None`` when the window has no
+            trading day.
+
+        Raises
+        ------
+        ValueError
+            If the token names no trading day inside the window.
+        """
+        days = self._trading_days(start_date, end_date)
+        if not days:
+            return None
+        day = date.fromisoformat(page_token) if page_token else days[0]
+        if day not in days:
+            raise ValueError(
+                f"{self.class_name}: page token {page_token!r} names no trading "
+                f"day inside [{start_date}, {end_date}]. A token is the ISO "
+                f"date of the next day table to read; refusing rather than "
+                f"reading a day outside the requested window."
+            )
+        position = days.index(day)
+        next_token = (
+            days[position + 1].isoformat() if position + 1 < len(days) else None
+        )
+        return day, next_token
+
     def _fetch_page(
         self,
         symbols: list[str],
@@ -1338,22 +1402,10 @@ class WrdsTaqNbboAcquisition(Acquisition):
         symbols = self._validate_symbols(symbols)
         # Before any query: a hyphenated or malformed symbol is refused here.
         pairs = [self.symbol_to_pair(symbol) for symbol in symbols]
-        days = self._trading_days(start_date, end_date)
-        if not days:
+        page_day = self._page_day(start_date, end_date, page_token)
+        if page_day is None:
             return self._empty_page(), None
-
-        day = date.fromisoformat(page_token) if page_token else days[0]
-        if day not in days:
-            raise ValueError(
-                f"{self.class_name}: page token {page_token!r} names no trading "
-                f"day inside [{start_date}, {end_date}]. A token is the ISO "
-                f"date of the next day table to read; refusing rather than "
-                f"reading a day outside the requested window."
-            )
-        position = days.index(day)
-        next_token = (
-            days[position + 1].isoformat() if position + 1 < len(days) else None
-        )
+        day, next_token = page_day
 
         server_columns = set(self._session.table_columns(day))
         table = f"taqm_{day:%Y}.{self.TABLE_PATTERN.format(ymd=f'{day:%Y%m%d}')}"

@@ -183,6 +183,60 @@ class NbboDatasetConfig(DatasetConfig):
     keep_qu_cond: tuple[str, ...] | None = None
 
 
+@dataclass(kw_only=True, frozen=True)
+class NbboBarsDatasetConfig(DatasetConfig):
+    """Config of the NBBO bar panel built from bars resampled on the WRDS server.
+
+    The raw tier already holds bars, so ``frequency`` is the bar size
+    itself; there is no ``bar_interval`` field. The session window and the
+    four filter fields carry the same meaning as on ``NbboDatasetConfig``,
+    but they were applied on the WRDS server when the bars were downloaded:
+    the conversion refuses a config whose values differ from the settings
+    recorded with the raw tier, rather than labelling bars with filters they
+    were not built with. The ``symbol`` axis is the PERMNO, as for
+    ``NbboDatasetConfig``. See ``docs/wrds_taq.md``.
+
+    Examples
+    --------
+    >>> cfg = NbboBarsDatasetConfig(
+    ...     zarr_file_path="/data/us_equity/1m/nbbo_server_1m.zarr",
+    ...     raw_data_dir_path="/data/downloads/wrds",
+    ...     reference_dir="/data/downloads/_reference",
+    ...     start_date="2024-01-02",
+    ...     end_date="2024-01-31",
+    ...     permnos=("14593",),
+    ... )
+    >>> cfg.frequency, cfg.session_start, cfg.drop_crossed
+    ('1m', '09:30', True)
+    """
+
+    #: Always US equity for this vendor.
+    market: Market = "us_equity"
+    #: The bar size of the raw tier and of the panel.
+    frequency: Frequency = "1m"
+    #: Always WRDS for this dataset.
+    vendor: Vendor | None = "wrds"
+    #: Directory of the CRSP reference tables the conversion reads its
+    #: symbology from, as for ``NbboDatasetConfig.reference_dir``.
+    reference_dir: str
+    #: Restrict the panel to these PERMNOs, as digit strings; as for
+    #: ``NbboDatasetConfig.permnos``.
+    permnos: tuple[str, ...] | None = None
+    #: Start of the session window the bars were cut on, US/Eastern ``HH:MM``.
+    session_start: str = "09:30"
+    #: End of the session window the bars were cut on, US/Eastern ``HH:MM``.
+    session_end: str = "16:00"
+    #: The server dropped records whose bid exceeds the ask.
+    drop_crossed: bool = True
+    #: The server dropped records whose bid equals the ask.
+    drop_locked: bool = False
+    #: The server dropped records carrying a non-positive price.
+    drop_nonpositive_price: bool = True
+    #: The server kept only these ``qu_cond`` quote conditions; ``None``
+    #: kept every condition.
+    keep_qu_cond: tuple[str, ...] | None = None
+
+
 #: PERMNO of the QQQ ETF. A module constant because it is also the value a user
 #: passes to ``permnos`` when they want the ETF in some other window.
 QQQ_PERMNO: str = "86755"

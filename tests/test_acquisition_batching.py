@@ -452,6 +452,14 @@ _WALK_CONFIG_OVERRIDES = {
         "start_date": "2008-09-01",
         "end_date": "2020-08-31",
     },
+    # Server-side NBBO bars: the frequency is the bar size. The window is the
+    # two days `FakeWrdsSession` holds AAPL and MSFT records for.
+    "WrdsTaqNbboBarsAcquisition": {
+        "frequency": "1m",
+        "kwargs": {"data_type": "nbbo_bars"},
+        "start_date": "2024-01-24",
+        "end_date": "2024-01-25",
+    },
 }
 
 
