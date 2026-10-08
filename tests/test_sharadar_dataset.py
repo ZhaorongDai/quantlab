@@ -7,6 +7,8 @@ bulk pull leaves on disk.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -158,12 +160,31 @@ def test_a_ticker_mapped_to_two_permatickers_is_refused(tmp_path):
         _dataset(tmp_path, vendor_root).from_raw_data()
 
 
-def test_a_ticker_missing_from_tickers_is_refused(tmp_path):
-    rows = [sep_row("AAA", "2024-01-02", 10.0), sep_row("ZZZ", "2024-01-02", 5.0)]  # SYNTHETIC
+def test_a_ticker_no_source_maps_is_left_out_and_reported(tmp_path):
+    # Not refused (#234): a daily update must complete; the bars are missing
+    # and listed in <store>.unmapped.json.
+    rows = [
+        sep_row("AAA", "2024-01-02", 10.0),  # SYNTHETIC
+        sep_row("ZZZ", "2024-01-02", 5.0),  # SYNTHETIC
+        sep_row("ZZZ", "2024-01-03", 6.0),  # SYNTHETIC
+    ]
     tickers = [tickers_row("SEP", 101, "AAA")]  # SYNTHETIC
     vendor_root = _pull(tmp_path / "downloads", rows, tickers)
-    with pytest.raises(ValueError, match="ZZZ"):
-        _dataset(tmp_path, vendor_root).from_raw_data()
+    ds = _dataset(tmp_path, vendor_root)
+    ds.from_raw_data().save()
+    assert ds.panel("2024-01-01", "2024-01-31").symbol.values.tolist() == [101]
+    report = json.loads(ds.unmapped_path().read_text())
+    assert report["table"] == "sep"
+    assert report["unmapped"] == [
+        {
+            "ticker": "ZZZ",
+            "first_date": "2024-01-02",
+            "last_date": "2024-01-03",
+            "rows": 2,
+            "raw_files": ["sep.parquet"],
+            "reason": "no permaticker",
+        }
+    ]
 
 
 def test_two_tickers_of_one_permaticker_on_one_date_are_refused(tmp_path):

@@ -363,3 +363,96 @@ def test_without_a_store_update_builds_one(tmp_path):
     ds = _dataset(tmp_path, root)
     ds.update()
     assert _stored(ds).sizes["timestamp"] == 4
+
+
+# -- a ticker change between pulls (#234) -----------------------------------------
+
+
+@pytest.mark.parametrize("snapshots", [True, False], ids=["snapshots", "legacy-raw-tier"])
+def test_a_member_whose_ticker_changed_keeps_all_its_bars(tmp_path, snapshots):
+    """A member's bulk rows name it OLD; TICKERS, ACTIONS and the windows say NEW.
+
+    With TICKERS snapshots the bulk maps through its own run's; a raw tier
+    pulled before snapshots existed maps through the ACTIONS chain. Either
+    way the update completes and the security keeps every bar.
+    """
+    from tests.sharadar_fixtures import SP500_COLUMNS, sp500_row
+
+    vendor = _vendor(DAYS[:4], tickers=("AAA", "OLD"))  # 101 AAA, 202 OLD
+    vendor.tables["sp500"] = (
+        SP500_COLUMNS,
+        [sp500_row("2023-06-01", "added", "OLD")],  # SYNTHETIC
+    )
+    root = _bulk(vendor, tmp_path)
+    _client(vendor).bulk_table("sp500", tmp_path)
+    for name, fields in {
+        "sharadar_sep_1d.zarr": {},
+        "sharadar_sp500_1d.zarr": {"roster_universe": "sp500"},
+    }.items():
+        _dataset(tmp_path, root, name=name, **fields).update()
+
+    # The vendor renames 202's whole history to NEW on DAYS[4].
+    sep = vendor.tables["stocks"][1]
+    for row in sep:
+        if row["ticker"] == "OLD":
+            row["ticker"] = "NEW"
+    sep.extend(
+        sep_row(t, d, 150.0 + i)  # SYNTHETIC
+        for t in ("AAA", "NEW")
+        for i, d in enumerate(DAYS[4:6])
+    )
+    vendor.tables["tickers"][1][1]["ticker"] = "NEW"
+    change = action_row(DAYS[4], "tickerchangefrom", "NEW", None)
+    change.update(contraticker="OLD", contraname="OLD CORP")  # SYNTHETIC
+    vendor.tables["actions"][1].append(change)
+    vendor.tables["sp500"][1][0]["ticker"] = "NEW"
+    if not snapshots:
+        for path in (root / "tickers").glob("snapshot_*.parquet"):
+            path.unlink()
+    client = _client(vendor)
+    for code in ("tickers", "sp500"):
+        client.bulk_table(code, tmp_path)
+    _window(vendor, tmp_path, DAYS[5], trading_days=2)
+    # The bulk file still names 202 OLD on the days before the window.
+    assert "OLD" in _raw(root, "sep")["ticker"].to_list()
+
+    for name, fields in {
+        "sharadar_sep_1d.zarr": {},
+        "sharadar_sp500_1d.zarr": {"roster_universe": "sp500"},
+    }.items():
+        ds = _dataset(tmp_path, root, name=name, **fields)
+        ds.update()
+        panel = _stored(ds)
+        assert 202 in panel.symbol.values.tolist()
+        closes = panel["close"].sel(symbol=202).values
+        assert panel.sizes["timestamp"] == 6
+        assert not np.isnan(closes).any()
+        assert closes[4:].tolist() == [150.0, 151.0]
+        assert not ds.unmapped_path().exists()
+
+
+def test_an_unmappable_ticker_is_reported_and_the_update_completes(tmp_path):
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+    _dataset(tmp_path, root).update()
+    # A ticker no TICKERS, ACTIONS row or sidecar knows appears in the window.
+    vendor.tables["stocks"][1].extend(
+        [sep_row("AAA", DAYS[4], 104.0), sep_row("GHOST", DAYS[4], 9.0)]  # SYNTHETIC
+    )
+    _window(vendor, tmp_path, DAYS[4])
+    ds = _dataset(tmp_path, root)
+    ds.update()
+    assert _stored(ds).sizes["timestamp"] == 5
+    report = json.loads(ds.unmapped_path().read_text())
+    (entry,) = report["unmapped"]
+    assert entry["ticker"] == "GHOST"
+    assert (entry["first_date"], entry["last_date"], entry["rows"]) == (DAYS[4], DAYS[4], 1)
+    assert entry["raw_files"][0].startswith("window_")
+
+    # Once TICKERS knows it, the next derivation maps it and the report goes.
+    vendor.tables["tickers"][1].append(tickers_row("SEP", 909, "GHOST"))  # SYNTHETIC
+    _client(vendor).bulk_table("tickers", tmp_path)
+    _window(vendor, tmp_path, DAYS[4])
+    ds = _dataset(tmp_path, root)
+    ds.update()
+    assert not ds.unmapped_path().exists()

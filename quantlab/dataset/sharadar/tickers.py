@@ -45,15 +45,13 @@ import polars as pl
 from loguru import logger
 
 from quantlab.dataset.base import SymbolName, TickerLookup
-from quantlab.dataset.sharadar.tables import permaticker_mapping, scan_raw_table, table
+from quantlab.dataset.sharadar.permatickers import ticker_changes
+from quantlab.dataset.sharadar.tables import scan_raw_table, table
 
 __all__ = ["TICKER_SIDECAR_SUFFIX", "SharadarTickerLookup", "ticker_sidecar_payload"]
 
 #: Suffix of the ticker sidecar written beside a Sharadar store.
 TICKER_SIDECAR_SUFFIX = ".sharadar_tickers.json"
-
-#: The ACTIONS type recording a ticker change: ``contraticker`` became ``ticker``.
-TICKER_CHANGE = "tickerchangefrom"
 
 #: How the vendor fills an unused contra column.
 _NOT_APPLICABLE = "N/A"
@@ -89,53 +87,21 @@ def _current_names(vendor_root: str | Path, code: str, permatickers: set[int]) -
     return current
 
 
-def _ticker_changes(vendor_root: str | Path, code: str) -> dict[int, list[tuple[str, str, str | None]]]:
-    """Return each permaticker's ticker changes, ``(date, old ticker, old company)``, by date.
-
-    A change row's ``ticker`` is the one the security took on its date. If
-    a security changed away from that ticker later (``AAX`` -> ``BBX`` ->
-    ``BBB``: the change into ``BBX``), the row is that security's, the one
-    whose change away from it comes first after the row's date, even when
-    another company trades under the ticker now. Otherwise the row is the
-    security the TICKERS rows of ``code`` give the ticker to. A row that
-    maps to nothing, or to several permatickers, names nobody and is left
-    out: the sidecar is for display, and a refusal would cost a backtest
-    its names over one stray row.
-    """
-    rows = (
-        scan_raw_table(vendor_root, "actions")
-        .filter(pl.col("action") == TICKER_CHANGE)
-        .select("date", "ticker", "contraticker", "contraname")
-        .collect()
-        .sort("date", descending=True)
-    )
-    owners: dict[str, set[int]] = {}
-    for ticker, permaticker in permaticker_mapping(vendor_root, code).iter_rows():
-        owners.setdefault(str(ticker), set()).add(int(permaticker))
-    # Latest first, so a later change has resolved the ticker an earlier one
-    # changed into before that earlier one is looked at.
-    resolved: dict[int, list[tuple[str, str, str | None]]] = {}
-    later: dict[str, list[tuple[str, int]]] = {}
-    for day, ticker, old, old_company in rows.iter_rows():
-        old = _text_or_none(old)
-        if old is None or ticker is None:
-            continue
-        day = str(day)[:10]
-        left = [(since, perm) for since, perm in later.get(str(ticker), []) if since > day]
-        if left:
-            permaticker = min(left)[1]
-        else:
-            candidates = owners.get(str(ticker), set())
-            if len(candidates) != 1:
-                continue
-            (permaticker,) = candidates
-        resolved.setdefault(permaticker, []).append((day, old, _text_or_none(old_company)))
-        later.setdefault(old, []).append((day, permaticker))
-    return {perm: sorted(changes) for perm, changes in resolved.items()}
-
-
-def ticker_sidecar_payload(vendor_root: str | Path, code: str, permatickers: Iterable[int]) -> dict:
+def ticker_sidecar_payload(
+    vendor_root: str | Path,
+    code: str,
+    permatickers: Iterable[int],
+    previous: dict | None = None,
+) -> dict:
     """Return the ticker sidecar of ``permatickers`` from the raw TICKERS and ACTIONS tables.
+
+    The sidecar is also what a later conversion maps an old raw file's
+    tickers with (``quantlab.dataset.sharadar.permatickers``), so what an
+    earlier sidecar knew is carried forward rather than lost when TICKERS
+    forgets it: a permaticker TICKERS no longer lists keeps its earlier
+    spans, and a ticker the vendor renamed away without an ACTIONS row (a
+    reused ticker's old holder gets a suffixed one) is kept under
+    ``former``.
 
     Parameters
     ----------
@@ -146,17 +112,23 @@ def ticker_sidecar_payload(vendor_root: str | Path, code: str, permatickers: Ite
         map tickers to permatickers.
     permatickers : iterable of int
         The store's symbols. A permaticker without a TICKERS row of the
-        table is left out of the sidecar, and reads as its id.
+        table and without spans in ``previous`` is left out of the sidecar,
+        and reads as its id.
+    previous : dict, optional
+        The sidecar this one replaces, as read from its file.
 
     Returns
     -------
     dict
-        ``{"table": code, "intervals": {permaticker: [span, ...]}}``, each
-        span ``{"start", "ticker", "company"}``: the first day the ticker was
-        in use (``None`` for the first span), the ticker and the company
+        ``{"table": code, "intervals": {permaticker: [span, ...]},
+        "former": {permaticker: [span, ...]}}``, each span ``{"start",
+        "ticker", "company"}``: the first day the ticker was in use (``None``
+        for the first span, or when unknown), the ticker and the company
         (``None`` when the tables record none; an earlier ticker's company is
         the ``contraname`` of its change). Spans are in date order and
-        permatickers in numeric order.
+        permatickers in numeric order. ``former`` lists tickers an earlier
+        sidecar gave a permaticker that its current spans no longer name;
+        the lookup does not show them.
 
     Examples
     --------
@@ -166,7 +138,7 @@ def ticker_sidecar_payload(vendor_root: str | Path, code: str, permatickers: Ite
     """
     wanted = {int(p) for p in permatickers}
     current = _current_names(vendor_root, code, wanted)
-    changes = _ticker_changes(vendor_root, code)
+    changes = ticker_changes(vendor_root, code)
     intervals: dict[str, list[dict]] = {}
     for permaticker in sorted(current):
         ticker, company = current[permaticker]
@@ -178,7 +150,28 @@ def ticker_sidecar_payload(vendor_root: str | Path, code: str, permatickers: Ite
             start = day
         spans.append({"start": start, "ticker": ticker, "company": company})
         intervals[str(permaticker)] = spans
-    return {"table": code, "intervals": intervals}
+    former: dict[str, list[dict]] = {}
+    if previous:
+        old_intervals = previous.get("intervals", {}) or {}
+        old_former = previous.get("former", {}) or {}
+        for permaticker in sorted(wanted):
+            key = str(permaticker)
+            if key not in intervals and key in old_intervals:
+                intervals[key] = old_intervals[key]
+                if key in old_former:
+                    former[key] = old_former[key]
+                continue
+            named = {span["ticker"] for span in intervals.get(key, [])}
+            kept = [
+                span
+                for span in [*old_intervals.get(key, []), *old_former.get(key, [])]
+                if span.get("ticker") not in named
+            ]
+            unique = {span["ticker"]: span for span in kept}
+            if unique:
+                former[key] = [unique[t] for t in sorted(unique)]
+        intervals = {key: intervals[key] for key in sorted(intervals, key=int)}
+    return {"table": code, "intervals": intervals, "former": former}
 
 
 class SharadarTickerLookup(TickerLookup):

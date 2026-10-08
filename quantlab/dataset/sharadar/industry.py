@@ -59,8 +59,8 @@ from quantlab.dataset._support.ff48 import (
 )
 from quantlab.dataset.config import DatasetConfig, SharadarIndustryConfig
 from quantlab.dataset.sharadar.spells import ERROR_SAMPLE, SpellPanelDataset
+from quantlab.dataset.sharadar.permatickers import PermatickerResolver
 from quantlab.dataset.sharadar.tables import (
-    permaticker_mapping,
     scan_raw_table,
     table,
 )
@@ -145,14 +145,17 @@ class SharadarIndustryDataset(SpellPanelDataset):
             If a security has two changes on one date.
         """
         root = self.config.raw_data_dir_path
+        # ACTIONS is keyed by ticker, each raw file by the tickers of its own
+        # pull; a row mapping to no SEP security is another one's, dropped.
+        resolver = PermatickerResolver(root, "sep")
         changes = (
-            scan_raw_table(root, "actions")
+            scan_raw_table(root, "actions", annotate=resolver.annotate)
             # Every change, however late: the current code walked back from
             # is TICKERS', which already holds them all.
             .filter(pl.col("action") == SIC_CHANGE_FROM)
-            .select("date", "ticker", pl.col("value").alias("sic"))
+            .select("date", "ticker", pl.col("value").alias("sic"), "permaticker")
             .collect()
-            .join(permaticker_mapping(root, "sep"), on="ticker", how="inner")
+            .filter(pl.col("permaticker").is_not_null())
             .join(securities.select("permaticker"), on="permaticker", how="semi")
         )
         repeated = (

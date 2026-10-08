@@ -28,8 +28,9 @@ PosixPath('/data/downloads/sharadar/sep')
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -473,7 +474,30 @@ def _window_dates(path: Path) -> tuple[date, date]:
     return date.fromisoformat(start), date.fromisoformat(end)
 
 
-def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
+#: A function given each raw file of a table and its scan, returning the scan
+#: with a ``permaticker`` column (``PermatickerResolver.annotate``).
+Annotate = Callable[[Path, pl.LazyFrame], pl.LazyFrame]
+
+
+def raw_files(vendor_root: str | Path, code: str) -> list[Path]:
+    """Return a table's raw parquet files: the bulk file, then its windows and updated pulls in pull order.
+
+    Examples
+    --------
+    >>> [p.name for p in raw_files("/data/downloads/sharadar", "sep")][:1]
+    ['sep.parquet']
+    """
+    directory = raw_table_dir(vendor_root, code)
+    return (
+        [p for p in [bulk_file(vendor_root, code)] if p.exists()]
+        + sorted(directory.glob(f"{WINDOW_PREFIX}*.parquet"))
+        + sorted(directory.glob(f"{UPDATED_PREFIX}*.parquet"))
+    )
+
+
+def scan_raw_table(
+    vendor_root: str | Path, code: str, *, annotate: Annotate | None = None
+) -> pl.LazyFrame:
     """Scan one raw table: its bulk pull overlaid with its later pulls.
 
     A window pull is a complete copy of the table over its dates, so a row
@@ -482,6 +506,22 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
     window's dates, are left out. An updated pull (``updated_file``) holds
     changed rows, so each of its rows replaces the earlier row with the same
     primary key, and the newest pull wins.
+
+    Parameters
+    ----------
+    vendor_root : str or Path
+        ``<download-dir>/sharadar``.
+    code : str
+        The table's code.
+    annotate : callable, optional
+        Called with each raw file and its scan before the files are
+        combined, and returns the scan with a ``permaticker`` column
+        (``quantlab.dataset.sharadar.permatickers.PermatickerResolver.annotate``):
+        each file names its securities by the tickers of its own pull, so
+        they are mapped file by file. An updated pull then replaces the
+        earlier row of the same *permaticker* and key, so a security renamed
+        between two pulls keeps one row per key (a row no permaticker was
+        found for is keyed by its ticker).
 
     Raises
     ------
@@ -502,7 +542,12 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
             f"no raw Sharadar {code!r} table under {directory}; pull it first "
             f"(SharadarClient.bulk_table({code!r}, <download-dir>))"
         )
-    base = _overlay_windows(files, windows)
+
+    def scan(path: Path) -> pl.LazyFrame:
+        frame = pl.scan_parquet(path)
+        return frame if annotate is None else annotate(path, frame)
+
+    base = _overlay_windows(files, windows, scan)
     if not updates:
         return base
     key = table(code).primary_key
@@ -511,27 +556,156 @@ def scan_raw_table(vendor_root: str | Path, code: str) -> pl.LazyFrame:
             f"Sharadar table {code!r} has updated pulls under {directory} but "
             f"no primary key to apply them by."
         )
-    pulls = [base, *(pl.scan_parquet(path) for path in updates)]
-    return (
+    pulls = pl.concat([base, *(scan(path) for path in updates)])
+    if annotate is None or "ticker" not in key:
         # concat keeps the pulls in order, so the last row per key is the newest.
-        pl.concat(pulls).unique(subset=list(key), keep="last", maintain_order=True)
+        return pulls.unique(subset=list(key), keep="last", maintain_order=True)
+    identity = (
+        pl.when(pl.col("permaticker").is_null())
+        .then(pl.lit("ticker:") + pl.col("ticker"))
+        .otherwise(pl.col("permaticker").cast(pl.String))
+        .alias("_identity")
+    )
+    subset = ["_identity", *(name for name in key if name != "ticker")]
+    return (
+        pulls.with_columns(identity)
+        .unique(subset=subset, keep="last", maintain_order=True)
+        .drop("_identity")
     )
 
 
-def _overlay_windows(files: list[Path], windows: list[Path]) -> pl.LazyFrame:
+def _overlay_windows(
+    files: list[Path], windows: list[Path], scan: Callable[[Path], pl.LazyFrame]
+) -> pl.LazyFrame:
     """Scan the bulk file and the window files, each date from the newest file covering it."""
     if not windows:
-        return pl.scan_parquet(files)
+        return pl.concat([scan(path) for path in files])
     covered = [_window_dates(path) for path in windows]
     # The bulk file sits before every window (position -1 among them).
     first_window = len(files) - len(windows)
     frames = []
     for index, path in enumerate(files):
-        frame = pl.scan_parquet(path)
+        frame = scan(path)
         for start, end in covered[max(index - first_window + 1, 0) :]:
             frame = frame.filter(~pl.col("date").is_between(pl.lit(start), pl.lit(end)))
         frames.append(frame)
     return pl.concat(frames)
+
+
+#: Name of the file recording when a table's bulk file was pulled, beside it.
+BULK_PULL_FILE = "_bulk_pull.json"
+
+#: Filename prefix of a TICKERS snapshot (see ``tickers_snapshot_file``).
+SNAPSHOT_PREFIX = "snapshot_"
+
+#: How far a raw file's pull may be from a TICKERS snapshot for the snapshot
+#: to map it: one run of ``download.py`` or ``update.py`` pulls TICKERS and
+#: then the other tables within it.
+SNAPSHOT_TOLERANCE = timedelta(hours=12)
+
+#: The pull-time format of every pull's filename (UTC).
+_STAMP_FORMAT = "%Y%m%dT%H%M%S%f"
+
+
+def tickers_snapshot_file(vendor_root: str | Path, pulled_at: datetime) -> Path:
+    """Return the path of the TICKERS snapshot of a pull, beside ``tickers.parquet``.
+
+    A TICKERS pull replaces ``tickers.parquet``; the snapshot keeps that
+    pull's copy, so a raw file pulled in the same run can later be mapped
+    with the tickers the vendor used when it was pulled.
+
+    Examples
+    --------
+    >>> tickers_snapshot_file("/d/sharadar", datetime(2024, 1, 11, 8, 30)).name
+    'snapshot_20240111T083000000000.parquet'
+    """
+    return raw_table_dir(vendor_root, "tickers") / (
+        f"{SNAPSHOT_PREFIX}{pulled_at:{_STAMP_FORMAT}}.parquet"
+    )
+
+
+def write_bulk_pull(vendor_root: str | Path, code: str, pulled_at: datetime) -> None:
+    """Record when a table's bulk file was pulled (``BULK_PULL_FILE``), in UTC."""
+    write_json_atomically(
+        raw_table_dir(vendor_root, code) / BULK_PULL_FILE,
+        {"table": table(code).code, "pulled_at": pulled_at.astimezone(UTC).isoformat()},
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def pull_time(path: str | Path) -> datetime:
+    """Return when a raw file was pulled, in UTC.
+
+    A window, updated pull or TICKERS snapshot carries it in its name. A
+    bulk file's is in ``BULK_PULL_FILE`` beside it; a bulk file pulled before
+    that file existed falls back to its modification time.
+
+    Examples
+    --------
+    >>> pull_time("/d/sharadar/sep/window_20240111T083000000000_2024-01-02_2024-01-11.parquet")
+    datetime.datetime(2024, 1, 11, 8, 30, tzinfo=datetime.timezone.utc)
+    """
+    path = Path(path)
+    for prefix in (WINDOW_PREFIX, UPDATED_PREFIX, SNAPSHOT_PREFIX):
+        if path.name.startswith(prefix):
+            stamp = path.stem.removeprefix(prefix).split("_")[0]
+            return datetime.strptime(stamp, _STAMP_FORMAT).replace(tzinfo=UTC)
+    record = path.parent / BULK_PULL_FILE
+    if record.exists():
+        return datetime.fromisoformat(json.loads(record.read_text())["pulled_at"]).astimezone(UTC)
+    return datetime.fromtimestamp(path.stat().st_mtime, UTC)
+
+
+def tickers_snapshots(vendor_root: str | Path) -> list[Path]:
+    """Return the TICKERS snapshots, oldest first."""
+    return sorted(raw_table_dir(vendor_root, "tickers").glob(f"{SNAPSHOT_PREFIX}*.parquet"))
+
+
+def snapshot_for(vendor_root: str | Path, pulled_at: datetime) -> Path | None:
+    """Return the TICKERS snapshot of the run that pulled a file at ``pulled_at``, or ``None``.
+
+    The run's snapshot is the latest one taken at or before the pull (a run
+    pulls TICKERS first), or, when the file was pulled before any (a table
+    pulled ahead of TICKERS), the earliest one after it; either only within
+    ``SNAPSHOT_TOLERANCE`` of the pull.
+
+    Examples
+    --------
+    >>> snapshot_for("/data/downloads/sharadar", pull_time(window)).name
+    'snapshot_20240111T082900000000.parquet'
+    """
+    stamped = [(pull_time(path), path) for path in tickers_snapshots(vendor_root)]
+    before = [(t, p) for t, p in stamped if t <= pulled_at and pulled_at - t <= SNAPSHOT_TOLERANCE]
+    if before:
+        return before[-1][1]
+    after = [(t, p) for t, p in stamped if t > pulled_at and t - pulled_at <= SNAPSHOT_TOLERANCE]
+    return after[0][1] if after else None
+
+
+def prune_tickers_snapshots(vendor_root: str | Path) -> list[Path]:
+    """Delete the TICKERS snapshots no raw file maps with, and return them.
+
+    The newest snapshot is always kept (the next pulls of its run map with
+    it); an older one is kept while a raw file of any table pairs with it
+    (``snapshot_for``). A bulk pull deletes its table's windows, so the
+    snapshots only they used go too.
+    """
+    snapshots = tickers_snapshots(vendor_root)
+    if len(snapshots) < 2:
+        return []
+    used = {snapshots[-1]}
+    for spec in TABLES.values():
+        if spec.code == "tickers" or "ticker" not in spec.schema:
+            continue
+        for path in raw_files(vendor_root, spec.code):
+            paired = snapshot_for(vendor_root, pull_time(path))
+            if paired is not None:
+                used.add(paired)
+    removed = [path for path in snapshots if path not in used]
+    for path in removed:
+        path.unlink()
+    return removed
 
 
 #: Sharadar's time zone: its tables are updated on US/Eastern evenings, so a

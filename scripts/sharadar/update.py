@@ -24,7 +24,11 @@ Run every morning after ``download.py`` has built the stores. One run:
    first day it already holds: new bars are appended and earlier rows are
    never rewritten. A vendor correction to a stored date of a price store is
    listed in ``<store>.corrections.json`` instead; one to SF1 or DAILY is not
-   reported.
+   reported. Each raw file's tickers are mapped as of its own pull (its
+   run's TICKERS snapshot, then TICKERS, the ACTIONS ticker changes and the
+   store's ticker sidecar), so a ticker change between pulls never stops the
+   update; a row still unmapped is left out and listed in
+   ``<store>.unmapped.json``.
 
 SF3 (every 13F holding, 400 MB) and SF3B (holdings by investor) feed no
 store and are not refreshed here; ``download.py`` pulls them whole.

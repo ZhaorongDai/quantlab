@@ -12,9 +12,15 @@ by ``quantlab.acquisition.sharadar.client`` into parquet under
 ``<download-dir>/sharadar/``) into a dense ``(timestamp, symbol)`` Zarr panel
 whose ``symbol`` coordinate is the int64 permaticker. Each raw row is mapped
 through the TICKERS rows of its own table, so a ticker of a fund never maps a
-stock. The conversion refuses a raw ticker TICKERS does not know, a ticker
-TICKERS maps to two permatickers, and two rows of one permaticker on one
-date, rather than guess which company a row belongs to.
+stock, and as of its raw file's own pull, so a security whose ticker changed
+after a file was pulled keeps its rows (``quantlab.dataset.sharadar.permatickers``:
+the file's TICKERS snapshot, current TICKERS, the ACTIONS ticker changes,
+then the store's ticker sidecar). The conversion refuses a ticker TICKERS
+maps to two permatickers, and two rows of one permaticker on one date,
+rather than guess which company a row belongs to. A row no permaticker is
+found for is left out with a warning and listed in
+``<store>.unmapped.json`` (``unmapped_path()``), so a daily update completes;
+those bars are missing from the store.
 
 The panel holds raw (unadjusted) prices, so a later dividend or split never
 rewrites a stored row:
@@ -81,10 +87,9 @@ from quantlab.dataset.sharadar.tickers import (
     SharadarTickerLookup,
     ticker_sidecar_payload,
 )
+from quantlab.dataset.sharadar.permatickers import UNMAPPED_SUFFIX, PermatickerResolver
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
-    map_permatickers,
-    permaticker_mapping,
     raw_through,
     scan_raw_table,
     table,
@@ -184,8 +189,9 @@ class SharadarStockDataset(MarketDataset):
         return normalize_universe(config, self.class_name)
 
     def _on_config_installed(self) -> None:
-        """Drop the derivation cached for the previous config."""
+        """Drop the derivation and the resolver cached for the previous config."""
         self._derivation_cache: pl.DataFrame | None = None
+        self._resolver_cache: PermatickerResolver | None = None
 
     def _derivation(self) -> pl.DataFrame:
         """Return the panel's rows for the whole configured window, cached.
@@ -202,9 +208,10 @@ class SharadarStockDataset(MarketDataset):
         Raises
         ------
         ValueError
-            If a raw ticker has no permaticker, a ticker has two, or two rows
-            share a permaticker and date. An empty window is not an error
-            here; a build refuses it (``_rows_to_build``).
+            If a ticker has two permatickers, or two rows share a permaticker
+            and date. A row without a permaticker is left out and reported
+            (``unmapped_path()``). An empty window is not an error here; a
+            build refuses it (``_rows_to_build``).
         """
         if self._derivation_cache is not None:
             return self._derivation_cache
@@ -217,13 +224,12 @@ class SharadarStockDataset(MarketDataset):
         )
         with Timer(f"{self.class_name}: derive"):
             prices = (
-                scan_raw_table(root, self.config.table)
+                scan_raw_table(root, self.config.table, annotate=self._resolver().annotate)
                 .filter(pl.col("date").is_between(pl.lit(start), pl.lit(end)))
                 .collect()
             )
-            mapping = permaticker_mapping(root, self.config.table)
-            frame = self._map_permatickers(prices, mapping)
-            frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
+            frame = self._map_permatickers(prices)
+            frame = frame.filter(pl.col("permaticker").is_in(self._universe()))
             self._assert_unique_keys(frame)
             ratio = (
                 pl.when(pl.col("close") > 0)
@@ -240,7 +246,7 @@ class SharadarStockDataset(MarketDataset):
                 (pl.col("volume") / ratio).alias("volume"),
                 ratio.alias("_ratio"),
             )
-            events = self._events(mapping, start, end)
+            events = self._events(start, end)
             frame = self._adjust(frame, events).select(
                 "timestamp",
                 "symbol",
@@ -249,12 +255,13 @@ class SharadarStockDataset(MarketDataset):
         self._derivation_cache = frame
         return frame
 
-    def _events(self, mapping: pl.DataFrame, start, end) -> pl.DataFrame:
+    def _events(self, start, end) -> pl.DataFrame:
         """Return the window's cash distributions and splits per permaticker and date.
 
-        ACTIONS is keyed by the same current ticker as the price table, so its
-        rows are mapped through the price table's TICKERS rows; a row of a
-        ticker outside the price table is another security and is dropped.
+        ACTIONS is keyed by ticker like the price table, so each of its raw
+        files is mapped through the price table's TICKERS rows as of its own
+        pull, as the prices are; a row of a ticker outside the price table
+        is another security and is dropped.
         The cash distributions are the ``DISTRIBUTIONS`` actions: dividends
         and ``spinoffdividend``, the dollar value of the spun-off shares
         issued per parent share (adjusted for later splits like a dividend).
@@ -269,14 +276,17 @@ class SharadarStockDataset(MarketDataset):
             split-adjusted value, null when none) and ``_split`` (new shares
             per old share, null when none).
         """
+        resolver = PermatickerResolver(
+            self.config.raw_data_dir_path, self.config.table, sidecar_path=self._sidecar_source()
+        )
         actions = (
-            scan_raw_table(self.config.raw_data_dir_path, "actions")
+            scan_raw_table(self.config.raw_data_dir_path, "actions", annotate=resolver.annotate)
             .filter(
                 pl.col("date").is_between(pl.lit(start), pl.lit(end))
                 & pl.col("action").is_in([*DISTRIBUTIONS, "split"])
+                & pl.col("permaticker").is_not_null()
             )
             .collect()
-            .join(mapping, on="ticker", how="inner")
         )
         return actions.group_by(
             pl.col("date").cast(pl.Datetime("ns")).alias("timestamp"),
@@ -448,13 +458,66 @@ class SharadarStockDataset(MarketDataset):
         halted = halted.reindex(timestamp=stamps, fill_value=False)
         return tradable & ~halted.values
 
-    def _map_permatickers(
-        self, prices: pl.DataFrame, mapping: pl.DataFrame
-    ) -> pl.DataFrame:
-        """Add each raw row's permaticker, refusing a missing or ambiguous one."""
-        return map_permatickers(
-            prices, mapping, owner=self.class_name, code=self.config.table
-        )
+    def _sidecar_source(self) -> Path | None:
+        """Return the store's ticker sidecar to map old tickers with, or ``None`` without a store path."""
+        return None if self.config.zarr_file_path is None else self.ticker_sidecar_path()
+
+    def _resolver(self) -> PermatickerResolver:
+        """Return the price rows' resolver, made once per derivation."""
+        resolver = getattr(self, "_resolver_cache", None)
+        if resolver is None:
+            resolver = PermatickerResolver(
+                self.config.raw_data_dir_path, self.config.table, sidecar_path=self._sidecar_source()
+            )
+            self._resolver_cache = resolver
+        return resolver
+
+    def unmapped_path(self) -> Path:
+        """Return the report of raw rows left out for want of a permaticker (``<store>.unmapped.json``).
+
+        Written by every derivation that leaves rows out, and deleted by one
+        that leaves none out; see
+        ``quantlab.dataset.sharadar.permatickers.PermatickerResolver.left_out``.
+
+        Examples
+        --------
+        >>> SharadarStockDataset(config).unmapped_path().name
+        'sharadar_sep_1d.zarr.unmapped.json'
+        """
+        return Path(f"{self.config.zarr_file_path}{UNMAPPED_SUFFIX}")
+
+    def _map_permatickers(self, prices: pl.DataFrame) -> pl.DataFrame:
+        """Drop and report the annotated raw rows that have no permaticker."""
+        # A diff's derivations read another raw tier; the store's report is
+        # the store's own update's.
+        reports = self.config.zarr_file_path is not None and not getattr(self, "_diffing", False)
+        report = self.unmapped_path() if reports else None
+        return self._resolver().left_out(prices, owner=self.class_name, report_path=report)
+
+    def _universe(self) -> list[int]:
+        """Return the permatickers to keep: the configured universe, and the stored ones TICKERS dropped.
+
+        A market universe (no roster) is TICKERS' list for the table, so a
+        security TICKERS no longer lists (a delisted fund, a SPAC unit) would
+        leave it, and an update refuses a store losing a security. A stored
+        one TICKERS has no row of at all stays, mapped through the store's
+        ticker sidecar.
+        """
+        keep = set(universe(self.config))
+        if self.config.permatickers is None and self.config.roster_universe is None:
+            stored = {int(s) for s in self._stored_symbols()}
+            if stored - keep:
+                listed = set(
+                    scan_raw_table(self.config.raw_data_dir_path, "tickers")
+                    .filter(pl.col("table").is_in(table(self.config.table).mapping_labels))
+                    .select("permaticker")
+                    .unique()
+                    .collect()
+                    .to_series()
+                    .to_list()
+                )
+                keep |= stored - listed
+        return sorted(keep)
 
     def _assert_unique_keys(self, frame: pl.DataFrame) -> None:
         """Raise if two rows share a permaticker and a date."""
@@ -548,13 +611,22 @@ class SharadarStockDataset(MarketDataset):
         A conversion calls it once its derivation has succeeded, with the
         derivation's permatickers and the existing store's, so it is
         rewritten from the latest TICKERS and ACTIONS on every update and a
-        ticker change after the store was built still shows.
+        ticker change after the store was built still shows. What the
+        previous file knew and TICKERS no longer says is carried forward
+        (``ticker_sidecar_payload``'s ``previous``), since the next
+        derivation maps old raw tickers with it.
         """
         named = {int(s) for s in symbols}
         path = self.ticker_sidecar_path()
+        try:
+            previous = json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+        except (OSError, ValueError):
+            previous = None
         write_json_atomically(
             path,
-            ticker_sidecar_payload(self.config.raw_data_dir_path, self.config.table, named),
+            ticker_sidecar_payload(
+                self.config.raw_data_dir_path, self.config.table, named, previous=previous
+            ),
             indent=2,
             sort_keys=True,
         )
@@ -914,11 +986,13 @@ class SharadarStockDataset(MarketDataset):
         for year in sorted(set(stamps.year)):
             first = max(stamps[0].date(), date(year, 1, 1))
             end = min(last, date(year, 12, 31))
-            derived = type(self)(
+            year_dataset = type(self)(
                 dataclasses.replace(
                     compare, start_date=first.isoformat(), end_date=end.isoformat()
                 )
-            )._derivation()
+            )
+            year_dataset._diffing = True
+            derived = year_dataset._derivation()
             in_year = stamps[(stamps.year == year)].to_list()
             found.extend(
                 self._differences(

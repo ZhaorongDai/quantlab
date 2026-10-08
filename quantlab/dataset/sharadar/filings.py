@@ -26,12 +26,10 @@ import xarray as xr
 from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDatasetConfig
 from quantlab.dataset.sharadar.tables import (
-    map_permatickers,
-    permaticker_mapping,
     raw_through,
-    scan_raw_table,
     trading_days,
 )
+from quantlab.dataset.sharadar.permatickers import map_raw_table
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
@@ -147,20 +145,20 @@ class FilingPanelDataset(BaseDataset):
         Raises
         ------
         ValueError
-            If a raw ticker has no permaticker or two (``map_permatickers``).
+            If a raw ticker has two permatickers (``map_raw_table``); a row
+            with none is left out and reported in ``<store>.unmapped.json``.
         """
         if self._placed_cache is not None:
             return self._placed_cache
         root = self.config.raw_data_dir_path
         days = self._trading_days()
         with Timer(f"{self.class_name}: place filings"):
-            raw = (
-                scan_raw_table(root, self.TABLE)
-                .filter(pl.col("date") <= pl.lit(self._raw_through()))
-                .collect()
-            )
-            frame = map_permatickers(
-                raw, permaticker_mapping(root, self.TABLE), owner=self.class_name, code=self.TABLE
+            frame = map_raw_table(
+                root,
+                self.TABLE,
+                owner=self.class_name,
+                store_path=self.config.zarr_file_path,
+                query=lambda scan: scan.filter(pl.col("date") <= pl.lit(self._raw_through())),
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             filings = self._filings(frame)

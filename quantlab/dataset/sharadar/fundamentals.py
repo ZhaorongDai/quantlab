@@ -61,12 +61,11 @@ import xarray as xr
 
 from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.config import DatasetConfig, SharadarFundamentalsConfig
+from quantlab.dataset.sharadar.permatickers import map_raw_table
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.dataset.sharadar.tables import (
     DAILY_INDICATORS,
     SF1_INDICATORS,
-    map_permatickers,
-    permaticker_mapping,
     raw_through,
     scan_raw_table,
     table,
@@ -201,14 +200,14 @@ class SharadarFundamentalsDataset(BaseDataset):
         config = self.config
         root = config.raw_data_dir_path
         with Timer(f"{self.class_name}: shown rows"):
-            raw = (
-                scan_raw_table(root, "sf1")
-                .filter(pl.col("dimension") == config.dimension)
-                .filter(pl.col("date") <= pl.lit(self._raw_through()))
-                .collect()
-            )
-            frame = map_permatickers(
-                raw, permaticker_mapping(root, "sf1"), owner=self.class_name, code="sf1"
+            frame = map_raw_table(
+                root,
+                "sf1",
+                owner=self.class_name,
+                store_path=config.zarr_file_path,
+                query=lambda scan: scan.filter(pl.col("dimension") == config.dimension).filter(
+                    pl.col("date") <= pl.lit(self._raw_through())
+                ),
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(config)))
             self._assert_unique_keys(frame)

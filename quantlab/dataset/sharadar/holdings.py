@@ -53,15 +53,12 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import xarray as xr
-from loguru import logger
 
 from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.config import DatasetConfig, SharadarHoldingsConfig
+from quantlab.dataset.sharadar.permatickers import map_raw_table
 from quantlab.dataset.sharadar.tables import (
-    map_permatickers,
-    permaticker_mapping,
     raw_through,
-    scan_raw_table,
     trading_days,
 )
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
@@ -161,30 +158,22 @@ class SharadarHoldingsDataset(BaseDataset):
             return self._quarters_cache
         root = self.config.raw_data_dir_path
         with Timer(f"{self.class_name}: quarters"):
-            raw = (
-                scan_raw_table(root, "sf3a")
-                .select(
+            # SF3A holds funds and securities without Sharadar prices: their
+            # rows map to nothing and are left out quietly, with no report. A
+            # ticker that maps to two permatickers is still refused.
+            frame = map_raw_table(
+                root,
+                "sf3a",
+                owner=self.class_name,
+                query=lambda scan: scan.select(
                     "ticker",
                     pl.col("date").str.to_date().alias("quarter_end"),
                     "shrholders",
                     "shrunits",
-                )
-                .collect()
-            )
-            mapping = permaticker_mapping(root, "sf3a")
-            unlisted = raw.join(mapping, on="ticker", how="anti")
-            if unlisted.height:
-                logger.info(
-                    f"{self.class_name}: {unlisted.height} SF3A row(s) of "
-                    f"{unlisted['ticker'].n_unique()} ticker(s) SEP does not list "
-                    f"(funds, or securities without Sharadar prices) are left out."
-                )
-            # A listed ticker that maps to two permatickers is still refused.
-            frame = map_permatickers(
-                raw.join(mapping.select("ticker").unique(), on="ticker", how="semi"),
-                mapping,
-                owner=self.class_name,
-                code="sf3a",
+                    "permaticker",
+                ),
+                date_column="quarter_end",
+                quiet=True,
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             self._assert_unique_keys(frame)

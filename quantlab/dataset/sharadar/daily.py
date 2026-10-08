@@ -46,12 +46,11 @@ from quantlab.dataset.base import BaseDataset
 from quantlab.dataset.config import DatasetConfig, SharadarDailyConfig
 from quantlab.dataset.sharadar.tables import (
     DAILY_INDICATORS,
-    map_permatickers,
-    permaticker_mapping,
     raw_through,
     scan_raw_table,
     table,
 )
+from quantlab.dataset.sharadar.permatickers import map_raw_table
 from quantlab.dataset.sharadar.universe import normalize_universe, universe
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
@@ -172,13 +171,12 @@ class SharadarDailyDataset(BaseDataset):
             datetime.fromisoformat(self.config.end_date).date(), raw_through(root, ("daily",))
         )
         with Timer(f"{self.class_name}: derive"):
-            raw = (
-                scan_raw_table(root, "daily")
-                .filter(pl.col("date").is_between(pl.lit(start), pl.lit(end)))
-                .collect()
-            )
-            frame = map_permatickers(
-                raw, permaticker_mapping(root, "daily"), owner=self.class_name, code="daily"
+            frame = map_raw_table(
+                root,
+                "daily",
+                owner=self.class_name,
+                store_path=self.config.zarr_file_path,
+                query=lambda scan: scan.filter(pl.col("date").is_between(pl.lit(start), pl.lit(end))),
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             self._assert_unique_keys(frame)

@@ -66,13 +66,16 @@ from quantlab.dataset.sharadar.tables import (
     VENDOR_DIR,
     WINDOW_PREFIX,
     SharadarTable,
+    prune_tickers_snapshots,
     raw_table_dir,
     read_watermark,
     scan_raw_table,
     table,
+    tickers_snapshot_file,
     updated_file,
     vendor_today,
     window_file,
+    write_bulk_pull,
     write_watermark,
 )
 
@@ -229,7 +232,13 @@ class SharadarClient:
 
         The parquet replaces any earlier bulk pull of the table and is
         written only once the whole zip has been read and checked, so an
-        interrupted pull leaves the previous file in place.
+        interrupted pull leaves the previous file in place. When the pull
+        was asked for is recorded beside it (``tables.BULK_PULL_FILE``), and
+        a TICKERS pull also keeps a copy of itself as a snapshot
+        (``tables.tickers_snapshot_file``): a raw file names securities by
+        the tickers of its own pull, and is later mapped with the snapshot
+        of its run (``quantlab.dataset.sharadar.permatickers``). Snapshots no
+        raw file maps with any more are deleted.
 
         Parameters
         ----------
@@ -269,6 +278,7 @@ class SharadarClient:
             raise SharadarEntitlementError(
                 f"cannot pull Sharadar table {code!r}: {API_KEY_ENV} is not set."
             )
+        pulled_at = datetime.now(UTC)
         response = self._get(
             spec,
             f"{DATA_URL}/{spec.api_name}",
@@ -298,6 +308,13 @@ class SharadarClient:
         for prefix in (WINDOW_PREFIX, UPDATED_PREFIX):
             for pull in directory.glob(f"{prefix}*.parquet"):
                 pull.unlink()
+        write_bulk_pull(vendor_root, code, pulled_at)
+        if code == "tickers":
+            snapshot = tickers_snapshot_file(vendor_root, pulled_at)
+            partial = snapshot.with_name(f".{snapshot.name}.partial")
+            shutil.copyfile(target, partial)
+            os.replace(partial, snapshot)
+        prune_tickers_snapshots(vendor_root)
         if "date" in spec.schema:
             write_watermark(vendor_root, code, vendor_today())
         logger.info(f"Sharadar {code}: bulk pull (years={years}) written to {target}")
