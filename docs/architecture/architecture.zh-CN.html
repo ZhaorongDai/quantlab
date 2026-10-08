@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>quantlab 架构设计</title>
+<style>
+:root{
+  --ink:#1f2328; --muted:#5b636e; --line:#d6dbe1; --soft:#f4f6f8;
+  --accent:#1f5fa8; --accent-soft:#e8f0fa; --warn:#a4501a; --warn-soft:#fbefe6;
+  --ok:#2c7a4b; --ok-soft:#e7f4ec; --code:#f6f8fa;
+}
+@page{ size:A4; margin:20mm 18mm 20mm 18mm;
+  @bottom-center{ content: counter(page); font-family:"PingFang SC",sans-serif; font-size:9pt; color:#8a929c; }
+  @top-right{ content:"quantlab 架构设计"; font-family:"PingFang SC",sans-serif; font-size:8pt; color:#9aa2ab; }
+}
+@page :first{ @bottom-center{content:none} @top-right{content:none} }
+html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+body{ font-family:"PingFang SC","Hiragino Sans GB","Noto Sans CJK SC",sans-serif; color:var(--ink);
+  font-size:10.3pt; line-height:1.72; margin:0; background:#fff; }
+h1,h2,h3,h4{ line-height:1.35; color:#111; }
+h1.chapter{ font-size:21pt; margin:0 0 6pt; padding-bottom:6pt; border-bottom:2px solid var(--accent); break-before:page; }
+h1.chapter .num{ color:var(--accent); margin-right:10pt; }
+h2{ font-size:14pt; margin:20pt 0 6pt; }
+h3{ font-size:11.5pt; margin:14pt 0 4pt; }
+p{ margin:5pt 0 7pt; text-align:justify; }
+code{ font-family:"SF Mono",Menlo,monospace; font-size:8.7pt; background:var(--code); padding:0 3px; border-radius:3px; }
+pre{ font-family:"SF Mono",Menlo,monospace; font-size:8.3pt; line-height:1.5; background:var(--code); border:1px solid #e3e7eb;
+  border-radius:6px; padding:8pt 10pt; white-space:pre-wrap; break-inside:avoid; margin:6pt 0 10pt; }
+pre code{ background:none; padding:0; font-size:inherit; }
+.c{ color:#6a737d; } .k{ color:#a626a4; } .s{ color:#2c7a4b; }
+table{ border-collapse:collapse; width:100%; margin:6pt 0 12pt; font-size:9.2pt; }
+th,td{ border-bottom:1px solid var(--line); padding:4pt 6pt; text-align:left; vertical-align:top; }
+th{ background:var(--soft); font-weight:600; border-bottom:1.5px solid #b9c1ca; }
+tr{ break-inside:avoid; }
+.lead{ font-size:11pt; color:#333; }
+.box{ border-left:4px solid var(--accent); background:var(--accent-soft); padding:6pt 10pt; margin:8pt 0 10pt; border-radius:0 6px 6px 0; break-inside:avoid; }
+.box.warn{ border-color:var(--warn); background:var(--warn-soft); }
+.box.ok{ border-color:var(--ok); background:var(--ok-soft); }
+.box b.t{ display:block; margin-bottom:2pt; }
+figure{ margin:10pt 0 12pt; text-align:center; break-inside:avoid; }
+figure svg{ max-width:100%; height:auto; }
+figure img{ max-width:100%; }
+figcaption{ font-size:8.8pt; color:var(--muted); margin-top:4pt; }
+ul,ol{ margin:4pt 0 8pt; padding-left:18pt; } li{ margin:2pt 0; }
+.cover{ height:250mm; display:flex; flex-direction:column; justify-content:center; }
+.cover h1{ font-size:34pt; margin:0; letter-spacing:1px; }
+.cover .sub{ font-size:15pt; color:var(--accent); margin-top:8pt; }
+.cover .meta{ margin-top:40pt; color:var(--muted); font-size:10pt; line-height:1.9; }
+.toc{ break-before:page; }
+.toc ol{ list-style:none; padding:0; } .toc li{ padding:3pt 0; border-bottom:1px dotted #ccd2d8; }
+.toc li span{ color:var(--accent); display:inline-block; width:28pt; font-weight:600; }
+.small{ font-size:8.8pt; color:var(--muted); }
+.stats{ display:flex; gap:8pt; margin:10pt 0; }
+.stats div{ flex:1; border:1px solid var(--line); border-radius:6px; padding:6pt 8pt; }
+.stats b{ display:block; font-size:15pt; color:var(--accent); }
+.stats span{ font-size:8.5pt; color:var(--muted); }
+.keep{ break-inside:avoid; }
+</style>
+</head>
+<body>
+
+<!-- ============ 封面 ============ -->
+<section class="cover">
+  <svg width="120" height="60" viewBox="0 0 120 60"><rect x="0" y="34" width="14" height="26" fill="#9fc0e6"/><rect x="20" y="22" width="14" height="38" fill="#6b9fd8"/><rect x="40" y="10" width="14" height="50" fill="#1f5fa8"/><rect x="60" y="26" width="14" height="34" fill="#6b9fd8"/><rect x="80" y="0" width="14" height="60" fill="#13467f"/></svg>
+  <h1>quantlab</h1>
+  <div class="sub">架构设计、取舍与工程实践</div>
+  <p class="lead" style="margin-top:18pt;max-width:140mm">写给熟悉 Python、但从没接触过这个仓库的程序员。<br>读这份文档不需要任何量化背景，也不需要事先了解这个仓库的任何东西。本文讲代码为什么这样组织，量化方法只在解释设计动机时一笔带过。</p>
+  <div class="meta">
+    仓库：github.com/ZhaorongDai/quantlab<br>
+    对应版本：2026-10-07 的 main 分支
+  </div>
+</section>
+
+<!-- ============ 目录 ============ -->
+<section class="toc">
+<h2 style="font-size:18pt">目录</h2>
+<ol>
+<li><span>0</span>阅读前：五分钟了解业务背景</li>
+<li><span>1</span>全景：一条流水线，十八个有序的层</li>
+<li><span>2</span>唯一的数据契约：面板</li>
+<li><span>3</span>组件模型：配置即对象，对象可重建</li>
+<li><span>4</span>读取是无状态查询</li>
+<li><span>5</span>扩展点：模板方法、钩子与包装器</li>
+<li><span>6</span>基类还是协议</li>
+<li><span>7</span>用接口形状保证不变量：“只看得到 t”</li>
+<li><span>8</span>长任务的健壮性：断点续传与原子写</li>
+<li><span>9</span>运行目录层：可复现的落盘格式</li>
+<li><span>10</span>外部依赖的隔离</li>
+<li><span>11</span>用测试守护架构</li>
+<li><span>12</span>设计文档与项目约定</li>
+<li><span>13</span>取舍总表</li>
+<li><span>14</span>优势、局限与预留方向</li>
+<li><span>附</span>A. 读代码路线　B. 术语对照　C. 一个最小端到端示例</li>
+</ol>
+</section>
+
+<!-- ============ 0 ============ -->
+<h1 class="chapter"><span class="num">0</span>阅读前：五分钟了解业务背景</h1>
+
+<p>quantlab 是一个<b>量化股票研究的 Python 后端库</b>：用历史行情数据找规律、训练模型，再用历史数据模拟“如果当时按模型交易会怎样”。不懂量化也能读懂本文，先记住下面几个词就够了：</p>
+
+<table>
+<tr><th style="width:22%">业务词</th><th>程序员视角的解释</th></tr>
+<tr><td>行情 / K 线（bar）</td><td>每只股票每个时间点（例如每天）一条记录：开盘价、最高价、最低价、收盘价、成交量。一根 bar 就是一个时间步。</td></tr>
+<tr><td>因子（factor）</td><td>由行情算出来的<b>特征</b>，例如“过去 20 天涨了多少”。就是机器学习里的 feature。</td></tr>
+<tr><td>标签（label）</td><td>模型要预测的<b>目标</b>，例如“未来 5 天的收益”。就是机器学习里的 y。</td></tr>
+<tr><td>收益模型</td><td>用因子预测标签的模型（XGBoost、神经网络等），对每只股票每天输出一个分数。</td></tr>
+<tr><td>组合构建</td><td>把分数变成“每只股票该占资金的百分之几”，即目标权重。</td></tr>
+<tr><td>回测（backtest）</td><td>用历史数据模拟按这些权重交易，看账户净值如何变化。</td></tr>
+</table>
+
+<p>这个领域有两个和软件设计直接相关的难点。理解了它们，就理解了本仓库一半的设计：</p>
+
+<div class="box warn"><b class="t">难点一：前视偏差（look-ahead bias），也就是“偷看未来”</b>
+模拟第 t 天的决策时，代码只要不小心读到 t 之后的任何数据（哪怕只是“这只股票明天会停牌”这样一条信息），回测结果就会虚高，而且<b>程序不会报错</b>。这是一类沉默的 bug，靠代码审查很难查全。本仓库的许多设计都是为了让这类 bug 在结构上写不出来（第 7 章）。</div>
+
+<div class="box warn"><b class="t">难点二：可复现性</b>
+一次研究结果由“数据 + 参数 + 代码”三者共同决定。数据会被追加和修订，参数散落在各个对象里，代码每天都在改。三个月后要回答“这条曲线是怎么算出来的”，往往已经做不到。本仓库把可复现单独做成了一层（第 3、9 章）。</div>
+
+<div class="stats">
+<div><b>~8.3 万</b><span>行库代码（quantlab/）</span></div>
+<div><b>~10 万</b><span>行测试代码，约 3000 个测试函数</span></div>
+<div><b>18</b><span>个有序的层</span></div>
+<div><b>28</b><span>篇设计决策记录</span></div>
+</div>
+
+<p><b>技术栈</b>：Python ≥ 3.13，用 <code>uv</code> 管理依赖；数据格式是 xarray + Zarr（Zarr 是一种分块存储 N 维数组的磁盘格式）；因子用 KunQuant（一个把因子公式编译成本地代码的库）和 Polars 计算；模型用 PyTorch、XGBoost、pytabkit；组合优化用 cvxpy；回测撮合用 vectorbt；实验追踪可选 W&amp;B 或 MLflow。项目没有 Web 框架，也没有服务进程，是一个纯后端库。</p>
+
+<p><b>数据从哪来</b>：项目支持多家行情数据供应商，例如 WRDS（学术界常用的金融数据平台，提供美股历史数据 CRSP 和逐笔报价 TAQ）、Sharadar（商业美股数据），也可以直接传入自己的 pandas / polars DataFrame。</p>
+
+<!-- ============ 1 ============ -->
+<h1 class="chapter"><span class="num">1</span>全景：一条流水线，十八个有序的层</h1>
+
+<div class="keep"><h2>1.1 流水线</h2>
+<p>项目的核心价值可以用一句话概括：<b>一条打通的、由配置驱动、可复现的流水线。模块之间通过清晰的输入输出契约组合，任何一环都能单独替换。</b></p></div>
+
+<figure>
+<img src="../assets/workflow.zh-CN.svg" style="width:100%">
+<figcaption>图 1-1　研究流程。每个阶段对应一层里的一个根类，前一阶段的输出就是后一阶段的输入。</figcaption>
+</figure>
+
+<table>
+<tr><th>阶段</th><th>根类（位于 &lt;层&gt;/base.py）</th><th>输入 → 输出</th></tr>
+<tr><td>数据获取</td><td><code>Acquisition</code></td><td>供应商 API → 原始 Parquet 文件</td></tr>
+<tr><td>数据集</td><td><code>BaseDataset</code> / <code>MarketDataset</code></td><td>原始文件 → 价格面板（存成 Zarr）</td></tr>
+<tr><td>因子 / 标签</td><td><code>Factor</code> / <code>Forward</code></td><td>价格面板 → 因子面板</td></tr>
+<tr><td>收益模型</td><td><code>BaseModel</code></td><td>因子面板 + 标签面板 → 预测面板</td></tr>
+<tr><td>风险模型</td><td><code>FactorRiskModel</code></td><td>股票的风险特征 + 历史收益 → 每根 bar 的风险（协方差）预测</td></tr>
+<tr><td>组合构建</td><td><code>PortfolioConstructor</code></td><td>一根 bar 的预测 + 当前持仓 → 目标权重</td></tr>
+<tr><td>回测</td><td><code>BaseBacktester</code></td><td>权重 + 价格 → 模拟结果、运行目录</td></tr>
+</table>
+<p>“面板”是本项目对一种固定形状数据的叫法，第 2 章专门讲。</p>
+
+<div class="keep"><h2>1.2 层的依赖链</h2>
+<p>代码按“层”组织，<code>quantlab/</code> 下每个子包是一层。所有层排成<b>一条单向的链</b>：一个层只能 import 链上排在它前面的层。函数内部的延迟 import 也受这条规则约束，<b>没有任何例外</b>。</p></div>
+
+<figure>
+<svg viewBox="0 0 760 330" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="12">
+<defs><marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7d8792"/></marker></defs>
+<g font-size="10" fill="#5b636e"><text x="10" y="22">基础设施</text><text x="10" y="122">数据</text><text x="10" y="222">研究</text><text x="10" y="306">出口</text></g>
+<rect x="70" y="8" width="88" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="114" y="29" text-anchor="middle">utils / enums</text>
+<rect x="180" y="8" width="70" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="215" y="29" text-anchor="middle">core</text>
+<rect x="272" y="8" width="80" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="312" y="29" text-anchor="middle">backend</text>
+<rect x="374" y="8" width="80" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="414" y="29" text-anchor="middle">tracking</text>
+<rect x="476" y="8" width="88" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="520" y="29" text-anchor="middle">execution</text>
+<rect x="586" y="8" width="70" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="621" y="29" text-anchor="middle">runs</text>
+<line x1="158" y1="25" x2="178" y2="25" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="250" y1="25" x2="270" y2="25" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="352" y1="25" x2="372" y2="25" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="454" y1="25" x2="474" y2="25" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="564" y1="25" x2="584" y2="25" stroke="#7d8792" marker-end="url(#a1)"/>
+<path d="M656,25 C720,25 720,110 690,118" fill="none" stroke="#7d8792" marker-end="url(#a1)"/>
+<rect x="600" y="104" width="86" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="643" y="125" text-anchor="middle">universe</text>
+<rect x="490" y="104" width="86" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="533" y="125" text-anchor="middle">dataset</text>
+<rect x="380" y="104" width="86" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="423" y="125" text-anchor="middle">config</text>
+<rect x="260" y="104" width="96" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="308" y="125" text-anchor="middle">acquisition</text>
+<rect x="150" y="104" width="86" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="193" y="125" text-anchor="middle">analysis</text>
+<line x1="600" y1="121" x2="578" y2="121" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="490" y1="121" x2="468" y2="121" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="380" y1="121" x2="358" y2="121" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="260" y1="121" x2="238" y2="121" stroke="#7d8792" marker-end="url(#a1)"/>
+<path d="M150,121 C90,121 90,205 118,214" fill="none" stroke="#7d8792" marker-end="url(#a1)"/>
+<rect x="120" y="200" width="76" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="158" y="221" text-anchor="middle">factor</text>
+<rect x="218" y="200" width="76" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="256" y="221" text-anchor="middle">label</text>
+<rect x="316" y="200" width="76" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="354" y="221" text-anchor="middle">model</text>
+<rect x="414" y="200" width="76" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="452" y="221" text-anchor="middle">risk</text>
+<rect x="512" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="555" y="221" text-anchor="middle">portfolio</text>
+<rect x="620" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="663" y="221" text-anchor="middle">backtest</text>
+<line x1="196" y1="217" x2="216" y2="217" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="294" y1="217" x2="314" y2="217" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="392" y1="217" x2="412" y2="217" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="490" y1="217" x2="510" y2="217" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="598" y1="217" x2="618" y2="217" stroke="#7d8792" marker-end="url(#a1)"/>
+<line x1="663" y1="234" x2="663" y2="282" stroke="#7d8792" marker-end="url(#a1)"/>
+<rect x="620" y="284" width="86" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="663" y="305" text-anchor="middle">api</text>
+<text x="70" y="300" font-size="11" fill="#5b636e">箭头方向就是链的顺序：A → B 表示 B 可以 import A，反过来不行。</text>
+<text x="70" y="318" font-size="11" fill="#5b636e">由一个测试静态扫描每一条 import 语句（包括函数内的）来保证。</text>
+</svg>
+<figcaption>图 1-2　18 个层的依赖顺序。最后的 api 层是给只想用 DataFrame 的使用者准备的外观接口。</figcaption>
+</figure>
+
+<table>
+<tr><th style="width:16%">层</th><th>职责</th></tr>
+<tr><td>utils / enums</td><td>通用小工具（原子写文件、日期范围、计时等）与共享的枚举常量</td></tr>
+<tr><td>core</td><td>组件规则：对象如何序列化成配置、如何从配置重建（第 3 章）</td></tr>
+<tr><td>backend</td><td>存储后端：读写 Zarr 和 Parquet</td></tr>
+<tr><td>tracking</td><td>实验追踪的统一接口及 W&amp;B、MLflow 适配器</td></tr>
+<tr><td>execution</td><td>模拟市场成交的规则</td></tr>
+<tr><td>runs</td><td>“运行目录”的读写：训练和回测结果如何落盘（第 9 章）</td></tr>
+<tr><td>universe / dataset</td><td>股票池；把原始数据整理成面板</td></tr>
+<tr><td>config / acquisition</td><td>数据根目录配置；从各数据供应商下载数据</td></tr>
+<tr><td>analysis</td><td>因子分析报告</td></tr>
+<tr><td>factor / label / model</td><td>因子、标签、收益模型</td></tr>
+<tr><td>risk / portfolio / backtest</td><td>风险模型、组合构建、回测</td></tr>
+<tr><td>api</td><td>DataFrame 进、DataFrame 出的便捷函数</td></tr>
+</table>
+
+<p>有几处排序可能出乎意料，都有原因：</p>
+<ul>
+<li><b><code>runs</code>（运行目录）排得很靠前</b>，比 dataset、model 都早。模型层和回测层<b>都要写</b>运行目录，所以它必须排在两者之前；反过来 runs 从不 import 模型层或回测层，因此打开一个运行目录不会加载 torch。</li>
+<li><b><code>execution</code>（成交规则）也很靠前</b>。回测引擎用它模拟成交，组合构建层也要用它推算“当前实际持有什么”。两边必须共用<b>同一份</b>规则代码，于是它放在两者之前。</li>
+<li><b><code>risk</code> 排在 <code>model</code> 和 <code>portfolio</code> 之间</b>。风险模型本身不做投资决策，风险分析也不需要依赖组合层。</li>
+</ul>
+
+<div class="keep"><h2>1.3 层内部的目录约定</h2>
+<p>每一层都遵循同一个布局，读懂一层就读懂了所有层：</p>
+<pre><code>quantlab/&lt;layer&gt;/
+    base.py          <span class="c"># 这一层的根类（BaseDataset / Factor / BaseModel / PortfolioConstructor ...）</span>
+    config.py        <span class="c"># 这一层的配置 dataclass</span>
+    xxx.py           <span class="c"># 框架：用户要继承的中间类（FactorKunQuant、TorchModel、LibraryModel ...）</span>
+    predefined/      <span class="c"># 项目自带的实现（各种现成的因子、模型、组合规则）</span>
+    _support/        <span class="c"># 本层私有的辅助代码，下划线表示外部不要直接使用</span></code></pre></div>
+<figure>
+<svg viewBox="0 0 720 232" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="mr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c0392b"/></marker></defs><rect x="20" y="20" width="260" height="50" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="150" y="42.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">predefined/</text><text x="150" y="57.0" text-anchor="middle" font-size="9.8" fill="#5b636e">项目自带实现（Alpha158、XGBoost、TopN…）</text><rect x="460" y="20" width="220" height="50" rx="7" fill="#fff" stroke="#8fb2dc" stroke-dasharray="5 3"/><text x="570.0" y="42.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">用户自己的实现</text><text x="570.0" y="57.0" text-anchor="middle" font-size="9.8" fill="#5b636e">写在仓库外，地位与自带实现相同</text><rect x="232" y="100" width="256" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="360.0" y="122.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">框架中间类（xxx.py）</text><text x="360.0" y="137.0" text-anchor="middle" font-size="9.8" fill="#5b636e">FactorKunQuant、TorchModel、LibraryModel…</text><rect x="250" y="172" width="220" height="50" rx="7" fill="#1f5fa8" stroke="#1f5fa8"/><text x="360.0" y="194.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#fff">base.py + config.py</text><text x="360.0" y="209.0" text-anchor="middle" font-size="9.8" fill="#fff">根类（契约与不变量）和配置类</text><rect x="520" y="136" width="170" height="50" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="605.0" y="158.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">_support/</text><text x="605.0" y="173.0" text-anchor="middle" font-size="9.8" fill="#5b636e">本层私有的辅助代码</text><line x1="150" y1="70" x2="320" y2="98" stroke="#555" marker-end="url(#m)"/><line x1="570" y1="70" x2="400" y2="98" stroke="#555" marker-end="url(#m)"/><line x1="360" y1="150" x2="360" y2="170" stroke="#555" marker-end="url(#m)"/><line x1="290" y1="100" x2="190" y2="72" stroke="#c0392b" stroke-dasharray="4 3" marker-end="url(#mr)"/><text x="222" y="98" font-size="11" fill="#c0392b" font-weight="600">✗ 禁止</text><line x1="470" y1="130" x2="518" y2="152" stroke="#888" stroke-dasharray="2 3"/><line x1="470" y1="196" x2="518" y2="172" stroke="#888" stroke-dasharray="2 3"/><text x="20" y="150" font-size="10" fill="#5b636e">灰色箭头：允许的继承 / import</text><text x="20" y="168" font-size="10" fill="#c0392b">红色虚线：被测试禁止</text><text x="20" y="186" font-size="10" fill="#5b636e">点线：使用私有辅助代码</text></svg>
+<figcaption>图 1-3　一层的内部结构。自带实现和用户实现都只依赖框架，框架和根类不依赖任何自带实现。</figcaption>
+</figure>
+
+
+<table>
+<tr><th style="width:26%">约定</th><th>含义与理由</th></tr>
+<tr><td>框架模块不 import <code>predefined/</code></td><td>用户写自己的因子或模型时，只需要依赖框架，不需要依赖任何自带实现。自带实现和用户实现地位完全相同。有测试保证。</td></tr>
+<tr><td><code>dataset/</code> 和 <code>acquisition/</code> 的顶层像一份“菜单”</td><td>这两个目录的每个顶层条目都是一个完整可用的东西（一种数据集 / 一家数据供应商），辅助代码一律放进 <code>_support/</code>。浏览目录就等于浏览功能清单。</td></tr>
+<tr><td><code>__init__.py</code> 不转发（re-export）别的模块</td><td>所有 import 都写完整路径，例如 <code>from quantlab.factor.predefined.alpha158 import Alpha158Stock</code>。一个名字只有一种写法，grep 一定能找到定义处。</td></tr>
+<tr><td>少数包的 <code>__init__.py</code> <b>本身就是</b>入口模块</td><td>例如 <code>quantlab/dataset/crsp/__init__.py</code> 就是 CRSP 数据集的主模块，相关的子模块放在同一目录下。规则是“__init__ 就是模块本身”，而不是“__init__ 转发别的模块”。</td></tr>
+<tr><td>若干 <code>__init__.py</code> 必须是 0 字节</td><td>非空的 <code>__init__</code> 会在其下每次 import 时执行。有一个保证（“不需要凭证的数据源查看器不会间接加载任何供应商客户端”）依赖这几个空文件，有测试保证（第 10 章）。</td></tr>
+<tr><td>根类与配置不加载 torch</td><td>import 任意层的 <code>base.py</code> 或 <code>config.py</code> 都不会加载 torch。测试会起一个子进程检查 <code>'torch' in sys.modules</code>。</td></tr>
+</table>
+
+<div class="keep"><h2>1.4 一次回测在代码里怎么走</h2>
+<p>下面用一张时序图把各层串起来：调用 <code>backtester.run()</code> 之后，每一层只和相邻的契约打交道。</p></div>
+<figure>
+<svg viewBox="0 0 720 355" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="9" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="50" y="28" text-anchor="middle" font-size="10.5" font-weight="600">回测器</text><line x1="50" y1="38" x2="50" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="94" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="135" y="28" text-anchor="middle" font-size="10.5" font-weight="600">模型</text><line x1="135" y1="38" x2="135" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="181" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="222" y="28" text-anchor="middle" font-size="10.5" font-weight="600">因子</text><line x1="222" y1="38" x2="222" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="267" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="308" y="28" text-anchor="middle" font-size="10.5" font-weight="600">数据集</text><line x1="308" y1="38" x2="308" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="359" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="400" y="28" text-anchor="middle" font-size="10.5" font-weight="600">DecisionInputs</text><line x1="400" y1="38" x2="400" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="449" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="490" y="28" text-anchor="middle" font-size="10.5" font-weight="600">组合规则</text><line x1="490" y1="38" x2="490" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="539" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="580" y="28" text-anchor="middle" font-size="10.5" font-weight="600">成交引擎</text><line x1="580" y1="38" x2="580" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="625" y="8" width="82" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="666" y="28" text-anchor="middle" font-size="10.5" font-weight="600">runs 层</text><line x1="666" y1="38" x2="666" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="375" y="212" width="160" height="56" fill="none" stroke="#a4501a" stroke-dasharray="4 3"/><text x="380" y="224" font-size="9" fill="#a4501a">循环：每个调仓 bar 一次</text><line x1="50" y1="65" x2="135" y2="65" stroke="#555" marker-end="url(#m)"/><text x="92.5" y="61" text-anchor="middle" font-size="9.5" fill="#5b636e">predict_window(s, e)</text><line x1="135" y1="90" x2="222" y2="90" stroke="#555" marker-end="url(#m)"/><text x="178.5" y="86" text-anchor="middle" font-size="9.5" fill="#5b636e">read / compute</text><line x1="222" y1="115" x2="308" y2="115" stroke="#555" marker-end="url(#m)"/><text x="265.0" y="111" text-anchor="middle" font-size="9.5" fill="#5b636e">panel(s, e)</text><line x1="308" y1="138" x2="222" y2="138" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="265.0" y="134" text-anchor="middle" font-size="9.5" fill="#5b636e">价格面板</text><line x1="222" y1="160" x2="135" y2="160" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="178.5" y="156" text-anchor="middle" font-size="9.5" fill="#5b636e">因子面板</text><line x1="135" y1="182" x2="50" y2="182" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="92.5" y="178" text-anchor="middle" font-size="9.5" fill="#5b636e">预测面板</text><line x1="50" y1="205" x2="400" y2="205" stroke="#555" marker-end="url(#m)"/><text x="225.0" y="201" text-anchor="middle" font-size="9.5" fill="#5b636e">weights(预测面板)</text><line x1="400" y1="240" x2="490" y2="240" stroke="#555" marker-end="url(#m)"/><text x="445.0" y="236" text-anchor="middle" font-size="9.5" fill="#5b636e">decide(context_t)</text><line x1="490" y1="258" x2="400" y2="258" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="445.0" y="254" text-anchor="middle" font-size="9.5" fill="#5b636e">这一 bar 的权重</text><line x1="50" y1="290" x2="580" y2="290" stroke="#555" marker-end="url(#m)"/><text x="315.0" y="286" text-anchor="middle" font-size="9.5" fill="#5b636e">simulate(权重)</text><line x1="580" y1="308" x2="50" y2="308" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="315.0" y="304" text-anchor="middle" font-size="9.5" fill="#5b636e">净值、实际持仓</text><line x1="50" y1="335" x2="666" y2="335" stroke="#555" marker-end="url(#m)"/><text x="358.0" y="331" text-anchor="middle" font-size="9.5" fill="#5b636e">写运行目录（run.json 最后写）</text></svg>
+<figcaption>图 1-4　一次 <code>run()</code> 调用在各层之间的调用顺序（简化）。整个过程被 <code>DataRecorder</code> 包住，数据集和因子的每次读取都会被记录（第 9 章）。</figcaption>
+</figure>
+
+<!-- ============ 2 ============ -->
+<h1 class="chapter"><span class="num">2</span>唯一的数据契约：面板</h1>
+
+<div class="keep"><h2>2.1 什么是面板</h2>
+<p>所有层之间只交换一种数据：一个 <code>xarray.Dataset</code>，它<b>恰好</b>有两个维度 <code>(timestamp, symbol)</code>（时间 × 股票），每个字段是一个变量。项目把这种数据叫做<b>面板（panel）</b>。存到磁盘时，每个 Zarr 存储（下文称 store）里也恰好装着一个这样的面板。</p></div>
+
+<figure>
+<svg viewBox="0 0 760 250" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="12"><defs><marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f5fa8"/></marker></defs><g transform="translate(100,52)"><rect x="36" y="36" width="300" height="136" fill="#d9e7f6" stroke="#8fb2dc"/><rect x="18" y="18" width="300" height="136" fill="#e3eefa" stroke="#8fb2dc"/><rect x="0" y="0" width="300" height="136" fill="#fff" stroke="#1f5fa8" stroke-width="1.5"/><g stroke="#dbe3ec"><line x1="0" y1="34" x2="300" y2="34"/><line x1="0" y1="68" x2="300" y2="68"/><line x1="0" y1="102" x2="300" y2="102"/><line x1="60" y1="0" x2="60" y2="136"/><line x1="120" y1="0" x2="120" y2="136"/><line x1="180" y1="0" x2="180" y2="136"/><line x1="240" y1="0" x2="240" y2="136"/></g><g font-size="10.5" text-anchor="middle" fill="#333"><text x="30" y="22">101.2</text><text x="90" y="22">48.7</text><text x="150" y="22">NaN</text><text x="210" y="22">12.3</text><text x="270" y="22">77.0</text><text x="30" y="56">102.0</text><text x="90" y="56">49.1</text><text x="150" y="56">NaN</text><text x="210" y="56">12.1</text><text x="270" y="56">76.4</text><text x="30" y="90">101.5</text><text x="90" y="90">48.9</text><text x="150" y="90">33.0</text><text x="210" y="90">NaN</text><text x="270" y="90">77.9</text><text x="30" y="124">103.1</text><text x="90" y="124">50.2</text><text x="150" y="124">33.4</text><text x="210" y="124">NaN</text><text x="270" y="124">78.2</text></g><g font-size="11" font-weight="600" text-anchor="middle" fill="#1f5fa8"><text x="30" y="-8">AAA</text><text x="90" y="-8">BBB</text><text x="150" y="-8">CCC</text><text x="210" y="-8">DDD</text><text x="270" y="-8">EEE</text></g><line x1="0" y1="-22" x2="300" y2="-22" stroke="#1f5fa8" marker-end="url(#pa)"/><text x="150" y="-28" text-anchor="middle" fill="#1f5fa8" font-size="11">symbol 维度（股票）</text><g font-size="10" text-anchor="end" fill="#1f5fa8"><text x="-8" y="22">2024-01-02</text><text x="-8" y="56">2024-01-03</text><text x="-8" y="90">2024-01-04</text><text x="-8" y="124">2024-01-05</text></g><line x1="-78" y1="0" x2="-78" y2="136" stroke="#1f5fa8" marker-end="url(#pa)"/><text x="-86" y="68" text-anchor="middle" fill="#1f5fa8" font-size="11" transform="rotate(-90 -86 68)">timestamp 维度（时间）</text><g font-size="10.5" fill="#1f5fa8"><line x1="288" y1="8" x2="352" y2="8" stroke="#1f5fa8"/><text x="356" y="12">变量 adjClose</text><line x1="310" y1="60" x2="352" y2="60" stroke="#8fb2dc"/><text x="356" y="64">变量 adjOpen</text><line x1="328" y1="112" x2="352" y2="112" stroke="#8fb2dc"/><text x="356" y="116">变量 adjVolume</text></g><g font-size="11" fill="#333"><text x="450" y="4">● 列 = symbol 维度</text><text x="450" y="25">● 行 = timestamp 维度</text><text x="450" y="46">● 每个变量是一张 [T, S] 表，</text><text x="450" y="67">　多个变量叠在同一个网格上</text><text x="450" y="88">● 网格里只有数值；没交易就是 NaN</text><text x="450" y="109">　CCC 较晚上市，DDD 中途退市</text><text x="450" y="130">● 退市股票仍保留为一列</text><text x="450" y="151">● symbol 用永久编号：股票代码</text><text x="450" y="172">　会变更，也会被别的公司复用</text></g></g></svg>
+<figcaption>图 2-1　面板的结构：两个维度是 timestamp（行）和 symbol（列），网格里是数值；多个变量叠在同一个网格上。adj 前缀表示经过拆股、分红调整的价格。</figcaption>
+</figure>
+
+<pre><code>&lt;xarray.Dataset&gt;
+Dimensions:    (timestamp: 400, symbol: 16)
+Coordinates:
+  * timestamp  (timestamp) datetime64[ns] 2022-01-03 ... 2023-07-14
+  * symbol     (symbol) &lt;U3 'S00' 'S01' ... 'S15'
+Data variables:
+    adjOpen    (timestamp, symbol) float64 49.74 50.21 ...
+    adjClose   (timestamp, symbol) float64 50.13 49.87 ...</code></pre>
+
+<div class="box"><b class="t">为什么退市股票要保留？</b>
+如果只研究“今天还存在的公司”，就会漏掉那些破产、被摘牌的公司，得出过于乐观的结论（称为幸存者偏差）。稠密面板把退市股票保留为一列，模型和回测都能“看到”它们。</div>
+
+<div class="keep"><h2>2.2 为什么用 xarray，而不是 DataFrame</h2>
+<ul>
+<li><b>形状本身就是契约。</b>在长表 DataFrame（每行一个 timestamp + symbol）里，“某天某股票没有数据”有两种表示：少一行，或者这一行是 NaN。两种表示混用是大量 bug 的来源。稠密面板只有一种表示。</li>
+<li><b>截面运算天然向量化。</b>量化里最常见的运算是“对每一天，在所有股票之间排名或标准化”。在 <code>[T, S]</code> 数组上，这只是沿 symbol 轴的一次运算；在长表上则需要 groupby。</li>
+<li><b>模型可以直接使用。</b>面板无需转换就能变成 <code>[T, S, F]</code> 的 torch 张量（F 是因子个数），深度模型正是按这个形状设计的。</li>
+<li><b>Zarr 分块存储、按需加载。</b>一个全市场因子面板可以有 3270 天 × 13015 只股票 × 169 个因子，约 29 GB。xarray + Zarr 可以只读取需要的那一块。</li>
+</ul></div>
+
+<div class="keep"><h2>2.3 谁来守住这个形状</h2>
+<p>“只有一种形状”必须有代码强制执行，否则会慢慢失守。项目里有两处把关：</p>
+<ol>
+<li><b>存储后端的 <code>get_xarray_dataset(indexes)</code></b>：传入 <code>["timestamp", "symbol"]</code> 时，Zarr 和 Parquet 两个后端都会丢掉不在这两个维度上的变量，并按指定顺序转置；请求一个不存在的维度会抛 <code>ValueError</code>。有专门的测试覆盖两个后端。</li>
+<li><b>合并（merge）的严格语义</b>：几个面板按两个维度做外连接时，如果同一个格子在两个输入里都有值，直接报错，<b>绝不</b>按输入顺序悄悄覆盖。</li>
+</ol></div>
+
+<div class="keep"><h2>2.4 唯一的例外：面向 DataFrame 用户的外观层</h2>
+<p>很多使用者手里只有 pandas / polars DataFrame，只想用其中一项能力（比如算因子或做回测），不想接受项目的存储和配置体系。<code>quantlab.api</code> 为他们提供“DataFrame 进、DataFrame 出”的函数。设计要点：</p>
+<ul>
+<li>DataFrame 与面板之间的转换<b>只</b>发生在 api 层。库内部的结果类型仍然是纯 xarray，并不知道 api 层存在。“层间只交换面板”约束的是流水线内部，api 层是流水线的外边界。</li>
+<li>传进来的 DataFrame 会变成一个 <code>FrameDataset</code>：它是一个真正的 <code>MarketDataset</code> 子类，只是面板放在内存里。这样因子和回测走的都是<b>公开</b>接口，api 层不调用任何私有方法，库内部重构时 api 层不会跟着坏。</li>
+<li>默认不写任何文件；传入 <code>output_dir</code> 时会把输入数据拷进结果目录，保证这次运行之后仍能被重建。</li>
+<li>传进来的是哪个库的 DataFrame，返回的就是哪个库的；需要 xarray 的可以传 <code>as_xarray=True</code>。</li>
+</ul></div>
+<figure>
+<svg viewBox="0 0 720 182" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="320" y="8" width="392" height="166" rx="10" fill="#f8fafc" stroke="#1f5fa8" stroke-dasharray="6 4"/><text x="334" y="26" font-size="10.5" fill="#1f5fa8" font-weight="600">流水线内部：只有面板（xarray）</text><rect x="8" y="62" width="135" height="56" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="75.5" y="87.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">调用方的 DataFrame</text><text x="75.5" y="102.0" text-anchor="middle" font-size="9.8" fill="#5b636e">pandas 或 polars 长表</text><rect x="170" y="20" width="120" height="140" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="230.0" y="87.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">quantlab.api</text><text x="230.0" y="102.0" text-anchor="middle" font-size="9.8" fill="#5b636e">DataFrame ↔ 面板</text><text x="230.0" y="116.0" text-anchor="middle" font-size="9.8" fill="#5b636e">的转换只在这里</text><rect x="338" y="40" width="160" height="52" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="418.0" y="63.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">FrameDataset</text><text x="418.0" y="78.0" text-anchor="middle" font-size="9.8" fill="#5b636e">MarketDataset 子类，面板在内存</text><rect x="536" y="40" width="165" height="52" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="618.5" y="63.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">Factor / Backtester</text><text x="618.5" y="78.0" text-anchor="middle" font-size="9.8" fill="#5b636e">只走公开接口</text><rect x="536" y="112" width="165" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="618.5" y="138.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">xarray 结果</text><line x1="143" y1="80" x2="168" y2="80" stroke="#555" marker-end="url(#m)"/><line x1="290" y1="66" x2="336" y2="66" stroke="#555" marker-end="url(#m)"/><line x1="498" y1="66" x2="534" y2="66" stroke="#555" marker-end="url(#m)"/><line x1="618" y1="92" x2="618" y2="110" stroke="#555" marker-end="url(#m)"/><line x1="534" y1="134" x2="292" y2="134" stroke="#555" marker-end="url(#m)"/><text x="413.0" y="128" text-anchor="middle" font-size="9.5" fill="#5b636e">结果</text><line x1="168" y1="104" x2="145" y2="104" stroke="#555" marker-end="url(#m)"/><text x="156" y="122" font-size="9" fill="#5b636e" text-anchor="middle">同一个库</text></svg>
+<figcaption>图 2-2　api 层是流水线的外边界：转换只发生在边界上，内部仍然只有面板。</figcaption>
+</figure>
+
+
+<!-- ============ 3 ============ -->
+<h1 class="chapter"><span class="num">3</span>组件模型：配置即对象，对象可重建</h1>
+
+<div class="keep"><h2>3.1 每个对象由一个配置 dataclass 构造</h2>
+<p>数据集、因子、标签、模型、组合规则、回测器、实验追踪器……项目里几乎每个对象都是一个<b>组件（component）</b>：它由<b>一个</b>配置 dataclass 构造，并把这个配置保存在自己的 <code>config</code> 属性上。配置可以嵌套：因子的配置里放着它要读取的数据集对象，模型的配置里放着因子列表和标签列表，回测的配置里放着价格数据集和模型。</p>
+<p>凡是会影响结果的参数（窗口长度、过滤阈值、手续费……）都做成配置字段，而不写成代码里的常量。原因很简单：配置能被保存下来，常量不能。</p></div>
+
+<div class="keep"><h2>3.2 用声明标出“哪些字段装着组件”</h2>
+<p>序列化嵌套对象时，最难的问题是“怎么知道某个字段里放的是需要递归处理的对象”。按键名猜、看到带 <code>"name"</code> 的 dict 就当对象，这些办法都会把规则散落到各处。本项目只用一种办法：<b>在 dataclass 字段上声明</b>。</p></div>
+
+<pre><code><span class="c"># quantlab/label/config.py（节选）</span>
+@dataclass(kw_only=<span class="k">True</span>, frozen=<span class="k">True</span>)
+<span class="k">class</span> ForwardConfig(FrozenConfig):
+    factor: <span class="s">"Factor"</span> = component()        <span class="c"># 这个字段装一个组件</span>
+    span: int                             <span class="c"># 普通数据</span>
+    delay: int = 1
+    name: str | <span class="k">None</span> = <span class="k">None</span>             <span class="c"># 类的导入路径，由对象自动填写</span>
+
+<span class="c"># quantlab/model/config.py（节选）</span>
+@dataclass(frozen=<span class="k">True</span>)
+<span class="k">class</span> ModelConfig(FrozenConfig):
+    factors: list[<span class="s">"Factor"</span>] = component(many=<span class="k">True</span>)   <span class="c"># 装一组组件</span>
+    labels: list[<span class="s">"Factor"</span>] = component(many=<span class="k">True</span>)
+    tracker: Tracker = component(default_factory=NullTracker)
+    hyperparameters: dict ...             <span class="c"># 普通 dict，永远不会被递归处理</span>
+    ...</code></pre>
+
+<p>这一处声明同时驱动三件事：</p>
+<figure>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="12">
+<defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f5fa8"/></marker></defs>
+<rect x="250" y="10" width="220" height="50" rx="8" fill="#1f5fa8"/><text x="360" y="32" text-anchor="middle" fill="#fff" font-weight="600">component(many=...)</text><text x="360" y="50" text-anchor="middle" fill="#dbe8f7" font-size="11">字段 metadata 上的一个标记</text>
+<rect x="20" y="120" width="210" height="96" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="125" y="142" text-anchor="middle" font-weight="600">get_config()</text>
+<text x="125" y="162" text-anchor="middle" font-size="11">对象 → 纯 JSON dict</text>
+<text x="125" y="180" text-anchor="middle" font-size="11">声明的字段写成子组件自己的配置</text>
+<text x="125" y="198" text-anchor="middle" font-size="11">"name" = 类的导入路径</text>
+<rect x="255" y="120" width="210" height="96" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="360" y="142" text-anchor="middle" font-weight="600">rebuild(config)</text>
+<text x="360" y="162" text-anchor="middle" font-size="11">dict → 对象</text>
+<text x="360" y="180" text-anchor="middle" font-size="11">只沿声明的字段递归</text>
+<text x="360" y="198" text-anchor="middle" font-size="11">先建子组件，再建自己</text>
+<rect x="490" y="120" width="210" height="96" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="595" y="142" text-anchor="middle" font-weight="600">walk_components()</text>
+<text x="595" y="162" text-anchor="middle" font-size="11">遍历整棵组件树</text>
+<text x="595" y="180" text-anchor="middle" font-size="11">带路径：model.factors.0.dataset</text>
+<text x="595" y="198" text-anchor="middle" font-size="11">数据指纹、代码记录都靠它</text>
+<line x1="320" y1="60" x2="140" y2="118" stroke="#1f5fa8" marker-end="url(#a3)"/>
+<line x1="360" y1="60" x2="360" y2="118" stroke="#1f5fa8" marker-end="url(#a3)"/>
+<line x1="400" y1="60" x2="580" y2="118" stroke="#1f5fa8" marker-end="url(#a3)"/>
+</svg>
+<figcaption>图 3-1　一处声明，三种用途。不靠键名，也不靠 dict 的形状来识别对象。</figcaption>
+</figure>
+
+<pre><code>label = Forward(ForwardConfig(factor=momentum, span=5))
+saved = label.get_config()
+saved[<span class="s">"factor"</span>][<span class="s">"name"</span>]             <span class="c"># 'quantlab.factor.predefined.momentum.Momentum'</span>
+saved[<span class="s">"factor"</span>][<span class="s">"dataset"</span>][<span class="s">"name"</span>]  <span class="c"># 'quantlab.dataset.spot.SpotKlineDataset'</span>
+rebuild(saved) == label              <span class="c"># True</span></code></pre>
+<figure>
+<svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="220" y="8" width="280" height="38" rx="7" fill="#1f5fa8" stroke="#1f5fa8"/><text x="360.0" y="31.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#fff">回测器（CrossSectionBacktestConfig）</text><rect x="190" y="86" width="170" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="275.0" y="109.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">model：XGBoostRegressor</text><rect x="380" y="86" width="170" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="465.0" y="109.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">constructor：TopNConstructor</text><rect x="566" y="86" width="146" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="639.0" y="109.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">tracker：NullTracker</text><rect x="100" y="164" width="180" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="190.0" y="187.0" text-anchor="middle" font-weight="600" font-size="10.2" fill="#1f2328">model.factors.0：Alpha158Stock</text><rect x="300" y="164" width="170" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="385.0" y="187.0" text-anchor="middle" font-weight="600" font-size="10.2" fill="#1f2328">model.labels.0：Return</text><rect x="10" y="240" width="250" height="40" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="135.0" y="264.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">FrameDataset（同一个对象）</text><line x1="330" y1="46" x2="280" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="380" y1="46" x2="462" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="450" y1="46" x2="632" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="240" y1="124" x2="195" y2="162" stroke="#555" marker-end="url(#m)"/><line x1="310" y1="124" x2="380" y2="162" stroke="#555" marker-end="url(#m)"/><line x1="225" y1="46" x2="60" y2="238" stroke="#555" marker-end="url(#m)"/><text x="112" y="128" text-anchor="middle" font-size="9.5" fill="#5b636e">price_dataset</text><line x1="170" y1="202" x2="140" y2="238" stroke="#555" marker-end="url(#m)"/><text x="180" y="225" text-anchor="middle" font-size="9.5" fill="#5b636e">dataset</text><line x1="360" y1="202" x2="230" y2="238" stroke="#555" marker-end="url(#m)"/><text x="315" y="228" text-anchor="middle" font-size="9.5" fill="#5b636e">dataset</text><text x="280" y="256" font-size="10" fill="#2c7a4b">保存时只在第一处写完整配置，其余两处写 shared_as: "price_dataset"；</text><text x="280" y="272" font-size="10" fill="#2c7a4b">rebuild 后三处引用的仍是同一个对象。</text></svg>
+<figcaption>图 3-2　一个回测器的组件树。节点名就是组件路径；同一个数据集对象被三处引用，保存和重建后仍然共享。</figcaption>
+</figure>
+
+
+<div class="keep"><h3>几个值得注意的细节</h3>
+<ul>
+<li><b>安全</b>：只有声明了配置类（<code>config_cls</code>）的类才会被重建，所以一份被篡改的 JSON 无法借 <code>rebuild</code> 实例化任意可导入的函数。</li>
+<li><b>共享引用不丢失</b>：如果同一个数据集对象同时被因子和回测器引用，写出时第二处会带一个 <code>"shared_as"</code> 键指向第一处的路径；一次 <code>rebuild</code> 调用会把它们重建成<b>同一个</b>对象，重建后的对象关系与保存前一致。</li>
+<li><b>未知字段直接拒绝</b>：dict 里出现配置类没有的字段会报错，不会被悄悄忽略。</li>
+<li><b>严格重建</b>：重建回测器时，配置里必须包含每一个字段，不会用当前代码的默认值补齐。因为默认值可能在这次运行之后被改过，补上就会悄悄得到另一个回测。</li>
+<li><b>类路径就是契约</b>：类按导入路径查找，所以移动或重命名一个类之后，之前保存的配置就无法加载。项目接受这个代价（见 12.3“不做向后兼容”）。</li>
+</ul></div>
+
+<div class="keep"><h2>3.3 配置是冻结的</h2>
+<p>所有配置类都继承 <code>FrozenConfig</code>，并且是 <code>frozen=True</code> 的 dataclass，创建后不能修改。对象拿到配置后会把它“补全”（例如记下自己的类名、解析出因子名列表），做法是<b>返回一个补全后的副本</b>，而不是修改调用方传进来的那一份。下一章说明这为什么重要。</p></div>
+
+<!-- ============ 4 ============ -->
+<h1 class="chapter"><span class="num">4</span>读取是无状态查询</h1>
+
+<p>流水线里到处都有“读取某段时间的数据”的需求：模型要读 2016–2021 年的因子来训练，回测要读 2023–2024 年的价格。本项目规定：<b>日期范围永远作为参数传给读取方法，绝不写进别的对象的配置里。</b></p>
+
+<div class="keep"><h2>4.1 读取接口</h2>
+<pre><code>panel  = dataset.panel(start, end, symbols=<span class="k">None</span>, variables=<span class="k">None</span>)   <span class="c"># 数据集回答一个查询</span>
+values = factor.read(start, end)      <span class="c"># 从因子自己的 store 读出已算好的值</span>
+values = factor.compute(start, end)   <span class="c"># 从输入数据现场计算</span></code></pre></div>
+
+<div class="keep"><h2>4.2 为什么不把日期写进配置</h2>
+<p>一种看起来很自然的做法是：要读哪段时间，就先设置对象的 <code>config.start_date</code> / <code>end_date</code>，再调用 <code>read()</code>。因子再把日期传给它的数据集，数据集按新范围缓存数据。这种做法在数据管道里的问题是<b>共享可变状态</b>：</p>
+<ul>
+<li>一个数据集常被多个因子和回测器同时引用。谁最后写了日期谁说了算，结果取决于调用顺序；</li>
+<li>如果数据集按日期就地缓存并截窄数据，其他使用者就会读到被截窄的数据，只能靠强制重读或深拷贝来规避；</li>
+<li>同一个数据集对象无法同时服务两个需要不同日期的使用者，也没法把几个数据集合并成一个输入。</li>
+</ul></div>
+
+<figure>
+<svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="12">
+<defs><marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a4501a"/></marker>
+<marker id="a4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2c7a4b"/></marker></defs>
+<text x="170" y="18" text-anchor="middle" font-weight="600" fill="#a4501a">不采用：改写共享配置</text>
+<rect x="20" y="34" width="90" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="65" y="56" text-anchor="middle">模型</text>
+<rect x="125" y="34" width="90" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="170" y="56" text-anchor="middle">因子 A</text>
+<rect x="230" y="34" width="90" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="275" y="56" text-anchor="middle">因子 B</text>
+<rect x="125" y="128" width="195" height="40" rx="6" fill="#fff" stroke="#a4501a" stroke-width="1.5"/><text x="222" y="146" text-anchor="middle">共享数据集（可变）</text><text x="222" y="161" text-anchor="middle" font-size="10.5" fill="#a4501a">config.start/end 被反复改写</text>
+<line x1="110" y1="51" x2="123" y2="51" stroke="#a4501a" marker-end="url(#a4)"/>
+<line x1="170" y1="68" x2="200" y2="126" stroke="#a4501a" marker-end="url(#a4)"/>
+<line x1="275" y1="68" x2="245" y2="126" stroke="#a4501a" marker-end="url(#a4)"/>
+<text x="20" y="190" font-size="10.5" fill="#5b636e">谁最后写了日期谁说了算，读取顺序决定结果</text>
+<text x="540" y="18" text-anchor="middle" font-weight="600" fill="#2c7a4b">本项目：传参的纯查询</text>
+<rect x="390" y="34" width="90" height="34" rx="6" fill="#e7f4ec" stroke="#93c4a4"/><text x="435" y="56" text-anchor="middle">模型</text>
+<rect x="495" y="34" width="90" height="34" rx="6" fill="#e7f4ec" stroke="#93c4a4"/><text x="540" y="56" text-anchor="middle">因子 A</text>
+<rect x="600" y="34" width="90" height="34" rx="6" fill="#e7f4ec" stroke="#93c4a4"/><text x="645" y="56" text-anchor="middle">因子 B</text>
+<rect x="495" y="128" width="195" height="40" rx="6" fill="#fff" stroke="#2c7a4b" stroke-width="1.5"/><text x="592" y="146" text-anchor="middle">数据集（配置冻结）</text><text x="592" y="161" text-anchor="middle" font-size="10.5" fill="#2c7a4b">每次请求时才打开 store，读完不留状态</text>
+<line x1="480" y1="51" x2="493" y2="51" stroke="#2c7a4b" marker-end="url(#a4b)"/>
+<line x1="540" y1="68" x2="570" y2="126" stroke="#2c7a4b" marker-end="url(#a4b)"/>
+<line x1="645" y1="68" x2="615" y2="126" stroke="#2c7a4b" marker-end="url(#a4b)"/>
+<text x="520" y="102" font-size="9.5" fill="#2c7a4b">panel(s1,e1)</text><text x="630" y="102" font-size="9.5" fill="#2c7a4b">panel(s2,e2)</text>
+<text x="390" y="190" font-size="10.5" fill="#5b636e">一个数据集对象可以同时服务多个使用者</text>
+</svg>
+<figcaption>图 4-1　两种传递日期的方式。本项目只用右边这种。</figcaption>
+</figure>
+
+<div class="keep"><h2>4.3 配套规则</h2>
+<ul>
+<li><b>读取不留状态</b>：数据集在每次请求时才打开 store，读完什么也不保留。只有“原始文件 → store”的构建过程会在内存里持有数据。</li>
+<li><b>因子配置里没有日期字段</b>：一个因子 store 覆盖哪段日期，是在<b>构建</b> store 时作为参数传入的，并记录在 store 旁边。</li>
+<li><b>预热（warm-up）按 bar 数计，不按日历天</b>：滚动计算需要额外读取起始日期之前的一段历史，长度由 <code>warmup_bars</code> 字段指定。数据集负责回答“某日期往前第 N 根 bar 是哪一天”。按 bar 计，就避免了“30 天”在日线和分钟线上含义不同的问题。</li>
+<li><b>外层对象的日期说了算</b>：模型把自己的日期随请求传给因子，回测器把自己的回测区间传给模型。</li>
+</ul></div>
+
+<div class="box"><b class="t">为什么 <code>read</code> 和 <code>compute</code> 是两个方法，而不是“有 store 就读、没有就算”？</b>
+如果合成一个方法自动选择，调用方就看不出值是读出来的还是算出来的。而数据指纹（第 9 章）恰恰需要知道这一点。</div>
+
+<div class="box ok"><b class="t">额外的好处</b>
+一个因子可以接收<b>一组</b>数据集，把它们合并成一个输入面板（先改名到统一的变量名，再外连接，有冲突就报错）。将来要做多用户服务，“没有共享可变状态”也是前提条件。</div>
+
+<!-- ============ 5 ============ -->
+<h1 class="chapter"><span class="num">5</span>扩展点：模板方法、钩子与包装器</h1>
+
+<p>项目的长期目标之一是能在线编辑和测试因子与模型，所以“新增一个因子 / 模型要写多少代码”是核心设计指标。通用做法是：<b>根类实现完整的生命周期（模板方法模式），子类只填几个钩子方法。</b></p>
+
+<div class="keep"><h2>5.1 因子：两种计算后端，各只需一个钩子</h2>
+<table>
+<tr><th style="width:24%">中间类</th><th style="width:34%">子类只需实现</th><th>特点</th></tr>
+<tr><td><code>FactorKunQuant</code></td><td><code>_get_factor_func()</code>：返回一个 KunQuant 计算图</td><td>因子写成声明式的算子图（<code>Builder</code> / <code>Input</code> / <code>Output</code> / 各种算子），即时编译成本地代码并多线程执行。<b>同一张图既能批量计算整段历史，也能逐 bar 流式计算</b>，研究时写的因子将来可以直接接入实时数据。这是主力后端。</td></tr>
+<tr><td><code>FactorPolars</code></td><td><code>_get_factor_lazyframe(lf)</code>：返回一个 Polars 惰性查询</td><td>只支持批量计算。适合用表格操作更容易表达的公式，作为补充手段。</td></tr>
+</table></div>
+
+<pre><code><span class="k">class</span> Momentum(FactorPolars):
+    <span class="c">"""N-bar 价格动量：Close_t / Close_{t-n} - 1"""</span>
+    <span class="k">def</span> _get_factor_lazyframe(self, lf):
+        n = self.config.kwargs.get(<span class="s">"n"</span>, 20)
+        <span class="k">return</span> lf.select(
+            <span class="s">"timestamp"</span>, <span class="s">"symbol"</span>,
+            (pl.col(<span class="s">"Close"</span>) / pl.col(<span class="s">"Close"</span>).shift(n).over(<span class="s">"symbol"</span>) - 1).alias(f<span class="s">"momentum_{n}"</span>),
+        )
+<span class="c"># 其余工作（按日期读取、预热、存盘、增量追加、重采样、记录数据指纹）都由根类 Factor 负责</span></code></pre>
+<p class="small">（示意代码，实际实现见 quantlab/factor/predefined/momentum.py。）</p>
+
+<p>根类 <code>Factor</code> 提供统一的生命周期：<code>compute(start, end)</code> 现场计算；<code>build</code> 生成 store；<code>extend(end)</code> 增量追加新日期；<code>read(start, end)</code> 从 store 读取；<code>resample(freq, how)</code> 把数据聚合到更粗的时间粒度（例如分钟线变日线）；<code>analyze()</code> 生成因子分析报告。</p>
+
+<div class="box"><b class="t">一个平台相关的细节：macOS 上的 SIMD 对齐</b>
+KunQuant 在 macOS 上要求股票个数是 8 的倍数。<code>FactorKunQuant</code> 只在 <code>sys.platform == "darwin"</code> 时用全 NaN 的占位股票把 symbol 轴补齐到 8 的倍数，计算完再去掉。在 Linux 上实测 4、5、7、8、12、16 只股票都能正常运行，所以 Linux 上不做补齐。补齐只在必要的平台上做，实测依据也写在文档里。</div>
+
+<div class="keep"><h2>5.2 标签：用包装器而不是子类</h2>
+<p>标签（预测目标）在数学上就是“把某个因子的值在时间上往前挪”：未来 5 天的收益，就是 5 天后那个“过去 5 天收益”因子的值。所以本项目不为标签单独设计类层次，而是用一个<b>包装器</b>把任意因子变成标签：</p>
+<pre><code>label = Forward(ForwardConfig(factor=any_factor, span=5, delay=1))
+label.lookahead_bars()   <span class="c"># 6 = delay + span：t 时刻的标签要用到 t 之后第 6 根 bar 的数据</span></code></pre></div>
+<p><code>Forward</code> 读取时向被包装的因子多要 <code>lookahead</code> 根 bar 的数据，然后平移、裁回请求的范围。它自己不拥有 store，所以<b>同一个因子 store 既可以直接当特征，包一层又可以当标签</b>。模型只接受 <code>Forward</code> 对象作为标签，也拒绝把 <code>Forward</code> 当特征：“特征还是标签”取决于怎么使用，而不是写死在类里，并且由类型检查保证不会用错。</p>
+
+<figure>
+<svg viewBox="0 0 720 190" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5">
+<g transform="translate(20,20)">
+<text x="0" y="12" font-weight="600">一次训练 / 测试切分的边界</text>
+ <rect x="0" y="34" width="360" height="30" fill="#d9e7f6" stroke="#8fb2dc"/><text x="180" y="54" text-anchor="middle">训练段</text>
+ <rect x="360" y="34" width="70" height="30" fill="#fbefe6" stroke="#dcae8c"/><text x="395" y="54" text-anchor="middle" fill="#a4501a">purge</text>
+ <rect x="430" y="34" width="250" height="30" fill="#e6f3ea" stroke="#93c4a4"/><text x="555" y="54" text-anchor="middle">测试段</text>
+<line x1="430" y1="26" x2="430" y2="72" stroke="#333" stroke-dasharray="3 3"/>
+<text x="430" y="20" text-anchor="middle" font-size="10.5">切分点</text>
+<path d="M340,80 C360,110 420,110 450,82" fill="none" stroke="#a4501a" stroke-width="1.4"/>
+<text x="300" y="122" fill="#a4501a">若不 purge：训练段最后几根 bar 的标签会用到测试段的价格</text>
+<text x="0" y="150" fill="#333">purge 长度 = 模型所有标签中最大的 lookahead，<tspan font-weight="600">由标签对象自己算出，不是可调参数</tspan></text>
+<text x="0" y="168" fill="#5b636e">所有切分点都适用：训练 / 验证、训练 / 测试、滚动训练的每一折、回测中样本内与样本外的分界</text>
+</g>
+</svg>
+<figcaption>图 5-1　purge：丢掉训练段末尾那几根“标签会看到测试段”的 bar。前视长度是标签对象的一个可查询属性，所有切分点都用它。</figcaption>
+</figure>
+
+<p>由于“前视多少根 bar”只有一个来源（标签对象本身），模型切分、因子报告、回测的样本内外划分都从这里读，不会各算各的。回测引擎还声明了自己的成交延迟 <code>fill_delay_bars</code>，标签的 <code>delay</code> 和它不一致时，回测直接拒绝运行。</p>
+
+<div class="keep"><h2>5.3 模型：三层继承，钩子尽量少</h2>
+<figure>
+<svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5">
+<defs><marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#fff" stroke="#555"/></marker></defs>
+<rect x="150" y="8" width="420" height="78" rx="8" fill="#1f5fa8"/>
+<text x="360" y="30" text-anchor="middle" fill="#fff" font-weight="600" font-size="13">BaseModel</text>
+<text x="360" y="50" text-anchor="middle" fill="#dbe8f7">公开的 train / train_cv / load / predict 只实现一次</text>
+<text x="360" y="68" text-anchor="middle" fill="#dbe8f7">预热、purge、滚动折、缺失标签掩码、评估、checkpoint、run.json</text>
+<rect x="40" y="130" width="290" height="80" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="185" y="152" text-anchor="middle" font-weight="600">TorchModel（框架负责 epoch 循环）</text>
+<text x="185" y="172" text-anchor="middle">必须实现：_init_model、_loss</text>
+<text x="185" y="190" text-anchor="middle" fill="#5b636e">可选：_dataset、_train_one_batch 等</text>
+<rect x="390" y="130" width="290" height="80" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="535" y="152" text-anchor="middle" font-weight="600">LibraryModel（由第三方库自己训练）</text>
+<text x="535" y="172" text-anchor="middle">必须实现：_init_model、_fit_model、_forward</text>
+<text x="535" y="190" text-anchor="middle" fill="#5b636e">使用库自带的早停；checkpoint 用 joblib 保存</text>
+<line x1="185" y1="128" x2="300" y2="88" stroke="#555" marker-end="url(#a5)"/>
+<line x1="535" y1="128" x2="420" y2="88" stroke="#555" marker-end="url(#a5)"/>
+<g font-size="11">
+<rect x="40" y="240" width="135" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="107" y="261" text-anchor="middle">GATsRegressor</text>
+<rect x="195" y="240" width="135" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="262" y="261" text-anchor="middle">MASTERRegressor</text>
+<rect x="390" y="240" width="90" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="435" y="261" text-anchor="middle">XGBoost</text>
+<rect x="490" y="240" width="90" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="535" y="261" text-anchor="middle">XGB-TD</text>
+<rect x="590" y="240" width="90" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="635" y="261" text-anchor="middle">RealMLP</text>
+</g>
+<line x1="107" y1="238" x2="160" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="262" y1="238" x2="210" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="435" y1="238" x2="510" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="535" y1="238" x2="535" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="635" y1="238" x2="560" y2="212" stroke="#555" marker-end="url(#a5)"/>
+</svg>
+<figcaption>图 5-2　模型层的继承结构。框架负责数据契约，具体模型负责学习策略。最下一行是项目自带的模型。</figcaption>
+</figure></div>
+<p>一次 <code>train()</code> 调用的步骤如下，只有“拟合”这一步属于具体模型：</p>
+<figure>
+<svg viewBox="0 0 720 124" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="24" width="104" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="60.0" y="50.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">collect()</text><text x="60.0" y="65.0" text-anchor="middle" font-size="9.8" fill="#5b636e">读取因子和标签</text><line x1="112" y1="53" x2="125" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="127" y="24" width="104" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="179.0" y="50.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">切分 + purge</text><text x="179.0" y="65.0" text-anchor="middle" font-size="9.8" fill="#5b636e">训练 / 验证 / 测试</text><line x1="231" y1="53" x2="244" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="246" y="24" width="104" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="298.0" y="50.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">训练目标变换</text><text x="298.0" y="65.0" text-anchor="middle" font-size="9.8" fill="#5b636e">每 bar 排名或标准化</text><line x1="350" y1="53" x2="363" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="365" y="24" width="104" height="58" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="417.0" y="50.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">拟合</text><text x="417.0" y="65.0" text-anchor="middle" font-size="9.8" fill="#5b636e">优化器、损失、早停</text><line x1="469" y1="53" x2="482" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="484" y="24" width="104" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="536.0" y="50.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">评估</text><text x="536.0" y="65.0" text-anchor="middle" font-size="9.8" fill="#5b636e">在原始标签上算 IC 等</text><line x1="588" y1="53" x2="601" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="603" y="24" width="104" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="655.0" y="50.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">写训练运行</text><text x="655.0" y="65.0" text-anchor="middle" font-size="9.8" fill="#5b636e">run.json 最后写</text><rect x="8" y="104" width="14" height="12" fill="#e8f0fa" stroke="#8fb2dc"/><text x="28" y="114" font-size="10">基类 BaseModel 统一实现</text><rect x="200" y="104" width="14" height="12" fill="#fbefe6" stroke="#dcae8c"/><text x="220" y="114" font-size="10">具体模型的钩子（TorchModel / LibraryModel 的子类）</text></svg>
+<figcaption>图 5-3　<code>train()</code> 的步骤。蓝色由基类实现，橙色由具体模型的钩子实现。</figcaption>
+</figure>
+
+
+<p>分工原则是：<b>基类管数据契约，钩子管学习策略。</b>用什么优化器、什么损失函数、一步训练怎么走，由具体模型决定；预热、purge、交叉验证的折、缺失标签的掩码、在原始标签上计算评估指标、checkpoint 格式、把预测填回 <code>[T, S, L]</code>（时间 × 股票 × 标签）的方式，由基类统一负责。</p>
+
+<div class="keep"><h3>torch 模型自己选择样本形状</h3>
+<p>torch 模型通过 <code>_dataset()</code> 返回一个标准的 <code>torch.utils.data.Dataset</code>，以此决定“一步训练看到什么”。默认是一根 bar 上的整个截面（所有股票一起进入网络，适合在股票之间做注意力的模型）；也可以是单只股票的一段时间序列，这是 Qlib（微软开源的量化研究平台）的风格。关键约束是：每个样本都带着 <code>where = (t_idx, s_idx)</code>，于是基类可以用同一套代码把任何形状的预测放回 <code>[T, S, L]</code>，并且<b>拒绝</b>漏掉或重复覆盖某个格子的预测。</p></div>
+
+<p>深度模型不按固定的股票集合确定网络尺寸。原因是股票指数的成分每月都在变化：如果网络输入是固定的 <code>S × F</code>，就无法给新加入的股票做预测。因此网络把 <code>[S_t, N, F]</code>（当期股票数 × 历史长度 × 因子数）映射到 <code>[S_t, L]</code>，<code>S_t</code> 每根 bar 都可以不同。缺标签的股票仍然留在截面里作为上下文，只是不参与损失计算。</p>
+
+<div class="box"><b class="t">用实测数据做取舍：训练数据放内存，还是从磁盘按需加载？</b>
+在训练服务器上对一个约 29 GB 的全市场因子面板实测：截面模型从内存读一根 bar 需 15.4 ms，从按时间分块的缓存读需 58 ms（8 个 worker 时 22 ms，仍不比内存快），从原始 store 读需 99 ms；面板常驻 GPU 时只需 0.1 ms。序列模型从内存读一个 800 样本的 batch 需 2.7 ms，从缓存读需 177 ms。因此的规则是：面板放得下（不超过空闲显存的一半）就放 GPU，否则放内存，可选 float16；<b>只有当面板大到内存放不下时，才考虑按需加载</b>。</div>
+
+<div class="keep"><h3>把常见的坑写成测试</h3>
+<p>评估用的 DataLoader 不丢弃最后一个不满的 batch；评估在 <code>no_grad</code> 和 <code>eval()</code> 模式下运行；只有一只股票的截面也能跑；训练时打乱 bar 的顺序；缺标签的行仍留在特征面板中；purge 只覆盖标签的前视长度，不覆盖特征窗口。每一条都有对应的测试。</p></div>
+
+<div class="keep"><h2>5.4 组合规则与协方差估计器</h2>
+<p>组合构建的根类 <code>PortfolioConstructor</code> 只要求实现一个方法 <code>construct(context)</code>；风险估计的根类 <code>CovarianceEstimator</code> 只要求实现 <code>estimate(...)</code>（返回股票收益的协方差，即衡量股票之间风险关联的矩阵）。</p>
+<p>两者都通过 <code>declared_inputs()</code> 返回<b>一个</b> <code>InputDeclaration</code> 值，声明自己在决策时需要读多长的历史、哪些因子、哪个风险模型。如果一个组合规则内部包含估计器，就用 <code>InputDeclaration.merged</code> 把两者的声明合并。“所有输入需求用一个值描述”的好处是：以后要支持一种新的输入，只需给这个值加一个字段，而不必在两个基类上各加一个方法再层层转发。</p></div>
+<figure>
+<svg viewBox="0 0 720 182" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="18" width="200" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="108.0" y="44.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">组合规则</text><text x="108.0" y="59.0" text-anchor="middle" font-size="9.8" fill="#5b636e">declared_inputs()</text><text x="108.0" y="73.0" text-anchor="middle" font-size="9.8" fill="#5b636e">lookback_bars、factors</text><rect x="8" y="112" width="200" height="58" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="108.0" y="138.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">协方差估计器</text><text x="108.0" y="153.0" text-anchor="middle" font-size="9.8" fill="#5b636e">declared_inputs()</text><text x="108.0" y="167.0" text-anchor="middle" font-size="9.8" fill="#5b636e">history_bars、risk_model</text><rect x="250" y="64" width="150" height="58" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="325.0" y="90.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">InputDeclaration</text><text x="325.0" y="105.0" text-anchor="middle" font-size="9.8" fill="#5b636e">.merged(...)</text><text x="325.0" y="119.0" text-anchor="middle" font-size="9.8" fill="#5b636e">合并成一个值</text><rect x="440" y="64" width="120" height="58" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="500.0" y="90.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">DecisionInputs</text><text x="500.0" y="105.0" text-anchor="middle" font-size="9.8" fill="#5b636e">只读这一个值</text><rect x="598" y="22" width="114" height="142" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="655.0" y="90.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">PortfolioContext</text><text x="655.0" y="105.0" text-anchor="middle" font-size="9.8" fill="#5b636e">收益窗口</text><text x="655.0" y="119.0" text-anchor="middle" font-size="9.8" fill="#5b636e">staleness</text><text x="655.0" y="133.0" text-anchor="middle" font-size="9.8" fill="#5b636e">factors</text><text x="655.0" y="147.0" text-anchor="middle" font-size="9.8" fill="#5b636e">risk_exposures</text><text x="655.0" y="161.0" text-anchor="middle" font-size="9.8" fill="#5b636e">…</text><line x1="208" y1="47" x2="248" y2="82" stroke="#555" marker-end="url(#m)"/><line x1="208" y1="141" x2="248" y2="106" stroke="#555" marker-end="url(#m)"/><line x1="400" y1="93" x2="438" y2="93" stroke="#555" marker-end="url(#m)"/><line x1="560" y1="93" x2="596" y2="93" stroke="#555" marker-end="url(#m)"/><text x="578.0" y="87" text-anchor="middle" font-size="9.5" fill="#5b636e">组装</text></svg>
+<figcaption>图 5-4　输入声明的合并：规则和估计器各自声明需要什么，DecisionInputs 只读合并后的一个值，据此组装每根 bar 的上下文。</figcaption>
+</figure>
+
+<p>均值-方差优化器（一种在预期收益和风险之间做权衡的经典组合方法）还留了两个扩展点：<code>reference_weights</code>（相对一个参考组合来衡量风险）和 <code>risk_constraints</code>（对风险项加约束）。基类本身不使用它们；<code>scripts/active_risk.py</code> 里的 <code>ActiveRiskOptimizer</code> 就是基于这两个扩展点写的，有测试保证它能正常工作。</p>
+
+<!-- ============ 6 ============ -->
+<h1 class="chapter"><span class="num">6</span>基类还是协议</h1>
+
+<p>Python 有两种表达“接口”的方式：抽象基类（通过继承）和 <code>typing.Protocol</code>（结构化类型，只要有对应的方法就算满足）。项目对何时用哪一种有一条明确规则：</p>
+
+<div class="box ok"><b class="t">规则</b>
+每层的根类就是这一层的契约，所有实现都从它派生。<b>只有当某个接口位置出现了第二种实现，它能满足调用方的需要、但<u>不应该</u>继承根类的实现代码时</b>，才在那里定义 Protocol。Protocol 定义在调用方旁边，只列出调用方真正用到的成员。</div>
+
+<div class="keep"><h2>6.1 唯一的实例：Predictor</h2>
+<p>回测器需要一个“信号源”来提供预测。单个模型（<code>BaseModel</code> 的子类）当然可以；但集成模型（例如 <code>SeedEnsemble</code>：同一配置用多个随机种子训练再平均）也必须可以。集成如果继承 <code>BaseModel</code>，就会继承一整套它并不具备的训练循环、交叉验证逻辑和 checkpoint 规则，只能逐个写成空实现。所以回测层定义了 <code>Predictor</code> 协议：</p></div>
+
+<figure>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5">
+<defs><marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="226" y="10" width="268" height="92" rx="8" fill="#fff" stroke="#1f5fa8" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="360" y="30" text-anchor="middle" font-weight="600" fill="#1f5fa8">«Protocol» Predictor</text>
+<text x="360" y="50" text-anchor="middle" font-size="10.5">labels, train_bounds, test_bounds, label_scales</text>
+<text x="360" y="66" text-anchor="middle" font-size="10.5">predict_window(start, end)</text>
+<text x="360" y="82" text-anchor="middle" font-size="10.5">train(), load(), check_checkpoint()</text>
+<text x="360" y="96" text-anchor="middle" font-size="10.5">get_config(), from_config()</text>
+<rect x="560" y="30" width="140" height="52" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/><text x="630" y="52" text-anchor="middle" font-weight="600">BaseBacktester</text><text x="630" y="70" text-anchor="middle" font-size="10.5">只使用协议成员</text>
+<line x1="558" y1="56" x2="472" y2="56" stroke="#555" marker-end="url(#a6)"/><text x="515" y="48" text-anchor="middle" font-size="10">依赖</text>
+<rect x="40" y="150" width="200" height="60" rx="8" fill="#e6f3ea" stroke="#93c4a4"/><text x="140" y="174" text-anchor="middle" font-weight="600">BaseModel 及其子类</text><text x="140" y="194" text-anchor="middle" font-size="10.5">结构上满足，不继承协议</text>
+<rect x="280" y="150" width="200" height="60" rx="8" fill="#e6f3ea" stroke="#93c4a4"/><text x="380" y="174" text-anchor="middle" font-weight="600">BaseEnsemble</text><text x="380" y="194" text-anchor="middle" font-size="10.5">组合多个模型，本身不是模型</text>
+<rect x="520" y="150" width="180" height="60" rx="8" fill="#f4f6f8" stroke="#b9c1ca"/><text x="610" y="174" text-anchor="middle">测试里的委托式包装器</text><text x="610" y="194" text-anchor="middle" font-size="10.5">回测结果须与原模型一致</text>
+<line x1="140" y1="148" x2="300" y2="104" stroke="#555" stroke-dasharray="4 3" marker-end="url(#a6)"/>
+<line x1="380" y1="148" x2="370" y2="104" stroke="#555" stroke-dasharray="4 3" marker-end="url(#a6)"/>
+<line x1="600" y1="148" x2="440" y2="104" stroke="#555" stroke-dasharray="4 3" marker-end="url(#a6)"/>
+</svg>
+<figcaption>图 6-1　Predictor 协议定义在调用方（回测层），模型和集成都在结构上满足它。</figcaption>
+</figure>
+
+<ul>
+<li>协议<b>故意不暴露 <code>ModelConfig</code></b>：集成可能由完全不同的模型组成（例如一个 XGBoost 加一个神经网络，各用各的因子），它们没有单一的配置可以暴露。</li>
+<li>项目不使用静态类型检查器，所以协议<b>在运行时强制</b>：构造回测器时，传入的对象缺少任何成员就直接拒绝。测试还验证：一个不继承 <code>BaseModel</code> 的委托包装器，回测结果与原模型完全相同；另有一个基于 <code>ast</code> 的源码扫描，保证回测层除了协议成员之外不读取模型的任何属性。</li>
+</ul>
+
+<div class="keep"><h2>6.2 为什么不给每一层都先定义协议</h2>
+<table>
+<tr><th style="width:36%">没有采用的做法</th><th>理由</th></tr>
+<tr><td>每层都先定义协议，根类作为默认实现</td><td>其他接口位置都只有一种实现。为它们定义协议，只是把根类的公开方法重抄一遍，多了一份需要保持同步的声明。</td></tr>
+<tr><td>把所有协议集中到一个 <code>protocols.py</code></td><td>不归属于任何调用方的协议，会慢慢变成“实现类公开方法的复印件”。</td></tr>
+<tr><td>把根类的模板方法也抽成协议</td><td>根类不只是一组签名，它们<b>承载不变量</b>：数据集和因子的根类负责读取、预热、重采样和 store；<code>PortfolioConstructor.decide</code> 负责防前视和保护不可交易持仓的校验（第 7 章）。把这一层换成协议，等于让每个实现者自己维护这些不变量。</td></tr>
+</table></div>
+
+<div class="keep"><h2>6.3 集成：用组合而不是继承</h2>
+<p><code>BaseEnsemble</code> 是一个独立的类，它组合若干模型，同时满足 <code>Predictor</code>。它的合并规则也只用一个概念：集成的标签是各成员标签的<b>并集</b>；每个标签由预测它的那些成员合成。有多个成员预测同一标签时，逐 bar 标准化后取平均；只有一个成员预测时，原样透传。</p></div>
+<figure>
+<svg viewBox="0 0 720 212" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="14" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="36.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">成员 1：XGBoost</text><text x="113.0" y="51.0" text-anchor="middle" font-size="9.8" fill="#5b636e">预测 ret</text><rect x="8" y="80" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="102.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">成员 2：XGBoost（另一个种子）</text><text x="113.0" y="117.0" text-anchor="middle" font-size="9.8" fill="#5b636e">预测 ret</text><rect x="8" y="150" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="172.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">成员 3：波动率模型</text><text x="113.0" y="187.0" text-anchor="middle" font-size="9.8" fill="#5b636e">预测 vol</text><rect x="270" y="34" width="210" height="62" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="375.0" y="62.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">标签 ret：2 个成员预测</text><text x="375.0" y="77.0" text-anchor="middle" font-size="9.8" fill="#5b636e">逐 bar 标准化后取平均</text><text x="375.0" y="91.0" text-anchor="middle" font-size="9.8" fill="#5b636e">scale = 标准化</text><rect x="270" y="148" width="210" height="54" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="375.0" y="172.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">标签 vol：1 个成员预测</text><text x="375.0" y="187.0" text-anchor="middle" font-size="9.8" fill="#5b636e">原样透传</text><text x="375.0" y="201.0" text-anchor="middle" font-size="9.8" fill="#5b636e">scale = raw（原单位）</text><rect x="530" y="64" width="182" height="108" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="621.0" y="115.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">集成的预测面板</text><text x="621.0" y="130.0" text-anchor="middle" font-size="9.8" fill="#5b636e">变量：ret、vol</text><text x="621.0" y="144.0" text-anchor="middle" font-size="9.8" fill="#5b636e">+ 每个标签的 label_scales</text><text x="621.0" y="158.0" text-anchor="middle" font-size="9.8" fill="#5b636e">（满足 Predictor 协议）</text><line x1="218" y1="39" x2="268" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="218" y1="105" x2="268" y2="78" stroke="#555" marker-end="url(#m)"/><line x1="218" y1="175" x2="268" y2="175" stroke="#555" marker-end="url(#m)"/><line x1="480" y1="65" x2="528" y2="100" stroke="#555" marker-end="url(#m)"/><line x1="480" y1="175" x2="528" y2="140" stroke="#555" marker-end="url(#m)"/></svg>
+<figcaption>图 6-2　集成按标签合并：同一标签有多个成员就平均，只有一个就透传。</figcaption>
+</figure>
+
+<p>这样，“多种子集成”“不同模型的集成”“一个模型预测收益、另一个预测波动率”都是<b>同一条规则</b>，既不需要模式开关，也不需要第二个组合类。代价是：预测值的量纲取决于有几个成员（平均过的是标准化分数，透传的保持原单位），所以协议里有一个按标签给出的 <code>label_scales</code>，需要真实收益单位的组合规则必须检查它。</p>
+
+<!-- ============ 7 ============ -->
+<h1 class="chapter"><span class="num">7</span>用接口形状保证不变量：“只看得到 t”</h1>
+
+<p>第 0 章说过，“偷看未来”是一类沉默的 bug。这一章展示项目怎样用<b>函数签名和数据结构</b>，而不是靠开发者自觉，来杜绝它。</p>
+
+<div class="keep"><h2>7.1 逐 bar 决策的接口</h2>
+<p>把模型预测变成持仓权重，可以有两种接口设计：</p>
+<pre><code><span class="c"># A. 整面板接口：一次拿到所有日期的数据</span>
+weights = selector.select(scores_panel, next_fill_price_panel, rebalance_mask)
+
+<span class="c"># B. 逐 bar 接口：一次只拿到一根 bar 的上下文</span>
+weights_t = rule.construct(context_at_t)</code></pre></div>
+<p>接口 A 的签名本身就允许实现读到 t 之后的数据；接口 B 的实现<b>根本拿不到</b>未来的数据。本项目采用 B。另外两个理由：优化器本来就是每个调仓日解一次问题；将来的事件驱动回测器或实盘执行器可以原样调用同一个方法。</p>
+
+<p><code>PortfolioContext</code> 是一个只描述一根 bar 的数据类：</p>
+<pre><code>@dataclass
+<span class="k">class</span> PortfolioContext:
+    timestamp: pd.Timestamp          <span class="c"># 做决策的这根 bar；返回的权重在下一根 bar 成交</span>
+    predictions: xr.Dataset          <span class="c"># 这根 bar 上每个标签的预测，只有 symbol 一个维度</span>
+    tradable: xr.DataArray           <span class="c"># 这根 bar 上能否交易，只用 t 及之前的信息判断</span>
+    current_weights: xr.DataArray    <span class="c"># 当前实际持仓</span>
+    returns: xr.DataArray | None     <span class="c"># 截至 t 的一段有限长度的收益历史</span>
+    staleness: xr.DataArray | None   <span class="c"># 距离最后一个真实价格过了几根 bar（停牌时会增长）</span>
+    factors: xr.Dataset | None       <span class="c"># 规则声明过的因子在 t 的值</span>
+    risk_exposures: xr.Dataset | None</code></pre>
+<p class="small">（字段与注释为示意，完整定义见 quantlab/portfolio/base.py。）</p>
+
+<div class="keep"><h2>7.2 decide()：不可覆盖的校验外壳</h2>
+<p>组合规则实现的是 <code>construct</code>，但外部永远调用 <code>decide</code>。<code>decide</code> 是基类上一个<b>不应被子类覆盖</b>的方法，它包住 <code>construct</code>，并做两件事：</p>
+<ul>
+<li>把 <code>PortfolioConstructionError</code>（例如优化器无解）转换成“这根 bar 维持原持仓”，并记录原因，而不是让整个回测崩溃；</li>
+<li>检查返回的这一行权重：股票轴必须与上下文一致；不能 NaN 和有效数值混在一起；<b>不能改动被锁定的持仓</b>（已经持有、但当前不能交易的股票，例如停牌）；不能给既不能交易、又没有持有的股票分配权重。违反任何一条都说明规则本身有 bug，直接抛 <code>ValueError</code>。</li>
+</ul></div>
+<figure>
+<svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="140" y="8" width="378" height="224" rx="10" fill="none" stroke="#1f5fa8" stroke-dasharray="6 4"/><text x="152" y="26" font-size="10.5" fill="#1f5fa8" font-weight="600">decide()：基类实现，子类不覆盖</text><rect x="8" y="98" width="110" height="44" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="63.0" y="124.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">context_t</text><rect x="160" y="98" width="120" height="50" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="220.0" y="120.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">construct()</text><text x="220.0" y="135.0" text-anchor="middle" font-size="9.8" fill="#5b636e">子类唯一要写的</text><rect x="318" y="36" width="186" height="44" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="411.0" y="62.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">抛出 PortfolioConstructionError</text><rect x="318" y="120" width="186" height="60" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="411.0" y="147.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">检查返回的权重行</text><text x="411.0" y="162.0" text-anchor="middle" font-size="9.8" fill="#5b636e">股票轴、NaN 混合、</text><text x="411.0" y="176.0" text-anchor="middle" font-size="9.8" fill="#5b636e">锁定持仓、不可交易</text><rect x="548" y="36" width="166" height="50" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="631.0" y="58.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">保持原持仓</text><text x="631.0" y="73.0" text-anchor="middle" font-size="9.8" fill="#5b636e">记录失败原因</text><rect x="548" y="120" width="166" height="44" rx="7" fill="#fbe3e3" stroke="#d99"/><text x="631.0" y="146.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">ValueError：规则有 bug</text><rect x="548" y="182" width="166" height="44" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="631.0" y="208.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">Decision(weights, events)</text><line x1="118" y1="120" x2="158" y2="120" stroke="#555" marker-end="url(#m)"/><line x1="280" y1="108" x2="316" y2="64" stroke="#555" marker-end="url(#m)"/><text x="284" y="84" text-anchor="middle" font-size="9.5" fill="#5b636e">异常</text><line x1="280" y1="134" x2="316" y2="148" stroke="#555" marker-end="url(#m)"/><text x="298" y="156" text-anchor="middle" font-size="9.5" fill="#5b636e">返回权重</text><line x1="504" y1="58" x2="546" y2="60" stroke="#555" marker-end="url(#m)"/><line x1="504" y1="142" x2="546" y2="142" stroke="#555" marker-end="url(#m)"/><text x="525.0" y="136" text-anchor="middle" font-size="9.5" fill="#5b636e">违反</text><line x1="504" y1="166" x2="546" y2="200" stroke="#555" marker-end="url(#m)"/><text x="520" y="196" text-anchor="middle" font-size="9.5" fill="#5b636e">通过</text></svg>
+<figcaption>图 7-1　<code>decide()</code> 的流程。规则作者只写 <code>construct</code>，失败处理和合法性检查由基类统一完成。</figcaption>
+</figure>
+
+<p>这就是第 6 章所说的“根类承载不变量”：任何人新写的规则，只要通过 <code>decide</code> 调用，就自动受到这些检查的保护。</p>
+
+<div class="keep"><h2>7.3 决策与执行分离</h2>
+<figure>
+<svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5">
+<defs><marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<line x1="30" y1="120" x2="700" y2="120" stroke="#333" stroke-width="1.5" marker-end="url(#a7)"/>
+<g font-size="11"><line x1="150" y1="112" x2="150" y2="128" stroke="#333"/><text x="150" y="146" text-anchor="middle">bar t-1</text>
+<line x1="330" y1="112" x2="330" y2="128" stroke="#333"/><text x="330" y="146" text-anchor="middle" font-weight="600">bar t</text>
+<line x1="520" y1="112" x2="520" y2="128" stroke="#333"/><text x="520" y="146" text-anchor="middle" font-weight="600">bar t+1</text></g>
+<rect x="40" y="20" width="320" height="76" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="200" y="40" text-anchor="middle" font-weight="600" fill="#1f5fa8">决策侧：只能读 ≤ t 的信息</text>
+<text x="200" y="60" text-anchor="middle" font-size="10.5">DecisionInputs 组装 context → rule.decide(context)</text>
+<text x="200" y="78" text-anchor="middle" font-size="10.5">可交易性、收益历史、陈旧度、当前持仓</text>
+<rect x="390" y="20" width="300" height="76" rx="8" fill="#fbefe6" stroke="#dcae8c"/>
+<text x="540" y="40" text-anchor="middle" font-weight="600" fill="#a4501a">执行侧：模拟市场在 t+1 的反应</text>
+<text x="540" y="60" text-anchor="middle" font-size="10.5">以 t+1 开盘价成交；没有成交价 → 拒单，持仓不变</text>
+<text x="540" y="78" text-anchor="middle" font-size="10.5">已退市的持仓按最后估值转为现金</text>
+<path d="M330,170 C380,210 470,210 520,170" fill="none" stroke="#555" marker-end="url(#a7)"/>
+<text x="425" y="226" text-anchor="middle" font-size="10.5">t 时刻给出的目标权重在 t+1 成交</text>
+</svg>
+<figcaption>图 7-2　决策侧只读 t，执行侧可以读 t+1。两侧共用 quantlab/execution 里的同一份成交规则。</figcaption>
+</figure></div>
+
+<p>举一个看起来无害的错误写法：把“股票在 t 能否被选入”定义为“它在 t+1 有成交价”。这样每个目标权重都一定能成交，代码很简单，目标权重也就等于实际持仓。但这等于让策略在 t 就知道哪些股票会在 t+1 停牌或退市，于是它永远不会在停牌前一天买入。这是一种乐观偏差，<b>而且在实盘里根本无法计算</b>。本项目的做法是：</p>
+<ul>
+<li>决策侧只用 t 时刻的信息判断能否交易；</li>
+<li>执行侧如实模拟：没有成交价的订单被拒绝并作废，原持仓保留；已退市的持仓按最后估值转为现金；</li>
+<li>组合规则需要知道“当前实际持有什么”，所以有一个 <code>ExecutionBook</code> 按<b>与回测引擎完全相同的规则</b>重放成交、拒单、退市结算和现金约束。这份规则只存在于 <code>quantlab/execution/rules.py</code> 一处，连 vectorbt 的数值细节（浮点比较、累加方式）也只在这里实现一次。</li>
+</ul>
+
+<div class="keep"><h2>7.4 DecisionInputs：研究与实盘共用的唯一组装点</h2>
+<p>“决策时能读到什么”由一个模块统一组装：<code>quantlab/portfolio/decision_inputs.py</code> 里的 <code>DecisionInputs</code>。它同时服务研究回测和实盘执行器。实盘执行器是同一作者的另一个仓库 quantlab-ibkr，它把本项目的策略接到券商 Interactive Brokers 做交易。</p>
+<table>
+<tr><th style="width:38%">方法</th><th>用途</th></tr>
+<tr><td><code>weights(predictions)</code></td><td>研究回测：对整段数据逐 bar 做决策</td></tr>
+<tr><td><code>context(t, predictions, current_weights)</code></td><td>实盘执行器：只构造一根 bar 的上下文，持仓由执行器从自己的账户传入</td></tr>
+<tr><td><code>rebalances(t)</code></td><td>调仓日程：t 是否是调仓日</td></tr>
+<tr><td><code>from_run(run_dir)</code></td><td>从一次回测的结果目录重建它的决策输入，不需要加载模型</td></tr>
+</table></div>
+<p>它是唯一构造 <code>PortfolioContext</code> 的代码。每根 bar 只读取最近 <code>history_bars</code> 个原始价格（数量由规则自己声明），并只在这个窗口内向前填充缺失值。因此<b>决策只取决于 t 时刻能知道的信息，与调用方的历史数据从哪天开始无关</b>。实盘执行器没有一个天然的“起始日”，这一点对它至关重要。</p>
+<figure>
+<svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="24" width="190" height="52" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="103.0" y="47.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">研究回测</text><text x="103.0" y="62.0" text-anchor="middle" font-size="9.8" fill="#5b636e">BaseBacktester</text><rect x="8" y="176" width="190" height="52" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="103.0" y="199.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">实盘执行器</text><text x="103.0" y="214.0" text-anchor="middle" font-size="9.8" fill="#5b636e">quantlab-ibkr（另一个仓库）</text><rect x="250" y="58" width="210" height="136" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="355.0" y="123.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">DecisionInputs</text><text x="355.0" y="138.0" text-anchor="middle" font-size="9.8" fill="#5b636e">weights(predictions)　← 回测</text><text x="355.0" y="152.0" text-anchor="middle" font-size="9.8" fill="#5b636e">context(t, 预测, 持仓)　← 实盘</text><text x="355.0" y="166.0" text-anchor="middle" font-size="9.8" fill="#5b636e">rebalances(t)</text><text x="355.0" y="180.0" text-anchor="middle" font-size="9.8" fill="#5b636e">from_run(run_dir)</text><rect x="508" y="100" width="204" height="52" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="610.0" y="123.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">rule.decide(context)</text><text x="610.0" y="138.0" text-anchor="middle" font-size="9.8" fill="#5b636e">→ 这一 bar 的目标权重</text><rect x="508" y="10" width="204" height="52" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="610.0" y="33.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">ExecutionBook</text><text x="610.0" y="48.0" text-anchor="middle" font-size="9.8" fill="#5b636e">按成交规则重放出当前持仓</text><rect x="508" y="190" width="204" height="52" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="610.0" y="213.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">券商账户</text><text x="610.0" y="228.0" text-anchor="middle" font-size="9.8" fill="#5b636e">真实的当前持仓</text><line x1="198" y1="50" x2="248" y2="86" stroke="#555" marker-end="url(#m)"/><text x="228" y="60" text-anchor="middle" font-size="9.5" fill="#5b636e">weights()</text><line x1="198" y1="202" x2="248" y2="170" stroke="#555" marker-end="url(#m)"/><text x="228" y="200" text-anchor="middle" font-size="9.5" fill="#5b636e">context()</text><line x1="460" y1="126" x2="506" y2="126" stroke="#555" marker-end="url(#m)"/><line x1="508" y1="48" x2="462" y2="74" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="492" y="74" text-anchor="middle" font-size="9.5" fill="#5b636e">持仓</text><line x1="506" y1="214" x2="200" y2="214" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="360" y="232" text-anchor="middle" font-size="9.5" fill="#5b636e">持仓</text></svg>
+<figcaption>图 7-3　DecisionInputs 同时服务研究回测和实盘执行器，两边只在“当前持仓从哪里来”上不同。</figcaption>
+</figure>
+
+
+<div class="box"><b class="t">同样的思路也用在风险模型上</b>
+因子风险模型是业界常用的一种风险估计方法（本项目按 MSCI Barra 的 USE4 方法实现），它用一组公共的风险因子解释股票之间的联动。在本项目里，它被设计成“每根 bar 一行的数据产品”：提前算好、存成 store，每一行只用不晚于该 bar 的数据，并且只依赖有限长度的窗口。所以“一次性算完整段历史”和“先算一段、再每天追加一行”得到的结果逐行完全相同，实盘每天追加一行就能和研究结果对齐。某根 bar 上的风险预测 <code>B F Bᵀ + diag(D)</code> 是风险层的一个值类型 <code>FactorRiskForecast</code>：组合优化、风险归因和模型检验都使用它，“哪些股票被这个预测覆盖”的规则只写在这一处。</div>
+
+<!-- ============ 8 ============ -->
+<h1 class="chapter"><span class="num">8</span>长任务的健壮性：断点续传与原子写</h1>
+
+<p>下载全市场数据需要成千上万次请求，可能跑好几个小时；把原始数据转换成 Zarr 也是长任务。设计要求是：<b>无论在哪个时刻杀掉进程，重新运行都能接着做，既不重复抓取已完成的部分，也不跳过未完成的部分。</b></p>
+
+<div class="keep"><h2>8.1 两层存储</h2>
+<figure>
+<svg viewBox="0 0 720 150" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5">
+<defs><marker id="a8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="40" width="130" height="56" rx="8" fill="#f4f6f8" stroke="#b9c1ca"/><text x="75" y="64" text-anchor="middle" font-weight="600">供应商 API</text><text x="75" y="82" text-anchor="middle" font-size="10.5">各数据供应商</text>
+<rect x="200" y="30" width="200" height="76" rx="8" fill="#fbefe6" stroke="#dcae8c"/><text x="300" y="52" text-anchor="middle" font-weight="600">原始层（Parquet）</text><text x="300" y="70" text-anchor="middle" font-size="10.5">供应商返回的原始数据，原样保存</text><text x="300" y="88" text-anchor="middle" font-size="10.5">旁边是记录下载进度的 JSON</text>
+<rect x="460" y="30" width="250" height="76" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/><text x="585" y="52" text-anchor="middle" font-weight="600">存储层（Zarr 面板）</text><text x="585" y="70" text-anchor="middle" font-size="10.5">稠密、清洗过的派生数据</text><text x="585" y="88" text-anchor="middle" font-size="10.5">旁边是记录转换进度的 JSON</text>
+<line x1="140" y1="68" x2="198" y2="68" stroke="#555" marker-end="url(#a8)"/><text x="170" y="60" text-anchor="middle" font-size="10">下载</text>
+<line x1="400" y1="68" x2="458" y2="68" stroke="#555" marker-end="url(#a8)"/><text x="430" y="60" text-anchor="middle" font-size="10">转换</text>
+<text x="360" y="134" text-anchor="middle" fill="#5b636e" font-size="10.5">想换一种清洗或过滤方式，只需重新转换，不必重新下载</text>
+</svg>
+<figcaption>图 8-1　原始层与存储层分离。</figcaption>
+</figure></div>
+
+<div class="keep"><h2>8.2 三种进度账本</h2>
+<table>
+<tr><th style="width:18%">账本</th><th style="width:30%">记录什么</th><th>保证的性质</th></tr>
+<tr><td>Watermark（水位线）</td><td>每只股票已经存到磁盘的日期范围</td><td>一整批数据抓完、写完<b>之后</b>才写 watermark。中途被打断的股票没有 watermark，下次会重新抓取。</td></tr>
+<tr><td>Page ledger（分页账本）</td><td>一个多股票批量请求的分页进度：抓过哪些页、下一页的 token、每页写到了哪些文件</td><td>见下方列表。</td></tr>
+<tr><td>Chunk ledger（分块账本）</td><td>Zarr 转换按时间窗口追加了哪些窗口</td><td>symbol 轴在第一个窗口之前就固定下来，保证所有窗口按列对齐；账本和 store 不一致时拒绝续传，两者都不单方面信任。</td></tr>
+</table></div>
+
+<p>分页账本的每一条设计都在防一种具体的失败：</p>
+<ul>
+<li><b>确定性的文件名</b>：分片文件名是 <code>part-{batch_key}-{page:05d}.pqt</code>，其中 batch_key 是供应商、频率、日期和排序后股票列表的哈希，不含时间戳或随机数。重抓一页会覆盖同一个文件，所以重试最多浪费几次请求，永远不会产生重复数据。</li>
+<li><b>先写数据，后写账本</b>：两步之间崩溃，代价只是多抓一页；如果顺序反过来，账本可能记下了一页根本没写到磁盘的数据。</li>
+<li><b>账本记住股票名单的指纹</b>：换一份股票名单打开时，读回来的是空账本，不会接着别的名单的进度续传。</li>
+<li><b>续传前核对</b>：账本里记录的每个分片文件必须都还在，缺一个就报错。跳过它会留下一个之后谁也发现不了的数据空洞。</li>
+<li><b>防止死循环</b>：如果供应商返回的 token 和请求时一样，直接 <code>ValueError</code>，而不是无限循环、每轮写一个新文件。</li>
+<li><b>损坏时降级</b>：账本文件丢失或损坏时，当作空账本处理，代价只是这一批重新抓取。</li>
+</ul>
+<figure>
+<svg viewBox="0 0 720 214" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="30" width="160" height="56" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="88.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">请求第 k 页</text><text x="88.0" y="70.0" text-anchor="middle" font-size="9.8" fill="#5b636e">带上一页给的 token</text><rect x="210" y="30" width="200" height="56" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="310.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">写分片文件</text><text x="310.0" y="70.0" text-anchor="middle" font-size="9.8" fill="#5b636e">part-{batch_key}-{k}.pqt</text><rect x="452" y="30" width="160" height="56" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="532.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">账本记录第 k 页</text><text x="532.0" y="70.0" text-anchor="middle" font-size="9.8" fill="#5b636e">和下一页的 token</text><rect x="650" y="30" width="62" height="56" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="681.0" y="62.0" text-anchor="middle" font-weight="600" font-size="11.5" fill="#1f2328">k+1</text><line x1="168" y1="58" x2="208" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="410" y1="58" x2="450" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="612" y1="58" x2="648" y2="58" stroke="#555" marker-end="url(#m)"/><text x="189" y="112" text-anchor="middle" font-size="16" fill="#a4501a">⚡</text><line x1="189" y1="64" x2="189" y2="96" stroke="#a4501a" stroke-dasharray="2 2"/><text x="20" y="134" font-size="10" fill="#a4501a">在这里崩溃：第 k 页还没落盘，</text><text x="20" y="150" font-size="10" fill="#a4501a">重跑时从账本得知要重抓第 k 页</text><text x="431" y="112" text-anchor="middle" font-size="16" fill="#a4501a">⚡</text><line x1="431" y1="64" x2="431" y2="96" stroke="#a4501a" stroke-dasharray="2 2"/><text x="300" y="134" font-size="10" fill="#a4501a">在这里崩溃：文件已写、账本未记，重抓第 k 页，</text><text x="300" y="150" font-size="10" fill="#a4501a">覆盖同名文件，不会产生重复数据</text><rect x="8" y="172" width="704" height="34" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="360.0" y="193.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">续传前：账本记录的每个分片文件都必须存在，否则报错；换了股票名单则账本读回为空</text></svg>
+<figcaption>图 8-2　分页账本的写入顺序：先写数据、后记账本。任何一步崩溃，代价都只是重抓一页。</figcaption>
+</figure>
+
+
+<div class="keep"><h2>8.3 原子写与“先建新、后删旧”</h2>
+<ul>
+<li>所有 JSON 附属文件都通过 <code>write_json_atomically</code> 写入：先写到<b>同一目录</b>下的临时文件，<code>flush</code> + <code>fsync</code>，再用 <code>os.replace</code> 覆盖目标。必须在同一目录，是因为 rename 只在同一文件系统内才是原子的。崩溃之后只可能看到完整的旧文件或完整的新文件。</li>
+<li>目录也是同样处理：一次回测的结果目录先写成隐藏的 <code>.{name}.partial</code>，全部产物成功后才 rename 成正式名字；出现任何异常（包括 <code>KeyboardInterrupt</code>）都会删掉这个临时目录。<b>一个结果目录要么完整，要么不存在。</b></li>
+<li>重建 store 时，<b>旧 store 一定等新 store 完成后才删除</b>：给 store 增加股票列时，先在旁边写一个 <code>.widening.tmp</code>，再用两次 rename 互换；整体重建时，先把旧 store 改名为 <code>.superseded.tmp</code>，失败就改回原名。如果连改回也失败，只记日志、不抛错，避免掩盖真正的错误，日志里写明两份副本的位置。</li>
+<li>重建工具的 <code>data_root</code> 参数必填、没有默认值：在一个没有数据目录的代码副本里运行重建时，绝不能对着一个根本没读过的目录报告“成功”。</li>
+</ul></div>
+<figure>
+<svg viewBox="0 0 720 208" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><text x="8" y="16" font-size="10.5" font-weight="600" fill="#1f5fa8">单个 JSON 文件</text><rect x="8" y="24" width="150" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="83.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">写临时文件</text><text x="83.0" y="58.0" text-anchor="middle" font-size="9.8" fill="#5b636e">与目标在同一目录</text><rect x="190" y="24" width="130" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="255.0" y="50.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">flush + fsync</text><rect x="352" y="24" width="170" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="437.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">os.replace(临时, 目标)</text><text x="437.0" y="58.0" text-anchor="middle" font-size="9.8" fill="#5b636e">原子替换</text><rect x="554" y="24" width="158" height="44" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="633.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">崩溃后只会看到</text><text x="633.0" y="58.0" text-anchor="middle" font-size="9.8" fill="#5b636e">完整的旧文件或新文件</text><line x1="158" y1="46" x2="188" y2="46" stroke="#555" marker-end="url(#m)"/><line x1="320" y1="46" x2="350" y2="46" stroke="#555" marker-end="url(#m)"/><line x1="522" y1="46" x2="552" y2="46" stroke="#555" marker-end="url(#m)"/><text x="8" y="104" font-size="10.5" font-weight="600" fill="#1f5fa8">整个运行目录</text><rect x="8" y="112" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="134.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">.{name}.partial/</text><text x="113.0" y="149.0" text-anchor="middle" font-size="9.8" fill="#5b636e">在隐藏的暂存目录里写全部产物</text><rect x="280" y="112" width="180" height="50" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="370.0" y="134.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">rename 为 {name}/</text><text x="370.0" y="149.0" text-anchor="middle" font-size="9.8" fill="#5b636e">全部成功后一步到位</text><rect x="500" y="112" width="212" height="50" rx="7" fill="#fbe3e3" stroke="#d99"/><text x="606.0" y="134.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">删除暂存目录</text><text x="606.0" y="149.0" text-anchor="middle" font-size="9.8" fill="#5b636e">任何异常，包括 KeyboardInterrupt</text><line x1="218" y1="128" x2="278" y2="128" stroke="#555" marker-end="url(#m)"/><text x="248.0" y="122" text-anchor="middle" font-size="9.5" fill="#5b636e">成功</text><path d="M113,162 C113,196 600,196 606,164" fill="none" stroke="#555" marker-end="url(#m)"/><text x="360" y="200" text-anchor="middle" font-size="9.5" fill="#5b636e">失败</text></svg>
+<figcaption>图 8-3　原子写的两种形式：文件用“临时文件 + os.replace”，目录用“暂存目录 + rename”。结果要么完整，要么不存在。</figcaption>
+</figure>
+
+
+<div class="keep"><h2>8.4 先测量再设计：把计算放到服务器端</h2>
+<p>逐笔报价数据极其庞大：标普 500 成分股十年的 NBBO（全美最优买卖报价）约有 9 TB CSV，而训练服务器到 WRDS 的总带宽只有 5–6 MB/s，下载后在本地重采样需要三周以上。实测同一天 96 只股票：在 WRDS 服务器上用 SQL 直接聚合成一分钟 bar，返回 1.7 MB、用时 63 秒；下载原始逐笔数据则是 328 MB、用时 110 秒。</p></div>
+<p>因此项目提供了一种单独的数据类型 <code>nbbo_bars</code>：由 SQL 在服务器端完成聚合，复现本地重采样器的全部 13 个变量，产出的 store 与本地路径布局完全相同。本地逐笔路径也保留着，作为验证 SQL 正确性的对照基准，两者已逐 bar 比对一致。</p>
+
+<!-- ============ 9 ============ -->
+<h1 class="chapter"><span class="num">9</span>运行目录层：可复现的落盘格式</h1>
+
+<p>一次结果能否复现，取决于三样东西：<b>配置、数据、代码</b>。项目把记录这三样东西的职责单独做成了一层 <code>quantlab/runs</code>。一次训练或一次回测称为一次“运行”，它的全部产物放在一个“运行目录”里。</p>
+
+<div class="keep"><h2>9.1 两种运行，一套机制</h2>
+<figure>
+<svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="10.5">
+<g font-family="PingFang SC, sans-serif"><text x="20" y="18" font-weight="600" font-size="12">训练运行（TrainedRun）</text><text x="380" y="18" font-weight="600" font-size="12">回测运行（BacktestRun）</text></g>
+<rect x="10" y="28" width="340" height="262" rx="8" fill="#f6f8fa" stroke="#d6dbe1"/>
+<rect x="370" y="28" width="340" height="262" rx="8" fill="#f6f8fa" stroke="#d6dbe1"/>
+<g fill="#24292f">
+<text x="24" y="52">XGBoostRegressor_trial_&lt;时间&gt;/</text>
+<text x="40" y="72">config.json      <tspan fill="#6a737d">重建配方</tspan></text>
+<text x="40" y="90">model.joblib     <tspan fill="#6a737d">模型 checkpoint</tspan></text>
+<text x="40" y="108" fill="#1f5fa8" font-weight="600">run.json         <tspan fill="#6a737d" font-weight="400">最后写入</tspan></text>
+<text x="24" y="136" fill="#6a737d">滚动训练 train_cv：</text>
+<text x="24" y="156">..._trial_&lt;时间&gt;/</text>
+<text x="40" y="174">fold_0/  fold_1/  ...</text>
+<text x="40" y="192" fill="#1f5fa8" font-weight="600">run.json  <tspan fill="#6a737d" font-weight="400">kind=walk_forward</tspan></text>
+<text x="24" y="220" fill="#6a737d">集成：</text>
+<text x="40" y="238">member_0/  member_1/ ...</text>
+<text x="40" y="256" fill="#1f5fa8" font-weight="600">run.json  <tspan fill="#6a737d" font-weight="400">kind=ensemble</tspan></text>
+<text x="384" y="52">&lt;回测器类名&gt;_&lt;时间&gt;/</text>
+<text x="400" y="72">config.json      <tspan fill="#6a737d">只放重建配方</tspan></text>
+<text x="400" y="90">weights.zarr     <tspan fill="#6a737d">目标权重</tspan></text>
+<text x="400" y="108">holdings.zarr    <tspan fill="#6a737d">实际持仓</tspan></text>
+<text x="400" y="126">equity.zarr      <tspan fill="#6a737d">净值</tspan></text>
+<text x="400" y="144">predictions.zarr <tspan fill="#6a737d">规则读到的预测</tspan></text>
+<text x="400" y="162">metrics.json  settlements.json</text>
+<text x="400" y="180">report.html</text>
+<text x="400" y="198">inputs/          <tspan fill="#6a737d">内存数据的副本</tspan></text>
+<text x="400" y="216" fill="#1f5fa8" font-weight="600">run.json         <tspan fill="#6a737d" font-weight="400">最后写入</tspan></text>
+<text x="400" y="240" fill="#6a737d">run.json 内容：类型、回测区间、</text>
+<text x="400" y="258" fill="#6a737d">数据指纹、代码记录、所用的训练运行</text>
+</g>
+</svg>
+<figcaption>图 9-1　两种运行目录。run.json 的头部（格式版本、类型 kind、写入时间）格式统一，并且最后写入，作为“已完成”的标记。</figcaption>
+</figure></div>
+
+<p><code>quantlab/runs/directory.py</code> 是两种运行共用的机制：统一的 <code>run.json</code> 头部和格式版本号；最后写 <code>run.json</code> 作为完成标记；先写临时目录再 rename；目录内部一律用相对路径（从服务器拷到本机的运行目录也能直接打开）；遇到不认识的格式版本直接拒绝并提示重跑；<code>open_run(path)</code> 按 <code>kind</code> 字段分派到对应的读取类（用一张固定的“类型 → 类路径”表，真正打开时才 import）。</p>
+
+<div class="keep"><h2>9.2 文件归属：只有一个模块知道文件名</h2>
+<p>规则：<b>运行目录里的文件只能通过 <code>quantlab/runs</code> 读写，其他任何代码中都不允许出现这些文件名。</b>如果文件名和 JSON 键名散落在写方和读方各处，就会出现两份不一致的定义；调用方还会用 <code>Path(checkpoint).parent.parent</code> 之类的写法去“猜”目录结构，层级一变就出错。</p></div>
+<p>这条规则由一个测试强制执行：它扫描库代码、示例，以及文档中的 Python 代码（包括 docstring），一旦发现 <code>run.json</code> 这类文件名的字符串字面量，或者从 checkpoint 路径往上走两级 <code>.parent.parent</code>，测试就失败。调用方只通过类型化的接口访问：</p>
+<pre><code>run = BacktestRun.open(run_dir)
+run.window, run.data_fingerprint, run.trained_run()     <span class="c"># 类型化的属性，不按字符串键去读 JSON</span></code></pre>
+
+<div class="keep"><h2>9.3 数据指纹：在“读取的位置”记录</h2>
+<p>要知道一次运行用了什么数据，一种做法是让回测器<b>列举</b>所有要记录的输入。问题是，谁也列不全：可交易性数据、组合规则在区间之前读的历史价格、合并数据集的各个输入、集成里的每一个成员……而且回测器还得深入了解因子的内部。</p>
+<p>本项目反过来做：<b>不列举，而是在数据被读取的地方记录。</b></p></div>
+<figure>
+<svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5">
+<defs><marker id="a9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="14" width="700" height="150" rx="10" fill="#f8fafc" stroke="#1f5fa8" stroke-dasharray="6 4"/>
+<text x="24" y="34" fill="#1f5fa8" font-weight="600">with DataRecorder():   （包住一次回测 / 一次训练数据收集 / 一个交叉验证折）</text>
+<rect x="30" y="52" width="140" height="44" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="100" y="78" text-anchor="middle">回测器</text>
+<rect x="200" y="52" width="140" height="44" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="270" y="78" text-anchor="middle">模型 / 组合规则</text>
+<rect x="370" y="52" width="140" height="44" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="440" y="78" text-anchor="middle">因子 / 风险模型</text>
+<line x1="170" y1="74" x2="198" y2="74" stroke="#555" marker-end="url(#a9)"/>
+<line x1="340" y1="74" x2="368" y2="74" stroke="#555" marker-end="url(#a9)"/>
+<rect x="540" y="44" width="160" height="104" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="620" y="64" text-anchor="middle" font-weight="600">三个读取入口</text>
+<text x="620" y="86" text-anchor="middle" font-size="10.5">BaseDataset.panel()</text>
+<text x="620" y="104" text-anchor="middle" font-size="10.5">Factor.read()</text>
+<text x="620" y="122" text-anchor="middle" font-size="10.5">RiskStore.read()</text>
+<text x="620" y="140" text-anchor="middle" font-size="9.5" fill="#5b636e">每次调用登记一个请求</text>
+<line x1="510" y1="74" x2="538" y2="74" stroke="#555" marker-end="url(#a9)"/>
+<text x="250" y="140" font-size="10" fill="#5b636e">不管是谁读的都会被记下，包括没人想到要列举的读取</text>
+<text x="20" y="190">退出时：每个不同的请求重新读一次，计算 SHA-256，以组件路径为键（如 <tspan font-family="Menlo" font-size="10.5">model.factors.0.dataset</tspan>）写入 run.json</text>
+<text x="20" y="210" fill="#5b636e">重建时：重新计算并比较摘要；不一致只告警，不阻止运行（修订过的数据也必须能回测）</text>
+</svg>
+<figcaption>图 9-2　数据指纹在读取入口处记录。新写的模型或组合规则不需要为指纹做任何事。</figcaption>
+</figure>
+
+<div class="keep"><h3>哈希计算的工程细节</h3>
+<ul>
+<li><b>两级摘要</b>：每个变量各算一个 SHA-256；整个请求的摘要再对时间轴、股票轴以及各变量的名字、类型和摘要计算哈希。所以告警时能具体指出哪个变量变了。</li>
+<li><b>规范化</b>：按存储时的数据类型哈希（不做类型提升）；所有 NaN 统一成同一个比特模式，<code>-0.0</code> 统一成 <code>0.0</code>，否则两次读取完全相同的数据也可能得到不同的哈希。</li>
+<li><b>不撑爆内存，并行计算</b>：每个变量按约 64 MB 一块、以整根 bar 为单位分块读取和哈希（与 store 的分块对齐）；不同变量多线程并行。分块方式和并行度都不影响最终摘要。</li>
+<li><b>只在最底层记录</b>：只有真正的 store 或内存里的数据会被记录；合并数据集本身不记录，由它的各个输入分别记录。查日历这类辅助读取走单独的 <code>calendar()</code> 方法，不记录；需要排除的读取用 <code>unrecorded()</code> 包起来。</li>
+<li><b>合并逐 bar 的读取</b>：风险模型的 store 每根 bar 读一行。只有日期范围不同的多次读取会被合并成一个覆盖首尾的请求，只记录、只哈希一次。</li>
+</ul></div>
+
+<div class="keep"><h2>9.4 代码记录</h2>
+<p>每个 <code>run.json</code> 还有一个 <code>code</code> 部分：</p>
+<ul>
+<li><code>git</code>：quantlab 的提交号，以及工作区是否有未提交的修改（只作参考，不参与比较）；</li>
+<li><code>modules</code>：组件树里每个类（以及它的基类）所在源文件的 SHA-256，并标明它是框架模块还是组件模块、被哪些组件路径用到；</li>
+<li><code>libraries</code>：numpy、pandas、xarray、polars、xgboost、torch、vectorbt、KunQuant、cvxpy 的版本号。</li>
+</ul></div>
+<p>重建时逐项比较，有差异就告警，组件模块的差异排在框架模块之前。数据和代码采用同样的策略：<b>只告警，不阻止</b>。修订过的数据必须仍然可以回测；如果直接阻止运行，使用者只会想办法绕过它。</p>
+
+<div class="keep"><h2>9.5 完整闭环</h2>
+<pre><code>run = BacktestRun.open(run_dir)
+again = run.rebuild_backtester()          <span class="c"># 从 config.json 重建整棵组件树</span>
+again.run()                               <span class="c"># 重新计算数据指纹和代码记录，与原记录比较，有差异就告警</span>
+
+inputs = DecisionInputs.from_run(run_dir) <span class="c"># 实盘执行器：不加载模型也能重建决策输入</span></code></pre></div>
+<figure>
+<svg viewBox="0 0 720 180" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="30" width="160" height="60" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="88.0" y="57.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">运行目录 A</text><text x="88.0" y="72.0" text-anchor="middle" font-size="9.8" fill="#5b636e">config.json：重建配方</text><text x="88.0" y="86.0" text-anchor="middle" font-size="9.8" fill="#5b636e">run.json：数据与代码记录</text><rect x="200" y="36" width="150" height="48" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="275.0" y="57.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">rebuild_backtester()</text><text x="275.0" y="72.0" text-anchor="middle" font-size="9.8" fill="#5b636e">重建整棵组件树</text><rect x="382" y="36" width="120" height="48" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="442.0" y="57.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">重新运行</text><text x="442.0" y="72.0" text-anchor="middle" font-size="9.8" fill="#5b636e">得到运行 B</text><rect x="534" y="14" width="178" height="94" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="623.0" y="57.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">逐项比较 A 与 B</text><text x="623.0" y="72.0" text-anchor="middle" font-size="9.8" fill="#5b636e">数据摘要（按组件路径）</text><text x="623.0" y="86.0" text-anchor="middle" font-size="9.8" fill="#5b636e">模块源文件摘要</text><text x="623.0" y="100.0" text-anchor="middle" font-size="9.8" fill="#5b636e">库版本</text><rect x="534" y="126" width="178" height="44" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="623.0" y="145.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">有差异：告警</text><text x="623.0" y="160.0" text-anchor="middle" font-size="9.8" fill="#5b636e">运行照常完成</text><line x1="168" y1="60" x2="198" y2="60" stroke="#555" marker-end="url(#m)"/><line x1="350" y1="60" x2="380" y2="60" stroke="#555" marker-end="url(#m)"/><line x1="502" y1="60" x2="532" y2="60" stroke="#555" marker-end="url(#m)"/><line x1="623" y1="108" x2="623" y2="124" stroke="#555" marker-end="url(#m)"/></svg>
+<figcaption>图 9-3　复现闭环：从运行目录重建、重新运行、比较记录，差异只告警。</figcaption>
+</figure>
+
+
+<!-- ============ 10 ============ -->
+<h1 class="chapter"><span class="num">10</span>外部依赖的隔离</h1>
+
+<p>项目依赖不少重型或敏感的外部库和服务。原则是：<b>每个外部依赖只允许被一个模块 import，并由测试保证。</b></p>
+<table>
+<tr><th style="width:24%">依赖</th><th style="width:34%">唯一的 import 位置</th><th>理由</th></tr>
+<tr><td>vectorbt</td><td><code>backtest/engine_vectorbt.py</code></td><td>回测引擎可替换（已为事件驱动引擎留好位置）；重放持仓需要的数值规则单独放在 <code>execution/rules.py</code>。</td></tr>
+<tr><td>cvxpy</td><td><code>portfolio/predefined/mean_variance.py</code></td><td>只有均值-方差优化器需要求解器；其他组合规则和根类都不加载它。</td></tr>
+<tr><td>wandb / mlflow</td><td><code>tracking/wandb.py</code> / <code>tracking/mlflow.py</code></td><td>见 10.1。</td></tr>
+<tr><td>torch</td><td>模型层的 torch 部分</td><td>任何层的根类和配置都不加载 torch，由子进程测试验证。</td></tr>
+<tr><td>数据供应商客户端</td><td><code>acquisition/&lt;供应商&gt;</code></td><td>见 10.2。</td></tr>
+</table>
+<figure>
+<svg viewBox="0 0 720 242" xmlns="http://www.w3.org/2000/svg" font-family="PingFang SC, sans-serif" font-size="11.5"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="8" width="430" height="226" rx="10" fill="#f8fafc" stroke="#b9c1ca"/><text x="20" y="26" font-size="11" font-weight="600">quantlab</text><rect x="22" y="44" width="150" height="176" rx="8" fill="#fff" stroke="#c0392b" stroke-dasharray="5 3"/><text x="97" y="120" text-anchor="middle" font-size="11" font-weight="600">其余所有模块</text><text x="97" y="140" text-anchor="middle" font-size="10" fill="#c0392b">不得直接 import</text><text x="97" y="156" text-anchor="middle" font-size="10" fill="#c0392b">右侧任何一个库</text><rect x="190" y="40" width="236" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="308.0" y="59.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">backtest/engine_vectorbt.py</text><rect x="500" y="40" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="59.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">vectorbt</text><line x1="426" y1="55" x2="498" y2="55" stroke="#555" marker-end="url(#m)"/><rect x="190" y="78" width="236" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="308.0" y="97.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">portfolio/predefined/mean_variance.py</text><rect x="500" y="78" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="97.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">cvxpy</text><line x1="426" y1="93" x2="498" y2="93" stroke="#555" marker-end="url(#m)"/><rect x="190" y="116" width="236" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="308.0" y="135.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">tracking/wandb.py、mlflow.py</text><rect x="500" y="116" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="135.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">wandb / mlflow</text><line x1="426" y1="131" x2="498" y2="131" stroke="#555" marker-end="url(#m)"/><rect x="190" y="154" width="236" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="308.0" y="173.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">model/ 中的 torch 部分</text><rect x="500" y="154" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="173.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">torch</text><line x1="426" y1="169" x2="498" y2="169" stroke="#555" marker-end="url(#m)"/><rect x="190" y="192" width="236" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="308.0" y="211.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">acquisition/&lt;供应商&gt;/</text><rect x="500" y="192" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="211.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">供应商 API 客户端</text><line x1="426" y1="207" x2="498" y2="207" stroke="#555" marker-end="url(#m)"/></svg>
+<figcaption>图 10-1　每个外部依赖只有一个入口模块。其余模块不能直接 import 这些库，由测试保证。</figcaption>
+</figure>
+
+
+<div class="keep"><h2>10.1 实验追踪：由配置选择，默认关闭</h2>
+<ul>
+<li>追踪器是配置里的一个<b>组件</b>（<code>tracker</code> 字段，像其他组件一样按类路径序列化），默认是不做任何事的空追踪器。除非配置里明确指定，<b>任何数据都不会离开本机</b>；</li>
+<li>W&amp;B 和 MLflow 是同一个小接口背后的两个适配器，接口只有：<code>start_run</code>（上下文管理器）、<code>log</code>、<code>summarize</code>、<code>update_config</code>、<code>log_table</code>、<code>log_file</code>；</li>
+<li>没有采用的做法及原因：用环境变量开关（无法从 <code>config.json</code> 复现）；把追踪器对象传给构造函数但不序列化（重建后的运行会悄悄停止追踪）；用 contextvar 保存一个“当前运行”（这是隐藏的全局状态，遇到被深拷贝的模型时很难推理）。</li>
+</ul></div>
+
+<div class="keep"><h2>10.2 凭证与“无凭证查看器”</h2>
+<ul>
+<li>所有 API key 只从环境变量读取，不通过命令行参数传入，不写进配置文件，也不出现在日志里。</li>
+<li><code>SourceInspector</code> 用来回答“这个项目能下载哪些数据”，它必须能在<b>不加载任何供应商客户端</b>的情况下被 import。保证方法是：用 AST 扫描它自身的源码，再在运行时检查 <code>vars()</code>。但这两种检查都看不到通过包的 <code>__init__.py</code> 间接引入的 import，所以 import 链上的三个 <code>__init__.py</code> 必须保持 0 字节，并有测试断言这一点。</li>
+</ul></div>
+
+<div class="keep"><h2>10.3 平台差异写进文档和测试</h2>
+<p>在 macOS 上，xgboost 的安装包链接 Homebrew 提供的 OpenMP 库（libomp），torch 则自带另一份，同一个进程同时使用两者会段错误或死锁。实测只有设置 <code>OMP_NUM_THREADS=1</code> 是安全的（预先加载 libomp 反而会让 torch 崩溃）。<code>tests/conftest.py</code> 在 macOS 上于所有 import 之前设置这个变量，并有一个测试保证这项设置存在；Linux 不受影响。</p></div>
+
+<!-- ============ 11 ============ -->
+<h1 class="chapter"><span class="num">11</span>用测试守护架构</h1>
+
+<p>这个仓库的测试有一个显著特点：除了常规的功能测试，还有一批<b>专门守护架构规则的测试</b>。只写在文档里的架构规则会慢慢被遗忘，写成测试就不会。</p>
+
+<table>
+<tr><th style="width:34%">测试文件（tests/ 下）</th><th>保证的规则</th></tr>
+<tr><td><code>test_layer_layout.py</code></td><td>每一条 <code>quantlab</code> 的 import（包括函数内的）都符合层顺序；每个模块都归属某一层；根类不加载 torch；框架模块不 import <code>predefined</code>；cvxpy、wandb、mlflow 各只有一个 import 位置；<code>predefined/__init__.py</code> 为空。</td></tr>
+<tr><td><code>test_run_ownership.py</code></td><td>运行目录的文件名只出现在 <code>quantlab/runs</code>；不允许 <code>.parent.parent</code> 式的目录猜测。</td></tr>
+<tr><td><code>test_backtest_predictor_protocol.py</code></td><td>不继承基类的包装器回测结果完全一致；缺少成员的对象被拒绝；回测层只读取协议成员。</td></tr>
+<tr><td><code>test_source_inspector.py</code></td><td>无凭证查看器访问不到任何供应商客户端；三个 <code>__init__.py</code> 为空。</td></tr>
+<tr><td><code>test_data_recorder.py</code> 等</td><td>数据指纹的记录与比较；只有数据、因子和指纹模块会去询问因子“你读了什么”。</td></tr>
+<tr><td><code>test_code_record.py</code></td><td>代码记录的内容与比较。</td></tr>
+<tr><td><code>test_undefined_names.py</code></td><td>用 ruff 检查未定义的名字和未使用的 import。</td></tr>
+<tr><td><code>test_extensibility_contract.py</code>、<code>test_risk_contract.py</code>、<code>test_tracker_contract.py</code></td><td>各个扩展点的契约：用户写一个新实现时，需要提供什么、不需要提供什么。</td></tr>
+<tr><td>回归基准文件（如 <code>topn_reference.npz</code>）</td><td>重构前后的数值结果逐位相同；只有在有意改变计算语义时才重新生成。</td></tr>
+</table>
+
+<div class="keep"><h3>这些测试写法上的共同点</h3>
+<ul>
+<li><b>带阳性对照</b>：例如层测试会先断言“<code>quantlab.model.base</code> 确实在被检查的模块列表里”，防止因为路径写错、扫描结果为空而永远通过。</li>
+<li><b>检查依赖顺序，而不是文件路径</b>：移动文件不需要修改测试。</li>
+<li><b>没有豁免清单</b>：规则不允许登记“这几处例外可以违反”的名单，因为例外名单正是规则被慢慢侵蚀的方式。</li>
+<li><b>完全离线</b>：整个测试套件不需要网络和凭证。需要真实数据的测量类测试默认不运行，只有在命令行里明确点名时才运行，缺少数据时会给出清晰的失败说明。</li>
+</ul></div>
+
+<div class="box"><b class="t">另一个护栏：可运行的文档</b>
+每个公开的类和函数都有 numpydoc 格式的 docstring，并且<b>必须带示例</b>，示例的输出是真实运行得到的，不是手写的。文档里的 Python 代码同样受 9.2 节的“文件归属”扫描约束。</div>
+
+<!-- ============ 12 ============ -->
+<h1 class="chapter"><span class="num">12</span>设计文档与项目约定</h1>
+
+<div class="keep"><h2>12.1 设计决策记录：把“为什么”写下来</h2>
+<p><code>docs/adr/</code> 目录下有 28 篇设计决策记录（Architecture Decision Record，简称 ADR）。每篇用统一的格式写明：决定了什么、为什么这样决定、<b>考虑过哪些其他方案以及为什么没有采用</b>、会带来什么后果。“没有采用的方案”这部分是读懂这个仓库的捷径：几乎每个初看别扭的设计，旁边都写着那个更直观的方案为什么行不通。本文各章的“为什么”大多出自这里。</p></div>
+
+<table>
+<tr><th style="width:62%">主题</th><th>本文对应章节</th></tr>
+<tr><td>按日期范围读取数据，不改写别人的配置</td><td>第 4 章</td></tr>
+<tr><td>标签是前移的因子，切分时按前视长度 purge</td><td>5.2</td></tr>
+<tr><td>torch 模型自己选择样本形状，基类负责数据契约</td><td>5.3</td></tr>
+<tr><td>回测器依赖 Predictor 协议；何时才定义协议</td><td>第 6 章</td></tr>
+<tr><td>api 层是 DataFrame 进出的外观</td><td>2.4</td></tr>
+<tr><td>逐 bar 决策；决策与执行分离；决策输入集中组装</td><td>第 7 章</td></tr>
+<tr><td>追踪器由配置选择，默认关闭</td><td>10.1</td></tr>
+<tr><td>运行目录的文件归属、组件声明、数据指纹与代码记录</td><td>第 3、9 章</td></tr>
+<tr><td>层构成有序依赖链</td><td>1.2</td></tr>
+<tr><td>因子风险模型是每 bar 一行的数据产品</td><td>7.4</td></tr>
+<tr><td>NBBO 在服务器端聚合</td><td>第 8 章</td></tr>
+</table>
+
+<div class="keep"><h2>12.2 统一术语</h2>
+<p>仓库根目录的 <code>CONTEXT.md</code> 是一份术语表，规定每个概念用哪个词，并列出应避免的同义词。例如：“面板（panel）”指 <code>(timestamp, symbol)</code> 形状的 xarray 数据，“frame”指调用方手里的 DataFrame；“权重（weight）”是要求的目标比例，“持仓（holding）”是实际成交后持有的比例；“lookahead”和“span”含义不同。代码、文档和脚本都使用同一套词汇，附录 B 摘录了其中一部分。</p></div>
+
+<div class="keep"><h2>12.3 不做向后兼容</h2>
+<p>项目尚未用于生产，因此有一条明确的策略：<b>需要破坏性重构时直接做，不写配置迁移，不留兼容层，不保留旧名字。</b>遇到无法加载的旧配置或旧格式的运行目录时，错误信息会提示重新运行或重新训练。好处是代码里没有层层叠叠的转发和兼容分支，架构调整成本很低；代价是过去的运行结果在重构后需要重新计算才能打开。</p></div>
+
+<div class="keep"><h2>12.4 开发流程</h2>
+<p>较大的改动按“先反复推敲设计 → 写成规格（GitHub issue）→ 拆成可单独提交的小任务 → 实现”的流程进行。研究性质的实验运行记录在一个独立的私有仓库里，每个实验一个目录，包含设置、实际运行的脚本和结论，与库代码分开。</p></div>
+
+<!-- ============ 13 ============ -->
+<h1 class="chapter"><span class="num">13</span>取舍总表</h1>
+
+<p>没有免费的设计。下表把本文提到的主要决策放在一起：中间一列是得到的，右边一列是付出的。</p>
+<table>
+<tr><th style="width:24%">决策</th><th style="width:38%">得到</th><th>代价</th></tr>
+<tr><td>层间只交换 xarray 面板</td><td>缺失值只有一种表示；截面运算向量化；模型直接使用；Zarr 按需加载</td><td>DataFrame 用户需要一个外观层；稠密面板在稀疏数据（多年全市场、大量退市股票）上更占内存</td></tr>
+<tr><td>配置 dataclass + 组件声明</td><td>任何运行都可序列化、可重建；组件树可遍历</td><td>每个可配置对象都要有配置类；移动类会让已保存的配置失效</td></tr>
+<tr><td>读取是传参查询，配置冻结</td><td>没有共享可变状态；一个数据集可服务多方；可以合并多个输入</td><td>每次读取都要重新打开 store；调用方要自己传日期</td></tr>
+<tr><td>标签是 <code>Forward</code> 包装器</td><td>任何因子都能当标签；前视长度只有一个来源；purge 自动完成</td><td>每个切分点损失若干根 bar；被包装的因子必须只用 t 之前的数据，<code>Forward</code> 无法替它检查</td></tr>
+<tr><td>逐 bar 决策接口</td><td>结构上看不到未来；研究与实盘共用同一个方法</td><td>不能用整段数据一次性向量化计算的捷径，速度较慢</td></tr>
+<tr><td>如实模拟拒单与退市结算</td><td>没有乐观偏差；实盘中也能计算</td><td>目标权重 ≠ 实际持仓，需要重放持仓并单独记录 holdings</td></tr>
+<tr><td>只在出现第二种实现时才定义协议</td><td>接口小；不变量留在根类里</td><td>没有静态类型检查，协议靠运行时检查和测试维护</td></tr>
+<tr><td>运行目录单独成层</td><td>文件名只在一处定义；格式统一；目录可移动</td><td>新增一种运行产物必须经过 runs 层，不能随手写文件</td></tr>
+<tr><td>在读取入口记录数据指纹</td><td>不会漏记；新组件零成本</td><td>结束时每个请求要重读一次再哈希，消耗 I/O</td></tr>
+<tr><td>差异只告警不阻止</td><td>修订后的数据仍能回测</td><td>告警可能被忽略</td></tr>
+<tr><td>训练数据放 GPU / 内存</td><td>读取速度快一到两个数量级（实测）</td><td>数据超过内存时需要另行设计</td></tr>
+<tr><td>不做向后兼容</td><td>重构快，代码里没有兼容层</td><td>旧的运行结果需要重算才能打开</td></tr>
+<tr><td>把架构规则写成测试</td><td>规则不会被遗忘或悄悄违反</td><td>测试代码量超过库代码；调整架构时要同步修改守护测试</td></tr>
+</table>
+
+<!-- ============ 14 ============ -->
+<h1 class="chapter"><span class="num">14</span>优势、局限与预留方向</h1>
+
+<div class="keep"><h2>14.1 优势</h2>
+<ol>
+<li><b>正确性来自结构，而不是靠自觉。</b>防前视、防重复数据、防写了一半的文件，都由接口形状、唯一的组装点、原子操作和守护测试来保证。新加入的开发者即使不了解所有陷阱，也很难写出这类 bug。</li>
+<li><b>可复现性是一等公民。</b>配置、数据、代码三者都有记录，运行目录可以重建成活的对象，并自动比对差异。</li>
+<li><b>扩展成本低，而且一视同仁。</b>新因子、新模型、新组合规则大多只需实现一到三个钩子；自带实现和用户实现走同一条路径，没有内部特权。</li>
+<li><b>研究与实盘共用代码。</b>KunQuant 因子的批量和流式计算出自同一张计算图；组合规则的逐 bar 接口、<code>DecisionInputs</code>、成交规则都被实盘执行器直接复用。</li>
+<li><b>依赖边界清晰。</b>层之间是无环的单向链，重型库各自只有一个入口，打开一个运行目录不会加载 torch。</li>
+<li><b>决策有据可查。</b>设计决策记录写明了每个关键选择的备选方案和实测数据，读代码时能知道“为什么不那样写”。</li>
+</ol></div>
+
+<div class="keep"><h2>14.2 局限</h2>
+<ul>
+<li><b>依赖重，上手门槛高。</b>KunQuant 运行时需要 C++ 编译器，因子测试要编译好几分钟；要求 Python ≥ 3.13；主要数据源需要付费账号。不过仓库提供了不需要账号的 Yahoo Finance 示例，以及完全离线的合成数据快速入门。</li>
+<li><b>单进程、单机。</b>没有服务层，也没有任务队列；训练和因子计算依赖一台带 GPU 的大内存工作站。</li>
+<li><b>没有静态类型检查。</b>协议和契约靠运行时检查与测试维护；是否引入 pyright / mypy 被视为一个需要单独决定的更大问题。</li>
+<li><b>接口仍在变化。</b>不做向后兼容，意味着外部使用者需要跟随主分支更新。</li>
+<li><b>回测是向量化的。</b>部分成交、盘中撮合这类细节需要事件驱动的引擎；当前引擎对被拒绝的订单只做“作废”，不在后续 bar 重试。</li>
+</ul></div>
+
+<div class="keep"><h2>14.3 架构上已预留、尚未实现的方向</h2>
+<ul>
+<li><b>事件驱动回测</b>（计划使用 NautilusTrader）：组合规则的逐 bar 接口和 <code>DecisionInputs.context</code> 已经为它准备好。</li>
+<li><b>服务化与多用户</b>：读取无状态、配置冻结、组件可序列化，正是在线编辑、测试因子和模型的前提。</li>
+<li><b>非结构化数据</b>（如新闻）：数据集的清洗步骤可以被覆盖，没有写死“行情数据一定是开高低收量”的假设。</li>
+<li><b>网页前端</b>：当前阶段明确不做。</li>
+</ul></div>
+
+<!-- ============ 附录 ============ -->
+<h1 class="chapter"><span class="num">附</span>附录</h1>
+
+<div class="keep"><h2>A. 建议的读代码路线</h2>
+<ol>
+<li><code>README.zh-CN.md</code> 与 <code>docs/user-guide/concepts.md</code>：整体概念。</li>
+<li><code>CONTEXT.md</code>：术语表，先把词汇对齐。</li>
+<li><code>tests/test_layer_layout.py</code>：一眼看到所有层和它们的顺序。</li>
+<li><code>quantlab/core/component.py</code>：组件规则，理解序列化与重建。</li>
+<li><code>quantlab/dataset/base.py</code> → <code>quantlab/factor/base.py</code> → <code>quantlab/label/forward.py</code>：数据是怎样被读取的。</li>
+<li><code>quantlab/model/base.py</code>，以及 <code>torch_model.py</code> / <code>library_model.py</code>：模板方法与钩子。</li>
+<li><code>quantlab/portfolio/base.py</code> 与 <code>decision_inputs.py</code>：防前视的接口设计。</li>
+<li><code>quantlab/backtest/base.py</code>：Predictor 协议与回测流程。</li>
+<li><code>quantlab/runs/directory.py</code> 与 <code>record.py</code>：可复现机制。</li>
+<li><code>docs/adr/</code>：遇到“为什么要这样写”时去查。</li>
+<li><code>docs/developer-guide/extending.md</code>：动手写自己的数据源、因子、模型、组合规则。</li>
+</ol></div>
+
+<h2>B. 术语对照</h2>
+<table>
+<tr><th style="width:24%">术语</th><th>含义</th></tr>
+<tr><td>面板 panel</td><td>维度恰好是 (timestamp, symbol) 的 xarray.Dataset</td></tr>
+<tr><td>frame</td><td>调用方手里的 pandas / polars 长表，只出现在 api 层</td></tr>
+<tr><td>store</td><td>磁盘上的一个 Zarr 目录，装着一个面板</td></tr>
+<tr><td>组件 component</td><td>由一个配置 dataclass 构造、可以 get_config / rebuild 的对象</td></tr>
+<tr><td>预热 warm-up</td><td>为了让滚动计算在第一根请求的 bar 上就有足够历史而多读的 bar 数，按 bar 计</td></tr>
+<tr><td>lookahead / span / delay</td><td>标签在 t 时刻要读到 t 之后多少根 bar（= delay + span）/ 标签累计多少根 bar / 信号产生到开始计入之间隔几根 bar</td></tr>
+<tr><td>purge</td><td>在每个切分点丢掉前一段最后 lookahead 根 bar</td></tr>
+<tr><td>Predictor</td><td>回测可以使用的信号源协议，模型和集成都满足</td></tr>
+<tr><td>权重 weight / 持仓 holding</td><td>要求的目标比例 / 成交后实际持有的比例</td></tr>
+<tr><td>锁定持仓 locked position</td><td>已持有但当前不能交易的股票，组合规则必须保持其权重不变</td></tr>
+<tr><td>决策输入 decision inputs</td><td>组合规则在 t 时刻可以读到的一切（持仓除外），只由 DecisionInputs 组装</td></tr>
+<tr><td>训练运行 / 回测运行</td><td>由 run.json 描述的两种运行目录</td></tr>
+<tr><td>数据指纹 / 代码记录</td><td>一次运行读过的数据的摘要 / 用到的代码的摘要和库版本</td></tr>
+<tr><td>追踪器 tracker</td><td>W&amp;B、MLflow，或者什么都不做（默认）</td></tr>
+</table>
+
+<h2>C. 一个最小端到端示例</h2>
+<p>摘自仓库根目录 README（<code>examples/yahoo_us_equity.py</code>，不需要任何账号，约 20 秒跑完）。注意每一步都只是构造配置对象，然后调用公开方法：</p>
+<pre><code><span class="c"># 1. 数据：DataFrame → 内存中的 MarketDataset</span>
+prices = FrameDataset(stocks_df, columns=COLUMNS)
+
+<span class="c"># 2. 因子与标签：都用 FactorConfig 构造；Return 是一种现成的收益标签</span>
+factor = Alpha158Stock(FactorConfig(dataset=prices, warmup_bars=60, mode=<span class="s">"batch"</span>,
+                                    data_columns=ADJUSTED, file_path=<span class="s">".../alpha158.zarr"</span>))
+label = Return(FactorConfig(dataset=prices, warmup_bars=0, mode=<span class="s">"batch"</span>,
+                            data_columns=(<span class="s">"adjOpen"</span>,), kwargs={<span class="s">"n_forward_periods"</span>: 5},
+                            file_path=<span class="s">".../ret_5.zarr"</span>))
+
+<span class="c"># 3. 模型：日期只在最外层设置，读取时再随请求传给因子和标签</span>
+model = XGBoostRegressor(ModelConfig(
+    factors=[factor], labels=[label], model_save_dir=<span class="s">".../models"</span>,
+    hyperparameters={<span class="s">"num_boost_round"</span>: 200, <span class="s">"max_depth"</span>: 3, <span class="s">"eta"</span>: 0.03},
+    train_start=<span class="s">"2016-01-01"</span>, train_end=<span class="s">"2021-12-31"</span>,
+    test_start=<span class="s">"2022-01-01"</span>, test_end=<span class="s">"2022-12-31"</span>, ...))
+model.collect()
+checkpoint = model.train()          <span class="c"># 写出一个训练运行目录</span>
+
+<span class="c"># 4. 组合规则与回测：组合规则是配置里的一个组件</span>
+backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    price_dataset=prices, model=..., model_mode=<span class="s">"load"</span>, checkpoint=str(checkpoint),
+    start_date=<span class="s">"2023-01-01"</span>, end_date=<span class="s">"2024-12-31"</span>, output_dir=<span class="s">".../backtests"</span>,
+    rebalance_periods=5,
+    constructor=TopNConstructor(TopNConfig(direction=<span class="s">"long_only"</span>, top_n=10)),
+))
+result = backtester.run()           <span class="c"># 写出一个回测运行目录</span>
+
+<span class="c"># 5. 复现：从运行目录重建并重新运行，得到同一条净值曲线</span>
+BacktestRun.open(run_dir).rebuild_backtester().run()</code></pre>
+
+<p class="small" style="margin-top:20pt">本文依据仓库的源码、设计决策记录（docs/adr/）、术语表（CONTEXT.md）、开发者文档和测试整理。文中的实测数字均引自仓库文档，没有另外测量。示意代码已经标注，其余代码片段摘自仓库。</p>
+
+</body>
+</html>

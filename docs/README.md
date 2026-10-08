@@ -54,6 +54,12 @@ backtest run.
 
 ## Developer guide
 
+[Architecture overview](architecture/architecture.pdf) ([简体中文](architecture/architecture.zh-CN.pdf))
+explains, for programmers new to the repository, how the code is organised and why: the layer
+chain, the panel contract, the component model, the no-look-ahead interfaces, resumable jobs,
+run directories and the tests that guard them, with the trade-offs of each choice. The HTML
+sources sit beside the PDFs.
+
 [Extending quantlab](developer-guide/extending.md) walks through adding a data source, a
 dataset, a storage backend, a factor, a model head and a backtest rule, each with a minimal
 working example.

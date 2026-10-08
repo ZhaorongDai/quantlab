@@ -1,0 +1,1031 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>quantlab Architecture</title>
+<style>
+:root{
+  --ink:#1f2328; --muted:#5b636e; --line:#d6dbe1; --soft:#f4f6f8;
+  --accent:#1f5fa8; --accent-soft:#e8f0fa; --warn:#a4501a; --warn-soft:#fbefe6;
+  --ok:#2c7a4b; --ok-soft:#e7f4ec; --code:#f6f8fa;
+}
+@page{ size:A4; margin:20mm 18mm 20mm 18mm;
+  @bottom-center{ content: counter(page); font-family:"Helvetica Neue",Arial,sans-serif; font-size:9pt; color:#8a929c; }
+  @top-right{ content:"quantlab architecture"; font-family:"Helvetica Neue",Arial,sans-serif; font-size:8pt; color:#9aa2ab; }
+}
+@page :first{ @bottom-center{content:none} @top-right{content:none} }
+html{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+body{ font-family:"Helvetica Neue",Arial,sans-serif; color:var(--ink);
+  font-size:10.2pt; line-height:1.58; margin:0; background:#fff; }
+h1,h2,h3,h4{ line-height:1.3; color:#111; }
+h1.chapter{ font-size:21pt; margin:0 0 6pt; padding-bottom:6pt; border-bottom:2px solid var(--accent); break-before:page; }
+h1.chapter .num{ color:var(--accent); margin-right:10pt; }
+h2{ font-size:14pt; margin:18pt 0 6pt; }
+h3{ font-size:11.5pt; margin:13pt 0 4pt; }
+p{ margin:5pt 0 7pt; }
+code{ font-family:"SF Mono",Menlo,monospace; font-size:8.6pt; background:var(--code); padding:0 3px; border-radius:3px; }
+pre{ font-family:"SF Mono",Menlo,monospace; font-size:8.2pt; line-height:1.5; background:var(--code); border:1px solid #e3e7eb;
+  border-radius:6px; padding:8pt 10pt; white-space:pre-wrap; break-inside:avoid; margin:6pt 0 10pt; }
+pre code{ background:none; padding:0; font-size:inherit; }
+.c{ color:#6a737d; } .k{ color:#a626a4; } .s{ color:#2c7a4b; }
+table{ border-collapse:collapse; width:100%; margin:6pt 0 12pt; font-size:9.1pt; }
+th,td{ border-bottom:1px solid var(--line); padding:4pt 6pt; text-align:left; vertical-align:top; }
+th{ background:var(--soft); font-weight:600; border-bottom:1.5px solid #b9c1ca; }
+tr{ break-inside:avoid; }
+.lead{ font-size:11pt; color:#333; }
+.box{ border-left:4px solid var(--accent); background:var(--accent-soft); padding:6pt 10pt; margin:8pt 0 10pt; border-radius:0 6px 6px 0; break-inside:avoid; }
+.box.warn{ border-color:var(--warn); background:var(--warn-soft); }
+.box.ok{ border-color:var(--ok); background:var(--ok-soft); }
+.box b.t{ display:block; margin-bottom:2pt; }
+figure{ margin:10pt 0 12pt; text-align:center; break-inside:avoid; }
+figure svg{ max-width:100%; height:auto; }
+figure img{ max-width:100%; }
+figcaption{ font-size:8.8pt; color:var(--muted); margin-top:4pt; }
+ul,ol{ margin:4pt 0 8pt; padding-left:18pt; } li{ margin:2pt 0; }
+.cover{ height:250mm; display:flex; flex-direction:column; justify-content:center; }
+.cover h1{ font-size:34pt; margin:0; letter-spacing:1px; }
+.cover .sub{ font-size:15pt; color:var(--accent); margin-top:8pt; }
+.cover .meta{ margin-top:40pt; color:var(--muted); font-size:10pt; line-height:1.9; }
+.toc{ break-before:page; }
+.toc ol{ list-style:none; padding:0; } .toc li{ padding:3pt 0; border-bottom:1px dotted #ccd2d8; }
+.toc li span{ color:var(--accent); display:inline-block; width:34pt; font-weight:600; }
+.small{ font-size:8.8pt; color:var(--muted); }
+.stats{ display:flex; gap:8pt; margin:10pt 0; }
+.stats div{ flex:1; border:1px solid var(--line); border-radius:6px; padding:6pt 8pt; }
+.stats b{ display:block; font-size:15pt; color:var(--accent); }
+.stats span{ font-size:8.5pt; color:var(--muted); }
+.keep{ break-inside:avoid; }
+</style>
+</head>
+<body>
+
+<section class="cover">
+  <svg width="120" height="60" viewBox="0 0 120 60"><rect x="0" y="34" width="14" height="26" fill="#9fc0e6"/><rect x="20" y="22" width="14" height="38" fill="#6b9fd8"/><rect x="40" y="10" width="14" height="50" fill="#1f5fa8"/><rect x="60" y="26" width="14" height="34" fill="#6b9fd8"/><rect x="80" y="0" width="14" height="60" fill="#13467f"/></svg>
+  <h1>quantlab</h1>
+  <div class="sub">Architecture, trade-offs and engineering practice</div>
+  <p class="lead" style="margin-top:18pt;max-width:140mm">For programmers who know Python but have never seen this repository.<br>No background in quantitative finance is needed, and nothing about the repository is assumed. This document explains why the code is organised the way it is; quantitative methods appear only where they explain a design choice.</p>
+  <div class="meta">
+    Repository: github.com/ZhaorongDai/quantlab<br>
+    Describes the main branch as of 2026-10-07
+  </div>
+</section>
+
+<section class="toc">
+<h2 style="font-size:18pt">Contents</h2>
+<ol>
+<li><span>0</span>Before you start: the domain in five minutes</li>
+<li><span>1</span>Overview: one pipeline, eighteen ordered layers</li>
+<li><span>2</span>The one data contract: the panel</li>
+<li><span>3</span>The component model: configs build objects, objects rebuild from configs</li>
+<li><span>4</span>Reading is a stateless query</li>
+<li><span>5</span>Extension points: template methods, hooks and wrappers</li>
+<li><span>6</span>Base class or protocol</li>
+<li><span>7</span>Invariants enforced by interface shape: "only t is visible"</li>
+<li><span>8</span>Robust long-running jobs: resumable work and atomic writes</li>
+<li><span>9</span>The run layer: a reproducible on-disk format</li>
+<li><span>10</span>Isolating external dependencies</li>
+<li><span>11</span>Tests that guard the architecture</li>
+<li><span>12</span>Design records and project conventions</li>
+<li><span>13</span>Trade-offs at a glance</li>
+<li><span>14</span>Strengths, limitations and reserved directions</li>
+<li><span>App.</span>A. Reading path　B. Glossary　C. A minimal end-to-end example</li>
+</ol>
+</section>
+
+<!-- ============ 0 ============ -->
+<h1 class="chapter"><span class="num">0</span>Before you start: the domain in five minutes</h1>
+
+<p>quantlab is a <b>Python backend library for quantitative equity research</b>: it looks for patterns in historical market data, trains models on them, and then simulates "what would have happened had we traded on the model". You can read this document without knowing finance; these few words are enough:</p>
+
+<table>
+<tr><th style="width:22%">Domain term</th><th>What it means to a programmer</th></tr>
+<tr><td>Bar</td><td>One record per stock per point in time (for example per day): open, high, low, close and volume. One bar is one time step.</td></tr>
+<tr><td>Factor</td><td>A <b>feature</b> computed from market data, such as "how much the price rose over the last 20 days".</td></tr>
+<tr><td>Label</td><td>The <b>target</b> a model predicts, such as "the return over the next 5 days". The y of machine learning.</td></tr>
+<tr><td>Return model</td><td>A model (XGBoost, a neural network, ...) that predicts labels from factors, giving one score per stock per day.</td></tr>
+<tr><td>Portfolio construction</td><td>Turning scores into "what fraction of capital each stock should take": the target weights.</td></tr>
+<tr><td>Backtest</td><td>Simulating trading on those weights over historical data, to see how the account value would have moved.</td></tr>
+</table>
+
+<p>Two problems of this domain bear directly on software design. Understand them and you understand half of this repository:</p>
+
+<div class="box warn"><b class="t">Problem one: look-ahead bias, or "peeking at the future"</b>
+When simulating the decision of day t, if the code reads any data from after t (even just "this stock will be halted tomorrow"), the backtest looks better than it should, and <b>nothing raises an error</b>. It is a silent class of bug that code review rarely catches completely. Much of this repository is designed so that such bugs cannot be written in the first place (chapter 7).</div>
+
+<div class="box warn"><b class="t">Problem two: reproducibility</b>
+A research result depends on data, parameters and code together. Data is appended to and revised, parameters are scattered across objects, and code changes every day. Three months later, "how was this curve produced?" often has no answer. This repository makes reproducibility a layer of its own (chapters 3 and 9).</div>
+
+<div class="stats">
+<div><b>~83k</b><span>lines of library code (quantlab/)</span></div>
+<div><b>~100k</b><span>lines of tests, about 3,000 test functions</span></div>
+<div><b>18</b><span>ordered layers</span></div>
+<div><b>28</b><span>architecture decision records</span></div>
+</div>
+
+<p><b>Stack.</b> Python ≥ 3.13 with <code>uv</code> for dependencies; xarray + Zarr as the data format (Zarr is a chunked on-disk format for N-dimensional arrays); factors computed with KunQuant (a library that compiles factor formulas to native code) and Polars; models with PyTorch, XGBoost and pytabkit; portfolio optimisation with cvxpy; trade simulation with vectorbt; optional experiment tracking with W&amp;B or MLflow. There is no web framework and no server process: it is a backend library.</p>
+
+<p><b>Where the data comes from.</b> Several market-data vendors are supported, such as WRDS (a data platform widely used in academia, which serves the CRSP US stock history and the TAQ tick quotes) and Sharadar (commercial US equity data). A caller can also pass in their own pandas or polars DataFrame.</p>
+
+<!-- ============ 1 ============ -->
+<h1 class="chapter"><span class="num">1</span>Overview: one pipeline, eighteen ordered layers</h1>
+
+<div class="keep"><h2>1.1 The pipeline</h2>
+<p>The project's core value fits in one sentence: <b>one connected pipeline, driven by configuration and reproducible, whose modules are composed through clear input and output contracts so that any stage can be replaced on its own.</b></p></div>
+
+<figure>
+<img src="../assets/workflow.svg" style="width:100%">
+<figcaption>Figure 1-1. The research workflow. Each stage is the root class of one layer; the output of one stage is the input of the next.</figcaption>
+</figure>
+
+<table>
+<tr><th>Stage</th><th>Root class (in &lt;layer&gt;/base.py)</th><th>Input → output</th></tr>
+<tr><td>Acquisition</td><td><code>Acquisition</code></td><td>vendor API → raw Parquet files</td></tr>
+<tr><td>Dataset</td><td><code>BaseDataset</code> / <code>MarketDataset</code></td><td>raw files → price panel (stored as Zarr)</td></tr>
+<tr><td>Factor / label</td><td><code>Factor</code> / <code>Forward</code></td><td>price panel → factor panel</td></tr>
+<tr><td>Return model</td><td><code>BaseModel</code></td><td>factor panel + label panel → prediction panel</td></tr>
+<tr><td>Risk model</td><td><code>FactorRiskModel</code></td><td>risk characteristics + past returns → a risk (covariance) forecast per bar</td></tr>
+<tr><td>Portfolio construction</td><td><code>PortfolioConstructor</code></td><td>one bar's predictions + current holdings → target weights</td></tr>
+<tr><td>Backtest</td><td><code>BaseBacktester</code></td><td>weights + prices → simulation, run directory</td></tr>
+</table>
+<p>A "panel" is this project's name for data of one fixed shape; chapter 2 is about it.</p>
+
+<div class="keep"><h2>1.2 The layer chain</h2>
+<p>The code is organised in layers: each sub-package of <code>quantlab/</code> is one layer. All layers form <b>one ordered chain</b>, and a layer may import only layers earlier in the chain. A deferred import inside a function counts too, and there are <b>no exceptions</b>.</p></div>
+
+<figure>
+<svg viewBox="0 0 720 330" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7d8792"/></marker></defs><g font-size="10" fill="#5b636e"><text x="6" y="30">infrastructure</text><text x="6" y="126">data</text><text x="6" y="222">research</text><text x="6" y="306">outer edge</text></g><rect x="90" y="8" width="86" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="133.0" y="29" text-anchor="middle" font-size="11.5">utils / enums</text><rect x="190" y="8" width="72" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="226.0" y="29" text-anchor="middle" font-size="11.5">core</text><rect x="280" y="8" width="74" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="317.0" y="29" text-anchor="middle" font-size="11.5">backend</text><rect x="370" y="8" width="74" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="407.0" y="29" text-anchor="middle" font-size="11.5">tracking</text><rect x="460" y="8" width="84" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="502.0" y="29" text-anchor="middle" font-size="11.5">execution</text><rect x="560" y="8" width="64" height="34" rx="6" fill="#eef1f4" stroke="#b9c1ca"/><text x="592.0" y="29" text-anchor="middle" font-size="11.5">runs</text><line x1="176" y1="25" x2="188" y2="25" stroke="#7d8792" marker-end="url(#m1)"/><line x1="262" y1="25" x2="278" y2="25" stroke="#7d8792" marker-end="url(#m1)"/><line x1="354" y1="25" x2="368" y2="25" stroke="#7d8792" marker-end="url(#m1)"/><line x1="444" y1="25" x2="458" y2="25" stroke="#7d8792" marker-end="url(#m1)"/><line x1="544" y1="25" x2="558" y2="25" stroke="#7d8792" marker-end="url(#m1)"/><path d="M624,25 C700,25 700,110 676,118" fill="none" stroke="#7d8792" marker-end="url(#m1)"/><rect x="590" y="104" width="96" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="638" y="125" text-anchor="middle" font-size="11.5">universe</text><rect x="480" y="104" width="96" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="528" y="125" text-anchor="middle" font-size="11.5">dataset</text><rect x="370" y="104" width="96" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="418" y="125" text-anchor="middle" font-size="11.5">config</text><rect x="250" y="104" width="96" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="298" y="125" text-anchor="middle" font-size="11.5">acquisition</text><rect x="140" y="104" width="96" height="34" rx="6" fill="#e3eefa" stroke="#8fb2dc"/><text x="188" y="125" text-anchor="middle" font-size="11.5">analysis</text><line x1="590" y1="121" x2="578" y2="121" stroke="#7d8792" marker-end="url(#m1)"/><line x1="480" y1="121" x2="468" y2="121" stroke="#7d8792" marker-end="url(#m1)"/><line x1="370" y1="121" x2="348" y2="121" stroke="#7d8792" marker-end="url(#m1)"/><line x1="250" y1="121" x2="238" y2="121" stroke="#7d8792" marker-end="url(#m1)"/><path d="M140,121 C80,121 80,205 108,214" fill="none" stroke="#7d8792" marker-end="url(#m1)"/><rect x="110" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="153" y="221" text-anchor="middle" font-size="11.5">factor</text><rect x="208" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="251" y="221" text-anchor="middle" font-size="11.5">label</text><rect x="306" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="349" y="221" text-anchor="middle" font-size="11.5">model</text><rect x="404" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="447" y="221" text-anchor="middle" font-size="11.5">risk</text><rect x="502" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="545" y="221" text-anchor="middle" font-size="11.5">portfolio</text><rect x="610" y="200" width="86" height="34" rx="6" fill="#e6f3ea" stroke="#93c4a4"/><text x="653" y="221" text-anchor="middle" font-size="11.5">backtest</text><line x1="196" y1="217" x2="206" y2="217" stroke="#7d8792" marker-end="url(#m1)"/><line x1="294" y1="217" x2="304" y2="217" stroke="#7d8792" marker-end="url(#m1)"/><line x1="392" y1="217" x2="402" y2="217" stroke="#7d8792" marker-end="url(#m1)"/><line x1="490" y1="217" x2="500" y2="217" stroke="#7d8792" marker-end="url(#m1)"/><line x1="588" y1="217" x2="608" y2="217" stroke="#7d8792" marker-end="url(#m1)"/><line x1="653" y1="234" x2="653" y2="282" stroke="#7d8792" marker-end="url(#m1)"/><rect x="610" y="284" width="86" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="653" y="305" text-anchor="middle" font-size="11.5">api</text><text x="90" y="298" font-size="10.5" fill="#5b636e">Arrows follow the chain: A → B means B may import A, never the reverse.</text><text x="90" y="315" font-size="10.5" fill="#5b636e">A test statically scans every import statement, function-level ones included.</text></svg>
+<figcaption>Figure 1-2. The order of the 18 layers. The last one, api, is a facade for users who only want to work with DataFrames.</figcaption>
+</figure>
+
+<table>
+<tr><th style="width:18%">Layer</th><th>Responsibility</th></tr>
+<tr><td>utils / enums</td><td>Generic helpers (atomic writes, date ranges, timers, ...) and shared enumerations</td></tr>
+<tr><td>core</td><td>The component rule: how an object is serialised to a config and rebuilt from it (chapter 3)</td></tr>
+<tr><td>backend</td><td>Storage backends: reading and writing Zarr and Parquet</td></tr>
+<tr><td>tracking</td><td>The experiment-tracking interface and its W&amp;B and MLflow adapters</td></tr>
+<tr><td>execution</td><td>The rules that simulate how the market fills orders</td></tr>
+<tr><td>runs</td><td>Reading and writing run directories: how training and backtest results are stored (chapter 9)</td></tr>
+<tr><td>universe / dataset</td><td>Stock universes; turning raw data into panels</td></tr>
+<tr><td>config / acquisition</td><td>Data-root configuration; downloading from each vendor</td></tr>
+<tr><td>analysis</td><td>Factor reports</td></tr>
+<tr><td>factor / label / model</td><td>Factors, labels, return models</td></tr>
+<tr><td>risk / portfolio / backtest</td><td>Risk models, portfolio construction, backtests</td></tr>
+<tr><td>api</td><td>Convenience functions that take and return DataFrames</td></tr>
+</table>
+
+<p>A few positions in the chain may be surprising; each has a reason:</p>
+<ul>
+<li><b><code>runs</code> comes early</b>, before dataset and model. Both the model layer and the backtest layer <b>write</b> run directories, so it must come before both; and since runs never imports either of them, opening a run directory never loads torch.</li>
+<li><b><code>execution</code> comes early too.</b> The backtest engine uses it to simulate fills, and portfolio construction uses it to work out what is actually held. Both must share <b>one</b> copy of these rules, so it sits before both.</li>
+<li><b><code>risk</code> sits between <code>model</code> and <code>portfolio</code>.</b> A risk model makes no investment decision, and risk analysis does not need the portfolio layer.</li>
+</ul>
+
+<div class="keep"><h2>1.3 The layout inside a layer</h2>
+<p>Every layer follows the same layout; read one and you have read them all:</p>
+<pre><code>quantlab/&lt;layer&gt;/
+    base.py          <span class="c"># the layer's root class (BaseDataset, Factor, BaseModel, ...)</span>
+    config.py        <span class="c"># the layer's config dataclasses</span>
+    xxx.py           <span class="c"># framework classes users subclass (FactorKunQuant, ...)</span>
+    predefined/      <span class="c"># the implementations quantlab ships</span>
+    _support/        <span class="c"># private helpers; do not import from outside the layer</span></code></pre></div>
+<figure>
+<svg viewBox="0 0 720 232" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker><marker id="mr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c0392b"/></marker></defs><rect x="20" y="20" width="260" height="50" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="150.0" y="42.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">predefined/</text><text x="150.0" y="57.0" text-anchor="middle" font-size="9.5" fill="#5b636e">shipped implementations (Alpha158, XGBoost, ...)</text><rect x="450" y="20" width="250" height="50" rx="7" fill="#fff" stroke="#8fb2dc" stroke-dasharray="5 3"/><text x="575.0" y="42.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">your own implementation</text><text x="575.0" y="57.0" text-anchor="middle" font-size="9.5" fill="#5b636e">outside the repo, equal footing with shipped ones</text><rect x="222" y="100" width="276" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="360.0" y="122.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">framework classes (xxx.py)</text><text x="360.0" y="137.0" text-anchor="middle" font-size="9.5" fill="#5b636e">FactorKunQuant, TorchModel, LibraryModel, ...</text><rect x="240" y="172" width="240" height="50" rx="7" fill="#1f5fa8" stroke="#1f5fa8"/><text x="360.0" y="194.0" text-anchor="middle" font-weight="600" font-size="11" fill="#fff">base.py + config.py</text><text x="360.0" y="209.0" text-anchor="middle" font-size="9.5" fill="#fff">root class (contract, invariants), configs</text><rect x="530" y="136" width="170" height="50" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="615.0" y="158.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">_support/</text><text x="615.0" y="173.0" text-anchor="middle" font-size="9.5" fill="#5b636e">private helpers of the layer</text><line x1="150" y1="70" x2="320" y2="98" stroke="#555" marker-end="url(#m)"/><line x1="575" y1="70" x2="400" y2="98" stroke="#555" marker-end="url(#m)"/><line x1="360" y1="150" x2="360" y2="170" stroke="#555" marker-end="url(#m)"/><line x1="290" y1="100" x2="190" y2="72" stroke="#c0392b" stroke-dasharray="4 3" marker-end="url(#mr)"/><text x="150" y="92" font-size="11" fill="#c0392b" font-weight="600">✗ forbidden</text><line x1="498" y1="130" x2="528" y2="152" stroke="#888" stroke-dasharray="2 3"/><line x1="480" y1="196" x2="528" y2="172" stroke="#888" stroke-dasharray="2 3"/><text x="14" y="146" font-size="9.5" fill="#5b636e">grey arrow: allowed subclassing / import</text><text x="14" y="164" font-size="9.5" fill="#c0392b">red dashed: forbidden by a test</text><text x="14" y="182" font-size="9.5" fill="#5b636e">dotted: uses private helpers</text></svg>
+<figcaption>Figure 1-3. Inside one layer. Shipped and user implementations depend only on the framework; neither the framework nor the root class depends on any shipped implementation.</figcaption>
+</figure>
+
+<table>
+<tr><th style="width:28%">Convention</th><th>Meaning and reason</th></tr>
+<tr><td>Framework modules never import <code>predefined/</code></td><td>A user's own factor or model depends only on the framework, never on a shipped implementation. Shipped and user implementations stand on equal footing. Enforced by a test.</td></tr>
+<tr><td>The top level of <code>dataset/</code> and <code>acquisition/</code> reads like a menu</td><td>Every top-level entry of these two directories is one complete, usable thing (a dataset, a vendor); helpers go into <code>_support/</code>. Browsing the directory is browsing the feature list.</td></tr>
+<tr><td>No <code>__init__.py</code> re-exports</td><td>Every import spells the full path, e.g. <code>from quantlab.factor.predefined.alpha158 import Alpha158Stock</code>. Each name has one spelling, so grep always finds its definition.</td></tr>
+<tr><td>A few packages' <code>__init__.py</code> <b>is</b> the entry module</td><td>For example <code>quantlab/dataset/crsp/__init__.py</code> is the CRSP dataset's main module, with its submodules beside it. The rule is "the __init__ is the module itself", never "the __init__ forwards other modules".</td></tr>
+<tr><td>Some <code>__init__.py</code> files must be empty</td><td>A non-empty <code>__init__</code> runs on every import beneath it. One guarantee ("the credential-free source inspector never loads a vendor client, not even indirectly") depends on a few empty files, and a test checks them (chapter 10).</td></tr>
+<tr><td>Root classes and configs load no torch</td><td>Importing any layer's <code>base.py</code> or <code>config.py</code> does not load torch. A test checks <code>'torch' in sys.modules</code> in a subprocess.</td></tr>
+</table>
+
+<div class="keep"><h2>1.4 How one backtest flows through the code</h2>
+<p>A sequence diagram ties the layers together: after <code>backtester.run()</code> is called, each layer talks only to the contracts next to it.</p></div>
+<figure>
+<svg viewBox="0 0 720 355" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="50" y="28" text-anchor="middle" font-size="10" font-weight="600">Backtester</text><line x1="50" y1="38" x2="50" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="95" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="137" y="28" text-anchor="middle" font-size="10" font-weight="600">Model</text><line x1="137" y1="38" x2="137" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="182" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="224" y="28" text-anchor="middle" font-size="10" font-weight="600">Factor</text><line x1="224" y1="38" x2="224" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="269" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="311" y="28" text-anchor="middle" font-size="10" font-weight="600">Dataset</text><line x1="311" y1="38" x2="311" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="360" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="402" y="28" text-anchor="middle" font-size="10" font-weight="600">DecisionInputs</text><line x1="402" y1="38" x2="402" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="450" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="492" y="28" text-anchor="middle" font-size="10" font-weight="600">Portfolio rule</text><line x1="492" y1="38" x2="492" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="538" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="580" y="28" text-anchor="middle" font-size="10" font-weight="600">Fill engine</text><line x1="580" y1="38" x2="580" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="624" y="8" width="84" height="30" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/><text x="666" y="28" text-anchor="middle" font-size="10" font-weight="600">runs layer</text><line x1="666" y1="38" x2="666" y2="345" stroke="#b9c1ca" stroke-dasharray="3 3"/><rect x="376" y="212" width="164" height="56" fill="none" stroke="#a4501a" stroke-dasharray="4 3"/><text x="381" y="224" font-size="9" fill="#a4501a">loop: once per rebalance bar</text><line x1="50" y1="65" x2="137" y2="65" stroke="#555" marker-end="url(#m)"/><text x="93.5" y="61" text-anchor="middle" font-size="9.5" fill="#5b636e">predict_window(s, e)</text><line x1="137" y1="90" x2="224" y2="90" stroke="#555" marker-end="url(#m)"/><text x="180.5" y="86" text-anchor="middle" font-size="9.5" fill="#5b636e">read / compute</text><line x1="224" y1="115" x2="311" y2="115" stroke="#555" marker-end="url(#m)"/><text x="267.5" y="111" text-anchor="middle" font-size="9.5" fill="#5b636e">panel(s, e)</text><line x1="311" y1="138" x2="224" y2="138" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="267.5" y="134" text-anchor="middle" font-size="9.5" fill="#5b636e">price panel</text><line x1="224" y1="160" x2="137" y2="160" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="180.5" y="156" text-anchor="middle" font-size="9.5" fill="#5b636e">factor panel</text><line x1="137" y1="182" x2="50" y2="182" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="93.5" y="178" text-anchor="middle" font-size="9.5" fill="#5b636e">prediction panel</text><line x1="50" y1="205" x2="402" y2="205" stroke="#555" marker-end="url(#m)"/><text x="226.0" y="201" text-anchor="middle" font-size="9.5" fill="#5b636e">weights(predictions)</text><line x1="402" y1="240" x2="492" y2="240" stroke="#555" marker-end="url(#m)"/><text x="447.0" y="236" text-anchor="middle" font-size="9.5" fill="#5b636e">decide(context_t)</text><line x1="492" y1="258" x2="402" y2="258" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="447.0" y="254" text-anchor="middle" font-size="9.5" fill="#5b636e">the bar's weights</text><line x1="50" y1="290" x2="580" y2="290" stroke="#555" marker-end="url(#m)"/><text x="315.0" y="286" text-anchor="middle" font-size="9.5" fill="#5b636e">simulate(weights)</text><line x1="580" y1="308" x2="50" y2="308" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="315.0" y="304" text-anchor="middle" font-size="9.5" fill="#5b636e">equity, actual holdings</text><line x1="50" y1="335" x2="666" y2="335" stroke="#555" marker-end="url(#m)"/><text x="358.0" y="331" text-anchor="middle" font-size="9.5" fill="#5b636e">write the run directory (run.json last)</text></svg>
+<figcaption>Figure 1-4. The order of calls between layers in one <code>run()</code> (simplified). The whole run sits inside a <code>DataRecorder</code>, which records every dataset and factor read (chapter 9).</figcaption>
+</figure>
+
+<!-- ============ 2 ============ -->
+<h1 class="chapter"><span class="num">2</span>The one data contract: the panel</h1>
+
+<div class="keep"><h2>2.1 What a panel is</h2>
+<p>Layers exchange exactly one kind of data: an <code>xarray.Dataset</code> with <b>exactly</b> two dimensions, <code>(timestamp, symbol)</code> (time × stock), and one variable per field. The project calls it a <b>panel</b>. On disk, every Zarr store (a "store" below) holds exactly one such panel.</p></div>
+
+<figure>
+<svg viewBox="0 0 790 250" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="12"><defs><marker id="pa" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f5fa8"/></marker></defs><g transform="translate(100,52)"><rect x="36" y="36" width="300" height="136" fill="#d9e7f6" stroke="#8fb2dc"/><rect x="18" y="18" width="300" height="136" fill="#e3eefa" stroke="#8fb2dc"/><rect x="0" y="0" width="300" height="136" fill="#fff" stroke="#1f5fa8" stroke-width="1.5"/><g stroke="#dbe3ec"><line x1="0" y1="34" x2="300" y2="34"/><line x1="0" y1="68" x2="300" y2="68"/><line x1="0" y1="102" x2="300" y2="102"/><line x1="60" y1="0" x2="60" y2="136"/><line x1="120" y1="0" x2="120" y2="136"/><line x1="180" y1="0" x2="180" y2="136"/><line x1="240" y1="0" x2="240" y2="136"/></g><g font-size="10.5" text-anchor="middle" fill="#333"><text x="30" y="22">101.2</text><text x="90" y="22">48.7</text><text x="150" y="22">NaN</text><text x="210" y="22">12.3</text><text x="270" y="22">77.0</text><text x="30" y="56">102.0</text><text x="90" y="56">49.1</text><text x="150" y="56">NaN</text><text x="210" y="56">12.1</text><text x="270" y="56">76.4</text><text x="30" y="90">101.5</text><text x="90" y="90">48.9</text><text x="150" y="90">33.0</text><text x="210" y="90">NaN</text><text x="270" y="90">77.9</text><text x="30" y="124">103.1</text><text x="90" y="124">50.2</text><text x="150" y="124">33.4</text><text x="210" y="124">NaN</text><text x="270" y="124">78.2</text></g><g font-size="11" font-weight="600" text-anchor="middle" fill="#1f5fa8"><text x="30" y="-8">AAA</text><text x="90" y="-8">BBB</text><text x="150" y="-8">CCC</text><text x="210" y="-8">DDD</text><text x="270" y="-8">EEE</text></g><line x1="0" y1="-22" x2="300" y2="-22" stroke="#1f5fa8" marker-end="url(#pa)"/><text x="150" y="-28" text-anchor="middle" fill="#1f5fa8" font-size="11">symbol dimension (stocks)</text><g font-size="10" text-anchor="end" fill="#1f5fa8"><text x="-8" y="22">2024-01-02</text><text x="-8" y="56">2024-01-03</text><text x="-8" y="90">2024-01-04</text><text x="-8" y="124">2024-01-05</text></g><line x1="-78" y1="0" x2="-78" y2="136" stroke="#1f5fa8" marker-end="url(#pa)"/><text x="-86" y="68" text-anchor="middle" fill="#1f5fa8" font-size="11" transform="rotate(-90 -86 68)">timestamp dimension (time)</text><g font-size="10.5" fill="#1f5fa8"><line x1="288" y1="8" x2="352" y2="8" stroke="#1f5fa8"/><text x="356" y="12">variable adjClose</text><line x1="310" y1="60" x2="352" y2="60" stroke="#8fb2dc"/><text x="356" y="64">variable adjOpen</text><line x1="328" y1="112" x2="352" y2="112" stroke="#8fb2dc"/><text x="356" y="116">variable adjVolume</text></g><g font-size="10.5" fill="#333"><text x="470" y="4">● columns = the symbol dimension</text><text x="470" y="24">● rows = the timestamp dimension</text><text x="470" y="44">● each variable is one [T, S] table;</text><text x="470" y="64">   variables stack on one grid</text><text x="470" y="84">● cells hold values only; no trade = NaN</text><text x="470" y="104">   (CCC listed late, DDD delisted)</text><text x="470" y="124">● a delisted stock keeps its column</text><text x="470" y="144">● symbols are permanent ids: tickers</text><text x="470" y="164">   change and get reused</text></g></g></svg>
+<figcaption>Figure 2-1. A panel: its two dimensions are timestamp (rows) and symbol (columns), the grid holds values, and several variables stack on one grid. The adj prefix marks prices adjusted for splits and dividends.</figcaption>
+</figure>
+
+<pre><code>&lt;xarray.Dataset&gt;
+Dimensions:    (timestamp: 400, symbol: 16)
+Coordinates:
+  * timestamp  (timestamp) datetime64[ns] 2022-01-03 ... 2023-07-14
+  * symbol     (symbol) &lt;U3 'S00' 'S01' ... 'S15'
+Data variables:
+    adjOpen    (timestamp, symbol) float64 49.74 50.21 ...
+    adjClose   (timestamp, symbol) float64 50.13 49.87 ...</code></pre>
+
+<div class="box"><b class="t">Why keep delisted stocks?</b>
+Studying only the companies that exist today leaves out those that went bankrupt or were delisted, and gives conclusions that are too optimistic (survivorship bias). A dense panel keeps a delisted stock as a column, so models and backtests "see" it.</div>
+
+<div class="keep"><h2>2.2 Why xarray rather than DataFrames</h2>
+<ul>
+<li><b>The shape is the contract.</b> In a long DataFrame (one row per timestamp and symbol), "no data for this stock on this day" has two representations: a missing row, or a row of NaN. Mixing them is a rich source of bugs. A dense panel has one representation.</li>
+<li><b>Cross-sectional operations vectorise naturally.</b> The most common operation in this domain is "for each day, rank or standardise across all stocks". On a <code>[T, S]</code> array that is one operation along the symbol axis; on a long table it is a groupby.</li>
+<li><b>Models consume it directly.</b> A panel becomes a <code>[T, S, F]</code> torch tensor (F factors) with no conversion, and the deep models are designed around that shape.</li>
+<li><b>Zarr stores in chunks and loads on demand.</b> A whole-market factor panel can be 3,270 days × 13,015 stocks × 169 factors, about 29 GB; xarray + Zarr reads only the part needed.</li>
+</ul></div>
+
+<div class="keep"><h2>2.3 Who guards the shape</h2>
+<p>"Only one shape" holds only if code enforces it. Two places do:</p>
+<ol>
+<li><b>The storage backends' <code>get_xarray_dataset(indexes)</code></b>: asked for <code>["timestamp", "symbol"]</code>, both the Zarr and the Parquet backend drop variables on other dimensions and transpose to the requested order; asking for a dimension the data lacks raises <code>ValueError</code>. A dedicated test covers both backends.</li>
+<li><b>Strict merge semantics</b>: when several panels are outer-joined on both dimensions, a cell holding a value in two inputs is an error, <b>never</b> resolved silently by input order.</li>
+</ol></div>
+
+<div class="keep"><h2>2.4 The one exception: a facade for DataFrame users</h2>
+<p>Many users hold only pandas or polars DataFrames and want one capability (computing factors, say, or a backtest) without adopting the project's stores and configs. <code>quantlab.api</code> gives them functions that take a DataFrame and return one. Design points:</p>
+<ul>
+<li>Conversion between DataFrames and panels happens <b>only</b> in the api layer. The library's own result types stay pure xarray and do not know the api layer exists. "Layers exchange only panels" governs the inside of the pipeline; the api layer is its outer boundary.</li>
+<li>An incoming DataFrame becomes a <code>FrameDataset</code>: a real <code>MarketDataset</code> subclass whose panel lives in memory. Factors and backtests therefore run through their <b>public</b> interfaces; the api layer calls no private method, so internal refactoring does not break it.</li>
+<li>Nothing is written to disk by default; with <code>output_dir</code>, the inputs are copied into the result directory so the run can still be rebuilt later.</li>
+<li>A pandas DataFrame in gives a pandas DataFrame out, and likewise for polars; <code>as_xarray=True</code> returns xarray instead.</li>
+</ul></div>
+<figure>
+<svg viewBox="0 0 720 182" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="320" y="8" width="392" height="166" rx="10" fill="#f8fafc" stroke="#1f5fa8" stroke-dasharray="6 4"/><text x="334" y="26" font-size="10.5" fill="#1f5fa8" font-weight="600">inside the pipeline: panels (xarray) only</text><rect x="8" y="62" width="135" height="56" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="75.5" y="87.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">caller's DataFrame</text><text x="75.5" y="102.0" text-anchor="middle" font-size="9.5" fill="#5b636e">pandas or polars, long</text><rect x="170" y="20" width="120" height="140" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="230.0" y="73.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">quantlab.api</text><text x="230.0" y="88.0" text-anchor="middle" font-size="9.5" fill="#5b636e">converts between</text><text x="230.0" y="102.0" text-anchor="middle" font-size="9.5" fill="#5b636e">DataFrames and</text><text x="230.0" y="116.0" text-anchor="middle" font-size="9.5" fill="#5b636e">panels, here only</text><rect x="338" y="40" width="170" height="52" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="423.0" y="63.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">FrameDataset</text><text x="423.0" y="78.0" text-anchor="middle" font-size="9.5" fill="#5b636e">a MarketDataset, panel in memory</text><rect x="530" y="40" width="172" height="52" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="616.0" y="63.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">Factor / Backtester</text><text x="616.0" y="78.0" text-anchor="middle" font-size="9.5" fill="#5b636e">public interfaces only</text><rect x="530" y="112" width="172" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="616.0" y="138.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">xarray result</text><line x1="143" y1="80" x2="168" y2="80" stroke="#555" marker-end="url(#m)"/><line x1="290" y1="66" x2="336" y2="66" stroke="#555" marker-end="url(#m)"/><line x1="508" y1="66" x2="528" y2="66" stroke="#555" marker-end="url(#m)"/><line x1="616" y1="92" x2="616" y2="110" stroke="#555" marker-end="url(#m)"/><line x1="528" y1="134" x2="292" y2="134" stroke="#555" marker-end="url(#m)"/><text x="410.0" y="128" text-anchor="middle" font-size="9.5" fill="#5b636e">result</text><line x1="168" y1="104" x2="145" y2="104" stroke="#555" marker-end="url(#m)"/><text x="156" y="124" font-size="8.5" fill="#5b636e" text-anchor="middle">same library</text></svg>
+<figcaption>Figure 2-2. The api layer is the outer boundary of the pipeline: conversion happens at the boundary, and inside there are still only panels.</figcaption>
+</figure>
+
+<!-- ============ 3 ============ -->
+<h1 class="chapter"><span class="num">3</span>The component model: configs build objects, objects rebuild from configs</h1>
+
+<div class="keep"><h2>3.1 Every object is built from one config dataclass</h2>
+<p>Datasets, factors, labels, models, portfolio rules, backtesters, experiment trackers: almost every object in the project is a <b>component</b>. It is built from <b>one</b> config dataclass and keeps it as its <code>config</code> attribute. Configs nest: a factor's config holds the dataset object it reads, a model's config holds its lists of factors and labels, a backtest's config holds the price dataset and the model.</p>
+<p>Every parameter that changes results (a window length, a filter threshold, a fee) is a config field, never a constant in code, for a simple reason: a config can be saved, a constant cannot.</p></div>
+
+<div class="keep"><h2>3.2 Declaring which fields hold components</h2>
+<p>The hard question when serialising nested objects is "how do we know a field holds an object that must be recursed into?". Guessing from key names, or treating any dict with a <code>"name"</code> key as an object, scatters the rule everywhere. This project has one answer: <b>declare it on the dataclass field</b>.</p></div>
+
+<pre><code><span class="c"># quantlab/label/config.py (excerpt)</span>
+@dataclass(kw_only=<span class="k">True</span>, frozen=<span class="k">True</span>)
+<span class="k">class</span> ForwardConfig(FrozenConfig):
+    factor: <span class="s">"Factor"</span> = component()        <span class="c"># this field holds one component</span>
+    span: int                             <span class="c"># plain data</span>
+    delay: int = 1
+    name: str | <span class="k">None</span> = <span class="k">None</span>             <span class="c"># the class's import path, filled in by the object</span>
+
+<span class="c"># quantlab/model/config.py (excerpt)</span>
+@dataclass(frozen=<span class="k">True</span>)
+<span class="k">class</span> ModelConfig(FrozenConfig):
+    factors: list[<span class="s">"Factor"</span>] = component(many=<span class="k">True</span>)   <span class="c"># holds several components</span>
+    labels: list[<span class="s">"Factor"</span>] = component(many=<span class="k">True</span>)
+    tracker: Tracker = component(default_factory=NullTracker)
+    hyperparameters: dict ...             <span class="c"># a plain dict, never recursed into</span>
+    ...</code></pre>
+
+<p>That one declaration drives three things:</p>
+<figure>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="12">
+<defs><marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#1f5fa8"/></marker></defs>
+<rect x="240" y="10" width="240" height="50" rx="8" fill="#1f5fa8"/><text x="360" y="32" text-anchor="middle" fill="#fff" font-weight="600">component(many=...)</text><text x="360" y="50" text-anchor="middle" fill="#dbe8f7" font-size="11">a marker in the field's metadata</text>
+<rect x="20" y="120" width="210" height="96" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="125" y="142" text-anchor="middle" font-weight="600">get_config()</text>
+<text x="125" y="162" text-anchor="middle" font-size="10.5">object → plain JSON dict</text>
+<text x="125" y="180" text-anchor="middle" font-size="10.5">declared fields → child's own config</text>
+<text x="125" y="198" text-anchor="middle" font-size="10.5">"name" = the class's import path</text>
+<rect x="255" y="120" width="210" height="96" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="360" y="142" text-anchor="middle" font-weight="600">rebuild(config)</text>
+<text x="360" y="162" text-anchor="middle" font-size="10.5">dict → object</text>
+<text x="360" y="180" text-anchor="middle" font-size="10.5">recurses only along declared fields</text>
+<text x="360" y="198" text-anchor="middle" font-size="10.5">children first, then the object</text>
+<rect x="490" y="120" width="210" height="96" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="595" y="142" text-anchor="middle" font-weight="600">walk_components()</text>
+<text x="595" y="162" text-anchor="middle" font-size="10.5">walks the whole component tree</text>
+<text x="595" y="180" text-anchor="middle" font-size="10.5">with paths: model.factors.0.dataset</text>
+<text x="595" y="198" text-anchor="middle" font-size="10.5">used by fingerprints, code records</text>
+<line x1="320" y1="60" x2="140" y2="118" stroke="#1f5fa8" marker-end="url(#a3)"/>
+<line x1="360" y1="60" x2="360" y2="118" stroke="#1f5fa8" marker-end="url(#a3)"/>
+<line x1="400" y1="60" x2="580" y2="118" stroke="#1f5fa8" marker-end="url(#a3)"/>
+</svg>
+<figcaption>Figure 3-1. One declaration, three uses. Objects are recognised neither by key name nor by the shape of a dict.</figcaption>
+</figure>
+
+<pre><code>label = Forward(ForwardConfig(factor=momentum, span=5))
+saved = label.get_config()
+saved[<span class="s">"factor"</span>][<span class="s">"name"</span>]             <span class="c"># 'quantlab.factor.predefined.momentum.Momentum'</span>
+saved[<span class="s">"factor"</span>][<span class="s">"dataset"</span>][<span class="s">"name"</span>]  <span class="c"># 'quantlab.dataset.spot.SpotKlineDataset'</span>
+rebuild(saved) == label              <span class="c"># True</span></code></pre>
+<figure>
+<svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="210" y="8" width="300" height="38" rx="7" fill="#1f5fa8" stroke="#1f5fa8"/><text x="360.0" y="31.0" text-anchor="middle" font-weight="600" font-size="11" fill="#fff">backtester (CrossSectionBacktestConfig)</text><rect x="180" y="86" width="180" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="270.0" y="109.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">model: XGBoostRegressor</text><rect x="374" y="86" width="180" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="464.0" y="109.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">constructor: TopNConstructor</text><rect x="568" y="86" width="144" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="640.0" y="109.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">tracker: NullTracker</text><rect x="84" y="164" width="200" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="184.0" y="187.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">model.factors.0: Alpha158Stock</text><rect x="300" y="164" width="180" height="38" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="390.0" y="187.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">model.labels.0: Return</text><rect x="10" y="240" width="250" height="40" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="135.0" y="264.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">FrameDataset (one object)</text><line x1="330" y1="46" x2="280" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="380" y1="46" x2="462" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="450" y1="46" x2="632" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="240" y1="124" x2="195" y2="162" stroke="#555" marker-end="url(#m)"/><line x1="310" y1="124" x2="385" y2="162" stroke="#555" marker-end="url(#m)"/><line x1="215" y1="46" x2="60" y2="238" stroke="#555" marker-end="url(#m)"/><text x="104" y="128" text-anchor="middle" font-size="9.5" fill="#5b636e">price_dataset</text><line x1="170" y1="202" x2="140" y2="238" stroke="#555" marker-end="url(#m)"/><text x="182" y="225" text-anchor="middle" font-size="9.5" fill="#5b636e">dataset</text><line x1="370" y1="202" x2="230" y2="238" stroke="#555" marker-end="url(#m)"/><text x="320" y="228" text-anchor="middle" font-size="9.5" fill="#5b636e">dataset</text><text x="276" y="256" font-size="10" fill="#2c7a4b">Saved in full at the first place; the other two write shared_as: "price_dataset".</text><text x="276" y="272" font-size="10" fill="#2c7a4b">After rebuild, all three references are again one object.</text></svg>
+<figcaption>Figure 3-2. The component tree of a backtester. Node names are component paths; one dataset object is referenced from three places and stays shared through saving and rebuilding.</figcaption>
+</figure>
+
+<div class="keep"><h3>Details worth knowing</h3>
+<ul>
+<li><b>Safety</b>: only a class that declares a config class (<code>config_cls</code>) is ever rebuilt, so a tampered JSON file cannot use <code>rebuild</code> to call an arbitrary importable function.</li>
+<li><b>Shared references survive</b>: when one dataset object is referenced by both a factor and the backtester, the second place is written with a <code>"shared_as"</code> key naming the first; one <code>rebuild</code> call turns them back into <b>one</b> object, so the rebuilt object graph matches the saved one.</li>
+<li><b>Unknown fields are refused</b>: a key the config class does not have raises instead of being ignored.</li>
+<li><b>Strict rebuild</b>: rebuilding a backtester requires every config field to be present instead of filling gaps from today's defaults. A default changed since the run would silently produce a different backtest.</li>
+<li><b>The class path is the contract</b>: a class is found by its import path, so moving or renaming a class makes saved configs unloadable. The project accepts this cost (see 12.3, "No backward compatibility").</li>
+</ul></div>
+
+<div class="keep"><h2>3.3 Configs are frozen</h2>
+<p>Every config class derives from <code>FrozenConfig</code> and is a <code>frozen=True</code> dataclass that cannot be changed after creation. An object "completes" the config it is given (it records its class name, resolves the list of factor names, ...) by <b>returning a completed copy</b>, never by changing the one the caller passed in. The next chapter explains why that matters.</p></div>
+
+<!-- ============ 4 ============ -->
+<h1 class="chapter"><span class="num">4</span>Reading is a stateless query</h1>
+
+<p>The pipeline reads date ranges everywhere: a model reads 2016–2021 factors to train, a backtest reads 2023–2024 prices. The rule: <b>a date range is always an argument of the read method, and is never written into another object's config.</b></p>
+
+<div class="keep"><h2>4.1 The read interface</h2>
+<pre><code>panel  = dataset.panel(start, end, symbols=<span class="k">None</span>, variables=<span class="k">None</span>)   <span class="c"># a dataset answers a query</span>
+values = factor.read(start, end)      <span class="c"># read values already computed into the factor's store</span>
+values = factor.compute(start, end)   <span class="c"># compute from the inputs</span></code></pre></div>
+
+<div class="keep"><h2>4.2 Why dates do not go into configs</h2>
+<p>A natural-looking alternative is to set <code>config.start_date</code> / <code>end_date</code> on the object and then call <code>read()</code>, with the factor passing the dates on to its dataset and the dataset caching data for the new range. In a data pipeline the trouble with this is <b>shared mutable state</b>:</p>
+<ul>
+<li>One dataset is often referenced by several factors and a backtester at once. Whoever wrote the dates last wins, and results depend on call order;</li>
+<li>if a dataset caches and narrows its data in place for a range, other users read the narrowed data, and can only defend themselves with forced re-reads or deep copies;</li>
+<li>one dataset object cannot serve two users with different ranges, and there is nowhere to merge several datasets into one input.</li>
+</ul></div>
+
+<figure>
+<svg viewBox="0 0 720 200" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="12">
+<defs><marker id="a4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a4501a"/></marker>
+<marker id="a4b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#2c7a4b"/></marker></defs>
+<text x="170" y="18" text-anchor="middle" font-weight="600" fill="#a4501a">Not used: rewriting a shared config</text>
+<rect x="20" y="34" width="90" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="65" y="56" text-anchor="middle">Model</text>
+<rect x="125" y="34" width="90" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="170" y="56" text-anchor="middle">Factor A</text>
+<rect x="230" y="34" width="90" height="34" rx="6" fill="#fbefe6" stroke="#dcae8c"/><text x="275" y="56" text-anchor="middle">Factor B</text>
+<rect x="115" y="128" width="215" height="40" rx="6" fill="#fff" stroke="#a4501a" stroke-width="1.5"/><text x="222" y="146" text-anchor="middle">Shared dataset (mutable)</text><text x="222" y="161" text-anchor="middle" font-size="10" fill="#a4501a">config.start/end rewritten again and again</text>
+<line x1="110" y1="51" x2="123" y2="51" stroke="#a4501a" marker-end="url(#a4)"/>
+<line x1="170" y1="68" x2="200" y2="126" stroke="#a4501a" marker-end="url(#a4)"/>
+<line x1="275" y1="68" x2="245" y2="126" stroke="#a4501a" marker-end="url(#a4)"/>
+<text x="20" y="190" font-size="10.5" fill="#5b636e">The last writer wins; call order decides the result</text>
+<text x="540" y="18" text-anchor="middle" font-weight="600" fill="#2c7a4b">quantlab: a query with arguments</text>
+<rect x="390" y="34" width="90" height="34" rx="6" fill="#e7f4ec" stroke="#93c4a4"/><text x="435" y="56" text-anchor="middle">Model</text>
+<rect x="495" y="34" width="90" height="34" rx="6" fill="#e7f4ec" stroke="#93c4a4"/><text x="540" y="56" text-anchor="middle">Factor A</text>
+<rect x="600" y="34" width="90" height="34" rx="6" fill="#e7f4ec" stroke="#93c4a4"/><text x="645" y="56" text-anchor="middle">Factor B</text>
+<rect x="485" y="128" width="220" height="40" rx="6" fill="#fff" stroke="#2c7a4b" stroke-width="1.5"/><text x="595" y="146" text-anchor="middle">Dataset (frozen config)</text><text x="595" y="161" text-anchor="middle" font-size="10" fill="#2c7a4b">opens its store per request, keeps nothing</text>
+<line x1="480" y1="51" x2="493" y2="51" stroke="#2c7a4b" marker-end="url(#a4b)"/>
+<line x1="540" y1="68" x2="570" y2="126" stroke="#2c7a4b" marker-end="url(#a4b)"/>
+<line x1="645" y1="68" x2="615" y2="126" stroke="#2c7a4b" marker-end="url(#a4b)"/>
+<text x="508" y="102" font-size="9.5" fill="#2c7a4b">panel(s1,e1)</text><text x="630" y="102" font-size="9.5" fill="#2c7a4b">panel(s2,e2)</text>
+<text x="390" y="190" font-size="10.5" fill="#5b636e">One dataset object can serve many users at once</text>
+</svg>
+<figcaption>Figure 4-1. Two ways to pass dates. quantlab uses only the one on the right.</figcaption>
+</figure>
+
+<div class="keep"><h2>4.3 Companion rules</h2>
+<ul>
+<li><b>Reads keep no state</b>: a dataset opens its store on each request and keeps nothing afterwards. Only the build path (raw files to store) holds data in memory.</li>
+<li><b>Factor configs have no date fields</b>: the range a factor store covers is an argument of <b>building</b> the store, and is recorded beside it.</li>
+<li><b>Warm-up is counted in bars, not calendar days</b>: rolling computations read some history before the start date, its length given by the <code>warmup_bars</code> field. The dataset answers "which bar lies N bars before this date". Counting bars avoids "30 days" meaning different things on daily and minute data.</li>
+<li><b>The outer object's dates win</b>: a model passes its dates to its factors with each request, and a backtester passes its window to the model.</li>
+</ul></div>
+
+<div class="box"><b class="t">Why are <code>read</code> and <code>compute</code> two methods, not "read if there is a store, compute otherwise"?</b>
+With one method choosing automatically, the caller could not tell whether a value was read or computed, and the data fingerprints of chapter 9 need to know exactly that.</div>
+
+<div class="box ok"><b class="t">A bonus</b>
+A factor can take <b>a list</b> of datasets and merge them into one input panel (renamed to shared variable names, then outer-joined; a conflict is an error). And "no shared mutable state" is a precondition for a future multi-user service.</div>
+
+<!-- ============ 5 ============ -->
+<h1 class="chapter"><span class="num">5</span>Extension points: template methods, hooks and wrappers</h1>
+
+<p>One long-term goal is editing and testing factors and models online, so "how much code does a new factor or model take?" is a core design metric. The general answer: <b>the root class implements the whole lifecycle (the template method pattern), and a subclass fills in a few hook methods.</b></p>
+
+<div class="keep"><h2>5.1 Factors: two compute backends, one hook each</h2>
+<table>
+<tr><th style="width:22%">Intermediate class</th><th style="width:32%">A subclass implements only</th><th>Characteristics</th></tr>
+<tr><td><code>FactorKunQuant</code></td><td><code>_get_factor_func()</code>: return a KunQuant computation graph</td><td>A factor is a declarative graph of operators (<code>Builder</code> / <code>Input</code> / <code>Output</code> / operators), compiled to native code just in time and run on several threads. <b>The same graph computes a whole history in batch or updates bar by bar in streaming mode</b>, so a factor written for research can later run on live data. The main backend.</td></tr>
+<tr><td><code>FactorPolars</code></td><td><code>_get_factor_lazyframe(lf)</code>: return a lazy Polars query</td><td>Batch only. For formulas easier to express as table operations; a complement to KunQuant.</td></tr>
+</table></div>
+
+<pre><code><span class="k">class</span> Momentum(FactorPolars):
+    <span class="c">"""N-bar price momentum, Close_t / Close_{t-n} - 1."""</span>
+    <span class="k">def</span> _get_factor_lazyframe(self, lf):
+        n = self.config.kwargs.get(<span class="s">"n"</span>, 20)
+        <span class="k">return</span> lf.select(
+            <span class="s">"timestamp"</span>, <span class="s">"symbol"</span>,
+            (pl.col(<span class="s">"Close"</span>) / pl.col(<span class="s">"Close"</span>).shift(n).over(<span class="s">"symbol"</span>) - 1).alias(f<span class="s">"momentum_{n}"</span>),
+        )
+<span class="c"># everything else (reading by date, warm-up, storing, extending, resampling, recording</span>
+<span class="c"># fingerprints) is done by the root class Factor</span></code></pre>
+<p class="small">(Illustrative; the actual implementation is quantlab/factor/predefined/momentum.py.)</p>
+
+<p>The root class <code>Factor</code> provides one lifecycle: <code>compute(start, end)</code> computes; <code>build</code> writes a store; <code>extend(end)</code> appends new dates; <code>read(start, end)</code> reads the store; <code>resample(freq, how)</code> aggregates to coarser bars (minute bars to daily, say); <code>analyze()</code> writes a factor report.</p>
+
+<div class="box"><b class="t">A platform detail: SIMD alignment on macOS</b>
+On macOS, KunQuant needs the number of stocks to be a multiple of 8. <code>FactorKunQuant</code> pads the symbol axis with all-NaN placeholder stocks to a multiple of 8 and cuts them off afterwards, but only when <code>sys.platform == "darwin"</code>. On Linux, 4, 5, 7, 8, 12 and 16 stocks were measured to work, so nothing is padded there. Padding happens only on the platform that needs it, and the measurement is written down in the docs.</div>
+
+<div class="keep"><h2>5.2 Labels: a wrapper, not a subclass</h2>
+<p>Mathematically a label is a factor moved forward in time: the return over the next 5 days is the value, 5 days later, of a "return over the last 5 days" factor. So labels get no class hierarchy of their own; a <b>wrapper</b> turns any factor into a label:</p>
+<pre><code>label = Forward(ForwardConfig(factor=any_factor, span=5, delay=1))
+label.lookahead_bars()   <span class="c"># 6 = delay + span: the label at t reads data up to 6 bars after t</span></code></pre></div>
+<p><code>Forward</code> asks the wrapped factor for <code>lookahead</code> more bars, shifts the panel and trims it back to the request. It owns no store, so <b>one factor store serves as a feature directly and, wrapped, as a label</b>. A model accepts only <code>Forward</code> objects as labels and refuses them as features: whether something is a feature or a label depends on how it is used, not on its class, and a type check prevents mistakes.</p>
+
+<figure>
+<svg viewBox="0 0 720 190" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11.5">
+<g transform="translate(20,20)">
+<text x="0" y="12" font-weight="600">The boundary of one train / test split</text>
+ <rect x="0" y="34" width="360" height="30" fill="#d9e7f6" stroke="#8fb2dc"/><text x="180" y="54" text-anchor="middle">training segment</text>
+ <rect x="360" y="34" width="70" height="30" fill="#fbefe6" stroke="#dcae8c"/><text x="395" y="54" text-anchor="middle" fill="#a4501a">purge</text>
+ <rect x="430" y="34" width="250" height="30" fill="#e6f3ea" stroke="#93c4a4"/><text x="555" y="54" text-anchor="middle">test segment</text>
+<line x1="430" y1="26" x2="430" y2="72" stroke="#333" stroke-dasharray="3 3"/>
+<text x="430" y="20" text-anchor="middle" font-size="10.5">split point</text>
+<path d="M340,80 C360,110 420,110 450,82" fill="none" stroke="#a4501a" stroke-width="1.4"/>
+<text x="240" y="122" fill="#a4501a">Without a purge, the last training labels would read test-segment prices</text>
+<text x="0" y="150" fill="#333">Purge length = the largest lookahead among the model's labels, <tspan font-weight="600">derived from the labels, not a parameter</tspan></text>
+<text x="0" y="168" fill="#5b636e">Applies at every split: train/validation, train/test, each walk-forward fold, the in/out-of-sample line of a backtest</text>
+</g>
+</svg>
+<figcaption>Figure 5-1. The purge drops the last training bars whose labels would see the test segment. The lookahead is a queryable property of the label, and every split uses it.</figcaption>
+</figure>
+
+<p>Because "how many bars does a label look ahead" has one source, the label object, model splits, factor reports and the backtest's in/out-of-sample line all read it from there instead of each computing their own. The backtest engine also declares its fill delay, <code>fill_delay_bars</code>, and a backtest refuses to run when a label's <code>delay</code> differs from it.</p>
+
+<div class="keep"><h2>5.3 Models: three levels of inheritance, as few hooks as possible</h2>
+<figure>
+<svg viewBox="0 0 720 290" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11.5">
+<defs><marker id="a5" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#fff" stroke="#555"/></marker></defs>
+<rect x="140" y="8" width="440" height="78" rx="8" fill="#1f5fa8"/>
+<text x="360" y="30" text-anchor="middle" fill="#fff" font-weight="600" font-size="13">BaseModel</text>
+<text x="360" y="50" text-anchor="middle" fill="#dbe8f7" font-size="10.5">public train / train_cv / load / predict, implemented once</text>
+<text x="360" y="68" text-anchor="middle" fill="#dbe8f7" font-size="10.5">warm-up, purge, folds, missing-label masks, evaluation, checkpoints, run.json</text>
+<rect x="20" y="130" width="320" height="80" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="180" y="152" text-anchor="middle" font-weight="600">TorchModel (the framework runs epochs)</text>
+<text x="180" y="172" text-anchor="middle" font-size="10.5">must implement: _init_model, _loss</text>
+<text x="180" y="190" text-anchor="middle" fill="#5b636e" font-size="10">optional: _dataset, _train_one_batch, ...</text>
+<rect x="380" y="130" width="320" height="80" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="540" y="152" text-anchor="middle" font-weight="600">LibraryModel (the library trains itself)</text>
+<text x="540" y="172" text-anchor="middle" font-size="10.5">must implement: _init_model, _fit_model, _forward</text>
+<text x="540" y="190" text-anchor="middle" fill="#5b636e" font-size="10">library early stopping; joblib checkpoints</text>
+<line x1="180" y1="128" x2="300" y2="88" stroke="#555" marker-end="url(#a5)"/>
+<line x1="540" y1="128" x2="420" y2="88" stroke="#555" marker-end="url(#a5)"/>
+<g font-size="11">
+<rect x="40" y="240" width="135" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="107" y="261" text-anchor="middle">GATsRegressor</text>
+<rect x="195" y="240" width="135" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="262" y="261" text-anchor="middle">MASTERRegressor</text>
+<rect x="390" y="240" width="90" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="435" y="261" text-anchor="middle">XGBoost</text>
+<rect x="490" y="240" width="90" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="535" y="261" text-anchor="middle">XGB-TD</text>
+<rect x="590" y="240" width="90" height="34" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="635" y="261" text-anchor="middle">RealMLP</text>
+</g>
+<line x1="107" y1="238" x2="160" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="262" y1="238" x2="210" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="435" y1="238" x2="510" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="535" y1="238" x2="535" y2="212" stroke="#555" marker-end="url(#a5)"/>
+<line x1="635" y1="238" x2="560" y2="212" stroke="#555" marker-end="url(#a5)"/>
+</svg>
+<figcaption>Figure 5-2. The model layer's inheritance. The framework owns the data contracts, a concrete model owns its learning strategy. The bottom row ships with quantlab.</figcaption>
+</figure></div>
+
+<p>The steps of one <code>train()</code> call; only "fit" belongs to the concrete model:</p><figure>
+<svg viewBox="0 0 720 124" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="20" width="104" height="66" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="60.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">collect()</text><text x="60.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">read factors</text><text x="60.0" y="72.0" text-anchor="middle" font-size="9.5" fill="#5b636e">and labels</text><line x1="112" y1="53" x2="125" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="127" y="20" width="104" height="66" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="179.0" y="50.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">split + purge</text><text x="179.0" y="65.0" text-anchor="middle" font-size="9.5" fill="#5b636e">train / val / test</text><line x1="231" y1="53" x2="244" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="246" y="20" width="104" height="66" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="298.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">training target</text><text x="298.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">rank or z-score</text><text x="298.0" y="72.0" text-anchor="middle" font-size="9.5" fill="#5b636e">per bar</text><line x1="350" y1="53" x2="363" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="365" y="20" width="104" height="66" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="417.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">fit</text><text x="417.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">optimiser, loss,</text><text x="417.0" y="72.0" text-anchor="middle" font-size="9.5" fill="#5b636e">early stopping</text><line x1="469" y1="53" x2="482" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="484" y="20" width="104" height="66" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="536.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">evaluate</text><text x="536.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">IC etc. on</text><text x="536.0" y="72.0" text-anchor="middle" font-size="9.5" fill="#5b636e">the raw label</text><line x1="588" y1="53" x2="601" y2="53" stroke="#555" marker-end="url(#m)"/><rect x="603" y="20" width="104" height="66" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="655.0" y="50.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">write the run</text><text x="655.0" y="65.0" text-anchor="middle" font-size="9.5" fill="#5b636e">run.json last</text><rect x="8" y="104" width="14" height="12" fill="#e8f0fa" stroke="#8fb2dc"/><text x="28" y="114" font-size="10">implemented once by BaseModel</text><rect x="230" y="104" width="14" height="12" fill="#fbefe6" stroke="#dcae8c"/><text x="250" y="114" font-size="10">a concrete model's hooks (subclass of TorchModel / LibraryModel)</text></svg>
+<figcaption>Figure 5-3. The steps of <code>train()</code>. Blue: implemented by the base class; orange: the concrete model's hooks.</figcaption>
+</figure>
+
+<p>The division of labour: <b>the base class owns the data contracts, the hooks own the learning strategy.</b> Optimiser, loss and what one training step does are up to the concrete model; warm-up, purge, cross-validation folds, missing-label masks, metrics on the raw label, the checkpoint format and putting predictions back into <code>[T, S, L]</code> (time × stock × label) belong to the base class.</p>
+
+<div class="keep"><h3>Torch models choose their sample shape</h3>
+<p>A torch model returns a standard <code>torch.utils.data.Dataset</code> from <code>_dataset()</code> to decide what one training step sees. The default is the whole cross-section of one bar (all stocks enter the network together, which suits models with attention between stocks); another option is one stock's time series, in the style of Qlib (Microsoft's open-source quantitative research platform). The key constraint: every sample carries <code>where = (t_idx, s_idx)</code>, so the base class puts predictions of any shape back into <code>[T, S, L]</code> with the same code, and <b>refuses</b> a set of predictions that misses or repeats a cell.</p></div>
+
+<p>Deep models are not sized to a fixed set of stocks, because index membership changes every month: a network whose input is a fixed <code>S × F</code> could not predict a newly added stock. The network maps <code>[S_t, N, F]</code> (stocks at the bar × history length × factors) to <code>[S_t, L]</code>, and <code>S_t</code> may differ from bar to bar. A stock without a label stays in the cross-section as context and is left out of the loss.</p>
+
+<div class="box"><b class="t">A trade-off decided by measurement: training data in memory, or loaded from disk on demand?</b>
+Measured on the training server on a whole-market factor panel of about 29 GB: a cross-section model reads one bar in 15.4 ms from memory, 58 ms from a time-chunked cache (22 ms with 8 workers, still no faster than memory) and 99 ms from the raw stores; with the panel resident on the GPU, 0.1 ms. A sequence model reads an 800-sample batch in 2.7 ms from memory and 177 ms from the cache. Hence the rule: the panel goes on the GPU when it fits (in half the free GPU memory), otherwise in RAM, optionally as float16; <b>on-demand loading is considered only once a panel no longer fits in RAM</b>.</div>
+
+<div class="keep"><h3>Known pitfalls written as tests</h3>
+<p>Evaluation loaders never drop the last partial batch; evaluation runs under <code>no_grad</code> and <code>eval()</code>; a one-stock cross-section works; training shuffles bars; rows with a missing label stay in the feature panel; the purge covers the label lookahead only, not the feature window. Each has a test.</p></div>
+
+<div class="keep"><h2>5.4 Portfolio rules and covariance estimators</h2>
+<p>The portfolio-construction root class <code>PortfolioConstructor</code> asks for one method, <code>construct(context)</code>; the risk root class <code>CovarianceEstimator</code> asks for <code>estimate(...)</code> (the covariance of stock returns: the matrix describing how stocks' risks move together).</p>
+<p>Both return <b>one</b> <code>InputDeclaration</code> value from <code>declared_inputs()</code>: how much history they read at a decision, which factors, which risk model. A rule that holds an estimator merges the two with <code>InputDeclaration.merged</code>. Describing every input need as one value means a new kind of input is a new field on that value, not a new method on two base classes forwarded layer by layer.</p></div>
+<figure>
+<svg viewBox="0 0 720 182" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="18" width="200" height="62" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="108.0" y="39.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">portfolio rule</text><text x="108.0" y="54.0" text-anchor="middle" font-size="9.5" fill="#5b636e">declared_inputs()</text><text x="108.0" y="68.0" text-anchor="middle" font-size="9.5" fill="#5b636e">lookback_bars, factors</text><rect x="8" y="110" width="200" height="62" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="108.0" y="131.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">covariance estimator</text><text x="108.0" y="146.0" text-anchor="middle" font-size="9.5" fill="#5b636e">declared_inputs()</text><text x="108.0" y="160.0" text-anchor="middle" font-size="9.5" fill="#5b636e">history_bars, risk_model</text><rect x="250" y="64" width="150" height="62" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="325.0" y="85.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">InputDeclaration</text><text x="325.0" y="100.0" text-anchor="middle" font-size="9.5" fill="#5b636e">.merged(...)</text><text x="325.0" y="114.0" text-anchor="middle" font-size="9.5" fill="#5b636e">one value</text><rect x="440" y="64" width="124" height="62" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="502.0" y="85.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">DecisionInputs</text><text x="502.0" y="100.0" text-anchor="middle" font-size="9.5" fill="#5b636e">reads that</text><text x="502.0" y="114.0" text-anchor="middle" font-size="9.5" fill="#5b636e">one value</text><rect x="598" y="22" width="114" height="142" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="655.0" y="62.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">PortfolioContext</text><text x="655.0" y="77.0" text-anchor="middle" font-size="9.5" fill="#5b636e">return window</text><text x="655.0" y="91.0" text-anchor="middle" font-size="9.5" fill="#5b636e">staleness</text><text x="655.0" y="105.0" text-anchor="middle" font-size="9.5" fill="#5b636e">factors</text><text x="655.0" y="119.0" text-anchor="middle" font-size="9.5" fill="#5b636e">risk_exposures</text><text x="655.0" y="133.0" text-anchor="middle" font-size="9.5" fill="#5b636e">...</text><line x1="208" y1="49" x2="248" y2="84" stroke="#555" marker-end="url(#m)"/><line x1="208" y1="141" x2="248" y2="108" stroke="#555" marker-end="url(#m)"/><line x1="400" y1="95" x2="438" y2="95" stroke="#555" marker-end="url(#m)"/><line x1="564" y1="95" x2="596" y2="95" stroke="#555" marker-end="url(#m)"/><text x="580.0" y="89" text-anchor="middle" font-size="9.5" fill="#5b636e">builds</text></svg>
+<figcaption>Figure 5-4. Merging input declarations: the rule and the estimator each declare what they need, and DecisionInputs reads one merged value to build each bar's context.</figcaption>
+</figure>
+<p>The mean-variance optimiser (a classic method that trades expected return off against risk) also opens two extension points: <code>reference_weights</code> (measure risk relative to a reference portfolio) and <code>risk_constraints</code> (constrain the risk term). The base optimiser leaves both unused; <code>ActiveRiskOptimizer</code> in <code>scripts/active_risk.py</code> is built on them, and a test checks that it works.</p>
+
+<!-- ============ 6 ============ -->
+<h1 class="chapter"><span class="num">6</span>Base class or protocol</h1>
+
+<p>Python can express an interface in two ways: an abstract base class (by inheritance) or a <code>typing.Protocol</code> (structural typing: having the methods is enough). The project has an explicit rule for which to use:</p>
+
+<div class="box ok"><b class="t">The rule</b>
+Each layer's root class is the layer's contract, and implementations derive from it. <b>A Protocol is defined at a seam only when a second implementation appears there that meets the caller's needs but must <u>not</u> inherit the root class's code.</b> The Protocol is then defined beside its caller and lists only the members the caller uses.</div>
+
+<div class="keep"><h2>6.1 The one instance: Predictor</h2>
+<p>A backtester needs a "signal source" for predictions. A single model (a <code>BaseModel</code> subclass) obviously qualifies, but so must an ensemble (such as <code>SeedEnsemble</code>: one config trained under several random seeds and averaged). An ensemble inheriting <code>BaseModel</code> would inherit a training loop, cross-validation logic and checkpoint rules it does not have, and would have to stub each one. So the backtest layer defines a <code>Predictor</code> protocol:</p></div>
+
+<figure>
+<svg viewBox="0 0 720 230" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11.5">
+<defs><marker id="a6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="216" y="10" width="288" height="92" rx="8" fill="#fff" stroke="#1f5fa8" stroke-width="1.5" stroke-dasharray="5 3"/>
+<text x="360" y="30" text-anchor="middle" font-weight="600" fill="#1f5fa8">«Protocol» Predictor</text>
+<text x="360" y="50" text-anchor="middle" font-size="10.5">labels, train_bounds, test_bounds, label_scales</text>
+<text x="360" y="66" text-anchor="middle" font-size="10.5">predict_window(start, end)</text>
+<text x="360" y="82" text-anchor="middle" font-size="10.5">train(), load(), check_checkpoint()</text>
+<text x="360" y="96" text-anchor="middle" font-size="10.5">get_config(), from_config()</text>
+<rect x="560" y="30" width="150" height="52" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/><text x="635" y="52" text-anchor="middle" font-weight="600">BaseBacktester</text><text x="635" y="70" text-anchor="middle" font-size="10.5">uses protocol members only</text>
+<line x1="558" y1="56" x2="506" y2="56" stroke="#555" marker-end="url(#a6)"/><text x="532" y="48" text-anchor="middle" font-size="10">uses</text>
+<rect x="30" y="150" width="210" height="60" rx="8" fill="#e6f3ea" stroke="#93c4a4"/><text x="135" y="174" text-anchor="middle" font-weight="600">BaseModel and subclasses</text><text x="135" y="194" text-anchor="middle" font-size="10.5">satisfy it structurally</text>
+<rect x="270" y="150" width="210" height="60" rx="8" fill="#e6f3ea" stroke="#93c4a4"/><text x="375" y="174" text-anchor="middle" font-weight="600">BaseEnsemble</text><text x="375" y="194" text-anchor="middle" font-size="10.5">composes models, is not one</text>
+<rect x="510" y="150" width="200" height="60" rx="8" fill="#f4f6f8" stroke="#b9c1ca"/><text x="610" y="174" text-anchor="middle">A delegating test wrapper</text><text x="610" y="194" text-anchor="middle" font-size="10.5">must backtest identically</text>
+<line x1="135" y1="148" x2="290" y2="104" stroke="#555" stroke-dasharray="4 3" marker-end="url(#a6)"/>
+<line x1="375" y1="148" x2="368" y2="104" stroke="#555" stroke-dasharray="4 3" marker-end="url(#a6)"/>
+<line x1="600" y1="148" x2="450" y2="104" stroke="#555" stroke-dasharray="4 3" marker-end="url(#a6)"/>
+</svg>
+<figcaption>Figure 6-1. The Predictor protocol is defined beside its caller (the backtest layer); models and ensembles both satisfy it structurally.</figcaption>
+</figure>
+
+<ul>
+<li>The protocol <b>deliberately exposes no <code>ModelConfig</code></b>: an ensemble may combine quite different models (an XGBoost and a neural network, each with its own factors), which have no single config to expose.</li>
+<li>The project runs no static type checker, so the protocol is <b>enforced at run time</b>: a backtester refuses, at construction, an object missing any member. Tests also check that a delegating wrapper that does not inherit <code>BaseModel</code> backtests exactly like the model it wraps, and an <code>ast</code> scan of the source checks that the backtest layer reads no model attribute outside the protocol.</li>
+</ul>
+
+<div class="keep"><h2>6.2 Why not a protocol for every layer up front</h2>
+<table>
+<tr><th style="width:36%">Not adopted</th><th>Reason</th></tr>
+<tr><td>A protocol per layer, the root class as its default implementation</td><td>Every other seam has one implementation. A protocol there would restate the root class's public methods: one more declaration to keep in step.</td></tr>
+<tr><td>All protocols in one <code>protocols.py</code></td><td>A protocol owned by no caller drifts towards a copy of the implementing class's public surface.</td></tr>
+<tr><td>Protocols at the level of the template methods</td><td>Root classes are not just signatures; they <b>carry invariants</b>. The dataset and factor roots own reading, warm-up, resampling and the store; <code>PortfolioConstructor.decide</code> owns the no-look-ahead and locked-position checks (chapter 7). A protocol there would hand the invariants to every implementer.</td></tr>
+</table></div>
+
+<div class="keep"><h2>6.3 Ensembles: composition, not inheritance</h2>
+<p><code>BaseEnsemble</code> is a class of its own that composes models and satisfies <code>Predictor</code>. Its combination rule needs one idea: the ensemble's labels are the <b>union</b> of its members' labels, and each label is combined from the members that predict it. With several members on one label, each is standardised per bar and the results averaged; with one member, its prediction passes through unchanged.</p></div>
+<figure>
+<svg viewBox="0 0 720 212" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="14" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="36.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">member 1: XGBoost</text><text x="113.0" y="51.0" text-anchor="middle" font-size="9.5" fill="#5b636e">predicts ret</text><rect x="8" y="80" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="102.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">member 2: XGBoost, other seed</text><text x="113.0" y="117.0" text-anchor="middle" font-size="9.5" fill="#5b636e">predicts ret</text><rect x="8" y="150" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="172.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">member 3: volatility model</text><text x="113.0" y="187.0" text-anchor="middle" font-size="9.5" fill="#5b636e">predicts vol</text><rect x="270" y="34" width="214" height="66" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="377.0" y="57.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">label ret: 2 members</text><text x="377.0" y="72.0" text-anchor="middle" font-size="9.5" fill="#5b636e">standardise per bar, average</text><text x="377.0" y="86.0" text-anchor="middle" font-size="9.5" fill="#5b636e">scale = standardised</text><rect x="270" y="146" width="214" height="58" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="377.0" y="165.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">label vol: 1 member</text><text x="377.0" y="180.0" text-anchor="middle" font-size="9.5" fill="#5b636e">passed through unchanged</text><text x="377.0" y="194.0" text-anchor="middle" font-size="9.5" fill="#5b636e">scale = raw</text><rect x="534" y="60" width="178" height="112" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="623.0" y="99.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">ensemble prediction panel</text><text x="623.0" y="114.0" text-anchor="middle" font-size="9.5" fill="#5b636e">variables: ret, vol</text><text x="623.0" y="128.0" text-anchor="middle" font-size="9.5" fill="#5b636e">+ label_scales per label</text><text x="623.0" y="142.0" text-anchor="middle" font-size="9.5" fill="#5b636e">(satisfies Predictor)</text><line x1="218" y1="39" x2="268" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="218" y1="105" x2="268" y2="80" stroke="#555" marker-end="url(#m)"/><line x1="218" y1="175" x2="268" y2="175" stroke="#555" marker-end="url(#m)"/><line x1="484" y1="67" x2="532" y2="100" stroke="#555" marker-end="url(#m)"/><line x1="484" y1="175" x2="532" y2="140" stroke="#555" marker-end="url(#m)"/></svg>
+<figcaption>Figure 6-2. An ensemble combines per label: average when several members predict it, pass through when one does.</figcaption>
+</figure>
+<p>"Several seeds", "different models" and "one model for returns, another for volatility" are then <b>one rule</b>: no mode switch and no second composition class. The cost: a prediction's units depend on how many members predict it (averaged predictions are standardised scores, passed-through ones keep their units), so the protocol carries a per-label <code>label_scales</code>, and a rule that needs return units must check it.</p>
+
+<!-- ============ 7 ============ -->
+<h1 class="chapter"><span class="num">7</span>Invariants enforced by interface shape: "only t is visible"</h1>
+
+<p>Chapter 0 called look-ahead a silent bug. This chapter shows how the project rules it out with <b>function signatures and data structures</b> rather than developer discipline.</p>
+
+<div class="keep"><h2>7.1 A per-bar decision interface</h2>
+<p>There are two ways to design the interface that turns predictions into weights:</p>
+<pre><code><span class="c"># A. Whole-panel interface: every date at once</span>
+weights = selector.select(scores_panel, next_fill_price_panel, rebalance_mask)
+
+<span class="c"># B. Per-bar interface: one bar's context at a time</span>
+weights_t = rule.construct(context_at_t)</code></pre></div>
+<p>The signature of A lets an implementation read past t; an implementation of B <b>cannot even get hold of</b> future data. quantlab uses B, for two more reasons: an optimiser solves one problem per rebalance anyway, and a future event-driven backtester or live executor can call the same method unchanged.</p>
+
+<p><code>PortfolioContext</code> is a dataclass that describes one bar:</p>
+<pre><code>@dataclass
+<span class="k">class</span> PortfolioContext:
+    timestamp: pd.Timestamp          <span class="c"># the bar decided on; the weights returned fill at the next bar</span>
+    predictions: xr.Dataset          <span class="c"># each label's prediction at the bar, on symbol only</span>
+    tradable: xr.DataArray           <span class="c"># whether each stock can trade at the bar, judged from t and before</span>
+    current_weights: xr.DataArray    <span class="c"># what is actually held</span>
+    returns: xr.DataArray | None     <span class="c"># a bounded window of returns up to t</span>
+    staleness: xr.DataArray | None   <span class="c"># bars since the last real price (grows during a halt)</span>
+    factors: xr.Dataset | None       <span class="c"># values at t of the factors the rule declared</span>
+    risk_exposures: xr.Dataset | None</code></pre>
+<p class="small">(Fields and comments abridged; the full definition is in quantlab/portfolio/base.py.)</p>
+
+<div class="keep"><h2>7.2 decide(): a checking shell that is not overridden</h2>
+<p>A portfolio rule implements <code>construct</code>, but callers always call <code>decide</code>, a base-class method that subclasses <b>do not override</b>. It wraps <code>construct</code> and does two things:</p>
+<ul>
+<li>it turns a <code>PortfolioConstructionError</code> (an optimiser with no solution, say) into "hold the current position at this bar" and records why, instead of crashing the whole backtest;</li>
+<li>it checks the returned row of weights: the stock axis matches the context; NaN and finite values are not mixed; <b>a locked position is not changed</b> (a stock held but not tradable now, during a halt for example); no weight goes to a stock that is neither tradable nor held. Breaking any of these is a bug in the rule and raises <code>ValueError</code>.</li>
+</ul></div>
+<figure>
+<svg viewBox="0 0 720 242" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="140" y="8" width="380" height="226" rx="10" fill="none" stroke="#1f5fa8" stroke-dasharray="6 4"/><text x="152" y="26" font-size="10.5" fill="#1f5fa8" font-weight="600">decide(): in the base class, not overridden</text><rect x="8" y="98" width="110" height="44" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="63.0" y="124.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">context_t</text><rect x="160" y="96" width="124" height="54" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="222.0" y="113.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">construct()</text><text x="222.0" y="128.0" text-anchor="middle" font-size="9.5" fill="#5b636e">the only method</text><text x="222.0" y="142.0" text-anchor="middle" font-size="9.5" fill="#5b636e">a rule writes</text><rect x="318" y="36" width="190" height="44" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="413.0" y="62.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">raises PortfolioConstructionError</text><rect x="318" y="116" width="190" height="66" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="413.0" y="139.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">check the returned row</text><text x="413.0" y="154.0" text-anchor="middle" font-size="9.5" fill="#5b636e">stock axis, mixed NaN,</text><text x="413.0" y="168.0" text-anchor="middle" font-size="9.5" fill="#5b636e">locked positions, untradable</text><rect x="548" y="32" width="166" height="52" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="631.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">hold the position</text><text x="631.0" y="70.0" text-anchor="middle" font-size="9.5" fill="#5b636e">record the reason</text><rect x="548" y="120" width="166" height="44" rx="7" fill="#fbe3e3" stroke="#d99"/><text x="631.0" y="146.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">ValueError: a bug in the rule</text><rect x="548" y="184" width="166" height="44" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="631.0" y="210.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">Decision(weights, events)</text><line x1="118" y1="120" x2="158" y2="120" stroke="#555" marker-end="url(#m)"/><line x1="284" y1="108" x2="316" y2="64" stroke="#555" marker-end="url(#m)"/><text x="286" y="84" text-anchor="middle" font-size="9.5" fill="#5b636e">raises</text><line x1="284" y1="134" x2="316" y2="148" stroke="#555" marker-end="url(#m)"/><text x="298" y="162" text-anchor="middle" font-size="9.5" fill="#5b636e">weights</text><line x1="508" y1="58" x2="546" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="508" y1="142" x2="546" y2="142" stroke="#555" marker-end="url(#m)"/><text x="527.0" y="136" text-anchor="middle" font-size="9.5" fill="#5b636e">breaks</text><line x1="508" y1="166" x2="546" y2="202" stroke="#555" marker-end="url(#m)"/><text x="520" y="198" text-anchor="middle" font-size="9.5" fill="#5b636e">passes</text></svg>
+<figcaption>Figure 7-1. The flow of <code>decide()</code>. A rule's author writes only <code>construct</code>; failure handling and validity checks are done once, by the base class.</figcaption>
+</figure>
+<p>This is what chapter 6 meant by "root classes carry invariants": any new rule anyone writes is protected by these checks as long as it is called through <code>decide</code>.</p>
+
+<div class="keep"><h2>7.3 Decision and execution are separate</h2>
+<figure>
+<svg viewBox="0 0 720 240" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11.5">
+<defs><marker id="a7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<line x1="30" y1="120" x2="700" y2="120" stroke="#333" stroke-width="1.5" marker-end="url(#a7)"/>
+<g font-size="11"><line x1="150" y1="112" x2="150" y2="128" stroke="#333"/><text x="150" y="146" text-anchor="middle">bar t-1</text>
+<line x1="330" y1="112" x2="330" y2="128" stroke="#333"/><text x="330" y="146" text-anchor="middle" font-weight="600">bar t</text>
+<line x1="520" y1="112" x2="520" y2="128" stroke="#333"/><text x="520" y="146" text-anchor="middle" font-weight="600">bar t+1</text></g>
+<rect x="20" y="20" width="340" height="76" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="190" y="40" text-anchor="middle" font-weight="600" fill="#1f5fa8">Decision side: reads only information ≤ t</text>
+<text x="190" y="60" text-anchor="middle" font-size="10.5">DecisionInputs builds context → rule.decide(context)</text>
+<text x="190" y="78" text-anchor="middle" font-size="10.5">tradability, return window, staleness, holdings</text>
+<rect x="380" y="20" width="320" height="76" rx="8" fill="#fbefe6" stroke="#dcae8c"/>
+<text x="540" y="40" text-anchor="middle" font-weight="600" fill="#a4501a">Execution side: the market's answer at t+1</text>
+<text x="540" y="60" text-anchor="middle" font-size="10.5">fills at t+1's open; no fill price → rejected, holding kept</text>
+<text x="540" y="78" text-anchor="middle" font-size="10.5">a delisted holding is settled into cash</text>
+<path d="M330,170 C380,210 470,210 520,170" fill="none" stroke="#555" marker-end="url(#a7)"/>
+<text x="425" y="226" text-anchor="middle" font-size="10.5">target weights formed at t fill at t+1</text>
+</svg>
+<figcaption>Figure 7-2. The decision side reads only t; the execution side may read t+1. Both use one copy of the fill rules in quantlab/execution.</figcaption>
+</figure></div>
+
+<p>An example of a harmless-looking mistake: define "can this stock be picked at t" as "it has a fill price at t+1". Every target weight is then guaranteed to fill, the code is simple, and target weights equal holdings. But it tells the strategy at t which stocks will halt or delist at t+1, so it never buys the day before a halt. That is an optimistic bias, <b>and it cannot be computed in live trading at all</b>. quantlab instead:</p>
+<ul>
+<li>judges tradability on the decision side from information at t only;</li>
+<li>simulates faithfully on the execution side: an order without a fill price is rejected and expires, the holding is kept; a delisted holding is settled into cash at its last valuation;</li>
+<li>since a rule must know what is actually held, an <code>ExecutionBook</code> replays fills, rejections, delisting settlements and the cash limit with <b>exactly the rules the backtest engine uses</b>. Those rules live in one place, <code>quantlab/execution/rules.py</code>, down to vectorbt's numeric details (floating-point comparison, how amounts are added).</li>
+</ul>
+
+<div class="keep"><h2>7.4 DecisionInputs: one assembly point for research and live trading</h2>
+<p>What a decision may read is assembled by one module, <code>DecisionInputs</code> in <code>quantlab/portfolio/decision_inputs.py</code>, which serves both research backtests and live executors. The live executor is a separate repository by the same author, quantlab-ibkr, which connects quantlab's strategies to the broker Interactive Brokers.</p>
+<table>
+<tr><th style="width:40%">Method</th><th>Use</th></tr>
+<tr><td><code>weights(predictions)</code></td><td>Research backtest: decide every bar of a whole panel</td></tr>
+<tr><td><code>context(t, predictions, current_weights)</code></td><td>Live executor: build one bar's context; the executor supplies the holdings of its own account</td></tr>
+<tr><td><code>rebalances(t)</code></td><td>The schedule: is t a rebalance bar</td></tr>
+<tr><td><code>from_run(run_dir)</code></td><td>Rebuild a recorded backtest's decision inputs from its run directory, without loading the model</td></tr>
+</table></div>
+<p>It is the only code that builds a <code>PortfolioContext</code>. Each bar reads only the last <code>history_bars</code> raw prices (a number the rule declares), forward-filled within that window only. So <b>a decision depends only on what is known at t, never on where the caller's history starts</b>. A live executor has no natural start date, which makes this essential.</p>
+<figure>
+<svg viewBox="0 0 720 250" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="24" width="190" height="52" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="103.0" y="47.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">research backtest</text><text x="103.0" y="62.0" text-anchor="middle" font-size="9.5" fill="#5b636e">BaseBacktester</text><rect x="8" y="176" width="190" height="52" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="103.0" y="199.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">live executor</text><text x="103.0" y="214.0" text-anchor="middle" font-size="9.5" fill="#5b636e">quantlab-ibkr (separate repo)</text><rect x="240" y="58" width="230" height="136" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="355.0" y="102.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">DecisionInputs</text><text x="355.0" y="117.0" text-anchor="middle" font-size="9.5" fill="#5b636e">weights(predictions)  ← backtest</text><text x="355.0" y="131.0" text-anchor="middle" font-size="9.5" fill="#5b636e">context(t, preds, holdings)  ← live</text><text x="355.0" y="145.0" text-anchor="middle" font-size="9.5" fill="#5b636e">rebalances(t)</text><text x="355.0" y="159.0" text-anchor="middle" font-size="9.5" fill="#5b636e">from_run(run_dir)</text><rect x="508" y="100" width="204" height="52" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="610.0" y="123.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">rule.decide(context)</text><text x="610.0" y="138.0" text-anchor="middle" font-size="9.5" fill="#5b636e">→ the bar's target weights</text><rect x="508" y="10" width="204" height="52" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="610.0" y="33.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">ExecutionBook</text><text x="610.0" y="48.0" text-anchor="middle" font-size="9.5" fill="#5b636e">replays holdings by the fill rules</text><rect x="508" y="190" width="204" height="52" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="610.0" y="213.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">broker account</text><text x="610.0" y="228.0" text-anchor="middle" font-size="9.5" fill="#5b636e">the real current holdings</text><line x1="198" y1="50" x2="238" y2="86" stroke="#555" marker-end="url(#m)"/><text x="212" y="60" text-anchor="middle" font-size="9.5" fill="#5b636e">weights()</text><line x1="198" y1="202" x2="238" y2="170" stroke="#555" marker-end="url(#m)"/><text x="214" y="200" text-anchor="middle" font-size="9.5" fill="#5b636e">context()</text><line x1="470" y1="126" x2="506" y2="126" stroke="#555" marker-end="url(#m)"/><line x1="508" y1="48" x2="472" y2="74" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="494" y="78" text-anchor="middle" font-size="9.5" fill="#5b636e">holdings</text><line x1="506" y1="214" x2="200" y2="214" stroke="#555" stroke-dasharray="4 3" marker-end="url(#m)"/><text x="360" y="232" text-anchor="middle" font-size="9.5" fill="#5b636e">holdings</text></svg>
+<figcaption>Figure 7-3. DecisionInputs serves both the research backtest and the live executor; they differ only in where the current holdings come from.</figcaption>
+</figure>
+
+<div class="box"><b class="t">The same idea in the risk model</b>
+A factor risk model is a standard industry way to estimate risk (quantlab implements MSCI Barra's USE4 method): it explains how stocks move together through a set of common risk factors. Here it is a "data product with one row per bar": computed ahead, stored, each row using nothing later than its bar and only a bounded window. Computing a whole history at once and computing part of it then appending a row a day give identical rows, so a live executor appending one row a day stays aligned with research. The forecast at a bar, <code>B F Bᵀ + diag(D)</code>, is one value type of the risk layer, <code>FactorRiskForecast</code>, used by portfolio optimisation, risk attribution and model tests alike; the rule for "which stocks this forecast covers" is written in that one place.</div>
+
+<!-- ============ 8 ============ -->
+<h1 class="chapter"><span class="num">8</span>Robust long-running jobs: resumable work and atomic writes</h1>
+
+<p>Downloading a whole market takes thousands of requests and can run for hours; converting raw data into Zarr is a long job too. The requirement: <b>kill the process at any moment and a re-run carries on, never re-fetching finished work and never skipping unfinished work.</b></p>
+
+<div class="keep"><h2>8.1 Two storage tiers</h2>
+<figure>
+<svg viewBox="0 0 720 150" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11.5">
+<defs><marker id="a8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="40" width="130" height="56" rx="8" fill="#f4f6f8" stroke="#b9c1ca"/><text x="75" y="64" text-anchor="middle" font-weight="600">Vendor API</text><text x="75" y="82" text-anchor="middle" font-size="10.5">each data vendor</text>
+<rect x="190" y="30" width="220" height="76" rx="8" fill="#fbefe6" stroke="#dcae8c"/><text x="300" y="52" text-anchor="middle" font-weight="600">Raw tier (Parquet)</text><text x="300" y="70" text-anchor="middle" font-size="10.5">the vendor's rows, kept as received</text><text x="300" y="88" text-anchor="middle" font-size="10.5">beside it: download-progress JSON</text>
+<rect x="460" y="30" width="250" height="76" rx="8" fill="#e8f0fa" stroke="#8fb2dc"/><text x="585" y="52" text-anchor="middle" font-weight="600">Store tier (Zarr panels)</text><text x="585" y="70" text-anchor="middle" font-size="10.5">dense, cleaned, derived data</text><text x="585" y="88" text-anchor="middle" font-size="10.5">beside it: conversion-progress JSON</text>
+<line x1="140" y1="68" x2="188" y2="68" stroke="#555" marker-end="url(#a8)"/><text x="164" y="60" text-anchor="middle" font-size="10">download</text>
+<line x1="410" y1="68" x2="458" y2="68" stroke="#555" marker-end="url(#a8)"/><text x="434" y="60" text-anchor="middle" font-size="10">convert</text>
+<text x="360" y="134" text-anchor="middle" fill="#5b636e" font-size="10.5">A change of cleaning or filtering is a re-conversion, not a re-download</text>
+</svg>
+<figcaption>Figure 8-1. The raw tier and the store tier are separate.</figcaption>
+</figure></div>
+
+<div class="keep"><h2>8.2 Three progress ledgers</h2>
+<table>
+<tr><th style="width:16%">Ledger</th><th style="width:32%">What it records</th><th>The property it guarantees</th></tr>
+<tr><td>Watermark</td><td>The date range of each stock already on disk</td><td>A watermark is written only <b>after</b> a whole batch is fetched and written. A stock interrupted halfway has no watermark and is fetched again.</td></tr>
+<tr><td>Page ledger</td><td>Progress of one multi-stock request that the vendor pages: pages fetched, the next page's token, the files each page was written to</td><td>See the list below.</td></tr>
+<tr><td>Chunk ledger</td><td>The time windows a Zarr conversion has appended</td><td>The symbol axis is fixed before the first window so all windows line up by column; when ledger and store disagree, resuming is refused, trusting neither alone.</td></tr>
+</table></div>
+
+<p>Each design point of the page ledger guards against one specific failure:</p>
+<ul>
+<li><b>Deterministic file names</b>: a shard is named <code>part-{batch_key}-{page:05d}.pqt</code>, where batch_key hashes the vendor, frequency, dates and the sorted stock list, with no timestamp or random part. Re-fetching a page overwrites the same file, so a retry can waste requests but never duplicates rows.</li>
+<li><b>Data first, ledger second</b>: a crash between the two costs one re-fetched page; the opposite order could record a page that never reached disk.</li>
+<li><b>The ledger remembers a fingerprint of its stock list</b>: opened with another list, it reads back empty instead of resuming someone else's progress.</li>
+<li><b>Check before resuming</b>: every shard file the ledger records must still exist, or it raises. Skipping it would leave a hole no later read could detect.</li>
+<li><b>No infinite loops</b>: a vendor that returns the token it was given raises <code>ValueError</code> instead of looping and writing a new shard every round.</li>
+<li><b>Graceful degradation</b>: a missing or corrupt ledger file reads as an empty ledger, which costs that one batch a re-fetch.</li>
+</ul>
+<figure>
+<svg viewBox="0 0 720 214" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="30" width="160" height="56" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="88.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">request page k</text><text x="88.0" y="70.0" text-anchor="middle" font-size="9.5" fill="#5b636e">with the previous token</text><rect x="210" y="30" width="200" height="56" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="310.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">write the shard</text><text x="310.0" y="70.0" text-anchor="middle" font-size="9.5" fill="#5b636e">part-{batch_key}-{k}.pqt</text><rect x="452" y="30" width="160" height="56" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="532.0" y="55.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">ledger records page k</text><text x="532.0" y="70.0" text-anchor="middle" font-size="9.5" fill="#5b636e">and the next token</text><rect x="650" y="30" width="62" height="56" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="681.0" y="62.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">k+1</text><line x1="168" y1="58" x2="208" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="410" y1="58" x2="450" y2="58" stroke="#555" marker-end="url(#m)"/><line x1="612" y1="58" x2="648" y2="58" stroke="#555" marker-end="url(#m)"/><text x="189" y="112" text-anchor="middle" font-size="16" fill="#a4501a">⚡</text><line x1="189" y1="64" x2="189" y2="96" stroke="#a4501a" stroke-dasharray="2 2"/><text x="14" y="134" font-size="9.5" fill="#a4501a">Crash here: page k is not on disk yet;</text><text x="14" y="150" font-size="9.5" fill="#a4501a">the ledger says to fetch page k again</text><text x="431" y="112" text-anchor="middle" font-size="16" fill="#a4501a">⚡</text><line x1="431" y1="64" x2="431" y2="96" stroke="#a4501a" stroke-dasharray="2 2"/><text x="290" y="134" font-size="9.5" fill="#a4501a">Crash here: file written, ledger not updated; page k is fetched</text><text x="290" y="150" font-size="9.5" fill="#a4501a">again and overwrites the same file, so no rows are duplicated</text><rect x="8" y="172" width="704" height="34" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="360.0" y="193.0" text-anchor="middle" font-weight="600" font-size="10" fill="#1f2328">Before resuming: every shard the ledger records must exist, or it raises; with another stock list the ledger reads back empty</text></svg>
+<figcaption>Figure 8-2. The page ledger writes data first and the ledger second. A crash at any step costs one re-fetched page.</figcaption>
+</figure>
+
+<div class="keep"><h2>8.3 Atomic writes, and "build the new before deleting the old"</h2>
+<ul>
+<li>Every JSON sidecar is written by <code>write_json_atomically</code>: to a temporary file in the <b>same directory</b>, then <code>flush</code> + <code>fsync</code>, then <code>os.replace</code> over the target. The same directory, because a rename is atomic only within one file system. After a crash there is only ever the complete old file or the complete new one.</li>
+<li>Directories likewise: a backtest's result directory is written as a hidden <code>.{name}.partial</code> and renamed into place once every artifact has succeeded; any exception, <code>KeyboardInterrupt</code> included, removes the staging directory. <b>A result directory is complete or absent.</b></li>
+<li>When a store is rebuilt, <b>the old store is deleted only after the new one is complete</b>: adding stock columns writes a <code>.widening.tmp</code> beside it and swaps by two renames; a full rebuild renames the old store to <code>.superseded.tmp</code> and renames it back on failure. If even that fails, it logs instead of raising, so as not to hide the real error, and the log names both copies.</li>
+<li>The rebuild tool's <code>data_root</code> is required, with no default: run from a code checkout with no data directory, it must never report success against a tree it never read.</li>
+</ul></div>
+<figure>
+<svg viewBox="0 0 720 208" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><text x="8" y="16" font-size="10.5" font-weight="600" fill="#1f5fa8">One JSON file</text><rect x="8" y="24" width="150" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="83.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">write a temp file</text><text x="83.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">in the same directory</text><rect x="190" y="24" width="130" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="255.0" y="50.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">flush + fsync</text><rect x="352" y="24" width="170" height="44" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="437.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">os.replace(temp, target)</text><text x="437.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">atomic swap</text><rect x="554" y="24" width="158" height="44" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="633.0" y="43.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">after a crash: the</text><text x="633.0" y="58.0" text-anchor="middle" font-size="9.5" fill="#5b636e">complete old or new file</text><line x1="158" y1="46" x2="188" y2="46" stroke="#555" marker-end="url(#m)"/><line x1="320" y1="46" x2="350" y2="46" stroke="#555" marker-end="url(#m)"/><line x1="522" y1="46" x2="552" y2="46" stroke="#555" marker-end="url(#m)"/><text x="8" y="104" font-size="10.5" font-weight="600" fill="#1f5fa8">A whole run directory</text><rect x="8" y="112" width="210" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="113.0" y="134.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">.{name}.partial/</text><text x="113.0" y="149.0" text-anchor="middle" font-size="9.5" fill="#5b636e">every artifact written in a hidden staging dir</text><rect x="280" y="112" width="180" height="50" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="370.0" y="134.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">rename to {name}/</text><text x="370.0" y="149.0" text-anchor="middle" font-size="9.5" fill="#5b636e">in one step, once all succeeded</text><rect x="500" y="112" width="212" height="50" rx="7" fill="#fbe3e3" stroke="#d99"/><text x="606.0" y="134.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">remove the staging dir</text><text x="606.0" y="149.0" text-anchor="middle" font-size="9.5" fill="#5b636e">on any exception, KeyboardInterrupt too</text><line x1="218" y1="128" x2="278" y2="128" stroke="#555" marker-end="url(#m)"/><text x="248.0" y="122" text-anchor="middle" font-size="9.5" fill="#5b636e">success</text><path d="M113,162 C113,196 600,196 606,164" fill="none" stroke="#555" marker-end="url(#m)"/><text x="360" y="200" text-anchor="middle" font-size="9.5" fill="#5b636e">failure</text></svg>
+<figcaption>Figure 8-3. Atomic writes in two forms: a file through a temporary file and os.replace, a directory through a staging directory and rename. The result is complete or absent.</figcaption>
+</figure>
+
+<div class="keep"><h2>8.4 Measure first, then design: computing on the server</h2>
+<p>Tick quote data is huge: ten years of NBBO (the US national best bid and offer) for the S&amp;P 500 is about 9 TB of CSV, while the training server reaches WRDS at only 5–6 MB/s in total, so downloading ticks and resampling locally would take more than three weeks. Measured on one day of 96 stocks: aggregated into one-minute bars by SQL on the WRDS server, 1.7 MB returns in 63 s; the raw ticks are 328 MB in 110 s.</p></div>
+<p>So there is a separate data type, <code>nbbo_bars</code>: SQL on the server does the aggregation, reproducing all 13 variables of the local resampler, and the resulting store has the same layout as the local path's. The local tick path is kept as the reference the SQL is checked against, and the two agree bar for bar.</p>
+
+<!-- ============ 9 ============ -->
+<h1 class="chapter"><span class="num">9</span>The run layer: a reproducible on-disk format</h1>
+
+<p>Whether a result can be reproduced depends on three things: <b>config, data and code</b>. Recording all three is the job of one layer, <code>quantlab/runs</code>. A training or a backtest is a "run", and everything it produces goes into one "run directory".</p>
+
+<div class="keep"><h2>9.1 Two kinds of run, one mechanism</h2>
+<figure>
+<svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono, Menlo, monospace" font-size="10.5">
+<g font-family="Helvetica Neue, Arial, sans-serif"><text x="20" y="18" font-weight="600" font-size="12">Trained run (TrainedRun)</text><text x="380" y="18" font-weight="600" font-size="12">Backtest run (BacktestRun)</text></g>
+<rect x="10" y="28" width="340" height="262" rx="8" fill="#f6f8fa" stroke="#d6dbe1"/>
+<rect x="370" y="28" width="340" height="262" rx="8" fill="#f6f8fa" stroke="#d6dbe1"/>
+<g fill="#24292f">
+<text x="24" y="52">XGBoostRegressor_trial_&lt;time&gt;/</text>
+<text x="40" y="72">config.json      <tspan fill="#6a737d">rebuild recipe</tspan></text>
+<text x="40" y="90">model.joblib     <tspan fill="#6a737d">checkpoint</tspan></text>
+<text x="40" y="108" fill="#1f5fa8" font-weight="600">run.json         <tspan fill="#6a737d" font-weight="400">written last</tspan></text>
+<text x="24" y="136" fill="#6a737d">walk-forward train_cv:</text>
+<text x="24" y="156">..._trial_&lt;time&gt;/</text>
+<text x="40" y="174">fold_0/  fold_1/  ...</text>
+<text x="40" y="192" fill="#1f5fa8" font-weight="600">run.json  <tspan fill="#6a737d" font-weight="400">kind=walk_forward</tspan></text>
+<text x="24" y="220" fill="#6a737d">ensemble:</text>
+<text x="40" y="238">member_0/  member_1/ ...</text>
+<text x="40" y="256" fill="#1f5fa8" font-weight="600">run.json  <tspan fill="#6a737d" font-weight="400">kind=ensemble</tspan></text>
+<text x="384" y="52">&lt;BacktesterClass&gt;_&lt;time&gt;/</text>
+<text x="400" y="72">config.json      <tspan fill="#6a737d">rebuild recipe only</tspan></text>
+<text x="400" y="90">weights.zarr     <tspan fill="#6a737d">target weights</tspan></text>
+<text x="400" y="108">holdings.zarr    <tspan fill="#6a737d">actual holdings</tspan></text>
+<text x="400" y="126">equity.zarr      <tspan fill="#6a737d">portfolio value</tspan></text>
+<text x="400" y="144">predictions.zarr <tspan fill="#6a737d">what the rule read</tspan></text>
+<text x="400" y="162">metrics.json  settlements.json</text>
+<text x="400" y="180">report.html</text>
+<text x="400" y="198">inputs/          <tspan fill="#6a737d">copies of in-memory data</tspan></text>
+<text x="400" y="216" fill="#1f5fa8" font-weight="600">run.json         <tspan fill="#6a737d" font-weight="400">written last</tspan></text>
+<text x="400" y="240" fill="#6a737d">run.json: kind, window, data</text>
+<text x="400" y="258" fill="#6a737d">fingerprint, code record, trained run</text>
+</g>
+</svg>
+<figcaption>Figure 9-1. The two kinds of run directory. The run.json header (format version, kind, time written) is shared, and run.json is written last as the "complete" marker.</figcaption>
+</figure></div>
+
+<p><code>quantlab/runs/directory.py</code> is the mechanism both kinds share: one <code>run.json</code> header and format version; <code>run.json</code> written last as the completion marker; writing into a staging directory and renaming it; paths inside the directory always relative (a run copied from the server to a laptop opens as it is); an unknown format version refused with a message to re-run; and <code>open_run(path)</code>, which dispatches on <code>kind</code> to the right reader through a fixed kind-to-class table, importing the class only when it opens a run.</p>
+
+<div class="keep"><h2>9.2 File ownership: only one module knows the file names</h2>
+<p>The rule: <b>files of a run directory are read and written only through <code>quantlab/runs</code>, and no other code may contain their names.</b> With file names and JSON keys scattered over writers and readers, two definitions drift apart, and callers guess the layout with things like <code>Path(checkpoint).parent.parent</code>, which breaks as soon as the nesting changes.</p></div>
+<p>A test enforces it: it scans the library, the examples and the Python code in the docs (docstrings included), and fails on a string literal naming a file such as <code>run.json</code>, or on walking two levels up from a checkpoint with <code>.parent.parent</code>. Callers use typed accessors only:</p>
+<pre><code>run = BacktestRun.open(run_dir)
+run.window, run.data_fingerprint, run.trained_run()     <span class="c"># typed properties, never JSON indexed by string keys</span></code></pre>
+
+<div class="keep"><h2>9.3 Data fingerprints: recorded where data is read</h2>
+<p>One way to learn what data a run used is to have the backtester <b>enumerate</b> every input to record. Nobody can enumerate them all: tradability data, the price history a rule reads before the window, each input of a merged dataset, every member of an ensemble... and the backtester would have to know factor internals.</p>
+<p>quantlab does the opposite: <b>no enumeration; record data where it is read.</b></p></div>
+<figure>
+<svg viewBox="0 0 720 220" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11.5">
+<defs><marker id="a9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs>
+<rect x="10" y="14" width="700" height="150" rx="10" fill="#f8fafc" stroke="#1f5fa8" stroke-dasharray="6 4"/>
+<text x="24" y="34" fill="#1f5fa8" font-weight="600">with DataRecorder():   (around one backtest / one training collect() / one fold)</text>
+<rect x="30" y="52" width="140" height="44" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="100" y="78" text-anchor="middle">Backtester</text>
+<rect x="200" y="52" width="140" height="44" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="270" y="78" text-anchor="middle">Model / rule</text>
+<rect x="370" y="52" width="140" height="44" rx="6" fill="#fff" stroke="#b9c1ca"/><text x="440" y="78" text-anchor="middle">Factor / risk model</text>
+<line x1="170" y1="74" x2="198" y2="74" stroke="#555" marker-end="url(#a9)"/>
+<line x1="340" y1="74" x2="368" y2="74" stroke="#555" marker-end="url(#a9)"/>
+<rect x="540" y="44" width="160" height="104" rx="6" fill="#e8f0fa" stroke="#8fb2dc"/>
+<text x="620" y="64" text-anchor="middle" font-weight="600">Three read seams</text>
+<text x="620" y="86" text-anchor="middle" font-size="10.5">BaseDataset.panel()</text>
+<text x="620" y="104" text-anchor="middle" font-size="10.5">Factor.read()</text>
+<text x="620" y="122" text-anchor="middle" font-size="10.5">RiskStore.read()</text>
+<text x="620" y="140" text-anchor="middle" font-size="9.5" fill="#5b636e">each call logs a request</text>
+<line x1="510" y1="74" x2="538" y2="74" stroke="#555" marker-end="url(#a9)"/>
+<text x="30" y="128" font-size="10" fill="#5b636e">Every read is logged, whoever makes it,</text><text x="30" y="142" font-size="10" fill="#5b636e">including reads nobody thought to list</text>
+<text x="20" y="190">On exit: each distinct request is read again, hashed with SHA-256 and written to run.json, keyed by component path</text>
+<text x="20" y="210" fill="#5b636e">On rebuild: recomputed and compared; a difference only warns (revised data must still be backtestable)</text>
+</svg>
+<figcaption>Figure 9-2. Data fingerprints are recorded at the read seams; a new model or portfolio rule does nothing to be fingerprinted.</figcaption>
+</figure>
+
+<div class="keep"><h3>Engineering details of the hashing</h3>
+<ul>
+<li><b>Two-level digests</b>: one SHA-256 per variable; the request's digest hashes the time axis, the stock axis and each variable's name, dtype and digest. A warning can therefore name the variables that changed.</li>
+<li><b>Canonical form</b>: values are hashed in their stored dtype (no up-casting); every NaN becomes one bit pattern and <code>-0.0</code> becomes <code>0.0</code>, or two reads of identical data could hash differently.</li>
+<li><b>Bounded memory, parallel</b>: each variable is read and hashed in blocks of about 64 MB of whole bars (aligned to the store's chunks), and variables are hashed in parallel threads. Neither the blocking nor the parallelism changes a digest.</li>
+<li><b>Leaves only</b>: only real stores or in-memory data are recorded; a merged dataset records nothing itself, its inputs do. Bookkeeping reads such as calendar lookups go through a separate <code>calendar()</code> and are not recorded; reads to exclude are wrapped in <code>unrecorded()</code>.</li>
+<li><b>Merging per-bar reads</b>: a risk model's store is read one row per bar. Reads that differ only in range are merged into one request covering the first to the last bar, recorded and hashed once.</li>
+</ul></div>
+
+<div class="keep"><h2>9.4 Code records</h2>
+<p>Every <code>run.json</code> also has a <code>code</code> part:</p>
+<ul>
+<li><code>git</code>: the quantlab commit and whether tracked files had uncommitted changes (context only, never compared);</li>
+<li><code>modules</code>: the SHA-256 of the source file of every class in the component tree and of its base classes, marked as a framework or a component module, with the component paths using it;</li>
+<li><code>libraries</code>: the versions of numpy, pandas, xarray, polars, xgboost, torch, vectorbt, KunQuant and cvxpy.</li>
+</ul></div>
+<p>A rebuild compares them item by item and warns on each difference, listing component modules before framework modules. Data and code follow one policy: <b>warn, never block</b>. Revised data must still be backtestable, and a check that blocks only teaches people to work around it.</p>
+
+<div class="keep"><h2>9.5 The full loop</h2>
+<pre><code>run = BacktestRun.open(run_dir)
+again = run.rebuild_backtester()          <span class="c"># rebuild the whole component tree from config.json</span>
+again.run()                               <span class="c"># recompute fingerprints and code record, compare, warn on differences</span>
+
+inputs = DecisionInputs.from_run(run_dir) <span class="c"># live executor: rebuild the decision inputs without the model</span></code></pre></div>
+<figure>
+<svg viewBox="0 0 720 180" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="30" width="170" height="62" rx="7" fill="#f4f6f8" stroke="#b9c1ca"/><text x="93.0" y="51.0" text-anchor="middle" font-weight="600" font-size="11" fill="#1f2328">run directory A</text><text x="93.0" y="66.0" text-anchor="middle" font-size="9.5" fill="#5b636e">config.json: rebuild recipe</text><text x="93.0" y="80.0" text-anchor="middle" font-size="9.5" fill="#5b636e">run.json: data, code records</text><rect x="206" y="36" width="150" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="281.0" y="58.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">rebuild_backtester()</text><text x="281.0" y="73.0" text-anchor="middle" font-size="9.5" fill="#5b636e">rebuild the component tree</text><rect x="384" y="36" width="120" height="50" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="444.0" y="58.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">run again</text><text x="444.0" y="73.0" text-anchor="middle" font-size="9.5" fill="#5b636e">giving run B</text><rect x="532" y="14" width="180" height="94" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="622.0" y="44.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">compare A and B</text><text x="622.0" y="59.0" text-anchor="middle" font-size="9.5" fill="#5b636e">data digests (by component path)</text><text x="622.0" y="73.0" text-anchor="middle" font-size="9.5" fill="#5b636e">module source digests</text><text x="622.0" y="87.0" text-anchor="middle" font-size="9.5" fill="#5b636e">library versions</text><rect x="532" y="126" width="180" height="44" rx="7" fill="#e7f4ec" stroke="#93c4a4"/><text x="622.0" y="145.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">difference: a warning</text><text x="622.0" y="160.0" text-anchor="middle" font-size="9.5" fill="#5b636e">the run completes as usual</text><line x1="178" y1="61" x2="204" y2="61" stroke="#555" marker-end="url(#m)"/><line x1="356" y1="61" x2="382" y2="61" stroke="#555" marker-end="url(#m)"/><line x1="504" y1="61" x2="530" y2="61" stroke="#555" marker-end="url(#m)"/><line x1="622" y1="108" x2="622" y2="124" stroke="#555" marker-end="url(#m)"/></svg>
+<figcaption>Figure 9-3. The reproduction loop: rebuild from a run directory, run again, compare the records; a difference only warns.</figcaption>
+</figure>
+
+<!-- ============ 10 ============ -->
+<h1 class="chapter"><span class="num">10</span>Isolating external dependencies</h1>
+
+<p>The project depends on several heavy or sensitive libraries and services. The principle: <b>each external dependency is imported by exactly one module, and a test enforces it.</b></p>
+<table>
+<tr><th style="width:20%">Dependency</th><th style="width:36%">Its one importing module</th><th>Reason</th></tr>
+<tr><td>vectorbt</td><td><code>backtest/engine_vectorbt.py</code></td><td>The engine is replaceable (an event-driven engine is planned); the numeric rules holdings replay needs live separately in <code>execution/rules.py</code>.</td></tr>
+<tr><td>cvxpy</td><td><code>portfolio/predefined/mean_variance.py</code></td><td>Only the mean-variance optimiser needs a solver; other rules and the root classes never load it.</td></tr>
+<tr><td>wandb / mlflow</td><td><code>tracking/wandb.py</code> / <code>tracking/mlflow.py</code></td><td>See 10.1.</td></tr>
+<tr><td>torch</td><td>the torch part of the model layer</td><td>No root class or config of any layer loads torch; a subprocess test checks it.</td></tr>
+<tr><td>Vendor clients</td><td><code>acquisition/&lt;vendor&gt;</code></td><td>See 10.2.</td></tr>
+</table>
+<figure>
+<svg viewBox="0 0 720 242" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica Neue, Arial, sans-serif" font-size="11"><defs><marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#555"/></marker></defs><rect x="8" y="8" width="430" height="226" rx="10" fill="#f8fafc" stroke="#b9c1ca"/><text x="20" y="26" font-size="11" font-weight="600">quantlab</text><rect x="22" y="44" width="150" height="176" rx="8" fill="#fff" stroke="#c0392b" stroke-dasharray="5 3"/><text x="97" y="116" text-anchor="middle" font-size="11" font-weight="600">every other module</text><text x="97" y="136" text-anchor="middle" font-size="9.5" fill="#c0392b">may not import any</text><text x="97" y="150" text-anchor="middle" font-size="9.5" fill="#c0392b">library on the right</text><rect x="186" y="40" width="240" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="306.0" y="59.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">backtest/engine_vectorbt.py</text><rect x="500" y="40" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="59.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">vectorbt</text><line x1="426" y1="55" x2="498" y2="55" stroke="#555" marker-end="url(#m)"/><rect x="186" y="78" width="240" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="306.0" y="97.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">portfolio/predefined/mean_variance.py</text><rect x="500" y="78" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="97.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">cvxpy</text><line x1="426" y1="93" x2="498" y2="93" stroke="#555" marker-end="url(#m)"/><rect x="186" y="116" width="240" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="306.0" y="135.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">tracking/wandb.py, mlflow.py</text><rect x="500" y="116" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="135.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">wandb / mlflow</text><line x1="426" y1="131" x2="498" y2="131" stroke="#555" marker-end="url(#m)"/><rect x="186" y="154" width="240" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="306.0" y="173.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">the torch part of model/</text><rect x="500" y="154" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="173.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">torch</text><line x1="426" y1="169" x2="498" y2="169" stroke="#555" marker-end="url(#m)"/><rect x="186" y="192" width="240" height="30" rx="7" fill="#e8f0fa" stroke="#8fb2dc"/><text x="306.0" y="211.0" text-anchor="middle" font-weight="600" font-size="9.5" fill="#1f2328">acquisition/&lt;vendor&gt;/</text><rect x="500" y="192" width="212" height="30" rx="7" fill="#fbefe6" stroke="#dcae8c"/><text x="606.0" y="211.0" text-anchor="middle" font-weight="600" font-size="10.5" fill="#1f2328">vendor API clients</text><line x1="426" y1="207" x2="498" y2="207" stroke="#555" marker-end="url(#m)"/></svg>
+<figcaption>Figure 10-1. Each external dependency has one entry module. No other module may import these libraries, and a test enforces it.</figcaption>
+</figure>
+
+<div class="keep"><h2>10.1 Experiment tracking: chosen by config, off by default</h2>
+<ul>
+<li>The tracker is a <b>component</b> in the config (the <code>tracker</code> field, serialised by class path like any other component); the default is a null tracker that does nothing. Unless a config names one, <b>no data leaves the machine</b>;</li>
+<li>W&amp;B and MLflow are two adapters behind one small interface: <code>start_run</code> (a context manager), <code>log</code>, <code>summarize</code>, <code>update_config</code>, <code>log_table</code>, <code>log_file</code>;</li>
+<li>Not adopted, and why: an environment-variable switch (not reproducible from <code>config.json</code>); passing a tracker object to constructors without serialising it (a rebuilt run would silently stop tracking); a contextvar holding a "current run" (hidden global state, hard to reason about with deep-copied models).</li>
+</ul></div>
+
+<div class="keep"><h2>10.2 Credentials and the credential-free inspector</h2>
+<ul>
+<li>Every API key is read from environment variables only: never passed on the command line, never written to a config file, never logged.</li>
+<li><code>SourceInspector</code> answers "what can this project download", and must be importable <b>without loading any vendor client</b>. It is checked by an AST scan of its own source plus a run-time look at <code>vars()</code>. Neither can see an import pulled in by a package <code>__init__.py</code>, so the three <code>__init__.py</code> files on its import chain must stay empty, and a test asserts it.</li>
+</ul></div>
+
+<div class="keep"><h2>10.3 Platform differences live in docs and tests</h2>
+<p>On macOS, xgboost's wheel links Homebrew's OpenMP library (libomp) while torch bundles its own, and a process using both crashes or deadlocks. Only <code>OMP_NUM_THREADS=1</code> was measured to be safe (preloading libomp crashes torch instead). <code>tests/conftest.py</code> sets it on macOS before any import, and a test checks that the setting is there; Linux is unaffected.</p></div>
+
+<!-- ============ 11 ============ -->
+<h1 class="chapter"><span class="num">11</span>Tests that guard the architecture</h1>
+
+<p>Besides ordinary functional tests, the suite has a set of <b>tests whose job is to guard architectural rules</b>. A rule written only in a document fades; a rule written as a test does not.</p>
+
+<table>
+<tr><th style="width:36%">Test file (under tests/)</th><th>The rule it enforces</th></tr>
+<tr><td><code>test_layer_layout.py</code></td><td>Every <code>quantlab</code> import (function-level ones included) follows the layer order; every module belongs to a layer; root classes load no torch; framework modules never import <code>predefined</code>; cvxpy, wandb and mlflow each have one importer; <code>predefined/__init__.py</code> is empty.</td></tr>
+<tr><td><code>test_run_ownership.py</code></td><td>Run-directory file names appear only in <code>quantlab/runs</code>; no <code>.parent.parent</code> guessing.</td></tr>
+<tr><td><code>test_backtest_predictor_protocol.py</code></td><td>A non-inheriting wrapper backtests identically; an object missing a member is refused; the backtest layer reads protocol members only.</td></tr>
+<tr><td><code>test_source_inspector.py</code></td><td>The credential-free inspector reaches no vendor client; three <code>__init__.py</code> files are empty.</td></tr>
+<tr><td><code>test_data_recorder.py</code> and others</td><td>Recording and comparing data fingerprints; only the data, factor and fingerprint modules ask a factor what it reads.</td></tr>
+<tr><td><code>test_code_record.py</code></td><td>The content and comparison of code records.</td></tr>
+<tr><td><code>test_undefined_names.py</code></td><td>Undefined names and unused imports, checked with ruff.</td></tr>
+<tr><td><code>test_extensibility_contract.py</code>, <code>test_risk_contract.py</code>, <code>test_tracker_contract.py</code></td><td>The contract of each extension point: what a user's new implementation must and need not provide.</td></tr>
+<tr><td>Reference files (such as <code>topn_reference.npz</code>)</td><td>Numbers are bit-identical before and after a refactor; regenerated only when the computation's meaning changes on purpose.</td></tr>
+</table>
+
+<div class="keep"><h3>What these tests have in common</h3>
+<ul>
+<li><b>Positive controls</b>: the layer test first asserts that <code>quantlab.model.base</code> is among the modules it checks, so a wrong path cannot make it pass forever on an empty scan.</li>
+<li><b>Order, not paths</b>: the checks are about dependency order, so moving a file does not mean editing the test.</li>
+<li><b>No exemption lists</b>: the rules do not allow a list of "these places may break it", because such lists are how rules erode.</li>
+<li><b>Fully offline</b>: the whole suite needs no network and no credentials. Measurement tests that need real data are not collected by default; they run only when named on the command line and fail with a clear message when the data is missing.</li>
+</ul></div>
+
+<div class="box"><b class="t">Another guard rail: runnable documentation</b>
+Every public class and function has a numpydoc docstring that <b>must include an example</b>, and the example output is real output, not written by hand. Python code in the docs is also subject to the file-ownership scan of 9.2.</div>
+
+<!-- ============ 12 ============ -->
+<h1 class="chapter"><span class="num">12</span>Design records and project conventions</h1>
+
+<div class="keep"><h2>12.1 Architecture decision records: writing down "why"</h2>
+<p><code>docs/adr/</code> holds 28 architecture decision records (ADRs). Each uses one format: what was decided, why, <b>which other options were considered and why they were not taken</b>, and the consequences. The "options not taken" part is the shortcut to understanding this repository: next to almost every design that looks odd at first sight is the reason the more obvious one does not work. Most of the "why" in this document comes from there.</p></div>
+
+<table>
+<tr><th style="width:62%">Topic</th><th>Where in this document</th></tr>
+<tr><td>Panels are read by date range, never by rewriting another object's config</td><td>Chapter 4</td></tr>
+<tr><td>A label is a forward-shifted factor; splits purge by its lookahead</td><td>5.2</td></tr>
+<tr><td>Torch models choose their sample shape; the base keeps the data contracts</td><td>5.3</td></tr>
+<tr><td>The backtester depends on a Predictor protocol; when to define a protocol</td><td>Chapter 6</td></tr>
+<tr><td>The api layer is a DataFrame-in, DataFrame-out facade</td><td>2.4</td></tr>
+<tr><td>Per-bar decisions; decision and execution apart; one assembly of decision inputs</td><td>Chapter 7</td></tr>
+<tr><td>The tracker is chosen by config and off by default</td><td>10.1</td></tr>
+<tr><td>Run-file ownership, component declarations, data fingerprints and code records</td><td>Chapters 3 and 9</td></tr>
+<tr><td>Layers form an ordered dependency chain</td><td>1.2</td></tr>
+<tr><td>A factor risk model is a per-bar data product</td><td>7.4</td></tr>
+<tr><td>NBBO bars are aggregated on the server</td><td>Chapter 8</td></tr>
+</table>
+
+<div class="keep"><h2>12.2 One vocabulary</h2>
+<p><code>CONTEXT.md</code> at the repository root is a glossary: it fixes which word names each concept and lists the synonyms to avoid. For example, a "panel" is xarray data shaped <code>(timestamp, symbol)</code> while a "frame" is the caller's DataFrame; a "weight" is the target fraction asked for while a "holding" is the fraction actually held after fills; "lookahead" and "span" mean different things. Code, docs and scripts all use one vocabulary; appendix B lists part of it.</p></div>
+
+<div class="keep"><h2>12.3 No backward compatibility</h2>
+<p>The project is not in production yet, so its policy is explicit: <b>when a breaking refactor is needed, do it directly: no config migrations, no compatibility layers, no old names kept.</b> A config or run directory in an old format is refused with a message to re-run or retrain. The benefit is that the code holds no layers of forwarding and compatibility branches, and changing the architecture is cheap; the cost is that past runs must be recomputed before they open again.</p></div>
+
+<div class="keep"><h2>12.4 Development process</h2>
+<p>Larger changes follow "question the design hard, then write a spec (a GitHub issue), then split it into small, separately committable tasks, then implement". Research experiments are recorded in a separate private repository, one directory per experiment with its setup, the scripts actually run and the conclusions, apart from the library code.</p></div>
+
+<!-- ============ 13 ============ -->
+<h1 class="chapter"><span class="num">13</span>Trade-offs at a glance</h1>
+
+<p>No design is free. The table puts the main decisions of this document side by side: the middle column is what was gained, the right column what was paid.</p>
+<table>
+<tr><th style="width:24%">Decision</th><th style="width:38%">Gained</th><th>Paid</th></tr>
+<tr><td>Layers exchange only xarray panels</td><td>One representation of missing data; vectorised cross-sections; models consume it directly; Zarr loads on demand</td><td>DataFrame users need a facade; dense panels cost memory on sparse data (many years of the whole market, many delisted stocks)</td></tr>
+<tr><td>Config dataclasses + component declarations</td><td>Every run serialisable and rebuildable; the component tree is walkable</td><td>Every configurable object needs a config class; moving a class invalidates saved configs</td></tr>
+<tr><td>Reads are queries with arguments; configs frozen</td><td>No shared mutable state; one dataset serves many users; several inputs can merge</td><td>Every read reopens the store; callers pass their own dates</td></tr>
+<tr><td>Labels are a <code>Forward</code> wrapper</td><td>Any factor can be a label; one source for the lookahead; automatic purge</td><td>Bars lost at every split; the wrapped factor must use only data up to t, which <code>Forward</code> cannot check</td></tr>
+<tr><td>Per-bar decision interface</td><td>The future is structurally invisible; research and live trading share one method</td><td>No whole-panel vectorised shortcut; slower</td></tr>
+<tr><td>Rejections and delistings simulated faithfully</td><td>No optimistic bias; computable live</td><td>Target weights ≠ holdings: holdings must be replayed and recorded separately</td></tr>
+<tr><td>A protocol only when a second implementation appears</td><td>Small interfaces; invariants stay in root classes</td><td>No static type checking; protocols rely on run-time checks and tests</td></tr>
+<tr><td>Run directories as a layer</td><td>File names defined once; one format; directories movable</td><td>A new kind of run artifact must go through the runs layer</td></tr>
+<tr><td>Fingerprints recorded at the read seams</td><td>Nothing missed; zero cost for new components</td><td>Each request is read again and hashed at the end: extra I/O</td></tr>
+<tr><td>Differences warn, never block</td><td>Revised data can still be backtested</td><td>Warnings can be ignored</td></tr>
+<tr><td>Training data on GPU / in RAM</td><td>Reads one to two orders of magnitude faster (measured)</td><td>Data larger than RAM needs another design</td></tr>
+<tr><td>No backward compatibility</td><td>Fast refactors; no compatibility layers in code</td><td>Old runs must be recomputed to open</td></tr>
+<tr><td>Architecture rules written as tests</td><td>Rules are neither forgotten nor quietly broken</td><td>More test code than library code; changing the architecture means changing the guard tests too</td></tr>
+</table>
+
+<!-- ============ 14 ============ -->
+<h1 class="chapter"><span class="num">14</span>Strengths, limitations and reserved directions</h1>
+
+<div class="keep"><h2>14.1 Strengths</h2>
+<ol>
+<li><b>Correctness from structure, not discipline.</b> No look-ahead, no duplicated data, no half-written files: interface shapes, single assembly points, atomic operations and guard tests ensure them. A newcomer who does not know every pitfall will still find these bugs hard to write.</li>
+<li><b>Reproducibility is first-class.</b> Config, data and code are all recorded; a run directory rebuilds into live objects and differences are reported automatically.</li>
+<li><b>Extension is cheap and even-handed.</b> A new factor, model or portfolio rule mostly means one to three hooks; shipped and user implementations take the same path, with no internal privileges.</li>
+<li><b>Research and live trading share code.</b> A KunQuant factor's batch and streaming modes come from one graph; the per-bar rule interface, <code>DecisionInputs</code> and the fill rules are reused directly by the live executor.</li>
+<li><b>Clear dependency boundaries.</b> Layers form an acyclic chain, each heavy library has one entry point, and opening a run directory loads no torch.</li>
+<li><b>Decisions are traceable.</b> The decision records give the alternatives and measurements behind each key choice, so a reader of the code can learn why it is not written another way.</li>
+</ol></div>
+
+<div class="keep"><h2>14.2 Limitations</h2>
+<ul>
+<li><b>Heavy dependencies, steep start.</b> KunQuant needs a C++ compiler at run time and its factor tests compile for minutes; Python ≥ 3.13 is required; the main data sources need paid accounts. The repository does include a Yahoo Finance example that needs no account, and an offline quickstart on synthetic data.</li>
+<li><b>Single process, single machine.</b> No service layer, no job queue; training and factor computation assume one large-memory workstation with a GPU.</li>
+<li><b>No static type checking.</b> Protocols and contracts rely on run-time checks and tests; adopting pyright or mypy is treated as a larger, separate decision.</li>
+<li><b>Interfaces still change.</b> No backward compatibility means outside users must follow the main branch.</li>
+<li><b>The backtest is vectorised.</b> Partial fills and intraday matching need an event-driven engine; the current engine lets a rejected order expire instead of retrying it on later bars.</li>
+</ul></div>
+
+<div class="keep"><h2>14.3 Directions the architecture reserves</h2>
+<ul>
+<li><b>Event-driven backtesting</b> (NautilusTrader is planned): the per-bar rule interface and <code>DecisionInputs.context</code> are ready for it.</li>
+<li><b>A service and multiple users</b>: stateless reads, frozen configs and serialisable components are the preconditions for editing and testing factors and models online.</li>
+<li><b>Unstructured data</b> (news, say): a dataset's cleaning steps can be overridden; nothing assumes market data is always open-high-low-close-volume.</li>
+<li><b>A web front end</b>: explicitly out of scope for now.</li>
+</ul></div>
+
+<!-- ============ Appendix ============ -->
+<h1 class="chapter"><span class="num">App.</span>Appendix</h1>
+
+<div class="keep"><h2>A. Suggested reading path</h2>
+<ol>
+<li><code>README.md</code> and <code>docs/user-guide/concepts.md</code>: the overall concepts.</li>
+<li><code>CONTEXT.md</code>: the glossary, to agree on words first.</li>
+<li><code>tests/test_layer_layout.py</code>: every layer and its order at a glance.</li>
+<li><code>quantlab/core/component.py</code>: the component rule, serialisation and rebuilding.</li>
+<li><code>quantlab/dataset/base.py</code> → <code>quantlab/factor/base.py</code> → <code>quantlab/label/forward.py</code>: how data is read.</li>
+<li><code>quantlab/model/base.py</code>, then <code>torch_model.py</code> / <code>library_model.py</code>: template methods and hooks.</li>
+<li><code>quantlab/portfolio/base.py</code> and <code>decision_inputs.py</code>: the no-look-ahead interface design.</li>
+<li><code>quantlab/backtest/base.py</code>: the Predictor protocol and the backtest workflow.</li>
+<li><code>quantlab/runs/directory.py</code> and <code>record.py</code>: the reproducibility machinery.</li>
+<li><code>docs/adr/</code>: whenever you ask "why is it written this way".</li>
+<li><code>docs/developer-guide/extending.md</code>: writing your own data source, factor, model or portfolio rule.</li>
+</ol></div>
+
+<h2>B. Glossary</h2>
+<table>
+<tr><th style="width:24%">Term</th><th>Meaning</th></tr>
+<tr><td>panel</td><td>An xarray.Dataset with exactly the dimensions (timestamp, symbol)</td></tr>
+<tr><td>frame</td><td>The caller's long pandas / polars table; appears only in the api layer</td></tr>
+<tr><td>store</td><td>A Zarr directory on disk holding one panel</td></tr>
+<tr><td>component</td><td>An object built from one config dataclass, with get_config / rebuild</td></tr>
+<tr><td>warm-up</td><td>Bars read before the first requested bar so rolling computations have enough history; counted in bars</td></tr>
+<tr><td>lookahead / span / delay</td><td>How many bars after t a label at t reads (= delay + span) / how many bars it accumulates over / the bars between the signal and the first bar counted</td></tr>
+<tr><td>purge</td><td>Dropping the last lookahead bars of the earlier segment at every split</td></tr>
+<tr><td>Predictor</td><td>The protocol of a signal source a backtest can use; models and ensembles satisfy it</td></tr>
+<tr><td>weight / holding</td><td>The target fraction asked for / the fraction actually held after fills</td></tr>
+<tr><td>locked position</td><td>A stock held but not tradable at the bar; a rule must keep its weight</td></tr>
+<tr><td>decision inputs</td><td>Everything a rule may read at t except holdings; assembled only by DecisionInputs</td></tr>
+<tr><td>trained run / backtest run</td><td>The two kinds of run directory, each described by its run.json</td></tr>
+<tr><td>data fingerprint / code record</td><td>Digests of the data a run read / digests of the code it used, plus library versions</td></tr>
+<tr><td>tracker</td><td>W&amp;B, MLflow, or nothing (the default)</td></tr>
+</table>
+
+<h2>C. A minimal end-to-end example</h2>
+<p>From the repository README (<code>examples/yahoo_us_equity.py</code>; no account needed, about 20 seconds). Every step builds a config object and calls a public method:</p>
+<pre><code><span class="c"># 1. Data: a DataFrame becomes an in-memory MarketDataset</span>
+prices = FrameDataset(stocks_df, columns=COLUMNS)
+
+<span class="c"># 2. Factor and label, both built from a FactorConfig; Return is a ready-made return label</span>
+factor = Alpha158Stock(FactorConfig(dataset=prices, warmup_bars=60, mode=<span class="s">"batch"</span>,
+                                    data_columns=ADJUSTED, file_path=<span class="s">".../alpha158.zarr"</span>))
+label = Return(FactorConfig(dataset=prices, warmup_bars=0, mode=<span class="s">"batch"</span>,
+                            data_columns=(<span class="s">"adjOpen"</span>,), kwargs={<span class="s">"n_forward_periods"</span>: 5},
+                            file_path=<span class="s">".../ret_5.zarr"</span>))
+
+<span class="c"># 3. Model: dates are set on the outermost object only and passed down with each read</span>
+model = XGBoostRegressor(ModelConfig(
+    factors=[factor], labels=[label], model_save_dir=<span class="s">".../models"</span>,
+    hyperparameters={<span class="s">"num_boost_round"</span>: 200, <span class="s">"max_depth"</span>: 3, <span class="s">"eta"</span>: 0.03},
+    train_start=<span class="s">"2016-01-01"</span>, train_end=<span class="s">"2021-12-31"</span>,
+    test_start=<span class="s">"2022-01-01"</span>, test_end=<span class="s">"2022-12-31"</span>, ...))
+model.collect()
+checkpoint = model.train()          <span class="c"># writes a trained run directory</span>
+
+<span class="c"># 4. Portfolio rule and backtest: the rule is a component in the config</span>
+backtester = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
+    price_dataset=prices, model=..., model_mode=<span class="s">"load"</span>, checkpoint=str(checkpoint),
+    start_date=<span class="s">"2023-01-01"</span>, end_date=<span class="s">"2024-12-31"</span>, output_dir=<span class="s">".../backtests"</span>,
+    rebalance_periods=5,
+    constructor=TopNConstructor(TopNConfig(direction=<span class="s">"long_only"</span>, top_n=10)),
+))
+result = backtester.run()           <span class="c"># writes a backtest run directory</span>
+
+<span class="c"># 5. Reproduce: rebuild from the run directory and run again, same equity curve</span>
+BacktestRun.open(run_dir).rebuild_backtester().run()</code></pre>
+
+<p class="small" style="margin-top:20pt">Compiled from the repository's source code, architecture decision records (docs/adr/), glossary (CONTEXT.md), developer documentation and tests. Every measured figure is quoted from the repository's documentation; none was measured for this document. Illustrative code is marked as such; other snippets are taken from the repository.</p>
+
+</body>
+</html>
