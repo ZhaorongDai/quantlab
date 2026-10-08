@@ -12,6 +12,7 @@ reference tables is ``quantlab.backend.parquet.PlBackend``. See
 ``docs/backend.md`` and ``docs/chunking.md``.
 """
 
+import glob
 import json
 import os
 import shutil
@@ -239,6 +240,8 @@ class XrBackend(DataBackend):
             self.data.to_zarr(path, mode="w", **kwargs)
             return self
 
+        # A rechunk killed midway may have left the store without a coordinate.
+        _recover_index_coordinate_swap(target)
         self._assert_append_compatible(path, append_dim)
         # xarray rejects `encoding` on an append; the grid was pinned by the
         # creating write above.
@@ -381,8 +384,14 @@ class XrBackend(DataBackend):
         if widening.exists():
             # A never-authoritative orphan from a crashed rewrite.
             shutil.rmtree(widening, ignore_errors=True)
+        # So are the sidecars of a rechunk of that orphan (`_widen_chunked`).
+        for suffix in (_RECHUNK_SUFFIX, _REPLACED_SUFFIX):
+            pattern = f"{glob.escape(widening.name)}.*{suffix}"
+            for orphan in widening.parent.glob(pattern):
+                shutil.rmtree(orphan, ignore_errors=True)
         if not target.exists():
             raise FileNotFoundError(f"File {path} does not exist.")
+        _recover_index_coordinate_swap(target)
 
         fills = dict(fill_values or {})
 
@@ -756,6 +765,7 @@ class XrBackend(DataBackend):
         """
         if not Path(path).exists():
             raise FileNotFoundError(f"File {path} does not exist.")
+        _recover_index_coordinate_swap(Path(path))
 
         fills = dict(fill_values or {})
         requested = {
@@ -895,6 +905,7 @@ class XrBackend(DataBackend):
 
         if not Path(path).exists():
             return self.append(path, append_dim, **kwargs)
+        _recover_index_coordinate_swap(Path(path))
 
         # Labels keep their own type and `sort_symbol_axis` orders integers
         # numerically, so an integer axis is never sorted as strings.
@@ -1389,7 +1400,8 @@ class XrBackend(DataBackend):
 
 #: Suffixes of the two sidecars ``rechunk_index_coordinates`` keeps beside
 #: the store while it swaps one coordinate array: the rewritten array before
-#: it becomes authoritative, and the original array between the two renames.
+#: it becomes authoritative, and the original array from the first rename
+#: until the swap is complete (consolidated metadata included).
 _RECHUNK_SUFFIX = ".rechunk.tmp"
 _REPLACED_SUFFIX = ".replaced.tmp"
 
@@ -1397,19 +1409,101 @@ _REPLACED_SUFFIX = ".replaced.tmp"
 _ARRAY_METADATA_FILES = ("zarr.json", ".zarray", ".zattrs")
 
 
+def _dimension_names(array) -> Optional[list[str]]:
+    """Return the dimension names of a Zarr v2 or v3 array, if recorded."""
+    if array.metadata.zarr_format == 3:
+        dims = array.metadata.dimension_names
+    else:
+        dims = array.attrs.get("_ARRAY_DIMENSIONS")
+    return None if dims is None else [str(dim) for dim in dims]
+
+
 def _index_coordinate_names(group) -> list[str]:
     """Return the names of the 1-D arrays that index their own dimension."""
     names = []
     for name, array in group.arrays():
-        if array.ndim != 1:
-            continue
-        if array.metadata.zarr_format == 3:
-            dims = array.metadata.dimension_names
-        else:
-            dims = array.attrs.get("_ARRAY_DIMENSIONS")
-        if dims is not None and list(dims) == [name]:
+        if array.ndim == 1 and _dimension_names(array) == [str(name)]:
             names.append(str(name))
     return sorted(names)
+
+
+def _rechunk_sidecars(store: Path, name: str) -> tuple[Path, Path]:
+    """Return the staging and replaced sidecars of coordinate ``name``."""
+    return (
+        Path(f"{store}.{name}{_RECHUNK_SUFFIX}"),
+        Path(f"{store}.{name}{_REPLACED_SUFFIX}"),
+    )
+
+
+def _is_consolidated(store: Path, zarr_format: int) -> bool:
+    """Return whether the store at ``store`` carries consolidated metadata."""
+    if zarr_format == 3:
+        root = json.loads((store / "zarr.json").read_text())
+        return root.get("consolidated_metadata") is not None
+    return (store / ".zmetadata").exists()
+
+
+def _recover_index_coordinate_swap(store: Path) -> list[str]:
+    """Finish or undo a ``rechunk_index_coordinates`` swap a crash cut short.
+
+    The swap of one coordinate renames the original array aside to its
+    ``.replaced.tmp`` sidecar, renames the rewritten ``.rechunk.tmp``
+    sidecar into the store, rewrites consolidated metadata, and only then
+    removes the ``.replaced.tmp`` sidecar. The sidecars left on disk tell
+    deterministically how far it got, coordinate by coordinate:
+
+    - only ``.rechunk.tmp``: killed before the swap; the store is intact and
+      the sidecar, never authoritative, is removed.
+    - ``.replaced.tmp`` and no array in the store: killed between the two
+      renames; the original array is renamed back (rolled back) and the
+      rewritten sidecar removed, so the store is exactly as it was before.
+    - ``.replaced.tmp`` and an array in the store: the swap completed (the
+      rename is atomic and the rewritten array was verified before it);
+      consolidated metadata is rewritten, then the original removed.
+
+    Every coordinate is a dimension of some array of the store, so the
+    candidates are read from the dimension names the remaining arrays
+    record, never guessed from file names. Called on entry by
+    ``rechunk_index_coordinates`` and by every ``XrBackend`` method that
+    writes to an existing store. Not safe against a swap running
+    concurrently in another process.
+
+    Returns
+    -------
+    list[str]
+        Names of the coordinates whose swap residue was resolved, sorted.
+    """
+    import zarr
+
+    group = zarr.open_group(str(store), mode="r", use_consolidated=False)
+    candidates = set(group.array_keys())
+    for _, array in group.arrays():
+        candidates.update(_dimension_names(array) or [])
+
+    resolved, completed = [], []
+    for name in sorted(candidates):
+        staging, replaced = _rechunk_sidecars(store, name)
+        if not staging.exists() and not replaced.exists():
+            continue
+        resolved.append(name)
+        if replaced.exists() and not (store / name).exists():
+            logger.warning(
+                f"rechunk_index_coordinates: a previous rewrite of '{name}' "
+                f"in {store} was killed between its two renames; rolling the "
+                f"original array back from {replaced}."
+            )
+            os.replace(replaced, store / name)
+        elif replaced.exists():
+            completed.append(replaced)
+        shutil.rmtree(staging, ignore_errors=True)
+
+    if completed:
+        zarr_format = group.metadata.zarr_format
+        if _is_consolidated(store, zarr_format):
+            zarr.consolidate_metadata(str(store), zarr_format=zarr_format)
+        for replaced in completed:
+            shutil.rmtree(replaced)
+    return resolved
 
 
 def _with_one_chunk(document: dict, length: int) -> dict:
@@ -1448,10 +1542,26 @@ def rechunk_index_coordinates(path: "str | os.PathLike") -> list[str]:
     Only the chunk grid changes. The stored values are copied as they are
     encoded on disk (the int64 ticks of a datetime coordinate, the text of a
     string one), so no value, dtype, codec, attribute or data variable is
-    touched and a data fingerprint of the store is unchanged. The new array
-    is built and read back in a sidecar beside the store, then swapped in by
-    two renames; consolidated metadata, when the store has it, is rewritten
-    afterwards. A store with no fragmented coordinate is not written at all.
+    touched and a data fingerprint of the store is unchanged. A store with
+    no fragmented coordinate is not written at all.
+
+    Each rewritten array is built and read back in a ``.rechunk.tmp``
+    sidecar beside the store, then swapped in by two renames: the original
+    array to a ``.replaced.tmp`` sidecar, the rewritten one into its place.
+    Consolidated metadata, when the store has it, is rewritten after every
+    swap, and only then are the originals removed. A process killed at any
+    point leaves sidecars that tell how far it got; the next call of this
+    function, or of any ``XrBackend`` method that writes to the store,
+    resolves them first: before the first rename the store is intact and the
+    sidecar is dropped, between the renames the original array is renamed
+    back, after them the swap is finished. Nothing beside the store is ever
+    needed to read it, except in two windows a reader can fall into: between
+    the two renames the store has no array for that coordinate, and between
+    the swap and the consolidation its consolidated metadata records the
+    old chunk grid. Both last microseconds to milliseconds when the process
+    runs to the end; after a kill inside one, the store stays unreadable
+    until the next writing call recovers it. Do not run this while another
+    process reads or writes the store.
 
     Parameters
     ----------
@@ -1474,6 +1584,9 @@ def rechunk_index_coordinates(path: "str | os.PathLike") -> list[str]:
 
     Examples
     --------
+    A store created from a one-bar window and grown by an append holds
+    ``timestamp`` in one-element chunks:
+
     >>> import tempfile
     >>> from pathlib import Path
     >>> import numpy as np
@@ -1487,33 +1600,30 @@ def rechunk_index_coordinates(path: "str | os.PathLike") -> list[str]:
     ...             "symbol": ["AAA", "BBB"]},
     ... )
     >>> path = Path(tempfile.mkdtemp()) / "prices.zarr"
-    >>> panel.isel(timestamp=[0]).to_zarr(path, mode="w")  # doctest: +SKIP
-    >>> panel.isel(timestamp=[1, 2]).to_zarr(
+    >>> _ = panel.isel(timestamp=[0]).to_zarr(path, mode="w")
+    >>> _ = panel.isel(timestamp=[1, 2]).to_zarr(
     ...     path, mode="a", append_dim="timestamp"
-    ... )  # doctest: +SKIP
-    >>> zarr.open_group(path)["timestamp"].chunks  # doctest: +SKIP
+    ... )
+    >>> zarr.open_group(path, mode="r")["timestamp"].chunks
     (1,)
-    >>> rechunk_index_coordinates(path)  # doctest: +SKIP
+    >>> rechunk_index_coordinates(path)
     ['timestamp']
-    >>> zarr.open_group(path)["timestamp"].chunks  # doctest: +SKIP
+    >>> zarr.open_group(path, mode="r")["timestamp"].chunks
     (3,)
+    >>> xr.open_zarr(path)["timestamp"].dt.day.values.tolist()
+    [2, 3, 4]
+    >>> rechunk_index_coordinates(path)
+    []
     """
     import zarr
 
     store = Path(path)
     if not store.exists():
         raise FileNotFoundError(f"File {path} does not exist.")
+    _recover_index_coordinate_swap(store)
     group = zarr.open_group(str(store), mode="r", use_consolidated=False)
     zarr_format = group.metadata.zarr_format
-    if zarr_format == 3:
-        consolidated = (
-            json.loads((store / "zarr.json").read_text()).get(
-                "consolidated_metadata"
-            )
-            is not None
-        )
-    else:
-        consolidated = (store / ".zmetadata").exists()
+    consolidated = _is_consolidated(store, zarr_format)
 
     rewritten = []
     for name in _index_coordinate_names(group):
@@ -1523,9 +1633,7 @@ def rechunk_index_coordinates(path: "str | os.PathLike") -> list[str]:
             continue
         values = array[...]
         source = store / name
-        staging = Path(f"{store}.{name}{_RECHUNK_SUFFIX}")
-        replaced = Path(f"{store}.{name}{_REPLACED_SUFFIX}")
-        shutil.rmtree(staging, ignore_errors=True)
+        staging, replaced = _rechunk_sidecars(store, name)
         try:
             staging.mkdir(parents=True)
             for document in _ARRAY_METADATA_FILES:
@@ -1549,12 +1657,15 @@ def rechunk_index_coordinates(path: "str | os.PathLike") -> list[str]:
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
-        shutil.rmtree(replaced, ignore_errors=True)
+        # From here a kill leaves residue `_recover_index_coordinate_swap`
+        # resolves on the next call; the original stays on disk until the
+        # consolidated metadata describes the rewritten array.
         os.replace(source, replaced)
         os.replace(staging, source)
-        shutil.rmtree(replaced)
         rewritten.append(name)
 
     if rewritten and consolidated:
         zarr.consolidate_metadata(str(store), zarr_format=zarr_format)
+    for name in rewritten:
+        shutil.rmtree(_rechunk_sidecars(store, name)[1])
     return rewritten

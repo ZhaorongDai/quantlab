@@ -189,3 +189,159 @@ def test_rechunk_keeps_a_store_without_consolidated_metadata_unconsolidated(
 def test_rechunk_refuses_a_missing_store(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         rechunk_index_coordinates(tmp_path / "absent.zarr")
+
+
+# --- Crash recovery -------------------------------------------------------
+#
+# The swap renames the original coordinate array aside, renames the
+# rewritten one in, consolidates, then removes the original. A process killed
+# at any point must leave a store the next call (a rechunk or an append)
+# brings back to a valid store holding the same values. A raised exception
+# stands in for the kill: the swap has no in-process cleanup, so it leaves the
+# same residue on disk.
+
+_LONG_DATES = pd.date_range("2024-01-01", periods=12)
+
+
+def _long_panel() -> xr.Dataset:
+    values = np.arange(len(_LONG_DATES) * 2, dtype="float64").reshape(-1, 2)
+    return xr.Dataset(
+        {"close": (("timestamp", "symbol"), values)},
+        coords={
+            "timestamp": _LONG_DATES,
+            "symbol": np.array(["A", "B"], dtype=object),
+        },
+    )
+
+
+class _Killed(BaseException):
+    """Stands in for the process being killed mid-swap."""
+
+
+def _crash_on_replace(monkeypatch: pytest.MonkeyPatch, step: str) -> None:
+    """Make one rename of the swap raise ``_Killed``.
+
+    ``step`` is ``"aside"`` (the original array renamed to its
+    ``.replaced.tmp`` sidecar) or ``"in"`` (the rewritten array renamed into
+    the store). Zarr's own writes go through ``os.replace`` too, so the
+    rename is picked by its sidecar suffix, not by call count.
+    """
+    import quantlab.backend.zarr as module
+
+    real = module.os.replace
+
+    def replace(src, dst):
+        if step == "aside" and str(dst).endswith(".replaced.tmp"):
+            raise _Killed
+        if step == "in" and str(src).endswith(".rechunk.tmp"):
+            raise _Killed
+        return real(src, dst)
+
+    monkeypatch.setattr(module.os, "replace", replace)
+
+
+def _crash_on_consolidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    def consolidate(*args, **kwargs):
+        raise _Killed
+
+    monkeypatch.setattr(zarr, "consolidate_metadata", consolidate)
+
+
+_CRASHES = {
+    # Before the swap: the rewritten array sits in its sidecar only.
+    "before_swap": lambda mp: _crash_on_replace(mp, "aside"),
+    # Between the renames: the store has no `timestamp` array at all.
+    "between_renames": lambda mp: _crash_on_replace(mp, "in"),
+    # After the swap: consolidated metadata still records the old grid.
+    "before_consolidate": _crash_on_consolidate,
+}
+
+
+def _crashed_store(tmp_path: Path, monkeypatch, crash: str) -> Path:
+    path = tmp_path / "panel.zarr"
+    panel = _long_panel().isel(timestamp=slice(0, 10))
+    for index in range(10):
+        window = panel.isel(timestamp=slice(index, index + 1))
+        if index == 0:
+            window.to_zarr(path, mode="w")
+        else:
+            window.to_zarr(path, mode="a", append_dim="timestamp")
+    with monkeypatch.context() as patch:
+        _CRASHES[crash](patch)
+        with pytest.raises(_Killed):
+            rechunk_index_coordinates(path)
+    # The crash left residue beside the store.
+    assert sorted(p.name for p in tmp_path.iterdir()) != ["panel.zarr"]
+    return path
+
+
+def _assert_valid(path: Path, expected: xr.Dataset) -> None:
+    chunks = _chunks(path)
+    assert chunks["timestamp"] == (expected.sizes["timestamp"],)
+    assert _consolidated_chunks(path) == chunks
+    xr.testing.assert_identical(xr.open_zarr(path).load(), expected)
+    assert sorted(p.name for p in path.parent.iterdir()) == ["panel.zarr"]
+
+
+@pytest.mark.parametrize("crash", sorted(_CRASHES))
+def test_the_next_rechunk_recovers_a_swap_killed_midway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash: str
+) -> None:
+    path = _crashed_store(tmp_path, monkeypatch, crash)
+
+    rechunk_index_coordinates(path)
+
+    _assert_valid(path, _long_panel().isel(timestamp=slice(0, 10)))
+
+
+@pytest.mark.parametrize("crash", sorted(_CRASHES))
+def test_the_next_append_recovers_a_swap_killed_midway(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash: str
+) -> None:
+    path = _crashed_store(tmp_path, monkeypatch, crash)
+
+    XrBackend().to_internal(
+        _long_panel().isel(timestamp=slice(10, 12))
+    ).widen_and_append(str(path))
+
+    _assert_valid(path, _long_panel())
+
+
+def test_a_kill_between_the_renames_rolls_back_to_the_original_array(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The original array is put back, then rewritten afresh."""
+    path = _crashed_store(tmp_path, monkeypatch, "between_renames")
+    assert not (path / "timestamp").exists()
+
+    assert rechunk_index_coordinates(path) == ["timestamp"]
+
+
+def test_a_widen_clears_the_rechunk_residue_of_its_own_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crashed chunked widen leaves its sidecar's rechunk sidecars too."""
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 0)
+    monkeypatch.setattr(XrBackend, "APPEND_DIM_CHUNK", 2)
+    path = tmp_path / "panel.zarr"
+    XrBackend().to_internal(
+        _panel(("A",)).isel(timestamp=slice(0, 6))
+    ).append(str(path))
+    with monkeypatch.context() as patch:
+        _crash_on_replace(patch, "in")
+        with pytest.raises(_Killed):
+            XrBackend().to_internal(
+                _panel(("A", "B")).isel(timestamp=slice(6, 10))
+            ).widen_and_append(str(path), fill_values={"volume": 0})
+    residue = sorted(p.name for p in tmp_path.iterdir())
+    assert any(name.endswith(".replaced.tmp") for name in residue)
+    # The retry widens the whole store at once, so no rechunk of a new
+    # sidecar of the same name happens to sweep the old residue up.
+    monkeypatch.setattr(XrBackend, "MAX_WIDEN_BYTES", 10**12)
+
+    XrBackend().to_internal(
+        _panel(("A", "B")).isel(timestamp=slice(6, 10))
+    ).widen_and_append(str(path), fill_values={"volume": 0})
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["panel.zarr"]
+    assert _chunks(path)["timestamp"] == (10,)

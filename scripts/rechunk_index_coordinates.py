@@ -10,7 +10,10 @@ chunk; this script repairs a store written before that, through
 attribute or data variable is touched, so the data fingerprints of the stores
 are unchanged. A store already in one chunk is not written.
 
-Do not run it while another process writes to the same store.
+Do not run it while another process reads or writes the same store. A run
+killed midway leaves ``.rechunk.tmp`` / ``.replaced.tmp`` sidecars beside the
+store; the next run (or the next append to the store) finishes or rolls back
+that swap before doing anything else.
 
 Usage::
 
@@ -30,7 +33,10 @@ from pathlib import Path
 
 import zarr
 
-from quantlab.backend.zarr import rechunk_index_coordinates
+from quantlab.backend.zarr import (
+    _index_coordinate_names,
+    rechunk_index_coordinates,
+)
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -53,17 +59,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 def _coordinate_chunks(store: Path) -> dict[str, int]:
     """Return the number of chunks of each 1-D index coordinate of ``store``."""
     group = zarr.open_group(str(store), mode="r", use_consolidated=False)
-    counts = {}
-    for name, array in group.arrays():
-        if array.ndim != 1:
-            continue
-        if array.metadata.zarr_format == 3:
-            dims = array.metadata.dimension_names
-        else:
-            dims = array.attrs.get("_ARRAY_DIMENSIONS")
-        if dims is not None and list(dims) == [name]:
-            counts[str(name)] = int(array.nchunks)
-    return counts
+    return {
+        name: int(group[name].nchunks) for name in _index_coordinate_names(group)
+    }
 
 
 if __name__ == "__main__":

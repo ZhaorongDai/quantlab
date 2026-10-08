@@ -381,7 +381,7 @@ ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store 
 
 重叠和标的不一致的消息见前面的 append 示例。对应的处理方式依次是：重叠的窗口要丢弃重叠行，或者用 `write` 重写存储；标的集合变化时走 `widen_and_append`；dtype 不一致时先把新变量转成存储的 dtype；新增变量时走 `widen_and_append`；新窗口缺少存储中已有的变量时需要重算这个窗口，这种情形没有可选的放行方式。消息中提到的 `save(mode="w")` 指的就是 `write`。
 
-#232 之前靠追加扩充的存储可能把 `timestamp` 按窗口分成多个 chunk（第一个窗口只有一根 bar 时就是每根 bar 一个 chunk），每次打开都很慢。`scripts/rechunk_index_coordinates.py STORE...` 会就地把已有存储的索引坐标重写为单个 chunk；只改 chunk 网格，数值、属性、数据变量和数据指纹都不变。运行时不要有其他进程同时写这个存储。
+#232 之前靠追加扩充的存储可能把 `timestamp` 按窗口分成多个 chunk（第一个窗口只有一根 bar 时就是每根 bar 一个 chunk），每次打开都很慢。`scripts/rechunk_index_coordinates.py STORE...` 会就地把已有存储的索引坐标重写为单个 chunk；只改 chunk 网格，数值、属性、数据变量和数据指纹都不变。运行时不要有其他进程同时读写这个存储。每个坐标通过两次重命名换入，原数组保存在 `.replaced.tmp` 旁车中，直到合并元数据重写完成；运行中途被杀会在存储旁留下旁车，下一次对该存储的 rechunk 或追加（或 `widen_*`）会先完成或回滚这次交换，不会丢失任何数值。在此之前，若进程恰好在两次重命名之间被杀，存储缺少该坐标的数组，无法打开。
 
 如果崩溃在存储旁留下了 `.superseded.tmp` 目录，`widen_symbol_axis` 会拒绝继续，并在消息里给出需要手工执行的重命名操作。
 
