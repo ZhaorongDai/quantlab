@@ -390,7 +390,7 @@ def test_raw_calibration_on_a_standardized_label_is_refused_at_bind_naming_the_l
         optimizer.bind(_scaled_specs("standardized"))
 
 
-def test_the_solver_defaults_to_osqp_and_is_the_one_used(monkeypatch):
+def test_the_solver_defaults_to_clarabel_and_is_the_one_used(monkeypatch):
     import cvxpy as cp
 
     used = []
@@ -401,20 +401,20 @@ def test_the_solver_defaults_to_osqp_and_is_the_one_used(monkeypatch):
         return solve(problem, *args, **kwargs)
 
     monkeypatch.setattr(cp.Problem, "solve", recording)
-    assert MeanVarianceConfig.__dataclass_fields__["solver"].default == "OSQP"
+    assert MeanVarianceConfig.__dataclass_fields__["solver"].default == "CLARABEL"
     _optimizer().construct(_context(seed=0))
-    _optimizer(solver="CLARABEL").construct(_context(seed=0))
+    _optimizer(solver="OSQP").construct(_context(seed=0))
     _optimizer(solver=None).construct(_context(seed=0))
-    assert used == ["OSQP", "CLARABEL", None]
+    assert used == ["CLARABEL", "OSQP", None]
 
 
 def test_another_solver_reaches_the_same_weights():
-    osqp = _optimizer().construct(_context(seed=3))
-    clarabel = _optimizer(solver="CLARABEL").construct(_context(seed=3))
+    clarabel = _optimizer().construct(_context(seed=3))
+    osqp = _optimizer(solver="OSQP").construct(_context(seed=3))
     np.testing.assert_allclose(osqp.values, clarabel.values, atol=1e-3)
 
 
 def test_the_solver_round_trips_through_the_config():
-    config = json.loads(json.dumps(_optimizer(solver="CLARABEL").get_config()))
-    assert config["solver"] == "CLARABEL"
-    assert MeanVarianceOptimizer.from_config(config).config.solver == "CLARABEL"
+    config = json.loads(json.dumps(_optimizer(solver="OSQP").get_config()))
+    assert config["solver"] == "OSQP"
+    assert MeanVarianceOptimizer.from_config(config).config.solver == "OSQP"

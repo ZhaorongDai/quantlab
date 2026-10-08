@@ -602,7 +602,12 @@ def test_a_mean_variance_backtest_on_a_factor_risk_model_runs_and_rebuilds(tmp_p
     def factor_risk(dataset_config):
         bars = xr.open_zarr(dataset_config.zarr_file_path).timestamp.values
         model = _factor_risk_model(tmp_path, dataset_config, bars)
-        return _optimizer(covariance=FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model)))
+        # The reference below was captured with OSQP; name it so the anchor
+        # keeps pinning the exposures, not the default solver.
+        return _optimizer(
+            covariance=FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=model)),
+            solver="OSQP",
+        )
 
     backtester, _, _ = _backtester(tmp_path, factor_risk, output_dir=str(tmp_path / "runs"))
 

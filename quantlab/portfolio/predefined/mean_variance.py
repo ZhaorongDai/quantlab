@@ -794,7 +794,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     def _skip_small_trades(self, solution: np.ndarray, current: np.ndarray, total: float) -> np.ndarray:
         """Keep the current weight wherever the solved change is below ``min_trade`` (long-only)."""
         small = np.abs(solution - current) < self.config.min_trade
-        kept = np.where(small, current, solution)
+        # A traded target below min_trade is a residue or a sliver: close it.
+        kept = np.where(small, current, np.where(solution < self.config.min_trade, 0.0, solution))
         excess = kept.sum() - total
         if excess > 1e-12:
             traded = ~small & (kept > 0)

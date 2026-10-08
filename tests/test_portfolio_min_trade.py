@@ -5,7 +5,8 @@ A candidate whose solved weight differs from its current one by less than
 a solver residue on an unheld symbol nor a tiny adjustment of a held one. When
 the skipped sells leave the long-only book above its budget, the candidates
 that do trade are scaled down to absorb the excess; when they cannot, the small
-sells are made as solved. With no turnover penalty the solution does not
+sells are made as solved. A traded target below ``min_trade`` (a residue the
+solver leaves on a position it sells) becomes 0. With no turnover penalty the solution does not
 depend on the current weights, so each test perturbs a plain solution by hand.
 """
 
@@ -30,9 +31,9 @@ def _with_min_trade(min_trade, current):
 
 
 def test_a_solver_residue_on_an_unheld_symbol_is_not_bought():
-    """At risk aversion 1 the solver leaves about 1.8e-10 on DDD."""
+    """At risk aversion 1 the solver leaves residues (1e-10 to 1e-5) on the names it does not want."""
     plain = _optimizer(risk_aversion=1.0, weight_cap=0.5).construct(_context()).values
-    residue = (plain > 0) & (plain < 1e-6)
+    residue = (plain > 0) & (plain < 1e-4)
     assert residue.any()
     weights = _optimizer(risk_aversion=1.0, weight_cap=0.5, min_trade=1e-4).construct(_context()).values
     assert (weights[residue] == 0.0).all()
@@ -84,6 +85,37 @@ def test_small_sells_are_made_when_nothing_else_trades_to_absorb_them():
     weights = _with_min_trade(1e-3, current)
     np.testing.assert_allclose(weights[held], plain[held], atol=1e-9)
     assert weights.sum() <= 1.0 + 1e-12
+
+
+def test_a_held_position_sold_toward_zero_is_closed_not_left_at_a_residue():
+    """Held at 0.05 where the plain solution holds nothing: the sale is far
+    above min_trade, and its target is 0, not the solver's residue."""
+    plain = _optimizer(risk_aversion=1.0, weight_cap=0.5).construct(_context()).values
+    sold = int(np.flatnonzero(plain < 1e-6)[0])
+    current = np.where(plain < 1e-4, 0.0, plain)  # a book min_trade kept clean
+    current[sold] = 0.05
+    current[np.argmax(plain)] -= current.sum() - 1.0
+    weights = _optimizer(risk_aversion=1.0, weight_cap=0.5, min_trade=1e-3).construct(
+        _context(current=current)
+    ).values
+    assert weights[sold] == 0.0
+    assert ((weights == 0.0) | (weights >= 1e-3)).all()
+
+
+def test_a_sale_to_a_target_below_min_trade_closes_the_position_and_leaves_cash():
+    """The smallest plain name (about 0.066) held 0.08 above it: the sale is
+    above min_trade 0.07, its target below it, so the position is closed and
+    its weight stays cash."""
+    plain = _plain()
+    small, big = int(np.argmin(plain)), int(np.argmax(plain))
+    assert 0 < plain[small] < 0.07
+    current = plain.copy()
+    current[small] += 0.08
+    current[big] -= 0.08
+    weights = _with_min_trade(0.07, current)
+    assert weights[small] == 0.0
+    assert ((weights == 0.0) | (weights >= 0.07) | (weights == current)).all()
+    assert weights.sum() == pytest.approx(1.0 - plain[small], abs=1e-6)
 
 
 @pytest.mark.parametrize("overrides, match", [
