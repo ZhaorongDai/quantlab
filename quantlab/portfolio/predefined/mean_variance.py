@@ -401,9 +401,13 @@ class MeanVarianceOptimizer(PortfolioConstructor):
             raise ValueError("calibration='grinold' needs an ic")
         if not 0 < config.weight_cap <= 1:
             raise ValueError(f"weight_cap must be in (0, 1], got {config.weight_cap}")
-        for name in ("risk_aversion", "turnover_penalty"):
+        for name in ("risk_aversion", "turnover_penalty", "min_trade"):
             if getattr(config, name) < 0:
                 raise ValueError(f"{name} must be >= 0, got {getattr(config, name)}")
+        if config.min_trade and config.direction != "long_only":
+            raise ValueError(
+                f"min_trade is supported for direction='long_only' only, got {config.direction!r}"
+            )
         top_k = config.candidate_top_k
         if top_k is not None and (
             isinstance(top_k, bool) or not isinstance(top_k, (int, np.integer)) or top_k < 1
@@ -754,6 +758,8 @@ class MeanVarianceOptimizer(PortfolioConstructor):
                 )
             else:
                 solution = self._solve(inputs, total)
+            if config.min_trade:
+                solution = self._skip_small_trades(solution, inputs.current_weights, total)
         else:
             gross = 1.0 - float(np.abs(inputs.locked_weights).sum())
             if gross < -1e-12:
@@ -784,6 +790,22 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         if events:
             weights.attrs["events"] = events
         return weights
+
+    def _skip_small_trades(self, solution: np.ndarray, current: np.ndarray, total: float) -> np.ndarray:
+        """Keep the current weight wherever the solved change is below ``min_trade`` (long-only)."""
+        small = np.abs(solution - current) < self.config.min_trade
+        kept = np.where(small, current, solution)
+        excess = kept.sum() - total
+        if excess > 1e-12:
+            traded = ~small & (kept > 0)
+            room = kept[traded].sum()
+            if room > excess:
+                kept[traded] *= 1.0 - excess / room
+            else:
+                # The trading names cannot absorb the skipped sells: make those sells.
+                sells = small & (solution < current)
+                kept[sells] = solution[sells]
+        return kept
 
     def _solve(self, inputs: MeanVarianceInputs, total: float, gross: float = 1.0) -> np.ndarray:
         """Solve for the candidates' weights: summing to ``total``, within ``gross`` long-short."""

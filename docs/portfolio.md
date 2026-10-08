@@ -324,6 +324,18 @@ A universe of thousands of symbols is slow to optimise at every rebalance. `cand
 
 Symbols outside the pool get 0.0. The z-score of the Grinold calibration is taken over every candidate before the pool is cut, so `mu` does not depend on `candidate_top_k`.
 
+### Minimum trade
+
+The solver rarely returns an exact 0: a symbol it does not want often comes back at 1e-10 to 1e-6, and every such residue would be an order, a holding, and, through the pool's held symbols, a candidate at every later bar. `min_trade` (long-only, 0 by default) skips every change smaller than itself: a candidate whose solved weight differs from its current one by less than `min_trade` keeps its current weight, so no order is placed for it.
+
+| current | solved | `min_trade=1e-4` |
+|---|---|---|
+| 0 | 1e-9 | 0 (not bought) |
+| 0.05 | 0.04995 | 0.05 (not traded) |
+| 0.05 | 0.03 | 0.03 (sold) |
+
+A skipped buy leaves its budget in cash. Skipped sells can leave the book above one; the candidates that do trade are then scaled down to absorb the excess, and when they cannot, those sells are made as solved. The bounded exposures can move by about the skipped trades' total.
+
 ### Solver
 
 Each bar's problem is solved by the cvxpy solver `solver` names: `"OSQP"` by default, the solver cvxpy 1.9 picks for these problems. It is named so a run reproduces when cvxpy changes its default. `"CLARABEL"`, an interior-point solver, is more accurate and slower on large pools. `None` leaves the choice to cvxpy. A solver that is not installed (`cvxpy.installed_solvers()`) is refused when the optimizer is built.

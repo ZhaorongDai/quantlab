@@ -115,6 +115,15 @@ class MeanVarianceConfig(FrozenConfig):
     #: Penalty ``kappa`` per unit of one-way turnover against the current
     #: weights; 0 trades freely.
     turnover_penalty: float = 0.0
+    #: Smallest trade: a candidate whose solved weight differs from its
+    #: current one by less than this keeps its current weight, so no order
+    #: is placed for a solver residue or a tiny adjustment. Skipped sells
+    #: that leave the book above its budget are absorbed by the candidates
+    #: that do trade, scaled down; when they cannot, those sells are made.
+    #: A skipped buy leaves its budget in cash, and the bounded exposures
+    #: may move by about the skipped trades' total. ``"long_only"`` only;
+    #: 0 trades every change.
+    min_trade: float = 0.0
     #: Largest absolute weight of one symbol.
     weight_cap: float = 1.0
     #: ``"long_only"``: fully invested, non-negative weights (``sum(w) =
