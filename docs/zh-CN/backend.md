@@ -127,7 +127,7 @@ ValueError: PlBackend.get_xarray_dataset: `indexes` is required. A LazyFrame has
 
 ### 按时间窗口逐步扩充 Zarr 存储
 
-`append` 第一次调用时创建存储，之后沿某个维度（默认 `timestamp`）向后延长。新窗口必须从已存储的末尾之后开始，并且标的、变量和 dtype 都要与存储一致。窗口之间允许有间隔，不允许重叠。如果事先知道存储的最终长度，可以在每次调用时传 `append_dim_size=`；它只影响创建存储的那一次调用，用来确定 chunk 长度（上限为 `XrBackend.APPEND_DIM_CHUNK`，即 512）。
+`append` 第一次调用时创建存储，之后沿某个维度（默认 `timestamp`）向后延长。新窗口必须从已存储的末尾之后开始，并且标的、变量和 dtype 都要与存储一致。窗口之间允许有间隔，不允许重叠。如果事先知道存储的最终长度，可以在每次调用时传 `append_dim_size=`；它只影响创建存储的那一次调用，用来确定 chunk 长度（上限为 `XrBackend.APPEND_DIM_CHUNK`，即 512）。每次追加之后，`quantlab.backend.zarr.rechunk_index_coordinates` 会把一维索引坐标（`timestamp`、`symbol`）重写为单个 chunk，所以无论存储由多少个窗口构建，打开时每个坐标只读一次。
 
 下面的辅助函数 `window` 构造一个小面板。最后两次调用展示两种拒绝情形：窗口重叠，以及标的与存储不同（即使数量相同）。
 
@@ -380,6 +380,8 @@ ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store 
 ```
 
 重叠和标的不一致的消息见前面的 append 示例。对应的处理方式依次是：重叠的窗口要丢弃重叠行，或者用 `write` 重写存储；标的集合变化时走 `widen_and_append`；dtype 不一致时先把新变量转成存储的 dtype；新增变量时走 `widen_and_append`；新窗口缺少存储中已有的变量时需要重算这个窗口，这种情形没有可选的放行方式。消息中提到的 `save(mode="w")` 指的就是 `write`。
+
+#232 之前靠追加扩充的存储可能把 `timestamp` 按窗口分成多个 chunk（第一个窗口只有一根 bar 时就是每根 bar 一个 chunk），每次打开都很慢。`scripts/rechunk_index_coordinates.py STORE...` 会就地把已有存储的索引坐标重写为单个 chunk；只改 chunk 网格，数值、属性、数据变量和数据指纹都不变。运行时不要有其他进程同时写这个存储。
 
 如果崩溃在存储旁留下了 `.superseded.tmp` 目录，`widen_symbol_axis` 会拒绝继续，并在消息里给出需要手工执行的重命名操作。
 

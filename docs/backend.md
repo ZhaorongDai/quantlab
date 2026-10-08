@@ -127,7 +127,7 @@ ValueError: PlBackend.get_xarray_dataset: `indexes` is required. A LazyFrame has
 
 ### Grow a Zarr store one window at a time
 
-`append` creates the store on its first call and extends it along a dimension (`timestamp` by default) on later calls. A new window must start after the stored end, and must carry the same symbols, variables and dtypes. A gap between windows is allowed; overlap is refused. If the final length of the store is known, `append_dim_size=` can be passed on each call; it only affects the call that creates the store, where it sets the chunk length (capped by `XrBackend.APPEND_DIM_CHUNK`, 512).
+`append` creates the store on its first call and extends it along a dimension (`timestamp` by default) on later calls. A new window must start after the stored end, and must carry the same symbols, variables and dtypes. A gap between windows is allowed; overlap is refused. If the final length of the store is known, `append_dim_size=` can be passed on each call; it only affects the call that creates the store, where it sets the chunk length (capped by `XrBackend.APPEND_DIM_CHUNK`, 512). After each append the 1-D index coordinates (`timestamp`, `symbol`) are rewritten in one chunk by `quantlab.backend.zarr.rechunk_index_coordinates`, so opening the store reads each coordinate once however many windows built it.
 
 The helper `window` below builds a small panel. The last two calls show the refusals: an overlapping window, and a window whose symbols differ from the store, even though the count is the same.
 
@@ -380,6 +380,8 @@ ValueError: XrBackend.append: refusing to append to data/ints.zarr -- the store 
 ```
 
 The overlap and symbol-mismatch messages appear in the append session above. The fixes, in order: an overlapping window is dropped or the store rewritten with `write`; a changed symbol set goes through `widen_and_append`; a dtype mismatch is fixed by casting the incoming variable to the stored dtype; a new variable goes through `widen_and_append`; a variable missing from the incoming window is recomputed, because there is no opt-in for it. The messages that mention `save(mode="w")` refer to `write`.
+
+A store grown by appends before #232 can hold `timestamp` in one chunk per window (one per bar when the first window was one bar), which makes every open slow. `scripts/rechunk_index_coordinates.py STORE...` rewrites the index coordinates of existing stores in one chunk in place; only the chunk grid changes, so values, attributes, data variables and data fingerprints stay the same. Run it while no other process writes to the store.
 
 If a crash leaves a `.superseded.tmp` directory next to a store, `widen_symbol_axis` refuses to continue and its message names the rename to perform by hand.
 

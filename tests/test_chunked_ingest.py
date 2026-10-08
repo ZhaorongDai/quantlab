@@ -1199,6 +1199,33 @@ def test_the_chunk_grid_survives_a_crash_and_resume(
     assert grid == _chunk_grid(clean_config.zarr_file_path)
 
 
+def test_a_day_rung_conversion_keeps_the_index_coordinates_in_one_chunk(
+    three_year_stock_config: Callable[..., DatasetConfig],
+) -> None:
+    """#232: the day rung creates the store from a one-bar window, and Zarr
+    fixes a coordinate's grid at creation, so without the rechunk after each
+    append ``timestamp`` would end in nine one-element chunks. A crash and
+    resume through the ledger must end the same way, with the same values as
+    the unchunked store.
+    """
+    config = three_year_stock_config("coord_day.zarr")
+    unchunked_config = three_year_stock_config("coord_day_ref.zarr")
+
+    with pytest.raises(RuntimeError):
+        _FailsOnSecondWindow(config).from_raw_data_chunked(granularity="day")
+    StockDataset(config).from_raw_data_chunked(granularity="day")
+    # A second run against the complete store skips every window.
+    StockDataset(config).from_raw_data_chunked(granularity="day")
+    StockDataset(unchunked_config).from_raw_data().save()
+
+    store = zarr.open_group(config.zarr_file_path, mode="r")
+    assert tuple(store["timestamp"].chunks) == (9,)
+    assert tuple(store["symbol"].chunks) == (3,)
+    xr.testing.assert_equal(
+        _panel(config.zarr_file_path), _panel(unchunked_config.zarr_file_path)
+    )
+
+
 def test_the_chunk_grid_survives_a_rebuild(
     # Forward reference: this arm lives beside its three siblings rather than
     # beside the fixture it borrows, and `_GrowingRoster` is defined further

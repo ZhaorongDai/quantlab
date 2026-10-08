@@ -12,6 +12,7 @@ reference tables is ``quantlab.backend.parquet.PlBackend``. See
 ``docs/backend.md`` and ``docs/chunking.md``.
 """
 
+import json
 import os
 import shutil
 from pathlib import Path
@@ -181,6 +182,11 @@ class XrBackend(DataBackend):
         one. To replace a range the store already holds, rewrite the store
         with ``write``.
 
+        After the append the store's 1-D index coordinates are rewritten in
+        one chunk by ``rechunk_index_coordinates``: Zarr fixes a
+        coordinate's chunk grid at creation, so without it a store created
+        from a one-bar window would keep ``timestamp`` in one chunk per bar.
+
         A panel that has grown a variable must go through
         ``widen_data_vars`` or ``widen_and_append`` first; a panel missing a
         stored variable is refused outright, since the only fill would be
@@ -238,6 +244,9 @@ class XrBackend(DataBackend):
         # creating write above.
         kwargs.pop("encoding", None)
         self.data.to_zarr(path, mode="a", append_dim=append_dim, **kwargs)
+        # The coordinate's grid was fixed by the creating write; without this
+        # a store created from a one-bar window keeps one chunk per bar.
+        rechunk_index_coordinates(path)
         return self
 
     #: Sidecar suffixes used by ``widen_symbol_axis``'s atomic directory
@@ -676,6 +685,7 @@ class XrBackend(DataBackend):
                 ]
             )
             block.to_zarr(str(widening), mode="a", append_dim=append_dim)
+        rechunk_index_coordinates(widening)
 
     def widen_data_vars(
         self,
@@ -1375,3 +1385,176 @@ class XrBackend(DataBackend):
         finally:
             opened.close()
         return pl.from_pandas(frame).lazy().head(n)
+
+
+#: Suffixes of the two sidecars ``rechunk_index_coordinates`` keeps beside
+#: the store while it swaps one coordinate array: the rewritten array before
+#: it becomes authoritative, and the original array between the two renames.
+_RECHUNK_SUFFIX = ".rechunk.tmp"
+_REPLACED_SUFFIX = ".replaced.tmp"
+
+#: Metadata documents of one array: Zarr v3 keeps one, Zarr v2 two.
+_ARRAY_METADATA_FILES = ("zarr.json", ".zarray", ".zattrs")
+
+
+def _index_coordinate_names(group) -> list[str]:
+    """Return the names of the 1-D arrays that index their own dimension."""
+    names = []
+    for name, array in group.arrays():
+        if array.ndim != 1:
+            continue
+        if array.metadata.zarr_format == 3:
+            dims = array.metadata.dimension_names
+        else:
+            dims = array.attrs.get("_ARRAY_DIMENSIONS")
+        if dims is not None and list(dims) == [name]:
+            names.append(str(name))
+    return sorted(names)
+
+
+def _with_one_chunk(document: dict, length: int) -> dict:
+    """Return an array metadata document with its chunk grid set to ``length``."""
+    document = dict(document)
+    if document.get("zarr_format") == 3:
+        grid = dict(document["chunk_grid"])
+        if grid.get("name") != "regular":
+            raise ValueError(
+                f"rechunk_index_coordinates: unsupported chunk grid {grid}"
+            )
+        grid["configuration"] = {
+            **grid["configuration"],
+            "chunk_shape": [length],
+        }
+        document["chunk_grid"] = grid
+    else:
+        document["chunks"] = [length]
+    return document
+
+
+def rechunk_index_coordinates(path: "str | os.PathLike") -> list[str]:
+    """Rewrite each 1-D index coordinate of a store in one chunk, in place.
+
+    Zarr fixes an array's chunk grid when the array is created, and xarray
+    writes a dimension coordinate as one chunk of the creating write's
+    length. A store created from a short window and grown by appends
+    therefore holds ``timestamp`` in many small chunks (one per bar when the
+    first window was one bar), and every open of the store reads each of
+    them. This function rewrites every such coordinate (a 1-D array whose
+    only dimension is its own name, such as ``timestamp`` or ``symbol``) as
+    one chunk spanning the whole axis. ``XrBackend.append`` calls it after
+    every append, and it is the maintenance step for a store written before
+    that.
+
+    Only the chunk grid changes. The stored values are copied as they are
+    encoded on disk (the int64 ticks of a datetime coordinate, the text of a
+    string one), so no value, dtype, codec, attribute or data variable is
+    touched and a data fingerprint of the store is unchanged. The new array
+    is built and read back in a sidecar beside the store, then swapped in by
+    two renames; consolidated metadata, when the store has it, is rewritten
+    afterwards. A store with no fragmented coordinate is not written at all.
+
+    Parameters
+    ----------
+    path : str or os.PathLike
+        Directory of the Zarr store (format 2 or 3).
+
+    Returns
+    -------
+    list[str]
+        Names of the coordinates rewritten, sorted; empty when every index
+        coordinate was already one chunk.
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``path`` does not exist.
+    RuntimeError
+        If a rewritten coordinate does not read back equal to the original;
+        the store is then left as it was.
+
+    Examples
+    --------
+    >>> import tempfile
+    >>> from pathlib import Path
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> import xarray as xr
+    >>> import zarr
+    >>> from quantlab.backend.zarr import rechunk_index_coordinates
+    >>> panel = xr.Dataset(
+    ...     {"close": (("timestamp", "symbol"), np.ones((3, 2)))},
+    ...     coords={"timestamp": pd.date_range("2024-01-02", periods=3),
+    ...             "symbol": ["AAA", "BBB"]},
+    ... )
+    >>> path = Path(tempfile.mkdtemp()) / "prices.zarr"
+    >>> panel.isel(timestamp=[0]).to_zarr(path, mode="w")  # doctest: +SKIP
+    >>> panel.isel(timestamp=[1, 2]).to_zarr(
+    ...     path, mode="a", append_dim="timestamp"
+    ... )  # doctest: +SKIP
+    >>> zarr.open_group(path)["timestamp"].chunks  # doctest: +SKIP
+    (1,)
+    >>> rechunk_index_coordinates(path)  # doctest: +SKIP
+    ['timestamp']
+    >>> zarr.open_group(path)["timestamp"].chunks  # doctest: +SKIP
+    (3,)
+    """
+    import zarr
+
+    store = Path(path)
+    if not store.exists():
+        raise FileNotFoundError(f"File {path} does not exist.")
+    group = zarr.open_group(str(store), mode="r", use_consolidated=False)
+    zarr_format = group.metadata.zarr_format
+    if zarr_format == 3:
+        consolidated = (
+            json.loads((store / "zarr.json").read_text()).get(
+                "consolidated_metadata"
+            )
+            is not None
+        )
+    else:
+        consolidated = (store / ".zmetadata").exists()
+
+    rewritten = []
+    for name in _index_coordinate_names(group):
+        array = group[name]
+        length = int(array.shape[0])
+        if length == 0 or tuple(array.chunks) == (length,):
+            continue
+        values = array[...]
+        source = store / name
+        staging = Path(f"{store}.{name}{_RECHUNK_SUFFIX}")
+        replaced = Path(f"{store}.{name}{_REPLACED_SUFFIX}")
+        shutil.rmtree(staging, ignore_errors=True)
+        try:
+            staging.mkdir(parents=True)
+            for document in _ARRAY_METADATA_FILES:
+                if not (source / document).exists():
+                    continue
+                content = json.loads((source / document).read_text())
+                if document != ".zattrs":
+                    content = _with_one_chunk(content, length)
+                (staging / document).write_text(json.dumps(content, indent=2))
+            target = zarr.open_array(str(staging), mode="r+")
+            target[...] = values
+            check = zarr.open_array(str(staging), mode="r")
+            if tuple(check.chunks) != (length,) or not np.array_equal(
+                np.asarray(check[...], dtype=object),
+                np.asarray(values, dtype=object),
+            ):
+                raise RuntimeError(
+                    f"rechunk_index_coordinates: '{name}' of {path} did not "
+                    f"read back equal after the rewrite; the store is unchanged."
+                )
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        shutil.rmtree(replaced, ignore_errors=True)
+        os.replace(source, replaced)
+        os.replace(staging, source)
+        shutil.rmtree(replaced)
+        rewritten.append(name)
+
+    if rewritten and consolidated:
+        zarr.consolidate_metadata(str(store), zarr_format=zarr_format)
+    return rewritten
