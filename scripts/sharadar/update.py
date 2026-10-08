@@ -36,6 +36,14 @@ store and are not refreshed here; ``download.py`` pulls them whole.
 An interrupted run resumes from each table's watermark and each store's last
 bar; running it twice in a day appends nothing the second time.
 
+A store that fails does not stop the others: its error is printed, the run
+goes on with the next store and exits 1 at the end. A store refusing because
+a symbol it holds is no longer on the raw tier's symbol axis (a security's
+raw rows now map to another permaticker; ``update()`` refuses rather than
+choose between losing history and stopping) is rebuilt from the raw tier
+with ``--rebuild-dropped``: the old store and its ledger are kept beside it
+as ``<store>.pre<YYYYMMDD>`` and the symbols removed and added are printed.
+
 ``SHARADAR_API_KEY`` must be set in the environment. Both directories must be
 outside this repository; the script refuses one inside it.
 
@@ -50,6 +58,9 @@ must be the ones ``download.py`` used.
 """
 
 import argparse
+import os
+import traceback
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -133,6 +144,52 @@ def _store_start(path: Path) -> str:
     return pd.Timestamp(first).date().isoformat()
 
 
+#: Messages of ``update()`` refusing a store whose stored symbols left the
+#: raw tier's symbol axis.
+_DROPPED_SYMBOL_REFUSALS = ("refusing to resume", "absent from the pinned whole-range axis")
+
+
+def _update_store(path: Path, make, rebuild_dropped: bool, failures: list) -> None:
+    """Update one store; rebuild it on a dropped-symbol refusal when asked; record a failure.
+
+    ``make(start_date)`` returns the store's dataset.
+    """
+    try:
+        dataset = make(_store_start(path)).update()
+        print_conversion_result(dataset.last_chunk_result)
+        corrections = getattr(dataset, "corrections_path", None)
+        if corrections is not None and corrections().exists():
+            print(f"  vendor corrections: {corrections()}")
+        return
+    except ValueError as exc:
+        if not (rebuild_dropped and any(m in str(exc) for m in _DROPPED_SYMBOL_REFUSALS)):
+            failures.append(path.name)
+            print(f"{path.name}: update failed: {exc}")
+            return
+        print(f"{path.name}: a stored symbol left the raw tier's axis; rebuilding")
+    except Exception:  # noqa: BLE001 - one store's failure must not stop the others
+        failures.append(path.name)
+        print(f"{path.name}: update failed:\n{traceback.format_exc()}")
+        return
+    try:
+        start = _store_start(path)
+        before = set(xr.open_zarr(path)["symbol"].values.tolist())
+        kept = path.with_name(f"{path.name}.pre{date.today():%Y%m%d}")
+        os.rename(path, kept)
+        ledger = Path(f"{path}.chunks.json")
+        if ledger.exists():
+            os.rename(ledger, f"{kept}.chunks.json")
+        print_conversion_result(make(start).update().last_chunk_result)
+        after = set(xr.open_zarr(path)["symbol"].values.tolist())
+        print(
+            f"  rebuilt {path.name}; old store kept as {kept.name}; symbols removed "
+            f"{sorted(before - after)}, added {sorted(after - before)}"
+        )
+    except Exception:  # noqa: BLE001
+        failures.append(path.name)
+        print(f"{path.name}: rebuild failed:\n{traceback.format_exc()}")
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Build this script's argument parser."""
     parser = argparse.ArgumentParser(
@@ -150,6 +207,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help=(
             "Raw dates re-pulled before each table's watermark, so a late "
             "vendor correction is seen. Default: 10."
+        ),
+    )
+    parser.add_argument(
+        "--rebuild-dropped",
+        action="store_true",
+        help=(
+            "Rebuild from the raw tier a store that refuses because a symbol it "
+            "holds left the raw tier's symbol axis, keeping the old store as "
+            "<store>.pre<YYYYMMDD>."
         ),
     )
     add_output_dir_args(
@@ -201,47 +267,53 @@ if __name__ == "__main__":
     except (SharadarEntitlementError, RuntimeError, ValueError) as exc:
         parser.exit(1, f"{exc}\n")
 
+    failures: list[str] = []
     for store, fields in PRICE_STORES.items():
-        config = SharadarDatasetConfig(
-            zarr_file_path=str(zarr_dir / store),
-            raw_data_dir_path=str(vendor_root),
-            **fields,
-            start_date=_store_start(zarr_dir / store),
+        _update_store(
+            zarr_dir / store,
+            lambda start, fields=fields, store=store: SharadarStockDataset(SharadarDatasetConfig(
+                zarr_file_path=str(zarr_dir / store), raw_data_dir_path=str(vendor_root),
+                **fields, start_date=start,
+            )),
+            args.rebuild_dropped, failures,
         )
-        dataset = SharadarStockDataset(config).update()
-        print_conversion_result(dataset.last_chunk_result)
-        if dataset.corrections_path().exists():
-            print(f"  vendor corrections: {dataset.corrections_path()}")
-
-    membership = SharadarSP500ConstituentDataset(
-        ConstituentDatasetConfig(
-            zarr_file_path=str(zarr_dir / MEMBERSHIP_STORE),
-            cache_dir=str(vendor_root),
-            start_date=_store_start(zarr_dir / MEMBERSHIP_STORE),
-        )
+    _update_store(
+        zarr_dir / MEMBERSHIP_STORE,
+        lambda start: SharadarSP500ConstituentDataset(ConstituentDatasetConfig(
+            zarr_file_path=str(zarr_dir / MEMBERSHIP_STORE), cache_dir=str(vendor_root),
+            start_date=start,
+        )),
+        args.rebuild_dropped, failures,
     )
-    print_conversion_result(membership.update().last_chunk_result)
-
     for store, dimension in FUNDAMENTALS_STORES.items():
-        config = SharadarFundamentalsConfig(
-            zarr_file_path=str(zarr_dir / store),
-            raw_data_dir_path=str(vendor_root),
-            dimension=dimension,
-            start_date=_store_start(zarr_dir / store),
+        _update_store(
+            zarr_dir / store,
+            lambda start, store=store, dimension=dimension: SharadarFundamentalsDataset(
+                SharadarFundamentalsConfig(
+                    zarr_file_path=str(zarr_dir / store), raw_data_dir_path=str(vendor_root),
+                    dimension=dimension, start_date=start,
+                )
+            ),
+            args.rebuild_dropped, failures,
         )
-        print_conversion_result(SharadarFundamentalsDataset(config).update().last_chunk_result)
-
-    daily = SharadarDailyConfig(
-        zarr_file_path=str(zarr_dir / DAILY_STORE),
-        raw_data_dir_path=str(vendor_root),
-        start_date=_store_start(zarr_dir / DAILY_STORE),
+    _update_store(
+        zarr_dir / DAILY_STORE,
+        lambda start: SharadarDailyDataset(SharadarDailyConfig(
+            zarr_file_path=str(zarr_dir / DAILY_STORE), raw_data_dir_path=str(vendor_root),
+            start_date=start,
+        )),
+        args.rebuild_dropped, failures,
     )
-    print_conversion_result(SharadarDailyDataset(daily).update().last_chunk_result)
-
     for store, (config_cls, dataset_cls) in PANEL_STORES.items():
-        config = config_cls(
-            zarr_file_path=str(zarr_dir / store),
-            raw_data_dir_path=str(vendor_root),
-            start_date=_store_start(zarr_dir / store),
+        _update_store(
+            zarr_dir / store,
+            lambda start, store=store, config_cls=config_cls, dataset_cls=dataset_cls: dataset_cls(
+                config_cls(
+                    zarr_file_path=str(zarr_dir / store), raw_data_dir_path=str(vendor_root),
+                    start_date=start,
+                )
+            ),
+            args.rebuild_dropped, failures,
         )
-        print_conversion_result(dataset_cls(config).update().last_chunk_result)
+    if failures:
+        parser.exit(1, f"{len(failures)} store(s) not updated: {failures}\n")
