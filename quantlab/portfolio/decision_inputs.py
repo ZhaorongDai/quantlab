@@ -27,6 +27,11 @@ prediction panel a run decided on), the last bar never.
 ``DecisionInputs.from_run`` rebuilds the inputs of a recorded backtest run,
 read through ``quantlab.runs.backtest_run.BacktestRun``.
 
+A replay that builds a context per bar can read its window once:
+inside ``preloaded(start, end)`` every ``context`` of a bar in the window
+is sliced from what was read there, and equals the one read bar by bar.
+A live run, deciding one new bar at a time, does not preload.
+
 A factor risk model's exposures are taken from the model
 (``FactorRiskModel.exposures``: its exposures factor's store under
 ``exposure_data_strategy="read"``, computed under ``"cal"``), the source its
@@ -39,6 +44,8 @@ label layers.
 """
 
 import warnings
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from os import PathLike
 from typing import Self
 
@@ -48,8 +55,10 @@ import xarray as xr
 
 from quantlab.dataset.base import InsufficientHistoryError, MarketDataset
 from quantlab.portfolio.base import PortfolioConstructor, PortfolioContext
+from quantlab.risk.base import FactorRiskModel
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.execution.rules import ExecutionBook, ExecutionSettings
+from quantlab.utils.date_range import last_moment
 from quantlab.utils.returns import one_bar_returns
 
 _DIMS = ("timestamp", "symbol")
@@ -164,6 +173,60 @@ class _Book:
         self.book.submit(row, targets)
 
 
+class _Preload:
+    """What ``DecisionInputs.preloaded`` read once, and each bar's inputs sliced from it.
+
+    ``prices`` holds the fill and valuation prices from the warm-up of the
+    window's first bar to its last bar, on every symbol; ``calendar`` the
+    dataset's bars over the same range, which every bar's warm-up is counted
+    on as ``bar_before`` counts it; ``tradable``, ``factors`` and
+    ``risk_exposures`` the window's bars, on every symbol.
+    """
+
+    def __init__(self, first, last, history_bars, prices, calendar, tradable, factors, risk_exposures):
+        """Hold the window's reads; see the class docstring."""
+        self.first, self.last = first, last
+        self.history_bars = history_bars
+        self.prices = prices
+        self.calendar = calendar
+        self.tradable = tradable
+        self.factors = factors
+        self.risk_exposures = risk_exposures
+
+    def bar(self, t: pd.Timestamp, symbols):
+        """Return the bar's prices window, tradability, factors and exposures on ``symbols``.
+
+        Each as ``context`` reads it from the sources, bar by bar.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is outside the window or not a bar of the dataset.
+        """
+        if not self.first <= t <= self.last:
+            raise ValueError(
+                f"{t} is outside the preloaded window {self.first} to {self.last}; "
+                f"preload a window holding it, or build its context outside preloaded()"
+            )
+        position = int(self.calendar.get_indexer([t])[0])
+        if position < 0:
+            raise ValueError(f"{t} is not a bar of the price dataset")
+        start = self.calendar[max(0, position - (self.history_bars - 1))]
+        prices = self.prices.sel(timestamp=slice(start, t)).reindex(symbol=symbols)
+        tradable = np.asarray(
+            self.tradable.sel(timestamp=t).reindex(symbol=symbols, fill_value=False).values,
+            dtype=bool,
+        )
+        return prices, tradable, _at(self.factors, t, symbols), _at(self.risk_exposures, t, symbols)
+
+
+def _at(panel: xr.Dataset | None, t: pd.Timestamp, symbols) -> xr.Dataset | None:
+    """Return a preloaded panel's values at ``t`` on ``symbols`` (NaN where it has none), or None."""
+    if panel is None:
+        return None
+    return panel.reindex(timestamp=[t]).isel(timestamp=0, drop=True).reindex(symbol=symbols)
+
+
 class DecisionInputs:
     """Assemble a rule's decision inputs from a price dataset and decide with it.
 
@@ -171,7 +234,8 @@ class DecisionInputs:
     whole prediction panel, replaying the holdings between rebalances, for
     the research backtester; ``context`` builds one bar's context with the
     holdings an executor injects, and ``rebalances`` tells it which bars to
-    decide. On every rebalance bar both give the same context.
+    decide. On every rebalance bar both give the same context. A replay
+    building a context per bar reads its window once with ``preloaded``.
 
     Parameters
     ----------
@@ -276,6 +340,8 @@ class DecisionInputs:
         # The dataset's bars from the anchor, read up to its last bar when
         # rebalances() is first asked and again only past it (a live dataset grows).
         self._calendar = pd.DatetimeIndex([])
+        # What preloaded() read, while its context is open.
+        self._preload: _Preload | None = None
 
     @classmethod
     def from_run(cls, run_dir: str | PathLike, *, end=None) -> Self:
@@ -538,6 +604,7 @@ class DecisionInputs:
         risk model's exposures at ``t`` from the model; with the
         holdings the panel entry replayed, the context equals the one
         ``weights`` built at ``t``. No warning is given for a short history.
+        Inside ``preloaded`` the same values are sliced from memory.
 
         Parameters
         ----------
@@ -560,8 +627,9 @@ class DecisionInputs:
         ValueError
             If an input is not on ``symbol`` alone or repeats a symbol, a
             current weight is not finite, ``t`` is not a bar of the
-            dataset, or the risk model's exposures store does not cover
-            ``t`` (under ``"read"``).
+            dataset, the risk model's exposures store does not cover
+            ``t`` (under ``"read"``), or, inside ``preloaded``, ``t`` is
+            outside the preloaded window.
 
         Examples
         --------
@@ -583,6 +651,13 @@ class DecisionInputs:
         current = np.asarray(
             current_weights.reindex(symbol=symbols, fill_value=0.0).values, dtype=np.float64
         )
+        if self._preload is not None:
+            prices, tradable, factors, risk_exposures = self._preload.bar(t, symbols)
+            if not prices.sizes["timestamp"] or pd.Timestamp(prices.timestamp.values[-1]) != t:
+                raise ValueError(f"{t} is not a bar of the price dataset")
+            return self._context(
+                t, predictions, tradable, current, prices[self.valuation_column], factors, risk_exposures
+            )
         prices = self._prices(t, t, symbols, warn=False)
         if not prices.sizes["timestamp"] or pd.Timestamp(prices.timestamp.values[-1]) != t:
             raise ValueError(f"{t} is not a bar of the price dataset")
@@ -603,6 +678,103 @@ class DecisionInputs:
         return self._context(
             t, predictions, tradable, current, prices[self.valuation_column], factors, risk_exposures
         )
+
+    @contextmanager
+    def preloaded(self, start, end) -> Iterator[Self]:
+        """Read what the contexts of the bars from ``start`` to ``end`` need once; slice them from memory inside.
+
+        For a replay that builds a context per bar (an event-driven
+        executor's closed loop, a recheck of its decisions), which otherwise
+        reads its sources again on every bar. On entering, over the
+        dataset's bars from ``start`` to ``end`` (the window) it reads, each
+        in one request through the usual read seams, so an open
+        ``quantlab.runs.record.DataRecorder`` records each as one request
+        over the window: the fill and valuation prices from the
+        ``history_bars - 1`` bars before the window's first bar (or the
+        dataset's first bar) to its last, on every symbol; their
+        tradability (``tradable_bars``); the rule's declared factors
+        (``Factor.compute`` over the window, as ``weights`` computes them
+        over its panel); and its declared risk model's exposures. The risk
+        model's estimate store is held over the part of the window it
+        covers (``RiskStore.held``), so the covariance estimator's row of
+        each bar is read from memory too.
+
+        Inside, ``context`` at a bar of the window slices the bar's inputs
+        from what was read and returns the context it builds without the
+        preload, value for value: the price window and its warm-up are
+        counted on the dataset's calendar as ``bar_before`` counts them,
+        so a bar near the window's start has the same history, and nothing
+        after a bar enters its context. ``context`` at a bar outside the
+        window raises ``ValueError``; ``weights`` and ``rebalances`` are
+        unaffected. On leaving, everything read is dropped. A factor whose
+        value at a bar depends on where its computation starts, beyond its
+        ``warmup_bars``, would differ, as it differs between ``weights``
+        and ``context`` already.
+
+        Parameters
+        ----------
+        start, end : pd.Timestamp or datetime-like
+            The window: the first and last bar whose context is built. A
+            date-only ``end`` includes every bar of that day.
+
+        Yields
+        ------
+        DecisionInputs
+            ``self``, preloaded.
+
+        Raises
+        ------
+        ValueError
+            If the dataset has no bar from ``start`` to ``end``, ``self`` is
+            already preloaded, or a read refuses its range (an exposures
+            store not covering the window, under ``"read"``).
+
+        Examples
+        --------
+        >>> with inputs.preloaded(ts[1], ts[3]):
+        ...     again = inputs.context(ts[2], scores["ret"].isel(timestamp=2).to_dataset(), held)
+        >>> again.tradable.values, again.staleness.values
+        (array([ True, False,  True]), array([ 0., nan,  0.]))
+        >>> with inputs.preloaded(ts[2], ts[3]):
+        ...     inputs.context(ts[1], scores["ret"].isel(timestamp=1).to_dataset(), held)
+        Traceback (most recent call last):
+        ValueError: 2024-01-02 00:00:00 is outside the preloaded window 2024-01-03 00:00:00 to 2024-01-04 00:00:00; ...
+        """
+        if self._preload is not None:
+            raise ValueError("these decision inputs are already preloaded")
+        bars = self.dataset.calendar(start, end)
+        if not len(bars):
+            raise ValueError(f"the price dataset has no bar from {start} to {end}")
+        first, last = bars[0], bars[-1]
+        history_start = self._history_start(first, warn=False)
+        prices = self._prices(first, last, None, warn=False)
+        window = prices.sel(timestamp=slice(first, last))
+        tradable = self.dataset.tradable_bars(window, self.fill_column).transpose(*_DIMS).load()
+        factors = self._factor_panels(first, last, None)
+        risk_exposures = self._risk_exposures(first, last, None)
+        with ExitStack() as stack:
+            model = self.declared.risk_model
+            if isinstance(model, FactorRiskModel):
+                covered = model.estimate.store_range()
+                if covered is not None:
+                    held_first = max(first, pd.Timestamp(covered[0]))
+                    held_last = min(last, last_moment(covered[1]))
+                    if held_first <= held_last:
+                        stack.enter_context(model.estimate.held(held_first, held_last))
+            self._preload = _Preload(
+                first,
+                last,
+                self.declared.history_bars,
+                prices,
+                self.dataset.calendar(history_start, last),
+                tradable,
+                None if factors is None else factors.load(),
+                None if risk_exposures is None else risk_exposures.load(),
+            )
+            try:
+                yield self
+            finally:
+                self._preload = None
 
     def _context(
         self, timestamp, predictions, tradable, current, valuation_price, factors, risk_exposures
@@ -649,12 +821,24 @@ class DecisionInputs:
     def _prices(self, first: pd.Timestamp, last: pd.Timestamp, symbols, *, warn: bool) -> xr.Dataset:
         """Return the raw fill and valuation prices from ``history_bars - 1`` bars before ``first`` to ``last``.
 
-        On ``symbols`` (NaN where the dataset has none). With ``warn``, a
-        shortfall of bars before ``first`` is reported once.
+        On ``symbols`` (NaN where the dataset has none), every symbol for
+        ``None``. With ``warn``, a shortfall of bars before ``first`` is
+        reported once.
+        """
+        start = self._history_start(first, warn=warn)
+        panel = self.dataset.panel(start, last, variables=[self.fill_column, self.valuation_column])
+        if symbols is not None:
+            panel = panel.reindex(symbol=symbols)
+        return panel.transpose(*_DIMS).load()
+
+    def _history_start(self, first: pd.Timestamp, *, warn: bool) -> pd.Timestamp:
+        """Return the bar ``history_bars - 1`` bars before ``first``, or the dataset's first bar.
+
+        With ``warn``, a shortfall is reported once.
         """
         warmup = self.declared.history_bars - 1
         try:
-            start = self.dataset.bar_before(first, warmup)
+            return self.dataset.bar_before(first, warmup)
         except InsufficientHistoryError as exc:
             if warn:
                 warnings.warn(
@@ -663,18 +847,12 @@ class DecisionInputs:
                     f"{exc.available}; the first price windows are short by "
                     f"{warmup - exc.available} bar(s).",
                     UserWarning,
-                    stacklevel=3,
+                    stacklevel=4,
                 )
-            start = self.dataset.bar_before(first, exc.available)
-        return (
-            self.dataset.panel(start, last, variables=[self.fill_column, self.valuation_column])
-            .reindex(symbol=symbols)
-            .transpose(*_DIMS)
-            .load()
-        )
+            return self.dataset.bar_before(first, exc.available)
 
     def _factor_panels(self, first: pd.Timestamp, last: pd.Timestamp, symbols) -> xr.Dataset | None:
-        """Return the rule's declared factors from ``first`` to ``last`` on ``symbols``, or None.
+        """Return the rule's declared factors from ``first`` to ``last`` on ``symbols`` (all for None), or None.
 
         Each factor is computed with ``Factor.compute``, which reads its own
         warm-up before ``first``. Refused: values lacking a declared name.
@@ -690,10 +868,11 @@ class DecisionInputs:
                 f"{type(self.constructor).__name__} declares factors {missing} that "
                 f"their computed panels lack"
             )
-        return panels.transpose(*_DIMS).reindex(symbol=symbols)
+        panels = panels.transpose(*_DIMS)
+        return panels if symbols is None else panels.reindex(symbol=symbols)
 
     def _risk_exposures(self, first: pd.Timestamp, last: pd.Timestamp, symbols) -> xr.Dataset | None:
-        """Return the exposures of the rule's declared risk model from ``first`` to ``last`` on ``symbols``, or None.
+        """Return the exposures of the rule's declared risk model from ``first`` to ``last`` on ``symbols`` (all for None), or None.
 
         One ``FactorRiskModel.exposures`` request, which reads the exposures
         factor's store or computes it per the model's
@@ -703,4 +882,5 @@ class DecisionInputs:
         model = self.declared.risk_model
         if model is None:
             return None
-        return model.exposures(first, last).transpose(*_DIMS).reindex(symbol=symbols)
+        exposures = model.exposures(first, last).transpose(*_DIMS)
+        return exposures if symbols is None else exposures.reindex(symbol=symbols)

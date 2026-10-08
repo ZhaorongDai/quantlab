@@ -125,6 +125,7 @@ True
 
 - `rebalances(t)` 回答 bar `t` 是否是日程中的调仓 bar；构造时传入 `end=` 可以让回放的最后一根 bar 不调仓。
 - `context(t, predictions, current_weights)` 构造这根 bar 的 `PortfolioContext`。`predictions` 和 `current_weights` 是这根 bar 在 `symbol` 上的取值；`current_weights` 中缺失的标的视为未持有，没有预测的持仓标的以 NaN 预测加入这根 bar。可交易性、截至 `t` 的最近 `history_bars` 个估值价格得出的收益窗口和停牌时长（staleness），以及 `t` 上的因子值，都从数据集读取，所以执行器最多只需保留 `history_bars` 根 bar 的价格。给定回测重放出的持仓，得到的 context 与回测构造的相同。
+- `preloaded(start, end)` 是一个上下文管理器，供逐根 bar 构造 context 的回放使用（事件驱动回测、对其决策的复核）。进入时它在窗口上一次性读取（经由同样会被记录的读取接口）带预热的价格、可交易性、声明的因子和声明的风险模型暴露，并把风险模型的 estimate 存储保存在内存中（`RiskStore.held`）。在其中，窗口内某根 bar 的 `context` 从内存切片得到，与不预加载时构造的 context 相同；窗口外的 bar 抛出 `ValueError`。实盘每次只决定新的一根 bar，不做预加载。
 - `decide(context)` 调用 `construct`，并按权重契约检查这一行。它返回 `Decision(weights, failure, events)`：context 各标的上的权重，全 NaN 表示保持；使这根 bar 保持仓位的 `PortfolioConstructionError` 的消息，或 `None`；以及这一行报告的事件。违反契约的行（NaN 与有限权重混合、改动了锁定仓位、给既不可交易也未持有的标的分配权重）是规则的 bug，抛出 `ValueError`。
 
 这里直接构造 `inputs`，即 `DecisionInputs(dataset, rule, fill_column=..., valuation_column=..., rebalance_periods=..., anchor=...)`，价格只有三根 bar，`DDD` 在 `context.timestamp` 上没有价格（`from_run` 从一次运行构造同样的输入）：
