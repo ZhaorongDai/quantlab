@@ -9,6 +9,8 @@ of the 2026-10-05 bulk TICKERS file: SEP, SFP, SF1, SF2, SF3B).
 
 from __future__ import annotations
 
+import json
+
 from datetime import date
 
 import numpy as np
@@ -180,17 +182,28 @@ def test_the_category_filter_applies_only_to_an_unrostered_universe(tmp_path, to
     assert _panel(tmp_path / "r", root, permatickers=(202,))["symbol"].values.tolist() == [202]
 
 
-def test_two_rows_of_one_permaticker_on_one_date_are_refused(tmp_path, today):
+def test_two_tickers_of_one_permaticker_on_one_date_are_left_out_and_reported(tmp_path, today):
+    # TICKERS gives 101 both tickers: neither row can be chosen.
     daily = [
         daily_row("AAA", DAYS[0], marketcap=1.0),  # SYNTHETIC
         daily_row("AAA.OLD", DAYS[0], marketcap=2.0),  # SYNTHETIC
+        daily_row("AAA", DAYS[1], marketcap=3.0),  # SYNTHETIC
     ]
     vendor = _vendor(daily)
     vendor.tables["tickers"][1].append(tickers_row("SF1", 101, "AAA.OLD"))  # SYNTHETIC
     root = _bulk(vendor, tmp_path / "dl")
 
-    with pytest.raises(ValueError, match="several raw rows"):
-        _dataset(tmp_path, root).update()
+    panel = _panel(tmp_path, root)
+    assert panel["marketcap"].sel(symbol=101).values.tolist() == [3e6]
+    report = _ambiguous_report(tmp_path)
+    assert sorted(report) == ["AAA", "AAA.OLD"]
+    assert "several" in report["AAA"]["reason"]
+
+
+def _ambiguous_report(tmp_path) -> dict:
+    """The ``<store>.unmapped.json`` entries by ticker, of the one store under ``tmp_path``."""
+    (path,) = tmp_path.glob("*.unmapped.json")
+    return {e["ticker"]: e for e in json.loads(path.read_text())["unmapped"]}
 
 
 def test_an_update_by_lastupdated_appends_new_days_and_never_rewrites_stored_ones(

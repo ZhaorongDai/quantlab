@@ -208,8 +208,9 @@ class SharadarStockDataset(MarketDataset):
         Raises
         ------
         ValueError
-            If a ticker has two permatickers, or two rows share a permaticker
-            and date. A row without a permaticker is left out and reported
+            If a ticker has two permatickers, or two rows of one ticker share
+            a permaticker and date (rows under two tickers are settled,
+            ``PermatickerResolver.settle``). A row without a permaticker is left out and reported
             (``unmapped_path()``). An empty window is not an error here; a
             build refuses it (``_rows_to_build``).
         """
@@ -487,11 +488,12 @@ class SharadarStockDataset(MarketDataset):
         return Path(f"{self.config.zarr_file_path}{UNMAPPED_SUFFIX}")
 
     def _map_permatickers(self, prices: pl.DataFrame) -> pl.DataFrame:
-        """Drop and report the annotated raw rows that have no permaticker."""
+        """Settle a security's rows under two tickers on one date, then drop and report the rows without a permaticker."""
         # A diff's derivations read another raw tier; the store's report is
         # the store's own update's.
         reports = self.config.zarr_file_path is not None and not getattr(self, "_diffing", False)
         report = self.unmapped_path() if reports else None
+        prices = self._resolver().settle(prices, ("date",))
         return self._resolver().left_out(prices, owner=self.class_name, report_path=report)
 
     def _universe(self) -> list[int]:

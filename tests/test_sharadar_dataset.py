@@ -187,12 +187,20 @@ def test_a_ticker_no_source_maps_is_left_out_and_reported(tmp_path):
     ]
 
 
-def test_two_tickers_of_one_permaticker_on_one_date_are_refused(tmp_path):
-    rows = [sep_row("FB", "2024-01-02", 10.0), sep_row("META", "2024-01-02", 10.5)]  # SYNTHETIC
+def test_two_tickers_of_one_permaticker_on_one_date_are_left_out_and_reported(tmp_path):
+    # TICKERS gives 303 both tickers: neither price can be chosen.
+    rows = [
+        sep_row("FB", "2024-01-02", 10.0),  # SYNTHETIC
+        sep_row("META", "2024-01-02", 10.5),  # SYNTHETIC
+        sep_row("META", "2024-01-03", 11.0),  # SYNTHETIC
+    ]
     tickers = [tickers_row("SEP", 303, "FB"), tickers_row("SEP", 303, "META")]  # SYNTHETIC
-    vendor_root = _pull(tmp_path / "downloads", rows, tickers)
-    with pytest.raises(ValueError, match="303"):
-        _dataset(tmp_path, vendor_root).from_raw_data()
+    panel = _build(tmp_path, rows, tickers).panel("2024-01-01", "2024-01-31")
+    assert panel["close"].sel(symbol=303).values.tolist() == [11.0]
+    (path,) = tmp_path.glob("*.unmapped.json")
+    entries = {e["ticker"]: e for e in json.loads(path.read_text())["unmapped"]}
+    assert sorted(entries) == ["FB", "META"]
+    assert "303" in entries["FB"]["reason"]
 
 
 def test_the_config_dates_and_permatickers_bound_the_conversion(tmp_path):

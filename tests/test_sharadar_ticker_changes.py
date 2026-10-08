@@ -11,7 +11,18 @@ only the current ones. What is locked here:
   ACTIONS row, and a rewritten sidecar keeps what the old one knew;
 - an updated pull (SF1) replaces the row of the same security and key even
   when its ticker changed;
-- a bulk TICKERS pull keeps a snapshot, and unused snapshots are pruned.
+- a bulk TICKERS pull keeps a snapshot, and unused snapshots are pruned;
+- a security TICKERS renamed to its ticker plus a number, with no ACTIONS
+  row (NSTR became NSTR1), keeps the rows of its old ticker through
+  ``relatedtickers``, and a later holder of the ticker its own; a related
+  ticker of another shape (a SPAC's unit) maps nothing;
+- a ticker the file's own snapshot gives to another security (a fund that
+  took over a dead stock's ticker) is not mapped to the stock through its
+  holders;
+- two tickers of one security on one key (SF3A keeps a quarter under the
+  current ticker and a stale one) settle on the security's own ticker, else
+  the ticker it used on the row's date, else one of identical rows; what is
+  still ambiguous is left out and reported.
 
 Raw files are written directly (``_write``) so each pull time is chosen by the
 test; every value is SYNTHETIC.
@@ -34,6 +45,7 @@ from tests.sharadar_fixtures import (
     csv_text,
     sep_row,
     sf1_row,
+    sf3a_row,
     tickers_row,
 )
 
@@ -262,3 +274,205 @@ def test_a_bulk_tickers_pull_keeps_a_snapshot_and_prunes_unused_ones(tmp_path, m
     assert len(snapshots) == 1
     assert pl.read_parquet(snapshots[0])["ticker"].to_list() == ["OLD"]
     assert abs((pull_time(root / "tickers" / "tickers.parquet") - pull_time(snapshots[0])).total_seconds()) < 1
+
+
+# -- a ticker taken over by another security, two tickers on one key ----------
+
+QUARTER = "2024-03-31"
+PULLED = _at("2024-06-20")
+
+
+def _sf3a(root: Path, rows: list[dict], tickers: list[dict], actions: list[dict] | None = None):
+    """SF3A pulled whole on ``PULLED`` with TICKERS (and its run's snapshot) and ACTIONS."""
+    _snapshot(root, tickers, PULLED.replace(hour=19))
+    _write(root, "tickers", tickers, PULLED.replace(hour=19))
+    _write(root, "actions", actions or [], PULLED)
+    _write(root, "sf3a", rows, PULLED)
+
+
+def _sf3a_mapped(root: Path, tmp_path: Path, **kwargs):
+    from quantlab.dataset.sharadar.permatickers import map_raw_table
+
+    store = tmp_path / "holdings.zarr"
+    frame = map_raw_table(
+        root, "sf3a", owner="test", store_path=store, key=("date",), **kwargs
+    ).sort("ticker")
+    report = Path(f"{store}.unmapped.json")
+    return frame, (json.loads(report.read_text()) if report.exists() else None)
+
+
+def test_a_ticker_its_files_snapshot_gives_another_security_is_not_mapped(tmp_path):
+    # 707 traded as OLD until 2010, then NEW; a fund (SFP 909) trades as OLD now.
+    root = tmp_path / "sharadar"
+    _sf3a(
+        root,
+        [sf3a_row(QUARTER, "NEW", 40, 900.0), sf3a_row(QUARTER, "OLD", 7, 30.0)],  # SYNTHETIC
+        [tickers_row("SEP", 707, "NEW"), tickers_row("SFP", 909, "OLD")],  # SYNTHETIC
+        [_change("2010-05-03", "NEW", "OLD")],  # SYNTHETIC
+    )
+
+    frame, report = _sf3a_mapped(root, tmp_path)
+    assert frame.select("ticker", "permaticker").rows() == [("NEW", 707)]
+    (entry,) = report["unmapped"]
+    assert entry["ticker"] == "OLD"
+    assert "909" in entry["reason"]
+
+
+def test_two_tickers_of_one_security_on_one_quarter_keep_its_own_ticker(tmp_path):
+    # OLD is no one's in TICKERS: only the ACTIONS chain gives it to 707.
+    root = tmp_path / "sharadar"
+    _sf3a(
+        root,
+        [sf3a_row(QUARTER, "NEW", 40, 900.0), sf3a_row(QUARTER, "OLD", 7, 30.0)],  # SYNTHETIC
+        [tickers_row("SEP", 707, "NEW")],  # SYNTHETIC
+        [_change("2024-05-01", "NEW", "OLD")],  # SYNTHETIC: OLD covered the quarter
+    )
+
+    frame, report = _sf3a_mapped(root, tmp_path)
+    assert frame.select("ticker", "permaticker", "shrholders").rows() == [("NEW", 707, 40)]
+    assert report is None  # a superseded row is not a missing one
+
+
+def test_two_former_tickers_settle_on_the_one_used_on_the_rows_date(tmp_path):
+    # 707: AAA until 2023-01-02, BBB until 2024-05-01, CCC since; the file
+    # holds AAA and BBB rows for one quarter and no CCC row.
+    root = tmp_path / "sharadar"
+    _sf3a(
+        root,
+        [sf3a_row(QUARTER, "AAA", 3, 10.0), sf3a_row(QUARTER, "BBB", 40, 900.0)],  # SYNTHETIC
+        [tickers_row("SEP", 707, "CCC")],  # SYNTHETIC
+        [_change("2023-01-02", "BBB", "AAA"), _change("2024-05-01", "CCC", "BBB")],  # SYNTHETIC
+    )
+
+    frame, report = _sf3a_mapped(root, tmp_path)
+    assert frame.select("ticker", "permaticker").rows() == [("BBB", 707)]
+    assert report is None
+
+
+def test_identical_rows_under_two_tickers_keep_one(tmp_path):
+    root = tmp_path / "sharadar"
+    _sf3a(
+        root,
+        [sf3a_row(QUARTER, "AAA", 40, 900.0), sf3a_row(QUARTER, "BBB", 40, 900.0)],  # SYNTHETIC
+        [tickers_row("SEP", 707, "CCC")],  # SYNTHETIC
+        # Both ended before the quarter: neither was in use on it.
+        [_change("2020-01-02", "BBB", "AAA"), _change("2021-01-04", "CCC", "BBB")],  # SYNTHETIC
+    )
+
+    frame, report = _sf3a_mapped(root, tmp_path)
+    assert frame.height == 1
+    assert frame["permaticker"].to_list() == [707]
+    assert report is None
+
+
+def test_rows_still_ambiguous_are_left_out_and_reported(tmp_path):
+    root = tmp_path / "sharadar"
+    _sf3a(
+        root,
+        [
+            sf3a_row(QUARTER, "AAA", 3, 10.0),  # SYNTHETIC
+            sf3a_row(QUARTER, "BBB", 40, 900.0),  # SYNTHETIC
+            sf3a_row("2023-12-31", "BBB", 38, 850.0),  # SYNTHETIC: alone on its quarter
+        ],
+        [tickers_row("SEP", 707, "CCC")],  # SYNTHETIC
+        [_change("2020-01-02", "BBB", "AAA"), _change("2021-01-04", "CCC", "BBB")],  # SYNTHETIC
+    )
+
+    frame, report = _sf3a_mapped(root, tmp_path)
+    assert frame.select("ticker", "date").rows() == [("BBB", "2023-12-31")]
+    entries = {e["ticker"]: e for e in report["unmapped"]}
+    assert sorted(entries) == ["AAA", "BBB"]
+    assert entries["BBB"]["rows"] == 1
+    assert entries["BBB"]["first_date"] == QUARTER
+    assert "several" in entries["BBB"]["reason"]
+
+
+def test_an_unmapped_row_is_not_reported_when_the_table_expects_them(tmp_path):
+    # SF3A holds funds: their rows are expected to map to nothing, an
+    # ambiguous duplicate is still reported.
+    root = tmp_path / "sharadar"
+    _sf3a(
+        root,
+        [
+            sf3a_row(QUARTER, "FUND", 9, 1.0),  # SYNTHETIC
+            sf3a_row(QUARTER, "AAA", 3, 10.0),  # SYNTHETIC
+            sf3a_row(QUARTER, "BBB", 40, 900.0),  # SYNTHETIC
+        ],
+        [tickers_row("SEP", 707, "CCC"), tickers_row("SFP", 909, "FUND")],  # SYNTHETIC
+        [_change("2020-01-02", "BBB", "AAA"), _change("2021-01-04", "CCC", "BBB")],  # SYNTHETIC
+    )
+
+    frame, report = _sf3a_mapped(root, tmp_path, report_unmapped=False, quiet=True)
+    assert frame.height == 0
+    assert sorted(e["ticker"] for e in report["unmapped"]) == ["AAA", "BBB"]
+
+
+# -- relatedtickers: a ticker renamed with a number, without an ACTIONS row ----
+
+
+def test_a_ticker_renamed_with_a_number_maps_through_relatedtickers(tmp_path):
+    # TICKERS renamed 707 OLD -> OLD1 (its old ticker was reused) with no
+    # ACTIONS row; the bulk file, pulled without a snapshot, names it OLD.
+    root = tmp_path / "sharadar"
+    _write(root, "sep", [sep_row("OLD", d, 10.0) for d in BULK_DAYS], _at("2024-01-05"))  # SYNTHETIC
+    _write(
+        root,
+        "tickers",
+        [
+            tickers_row(
+                "SEP", 707, "OLD1", relatedtickers="OLDU OLD",  # SYNTHETIC
+                firstpricedate="2023-06-01", lastpricedate="2024-01-05",  # SYNTHETIC
+            )
+        ],
+        _at("2024-03-01"),
+    )
+    _write(root, "actions", [], _at("2024-03-01"))
+
+    frame, resolver = _mapped(root)
+    assert frame["permaticker"].to_list() == [707] * 4
+    assert resolver.unresolved == {}
+
+
+def test_a_related_ticker_of_another_shape_maps_nothing(tmp_path):
+    # OLDU (a unit) is listed in 707's relatedtickers but is not 707's.
+    root = tmp_path / "sharadar"
+    _write(root, "sep", [sep_row("OLDU", d, 10.0) for d in BULK_DAYS], _at("2024-01-05"))  # SYNTHETIC
+    _write(root, "tickers", [tickers_row("SEP", 707, "OLD1", relatedtickers="OLDU OLD")], _at("2024-03-01"))  # SYNTHETIC
+    _write(root, "actions", [], _at("2024-03-01"))
+
+    frame, resolver = _mapped(root)
+    assert frame["permaticker"].null_count() == 4
+    assert resolver.unresolved[root / "sep" / "sep.parquet"] == {"OLDU": "no permaticker"}
+
+
+def test_a_renamed_ticker_reused_later_maps_each_file_to_its_holder_then(tmp_path):
+    # 707 traded as OLD until 2024-01-05 and became OLD1; 808 lists as OLD
+    # from 2024-02-01. The bulk (pulled 01-05) names 707 OLD; a window pulled
+    # in February names 808 OLD.
+    root = tmp_path / "sharadar"
+    _write(root, "sep", [sep_row("OLD", d, 10.0) for d in BULK_DAYS], _at("2024-01-05"))  # SYNTHETIC
+    _write(
+        root,
+        "sep",
+        [sep_row("OLD", d, 30.0) for d in ["2024-02-01", "2024-02-02"]],  # SYNTHETIC
+        _at("2024-02-02"),
+        window=(date(2024, 2, 1), date(2024, 2, 2)),
+    )
+    _write(
+        root,
+        "tickers",
+        [
+            tickers_row(
+                "SEP", 707, "OLD1", relatedtickers="OLD",  # SYNTHETIC
+                firstpricedate="2023-06-01", lastpricedate="2024-01-05",  # SYNTHETIC
+            ),
+            tickers_row("SEP", 808, "OLD", firstpricedate="2024-02-01"),  # SYNTHETIC
+        ],
+        _at("2024-03-01"),
+    )
+    _write(root, "actions", [], _at("2024-03-01"))
+
+    frame, resolver = _mapped(root)
+    assert frame.filter(pl.col("date") <= date(2024, 1, 5))["permaticker"].to_list() == [707] * 4
+    assert frame.filter(pl.col("date") >= date(2024, 2, 1))["permaticker"].to_list() == [808] * 2
+    assert resolver.unresolved == {}

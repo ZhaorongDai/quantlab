@@ -71,6 +71,9 @@ class SharadarEventsDataset(FilingPanelDataset):
 
     TABLE = "events"
 
+    #: One row per company and filing date.
+    KEY = ("date",)
+
     def _on_config_installed(self) -> None:
         """Drop what was cached for the previous config."""
         super()._on_config_installed()

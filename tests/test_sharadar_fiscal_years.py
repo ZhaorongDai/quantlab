@@ -9,6 +9,8 @@ them.
 
 from __future__ import annotations
 
+import json
+
 from datetime import date
 
 import numpy as np
@@ -241,14 +243,23 @@ def test_only_annual_as_reported_rows_feed_the_panel(tmp_path, today):
     assert set(shown[6:].tolist()) == {2.0}
 
 
-def test_rows_of_one_permaticker_with_one_key_are_refused(tmp_path, today):
-    sf1 = [_ary("AAA", "2024-01-04", 2023, 1.0), _ary("AAA.OLD", "2024-01-04", 2023, 1.1)]
+def test_rows_of_one_permaticker_with_one_key_under_two_tickers_are_left_out_and_reported(
+    tmp_path, today
+):
+    sf1 = [
+        _ary("AAA", "2024-01-04", 2023, 1.0),
+        _ary("AAA.OLD", "2024-01-04", 2023, 1.1),
+        _ary("AAA", "2024-01-03", 2022, 0.9),
+    ]
     vendor = _vendor(sf1)
     vendor.tables["tickers"][1].append(tickers_row("SF1", 101, "AAA.OLD"))  # SYNTHETIC
     root = _bulk(vendor, tmp_path / "dl")
 
-    with pytest.raises(ValueError, match="several raw rows"):
-        _dataset(tmp_path, root).update()
+    _dataset(tmp_path, root).update()
+    (path,) = tmp_path.glob("*.unmapped.json")
+    entries = {e["ticker"]: e for e in json.loads(path.read_text())["unmapped"]}
+    assert sorted(entries) == ["AAA", "AAA.OLD"]
+    assert entries["AAA"]["rows"] == 1
 
 
 # -- staleness, units and universe ---------------------------------------------

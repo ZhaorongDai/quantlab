@@ -192,8 +192,9 @@ class SharadarFundamentalsDataset(BaseDataset):
         Raises
         ------
         ValueError
-            If a raw ticker has no permaticker or two, or two rows of one
-            permaticker share a release date and fiscal period.
+            If a raw ticker has two permatickers, or two rows of one ticker
+            and permaticker share a release date and fiscal period (rows
+            under two tickers are settled, ``PermatickerResolver.settle``).
         """
         if self._shown_cache is not None:
             return self._shown_cache
@@ -208,6 +209,7 @@ class SharadarFundamentalsDataset(BaseDataset):
                 query=lambda scan: scan.filter(pl.col("dimension") == config.dimension).filter(
                     pl.col("date") <= pl.lit(self._raw_through())
                 ),
+                key=("dimension", "date", "reportperiod"),
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(config)))
             self._assert_unique_keys(frame)
