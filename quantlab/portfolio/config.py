@@ -146,7 +146,7 @@ class MeanVarianceConfig(FrozenConfig):
     #: (historical) volatilities.
     volatility_label: str | None = None
     #: Factors whose outputs ``exposure_bounds`` bounds, such as a
-    #: ``BenchmarkBeta``; the rule declares them in ``required_factors()``,
+    #: ``BenchmarkBeta``; the rule declares them in ``declared_inputs()``,
     #: so the backtest hands their values at each bar in ``context.factors``.
     exposure_factors: tuple["Factor", ...] = component(many=True, default=())
     #: Output name of an ``exposure_factors`` factor, or of an exposure of
