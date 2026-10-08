@@ -65,6 +65,7 @@ import xarray as xr
 from plotly.subplots import make_subplots
 
 from quantlab.utils import date_range
+from quantlab.utils.returns import one_bar_returns
 from quantlab.runs import backtest_stats
 from quantlab.runs.factor_attribution_report import (
     AXIS, CHART_FONT, GRID, INK2, MUTED, factor_attribution_section,
@@ -195,6 +196,7 @@ def write_backtest_report(
     holdings: xr.DataArray | None = None,
     holding_names: Mapping[str, Sequence[tuple[str, str, str]]] | None = None,
     holding_returns: xr.DataArray | None = None,
+    holding_contributions: xr.Dataset | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -341,6 +343,14 @@ def write_backtest_report(
         ``report_holdings_inputs``: on ``(timestamp, symbol)``, each symbol's
         price return over the holding period the bar falls in. Without them
         the column shows a dash.
+    holding_contributions : xr.Dataset | None
+        The contributions by position size, from ``report_holdings_inputs``:
+        on ``(timestamp, band)``, each bar's gains, losses, names and losing
+        names by size band. With them (and ``returns``, for the residual) the Holdings
+        section opens with the return of the largest positions against the
+        rest, cut at a share of the names chosen by button, over time, and
+        a table of the contributions by size decile and year, each as the
+        net, the gains or the losses.
 
     Examples
     --------
@@ -392,7 +402,9 @@ def write_backtest_report(
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
     if holdings is not None:
-        tabs.append(("Holdings", _holdings_section(holdings, weights, holding_names, holding_returns)))
+        tabs.append(("Holdings", _holdings_section(
+            holdings, weights, holding_names, holding_returns, holding_contributions, returns,
+        )))
     block = (metrics or {}).get("attribution")
     if attribution is not None and block:
         tabs.append(("Attribution", _attribution_table(block, name)
@@ -769,9 +781,15 @@ def report_holdings_inputs(
         ``holdings``; ``holding_names`` (``None`` without ``label``): per
         symbol id (as ``str``), ``(first bar label, ticker, company)``
         spans in time order, each in use until the next, an unknown company
-        empty; and ``holding_returns`` (``None`` without ``prices``): on
+        empty; ``holding_returns`` (``None`` without ``prices``): on
         ``(timestamp, symbol)``, the return of the holding period each bar
-        falls in, NaN before the first rebalance fills or without a price.
+        falls in, NaN before the first rebalance fills or without a price;
+        and ``holding_contributions`` (``None`` without ``prices``): a
+        dataset on ``(timestamp, band)``, each bar's contributions (a name's
+        holding at the previous close times its return over the bar) by the
+        size band of ``CONTRIBUTION_BANDS`` the name ranks in: ``gain`` and
+        ``loss``, the positive and negative ones summed, ``names`` and
+        ``losers``, the names in the band and those that lost.
 
     Examples
     --------
@@ -790,6 +808,8 @@ def report_holdings_inputs(
     >>> inputs = report_holdings_inputs(holdings, weights, prices=prices)
     >>> inputs["holding_returns"].values.round(2).ravel().tolist()
     [nan, 0.21, 0.21]
+    >>> inputs["holding_contributions"]["gain"].sel(band=1).values.round(3).tolist()
+    [0.0, 0.0, 0.05]
     """
     names = None
     if label is not None:
@@ -808,7 +828,13 @@ def report_holdings_inputs(
                 if not spans or spans[-1][1:] != span:
                     spans.append((date_range.bar_label(bar), *span))
     returns = None if prices is None else _holding_period_returns(weights, holdings, prices)
-    return {"holdings": holdings, "holding_names": names, "holding_returns": returns}
+    contributions = None if prices is None else _band_contributions(holdings, prices)
+    return {
+        "holdings": holdings,
+        "holding_names": names,
+        "holding_returns": returns,
+        "holding_contributions": contributions,
+    }
 
 
 def backtest_report_figure(
@@ -2123,6 +2149,15 @@ def _portfolio_figure(weights: xr.DataArray | None, turnover: xr.DataArray | Non
 #: a config field, so it never changes a run's identity.
 DUST_THRESHOLD = 1e-4
 
+#: The size bands the Holdings tab sums contributions by: the upper bound of
+#: each, in percent of the names held at the previous close, largest first.
+#: The tab's cut-off buttons (``CONTRIBUTION_CUTS``) and its deciles are
+#: unions of these bands, so each of those bounds is a band bound.
+CONTRIBUTION_BANDS = (1, 5, 10, 20, 25, 30, 40, 50, 60, 70, 80, 90, 100)
+
+#: The shares of the names, largest first, the tab's buttons cut at.
+CONTRIBUTION_CUTS = (1, 5, 10, 20, 25, 30, 50)
+
 
 def _targets_in_force(
     weights: xr.DataArray | None, holdings: xr.DataArray
@@ -2186,11 +2221,55 @@ def _holding_period_returns(
     })
 
 
+def _band_contributions(holdings: xr.DataArray, prices: xr.DataArray) -> xr.Dataset:
+    """Return each bar's gains and losses by ``CONTRIBUTION_BANDS``, on ``(timestamp, band)``.
+
+    A name's contribution to a bar is its holding at the previous close
+    times its return over the bar on ``prices`` carried forward. The names
+    held at the previous close are ranked by the size of their holding
+    (ties in symbol order); the name of rank ``r`` (0 for the largest) of
+    ``n`` falls in the first band ``b`` with ``r / n < b / 100``. A name
+    with no return contributes nothing; the first bar has none. ``gain``
+    and ``loss`` sum the positive and the negative contributions, ``names``
+    counts the names in the band and ``losers`` those that lost.
+    """
+    held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
+    start = np.zeros_like(held)
+    start[1:] = held[:-1]
+    price = (
+        prices.transpose("timestamp", "symbol")
+        .reindex(timestamp=holdings.timestamp.values, symbol=holdings.symbol.values)
+        .ffill("timestamp")
+        .values.astype(np.float64)
+    )
+    contribution = np.where(start != 0.0, start * np.nan_to_num(one_bar_returns(price)), 0.0)
+    cuts = np.asarray(CONTRIBUTION_BANDS)
+    parts = {key: np.zeros((held.shape[0], cuts.size)) for key in ("gain", "loss", "names", "losers")}
+    for i in range(1, held.shape[0]):
+        names = np.flatnonzero(start[i])
+        if names.size == 0:
+            continue
+        names = names[np.argsort(-np.abs(start[i, names]), kind="stable")]
+        band = np.argmax(np.arange(names.size)[:, None] * 100 < cuts[None, :] * names.size, axis=1)
+        c = contribution[i, names]
+        np.add.at(parts["gain"][i], band, np.maximum(c, 0.0))
+        np.add.at(parts["loss"][i], band, np.minimum(c, 0.0))
+        np.add.at(parts["names"][i], band, 1)
+        np.add.at(parts["losers"][i], band, c < 0.0)
+    axes = ("timestamp", "band")
+    return xr.Dataset(
+        {key: (axes, value.astype(np.int64) if key in ("names", "losers") else value) for key, value in parts.items()},
+        coords={"timestamp": holdings.timestamp.values, "band": list(CONTRIBUTION_BANDS)},
+    )
+
+
 def _holdings_data(
     holdings: xr.DataArray,
     weights: xr.DataArray | None,
     names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
-    returns: xr.DataArray | None,
+    holding_returns: xr.DataArray | None,
+    contributions: xr.Dataset | None,
+    book_returns: xr.DataArray | None,
 ) -> dict:
     """The JSON the Holdings tab embeds.
 
@@ -2199,7 +2278,7 @@ def _holdings_data(
     target and holding of the dust) and ``h``, one ``[name, target,
     holding, period return]`` row per other symbol held or targeted, largest
     holding first; ``name`` indexes ``names``, ``[ticker, company, symbol
-    id]`` rows, and the period return (``returns`` on the bar, ``None``
+    id]`` rows, and the period return (``holding_returns`` on the bar, ``None``
     where it is NaN or not given) is the symbol's return over the holding
     period the bar falls in.
     Each day also carries its summary: ``n``, the number of non-zero
@@ -2209,13 +2288,19 @@ def _holdings_data(
     did not (a target counts when it is above ``DUST_THRESHOLD`` in size),
     ``None`` while there is no previous rebalance to compare with.
     ``summary`` holds the tab's tiles: bars, rebalances and holdings per bar.
+    ``contribution`` (``None`` without ``contributions``) holds the
+    ``bands`` (``CONTRIBUTION_BANDS``), the ``cuts`` of its buttons
+    (``CONTRIBUTION_CUTS``), ``gain``, ``loss``, ``names`` and
+    ``losers``, each bar's rows of ``contributions`` by band, and ``nav``, the book's return on each bar
+    (``None`` without ``book_returns``), whose excess over the summed
+    contributions is trading at the open and costs.
     """
     held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
     targets, since = _targets_in_force(weights, holdings)
     targets = np.nan_to_num(targets)
     period = (
-        np.full(held.shape, np.nan) if returns is None
-        else returns.transpose("timestamp", "symbol").values.astype(np.float64)
+        np.full(held.shape, np.nan) if holding_returns is None
+        else holding_returns.transpose("timestamp", "symbol").values.astype(np.float64)
     )
     symbols = [str(symbol) for symbol in holdings.symbol.values]
     spans = {str(key): list(value) for key, value in (names or {}).items()}
@@ -2270,14 +2355,29 @@ def _holdings_data(
         ["Rebalances", f"{len({r for r in since if r is not None}):,}"],
         ["Holdings per bar", f"{min(traded)}–{max(traded)} (avg {np.mean(traded):.0f})" if traded else DASH],
     ]
-    return {"days": days, "names": table, "summary": summary, "dust": DUST_THRESHOLD}
+    contribution = None
+    if contributions is not None:
+        nav = None
+        if book_returns is not None:
+            nav = np.nan_to_num(book_returns.reindex(timestamp=holdings.timestamp.values).values.astype(np.float64))
+        contribution = {
+            "bands": list(CONTRIBUTION_BANDS),
+            "cuts": list(CONTRIBUTION_CUTS),
+            **{key: contributions[key].transpose("timestamp", "band").values.tolist()
+               for key in ("gain", "loss", "names", "losers")},
+            "nav": None if nav is None else nav.tolist(),
+        }
+    return {"days": days, "names": table, "summary": summary, "dust": DUST_THRESHOLD,
+            "contribution": contribution}
 
 
 def _holdings_section(
     holdings: xr.DataArray,
     weights: xr.DataArray | None,
     names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
-    returns: xr.DataArray | None,
+    holding_returns: xr.DataArray | None,
+    contributions: xr.Dataset | None,
+    book_returns: xr.DataArray | None,
 ) -> str:
     """The Holdings tab: summary tiles, day controls, the day's table, its data and script.
 
@@ -2285,7 +2385,7 @@ def _holdings_section(
     no name can close the script element; the page's own small script draws
     the selected day from it.
     """
-    data = _holdings_data(holdings, weights, names, returns)
+    data = _holdings_data(holdings, weights, names, holding_returns, contributions, book_returns)
     payload = json.dumps(data, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
     tiles = "".join(
         f'<div class="tile"><div class="kl">{_escape(label)}</div><div class="kv">{_escape(value)}</div></div>'
@@ -2293,7 +2393,8 @@ def _holdings_section(
     )
     return (
         f"<style>{_HOLDINGS_STYLE}</style>\n"
-        f'<div class="tiles hd-tiles">{tiles}</div>\n'
+        + ('<div class="hd-analysis" id="hd-analysis"></div>\n' if data["contribution"] else "")
+        + f'<div class="tiles hd-tiles">{tiles}</div>\n'
         '<div class="hd-controls">'
         '<button id="hd-prev-reb" title="The first bar of the previous rebalance">&laquo; Rebalance</button>'
         '<button id="hd-prev" title="The previous bar (left arrow)">&lsaquo; Day</button>'
@@ -2319,6 +2420,7 @@ def _holdings_section(
         '<tbody id="hd-rows"></tbody><tfoot id="hd-foot"></tfoot></table>\n'
         f'<script type="application/json" id="holdings-data">{payload}</script>\n'
         f"<script>{_HOLDINGS_SCRIPT}</script>"
+        + (f"<script>{_HOLDINGS_ANALYSIS_SCRIPT}</script>" if data["contribution"] else "")
     )
 
 
@@ -2346,6 +2448,217 @@ _HOLDINGS_STYLE = """
   .hd-key.t { background: #93c5fd; } .hd-key.h { background: #2563eb; }
   .hd-key.t.neg { background: #fca5a5; } .hd-key.h.neg { background: #dc2626; }
   .hd-bar .t.neg { background: #fca5a5; } .hd-bar .h.neg { background: #dc2626; }
+  .hd-analysis { margin-bottom: 22px; padding-bottom: 18px; border-bottom: 1px solid #e5e7eb; }
+  .hd-analysis h4 { margin: 0 0 4px; font-size: 14px; } .hd-analysis .hd-note { color: #6b7280; margin-bottom: 10px; }
+  .hd-cuts { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .hd-cuts button { font: inherit; color: #111827; background: #fff; border: 1px solid #e5e7eb; border-radius: 6px;
+    padding: 4px 10px; cursor: pointer; }
+  .hd-cuts button.on { border-color: #2563eb; color: #2563eb; background: #eff6ff; }
+  .hd-analysis .kv.pos { color: #059669; } .hd-analysis .kv.neg { color: #dc2626; }
+  .hd-deciles { overflow-x: auto; margin-top: 14px; }
+  table.hd-dec td, table.hd-dec th { text-align: right; } table.hd-dec td:first-child, table.hd-dec th:first-child { text-align: left; }
+  table.hd-dec tr.all td { font-weight: 600; }
+"""
+
+#: Draws the Holdings tab's contribution analysis from its JSON: the return of
+#: the largest positions (a share of the names, chosen by button) against the
+#: rest and the residual, as tiles and cumulative lines, then the contributions
+#: by size decile and year, each as the net, the gains or the losses, with the
+#: share of name-days that lost. Contributions are summed over bars, not
+#: compounded. Text is set with ``textContent``, never as markup.
+_HOLDINGS_ANALYSIS_SCRIPT = """
+(function () {
+  var D = JSON.parse(document.getElementById('holdings-data').textContent);
+  var C = D.contribution, root = document.getElementById('hd-analysis');
+  if (!C || !root || !D.days.length) return;
+  var dates = D.days.map(function (d) { return d.d; });
+  var nav = C.nav, cut = 10, view = 'net';
+  var VIEWS = [['net', 'Net'], ['gain', 'Gains'], ['loss', 'Losses']];
+  var pct = function (x, p) { return (x * 100).toFixed(p === undefined ? 1 : p) + '%'; };
+  var signed = function (x, p) { return (x > 0 ? '+' : '') + pct(x, p); };
+  var tone = function (x) { return x > 0 ? ' pos' : x < 0 ? ' neg' : ''; };
+  function el(tag, text, cls) {
+    var e = document.createElement(tag);
+    if (text !== undefined) e.textContent = text;
+    if (cls) e.className = cls;
+    return e;
+  }
+  function tile(label, value, notes, cls, tip) {
+    var t = el('div', undefined, 'tile');
+    if (tip) t.title = tip;
+    t.appendChild(el('div', label, 'kl'));
+    t.appendChild(el('div', value, 'kv' + (cls || '')));
+    notes.forEach(function (n) { if (n) t.appendChild(el('div', n, 'hd-note')); });
+    return t;
+  }
+  // Bar i's `key` (gain, loss, names, losers, or net = gain + loss) in the
+  // bands above `lower` and up to `upper` percent of the names.
+  function between(i, key, lower, upper) {
+    var s = 0;
+    for (var k = 0; k < C.bands.length; k++) {
+      if (C.bands[k] <= lower || C.bands[k] > upper) continue;
+      s += key === 'net' ? C.gain[i][k] + C.loss[i][k] : C[key][i][k];
+    }
+    return s;
+  }
+  // `key` summed over the bars i for which keep(i) holds, in a share of the names.
+  function total(key, lower, upper, keep) {
+    var s = 0;
+    for (var i = 0; i < dates.length; i++) if (!keep || keep(i)) s += between(i, key, lower, upper);
+    return s;
+  }
+  function losing(lower, upper, keep) {
+    var n = total('names', lower, upper, keep);
+    return n ? total('losers', lower, upper, keep) / n : 0;
+  }
+  root.appendChild(el('h4', 'Return by position size'));
+  root.appendChild(el('div', 'Each day the names held at the previous close are ranked by the size of their holding; '
+    + 'a name contributes its holding times its return over the day. The largest share of the names against the rest, '
+    + 'summed over the days (not compounded): the net, or only the gains or only the losses. A losing name-day is '
+    + 'a name that lost on a day. The residual is the return of the book less all contributions: trading at the '
+    + 'open and costs.', 'hd-note'));
+  var views = el('div', undefined, 'hd-cuts'), buttons = el('div', undefined, 'hd-cuts');
+  VIEWS.forEach(function (v) {
+    var b = el('button', v[1]);
+    b.dataset.view = v[0];
+    b.addEventListener('click', function () { view = v[0]; draw(); decile(); });
+    views.appendChild(b);
+  });
+  C.cuts.forEach(function (c) {
+    var b = el('button', 'Top ' + c + '%');
+    b.dataset.cut = c;
+    b.addEventListener('click', function () { cut = c; draw(); });
+    buttons.appendChild(b);
+  });
+  root.appendChild(views);
+  root.appendChild(buttons);
+  var tiles = el('div', undefined, 'tiles');
+  root.appendChild(tiles);
+  var chart = el('div', undefined, 'plotly-graph-div');
+  root.appendChild(chart);
+  var noun = function () { return view === 'net' ? '' : view === 'gain' ? ' (gains)' : ' (losses)'; };
+  function draw() {
+    views.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', b.dataset.view === view); });
+    buttons.querySelectorAll('button').forEach(function (b) { b.classList.toggle('on', +b.dataset.cut === cut); });
+    var top = [], rest = [], resid = [], book = [], a = 0, b = 0, r = 0, n = 0;
+    dates.forEach(function (d, i) {
+      var t = between(i, view, 0, cut), all = between(i, view, 0, 100);
+      a += t; b += all - t;
+      top.push(a); rest.push(b);
+      if (nav) {
+        n += nav[i]; book.push(n);
+        r += nav[i] - between(i, 'net', 0, 100); resid.push(r);
+      }
+    });
+    tiles.textContent = '';
+    // A share of the return of the book reads only when there is a gain to share.
+    var share = function (x) {
+      return view === 'net' && nav && n > 0.01 ? pct(x / n, 0) + ' of the summed return of the book' : '';
+    };
+    var split = function (lower, upper) {
+      return 'gains ' + signed(total('gain', lower, upper)) + ', losses ' + signed(total('loss', lower, upper));
+    };
+    var lost = function (lower, upper) { return pct(losing(lower, upper), 0) + ' of name-days lost'; };
+    tiles.appendChild(tile('Top ' + cut + '% of names' + noun(), signed(a), [share(a), split(0, cut), lost(0, cut)],
+      tone(a), 'The contributions of the largest ' + cut + '% of the names held at each previous close.'));
+    tiles.appendChild(tile('Remaining ' + (100 - cut) + '%' + noun(), signed(b),
+      [share(b), split(cut, 100), lost(cut, 100)], tone(b), 'The contributions of the other names.'));
+    if (nav && view === 'net') {
+      tiles.appendChild(tile('Trading & costs', signed(r, 2), [share(r)], tone(r),
+        'The return of the book less every contribution: fills at the open rather than the close, fees and slippage.'));
+      tiles.appendChild(tile('Book', signed(n), ['summed daily returns, not compounded'], tone(n)));
+    }
+    var traces = [
+      { x: dates, y: top, name: 'Top ' + cut + '%', line: { color: view === 'loss' ? '#dc2626' : '#2563eb', width: 2 } },
+      { x: dates, y: rest, name: 'Remaining ' + (100 - cut) + '%',
+        line: { color: view === 'loss' ? '#fca5a5' : '#93c5fd', width: 2 } },
+    ];
+    if (nav && view === 'net') {
+      traces.push({ x: dates, y: resid, name: 'Trading & costs', line: { color: '#9ca3af', dash: 'dot', width: 1.5 } });
+      traces.push({ x: dates, y: book, name: 'Book', line: { color: '#111827', width: 1 } });
+    }
+    Plotly.react(chart, traces, {
+      height: 300, margin: { l: 56, r: 12, t: 24, b: 32 }, hovermode: 'x unified',
+      yaxis: { tickformat: '.0%', title: { text: 'summed contribution' + noun() }, gridcolor: '#f3f4f6' },
+      xaxis: { gridcolor: '#f3f4f6' }, legend: { orientation: 'h', y: 1.15 },
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { size: 11 },
+    }, { displayModeBar: false, responsive: true });
+  }
+  // Size deciles by year.
+  var years = [];
+  dates.forEach(function (d) { if (years.indexOf(d.slice(0, 4)) < 0) years.push(d.slice(0, 4)); });
+  var inYear = function (y) { return function (i) { return dates[i].slice(0, 4) === y; }; };
+  var box = el('div', undefined, 'hd-deciles');
+  box.appendChild(el('h4', 'Contribution by size decile and year'));
+  box.appendChild(el('div', 'D1 is the largest 10% of the names held at each previous close, D10 the smallest; '
+    + 'each cell sums the contributions of that decile over the year. The last row is the share of name-days that '
+    + 'lost. The first bar has no previous close, so its return is all residual.', 'hd-note'));
+  var table = el('table', undefined, 'metrics hd-dec');
+  box.appendChild(table);
+  var bars = el('div', undefined, 'plotly-graph-div');
+  box.appendChild(bars);
+  root.appendChild(box);
+  function decile() {
+    var groups = years.map(function (y) { return [y, inYear(y)]; }).concat([['Whole run', null]]);
+    var cells = groups.map(function (g) {
+      return [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(function (k) { return total(view, k * 10, (k + 1) * 10, g[1]); });
+    });
+    var scale = Math.max(1e-12, Math.max.apply(null, cells.slice(0, -1).map(function (row) {
+      return Math.max.apply(null, row.map(Math.abs));
+    })));
+    table.textContent = '';
+    var head = el('tr');
+    ['Year', 'Holdings per bar'].concat([1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(function (k) { return 'D' + k; }))
+      .concat(view === 'net' && nav ? ['Held', 'Trading & costs', 'Book'] : ['Held'])
+      .forEach(function (h) { head.appendChild(el('th', h)); });
+    var thead = el('thead');
+    thead.appendChild(head);
+    table.appendChild(thead);
+    var body = el('tbody');
+    groups.forEach(function (g, row) {
+      var keep = g[1], tr = el('tr', undefined, keep ? '' : 'all');
+      var count = 0, names = total('names', 0, 100, keep);
+      dates.forEach(function (d, i) { if (!keep || keep(i)) count++; });
+      tr.appendChild(el('td', g[0]));
+      tr.appendChild(el('td', (names / Math.max(1, count)).toFixed(0)));
+      cells[row].forEach(function (x) {
+        var td = el('td', signed(x)), a = Math.min(1, Math.abs(x) / scale) * 0.5;
+        td.style.background = x >= 0 ? 'rgba(37,99,235,' + a.toFixed(2) + ')' : 'rgba(220,38,38,' + a.toFixed(2) + ')';
+        tr.appendChild(td);
+      });
+      var held = cells[row].reduce(function (s, x) { return s + x; }, 0);
+      tr.appendChild(el('td', signed(held)));
+      if (view === 'net' && nav) {
+        var book = 0;
+        nav.forEach(function (x, i) { if (!keep || keep(i)) book += x; });
+        tr.appendChild(el('td', signed(book - held, 2)));
+        tr.appendChild(el('td', signed(book)));
+      }
+      body.appendChild(tr);
+    });
+    var lost = el('tr', undefined, 'all');
+    lost.appendChild(el('td', 'Losing name-days'));
+    lost.appendChild(el('td', ''));
+    [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].forEach(function (k) { lost.appendChild(el('td', pct(losing(k * 10, (k + 1) * 10), 0))); });
+    lost.appendChild(el('td', pct(losing(0, 100), 0)));
+    if (view === 'net' && nav) { lost.appendChild(el('td', '')); lost.appendChild(el('td', '')); }
+    body.appendChild(lost);
+    table.appendChild(body);
+    var whole = cells[cells.length - 1], held = whole.reduce(function (s, x) { return s + x; }, 0);
+    Plotly.react(bars, [{
+      type: 'bar', x: whole.map(function (x, k) { return 'D' + (k + 1); }),
+      y: whole.map(function (x) { return held ? x / held : 0; }),
+      marker: { color: whole.map(function (x) { return x < 0 ? '#dc2626' : '#2563eb'; }) },
+      hovertemplate: '%{x}: %{y:.0%} of the summed contributions' + noun() + '<extra></extra>',
+    }], {
+      height: 220, margin: { l: 56, r: 12, t: 28, b: 28 }, yaxis: { tickformat: '.0%', gridcolor: '#f3f4f6' },
+      title: { text: 'Whole run: share of the summed contributions' + noun() + ' by size decile', font: { size: 12 } },
+      paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)', font: { size: 11 },
+    }, { displayModeBar: false, responsive: true });
+  }
+  draw();
+  decile();
+})();
 """
 
 #: Draws the selected day of the Holdings tab from its JSON: stepping by bar,
@@ -2781,7 +3094,8 @@ _CHART_TIPS = {
     "Portfolio": "Turnover at each fill, the number of holdings and the gross exposure on each rebalance.",
     "Attribution": "Where the excess came from: the universe against the benchmark, the selection against "
                    "the universe, and the costs; and how each score group of the universe did.",
-    "Holdings": "What the book held at each day's close: each symbol's target weight from the last rebalance "
+    "Holdings": "Which positions made the return: the largest positions against the rest, over time and by size "
+                "decile and year. Then what the book held at each day's close: each symbol's target weight from the last rebalance "
                 "before the day, and its holding, its value over the whole book with cash. Rejected orders, "
                 "delisting settlements, costs and price moves make the two differ. The period return is each "
                 "symbol's price return over the holding period of the day's rebalance. Top-10 holding is the sum "

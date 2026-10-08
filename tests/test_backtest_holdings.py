@@ -315,6 +315,22 @@ def test_each_row_shows_its_holding_period_return_on_the_valuation_prices(scenar
 
 
 @pytest.mark.parametrize("scenario", ["long_only", "long_short"])
+def test_the_size_bands_split_each_bars_contributions_and_the_book_return(scenario, request):
+    result, prices = request.getfixturevalue(scenario)
+    contribution = holdings_data(_open(result).report())["contribution"]
+    holdings = result.simulation.holdings.transpose("timestamp", "symbol").values
+    _, _, close = _book(result, prices)
+    expected = np.zeros(len(holdings))
+    expected[1:] = np.nansum(holdings[:-1] * (close[1:] / close[:-1] - 1.0), axis=1)
+    net = np.sum(contribution["gain"], axis=1) + np.sum(contribution["loss"], axis=1)
+    np.testing.assert_allclose(net, expected, rtol=1e-9, atol=1e-15)
+    assert (np.asarray(contribution["gain"]) >= 0).all() and (np.asarray(contribution["loss"]) <= 0).all()
+    held = (np.vstack([np.zeros(holdings.shape[1]), holdings[:-1]]) != 0).sum(axis=1)
+    np.testing.assert_array_equal(np.sum(contribution["names"], axis=1), held)
+    np.testing.assert_allclose(contribution["nav"], result.simulation.returns.values, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("scenario", ["long_only", "long_short"])
 def test_the_holdings_tiles_count_bars_rebalances_and_holdings(scenario, request):
     result, _ = request.getfixturevalue(scenario)
     page = _open(result).report()

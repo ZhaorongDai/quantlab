@@ -17,6 +17,8 @@ import pytest
 import xarray as xr
 
 from quantlab.runs.backtest_report import (
+    CONTRIBUTION_BANDS,
+    CONTRIBUTION_CUTS,
     DUST_THRESHOLD,
     report_holdings_inputs,
     write_backtest_report,
@@ -259,3 +261,75 @@ def test_a_period_that_starts_on_the_first_bar_takes_its_signal_close_from_the_p
                         PRICES], dim="timestamp")
     returns = report_holdings_inputs(HOLDINGS, weights, prices=prices)["holding_returns"]
     np.testing.assert_allclose(returns.values[0], [8.0 / 8.0 - 1, 22.0 / 16.0 - 1, 6.6 / 4.0 - 1])
+
+
+def _bands_by_hand(holdings: xr.DataArray, prices: xr.DataArray) -> dict[str, np.ndarray]:
+    """Each bar's gains, losses, names and losing names by size band, one name at a time."""
+    w = np.vstack([np.zeros(holdings.sizes["symbol"]), holdings.values[:-1]])
+    p = prices.ffill("timestamp").values
+    out = {key: np.zeros((len(w), len(CONTRIBUTION_BANDS))) for key in ("gain", "loss", "names", "losers")}
+    for i in range(1, len(w)):
+        held = [j for j in np.argsort(-np.abs(w[i]), kind="stable") if w[i, j] != 0.0]
+        for rank, j in enumerate(held):
+            band = next(k for k, cut in enumerate(CONTRIBUTION_BANDS) if rank * 100 < cut * len(held))
+            c = w[i, j] * (p[i, j] / p[i - 1, j] - 1.0)
+            out["gain" if c > 0 else "loss"][i, band] += c
+            out["names"][i, band] += 1
+            out["losers"][i, band] += c < 0
+    return out
+
+
+def _assert_bands(bands: xr.Dataset, expected: dict[str, np.ndarray]) -> None:
+    for key, values in expected.items():
+        np.testing.assert_allclose(bands[key].values, values, rtol=1e-12, atol=0, err_msg=key)
+
+
+def test_contributions_are_summed_by_the_size_band_of_the_previous_close():
+    bands = report_holdings_inputs(HOLDINGS, WEIGHTS, prices=PRICES)["holding_contributions"]
+    assert sorted(bands.data_vars) == ["gain", "losers", "loss", "names"]
+    assert bands["gain"].dims == ("timestamp", "band")
+    assert bands.band.values.tolist() == list(CONTRIBUTION_BANDS)
+    _assert_bands(bands, _bands_by_hand(HOLDINGS, PRICES))
+    # Bar 2 holds three names at bar 1's close: the largest is the top 1%,
+    # the second falls in the 40% band (1 of 3 names is a third), the third in the 70% one.
+    net = dict(zip(CONTRIBUTION_BANDS, (bands["gain"] + bands["loss"]).values[2]))
+    assert net[1] == pytest.approx(0.59 * (12.0 / 11.0 - 1))
+    assert net[40] == pytest.approx(0.39 * (19.0 / 21.0 - 1))
+    assert net[70] == pytest.approx(0.00004 * (5.5 / 5.0 - 1))
+    # 10002 fell: its loss is the 40% band's, and it is that band's one losing name.
+    assert bands["loss"].sel(band=40).values[2] == pytest.approx(0.39 * (19.0 / 21.0 - 1))
+    assert bands["gain"].sel(band=40).values[2] == 0.0
+    assert bands["losers"].values[2].tolist() == [1 if b == 40 else 0 for b in CONTRIBUTION_BANDS]
+    assert bands["names"].values[2].sum() == 3
+    assert not any(bands[key].values[0].any() for key in bands.data_vars)
+
+
+def test_shorts_are_ranked_by_size_and_lose_when_the_price_rises():
+    shorted = HOLDINGS.copy()
+    shorted[1, 1] = -0.7
+    bands = report_holdings_inputs(shorted, WEIGHTS, prices=PRICES)["holding_contributions"]
+    _assert_bands(bands, _bands_by_hand(shorted, PRICES))
+    # A short of a falling name gains.
+    assert bands["gain"].sel(band=1).values[2] == pytest.approx(-0.7 * (19.0 / 21.0 - 1))
+
+
+def test_the_page_embeds_the_band_contributions_and_the_nav_returns(tmp_path):
+    returns = xr.DataArray([0.0, 0.01, -0.0198, 0.0303, 0.0098], dims=("timestamp",), coords={"timestamp": BARS})
+    inputs = report_holdings_inputs(HOLDINGS, WEIGHTS, prices=PRICES)
+    data = _data(_page(tmp_path, returns=returns, **inputs))
+    contribution = data["contribution"]
+    assert contribution["bands"] == list(CONTRIBUTION_BANDS)
+    assert contribution["cuts"] == list(CONTRIBUTION_CUTS)
+    for key in ("gain", "loss", "names", "losers"):
+        np.testing.assert_array_equal(contribution[key], inputs["holding_contributions"][key].values)
+    assert contribution["nav"] == returns.values.tolist()
+
+
+def test_without_prices_the_page_has_no_contribution_analysis(tmp_path):
+    assert report_holdings_inputs(HOLDINGS, WEIGHTS)["holding_contributions"] is None
+    assert _data(_page(tmp_path, holdings=HOLDINGS))["contribution"] is None
+
+
+def test_every_button_and_decile_bound_is_a_band_bound():
+    # The tab sums whole bands into its cut-offs and deciles.
+    assert set(CONTRIBUTION_CUTS) | set(range(10, 101, 10)) <= set(CONTRIBUTION_BANDS)

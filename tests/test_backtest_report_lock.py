@@ -276,18 +276,21 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: (#228). The metrics did not change.
 #: Re-recorded when the path-in-period sparkline became each row's holding-period
 #: return on the valuation prices (#231). The metrics did not change.
+#: Re-recorded when the Holdings tab opened with the return by position size
+#: (cut-off buttons, cumulative lines, size decile by year; net, gains or losses,
+#: losing name-days). The metrics did not change.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "4bb3a21f339c76017233b2d7a23109c8636ab9f72028352e31a0452a67143a15",
+    "run_long_only_benchmark/report.html": "e931e69c38dcd94cfc40e83aa538993893437f5791c81affb5f3bee878d4e174",
     "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
-    "run_long_short_delisting/report.html": "ba8f360cc35184163630d7f4afddcd069040bde5fde6b08fb0756cd91df3b35e",
+    "run_long_short_delisting/report.html": "7407c78f92424b714eebf5cb321490114fcbeb64ff8f7eaad01081309b638be7",
     "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
-    "run_weights_benchmark/report.html": "a72197d0d0c9bf4c1e1e4804ec08c9a5e8a4a1faa46346b34dd0277f5c9650ec",
+    "run_weights_benchmark/report.html": "f5a35faf3886b4ea9b49bf91b3114ecece0b58f86cff645fb2b12e7286225c73",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
-    "run_weights/report.html": "979b658b54a46259290dd74b306f6fe8a9cddc91f2e7859658b048daba1e4e8a",
+    "run_weights/report.html": "2c3b0bb5edaeff8b9771d3a847a5f700ddede7964118b735456e58be0a319cdf",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "f1375a77d5725daab690248ceb750d8fec64c684a2daf5a8db7b82e55cffbff8",
+    "run_cv_benchmark/report.html": "007afb519bff29e402f39ae9969cf765485340bcb531520ed94f4be6925e1427",
     "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
-    "run_cv/report.html": "e48e80ed0d70e8a8a061173cfa04f75b25689fcaf76f14be13f879a15d333d84",
+    "run_cv/report.html": "7c188e703cbf3651210b71ebef0d7a17b8c03e31a0e8de2cbf7cd1aef38e3228",
     "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
 
@@ -337,7 +340,8 @@ def test_without_holdings_the_report_is_byte_identical_to_before_the_holdings_ta
 
     write = base.write_backtest_report
 
-    def without_holdings(*args, holdings=None, holding_names=None, holding_returns=None, **kwargs):
+    def without_holdings(*args, holdings=None, holding_names=None, holding_returns=None,
+                         holding_contributions=None, **kwargs):
         write(*args, **kwargs)
 
     monkeypatch.setattr(base, "write_backtest_report", without_holdings)
