@@ -310,7 +310,7 @@ def test_a_backtest_on_a_sharadar_store_names_holdings_and_settlements_by_ticker
 
     def shown(day: str) -> dict:
         (entry,) = [d for d in data["days"] if d["d"] == day]
-        return {names[k][2]: (names[k][0], names[k][1]) for k, _, _ in entry["h"]}
+        return {names[k][2]: (names[k][0], names[k][1]) for k, _, _, _ in entry["h"]}
 
     assert shown(DAYS[1]) == {
         "101": ("AAA", "AAA CORP"),

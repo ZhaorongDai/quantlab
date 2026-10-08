@@ -1164,6 +1164,7 @@ class BaseBacktester(Component, ABC):
         run_dir = self._report_and_persist(
             "run_cv",
             stitched_weights,
+            stitched_prices,
             stitched_simulation,
             metrics,
             benchmark=stitched_benchmark,
@@ -1413,6 +1414,7 @@ class BaseBacktester(Component, ABC):
             run_dir = self._report_and_persist(
                 kind,
                 window.weights,
+                window.prices,
                 window.simulation,
                 metrics,
                 benchmark=window.benchmark,
@@ -2903,6 +2905,7 @@ class BaseBacktester(Component, ABC):
         self,
         kind: str,
         weights: xr.Dataset,
+        prices: xr.Dataset,
         simulation: SimulationResult,
         metrics: dict,
         *,
@@ -2923,6 +2926,9 @@ class BaseBacktester(Component, ABC):
         the prediction panel when ``predictions`` is given (a run with a
         model) and ``run.json`` recording the market, the data fingerprints
         and the trained unit used.
+
+        ``prices`` are the prices the run simulated on; the Holdings tab
+        takes its holding-period returns from their valuation column.
 
         ``kind`` is ``"run"``, ``"run_weights"`` or ``"run_cv"``. A
         ``run_cv`` run describes the stitched curve: ``metrics`` holds
@@ -2973,7 +2979,7 @@ class BaseBacktester(Component, ABC):
                 metrics=block,
                 **chart,
                 **self._report_portfolio_inputs(weights, simulation),
-                **self._report_holdings_inputs(weights, simulation),
+                **self._report_holdings_inputs(weights, prices, simulation),
                 attribution=simulation.attribution,
                 factor_attribution=simulation.factor_attribution,
             )
@@ -3075,18 +3081,22 @@ class BaseBacktester(Component, ABC):
         )
 
     def _report_holdings_inputs(
-        self, weights: xr.Dataset, simulation: SimulationResult
+        self, weights: xr.Dataset, prices: xr.Dataset, simulation: SimulationResult
     ) -> dict:
         """Return the Holdings tab inputs: ``report_holdings_inputs`` of this run.
 
-        Symbols are named as ``_symbol_names`` names them on each bar;
-        nothing is returned when the engine supplied no holdings, so the
-        page has no Holdings tab.
+        Symbols are named as ``_symbol_names`` names them on each bar, and
+        holding-period returns are taken on the market's valuation prices,
+        the prices the engine values the book at; nothing is returned when
+        the engine supplied no holdings, so the page has no Holdings tab.
         """
         if simulation.holdings is None:
             return {}
         return report_holdings_inputs(
-            simulation.holdings, weights["weight"], label=self._symbol_names
+            simulation.holdings,
+            weights["weight"],
+            label=self._symbol_names,
+            prices=prices[self.MARKET.valuation_price_column],  # type: ignore[union-attr]
         )
 
     @staticmethod

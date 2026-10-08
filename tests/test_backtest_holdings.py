@@ -279,7 +279,7 @@ def test_the_holdings_tab_embeds_holdings_targets_and_cash_of_every_bar(scenario
             rebalance = bar_label(bars[i - 1])
         assert day["r"] == rebalance
         row = holdings.values[i]
-        shown = {names[k][2]: (t, h) for k, t, h in day["h"]}
+        shown = {names[k][2]: (t, h) for k, t, h, _ in day["h"]}
         expected = {
             symbols[j]: (targets[j], row[j])
             for j in range(len(symbols))
@@ -293,6 +293,25 @@ def test_the_holdings_tab_embeds_holdings_targets_and_cash_of_every_bar(scenario
         assert day["cash"] == pytest.approx(1.0 - row.sum(), abs=1e-12)
     # No ticker sidecar beside the fixture store: each symbol is its own label.
     assert all(name[0] == name[2] and name[1] == "" for name in names)
+
+
+@pytest.mark.parametrize("scenario", ["long_only", "long_short"])
+def test_each_row_shows_its_holding_period_return_on_the_valuation_prices(scenario, request):
+    result, prices = request.getfixturevalue(scenario)
+    data = holdings_data(_open(result).report())
+    holdings = result.simulation.holdings
+    bars, symbols = holdings.timestamp.values, [str(s) for s in holdings.symbol.values]
+    _, _, close = _book(result, prices)
+    days = data["days"]
+    for i, day in enumerate(days):
+        if day["r"] is None:
+            assert all(row[3] is None for row in day["h"])
+            continue
+        signal = [bar_label(b) for b in bars].index(day["r"])
+        end = max(k for k in range(len(days)) if days[k]["r"] == day["r"])
+        for k, _, _, period in day["h"]:
+            j = symbols.index(data["names"][k][2])
+            assert period == pytest.approx(close[end, j] / close[signal, j] - 1.0, rel=1e-12)
 
 
 @pytest.mark.parametrize("scenario", ["long_only", "long_short"])

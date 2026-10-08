@@ -771,7 +771,7 @@ def test_run_cv_writes_holdings_for_the_stitched_run_and_every_fold(tmp_path, cv
     symbols = [str(s) for s in stitched.symbol.values]
     for i, day in enumerate(days):
         row = stitched.values[i]
-        shown = {names[k][2]: h for k, _, h in day["h"]}
+        shown = {names[k][2]: h for k, _, h, _ in day["h"]}
         assert shown == {s: row[j] for j, s in enumerate(symbols) if s in shown}
         assert {s for j, s in enumerate(symbols) if row[j] != 0.0} <= shown.keys()
         assert day["cash"] == pytest.approx(1.0 - row.sum(), abs=1e-12)

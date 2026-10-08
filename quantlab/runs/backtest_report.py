@@ -194,6 +194,7 @@ def write_backtest_report(
     factor_attribution: xr.Dataset | None = None,
     holdings: xr.DataArray | None = None,
     holding_names: Mapping[str, Sequence[tuple[str, str, str]]] | None = None,
+    holding_returns: xr.DataArray | None = None,
 ) -> None:
     """Write the HTML report for one backtest run to ``path``.
 
@@ -335,6 +336,11 @@ def write_backtest_report(
         ``report_holdings_inputs``: per symbol id, ``(first bar label,
         ticker, company)`` spans in time order. A symbol without a name is
         shown by its id.
+    holding_returns : xr.DataArray | None
+        The holding-period returns the Holdings section shows, from
+        ``report_holdings_inputs``: on ``(timestamp, symbol)``, each symbol's
+        price return over the holding period the bar falls in. Without them
+        the column shows a dash.
 
     Examples
     --------
@@ -386,7 +392,7 @@ def write_backtest_report(
             _shade(extra_fig, in_sample_range)
             tabs.append((label, _figure_div(extra_fig)))
     if holdings is not None:
-        tabs.append(("Holdings", _holdings_section(holdings, weights, holding_names)))
+        tabs.append(("Holdings", _holdings_section(holdings, weights, holding_names, holding_returns)))
     block = (metrics or {}).get("attribution")
     if attribution is not None and block:
         tabs.append(("Attribution", _attribution_table(block, name)
@@ -727,6 +733,7 @@ def report_holdings_inputs(
     weights: xr.DataArray,
     *,
     label: Callable[[list, datetime.date], list[tuple[str, str | None]]] | None = None,
+    prices: xr.DataArray | None = None,
 ) -> dict:
     """Return the Holdings tab arguments of ``write_backtest_report``.
 
@@ -748,14 +755,23 @@ def report_holdings_inputs(
         ``label(symbols, day)`` returns a ``(ticker, company)`` pair for
         each of ``symbols`` as of the date ``day``, the company ``None``
         when unknown. Without it the page shows each symbol by its id.
+    prices : xarray.DataArray, optional
+        The valuation prices on ``(timestamp, symbol)`` the engine marks
+        the book with. A holding period is the bars one rebalance's targets
+        are in force, from its fill to the bar before the next rebalance
+        fills; its return is the symbol's price at the period's last close
+        over its price at the signal bar's close, less one, prices carried
+        forward over a bar without one (as the book is valued).
 
     Returns
     -------
     dict
-        ``holdings`` and ``holding_names`` (``None`` without ``label``):
-        per symbol id (as ``str``), ``(first bar label, ticker, company)``
-        spans in time order, each in use until the next; an unknown
-        company is empty.
+        ``holdings``; ``holding_names`` (``None`` without ``label``): per
+        symbol id (as ``str``), ``(first bar label, ticker, company)``
+        spans in time order, each in use until the next, an unknown company
+        empty; and ``holding_returns`` (``None`` without ``prices``): on
+        ``(timestamp, symbol)``, the return of the holding period each bar
+        falls in, NaN before the first rebalance fills or without a price.
 
     Examples
     --------
@@ -769,6 +785,11 @@ def report_holdings_inputs(
     ...     return [(ticker, "Meta Platforms") for _ in symbols]
     >>> report_holdings_inputs(holdings, weights, label=label)["holding_names"]
     {'13407': [('2024-01-02', 'FB', 'Meta Platforms'), ('2024-01-03', 'META', 'Meta Platforms')]}
+    >>> prices = xr.DataArray([[10.0], [11.0], [12.1]], dims=("timestamp", "symbol"),
+    ...                       coords={"timestamp": bars, "symbol": [13407]})
+    >>> inputs = report_holdings_inputs(holdings, weights, prices=prices)
+    >>> inputs["holding_returns"].values.round(2).ravel().tolist()
+    [nan, 0.21, 0.21]
     """
     names = None
     if label is not None:
@@ -786,7 +807,8 @@ def report_holdings_inputs(
                 spans = names.setdefault(str(symbols[j]), [])
                 if not spans or spans[-1][1:] != span:
                     spans.append((date_range.bar_label(bar), *span))
-    return {"holdings": holdings, "holding_names": names}
+    returns = None if prices is None else _holding_period_returns(weights, holdings, prices)
+    return {"holdings": holdings, "holding_names": names, "holding_returns": returns}
 
 
 def backtest_report_figure(
@@ -2130,18 +2152,56 @@ def _targets_in_force(
     return targets, since
 
 
+def _holding_period_returns(
+    weights: xr.DataArray, holdings: xr.DataArray, prices: xr.DataArray
+) -> xr.DataArray:
+    """Return, on each bar of ``holdings``, the price return of the holding period it falls in.
+
+    A period is the bars one rebalance's targets are in force; its return
+    runs from the close of its signal bar to its last close on ``holdings``'
+    bars, on ``prices`` carried forward. NaN before the first rebalance
+    fills and where a symbol has no price.
+    """
+    bars = holdings.timestamp.values
+    price = (
+        prices.transpose("timestamp", "symbol")
+        .reindex(symbol=holdings.symbol.values)
+        .ffill("timestamp")
+    )
+    returns = np.full((bars.size, holdings.sizes["symbol"]), np.nan)
+    signals = weights.timestamp.values[
+        np.isfinite(weights.transpose("timestamp", "symbol").values).any(axis=1)
+    ]
+    starts = np.searchsorted(bars, signals, side="right")
+    for n, (signal, start) in enumerate(zip(signals, starts)):
+        end = starts[n + 1] if n + 1 < len(starts) else bars.size
+        if end <= start:
+            continue
+        opened = price.sel(timestamp=signal).values.astype(np.float64)
+        closed = price.sel(timestamp=bars[end - 1], method="ffill").values.astype(np.float64)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            returns[start:end] = closed / opened - 1.0
+    return xr.DataArray(returns, dims=("timestamp", "symbol"), coords={
+        "timestamp": bars, "symbol": holdings.symbol.values,
+    })
+
+
 def _holdings_data(
     holdings: xr.DataArray,
     weights: xr.DataArray | None,
     names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
+    returns: xr.DataArray | None,
 ) -> dict:
     """The JSON the Holdings tab embeds.
 
     ``days`` holds, per bar, its label ``d``, the rebalance its targets came
     from ``r``, the ``cash`` (1 less the holdings), ``other`` (the count,
     target and holding of the dust) and ``h``, one ``[name, target,
-    holding]`` row per other symbol held or targeted, largest holding first;
-    ``name`` indexes ``names``, ``[ticker, company, symbol id]`` rows.
+    holding, period return]`` row per other symbol held or targeted, largest
+    holding first; ``name`` indexes ``names``, ``[ticker, company, symbol
+    id]`` rows, and the period return (``returns`` on the bar, ``None``
+    where it is NaN or not given) is the symbol's return over the holding
+    period the bar falls in.
     Each day also carries its summary: ``n``, the number of non-zero
     holdings (dust included); ``top``, the ten largest holdings by size
     summed (a short counts by its size); and ``new``, the positions in
@@ -2153,6 +2213,10 @@ def _holdings_data(
     held = np.nan_to_num(holdings.transpose("timestamp", "symbol").values.astype(np.float64))
     targets, since = _targets_in_force(weights, holdings)
     targets = np.nan_to_num(targets)
+    period = (
+        np.full(held.shape, np.nan) if returns is None
+        else returns.transpose("timestamp", "symbol").values.astype(np.float64)
+    )
     symbols = [str(symbol) for symbol in holdings.symbol.values]
     spans = {str(key): list(value) for key, value in (names or {}).items()}
     starts = {key: [str(span[0]) for span in value] for key, value in spans.items()}
@@ -2195,7 +2259,10 @@ def _holdings_data(
             "top": float(np.sort(np.abs(h))[::-1][:10].sum()),
             "new": new,
             "other": [int(dust.sum()), float(t[dust].sum()), float(h[dust].sum())],
-            "h": [[name(j, day), float(t[j]), float(h[j])] for j in kept],
+            "h": [
+                [name(j, day), float(t[j]), float(h[j]), float(period[i, j]) if np.isfinite(period[i, j]) else None]
+                for j in kept
+            ],
         })
     traded = [int(np.count_nonzero(held[i])) for i in range(len(days)) if since[i] is not None]
     summary = [
@@ -2210,6 +2277,7 @@ def _holdings_section(
     holdings: xr.DataArray,
     weights: xr.DataArray | None,
     names: Mapping[str, Sequence[tuple[str, str, str]]] | None,
+    returns: xr.DataArray | None,
 ) -> str:
     """The Holdings tab: summary tiles, day controls, the day's table, its data and script.
 
@@ -2217,7 +2285,7 @@ def _holdings_section(
     no name can close the script element; the page's own small script draws
     the selected day from it.
     """
-    data = _holdings_data(holdings, weights, names)
+    data = _holdings_data(holdings, weights, names, returns)
     payload = json.dumps(data, separators=(",", ":"), allow_nan=False).replace("<", "\\u003c")
     tiles = "".join(
         f'<div class="tile"><div class="kl">{_escape(label)}</div><div class="kv">{_escape(value)}</div></div>'
@@ -2243,8 +2311,11 @@ def _holdings_section(
         '<th data-k="h" title="Upper, light bar: the target weight. Lower, dark bar: the holding. Blue is '
         'long, red short.">Target <span class="hd-key t"></span><span class="hd-key t neg"></span> / holding '
         '<span class="hd-key h"></span><span class="hd-key h neg"></span></th>'
-        '<th title="The holding on each day the targets of this rebalance are in force, from the fill to the day '
-        'before the next rebalance fills; the dot is the selected day.">Path in period</th></tr></thead>'
+        '<th data-k="p" title="The symbol\'s price return over the holding period the day falls in: the days the '
+        'targets of this rebalance are in force, from the fill to the day before the next rebalance fills. It runs '
+        'from the signal day\'s close to the period\'s last close, on the prices the book is valued at; with a '
+        'rebalance every day it is the one day\'s return. Every day of a period shows the whole period\'s return; '
+        'the last period ends with the run.">Period return</th></tr></thead>'
         '<tbody id="hd-rows"></tbody><tfoot id="hd-foot"></tfoot></table>\n'
         f'<script type="application/json" id="holdings-data">{payload}</script>\n'
         f"<script>{_HOLDINGS_SCRIPT}</script>"
@@ -2269,7 +2340,7 @@ _HOLDINGS_STYLE = """
   table.hd-table tfoot td { color: #6b7280; }
   .hd-bar { position: relative; width: 140px; height: 10px; }
   .hd-bar span { position: absolute; left: 0; height: 4px; border-radius: 2px; }
-  .hd-spark { display: block; }
+  table.hd-table td.pos { color: #059669; } table.hd-table td.neg { color: #dc2626; }
   .hd-bar .t { top: 0; background: #93c5fd; } .hd-bar .h { top: 6px; background: #2563eb; }
   .hd-key { display: inline-block; width: 12px; height: 4px; border-radius: 2px; margin: 0 2px 2px 0; }
   .hd-key.t { background: #93c5fd; } .hd-key.h { background: #2563eb; }
@@ -2296,42 +2367,8 @@ _HOLDINGS_SCRIPT = """
     (days[i].new || []).forEach(function (k) { fresh[k] = true; });
     return days[i].h.map(function (r, k) {
       var n = N[r[0]];
-      return { ticker: n[0], company: n[1], symbol: n[2], t: r[1], h: r[2], isNew: !!fresh[k] };
+      return { ticker: n[0], company: n[1], symbol: n[2], t: r[1], h: r[2], p: r[3], isNew: !!fresh[k] };
     });
-  }
-  var byDay = [];
-  function heldOn(i) {
-    if (!byDay[i]) {
-      byDay[i] = {};
-      days[i].h.forEach(function (r) { byDay[i][N[r[0]][2]] = r[2]; });
-    }
-    return byDay[i];
-  }
-  function period(i) {
-    if (days[i].r === null) return null;
-    var a = i, b = i;
-    while (a > 0 && days[a - 1].r === days[i].r) a--;
-    while (b < days.length - 1 && days[b + 1].r === days[i].r) b++;
-    return [a, b];
-  }
-  function spark(symbol, span, mark) {
-    var ns = 'http://www.w3.org/2000/svg', w = 90, ht = 18, v = [];
-    for (var i = span[0]; i <= span[1]; i++) v.push(heldOn(i)[symbol] || 0);
-    var lo = Math.min.apply(null, v), hi = Math.max.apply(null, v);
-    if (hi === lo) { hi += 1e-9; }
-    var x = function (k) { return v.length > 1 ? k / (v.length - 1) * w : w / 2; };
-    var y = function (u) { return ht - 2 - (u - lo) / (hi - lo) * (ht - 4); };
-    var svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('width', w); svg.setAttribute('height', ht); svg.setAttribute('class', 'hd-spark');
-    var line = document.createElementNS(ns, 'polyline');
-    line.setAttribute('fill', 'none'); line.setAttribute('stroke-width', '1.5');
-    line.setAttribute('stroke', v[mark - span[0]] < 0 ? '#dc2626' : '#2563eb');
-    line.setAttribute('points', v.map(function (u, k) { return x(k).toFixed(1) + ',' + y(u).toFixed(1); }).join(' '));
-    var dot = document.createElementNS(ns, 'circle');
-    dot.setAttribute('cx', x(mark - span[0]).toFixed(1)); dot.setAttribute('cy', y(v[mark - span[0]]).toFixed(1));
-    dot.setAttribute('r', '2.5'); dot.setAttribute('fill', '#111827');
-    svg.appendChild(line); svg.appendChild(dot);
-    return svg;
   }
   function el(tag, text, cls) {
     var e = document.createElement(tag);
@@ -2370,12 +2407,13 @@ _HOLDINGS_SCRIPT = """
     });
     rows.sort(function (a, b) {
       var x = a[sortKey], y = b[sortKey];
+      if (x === null) x = -Infinity;
+      if (y === null) y = -Infinity;
       return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
     });
     var scale = Math.max(1e-9, Math.max.apply(null, all.map(function (r) {
       return Math.max(Math.abs(r.t), Math.abs(r.h));
     }).concat([0])));
-    var span = period(cur);
     var body = $('hd-rows');
     body.textContent = '';
     rows.forEach(function (r) {
@@ -2390,9 +2428,8 @@ _HOLDINGS_SCRIPT = """
       var cell = el('td');
       cell.appendChild(bar(r.t, r.h, scale));
       tr.appendChild(cell);
-      var path = el('td');
-      if (span) path.appendChild(spark(r.symbol, span, cur));
-      tr.appendChild(path);
+      tr.appendChild(r.p === null ? el('td', '\u2013')
+        : el('td', (r.p > 0 ? '+' : '') + pct(r.p), r.p > 0 ? 'pos' : r.p < 0 ? 'neg' : undefined));
       body.appendChild(tr);
     });
     var foot = $('hd-foot');
@@ -2447,18 +2484,19 @@ _HOLDINGS_SCRIPT = """
     th.addEventListener('click', function () {
       var k = th.dataset.k;
       if (sortKey === k) sortDir = -sortDir;
-      else { sortKey = k; sortDir = (k === 't' || k === 'h') ? -1 : 1; }
+      else { sortKey = k; sortDir = (k === 't' || k === 'h' || k === 'p') ? -1 : 1; }
       render();
     });
   });
   $('hd-csv').addEventListener('click', function () {
     var day = days[cur];
     var quote = function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; };
-    var lines = ['date,rebalance,ticker,company,symbol,target_weight,holding'];
-    var line = function (a, b, c, t, h) {
-      return [day.d, day.r === null ? '' : day.r, quote(a), quote(b), quote(c), t, h].join(',');
+    var lines = ['date,rebalance,ticker,company,symbol,target_weight,holding,period_return'];
+    var line = function (a, b, c, t, h, p) {
+      return [day.d, day.r === null ? '' : day.r, quote(a), quote(b), quote(c), t, h,
+              p === null || p === undefined ? '' : p].join(',');
     };
-    rowsOf(cur).forEach(function (r) { lines.push(line(r.ticker, r.company, r.symbol, r.t, r.h)); });
+    rowsOf(cur).forEach(function (r) { lines.push(line(r.ticker, r.company, r.symbol, r.t, r.h, r.p)); });
     if (day.other[0]) lines.push(line('Other', '', '', day.other[1], day.other[2]));
     lines.push(line('Cash', '', '', '', day.cash));
     var a = document.createElement('a');
@@ -2745,8 +2783,8 @@ _CHART_TIPS = {
                    "the universe, and the costs; and how each score group of the universe did.",
     "Holdings": "What the book held at each day's close: each symbol's target weight from the last rebalance "
                 "before the day, and its holding, its value over the whole book with cash. Rejected orders, "
-                "delisting settlements, costs and price moves make the two differ; the path shows how each "
-                "holding moved from its rebalance's fill to the selected day and on to the next rebalance. Top-10 holding is the sum "
+                "delisting settlements, costs and price moves make the two differ. The period return is each "
+                "symbol's price return over the holding period of the day's rebalance. Top-10 holding is the sum "
                 "of the ten largest holdings by size, shorts included; cash is one less the net holdings, so "
                 "a short sale's proceeds raise it above 100%.",
 }
