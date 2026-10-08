@@ -323,15 +323,17 @@ class MeanVarianceOptimizer(PortfolioConstructor):
     config : MeanVarianceConfig
         ``expected_return_label``, ``covariance``, ``risk_aversion``,
         ``calibration``, ``ic``, ``turnover_penalty``, ``weight_cap``,
-        ``direction``, ``candidate_top_k`` and ``volatility_label``.
+        ``direction``, ``candidate_top_k``, ``volatility_label``,
+        ``exposure_factors``, ``exposure_bounds`` and ``solver``.
 
     Raises
     ------
     ValueError
         If ``direction`` or ``calibration`` is unknown, ``ic`` is missing
         for ``"grinold"``, ``weight_cap`` is not in ``(0, 1]``,
-        ``risk_aversion`` or ``turnover_penalty`` is negative, or
-        ``candidate_top_k`` is not a positive integer.
+        ``risk_aversion`` or ``turnover_penalty`` is negative,
+        ``candidate_top_k`` is not a positive integer, or ``solver`` is not
+        an installed cvxpy solver.
 
     Examples
     --------
@@ -408,6 +410,11 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         ):
             raise ValueError(
                 f"candidate_top_k must be a positive integer or None, got {top_k!r}"
+            )
+        if config.solver is not None and config.solver not in cp.installed_solvers():
+            raise ValueError(
+                f"solver {config.solver!r} is not an installed cvxpy solver; installed: "
+                f"{cp.installed_solvers()}"
             )
         declared = [
             name for factor in config.exposure_factors for name in factor.get_factor_names()
@@ -818,7 +825,7 @@ class MeanVarianceOptimizer(PortfolioConstructor):
         constraints += list(self.risk_constraints(risk))
         problem = cp.Problem(cp.Maximize(objective), constraints)
         try:
-            problem.solve()
+            problem.solve(solver=config.solver)
         except (cp.error.SolverError, ValueError, ArithmeticError) as exc:
             # cvxpy raises ValueError for non-finite problem data.
             raise PortfolioConstructionError(f"the solver failed: {exc}") from exc

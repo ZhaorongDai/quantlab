@@ -147,6 +147,13 @@ class MeanVarianceConfig(FrozenConfig):
     #: 1e-5). A candidate without an exposure gets no weight. Empty: no
     #: exposure is bounded.
     exposure_bounds: dict[str, tuple[float, float]] = field(default_factory=dict)
+    #: The cvxpy solver each bar's problem is solved with, by its cvxpy name
+    #: (``cvxpy.installed_solvers()``), or ``None`` for cvxpy's own choice,
+    #: which may change with the cvxpy version. Our choice: ``"OSQP"``, the
+    #: one cvxpy 1.9 picks for these problems, named so a run reproduces
+    #: across versions. ``"CLARABEL"`` (interior point) is more accurate and
+    #: slower on large problems.
+    solver: str | None = "OSQP"
 
     def __post_init__(self):
         """Store the exposure factors as a tuple and each bound as a tuple of two floats.

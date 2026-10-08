@@ -324,6 +324,10 @@ A universe of thousands of symbols is slow to optimise at every rebalance. `cand
 
 Symbols outside the pool get 0.0. The z-score of the Grinold calibration is taken over every candidate before the pool is cut, so `mu` does not depend on `candidate_top_k`.
 
+### Solver
+
+Each bar's problem is solved by the cvxpy solver `solver` names: `"OSQP"` by default, the solver cvxpy 1.9 picks for these problems. It is named so a run reproduces when cvxpy changes its default. `"CLARABEL"`, an interior-point solver, is more accurate and slower on large pools. `None` leaves the choice to cvxpy. A solver that is not installed (`cvxpy.installed_solvers()`) is refused when the optimizer is built.
+
 ### Exposure bounds
 
 `exposure_bounds` holds the book's exposure to a factor between two bounds: for each named output `x` of the `exposure_factors`, `lower <= sum_i w_i * x_i <= upper`, the locked positions' exposure included (a locked symbol without one counts 0). The rule declares the `exposure_factors` among its factors (`declared_inputs()`), so a backtest computes them over its window and hands their values at the bar in `context.factors`. A candidate without an exposure gets no weight, and a held one is closed, listed in the bar's `closed_without_exposure` event. A factor of the covariance estimator's factor risk model (one of its `factor_names`) can be bounded too, without declaring a factor: its exposures are the forecast's column of `B`, so a symbol the forecast does not cover has none. With a factor risk model as the covariance, `exposure_bounds={"style_beta": (-0.1, 0.1)}` holds the book's USE4 Beta exposure near the cap-weighted estimation universe's, which is 0, and an industry factor can be bounded the same way. A bounded name that is both an `exposure_factors` output and a factor of the risk model is refused. Bounds the candidates cannot reach make the bar infeasible, and the backtest holds it (see [In a backtest](#in-a-backtest)). The bounds hold to the solver's tolerance, about 1e-5.
