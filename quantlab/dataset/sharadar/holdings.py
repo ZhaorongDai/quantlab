@@ -152,15 +152,20 @@ class SharadarHoldingsDataset(BaseDataset):
         Raises
         ------
         ValueError
-            If two rows of one permaticker share a quarter.
+            If two rows of one ticker and permaticker share a quarter; rows
+            of two tickers of one security are settled first
+            (``PermatickerResolver.settle``).
         """
         if self._quarters_cache is not None:
             return self._quarters_cache
         root = self.config.raw_data_dir_path
         with Timer(f"{self.class_name}: quarters"):
             # SF3A holds funds and securities without Sharadar prices: their
-            # rows map to nothing and are left out quietly, with no report. A
-            # ticker that maps to two permatickers is still refused.
+            # rows map to nothing and are left out quietly, unreported. SF3A
+            # can hold a quarter of one security under its current and a
+            # former ticker: the rows are settled (``key``), and those that
+            # cannot be are left out and listed in ``<store>.unmapped.json``.
+            # A ticker that maps to two permatickers is still refused.
             frame = map_raw_table(
                 root,
                 "sf3a",
@@ -172,8 +177,11 @@ class SharadarHoldingsDataset(BaseDataset):
                     "shrunits",
                     "permaticker",
                 ),
+                store_path=self.config.zarr_file_path,
                 date_column="quarter_end",
+                key=("quarter_end",),
                 quiet=True,
+                report_unmapped=False,
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             self._assert_unique_keys(frame)

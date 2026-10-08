@@ -53,6 +53,11 @@ class FilingPanelDataset(BaseDataset):
     #: Code of the filing table (a key of ``quantlab.dataset.sharadar.tables.TABLES``).
     TABLE: str
 
+    #: The columns naming one row of a security, whose rows under two of its
+    #: tickers are settled (``PermatickerResolver.settle``); ``None`` when a
+    #: security has several rows a day (SF2's filing lines).
+    KEY: tuple[str, ...] | None = None
+
     def _normalize_config(self, config: DatasetConfig) -> SharadarDatasetConfig:
         """Normalise as the base class does, then check the table and the universe fields.
 
@@ -159,6 +164,7 @@ class FilingPanelDataset(BaseDataset):
                 owner=self.class_name,
                 store_path=self.config.zarr_file_path,
                 query=lambda scan: scan.filter(pl.col("date") <= pl.lit(self._raw_through())),
+                key=self.KEY,
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             filings = self._filings(frame)

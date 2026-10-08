@@ -15,10 +15,12 @@ import pandas as pd
 import pytest
 
 from tests.sharadar_fixtures import (
+    ACTIONS_COLUMNS,
     SEP_COLUMNS,
     SF3A_COLUMNS,
     TICKERS_COLUMNS,
     FakeVendor,
+    action_row,
     sep_row,
     sf3a_row,
     tickers_row,
@@ -185,3 +187,23 @@ def test_an_update_appends_days_and_a_later_quarter(tmp_path, today):
     # Built day by day or rebuilt at once, the panel is the same.
     rebuilt = _panel(tmp_path / "rebuilt", root)
     assert after.identical(rebuilt)
+
+
+def test_a_quarter_under_the_securitys_old_and_new_ticker_shows_the_new_ones_row(tmp_path, today):
+    # SF3A keeps a quarter of 101 under AAA and under its former ticker OLDA
+    # (#234 maps OLDA through ACTIONS): the AAA row, the security's own
+    # ticker in TICKERS, is shown rather than the update refusing.
+    change = action_row("2024-04-15", "tickerchangefrom", "AAA", None)  # SYNTHETIC
+    change.update(contraticker="OLDA", contraname="OLDA CORP")  # SYNTHETIC
+    vendor = _vendor(
+        [
+            sf3a_row("2024-03-31", "AAA", 60, 1500.0),  # SYNTHETIC
+            sf3a_row("2024-03-31", "OLDA", 4, 20.0),  # SYNTHETIC
+        ]
+    )
+    vendor.tables["actions"] = (ACTIONS_COLUMNS, [change])
+    root = _bulk(vendor, tmp_path / "dl")
+    _client(vendor).bulk_table("actions", tmp_path / "dl")
+
+    panel = _panel(tmp_path, root)
+    assert _value_on(panel, "holders", "2024-05-15") == 60.0

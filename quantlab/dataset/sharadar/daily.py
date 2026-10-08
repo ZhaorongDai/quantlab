@@ -160,8 +160,9 @@ class SharadarDailyDataset(BaseDataset):
         Raises
         ------
         ValueError
-            If a raw ticker has no permaticker, a ticker has two, or two rows
-            share a permaticker and date.
+            If a ticker has two permatickers, or two rows of one ticker share
+            a permaticker and date (rows under two tickers are settled,
+            ``PermatickerResolver.settle``).
         """
         if self._derivation_cache is not None:
             return self._derivation_cache
@@ -177,6 +178,7 @@ class SharadarDailyDataset(BaseDataset):
                 owner=self.class_name,
                 store_path=self.config.zarr_file_path,
                 query=lambda scan: scan.filter(pl.col("date").is_between(pl.lit(start), pl.lit(end))),
+                key=("date",),
             )
             frame = frame.filter(pl.col("permaticker").is_in(universe(self.config)))
             self._assert_unique_keys(frame)

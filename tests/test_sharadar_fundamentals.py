@@ -8,6 +8,8 @@ weekdays of January 2024.
 
 from __future__ import annotations
 
+import json
+
 from datetime import date
 
 import numpy as np
@@ -383,17 +385,23 @@ def test_a_new_filer_widens_the_store(tmp_path, today):
     assert _shown(_series(after, "revenue", "BBB")) == {"2024-01-16": 7.0, "2024-01-17": 7.0}
 
 
-def test_rows_of_one_permaticker_with_one_key_are_refused(tmp_path, today):
+def test_rows_of_one_permaticker_with_one_key_under_two_tickers_are_left_out_and_reported(
+    tmp_path, today
+):
     sf1 = [
         sf1_row("AAA", "ARQ", "2024-01-04", "2023-09-30", revenue=100),  # SYNTHETIC
         sf1_row("AAA.OLD", "ARQ", "2024-01-04", "2023-09-30", revenue=101),  # SYNTHETIC
+        sf1_row("AAA", "ARQ", "2024-01-05", "2023-12-31", revenue=102),  # SYNTHETIC
     ]
     vendor = _vendor(sf1)
     vendor.tables["tickers"][1].append(tickers_row("SF1", 101, "AAA.OLD"))  # SYNTHETIC
     root = _bulk(vendor, tmp_path / "dl")
 
-    with pytest.raises(ValueError, match="several raw rows"):
-        _dataset(tmp_path, root).update()
+    _dataset(tmp_path, root).update()
+    (path,) = tmp_path.glob("*.unmapped.json")
+    entries = {e["ticker"]: e for e in json.loads(path.read_text())["unmapped"]}
+    assert sorted(entries) == ["AAA", "AAA.OLD"]
+    assert entries["AAA"]["rows"] == 1
 
 
 def test_raw_rows_keep_every_dimension(tmp_path, today):
