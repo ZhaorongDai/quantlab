@@ -171,12 +171,14 @@ def test_the_report_is_one_self_contained_file_loading_plotly_from_the_cdn(tmp_p
 
 def test_the_module_is_a_leaf():
     """The only `quantlab.*` imports of the report module are `backtest_stats`,
-    `date_range` and `factor_attribution_report`.
+    `date_range`, `returns` and `factor_attribution_report`.
 
     All are leaves (numpy, pandas, xarray, plotly; `backtest_stats` also reads
     the numpy-only Execution rules), so the report module still drags in no
     quantlab layer (#115: its public builders label bars and compute turnover
-    through them; #215: the Factor attribution section).
+    through them; #215: the Factor attribution section; the Holdings tab's
+    contributions take their one-bar returns from `one_bar_returns`, numpy and
+    xarray only).
     """
     import pathlib
 
@@ -190,6 +192,7 @@ def test_the_module_is_a_leaf():
         and line
         not in (
             "from quantlab.utils import date_range",
+            "from quantlab.utils.returns import one_bar_returns",
             "from quantlab.runs import backtest_stats",
             "from quantlab.runs.factor_attribution_report import (",
         )
