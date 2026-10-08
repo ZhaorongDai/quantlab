@@ -215,7 +215,7 @@ def test_an_updated_store_equals_a_store_built_from_scratch(tmp_path):
     _dataset(tmp_path, root, name="fresh.zarr").from_raw_data().save()
 
     a, b = _stored(updated), _stored(_dataset(tmp_path, root, name="fresh.zarr"))
-    for name in ("close", "adjClose", "adjOpen", "adjVolume", "divCash", "splitFactor"):
+    for name in ("close", "adjClose", "adjOpen", "adjVolume", "divCash", "splitFactor", "cumfacshr"):
         np.testing.assert_allclose(a[name].values, b[name].values, rtol=1e-12)
 
 
@@ -237,9 +237,46 @@ def test_a_security_halted_longer_than_the_overlap_continues_its_chain(tmp_path,
     _dataset(tmp_path, root, name="fresh.zarr").from_raw_data().save()
 
     a, b = _stored(updated), _stored(_dataset(tmp_path, root, name="fresh.zarr"))
-    np.testing.assert_allclose(a["adjClose"].values, b["adjClose"].values, rtol=1e-12)
+    for name in ("adjClose", "cumfacshr"):
+        np.testing.assert_allclose(a[name].values, b[name].values, rtol=1e-12)
     bbb = a["adjClose"].sel(symbol=202).values
     assert bbb[-1] == pytest.approx(bbb[1] * (99.0 + 1.0) / 111.0)
+
+
+def test_the_share_factor_continues_from_the_store_across_a_vendor_correction(tmp_path):
+    vendor = _vendor(DAYS[:4])
+    vendor.tables["actions"][1].append(action_row(DAYS[2], "split", "AAA", 2.0))  # SYNTHETIC
+    root = _bulk(vendor, tmp_path)
+    _dataset(tmp_path, root).update()
+    # The vendor withdraws the stored split, and a 3:1 split comes on the new day.
+    vendor.tables["actions"][1][:] = [action_row(DAYS[4], "split", "AAA", 3.0)]  # SYNTHETIC
+    vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 35.0))  # SYNTHETIC
+    _window(vendor, tmp_path, DAYS[4])
+    ds = _dataset(tmp_path, root)
+    ds.update()
+
+    panel = _stored(ds).sel(symbol=101)
+    # The stored bars keep the split; the new bar continues from them.
+    np.testing.assert_allclose(panel["cumfacshr"].values, [1.0, 1.0, 0.5, 0.5, 0.5 / 3.0])
+    assert panel["splitFactor"].values.tolist() == [1.0, 1.0, 2.0, 1.0, 3.0]
+
+
+def test_an_update_of_a_store_without_cumfacshr_asks_for_a_rebuild(tmp_path):
+    import xarray as xr
+
+    vendor = _vendor(DAYS[:4])
+    root = _bulk(vendor, tmp_path)
+    ds = _dataset(tmp_path, root)
+    ds.update()
+    # A store converted before cumfacshr existed.
+    old = xr.open_zarr(ds.store_path).load().drop_vars("cumfacshr")
+    old.to_zarr(ds.store_path, mode="w")
+    vendor.tables["stocks"][1].append(sep_row("AAA", DAYS[4], 104.0))  # SYNTHETIC
+    _window(vendor, tmp_path, DAYS[4])
+    with pytest.raises(ValueError, match="cumfacshr.*rebuild"):
+        _dataset(tmp_path, root).update()
+    assert "cumfacshr" not in xr.open_zarr(ds.store_path).data_vars
+    assert xr.open_zarr(ds.store_path).sizes["timestamp"] == 4
 
 
 def test_a_vendor_correction_to_a_stored_date_is_reported_and_not_written(tmp_path):

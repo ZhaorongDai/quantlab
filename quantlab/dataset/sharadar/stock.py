@@ -32,7 +32,12 @@ of the ACTIONS table, with the CRSP panel's convention and names (``adjOpen``, `
 ``adjLow``, ``adjClose``, ``adjVolume``, ``divCash``, ``splitFactor``; see
 ``SharadarStockDataset._adjust``). The panel therefore carries the same
 twelve daily variables as a CRSP or Tiingo panel, and a factor, label or
-backtest reads it without knowing the vendor. A bar without a fill price
+backtest reads it without knowing the vendor. Like a CRSP panel it also
+carries ``cumfacshr``, the cumulative share adjustment factor: 1.0 on each
+permaticker's first stored bar and divided by ``splitFactor`` on every bar
+since, so ``cumfacshr[t-1] / cumfacshr[t] == splitFactor[t]`` with
+``cumfacshr[t-1]`` the permaticker's last earlier stored value. Only such
+ratios are meaningful; an executor books a holder's split from them. A bar without a fill price
 is untradable (the ``MarketDataset`` default), and so is a bar Sharadar
 carries forward through a trading halt: volume 0 and the previous close
 repeated (``SharadarStockDataset.tradable_bars``). ``delisting_bars`` is the
@@ -53,7 +58,7 @@ Examples
 >>> SharadarStockDataset(config).from_raw_data().save()
 >>> panel = SharadarStockDataset(config).panel("2024-01-02", "2024-01-05")
 >>> sorted(panel.data_vars)
-['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'divCash', 'high', 'low', 'open', 'splitFactor', 'volume']
+['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'cumfacshr', 'divCash', 'high', 'low', 'open', 'splitFactor', 'volume']
 """
 
 from __future__ import annotations
@@ -89,9 +94,13 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.symbol_axis import sort_symbol_axis
 from quantlab.utils.timer import Timer
 
-#: The panel's variables: the twelve shared daily variables, in
-#: ``TiingoColumns.EOD`` order, as the CRSP panel holds them.
+#: The twelve shared daily variables, in ``TiingoColumns.EOD`` order, as the
+#: CRSP panel holds them.
 PRICE_VARIABLES: tuple[str, ...] = tuple(TiingoColumns.EOD.split(","))
+
+#: The panel's variables: ``PRICE_VARIABLES`` and, as on a CRSP panel,
+#: ``cumfacshr`` (see ``SharadarStockDataset._adjust``).
+PANEL_VARIABLES: tuple[str, ...] = (*PRICE_VARIABLES, "cumfacshr")
 
 #: ACTIONS types that pay cash per share on their date, as ``divCash``:
 #: ordinary dividends and the value of spun-off shares.
@@ -188,7 +197,7 @@ class SharadarStockDataset(MarketDataset):
         -------
         pl.DataFrame
             Columns ``timestamp``, ``symbol`` (the permaticker) and
-            ``PRICE_VARIABLES``, one row per pair.
+            ``PANEL_VARIABLES``, one row per pair.
 
         Raises
         ------
@@ -235,7 +244,7 @@ class SharadarStockDataset(MarketDataset):
             frame = self._adjust(frame, events).select(
                 "timestamp",
                 "symbol",
-                *(pl.col(name).cast(pl.Float64) for name in PRICE_VARIABLES),
+                *(pl.col(name).cast(pl.Float64) for name in PANEL_VARIABLES),
             )
         self._derivation_cache = frame
         return frame
@@ -309,6 +318,16 @@ class SharadarStockDataset(MarketDataset):
         - ``adjOpen``/``adjHigh``/``adjLow`` are scaled by
           ``adjClose / close``; ``adjVolume`` is the raw volume in the
           anchor's shares, divided by the splits since the anchor.
+        - ``cumfacshr`` is CRSP's cumulative share factor in CRSP's
+          direction: 1.0 on each permaticker's first row in the window and
+          divided by ``splitFactor`` on every row since (a 2:1 split halves
+          it), so ``cumfacshr[t-1] / cumfacshr[t] == splitFactor[t]`` with
+          ``t-1`` the permaticker's last earlier row. It is set on every row,
+          a row without a positive close included, so the ratio holds on
+          every stored bar. A split on the first row is not in it (there is
+          no earlier bar to divide). Only ratios are meaningful: Sharadar's
+          ``splitFactor`` is the holder's own share factor (a spin-off's
+          value is cash in ``divCash``), which is what an executor books.
 
         An event on a date without a positive close cannot enter the chain;
         it is logged and dropped. No delisting return is imputed.
@@ -347,6 +366,9 @@ class SharadarStockDataset(MarketDataset):
         frame = frame.with_columns(
             (1.0 + ret.fill_null(0.0)).cum_prod().over("symbol").alias("_G"),
             pl.col("splitFactor").cum_prod().over("symbol").alias("_S"),
+        )
+        frame = frame.with_columns(
+            (pl.col("_S").first().over("symbol") / pl.col("_S")).alias("cumfacshr")
         )
         anchor = (
             frame.filter(pl.col("close") > 0)
@@ -569,10 +591,13 @@ class SharadarStockDataset(MarketDataset):
           (``CORRECTION_VARIABLES``) the vendor has changed is written to
           ``corrections_path()`` and logged, never to the store.
         - The window's adjusted prices (and adjusted volume) are scaled so
-          each security continues from its last stored adjusted close: a
-          vendor correction to an earlier bar never re-anchors the stored
-          chain. Without corrections the factor is 1.0, because the store and
-          the derivation share one anchor.
+          each security continues from its last stored adjusted close, and
+          its ``cumfacshr`` so it continues from its last stored
+          ``cumfacshr``: a vendor correction to an earlier bar never
+          re-anchors a stored chain, and ``cumfacshr[t-1] / cumfacshr[t]``
+          stays ``splitFactor[t]`` across the store's last bar. Without
+          corrections every factor is 1.0, because the store and the
+          derivation share one anchor.
 
         Parameters
         ----------
@@ -582,9 +607,24 @@ class SharadarStockDataset(MarketDataset):
         Returns
         -------
         xr.Dataset
-            The window with its adjusted variables continued.
+            The window with its adjusted variables and ``cumfacshr`` continued.
+
+        Raises
+        ------
+        ValueError
+            If the store has no ``cumfacshr`` (converted before it existed):
+            appending would leave it NaN over the whole stored history.
+            Rebuild the store from the raw tier instead.
         """
         stored = self._open_store(self.store_path)
+        if "cumfacshr" not in stored.data_vars:
+            raise ValueError(
+                f"{self.class_name}: the store at {self.store_path!r} has no "
+                f"cumfacshr (it was converted before cumfacshr existed), so it "
+                f"cannot be continued; rebuild it from the raw tier: move it "
+                f"and its chunk ledger aside, then run update() with the same "
+                f"config."
+            )
         stamps = pd.DatetimeIndex(stored["timestamp"].values)
         stored_symbols = stored["symbol"].values.tolist()
         first = stamps[-min(UPDATE_OVERLAP_BARS, len(stamps))]
@@ -595,66 +635,82 @@ class SharadarStockDataset(MarketDataset):
             )
         )
         self._report_corrections(stored, overlap, stored_symbols)
-        factors = self._chain_factors(stored, derived, overlap, window)
-        if not factors:
+        price = self._chain_factors(stored, derived, overlap, window, "adjClose", "adjVolume")
+        shares = self._chain_factors(stored, derived, overlap, window, "cumfacshr")
+        if not price and not shares:
             return window
         symbols = window["symbol"].values.tolist()
-        price = xr.DataArray(
-            [factors.get(s, (1.0, 1.0))[0] for s in symbols], dims="symbol", coords={"symbol": symbols}
-        )
-        volume = xr.DataArray(
-            [factors.get(s, (1.0, 1.0))[1] for s in symbols], dims="symbol", coords={"symbol": symbols}
-        )
+
+        def factor(factors, position):
+            return xr.DataArray(
+                [factors[s][position] if s in factors else 1.0 for s in symbols],
+                dims="symbol",
+                coords={"symbol": symbols},
+            )
+
         return window.assign(
-            **{name: window[name] * price for name in ("adjOpen", "adjHigh", "adjLow", "adjClose")},
-            adjVolume=window["adjVolume"] * volume,
+            **{name: window[name] * factor(price, 0) for name in ("adjOpen", "adjHigh", "adjLow", "adjClose")},
+            adjVolume=window["adjVolume"] * factor(price, 1),
+            cumfacshr=window["cumfacshr"] * factor(shares, 0),
         )
 
     def _chain_factors(
-        self, stored: xr.Dataset, derived: pl.DataFrame, overlap: pl.DataFrame, window: xr.Dataset
-    ) -> dict[int, tuple[float, float]]:
-        """Return each stored security's ``(price, volume)`` factor onto its stored chain.
+        self,
+        stored: xr.Dataset,
+        derived: pl.DataFrame,
+        overlap: pl.DataFrame,
+        window: xr.Dataset,
+        link: str,
+        *carried: str,
+    ) -> dict[int, tuple[float, ...]]:
+        """Return each stored security's factors onto its stored chain of ``link``.
 
-        A factor is the stored adjusted value over the derived one on the
-        security's last bar where both exist: in the overlap, or, for a
-        security priced in the window but halted through the whole
-        overlap, on its last stored adjusted close. Factors of 1.0 are left
-        out.
+        A factor is the stored value over the derived one on the security's
+        last bar where ``link`` exists on both sides: in the overlap, or,
+        for a security present in the window (``link`` set) but absent from
+        the whole overlap (halted longer than it), on its last stored bar
+        with ``link`` set. ``carried`` variables take their factor from the
+        same bar (1.0 where theirs is missing). Securities whose factors are
+        all 1.0 are left out.
+
+        Returns
+        -------
+        dict
+            ``{permaticker: (link factor, *carried factors)}``.
         """
+        names = (link, *carried)
+        stored_names = {name: f"_stored_{name}" for name in names}
         stamps = overlap.get_column("timestamp").unique().sort().to_list()
+        both = pl.col(link).is_finite() & pl.col(f"_stored_{link}").is_finite()
         pairs = []
         if stamps:
-            old = stored[["adjClose", "adjVolume"]].sel(timestamp=stamps).load().to_dataframe()
+            old = stored[list(names)].sel(timestamp=stamps).load().to_dataframe()
             pairs.append(
-                overlap.select("timestamp", "symbol", "adjClose", "adjVolume").join(
+                overlap.select("timestamp", "symbol", *names).join(
                     pl.from_pandas(old.reset_index())
-                    .rename({"adjClose": "_stored_close", "adjVolume": "_stored_volume"})
+                    .rename(stored_names)
                     .with_columns(pl.col("symbol").cast(pl.Int64)),
                     on=["timestamp", "symbol"],
                 )
             )
         known = {s for s in stored["symbol"].values.tolist()}
-        priced = window["adjClose"].notnull().any("timestamp")
-        resumed = [s for s in window["symbol"].values[priced.values].tolist() if s in known]
-        linked = (
-            set(pairs[0].filter(pl.col("adjClose").is_finite() & pl.col("_stored_close").is_finite())["symbol"].to_list())
-            if pairs
-            else set()
-        )
+        present = window[link].notnull().any("timestamp")
+        resumed = [s for s in window["symbol"].values[present.values].tolist() if s in known]
+        linked = set(pairs[0].filter(both)["symbol"].to_list()) if pairs else set()
         gapped = [s for s in resumed if s not in linked]
         if gapped:
-            close = stored[["adjClose", "adjVolume"]].sel(symbol=gapped).load().to_dataframe().reset_index()
+            history = stored[list(names)].sel(symbol=gapped).load().to_dataframe().reset_index()
             last = (
-                pl.from_pandas(close)
+                pl.from_pandas(history)
                 .with_columns(pl.col("symbol").cast(pl.Int64))
-                .filter(pl.col("adjClose").is_finite())
+                .filter(pl.col(link).is_finite())
                 .sort("timestamp")
                 .group_by("symbol")
                 .last()
-                .rename({"adjClose": "_stored_close", "adjVolume": "_stored_volume"})
+                .rename(stored_names)
             )
             pairs.append(
-                derived.select("timestamp", "symbol", "adjClose", "adjVolume").join(
+                derived.select("timestamp", "symbol", *names).join(
                     last, on=["timestamp", "symbol"]
                 )
             )
@@ -662,19 +718,17 @@ class SharadarStockDataset(MarketDataset):
             return {}
         ratios = (
             pl.concat(pairs, how="diagonal_relaxed")
-            .filter(pl.col("adjClose").is_finite() & pl.col("_stored_close").is_finite())
+            .filter(both)
             .sort("timestamp")
             .group_by("symbol")
-            .agg(
-                (pl.col("_stored_close") / pl.col("adjClose")).last().alias("price"),
-                (pl.col("_stored_volume") / pl.col("adjVolume")).last().alias("volume"),
-            )
-            .with_columns(pl.col("volume").fill_nan(1.0).fill_null(1.0))
+            .agg(*((pl.col(f"_stored_{n}") / pl.col(n)).last().alias(n) for n in names))
+            .with_columns(*(pl.col(n).fill_nan(1.0).fill_null(1.0) for n in carried))
+            .select("symbol", *names)
         )
         return {
-            int(symbol): (float(price), float(volume))
-            for symbol, price, volume in ratios.iter_rows()
-            if not (np.isclose(price, 1.0, rtol=1e-12) and np.isclose(volume, 1.0, rtol=1e-12))
+            int(symbol): tuple(float(f) for f in factors)
+            for symbol, *factors in ratios.iter_rows()
+            if not all(np.isclose(f, 1.0, rtol=1e-12) for f in factors)
         }
 
     def _added_symbols_with_raw_history(self, added: list, start, end) -> dict[str, int]:

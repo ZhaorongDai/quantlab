@@ -52,6 +52,7 @@ def test_the_panel_carries_the_twelve_shared_daily_variables(tmp_path):
 
     panel = _dividend_then_split(tmp_path)
     assert set(TiingoColumns.EOD.split(",")) <= set(panel.data_vars)
+    assert "cumfacshr" in panel.data_vars  # the CRSP extra quantlab-ibkr books splits from
     assert not {"closeadj", "closeunadj", "lastupdated"} & set(panel.data_vars)
 
 
@@ -60,6 +61,44 @@ def test_events_land_on_their_dates_as_raw_cash_and_split_ratio(tmp_path):
     # The split-adjusted $2 is $4 of cash per share held on the ex-date.
     assert panel["divCash"].values.tolist() == [0.0, 4.0, 0.0, 0.0]
     assert panel["splitFactor"].values.tolist() == [1.0, 1.0, 2.0, 1.0]
+
+
+def _share_factor_ratio(cumfacshr):
+    """``cumfacshr[t-1] / cumfacshr[t]``, ``t-1`` the last earlier stored value (as quantlab-ibkr reads it)."""
+    series = pd.Series(cumfacshr)
+    return (series.ffill().shift(1) / series).to_numpy()
+
+
+def test_cumfacshr_is_the_reciprocal_cumulative_split_factor_from_one(tmp_path):
+    panel = _dividend_then_split(tmp_path)
+    # 1.0 on the first stored bar; a 2:1 split halves it, as CRSP's does.
+    np.testing.assert_allclose(panel["cumfacshr"].values, [1.0, 1.0, 0.5, 0.5])
+    ratio = _share_factor_ratio(panel["cumfacshr"].values)
+    np.testing.assert_allclose(ratio[1:], panel["splitFactor"].values[1:])
+
+
+def test_the_share_factor_ratio_is_the_split_factor_across_a_missing_bar(tmp_path):
+    rows = [
+        sep_row("AAA", DAYS[0], 30.0),  # SYNTHETIC
+        # No row on DAYS[1]: the bar is NaN in the dense panel.
+        sep_row("AAA", DAYS[2], 10.0),  # SYNTHETIC
+        sep_row("AAA", DAYS[3], 40.0),  # SYNTHETIC
+        *(sep_row("BBB", day, 20.0) for day in DAYS),  # SYNTHETIC
+    ]
+    actions = [
+        action_row(DAYS[2], "split", "AAA", 3.0),  # SYNTHETIC
+        action_row(DAYS[3], "split", "AAA", 0.25),  # SYNTHETIC, a 1-for-4 reverse split
+    ]
+    tickers = [tickers_row("SEP", 101, "AAA"), tickers_row("SEP", 202, "BBB")]  # SYNTHETIC
+    ds = _build(tmp_path, rows, tickers, actions)
+    aaa = ds.panel(DAYS[0], DAYS[-1]).sel(symbol=101)
+    cumfacshr = aaa["cumfacshr"].values
+    assert np.isnan(cumfacshr[1])
+    np.testing.assert_allclose(cumfacshr[[0, 2, 3]], [1.0, 1.0 / 3.0, 4.0 / 3.0])
+    ratio = _share_factor_ratio(cumfacshr)
+    np.testing.assert_allclose(ratio[[2, 3]], [3.0, 0.25])
+    bbb = ds.panel(DAYS[0], DAYS[-1]).sel(symbol=202)
+    assert bbb["cumfacshr"].values.tolist() == [1.0] * 4
 
 
 def test_adjusted_prices_chain_across_a_dividend_and_a_split(tmp_path):

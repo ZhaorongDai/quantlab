@@ -46,7 +46,7 @@ Observed on a one-row synthetic raw tier:
 
 ```python
 >>> sorted(panel.data_vars), panel.symbol.dtype
-(['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'divCash', 'high', 'low', 'open', 'splitFactor', 'volume'], dtype('int64'))
+(['adjClose', 'adjHigh', 'adjLow', 'adjOpen', 'adjVolume', 'anomaly_flag', 'close', 'cumfacshr', 'divCash', 'high', 'low', 'open', 'splitFactor', 'volume'], dtype('int64'))
 ```
 
 What the panel means:
@@ -57,6 +57,7 @@ What the panel means:
   - `divCash` is the cash per share on the ex-date: dividends plus `spinoffdividend`, the value of spun-off shares per parent share (the `spinoff` share-ratio row is not counted again). ACTIONS gives a dividend adjusted for later splits, so it is multiplied back by that day's `closeunadj / close`; pull SEP and ACTIONS together so both are adjusted for the same splits.
   - `splitFactor` is new shares per old share on the split's effective date, 1.0 otherwise.
   - The day's total return is `(close + divCash) * splitFactor / previous close - 1`. On an ex-date that is also a split date, the distribution is cash per share after the split (DD on 2019-06-03: a 1-for-3 reverse split and the Corteva spin-off), so the split scales it with the close. This matches Sharadar's own `closeadj` on 280 of the 283 such events priced on the 2026-10-05 pull; `adjClose` starts at each permaticker's first positive close in the window (the anchor) and grows by those returns. `adjOpen`/`adjHigh`/`adjLow` scale with `adjClose / close`; `adjVolume` is the raw volume in the anchor's shares.
+  - `cumfacshr` is the cumulative share adjustment factor, in CRSP's direction (a 2:1 split halves it): 1.0 on each permaticker's first stored bar, then divided by `splitFactor` on every bar, so `cumfacshr[t-1] / cumfacshr[t] == splitFactor[t]`, where `cumfacshr[t-1]` is the permaticker's last earlier stored value. It is set on every stored bar, one without a positive close included. Only these ratios mean anything. Sharadar's `splitFactor` is the holder's own share factor, since a spin-off's value is cash in `divCash`, so quantlab-ibkr books a split from this ratio as it does on CRSP (its ADR 0009).
   - An event on a date without a positive close is logged and left out. As on CRSP, moving `start_date` later moves the anchor and rescales the adjusted history; a store that only grows forward keeps every past value.
 - **Trading contract.** A bar without a fill price is untradable. So is a bar Sharadar carries forward through a trading halt: volume 0 and the previous close repeated. For example, SIVB repeats its $106.04 close from 2023-03-13 to 2023-03-27 before its first OTC print of $0.40, so a backtest cannot sell it at $106.04 during the halt; the position stays locked until a real print. A delisted security settles at its last close. Sharadar has no delisting return and none is imputed, so backtests are slightly optimistic on names that went bankrupt (ADR 0023).
 - **Selection.** See the universe below; the ticker-based `symbols` field is refused.
@@ -352,7 +353,8 @@ SharadarStockDataset(config).update()
 
 - The derivation ends at the watermark of every input table (the price table and ACTIONS), so a bar is never stored before its dividends and splits are known. An update interrupted between the pulls stops at the older watermark and the next one continues from the store's last bar.
 - The last 10 stored bars are derived again from the raw tier. A raw price, `divCash` or `splitFactor` the vendor has since changed is listed in `<store>.corrections.json` (table, permaticker, date, variable, stored and vendor value) and logged; it is never written. Earlier rows of the store stay byte-identical.
-- Each security's new adjusted prices continue from its last stored `adjClose` and `adjVolume`, so the chain is never re-anchored, even for a security halted for longer than the overlap. On the 2026-10-05 pull, a store built through 2026-09-25 and updated to the end of the raw tier equals a store built in one go to within 7e-16.
+- Each security's new adjusted prices continue from its last stored `adjClose` and `adjVolume`, and its `cumfacshr` from its last stored `cumfacshr`, so no chain is ever re-anchored, even for a security halted for longer than the overlap. On the 2026-10-05 pull, a store built through 2026-09-25 and updated to the end of the raw tier equals a store built in one go to within 7e-16.
+- A store converted before `cumfacshr` existed cannot be continued: `update()` refuses to append to it, because the stored history would have no `cumfacshr`. Rebuild it from the raw tier (no download needed) by moving the store and its `<store>.chunks.json` ledger aside and running `update()` with the same config and `start_date` set to the store's first day.
 - A new security follows `BaseDataset.update`'s rule: a new listing is added with no history; a security new to the store that has bars inside its range (a roster change) rebuilds the store, the one case where earlier rows are rewritten.
 
 ## Periodic bulk diff
