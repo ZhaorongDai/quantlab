@@ -57,7 +57,7 @@ Examples
 --------
 >>> resolver = PermatickerResolver("/data/downloads/sharadar", "sep")
 >>> prices = scan_raw_table("/data/downloads/sharadar", "sep", annotate=resolver.annotate).collect()
->>> prices = resolver.left_out(prices, owner="demo", report_path="/data/zarrs/sep.zarr.unmapped.json")
+>>> prices = resolver.left_out(prices, owner="demo", report_path="/data/market/sharadar/sep/sep.zarr.unmapped.json")
 """
 
 from __future__ import annotations
@@ -894,7 +894,7 @@ def map_raw_table(
     Examples
     --------
     >>> rows = map_raw_table("/data/downloads/sharadar", "daily", owner="demo",
-    ...                      store_path="/data/zarrs/sharadar_daily_1d.zarr")
+    ...                      store_path="/data/market/sharadar/sharadar_daily_1d/sharadar_daily_1d.zarr")
     >>> rows.columns[-1]
     'permaticker'
     """

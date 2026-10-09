@@ -215,7 +215,7 @@ quantlab 只从环境变量读取凭证。凭证不会通过命令行传入，�
 | `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | Alpaca 的 K 线、报价和成交数据 |
 | `WANDB_API_KEY` | 可选，配置中指定 `WandbTracker` 时用于 Weights & Biases 实验追踪 |
 | `MLFLOW_TRACKING_USERNAME`、`MLFLOW_TRACKING_PASSWORD` 或 `MLFLOW_TRACKING_TOKEN` | 可选，配置中指定 `MlflowTracker` 且服务器需要凭证时使用（`uv sync --extra mlflow`） |
-| `QUANTLAB_DATA_DIR` | 可选，库内配置工厂据此推导数据路径的根目录；下载脚本改用 `--download-dir` 和 `--zarr-dir` |
+| `QUANTLAB_DATA_DIR` | 可选，库内配置工厂据此推导数据路径的根目录；下载脚本改用 `--download-dir` 和 `--data-dir` |
 
 下载脚本在 `scripts/wrds/` 和 `scripts/sharadar/` 中，每个脚本都可以用 `--help` 查看参数，例如
 `uv run python scripts/wrds/index.py --help`。Tiingo、Alpaca 和 Binance 只有库接口。

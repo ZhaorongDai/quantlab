@@ -58,15 +58,18 @@ from quantlab.utils.cli import inside_repository
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository.
 #: Replace with ``Path("/my/root")``. The stores are where
-#: ``scripts/sharadar/download.py --zarr-dir`` wrote them, the raw tables
+#: ``scripts/sharadar/download.py --data-dir`` placed them, the raw tables
 #: under its ``--download-dir``.
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "zarrs"
+#: Every store is a folder ``<stem>/`` holding ``<stem>.zarr`` and a short README.md.
+#: Sharadar's market stores (and the S&P 500 roster's price slice), the
+#: Sharadar universes, the S&P 500 factors and return label.
+SHARADAR = DATA_ROOT / "market" / "sharadar"
+MEMBERSHIPS = DATA_ROOT / "universe" / "sharadar"
+FACTORS = DATA_ROOT / "factors" / "sp500"
+LABELS = DATA_ROOT / "labels" / "sp500"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
-#: Each shared store is a folder ``<name>/`` holding ``<name>.zarr`` and a short README.md.
-#: The S&P 500 universe's shared stores (prices, factors, return label), and
-#: this pipeline's models and backtests.
-UNIVERSE = DATA_ROOT / "pipeline" / "universes" / "sp500"
+#: This pipeline's models and backtests.
 WORK = DATA_ROOT / "runs" / "sharadar_sp500"
 
 #: Data window (the factor warm-up is read before START), training window
@@ -82,6 +85,24 @@ ALPHA_COLUMNS = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
 #: never uploaded), because evaluations of Sharadar data are not published;
 #: or "disabled".
 TRACKER = WandbTracker(mode="offline")
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def describe(store: Path, text: str) -> None:
+    """Create ``store``'s folder and write ``text`` as its README.md unless one exists."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme = store.parent / "README.md"
+    if not readme.exists():
+        readme.write_text(text)
+
+
+#: The S&P 500 roster's price slice of Sharadar SEP (``prepare_stores`` writes it),
+#: shared by sp500_xgb.py and sp500_xgb_mvo.py.
+PRICES = store_path(SHARADAR, "sp500_prices")
 
 
 def stock_dataset(store: Path) -> StockDataset:
@@ -100,7 +121,7 @@ def index_dataset() -> SharadarStockDataset:
     still be sold at the next open.
     """
     return SharadarStockDataset(SharadarDatasetConfig(
-        zarr_file_path=str(STORES / "sharadar_sp500_1d.zarr"),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_sp500_1d")),
         raw_data_dir_path=str(VENDOR), roster_universe="sp500",
     ))
 
@@ -108,7 +129,7 @@ def index_dataset() -> SharadarStockDataset:
 def index_membership() -> SharadarSP500ConstituentDataset:
     """The point-in-time S&P 500 membership (``is_member``) on the permaticker axis."""
     return SharadarSP500ConstituentDataset(ConstituentDatasetConfig(
-        zarr_file_path=str(STORES / "sharadar_sp500_membership.zarr"),
+        zarr_file_path=str(store_path(MEMBERSHIPS, "sharadar_sp500_membership")),
         cache_dir=str(VENDOR),
     ))
 
@@ -116,25 +137,25 @@ def index_membership() -> SharadarSP500ConstituentDataset:
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects.
 
-    Factors and the label read ``prices.zarr``, so rolling windows and
+    Factors and the label read ``sp500_prices.zarr``, so rolling windows and
     returns see no membership gaps. The label is masked by index membership
     on t's date only (``MembershipMaskedLabel``): a stock that leaves the
     index inside the horizon keeps its return at t.
     """
     alpha101 = Alpha101Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices" / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factors" / "alpha101" / "alpha101.zarr"),
+        warmup_bars=400, dataset=stock_dataset(PRICES), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS, "alpha101")),
         njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices" / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factors" / "alpha158" / "alpha158.zarr"),
+        warmup_bars=400, dataset=stock_dataset(PRICES), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS, "alpha158")),
         njobs=16,
     ))
     label = Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(UNIVERSE / "prices" / "prices.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(PRICES), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
-        file_path=str(UNIVERSE / "labels" / f"ret_{HORIZON}" / f"ret_{HORIZON}.zarr"),
+        file_path=str(store_path(LABELS, f"ret_{HORIZON}")),
         njobs=16,
     ))
     return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
@@ -142,7 +163,7 @@ def factors_and_label() -> tuple[list, list]:
 
 # %% 1. Prices store
 def prepare_stores() -> None:
-    """Write ``prices``: the full history of every member ever, unmasked."""
+    """Write ``sp500_prices``: the full history of every member ever, unmasked."""
     # The data is licensed for personal use: never write it into the repository.
     if inside_repository([DATA_ROOT], Path(__file__).resolve().parents[2]):
         raise ValueError(
@@ -158,8 +179,12 @@ def prepare_stores() -> None:
             )
     # Every bar up to END: the factors warm up on the history before START.
     prices = index.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume"]]
-    (UNIVERSE / "prices").mkdir(parents=True, exist_ok=True)
-    prices.to_zarr(UNIVERSE / "prices" / "prices.zarr", mode="w")
+    describe(PRICES, (
+        "# sp500_prices\n\nEvery Sharadar SEP bar of every permaticker ever in the S&P 500, unmasked\n"
+        "(a roster slice of sharadar_sp500_1d). Written by examples/sharadar_us_equity/sp500_xgb.py\n"
+        "and sp500_xgb_mvo.py; their factors and labels read it.\n"
+    ))
+    prices.to_zarr(PRICES, mode="w")
     logger.info(f"prices {dict(prices.sizes)}")
 
 
@@ -167,10 +192,18 @@ def prepare_stores() -> None:
 def compute_factors() -> None:
     factors, labels = factors_and_label()
     for factor in factors:
+        describe(Path(factor.config.file_path), (
+            f"# {Path(factor.config.file_path).stem}\n\n{type(factor).__name__} on the S&P 500 roster prices.\n"
+            "Written by examples/sharadar_us_equity/sp500_xgb.py and sp500_xgb_mvo.py.\n"
+        ))
         factor.build(START, END)
         logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
     for label in labels:
         # A label is stored as the factor it shifts forward.
+        describe(Path(label.label.config.factor.config.file_path), (
+            f"# ret_{HORIZON}\n\n{HORIZON}-bar forward open-to-open return on the S&P 500 roster prices.\n"
+            "Written by examples/sharadar_us_equity/sp500_xgb.py and sp500_xgb_mvo.py.\n"
+        ))
         label.build(START, END)
         logger.info(f"{type(label).__name__} -> {label.label.config.factor.config.file_path}")
 
@@ -209,7 +242,7 @@ def train() -> Path:
 def backtest(checkpoint: Path):
     """TopN backtest of the test window against buy-and-hold SPY."""
     benchmark = SharadarStockDataset(SharadarDatasetConfig.etf_benchmark(
-        permaticker=SPY_PERMATICKER, zarr_file_path=str(STORES / "sharadar_spy_1d.zarr"),
+        permaticker=SPY_PERMATICKER, zarr_file_path=str(store_path(SHARADAR, "sharadar_spy_1d")),
         raw_data_dir_path=str(VENDOR),
     ))
     if not Path(benchmark.config.zarr_file_path).exists():

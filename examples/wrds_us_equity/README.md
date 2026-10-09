@@ -20,11 +20,11 @@ The heads are `XGBoostRegressor` (`xgb.train`, native early stopping), `XGBTDReg
 
 1. **Data**: read the converted CRSP store and its membership panel, then write the derived `prices` store.
 2. **Factors**: `Alpha101Stock` and `Alpha158Stock` on adjusted prices, written to Zarr stores with `build(START, END)`. The torch pipelines build them from `WINDOW_BARS - 1` bars before `START`, so the first training bar has a full window, and the MASTER pipelines add `MarketFeatures`, 21 features of each of SPY, QQQ and IWM, the same for every stock with a bar.
-3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on `prices.zarr` and wrapped in `MembershipMaskedLabel`, which keeps a sample only where the stock is an index member at t.
+3. **Label**: `Return`, the open-to-open return from t+1 to t+1+`HORIZON`, computed on the derived price store `wrds_<index>_prices` and wrapped in `MembershipMaskedLabel`, which keeps a sample only where the stock is an index member at t.
 4. **Model**: trained once on the training window.
 5. **Backtest**: `USEquityCrossectionSelectStockVectorBt`, a TopN cross-sectional portfolio over the out-of-sample window, compared against buy-and-hold SPY (S&P 500 and market) or QQQ (Nasdaq-100), logged to Weights & Biases.
 
-The market scripts skip step 1: the market store already holds only common stock, filtered per day when it was converted, so every step reads it directly through `CrspStockDataset` and no derived stores are written. A factor-analysis pipeline runs the data, factor and label steps and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, and `TRACKER` in the model pipelines) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `ModelConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
+The market scripts skip step 1: the market store already holds only common stock, filtered per day when it was converted, so every step reads it directly through `CrspStockDataset` and no derived price store is written. A factor-analysis pipeline runs the data, factor and label steps and then `Factor.analyze()` on every column of both libraries instead of a model. There is no command-line interface and no settings object: the top of each file holds a few constants (`DATA_ROOT`, the dates, `HORIZON`, and `TRACKER` in the model pipelines) and every quantlab config is constructed in place (`DatasetConfig`, `FactorConfig`, `ModelConfig`, `CrossSectionBacktestConfig`), so what a step does is the config it is given.
 
 ## Prerequisites
 
@@ -34,21 +34,21 @@ Download and convert the roster of the index you want once (this needs a WRDS ac
 export WRDS_USERNAME=<your-wrds-username>   # password in ~/.pgpass
 # S&P 500 (CRSP's own membership, from 1925)
 uv run python scripts/wrds/index.py --index sp500 --start 2010-01-01 --end 2024-12-31 \
-    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --data-dir data
 # Nasdaq-100 (Compustat membership linked through CCM, from 1995;
 # needs the Compustat and CCM schemas)
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31 \
-    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --data-dir data
 # The whole CRSP market (every listed common stock; `--security-filter` picks the type)
 uv run python scripts/wrds/market.py --start 2010-01-01 --end 2024-12-31 \
-    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --data-dir data
 # The ETFs, by CRSP PERMNO (SPY 84398, QQQ 86755, IWM 88222), one store each:
 # the benchmarks, and the market features of the MASTER pipelines
 uv run python scripts/wrds/etf.py --etf spy,qqq,iwm --start 2010-01-01 --end 2024-12-31 \
-    --download-dir data/downloads/us_equity/1d/wrds_crsp --zarr-dir data/data/us_equity/1d
+    --download-dir data/downloads/us_equity/1d/wrds_crsp --data-dir data
 ```
 
-`--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--zarr-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
+`--end` defaults to today and is clipped to the last day of the CRSP release; every script converts to Zarr; `--refresh` continues each PERMNO from its watermark. `--download-dir` and `--data-dir` default to the current directory; the values above, relative to the repository root, put the stores where the pipeline reads them.
 
 `market_residual_momentum.py` also needs the daily Fama-French factors, which need no account:
 
@@ -58,7 +58,7 @@ uv run python scripts/fama_french.py --download-dir data/downloads
 
 writes `data/downloads/fama_french/ff3_daily.csv`, where `FAMA_FRENCH_CSV` at the top of the script points.
 
-Each `index.py` run writes two stores under `data/data/us_equity/1d/`: `wrds_crsp_<index>_1d.zarr` (prices of every PERMNO that was a member at some point in the window) and `wrds_crsp_<index>_membership.zarr` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `market.py` writes `wrds_crsp_market_1d.zarr`, which the market scripts read directly, and `wrds_crsp_market_membership.zarr`, the listing panel, which they do not need. `etf.py` writes `wrds_crsp_spy_1d.zarr`, `wrds_crsp_qqq_1d.zarr` and `wrds_crsp_iwm_1d.zarr`; a MASTER pipeline stops with a message naming the command when one of the three is missing. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
+Every store sits in its own folder, `<folder>/<stem>/<stem>.zarr`, beside a short `README.md`. Each `index.py` run writes two stores: `market/wrds/wrds_crsp_<index>_1d/` (prices of every PERMNO that was a member at some point in the window) and `universe/wrds/wrds_crsp_<index>_membership/` (`is_member` per day), with `<index>` = `sp500` or `nasdaq100`. `market.py` writes `market/wrds/wrds_crsp_market_1d/`, which the market scripts read directly, and `universe/wrds/wrds_crsp_market_membership/`, the listing panel, which they do not need. `etf.py` writes `market/wrds/wrds_crsp_spy_1d/`, `market/wrds/wrds_crsp_qqq_1d/` and `market/wrds/wrds_crsp_iwm_1d/`; a MASTER pipeline stops with a message naming the command when one of the three is missing. The pipeline reads them from the same data root (`QUANTLAB_DATA_DIR`, or `data/` beside the repository, or `DATA_ROOT` at the top of each script).
 
 KunQuant compiles the factor graphs, so a C++ compiler is required. The model scripts set `OMP_NUM_THREADS=1` on macOS themselves (xgboost and torch in one process). All model pipelines train on a CUDA GPU when one is available (never on Apple MPS by default), and the torch pipelines keep the training panel on it when the panel takes at most half the free GPU memory (`panel_device`, `panel_dtype` in the hyperparameters; see [docs/model.md](../../docs/model.md)).
 
@@ -81,7 +81,7 @@ Everything lives at the top of each script, in this order:
 
 | Where | What |
 | --- | --- |
-| `DATA_ROOT`, `STORES`, `RAW`, `REFERENCE`, `WORK` | the data root (`get_data_root()`: `QUANTLAB_DATA_DIR` or `data/` beside the repository) and the input and output locations under it |
+| `DATA_ROOT`, `MARKET_DIR`, `UNIVERSE_DIR`, `RAW`, `REFERENCE`, `FACTORS_DIR`, `LABELS_DIR`, `PRICES_STORE`, `WORK` | the data root (`get_data_root()`: `QUANTLAB_DATA_DIR` or `data/` beside the repository) and the input and output locations under it |
 | `START`, `END` | data window; each factor reads its `warmup_bars` bars of warm-up before `START` |
 | `TRAIN_START` ... `TEST_END` | training and out-of-sample test windows (model pipelines) |
 | `WINDOW_BARS` | bars in each stock's window (torch pipelines: 20 for GATs, 8 for MASTER) |
@@ -96,19 +96,25 @@ Everything lives at the top of each script, in this order:
 
 ## Outputs
 
-Everything is written under `<data root>/data/pipeline/wrds_<universe>/`:
+Shared stores that other experiments can reuse go one folder per store, each with a short `README.md` written on first use (`<universe>` = `sp500`, `nasdaq100` or `market`):
 
 ```text
-prices.zarr                   derived price store (step 1; index scripts only)
-factor/alpha101.zarr, factor/alpha158.zarr, label/ret_<h>.zarr
-factor/market_features.zarr   SPY/QQQ/IWM market features (MASTER pipelines)
+market/wrds/wrds_<index>_prices/        derived price store (step 1; index scripts only)
+factors/wrds_<universe>/alpha101/, factors/wrds_<universe>/alpha158/
+factors/wrds_<universe>/market_features/    SPY/QQQ/IWM market features (MASTER pipelines)
+factors/wrds_<universe>/residual_momentum/  the residual-momentum score and rank (market_residual_momentum.py)
+labels/wrds_<universe>/ret_<h>/, labels/wrds_sp500/vol_<h>/ (sp500_xgb_mvo.py)
+```
+
+The pipeline's own outputs go under `<data root>/runs/wrds_<universe>/`:
+
+```text
 models/<model>/...            trained runs: checkpoint, config.json, run.json
 backtests/<model>/...         weights, equity, metrics.json, report.html
 analysis/alpha101/, analysis/alpha158/, analysis/residual_momentum/
                               summary.json and .csv, ic.csv, monthly_ic.csv,
                               quantile_returns.csv, turnover.csv, one PNG
                               per column, config.json (factor and label configs)
-factor/residual_momentum.zarr the residual-momentum score and rank (market_residual_momentum.py)
 ```
 
 ## What is logged to Weights & Biases
@@ -120,7 +126,7 @@ factor/residual_momentum.zarr the residual-momentum score and rank (market_resid
 
 The benchmark is the ETF's own daily rows from CRSP (`crsp_a_stock.dsf_v2`, selected by PERMNO), converted like any CRSP panel: `adjOpen`/`adjClose` are total-return adjusted, so the buy-and-hold includes the ETF's dividends (net of its expense ratio, like a real holding). It is the tradable ETF, not the index level.
 
-With a benchmark (the default), the backtest also buys and holds the ETF from the same `init_cash`, with the same fees, slippage and next-bar-open fills, so the two curves compare bar for bar. Each ETF lives in its own single-symbol store (`wrds_crsp_spy_1d.zarr`, `wrds_crsp_qqq_1d.zarr`), never in the equity panel, where it would be ranked against its own constituents. `metrics.json` gains two blocks, each split whole / in-sample / out-of-sample:
+With a benchmark (the default), the backtest also buys and holds the ETF from the same `init_cash`, with the same fees, slippage and next-bar-open fills, so the two curves compare bar for bar. Each ETF lives in its own single-symbol store (`wrds_crsp_spy_1d`, `wrds_crsp_qqq_1d`), never in the equity panel, where it would be ranked against its own constituents. `metrics.json` gains two blocks, each split whole / in-sample / out-of-sample:
 
 - `benchmark`: the ETF's own return statistics.
 - `relative`: the portfolio against the ETF, every `[%]` row in percent: `Excess Return [%]` (relative NAV − 1), `Annualized Excess Return [%]`, `Excess Max Drawdown [%]`, `Tracking Error [%]`, `Information Ratio`, `Beta`, `Correlation`, `CAPM Alpha [%]`, `Win Rate vs Benchmark [%]`.
@@ -132,7 +138,7 @@ A backtest run directory is read through `quantlab.runs.backtest_run.BacktestRun
 ## How the universe is handled
 
 - **Survivorship**: the CRSP roster contains every PERMNO that was a member at any time in the window, delisted ones included, and CRSP carries delisting returns.
-- **Point-in-time membership masks the label and the predictions, never prices**: factors and the label read `prices.zarr`, so rolling windows and returns see full history. The label is wrapped in `MembershipMaskedLabel(label, index_membership())`, which sets it to NaN wherever the PERMNO is not a member on t's date and reads no later membership, so a stock that leaves the index inside the horizon keeps its return at t. Masking the prices instead would also drop every sample whose symbol leaves before the label's endpoint; such stocks usually leave because they fell, so the target would be survivorship-biased. The backtest prices from the unmasked index store (`index_dataset()`, a `CrspStockDataset` over `wrds_crsp_<index>_1d.zarr`, with raw open/close, `adjClose`, `splitFactor`, `divCash` and delistings) and wraps the model in `MembershipMaskedPredictor(build_model(), index_membership())`, which sets a prediction to NaN wherever the PERMNO is not a member that day. So only members can be entered; a stock that leaves the index keeps its prices and stays tradable, and the rule decides what happens to a holding (TopN sells it at the next rebalance, the mean-variance optimiser holds it at an expected return of 0). The run's `predictions.zarr` holds the masked predictions. The membership store must cover every backtest date: a date it does not cover is refused rather than read as "not a member".
+- **Point-in-time membership masks the label and the predictions, never prices**: factors and the label read `wrds_<index>_prices`, so rolling windows and returns see full history. The label is wrapped in `MembershipMaskedLabel(label, index_membership())`, which sets it to NaN wherever the PERMNO is not a member on t's date and reads no later membership, so a stock that leaves the index inside the horizon keeps its return at t. Masking the prices instead would also drop every sample whose symbol leaves before the label's endpoint; such stocks usually leave because they fell, so the target would be survivorship-biased. The backtest prices from the unmasked index store (`index_dataset()`, a `CrspStockDataset` over `wrds_crsp_<index>_1d`, with raw open/close, `adjClose`, `splitFactor`, `divCash` and delistings) and wraps the model in `MembershipMaskedPredictor(build_model(), index_membership())`, which sets a prediction to NaN wherever the PERMNO is not a member that day. So only members can be entered; a stock that leaves the index keeps its prices and stays tradable, and the rule decides what happens to a holding (TopN sells it at the next rebalance, the mean-variance optimiser holds it at an expected return of 0). The run's `predictions.zarr` holds the masked predictions. The membership store must cover every backtest date: a date it does not cover is refused rather than read as "not a member".
 
 ## Notes
 

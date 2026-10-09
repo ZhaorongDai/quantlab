@@ -248,8 +248,8 @@ registry.convert(SOURCE, NbboDatasetConfig, data_type="nbbo")             │
 NbboPanelDataset：(交易日, ticker) → PERMNO（CrspSymbology.resolve）          │
   → NbboResampler（过滤 → 排序 → 种子 → 右闭 bar）                            │
   ▼                                                                       │
-<zarr-dir>/wrds_nbbo_{bar}_{开始}-{结束}.zarr   （symbol 轴 = PERMNO）        │
-  + .nbbo_filter_stats.json、.crsp_tickers.json 旁车文件                     │
+<data-dir>/market/wrds/<stem>/<stem>.zarr，stem = wrds_nbbo_{bar}_{开始}-{结束} │
+  （symbol 轴 = PERMNO）+ .nbbo_filter_stats.json、.crsp_tickers.json 旁车文件、README.md │
                                                         finally: close_shared()
 ```
 
@@ -361,7 +361,7 @@ uv run python scripts/wrds/nbbo.py --index sp500 --start 2016-01-04 --end 2025-1
 
 其余参数与逐笔下载相同。bar 落在自己的原始目录 `<download-dir>/wrds/nbbo_bars/date=.../symbol=.../`
 （每个 ticker 每根 bar 一行），水位在 `<download-dir>/_watermarks/wrds/nbbo_bars/`；
-store 名是 `wrds_nbbo_server_{bar}_{开始}-{结束}.zarr`，带 `server` 标记，不会和同参数的逐笔 store 互相覆盖。
+store 名是 `wrds_nbbo_server_{bar}_{开始}-{结束}.zarr`（同样放在 `<data-dir>/market/wrds/` 下自己的文件夹里），带 `server` 标记，不会和同参数的逐笔 store 互相覆盖。
 每页日志写明日期、批次、行数和秒数，便于估计多日运行的剩余时间；中断后按已记录的页续跑。
 
 转换（`NbboBarsDataset`、`NbboBarsDatasetConfig`）得到的面板与逐笔路径在同样记录上得到的一致：

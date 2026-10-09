@@ -261,10 +261,10 @@ def etf(permno, path):
 
 market = MarketFeatures(MarketFeatureConfig(
     dataset=stocks,  # the CRSP panel the model trains on
-    series={"spy": etf(SPY_PERMNO, "/data/zarrs/wrds_crsp_spy_1d.zarr"),
-            "qqq": etf(QQQ_PERMNO, "/data/zarrs/wrds_crsp_qqq_1d.zarr"),
-            "iwm": etf(IWM_PERMNO, "/data/zarrs/wrds_crsp_iwm_1d.zarr")},
-    file_path="/data/factors/market.zarr",
+    series={"spy": etf(SPY_PERMNO, "/data/market/wrds/wrds_crsp_spy_1d/wrds_crsp_spy_1d.zarr"),
+            "qqq": etf(QQQ_PERMNO, "/data/market/wrds/wrds_crsp_qqq_1d/wrds_crsp_qqq_1d.zarr"),
+            "iwm": etf(IWM_PERMNO, "/data/market/wrds/wrds_crsp_iwm_1d/wrds_crsp_iwm_1d.zarr")},
+    file_path="/data/factors/market/market/market.zarr",
 ))
 ```
 
@@ -493,14 +493,14 @@ from quantlab.factor.config import NeutralizedConfig
 from quantlab.factor.predefined.neutralized import NeutralizedFactor
 
 daily = SharadarDailyDataset(SharadarDailyConfig(
-    zarr_file_path=str(STORES / "sharadar_daily_1d.zarr"), raw_data_dir_path=str(VENDOR),
+    zarr_file_path=str(store_path(SHARADAR, "sharadar_daily_1d")), raw_data_dir_path=str(VENDOR),
 ))
 industry = SharadarIndustryDataset(SharadarIndustryConfig(
-    zarr_file_path=str(STORES / "sharadar_industry_1d.zarr"), raw_data_dir_path=str(VENDOR),
+    zarr_file_path=str(store_path(SHARADAR, "sharadar_industry_1d")), raw_data_dir_path=str(VENDOR),
 ))
 alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
     factor=alpha158, dataset=[daily, industry],
-    file_path=str(WORK / "factor" / "alpha158_neutral.zarr"), njobs=16,
+    file_path=str(store_path(FACTORS, "alpha158_neutral")), njobs=16,
 ))
 ```
 
@@ -532,10 +532,10 @@ from quantlab.dataset.memory import FrameDataset
 from quantlab.factor.config import BenchmarkBetaConfig
 from quantlab.factor.predefined.benchmark_beta import BenchmarkBeta
 
-vt = FrameDataset(FrameDatasetConfig(zarr_file_path=str(STORES / "sharadar_vt_pr_1d.zarr")))
+vt = FrameDataset(FrameDatasetConfig(zarr_file_path=str(store_path(DATA_ROOT / "market" / "benchmarks", "sharadar_vt_pr_1d"))))
 beta = BenchmarkBeta(BenchmarkBetaConfig(
     dataset=prices, benchmark=vt,
-    file_path=str(WORK / "factor" / "beta_vt.zarr"),
+    file_path=str(store_path(FACTORS, "beta_vt")),
 ))
 ```
 

@@ -23,7 +23,7 @@ built from the same raw file is the same whenever it is built.
 Examples
 --------
 >>> config = ConstituentDatasetConfig(
-...     zarr_file_path="/data/zarrs/sharadar_sp500_membership.zarr",
+...     zarr_file_path="/data/universe/sharadar/sharadar_sp500_membership/sharadar_sp500_membership.zarr",
 ...     cache_dir="/data/downloads/sharadar",
 ...     start_date="2015-01-01",
 ... )

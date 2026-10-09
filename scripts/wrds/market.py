@@ -6,12 +6,16 @@ tier: every PERMNO whose listing overlaps the window and passes the
 ``--security-filter`` preset (default ``equity_common``: common stock
 including REITs, without ADRs, units, funds or ETFs). The script pulls those
 PERMNOs' ``crsp_a_stock.dsf_v2`` daily rows and writes two Zarr stores
-into ``--zarr-dir`` (default: the current directory):
+under the data root ``--data-dir`` (default: the current directory), each in
+its own folder beside a short ``README.md`` (written when the folder has
+none):
 
-- ``wrds_crsp_market_1d.zarr``, the daily bars on the PERMNO axis, with the
-  security-filter and ticker sidecars;
-- ``wrds_crsp_market_membership.zarr``, the listing panel that marks the
-  days each security was listed and of the requested type.
+- ``<data-dir>/market/wrds/wrds_crsp_market_1d/wrds_crsp_market_1d.zarr``,
+  the daily bars on the PERMNO axis, with the security-filter and ticker
+  sidecars;
+- ``<data-dir>/universe/wrds/wrds_crsp_market_membership/wrds_crsp_market_membership.zarr``,
+  the listing panel that marks the days each security was listed and of the
+  requested type.
 
 The raw rows go to ``<download-dir>/wrds/crsp_daily/`` and the CRSP reference tables to
 ``<download-dir>/_reference/``; ``--download-dir`` also defaults to the
@@ -36,18 +40,19 @@ Usage::
     uv run python scripts/wrds/market.py --start 2000-01-01 \\
         --security-filter shrcd_10_11 --refresh
     uv run python scripts/wrds/market.py --start 2000-01-01 \\
-        --download-dir /data/wrds/raw --zarr-dir /data/wrds/zarr
+        --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 
 ``--end`` defaults to today and is clipped to the last day of the annual CRSP
 release. ``--refresh`` continues each PERMNO from its recorded watermark
-instead of downloading the whole window again. ``--download-dir`` and
-``--zarr-dir`` choose where the raw files and the Zarr stores go; both
-default to the current directory.
+instead of downloading the whole window again. ``--download-dir`` chooses
+where the raw files go and ``--data-dir`` the data root the Zarr stores go
+under; both default to the current directory.
 """
 
 import argparse
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 
 from quantlab.acquisition.base import DataSourceRegistry
 from quantlab.acquisition.registry import convert, run
@@ -57,8 +62,8 @@ from quantlab.dataset.crsp import SECURITY_FILTER_PRESETS, CrspStockDataset
 from quantlab.dataset.crsp.market import CrspMarketRoster
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.cli import (
-    add_max_workers_arg,
     add_output_dir_args,
+    add_max_workers_arg,
     place_downloads,
     print_conversion_result,
     resolve_output_dirs,
@@ -68,8 +73,29 @@ SOURCE = DataSourceRegistry.get("wrds")
 CAPABILITY = ("us_equity", "1d", "crsp_daily")
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
 
-STORE = "wrds_crsp_market_1d.zarr"
-MEMBERSHIP_STORE = "wrds_crsp_market_membership.zarr"
+STORE = "wrds_crsp_market_1d"
+MEMBERSHIP_STORE = "wrds_crsp_market_membership"
+
+#: Folders under the data root: the WRDS market stores and its universe (membership) stores.
+MARKET_FOLDER = Path("market") / "wrds"
+UNIVERSE_FOLDER = Path("universe") / "wrds"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def write_readme(store: Path, what: str) -> None:
+    """Create the store's folder and write its ``README.md`` unless one is there."""
+    readme = store.parent / "README.md"
+    if readme.exists():
+        return
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme.write_text(
+        f"# {store.parent.name}\n\n{what}\n\n"
+        f"Written by `scripts/wrds/market.py`; rerun it with `--refresh` to extend it.\n"
+    )
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -110,14 +136,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Continue each PERMNO from its watermark instead of re-downloading.",
     )
     add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
-    add_output_dir_args(parser)
+    add_output_dir_args(
+        parser,
+        data_help=(
+            "The data root. The bars go to "
+            "<data-dir>/market/wrds/wrds_crsp_market_1d/ and the listing panel "
+            "to <data-dir>/universe/wrds/wrds_crsp_market_membership/. Each "
+            "store sits in its own folder <folder>/<stem>/<stem>.zarr with its "
+            "sidecars and a README.md. "
+            "Default: the current directory. It is created as needed."
+        ),
+    )
     return parser
 
 
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    download_dir, zarr_dir = resolve_output_dirs(args)
+    download_dir, data_dir = resolve_output_dirs(args)
     requested_end = args.end or date.today().isoformat()
 
     # Imported here so the session class is resolved at run time.
@@ -188,8 +224,10 @@ if __name__ == "__main__":
         print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
         # 6. Convert: the bars, then the listing panel.
+        bars_path = store_path(data_dir / MARKET_FOLDER, STORE)
+        membership_path = store_path(data_dir / UNIVERSE_FOLDER, MEMBERSHIP_STORE)
         ds_config = CrspDatasetConfig(
-            zarr_file_path=str(zarr_dir / STORE),
+            zarr_file_path=str(bars_path),
             raw_data_dir_path=acq_config.raw_data_dir_path,
             reference_dir=str(reference_dir),
             start_date=start,
@@ -204,12 +242,22 @@ if __name__ == "__main__":
                 f"{acq_config.raw_data_dir_path} ({len(result.failures)} PERMNO(s) "
                 f"failed this run). No store was written.\n",
             )
+        write_readme(
+            bars_path,
+            f"CRSP daily bars (crsp_a_stock.dsf_v2) of the whole CRSP market on the "
+            f"PERMNO axis, security filter {args.security_filter!r}, from WRDS.",
+        )
         print_conversion_result(convert(SOURCE, ds_config, data_type="crsp_daily"))
         print(f"Security filter sidecar:   {CrspStockDataset(ds_config).filter_report_path()}")
 
+        write_readme(
+            membership_path,
+            f"CRSP market listing panel (the days each PERMNO was listed and passed "
+            f"security filter {args.security_filter!r}), from WRDS.",
+        )
         mask = CrspMarketConstituentDataset(
             ConstituentDatasetConfig(
-                zarr_file_path=str(zarr_dir / MEMBERSHIP_STORE),
+                zarr_file_path=str(membership_path),
                 cache_dir=str(reference_dir),
                 start_date=start,
                 end_date=end,

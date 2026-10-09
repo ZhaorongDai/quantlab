@@ -24,7 +24,7 @@ Examples
 Build the store and see which companies reported results on a day::
 
     config = SharadarEventsConfig(
-        zarr_file_path="/data/quantlab/zarrs/sharadar_events_1d.zarr",
+        zarr_file_path="/data/quantlab/market/sharadar/sharadar_events_1d/sharadar_events_1d.zarr",
         raw_data_dir_path="/data/quantlab/downloads/sharadar",
     )
     SharadarEventsDataset(config).update()

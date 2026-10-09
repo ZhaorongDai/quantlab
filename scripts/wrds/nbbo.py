@@ -6,9 +6,12 @@ trading day. The NBBO (National Best Bid and Offer) is the highest bid and
 lowest ask across all exchanges at each instant. This script pulls the NBBO
 rows of a PERMNO roster over a window and resamples them into
 ``--interval`` bars inside the ``--session`` window (US Eastern time),
-written as ``wrds_nbbo_{interval}_{HHMM-HHMM}.zarr`` into ``--zarr-dir``
-with its filter-statistics and ticker sidecars. The raw rows go to
-``<download-dir>/wrds/nbbo/``; both directories default to the current one.
+written as ``wrds_nbbo_{interval}_{HHMM-HHMM}.zarr`` under the data root
+``--data-dir``, in its own folder
+``<data-dir>/market/wrds/wrds_nbbo_{interval}_{HHMM-HHMM}/`` with its
+filter-statistics and ticker sidecars and a short ``README.md`` (written when
+the folder has none). The raw rows go to ``<download-dir>/wrds/nbbo/``; both
+directories default to the current one.
 
 ``--server-bars`` resamples on the WRDS server instead (ADR 0027): each
 trading day and ticker batch runs one SQL statement that builds the bars, so
@@ -47,15 +50,15 @@ Usage::
     uv run python scripts/wrds/nbbo.py --index nasdaq100 --start 2024-01-02 \\
         --interval 5m --session 09:30-16:00 --refresh
     uv run python scripts/wrds/nbbo.py --permnos 14593 --start 2024-01-02 \\
-        --download-dir /data/taq/raw --zarr-dir /data/taq/zarr
+        --download-dir /data/quantlab/downloads --data-dir /data/quantlab
     uv run python scripts/wrds/nbbo.py --index sp500 --start 2016-01-04 \\
         --end 2025-12-31 --server-bars --max-workers 6
 
 ``--end`` defaults to today and is clipped to the last trading day TAQ has
 published. ``--refresh`` continues each ticker from its recorded watermark
-instead of downloading the whole window again. ``--download-dir`` and
-``--zarr-dir`` choose where the raw files and the Zarr store go; both
-default to the current directory.
+instead of downloading the whole window again. ``--download-dir`` chooses
+where the raw files go and ``--data-dir`` the data root the Zarr store goes
+under; both default to the current directory.
 """
 
 import argparse
@@ -77,12 +80,33 @@ from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.dataset.crsp.symbology import CrspSymbology
 from quantlab.enums.data import BarInterval
 from quantlab.utils.cli import (
-    add_max_workers_arg,
     add_output_dir_args,
+    add_max_workers_arg,
     place_downloads,
     print_conversion_result,
     resolve_output_dirs,
 )
+
+#: Folders under the data root: the WRDS market stores.
+MARKET_FOLDER = Path("market") / "wrds"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def write_readme(store: Path, what: str) -> None:
+    """Create the store's folder and write its ``README.md`` unless one is there."""
+    readme = store.parent / "README.md"
+    if readme.exists():
+        return
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme.write_text(
+        f"# {store.parent.name}\n\n{what}\n\n"
+        f"Written by `scripts/wrds/nbbo.py`; rerun it with `--refresh` to extend it.\n"
+    )
+
 
 SOURCE = DataSourceRegistry.get("wrds")
 NBBO_CAPABILITY = ("us_equity", "tick", "nbbo")
@@ -185,7 +209,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
-    add_output_dir_args(parser)
+    add_output_dir_args(
+        parser,
+        data_help=(
+            "The data root. The bar panel goes to "
+            "<data-dir>/market/wrds/<stem>/<stem>.zarr (stem wrds_nbbo_* or "
+            "wrds_nbbo_server_*), with its sidecars and a README.md. "
+            "Default: the current directory. It is created as needed."
+        ),
+    )
     return parser
 
 
@@ -294,7 +326,7 @@ def _resolve_roster(
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    download_dir, zarr_dir = resolve_output_dirs(args)
+    download_dir, data_dir = resolve_output_dirs(args)
     calendar = _parse_session(parser, args.session)
     if args.server_bars and args.interval not in SERVER_BAR_INTERVALS:
         parser.error(
@@ -380,8 +412,9 @@ if __name__ == "__main__":
             session_start=calendar.session_start.strftime("%H%M"),
             session_end=calendar.session_end.strftime("%H%M"),
         )
+        store = store_path(data_dir / MARKET_FOLDER, store_name)
         common = dict(
-            zarr_file_path=str(zarr_dir / store_name),
+            zarr_file_path=str(store),
             raw_data_dir_path=acq_config.raw_data_dir_path,
             reference_dir=str(reference_dir),
             start_date=start,
@@ -403,6 +436,11 @@ if __name__ == "__main__":
                 f"{acq_config.raw_data_dir_path} ({len(result.failures)} ticker(s) "
                 f"failed this run). No store was written.\n",
             )
+        write_readme(
+            store,
+            f"WRDS TAQ NBBO quotes as {args.interval} bars over {args.session} ET on the "
+            f"CRSP PERMNO axis" + (", resampled on the WRDS server." if args.server_bars else "."),
+        )
         if args.server_bars:
             print(f"Converting {args.interval} server bars over {args.session} ET")
         else:

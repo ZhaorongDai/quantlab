@@ -223,8 +223,8 @@ wrds {'WRDS_USERNAME': False}
 Two more variables control where data lives. `QUANTLAB_DATA_DIR` sets the root directory the
 library's config factories derive raw-download and Zarr paths from; without it the `data/`
 directory at the repository root is used. The WRDS download scripts do not read it: they write
-raw files under `--download-dir` and Zarr stores under `--zarr-dir`, both defaulting to the
-current directory. `QUANTLAB_DATA_ROOT` is read only by the CRSP measurement test mentioned above.
+raw files under `--download-dir` and Zarr stores under the data root `--data-dir`, both
+defaulting to the current directory. `QUANTLAB_DATA_ROOT` is read only by the CRSP measurement test mentioned above.
 
 ## Next steps
 

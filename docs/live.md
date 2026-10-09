@@ -57,17 +57,17 @@ The run directory is the strategy's recipe: `config.json` rebuilds the backteste
 The S&P 500 Barra mean-variance run (`examples/sharadar_us_equity/sp500_xgb_mvo.py` with
 `FactorRiskStoreEstimator`) is extended this way:
 
-| Store | How |
+| Store (each `<stem>/<stem>.zarr` under the data root) | How |
 |-------|-----|
-| `zarrs/sharadar_sp500_1d.zarr` (price dataset), `sharadar_sep_1d.zarr`, `sharadar_daily_1d.zarr`, `sharadar_sf1_art.zarr`, `sharadar_sf1_fiscal_years.zarr`, `sharadar_industry_1d.zarr`, `sharadar_share_class_1d.zarr`, `sharadar_sp500_membership.zarr` | must hold t (`scripts/sharadar/update.py`) |
-| `zarrs/fred_dtb3_1d.zarr` | `--may-lag` |
-| `pipeline/universes/sp500/prices/prices.zarr` | `--mirror` |
-| `pipeline/universes/sp500/factors/alpha101/alpha101.zarr`, `factors/alpha158/alpha158.zarr` | `Factor.extend` |
-| `pipeline/sharadar_barra/barra_style.zarr` | `Factor.extend` |
-| `pipeline/sharadar_risk/regression.zarr`, then `estimate.zarr` | `RiskStore.extend` |
+| `market/sharadar/`: `sharadar_sp500_1d` (price dataset), `sharadar_sep_1d`, `sharadar_daily_1d`, `sharadar_sf1_art`, `sharadar_sf1_fiscal_years`, `sharadar_industry_1d`, `sharadar_share_class_1d`; `universe/sharadar/sharadar_sp500_membership` | must hold t (`scripts/sharadar/update.py`) |
+| `market/fred/fred_dtb3_1d` | `--may-lag` |
+| `market/sharadar/sp500_prices` | `--mirror` |
+| `factors/sp500/alpha101`, `factors/sp500/alpha158` | `Factor.extend` |
+| `factors/market/barra_style` | `Factor.extend` |
+| `risk/use4/regression`, then `risk/use4/estimate` | `RiskStore.extend` |
 
 The us3000 run of `examples/sharadar_us_equity/us3000_h1_mvo.py` reads its 12 style
-features straight from `pipeline/sharadar_barra/barra_style.zarr` through a `RosterFactor`,
+features straight from `factors/market/barra_style/barra_style.zarr` through a `RosterFactor`,
 so that store is extended once, by the risk model's exposures factor; `prepare-day` extends
 it first, and the job finds it current.
 
@@ -127,15 +127,15 @@ The run directory of the #44 `real` configuration is written in that experiment'
 cd ~/projects/quantlab2
 export SHARADAR_API_KEY=<your-sharadar-key>
 .venv/bin/python scripts/sharadar/update.py \
-    --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+    --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 
 RUN=$(.venv/bin/python -c "import json; print(json.load(open('/data/quantlab/runs/ibkr_barra_closed_loop/real/backtest.json'))['run_dir'])")
 QUANTLAB_DATA_DIR=/data/quantlab OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 taskset -c 64-127 \
   .venv/bin/python scripts/live/predict_day.py "$RUN" \
     --store /data/quantlab/live/sp500_xgb_mvo/live_predictions.zarr \
-    --mirror /data/quantlab/pipeline/universes/sp500/prices/prices.zarr \
-    --may-lag /data/quantlab/zarrs/fred_dtb3_1d.zarr
+    --mirror /data/quantlab/market/sharadar/sp500_prices/sp500_prices.zarr \
+    --may-lag /data/quantlab/market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr
 ```
 
 On success the script prints t, the number of symbols predicted and what it did to each

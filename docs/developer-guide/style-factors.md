@@ -72,7 +72,7 @@ factor = BarraStyle(FactorConfig(
     dataset=MergedDataset([prices, daily, art, history, industry, share_class, dtb3]),
     mode="batch",
     data_columns=params.panel_columns,
-    file_path="barra_style.zarr",
+    file_path="factors/market/barra_style/barra_style.zarr",
     kwargs={"risk_free_symbol": "DTB3"},
 ))
 factor.build("2001-01-02", "2026-10-02")

@@ -7,12 +7,15 @@ id that never changes or gets reused. This script resolves the point-in-time
 members of one index (every PERMNO that belonged to it at any time in the
 window, including the ones that later left, which avoids survivorship bias),
 pulls their ``crsp_a_stock.dsf_v2`` daily rows, and writes two Zarr stores
-into ``--zarr-dir`` (default: the current directory):
+under the data root ``--data-dir`` (default: the current directory), each in
+its own folder beside a short ``README.md`` (written when the folder has
+none):
 
-- ``wrds_crsp_{index}_1d.zarr``, the members' daily bars on the PERMNO
-  axis, with the security-filter and ticker sidecars;
-- ``wrds_crsp_{index}_membership.zarr``, the membership panel that marks
-  the days each security was a member.
+- ``<data-dir>/market/wrds/wrds_crsp_{index}_1d/wrds_crsp_{index}_1d.zarr``,
+  the members' daily bars on the PERMNO axis, with the security-filter and
+  ticker sidecars;
+- ``<data-dir>/universe/wrds/wrds_crsp_{index}_membership/wrds_crsp_{index}_membership.zarr``,
+  the membership panel that marks the days each security was a member.
 
 The raw rows go to ``<download-dir>/wrds/crsp_daily/`` and the CRSP, Compustat and CCM
 reference tables to ``<download-dir>/_reference/``; ``--download-dir`` also
@@ -33,18 +36,19 @@ Usage::
     uv run python scripts/wrds/index.py --index nasdaq100 --start 2015-01-01 \\
         --end 2024-12-31 --refresh
     uv run python scripts/wrds/index.py --index sp500 --start 2015-01-01 \\
-        --download-dir /data/wrds/raw --zarr-dir /data/wrds/zarr
+        --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 
 ``--end`` defaults to today and is clipped to the last day of the annual CRSP
 release. ``--refresh`` continues each PERMNO from its recorded watermark
-instead of downloading the whole window again. ``--download-dir`` and
-``--zarr-dir`` choose where the raw files and the Zarr stores go; both
-default to the current directory.
+instead of downloading the whole window again. ``--download-dir`` chooses
+where the raw files go and ``--data-dir`` the data root the Zarr stores go
+under; both default to the current directory.
 """
 
 import argparse
 from dataclasses import replace
 from datetime import date
+from pathlib import Path
 
 from quantlab.acquisition.base import DataSourceRegistry
 from quantlab.acquisition.registry import convert, run
@@ -57,8 +61,8 @@ from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.dataset.crsp.membership import CrspMembership
 from quantlab.dataset.crsp.reference import CrspReference
 from quantlab.utils.cli import (
-    add_max_workers_arg,
     add_output_dir_args,
+    add_max_workers_arg,
     place_downloads,
     print_conversion_result,
     resolve_output_dirs,
@@ -67,6 +71,28 @@ from quantlab.utils.cli import (
 SOURCE = DataSourceRegistry.get("wrds")
 CAPABILITY = ("us_equity", "1d", "crsp_daily")
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
+
+#: Folders under the data root: the WRDS market stores and its universe (membership) stores.
+MARKET_FOLDER = Path("market") / "wrds"
+UNIVERSE_FOLDER = Path("universe") / "wrds"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def write_readme(store: Path, what: str) -> None:
+    """Create the store's folder and write its ``README.md`` unless one is there."""
+    readme = store.parent / "README.md"
+    if readme.exists():
+        return
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme.write_text(
+        f"# {store.parent.name}\n\n{what}\n\n"
+        f"Written by `scripts/wrds/index.py`; rerun it with `--refresh` to extend it.\n"
+    )
+
 
 #: ``--index`` name -> (CRSP membership universe id, constituent dataset class).
 INDEXES: dict[str, tuple[str, type]] = {
@@ -111,7 +137,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Continue each PERMNO from its watermark instead of re-downloading.",
     )
     add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
-    add_output_dir_args(parser)
+    add_output_dir_args(
+        parser,
+        data_help=(
+            "The data root. The bars go to "
+            "<data-dir>/market/wrds/wrds_crsp_<index>_1d/ and the membership "
+            "panel to <data-dir>/universe/wrds/wrds_crsp_<index>_membership/. "
+            "Each store sits in its own folder <folder>/<stem>/<stem>.zarr "
+            "with its sidecars and a README.md. "
+            "Default: the current directory. It is created as needed."
+        ),
+    )
     return parser
 
 
@@ -130,7 +166,7 @@ def _schemas_for(universe: str) -> tuple[str, ...]:
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    download_dir, zarr_dir = resolve_output_dirs(args)
+    download_dir, data_dir = resolve_output_dirs(args)
     universe, constituent_cls = INDEXES[args.index]
     requested_end = args.end or date.today().isoformat()
 
@@ -193,8 +229,12 @@ if __name__ == "__main__":
         print(f"Raw data written under: {acq_config.raw_data_dir_path}")
 
         # 6. Convert: the bars, then the membership panel.
+        bars_path = store_path(data_dir / MARKET_FOLDER, f"wrds_crsp_{args.index}_1d")
+        membership_path = store_path(
+            data_dir / UNIVERSE_FOLDER, f"wrds_crsp_{args.index}_membership"
+        )
         ds_config = CrspDatasetConfig(
-            zarr_file_path=str(zarr_dir / f"wrds_crsp_{args.index}_1d.zarr"),
+            zarr_file_path=str(bars_path),
             raw_data_dir_path=acq_config.raw_data_dir_path,
             reference_dir=str(reference_dir),
             start_date=start,
@@ -209,12 +249,22 @@ if __name__ == "__main__":
                 f"{acq_config.raw_data_dir_path} ({len(result.failures)} PERMNO(s) "
                 f"failed this run). No store was written.\n",
             )
+        write_readme(
+            bars_path,
+            f"CRSP daily bars (crsp_a_stock.dsf_v2) of every point-in-time "
+            f"{args.index} member on the PERMNO axis, from WRDS.",
+        )
         print_conversion_result(convert(SOURCE, ds_config, data_type="crsp_daily"))
         print(f"Security filter sidecar:   {CrspStockDataset(ds_config).filter_report_path()}")
 
+        write_readme(
+            membership_path,
+            f"Point-in-time {args.index} membership panel (the days each PERMNO "
+            f"was a member), from WRDS.",
+        )
         membership = constituent_cls(
             ConstituentDatasetConfig(
-                zarr_file_path=str(zarr_dir / f"wrds_crsp_{args.index}_membership.zarr"),
+                zarr_file_path=str(membership_path),
                 cache_dir=str(reference_dir),
                 start_date=start,
                 end_date=end,

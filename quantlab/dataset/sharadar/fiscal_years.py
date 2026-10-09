@@ -39,7 +39,7 @@ Examples
 Build the store from a downloaded raw tier and read a quarter::
 
     config = SharadarFiscalYearsConfig(
-        zarr_file_path="/data/quantlab/zarrs/sharadar_sf1_fiscal_years.zarr",
+        zarr_file_path="/data/quantlab/market/sharadar/sharadar_sf1_fiscal_years/sharadar_sf1_fiscal_years.zarr",
         raw_data_dir_path="/data/quantlab/downloads/sharadar",
     )
     SharadarFiscalYearsDataset(config).update()

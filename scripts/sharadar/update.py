@@ -12,7 +12,9 @@ Run every morning after ``download.py`` has built the stores. One run:
    ``lastupdated``), new filings included, or the whole of SF1 in bulk when
    that query fails (Sharadar stops a query after 15 seconds), and the
    same for DAILY;
-3. runs ``update()`` on every store ``download.py`` built in ``--zarr-dir``
+3. runs ``update()`` on every store ``download.py`` built under the data
+   root ``--data-dir``, each at ``<data-dir>/market/sharadar/<stem>/<stem>.zarr``
+   and the membership at ``<data-dir>/universe/sharadar/<stem>/<stem>.zarr``
    (``sharadar_sep_1d.zarr``, ``sharadar_sfp_1d.zarr``,
    ``sharadar_sp500_1d.zarr``, ``sharadar_spy_1d.zarr``,
    ``sharadar_sp500_membership.zarr``, ``sharadar_sf1_arq.zarr``,
@@ -51,9 +53,9 @@ Usage::
 
     export SHARADAR_API_KEY=<your-sharadar-key>
     uv run python scripts/sharadar/update.py \\
-        --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+        --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 
-``--download-dir`` and ``--zarr-dir`` default to the current directory and
+``--download-dir`` and ``--data-dir`` default to the current directory and
 must be the ones ``download.py`` used.
 """
 
@@ -105,6 +107,16 @@ from quantlab.utils.cli import (
 #: The repository this script lives in; no output may go inside it.
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+#: Folders under the data root: Sharadar's market stores and its universe stores.
+MARKET_FOLDER = Path("market") / "sharadar"
+UNIVERSE_FOLDER = Path("universe") / "sharadar"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
 #: Pulled whole every run: reference and membership tables are small.
 WHOLE_TABLES = ("tickers", "indicators", "sp500", "sf3a")
 #: Pulled as a trailing date window.
@@ -117,24 +129,24 @@ UPDATED_TABLES = ("sf1", "daily")
 #: with all its bars (the backtest's price dataset), and SPY alone (the
 #: benchmark).
 PRICE_STORES = {
-    "sharadar_sep_1d.zarr": {"table": "sep"},
-    "sharadar_sfp_1d.zarr": {"table": "sfp"},
-    "sharadar_sp500_1d.zarr": {"table": "sep", "roster_universe": "sp500"},
-    "sharadar_spy_1d.zarr": {"table": "sfp", "permatickers": (SPY_PERMATICKER,)},
+    "sharadar_sep_1d": {"table": "sep"},
+    "sharadar_sfp_1d": {"table": "sfp"},
+    "sharadar_sp500_1d": {"table": "sep", "roster_universe": "sp500"},
+    "sharadar_spy_1d": {"table": "sfp", "permatickers": (SPY_PERMATICKER,)},
 }
-MEMBERSHIP_STORE = "sharadar_sp500_membership.zarr"
+MEMBERSHIP_STORE = "sharadar_sp500_membership"
 #: Each point-in-time fundamentals store and its as-reported SF1 dimension.
-FUNDAMENTALS_STORES = {"sharadar_sf1_arq.zarr": "ARQ", "sharadar_sf1_art.zarr": "ART"}
+FUNDAMENTALS_STORES = {"sharadar_sf1_arq": "ARQ", "sharadar_sf1_art": "ART"}
 #: The DAILY valuation store.
-DAILY_STORE = "sharadar_daily_1d.zarr"
+DAILY_STORE = "sharadar_daily_1d"
 #: The stores of the filing, ownership, industry, fiscal-year and share-class panels, with their config and dataset classes.
 PANEL_STORES = {
-    "sharadar_events_1d.zarr": (SharadarEventsConfig, SharadarEventsDataset),
-    "sharadar_insiders_1d.zarr": (SharadarInsidersConfig, SharadarInsidersDataset),
-    "sharadar_holdings_1d.zarr": (SharadarHoldingsConfig, SharadarHoldingsDataset),
-    "sharadar_industry_1d.zarr": (SharadarIndustryConfig, SharadarIndustryDataset),
-    "sharadar_sf1_fiscal_years.zarr": (SharadarFiscalYearsConfig, SharadarFiscalYearsDataset),
-    "sharadar_share_class_1d.zarr": (SharadarShareClassConfig, SharadarShareClassDataset),
+    "sharadar_events_1d": (SharadarEventsConfig, SharadarEventsDataset),
+    "sharadar_insiders_1d": (SharadarInsidersConfig, SharadarInsidersDataset),
+    "sharadar_holdings_1d": (SharadarHoldingsConfig, SharadarHoldingsDataset),
+    "sharadar_industry_1d": (SharadarIndustryConfig, SharadarIndustryDataset),
+    "sharadar_sf1_fiscal_years": (SharadarFiscalYearsConfig, SharadarFiscalYearsDataset),
+    "sharadar_share_class_1d": (SharadarShareClassConfig, SharadarShareClassDataset),
 }
 
 
@@ -226,6 +238,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "Default: the current directory, which must be outside this "
             "repository."
         ),
+        data_help=(
+            "The data root download.py wrote into: the stores are "
+            "<data-dir>/market/sharadar/<stem>/<stem>.zarr and the S&P 500 "
+            "membership <data-dir>/universe/sharadar/<stem>/<stem>.zarr. "
+            "Default: the current directory, which must be outside this "
+            "repository."
+        ),
     )
     return parser
 
@@ -233,21 +252,28 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    download_dir, zarr_dir = resolve_output_dirs(args)
-    if offending := inside_repository([download_dir, zarr_dir], REPO_ROOT):
+    download_dir, data_dir = resolve_output_dirs(args)
+    if offending := inside_repository([download_dir, data_dir], REPO_ROOT):
         parser.exit(
             1,
             f"refusing to write Sharadar data inside the repository ({REPO_ROOT}): "
-            f"{[str(p) for p in offending]}. Pass --download-dir and --zarr-dir "
+            f"{[str(p) for p in offending]}. Pass --download-dir and --data-dir "
             f"outside it.\n",
         )
     vendor_root = download_dir / VENDOR_DIR
+    market_dir = data_dir / MARKET_FOLDER
+    membership_path = store_path(data_dir / UNIVERSE_FOLDER, MEMBERSHIP_STORE)
     missing = [
-        store for store in (*PRICE_STORES, MEMBERSHIP_STORE, *FUNDAMENTALS_STORES, DAILY_STORE, *PANEL_STORES)
-        if not (zarr_dir / store).exists()
+        str(path) for path in (
+            *(store_path(market_dir, stem) for stem in (
+                *PRICE_STORES, *FUNDAMENTALS_STORES, DAILY_STORE, *PANEL_STORES
+            )),
+            membership_path,
+        )
+        if not path.exists()
     ]
     if missing:
-        parser.exit(1, f"no store {missing} in {zarr_dir}; run download.py first.\n")
+        parser.exit(1, f"no store {missing}; run download.py first.\n")
 
     client = SharadarClient()
     try:
@@ -270,46 +296,46 @@ if __name__ == "__main__":
     failures: list[str] = []
     for store, fields in PRICE_STORES.items():
         _update_store(
-            zarr_dir / store,
+            store_path(market_dir, store),
             lambda start, fields=fields, store=store: SharadarStockDataset(SharadarDatasetConfig(
-                zarr_file_path=str(zarr_dir / store), raw_data_dir_path=str(vendor_root),
+                zarr_file_path=str(store_path(market_dir, store)), raw_data_dir_path=str(vendor_root),
                 **fields, start_date=start,
             )),
             args.rebuild_dropped, failures,
         )
     _update_store(
-        zarr_dir / MEMBERSHIP_STORE,
+        membership_path,
         lambda start: SharadarSP500ConstituentDataset(ConstituentDatasetConfig(
-            zarr_file_path=str(zarr_dir / MEMBERSHIP_STORE), cache_dir=str(vendor_root),
+            zarr_file_path=str(membership_path), cache_dir=str(vendor_root),
             start_date=start,
         )),
         args.rebuild_dropped, failures,
     )
     for store, dimension in FUNDAMENTALS_STORES.items():
         _update_store(
-            zarr_dir / store,
+            store_path(market_dir, store),
             lambda start, store=store, dimension=dimension: SharadarFundamentalsDataset(
                 SharadarFundamentalsConfig(
-                    zarr_file_path=str(zarr_dir / store), raw_data_dir_path=str(vendor_root),
+                    zarr_file_path=str(store_path(market_dir, store)), raw_data_dir_path=str(vendor_root),
                     dimension=dimension, start_date=start,
                 )
             ),
             args.rebuild_dropped, failures,
         )
     _update_store(
-        zarr_dir / DAILY_STORE,
+        store_path(market_dir, DAILY_STORE),
         lambda start: SharadarDailyDataset(SharadarDailyConfig(
-            zarr_file_path=str(zarr_dir / DAILY_STORE), raw_data_dir_path=str(vendor_root),
+            zarr_file_path=str(store_path(market_dir, DAILY_STORE)), raw_data_dir_path=str(vendor_root),
             start_date=start,
         )),
         args.rebuild_dropped, failures,
     )
     for store, (config_cls, dataset_cls) in PANEL_STORES.items():
         _update_store(
-            zarr_dir / store,
+            store_path(market_dir, store),
             lambda start, store=store, config_cls=config_cls, dataset_cls=dataset_cls: dataset_cls(
                 config_cls(
-                    zarr_file_path=str(zarr_dir / store), raw_data_dir_path=str(vendor_root),
+                    zarr_file_path=str(store_path(market_dir, store)), raw_data_dir_path=str(vendor_root),
                     start_date=start,
                 )
             ),

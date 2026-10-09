@@ -50,13 +50,18 @@ from quantlab.utils.cli import inside_repository
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository.
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "zarrs"
+#: Sharadar's and FRED's market stores, one folder per store.
+SHARADAR = DATA_ROOT / "market" / "sharadar"
+FRED = DATA_ROOT / "market" / "fred"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
 #: FRED's raw tier and its watermarks.
 FRED_RAW = DATA_ROOT / "downloads" / "fred"
 FRED_WATERMARKS = DATA_ROOT / "downloads" / "_watermarks" / "fred"
-#: Everything this script writes goes under here.
-WORK = DATA_ROOT / "pipeline" / "sharadar_barra"
+#: The exposures' store folder: ``barra_style.zarr``, ``coverage.json`` and
+#: the factor report's ``analysis/`` beside its README.md.
+WORK = DATA_ROOT / "factors" / "market" / "barra_style"
+#: The factor report's forward-return labels (whole market).
+LABELS = DATA_ROOT / "labels" / "market"
 
 #: The exposures' range, both inclusive; the warm-up (526 bars) is read
 #: before START. DAILY's market cap starts on 1998-12-01.
@@ -69,29 +74,42 @@ PARAMETERS = BarraStyleParameters(risk_free_symbol="DTB3")
 STYLES = tuple(name for name in BarraStyle._OUTPUTS if name.startswith("style_"))
 
 
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def describe(store: Path, text: str) -> None:
+    """Create ``store``'s folder and write ``text`` as its README.md unless one exists."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme = store.parent / "README.md"
+    if not readme.exists():
+        readme.write_text(text)
+
+
 def sharadar_inputs() -> list:
     """The Sharadar panels BarraStyle reads, on the permaticker axis."""
     prices = SharadarStockDataset(SharadarDatasetConfig(
-        zarr_file_path=str(STORES / "sharadar_sep_1d.zarr"), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_sep_1d")), raw_data_dir_path=str(VENDOR),
     ))
     daily = SharadarDailyDataset(SharadarDailyConfig(
-        zarr_file_path=str(STORES / "sharadar_daily_1d.zarr"), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_daily_1d")), raw_data_dir_path=str(VENDOR),
     ))
     # ART alone: its balance-sheet items equal ARQ's on every filing.
     fundamentals = SharadarFundamentalsDataset(SharadarFundamentalsConfig(
-        zarr_file_path=str(STORES / "sharadar_sf1_art.zarr"), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_sf1_art")), raw_data_dir_path=str(VENDOR),
         dimension="ART",
     ))
     history = SharadarFiscalYearsDataset(SharadarFiscalYearsConfig(
-        zarr_file_path=str(STORES / "sharadar_sf1_fiscal_years.zarr"),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_sf1_fiscal_years")),
         raw_data_dir_path=str(VENDOR),
     ))
     industry = SharadarIndustryDataset(SharadarIndustryConfig(
-        zarr_file_path=str(STORES / "sharadar_industry_1d.zarr"), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_industry_1d")), raw_data_dir_path=str(VENDOR),
     ))
     # A secondary share class (GOOG) takes its firm's (GOOGL's) cap and fundamentals.
     share_class = SharadarShareClassDataset(SharadarShareClassConfig(
-        zarr_file_path=str(STORES / "sharadar_share_class_1d.zarr"), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(store_path(SHARADAR, "sharadar_share_class_1d")), raw_data_dir_path=str(VENDOR),
     ))
     return [prices, daily, fundamentals, history, industry, share_class]
 
@@ -99,7 +117,7 @@ def sharadar_inputs() -> list:
 def risk_free() -> FredRateDataset:
     """DTB3 as a single-symbol panel; BarraStyle broadcasts and lags it."""
     return FredRateDataset(FredRateConfig(
-        zarr_file_path=str(STORES / "fred_dtb3_1d.zarr"), raw_data_dir_path=str(FRED_RAW),
+        zarr_file_path=str(store_path(FRED, "fred_dtb3_1d")), raw_data_dir_path=str(FRED_RAW),
     ))
 
 
@@ -121,7 +139,7 @@ def forward_return() -> Return:
     prices = sharadar_inputs()[0]
     return Return(FactorConfig(
         warmup_bars=2 * HORIZON + 5, dataset=prices, mode="batch", data_columns=("adjOpen",),
-        kwargs={"n_forward_periods": HORIZON}, file_path=str(WORK / f"ret_{HORIZON}.zarr"),
+        kwargs={"n_forward_periods": HORIZON}, file_path=str(store_path(LABELS, f"ret_{HORIZON}")),
         njobs=64,
     ))
 
@@ -135,12 +153,21 @@ def download_risk_free() -> None:
         symbols=("DTB3",), start_date="1954-01-04",
     ))
     acquisition.download()
+    describe(Path(risk_free().config.zarr_file_path), (
+        "# fred_dtb3_1d\n\nFRED's 3-month T-bill rate (DTB3), daily. Written by\n"
+        "examples/sharadar_us_equity/barra_style.py; read by BarraStyle and the risk model.\n"
+    ))
     risk_free().update()
 
 
 # %% 2. The exposures
 def build_exposures() -> dict:
     """Build the factor store over START..END and return the timing."""
+    describe(WORK / "barra_style.zarr", (
+        "# barra_style\n\nBarra USE4-style exposures on every Sharadar common stock, with\n"
+        "coverage.json and the factor report in analysis/. Written by\n"
+        "examples/sharadar_us_equity/barra_style.py; read by risk_model.py and the MVO recipes.\n"
+    ))
     began = time.perf_counter()
     barra().build(START, END)
     seconds = time.perf_counter() - began
@@ -169,6 +196,10 @@ def coverage() -> dict:
 def report() -> None:
     """Analyze every style against the forward return, from the built stores."""
     label = forward_return()
+    describe(Path(label.config.file_path), (
+        f"# ret_{HORIZON}\n\n{HORIZON}-bar forward open-to-open return on every Sharadar SEP stock.\n"
+        "Written by examples/sharadar_us_equity/barra_style.py for its factor report.\n"
+    ))
     label.build(REPORT_START, REPORT_END)
     analysis = barra().analyze(
         REPORT_START, REPORT_END, factor_names=list(STYLES), frets=[label],

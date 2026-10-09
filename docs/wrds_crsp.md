@@ -93,7 +93,7 @@ The `symbol` axis of a CRSP panel is therefore the integer PERMNO. Tickers are d
 
 ### Download by PERMNO
 
-Three scripts under `scripts/wrds/` drive a download through the vendor registry, one per kind of data: `index.py` takes the point-in-time members of an index, `market.py` takes the whole US equity market, and `etf.py` takes one or more ETFs by PERMNO. Each takes `--start`, an optional `--end` (default today, clipped to the last day of the annual CRSP release), `--refresh`, `--max-workers` (parallel download threads, default 4, at most 6), `--download-dir` and `--zarr-dir` (both default to the current directory), and always converts into Zarr. These commands need a WRDS account, so no output is shown.
+Three scripts under `scripts/wrds/` drive a download through the vendor registry, one per kind of data: `index.py` takes the point-in-time members of an index, `market.py` takes the whole US equity market, and `etf.py` takes one or more ETFs by PERMNO. Each takes `--start`, an optional `--end` (default today, clipped to the last day of the annual CRSP release), `--refresh`, `--max-workers` (parallel download threads, default 4, at most 6), `--download-dir` and `--data-dir` (the data root the stores go under; both default to the current directory), and always converts into Zarr. These commands need a WRDS account, so no output is shown.
 
 ```bash
 # CRSP's point-in-time S&P 500: the members' daily bars and the membership panel.
@@ -103,7 +103,7 @@ uv run python scripts/wrds/index.py --index sp500 --start 2000-01-01
 uv run python scripts/wrds/index.py --index nasdaq100 --start 2010-01-01 --end 2024-12-31
 ```
 
-Before the first daily row is copied the script checks the account's schema entitlements, clips the end date to the annual product end, pulls the reference tables and resolves the roster. The raw files are written under `--download-dir` and the stores into `--zarr-dir`:
+Before the first daily row is copied the script checks the account's schema entitlements, clips the end date to the annual product end, pulls the reference tables and resolves the roster. The raw files are written under `--download-dir` and each store into its own folder under `--data-dir`, beside its JSON sidecars and a short `README.md` written when the folder has none:
 
 ```text
 <download-dir>/
@@ -111,7 +111,9 @@ Before the first daily row is copied the script checks the account's schema enti
     _reference/                      parquet reference tables and manifest.json
     _watermarks/wrds/crsp_daily/     per-PERMNO progress, used by --refresh
     _vintage/wrds.json      which annual CRSP release the raw tier came from
-<zarr-dir>/                 converted Zarr stores and their JSON sidecars
+<data-dir>/
+    market/wrds/<stem>/      a price store <stem>.zarr (wrds_crsp_sp500_1d, ...), its sidecars, README.md
+    universe/wrds/<stem>/    a membership store <stem>.zarr (wrds_crsp_sp500_membership, ...), README.md
 ```
 
 The acquisition classes are documented in `quantlab.acquisition.wrds.crsp` and `quantlab.acquisition.wrds.crsp_reference`.
@@ -306,7 +308,7 @@ The market script takes the same window flags plus `--security-filter` (`equity_
 uv run python scripts/wrds/market.py --start 2024-01-01 --end 2024-12-31
 ```
 
-It writes `wrds_crsp_market_1d.zarr` and the listing mask `wrds_crsp_market_membership.zarr`. Index membership panels come from `index.py`. Both stores were named `wrds_crsp_all_*` before 2026-09-25: rename an existing store by hand, or reconvert it from the unchanged raw tier by running `market.py` again.
+It writes `<data-dir>/market/wrds/wrds_crsp_market_1d/wrds_crsp_market_1d.zarr` and the listing mask `<data-dir>/universe/wrds/wrds_crsp_market_membership/wrds_crsp_market_membership.zarr`. Index membership panels come from `index.py`. Both stores were named `wrds_crsp_all_*` before 2026-09-25: rename an existing store by hand, or reconvert it from the unchanged raw tier by running `market.py` again.
 
 ### Keep a store up to date
 
@@ -314,7 +316,7 @@ It writes `wrds_crsp_market_1d.zarr` and the listing mask `wrds_crsp_market_memb
 
 ### Add a benchmark ETF
 
-An ETF ranked against the stocks it holds would compete with itself, so the benchmark lives in its own store. `CrspDatasetConfig.etf_benchmark(permno=...)` fixes the two settings that matter, the PERMNO and `security_filter="none"`; `qqq_benchmark` is the same for QQQ (`QQQ_PERMNO`, 86755), and `SPY_PERMNO` (84398) is the S&P 500's ETF. `scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01` downloads ETFs by PERMNO, one store each (`wrds_crsp_spy_1d.zarr`, `wrds_crsp_qqq_1d.zarr`); any other ETF is given as `name=PERMNO`. An ETF is never a column of an index or market panel.
+An ETF ranked against the stocks it holds would compete with itself, so the benchmark lives in its own store. `CrspDatasetConfig.etf_benchmark(permno=...)` fixes the two settings that matter, the PERMNO and `security_filter="none"`; `qqq_benchmark` is the same for QQQ (`QQQ_PERMNO`, 86755), and `SPY_PERMNO` (84398) is the S&P 500's ETF. `scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01` downloads ETFs by PERMNO, one store each (`wrds_crsp_spy_1d.zarr`, `wrds_crsp_qqq_1d.zarr`, each in its folder under `<data-dir>/market/wrds/`); any other ETF is given as `name=PERMNO`. An ETF is never a column of an index or market panel.
 
 ```python
 >>> etf = CrspDatasetConfig.qqq_benchmark(

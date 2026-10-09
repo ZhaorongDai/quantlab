@@ -90,8 +90,8 @@ Three scripts under `scripts/wrds/` download CRSP daily rows, one per kind of
 roster, and every run converts to Zarr. Each takes `--start` and, optionally,
 `--end` (default today, clipped to the last day of the annual CRSP release),
 `--refresh` (continue each PERMNO from its watermark), `--max-workers`
-(parallel download threads, default 4), `--download-dir` and `--zarr-dir`
-(both default to the current directory). These
+(parallel download threads, default 4), `--download-dir` and `--data-dir`
+(the data root the stores go under; both default to the current directory). These
 commands need a WRDS account, so no output is shown:
 
 ```bash
@@ -109,8 +109,9 @@ uv run python scripts/wrds/etf.py --etf spy,qqq --start 2000-01-01
 ```
 
 `index.py` resolves the members of `sp500` or `nasdaq100` over the window,
-downloads their rows, and writes `wrds_crsp_{index}_1d.zarr` and
-`wrds_crsp_{index}_membership.zarr` under `data/us_equity/1d/`. `market.py`
+downloads their rows, and writes `wrds_crsp_{index}_1d.zarr` under
+`<data-dir>/market/wrds/` and `wrds_crsp_{index}_membership.zarr` under
+`<data-dir>/universe/wrds/`. `market.py`
 takes every security passing `--security-filter` (below) over the window,
 about 5,500 PERMNOs for 2024 alone, and writes `wrds_crsp_market_1d.zarr` and
 the listing panel `wrds_crsp_market_membership.zarr`. `etf.py` downloads each
@@ -138,8 +139,11 @@ downloaded again.
 
 The raw tier lands under `<download-dir>/wrds/crsp_daily/month=YYYY-MM/`, one row per
 PERMNO and day, exactly as CRSP serves it, with the reference tables in
-`<download-dir>/_reference/`. The Zarr stores go into `<zarr-dir>`, named as
-above.
+`<download-dir>/_reference/`. Each Zarr store, named as above, goes into its
+own folder, `<data-dir>/market/wrds/<stem>/<stem>.zarr` for bars and
+`<data-dir>/universe/wrds/<stem>/<stem>.zarr` for membership panels, beside
+its sidecars and a short `README.md` the script writes when the folder has
+none.
 
 ### The product end and the vintage
 
@@ -389,8 +393,9 @@ timestamps and several records can share one.
 The script, or a call to `quantlab.acquisition.registry.convert` with an
 `NbboDatasetConfig`, resamples the raw records into a regular bar panel on
 `(timestamp, symbol)`, written to
-`<zarr-dir>/wrds_nbbo_{interval}_{start}-{end}.zarr` (for example
-`wrds_nbbo_1m_0930-1600.zarr`). Resampling reads only local files, so you can
+`<data-dir>/market/wrds/<stem>/<stem>.zarr` with the stem
+`wrds_nbbo_{interval}_{start}-{end}` (for example
+`wrds_nbbo_1m_0930-1600`). Resampling reads only local files, so you can
 re-convert with a different bar size or session window without contacting
 WRDS.
 
@@ -498,7 +503,8 @@ Every other option works as for the tick download. The bars land in their
 own raw tier, `<download-dir>/wrds/nbbo_bars/date=YYYY-MM-DD/symbol=AAPL/`,
 one row per ticker and bar, with watermarks under
 `<download-dir>/_watermarks/wrds/nbbo_bars/`. The store is
-`<zarr-dir>/wrds_nbbo_server_{interval}_{start}-{end}.zarr`; the `server`
+`<data-dir>/market/wrds/<stem>/<stem>.zarr` with the stem
+`wrds_nbbo_server_{interval}_{start}-{end}`; the `server`
 marker keeps it apart from a store built from ticks with the same interval
 and session. Each page logs its day, batch, rows and seconds, which is how
 to estimate the rest of a multi-day run, and an interrupted run resumes from

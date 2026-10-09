@@ -38,7 +38,7 @@ Examples
 Build the store and read the net buying of a quarter::
 
     config = SharadarInsidersConfig(
-        zarr_file_path="/data/quantlab/zarrs/sharadar_insiders_1d.zarr",
+        zarr_file_path="/data/quantlab/market/sharadar/sharadar_insiders_1d/sharadar_insiders_1d.zarr",
         raw_data_dir_path="/data/quantlab/downloads/sharadar",
     )
     SharadarInsidersDataset(config).update()

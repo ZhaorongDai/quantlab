@@ -519,7 +519,7 @@ class BacktestRun:
         Examples
         --------
         >>> BacktestRun.open(run_dir).benchmark_source
-        '/data/zarrs/spy.zarr'
+        '/data/market/sharadar/sharadar_spy_1d/sharadar_spy_1d.zarr'
         """
         return self._benchmark_source
 

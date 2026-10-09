@@ -28,7 +28,7 @@ missing or damaged, with one warning per lookup object.
 
 Examples
 --------
->>> lookup = SharadarTickerLookup("/data/zarrs/sharadar_sep_1d.zarr.sharadar_tickers.json")
+>>> lookup = SharadarTickerLookup("/data/market/sharadar/sharadar_sep_1d/sharadar_sep_1d.zarr.sharadar_tickers.json")
 >>> lookup.label([194817], date(2022, 6, 8)), lookup.label([194817], date(2022, 6, 9))
 (['FB'], ['META'])
 """
@@ -188,7 +188,7 @@ class SharadarTickerLookup(TickerLookup):
 
     Examples
     --------
-    >>> lookup = SharadarTickerLookup("/data/zarrs/sharadar_sep_1d.zarr.sharadar_tickers.json")
+    >>> lookup = SharadarTickerLookup("/data/market/sharadar/sharadar_sep_1d/sharadar_sep_1d.zarr.sharadar_tickers.json")
     >>> lookup.names([194817, 1], date(2022, 6, 9))
     [SymbolName(ticker='META', company='META PLATFORMS INC'), SymbolName(ticker='1', company=None)]
     """

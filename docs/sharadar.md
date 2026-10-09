@@ -35,7 +35,7 @@ from quantlab.dataset.config import SharadarDatasetConfig
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
 config = SharadarDatasetConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_sep_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_sep_1d/sharadar_sep_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarStockDataset(config).from_raw_data().save()
@@ -77,7 +77,7 @@ from quantlab.dataset.config import ConstituentDatasetConfig
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 
 membership = SharadarSP500ConstituentDataset(ConstituentDatasetConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_sp500_membership.zarr",
+    zarr_file_path="/data/quantlab/universe/sharadar/sharadar_sp500_membership/sharadar_sp500_membership.zarr",
     cache_dir="/data/quantlab/downloads/sharadar",
 ))
 membership.from_raw_data().save()
@@ -95,7 +95,7 @@ from quantlab.dataset.sharadar.stock import SharadarStockDataset
 
 spy = SharadarDatasetConfig.etf_benchmark(
     permaticker=SPY_PERMATICKER,  # 118691, SPY's SFP permaticker in TICKERS
-    zarr_file_path="/data/quantlab/zarrs/sharadar_spy_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_spy_1d/sharadar_spy_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarStockDataset(spy).from_raw_data().save()
@@ -111,7 +111,7 @@ from quantlab.dataset.config import SharadarFundamentalsConfig
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 
 config = SharadarFundamentalsConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_sf1_arq.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_sf1_arq/sharadar_sf1_arq.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
     dimension="ARQ",          # or "ART"
     stale_after_days=365,     # the default; None never expires a row
@@ -147,7 +147,7 @@ from quantlab.dataset.config import SharadarFiscalYearsConfig
 from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 
 config = SharadarFiscalYearsConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_sf1_fiscal_years.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_sf1_fiscal_years/sharadar_sf1_fiscal_years.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
     indicators=("eps", "sps"),  # the default
     years=5,                    # the default: slots fy0..fy4
@@ -176,7 +176,7 @@ from quantlab.dataset.config import SharadarDailyConfig
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 
 config = SharadarDailyConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_daily_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_daily_1d/sharadar_daily_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarDailyDataset(config).update()
@@ -197,7 +197,7 @@ from quantlab.dataset.config import SharadarEventsConfig
 from quantlab.dataset.sharadar.events import SharadarEventsDataset
 
 config = SharadarEventsConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_events_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_events_1d/sharadar_events_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarEventsDataset(config).update()
@@ -222,7 +222,7 @@ from quantlab.dataset.config import SharadarInsidersConfig
 from quantlab.dataset.sharadar.insiders import SharadarInsidersDataset
 
 config = SharadarInsidersConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_insiders_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_insiders_1d/sharadar_insiders_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarInsidersDataset(config).update()
@@ -245,7 +245,7 @@ from quantlab.dataset.config import SharadarHoldingsConfig
 from quantlab.dataset.sharadar.holdings import SharadarHoldingsDataset
 
 config = SharadarHoldingsConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_holdings_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_holdings_1d/sharadar_holdings_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarHoldingsDataset(config).update()
@@ -266,7 +266,7 @@ from quantlab.dataset.config import SharadarIndustryConfig
 from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 
 config = SharadarIndustryConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_industry_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_industry_1d/sharadar_industry_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarIndustryDataset(config).update()
@@ -288,7 +288,7 @@ from quantlab.dataset.config import SharadarShareClassConfig
 from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
 
 config = SharadarShareClassConfig(
-    zarr_file_path="/data/quantlab/zarrs/sharadar_share_class_1d.zarr",
+    zarr_file_path="/data/quantlab/market/sharadar/sharadar_share_class_1d/sharadar_share_class_1d.zarr",
     raw_data_dir_path="/data/quantlab/downloads/sharadar",
 )
 SharadarShareClassDataset(config).update()
@@ -315,22 +315,22 @@ lookup.label([194817], date(2022, 6, 9))  # ['META']
 The sidecar is rewritten on every update, so a ticker change after the store was built shows once TICKERS and ACTIONS have been pulled. What the previous sidecar knew and TICKERS no longer says is carried forward: a permaticker TICKERS dropped keeps its spans, and a ticker renamed away without an ACTIONS row is kept under `former` (not shown), because the next conversion maps old raw tickers with the sidecar. A permaticker without a TICKERS row of the store's table, and every permaticker of a store without a sidecar, reads as its id. A change row goes to the security that later changed away from its ticker, or else to the ticker's current owner; one that maps to no permaticker of the table is left out, and an earlier ticker without a `contraname` has no company. `write_ticker_sidecar()` writes the sidecar of an existing store from the download directory's tables and only reads the store; `scripts/sharadar/ticker_sidecar.py` runs it for every price store `download.py` builds that exists, with no download:
 
 ```bash
-uv run python scripts/sharadar/ticker_sidecar.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+uv run python scripts/sharadar/ticker_sidecar.py --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 ```
 
 ## Scripts
 
-The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--zarr-dir` (the stores), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
+The download and the daily update are two scripts, run from the repository root. Both read `SHARADAR_API_KEY`, take `--download-dir` (raw tables under `<download-dir>/sharadar/<table>/`) and `--data-dir` (the data root the stores go under), both defaulting to the current directory, and refuse either directory inside the repository, because the data is licensed for personal use.
 
 ```bash
 export SHARADAR_API_KEY=<your-sharadar-key>
 # once: every table as a bulk zip, then the price, membership, SF1 and DAILY stores
-uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+uv run python scripts/sharadar/download.py --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 # every morning: TICKERS and SP500 whole, SEP/SFP/ACTIONS as trailing windows, SF1 and DAILY by lastupdated, EVENTS and SF2 as trailing windows, SF3A whole, then append
-uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
+uv run python scripts/sharadar/update.py --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 ```
 
-`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, the industry store `sharadar_industry_1d.zarr`, the fiscal-year history store `sharadar_sf1_fiscal_years.zarr` and the share-class store `sharadar_share_class_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership, industry, fiscal-year and share-class panels.
+`download.py` pulls `tickers`, `indicators`, `sep`, `sfp`, `actions`, `sp500`, `sf1`, `daily`, `events`, `sf2`, `sf3`, `sf3a` and `sf3b` (never METRICS) and builds `sharadar_sep_1d.zarr`, `sharadar_sfp_1d.zarr`, `sharadar_sp500_1d.zarr` (the `roster_universe="sp500"` store: every permaticker ever a member, with all its bars), `sharadar_spy_1d.zarr` (SPY alone, `SPY_PERMATICKER`), `sharadar_sp500_membership.zarr`, and the fundamentals stores `sharadar_sf1_arq.zarr` and `sharadar_sf1_art.zarr`, and the valuation store `sharadar_daily_1d.zarr`, and the filing and ownership stores `sharadar_events_1d.zarr`, `sharadar_insiders_1d.zarr` and `sharadar_holdings_1d.zarr`, the industry store `sharadar_industry_1d.zarr`, the fiscal-year history store `sharadar_sf1_fiscal_years.zarr` and the share-class store `sharadar_share_class_1d.zarr`, all with `update()`, so each keeps the chunk ledger the daily update reads. Each store sits in its own folder beside its sidecars and a short `README.md` (written when the folder has none): `<data-dir>/market/sharadar/<stem>/<stem>.zarr`, and the membership at `<data-dir>/universe/sharadar/sharadar_sp500_membership/sharadar_sp500_membership.zarr`; `--start` narrows the stores, `--years` picks the history tier. `update.py` extends each store from the first day it holds and prints where vendor corrections were reported. Sharadar is registered as a source (`DataSourceRegistry.get("sharadar")`, one capability per table), but its raw tier is whole tables rather than a symbol-batched download, so `registry.run()` refuses it and points here; `registry.convert()` builds every store except the membership, industry, fiscal-year and share-class panels.
 
 ## Daily update
 

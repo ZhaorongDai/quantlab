@@ -239,7 +239,7 @@ command line and never written to a configuration file or a log.
 | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | Alpaca bars, quotes and trades |
 | `WANDB_API_KEY` | Optional Weights & Biases tracking, when a config names a `WandbTracker` |
 | `MLFLOW_TRACKING_USERNAME`, `MLFLOW_TRACKING_PASSWORD` or `MLFLOW_TRACKING_TOKEN` | Optional MLflow tracking on a server that asks for credentials, when a config names an `MlflowTracker` (`uv sync --extra mlflow`) |
-| `QUANTLAB_DATA_DIR` | Optional root directory the library's config factories derive data paths from; the download scripts take `--download-dir` and `--zarr-dir` instead |
+| `QUANTLAB_DATA_DIR` | Optional root directory the library's config factories derive data paths from; the download scripts take `--download-dir` and `--data-dir` instead |
 
 The download scripts live in `scripts/wrds/` and `scripts/sharadar/`, and each prints its
 options with `--help`, for example `uv run python scripts/wrds/index.py --help`. Tiingo,

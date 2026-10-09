@@ -36,7 +36,7 @@ Examples
 Build the store and read a year::
 
     config = SharadarIndustryConfig(
-        zarr_file_path="/data/quantlab/zarrs/sharadar_industry_1d.zarr",
+        zarr_file_path="/data/quantlab/market/sharadar/sharadar_industry_1d/sharadar_industry_1d.zarr",
         raw_data_dir_path="/data/quantlab/downloads/sharadar",
     )
     SharadarIndustryDataset(config).update()

@@ -20,11 +20,12 @@ Usage::
 
     python scripts/sharadar/price_return_benchmark.py \\
         --tickers vt,spgm,acwi,urth \\
-        --sfp-store /data/quantlab/zarrs/sharadar_sfp_1d.zarr \\
+        --sfp-store /data/quantlab/market/sharadar/sharadar_sfp_1d/sharadar_sfp_1d.zarr \\
         --raw-dir /data/quantlab/downloads/sharadar \\
-        --zarr-dir /data/quantlab/zarrs
+        --data-dir /data/quantlab
 
-writes ``<zarr-dir>/sharadar_<ticker>_pr_1d.zarr`` per ticker.
+writes ``<data-dir>/market/benchmarks/sharadar_<ticker>_pr_1d/sharadar_<ticker>_pr_1d.zarr``
+per ticker, beside a short ``README.md`` written when the folder has none.
 """
 
 import argparse
@@ -39,6 +40,29 @@ import xarray as xr
 from quantlab.dataset.config import SharadarDatasetConfig
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
+
+#: The folder under the data root that holds the price-return benchmark stores.
+BENCHMARK_FOLDER = Path("market") / "benchmarks"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def write_readme(store: Path, ticker: str) -> None:
+    """Create the store's folder and write its ``README.md`` unless one is there."""
+    readme = store.parent / "README.md"
+    if readme.exists():
+        return
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme.write_text(
+        f"# {store.parent.name}\n\n"
+        f"Price-return benchmark of {ticker.upper()}: its Sharadar SFP prices adjusted "
+        f"for splits only, dividends not reinvested.\n\n"
+        f"Written and rebuilt (`--refresh`) by `scripts/sharadar/price_return_benchmark.py` "
+        f"from the SFP store.\n"
+    )
 
 
 def permaticker_of(raw_dir: Path, ticker: str) -> int:
@@ -75,7 +99,11 @@ def main() -> None:
     parser.add_argument("--tickers", default="vt", help="Comma-separated SFP tickers.")
     parser.add_argument("--sfp-store", required=True, help="The SFP Zarr store.")
     parser.add_argument("--raw-dir", required=True, help="<download-dir>/sharadar.")
-    parser.add_argument("--zarr-dir", required=True, help="Where the benchmark stores go.")
+    parser.add_argument(
+        "--data-dir",
+        required=True,
+        help="The data root; each store goes to <data-dir>/market/benchmarks/<stem>/<stem>.zarr.",
+    )
     parser.add_argument("--start", default="1997-01-01")
     parser.add_argument("--end", default=pd.Timestamp.today().strftime("%Y-%m-%d"))
     parser.add_argument("--refresh", action="store_true", help="Replace existing stores.")
@@ -91,11 +119,12 @@ def main() -> None:
         panel = sfp.panel(args.start, args.end, symbols=[permaticker]).load()
         panel = panel.isel(timestamp=panel["close"].notnull().any("symbol").values)
         built = price_return_panel(panel)
-        path = Path(args.zarr_dir) / f"sharadar_{ticker}_pr_1d.zarr"
+        path = store_path(Path(args.data_dir) / BENCHMARK_FOLDER, f"sharadar_{ticker}_pr_1d")
         if path.exists():
             if not args.refresh:
                 raise SystemExit(f"{path} exists; pass --refresh to replace it.")
             shutil.rmtree(path)
+        write_readme(path, ticker)
         FrameDataset(built).to_zarr(path)
         total[ticker] = panel["adjClose"].isel(symbol=0).to_series()
         price[ticker] = built["adjClose"].isel(symbol=0).to_series()

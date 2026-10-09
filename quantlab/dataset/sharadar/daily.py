@@ -26,7 +26,7 @@ Examples
 Build the store from a downloaded raw tier and read a week::
 
     config = SharadarDailyConfig(
-        zarr_file_path="/data/quantlab/zarrs/sharadar_daily_1d.zarr",
+        zarr_file_path="/data/quantlab/market/sharadar/sharadar_daily_1d/sharadar_daily_1d.zarr",
         raw_data_dir_path="/data/quantlab/downloads/sharadar",
     )
     SharadarDailyDataset(config).update()

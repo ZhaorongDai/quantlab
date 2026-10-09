@@ -495,7 +495,7 @@ Set `benchmark_dataset` to a market dataset that holds exactly one symbol, for e
 from quantlab.dataset.config import CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 qqq = CrspStockDataset(CrspDatasetConfig.qqq_benchmark(
-    zarr_file_path="data/us_equity/1d/wrds_crsp_qqq_1d.zarr",
+    zarr_file_path="data/market/wrds/wrds_crsp_qqq_1d/wrds_crsp_qqq_1d.zarr",
     raw_data_dir_path="data/downloads/us_equity/1d/crsp/wrds",
     reference_dir="data/reference/crsp",
 ))

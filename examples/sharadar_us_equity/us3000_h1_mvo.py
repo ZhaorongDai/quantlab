@@ -21,9 +21,10 @@ R223L5C5, rebuilt from library components only:
   CLARABEL, ``style_beta`` and ``style_size`` in [-0.1, 0.1], the 200
   best-predicted candidates, rebalanced every bar.
 
-The prices, members, alphas and label are the us3000 universe's shared
-stores (``pipeline/universes/us3000``); the CV and the live runs are this
-strategy's (``runs/h1_daily_mvo/us3000``).
+The roster prices and members are Sharadar slices (``market/sharadar/us3000_*``),
+the membership is ``universe/us3000``, the alphas and label are the us3000
+universe's (``factors/us3000``, ``labels/us3000``); the CV and the live runs
+are this strategy's (``runs/h1_daily_mvo/us3000``).
 
 Steps::
 
@@ -34,7 +35,8 @@ Steps::
     # Every morning, after scripts/sharadar/update.py and before predict_day.py:
     python us3000_h1_mvo.py prepare-day
     python scripts/live/predict_day.py <run> --store <live>/live_predictions.zarr \\
-        --mirror <us3000>/prices.zarr --may-lag zarrs/fred_dtb3_1d.zarr
+        --mirror market/sharadar/us3000_prices/us3000_prices.zarr \\
+        --may-lag market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr
 
 ``prepare-day`` brings to the last SEP bar the stores ``predict_day.py``
 does not extend: the roster price store (the run's price dataset), the full
@@ -104,17 +106,22 @@ from quantlab.risk.predefined.use4 import Use4RiskModel
 from quantlab.tracking.wandb import WandbTracker
 
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "zarrs"
+#: Sharadar's market stores (and the us3000 roster slices), FRED's, the benchmarks.
+#: Every store is a folder ``<stem>/`` holding ``<stem>.zarr`` and a short README.md.
+SHARADAR = DATA_ROOT / "market" / "sharadar"
+FRED = DATA_ROOT / "market" / "fred"
+BENCHMARKS = DATA_ROOT / "market" / "benchmarks"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
 FRED_RAW = DATA_ROOT / "downloads" / "fred"
-#: The us3000 universe's shared stores: prices, members, alphas, neutral alphas, labels.
-#: Each is a folder ``<name>/`` holding ``<name>.zarr`` and a short README.md.
-US3000 = DATA_ROOT / "pipeline" / "universes" / "us3000"
+#: The us3000 universe's membership, alphas (raw and neutral) and labels.
+UNIVERSE = DATA_ROOT / "universe" / "us3000"
+FACTORS = DATA_ROOT / "factors" / "us3000"
+LABELS = DATA_ROOT / "labels" / "us3000"
 #: This strategy's runs: the walk-forward CV and the live runs.
 H1 = DATA_ROOT / "runs" / "h1_daily_mvo" / "us3000"
 #: The Barra exposures (with ``estu``) and USE4 stores, bad prints masked since #223.
-EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
-RISK = DATA_ROOT / "pipeline" / "sharadar_risk"
+EXPOSURES = DATA_ROOT / "factors" / "market" / "barra_style" / "barra_style.zarr"
+RISK = DATA_ROOT / "risk" / "use4"
 #: The CV over the masked features and its record.
 MODELS = H1 / "models_223"
 CV_RECORD = H1 / "cv_223.json"
@@ -122,15 +129,27 @@ CV_RECORD = H1 / "cv_223.json"
 TRAIN_PERIODS, TEST_PERIODS = 1189, 252
 
 
-def shared_store(folder: Path, name: str) -> Path:
-    """A shared store: ``<folder>/<name>/<name>.zarr``, beside its README.md."""
-    return folder / name / f"{name}.zarr"
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
 
 
+def describe(store: Path, text: str) -> None:
+    """Create ``store``'s folder and write ``text`` as its README.md unless one exists."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme = store.parent / "README.md"
+    if not readme.exists():
+        readme.write_text(text)
+
+
+#: The roster slices of Sharadar SEP: alpha prices, the backtest's prices, the members.
+PRICES = store_path(SHARADAR, "us3000_prices")
+BACKTEST_PRICES = store_path(SHARADAR, "us3000_backtest_prices_1d")
+MEMBERS = store_path(SHARADAR, "us3000_members")
 #: The membership store this recipe maintains.
-MEMBERSHIP = shared_store(US3000, "membership_estu")
+MEMBERSHIP = store_path(UNIVERSE, "membership_estu")
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
-BENCHMARK = STORES / "sharadar_vt_pr_1d.zarr"
+BENCHMARK = store_path(BENCHMARKS, "sharadar_vt_pr_1d")
 
 #: Prices from here (warm-up of the alphas); features and label from START.
 PRICE_START, START, END = "2010-01-01", "2012-01-01", "2026-10-02"
@@ -157,24 +176,24 @@ def stock_dataset(store: Path) -> StockDataset:
 
 def sharadar_inputs() -> list:
     """The Sharadar panels and the risk-free rate BarraStyle reads."""
-    def store(name: str) -> str:
-        return str(STORES / name)
+    def store(stem: str, folder: Path = SHARADAR) -> str:
+        return str(store_path(folder, stem))
 
     return [
         SharadarStockDataset(SharadarDatasetConfig(
-            zarr_file_path=store("sharadar_sep_1d.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=store("sharadar_sep_1d"), raw_data_dir_path=str(VENDOR))),
         SharadarDailyDataset(SharadarDailyConfig(
-            zarr_file_path=store("sharadar_daily_1d.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=store("sharadar_daily_1d"), raw_data_dir_path=str(VENDOR))),
         SharadarFundamentalsDataset(SharadarFundamentalsConfig(
-            zarr_file_path=store("sharadar_sf1_art.zarr"), raw_data_dir_path=str(VENDOR), dimension="ART")),
+            zarr_file_path=store("sharadar_sf1_art"), raw_data_dir_path=str(VENDOR), dimension="ART")),
         SharadarFiscalYearsDataset(SharadarFiscalYearsConfig(
-            zarr_file_path=store("sharadar_sf1_fiscal_years.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=store("sharadar_sf1_fiscal_years"), raw_data_dir_path=str(VENDOR))),
         SharadarIndustryDataset(SharadarIndustryConfig(
-            zarr_file_path=store("sharadar_industry_1d.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=store("sharadar_industry_1d"), raw_data_dir_path=str(VENDOR))),
         SharadarShareClassDataset(SharadarShareClassConfig(
-            zarr_file_path=store("sharadar_share_class_1d.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=store("sharadar_share_class_1d"), raw_data_dir_path=str(VENDOR))),
         FredRateDataset(FredRateConfig(
-            zarr_file_path=store("fred_dtb3_1d.zarr"), raw_data_dir_path=str(FRED_RAW))),
+            zarr_file_path=store("fred_dtb3_1d", FRED), raw_data_dir_path=str(FRED_RAW))),
     ]
 
 
@@ -195,10 +214,15 @@ def style_features() -> RosterFactor:
         file_path=str(EXPOSURES), factor_names=STYLES,
         kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol}, njobs=64,
     ))
-    return RosterFactor(RosterConfig(factor=styles, roster=stock_dataset(shared_store(US3000, "prices"))))
+    return RosterFactor(RosterConfig(factor=styles, roster=stock_dataset(PRICES)))
 
 
 def membership() -> EstuConstituentDataset:
+    """us3000 membership (BarraStyle's ``estu``); its store folder gets a README.md on first use."""
+    describe(MEMBERSHIP, (
+        "# membership_estu\n\nPoint-in-time us3000 membership: BarraStyle's estimation universe.\n"
+        "Written by examples/sharadar_us_equity/us3000_h1_mvo.py (prepare-day); read by its runs.\n"
+    ))
     return EstuConstituentDataset(ConstituentDatasetConfig(
         zarr_file_path=str(MEMBERSHIP), cache_dir=str(VENDOR), start_date=PRICE_START,
         kwargs={"barra_store": str(EXPOSURES)},
@@ -207,9 +231,9 @@ def membership() -> EstuConstituentDataset:
 
 def price_dataset() -> SharadarStockDataset:
     """The roster price store: every security in the universe from PRICE_START to END."""
-    roster = tuple(int(s) for s in xr.open_zarr(shared_store(US3000, "prices"))["symbol"].values)
+    roster = tuple(int(s) for s in xr.open_zarr(PRICES)["symbol"].values)
     return SharadarStockDataset(SharadarDatasetConfig(
-        zarr_file_path=str(shared_store(US3000, "backtest_prices_1d")), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(BACKTEST_PRICES), raw_data_dir_path=str(VENDOR),
         permatickers=roster,
     ))
 
@@ -218,21 +242,21 @@ def features() -> list:
     """N1: the neutralised Alpha101/158 and the 12 styles."""
     exposures = [
         SharadarDailyDataset(SharadarDailyConfig(
-            zarr_file_path=str(STORES / "sharadar_daily_1d.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=str(store_path(SHARADAR, "sharadar_daily_1d")), raw_data_dir_path=str(VENDOR))),
         SharadarIndustryDataset(SharadarIndustryConfig(
-            zarr_file_path=str(STORES / "sharadar_industry_1d.zarr"), raw_data_dir_path=str(VENDOR))),
+            zarr_file_path=str(store_path(SHARADAR, "sharadar_industry_1d")), raw_data_dir_path=str(VENDOR))),
     ]
     alphas = [
         cls(FactorConfig(
-            warmup_bars=400, dataset=stock_dataset(shared_store(US3000, "prices")), mode="batch",
-            data_columns=ALPHA_COLUMNS, file_path=str(shared_store(US3000 / "factors", name)), njobs=64,
+            warmup_bars=400, dataset=stock_dataset(PRICES), mode="batch",
+            data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS, name)), njobs=64,
         ))
         for cls, name in ((Alpha101Stock, "alpha101"), (Alpha158Stock, "alpha158"))
     ]
     neutral = [
         NeutralizedFactor(NeutralizedConfig(
             factor=alpha, dataset=exposures, regressors=("industry", "size"),
-            file_path=str(shared_store(US3000 / "factors", f"{Path(alpha.config.file_path).stem}_neutral")), njobs=64,
+            file_path=str(store_path(FACTORS, f"{Path(alpha.config.file_path).stem}_neutral")), njobs=64,
         ))
         for alpha in alphas
     ]
@@ -241,10 +265,10 @@ def features() -> list:
 
 def label() -> MemberReturn:
     return MemberReturn(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(shared_store(US3000, "prices")), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(PRICES), mode="batch",
         data_columns=("adjOpen",),
-        kwargs={"n_forward_periods": HORIZON, "members_store": str(shared_store(US3000, "members"))},
-        file_path=str(shared_store(US3000 / "labels", f"ret_{HORIZON}")), njobs=64,
+        kwargs={"n_forward_periods": HORIZON, "members_store": str(MEMBERS)},
+        file_path=str(store_path(LABELS, f"ret_{HORIZON}")), njobs=64,
     ))
 
 
@@ -266,7 +290,7 @@ def risk_model() -> Use4RiskModel:
         exposures=masked_barra(),
         dataset=BadPrintMaskedDataset([sharadar_inputs()[0], sharadar_inputs()[1], sharadar_inputs()[-1]]),
         exposure_data_strategy="read", risk_free_symbol=PARAMETERS.risk_free_symbol,
-        regression_path=str(RISK / "regression.zarr"), estimate_path=str(RISK / "estimate.zarr"),
+        regression_path=str(store_path(RISK, "regression")), estimate_path=str(store_path(RISK, "estimate")),
     ))
 
 
@@ -306,8 +330,8 @@ def refresh_benchmark() -> None:
 
     script = Path(__file__).resolve().parents[2] / "scripts" / "sharadar" / "price_return_benchmark.py"
     subprocess.run(
-        [sys.executable, str(script), "--tickers", "vt", "--sfp-store", str(STORES / "sharadar_sfp_1d.zarr"),
-         "--raw-dir", str(VENDOR), "--zarr-dir", str(STORES), "--refresh"],
+        [sys.executable, str(script), "--tickers", "vt", "--sfp-store", str(store_path(SHARADAR, "sharadar_sfp_1d")),
+         "--raw-dir", str(VENDOR), "--data-dir", str(DATA_ROOT), "--refresh"],
         check=True,
     )
 

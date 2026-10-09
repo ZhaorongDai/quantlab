@@ -160,7 +160,7 @@ def test_add_output_dir_args_defaults_both_directories_to_the_current_one() -> (
 
     assert add_output_dir_args(parser) is parser
     args = parser.parse_args([])
-    assert (args.download_dir, args.zarr_dir) == (".", ".")
+    assert (args.download_dir, args.data_dir) == (".", ".")
     assert resolve_output_dirs(args) == (Path.cwd(), Path.cwd())
 
 
@@ -170,14 +170,14 @@ def test_resolve_output_dirs_anchors_relative_paths_and_expands_tilde(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     args = add_output_dir_args(argparse.ArgumentParser()).parse_args(
-        ["--download-dir", "raw", "--zarr-dir", "~/zarr"]
+        ["--download-dir", "raw", "--data-dir", "~/data"]
     )
 
-    download_dir, zarr_dir = resolve_output_dirs(args)
+    download_dir, data_dir = resolve_output_dirs(args)
 
     assert download_dir == tmp_path / "raw"
-    assert zarr_dir == tmp_path / "home" / "zarr"
-    assert download_dir.is_absolute() and zarr_dir.is_absolute()
+    assert data_dir == tmp_path / "home" / "data"
+    assert download_dir.is_absolute() and data_dir.is_absolute()
 
 
 def test_place_downloads_keeps_the_vendor_directory_and_moves_both_tiers(

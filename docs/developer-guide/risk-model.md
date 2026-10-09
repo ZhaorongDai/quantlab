@@ -55,8 +55,8 @@ model = Use4RiskModel(Use4RiskConfig(
     dataset=prices,                     # adjClose, marketcap and DTB3
     exposure_data_strategy="read",
     risk_free_symbol="DTB3",
-    regression_path="risk/regression.zarr",
-    estimate_path="risk/estimate.zarr",
+    regression_path="risk/use4/regression/regression.zarr",
+    estimate_path="risk/use4/estimate/estimate.zarr",
 ))
 model.regression.build("2001-01-03", "2026-10-02")
 model.estimate.build("2007-07-13", "2026-10-02")   # after the 1637-bar warm-up

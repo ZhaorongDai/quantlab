@@ -2,8 +2,9 @@
 
 An ETF (exchange-traded fund) is downloaded from CRSP like any security, by
 its PERMNO, and written as its own single-symbol store
-``wrds_crsp_{name}_1d.zarr`` into ``--zarr-dir`` (default: the current
-directory). It is never a column of an index or market panel: a backtest
+``<data-dir>/market/wrds/wrds_crsp_{name}_1d/wrds_crsp_{name}_1d.zarr`` under
+the data root ``--data-dir`` (default: the current directory), beside a short
+``README.md`` written when the folder has none. It is never a column of an index or market panel: a backtest
 picks it by name as a benchmark, and an ETF ranked against its own holdings
 would be the index competing with itself.
 
@@ -28,26 +29,27 @@ Usage::
     uv run python scripts/wrds/etf.py --etf dia=<PERMNO> --start 2005-01-01 \\
         --end 2024-12-31 --refresh
     uv run python scripts/wrds/etf.py --etf spy,qqq --start 1999-01-01 \\
-        --download-dir /data/wrds/raw --zarr-dir /data/wrds/zarr
+        --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 
 ``--end`` defaults to today and is clipped to the last day of the annual CRSP
 release. ``--refresh`` continues each ETF from its recorded watermark
-instead of downloading the whole window again. ``--download-dir`` and
-``--zarr-dir`` choose where the raw files and the Zarr stores go; both
-default to the current directory.
+instead of downloading the whole window again. ``--download-dir`` chooses
+where the raw files go and ``--data-dir`` the data root the Zarr stores go
+under; both default to the current directory.
 """
 
 import argparse
 import sys
 from datetime import date
+from pathlib import Path
 
 from quantlab.acquisition.base import DataSourceRegistry
 from quantlab.acquisition.registry import convert, run
 from quantlab.dataset.config import IWM_PERMNO, QQQ_PERMNO, SPY_PERMNO, CrspDatasetConfig
 from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.utils.cli import (
-    add_max_workers_arg,
     add_output_dir_args,
+    add_max_workers_arg,
     place_downloads,
     print_conversion_result,
     resolve_output_dirs,
@@ -56,6 +58,27 @@ from quantlab.utils.cli import (
 SOURCE = DataSourceRegistry.get("wrds")
 CAPABILITY = ("us_equity", "1d", "crsp_daily")
 ACQ = SOURCE.acquisition_cls_for(*CAPABILITY)
+
+#: Folders under the data root: the WRDS market stores.
+MARKET_FOLDER = Path("market") / "wrds"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def write_readme(store: Path, what: str) -> None:
+    """Create the store's folder and write its ``README.md`` unless one is there."""
+    readme = store.parent / "README.md"
+    if readme.exists():
+        return
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme.write_text(
+        f"# {store.parent.name}\n\n{what}\n\n"
+        f"Written by `scripts/wrds/etf.py`; rerun it with `--refresh` to extend it.\n"
+    )
+
 
 #: Built-in ETF names and their CRSP PERMNOs.
 KNOWN_ETFS: dict[str, str] = {"spy": SPY_PERMNO, "qqq": QQQ_PERMNO, "iwm": IWM_PERMNO}
@@ -113,14 +136,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Continue each ETF from its watermark instead of re-downloading.",
     )
     add_max_workers_arg(parser, default=ACQ.DEFAULT_MAX_WORKERS)
-    add_output_dir_args(parser)
+    add_output_dir_args(
+        parser,
+        data_help=(
+            "The data root. Each ETF goes to "
+            "<data-dir>/market/wrds/wrds_crsp_<name>_1d/wrds_crsp_<name>_1d.zarr, "
+            "with its sidecars and a README.md. "
+            "Default: the current directory. It is created as needed."
+        ),
+    )
     return parser
 
 
 if __name__ == "__main__":
     parser = _build_arg_parser()
     args = parser.parse_args()
-    download_dir, zarr_dir = resolve_output_dirs(args)
+    download_dir, data_dir = resolve_output_dirs(args)
     etfs = _parse_etfs(parser, args.etf)
     requested_end = args.end or date.today().isoformat()
 
@@ -175,7 +206,7 @@ if __name__ == "__main__":
         ds_configs = {
             name: CrspDatasetConfig.etf_benchmark(
                 permno=permno,
-                zarr_file_path=str(zarr_dir / f"wrds_crsp_{name}_1d.zarr"),
+                zarr_file_path=str(store_path(data_dir / MARKET_FOLDER, f"wrds_crsp_{name}_1d")),
                 raw_data_dir_path=acq_config.raw_data_dir_path,
                 reference_dir=str(reference_dir),
                 start_date=start,
@@ -195,6 +226,11 @@ if __name__ == "__main__":
         for name, ds_config in ds_configs.items():
             permno = etfs[name]
             print(f"Converting {name.upper()} (PERMNO {permno}) into its own store")
+            write_readme(
+                Path(ds_config.zarr_file_path),
+                f"CRSP daily bars of the ETF {name.upper()} (PERMNO {permno}) alone, "
+                f"a benchmark, from WRDS.",
+            )
             try:
                 print_conversion_result(convert(SOURCE, ds_config, data_type="crsp_daily"))
             except ValueError as exc:

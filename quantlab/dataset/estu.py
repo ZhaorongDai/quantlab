@@ -15,10 +15,10 @@ Examples
 --------
 >>> from quantlab.dataset.config import ConstituentDatasetConfig
 >>> members = EstuConstituentDataset(ConstituentDatasetConfig(
-...     zarr_file_path="/data/pipeline/us3000/membership.zarr",
+...     zarr_file_path="/data/universe/us3000/membership_estu/membership_estu.zarr",
 ...     cache_dir="/data/downloads/sharadar",
 ...     start_date="2010-01-01",
-...     kwargs={"barra_store": "/data/pipeline/sharadar_barra/barra_style.zarr"},
+...     kwargs={"barra_store": "/data/factors/market/barra_style/barra_style.zarr"},
 ... ))
 >>> members.update().panel("2026-10-01", "2026-10-02")["is_member"].sum("symbol").values
 array([3000, 3000])

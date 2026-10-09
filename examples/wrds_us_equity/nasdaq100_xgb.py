@@ -49,14 +49,41 @@ from quantlab.model.predefined.xgb import XGBoostRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
 
+#: Short name of this pipeline family, used in the stores' README.md.
+UNIVERSE = "nasdaq100"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def store_folder(store: Path, about: str) -> None:
+    """Create a derived store's folder and, when it has none, a short README.md."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme = store.parent / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# {store.stem}\n\n{about}\n\n"
+            f"Written and read by the examples/wrds_us_equity/{UNIVERSE}_*.py pipelines.\n"
+        )
+
+
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "data" / "us_equity" / "1d"
+#: The WRDS scripts' stores, one folder each: price panels and ETF bars
+#: under MARKET_DIR, membership panels under UNIVERSE_DIR.
+MARKET_DIR = DATA_ROOT / "market" / "wrds"
+UNIVERSE_DIR = DATA_ROOT / "universe" / "wrds"
 RAW = DATA_ROOT / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "wrds"
 REFERENCE = DATA_ROOT / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "_reference"
-#: Everything this pipeline writes goes under here.
-WORK = DATA_ROOT / "data" / "pipeline" / "wrds_nasdaq100"
+#: Shared stores this pipeline derives, which other experiments can reuse.
+FACTORS_DIR = DATA_ROOT / "factors" / "wrds_nasdaq100"
+LABELS_DIR = DATA_ROOT / "labels" / "wrds_nasdaq100"
+PRICES_STORE = store_path(MARKET_DIR, "wrds_nasdaq100_prices")
+#: This pipeline's own models, backtests and reports.
+WORK = DATA_ROOT / "runs" / "wrds_nasdaq100"
 
 #: Data window (the factor warm-up is read before START), training window
 #: and out-of-sample test window, all inclusive.
@@ -89,7 +116,7 @@ def index_dataset() -> CrspStockDataset:
     still be sold at the next open.
     """
     return CrspStockDataset(CrspDatasetConfig(
-        zarr_file_path=str(STORES / "wrds_crsp_nasdaq100_1d.zarr"),
+        zarr_file_path=str(store_path(MARKET_DIR, "wrds_crsp_nasdaq100_1d")),
         raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
     ))
 
@@ -97,7 +124,7 @@ def index_dataset() -> CrspStockDataset:
 def index_membership() -> CompustatNasdaq100ConstituentDataset:
     """The point-in-time Nasdaq-100 membership (``is_member``) on the PERMNO axis."""
     return CompustatNasdaq100ConstituentDataset(ConstituentDatasetConfig(
-        zarr_file_path=str(STORES / "wrds_crsp_nasdaq100_membership.zarr"),
+        zarr_file_path=str(store_path(UNIVERSE_DIR, "wrds_crsp_nasdaq100_membership")),
         cache_dir=str(REFERENCE),
     ))
 
@@ -105,25 +132,25 @@ def index_membership() -> CompustatNasdaq100ConstituentDataset:
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects.
 
-    Factors and the label read ``prices.zarr``, so rolling windows and
+    Factors and the label read ``wrds_nasdaq100_prices``, so rolling windows and
     returns see no membership gaps. The label is masked by index membership
     on t's date only (``MembershipMaskedLabel``): a stock that leaves the
     index inside the horizon keeps its return at t.
     """
     alpha101 = Alpha101Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha101.zarr"),
+        warmup_bars=400, dataset=stock_dataset(PRICES_STORE), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS_DIR, "alpha101")),
         njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha158.zarr"),
+        warmup_bars=400, dataset=stock_dataset(PRICES_STORE), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS_DIR, "alpha158")),
         njobs=16,
     ))
     label = Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(PRICES_STORE), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
-        file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
+        file_path=str(store_path(LABELS_DIR, f"ret_{HORIZON}")),
         njobs=16,
     ))
     return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
@@ -131,7 +158,7 @@ def factors_and_label() -> tuple[list, list]:
 
 # %% 1. Prices store
 def prepare_stores() -> None:
-    """Write ``prices``: the full history of every member ever, unmasked."""
+    """Write ``wrds_nasdaq100_prices``: the full history of every member ever, unmasked."""
     crsp, membership = index_dataset(), index_membership()
     for store in (crsp.config.zarr_file_path, membership.config.zarr_file_path):
         if not Path(store).exists():
@@ -141,8 +168,11 @@ def prepare_stores() -> None:
             )
     # Every bar up to END: the factors warm up on the history before START.
     prices = crsp.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume", "ret"]]
-    WORK.mkdir(parents=True, exist_ok=True)
-    prices.to_zarr(WORK / "prices.zarr", mode="w")
+    store_folder(PRICES_STORE, (
+        "Unmasked daily bars of every Nasdaq-100 member ever, sliced from "
+        "wrds_crsp_nasdaq100_1d; read by the factors and labels."
+    ))
+    prices.to_zarr(PRICES_STORE, mode="w")
     logger.info(f"prices {dict(prices.sizes)}")
 
 
@@ -150,10 +180,14 @@ def prepare_stores() -> None:
 def compute_factors() -> None:
     factors, labels = factors_and_label()
     for factor in factors:
+        store_folder(Path(factor.config.file_path), f"{type(factor).__name__} factor panel.")
         factor.build(START, END)
         logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
     for label in labels:
         # A label is stored as the factor it shifts forward.
+        store_folder(Path(label.label.config.factor.config.file_path), (
+            "Forward label, stored as the factor panel it shifts forward."
+        ))
         label.build(START, END)
         logger.info(f"{type(label).__name__} -> {label.label.config.factor.config.file_path}")
 
@@ -198,7 +232,7 @@ def train() -> Path:
 def backtest(checkpoint: Path):
     """TopN backtest of the test window against buy-and-hold QQQ."""
     benchmark = CrspStockDataset(CrspDatasetConfig.etf_benchmark(
-        permno=QQQ_PERMNO, zarr_file_path=str(STORES / "wrds_crsp_qqq_1d.zarr"),
+        permno=QQQ_PERMNO, zarr_file_path=str(store_path(MARKET_DIR, "wrds_crsp_qqq_1d")),
         raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
     ))
     if not Path(benchmark.config.zarr_file_path).exists():

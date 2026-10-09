@@ -46,13 +46,29 @@ from quantlab.utils.cli import inside_repository
 
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository.
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "zarrs"
+#: Sharadar's and FRED's market stores, one folder per store.
+SHARADAR = DATA_ROOT / "market" / "sharadar"
+FRED = DATA_ROOT / "market" / "fred"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
 FRED_RAW = DATA_ROOT / "downloads" / "fred"
 #: Where ``barra_style.py`` wrote the exposures.
-EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
-#: Everything this script writes goes under here.
-WORK = DATA_ROOT / "pipeline" / "sharadar_risk"
+EXPOSURES = DATA_ROOT / "factors" / "market" / "barra_style" / "barra_style.zarr"
+#: Everything this script writes goes under here: the ``regression/`` and
+#: ``estimate/`` store folders, the bias figures and ``bias_summary.json``.
+WORK = DATA_ROOT / "risk" / "use4"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def describe(folder: Path, text: str) -> None:
+    """Create ``folder`` and write ``text`` as its README.md unless one exists."""
+    folder.mkdir(parents=True, exist_ok=True)
+    readme = folder / "README.md"
+    if not readme.exists():
+        readme.write_text(text)
 
 #: The regression's range: from the second bar of the exposures store (the
 #: first regression reads the exposures of the bar before) to its end.
@@ -76,13 +92,13 @@ def price_inputs() -> BadPrintMaskedDataset:
     """
     return BadPrintMaskedDataset([
         SharadarStockDataset(SharadarDatasetConfig(
-            zarr_file_path=str(STORES / "sharadar_sep_1d.zarr"), raw_data_dir_path=str(VENDOR),
+            zarr_file_path=str(store_path(SHARADAR, "sharadar_sep_1d")), raw_data_dir_path=str(VENDOR),
         )),
         SharadarDailyDataset(SharadarDailyConfig(
-            zarr_file_path=str(STORES / "sharadar_daily_1d.zarr"), raw_data_dir_path=str(VENDOR),
+            zarr_file_path=str(store_path(SHARADAR, "sharadar_daily_1d")), raw_data_dir_path=str(VENDOR),
         )),
         FredRateDataset(FredRateConfig(
-            zarr_file_path=str(STORES / "fred_dtb3_1d.zarr"), raw_data_dir_path=str(FRED_RAW),
+            zarr_file_path=str(store_path(FRED, "fred_dtb3_1d")), raw_data_dir_path=str(FRED_RAW),
         )),
     ])
 
@@ -108,8 +124,8 @@ def risk_model() -> Use4RiskModel:
         dataset=price_inputs(),
         exposure_data_strategy="read",
         risk_free_symbol=PARAMETERS.risk_free_symbol,
-        regression_path=str(WORK / "regression.zarr"),
-        estimate_path=str(WORK / "estimate.zarr"),
+        regression_path=str(store_path(WORK, "regression")),
+        estimate_path=str(store_path(WORK, "estimate")),
         njobs=32,
     ))
 
@@ -118,6 +134,19 @@ def risk_model() -> Use4RiskModel:
 def build_stores() -> dict:
     """Build the regression store, then the estimate store, and return the timing."""
     model = risk_model()
+    describe(WORK, (
+        "# use4\n\nA USE4-style factor risk model on the Barra exposures: regression/ and\n"
+        "estimate/ stores, bias figures and bias_summary.json. Written by\n"
+        "examples/sharadar_us_equity/risk_model.py; read by the MVO recipes.\n"
+    ))
+    describe(WORK / "regression", (
+        "# regression\n\nUSE4 factor returns and specific returns (country, 48 industries, 12 styles).\n"
+        "Written by examples/sharadar_us_equity/risk_model.py.\n"
+    ))
+    describe(WORK / "estimate", (
+        "# estimate\n\nUSE4 factor covariance and specific risk. Written by\n"
+        "examples/sharadar_us_equity/risk_model.py; read by the MVO recipes.\n"
+    ))
     timing = {}
     began = time.perf_counter()
     model.regression.build(REGRESSION_START, END)

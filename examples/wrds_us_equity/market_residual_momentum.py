@@ -28,6 +28,8 @@ import sys
 if sys.platform == "darwin":
     os.environ.setdefault("OMP_NUM_THREADS", "1")
 
+from pathlib import Path
+
 from loguru import logger
 
 from quantlab.factor.config import FactorConfig
@@ -37,18 +39,44 @@ from quantlab.dataset.crsp import CrspStockDataset
 from quantlab.factor.predefined.residual_momentum import ResidualMomentumFF3
 from quantlab.label.predefined.fret import Return
 
+#: Short name of this pipeline family, used in the stores' README.md.
+UNIVERSE = "market"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def store_folder(store: Path, about: str) -> None:
+    """Create a derived store's folder and, when it has none, a short README.md."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme = store.parent / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# {store.stem}\n\n{about}\n\n"
+            f"Written and read by the examples/wrds_us_equity/{UNIVERSE}_*.py pipelines.\n"
+        )
+
+
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "data" / "us_equity" / "1d"
+#: The WRDS scripts' stores, one folder each: price panels and ETF bars
+#: under MARKET_DIR, membership panels under UNIVERSE_DIR.
+MARKET_DIR = DATA_ROOT / "market" / "wrds"
+UNIVERSE_DIR = DATA_ROOT / "universe" / "wrds"
 RAW = DATA_ROOT / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "wrds"
 REFERENCE = DATA_ROOT / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "_reference"
 #: The market store of scripts/wrds/market.py, read by every step.
-MARKET_STORE = STORES / "wrds_crsp_market_1d.zarr"
+MARKET_STORE = store_path(MARKET_DIR, "wrds_crsp_market_1d")
 #: The daily Fama-French CSV of scripts/fama_french.py.
 FAMA_FRENCH_CSV = DATA_ROOT / "downloads" / "fama_french" / "ff3_daily.csv"
-#: Everything this pipeline writes goes under here.
-WORK = DATA_ROOT / "data" / "pipeline" / "wrds_market"
+#: Shared stores this pipeline derives, which other experiments can reuse.
+FACTORS_DIR = DATA_ROOT / "factors" / "wrds_market"
+LABELS_DIR = DATA_ROOT / "labels" / "wrds_market"
+#: This pipeline's own models, backtests and reports.
+WORK = DATA_ROOT / "runs" / "wrds_market"
 
 #: Data window (the factor warm-up is read before START).
 START, END = "2012-01-01", "2024-12-31"
@@ -73,7 +101,7 @@ def factor_and_label() -> tuple[ResidualMomentumFF3, Return]:
     factor = ResidualMomentumFF3(FactorConfig(
         warmup_bars=WARMUP_BARS, dataset=market_dataset(), mode="batch",
         data_columns=("ret",), factor_names=("resmom_raw", "resmom_rank"),
-        file_path=str(WORK / "factor" / "residual_momentum.zarr"),
+        file_path=str(store_path(FACTORS_DIR, "residual_momentum")),
         njobs=16,
         kwargs={
             "fama_french_csv": str(FAMA_FRENCH_CSV),
@@ -86,7 +114,7 @@ def factor_and_label() -> tuple[ResidualMomentumFF3, Return]:
     label = Return(FactorConfig(
         warmup_bars=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
-        file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
+        file_path=str(store_path(LABELS_DIR, f"ret_{HORIZON}")),
         njobs=16,
     ))
     return factor, label
@@ -99,10 +127,14 @@ def compute_factor_and_label() -> None:
         if not path.exists():
             raise FileNotFoundError(f"{path} not found; run {script} first (see README.md).")
     factor, label = factor_and_label()
+    store_folder(Path(factor.config.file_path), f"{type(factor).__name__} factor panel.")
     factor.build(START, END)
     logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
     # A label is stored as the factor it shifts forward; the store is shared
     # with market_factor_analysis.py.
+    store_folder(Path(label.config.factor.config.file_path), (
+        "Forward label, stored as the factor panel it shifts forward."
+    ))
     label.build(START, END)
     logger.info(f"{type(label).__name__} -> {label.config.factor.config.file_path}")
 

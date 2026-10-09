@@ -1,8 +1,9 @@
 """Shared argparse helpers for the download scripts under ``scripts/``.
 
-A download script pulls raw market data from a vendor and converts it into a
-Zarr store. The scripts share the two output-directory flags
-(``--download-dir`` for the raw files, ``--zarr-dir`` for the stores) and the
+A download script pulls raw market data from a vendor and converts it into
+Zarr stores. The scripts share the two output-directory flags
+(``--download-dir`` for the raw files, ``--data-dir`` for the data root the
+stores go under) and the
 rendering of the conversion result they print; this module defines both
 once. Each script adds the flags that are its own.
 
@@ -24,8 +25,9 @@ WATERMARKS_DIR_NAME = "_watermarks"
 def add_output_dir_args(
     parser: argparse.ArgumentParser,
     download_help: str | None = None,
+    data_help: str | None = None,
 ) -> argparse.ArgumentParser:
-    """Add ``--download-dir`` and ``--zarr-dir`` to ``parser``.
+    """Add ``--download-dir`` and ``--data-dir`` to ``parser``.
 
     Both default to the current directory. Defined once here so the flag
     names, help text and defaults are identical on every script that offers
@@ -38,6 +40,9 @@ def add_output_dir_args(
     download_help : str or None, default None
         Help text for ``--download-dir`` when the vendor's raw layout differs
         from the WRDS one the default text describes.
+    data_help : str or None, default None
+        Help text for ``--data-dir`` when the script names the stores it
+        writes or reads under the data root.
 
     Returns
     -------
@@ -47,10 +52,10 @@ def add_output_dir_args(
     Examples
     --------
     >>> parser = add_output_dir_args(argparse.ArgumentParser())
-    >>> parser.parse_args(["--download-dir", "/mnt/raw", "--zarr-dir", "/mnt/zarr"])
-    Namespace(download_dir='/mnt/raw', zarr_dir='/mnt/zarr')
+    >>> parser.parse_args(["--download-dir", "/mnt/raw", "--data-dir", "/mnt/data"])
+    Namespace(download_dir='/mnt/raw', data_dir='/mnt/data')
     >>> parser.parse_args([])
-    Namespace(download_dir='.', zarr_dir='.')
+    Namespace(download_dir='.', data_dir='.')
     """
     parser.add_argument(
         "--download-dir",
@@ -66,13 +71,14 @@ def add_output_dir_args(
         ),
     )
     parser.add_argument(
-        "--zarr-dir",
+        "--data-dir",
         type=str,
         default=".",
-        help=(
-            "Directory the converted Zarr stores and their sidecars are "
-            "written into. Default: the current directory. It is created as "
-            "needed."
+        help=data_help or (
+            "The data root. Each store goes to "
+            "<data-dir>/<category>/<group>/<stem>/<stem>.zarr (market/, "
+            "universe/, ...) beside a short README.md. Default: the current "
+            "directory. It is created as needed."
         ),
     )
     return parser
@@ -116,7 +122,7 @@ def add_max_workers_arg(
 
 
 def resolve_output_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
-    """Return ``(download_dir, zarr_dir)`` from parsed arguments, as absolute paths.
+    """Return ``(download_dir, data_dir)`` from parsed arguments, as absolute paths.
 
     ``~`` is expanded and a relative path is anchored at the current
     directory, so the paths recorded in configs and sidecars stay valid when
@@ -132,18 +138,18 @@ def resolve_output_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
     Returns
     -------
     tuple[pathlib.Path, pathlib.Path]
-        The download directory and the Zarr directory.
+        The download directory and the data root.
 
     Examples
     --------
     >>> parser = add_output_dir_args(argparse.ArgumentParser())
-    >>> download_dir, zarr_dir = resolve_output_dirs(parser.parse_args([]))
-    >>> download_dir == Path.cwd() and zarr_dir == Path.cwd()
+    >>> download_dir, data_dir = resolve_output_dirs(parser.parse_args([]))
+    >>> download_dir == Path.cwd() and data_dir == Path.cwd()
     True
     """
     return (
         Path(args.download_dir).expanduser().absolute(),
-        Path(args.zarr_dir).expanduser().absolute(),
+        Path(args.data_dir).expanduser().absolute(),
     )
 
 

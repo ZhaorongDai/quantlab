@@ -32,7 +32,7 @@ Download DTB3 (no API key) and build its store::
         symbols=("DTB3",), start_date="1954-01-04",
     )).download()
     config = FredRateConfig(
-        zarr_file_path="/data/quantlab/zarrs/fred_dtb3_1d.zarr",
+        zarr_file_path="/data/quantlab/market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr",
         raw_data_dir_path="/data/quantlab/downloads/us_equity/1d/macro/fred",
     )
     FredRateDataset(config).update()

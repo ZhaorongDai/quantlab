@@ -58,7 +58,7 @@ a backtest shows each permaticker as the ticker and company in use that day.
 Examples
 --------
 >>> config = SharadarDatasetConfig(
-...     zarr_file_path="/data/zarrs/sharadar_sep_1d.zarr",
+...     zarr_file_path="/data/market/sharadar/sharadar_sep_1d/sharadar_sep_1d.zarr",
 ...     raw_data_dir_path="/data/downloads/sharadar",
 ... )
 >>> SharadarStockDataset(config).from_raw_data().save()
@@ -564,7 +564,7 @@ class SharadarStockDataset(MarketDataset):
         Examples
         --------
         >>> SharadarStockDataset(config).ticker_lookup()
-        SharadarTickerLookup('/data/zarrs/sharadar_sep_1d.zarr.sharadar_tickers.json')
+        SharadarTickerLookup('/data/market/sharadar/sharadar_sep_1d/sharadar_sep_1d.zarr.sharadar_tickers.json')
         """
         if self.config.zarr_file_path is None:
             return None

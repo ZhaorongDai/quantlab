@@ -47,16 +47,42 @@ from quantlab.model.predefined.gats import GATsRegressor
 from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.tracking.wandb import WandbTracker
 
+#: Short name of this pipeline family, used in the stores' README.md.
+UNIVERSE = "market"
+
+
+def store_path(folder: Path, stem: str) -> Path:
+    """``<folder>/<stem>/<stem>.zarr``: a store in its own folder, beside its README.md."""
+    return folder / stem / f"{stem}.zarr"
+
+
+def store_folder(store: Path, about: str) -> None:
+    """Create a derived store's folder and, when it has none, a short README.md."""
+    store.parent.mkdir(parents=True, exist_ok=True)
+    readme = store.parent / "README.md"
+    if not readme.exists():
+        readme.write_text(
+            f"# {store.stem}\n\n{about}\n\n"
+            f"Written and read by the examples/wrds_us_equity/{UNIVERSE}_*.py pipelines.\n"
+        )
+
+
 #: Storage root: ``QUANTLAB_DATA_DIR`` or ``data/`` beside the repository,
 #: where the WRDS scripts wrote the stores. Replace with ``Path("/my/root")``.
 DATA_ROOT = get_data_root()
-STORES = DATA_ROOT / "data" / "us_equity" / "1d"
+#: The WRDS scripts' stores, one folder each: price panels and ETF bars
+#: under MARKET_DIR, membership panels under UNIVERSE_DIR.
+MARKET_DIR = DATA_ROOT / "market" / "wrds"
+UNIVERSE_DIR = DATA_ROOT / "universe" / "wrds"
 RAW = DATA_ROOT / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "wrds"
 REFERENCE = DATA_ROOT / "downloads" / "us_equity" / "1d" / "wrds_crsp" / "_reference"
 #: The market store of scripts/wrds/market.py, read by every step.
-MARKET_STORE = STORES / "wrds_crsp_market_1d.zarr"
-#: Everything this pipeline writes goes under here.
-WORK = DATA_ROOT / "data" / "pipeline" / "wrds_market"
+MARKET_STORE = store_path(MARKET_DIR, "wrds_crsp_market_1d")
+#: Shared stores this pipeline derives, which other experiments can reuse.
+FACTORS_DIR = DATA_ROOT / "factors" / "wrds_market"
+LABELS_DIR = DATA_ROOT / "labels" / "wrds_market"
+#: This pipeline's own models, backtests and reports.
+WORK = DATA_ROOT / "runs" / "wrds_market"
 
 #: Data window (the factor warm-up is read before START), training window
 #: and out-of-sample test window, all inclusive.
@@ -87,18 +113,18 @@ def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects."""
     alpha101 = Alpha101Stock(FactorConfig(
         warmup_bars=400, dataset=market_dataset(), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha101.zarr"),
+        data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS_DIR, "alpha101")),
         njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
         warmup_bars=400, dataset=market_dataset(), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha158.zarr"),
+        data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS_DIR, "alpha158")),
         njobs=16,
     ))
     label = Return(FactorConfig(
         warmup_bars=2 * HORIZON + 5, dataset=market_dataset(), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
-        file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
+        file_path=str(store_path(LABELS_DIR, f"ret_{HORIZON}")),
         njobs=16,
     ))
     return [alpha101, alpha158], [label]
@@ -112,10 +138,14 @@ def compute_factors() -> None:
         )
     factors, labels = factors_and_label()
     for factor in factors:
+        store_folder(Path(factor.config.file_path), f"{type(factor).__name__} factor panel.")
         factor.build(factor.config.dataset.bar_before(START, WINDOW_BARS - 1), END)
         logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
     for label in labels:
         # A label is stored as the factor it shifts forward.
+        store_folder(Path(label.config.factor.config.file_path), (
+            "Forward label, stored as the factor panel it shifts forward."
+        ))
         label.build(START, END)
         logger.info(f"{type(label).__name__} -> {label.config.factor.config.file_path}")
 
@@ -162,7 +192,7 @@ def train() -> Path:
 def backtest(checkpoint: Path):
     """TopN backtest of the test window against buy-and-hold SPY."""
     benchmark = CrspStockDataset(CrspDatasetConfig.etf_benchmark(
-        permno=SPY_PERMNO, zarr_file_path=str(STORES / "wrds_crsp_spy_1d.zarr"),
+        permno=SPY_PERMNO, zarr_file_path=str(store_path(MARKET_DIR, "wrds_crsp_spy_1d")),
         raw_data_dir_path=str(RAW), reference_dir=str(REFERENCE),
     ))
     if not Path(benchmark.config.zarr_file_path).exists():

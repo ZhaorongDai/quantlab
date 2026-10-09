@@ -37,7 +37,7 @@ Examples
 Build the store and read the holders of a stock::
 
     config = SharadarHoldingsConfig(
-        zarr_file_path="/data/quantlab/zarrs/sharadar_holdings_1d.zarr",
+        zarr_file_path="/data/quantlab/market/sharadar/sharadar_holdings_1d/sharadar_holdings_1d.zarr",
         raw_data_dir_path="/data/quantlab/downloads/sharadar",
     )
     SharadarHoldingsDataset(config).update()

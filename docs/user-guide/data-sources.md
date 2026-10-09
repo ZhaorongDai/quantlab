@@ -135,8 +135,8 @@ They share `--start` (required), `--end` (default today, clipped to the
 vendor product's last date), `--refresh` (fetch forward from each symbol's
 last downloaded date instead of backfilling the window), `--max-workers`
 (parallel download threads, default 4), `--download-dir` (where the raw
-files go) and `--zarr-dir` (where the Zarr stores go); the last two default
-to the current directory. The rosters are *point-in-time*: an index roster
+files go) and `--data-dir` (the data root the Zarr stores go under); the last
+two default to the current directory. The rosters are *point-in-time*: an index roster
 holds every security that belonged to the index at any time in the window,
 including those since delisted, which keeps *survivorship bias* (a history
 made only of companies that survived) out of the data.
@@ -250,7 +250,11 @@ cancelled: True newly completed: ('AMD',)
 ## Where files land
 
 The scripts write where you point them: raw files under `--download-dir` and
-Zarr stores under `--zarr-dir`, both defaulting to the current directory. In
+Zarr stores under the data root `--data-dir`, both defaulting to the current
+directory. Each store gets its own folder, `<data-dir>/<category>/<group>/<stem>/<stem>.zarr`,
+holding its sidecars and a short `README.md` the script writes when the folder
+has none: bars and vendor tables under `market/<vendor>/`, membership panels
+under `universe/<group>/`. In
 the library, paths derive from one *data root*: the `QUANTLAB_DATA_DIR`
 environment variable, else a `data/` directory at the top of the repository.
 In Python, call `quantlab.config.set_data_root(path)` before building any
@@ -282,10 +286,10 @@ locations are:
 
 | Download | Raw tier | Panel |
 |---|---|---|
-| `scripts/wrds/index.py` | `<download-dir>/wrds/crsp_daily` | `<zarr-dir>/wrds_crsp_{sp500,nasdaq100}_1d.zarr` and `_membership.zarr` |
-| `scripts/wrds/market.py` | `<download-dir>/wrds/crsp_daily` | `<zarr-dir>/wrds_crsp_market_1d.zarr` and `_membership.zarr` |
-| `scripts/wrds/etf.py` | `<download-dir>/wrds/crsp_daily` | `<zarr-dir>/wrds_crsp_{name}_1d.zarr` |
-| `scripts/wrds/nbbo.py` | `<download-dir>/wrds/nbbo` | `<zarr-dir>/wrds_nbbo_{interval}_{HHMM-HHMM}.zarr` |
+| `scripts/wrds/index.py` | `<download-dir>/wrds/crsp_daily` | `<data-dir>/market/wrds/wrds_crsp_{sp500,nasdaq100}_1d/` and `<data-dir>/universe/wrds/wrds_crsp_{sp500,nasdaq100}_membership/` |
+| `scripts/wrds/market.py` | `<download-dir>/wrds/crsp_daily` | `<data-dir>/market/wrds/wrds_crsp_market_1d/` and `<data-dir>/universe/wrds/wrds_crsp_market_membership/` |
+| `scripts/wrds/etf.py` | `<download-dir>/wrds/crsp_daily` | `<data-dir>/market/wrds/wrds_crsp_{name}_1d/` |
+| `scripts/wrds/nbbo.py` | `<download-dir>/wrds/nbbo` | `<data-dir>/market/wrds/wrds_nbbo_{interval}_{HHMM-HHMM}/` |
 | `scripts/fama_french.py` | `<download-dir>/fama_french/ff3_{daily,monthly}.csv` | none: the CSV is read by `ResidualMomentumFF3` |
 | Tiingo (library) | `downloads/us_equity/1d/nasdaq_data/tiingo` | `data/us_equity/1d/stock.zarr` |
 | Alpaca (library) | `downloads/us_equity/{1d,1m,tick}/nasdaq_data/alpaca` | `data/us_equity/{1d,1m}/stock_alpaca.zarr` |
