@@ -287,15 +287,22 @@ def prepare_day() -> dict:
 
 
 # %% Once: the live run
-def live_run(fold: int | None) -> Path:
-    """A plain run() of R223L5C5 in load mode with one fold's checkpoint, over RUN_START..RUN_END."""
+def live_run(fold: int | None, candidate_top_k: int | None = OPTIMISER["candidate_top_k"]) -> Path:
+    """A plain run() of R223L5C5 in load mode with one fold's checkpoint, over RUN_START..RUN_END.
+
+    ``candidate_top_k=None`` optimises over every member: from an empty book
+    the 200 best-predicted names are mostly small caps, and a fully invested
+    book capped at 5% a name cannot hold ``style_size`` above -0.1 with them
+    (the backtest's first bars from cash were infeasible too; later its held
+    mega caps stayed candidates).
+    """
     if not MEMBERSHIP.exists():
         membership().update()
     optimiser = MeanVarianceOptimizer(MeanVarianceConfig(
         expected_return_label=f"ret_{HORIZON}",
         covariance=FactorRiskStoreEstimator(FactorRiskStoreEstimatorConfig(risk_model=risk_model())),
         ic=max(float(cv_record()["cv_mean"]["cv_mean_val_ic"]), 0.01), direction="long_only",
-        **OPTIMISER,
+        **{**OPTIMISER, "candidate_top_k": candidate_top_k},
     ))
     result = USEquityCrossectionSelectStockVectorBt(CrossSectionBacktestConfig(
         price_dataset=price_dataset(),
@@ -316,11 +323,13 @@ def main() -> None:
     sub.add_parser("prepare-day")
     run = sub.add_parser("live-run")
     run.add_argument("--fold", type=int, default=None)
+    run.add_argument("--all-candidates", action="store_true", help="candidate_top_k=None (every member)")
     args = parser.parse_args()
     if args.step == "prepare-day":
         prepare_day()
     else:
-        print(live_run(args.fold))
+        top_k = None if args.all_candidates else OPTIMISER["candidate_top_k"]
+        print(live_run(args.fold, top_k))
 
 
 if __name__ == "__main__":
