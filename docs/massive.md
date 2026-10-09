@@ -81,6 +81,8 @@ The panel holds, on `(timestamp, symbol)`:
 | `buy_volume`, `sell_volume` | volume signed by the tick rule (below) |
 | `offexchange_volume` | volume reported through a TRF (`trf_id` non-zero) |
 | `oddlot_volume` | volume of trades under 100 shares, fractional ones included |
+| `open_auction_price`, `open_auction_volume` | the opening cross (condition 17), on the bar that holds it |
+| `close_auction_price`, `close_auction_volume` | the closing cross (condition 8), on the session's last bar |
 
 Volumes are floats, so fractional shares are not truncated.
 
@@ -88,6 +90,7 @@ Volumes are floats, so fractional shares are not truncated.
 - **Time.** Bars are cut on `sip_timestamp`, right-closed and labelled at their end: the bar labelled 14:31 UTC covers trades after 14:30 up to and including 14:31.
 - **Session.** The regular session of the XNYS calendar, half days included (`session_start`/`session_end` set another window).
 - **Tick rule.** Each volume-eligible trade is compared with the price of the volume-eligible trade before it in the same session: an up-tick is a buy, a down-tick a sell, a zero tick takes the side of the last non-zero tick. The previous price carries across bars but not across sessions; a session's first trade, and zero ticks before its first price change, count in neither split, so `buy_volume + sell_volume` may be less than `volume` (about 1% of the volume on 2016-11-25).
+- **Auctions.** An auction is the condition-17 (opening) or condition-8 (closing) prints of one market, the one with the most volume under that condition that day: the listing market (2-3% of tickers also get such a print from a second market). Its largest print sets the price, its prints together (odd-lot portions included) the volume. The OHLCV are continuous trading only, cut on `sip_timestamp`. The closing auction's print reaches the SIP after the close (Nasdaq and Arca within a second, NYSE and NYSE American in 2016 about two minutes later, up to seven), so it is in no OHLCV: its prints up to 30 minutes after the close set `close_auction_price` and `close_auction_volume` on the session's last bar, which therefore holds information published after its label (they are still counted in `outside_session`). Only a window ending at 16:00 has a closing auction, and only one starting by 09:30 an opening auction. The opening cross arrives after the open and stays in its bar's OHLCV; it also sets `open_auction_price` and `open_auction_volume` on that bar. A daily resample's `close_auction_price` is the official close: it equals Sharadar SEP's unadjusted close for 94.5% of the stocks with a closing auction on 2016-11-25 and 2016-11-28 (the last continuous trade does for 40-49%); the rest are tiny auctions (median 43 shares) for which SEP keeps the last continuous trade. With the auction, daily volume is 98-99% of SEP's (92% without).
 - **Empty bars.** A bar without an eligible trade has NaN prices and zero volumes and `n_trades`; a bar of volume-only trades (odd lots, for example) has volume and NaN prices.
 - **Symbols.** Each raw `(date, ticker)` is mapped to its permaticker as traded that day, through Sharadar's SEP tickers and then SFP's. A ticker that maps to nothing is dropped, logged and recorded in the sidecar `<store>.massive_stats.json`, with the day's counts: `trades_in`, `dropped_correction`, `dropped_unknown_condition`, `outside_session`, `volume_ineligible` (kept, but no condition lets it count for volume), `unmapped_tickers` and `unmapped_trades`.
 
@@ -127,7 +130,7 @@ fine = replace(config, zarr_file_path="/data/quantlab/zarrs/massive_trade_bars_1
 
 Trades of mapped securities off the roster are counted per day as `outside_roster_trades`.
 
-Coarser bars come from Resample with no mapping: each variable declares its aggregation (`open` first, `high` max, `low` min, `close` last, the volumes and `n_trades` sum), and bars are cut per session, right-closed from the open and labelled at their end, the last one cut at the close (an hour of a 09:30-16:00 session ends with the half hour 15:30-16:00); `"1d"` is one bar per session, labelled with its date:
+Coarser bars come from Resample with no mapping: each variable declares its aggregation (`open` and `open_auction_price` first, `high` max, `low` min, `close` and `close_auction_price` last, the volumes and `n_trades` sum), and bars are cut per session, right-closed from the open and labelled at their end, the last one cut at the close (an hour of a 09:30-16:00 session ends with the half hour 15:30-16:00); `"1d"` is one bar per session, labelled with its date:
 
 ```python
 hourly = MassiveTradeBarDataset(config).resample("1h").panel("2016-11-25", "2016-11-26")

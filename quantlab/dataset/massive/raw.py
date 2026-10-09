@@ -97,6 +97,7 @@ TRADE_BAR_INPUTS = (
     "sip_timestamp",
     "size",
     "trf_id",
+    "exchange",
 )
 
 #: The columns of a minute- or day-aggregate file, in the vendor's order.

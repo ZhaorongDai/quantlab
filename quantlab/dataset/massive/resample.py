@@ -46,14 +46,29 @@ The rules:
   sessions; a session's first trade, and zero ticks before its first
   non-zero tick, count in neither ``buy_volume`` nor ``sell_volume``, so
   their sum may be less than ``volume``.
+- **The auctions are variables of their own.** An auction is the
+  ``OPENING_TRADE`` or ``CLOSING_PRINTS`` prints of one market: the one with
+  the most volume under that condition that day, which is the listing
+  market (a few percent of tickers also get such a print from a second
+  market). Its largest print sets the price, its prints together (odd-lot
+  portions included) the volume. The opening auction sets
+  ``open_auction_price`` and ``open_auction_volume`` on the bar that holds
+  that print, and stays in the bar's OHLCV. The closing auction reaches the
+  SIP after the session's close, Nasdaq's within a second and NYSE's in
+  2016 up to minutes later, so it is in no OHLCV: its prints after the close
+  and up to ``CLOSE_AUCTION_CUTOFF_NS`` later set ``close_auction_price``
+  and ``close_auction_volume`` on the session's last bar, which therefore
+  holds information published after its label. Only a window that ends at
+  the exchange's close has a closing auction (``close_auction``), and only
+  one that starts by its open an opening auction.
 - **A bar without an eligible trade** has null prices and zero volumes and
   ``n_trades``, never a carried price.
 
 Examples
 --------
 >>> bars, stats = TradeBarResampler("1m").resample_with_stats(trades, conditions, sessions)
->>> bars.columns
-['symbol', 'date', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'dollar_volume', 'n_trades', 'buy_volume', 'sell_volume', 'offexchange_volume', 'oddlot_volume']
+>>> bars.columns[3:]
+['open', 'high', 'low', 'close', 'volume', 'dollar_volume', 'n_trades', 'buy_volume', 'sell_volume', 'offexchange_volume', 'oddlot_volume', 'open_auction_price', 'open_auction_volume', 'close_auction_price', 'close_auction_volume']
 """
 
 from __future__ import annotations
@@ -77,11 +92,28 @@ TRADE_BAR_VARIABLES = (
     "sell_volume",
     "offexchange_volume",
     "oddlot_volume",
+    "open_auction_price",
+    "open_auction_volume",
+    "close_auction_price",
+    "close_auction_volume",
 )
+
+#: The bar variables that are prices: null on a bar without the trades they need.
+TRADE_BAR_PRICES = ("open", "high", "low", "close", "open_auction_price", "close_auction_price")
 
 #: The bar variables that are sums over trades: zero, never null, on a bar
 #: without an eligible trade.
-TRADE_BAR_SUMS = tuple(name for name in TRADE_BAR_VARIABLES if name not in ("open", "high", "low", "close"))
+TRADE_BAR_SUMS = tuple(name for name in TRADE_BAR_VARIABLES if name not in TRADE_BAR_PRICES)
+
+#: The condition of the listing market's closing auction print ("Closing Prints").
+CLOSING_PRINTS = 8
+
+#: The condition of the listing market's opening auction print ("Market Center Opening Trade").
+OPENING_TRADE = 17
+
+#: How long after the session's close a closing auction print is still taken:
+#: NYSE printed its 2016 closing auctions up to seven minutes after 16:00.
+CLOSE_AUCTION_CUTOFF_NS = 30 * 60 * 1_000_000_000
 
 #: The count columns of the per-``(date, symbol)`` stats, after the keys.
 #: ``volume_ineligible`` counts the trades kept whose conditions exclude them
@@ -111,6 +143,10 @@ class TradeBarResampler:
     ----------
     bar_interval : str
         The bar size, a key of ``BAR_INTERVAL_SECONDS``.
+    close_auction : bool, default True
+        Whether the sessions end at the exchange's close, so that the
+        closing auction printed after it belongs to their last bar. A
+        window that ends earlier has none.
 
     Raises
     ------
@@ -123,7 +159,7 @@ class TradeBarResampler:
     300000000000
     """
 
-    def __init__(self, bar_interval: str) -> None:
+    def __init__(self, bar_interval: str, *, close_auction: bool = True) -> None:
         """Initialize; see the class docstring."""
         if bar_interval not in BAR_INTERVAL_SECONDS:
             raise ValueError(
@@ -131,6 +167,7 @@ class TradeBarResampler:
             )
         self.bar_interval = bar_interval
         self.interval_ns = BAR_INTERVAL_SECONDS[bar_interval] * _NS_PER_SECOND
+        self.close_auction = close_auction
 
     def labels(self, sessions: pl.DataFrame) -> pl.DataFrame:
         """Return every bar label of ``sessions``.
@@ -210,8 +247,8 @@ class TradeBarResampler:
             Columns ``symbol``, ``date`` (the session date), ``conditions``
             (comma-separated ids, or null), ``correction``, ``price``,
             ``size``, ``sip_timestamp`` (Int64 nanoseconds since the epoch,
-            UTC), ``sequence_number`` and ``trf_id`` (0 or null when not
-            reported through a TRF).
+            UTC), ``sequence_number``, ``trf_id`` (0 or null when not
+            reported through a TRF) and ``exchange``.
         conditions : pl.DataFrame
             The condition table, as ``read_conditions`` returns it.
         sessions : pl.DataFrame
@@ -276,6 +313,19 @@ class TradeBarResampler:
         )
 
         kept = records.filter(~corrected & ~unknown & ~outside)
+        after_close = (
+            ~corrected
+            & pl.col("_known")
+            & _has_condition(CLOSING_PRINTS)
+            & (pl.col("sip_timestamp") > pl.col("_close"))
+            & (pl.col("sip_timestamp") <= pl.col("_close") + CLOSE_AUCTION_CUTOFF_NS)
+        )
+        closing = _auction(
+            records.filter(after_close & pl.lit(self.close_auction)).with_columns(
+                pl.col("_close").cast(pl.Datetime("ns")).alias("timestamp")
+            ),
+            "close_auction",
+        )
         step = self.interval_ns
         kept = kept.with_columns(
             pl.min_horizontal(
@@ -313,13 +363,48 @@ class TradeBarResampler:
             volume_where(pl.col("trf_id").fill_null(0) != 0).alias("offexchange_volume"),
             volume_where(size < ROUND_LOT).alias("oddlot_volume"),
         )
+        opening = _auction(kept.filter(_has_condition(OPENING_TRADE)), "open_auction")
 
         grid = records.select("symbol", "date").unique().join(self.labels(sessions).lazy(), on="date", how="inner")
         bars = (
             grid.join(observed, on=["symbol", "date", "timestamp"], how="left")
+            .join(closing, on=["symbol", "date", "timestamp"], how="left")
+            .join(opening, on=["symbol", "date", "timestamp"], how="left")
             .with_columns(pl.col(name).fill_null(0) for name in TRADE_BAR_SUMS)
             .select("symbol", "date", "timestamp", *TRADE_BAR_VARIABLES)
             .sort("symbol", "timestamp")
         )
         bars, stats = pl.collect_all([bars, stats])
         return bars, stats
+
+
+def _has_condition(condition: int) -> pl.Expr:
+    """Whether a trade's comma-separated ``conditions`` hold ``condition``."""
+    return pl.col("conditions").str.contains(rf"(^|,){condition}(,|$)")
+
+
+def _auction(prints: pl.LazyFrame, prefix: str) -> pl.LazyFrame:
+    """Return one auction per ``(symbol, date)`` from its candidate ``prints``.
+
+    The auction is the prints of the market with the most volume among
+    them (the listing market); its largest print gives ``<prefix>_price``
+    and the bar ``timestamp``, its prints together ``<prefix>_volume``.
+    """
+    size = pl.col("size").cast(pl.Float64)
+    market = (
+        prints.group_by("symbol", "date", "exchange")
+        .agg(size.sum().alias("_market_volume"))
+        .sort("_market_volume", "exchange", descending=[True, False])
+        .group_by("symbol", "date")
+        .agg(pl.col("exchange").first())
+    )
+    return (
+        prints.join(market, on=["symbol", "date", "exchange"], how="semi")
+        .sort("size", "sip_timestamp", descending=[True, False])
+        .group_by("symbol", "date")
+        .agg(
+            pl.col("timestamp").first(),
+            pl.col("price").first().alias(f"{prefix}_price"),
+            size.sum().alias(f"{prefix}_volume"),
+        )
+    )

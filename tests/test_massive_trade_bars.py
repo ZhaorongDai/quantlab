@@ -150,6 +150,7 @@ def test_the_store_is_on_the_permaticker_axis_with_the_trade_bar_variables(conve
     assert set(panel.data_vars) == {
         "open", "high", "low", "close", "volume", "dollar_volume", "n_trades",
         "buy_volume", "sell_volume", "offexchange_volume", "oddlot_volume",
+        "open_auction_price", "open_auction_volume", "close_auction_price", "close_auction_volume",
     }
     assert all(panel[name].dtype == np.float64 for name in panel.data_vars)
 
@@ -502,3 +503,27 @@ def test_a_bar_of_volume_only_trades_is_counted_apart_not_as_a_difference(tmp_pa
     check = json.loads(ds.stats_path.read_text())["days"]["2024-11-29"]["vendor_check"]
     assert (check["both"], check["ours_only"], check["ours_volume_only"]) == (1, 0, 1)
     assert check["agree"]["volume"] == 1
+
+
+# -- #250: the auctions ------------------------------------------------------------
+
+
+def test_the_auctions_reach_the_store_and_a_daily_resample_gives_the_official_close(tmp_path):
+    ds = _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY)  # writes the fixture raw tier
+    write_trades(Path(ds.config.raw_data_dir_path), HALF_DAY, [
+        trade_line("AAA", _utc(HALF_DAY, "14:30:00.4"), 10.0, 2000, conditions="17,9,41", sequence=1),  # SYNTHETIC
+        trade_line("AAA", _utc(HALF_DAY, "17:59:30"), 13.0, 30, sequence=2),  # SYNTHETIC
+        # 13:00 ET is the half day's close: the closing cross reaches the SIP just after it.
+        trade_line("AAA", _utc(HALF_DAY, "18:00:00.2"), 13.5, 5000, conditions="8,9,41", sequence=3),  # SYNTHETIC
+        trade_line("AAA", _utc(HALF_DAY, "18:00:00.2"), 13.5, 5000, conditions="15", sequence=4),  # SYNTHETIC
+    ])
+    ds.from_raw_data_chunked(granularity="day")
+    panel = ds.panel("2024-11-29", "2024-11-30")
+    first, last = _cell(panel, 101, _utc(HALF_DAY, "14:31")), _cell(panel, 101, _utc(HALF_DAY, "18:00"))
+    assert (first["open_auction_price"], first["open_auction_volume"], first["open"]) == (10.0, 2000.0, 10.0)
+    assert (last["close"], last["volume"]) == (13.0, 30.0)
+    assert (last["close_auction_price"], last["close_auction_volume"]) == (13.5, 5000.0)
+
+    daily = _cell(ds.resample("1d").panel("2024-11-29", "2024-11-30").load(), 101, pd.Timestamp(HALF_DAY))
+    assert (daily["close"], daily["close_auction_price"], daily["open_auction_price"]) == (13.0, 13.5, 10.0)
+    assert (daily["volume"], daily["close_auction_volume"]) == (2030.0, 5000.0)

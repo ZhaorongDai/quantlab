@@ -90,7 +90,10 @@ from quantlab.dataset.massive.raw import (
     read_trades,
 )
 from quantlab.dataset.massive.resample import (
+    CLOSE_AUCTION_CUTOFF_NS,
+    CLOSING_PRINTS,
     KEPT_CORRECTIONS,
+    OPENING_TRADE,
     ROUND_LOT,
     TRADE_BAR_SUMS,
     TRADE_BAR_VARIABLES,
@@ -104,6 +107,9 @@ from quantlab.utils.atomic import write_json_atomically
 from quantlab.utils.resample import session_labels
 from quantlab.utils.timer import Timer
 
+#: The end of the regular session, US/Eastern; the only window end with a closing auction.
+REGULAR_SESSION_END = "16:00"
+
 #: Appended to the store path to name the per-day statistics sidecar.
 STATS_SUFFIX = ".massive_stats.json"
 
@@ -116,6 +122,9 @@ COUNTING_RULES = {
     "kept_corrections": list(KEPT_CORRECTIONS),
     "round_lot": ROUND_LOT,
     "tick_reference": "previous volume-eligible trade of the session",
+    "open_auction_condition": OPENING_TRADE,
+    "close_auction_condition": CLOSING_PRINTS,
+    "close_auction_cutoff_seconds": CLOSE_AUCTION_CUTOFF_NS // 1_000_000_000,
 }
 
 #: Each Trade bar variable's aggregation onto coarser bars.
@@ -124,6 +133,8 @@ TRADE_BAR_RESAMPLE_HOW = {
     "high": "max",
     "low": "min",
     "close": "last",
+    "open_auction_price": "first",
+    "close_auction_price": "last",
     **{name: "sum" for name in TRADE_BAR_SUMS},
 }
 
@@ -178,8 +189,8 @@ class MassiveTradeBarDataset(StockDataset):
     --------
     >>> ds = MassiveTradeBarDataset(config).from_raw_data_chunked(granularity="day")
     >>> panel = ds.panel("2024-11-29", "2024-11-30")
-    >>> list(panel.data_vars)
-    ['open', 'high', 'low', 'close', 'volume', 'dollar_volume', 'n_trades', 'buy_volume', 'sell_volume', 'offexchange_volume', 'oddlot_volume']
+    >>> list(panel.data_vars)[:5]
+    ['open', 'high', 'low', 'close', 'volume']
     """
 
     #: The config class used to rebuild the dataset from a saved ``config.json``.
@@ -225,7 +236,11 @@ class MassiveTradeBarDataset(StockDataset):
     def _on_config_installed(self) -> None:
         """Create the calendar and resampler, and clear the per-day cache and the resolvers."""
         self._calendar = XnysSessionCalendar(self.config.session_start, self.config.session_end)
-        self._resampler = TradeBarResampler(self.config.bar_interval)
+        # The closing auction prints after the exchange's close: only a window
+        # ending there (at 13:00 on a half day) has one.
+        self._resampler = TradeBarResampler(
+            self.config.bar_interval, close_auction=self.config.session_end == REGULAR_SESSION_END
+        )
         self._days: dict[date, _Day] = {}
         self._resolvers: list[PermatickerResolver] | None = None
 

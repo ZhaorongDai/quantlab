@@ -52,7 +52,7 @@ def _ns(text: str, day: date = DAY) -> int:
 
 
 def _trades(rows: list[tuple], day: date = DAY) -> pl.DataFrame:
-    """``(symbol, time, price, size, conditions, correction, sequence[, trf_id])`` rows of ``day``."""
+    """``(symbol, time, price, size, conditions, correction, sequence[, trf_id[, exchange]])`` rows of ``day``."""
     return pl.DataFrame(
         {
             "symbol": [r[0] for r in rows],
@@ -64,6 +64,7 @@ def _trades(rows: list[tuple], day: date = DAY) -> pl.DataFrame:
             "sip_timestamp": [_ns(r[1], day) for r in rows],
             "size": [float(r[3]) for r in rows],
             "trf_id": [r[7] if len(r) > 7 else 0 for r in rows],
+            "exchange": [r[8] if len(r) > 8 else 12 for r in rows],
         },
         schema={
             "symbol": pl.String,
@@ -75,6 +76,7 @@ def _trades(rows: list[tuple], day: date = DAY) -> pl.DataFrame:
             "sip_timestamp": pl.Int64,
             "size": pl.Float64,
             "trf_id": pl.Int64,
+            "exchange": pl.Int64,
         },
     )
 
@@ -323,6 +325,7 @@ def test_the_bar_columns():
     assert TRADE_BAR_VARIABLES == (
         "open", "high", "low", "close", "volume", "dollar_volume", "n_trades",
         "buy_volume", "sell_volume", "offexchange_volume", "oddlot_volume",
+        "open_auction_price", "open_auction_volume", "close_auction_price", "close_auction_volume",
     )
     assert all(bars[name].dtype == pl.Float64 for name in TRADE_BAR_VARIABLES if name != "n_trades")
 
@@ -335,3 +338,98 @@ def test_an_interval_that_does_not_divide_the_session_ends_with_a_partial_bar_at
     assert bars["timestamp"].to_list() == [datetime(2024, 1, 24, 14, 33)]
     bar = _bar(bars, "AAA", "14:33")
     assert (bar["open"], bar["close"], bar["volume"]) == (10.0, 11.0, 3.0)
+
+
+# -- #250: the opening and closing auctions --------------------------------------
+
+
+def test_the_closing_auction_after_the_close_is_on_the_last_bar_and_in_no_ohlcv():
+    bars, stats = _resample(
+        [
+            ("AAA", "14:32:50", 10.0, 100, None, 0, 1),
+            ("AAA", "14:33:00.150", 10.4, 5000, "8,9,41", 0, 2),  # Nasdaq-style closing cross, 0.15 s late
+            ("AAA", "14:33:00.150", 10.4, 5000, "15", 0, 3),  # the market's official close: counts for nothing
+            ("AAA", "14:33:00.300", 10.4, 37, "8,37", 0, 4),  # its odd-lot portion
+            ("AAA", "14:33:10", 10.9, 100, "12", 0, 5),  # an extended-hours trade: neither
+        ]
+    )
+    last = _bar(bars, "AAA", "14:33")
+    assert (last["close"], last["volume"]) == (10.0, 100.0)
+    assert (last["close_auction_price"], last["close_auction_volume"]) == (10.4, 5037.0)
+    others = bars.filter(pl.col("timestamp") != datetime(2024, 1, 24, 14, 33))
+    assert others["close_auction_price"].is_null().all() and (others["close_auction_volume"] == 0).all()
+    assert stats["outside_session"].to_list() == [4]
+
+
+def test_a_late_nyse_closing_print_is_taken_and_one_after_the_cutoff_is_not():
+    bars, _ = _resample(
+        [
+            ("AAA", "14:32:50", 10.0, 100, None, 0, 1),
+            ("AAA", "14:40:00", 10.2, 3000, "8", 0, 2),  # seven minutes late, as NYSE printed in 2016
+            ("BBB", "14:32:50", 20.0, 100, None, 0, 3),
+            ("BBB", "15:03:01", 20.2, 3000, "8", 0, 4),  # past the 30-minute cutoff
+        ]
+    )
+    aaa, bbb = _bar(bars, "AAA", "14:33"), _bar(bars, "BBB", "14:33")
+    assert (aaa["close_auction_price"], aaa["close_auction_volume"]) == (10.2, 3000.0)
+    assert (bbb["close_auction_price"], bbb["close_auction_volume"]) == (None, 0.0)
+
+
+def test_the_opening_auction_is_on_the_bar_that_holds_it_and_stays_in_the_ohlcv():
+    bars, _ = _resample(
+        [
+            ("AAA", "14:30:00.400", 10.0, 2000, "17,9,41", 0, 1),  # opening cross, 0.4 s after the open
+            ("AAA", "14:30:20", 10.1, 100, None, 0, 2),
+            ("BBB", "14:31:30", 20.0, 900, "17", 0, 3),  # a delayed opening: in the second bar, not the first
+        ]
+    )
+    aaa = _bar(bars, "AAA", "14:31")
+    assert (aaa["open_auction_price"], aaa["open_auction_volume"]) == (10.0, 2000.0)
+    assert (aaa["open"], aaa["volume"]) == (10.0, 2100.0)
+    assert _bar(bars, "BBB", "14:31")["open_auction_volume"] == 0.0
+    bbb = _bar(bars, "BBB", "14:32")
+    assert (bbb["open_auction_price"], bbb["open_auction_volume"]) == (20.0, 900.0)
+
+
+def test_a_stock_without_auctions_has_none():
+    bars, _ = _resample([("AAA", "14:30:10", 10.0, 100, None, 0, 1)])
+    assert bars["open_auction_price"].is_null().all() and bars["close_auction_price"].is_null().all()
+    assert (bars["open_auction_volume"] == 0).all() and (bars["close_auction_volume"] == 0).all()
+
+
+def test_a_corrected_closing_print_is_dropped():
+    bars, _ = _resample(
+        [("AAA", "14:32:50", 10.0, 100, None, 0, 1), ("AAA", "14:33:00.150", 10.4, 5000, "8,9,41", 1, 2)]
+    )
+    assert _bar(bars, "AAA", "14:33")["close_auction_volume"] == 0.0
+
+
+def test_the_auction_is_the_market_with_the_most_volume_under_its_condition():
+    bars, _ = _resample(
+        [
+            ("AAA", "14:30:00.400", 10.0, 2000, "17,9,41", 0, 1, 0, 12),  # the listing market's opening cross
+            ("AAA", "14:30:00.300", 9.9, 100, "17", 0, 2, 0, 19),  # another market's opening trade, first
+            ("AAA", "14:32:50", 10.5, 100, None, 0, 3),
+            ("AAA", "14:33:00.200", 10.4, 4000, "8,9,41", 0, 4, 0, 12),
+            ("AAA", "14:33:00.300", 10.4, 40, "8,37", 0, 5, 0, 12),
+            ("AAA", "14:33:00.100", 10.6, 300, "8", 0, 6, 0, 19),  # another market's closing print
+        ]
+    )
+    first, last = _bar(bars, "AAA", "14:31"), _bar(bars, "AAA", "14:33")
+    assert (first["open_auction_price"], first["open_auction_volume"]) == (10.0, 2000.0)
+    assert (last["close_auction_price"], last["close_auction_volume"]) == (10.4, 4040.0)
+
+
+def test_a_closing_print_inside_the_session_is_not_the_auction():
+    bars, _ = _resample([("AAA", "14:33:00", 10.4, 5000, "8", 0, 1)])
+    last = _bar(bars, "AAA", "14:33")
+    assert (last["close"], last["volume"], last["close_auction_volume"]) == (10.4, 5000.0, 0.0)
+
+
+def test_a_window_that_ends_before_the_close_has_no_closing_auction():
+    from quantlab.dataset.massive.resample import TradeBarResampler
+
+    rows = [("AAA", "14:32:50", 10.0, 100, None, 0, 1), ("AAA", "14:33:00.200", 10.4, 5000, "8,9,41", 0, 2)]
+    bars, _ = TradeBarResampler("1m", close_auction=False).resample_with_stats(
+        _trades(rows), conditions_frame(), _sessions())
+    assert bars["close_auction_volume"].sum() == 0.0 and bars["close_auction_price"].is_null().all()
