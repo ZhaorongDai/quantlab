@@ -1,4 +1,4 @@
-"""us3000 one-day mean-variance (R223L5C5) as a live recipe: prepare each day's stores, build the run.
+"""us3000 one-day mean-variance (R223L5C5) as a live recipe: its stores' configs, the CV, the run.
 
 The strategy of quantlab-experiment ``2026-10-07-h1-daily-mvo``, scheme
 R223L5C5, rebuilt from library components only:
@@ -28,21 +28,21 @@ are this strategy's (``runs/h1_daily_mvo/us3000``).
 
 Steps::
 
-    # Once: the CV, the run quantlab-ibkr trades (a plain run() in load mode,
-    # so scripts/live/predict_day.py accepts it).
+    # Once: the configs the daily data update rebuilds the stores from, the CV,
+    # the run quantlab-ibkr trades (a plain run() in load mode, so
+    # scripts/live/predict_day.py accepts it).
+    python us3000_h1_mvo.py store-configs
     python us3000_h1_mvo.py train-cv
     python us3000_h1_mvo.py live-run [--fold N] [--size-bound X] [--beta-bound X]
-    # Every morning, after scripts/sharadar/update.py and before predict_day.py:
-    python us3000_h1_mvo.py prepare-day
-    python scripts/live/predict_day.py <run> --store <live>/live_predictions.zarr \\
-        --mirror market/sharadar/us3000_prices/us3000_prices.zarr \\
-        --may-lag market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr
 
-``prepare-day`` brings to the last SEP bar the stores ``predict_day.py``
-does not extend: the roster price store (the run's price dataset), the full
-masked Barra store (whose ``estu`` is the universe and whose styles the
-model reads), the membership and the price-return VT benchmark. Run
-it on the server with ``QUANTLAB_DATA_DIR=/data/quantlab``.
+Every morning ``scripts/data_update/update.py`` (``config/data_update.yaml``) brings
+these stores to the last SEP bar from the ``component.json`` that
+``store-configs`` writes into each store's folder: the roster price store
+(the run's price dataset) and its mirror, the masked Barra store (whose
+``estu`` is the universe and whose styles the model reads), the membership,
+the alphas, the USE4 risk stores, the FRED rate and the benchmarks; the
+paper trading then predicts with ``scripts/live/predict_day.py``. Run on the
+server with ``QUANTLAB_DATA_DIR=/data/quantlab``.
 """
 
 # %% Settings
@@ -56,7 +56,6 @@ import argparse
 import json
 from pathlib import Path
 
-import pandas as pd
 import xarray as xr
 from loguru import logger
 
@@ -65,6 +64,7 @@ from quantlab.backtest.predefined.us_equity import (
     USEquityCrossectionSelectStockVectorBt,
 )
 from quantlab.config import get_data_root
+from quantlab.utils.jsonable import to_jsonable
 from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.config import (
     ConstituentDatasetConfig,
@@ -221,7 +221,8 @@ def membership() -> EstuConstituentDataset:
     """us3000 membership (BarraStyle's ``estu``); its store folder gets a README.md on first use."""
     describe(MEMBERSHIP, (
         "# membership_estu\n\nPoint-in-time us3000 membership: BarraStyle's estimation universe.\n"
-        "Written by examples/sharadar_us_equity/us3000_h1_mvo.py (prepare-day); read by its runs.\n"
+        "Defined by examples/sharadar_us_equity/us3000_h1_mvo.py; updated every morning by\n"
+        "scripts/data_update/update.py; read by the recipe's runs.\n"
     ))
     return EstuConstituentDataset(ConstituentDatasetConfig(
         zarr_file_path=str(MEMBERSHIP), cache_dir=str(VENDOR), start_date=PRICE_START,
@@ -320,43 +321,28 @@ def fold_checkpoint(fold: int | None) -> Path:
     return path
 
 
-def refresh_benchmark() -> None:
-    """Rebuild the price-return VT benchmark from the (updated) SFP store.
+def store_configs() -> dict:
+    """Write each store's component config to ``<folder>/component.json`` for the daily update.
 
-    quantlab-ibkr reads a live day's benchmark from this store, so it must
-    hold every bar the trader marks.
+    ``scripts/data_update/update.py`` rebuilds the dataset, factor or risk model from it
+    (``quantlab.core.component.rebuild``) and updates or extends it.
     """
-    import subprocess
-
-    script = Path(__file__).resolve().parents[2] / "scripts" / "sharadar" / "price_return_benchmark.py"
-    subprocess.run(
-        [sys.executable, str(script), "--tickers", "vt", "--sfp-store", str(store_path(SHARADAR, "sharadar_sfp_1d")),
-         "--raw-dir", str(VENDOR), "--data-dir", str(DATA_ROOT), "--refresh"],
-        check=True,
-    )
-
-
-# %% Every morning: the stores predict_day.py does not extend
-def prepare_day() -> dict:
-    prices = price_dataset()
-    prices.update()
-    last = pd.Timestamp(xr.open_zarr(prices.config.zarr_file_path)["timestamp"].values[-1])
-    barra = masked_barra()
-    _, end = barra.store_range()
-    if pd.Timestamp(end) < last:
-        # A date, so the recorded range holds the whole day (a Timestamp ends it at midnight).
-        barra.extend(last.date().isoformat())
-    members = membership()
-    members.update()
-    refresh_benchmark()
-    done = {
-        "t": str(last.date()),
-        "prices": str(prices.config.zarr_file_path),
-        "barra_store": barra.store_range(),
-        "membership_last": str(pd.Timestamp(xr.open_zarr(MEMBERSHIP)["timestamp"].values[-1]).date()),
+    neutral = features()[:2]
+    components = {
+        BACKTEST_PRICES.parent: price_dataset(),
+        store_path(FRED, "fred_dtb3_1d").parent: sharadar_inputs()[-1],
+        Path(EXPOSURES).parent: masked_barra(),
+        MEMBERSHIP.parent: membership(),
+        **{Path(f.config.file_path).parent: f for f in neutral},
+        **{Path(f.config.factor.config.file_path).parent: f.config.factor for f in neutral},
+        RISK: risk_model(),
     }
-    logger.info(json.dumps(done))
-    return done
+    written = {}
+    for folder, item in components.items():
+        (folder / "component.json").write_text(json.dumps(to_jsonable(item.get_config()), indent=2))
+        written[str(folder)] = type(item).__name__
+    logger.info(json.dumps(written, indent=2))
+    return written
 
 
 # %% Once: the live run
@@ -411,7 +397,7 @@ def live_run(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="step", required=True)
-    sub.add_parser("prepare-day")
+    sub.add_parser("store-configs")
     sub.add_parser("train-cv")
     run = sub.add_parser("live-run")
     run.add_argument("--fold", type=int, default=None)
@@ -420,8 +406,8 @@ def main() -> None:
                      help="style_size in [-x, x]; 0 drops the bound (R223L5C5NS)")
     run.add_argument("--beta-bound", type=float, default=0.1, help="style_beta in [-x, x]; 0 drops the bound")
     args = parser.parse_args()
-    if args.step == "prepare-day":
-        prepare_day()
+    if args.step == "store-configs":
+        store_configs()
     elif args.step == "train-cv":
         train_cv()
     else:

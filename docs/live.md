@@ -19,6 +19,8 @@ The job is `quantlab.backtest.live.predict_live_bar`; the store is
 - [When a row equals a rebuild](#when-a-row-equals-a-rebuild)
 - [See also](#see-also)
 
+The stores themselves are brought up to date beforehand by the [daily data update](data_update.md).
+
 ## What one run does
 
 The run directory is the strategy's recipe: `config.json` rebuilds the backtester
@@ -68,8 +70,8 @@ The S&P 500 Barra mean-variance run (`examples/sharadar_us_equity/sp500_xgb_mvo.
 
 The us3000 run of `examples/sharadar_us_equity/us3000_h1_mvo.py` reads its 12 style
 features straight from `factors/market/barra_style/barra_style.zarr` through a `RosterFactor`,
-so that store is extended once, by the risk model's exposures factor; `prepare-day` extends
-it first, and the job finds it current.
+so that store is extended once, by the risk model's exposures factor; the daily data update
+([Daily data update](data_update.md)) extends it first, and the job finds it current.
 
 The benchmark (`sharadar_spy_1d.zarr`) and the backtest's own attribution `risk_model` field
 are not inputs of a decision and are not walked.
@@ -119,14 +121,16 @@ xr.open_zarr(store.path).sel(timestamp="2026-10-07")["ret_5"]
 
 ## Run it on the server
 
-Run Sharadar's update first. The job then reads only stores, so it needs no credentials.
+Run the daily data update first ([Daily data update](data_update.md)); on the server it has its
+own cron and writes `update_status.json`. The job then reads only stores, so it needs no
+credentials.
 The run directory of the #44 `real` configuration is written in that experiment's
 `backtest.json` (`run_dir`):
 
 ```bash
 cd ~/projects/quantlab2
 export SHARADAR_API_KEY=<your-sharadar-key>
-.venv/bin/python scripts/sharadar/update.py \
+QUANTLAB_DATA_DIR=/data/quantlab .venv/bin/python scripts/data_update/update.py \
     --download-dir /data/quantlab/downloads --data-dir /data/quantlab
 
 RUN=$(.venv/bin/python -c "import json; print(json.load(open('/data/quantlab/runs/ibkr_barra_closed_loop/real/backtest.json'))['run_dir'])")
@@ -143,9 +147,9 @@ store. The first run after the backtest catches the run's stores up from the end
 recorded ranges, which can span many months. Later runs add one bar each. Factor
 computation is bound by memory bandwidth, so the job runs on NUMA Node 1 (CPUs 64 to 127).
 
-DTB3 is not refreshed by `update.py`. While its store lags, `BarraStyle` and the risk model
-carry its last rate forward (they read the rate lagged one bar). Refresh it from time to time
-with `download_risk_free()` of `examples/sharadar_us_equity/barra_style.py`.
+The data update refreshes DTB3 too, but FRED publishes it a few days late. While its store lags,
+`BarraStyle` and the risk model carry its last rate forward (they read the rate lagged one bar),
+which is why the job passes it as `--may-lag`.
 
 ## Refusals and exit status
 

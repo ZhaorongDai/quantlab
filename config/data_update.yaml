@@ -1,0 +1,50 @@
+# The daily data update: scripts/data_update/update.py runs these stages in order, every
+# weekday morning (scripts/data_update/update_daily.sh, from cron). Paths are relative to the
+# data root (--data-dir). A store folder named by `update` or `extend` holds the store,
+# a README.md and a component.json (the component's get_config(), rebuilt with
+# quantlab.core.component.rebuild); `update` calls the dataset's update(), `extend`
+# extends a factor or a factor risk model to t, the last bar of the SEP store once
+# the raw stage is done. When it finishes, the script writes <data-dir>/update_status.json,
+# which the paper trading waits for.
+#
+# Actions:
+#   sharadar:   scripts/sharadar/update.py (every Sharadar table to market/ and universe/)
+#   fred:       download the FRED series, then update the store in that folder
+#   benchmarks: scripts/sharadar/price_return_benchmark.py --refresh for the tickers
+#   update:     a dataset rebuilt from <folder>/component.json, update()
+#   mirror:     append the source dataset's new bars to a store copying its variables
+#   extend:     a factor or factor risk model rebuilt from <folder>/component.json, to t
+
+# Stores that must hold t after the raw stage; until they do, the raw stage is retried.
+ready:
+  - market/sharadar/sharadar_sep_1d
+  - market/sharadar/sharadar_daily_1d
+  - market/sharadar/sharadar_industry_1d
+  - market/sharadar/sharadar_share_class_1d
+  - market/sharadar/sharadar_sfp_1d
+
+stages:
+  - name: raw
+    steps:
+      - sharadar: {args: [--rebuild-dropped]}
+      - fred: {series: [DTB3], start: "1954-01-04", store: market/fred/fred_dtb3_1d}
+      - benchmarks: {tickers: [vt, spy, acwi]}
+  - name: market
+    steps:
+      - update: market/sharadar/us3000_backtest_prices_1d
+      - mirror: {store: market/sharadar/us3000_prices, source: market/sharadar/us3000_backtest_prices_1d}
+  - name: market-factors
+    steps:
+      - extend: factors/market/barra_style
+  - name: universe
+    steps:
+      - update: universe/us3000/membership_estu
+  - name: factors
+    steps:
+      - extend: factors/us3000/alpha101
+      - extend: factors/us3000/alpha158
+      - extend: factors/us3000/alpha101_neutral
+      - extend: factors/us3000/alpha158_neutral
+  - name: risk
+    steps:
+      - extend: risk/use4

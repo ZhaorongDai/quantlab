@@ -101,6 +101,7 @@ working on.
 | [Models](model.md) | The model hierarchy, training, cross-validation and checkpoints |
 | [Backtesting](backtest.md) | Target weights, simulation, metrics and run directories |
 | [Portfolio construction](portfolio.md) | Rules from predictions to weights: top-n, mean-variance optimisation, covariance estimators, calibration and spans |
+| [Daily data update](data_update.md) | The scheduled script that brings every shared store up to the latest bar: raw downloads, Zarr stores, factors, risk model |
 | [Live prediction](live.md) | The daily job that extends a run's stores to the last closed bar and appends its prediction to a live prediction store |
 
 A Chinese translation of the topic pages is in [zh-CN](zh-CN/README.md).
