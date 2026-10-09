@@ -372,3 +372,20 @@ def test_a_merged_factor_resamples_onto_the_bars_its_inputs_cut(source, tmp_path
     actual = merged.compute("2024-01-02", "2024-01-03").sel(symbol=expected["symbol"])
     assert expected.sizes["timestamp"] == 2
     xr.testing.assert_allclose(actual, expected)
+
+
+def test_a_merged_dataset_stores_the_union_of_its_inputs_symbols(symbol_halves):
+    merged = MergedDataset([*symbol_halves])
+
+    assert merged.stored_symbols() == merged.panel("2024-01-01", "2024-02-29")["symbol"].values.tolist()
+
+
+def test_a_factor_on_a_merged_dataset_is_planned_in_chunks(symbol_halves, tmp_path):
+    from quantlab.factor.config import ChunkedConfig
+    from quantlab.factor.predefined.chunked import ChunkedFactor
+
+    factor = _ma_dev(MergedDataset([*symbol_halves]), tmp_path)
+
+    granularity, chunks = ChunkedFactor(ChunkedConfig(factor=factor)).plan("2024-01-10", "2024-02-29")
+
+    assert chunks

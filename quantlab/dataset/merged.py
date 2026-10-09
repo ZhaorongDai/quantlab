@@ -111,6 +111,24 @@ class MergedDataset(MarketDataset):
             return lookups[0] if lookups else None
         return _FirstKnownLookup(lookups)
 
+    def stored_symbols(self) -> list:
+        """Return the union of the inputs' symbol axes, in the merged panel's order.
+
+        Only the inputs' symbol coordinates are read, never a data variable.
+
+        Examples
+        --------
+        ``index`` holds AAPL and MSFT, ``etf`` holds SPY:
+
+        >>> MergedDataset([index, etf]).stored_symbols()
+        ['AAPL', 'MSFT', 'SPY']
+        """
+        axes = [pd.Index(dataset.stored_symbols()) for dataset in self.datasets]
+        union = axes[0]
+        for axis in axes[1:]:
+            union = union.union(axis)
+        return union.tolist()
+
     def _normalize_config(self, config: MergedDatasetConfig) -> MergedDatasetConfig:
         """Return ``config`` with ``name`` set, refusing an empty or non-dataset input."""
         if not config.datasets:

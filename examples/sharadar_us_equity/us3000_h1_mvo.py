@@ -13,9 +13,10 @@ R223L5C5, rebuilt from library components only:
 - label: ``Return``, the open-to-open return from t+1 to t+2, kept where the
   symbol is a member at t (``MembershipMaskedLabel``);
 - model: the experiment's ``XGBoostRegressor`` and walk-forward CV (ten
-  expanding folds, one year of tests each, through 2026-10-02), retrained
-  on these features, loaded from one fold's checkpoint (the last by
-  default), masked by membership (``MembershipMaskedPredictor``);
+  expanding folds from START, one year of tests each, from FIRST_TEST
+  through 2026-10-02, the experiment's test folds), retrained on these
+  features, loaded from one fold's checkpoint (the last by default), masked
+  by membership (``MembershipMaskedPredictor``);
 - portfolio: ``MeanVarianceOptimizer`` over the USE4 factor risk model of
   the #223 stores, lambda 5, kappa 0.002, 5% cap, ``min_trade`` 1e-3,
   CLARABEL, ``style_beta`` and ``style_size`` in [-0.1, 0.1], the 200
@@ -25,14 +26,19 @@ The roster is the membership store's symbol axis (every security ever in the
 universe since PRICE_START, ``universe/us3000``): the alphas, the label and
 the backtest read Sharadar SEP on it (``RosterDataset``), and it follows the
 membership as securities enter. The alphas and label are the us3000
-universe's (``factors/us3000``, ``labels/us3000``); the CV and the live runs
-are this strategy's (``runs/h1_daily_mvo/us3000``).
+universe's (``factors/us3000``, ``labels/us3000``), from PRICE_START (the
+first bar of the Barra store) for the membership and from START for the
+features and label; the CV and the live runs are this strategy's
+(``runs/h1_daily_mvo/us3000_2001``).
 
 Steps::
 
-    # Once: the configs the daily data update rebuilds the stores from, the CV,
-    # the run quantlab-ibkr trades (a plain run() in load mode, so
-    # scripts/live/predict_day.py accepts it).
+    # Once: the stores (the membership, then the alphas, their neutral
+    # versions and the label, a chunk of time at a time), the configs the
+    # daily data update rebuilds them from, the CV, the run quantlab-ibkr
+    # trades (a plain run() in load mode, so scripts/live/predict_day.py
+    # accepts it).
+    python us3000_h1_mvo.py build-stores
     python us3000_h1_mvo.py store-configs
     python us3000_h1_mvo.py train-cv
     python us3000_h1_mvo.py live-run [--fold N] [--size-bound X] [--beta-bound X]
@@ -88,10 +94,12 @@ from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
-from quantlab.factor.config import FactorConfig, NeutralizedConfig, RosterConfig
+from quantlab.enums.constant import Date
+from quantlab.factor.config import ChunkedConfig, FactorConfig, NeutralizedConfig, RosterConfig
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
+from quantlab.factor.predefined.chunked import ChunkedFactor
 from quantlab.factor.predefined.neutralized import NeutralizedFactor
 from quantlab.factor.predefined.roster import RosterFactor
 from quantlab.label.predefined.fret import Return
@@ -118,16 +126,16 @@ FRED_RAW = DATA_ROOT / "downloads" / "fred"
 UNIVERSE = DATA_ROOT / "universe" / "us3000"
 FACTORS = DATA_ROOT / "factors" / "us3000"
 LABELS = DATA_ROOT / "labels" / "us3000"
-#: This strategy's runs: the walk-forward CV and the live runs.
-H1 = DATA_ROOT / "runs" / "h1_daily_mvo" / "us3000"
+#: This strategy's runs on the universe since 2001: the walk-forward CV and the live runs.
+H1 = DATA_ROOT / "runs" / "h1_daily_mvo" / "us3000_2001"
 #: The Barra exposures (with ``estu``) and USE4 stores, bad prints masked since #223.
 EXPOSURES = DATA_ROOT / "factors" / "market" / "barra_style" / "barra_style.zarr"
 RISK = DATA_ROOT / "risk" / "use4"
-#: The CV over the masked features and its record.
-MODELS = H1 / "models_223"
-CV_RECORD = H1 / "cv_223.json"
-#: Walk-forward CV: expanding, ten one-year test folds ending on END.
-TRAIN_PERIODS, TEST_PERIODS = 1189, 252
+#: The CV and its record.
+MODELS = H1 / "models"
+CV_RECORD = H1 / "cv.json"
+#: Walk-forward CV: expanding from START, ten one-year test folds from FIRST_TEST to END.
+FIRST_TEST, TEST_PERIODS = "2016-09-23", 252
 
 
 def store_path(folder: Path, stem: str) -> Path:
@@ -150,8 +158,9 @@ MEMBERSHIP = store_path(UNIVERSE, "membership_estu")
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
 BENCHMARK = store_path(BENCHMARKS, "sharadar_vt_pr_1d")
 
-#: Prices from here (warm-up of the alphas); features and label from START.
-PRICE_START, START, END = "2010-01-01", "2012-01-01", "2026-10-02"
+#: The membership (the roster) from the Barra store's first bar; features and
+#: label from START, after 500 bars of the alphas' 400-bar warm-up.
+PRICE_START, START, END = "2001-01-01", "2003-01-01", "2026-10-02"
 HORIZON = 1
 ALPHA_COLUMNS = ("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume")
 PARAMETERS = BarraStyleParameters(risk_free_symbol="DTB3")
@@ -295,7 +304,9 @@ def cv_record() -> dict:
 # %% Once: the CV
 def train_cv() -> dict:
     """The experiment's walk-forward CV over these features; its record goes to ``CV_RECORD``."""
-    cv = model().collect().train_cv(train_periods=TRAIN_PERIODS, expanding=True, test_periods=TEST_PERIODS)
+    # The first training window is every bar before FIRST_TEST.
+    train_periods = len(sep().calendar(START, FIRST_TEST)) - 1
+    cv = model().collect().train_cv(train_periods=train_periods, expanding=True, test_periods=TEST_PERIODS)
     record = {"path": str(cv.path), "cv_mean": cv.cv_mean, "folds": [
         {"index": f.index, "test": [str(d)[:10] for d in f.test_window], "metrics": f.metrics} for f in cv.folds
     ]}
@@ -312,6 +323,24 @@ def fold_checkpoint(fold: int | None) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"no checkpoint for fold {index}: {path}")
     return path
+
+
+def build_stores() -> None:
+    """Build the membership, the alphas, their neutral versions and the label to SEP's last bar.
+
+    The membership first (the roster of everything else); each alpha a chunk
+    of time at a time (``ChunkedFactor``), so a store that would not fit in
+    memory is written year by year.
+    """
+    membership().update()
+    last = sep().calendar(START, Date.END_DATE)[-1].date().isoformat()
+    neutral = [f for f in features() if isinstance(f, NeutralizedFactor)]
+    for factor in [*(n.config.factor for n in neutral), *neutral]:
+        ChunkedFactor(ChunkedConfig(factor=factor)).build(START, last)
+        logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
+    ret = label().label
+    ret.build(START, last)
+    logger.info(f"{type(ret).__name__} -> {ret.config.factor.config.file_path}")
 
 
 def store_configs() -> dict:
@@ -391,6 +420,7 @@ def live_run(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="step", required=True)
+    sub.add_parser("build-stores")
     sub.add_parser("store-configs")
     sub.add_parser("train-cv")
     run = sub.add_parser("live-run")
@@ -400,7 +430,9 @@ def main() -> None:
                      help="style_size in [-x, x]; 0 drops the bound (R223L5C5NS)")
     run.add_argument("--beta-bound", type=float, default=0.1, help="style_beta in [-x, x]; 0 drops the bound")
     args = parser.parse_args()
-    if args.step == "store-configs":
+    if args.step == "build-stores":
+        build_stores()
+    elif args.step == "store-configs":
         store_configs()
     elif args.step == "train-cv":
         train_cv()
