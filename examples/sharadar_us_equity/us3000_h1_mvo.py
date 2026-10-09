@@ -334,7 +334,8 @@ def prepare_day() -> dict:
     barra = masked_barra()
     _, end = barra.store_range()
     if pd.Timestamp(end) < last:
-        barra.extend(last)
+        # A date, so the recorded range holds the whole day (a Timestamp ends it at midnight).
+        barra.extend(last.date().isoformat())
     styles = append_feature_barra()
     members = membership()
     members.update()
