@@ -38,14 +38,11 @@ from quantlab.factor.config import FactorConfig
 from quantlab.dataset.config import (
     SPY_PERMATICKER,
     ConstituentDatasetConfig,
-    DatasetConfig,
     SharadarDatasetConfig,
 )
 from quantlab.config import get_data_root
 from quantlab.dataset.sharadar.membership import SharadarSP500ConstituentDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
-from quantlab.dataset.stock import StockDataset
-from quantlab.enums.constant import Date
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.label.predefined.fret import Return
@@ -62,7 +59,7 @@ from quantlab.utils.cli import inside_repository
 #: under its ``--download-dir``.
 DATA_ROOT = get_data_root()
 #: Every store is a folder ``<stem>/`` holding ``<stem>.zarr`` and a short README.md.
-#: Sharadar's market stores (and the S&P 500 roster's price slice), the
+#: Sharadar's market stores, the
 #: Sharadar universes, the S&P 500 factors and return label.
 SHARADAR = DATA_ROOT / "market" / "sharadar"
 MEMBERSHIPS = DATA_ROOT / "universe" / "sharadar"
@@ -100,19 +97,6 @@ def describe(store: Path, text: str) -> None:
         readme.write_text(text)
 
 
-#: The S&P 500 roster's price slice of Sharadar SEP (``prepare_stores`` writes it),
-#: shared by sp500_xgb.py and sp500_xgb_mvo.py.
-PRICES = store_path(SHARADAR, "sp500_prices")
-
-
-def stock_dataset(store: Path) -> StockDataset:
-    """A dataset over one of the derived stores."""
-    return StockDataset(DatasetConfig(
-        zarr_file_path=str(store), raw_data_dir_path=str(VENDOR),
-        market="us_equity", frequency="1d",
-    ))
-
-
 def index_dataset() -> SharadarStockDataset:
     """The unmasked roster store: every bar of every permaticker ever a member.
 
@@ -137,23 +121,23 @@ def index_membership() -> SharadarSP500ConstituentDataset:
 def factors_and_label() -> tuple[list, list]:
     """``([alpha101, alpha158], [label])``; each call builds fresh objects.
 
-    Factors and the label read ``sp500_prices.zarr``, so rolling windows and
+    Factors and the label read ``sharadar_sp500_1d``, so rolling windows and
     returns see no membership gaps. The label is masked by index membership
     on t's date only (``MembershipMaskedLabel``): a stock that leaves the
     index inside the horizon keeps its return at t.
     """
     alpha101 = Alpha101Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(PRICES), mode="batch",
+        warmup_bars=400, dataset=index_dataset(), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS, "alpha101")),
         njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(PRICES), mode="batch",
+        warmup_bars=400, dataset=index_dataset(), mode="batch",
         data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS, "alpha158")),
         njobs=16,
     ))
     label = Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(PRICES), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=index_dataset(), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(store_path(LABELS, f"ret_{HORIZON}")),
         njobs=16,
@@ -161,9 +145,9 @@ def factors_and_label() -> tuple[list, list]:
     return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
 
 
-# %% 1. Prices store
-def prepare_stores() -> None:
-    """Write ``sp500_prices``: the full history of every member ever, unmasked."""
+# %% 1. Input stores
+def check_stores() -> None:
+    """Refuse a data root inside the repository or a missing input store."""
     # The data is licensed for personal use: never write it into the repository.
     if inside_repository([DATA_ROOT], Path(__file__).resolve().parents[2]):
         raise ValueError(
@@ -177,15 +161,6 @@ def prepare_stores() -> None:
                 f"{store} not found; run scripts/sharadar/download.py first "
                 f"(see README.md)."
             )
-    # Every bar up to END: the factors warm up on the history before START.
-    prices = index.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume"]]
-    describe(PRICES, (
-        "# sp500_prices\n\nEvery Sharadar SEP bar of every permaticker ever in the S&P 500, unmasked\n"
-        "(a roster slice of sharadar_sp500_1d). Written by examples/sharadar_us_equity/sp500_xgb.py\n"
-        "and sp500_xgb_mvo.py; their factors and labels read it.\n"
-    ))
-    prices.to_zarr(PRICES, mode="w")
-    logger.info(f"prices {dict(prices.sizes)}")
 
 
 # %% 2. Factors and 3. label
@@ -278,7 +253,7 @@ def backtest(checkpoint: Path):
 
 # %% Run everything
 def main():
-    prepare_stores()
+    check_stores()
     compute_factors()
     return backtest(train())
 

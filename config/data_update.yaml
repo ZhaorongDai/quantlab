@@ -38,10 +38,6 @@ stages:
       - sharadar: {args: [--rebuild-dropped], allow_failure: true, writes: [market/sharadar/, universe/sharadar/]}
       - fred: {series: [DTB3], start: "1954-01-04", store: market/fred/fred_dtb3_1d}
       - benchmarks: {tickers: [vt, spy, acwi], writes: [market/benchmarks/]}
-  - name: market
-    steps:
-      - update: market/sharadar/us3000_backtest_prices_1d
-      - mirror: {store: market/sharadar/us3000_prices, source: market/sharadar/us3000_backtest_prices_1d}
   - name: market-factors
     steps:
       - extend: factors/market/barra_style

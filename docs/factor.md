@@ -519,7 +519,7 @@ styles = BarraStyle(FactorConfig(
     file_path=str(EXPOSURES), factor_names=STYLES,
     kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol},
 ))
-style_features = RosterFactor(RosterConfig(factor=styles, roster=us3000_prices))
+style_features = RosterFactor(RosterConfig(factor=styles, roster=membership))
 ```
 
 ### Build a store that does not fit in memory
@@ -534,7 +534,7 @@ from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.factor.predefined.chunked import ChunkedFactor
 
 alpha158 = Alpha158Stock(FactorConfig(
-    warmup_bars=400, dataset=us3000_prices, mode="batch",
+    warmup_bars=400, dataset=RosterDataset(sep, membership), mode="batch",
     data_columns=("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"),
     file_path="factors/alpha158.zarr", njobs=32,
 ))

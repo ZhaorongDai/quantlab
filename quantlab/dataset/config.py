@@ -20,6 +20,7 @@ its definition.
 """
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from quantlab.core.component import component
 from quantlab.dataset._support.ff48 import FF48_INDUSTRIES
@@ -31,6 +32,9 @@ from quantlab.enums.data import (
     ResampleFrequency,
     Vendor,
 )
+
+if TYPE_CHECKING:
+    from quantlab.dataset.base import BaseDataset, MarketDataset
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -921,6 +925,33 @@ class BadPrintMaskedDatasetConfig(MergedDatasetConfig):
     --------
     >>> cfg = BadPrintMaskedDatasetConfig(datasets=[sep, daily])
     >>> cfg.jump, cfg.volume_ratio, cfg.lookback
+@dataclass(kw_only=True, frozen=True)
+class RosterDatasetConfig(FrozenConfig):
+    """Config of a roster dataset: a dataset read on another dataset's symbols.
+
+    A roster dataset holds no store of its own, so this config has no path,
+    dates or symbols; ``dataset`` and ``roster`` keep their own configs. Both
+    are component fields, so ``to_dict()`` nests their config dicts and
+    ``RosterDataset.from_config`` rebuilds them.
+
+    Examples
+    --------
+    With ``sep`` the Sharadar SEP dataset and ``membership`` a universe's
+    membership dataset:
+
+    >>> cfg = RosterDatasetConfig(dataset=sep, roster=membership)
+    >>> sorted(cfg.to_dict())
+    ['dataset', 'name', 'roster']
+    """
+
+    #: The dataset read: a market-wide store.
+    dataset: "MarketDataset" = component()
+    #: The dataset whose store's symbol axis is the roster.
+    roster: "BaseDataset" = component()
+    #: Dotted import path of the dataset class; filled by the config setter.
+    name: str | None = None
+
+
     (5.0, 20.0, 20)
     """
 

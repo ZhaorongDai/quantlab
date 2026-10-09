@@ -326,7 +326,6 @@ def predict_live_bar(
 
     >>> done = predict_live_bar(
     ...     run_dir, "/data/quantlab/live/sp500_xgb_mvo/live_predictions.zarr",
-    ...     mirrors=["/data/quantlab/market/sharadar/sp500_prices/sp500_prices.zarr"],
     ...     may_lag=["/data/quantlab/market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr"],
     ... )
     >>> done.timestamp
@@ -352,15 +351,17 @@ def predict_live_bar(
 
     backtester = run.rebuild_backtester()
     price = backtester.config.price_dataset
+    # A view (a roster or merged dataset) has no store; name the one its calendar reads.
+    price_store = price._calendar_source()
     t = last_bar(price)
     if t is None:
-        _refuse(f"the price dataset's store {price.store_path} holds no bar", "missing_data")
+        _refuse(f"the price dataset's store {price_store} holds no bar", "missing_data")
     day = bar_label(t)
     predicted = live.bars()
     if t in predicted:
         _refuse(
             f"{day} is already predicted in {live.path}; the last bar of the price "
-            f"dataset ({price.store_path}) is not new, so there is nothing to predict",
+            f"dataset ({price_store}) is not new, so there is nothing to predict",
             "already_predicted",
         )
     if len(predicted) and predicted[-1] > t:
@@ -393,8 +394,8 @@ def predict_live_bar(
                 f"{sorted(leaves)}",
                 "invalid",
             )
-    if _key(price.store_path) in mirrored:
-        _refuse(f"the price dataset's own store {price.store_path} cannot mirror itself", "invalid")
+    if _key(price_store) in mirrored:
+        _refuse(f"the price dataset's own store {price_store} cannot mirror itself", "invalid")
 
     missing = [
         f"{path} ({key}, last bar {bar_label(last) if (last := last_bar(dataset)) is not None else 'none'})"

@@ -39,6 +39,7 @@ from quantlab.backtest.config import CrossSectionBacktestConfig
 from quantlab.backtest.live import LivePredictionRefused, mirror_new_bars, predict_live_bar
 from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStockVectorBt
 from quantlab.dataset.config import ConstituentDatasetConfig, DatasetConfig
+from quantlab.dataset.roster import RosterDataset
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.constant import Date
 from quantlab.factor.config import BaseFactorConfig, PolarsFactorConfig, RosterConfig
@@ -92,13 +93,16 @@ def _vendor_append(full: xr.Dataset, path: Path, bar: int) -> None:
 class Fixture:
     """Stores, a run and the full panels the vendor will append from."""
 
-    def __init__(self, root: Path, view: str | None = None):
+    def __init__(self, root: Path, view: str | None = None, on_roster: bool = False):
         """``view``: the model also reads ``style_a`` of the exposures store
         through a ``RosterFactor``, a read-only view of it; ``"with_owner"``
         keeps the risk model (the store's owner) in the run, ``"alone"``
-        swaps the optimiser for a TopN, so only the view reaches the store."""
+        swaps the optimiser for a TopN, so only the view reaches the store.
+        ``on_roster``: the prices, factor and label read the vendor store on
+        the membership's roster (``RosterDataset``), with no derived copy."""
         self.root = root
         self.view = view
+        self.on_roster = on_roster
         full_config = write_price_store(root / "vendor_full", n_bars=N_BARS, seed=11)
         self.full = xr.open_zarr(full_config.zarr_file_path).load()
         self.bars = self.full["timestamp"].values
@@ -107,8 +111,9 @@ class Fixture:
         # The vendor's index roster store and the derived copy the factors read.
         self.roster = root / "zarrs" / "roster.zarr"
         _write(self.full.isel(timestamp=before), self.roster)
-        self.derived = root / "pipeline" / "prices.zarr"
-        _write(self.prices().panel(Date.START_DATE, Date.END_DATE)[list(DERIVED_COLUMNS)], self.derived)
+        self.derived = None if on_roster else root / "pipeline" / "prices.zarr"
+        if self.derived:
+            _write(self.prices().panel(Date.START_DATE, Date.END_DATE)[list(DERIVED_COLUMNS)], self.derived)
 
         # The risk model's vendor inputs: prices with caps and rate, and exposures.
         rng = np.random.default_rng(195)
@@ -162,8 +167,13 @@ class Fixture:
 
     # -- the components, built fresh each time ------------------------------
 
-    def prices(self) -> StockDataset:
-        return StockDataset(_config(self.roster))
+    def prices(self) -> StockDataset | RosterDataset:
+        vendor = StockDataset(_config(self.roster))
+        return RosterDataset(vendor, self.membership()) if self.on_roster else vendor
+
+    def factor_prices(self) -> StockDataset | RosterDataset:
+        """The factor's and label's prices: the derived copy, or the vendor store on the roster."""
+        return self.prices() if self.on_roster else StockDataset(_config(self.derived))
 
     def membership_config(self) -> ConstituentDatasetConfig:
         return ConstituentDatasetConfig(
@@ -197,13 +207,13 @@ class Fixture:
 
     def factor(self) -> PastReturnFactor:
         return PastReturnFactor(PolarsFactorConfig(
-            warmup_bars=5, dataset=StockDataset(_config(self.derived)), kwargs={"n": 3},
+            warmup_bars=5, dataset=self.factor_prices(), kwargs={"n": 3},
             file_path=str(self.root / "pipeline" / "factor" / "past_ret.zarr"),
         ))
 
     def model(self, save_dir: Path) -> FirstFeatureHead:
         label = ForwardReturnLabel(PolarsFactorConfig(
-            warmup_bars=0, dataset=StockDataset(_config(self.derived)),
+            warmup_bars=0, dataset=self.factor_prices(),
             kwargs={"n_forward_periods": 1},
         ))
         bars = self.bars
@@ -240,7 +250,7 @@ class Fixture:
     def written_stores(self) -> dict[str, Path]:
         risk = self.root / "pipeline" / "risk"
         return {
-            "derived": self.derived,
+            **({"derived": self.derived} if self.derived else {}),
             "factor": Path(self.factor().store_path),
             "exposures": risk / "exposures.zarr",
             "regression": risk / "regression.zarr",
@@ -251,7 +261,8 @@ class Fixture:
         return {name: xr.open_zarr(path).sizes["timestamp"] for name, path in self.written_stores().items()}
 
     def predict(self, **kwargs):
-        return predict_live_bar(self.run_dir, self.live, mirrors=[self.derived], **kwargs)
+        mirrors = [self.derived] if self.derived else []
+        return predict_live_bar(self.run_dir, self.live, mirrors=mirrors, **kwargs)
 
     def vendor_update(self, *, risk: bool = True) -> None:
         bar = N_BARS - 1
@@ -467,3 +478,19 @@ def test_a_new_symbol_rewrites_the_mirror_with_its_history(tmp_path):
     assert mirror_new_bars(source, mirror, last) == "appended"
     assert mirror_new_bars(source, mirror, last) == "current"
     xr.testing.assert_equal(xr.open_zarr(mirror).load(), full[["adjClose", "close"]])
+
+
+def test_a_run_reading_the_vendor_store_on_a_roster_extends_and_predicts(tmp_path):
+    fixture = Fixture(tmp_path / "roster", on_roster=True)
+    factor_store = Path(fixture.factor().store_path)
+    assert NEVER_MEMBER not in xr.open_zarr(factor_store)["symbol"].values  # off the roster
+
+    fixture.vendor_update()
+    done = fixture.predict()
+
+    t = pd.Timestamp(fixture.bars[N_BARS - 1])
+    assert done.timestamp == t and done.record["stores"][str(factor_store.absolute())] == "extended"
+    extended = xr.open_zarr(factor_store).sel(timestamp=[t]).load()
+    fixture.factor().build(_day(fixture.bars[0]), _day(t))
+    xr.testing.assert_identical(extended, xr.open_zarr(factor_store).sel(timestamp=[t]).load())
+    assert LivePredictionStore(fixture.live).row(t)["fwd_ret_1"].notnull().sum() > 0

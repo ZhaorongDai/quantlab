@@ -46,7 +46,10 @@ outputs.
 
 The shipped file updates what the us3000 paper trading reads, plus the base data: every Sharadar
 table, the FRED 3-month T-bill rate, the price-return benchmarks, the Barra exposures, the us3000
-price slices and membership, the us3000 alphas and the USE4 risk stores. WRDS data is not in the
+membership, the us3000 alphas and the USE4 risk stores. The us3000 alphas read Sharadar SEP on
+the membership's roster (`RosterDataset`, see the [dataset guide](dataset.md)), so the update keeps
+no price copy cut to the roster: SEP is brought up by the raw stage and the membership by the
+`universe` stage, both before the `factors` stage. WRDS data is not in the
 daily update; run `scripts/wrds/*.py` when the vendor publishes.
 
 ```bash

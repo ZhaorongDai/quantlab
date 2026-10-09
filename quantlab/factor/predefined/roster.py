@@ -22,6 +22,7 @@ from loguru import logger
 
 from quantlab.factor.base import Factor
 from quantlab.factor.config import RosterConfig
+from quantlab.utils.symbol_axis import on_roster
 
 
 class RosterFactor(Factor):
@@ -219,19 +220,11 @@ class RosterFactor(Factor):
         symbols ``axis`` lacks is logged.
         """
         listed = pd.Index(self.config.roster.stored_symbols())
-        roster = listed
-        if roster.dtype != axis.dtype:
-            if not pd.api.types.is_numeric_dtype(axis.dtype):
-                roster = roster.map(str)
-            else:
-                # A label that is no number of the axis's type cannot be on it.
-                roster = pd.Index(pd.to_numeric(roster, errors="coerce")).dropna()
-                roster = roster[roster == roster.astype(axis.dtype)].astype(axis.dtype)
-        kept = axis[axis.isin(roster)]
+        kept = on_roster(axis, listed)
         dropped = listed.nunique() - len(kept)
         if dropped:
             logger.info(
                 f"{self.class_name}: {dropped} of {listed.nunique()} roster symbol(s) "
                 f"are not in {self.config.factor.class_name}'s panel and are left out."
             )
-        return kept.tolist()
+        return kept

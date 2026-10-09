@@ -157,6 +157,23 @@ Traceback (most recent call last):
 quantlab.dataset.base.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
 ```
 
+### Read a store on a roster
+
+`RosterDataset(dataset, roster)` (`quantlab.dataset.roster`, config `RosterDatasetConfig`) reads `dataset` on a roster: the undated list of symbols a universe computes its factors and labels on, taken from the whole symbol axis of the `roster` dataset's store. A universe reads the vendor's market-wide store through it instead of keeping a copy cut to the roster. The roster is read again on every call, so a membership store used as the roster adds a security the day it first enters. It is cast to the type of the wrapped store's symbol axis; roster symbols the store lacks are left out and counted in an INFO log. `symbols` narrows the roster further, and a symbol off the roster raises `KeyError`.
+
+```python
+>>> prices = RosterDataset(sep, membership)   # text symbol axes: sep '101'..'505'; membership '202', '404', '909'
+>>> prices.stored_symbols()
+['202', '404']
+>>> prices.panel("2024-01-03", "2024-01-04")["adjClose"].to_pandas()
+symbol        202    404
+timestamp
+2024-01-03  106.0  108.0
+2024-01-04  111.0  113.0
+```
+
+The wrapper is a `MarketDataset`, so a factor, a label or a backtest takes it in place of the wrapped dataset with nothing else changed. Its calendar (`calendar`, `bar_before`, `bar_after`), variable names, KunQuant export, `tradable_bars`, `delisting_bars` and `ticker_lookup` are the wrapped dataset's, and `get_config()` rebuilds it through `rebuild`. A cross-sectional factor computed on it standardises over the roster, exactly as on a store cut to the roster. The wrapped dataset records each read in an open `DataRecorder` with the roster as its `symbols`, so a run's data fingerprint covers the roster's cells only. The wrapper has no store: `store_path`, `update`, `save`, `from_raw_data` and `resample` raise `ValueError`; the wrapped store is updated by its own vendor update. A factor store extended on it (`Factor.extend`) gains a symbol that enters the roster as a new column from that bar on; its earlier bars keep the cross-sections they were computed on, so a rebuild over the grown roster differs from the extended store on those bars.
+
 ### Read the anomaly flags
 
 Cleaning runs inside `from_raw_data()`. It checks that the required columns exist, reports nulls, and adds `anomaly_flag`. A cell is flagged when a price is zero or negative, or when `close` moves by more than 50 percent from a positive previous close. Values are never changed, filled or dropped; the flag only marks them. The functions can be called on any panel.

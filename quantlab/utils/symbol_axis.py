@@ -158,3 +158,44 @@ def _coercible(label: object, dtype) -> bool:
     except (TypeError, ValueError):
         return False
     return True
+
+
+def on_roster(axis: pd.Index, roster: Iterable) -> list:
+    """Return the labels of ``axis`` that are on ``roster``, in ``axis`` order.
+
+    A *roster* is an undated list of symbols, often read from another store
+    whose axis has another label type (a text roster against an integer
+    permaticker axis). The roster is cast to ``axis``'s type first: to text
+    for a text axis; for a numeric axis, a roster label that is no number of
+    that type (``"CASH"`` against permatickers) cannot be on it and is left
+    out. Roster labels ``axis`` lacks are left out too; the caller decides
+    whether to report them (``len(set(roster)) - len(result)``).
+
+    Parameters
+    ----------
+    axis : pd.Index
+        The symbol axis of the panel read.
+    roster : iterable
+        The roster's labels, of any type.
+
+    Returns
+    -------
+    list
+        The kept labels of ``axis``, in its order and type.
+
+    Examples
+    --------
+    >>> on_roster(pd.Index([1, 2, 3, 4]), ["2", "4", "CASH"])
+    [2, 4]
+    >>> on_roster(pd.Index(["1", "2", "3"]), [3, 1])
+    ['1', '3']
+    """
+    roster = pd.Index(list(roster))
+    if roster.dtype != axis.dtype:
+        if not pd.api.types.is_numeric_dtype(axis.dtype):
+            roster = roster.map(str)
+        else:
+            # A label that is no number of the axis's type cannot be on it.
+            roster = pd.Index(pd.to_numeric(roster, errors="coerce")).dropna()
+            roster = roster[roster == roster.astype(axis.dtype)].astype(axis.dtype)
+    return axis[axis.isin(roster)].tolist()

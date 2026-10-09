@@ -10,8 +10,8 @@ R223L5C5, rebuilt from library components only:
   cap (``NeutralizedFactor``), and the 12 Barra styles read straight from the
   masked store on the roster (``RosterFactor``; the experiment trained on the
   unmasked ones, ``train-cv`` retrains the CV on them);
-- label: ``MemberReturn``, the open-to-open return from t+1 to t+2 kept where
-  the symbol is a member at t;
+- label: ``Return``, the open-to-open return from t+1 to t+2, kept where the
+  symbol is a member at t (``MembershipMaskedLabel``);
 - model: the experiment's ``XGBoostRegressor`` and walk-forward CV (ten
   expanding folds, one year of tests each, through 2026-10-02), retrained
   on these features, loaded from one fold's checkpoint (the last by
@@ -21,8 +21,10 @@ R223L5C5, rebuilt from library components only:
   CLARABEL, ``style_beta`` and ``style_size`` in [-0.1, 0.1], the 200
   best-predicted candidates, rebalanced every bar.
 
-The roster prices and members are Sharadar slices (``market/sharadar/us3000_*``),
-the membership is ``universe/us3000``, the alphas and label are the us3000
+The roster is the membership store's symbol axis (every security ever in the
+universe since PRICE_START, ``universe/us3000``): the alphas, the label and
+the backtest read Sharadar SEP on it (``RosterDataset``), and it follows the
+membership as securities enter. The alphas and label are the us3000
 universe's (``factors/us3000``, ``labels/us3000``); the CV and the live runs
 are this strategy's (``runs/h1_daily_mvo/us3000``).
 
@@ -37,11 +39,11 @@ Steps::
 
 Every morning ``scripts/data_update/update.py`` (``config/data_update.yaml``) brings
 these stores to the last SEP bar from the ``component.json`` that
-``store-configs`` writes into each store's folder: the roster price store
-(the run's price dataset) and its mirror, the masked Barra store (whose
-``estu`` is the universe and whose styles the model reads), the membership,
-the alphas, the USE4 risk stores, the FRED rate and the benchmarks; the
-paper trading then predicts with ``scripts/live/predict_day.py``. Run on the
+``store-configs`` writes into each store's folder: the masked Barra store
+(whose ``estu`` is the universe and whose styles the model reads), the
+membership, the alphas, the USE4 risk stores and the FRED rate; Sharadar's
+own stores and the benchmarks come from their download scripts. The paper
+trading then predicts with ``scripts/live/predict_day.py``. Run on the
 server with ``QUANTLAB_DATA_DIR=/data/quantlab``.
 """
 
@@ -56,7 +58,6 @@ import argparse
 import json
 from pathlib import Path
 
-import xarray as xr
 from loguru import logger
 
 from quantlab.backtest.config import CrossSectionBacktestConfig
@@ -68,7 +69,6 @@ from quantlab.core.store_folder import save_component
 from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.config import (
     ConstituentDatasetConfig,
-    DatasetConfig,
     FrameDatasetConfig,
     FredRateConfig,
     SharadarDailyConfig,
@@ -81,20 +81,21 @@ from quantlab.dataset.config import (
 from quantlab.dataset.estu import EstuConstituentDataset
 from quantlab.dataset.fred import FredRateDataset
 from quantlab.dataset.memory import FrameDataset
+from quantlab.dataset.roster import RosterDataset
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
 from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
-from quantlab.dataset.stock import StockDataset
 from quantlab.factor.config import FactorConfig, NeutralizedConfig, RosterConfig
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
 from quantlab.factor.predefined.neutralized import NeutralizedFactor
 from quantlab.factor.predefined.roster import RosterFactor
-from quantlab.label.predefined.member_return import MemberReturn
+from quantlab.label.predefined.fret import Return
+from quantlab.label.predefined.membership_mask import MembershipMaskedLabel
 from quantlab.model.config import ModelConfig
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
 from quantlab.model.predefined.xgb import XGBoostRegressor
@@ -106,7 +107,7 @@ from quantlab.risk.predefined.use4 import Use4RiskModel
 from quantlab.tracking.wandb import WandbTracker
 
 DATA_ROOT = get_data_root()
-#: Sharadar's market stores (and the us3000 roster slices), FRED's, the benchmarks.
+#: Sharadar's market stores, FRED's, the benchmarks.
 #: Every store is a folder ``<stem>/`` holding ``<stem>.zarr`` and a short README.md.
 SHARADAR = DATA_ROOT / "market" / "sharadar"
 FRED = DATA_ROOT / "market" / "fred"
@@ -142,11 +143,9 @@ def describe(store: Path, text: str) -> None:
         readme.write_text(text)
 
 
-#: The roster slices of Sharadar SEP: alpha prices, the backtest's prices, the members.
-PRICES = store_path(SHARADAR, "us3000_prices")
-BACKTEST_PRICES = store_path(SHARADAR, "us3000_backtest_prices_1d")
-MEMBERS = store_path(SHARADAR, "us3000_members")
-#: The membership store this recipe maintains.
+#: Sharadar SEP: every security's daily prices, read on the roster.
+SEP = store_path(SHARADAR, "sharadar_sep_1d")
+#: The membership store this recipe maintains; its symbol axis is the roster.
 MEMBERSHIP = store_path(UNIVERSE, "membership_estu")
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
 BENCHMARK = store_path(BENCHMARKS, "sharadar_vt_pr_1d")
@@ -168,10 +167,8 @@ RUN_START, RUN_END = "2026-09-01", "2026-10-02"
 TRACKER = WandbTracker(mode="offline")
 
 
-def stock_dataset(store: Path) -> StockDataset:
-    return StockDataset(DatasetConfig(
-        zarr_file_path=str(store), raw_data_dir_path=str(VENDOR), market="us_equity", frequency="1d",
-    ))
+def sep() -> SharadarStockDataset:
+    return SharadarStockDataset(SharadarDatasetConfig(zarr_file_path=str(SEP), raw_data_dir_path=str(VENDOR)))
 
 
 def sharadar_inputs() -> list:
@@ -180,8 +177,7 @@ def sharadar_inputs() -> list:
         return str(store_path(folder, stem))
 
     return [
-        SharadarStockDataset(SharadarDatasetConfig(
-            zarr_file_path=store("sharadar_sep_1d"), raw_data_dir_path=str(VENDOR))),
+        sep(),
         SharadarDailyDataset(SharadarDailyConfig(
             zarr_file_path=store("sharadar_daily_1d"), raw_data_dir_path=str(VENDOR))),
         SharadarFundamentalsDataset(SharadarFundamentalsConfig(
@@ -214,7 +210,7 @@ def style_features() -> RosterFactor:
         file_path=str(EXPOSURES), factor_names=STYLES,
         kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol}, njobs=64,
     ))
-    return RosterFactor(RosterConfig(factor=styles, roster=stock_dataset(PRICES)))
+    return RosterFactor(RosterConfig(factor=styles, roster=membership()))
 
 
 def membership() -> EstuConstituentDataset:
@@ -230,13 +226,9 @@ def membership() -> EstuConstituentDataset:
     ))
 
 
-def price_dataset() -> SharadarStockDataset:
-    """The roster price store: every security in the universe from PRICE_START to END."""
-    roster = tuple(int(s) for s in xr.open_zarr(PRICES)["symbol"].values)
-    return SharadarStockDataset(SharadarDatasetConfig(
-        zarr_file_path=str(BACKTEST_PRICES), raw_data_dir_path=str(VENDOR),
-        permatickers=roster,
-    ))
+def price_dataset() -> RosterDataset:
+    """SEP on the roster: the alphas', the label's and the backtest's prices."""
+    return RosterDataset(sep(), membership())
 
 
 def features() -> list:
@@ -249,7 +241,7 @@ def features() -> list:
     ]
     alphas = [
         cls(FactorConfig(
-            warmup_bars=400, dataset=stock_dataset(PRICES), mode="batch",
+            warmup_bars=400, dataset=price_dataset(), mode="batch",
             data_columns=ALPHA_COLUMNS, file_path=str(store_path(FACTORS, name)), njobs=64,
         ))
         for cls, name in ((Alpha101Stock, "alpha101"), (Alpha158Stock, "alpha158"))
@@ -264,13 +256,14 @@ def features() -> list:
     return [*neutral, style_features()]
 
 
-def label() -> MemberReturn:
-    return MemberReturn(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(PRICES), mode="batch",
-        data_columns=("adjOpen",),
-        kwargs={"n_forward_periods": HORIZON, "members_store": str(MEMBERS)},
+def label() -> MembershipMaskedLabel:
+    """The return on every roster symbol, kept where the symbol is a member at t."""
+    ret = Return(FactorConfig(
+        warmup_bars=2 * HORIZON + 5, dataset=price_dataset(), mode="batch",
+        data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
         file_path=str(store_path(LABELS, f"ret_{HORIZON}")), njobs=64,
     ))
+    return MembershipMaskedLabel(ret, membership())
 
 
 def model() -> XGBoostRegressor:
@@ -331,7 +324,6 @@ def store_configs() -> dict:
     neutral_alphas = [f for f in features() if isinstance(f, NeutralizedFactor)]
     alphas = [neutral.config.factor for neutral in neutral_alphas]
     components = {
-        BACKTEST_PRICES.parent: price_dataset(),
         store_path(FRED, "fred_dtb3_1d").parent: rate,
         Path(EXPOSURES).parent: masked_barra(),
         MEMBERSHIP.parent: membership(),

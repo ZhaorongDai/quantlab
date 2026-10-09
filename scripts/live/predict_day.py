@@ -39,7 +39,6 @@ Usage on the training server, after ``scripts/sharadar/update.py``::
       .venv/bin/python scripts/live/predict_day.py \\
         /data/quantlab/runs/ibkr_barra_closed_loop/real/backtest/<run> \\
         --store /data/quantlab/live/sp500_xgb_mvo/live_predictions.zarr \\
-        --mirror /data/quantlab/market/sharadar/sp500_prices/sp500_prices.zarr \\
         --may-lag /data/quantlab/market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr
 """
 

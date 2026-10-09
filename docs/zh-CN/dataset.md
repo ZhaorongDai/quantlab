@@ -157,6 +157,23 @@ Traceback (most recent call last):
 quantlab.dataset.base.InsufficientHistoryError: StockDataset.bar_before(): only 1 bar(s) exist before '2024-01-03' in .../data/us_all.zarr, but 2 were requested.
 ```
 
+### 按名单读取 store
+
+`RosterDataset(dataset, roster)`（`quantlab.dataset.roster`，配置为 `RosterDatasetConfig`）按名单读取 `dataset`。名单（roster）是一份不带日期的标的列表，某个 universe 在它上面计算因子和标签；名单取自 `roster` 数据集 store 的整条 symbol 轴。universe 通过它读取供应商的全市场 store，不必再保留一份按名单切出来的副本。每次调用都会重新读取名单，所以用成员表 store 作名单时，一只证券第一次入选的那天就会被加进来。名单会先转换成被包装 store 的 symbol 轴类型；store 里没有的名单标的会被略去，并在一条 INFO 日志里给出数目。`symbols` 在名单内进一步收窄，名单外的标的会抛出 `KeyError`。
+
+```python
+>>> prices = RosterDataset(sep, membership)   # 文本 symbol 轴：sep 有 '101'..'505'；membership 有 '202'、'404'、'909'
+>>> prices.stored_symbols()
+['202', '404']
+>>> prices.panel("2024-01-03", "2024-01-04")["adjClose"].to_pandas()
+symbol        202    404
+timestamp
+2024-01-03  106.0  108.0
+2024-01-04  111.0  113.0
+```
+
+这个包装类本身是一个 `MarketDataset`，因子、标签或回测可以直接用它替换被包装的数据集，其他什么都不用改。它的日历（`calendar`、`bar_before`、`bar_after`）、变量名、KunQuant 导出、`tradable_bars`、`delisting_bars` 和 `ticker_lookup` 都来自被包装的数据集，`get_config()` 可以通过 `rebuild` 重建它。在它上面计算的截面因子在名单内做标准化，结果和在按名单切出的 store 上计算完全一样。被包装的数据集在打开的 `DataRecorder` 里记录每次读取，`symbols` 就是名单，所以运行的数据指纹只覆盖名单内的格子。包装类没有自己的 store：`store_path`、`update`、`save`、`from_raw_data` 和 `resample` 都会抛出 `ValueError`；被包装的 store 由它自己的供应商更新流程负责更新。在它上面延伸（`Factor.extend`）的因子 store，会在一只证券进入名单的那根 bar 起给它加一列；更早的 bar 保留当初计算时的截面，所以名单变大后整段重建的结果，在这些 bar 上和延伸出来的 store 不同。
+
 ### 读取异常标记
 
 清洗在 `from_raw_data()` 内部运行。它检查必需列是否存在，报告空值，并添加 `anomaly_flag`。当某个价格为零或负数，或者 `close` 相对于为正的前一个收盘价变动超过 50% 时，该单元格被标记。数值本身不会被修改、填充或删除，标记只是做记号。这些函数可以对任意面板调用。

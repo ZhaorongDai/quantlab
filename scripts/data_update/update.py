@@ -125,7 +125,7 @@ def stores_read(item) -> set[Path]:
             continue
         try:
             store = part.store_path
-        except ValueError:  # a merged dataset is a view; its inputs are walked too
+        except ValueError:  # a merged or roster dataset is a view; its inputs are walked too
             continue
         if store:
             paths.add(Path(store).absolute())

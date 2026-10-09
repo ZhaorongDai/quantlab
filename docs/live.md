@@ -36,8 +36,7 @@ The run directory is the strategy's recipe: `config.json` rebuilds the backteste
    stores, and the job does not update them. Two options change this:
    - `--may-lag STORE` lets a store end before t. Use it for a rate published the next
      business day and read lagged, such as FRED's DTB3. Its last bar is recorded.
-   - `--mirror STORE` marks a store that copies variables of the price store, such as the
-     example's `prices.zarr`, the store the alpha factors read. It gains the price store's
+   - `--mirror STORE` marks a store that copies variables of the price store. It gains the price store's
      bars after its last bar (`mirror_new_bars`). If the price store has gained a symbol, the
      mirror is instead rewritten from the price store over its own range, so the new symbol
      keeps its history. The rewrite goes through a sidecar and two renames.
@@ -63,7 +62,6 @@ The S&P 500 Barra mean-variance run (`examples/sharadar_us_equity/sp500_xgb_mvo.
 |-------|-----|
 | `market/sharadar/`: `sharadar_sp500_1d` (price dataset), `sharadar_sep_1d`, `sharadar_daily_1d`, `sharadar_sf1_art`, `sharadar_sf1_fiscal_years`, `sharadar_industry_1d`, `sharadar_share_class_1d`; `universe/sharadar/sharadar_sp500_membership` | must hold t (`scripts/sharadar/update.py`) |
 | `market/fred/fred_dtb3_1d` | `--may-lag` |
-| `market/sharadar/sp500_prices` | `--mirror` |
 | `factors/sp500/alpha101`, `factors/sp500/alpha158` | `Factor.extend` |
 | `factors/market/barra_style` | `Factor.extend` |
 | `risk/use4/regression`, then `risk/use4/estimate` | `RiskStore.extend` |
@@ -71,7 +69,10 @@ The S&P 500 Barra mean-variance run (`examples/sharadar_us_equity/sp500_xgb_mvo.
 The us3000 run of `examples/sharadar_us_equity/us3000_h1_mvo.py` reads its 12 style
 features straight from `factors/market/barra_style/barra_style.zarr` through a `RosterFactor`,
 so that store is extended once, by the risk model's exposures factor; the daily data update
-([Daily data update](data_update.md)) extends it first, and the job finds it current.
+([Daily data update](data_update.md)) extends it first, and the job finds it current. Its price
+dataset, alphas and label read `sharadar_sep_1d` on the roster of
+`universe/us3000/membership_estu` (`RosterDataset`): the price dataset is a view, so t is the last
+bar of SEP, and SEP and the membership are its leaf stores. It needs no `--mirror`.
 
 The benchmark (`sharadar_spy_1d.zarr`) and the backtest's own attribution `risk_model` field
 are not inputs of a decision and are not walked.
@@ -138,7 +139,6 @@ QUANTLAB_DATA_DIR=/data/quantlab OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 taskset -c 64-127 \
   .venv/bin/python scripts/live/predict_day.py "$RUN" \
     --store /data/quantlab/live/sp500_xgb_mvo/live_predictions.zarr \
-    --mirror /data/quantlab/market/sharadar/sp500_prices/sp500_prices.zarr \
     --may-lag /data/quantlab/market/fred/fred_dtb3_1d/fred_dtb3_1d.zarr
 ```
 
