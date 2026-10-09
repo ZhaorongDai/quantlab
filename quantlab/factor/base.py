@@ -20,6 +20,7 @@ bars before ``start``, counted on the input dataset's own calendar, and trims
 them off again.
 """
 
+import contextlib
 import copy
 import dataclasses
 import datetime
@@ -244,6 +245,51 @@ class Factor(Component, ABC):
         1
         """
         return len(self.get_factor_names())
+
+    #: How many times its own 8 bytes a variable takes at the peak of a
+    #: computation: the copies, intermediate results and buffers made on the
+    #: way. A rough, conservative figure; see ``cell_bytes``.
+    PEAK_COPIES: int = 4
+
+    def cell_bytes(self) -> tuple[int, int]:
+        """Return the bytes one bar of one symbol takes: at peak, and as output.
+
+        The output is 8 bytes per factor output. The peak counts every
+        input variable the factor reads (``_input_variables``; as many as
+        the outputs when it reads all of them) and every output at 8 bytes,
+        ``PEAK_COPIES`` times over. ``quantlab.factor.predefined.chunked``
+        sizes its chunks with it.
+
+        Returns
+        -------
+        tuple[int, int]
+            ``(peak, output)`` bytes per bar and symbol.
+
+        Examples
+        --------
+        >>> factor.cell_bytes()   # one input column, one output
+        (64, 8)
+        """
+        output = 8 * self.num_factors
+        inputs = self._input_variables()
+        read = output if inputs is None else 8 * len(inputs)
+        return self.PEAK_COPIES * (read + output), output
+
+    @contextlib.contextmanager
+    def keep_compiled(self):
+        """Keep whatever the factor compiles across ``compute`` calls inside the block.
+
+        Does nothing here; ``FactorKunQuant`` keeps its compiled graph, which
+        it otherwise compiles again on every call. A computation split into
+        many calls (``quantlab.factor.predefined.chunked``) runs inside it.
+
+        Examples
+        --------
+        >>> with factor.keep_compiled():
+        ...     january = factor.compute("2024-01-01", "2024-01-31")
+        ...     february = factor.compute("2024-02-01", "2024-02-29")
+        """
+        yield self
 
     @property
     def class_name(self) -> str:

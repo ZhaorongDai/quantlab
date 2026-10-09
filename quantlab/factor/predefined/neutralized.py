@@ -28,7 +28,7 @@ from KunQuant.Stage import Function
 
 from quantlab.factor.base import Factor
 from quantlab.factor.config import NeutralizedConfig
-from quantlab.factor.kunquant import FactorKunQuant, shared_executor
+from quantlab.factor.kunquant import BATCH_OPTIONS, FactorKunQuant, shared_executor
 from quantlab.factor.kunquant_cs import CrossSectionalNeutralize, CrossSectionalZScore
 from quantlab.utils.date_range import check_range
 from quantlab.utils.timer import Timer
@@ -254,7 +254,9 @@ class NeutralizedFactor(Factor):
         module = self.class_name
         with Timer(f" {self.class_name}: make"):
             lib = cfake.compileit(
-                [(module, self._function(), KunCompilerConfig(input_layout="TS", output_layout="TS"))],
+                [(module, self._function(), KunCompilerConfig(
+                    input_layout="TS", output_layout="TS", options=dict(BATCH_OPTIONS)
+                ))],
                 module,
                 cfake.CppCompilerConfig(),
             )

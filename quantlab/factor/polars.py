@@ -56,6 +56,12 @@ class FactorPolars(Factor):
     #: The config class ``from_config`` rebuilds this factor with.
     config_cls = PolarsFactorConfig
 
+    #: The panel goes through a long frame, a pandas frame and back, each a
+    #: copy with index columns: a one-output momentum on us3000 (2723 bars x
+    #: 7625 symbols) peaked at 14 times its input and output at 8 bytes
+    #: (2026-10-09). See ``Factor.cell_bytes``.
+    PEAK_COPIES = 16
+
     #: Index columns, never reported as factor names.
     _INDEX_COLUMNS = ("timestamp", "symbol")
 

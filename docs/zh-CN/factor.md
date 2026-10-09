@@ -522,6 +522,26 @@ styles = BarraStyle(FactorConfig(
 style_features = RosterFactor(RosterConfig(factor=styles, roster=us3000_prices))
 ```
 
+### 构建放不进内存的存储
+
+`ChunkedFactor`（`quantlab.factor.predefined.chunked`）把另一个因子按时间一块一块地计算，用于整段一次算不下的区间。它的配置是 `ChunkedConfig`：`factor` 是被包装的因子，`granularity` 为 `None` 或一个 `TimeChunkPlanner` 周期（`"year"`、`"quarter"`、`"month"`、`"day"`、`"hour"`）。为 `None` 时，若整段的峰值（含 warm-up）放得进可用内存的一半（`memory_budget()`），就整段计算；否则按最大一块放得下的最粗周期切分，连一小时都放不下时抛出 `MemoryError`。每个 bar、每个标的的峰值取被包装因子的 `cell_bytes()`，已在 us3000 上校准（`PEAK_COPIES`：KunQuant 为 1，Polars 为 16，其余为 4）。`build` 对第一块调用被包装因子的 `build`，之后每块调用它的 `extend`，每块都用被包装因子的 `warmup_bars` 预热，所以内存里只有一块，也只有存储的拥有者写存储；中途失败的构建会保留已完成的块，再调用 `extend(end)` 即可续跑。`compute` 返回一整块面板，所以只是计算放不下时，它逐块填入；输出本身就放不下时抛出 `MemoryError`。只沿时间切分，被包装因子的图对所有块只编译一次（`Factor.keep_compiled`）。重采样过的因子会被拒绝：先分块构建它的源因子，再重采样，重采样只读取源存储。各块拼起来与整段一次算出的结果在浮点容差内相同（float32 为 `rtol=1e-5, atol=1e-6`），这依赖于所有 KunQuant 批量图都用 `quantlab.factor.kunquant.BATCH_OPTIONS` 编译。`store_path`、`store_range()` 和 `read` 都是被包装因子的，所以模型读哪个都一样。
+
+在 us3000 上（3103 个 bar x 7625 个标的，按年分块），Alpha158 构建的峰值为 3.0 GB，整段构建为 13.8 GB。
+
+```python
+from quantlab.factor.config import ChunkedConfig, FactorConfig
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.factor.predefined.chunked import ChunkedFactor
+
+alpha158 = Alpha158Stock(FactorConfig(
+    warmup_bars=400, dataset=us3000_prices, mode="batch",
+    data_columns=("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"),
+    file_path="factors/alpha158.zarr", njobs=32,
+))
+ChunkedFactor(ChunkedConfig(factor=alpha158)).build("2016-01-01", "2026-10-02")
+features = alpha158.read("2026-01-02", "2026-10-02")   # 同一个存储
+```
+
 ### 基准 beta
 
 `BenchmarkBeta`（`quantlab.factor.predefined.benchmark_beta`）给出每个标的相对一个单标的基准（例如指数 ETF）的 beta：在截至当根 bar 的 `lookback_bars` 个收益上（默认 252），用带截距的普通最小二乘，把标的的单 bar 收益对基准的单 bar 收益回归，取斜率。任一价格缺失时单 bar 收益为 NaN，只统计两者收益都存在的 bar；不足 `min_bars` 个（默认 120）的窗口为 NaN。配置类是 `BenchmarkBetaConfig`：`dataset` 是各标的的价格，`benchmark` 是恰好只含一个标的的市场数据集，按同样的 bar 读取，`price_column`（默认 `"adjClose"`）是两者读取的价格列。`warmup_bars` 不能小于 `lookback_bars`，这样第一根请求的 bar 才有完整的窗口，默认为 252。唯一的输出是 `beta`，即均值-方差组合用 `exposure_bounds` 控制在 1 附近的那个暴露（见[暴露约束](portfolio.md#暴露约束)）。

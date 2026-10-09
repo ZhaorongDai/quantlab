@@ -7,6 +7,7 @@ factor sets are in ``quantlab/factor/predefined``.
 """
 
 import atexit
+import contextlib
 import datetime
 import sys
 import time
@@ -91,6 +92,17 @@ def _release_executors() -> None:
     _EXECUTORS.clear()
 
 
+#: Options every batch graph is compiled with. KunQuant's ``opt_reduce``
+#: rewrites a windowed sum into a running total (``sum += new - old``) carried
+#: from the first bar computed, so its rounding residue never leaves the
+#: window: a computation started on a later bar, as ``extend`` and
+#: ``quantlab.factor.predefined.chunked`` start one, then differs, by O(1)
+#: where a correlation or z-score divides by a variance that is truly 0.
+#: Without it every output depends only on its window, at about the same
+#: speed (measured on us3000 Alpha101/Alpha158, 2026-10-09).
+BATCH_OPTIONS: dict = {"opt_reduce": False}
+
+
 class FactorKunQuant(Factor):
     """Factor backend that compiles a KunQuant op graph to native code.
 
@@ -134,6 +146,12 @@ class FactorKunQuant(Factor):
     #: The config class ``from_config`` rebuilds this factor with.
     config_cls = FactorConfig
 
+    #: A compiled graph holds its float32 outputs and little else: Alpha101
+    #: and Alpha158 on us3000 (3103 bars x 7625 symbols) peaked at 0.43-0.50
+    #: of their inputs and outputs at 8 bytes (2026-10-09), so 1 leaves about
+    #: a factor of two. See ``Factor.cell_bytes``.
+    PEAK_COPIES = 1
+
     def __init__(self, config: FactorConfig):
         """Initialize the factor; see the class docstring for parameters.
 
@@ -142,6 +160,7 @@ class FactorKunQuant(Factor):
         super().__init__(config)
         self._stream_context: kr.StreamContext = None
         self._lib = None
+        self._keep_lib = False
         self._buffer_name_to_id = dict()
 
     def copy(self) -> Self:
@@ -159,8 +178,32 @@ class FactorKunQuant(Factor):
         other = super().copy()
         other._stream_context = None
         other._lib = None
+        other._keep_lib = False
         other._buffer_name_to_id = dict()
         return other
+
+    @contextlib.contextmanager
+    def keep_compiled(self):
+        """Compile the batch graph once for every ``compute`` inside the block.
+
+        Outside the block each call compiles again and drops the library
+        afterwards; inside it the first call compiles and the library is
+        kept until the block exits. See ``Factor.keep_compiled``.
+
+        Examples
+        --------
+        >>> with factor.keep_compiled():   # compiles once, not twice
+        ...     january = factor.compute("2024-01-01", "2024-01-31")
+        ...     february = factor.compute("2024-02-01", "2024-02-29")
+        >>> factor._lib is None
+        True
+        """
+        self._keep_lib = True
+        try:
+            yield self
+        finally:
+            self._keep_lib = False
+            self._lib = None
 
     def _check_dataset(self) -> None:
         """Refuse a merged or in-memory input in stream mode.
@@ -377,7 +420,7 @@ class FactorKunQuant(Factor):
 
         The graph is compiled if no library is cached, run from bar 0 on an
         executor of ``config.njobs`` threads, and dropped afterwards, so each
-        call compiles again.
+        call compiles again, unless the call runs inside ``keep_compiled``.
         """
         input_dict, symbols, timestamp = self._kunquant_inputs(inputs)
         # Every input is laid out [time, symbol]; any one gives the time count.
@@ -393,7 +436,8 @@ class FactorKunQuant(Factor):
         with Timer(f" {self.__class__.__name__}: cal"):
             out_dict = kr.runGraph(executor, modu, input_dict, 0, num_time)
 
-        self._lib = None
+        if not self._keep_lib:
+            self._lib = None
 
         return self._output_panel(
             self._cut_symbols(out_dict, len(symbols)), timestamp, symbols
@@ -522,6 +566,7 @@ class FactorKunQuant(Factor):
                         KunCompilerConfig(
                             input_layout="TS",
                             output_layout="TS",
+                            options=dict(BATCH_OPTIONS),
                         ),
                     )
                 ],

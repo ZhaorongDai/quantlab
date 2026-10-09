@@ -50,7 +50,7 @@ from KunQuant.Stage import Function
 from loguru import logger
 
 from quantlab.factor.config import FactorConfig
-from quantlab.factor.kunquant import FactorKunQuant
+from quantlab.factor.kunquant import BATCH_OPTIONS, FactorKunQuant
 from quantlab.factor.predefined.residual_momentum import (
     FAMA_FRENCH_COLUMNS,
     compound_onto_bars,
@@ -607,7 +607,7 @@ class LiteratureAlpha(FactorKunQuant):
             input_layout="TS",
             output_layout="TS",
             allow_unaligned=allow_unaligned,
-            options={"no_fast_stat": True},
+            options={"no_fast_stat": True, **BATCH_OPTIONS},
         )
         return cfake.compileit(
             [(module_name, self._get_factor_func(), compiler)],

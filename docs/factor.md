@@ -522,6 +522,26 @@ styles = BarraStyle(FactorConfig(
 style_features = RosterFactor(RosterConfig(factor=styles, roster=us3000_prices))
 ```
 
+### Build a store that does not fit in memory
+
+`ChunkedFactor` (`quantlab.factor.predefined.chunked`) computes another factor one chunk of time at a time, for a range whose computation would not fit in memory at once. Its config is `ChunkedConfig`: `factor` is the wrapped factor and `granularity` is `None` or one `TimeChunkPlanner` period (`"year"`, `"quarter"`, `"month"`, `"day"`, `"hour"`). With `None` the range is computed whole when its peak, warm-up included, fits in half the memory available (`memory_budget()`); otherwise it is cut at the coarsest period whose largest chunk fits, and refused with `MemoryError` when even an hour does not. The peak per bar and symbol is the wrapped factor's `cell_bytes()`, calibrated on us3000 (`PEAK_COPIES`: 1 for KunQuant, 16 for Polars, 4 for anything else). `build` is the wrapped factor's `build` on the first chunk and its `extend` on each later one, each warmed up with the wrapped factor's `warmup_bars`, so only one chunk is in memory and only the store's owner writes the store; a build that fails part way keeps the finished chunks, and `extend(end)` resumes it. `compute` returns one panel, so it fills it chunk by chunk when only the computation would not fit, and raises `MemoryError` when the output alone would not. The chunks are cut along time only and the wrapped factor's graph is compiled once for all of them (`Factor.keep_compiled`). A resampled factor is refused: build its source in chunks, then resample, which only reads the source store. Joined, the chunks equal the whole range computed at once to within floating-point tolerance (float32 `rtol=1e-5, atol=1e-6`), which holds because every KunQuant batch graph compiles with `quantlab.factor.kunquant.BATCH_OPTIONS`. `store_path`, `store_range()` and `read` are the wrapped factor's, so a model reads either.
+
+On us3000 (3103 bars x 7625 symbols, yearly chunks) the Alpha158 build peaked at 3.0 GB against 13.8 GB whole.
+
+```python
+from quantlab.factor.config import ChunkedConfig, FactorConfig
+from quantlab.factor.predefined.alpha158 import Alpha158Stock
+from quantlab.factor.predefined.chunked import ChunkedFactor
+
+alpha158 = Alpha158Stock(FactorConfig(
+    warmup_bars=400, dataset=us3000_prices, mode="batch",
+    data_columns=("adjOpen", "adjHigh", "adjLow", "adjClose", "adjVolume"),
+    file_path="factors/alpha158.zarr", njobs=32,
+))
+ChunkedFactor(ChunkedConfig(factor=alpha158)).build("2016-01-01", "2026-10-02")
+features = alpha158.read("2026-01-02", "2026-10-02")   # the same store
+```
+
 ### Benchmark beta
 
 `BenchmarkBeta` (`quantlab.factor.predefined.benchmark_beta`) gives each symbol's beta on a single-symbol benchmark, such as an index ETF: the slope of the ordinary least-squares regression, with an intercept, of the symbol's one-bar returns on the benchmark's over the `lookback_bars` returns ending at the bar (default 252). A one-bar return is NaN when either price is missing, and only the bars where both returns are present count; a window with fewer than `min_bars` of them (default 120) is NaN. Its config is `BenchmarkBetaConfig`: `dataset` holds the symbols' prices, `benchmark` a market dataset with exactly one symbol, read over the same bars, and `price_column` (default `"adjClose"`) the price both are read from. `warmup_bars` must be at least `lookback_bars`, so the first requested bar has a full window, and defaults to 252. Its one output is `beta`, the exposure a mean-variance book holds near 1 with `exposure_bounds` (see [Exposure bounds](portfolio.md#exposure-bounds)).

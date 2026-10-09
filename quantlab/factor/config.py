@@ -244,3 +244,33 @@ class RosterConfig(BaseFactorConfig):
     factor: "Factor" = component()
     #: The dataset whose store's symbol axis is the roster.
     roster: "BaseDataset" = component()
+
+
+@dataclass(kw_only=True, frozen=True)
+class ChunkedConfig(BaseFactorConfig):
+    """Config of ``quantlab.factor.predefined.chunked.ChunkedFactor``.
+
+    ``factor`` is the factor computed one chunk at a time; it keeps its own
+    config, warm-up and store. ``granularity`` forces the chunks to one
+    calendar period each (a ``TimeChunkPlanner`` granularity); ``None``
+    lets the wrapper choose from the memory available. ``dataset`` is
+    filled with the wrapped factor's dataset.
+
+    Examples
+    --------
+    With ``alpha`` a factor whose store would not fit in memory at once:
+
+    >>> cfg = ChunkedConfig(factor=alpha, granularity="month")
+    >>> cfg.warmup_bars, cfg.file_path
+    (0, None)
+    """
+
+    #: The wrapped factor warms itself up; anything but 0 is refused.
+    warmup_bars: int = 0
+    #: Filled with the wrapped factor's dataset by the factor's config setter.
+    dataset: "MarketDataset | None" = component(default=None)
+    #: The factor computed one chunk at a time.
+    factor: "Factor" = component()
+    #: One ``TimeChunkPlanner`` granularity for every chunk; ``None`` chooses
+    #: the coarsest one whose chunks fit in memory.
+    granularity: str | None = None
