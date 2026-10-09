@@ -16,7 +16,10 @@ on; whether the day is ready is still decided by the ``ready`` stores.
 - ``mirror``: append a source dataset's new bars to a store copying its variables
   (``quantlab.backtest.live.mirror_new_bars``);
 - ``extend``: extend a factor (only the store's owner may) or a factor risk model's
-  regression and estimate stores to t.
+  regression and estimate stores to t;
+- ``run``: any script under the repository, with ``args`` in which ``{data_dir}`` and
+  ``{download_dir}`` are filled in, and ``writes``: the store folders or folder prefixes
+  it writes (``market/wrds/``), which ``--check`` orders against the other steps.
 
 t is the last bar of ``market/sharadar/sharadar_sep_1d`` once the raw stage is done.
 Until every store of the file's ``ready`` list holds t, and t is newer than the last
@@ -33,7 +36,10 @@ Usage::
         --data-dir /data/quantlab --download-dir /data/quantlab/downloads
 
 ``SHARADAR_API_KEY`` must be set for the raw stage. ``--stage NAME`` runs only the
-named stages (repeatable), without the retry; ``--dry-run`` prints the plan.
+named stages (repeatable), without the retry; ``--dry-run`` prints the plan;
+``--check`` downloads and computes nothing: it rebuilds every step's component and
+checks that a factor owns its store and that no step reads a store a later step
+writes, and exits 1 listing the problems.
 """
 
 import argparse
@@ -54,7 +60,9 @@ from loguru import logger
 from quantlab.acquisition.config import AcquisitionConfig
 from quantlab.acquisition.fred import FredAcquisition
 from quantlab.backtest.live import mirror_new_bars
-from quantlab.core.component import rebuild
+from quantlab.core.component import walk_components
+from quantlab.core.store_folder import COMPONENT_FILE, load_component
+from quantlab.dataset.base import BaseDataset
 from quantlab.factor.base import Factor
 from quantlab.risk.base import FactorRiskModel
 from quantlab.utils.cli import add_output_dir_args, resolve_output_dirs
@@ -74,10 +82,16 @@ def store_path(folder: Path) -> Path:
 
 def component(folder: Path):
     """Rebuild the dataset, factor or factor risk model of a store folder from its component.json."""
-    config = folder / "component.json"
-    if not config.is_file():
-        raise FileNotFoundError(f"{config} is missing; write the component's get_config() there")
-    return rebuild(json.loads(config.read_text()))
+    return load_component(folder)
+
+
+def stores_read(item) -> set[Path]:
+    """The stores a component reads: every dataset's and factor's store below it."""
+    paths = set()
+    for _, part in walk_components(item):
+        if isinstance(part, (BaseDataset, Factor)) and getattr(part, "store_path", None):
+            paths.add(Path(part.store_path).absolute())
+    return paths
 
 
 def last_bar(path: Path) -> pd.Timestamp | None:
@@ -129,6 +143,11 @@ class Update:
                      "--sfp-store", str(sfp), "--raw-dir", str(self.download_dir / "sharadar"),
                      "--data-dir", str(self.data_dir), "--refresh")
         return "rebuilt"
+
+    def run(self, script: str, args: list | None = None, writes: list | None = None) -> str:
+        fill = {"data_dir": str(self.data_dir), "download_dir": str(self.download_dir)}
+        self._script(script, *(str(a).format(**fill) for a in (args or [])))
+        return "ran"
 
     def update(self, store: str) -> str:
         if self.dry_run:
@@ -193,6 +212,65 @@ class Update:
             self.steps.append(record)
             logger.info(json.dumps(to_jsonable(record)))
 
+    def writes(self, action: str, kwargs: dict) -> list[str]:
+        """The store folders (or folder prefixes, ending in /) a step writes."""
+        match action:
+            case "sharadar":
+                return ["market/sharadar/", "universe/sharadar/"]
+            case "benchmarks":
+                return ["market/benchmarks/"]
+            case "run":
+                return list(kwargs.get("writes", []))
+            case _:
+                return [kwargs["store"]]
+
+    def check(self) -> list[str]:
+        """Rebuild every step's component and check ownership and order; the problems found."""
+        problems, steps = [], []
+        for stage in self.plan["stages"]:
+            for step in stage["steps"]:
+                (action, value), = step.items()
+                kwargs = {k: v for k, v in (value if isinstance(value, dict) else {"store": value}).items()
+                          if k != "allow_failure"}
+                where = f"{stage['name']}: {action} {kwargs.get('store', kwargs.get('script', ''))}".strip()
+                if not hasattr(self, action) or action in ("check", "writes", "ready", "folder"):
+                    problems.append(f"{where}: unknown action")
+                    continue
+                reads: set[Path] = set()
+                for key in ("store", "source") if action in ("update", "extend", "mirror", "fred") else ():
+                    if key not in kwargs or (action == "mirror" and key == "store"):
+                        continue
+                    folder = self.folder(kwargs[key])
+                    if not (folder / COMPONENT_FILE).is_file():
+                        problems.append(f"{where}: {folder / COMPONENT_FILE} is missing")
+                        continue
+                    try:
+                        item = component(folder)
+                    except Exception as error:
+                        problems.append(f"{where}: {kwargs[key]} does not rebuild: {error!r}")
+                        continue
+                    if action == "extend" and isinstance(item, Factor) and not item.owns_store():
+                        problems.append(f"{where}: the component is not the owner of its store")
+                    if action == "extend" and not isinstance(item, (Factor, FactorRiskModel)):
+                        problems.append(f"{where}: extend takes a factor or a factor risk model")
+                    if action == "update" and not isinstance(item, BaseDataset):
+                        problems.append(f"{where}: update takes a dataset")
+                    own = store_path(folder).absolute()
+                    reads |= {p for p in stores_read(item) | {store_path(folder).absolute()} if p != own}
+                if action == "mirror":
+                    reads.add(store_path(self.folder(kwargs["source"])).absolute())
+                if action == "run" and not (REPO_ROOT / kwargs["script"]).is_file():
+                    problems.append(f"{where}: no script {kwargs['script']}")
+                steps.append((where, reads, self.writes(action, kwargs)))
+        for i, (where, reads, _) in enumerate(steps):
+            for later, _, written in steps[i + 1:]:
+                for target in written:
+                    root = self.folder(target).absolute()
+                    hit = [p for p in reads if p == store_path(root) or (target.endswith("/") and root in p.parents)]
+                    if hit:
+                        problems.append(f"{where} reads {hit[0]}, which a later step writes ({later})")
+        return problems
+
     def ready(self) -> list[str]:
         """The ``ready`` stores that do not hold t."""
         return [s for s in self.plan.get("ready", [])
@@ -214,9 +292,16 @@ def main() -> None:
     parser.add_argument("--retry-minutes", type=int, default=15)
     parser.add_argument("--retry-until", default="08:30", help="New York time, HH:MM.")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--check", action="store_true", help="Check the plan, run nothing.")
     args = parser.parse_args()
     download_dir, data_dir = resolve_output_dirs(args)
     plan = yaml.safe_load(Path(args.config).read_text())
+    if args.check:
+        problems = Update(plan, data_dir, download_dir, dry_run=True).check()
+        for problem in problems:
+            print(f"PROBLEM {problem}")
+        print(f"{len(problems)} problem(s) in {args.config}")
+        sys.exit(1 if problems else 0)
     stages = [s for s in plan["stages"] if not args.stage or s["name"] in args.stage]
     status_path = data_dir / STATUS_FILE
     previous = json.loads(status_path.read_text()) if status_path.exists() else {}

@@ -64,7 +64,7 @@ from quantlab.backtest.predefined.us_equity import (
     USEquityCrossectionSelectStockVectorBt,
 )
 from quantlab.config import get_data_root
-from quantlab.utils.jsonable import to_jsonable
+from quantlab.core.store_folder import save_component
 from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.config import (
     ConstituentDatasetConfig,
@@ -339,7 +339,7 @@ def store_configs() -> dict:
     }
     written = {}
     for folder, item in components.items():
-        (folder / "component.json").write_text(json.dumps(to_jsonable(item.get_config()), indent=2))
+        save_component(item, folder)
         written[str(folder)] = type(item).__name__
     logger.info(json.dumps(written, indent=2))
     return written

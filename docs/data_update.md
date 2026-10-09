@@ -25,6 +25,10 @@ root `--data-dir`. Each step is one action on one store folder (paths relative t
 | `update` | rebuilds the dataset of a store folder from its `component.json` and calls `update()` |
 | `mirror` | appends a source dataset's new bars to a store that copies its variables (`quantlab.backtest.live.mirror_new_bars`) |
 | `extend` | rebuilds a factor, or a factor risk model, from the folder's `component.json` and extends it to t |
+| `run` | runs any script under the repository: `{script: ..., args: [...], writes: [...]}`; `{data_dir}` and `{download_dir}` in `args` are filled in, and `writes` lists the store folders, or folder prefixes ending in `/`, it writes |
+
+A step with `allow_failure: true` that raises is recorded as failed and the run goes on; whether
+the day is ready is still decided by the `ready` stores.
 
 t is the last bar of `market/sharadar/sharadar_sep_1d` once the `raw` stage is done. Until every
 store in the file's `ready` list holds t, and t is newer than the last successful run's, the raw
@@ -45,14 +49,20 @@ QUANTLAB_DATA_DIR=/data/quantlab taskset -c 64-114 .venv/bin/python scripts/data
 ```
 
 `--dry-run` prints the steps without running them; `--stage NAME` (repeatable) runs only those
-stages, without the retry and without writing the status file.
+stages, without the retry and without writing the status file. `--check` downloads and computes
+nothing: it rebuilds every step's component, checks that `update` names a dataset, that `extend`
+names a factor owning its store or a factor risk model, and that no step reads a store a later
+step writes, then prints each problem and exits 1 if there is any. Run it after editing the file.
 
 ## Store configs
 
 A store the update rebuilds holds a `component.json` beside its `README.md`: the component's
-`get_config()`, as JSON. `rebuild` turns it back into the dataset, factor or risk model with every
-nested component, so the update needs no recipe code. A recipe writes the configs of the stores it
-defines; `python examples/sharadar_us_equity/us3000_h1_mvo.py store-configs` writes the us3000 ones.
+`get_config()`, as JSON. `quantlab.core.store_folder.load_component(folder)` turns it back into the
+dataset, factor or risk model with every nested component, so the update needs no recipe code.
+`save_component(component, folder, readme=...)` writes it (and the README): it first checks that
+the config rebuilds into an equal component, so a component held in memory is refused. A recipe
+saves the components of the stores it defines; `python
+examples/sharadar_us_equity/us3000_h1_mvo.py store-configs` saves the us3000 ones.
 
 ## The status file
 
@@ -84,8 +94,9 @@ logs to `<data-dir>/logs/data_update/<date>.log`:
 
 ## Add a store
 
-1. Build the store in its folder (`<category>/<group>/<stem>/<stem>.zarr`) with a short
-   `README.md`.
-2. Write the component's config to `component.json` in the same folder (`json.dumps(to_jsonable(obj.get_config()))`).
-3. Add an `update` or `extend` step to `config/data_update.yaml`, after the steps that update its
-   inputs.
+1. Build the store in its folder (`<category>/<group>/<stem>/<stem>.zarr`) and save its component
+   there: `save_component(factor, folder, readme="# my_factor\n...")`.
+2. Add an `update` or `extend` step to `config/data_update.yaml`, after the steps that update its
+   inputs. A new vendor script that takes `--data-dir` goes in as a `run` step.
+3. Run `scripts/data_update/update.py --check`; it names any missing `component.json`, a factor
+   that does not own its store, or a step placed before the step that writes its inputs.
