@@ -42,7 +42,7 @@ Timestamp('2026-10-07 00:00:00')
 >>> row["ret_5"].dims
 ('symbol',)
 >>> store.record("2026-10-07")["checkpoint"]
-'/data/quantlab/pipeline/sharadar_sp500/models/xgb_mvo/XGBoostRegressor_trial_0/model.joblib'
+'/data/quantlab/runs/sharadar_sp500/models/xgb_mvo/XGBoostRegressor_trial_0/model.joblib'
 """
 
 import dataclasses

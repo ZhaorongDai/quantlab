@@ -110,9 +110,10 @@ DATA_ROOT = get_data_root()
 STORES = DATA_ROOT / "zarrs"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
 FRED_RAW = DATA_ROOT / "downloads" / "fred"
-#: Everything this pipeline writes goes under here; the prices store, the
-#: factors and the return label are shared with sp500_xgb.py.
-WORK = DATA_ROOT / "pipeline" / "sharadar_sp500"
+#: The S&P 500 universe's shared stores (prices, factors, return label), shared
+#: with sp500_xgb.py; this pipeline's models and backtests go under WORK.
+UNIVERSE = DATA_ROOT / "pipeline" / "universes" / "sp500"
+WORK = DATA_ROOT / "runs" / "sharadar_sp500"
 #: Where ``barra_style.py`` wrote the exposures and ``risk_model.py`` the
 #: regression and estimate stores.
 EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
@@ -175,19 +176,19 @@ def factors_and_label() -> tuple[list, list]:
     (``MembershipMaskedLabel``).
     """
     alpha101 = Alpha101Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha101.zarr"),
+        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices.zarr"), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factor" / "alpha101.zarr"),
         njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(WORK / "factor" / "alpha158.zarr"),
+        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices.zarr"), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factor" / "alpha158.zarr"),
         njobs=16,
     ))
     label = Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(WORK / "prices.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(UNIVERSE / "prices.zarr"), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
-        file_path=str(WORK / "label" / f"ret_{HORIZON}.zarr"),
+        file_path=str(UNIVERSE / "label" / f"ret_{HORIZON}.zarr"),
         njobs=16,
     ))
     return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
@@ -297,8 +298,8 @@ def prepare_stores() -> None:
             )
     # Every bar up to END: the factors warm up on the history before START.
     prices = index.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume"]]
-    WORK.mkdir(parents=True, exist_ok=True)
-    prices.to_zarr(WORK / "prices.zarr", mode="w")
+    UNIVERSE.mkdir(parents=True, exist_ok=True)
+    prices.to_zarr(UNIVERSE / "prices.zarr", mode="w")
     logger.info(f"prices {dict(prices.sizes)}")
 
 

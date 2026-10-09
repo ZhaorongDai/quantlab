@@ -12,7 +12,7 @@ The steps, settings and outputs are those of the WRDS script; see [its README](.
 | Benchmark | `wrds_crsp_spy_1d.zarr` | `sharadar_spy_1d.zarr` (`SPY_PERMATICKER`) |
 | Delistings | CRSP's delisting return is on the delisting day's row | settled at the last close; Sharadar has no delisting return |
 | Tracker | `WandbTracker(mode="online")` | `WandbTracker(mode="offline")` |
-| Outputs | `<data root>/data/pipeline/wrds_sp500/` | `<data root>/pipeline/sharadar_sp500/` |
+| Outputs | `<data root>/data/pipeline/wrds_sp500/` | `<data root>/pipeline/universes/sp500/` (prices, factors, label), `<data root>/runs/sharadar_sp500/` (models, backtests) |
 
 ## Prerequisites
 
@@ -24,7 +24,7 @@ uv run python scripts/sharadar/download.py \
     --download-dir /data/quantlab/downloads --zarr-dir /data/quantlab/zarrs
 ```
 
-and point the script at that root: `QUANTLAB_DATA_DIR=/data/quantlab`, or set `DATA_ROOT` at the top of the file. The script reads `<data root>/zarrs/` and writes under `<data root>/pipeline/sharadar_sp500/`. `scripts/sharadar/update.py` keeps the stores current.
+and point the script at that root: `QUANTLAB_DATA_DIR=/data/quantlab`, or set `DATA_ROOT` at the top of the file. The script reads `<data root>/zarrs/` and writes the universe's prices, factors and label under `<data root>/pipeline/universes/sp500/`, its models and backtests under `<data root>/runs/sharadar_sp500/`. `scripts/sharadar/update.py` keeps the stores current.
 
 The data is licensed for personal use: the data root must be outside the repository (the script refuses one inside it), and runs stay off public trackers. The tracker is offline (runs are written to `wandb/` and never uploaded); set it to `"disabled"` to write nothing.
 
@@ -60,7 +60,7 @@ See [Factor risk model](../../docs/developer-guide/risk-model.md) for the method
 
 ## Mean-variance: Ledoit-Wolf against the factor risk model
 
-`sp500_xgb_mvo.py` trains the XGBoost return model of `sp500_xgb.py` (it shares that script's prices store, factors and `ret_5` label under `<data root>/pipeline/sharadar_sp500/`) and backtests it twice over 2020-2024 with the same `MeanVarianceOptimizer` (Grinold expected return, `ic=0.02`, risk aversion 10, turnover penalty, 2% weight cap, long only, rebalanced every 5 bars), once with `LedoitWolfEstimator` (126 one-bar returns) and once with `FactorRiskStoreEstimator` reading the estimate store of `risk_model.py`. The backtest reads the `BarraStyle` exposures from their store through the risk model, and passes `Use4RiskModel` as its `risk_model`, so each run attributes its returns and risk to the USE4 factors (the `factor_attribution` block of `metrics.json`, `factor_attribution.zarr` and the report's Factor attribution tab; see [Attribute returns and risk to factors](../../docs/backtest.md#attribute-returns-and-risk-to-factors)). It then takes each backtest's holdings on every rebalance bar, forecasts their volatility over the next 5 bars with both covariance estimators (`LedoitWolfEstimator` and `FactorRiskStoreEstimator`) and compares the forecasts with the return the holdings made (`bias_statistics`). The two backtests' statistics, their whole-window factor attribution and the forecasts are printed and written to `backtests/xgb_mvo_comparison.json`, the value curves and forecast volatilities plotted in `backtests/xgb_mvo_comparison.png`. It needs the stores of `barra_style.py` and `risk_model.py`.
+`sp500_xgb_mvo.py` trains the XGBoost return model of `sp500_xgb.py` (it shares that script's prices store, factors and `ret_5` label under `<data root>/pipeline/universes/sp500/`) and backtests it twice over 2020-2024 with the same `MeanVarianceOptimizer` (Grinold expected return, `ic=0.02`, risk aversion 10, turnover penalty, 2% weight cap, long only, rebalanced every 5 bars), once with `LedoitWolfEstimator` (126 one-bar returns) and once with `FactorRiskStoreEstimator` reading the estimate store of `risk_model.py`. The backtest reads the `BarraStyle` exposures from their store through the risk model, and passes `Use4RiskModel` as its `risk_model`, so each run attributes its returns and risk to the USE4 factors (the `factor_attribution` block of `metrics.json`, `factor_attribution.zarr` and the report's Factor attribution tab; see [Attribute returns and risk to factors](../../docs/backtest.md#attribute-returns-and-risk-to-factors)). It then takes each backtest's holdings on every rebalance bar, forecasts their volatility over the next 5 bars with both covariance estimators (`LedoitWolfEstimator` and `FactorRiskStoreEstimator`) and compares the forecasts with the return the holdings made (`bias_statistics`). The two backtests' statistics, their whole-window factor attribution and the forecasts are printed and written to `backtests/xgb_mvo_comparison.json`, the value curves and forecast volatilities plotted in `backtests/xgb_mvo_comparison.png`. It needs the stores of `barra_style.py` and `risk_model.py`.
 
 ```bash
 QUANTLAB_DATA_DIR=/data/quantlab uv run python examples/sharadar_us_equity/sp500_xgb_mvo.py

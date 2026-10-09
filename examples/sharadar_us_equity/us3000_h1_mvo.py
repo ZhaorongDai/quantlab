@@ -21,8 +21,9 @@ R223L5C5, rebuilt from library components only:
   CLARABEL, ``style_beta`` and ``style_size`` in [-0.1, 0.1], the 200
   best-predicted candidates, rebalanced every bar.
 
-The prices, alphas and label are the experiment's
-(``pipeline/neutral_cv_wls/us3000`` and ``pipeline/h1_daily_mvo/us3000``).
+The prices, members, alphas and label are the us3000 universe's shared
+stores (``pipeline/universes/us3000``); the CV and the live runs are this
+strategy's (``runs/h1_daily_mvo/us3000``).
 
 Steps::
 
@@ -106,10 +107,10 @@ DATA_ROOT = get_data_root()
 STORES = DATA_ROOT / "zarrs"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
 FRED_RAW = DATA_ROOT / "downloads" / "fred"
-#: The us3000 prices, members, alphas, neutral alphas and Barra subset.
-US3000 = DATA_ROOT / "pipeline" / "neutral_cv_wls" / "us3000"
-#: The one-day label, the walk-forward CV and the live runs.
-H1 = DATA_ROOT / "pipeline" / "h1_daily_mvo" / "us3000"
+#: The us3000 universe's shared stores: prices, members, alphas, neutral alphas, labels.
+US3000 = DATA_ROOT / "pipeline" / "universes" / "us3000"
+#: This strategy's runs: the walk-forward CV and the live runs.
+H1 = DATA_ROOT / "runs" / "h1_daily_mvo" / "us3000"
 #: The Barra exposures (with ``estu``) and USE4 stores, bad prints masked since #223.
 EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
 RISK = DATA_ROOT / "pipeline" / "sharadar_risk"
@@ -118,7 +119,7 @@ MODELS = H1 / "models_223"
 CV_RECORD = H1 / "cv_223.json"
 #: Walk-forward CV: expanding, ten one-year test folds ending on END.
 TRAIN_PERIODS, TEST_PERIODS = 1189, 252
-#: The membership store this recipe maintains (the experiment's own one is frozen).
+#: The membership store this recipe maintains.
 MEMBERSHIP = US3000 / "membership_estu.zarr"
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
 BENCHMARK = STORES / "sharadar_vt_pr_1d.zarr"
@@ -235,7 +236,7 @@ def label() -> MemberReturn:
         warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(US3000 / "prices.zarr"), mode="batch",
         data_columns=("adjOpen",),
         kwargs={"n_forward_periods": HORIZON, "members_store": str(US3000 / "members.zarr")},
-        file_path=str(H1 / "label" / f"ret_{HORIZON}.zarr"), njobs=64,
+        file_path=str(US3000 / "label" / f"ret_{HORIZON}.zarr"), njobs=64,
     ))
 
 
