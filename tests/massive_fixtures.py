@@ -130,3 +130,19 @@ def write_conditions(vendor_root: Path, pulled_at: datetime, records: list[dict]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(CONDITION_RECORDS if records is None else records), encoding="utf-8")
     return path
+
+
+def aggregate_line(ticker: str, start: datetime, o: float, h: float, low: float, c: float, volume: float,
+                   transactions: int) -> str:
+    """One minute-aggregate line; ``start`` is the bar's naive-UTC start. Every value is SYNTHETIC."""
+    return f"{ticker},{volume:g},{o},{c},{h},{low},{ns(start)},{transactions}"
+
+
+def write_aggregates(vendor_root: Path, day: date, lines: list[str], data_type: str = "minute_aggs") -> Path:
+    """Write one day's minute- (or day-) aggregate file into the raw tier."""
+    from quantlab.dataset.massive.raw import raw_file
+
+    path = raw_file(vendor_root, data_type, day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(gzip_text([AGGREGATE_HEADER, *lines]))
+    return path

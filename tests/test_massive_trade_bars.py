@@ -418,3 +418,87 @@ def test_reads_are_fingerprinted_with_the_store_settings(tmp_path):
     other = fingerprint(roster)
     assert other["variable_digests"] == entry["variable_digests"]  # every symbol is on the roster
     assert other["digest"] != entry["digest"]
+
+
+# -- #241: each converted day checked against Massive's minute aggregates -------
+
+
+def _vendor_bars(day: date = HALF_DAY, **changes) -> list[str]:
+    """Massive's minute bars of HALF_DAY agreeing with ours, labelled at their start; ``changes`` edit AAA 14:30."""
+    from tests.massive_fixtures import aggregate_line
+
+    aaa = {"o": 10.0, "h": 11.0, "low": 10.0, "c": 11.0, "volume": 127, "transactions": 3, **changes}
+    return [
+        aggregate_line("AAA", _utc(day, "14:30"), **aaa),  # SYNTHETIC
+        aggregate_line("AAA", _utc(day, "17:59"), 13.0, 13.0, 13.0, 13.0, 30, 1),  # SYNTHETIC
+        aggregate_line("AAA", _utc(day, "18:30"), 14.0, 14.0, 14.0, 14.0, 40, 1),  # after the close: not compared
+        aggregate_line("FFF", _utc(day, "14:34"), 50.0, 50.0, 50.0, 50.0, 5, 1),  # SYNTHETIC
+        aggregate_line("NEW", _utc(day, "14:31"), 21.0, 21.0, 21.0, 21.0, 210, 1),  # SYNTHETIC
+        aggregate_line("RRR", _utc(day, "14:31"), 40.0, 40.0, 40.0, 40.0, 400, 1),  # SYNTHETIC
+        aggregate_line("RRS", _utc(day, "14:31"), 31.0, 31.0, 31.0, 31.0, 310, 1),  # SYNTHETIC
+        aggregate_line("ZZZ", _utc(day, "14:31"), 1.0, 1.0, 1.0, 1.0, 1, 1),  # maps to nothing: not compared
+    ]
+
+
+def _checked(tmp_path, lines) -> dict:
+    import json
+
+    from tests.massive_fixtures import write_aggregates
+
+    ds = _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY)
+    write_aggregates(Path(ds.config.raw_data_dir_path), HALF_DAY, lines)
+    ds.from_raw_data_chunked(granularity="day")
+    return json.loads(ds.stats_path.read_text())["days"]["2024-11-29"]["vendor_check"]
+
+
+def test_a_day_whose_vendor_bars_agree_reports_full_agreement(tmp_path):
+    check = _checked(tmp_path, _vendor_bars())
+    assert check["status"] == "checked"
+    assert (check["ours_bars"], check["vendor_bars"], check["both"], check["ours_volume_only"]) == (6, 6, 6, 0)
+    assert (check["ours_only"], check["vendor_only"]) == (0, 0)
+    assert check["agree"] == {name: 6 for name in ("open", "high", "low", "close", "volume", "n_trades")}
+    assert (check["vendor_outside_session"], check["vendor_unmapped"]) == (1, 1)
+    assert check["worst"] == {}
+
+
+def test_a_deliberate_difference_is_reported_with_its_ticker_and_bar(tmp_path):
+    from tests.massive_fixtures import aggregate_line
+
+    lines = _vendor_bars(c=11.5, volume=120)
+    lines.append(aggregate_line("FFF", _utc(HALF_DAY, "15:00"), 51.0, 51.0, 51.0, 51.0, 9, 1))  # only theirs
+    check = _checked(tmp_path, lines)
+    assert (check["both"], check["vendor_only"], check["ours_only"]) == (6, 1, 0)
+    assert check["agree"]["close"] == 5 and check["agree"]["volume"] == 5 and check["agree"]["open"] == 6
+    worst = check["worst"]["close"]
+    assert (worst["ticker"], worst["permaticker"], worst["bar"]) == ("AAA", 101, "2024-11-29T14:31:00")
+    assert (worst["ours"], worst["vendor"]) == (11.0, 11.5)
+    assert check["worst"]["volume"]["vendor"] == 120.0
+    assert check["vendor_only_sample"] == [{"ticker": "FFF", "permaticker": 505, "bar": "2024-11-29T15:01:00"}]
+
+
+def test_a_day_without_vendor_bars_is_recorded_unchecked(tmp_path):
+    import json
+
+    ds = _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY)
+    ds.from_raw_data_chunked(granularity="day")
+    check = json.loads(ds.stats_path.read_text())["days"]["2024-11-29"]["vendor_check"]
+    assert check == {"status": "no minute aggregates"}
+
+
+def test_a_bar_of_volume_only_trades_is_counted_apart_not_as_a_difference(tmp_path):
+    import json
+
+    from tests.massive_fixtures import aggregate_line, write_aggregates
+
+    ds = _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY)  # writes the fixture raw tier
+    massive = Path(ds.config.raw_data_dir_path)
+    # An odd lot alone in its bar has volume and no price; Massive emits no bar for it.
+    write_trades(massive, HALF_DAY, [
+        trade_line("AAA", _utc(HALF_DAY, "14:30:10"), 10.0, 100, sequence=1),  # SYNTHETIC
+        trade_line("AAA", _utc(HALF_DAY, "14:35:10"), 10.5, 7, conditions="37", sequence=2),  # SYNTHETIC
+    ])
+    write_aggregates(massive, HALF_DAY, [aggregate_line("AAA", _utc(HALF_DAY, "14:30"), 10.0, 10.0, 10.0, 10.0, 100, 1)])
+    ds.from_raw_data_chunked(granularity="day")
+    check = json.loads(ds.stats_path.read_text())["days"]["2024-11-29"]["vendor_check"]
+    assert (check["both"], check["ours_only"], check["ours_volume_only"]) == (1, 0, 1)
+    assert check["agree"]["volume"] == 1

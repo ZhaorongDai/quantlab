@@ -93,6 +93,17 @@ Volumes are floats, so fractional shares are not truncated.
 
 Convert one day per window: a day of the whole market is tens of millions of trades (a 2016 half day, 14 million trades, peaks at about 5 GB of memory).
 
+## Checking against Massive's minute bars
+
+Each converted one-minute day is checked against Massive's own minute aggregates of that day when the raw tier holds them (`quantlab.dataset.massive.vendor_check`), and the result is the day's `vendor_check` entry in the sidecar; a day without them records `{"status": "no minute aggregates"}`. Massive labels a bar at its start, so its bars are shifted one minute onto ours; vendor bars outside the session window, or of a ticker the conversion did not keep, are counted and left out. Massive emits a bar only when it holds a trade that sets a price, so a bar of ours counts as present when it has prices; bars of volume-only trades are counted as `ours_volume_only`. Over the bars present on both sides, `open`, `high`, `low`, `close`, `volume` and `n_trades` are compared for equality, with the count that agree, the bar with the largest difference of each variable (ticker, permaticker, bar, both values) and samples of the bars present on one side only. Differences are reported, never raised.
+
+On the first two days checked:
+
+| day | bars on both sides | only ours / only theirs | open | high | low | close | volume, `n_trades` |
+|---|---|---|---|---|---|---|---|
+| 2016-11-25 | 616,733 | 0 / 0 | 100% | 99.9985% | 99.9998% | 99.9984% | 99.950% |
+| 2016-11-28 | 1,196,672 | 0 / 0 | 100% | 99.9986% | 99.9982% | 99.9980% | 99.964% |
+
 ## Growing the store, other intervals, coarser bars
 
 The store grows one day at a time. A config whose range holds the next day, passed to `update`, appends it; the backfill and a daily update are the same call:

@@ -23,6 +23,12 @@ the dense ``(timestamp, symbol)`` panel the store holds (ADR 0030).
   session, excluded from volume, unmapped tickers, outside the roster) are
   written to the JSON sidecar ``<store>.massive_stats.json``
   (``stats_path``), merged day by day.
+- **Each one-minute day is checked** against Massive's own minute
+  aggregates of that day when the raw tier holds them
+  (``quantlab.dataset.massive.vendor_check``): agreement counts, the worst
+  difference of each variable and the bars present on one side only go to
+  the day's ``vendor_check`` statistics. Differences are reported, never
+  raised.
 - **The store grows a day at a time.** A config whose range holds the
   next day, passed to ``update(granularity="day")``, appends that day: the
   symbol axis is the store's own plus the day's new permatickers (zero
@@ -79,6 +85,7 @@ from quantlab.dataset.massive.raw import (
     latest_conditions,
     raw_days,
     raw_file,
+    read_aggregates,
     read_conditions,
     read_trades,
 )
@@ -90,6 +97,7 @@ from quantlab.dataset.massive.resample import (
     TRADE_STATS_COUNTS,
     TradeBarResampler,
 )
+from quantlab.dataset.massive.vendor_check import NO_MINUTE_AGGREGATES, NOT_ONE_MINUTE, check_minute_bars
 from quantlab.dataset.sharadar.permatickers import PermatickerResolver
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.atomic import write_json_atomically
@@ -333,7 +341,11 @@ class MassiveTradeBarDataset(StockDataset):
         }
         # Every trade of the file: the resampler saw only the mapped, rostered ones.
         day_stats["trades_in"] += day_stats["unmapped_trades"] + outside_roster
-        result = _Day(bars=bars.with_columns(pl.col("symbol").cast(pl.Int64)), stats=day_stats)
+        bars = bars.with_columns(pl.col("symbol").cast(pl.Int64))
+        day_stats["vendor_check"] = self._vendor_check(
+            day, bars, dict(kept.select("ticker", "permaticker").iter_rows()), sessions
+        )
+        result = _Day(bars=bars, stats=day_stats)
         self._days[day] = result
         return result
 
@@ -403,6 +415,27 @@ class MassiveTradeBarDataset(StockDataset):
                 f"settings ({', '.join(f'{key}: {recorded.get(key)!r} there, {wanted.get(key)!r} here' for key in differ)}); "
                 f"bars built under different settings are never mixed. Convert into another store."
             )
+
+    def _vendor_check(self, day: date, bars: pl.DataFrame, mapping: dict[str, int], sessions: pl.DataFrame) -> dict:
+        """Check a one-minute day against Massive's minute aggregates of that day, when present.
+
+        Returns the ``check_minute_bars`` result, or a ``status`` saying why
+        the day was not checked: bars other than one minute, or no
+        minute-aggregate file in the raw tier.
+        """
+        if self.config.bar_interval != "1m":
+            return {"status": NOT_ONE_MINUTE}
+        path = raw_file(self.config.raw_data_dir_path, "minute_aggs", day)
+        if not path.exists():
+            return {"status": NO_MINUTE_AGGREGATES}
+        check = check_minute_bars(bars, read_aggregates(path), mapping, self._resampler.labels(sessions)["timestamp"])
+        both = max(check["both"], 1)
+        logger.info(
+            f"{self.class_name}: {day} against Massive's minute bars: {check['both']} bar(s) on both sides, "
+            f"{check['ours_only']} only ours, {check['vendor_only']} only theirs; close agrees on "
+            f"{check['agree']['close'] / both:.4%}, volume on {check['agree']['volume'] / both:.4%}."
+        )
+        return check
 
     def _write_stats(self, days: dict[date, dict]) -> None:
         """Merge the statistics of ``days`` into the sidecar, with the settings."""
