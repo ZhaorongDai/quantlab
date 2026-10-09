@@ -7,26 +7,30 @@ R223L5C5, rebuilt from library components only:
   (the 3,000 largest domestic common stocks by the previous bar's cap), on
   the #223 bad-print-masked Barra store;
 - features (N1): Alpha101 and Alpha158 neutralised on FF48 industry and log
-  cap (``NeutralizedFactor``), and the 12 Barra styles;
+  cap (``NeutralizedFactor``), and the 12 Barra styles of the masked store
+  (the experiment trained on the unmasked ones; ``feature-barra`` cuts the
+  masked styles for the roster, ``train-cv`` retrains the CV on them);
 - label: ``MemberReturn``, the open-to-open return from t+1 to t+2 kept where
   the symbol is a member at t;
-- model: ``XGBoostRegressor`` of the experiment's walk-forward CV, loaded
-  from one fold's checkpoint (the last fold by default), masked by
-  membership (``MembershipMaskedPredictor``);
+- model: the experiment's ``XGBoostRegressor`` and walk-forward CV (ten
+  expanding folds, one year of tests each, through 2026-10-02), retrained
+  on these features, loaded from one fold's checkpoint (the last by
+  default), masked by membership (``MembershipMaskedPredictor``);
 - portfolio: ``MeanVarianceOptimizer`` over the USE4 factor risk model of
   the #223 stores, lambda 5, kappa 0.002, 5% cap, ``min_trade`` 1e-3,
   CLARABEL, ``style_beta`` and ``style_size`` in [-0.1, 0.1], the 200
   best-predicted candidates, rebalanced every bar.
 
-The stores are the experiment's (``pipeline/neutral_cv_wls/us3000`` and
-``pipeline/h1_daily_mvo/us3000``); this file builds no history, it only
-extends it.
+The prices, alphas and label are the experiment's
+(``pipeline/neutral_cv_wls/us3000`` and ``pipeline/h1_daily_mvo/us3000``).
 
 Steps::
 
-    # Once: the run quantlab-ibkr trades (a plain run() in load mode, so
-    # scripts/live/predict_day.py accepts it).
-    python us3000_h1_mvo.py live-run [--fold N]
+    # Once: the masked styles, the CV, the run quantlab-ibkr trades (a plain
+    # run() in load mode, so scripts/live/predict_day.py accepts it).
+    python us3000_h1_mvo.py feature-barra
+    python us3000_h1_mvo.py train-cv
+    python us3000_h1_mvo.py live-run [--fold N] [--size-bound X] [--beta-bound X]
     # Every morning, after scripts/sharadar/update.py and before predict_day.py:
     python us3000_h1_mvo.py prepare-day
     python scripts/live/predict_day.py <run> --store <live>/live_predictions.zarr \\
@@ -49,6 +53,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import xarray as xr
 from loguru import logger
@@ -74,7 +79,6 @@ from quantlab.dataset.config import (
 from quantlab.dataset.estu import EstuConstituentDataset
 from quantlab.dataset.fred import FredRateDataset
 from quantlab.dataset.memory import FrameDataset
-from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.sharadar.daily import SharadarDailyDataset
 from quantlab.dataset.sharadar.fiscal_years import SharadarFiscalYearsDataset
 from quantlab.dataset.sharadar.fundamentals import SharadarFundamentalsDataset
@@ -109,6 +113,13 @@ H1 = DATA_ROOT / "pipeline" / "h1_daily_mvo" / "us3000"
 #: The Barra exposures (with ``estu``) and USE4 stores, bad prints masked since #223.
 EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
 RISK = DATA_ROOT / "pipeline" / "sharadar_risk"
+#: The 12 masked styles of the roster: the model's Barra features.
+FEATURE_BARRA = US3000 / "factor" / "barra_style_223.zarr"
+#: The CV over the masked features and its record.
+MODELS = H1 / "models_223"
+CV_RECORD = H1 / "cv_223.json"
+#: Walk-forward CV: expanding, ten one-year test folds ending on END.
+TRAIN_PERIODS, TEST_PERIODS = 1189, 252
 #: The membership store this recipe maintains (the experiment's own one is frozen).
 MEMBERSHIP = US3000 / "membership_estu.zarr"
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
@@ -170,11 +181,11 @@ def masked_barra() -> BarraStyle:
 
 
 def feature_barra() -> BarraStyle:
-    """The 12 styles the model was trained on: unmasked inputs, the us3000 store."""
+    """The model's 12 styles: the masked BarraStyle, written for the roster to ``FEATURE_BARRA``."""
     return BarraStyle(FactorConfig(
-        warmup_bars=PARAMETERS.warmup_bars, dataset=MergedDataset(sharadar_inputs()),
+        warmup_bars=PARAMETERS.warmup_bars, dataset=BadPrintMaskedDataset(sharadar_inputs()),
         mode="batch", data_columns=PARAMETERS.panel_columns,
-        file_path=str(US3000 / "factor" / "barra_style.zarr"), factor_names=STYLES,
+        file_path=str(FEATURE_BARRA), factor_names=STYLES,
         kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol}, njobs=64,
     ))
 
@@ -233,7 +244,7 @@ def model() -> XGBoostRegressor:
     """The experiment's XGBoost (its hyperparameters; the checkpoint carries the fit)."""
     return XGBoostRegressor(ModelConfig(
         tracker=TRACKER, factors=features(), labels=[label()],
-        model_save_dir=str(H1 / "models"), factor_data_strategy="read", label_data_strategy="read",
+        model_save_dir=str(MODELS), factor_data_strategy="read", label_data_strategy="read",
         start_date=START, end_date=END, train_start=START, train_end="2019-12-31",
         test_start="2020-01-01", test_end=END, val_size=0.2,
         hyperparameters={"training_target": "cs_rank", "early_stopping": True, "early_stopping_patience": 50,
@@ -252,7 +263,35 @@ def risk_model() -> Use4RiskModel:
 
 
 def cv_record() -> dict:
-    return json.loads((H1 / "cv.json").read_text())
+    return json.loads(CV_RECORD.read_text())
+
+
+# %% Once: the masked styles and the CV
+def cut_feature_barra() -> dict:
+    """Write the roster's 12 styles from the masked store over START..END, with their range."""
+    roster = xr.open_zarr(US3000 / "prices.zarr")["symbol"].values
+    full = xr.open_zarr(EXPOSURES)
+    keep = np.intersect1d(roster, full["symbol"].values)
+    subset = full[list(STYLES)].sel(timestamp=slice(START, END), symbol=keep).load()
+    for name in subset.data_vars:
+        subset[name].encoding = {}
+    FEATURE_BARRA.parent.mkdir(parents=True, exist_ok=True)
+    subset.to_zarr(FEATURE_BARRA, mode="w")
+    Path(f"{FEATURE_BARRA}.range.json").write_text(json.dumps({"start": START, "end": END}))
+    done = {"store": str(FEATURE_BARRA), "sizes": dict(subset.sizes), "missing_from_barra": int(len(roster) - len(keep))}
+    logger.info(json.dumps(done))
+    return done
+
+
+def train_cv() -> dict:
+    """The experiment's walk-forward CV over these features; its record goes to ``CV_RECORD``."""
+    cv = model().collect().train_cv(train_periods=TRAIN_PERIODS, expanding=True, test_periods=TEST_PERIODS)
+    record = {"path": str(cv.path), "cv_mean": cv.cv_mean, "folds": [
+        {"index": f.index, "test": [str(d)[:10] for d in f.test_window], "metrics": f.metrics} for f in cv.folds
+    ]}
+    CV_RECORD.write_text(json.dumps(record, indent=2, default=str))
+    logger.info(f"CV {cv.path}: {json.dumps(cv.cv_mean, default=str)[:600]}")
+    return record
 
 
 def fold_checkpoint(fold: int | None) -> Path:
@@ -339,6 +378,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="step", required=True)
     sub.add_parser("prepare-day")
+    sub.add_parser("feature-barra")
+    sub.add_parser("train-cv")
     run = sub.add_parser("live-run")
     run.add_argument("--fold", type=int, default=None)
     run.add_argument("--all-candidates", action="store_true", help="candidate_top_k=None (every member)")
@@ -348,6 +389,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.step == "prepare-day":
         prepare_day()
+    elif args.step == "feature-barra":
+        cut_feature_barra()
+    elif args.step == "train-cv":
+        train_cv()
     else:
         top_k = None if args.all_candidates else OPTIMISER["candidate_top_k"]
         print(live_run(args.fold, top_k, size_bound=args.size_bound or None, beta_bound=args.beta_bound or None))
