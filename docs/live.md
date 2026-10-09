@@ -61,8 +61,8 @@ The S&P 500 Barra mean-variance run (`examples/sharadar_us_equity/sp500_xgb_mvo.
 |-------|-----|
 | `zarrs/sharadar_sp500_1d.zarr` (price dataset), `sharadar_sep_1d.zarr`, `sharadar_daily_1d.zarr`, `sharadar_sf1_art.zarr`, `sharadar_sf1_fiscal_years.zarr`, `sharadar_industry_1d.zarr`, `sharadar_share_class_1d.zarr`, `sharadar_sp500_membership.zarr` | must hold t (`scripts/sharadar/update.py`) |
 | `zarrs/fred_dtb3_1d.zarr` | `--may-lag` |
-| `pipeline/universes/sp500/prices.zarr` | `--mirror` |
-| `pipeline/universes/sp500/factor/alpha101.zarr`, `alpha158.zarr` | `Factor.extend` |
+| `pipeline/universes/sp500/prices/prices.zarr` | `--mirror` |
+| `pipeline/universes/sp500/factors/alpha101/alpha101.zarr`, `factors/alpha158/alpha158.zarr` | `Factor.extend` |
 | `pipeline/sharadar_barra/barra_style.zarr` | `Factor.extend` |
 | `pipeline/sharadar_risk/regression.zarr`, then `estimate.zarr` | `RiskStore.extend` |
 
@@ -134,7 +134,7 @@ QUANTLAB_DATA_DIR=/data/quantlab OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
   MKL_NUM_THREADS=1 taskset -c 64-127 \
   .venv/bin/python scripts/live/predict_day.py "$RUN" \
     --store /data/quantlab/live/sp500_xgb_mvo/live_predictions.zarr \
-    --mirror /data/quantlab/pipeline/universes/sp500/prices.zarr \
+    --mirror /data/quantlab/pipeline/universes/sp500/prices/prices.zarr \
     --may-lag /data/quantlab/zarrs/fred_dtb3_1d.zarr
 ```
 

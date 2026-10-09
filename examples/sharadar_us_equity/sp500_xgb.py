@@ -63,6 +63,7 @@ from quantlab.utils.cli import inside_repository
 DATA_ROOT = get_data_root()
 STORES = DATA_ROOT / "zarrs"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
+#: Each shared store is a folder ``<name>/`` holding ``<name>.zarr`` and a short README.md.
 #: The S&P 500 universe's shared stores (prices, factors, return label), and
 #: this pipeline's models and backtests.
 UNIVERSE = DATA_ROOT / "pipeline" / "universes" / "sp500"
@@ -121,19 +122,19 @@ def factors_and_label() -> tuple[list, list]:
     index inside the horizon keeps its return at t.
     """
     alpha101 = Alpha101Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factor" / "alpha101.zarr"),
+        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices" / "prices.zarr"), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factors" / "alpha101" / "alpha101.zarr"),
         njobs=16,
     ))
     alpha158 = Alpha158Stock(FactorConfig(
-        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices.zarr"), mode="batch",
-        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factor" / "alpha158.zarr"),
+        warmup_bars=400, dataset=stock_dataset(UNIVERSE / "prices" / "prices.zarr"), mode="batch",
+        data_columns=ALPHA_COLUMNS, file_path=str(UNIVERSE / "factors" / "alpha158" / "alpha158.zarr"),
         njobs=16,
     ))
     label = Return(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(UNIVERSE / "prices.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(UNIVERSE / "prices" / "prices.zarr"), mode="batch",
         data_columns=("adjOpen",), kwargs={"n_forward_periods": HORIZON},
-        file_path=str(UNIVERSE / "label" / f"ret_{HORIZON}.zarr"),
+        file_path=str(UNIVERSE / "labels" / f"ret_{HORIZON}" / f"ret_{HORIZON}.zarr"),
         njobs=16,
     ))
     return [alpha101, alpha158], [MembershipMaskedLabel(label, index_membership())]
@@ -157,8 +158,8 @@ def prepare_stores() -> None:
             )
     # Every bar up to END: the factors warm up on the history before START.
     prices = index.panel(Date.START_DATE, END)[[*ALPHA_COLUMNS, "close", "volume"]]
-    UNIVERSE.mkdir(parents=True, exist_ok=True)
-    prices.to_zarr(UNIVERSE / "prices.zarr", mode="w")
+    (UNIVERSE / "prices").mkdir(parents=True, exist_ok=True)
+    prices.to_zarr(UNIVERSE / "prices" / "prices.zarr", mode="w")
     logger.info(f"prices {dict(prices.sizes)}")
 
 

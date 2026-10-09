@@ -108,6 +108,7 @@ STORES = DATA_ROOT / "zarrs"
 VENDOR = DATA_ROOT / "downloads" / "sharadar"
 FRED_RAW = DATA_ROOT / "downloads" / "fred"
 #: The us3000 universe's shared stores: prices, members, alphas, neutral alphas, labels.
+#: Each is a folder ``<name>/`` holding ``<name>.zarr`` and a short README.md.
 US3000 = DATA_ROOT / "pipeline" / "universes" / "us3000"
 #: This strategy's runs: the walk-forward CV and the live runs.
 H1 = DATA_ROOT / "runs" / "h1_daily_mvo" / "us3000"
@@ -119,8 +120,15 @@ MODELS = H1 / "models_223"
 CV_RECORD = H1 / "cv_223.json"
 #: Walk-forward CV: expanding, ten one-year test folds ending on END.
 TRAIN_PERIODS, TEST_PERIODS = 1189, 252
+
+
+def shared_store(folder: Path, name: str) -> Path:
+    """A shared store: ``<folder>/<name>/<name>.zarr``, beside its README.md."""
+    return folder / name / f"{name}.zarr"
+
+
 #: The membership store this recipe maintains.
-MEMBERSHIP = US3000 / "membership_estu.zarr"
+MEMBERSHIP = shared_store(US3000, "membership_estu")
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
 BENCHMARK = STORES / "sharadar_vt_pr_1d.zarr"
 
@@ -187,7 +195,7 @@ def style_features() -> RosterFactor:
         file_path=str(EXPOSURES), factor_names=STYLES,
         kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol}, njobs=64,
     ))
-    return RosterFactor(RosterConfig(factor=styles, roster=stock_dataset(US3000 / "prices.zarr")))
+    return RosterFactor(RosterConfig(factor=styles, roster=stock_dataset(shared_store(US3000, "prices"))))
 
 
 def membership() -> EstuConstituentDataset:
@@ -199,9 +207,9 @@ def membership() -> EstuConstituentDataset:
 
 def price_dataset() -> SharadarStockDataset:
     """The roster price store: every security in the universe from PRICE_START to END."""
-    roster = tuple(int(s) for s in xr.open_zarr(US3000 / "prices.zarr")["symbol"].values)
+    roster = tuple(int(s) for s in xr.open_zarr(shared_store(US3000, "prices"))["symbol"].values)
     return SharadarStockDataset(SharadarDatasetConfig(
-        zarr_file_path=str(US3000 / "backtest_prices_1d.zarr"), raw_data_dir_path=str(VENDOR),
+        zarr_file_path=str(shared_store(US3000, "backtest_prices_1d")), raw_data_dir_path=str(VENDOR),
         permatickers=roster,
     ))
 
@@ -216,15 +224,15 @@ def features() -> list:
     ]
     alphas = [
         cls(FactorConfig(
-            warmup_bars=400, dataset=stock_dataset(US3000 / "prices.zarr"), mode="batch",
-            data_columns=ALPHA_COLUMNS, file_path=str(US3000 / "factor" / f"{name}.zarr"), njobs=64,
+            warmup_bars=400, dataset=stock_dataset(shared_store(US3000, "prices")), mode="batch",
+            data_columns=ALPHA_COLUMNS, file_path=str(shared_store(US3000 / "factors", name)), njobs=64,
         ))
         for cls, name in ((Alpha101Stock, "alpha101"), (Alpha158Stock, "alpha158"))
     ]
     neutral = [
         NeutralizedFactor(NeutralizedConfig(
             factor=alpha, dataset=exposures, regressors=("industry", "size"),
-            file_path=str(US3000 / "factor" / f"{Path(alpha.config.file_path).stem}_neutral.zarr"), njobs=64,
+            file_path=str(shared_store(US3000 / "factors", f"{Path(alpha.config.file_path).stem}_neutral")), njobs=64,
         ))
         for alpha in alphas
     ]
@@ -233,10 +241,10 @@ def features() -> list:
 
 def label() -> MemberReturn:
     return MemberReturn(FactorConfig(
-        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(US3000 / "prices.zarr"), mode="batch",
+        warmup_bars=2 * HORIZON + 5, dataset=stock_dataset(shared_store(US3000, "prices")), mode="batch",
         data_columns=("adjOpen",),
-        kwargs={"n_forward_periods": HORIZON, "members_store": str(US3000 / "members.zarr")},
-        file_path=str(US3000 / "label" / f"ret_{HORIZON}.zarr"), njobs=64,
+        kwargs={"n_forward_periods": HORIZON, "members_store": str(shared_store(US3000, "members"))},
+        file_path=str(shared_store(US3000 / "labels", f"ret_{HORIZON}")), njobs=64,
     ))
 
 

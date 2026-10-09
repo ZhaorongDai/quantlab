@@ -326,7 +326,7 @@ def predict_live_bar(
 
     >>> done = predict_live_bar(
     ...     run_dir, "/data/quantlab/live/sp500_xgb_mvo/live_predictions.zarr",
-    ...     mirrors=["/data/quantlab/pipeline/universes/sp500/prices.zarr"],
+    ...     mirrors=["/data/quantlab/pipeline/universes/sp500/prices/prices.zarr"],
     ...     may_lag=["/data/quantlab/zarrs/fred_dtb3_1d.zarr"],
     ... )
     >>> done.timestamp
