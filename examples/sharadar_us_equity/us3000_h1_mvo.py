@@ -39,7 +39,7 @@ Steps::
 ``prepare-day`` brings to the last SEP bar the stores ``predict_day.py``
 does not extend: the roster price store (the run's price dataset), the full
 masked Barra store (whose ``estu`` is the universe), the model's style
-store (a slice of it) and the membership. Run
+store (a slice of it), the membership and the price-return VT benchmark. Run
 it on the server with ``QUANTLAB_DATA_DIR=/data/quantlab``.
 """
 
@@ -326,6 +326,22 @@ def append_feature_barra() -> int:
     return int(new.sizes["timestamp"])
 
 
+def refresh_benchmark() -> None:
+    """Rebuild the price-return VT benchmark from the (updated) SFP store.
+
+    quantlab-ibkr reads a live day's benchmark from this store, so it must
+    hold every bar the trader marks.
+    """
+    import subprocess
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "sharadar" / "price_return_benchmark.py"
+    subprocess.run(
+        [sys.executable, str(script), "--tickers", "vt", "--sfp-store", str(STORES / "sharadar_sfp_1d.zarr"),
+         "--raw-dir", str(VENDOR), "--zarr-dir", str(STORES), "--refresh"],
+        check=True,
+    )
+
+
 # %% Every morning: the stores predict_day.py does not extend
 def prepare_day() -> dict:
     prices = price_dataset()
@@ -339,6 +355,7 @@ def prepare_day() -> dict:
     styles = append_feature_barra()
     members = membership()
     members.update()
+    refresh_benchmark()
     done = {
         "feature_barra_appended": styles,
         "t": str(last.date()),
