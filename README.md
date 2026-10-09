@@ -205,7 +205,8 @@ below come from the WRDS examples.
 `Factor.analyze()` pairs every factor with every forward-return label and writes one
 alphalens-style figure per pair: the information coefficient (IC) over time, its
 distribution, monthly mean IC, returns by quantile, the long-short curve, turnover and rank
-autocorrelation, plus a summary table and tidy CSVs. With two or more factors it also
+autocorrelation at several lags, plus a summary table (with the Newey-West t-statistic and
+the long-short's return, volatility, Sharpe ratio and drawdown) and tidy CSVs. With two or more factors it also
 clusters them by their mean rank correlation. This is `MIN5` from the Alpha158 set, the
 5-day low relative to the close, against the 5-day open-to-open forward return on every
 common stock in CRSP, about 7,200 symbols including the delisted ones, 2012 to 2024.
