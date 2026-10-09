@@ -290,7 +290,7 @@ def prepare_day() -> dict:
 def live_run(
     fold: int | None,
     candidate_top_k: int | None = OPTIMISER["candidate_top_k"],
-    size_bound: bool = True,
+    size_bound: float | None = 0.1,
 ) -> Path:
     """A plain run() of R223L5C5 in load mode with one fold's checkpoint, over RUN_START..RUN_END.
 
@@ -298,12 +298,16 @@ def live_run(
     the 200 best-predicted names are mostly small caps, and a fully invested
     book capped at 5% a name cannot hold ``style_size`` above -0.1 with them
     (the backtest's first bars from cash were infeasible too; later its held
-    mega caps stayed candidates). ``size_bound=False`` drops the
-    ``style_size`` bound instead (the experiment's R223L5C5NS).
+    mega caps stayed candidates). ``size_bound`` widens the ``style_size``
+    bound to ``[-size_bound, size_bound]`` instead (0.75 was feasible from
+    an empty book on every bar of the year to 2026-10-02, 0.1 on 62% of
+    them), and ``None`` drops it (the experiment's R223L5C5NS).
     """
     bounds = dict(OPTIMISER["exposure_bounds"])
-    if not size_bound:
+    if size_bound is None:
         bounds.pop("style_size")
+    else:
+        bounds["style_size"] = (-size_bound, size_bound)
     if not MEMBERSHIP.exists():
         membership().update()
     optimiser = MeanVarianceOptimizer(MeanVarianceConfig(
@@ -332,13 +336,14 @@ def main() -> None:
     run = sub.add_parser("live-run")
     run.add_argument("--fold", type=int, default=None)
     run.add_argument("--all-candidates", action="store_true", help="candidate_top_k=None (every member)")
-    run.add_argument("--no-size-bound", action="store_true", help="drop the style_size bound (R223L5C5NS)")
+    run.add_argument("--size-bound", type=float, default=0.1,
+                     help="style_size in [-x, x]; 0 drops the bound (R223L5C5NS)")
     args = parser.parse_args()
     if args.step == "prepare-day":
         prepare_day()
     else:
         top_k = None if args.all_candidates else OPTIMISER["candidate_top_k"]
-        print(live_run(args.fold, top_k, size_bound=not args.no_size_bound))
+        print(live_run(args.fold, top_k, size_bound=args.size_bound or None))
 
 
 if __name__ == "__main__":
