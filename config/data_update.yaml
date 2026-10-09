@@ -3,20 +3,25 @@
 # data root (--data-dir). A store folder named by `update` or `extend` holds the store,
 # a README.md and a component.json (the component's get_config(), rebuilt with
 # quantlab.core.component.rebuild); `update` calls the dataset's update(), `extend`
-# extends a factor or a factor risk model to t, the last bar of the SEP store once
+# extends a factor or a factor risk model to t, the last bar of the `calendar` store once
 # the raw stage is done. When it finishes, the script writes <data-dir>/update_status.json,
-# which the paper trading waits for.
+# which the paper trading waits for (docs/data_update.md).
 #
 # Actions:
 #   sharadar:   scripts/sharadar/update.py (every Sharadar table to market/ and universe/)
-#   fred:       download the FRED series, then update the store in that folder
+#   fred:       download the FRED series from `start` (required), then update the store in that folder
 #   benchmarks: scripts/sharadar/price_return_benchmark.py --refresh for the tickers
 #   update:     a dataset rebuilt from <folder>/component.json, update()
 #   mirror:     append the source dataset's new bars to a store copying its variables
 #   extend:     a factor or factor risk model rebuilt from <folder>/component.json, to t
-#   run:        any repository script: {script: ..., args: [... {data_dir} ...], writes: [folders]}
+#   run:        any repository script: {script: ..., args: [... {data_dir} ...], writes: [...], reads: [...]}
+# `writes` (sharadar, benchmarks, run) and `reads` (run) list store folders or folder prefixes
+# ending in /; the other actions write their `store`. --check orders reads against later writes.
 # After editing, run `scripts/data_update/update.py --check`.
 # A step with `allow_failure: true` is recorded as failed when it raises, and the run goes on.
+
+# The store whose last bar, after the raw stage, is the day t everything is brought to.
+calendar: market/sharadar/sharadar_sep_1d
 
 # Stores that must hold t after the raw stage; until they do, the raw stage is retried.
 ready:
@@ -30,9 +35,9 @@ stages:
   - name: raw
     steps:
       # A table no strategy reads failing (a vendor hiccup) must not hold the day; the ready stores decide.
-      - sharadar: {args: [--rebuild-dropped], allow_failure: true}
+      - sharadar: {args: [--rebuild-dropped], allow_failure: true, writes: [market/sharadar/, universe/sharadar/]}
       - fred: {series: [DTB3], start: "1954-01-04", store: market/fred/fred_dtb3_1d}
-      - benchmarks: {tickers: [vt, spy, acwi]}
+      - benchmarks: {tickers: [vt, spy, acwi], writes: [market/benchmarks/]}
   - name: market
     steps:
       - update: market/sharadar/us3000_backtest_prices_1d

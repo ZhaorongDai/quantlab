@@ -327,14 +327,16 @@ def store_configs() -> dict:
     ``scripts/data_update/update.py`` rebuilds the dataset, factor or risk model from it
     (``quantlab.core.component.rebuild``) and updates or extends it.
     """
-    neutral = features()[:2]
+    rate = next(d for d in sharadar_inputs() if isinstance(d, FredRateDataset))
+    neutral_alphas = [f for f in features() if isinstance(f, NeutralizedFactor)]
+    alphas = [neutral.config.factor for neutral in neutral_alphas]
     components = {
         BACKTEST_PRICES.parent: price_dataset(),
-        store_path(FRED, "fred_dtb3_1d").parent: sharadar_inputs()[-1],
+        store_path(FRED, "fred_dtb3_1d").parent: rate,
         Path(EXPOSURES).parent: masked_barra(),
         MEMBERSHIP.parent: membership(),
-        **{Path(f.config.file_path).parent: f for f in neutral},
-        **{Path(f.config.factor.config.file_path).parent: f.config.factor for f in neutral},
+        **{Path(neutral.config.file_path).parent: neutral for neutral in neutral_alphas},
+        **{Path(alpha.config.file_path).parent: alpha for alpha in alphas},
         RISK: risk_model(),
     }
     written = {}

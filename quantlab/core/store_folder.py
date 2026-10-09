@@ -51,11 +51,11 @@ def save_component(component: Any, folder: "str | Path", readme: str | None = No
 
     Examples
     --------
-    >>> save_component(alpha101, "/data/quantlab/factors/us3000/alpha101",
-    ...                readme="# alpha101\\nAlpha101 on the us3000 roster.")
-    PosixPath('/data/quantlab/factors/us3000/alpha101/component.json')
-    >>> load_component("/data/quantlab/factors/us3000/alpha101") == alpha101
-    True
+    Needs a built store under the data root, so it is not run here::
+
+        save_component(alpha101, "/data/quantlab/factors/us3000/alpha101",
+                       readme="# alpha101\\nAlpha101 on the us3000 roster.")
+        load_component("/data/quantlab/factors/us3000/alpha101") == alpha101
     """
     text = json.dumps(to_jsonable(component.get_config()), indent=2)
     try:
@@ -99,8 +99,9 @@ def load_component(folder: "str | Path") -> Any:
 
     Examples
     --------
-    >>> type(load_component("/data/quantlab/risk/use4")).__name__
-    'Use4RiskModel'
+    Needs a store folder under the data root, so it is not run here::
+
+        risk_model = load_component("/data/quantlab/risk/use4")
     """
     path = Path(folder) / COMPONENT_FILE
     if not path.is_file():

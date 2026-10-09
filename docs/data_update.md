@@ -20,18 +20,26 @@ root `--data-dir`. Each step is one action on one store folder (paths relative t
 | action | what it does |
 |--------|--------------|
 | `sharadar` | `scripts/sharadar/update.py`: downloads every Sharadar table and updates `market/sharadar/` and `universe/sharadar/` |
-| `fred` | downloads the FRED series, then updates the store in the named folder |
+| `fred` | downloads the FRED series from `start` (required), then updates the store in the named folder |
 | `benchmarks` | `scripts/sharadar/price_return_benchmark.py --refresh` for the listed tickers (`market/benchmarks/`) |
 | `update` | rebuilds the dataset of a store folder from its `component.json` and calls `update()` |
 | `mirror` | appends a source dataset's new bars to a store that copies its variables (`quantlab.backtest.live.mirror_new_bars`) |
 | `extend` | rebuilds a factor, or a factor risk model, from the folder's `component.json` and extends it to t |
-| `run` | runs any script under the repository: `{script: ..., args: [...], writes: [...]}`; `{data_dir}` and `{download_dir}` in `args` are filled in, and `writes` lists the store folders, or folder prefixes ending in `/`, it writes |
+| `run` | runs any script under the repository: `{script: ..., args: [...], writes: [...], reads: [...]}`; `{data_dir}` and `{download_dir}` in `args` are filled in (other braces are kept) |
+
+Any other action is an error, in a run and in `--check`. A `sharadar`, `benchmarks` or `run` step
+lists in `writes` the store folders, or folder prefixes ending in `/`, it writes (the shipped file:
+`market/sharadar/` and `universe/sharadar/` for `sharadar`, `market/benchmarks/` for
+`benchmarks`); `update`, `extend`, `mirror` and `fred` write their `store`. A `run` step may list
+in `reads` the folders or prefixes it reads; the others' reads come from their components.
+`--check` orders every step's reads against the later steps' writes.
 
 A step with `allow_failure: true` that raises is recorded as failed and the run goes on; whether
 the day is ready is still decided by the `ready` stores.
 
-t is the last bar of `market/sharadar/sharadar_sep_1d` once the `raw` stage is done. Until every
-store in the file's `ready` list holds t, and t is newer than the last successful run's, the raw
+t is the last bar of the file's `calendar` store (`market/sharadar/sharadar_sep_1d`) once the
+`raw` stage is done. Until every store in the file's `ready` list holds t, and t is newer than
+`last_done_t` (the t of the last run that reached `done`, whatever states came after it), the raw
 stage is retried every `--retry-minutes` (15) until `--retry-until` (08:30 New York time). A factor
 is extended only by the store's owner (`Factor.owns_store`), never by a view pinned to some of its
 outputs.
@@ -52,7 +60,9 @@ QUANTLAB_DATA_DIR=/data/quantlab taskset -c 64-114 .venv/bin/python scripts/data
 stages, without the retry and without writing the status file. `--check` downloads and computes
 nothing: it rebuilds every step's component, checks that `update` names a dataset, that `extend`
 names a factor owning its store or a factor risk model, and that no step reads a store a later
-step writes, then prints each problem and exits 1 if there is any. Run it after editing the file.
+step writes, that the first stage writes the `calendar` store and every `ready` store, and that a
+`mirror` source is a dataset, then prints each problem and exits 1 if there is any. Run it after
+editing the file.
 
 ## Store configs
 
@@ -66,18 +76,24 @@ examples/sharadar_us_equity/us3000_h1_mvo.py store-configs` saves the us3000 one
 
 ## The status file
 
-When it finishes, the update writes `<data-dir>/update_status.json`:
+When it starts (`running`) and when it finishes, the update writes `<data-dir>/update_status.json`
+(not with `--dry-run` or `--stage`):
 
 | field | value |
 |-------|-------|
 | `date` | the New York date of the run |
-| `t` | the bar the stores were brought to |
 | `state` | `running`, `done`, `no_new_bar` (nothing new by the cut-off, as on a market holiday) or `failed` |
+| `t` | the bar the stores were brought to |
+| `last_done_t` | the t of the last run that reached `done` (this run's t when it is `done`); a bar is new only after it |
 | `steps` | each step's action, store, result and seconds |
-| `reason` | why it stopped, for `no_new_bar` and `failed` |
+| `reason` | why it stopped, for `no_new_bar` and `failed`; when the raw stage gives up it also names the `allow_failure` steps that failed (e.g. `sharadar failed: ...`) |
 
-quantlab-ibkr's `live_daily.sh` waits for `"state": "done"` with today's `date` before it runs the
-prediction job; a day that never gets there holds.
+`date`, `state`, `t` and `last_done_t` are the contract quantlab-ibkr's `scripts/live_daily.sh`
+reads: it waits for `"state": "done"` with today's `date` before it runs the prediction job; a day
+that never gets there holds. Change them only together with that script.
+
+The exit status follows the final state: 0 `done`, 1 `failed`, 3 `no_new_bar` (normal on a
+holiday, but not a done day). `--check` exits 1 when it finds a problem.
 
 ## Schedule
 
