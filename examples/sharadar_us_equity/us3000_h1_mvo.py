@@ -106,9 +106,9 @@ FRED_RAW = DATA_ROOT / "downloads" / "fred"
 US3000 = DATA_ROOT / "pipeline" / "neutral_cv_wls" / "us3000"
 #: The one-day label, the walk-forward CV and the live runs.
 H1 = DATA_ROOT / "pipeline" / "h1_daily_mvo" / "us3000"
-#: The #223 bad-print-masked Barra exposures (with ``estu``) and USE4 stores.
-EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra_223" / "barra_style.zarr"
-RISK = DATA_ROOT / "pipeline" / "sharadar_risk_223"
+#: The Barra exposures (with ``estu``) and USE4 stores, bad prints masked since #223.
+EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
+RISK = DATA_ROOT / "pipeline" / "sharadar_risk"
 #: The membership store this recipe maintains (the experiment's own one is frozen).
 MEMBERSHIP = US3000 / "membership_estu.zarr"
 #: The price-return VT benchmark (scripts/sharadar/price_return_benchmark.py).
