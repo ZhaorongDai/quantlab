@@ -579,7 +579,7 @@ bool(np.allclose(per_bar["contribution"].sum("term"), attributed.simulation.retu
 - **Excess**，有基准时显示：累计超额收益，可在对数 `Σ log((1+r)/(1+b))` 与算术 `Σ(r − b)` 之间切换，前者取指数减 1 就是几何超额，后者的读法与累计 IC 相同；下面是超额回撤；旁边是 "Relative to *基准*"（几何与算术超额、超额回撤、跟踪误差、信息比率、beta、相关系数、CAPM alpha）。
 - **Rolling**：滚动一年的超额收益、信息比率和 beta，没有基准时是滚动一年的收益、波动率和 Sharpe。
 - **Portfolio**：每个成交 bar 的换手、目标权重的持股数与总敞口，有空头时还有净敞口；旁边是 "Trading"（换手、费用、订单、往返交易、被拒订单、组合构建失败与事件）。
-- **Holdings**：先看收益来自哪些持仓：每天把上一收盘持有的标的按持仓大小排序，每个标的的贡献为持仓乘以当天收益；按按钮选择最大的一部分标的（前 1%、5%、10%、20%、25%、30% 或 50%），与其余标的和残差（开盘成交与交易成本）对比，按天加总，给出汇总卡片和累计曲线，再给出按持仓大小十分位和年份的贡献表和柱状图；可用按钮切换净值、只看盈利或只看亏损，并给出亏损的“持仓·天”占比。然后逐日列出持有或被目标权重选中的每个标的，按代码显示（价格 store 旁有代码 sidecar 时用当天在用的代码，否则用标的 id），给出上一次调仓的目标权重、当天持仓、并列的条形图，以及持有期收益率（该标的在当天所属调仓持有期内的价格收益：从信号日收盘到下一次调仓成交前最后一个收盘，用账户估值所用的估值价格；每个 bar 都调仓时就是该 bar 的收益），以及当天的现金、持股数、前十大持仓占比、目标来自哪次调仓、相比上一次调仓新增的名字（本次目标超过 1e-4、上一次调仓未选中）。目标不超过 1e-4（`DUST_THRESHOLD`）的持仓合并为一行 "Other"。可以按按钮、按调仓、按日期、拖动滑块或用方向键逐日切换；可按任意列排序、按代码或公司名筛选，并把当天导出为 CSV。数据以 JSON 嵌入页面（十年日频、几百个标的约增加几 MB）。
+- **Holdings**：先看收益来自哪些持仓：每天把上一收盘持有的标的按持仓大小排序，每个标的的贡献为持仓乘以当天收益；用滑条任意选择最大的一部分标的，与其余标的和残差（开盘成交与交易成本）对比，按天加总，给出汇总卡片和累计曲线，再给出按持仓大小十分位和年份的贡献表和柱状图；可用按钮切换净值、只看盈利或只看亏损，并给出亏损的“持仓·天”占比。然后逐日列出持有或被目标权重选中的每个标的，按代码显示（价格 store 旁有代码 sidecar 时用当天在用的代码，否则用标的 id），给出上一次调仓的目标权重、当天持仓、并列的条形图，以及持有期收益率（该标的在当天所属调仓持有期内的价格收益：从信号日收盘到下一次调仓成交前最后一个收盘，用账户估值所用的估值价格；每个 bar 都调仓时就是该 bar 的收益），以及当天的现金、持股数、前十大持仓占比、目标来自哪次调仓、相比上一次调仓新增的名字（本次目标超过 1e-4、上一次调仓未选中）。目标不超过 1e-4（`DUST_THRESHOLD`）的持仓合并为一行 "Other"。可以按按钮、按调仓、按日期、拖动滑块或用方向键逐日切换；可按任意列排序、按代码或公司名筛选，并把当天导出为 CSV。数据以 JSON 嵌入页面（十年日频、几百个标的约增加几 MB）。
 - **Attribution**，带模型的运行才有：超额拆成股票池、选股和成本三部分，策略、扣成本前的同一组权重、等权股票池和基准的累计对数增长，各分数分组的累计对数增长，以及各组的年化对数增长（见[超额归因](#超额归因)）。
 - **Factor attribution**，给了 `risk_model` 才有（见[把收益和风险归因到因子](#把收益和风险归因到因子)）：六个数字卡片（年化对数增长、来自因子的部分、无风险加交易、预测与实现波动率、覆盖率），然后收益与风险左右并排：各部分的年化对数增长画成从 0 轴起的柱，加起来等于合计，旁边是各部分对预测波动率的贡献、预测波动率和实现波动率；各部分的累计对数贡献（加起来等于对数净值），旁边是按月、按部分的预测波动率与 63 根 bar 的实现波动率；各风格的平均暴露与贡献，旁边是它们的预测与实现风险；贡献最好和最差的各 10 个行业，旁边是按预测风险排序的行业；最后是各风格每周暴露的热力图，以及各部分收益与实现风险的对比。行业和风格用风险模型的 `factor_labels()` 命名（`Use4RiskModel` 用 Fama-French 48 行业名）。
 - **Setup & notes**："Setup" 只列表格里没有的设置（bar 间隔、基准、最深回撤的日期、模型模式、调仓、组合构建、费用），以及说明。
@@ -747,7 +747,7 @@ vectorbt 引擎处理一个成交 bar 所遵循的规则，是公开模块 `quan
 | `report_windows(timestamps, block, folds=None)` | `windows`，即时间线；`folds` 是 `run_cv()` 运行的各折行（`fold`、`training_window`、`traded`、`in_sample_range`） |
 | `report_chart_inputs(block, notes, *, returns, init_cash, drawdown_span=None, benchmark_value=None, benchmark_returns=None)` | 图表与基准参数 |
 | `report_portfolio_inputs(weights, orders, value, *, init_cash, bar_interval, trading_days_per_year, session_minutes_per_day)` | `weights`、`turnover` 和 `bars_per_year`，即 Portfolio 与 Rolling 分区 |
-| `report_holdings_inputs(holdings, weights, *, label=None, prices=None)` | `holdings`、`holding_names`（每个标的由 `label(symbols, day)` 得到的 `(起始 bar, 代码, 公司)` 区间）、`holding_returns`（每个 bar 按估值价格 `prices` 计算的持有期收益率）和 `holding_contributions`（每个 bar 按 `CONTRIBUTION_BANDS` 持仓大小分档的盈利、亏损、持仓数与亏损持仓数），不传 `prices` 时两者都为 `None`，即 Holdings 分区；不传持仓时页面没有 Holdings 分区 |
+| `report_holdings_inputs(holdings, weights, *, label=None, prices=None)` | `holdings`、`holding_names`（每个标的由 `label(symbols, day)` 得到的 `(起始 bar, 代码, 公司)` 区间）、`holding_returns`（每个 bar 按估值价格 `prices` 计算的持有期收益率）和 `holding_contributions`（每个 bar 上一收盘所持每个标的的贡献，按持仓从大到小排列），不传 `prices` 时两者都为 `None`，即 Holdings 分区；不传持仓时页面没有 Holdings 分区 |
 
 给 summary 的某个键赋值即可替换该行且位置不变；`write_backtest_report(..., extra_tables={标题: {行名: 值}})` 在指标表之后追加带标题的表格，用于只有执行器才有的统计量。接上文：
 

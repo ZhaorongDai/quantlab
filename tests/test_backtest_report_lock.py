@@ -279,18 +279,20 @@ def scenarios(tmp_path: Path, cv_project) -> dict[str, tuple[Path, list[Path]]]:
 #: Re-recorded when the Holdings tab opened with the return by position size
 #: (cut-off buttons, cumulative lines, size decile by year; net, gains or losses,
 #: losing name-days). The metrics did not change.
+#: Re-recorded when the cut-off buttons became a stepless slider over each bar's
+#: ranked contributions. The metrics did not change.
 EXPECTED: dict[str, str] = {
-    "run_long_only_benchmark/report.html": "e931e69c38dcd94cfc40e83aa538993893437f5791c81affb5f3bee878d4e174",
+    "run_long_only_benchmark/report.html": "67cd735b883bd7d9155032203396e0d25d3e7afbe906f734ca75bf7540cd9d9b",
     "run_long_only_benchmark/metrics.json": "b4901c705f203ce3a769b40c357ce8a444d16df4488492ab2abf4f03e2697be6",
-    "run_long_short_delisting/report.html": "7407c78f92424b714eebf5cb321490114fcbeb64ff8f7eaad01081309b638be7",
+    "run_long_short_delisting/report.html": "0c4561145c5374f4759407bf52c1c7c20fd0886c0c7b4074d7805dde279e9fc1",
     "run_long_short_delisting/metrics.json": "61e9a1bee817c10179cc309e8722ad9a7a9a56c896183d0a3fe5d79ee90c79ed",
-    "run_weights_benchmark/report.html": "f5a35faf3886b4ea9b49bf91b3114ecece0b58f86cff645fb2b12e7286225c73",
+    "run_weights_benchmark/report.html": "2a2a62d488063f3b061536a5fcb76353fa65d9ee47166373159b6e55a8ea9702",
     "run_weights_benchmark/metrics.json": "aaf9c98eca07ec66a8f01999e3a6de56221133d6cb07b0a9dd8ea175170c84b2",
-    "run_weights/report.html": "2c3b0bb5edaeff8b9771d3a847a5f700ddede7964118b735456e58be0a319cdf",
+    "run_weights/report.html": "202dab36b03888b5387c94e68b6ba7c89f7b0a55f7bc1d3fd23a29d45bf9b33e",
     "run_weights/metrics.json": "fbfd860207fe6f7410dba4f91f905b38e9a45739d4c22f7c5d48de5e0b209b73",
-    "run_cv_benchmark/report.html": "007afb519bff29e402f39ae9969cf765485340bcb531520ed94f4be6925e1427",
+    "run_cv_benchmark/report.html": "5beb90155ba392b3454844986f160942220b8fbb0f1c34f20adce4e502061985",
     "run_cv_benchmark/metrics.json": "2df35a73119a4f7d4ed32983c76662dbe9b07b552c19169a870ddb79b3a8b3a3",
-    "run_cv/report.html": "7c188e703cbf3651210b71ebef0d7a17b8c03e31a0e8de2cbf7cd1aef38e3228",
+    "run_cv/report.html": "b3a1c01d2d0e0f58c4be9cd24bc76bf4e7d3f360dae81dd784b80ffbac64cdc8",
     "run_cv/metrics.json": "966f1e174eb2b1058c99048b48599fddff839a163a1fb847113bbac7542d6ced",
 }
 
