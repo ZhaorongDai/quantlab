@@ -34,7 +34,7 @@ features and label; the CV and the live runs are this strategy's
 Steps::
 
     # Once: the stores (the membership, then the alphas, their neutral
-    # versions and the label), the configs the
+    # versions and the label, a chunk of time at a time), the configs the
     # daily data update rebuilds them from, the CV, the run quantlab-ibkr
     # trades (a plain run() in load mode, so scripts/live/predict_day.py
     # accepts it).
@@ -95,10 +95,11 @@ from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 from quantlab.enums.constant import Date
-from quantlab.factor.config import FactorConfig, NeutralizedConfig, RosterConfig
+from quantlab.factor.config import ChunkedConfig, FactorConfig, NeutralizedConfig, RosterConfig
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
+from quantlab.factor.predefined.chunked import ChunkedFactor
 from quantlab.factor.predefined.neutralized import NeutralizedFactor
 from quantlab.factor.predefined.roster import RosterFactor
 from quantlab.label.predefined.fret import Return
@@ -327,14 +328,19 @@ def fold_checkpoint(fold: int | None) -> Path:
 def build_stores() -> None:
     """Build the membership, the alphas, their neutral versions and the label to SEP's last bar.
 
-    The membership first: it is the roster of everything else.
+    The membership first (the roster of everything else); each alpha a chunk
+    of time at a time (``ChunkedFactor``), so a store that would not fit in
+    memory is written year by year.
     """
     membership().update()
     last = sep().calendar(START, Date.END_DATE)[-1].date().isoformat()
     neutral = [f for f in features() if isinstance(f, NeutralizedFactor)]
-    for factor in [*(n.config.factor for n in neutral), *neutral, label().label]:
-        factor.build(START, last)
-        logger.info(f"{type(factor).__name__} built to {last}")
+    for factor in [*(n.config.factor for n in neutral), *neutral]:
+        ChunkedFactor(ChunkedConfig(factor=factor)).build(START, last)
+        logger.info(f"{type(factor).__name__} -> {factor.config.file_path}")
+    ret = label().label
+    ret.build(START, last)
+    logger.info(f"{type(ret).__name__} -> {ret.config.factor.config.file_path}")
 
 
 def store_configs() -> dict:
