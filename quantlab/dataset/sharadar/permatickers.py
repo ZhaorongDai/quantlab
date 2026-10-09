@@ -29,15 +29,16 @@ file pulled before a change is not in it.
    security still maps). Several holders (the ticker was reused) are told
    apart by the file's pull date: the holder whose span covers it, the
    latest-starting one if several do, or the latest to have used it if none
-   does.
+   does. A change dated on the pull's own day counts from the next day, as
+   the vendor applies it in its evening update.
 
    A holder is not taken when another security, under any table, held the
    ticker at the file's pull: the old ticker of a stock that a fund (SFP)
    has taken over names the fund in a file of that pull (ACTIONS and SF3A
    hold funds; ACTIONS names the FB fund's dividends FB, not Meta's, #235).
    Who held it is the file's own TICKERS snapshot, or without one current
-   TICKERS, each security counted from the day it took the ticker (its last
-   ACTIONS ticker change, else its first price).
+   TICKERS, each security counted from the day after it took the ticker (its
+   last ACTIONS ticker change, else its first price).
 
 A row whose ticker none of them maps is left out rather than refused:
 ``left_out`` drops it, logs a warning and writes the report
@@ -243,6 +244,16 @@ class _Span:
         """Return whether the span holds ``day``."""
         return (self.start is None or self.start <= day) and (self.end is None or day < self.end)
 
+    def held_at_pull(self, day: date) -> bool:
+        """Return whether a file pulled on ``day`` names the security by the ticker.
+
+        A change dated ``day`` shows only in the vendor's update that
+        evening, so a file pulled that day still has the ticker's earlier
+        holder: the span starts the day after its start and ends the day
+        after its end.
+        """
+        return (self.start is None or self.start < day) and (self.end is None or day <= self.end)
+
 
 def _day(value) -> date | None:
     """Return a ``YYYY-MM-DD`` text, a date or ``None`` as a date or ``None``."""
@@ -365,13 +376,15 @@ class PermatickerResolver:
     def _holding_on(self, day: date) -> dict[str, set[int]]:
         """Return ``{ticker: permatickers}`` current TICKERS (every table) shows holding it on ``day``.
 
-        A security counts from the day it took the ticker
-        (``_current_since``): one that took it after ``day`` did not hold it.
+        A security counts from the day after it took the ticker
+        (``_current_since``): a change shows in the vendor's update that
+        evening, so a file pulled on the day of the change, or before it,
+        names the ticker's earlier holder.
         """
         return {
             ticker: held
             for ticker, starts in self._current_since().items()
-            if (held := {p for p, start in starts.items() if start is None or start <= day})
+            if (held := {p for p, start in starts.items() if start is None or start < day})
         }
 
     def _current_pairs(self) -> dict[str, set[int]]:
@@ -546,15 +559,16 @@ class PermatickerResolver:
     def _holder_on(spans: list[_Span], day: date) -> int | None:
         """Return the holder of a reused ticker on ``day``, or ``None`` on a tie.
 
-        The span covering ``day``, the latest-starting one if several do;
-        with none covering it, the one that ended last on or before it.
+        The span held at a pull on ``day`` (``_Span.held_at_pull``), the
+        latest-starting one if several are; with none, the one that ended
+        last before it.
         """
-        covering = [s for s in spans if s.covers(day)]
+        covering = [s for s in spans if s.held_at_pull(day)]
         if covering:
             best = max((s.start or date.min) for s in covering)
             chosen = {s.permaticker for s in covering if (s.start or date.min) == best}
         else:
-            ended = [s for s in spans if s.end is not None and s.end <= day]
+            ended = [s for s in spans if s.end is not None and s.end < day]
             if not ended:
                 return None
             best = max(s.end for s in ended)

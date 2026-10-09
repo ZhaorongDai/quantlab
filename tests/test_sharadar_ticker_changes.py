@@ -601,3 +601,32 @@ def test_a_ticker_the_fund_took_by_a_ticker_change_counts_from_the_change(tmp_pa
     frame, resolver = _mapped(root, scanned="actions")
     assert set(frame.filter(pl.col("ticker") == "FB")["permaticker"]) == {707}
     assert resolver.unresolved == {}
+
+
+def test_a_ticker_another_security_took_on_the_pulls_own_day_is_still_the_old_holders(tmp_path):
+    # SPAC 707 moved from its unit ticker OLDU to OLD on 2025-10-01, and a new
+    # unit 909 listed as OLDU that day; a file pulled that morning, before the
+    # vendor's evening update, still names 707 OLDU.
+    root = tmp_path / "sharadar"
+    _write(
+        root,
+        "tickers",
+        [
+            tickers_row("SEP", 707, "OLD", firstpricedate="2025-08-13"),  # SYNTHETIC
+            tickers_row("SEP", 909, "OLDU", firstpricedate="2025-10-01"),  # SYNTHETIC
+        ],
+        _at("2025-10-02"),  # SYNTHETIC
+    )
+    _write(
+        root,
+        "actions",
+        [
+            _change("2025-10-01", "OLD", "OLDU"),  # SYNTHETIC
+            action_row("2025-09-15", "dividend", "OLDU", 0.1),  # SYNTHETIC
+        ],
+        datetime(2025, 10, 1, 15, 41, tzinfo=UTC),  # SYNTHETIC
+    )
+
+    frame, resolver = _mapped(root, scanned="actions")
+    assert set(frame.filter(pl.col("action") == "dividend")["permaticker"]) == {707}
+    assert resolver.unresolved == {}
