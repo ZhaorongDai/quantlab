@@ -349,3 +349,132 @@ def test_resampled_extend_is_refused(minute_momentum):
 
     with pytest.raises(ValueError, match="resampled factor"):
         daily.extend("2024-01-06")
+
+
+# -- a shared store: its owner and a view pinned to some of its outputs --------------
+
+
+class ThreeOutputs(FactorKunQuant):
+    """Three outputs off the close, ``a``, ``b`` and ``c``, warm on the first bar."""
+
+    def _get_factor_names(self):
+        return ("a", "b", "c")
+
+    def _get_factor_func(self):
+        builder = Builder()
+        with builder:
+            close = Input("close")
+            for offset, name in enumerate(("a", "b", "c"), start=1):
+                Output(op.SubConst(close, float(offset)), name)
+        return Function(builder.ops)
+
+
+def _three_outputs(dataset_config, store: Path, factor_names=None) -> ThreeOutputs:
+    return ThreeOutputs(
+        FactorConfig(
+            warmup_bars=0,
+            dataset=SpotKlineDataset(dataset_config),
+            mode="batch",
+            data_columns=("close",),
+            file_path=str(store),
+            factor_names=factor_names,
+            njobs=2,
+        )
+    )
+
+
+@pytest.fixture
+def shared_store(spot_kline_zarr, tmp_path):
+    """``(owner, view)``: the owner built a store of ``a, b, c``; the view pins ``b``."""
+    dataset_config = spot_kline_zarr(periods=20)
+    store = tmp_path / "factors" / "three.zarr"
+    owner = _three_outputs(dataset_config, store).build("2024-01-01", "2024-01-20")
+    return owner, _three_outputs(dataset_config, store, factor_names=("b",))
+
+
+def test_read_returns_only_the_factors_own_outputs(shared_store):
+    owner, view = shared_store
+
+    panel = view.read("2024-01-05", "2024-01-10")
+
+    assert list(panel.data_vars) == ["b"]
+    np.testing.assert_array_equal(
+        panel["b"].values, owner.read("2024-01-05", "2024-01-10")["b"].values
+    )
+
+
+def test_compute_returns_only_the_factors_own_outputs(shared_store):
+    _, view = shared_store
+
+    assert list(view.compute("2024-01-05", "2024-01-10").data_vars) == ["b"]
+
+def test_read_refuses_a_store_missing_one_of_the_factors_outputs(spot_kline_zarr, tmp_path):
+    dataset_config = spot_kline_zarr(periods=20)
+    store = tmp_path / "factors" / "three.zarr"
+    _three_outputs(dataset_config, store, factor_names=("a",)).build("2024-01-01", "2024-01-20")
+    wider = _three_outputs(dataset_config, store, factor_names=("a", "c"))
+
+    with pytest.raises(ValueError, match=r"lacks the factor's output\(s\) \['c'\]"):
+        wider.read("2024-01-05", "2024-01-10")
+
+
+def test_read_returns_only_the_requested_symbols(shared_store):
+    owner, view = shared_store
+
+    panel = view.read("2024-01-05", "2024-01-10", symbols=["S3USDT", "S1USDT"])
+
+    assert list(panel["symbol"].values) == ["S3USDT", "S1USDT"]
+    full = owner.read("2024-01-05", "2024-01-10")
+    np.testing.assert_array_equal(
+        panel["b"].values, full["b"].sel(symbol=["S3USDT", "S1USDT"]).values
+    )
+
+
+def test_read_refuses_a_symbol_the_store_lacks(shared_store):
+    _, view = shared_store
+
+    with pytest.raises(ValueError, match=r"lacks symbol\(s\) \['NOPE'\]"):
+        view.read("2024-01-05", "2024-01-10", symbols=["S1USDT", "NOPE"])
+
+
+def test_a_view_cannot_build_over_the_store_it_shares(shared_store):
+    owner, view = shared_store
+
+    with pytest.raises(ValueError, match=r"holds \['a', 'b', 'c'\].*only the factor"):
+        view.build("2024-01-01", "2024-01-20")
+
+    assert list(owner.read("2024-01-01", "2024-01-20").data_vars) == ["a", "b", "c"]
+
+
+def test_a_view_cannot_extend_the_store_it_shares(shared_store):
+    owner, view = shared_store
+    owner.build("2024-01-01", "2024-01-10")
+
+    with pytest.raises(ValueError, match=r"holds \['a', 'b', 'c'\].*only the factor"):
+        view.extend("2024-01-20")
+
+    assert owner.store_range() == ("2024-01-01", "2024-01-10")
+
+
+def test_a_factor_pinned_to_some_outputs_owns_a_store_of_just_those(spot_kline_zarr, tmp_path):
+    dataset_config = spot_kline_zarr(periods=20)
+    pinned = _three_outputs(dataset_config, tmp_path / "b.zarr", factor_names=("b",))
+
+    pinned.build("2024-01-01", "2024-01-10").extend("2024-01-20").build("2024-01-01", "2024-01-20")
+
+    assert list(pinned.read("2024-01-01", "2024-01-20").data_vars) == ["b"]
+
+
+def test_stored_symbols_reads_the_store_axis(shared_store):
+    _, view = shared_store
+
+    assert view.stored_symbols() == [f"S{i}USDT" for i in range(8)]
+
+
+def test_a_resampled_factor_without_its_own_store_reads_the_source_axis(minute_momentum):
+    minute_momentum.build("2024-01-02", "2024-01-03")
+
+    daily = minute_momentum.resample("1d", "last")
+
+    assert daily.stored_symbols() == minute_momentum.stored_symbols()
+

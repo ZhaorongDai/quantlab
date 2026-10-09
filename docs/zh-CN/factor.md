@@ -117,6 +117,8 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 不是由 `build` 写出的存储，`store_range()` 返回 `None`，`read` 和 `extend` 都会拒绝这样的存储。KunQuant 因子只在 batch 模式下应答这些调用。
 
+`read` 和 `compute` 只返回因子自己的输出 `get_factor_names()`，不管存储或计算图里还有什么；存储缺少某个输出时，`read` 抛出 `ValueError` 并列出缺少的名字。`read(start, end, symbols=[...])` 只保留这些标的，按给定顺序，标签类型须与存储一致；存储缺少某个标的时抛出异常。在 `DataRecorder` 内，symbols 是记录请求的一部分，指纹只覆盖切出的面板。存储只由它的拥有者写入，即输出恰好是存储全部变量的因子（`owns_store()`）：用 `factor_names` 钉住共享存储部分输出的因子只能读它，它的 `build` 和 `extend` 会抛出 `ValueError`，以免用子集替换存储，或在其余变量没跟上时推进记录的区间。
+
 ### 从配置重建因子
 
 `get_config()` 返回描述因子及其数据集的 dict，`rebuild` 可以据此重建因子。
@@ -500,6 +502,24 @@ alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
     factor=alpha158, dataset=[daily, industry],
     file_path=str(WORK / "factor" / "alpha158_neutral.zarr"), njobs=16,
 ))
+```
+
+### 按名单读取共享存储
+
+`RosterFactor`（`quantlab.factor.predefined.roster`）按名单读取另一个因子。名单（roster）是一份不带日期的标的列表，即为某个 universe 构建的模型能看到的标的。它的配置是 `RosterConfig`：`factor` 是被包装的因子，通常用 `factor_names` 钉住模型用到的输出；`roster` 是一个数据集，其存储的整条 symbol 轴就是名单，每次调用都重新读取。名单会转换成被包装面板的标签类型（整数 permaticker 轴对文本轴）；被包装面板没有的名单标的会被略去，并记录数量。`read` 只在保留的标的上读取被包装的存储；`compute` 先在被包装因子的整个数据集上计算再切，因为截面因子要在全市场上标准化。输出沿用被包装因子的名字，所以包装类可以直接替换模型 `factors` 里的因子。它没有自己的存储：`store_path` 为 `None`，`build` 和 `extend` 抛出异常，`store_range()` 就是被包装因子的。某个日期谁是成员，交给预测器的成员掩码决定。下面是 `examples/sharadar_us_equity/us3000_h1_mvo.py` 里的 us3000 模型，按名单读取全市场 BarraStyle 存储的 12 个风格输出；存储本身由拥有它、未钉输出的 `BarraStyle` 扩充。
+
+```python
+from quantlab.factor.config import FactorConfig, RosterConfig
+from quantlab.factor.predefined.barra import BarraStyle
+from quantlab.factor.predefined.roster import RosterFactor
+
+styles = BarraStyle(FactorConfig(
+    warmup_bars=PARAMETERS.warmup_bars, dataset=BadPrintMaskedDataset(sharadar_inputs()),
+    mode="batch", data_columns=PARAMETERS.panel_columns,
+    file_path=str(EXPOSURES), factor_names=STYLES,
+    kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol},
+))
+style_features = RosterFactor(RosterConfig(factor=styles, roster=us3000_prices))
 ```
 
 ### 基准 beta

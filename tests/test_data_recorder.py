@@ -197,6 +197,26 @@ def test_a_factor_store_read_is_recorded_under_the_factor_key(tmp_path, hashes):
     assert len(hashes) == 1
 
 
+def test_a_factor_reads_symbols_are_part_of_its_request_and_its_hash(tmp_path):
+    factor = PastReturnFactor(
+        PolarsFactorConfig(
+            warmup_bars=5,
+            dataset=StockDataset(write_price_store(tmp_path)),
+            kwargs={"n": 3},
+            file_path=str(tmp_path / "factor.zarr"),
+        )
+    )
+    factor.build("2024-01-10", "2024-02-20")
+
+    with DataRecorder(keys=[(factor, "f")]) as recorder:
+        factor.read("2024-01-15", "2024-02-01", symbols=["BBB", "AAA"])
+        factor.read("2024-01-15", "2024-02-01")
+
+    cut, whole = recorder.records["f"]
+    assert cut["request"]["symbols"] == ["BBB", "AAA"] and whole["request"]["symbols"] is None
+    assert cut["n_symbols"] == 2
+    assert cut["digest"] != whole["digest"]
+
 def _record(dataset, *ranges):
     """Return the records of reading ``ranges`` of ``dataset`` under key ``data``."""
     with DataRecorder(keys=[(dataset, "data")]) as recorder:

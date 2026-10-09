@@ -413,13 +413,32 @@ def predict_live_bar(
         for key in sorted(lagging)
     }
 
+    # A store is extended by its owner only; a view of it (a factor pinned to
+    # some of its variables) never writes it (ADR 0029).
+    factors: dict[str, tuple[str, Factor]] = {}
+    views: dict[str, tuple[str, Factor]] = {}
+    for path, item in sorted(components, key=lambda pair: -pair[0].count(".")):
+        if isinstance(item, Factor) and item.store_path and item.store_range() is not None:
+            found = factors if item.owns_store() else views
+            found.setdefault(_key(item.store_path), (path, item))
+    short = [
+        f"{key} (read by {path}, recorded to {view.store_range()[1]})"
+        for key, (path, view) in views.items()
+        if key not in factors and last_moment(view.store_range()[1]) < t
+    ]
+    if short:
+        _refuse(
+            f"the price dataset ends at {day}, but {len(short)} factor store(s) the run "
+            f"only reads do not hold it: {'; '.join(short)}. Nothing was extended or "
+            f"appended; extend each with the factor owning every variable of it first",
+            "missing_data",
+        )
+
     extended: dict[str, str] = {}
     for key in sorted(mirrored):
         extended[key] = mirror_new_bars(price, key, day)
-    factors: dict[str, tuple[str, Factor]] = {}
-    for path, item in sorted(components, key=lambda pair: -pair[0].count(".")):
-        if isinstance(item, Factor) and item.store_path and item.store_range() is not None:
-            factors.setdefault(_key(item.store_path), (path, item))
+    for key in views.keys() - factors.keys():
+        extended[key] = "current"
     for key, (_, factor) in factors.items():
         if last_moment(factor.store_range()[1]) < t:
             factor.extend(day)

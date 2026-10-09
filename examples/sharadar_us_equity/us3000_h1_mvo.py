@@ -7,9 +7,9 @@ R223L5C5, rebuilt from library components only:
   (the 3,000 largest domestic common stocks by the previous bar's cap), on
   the #223 bad-print-masked Barra store;
 - features (N1): Alpha101 and Alpha158 neutralised on FF48 industry and log
-  cap (``NeutralizedFactor``), and the 12 Barra styles of the masked store
-  (the experiment trained on the unmasked ones; ``feature-barra`` cuts the
-  masked styles for the roster, ``train-cv`` retrains the CV on them);
+  cap (``NeutralizedFactor``), and the 12 Barra styles read straight from the
+  masked store on the roster (``RosterFactor``; the experiment trained on the
+  unmasked ones, ``train-cv`` retrains the CV on them);
 - label: ``MemberReturn``, the open-to-open return from t+1 to t+2 kept where
   the symbol is a member at t;
 - model: the experiment's ``XGBoostRegressor`` and walk-forward CV (ten
@@ -26,9 +26,8 @@ The prices, alphas and label are the experiment's
 
 Steps::
 
-    # Once: the masked styles, the CV, the run quantlab-ibkr trades (a plain
-    # run() in load mode, so scripts/live/predict_day.py accepts it).
-    python us3000_h1_mvo.py feature-barra
+    # Once: the CV, the run quantlab-ibkr trades (a plain run() in load mode,
+    # so scripts/live/predict_day.py accepts it).
     python us3000_h1_mvo.py train-cv
     python us3000_h1_mvo.py live-run [--fold N] [--size-bound X] [--beta-bound X]
     # Every morning, after scripts/sharadar/update.py and before predict_day.py:
@@ -38,8 +37,8 @@ Steps::
 
 ``prepare-day`` brings to the last SEP bar the stores ``predict_day.py``
 does not extend: the roster price store (the run's price dataset), the full
-masked Barra store (whose ``estu`` is the universe), the model's style
-store (a slice of it), the membership and the price-return VT benchmark. Run
+masked Barra store (whose ``estu`` is the universe and whose styles the
+model reads), the membership and the price-return VT benchmark. Run
 it on the server with ``QUANTLAB_DATA_DIR=/data/quantlab``.
 """
 
@@ -54,7 +53,6 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xarray as xr
 from loguru import logger
@@ -87,11 +85,12 @@ from quantlab.dataset.sharadar.industry import SharadarIndustryDataset
 from quantlab.dataset.sharadar.share_class import SharadarShareClassDataset
 from quantlab.dataset.sharadar.stock import SharadarStockDataset
 from quantlab.dataset.stock import StockDataset
-from quantlab.factor.config import FactorConfig, NeutralizedConfig
+from quantlab.factor.config import FactorConfig, NeutralizedConfig, RosterConfig
 from quantlab.factor.predefined.alpha101 import Alpha101Stock
 from quantlab.factor.predefined.alpha158 import Alpha158Stock
 from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
 from quantlab.factor.predefined.neutralized import NeutralizedFactor
+from quantlab.factor.predefined.roster import RosterFactor
 from quantlab.label.predefined.member_return import MemberReturn
 from quantlab.model.config import ModelConfig
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
@@ -114,8 +113,6 @@ H1 = DATA_ROOT / "pipeline" / "h1_daily_mvo" / "us3000"
 #: The Barra exposures (with ``estu``) and USE4 stores, bad prints masked since #223.
 EXPOSURES = DATA_ROOT / "pipeline" / "sharadar_barra" / "barra_style.zarr"
 RISK = DATA_ROOT / "pipeline" / "sharadar_risk"
-#: The 12 masked styles of the roster: the model's Barra features.
-FEATURE_BARRA = US3000 / "factor" / "barra_style_223.zarr"
 #: The CV over the masked features and its record.
 MODELS = H1 / "models_223"
 CV_RECORD = H1 / "cv_223.json"
@@ -181,14 +178,15 @@ def masked_barra() -> BarraStyle:
     ))
 
 
-def feature_barra() -> BarraStyle:
-    """The model's 12 styles: the masked BarraStyle, written for the roster to ``FEATURE_BARRA``."""
-    return BarraStyle(FactorConfig(
+def style_features() -> RosterFactor:
+    """The model's 12 styles: the masked store read on the roster (``masked_barra`` writes it)."""
+    styles = BarraStyle(FactorConfig(
         warmup_bars=PARAMETERS.warmup_bars, dataset=BadPrintMaskedDataset(sharadar_inputs()),
         mode="batch", data_columns=PARAMETERS.panel_columns,
-        file_path=str(FEATURE_BARRA), factor_names=STYLES,
+        file_path=str(EXPOSURES), factor_names=STYLES,
         kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol}, njobs=64,
     ))
+    return RosterFactor(RosterConfig(factor=styles, roster=stock_dataset(US3000 / "prices.zarr")))
 
 
 def membership() -> EstuConstituentDataset:
@@ -229,7 +227,7 @@ def features() -> list:
         ))
         for alpha in alphas
     ]
-    return [*neutral, feature_barra()]
+    return [*neutral, style_features()]
 
 
 def label() -> MemberReturn:
@@ -267,23 +265,7 @@ def cv_record() -> dict:
     return json.loads(CV_RECORD.read_text())
 
 
-# %% Once: the masked styles and the CV
-def cut_feature_barra() -> dict:
-    """Write the roster's 12 styles from the masked store over START..END, with their range."""
-    roster = xr.open_zarr(US3000 / "prices.zarr")["symbol"].values
-    full = xr.open_zarr(EXPOSURES)
-    keep = np.intersect1d(roster, full["symbol"].values)
-    subset = full[list(STYLES)].sel(timestamp=slice(START, END), symbol=keep).load()
-    for name in subset.data_vars:
-        subset[name].encoding = {}
-    FEATURE_BARRA.parent.mkdir(parents=True, exist_ok=True)
-    subset.to_zarr(FEATURE_BARRA, mode="w")
-    Path(f"{FEATURE_BARRA}.range.json").write_text(json.dumps({"start": START, "end": END}))
-    done = {"store": str(FEATURE_BARRA), "sizes": dict(subset.sizes), "missing_from_barra": int(len(roster) - len(keep))}
-    logger.info(json.dumps(done))
-    return done
-
-
+# %% Once: the CV
 def train_cv() -> dict:
     """The experiment's walk-forward CV over these features; its record goes to ``CV_RECORD``."""
     cv = model().collect().train_cv(train_periods=TRAIN_PERIODS, expanding=True, test_periods=TEST_PERIODS)
@@ -303,27 +285,6 @@ def fold_checkpoint(fold: int | None) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"no checkpoint for fold {index}: {path}")
     return path
-
-
-def append_feature_barra() -> int:
-    """Append the masked store's new bars of the 12 styles to ``FEATURE_BARRA``, on its own symbols.
-
-    The feature store stays a slice of the masked store, never computed on
-    its own; ``predict_day.py`` then finds it current. Returns the bars appended.
-    """
-    stored = xr.open_zarr(FEATURE_BARRA)
-    last = pd.Timestamp(stored["timestamp"].values[-1])
-    full = xr.open_zarr(EXPOSURES)
-    new = full[list(STYLES)].sel(timestamp=full["timestamp"] > np.datetime64(last))
-    if new.sizes["timestamp"] == 0:
-        return 0
-    new = new.reindex(symbol=stored["symbol"].values).load()
-    for name in new.data_vars:
-        new[name].encoding = {}
-    new.to_zarr(FEATURE_BARRA, append_dim="timestamp")
-    end = str(pd.Timestamp(new["timestamp"].values[-1]).date())
-    Path(f"{FEATURE_BARRA}.range.json").write_text(json.dumps({"start": START, "end": end}))
-    return int(new.sizes["timestamp"])
 
 
 def refresh_benchmark() -> None:
@@ -352,12 +313,10 @@ def prepare_day() -> dict:
     if pd.Timestamp(end) < last:
         # A date, so the recorded range holds the whole day (a Timestamp ends it at midnight).
         barra.extend(last.date().isoformat())
-    styles = append_feature_barra()
     members = membership()
     members.update()
     refresh_benchmark()
     done = {
-        "feature_barra_appended": styles,
         "t": str(last.date()),
         "prices": str(prices.config.zarr_file_path),
         "barra_store": barra.store_range(),
@@ -420,7 +379,6 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="step", required=True)
     sub.add_parser("prepare-day")
-    sub.add_parser("feature-barra")
     sub.add_parser("train-cv")
     run = sub.add_parser("live-run")
     run.add_argument("--fold", type=int, default=None)
@@ -431,8 +389,6 @@ def main() -> None:
     args = parser.parse_args()
     if args.step == "prepare-day":
         prepare_day()
-    elif args.step == "feature-barra":
-        cut_feature_barra()
     elif args.step == "train-cv":
         train_cv()
     else:

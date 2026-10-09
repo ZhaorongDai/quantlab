@@ -414,6 +414,30 @@ class BaseDataset(Component, ABC):
             ["timestamp", "symbol"]
         ).symbol.values.tolist()
 
+    def stored_symbols(self) -> list:
+        """Return the symbol axis of the dataset's store, in axis order.
+
+        Only the coordinate is read, never a data variable, and nothing is
+        held on the dataset afterwards. The labels keep the store's own type.
+
+        Raises
+        ------
+        ValueError
+            If the store at ``store_path`` does not exist.
+
+        Examples
+        --------
+        >>> ds.stored_symbols()
+        ['AAA', 'BBB', 'CCC']
+        """
+        symbols = self._stored_symbol_axis(self.store_path)
+        if symbols is None:
+            raise ValueError(
+                f"{self.class_name}.stored_symbols(): there is no store with a "
+                f"symbol axis at {self.store_path}."
+            )
+        return symbols
+
     @property
     def time_interval(self) -> np.timedelta64:
         """Return the most common spacing between consecutive timestamps.

@@ -25,6 +25,7 @@ Everything is synthetic, CPU-only and offline.
 """
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -40,12 +41,14 @@ from quantlab.backtest.predefined.us_equity import USEquityCrossectionSelectStoc
 from quantlab.dataset.config import ConstituentDatasetConfig, DatasetConfig
 from quantlab.dataset.stock import StockDataset
 from quantlab.enums.constant import Date
-from quantlab.factor.config import BaseFactorConfig, PolarsFactorConfig
+from quantlab.factor.config import BaseFactorConfig, PolarsFactorConfig, RosterConfig
+from quantlab.factor.predefined.roster import RosterFactor
 from quantlab.model.config import ModelConfig
 from quantlab.model.predefined.membership_mask import MembershipMaskedPredictor
-from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig, MeanVarianceConfig
+from quantlab.portfolio.config import FactorRiskStoreEstimatorConfig, MeanVarianceConfig, TopNConfig
 from quantlab.portfolio.predefined.factor_risk import FactorRiskStoreEstimator
 from quantlab.portfolio.predefined.mean_variance import MeanVarianceOptimizer
+from quantlab.portfolio.predefined.top_n import TopNConstructor
 from quantlab.risk.config import Use4RiskConfig
 from quantlab.risk.predefined.use4 import Use4RiskModel
 from quantlab.runs.backtest_run import BacktestRun
@@ -89,8 +92,13 @@ def _vendor_append(full: xr.Dataset, path: Path, bar: int) -> None:
 class Fixture:
     """Stores, a run and the full panels the vendor will append from."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, view: str | None = None):
+        """``view``: the model also reads ``style_a`` of the exposures store
+        through a ``RosterFactor``, a read-only view of it; ``"with_owner"``
+        keeps the risk model (the store's owner) in the run, ``"alone"``
+        swaps the optimiser for a TopN, so only the view reaches the store."""
         self.root = root
+        self.view = view
         full_config = write_price_store(root / "vendor_full", n_bars=N_BARS, seed=11)
         self.full = xr.open_zarr(full_config.zarr_file_path).load()
         self.bars = self.full["timestamp"].values
@@ -147,14 +155,7 @@ class Fixture:
             model_mode="load", checkpoint=str(self.checkpoint),
             start_date=_day(self.bars[45]), end_date=_day(last),
             output_dir=str(root / "runs"), rebalance_periods=5,
-            constructor=MeanVarianceOptimizer(MeanVarianceConfig(
-                expected_return_label="fwd_ret_1",
-                covariance=FactorRiskStoreEstimator(
-                    FactorRiskStoreEstimatorConfig(risk_model=self.risk_model())
-                ),
-                ic=0.05, risk_aversion=5.0, turnover_penalty=0.001, weight_cap=0.4,
-                exposure_bounds={"style_a": (-0.3, 0.3)},
-            )),
+            constructor=self.constructor(),
         )).run()
         self.run_dir = Path(result.run_dir)
         self.live = root / "live" / "live_predictions.zarr"
@@ -173,6 +174,27 @@ class Fixture:
     def membership(self) -> IntervalMembership:
         return IntervalMembership(self.membership_config())
 
+    def constructor(self):
+        if self.view == "alone":
+            return TopNConstructor(TopNConfig(direction="long_only", top_n=3))
+        return MeanVarianceOptimizer(MeanVarianceConfig(
+            expected_return_label="fwd_ret_1",
+            covariance=FactorRiskStoreEstimator(
+                FactorRiskStoreEstimatorConfig(risk_model=self.risk_model())
+            ),
+            ic=0.05, risk_aversion=5.0, turnover_penalty=0.001, weight_cap=0.4,
+            exposure_bounds={"style_a": (-0.3, 0.3)},
+        ))
+
+    def style_view(self) -> RosterFactor:
+        """``style_a`` of the exposures store, on the roster: a view, never its writer."""
+        pinned = PassThrough(BaseFactorConfig(
+            warmup_bars=0, dataset=StockDataset(_config(self.exposures_source)),
+            file_path=str(self.root / "pipeline" / "risk" / "exposures.zarr"),
+            factor_names=("style_a",),
+        ))
+        return RosterFactor(RosterConfig(factor=pinned, roster=self.prices()))
+
     def factor(self) -> PastReturnFactor:
         return PastReturnFactor(PolarsFactorConfig(
             warmup_bars=5, dataset=StockDataset(_config(self.derived)), kwargs={"n": 3},
@@ -186,7 +208,8 @@ class Fixture:
         ))
         bars = self.bars
         return FirstFeatureHead(ModelConfig(
-            factors=[self.factor()], labels=[label], model_save_dir=str(save_dir),
+            factors=[self.factor(), *([self.style_view()] if self.view else [])],
+            labels=[label], model_save_dir=str(save_dir),
             factor_data_strategy="read", label_data_strategy="cal",
             start_date=_day(bars[0]), end_date=_day(bars[39]), val_size=0.0,
             train_start=_day(bars[0]), train_end=_day(bars[34]),
@@ -244,9 +267,22 @@ def fixture(tmp_path_factory):
     return Fixture(tmp_path_factory.mktemp("live"))
 
 
+@pytest.fixture(scope="module")
+def view_fixtures(tmp_path_factory):
+    """The run with the style view, beside the store's owner and alone."""
+    return {
+        view: Fixture(tmp_path_factory.mktemp(f"live_{view}"), view=view)
+        for view in ("with_owner", "alone")
+    }
+
+
 @pytest.fixture
 def fresh(fixture, tmp_path):
     """A copy of the module fixture's whole tree, so each test changes its own stores."""
+    return _fresh(fixture, tmp_path)
+
+
+def _fresh(fixture, tmp_path):
     copy = tmp_path / "tree"
     shutil.copytree(fixture.root, copy)
     clone = object.__new__(Fixture)
@@ -387,6 +423,32 @@ def test_an_unknown_mirror_is_refused(fresh):
         predict_live_bar(fresh.run_dir, fresh.live, mirrors=[fresh.root / "nowhere.zarr"])
     assert refused.value.reason == "invalid"
 
+
+def test_a_store_its_owner_and_a_view_share_is_extended_by_the_owner(view_fixtures, tmp_path):
+    fresh = _fresh(view_fixtures["with_owner"], tmp_path)
+    fresh.predict()
+    before = fresh.store_bars()
+
+    fresh.vendor_update()
+    done = fresh.predict()
+
+    assert fresh.store_bars() == {name: n + 1 for name, n in before.items()}
+    exposures = os.path.abspath(fresh.root / "pipeline" / "risk" / "exposures.zarr")
+    assert done.record["stores"][exposures] == "extended"
+
+
+def test_a_store_only_a_view_reads_refuses_the_day_when_short(view_fixtures, tmp_path):
+    fresh = _fresh(view_fixtures["alone"], tmp_path)
+    fresh.predict()
+    fresh.vendor_update()
+    stores = fresh.store_bars()
+
+    with pytest.raises(LivePredictionRefused, match="exposures.zarr") as refused:
+        fresh.predict()
+
+    assert refused.value.reason == "missing_data"
+    assert "the factor owning every variable" in str(refused.value)
+    assert fresh.store_bars() == stores
 
 def test_a_new_symbol_rewrites_the_mirror_with_its_history(tmp_path):
     full = xr.open_zarr(write_price_store(tmp_path, n_bars=12).zarr_file_path).load()

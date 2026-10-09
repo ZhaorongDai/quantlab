@@ -117,6 +117,8 @@ ValueError: Momentum.read(): the store at data/factors/momentum.zarr covers 2024
 
 `store_range()` is `None` for a store that `build` did not write, and `read` and `extend` refuse such a store. A KunQuant factor answers these calls in batch mode only.
 
+`read` and `compute` return only the factor's own outputs, `get_factor_names()`, whatever else the store or the computed graph holds; `read` raises `ValueError` naming any output the store lacks. `read(start, end, symbols=[...])` keeps only those symbols, in the order given and of the store's own label type, and raises on a symbol the store lacks; inside a `DataRecorder` the symbols are part of the recorded request and only the cut panel is fingerprinted. A store is written by its owner only, the factor whose outputs are every variable of it (`owns_store()`): a factor pinned with `factor_names` to some outputs of a shared store reads it, and its `build` and `extend` raise `ValueError` rather than replace the store with its subset or advance the recorded range while the other variables stay short.
+
 ### Rebuild a factor from its config
 
 `get_config()` returns a dict describing the factor and its dataset, and `rebuild` rebuilds the factor from it.
@@ -500,6 +502,24 @@ alpha158_neutral = NeutralizedFactor(NeutralizedConfig(
     factor=alpha158, dataset=[daily, industry],
     file_path=str(WORK / "factor" / "alpha158_neutral.zarr"), njobs=16,
 ))
+```
+
+### Read a shared store on a roster
+
+`RosterFactor` (`quantlab.factor.predefined.roster`) reads another factor on a roster: the undated list of symbols a model built for one universe may see. Its config is `RosterConfig`: `factor` is the wrapped factor, usually pinned with `factor_names` to the outputs the model uses, and `roster` is a dataset whose store's whole symbol axis is the roster, read on every call. The roster is cast to the wrapped panel's label type (an integer permaticker axis against a text one); roster symbols the wrapped panel lacks are left out and their count logged. `read` reads the wrapped store on the kept symbols only; `compute` computes the wrapped factor on its whole dataset and cuts afterwards, since a cross-sectional factor standardizes over the whole market. The outputs keep the wrapped factor's names, so the wrapper takes the factor's place in a model's `factors`. It has no store: `store_path` is `None`, `build` and `extend` raise, and `store_range()` is the wrapped factor's. Who is a member on a given date is left to the membership the predictor is masked with. Below, the us3000 model of `examples/sharadar_us_equity/us3000_h1_mvo.py` reads the 12 style outputs of the market-wide BarraStyle store on its roster; the store itself is extended by the unpinned `BarraStyle` that owns it.
+
+```python
+from quantlab.factor.config import FactorConfig, RosterConfig
+from quantlab.factor.predefined.barra import BarraStyle
+from quantlab.factor.predefined.roster import RosterFactor
+
+styles = BarraStyle(FactorConfig(
+    warmup_bars=PARAMETERS.warmup_bars, dataset=BadPrintMaskedDataset(sharadar_inputs()),
+    mode="batch", data_columns=PARAMETERS.panel_columns,
+    file_path=str(EXPOSURES), factor_names=STYLES,
+    kwargs={"risk_free_symbol": PARAMETERS.risk_free_symbol},
+))
+style_features = RosterFactor(RosterConfig(factor=styles, roster=us3000_prices))
 ```
 
 ### Benchmark beta

@@ -26,6 +26,7 @@ import datetime
 import json
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from pathlib import Path
 
 from typing import TYPE_CHECKING, Literal, Self
@@ -259,6 +260,7 @@ class Factor(Component, ABC):
         self,
         start: "str | datetime.date | pd.Timestamp",
         end: "str | datetime.date | pd.Timestamp",
+        symbols: "Sequence | None" = None,
     ) -> xr.Dataset:
         """Return the factor store from ``start`` to ``end``, both inclusive.
 
@@ -268,15 +270,25 @@ class Factor(Component, ABC):
         factor reads its own store when one has been built, otherwise it
         resamples the part of the source factor's store the range needs.
 
+        Only the factor's own outputs (``get_factor_names()``) are returned,
+        so a factor pinned to some outputs of a store shared with a factor
+        of more outputs reads just those (ADR 0029). ``symbols`` is a pure
+        query, like ``BaseDataset.panel``'s; a model reads a store on a
+        roster through ``quantlab.factor.predefined.roster.RosterFactor``.
+
         This is the factor read seam: inside an open
-        ``quantlab.runs.record.DataRecorder`` the request is logged
-        and fingerprinted, over every variable, when the recorder closes.
+        ``quantlab.runs.record.DataRecorder`` the request, its symbols
+        included, is logged and fingerprinted, over every returned
+        variable, when the recorder closes.
 
         Parameters
         ----------
         start, end : str, datetime.date or pd.Timestamp
             The range to return. A date-only ``end`` includes every bar of
             that day.
+        symbols : sequence, optional
+            Symbol labels to keep, in the order given, of the store's own
+            type. ``None`` keeps every symbol of the store.
 
         Returns
         -------
@@ -287,7 +299,8 @@ class Factor(Component, ABC):
         ------
         ValueError
             If ``start`` is after ``end``, the store has no recorded range,
-            or the recorded range does not contain the requested one.
+            the recorded range does not contain the requested one, or the
+            store lacks one of the factor's outputs or of ``symbols``.
 
         Examples
         --------
@@ -295,6 +308,9 @@ class Factor(Component, ABC):
         ('2024-01-01', '2024-03-31')
         >>> dict(factor.read("2024-02-01", "2024-02-10").sizes)
         {'timestamp': 10, 'symbol': 8}
+        >>> panel = factor.read("2024-02-01", "2024-02-10", symbols=["S3USDT", "S1USDT"])
+        >>> panel["symbol"].values.tolist()
+        ['S3USDT', 'S1USDT']
         >>> factor.read("2024-03-20", "2024-04-10")
         Traceback (most recent call last):
         ValueError: Momentum.read(): the store at ... covers 2024-01-01 to 2024-03-31, ...
@@ -311,8 +327,13 @@ class Factor(Component, ABC):
                 timestamp=slice(first - pad, last + pad)
             )
             data = self._resample_panel(source).sel(timestamp=window)
+        data = self._own_outputs(data, "read")
+        if symbols is not None:
+            data = data.sel(symbol=self._check_symbols(data, symbols, "read"))
         panel = _on_panel_axes(data)
-        record_read(self, panel, reread=lambda: self.read(start, end))
+        record_read(
+            self, panel, symbols=symbols, reread=lambda: self.read(start, end, symbols)
+        )
         return panel
 
     @property
@@ -382,8 +403,49 @@ class Factor(Component, ABC):
         if self.config.resample_freq is not None:
             panel = self._resample_panel(panel)
         return _on_panel_axes(
-            panel.sel(timestamp=slice(as_label(start), as_label(end)))
+            self._own_outputs(panel, "compute").sel(
+                timestamp=slice(as_label(start), as_label(end))
+            )
         )
+
+    def _own_outputs(self, data: xr.Dataset, method: str) -> xr.Dataset:
+        """Return ``get_factor_names()`` of ``data``, in that order.
+
+        A store or a computed panel may hold more variables than the
+        factor's outputs (a store shared with a factor of more outputs, or a
+        graph emitting every output it builds); only the factor's own are
+        returned.
+
+        Raises
+        ------
+        ValueError
+            If ``data`` lacks one of the factor's outputs.
+        """
+        names = list(self.get_factor_names())
+        missing = [name for name in names if name not in data.data_vars]
+        if missing:
+            raise ValueError(
+                f"{self.class_name}.{method}(): the panel lacks the factor's "
+                f"output(s) {missing}; it holds {sorted(map(str, data.data_vars))}."
+            )
+        return data[names]
+
+    def _check_symbols(self, data: xr.Dataset, symbols: Sequence, method: str) -> list:
+        """Return ``symbols`` as a list, checked against ``data``'s symbol axis.
+
+        Raises
+        ------
+        ValueError
+            If ``data`` lacks one of ``symbols``.
+        """
+        wanted = list(symbols)
+        missing = pd.Index(wanted).difference(pd.Index(data["symbol"].values))
+        if len(missing):
+            raise ValueError(
+                f"{self.class_name}.{method}(): the store at {self.store_path} lacks "
+                f"symbol(s) {missing.tolist()}."
+            )
+        return wanted
 
     def _input_variables(self) -> "list[str] | None":
         """Return the dataset variables ``compute`` reads; ``None`` for every one.
@@ -458,7 +520,7 @@ class Factor(Component, ABC):
         and the range is recorded beside it, in
         ``<store_path>.range.json``, for ``store_range``, ``read`` and
         ``extend``. The factor holds nothing afterwards and no config
-        changes.
+        changes. Only the store's owner builds it (see ``owns_store``).
 
         Parameters
         ----------
@@ -475,6 +537,7 @@ class Factor(Component, ABC):
         >>> factor.build("2024-01-01", "2024-03-31").store_range()
         ('2024-01-01', '2024-03-31')
         """
+        self._refuse_unless_owner("build")
         panel = self.compute(start, end)
         with Timer(f"{self.class_name}: build"):
             self._drop_range(self.store_path)
@@ -504,8 +567,9 @@ class Factor(Component, ABC):
         Raises
         ------
         ValueError
-            If the factor is resampled, the store has no recorded range, or
-            the recorded range already reaches ``end``.
+            If the factor is resampled, does not own its store (see
+            ``owns_store``), the store has no recorded range, or the recorded
+            range already reaches ``end``.
 
         Examples
         --------
@@ -515,6 +579,7 @@ class Factor(Component, ABC):
         ('2024-01-01', '2024-04-30')
         """
         self._refuse_if_resampled("extend")
+        self._refuse_unless_owner("extend")
         recorded = self._stored_range(self.store_path)
         if recorded is None:
             raise ValueError(
@@ -538,6 +603,69 @@ class Factor(Component, ABC):
                 )
             self._record_range(self.store_path, recorded_start, end)
         return self
+
+    def owns_store(self) -> bool:
+        """Whether the factor may write its store: it holds exactly its outputs.
+
+        A store is written only by its owner, the factor whose outputs are
+        every variable of it; a factor pinned to some of them reads it but
+        never writes it (ADR 0029). A store that does not exist yet belongs
+        to whoever writes it first.
+
+        Examples
+        --------
+        >>> owner.owns_store(), owner_pinned_to_one_output.owns_store()
+        (True, False)
+        """
+        if not self.store_path:
+            return False
+        if not Path(self.store_path).exists():
+            return True
+        return self._held_variables() == sorted(self.get_factor_names())
+
+    def _held_variables(self) -> list[str]:
+        """Return the variable names of the store at ``store_path``."""
+        return sorted(map(str, XrBackend().read(self.store_path).data.data_vars))
+
+    def _refuse_unless_owner(self, method: str) -> None:
+        """Raise unless the factor owns its store (see ``owns_store``).
+
+        Raises
+        ------
+        ValueError
+            If the store at ``store_path`` exists and its variables are not
+            exactly ``get_factor_names()``.
+        """
+        # A factor without a store has nothing to own; writing fails elsewhere.
+        if self.store_path and not self.owns_store():
+            raise ValueError(
+                f"{self.class_name}.{method}(): the store at {self.store_path} "
+                f"holds {self._held_variables()}, not just this factor's outputs "
+                f"{list(self.get_factor_names())}; only the factor whose outputs "
+                f"are every variable of a store builds or extends it. Write it "
+                f"with that factor."
+            )
+
+    def stored_symbols(self) -> list:
+        """Return the symbol axis of the store ``read`` reads, in axis order.
+
+        Only the coordinate is read, never a data variable. A resampled
+        factor without a store of its own reads the source factor's store,
+        as ``read`` does. The labels keep the store's own type.
+
+        Examples
+        --------
+        >>> factor.build("2024-01-01", "2024-03-31").stored_symbols()[:2]
+        ['S0USDT', 'S1USDT']
+        """
+        path = self.store_path
+        if self.config.resample_freq is not None and not Path(path).exists():
+            path = self.config.file_path
+        store = xr.open_zarr(path)
+        try:
+            return store["symbol"].values.tolist()
+        finally:
+            store.close()
 
     def store_range(self) -> tuple[str, str] | None:
         """Return the ``(start, end)`` the store was built for, if recorded.

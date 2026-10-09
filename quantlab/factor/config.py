@@ -16,7 +16,7 @@ from quantlab.core.config import FrozenConfig
 from quantlab.enums.data import ResampleFrequency
 
 if TYPE_CHECKING:
-    from quantlab.dataset.base import MarketDataset
+    from quantlab.dataset.base import BaseDataset, MarketDataset
     from quantlab.factor.base import Factor
 
 
@@ -213,3 +213,34 @@ class NeutralizedConfig(BaseFactorConfig):
     regressors: tuple[str, ...] = ("industry", "size")
     #: Threads used by the KunQuant executor.
     njobs: int = 128
+
+
+@dataclass(kw_only=True, frozen=True)
+class RosterConfig(BaseFactorConfig):
+    """Config of ``quantlab.factor.predefined.roster.RosterFactor``.
+
+    ``factor`` is the factor read on the roster; it keeps its own config,
+    warm-up and store. ``roster`` is the dataset whose whole symbol axis is
+    the roster. ``dataset`` is filled with the wrapped factor's dataset, so
+    a model counts warm-up bars on the wrapped factor's calendar. All three
+    are component fields, so ``to_dict()`` nests their configs and
+    ``RosterFactor.from_config`` rebuilds them.
+
+    Examples
+    --------
+    With ``styles`` a BarraStyle factor pinned to its style outputs and
+    ``prices`` the price dataset of a universe:
+
+    >>> cfg = RosterConfig(factor=styles, roster=prices)
+    >>> cfg.warmup_bars, cfg.file_path
+    (0, None)
+    """
+
+    #: The wrapped factor warms itself up; anything but 0 is refused.
+    warmup_bars: int = 0
+    #: Filled with the wrapped factor's dataset by the factor's config setter.
+    dataset: "MarketDataset | None" = component(default=None)
+    #: The factor read on the roster.
+    factor: "Factor" = component()
+    #: The dataset whose store's symbol axis is the roster.
+    roster: "BaseDataset" = component()

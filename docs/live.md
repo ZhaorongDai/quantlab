@@ -40,8 +40,12 @@ The run directory is the strategy's recipe: `config.json` rebuilds the backteste
      mirror is instead rewritten from the price store over its own range, so the new symbol
      keeps its history. The rewrite goes through a sidecar and two renames.
 3. **The stores the run built.** Each factor store with a recorded range is extended to t
-   with `Factor.extend`, deepest in the tree first. These are the model's factors and the
-   risk model's exposures factor (`BarraStyle`). Then each factor risk model's regression
+   with `Factor.extend`, deepest in the tree first, by its owner: the factor whose outputs
+   are every variable of the store (`Factor.owns_store`). These are the model's factors and
+   the risk model's exposures factor (`BarraStyle`). A factor pinned to some outputs of a
+   store, such as the 12 styles a `RosterFactor` reads from the Barra store, is a view and
+   never extends it; a store the run reaches only through views must already hold t, or the
+   day is refused before anything is extended. Then each factor risk model's regression
    store and estimate store are extended with `RiskStore.extend`, in that order. A store that
    already reaches t is left alone, so the next run finishes a run that was interrupted.
    Afterwards each store must hold t.
@@ -61,6 +65,11 @@ The S&P 500 Barra mean-variance run (`examples/sharadar_us_equity/sp500_xgb_mvo.
 | `pipeline/sharadar_sp500/factor/alpha101.zarr`, `alpha158.zarr` | `Factor.extend` |
 | `pipeline/sharadar_barra/barra_style.zarr` | `Factor.extend` |
 | `pipeline/sharadar_risk/regression.zarr`, then `estimate.zarr` | `RiskStore.extend` |
+
+The us3000 run of `examples/sharadar_us_equity/us3000_h1_mvo.py` reads its 12 style
+features straight from `pipeline/sharadar_barra/barra_style.zarr` through a `RosterFactor`,
+so that store is extended once, by the risk model's exposures factor; `prepare-day` extends
+it first, and the job finds it current.
 
 The benchmark (`sharadar_spy_1d.zarr`) and the backtest's own attribution `risk_model` field
 are not inputs of a decision and are not walked.
@@ -145,7 +154,7 @@ with `download_risk_free()` of `examples/sharadar_us_equity/barra_style.py`.
 | `reason` | When | Exit status |
 |----------|------|-------------|
 | `already_predicted` | t is already in the store: the day is done. | 3 |
-| `missing_data` | A leaf dataset does not hold t. Nothing is extended, and the message names each store with its last bar. Also raised if a store still lacks t after extension, or the model predicts no row at t. | 2 |
+| `missing_data` | A leaf dataset does not hold t, or a factor store the run reads only through views does not. Nothing is extended, and the message names each store with its last bar. Also raised if a store still lacks t after extension, or the model predicts no row at t. | 2 |
 | `foreign_store` | The store was written for another run, checkpoint or label set. | 1 |
 | `invalid` | The run has no model's predictions, an option names no store of the run, or the price store ends before the store's last bar. | 1 |
 
