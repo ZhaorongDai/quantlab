@@ -12,6 +12,7 @@ Install the project with `uv sync`. Browsing the catalogue and inspecting local 
 |---|---|---|
 | `alpaca` | `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` | US equity 1d and 1m bars; tick quotes and trades |
 | `fred` | none | Interest-rate series such as DTB3, the 3-month Treasury bill rate (key-free CSV endpoint); `FredRateDataset` makes a single-symbol `rate` and `risk_free` panel |
+| `massive` | `MASSIVE_API_KEY`, `MASSIVE_S3_ACCESS_KEY_ID` (`MASSIVE_S3_SECRET_ACCESS_KEY` optional) | Every US-equity SIP trade, and Massive's minute and day aggregates, as daily S3 files; `MassiveTradeBarDataset` builds Trade bars on the permaticker axis; downloaded by `MassiveClient`, not `run()` (see [Massive](massive.md)) |
 | `sharadar` | `SHARADAR_API_KEY` | US stock (SEP) and fund (SFP) daily prices, SF1 fundamentals, DAILY valuations, 8-K events, insider transactions, 13F holdings, ACTIONS, S&P 500 membership, TICKERS, INDICATORS; downloaded by `scripts/sharadar/`, not `run()` (see [Sharadar](sharadar.md)) |
 | `tiingo` | `TIINGO_API_KEY` | US equity daily bars |
 | `wrds` | `WRDS_USERNAME` (password in `~/.pgpass`) | TAQ NBBO quotes; CRSP daily bars |
@@ -27,7 +28,7 @@ The sessions in this guide leave out the log lines that quantlab writes to stder
 ```python
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
 >>> wrds = DataSourceRegistry.get("wrds")
 >>> wrds.display_name
 'WRDS (NYSE TAQ millisecond NBBO; CRSP Stock v2 daily)'
@@ -303,7 +304,7 @@ The descriptor lists one `Capability` per combination the vendor serves. `datase
 
 ```python
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'demo', 'fred', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'demo', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
 >>> DataSourceRegistry.get("demo").supports("us_equity", "1d")
 True
 >>> from quantlab.acquisition.registry import is_configured
@@ -330,7 +331,7 @@ For WRDS the same call raises `RuntimeError: WRDS_USERNAME environment variable 
 
 `register_source()` allows one descriptor per vendor. A second registration of the same vendor raises `ValueError: vendor 'demo' is already registered ('Demo Vendor'). ...`; add another `Capability` to the existing descriptor instead. It also refuses a descriptor with an empty `capabilities` tuple.
 
-`DataSourceRegistry.get()` raises `ValueError: No data source is registered for vendor 'bloomberg'. Registered vendors: ['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']. ...` for an unknown token, and the same happens for a vendor whose module was never imported.
+`DataSourceRegistry.get()` raises `ValueError: No data source is registered for vendor 'bloomberg'. Registered vendors: ['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']. ...` for an unknown token, and the same happens for a vendor whose module was never imported.
 
 `convert()` has no memory guard. It raises `ValueError` when the source serves no such capability (the message lists what it does serve), when several capabilities match with different conversion targets, and when the capability has no `dataset_cls`. Alpaca tick quotes and trades are stored raw on an irregular event axis and are examples of the last case:
 

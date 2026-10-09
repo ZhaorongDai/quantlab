@@ -12,6 +12,7 @@
 |---|---|---|
 | `alpaca` | `APCA_API_KEY_ID`、`APCA_API_SECRET_KEY` | 美股 1d、1m 行情；tick 报价与成交 |
 | `fred` | 无 | 利率序列，例如 DTB3（3 个月期国库券利率，免 key 的 CSV 接口）；`FredRateDataset` 生成单 symbol 的 `rate` 与 `risk_free` 面板 |
+| `massive` | `MASSIVE_API_KEY`、`MASSIVE_S3_ACCESS_KEY_ID`（`MASSIVE_S3_SECRET_ACCESS_KEY` 可选） | 美股每一笔 SIP 成交，以及 Massive 自己的分钟、日 bar，按日放在 S3 文件里；`MassiveTradeBarDataset` 在 permaticker 轴上生成 Trade bar；由 `MassiveClient` 下载，不走 `run()`（见 [Massive](../massive.md)） |
 | `sharadar` | `SHARADAR_API_KEY` | 美股股票（SEP）与基金（SFP）日线、SF1 基本面、DAILY 估值、8-K 事件、内部人交易、13F 持仓、ACTIONS、标普 500 成分、TICKERS、INDICATORS；由 `scripts/sharadar/` 下载，不走 `run()`（见 [Sharadar](../sharadar.md)） |
 | `tiingo` | `TIINGO_API_KEY` | 美股日线 |
 | `wrds` | `WRDS_USERNAME`（密码放在 `~/.pgpass`） | TAQ NBBO 报价；CRSP 日线 |
@@ -27,7 +28,7 @@
 ```python
 >>> from quantlab.acquisition.base import DataSourceRegistry
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
 >>> wrds = DataSourceRegistry.get("wrds")
 >>> wrds.display_name
 'WRDS (NYSE TAQ millisecond NBBO; CRSP Stock v2 daily)'
@@ -303,7 +304,7 @@ def make_configs(root: Path, symbols=("AAPL", "MSFT", "NVDA")):
 
 ```python
 >>> [d.vendor for d in DataSourceRegistry.all()]
-['alpaca', 'demo', 'fred', 'sharadar', 'tiingo', 'wrds']
+['alpaca', 'demo', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
 >>> DataSourceRegistry.get("demo").supports("us_equity", "1d")
 True
 >>> from quantlab.acquisition.registry import is_configured
@@ -330,7 +331,7 @@ RuntimeError: TIINGO_API_KEY environment variable is not set. Export it before r
 
 `register_source()` 每个厂商只允许一个描述符。对同一厂商再注册一次会抛出 `ValueError: vendor 'demo' is already registered ('Demo Vendor'). ...`；应改为给已有描述符增加一个 `Capability`。它也会拒绝 `capabilities` 为空元组的描述符。
 
-对未知的厂商标记，`DataSourceRegistry.get()` 抛出 `ValueError: No data source is registered for vendor 'bloomberg'. Registered vendors: ['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']. ...`；一个模块从未被导入的厂商也是同样的结果。
+对未知的厂商标记，`DataSourceRegistry.get()` 抛出 `ValueError: No data source is registered for vendor 'bloomberg'. Registered vendors: ['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']. ...`；一个模块从未被导入的厂商也是同样的结果。
 
 `convert()` 没有内存保护。以下情况它抛出 `ValueError`：数据源没有这种 capability（消息里会列出它实际提供的）、多个 capability 匹配且转换目标不同、匹配的 capability 没有 `dataset_cls`。Alpaca 的 tick 报价和成交以不规则的事件轴原样保存，属于最后一种情况：
 

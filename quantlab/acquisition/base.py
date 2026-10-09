@@ -2373,7 +2373,7 @@ class DataSourceRegistry:
     >>> import quantlab.acquisition.registry
     >>> from quantlab.acquisition.base import DataSourceRegistry
     >>> [d.vendor for d in DataSourceRegistry.all()]
-    ['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']
+    ['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']
     >>> DataSourceRegistry.get("tiingo").display_name
     'Tiingo EOD'
     """

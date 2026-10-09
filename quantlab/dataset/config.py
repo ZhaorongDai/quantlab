@@ -259,6 +259,47 @@ IWM_PERMNO: str = "88222"
 
 
 @dataclass(kw_only=True, frozen=True)
+class MassiveTradeBarsDatasetConfig(DatasetConfig):
+    """Config of the Trade bar panel built from Massive's daily trade files (ADR 0030).
+
+    ``frequency`` stays ``"tick"`` (the raw tier holds one row per trade);
+    the size of the bars is ``bar_interval``. The session window and the bar
+    size are fixed at conversion. The panel's ``symbol`` axis is the Sharadar
+    permaticker: each raw ``(date, ticker)`` is mapped through the TICKERS
+    and ACTIONS of the Sharadar raw tier in ``sharadar_dir``, so the
+    inherited ticker-side ``symbols`` field is refused by the dataset.
+
+    Examples
+    --------
+    >>> cfg = MassiveTradeBarsDatasetConfig(
+    ...     zarr_file_path="/data/zarrs/massive_trade_bars_1m.zarr",
+    ...     raw_data_dir_path="/data/downloads/massive",
+    ...     sharadar_dir="/data/downloads/sharadar",
+    ...     start_date="2024-11-29",
+    ...     end_date="2024-11-29",
+    ... )
+    >>> cfg.frequency, cfg.vendor, cfg.bar_interval
+    ('tick', 'massive', '1m')
+    """
+
+    #: Always US equity for this vendor.
+    market: Market = "us_equity"
+    #: Always tick: the raw tier is one row per trade.
+    frequency: Frequency = "tick"
+    #: Always Massive for this dataset.
+    vendor: Vendor | None = "massive"
+    #: The Sharadar raw tier (``<download-dir>/sharadar``) whose TICKERS and
+    #: ACTIONS map each raw ticker to its permaticker.
+    sharadar_dir: str
+    #: Bar size the trades are resampled to.
+    bar_interval: BarInterval = "1m"
+    #: Start of the session window, US/Eastern wall clock ``HH:MM``.
+    session_start: str = "09:30"
+    #: End of the session window, US/Eastern wall clock ``HH:MM``.
+    session_end: str = "16:00"
+
+
+@dataclass(kw_only=True, frozen=True)
 class CrspDatasetConfig(DatasetConfig):
     """Config of the CRSP Stock v2 daily panel.
 

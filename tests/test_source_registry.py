@@ -504,9 +504,9 @@ def test_direct_class_reference_is_the_class_object(isolated_registry) -> None:
     assert isolated_registry.get("tiingo").acquisition_cls is tiingo.TiingoAcquisition
     assert isolated_registry.get("alpaca").acquisition_cls is alpaca.AlpacaAcquisition
     for descriptor in isolated_registry.all():
-        # None only for a vendor its own scripts download (Sharadar).
+        # None only for a vendor its own scripts download (Sharadar, Massive).
         if descriptor.acquisition_cls is None:
-            assert descriptor.vendor == "sharadar"
+            assert descriptor.vendor in ("sharadar", "massive")
             continue
         assert isinstance(descriptor.acquisition_cls, type)
         assert not isinstance(descriptor.acquisition_cls, str)
@@ -639,7 +639,7 @@ def test_enumeration_order_is_sorted_by_vendor(isolated_registry, monkeypatch) -
     its sorted order; deleting the `sorted(...)` call turns this red.
     """
     assert [d.vendor for d in DataSourceRegistry_all()] == [
-        "alpaca", "fred", "sharadar", "tiingo", "wrds",
+        "alpaca", "fred", "massive", "sharadar", "tiingo", "wrds",
     ]
 
     reversed_registration = (
@@ -794,7 +794,7 @@ def test_enumeration_is_complete_from_a_cold_import() -> None:
     )
 
     assert child.returncode == 0, child.stderr
-    assert child.stdout.strip() == "['alpaca', 'fred', 'sharadar', 'tiingo', 'wrds']", child.stdout
+    assert child.stdout.strip() == "['alpaca', 'fred', 'massive', 'sharadar', 'tiingo', 'wrds']", child.stdout
     assert "Traceback" not in child.stderr
 
 
@@ -1265,7 +1265,7 @@ def test_the_isolated_registry_fixture_restored_every_fake_vendor() -> None:
     from quantlab.acquisition.base import DataSourceRegistry
 
     assert [d.vendor for d in DataSourceRegistry.all()] == [
-        "alpaca", "fred", "sharadar", "tiingo", "wrds",
+        "alpaca", "fred", "massive", "sharadar", "tiingo", "wrds",
     ]
 
     registered = {d.vendor for d in DataSourceRegistry.SOURCES}

@@ -66,7 +66,7 @@ import json
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import polars as pl
@@ -510,7 +510,44 @@ class PermatickerResolver:
         {'LESL': 632479}
         """
         path = Path(path)
-        pulled = pull_time(path)
+        mapped, unresolved = self._resolve(pull_time(path), tickers)
+        if unresolved:
+            self.unresolved.setdefault(path, {}).update(unresolved)
+        return mapped
+
+    def resolve_on(self, day: date, tickers: Iterable[str]) -> tuple[dict[str, int], dict[str, str]]:
+        """Return the permaticker of each of ``tickers`` as traded on ``day``, and why the rest are not mapped.
+
+        For a vendor that names each security by the ticker it traded under
+        that day (Massive's trade files), rather than by the tickers of a
+        later pull. A ticker change dated ``day`` is in force on ``day``, so
+        the tickers are mapped as a file pulled at the start of the next day
+        would name them; the order is the module docstring's.
+
+        Returns
+        -------
+        mapped : dict of str to int
+            ``{ticker: permaticker}``.
+        unresolved : dict of str to str
+            ``{ticker: reason}`` for the tickers left unmapped. Nothing is
+            recorded in ``unresolved``, which is keyed by raw file.
+
+        Raises
+        ------
+        ValueError
+            If TICKERS (or the TICKERS snapshot of that pull) gives one of
+            the tickers to several permatickers.
+
+        Examples
+        --------
+        >>> resolver.resolve_on(date(2016, 11, 25), ["AAPL", "ZVZZT"])
+        ({'AAPL': 199059}, {'ZVZZT': 'no permaticker'})
+        """
+        pulled = datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        return self._resolve(pulled, tickers)
+
+    def _resolve(self, pulled: datetime, tickers: Iterable[str]) -> tuple[dict[str, int], dict[str, str]]:
+        """Map ``tickers`` as named by a pull at ``pulled``; return the mapped and the unresolved."""
         left = {str(t) for t in tickers if t is not None}
         mapped: dict[str, int] = {}
         snapshot = snapshot_for(self.vendor_root, pulled)
@@ -551,9 +588,7 @@ class PermatickerResolver:
                 snapshot is None and permaticker in self._current_pairs().get(ticker, ())
             ):
                 self.own.setdefault(ticker, set()).add(permaticker)
-        if unresolved:
-            self.unresolved.setdefault(path, {}).update(unresolved)
-        return mapped
+        return mapped, unresolved
 
     @staticmethod
     def _holder_on(spans: list[_Span], day: date) -> int | None:

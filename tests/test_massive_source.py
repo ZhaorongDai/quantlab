@@ -1,0 +1,107 @@
+"""Massive in the data-source registry (#238).
+
+Massive's raw tier is one vendor file per data type and trading day (pulled by
+``MassiveClient``), not the symbol-batched hive tree an ``Acquisition`` writes,
+so its descriptor names no acquisition class: ``run()`` refuses it and points at
+``scripts/massive/``. Everything else an operator surface reads is there: the
+data types as capabilities, the credential names, and ``convert()`` for the
+trade files.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+
+import pytest
+
+from tests.massive_fixtures import trade_line, write_conditions, write_trades
+from tests.sharadar_fixtures import tickers_row
+
+
+def _source():
+    import quantlab.acquisition.registry  # noqa: F401  (registers every source)
+    from quantlab.acquisition.base import DataSourceRegistry
+
+    return DataSourceRegistry.get("massive")
+
+
+def test_the_registry_lists_massive_and_its_data_types():
+    from quantlab.dataset.massive.raw import DATA_TYPES
+
+    source = _source()
+    assert [c.data_type for c in source.capabilities] == ["trades", "minute_aggs", "day_aggs"]
+    assert set(DATA_TYPES) == {c.data_type for c in source.capabilities}
+    assert {(c.data_type, c.frequency) for c in source.capabilities} == {
+        ("trades", "tick"), ("minute_aggs", "1m"), ("day_aggs", "1d"),
+    }
+    assert {c.market for c in source.capabilities} == {"us_equity"}
+
+
+def test_only_the_trades_convert_through_the_registry():
+    from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
+
+    by_type = {c.data_type: c.dataset_cls for c in _source().capabilities}
+    assert by_type == {"trades": MassiveTradeBarDataset, "minute_aggs": None, "day_aggs": None}
+
+
+def test_the_credentials_are_the_clients_own_variables():
+    from quantlab.acquisition.massive.client import API_KEY_ENV, S3_ACCESS_KEY_ENV
+
+    assert _source().required_env == (API_KEY_ENV, S3_ACCESS_KEY_ENV)
+
+
+def test_is_configured_follows_both_variables(monkeypatch):
+    from quantlab.acquisition.registry import is_configured
+
+    monkeypatch.delenv("MASSIVE_API_KEY", raising=False)
+    monkeypatch.delenv("MASSIVE_S3_ACCESS_KEY_ID", raising=False)
+    assert is_configured(_source()) is False
+    monkeypatch.setenv("MASSIVE_API_KEY", "synthetic-key")  # SYNTHETIC
+    assert is_configured(_source()) is False
+    monkeypatch.setenv("MASSIVE_S3_ACCESS_KEY_ID", "synthetic-id")  # SYNTHETIC
+    assert is_configured(_source()) is True
+
+
+def test_run_refuses_and_points_at_the_scripts(acquisition_config):
+    from quantlab.acquisition.registry import run
+
+    source = _source()
+    assert source.acquisition_cls is None
+    assert source.config_factory is None
+    with pytest.raises(ValueError, match="scripts/massive"):
+        run(source, acquisition_config(vendor="tiingo"))
+
+
+def test_convert_builds_the_trade_bar_store(tmp_path):
+    import polars as pl
+
+    from quantlab.acquisition.registry import convert
+    from quantlab.dataset.config import MassiveTradeBarsDatasetConfig
+    from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
+    from quantlab.dataset.sharadar.tables import TABLES, bulk_file, write_bulk_pull
+
+    sharadar = tmp_path / "downloads" / "sharadar"
+    path = bulk_file(sharadar, "tickers")
+    path.parent.mkdir(parents=True)
+    row = tickers_row("SEP", 101, "AAA")  # SYNTHETIC
+    schema = TABLES["tickers"].schema
+    pl.DataFrame(
+        {name: [date.fromisoformat(row[name]) if dtype == pl.Date and row.get(name) else row.get(name)]
+         for name, dtype in schema.items()},
+        schema=schema,
+    ).write_parquet(path)
+    write_bulk_pull(sharadar, "tickers", datetime(2024, 1, 25, tzinfo=UTC))
+    massive = tmp_path / "downloads" / "massive"
+    write_conditions(massive, datetime(2024, 1, 25, tzinfo=UTC))
+    write_trades(massive, date(2024, 1, 24), [trade_line("AAA", datetime(2024, 1, 24, 15), 10.0, 100)])  # SYNTHETIC
+
+    config = MassiveTradeBarsDatasetConfig(
+        zarr_file_path=str(tmp_path / "massive_trade_bars_1m.zarr"),
+        raw_data_dir_path=str(massive),
+        sharadar_dir=str(sharadar),
+    )
+    result = convert(_source(), config, data_type="trades", granularity="day")
+    assert result.windows_written == 1
+    panel = MassiveTradeBarDataset(config).panel("2024-01-24", "2024-01-25")
+    assert panel.symbol.values.tolist() == [101]
+    assert float(panel["volume"].sum()) == 100.0
