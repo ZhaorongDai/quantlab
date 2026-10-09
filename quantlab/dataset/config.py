@@ -911,21 +911,6 @@ class MergedDatasetConfig(FrozenConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
-class BadPrintMaskedDatasetConfig(MergedDatasetConfig):
-    """Config of a merged dataset whose bad prints are masked (#223).
-
-    The inputs as for ``MergedDatasetConfig``, plus the rule of
-    ``quantlab.dataset._support.cleaning.bad_print_mask`` and the variables
-    it reads and masks, all in the merged panel's shared names. The defaults
-    name the Sharadar panels' variables (SEP's ``adjClose`` and
-    ``adjVolume``, DAILY's ``marketcap``); name another input's own, or the
-    panel raises ``KeyError`` for a variable the rule reads and none holds.
-
-    Examples
-    --------
-    >>> cfg = BadPrintMaskedDatasetConfig(datasets=[sep, daily])
-    >>> cfg.jump, cfg.volume_ratio, cfg.lookback
-@dataclass(kw_only=True, frozen=True)
 class RosterDatasetConfig(FrozenConfig):
     """Config of a roster dataset: a dataset read on another dataset's symbols.
 
@@ -952,6 +937,21 @@ class RosterDatasetConfig(FrozenConfig):
     name: str | None = None
 
 
+@dataclass(kw_only=True, frozen=True)
+class BadPrintMaskedDatasetConfig(MergedDatasetConfig):
+    """Config of a merged dataset whose bad prints are masked (#223).
+
+    The inputs as for ``MergedDatasetConfig``, plus the rule of
+    ``quantlab.dataset._support.cleaning.bad_print_mask`` and the variables
+    it reads and masks, all in the merged panel's shared names. The defaults
+    name the Sharadar panels' variables (SEP's ``adjClose`` and
+    ``adjVolume``, DAILY's ``marketcap``); name another input's own, or the
+    panel raises ``KeyError`` for a variable the rule reads and none holds.
+
+    Examples
+    --------
+    >>> cfg = BadPrintMaskedDatasetConfig(datasets=[sep, daily])
+    >>> cfg.jump, cfg.volume_ratio, cfg.lookback
     (5.0, 20.0, 20)
     """
 
