@@ -207,3 +207,28 @@ def test_a_quarter_under_the_securitys_old_and_new_ticker_shows_the_new_ones_row
 
     panel = _panel(tmp_path, root)
     assert _value_on(panel, "holders", "2024-05-15") == 60.0
+
+
+def test_an_update_that_adds_a_security_gives_it_its_earlier_quarters(tmp_path, today):
+    # #245: the new-listing check compared a polars Datetime with numpy datetime64 and raised.
+    sf3a = [sf3a_row("2024-03-31", "AAA", 60, 1500.0)]  # SYNTHETIC
+    vendor = _vendor(sf3a)
+    columns, sep = vendor.tables["stocks"]
+    vendor.tables["stocks"] = (columns, [r for r in sep if r["date"] <= "2024-07-31"])
+    today("2024-07-31")
+    root = _bulk(vendor, tmp_path / "dl")
+    _dataset(tmp_path, root).update()
+
+    added = _vendor(sf3a + [sf3a_row("2024-03-31", "BBB", 7, 300.0)], tickers=("AAA", "BBB"))  # SYNTHETIC
+    vendor.tables.update(added.tables)
+    today("2024-08-30")
+    client = _client(vendor)
+    client.bulk_table("tickers", tmp_path / "dl")
+    client.window_table("sep", tmp_path / "dl")
+    client.bulk_table("sf3a", tmp_path / "dl")
+    _dataset(tmp_path, root).update()
+
+    after = _dataset(tmp_path, root).panel("2024-01-01", "2024-12-31").load()
+    assert _value_on(after, "holders", "2024-05-15", permaticker=202) == 7.0
+    assert _value_on(after, "holders", "2024-08-30", permaticker=202) == 7.0
+    assert after.identical(_panel(tmp_path / "rebuilt", root))

@@ -333,7 +333,8 @@ class SharadarHoldingsDataset(BaseDataset):
         quarters = self._shown_by(pd.Timestamp(end).to_datetime64())
         starts = quarters.select("available").unique().sort("available").get_column("available")
         # The quarter shown on ``start`` is the latest available by then.
-        first = starts.filter(starts <= pd.Timestamp(start).to_datetime64()).max()
+        # polars compares a Datetime series with a Python datetime, not a numpy datetime64.
+        first = starts.filter(starts <= pd.Timestamp(start).to_pydatetime()).max()
         counts = (
             quarters.filter(
                 pl.col("symbol").is_in([int(s) for s in added])
