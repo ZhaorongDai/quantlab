@@ -31,10 +31,13 @@ file pulled before a change is not in it.
    latest-starting one if several do, or the latest to have used it if none
    does.
 
-   A holder is not taken when the file's own TICKERS snapshot gives the
-   ticker to another security, under any table: the old ticker of a dead
-   stock that a fund (SFP) has taken over names the fund in a file of that
-   pull (SF3A, pulled whole, holds funds).
+   A holder is not taken when another security, under any table, held the
+   ticker at the file's pull: the old ticker of a stock that a fund (SFP)
+   has taken over names the fund in a file of that pull (ACTIONS and SF3A
+   hold funds; ACTIONS names the FB fund's dividends FB, not Meta's, #235).
+   Who held it is the file's own TICKERS snapshot, or without one current
+   TICKERS, each security counted from the day it took the ticker (its last
+   ACTIONS ticker change, else its first price).
 
 A row whose ticker none of them maps is left out rather than refused:
 ``left_out`` drops it, logs a warning and writes the report
@@ -107,7 +110,9 @@ def _text_or_none(value) -> str | None:
     return None if not text or text == _NOT_APPLICABLE else text
 
 
-def ticker_changes(vendor_root: str | Path, code: str) -> dict[int, list[tuple[str, str, str | None]]]:
+def ticker_changes(
+    vendor_root: str | Path, code: str | None
+) -> dict[int, list[tuple[str, str, str | None]]]:
     """Return each permaticker's ticker changes, ``(date, old ticker, old company)``, by date.
 
     A ``tickerchangefrom`` row of ACTIONS says that on its ``date`` the
@@ -116,16 +121,17 @@ def ticker_changes(vendor_root: str | Path, code: str) -> dict[int, list[tuple[s
     -> ``BBX`` -> ``BBB``: the change into ``BBX``), the row is that
     security's, the one whose change away from it comes first after the
     row's date, even when another company trades under the ticker now.
-    Otherwise the row is the security the TICKERS rows of ``code`` give the
-    ticker to. A row that maps to nothing, or to several permatickers, is
-    left out.
+    Otherwise the row is the security the TICKERS rows of ``code`` (of every
+    table for ``None``) give the ticker to. A row that maps to nothing, or to
+    several permatickers, is left out.
 
     Parameters
     ----------
     vendor_root : str or Path
         ``<download-dir>/sharadar``, holding TICKERS and ACTIONS.
-    code : str
-        The table whose TICKERS rows own the tickers (``"sep"``).
+    code : str or None
+        The table whose TICKERS rows own the tickers (``"sep"``); ``None``
+        for the rows of every table (funds included).
 
     Returns
     -------
@@ -136,6 +142,8 @@ def ticker_changes(vendor_root: str | Path, code: str) -> dict[int, list[tuple[s
     --------
     >>> ticker_changes("/data/downloads/sharadar", "sep")[194817]
     [('2022-06-09', 'FB', 'FACEBOOK INC')]
+    >>> ticker_changes("/data/downloads/sharadar", None)[117736]  # a fund (SFP)
+    [('2026-04-09', 'BJK', None)]
     """
     rows = (
         scan_raw_table(vendor_root, "actions")
@@ -145,7 +153,11 @@ def ticker_changes(vendor_root: str | Path, code: str) -> dict[int, list[tuple[s
         .sort("date", descending=True)
     )
     owners: dict[str, set[int]] = {}
-    for ticker, permaticker in permaticker_mapping(vendor_root, code).iter_rows():
+    if code is None:
+        mapping = scan_raw_table(vendor_root, "tickers").select("ticker", "permaticker").unique().collect()
+    else:
+        mapping = permaticker_mapping(vendor_root, code)
+    for ticker, permaticker in mapping.drop_nulls().iter_rows():
         owners.setdefault(str(ticker), set()).add(int(permaticker))
     # Latest first, so a later change has resolved the ticker an earlier one
     # changed into before that earlier one is looked at.
@@ -280,6 +292,7 @@ class PermatickerResolver:
         self._current: dict[str, set[int]] | None = None
         self._snapshots: dict[Path, dict[str, set[int]]] = {}
         self._snapshots_all: dict[Path, dict[str, set[int]]] = {}
+        self._since: dict[str, dict[int, date | None]] | None = None
         #: Per raw file, the tickers it names that were not mapped, and why.
         self.unresolved: dict[Path, dict[str, str]] = {}
         #: ``{ticker: permatickers}`` mapped as the security's own ticker of a
@@ -321,6 +334,45 @@ class PermatickerResolver:
                     pairs.setdefault(str(ticker), set()).add(int(permaticker))
             self._snapshots_all[path] = pairs
         return self._snapshots_all[path]
+
+    def _current_since(self) -> dict[str, dict[int, date | None]]:
+        """Return ``{ticker: {permaticker: since}}`` of current TICKERS, every table's rows, read once.
+
+        ``since`` is the day the security took its ticker: its last ACTIONS
+        ticker change, else its first price (``None`` without either).
+        """
+        if self._since is None:
+            rows = (
+                scan_raw_table(self.vendor_root, "tickers")
+                .group_by("ticker", "permaticker")
+                .agg(pl.col("firstpricedate").min())
+                .collect()
+            )
+            try:
+                changes = ticker_changes(self.vendor_root, None)
+            except FileNotFoundError:
+                changes = {}
+            since: dict[str, dict[int, date | None]] = {}
+            for ticker, permaticker, first in rows.iter_rows():
+                if ticker is None or permaticker is None:
+                    continue
+                changed = changes.get(int(permaticker))
+                start = _day(changed[-1][0]) if changed else _day(first)
+                since.setdefault(str(ticker), {})[int(permaticker)] = start
+            self._since = since
+        return self._since
+
+    def _holding_on(self, day: date) -> dict[str, set[int]]:
+        """Return ``{ticker: permatickers}`` current TICKERS (every table) shows holding it on ``day``.
+
+        A security counts from the day it took the ticker
+        (``_current_since``): one that took it after ``day`` did not hold it.
+        """
+        return {
+            ticker: held
+            for ticker, starts in self._current_since().items()
+            if (held := {p for p, start in starts.items() if start is None or start <= day})
+        }
 
     def _current_pairs(self) -> dict[str, set[int]]:
         """Return the ``{ticker: permatickers}`` of current TICKERS, read once."""
@@ -458,8 +510,11 @@ class PermatickerResolver:
         if left:
             self._refuse_ambiguous(self._current_pairs(), left, "TICKERS")
         holders = self._ticker_holders() if left else {}
-        others = {} if snapshot is None else self._snapshot_any_table(snapshot)
         day = pulled.date()
+        if snapshot is not None:
+            others = self._snapshot_any_table(snapshot)
+        else:
+            others = self._holding_on(day) if left else {}
         unresolved: dict[str, str] = {}
         for ticker in left:
             spans = holders.get(ticker, [])
@@ -471,8 +526,9 @@ class PermatickerResolver:
             if chosen is None:
                 unresolved[ticker] = f"several securities used it ({sorted(permatickers)})"
             elif ticker in others and chosen not in others[ticker]:
+                where = "the TICKERS snapshot of its pull" if snapshot is not None else "TICKERS"
                 unresolved[ticker] = (
-                    f"the TICKERS snapshot of its pull gives it to another security "
+                    f"{where} gives it to another security as of its pull "
                     f"({sorted(others[ticker])})"
                 )
             else:

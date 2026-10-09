@@ -123,12 +123,13 @@ def _prices(root, *, old="OLD", new="NEW"):
     )
 
 
-def _mapped(root, code="sep", sidecar=None):
+def _mapped(root, code="sep", sidecar=None, *, scanned=None):
+    """Map ``scanned`` (default ``code``) through the TICKERS rows of ``code``."""
     from quantlab.dataset.sharadar.permatickers import PermatickerResolver
     from quantlab.dataset.sharadar.tables import scan_raw_table
 
     resolver = PermatickerResolver(root, code, sidecar_path=sidecar)
-    frame = scan_raw_table(root, code, annotate=resolver.annotate).collect().sort("date")
+    frame = scan_raw_table(root, scanned or code, annotate=resolver.annotate).collect().sort("date")
     return frame, resolver
 
 
@@ -475,4 +476,128 @@ def test_a_renamed_ticker_reused_later_maps_each_file_to_its_holder_then(tmp_pat
     frame, resolver = _mapped(root)
     assert frame.filter(pl.col("date") <= date(2024, 1, 5))["permaticker"].to_list() == [707] * 4
     assert frame.filter(pl.col("date") >= date(2024, 2, 1))["permaticker"].to_list() == [808] * 2
+    assert resolver.unresolved == {}
+
+
+# -- a former ticker another table's security holds at the pull (#235) ----------
+#
+# Every table, ACTIONS included, names a security's whole history by its ticker
+# at the pull: the rows a raw file holds under a stock's former ticker that a
+# fund (SFP) has since taken are the fund's. Without the file's TICKERS
+# snapshot, current TICKERS says who holds the ticker; a holder whose use of it
+# began after the pull did not hold it then.
+
+META_DAYS = ["2025-09-18", "2025-09-19", "2025-09-22", "2025-09-23"]
+
+
+def _meta(root: Path, *, actions_pulled: datetime, fund_since: str = "2025-06-26"):
+    """707 traded as FB until 2022-06-09, then META; fund 909 trades as FB since ``fund_since``.
+
+    No TICKERS snapshot: the raw tier was pulled before they were kept.
+    """
+    _write(root, "sep", [sep_row("META", d, 700.0) for d in META_DAYS], _at("2025-10-01"))  # SYNTHETIC
+    _write(
+        root,
+        "tickers",
+        [
+            tickers_row("SEP", 707, "META", firstpricedate="2012-05-18"),  # SYNTHETIC
+            tickers_row("SFP", 909, "FB", firstpricedate=fund_since),  # SYNTHETIC
+        ],
+        _at("2025-10-01"),
+    )
+    _write(
+        root,
+        "actions",
+        [
+            _change("2022-06-09", "META", "FB"),  # SYNTHETIC
+            action_row("2025-09-22", "dividend", "META", 0.525),  # SYNTHETIC
+            action_row("2025-09-22", "dividend", "FB", 0.53),  # SYNTHETIC
+        ],
+        actions_pulled,
+    )
+
+
+def test_a_former_ticker_a_fund_holds_at_the_pull_maps_to_the_fund_not_the_stock(tmp_path):
+    root = tmp_path / "sharadar"
+    _meta(root, actions_pulled=_at("2025-10-01"))
+
+    frame, resolver = _mapped(root, scanned="actions")
+    dividends = frame.filter(pl.col("action") == "dividend").sort("ticker")
+    assert dividends.select("ticker", "permaticker").rows() == [("FB", None), ("META", 707)]
+    (reasons,) = resolver.unresolved.values()
+    assert "909" in reasons["FB"]
+
+
+def test_a_stocks_dividends_leave_out_a_fund_trading_under_its_former_ticker(tmp_path):
+    from quantlab.dataset.config import SharadarDatasetConfig
+    from quantlab.dataset.sharadar.stock import SharadarStockDataset
+
+    root = tmp_path / "sharadar"
+    _meta(root, actions_pulled=_at("2025-10-01"))
+    dataset = SharadarStockDataset(
+        SharadarDatasetConfig(
+            zarr_file_path=str(tmp_path / "sharadar_sep_1d.zarr"), raw_data_dir_path=str(root)
+        )
+    )
+    dataset.update()
+    panel = dataset.panel("2025-09-01", "2025-09-30").load()
+    assert float(panel["divCash"].sel(symbol=707, timestamp="2025-09-22")) == 0.525
+    assert float(panel["divCash"].sel(symbol=707).sum()) == 0.525
+
+
+def test_a_former_ticker_reused_long_ago_is_the_funds_in_every_row(tmp_path):
+    # 199 traded as SRV until 2004; fund 919 listed as SRV in 2007 and paid
+    # under it from then on, decades of rows a bulk ACTIONS file holds.
+    root = tmp_path / "sharadar"
+    _write(
+        root,
+        "tickers",
+        [
+            tickers_row("SEP", 199, "SCI", firstpricedate="1997-12-31"),  # SYNTHETIC
+            tickers_row("SFP", 919, "SRV", firstpricedate="2007-09-04"),  # SYNTHETIC
+        ],
+        _at("2025-10-01"),  # SYNTHETIC
+    )
+    _write(
+        root,
+        "actions",
+        [
+            _change("2004-07-30", "SCI", "SRV"),  # SYNTHETIC
+            action_row("2007-11-26", "dividend", "SRV", 6.0),  # SYNTHETIC
+            action_row("2020-11-26", "dividend", "SRV", 0.5),  # SYNTHETIC
+            action_row("2020-12-30", "dividend", "SCI", 0.2),  # SYNTHETIC
+        ],
+        _at("2025-10-01"),  # SYNTHETIC
+    )
+
+    frame, _ = _mapped(root, scanned="actions")
+    dividends = frame.filter(pl.col("action") == "dividend").sort("date")
+    assert dividends.select("ticker", "permaticker").rows() == [
+        ("SRV", None), ("SRV", None), ("SCI", 199),
+    ]
+
+
+def test_a_file_pulled_before_the_fund_took_the_ticker_keeps_it_the_stocks(tmp_path):
+    # Pulled in 2022, before the fund listed as FB: FB rows then were 707's.
+    root = tmp_path / "sharadar"
+    _meta(root, actions_pulled=_at("2022-06-01"))  # SYNTHETIC
+
+    frame, resolver = _mapped(root, scanned="actions")
+    assert set(frame.filter(pl.col("ticker") == "FB")["permaticker"]) == {707}
+    assert resolver.unresolved == {}
+
+
+def test_a_ticker_the_fund_took_by_a_ticker_change_counts_from_the_change(tmp_path):
+    # Fund 909 listed in 2008 under another ticker and changed to FB in 2026;
+    # a file pulled in 2025, after the fund's first price but before its
+    # change, named 707 FB, not the fund.
+    root = tmp_path / "sharadar"
+    _meta(root, actions_pulled=_at("2025-10-01"), fund_since="2008-01-24")  # SYNTHETIC
+    actions = pl.read_parquet(root / "actions" / "actions.parquet")
+    pl.concat([actions, _frame("actions", [_change("2026-04-09", "FB", "DNET")])]).write_parquet(  # SYNTHETIC
+        root / "actions" / "actions.parquet"
+    )
+
+    frame, resolver = _mapped(root, scanned="actions")
+    assert set(frame.filter(pl.col("ticker") == "FB")["permaticker"]) == {707}
     assert resolver.unresolved == {}
