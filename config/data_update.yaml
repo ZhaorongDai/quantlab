@@ -27,7 +27,7 @@ ready:
 stages:
   - name: raw
     steps:
-      # A table no strategy reads may fail (sharadar_holdings_1d, #245); the ready stores decide.
+      # A table no strategy reads failing (a vendor hiccup) must not hold the day; the ready stores decide.
       - sharadar: {args: [--rebuild-dropped], allow_failure: true}
       - fred: {series: [DTB3], start: "1954-01-04", store: market/fred/fred_dtb3_1d}
       - benchmarks: {tickers: [vt, spy, acwi]}
