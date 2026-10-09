@@ -291,6 +291,7 @@ def live_run(
     fold: int | None,
     candidate_top_k: int | None = OPTIMISER["candidate_top_k"],
     size_bound: float | None = 0.1,
+    beta_bound: float | None = 0.1,
 ) -> Path:
     """A plain run() of R223L5C5 in load mode with one fold's checkpoint, over RUN_START..RUN_END.
 
@@ -301,13 +302,18 @@ def live_run(
     mega caps stayed candidates). ``size_bound`` widens the ``style_size``
     bound to ``[-size_bound, size_bound]`` instead (0.75 was feasible from
     an empty book on every bar of the year to 2026-10-02, 0.1 on 62% of
-    them), and ``None`` drops it (the experiment's R223L5C5NS).
+    them), and ``None`` drops it (the experiment's R223L5C5NS);
+    ``beta_bound`` does the same for ``style_beta``.
     """
     bounds = dict(OPTIMISER["exposure_bounds"])
     if size_bound is None:
         bounds.pop("style_size")
     else:
         bounds["style_size"] = (-size_bound, size_bound)
+    if beta_bound is None:
+        bounds.pop("style_beta")
+    else:
+        bounds["style_beta"] = (-beta_bound, beta_bound)
     if not MEMBERSHIP.exists():
         membership().update()
     optimiser = MeanVarianceOptimizer(MeanVarianceConfig(
@@ -338,12 +344,13 @@ def main() -> None:
     run.add_argument("--all-candidates", action="store_true", help="candidate_top_k=None (every member)")
     run.add_argument("--size-bound", type=float, default=0.1,
                      help="style_size in [-x, x]; 0 drops the bound (R223L5C5NS)")
+    run.add_argument("--beta-bound", type=float, default=0.1, help="style_beta in [-x, x]; 0 drops the bound")
     args = parser.parse_args()
     if args.step == "prepare-day":
         prepare_day()
     else:
         top_k = None if args.all_candidates else OPTIMISER["candidate_top_k"]
-        print(live_run(args.fold, top_k, size_bound=args.size_bound or None))
+        print(live_run(args.fold, top_k, size_bound=args.size_bound or None, beta_bound=args.beta_bound or None))
 
 
 if __name__ == "__main__":
