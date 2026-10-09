@@ -38,7 +38,19 @@ massive/minute_aggs/2016/2016-11-25.csv.gz
 massive/conditions/conditions_<UTC stamp>.json
 ```
 
-A file is written as `<name>.part`, checked against the vendor's size and decoded to the end of its gzip, then renamed into place; a file already there whole is not fetched again. A day without a file raises `MassiveNotPublishedError` (a holiday, or today before the vendor publishes); a refused key or a day outside the plan's window raises `MassiveEntitlementError`; a network failure raises `MassiveTransportError` after its retries.
+A file is fetched in byte ranges of `part_bytes` (32 MiB), several at once, each written at its offset of `<name>.part`; a range whose stream breaks is asked again for only the bytes it still lacks. The whole file is then checked against the vendor's size and decoded to the end of its gzip, and only then renamed into place; a file already there whole is not fetched again. A day without a file raises `MassiveNotPublishedError` (a holiday, or today before the vendor publishes); a refused key or a day outside the plan's window raises `MassiveEntitlementError`; a network failure or throttling raises `MassiveTransportError` after its retries, each after a back-off that doubles.
+
+A range of days goes through `download_days`, oldest first, with several files in flight; it asks only for the XNYS sessions of the range (weekends and holidays are not asked for) and yields one `DayDownload` per session in date order, so a caller can convert day d while d+1 downloads:
+
+```python
+for done in client.download_days("minute_aggs", date(2016, 10, 11), date(2016, 12, 30),
+                                 "/data/quantlab/downloads"):
+    print(done.day, done.published, done.fetched_bytes, done.seconds)
+```
+
+A session Massive has no file for yet comes back with `published` false and is skipped. Each published day moves the data type's watermark (`massive/<data type>/_watermark.json`) to it while no earlier day of the run is missing, and a later run starts after the watermark, so an interrupted run resumes where it stopped and a day not published yet is asked for again. The watermark, not the files present, says what was downloaded (a trade file is deleted once converted); it does not say what was converted.
+
+Concurrency is set on the client: one file is fetched at a time in `streams` byte ranges (default 16), while up to `files - 1` earlier ones are verified (`files` defaults to 4). Verifying decodes the whole gzip on one core and takes about twice as long as fetching: on the training server on 2026-10-09 a 2 GB trade file of 2025 fetched in 33 s at 16 streams and decoded in 81 s. Ranged reads from the server with the vendor reached directly: 1 stream 9 MB/s, 4 streams 35, 8 streams 54, 16 streams 40 to 61, 32 streams 72 MB/s.
 
 The download script (a backfill from the oldest day, download and conversion pipelined) is not written yet; `registry.run()` refuses Massive, as it refuses Sharadar.
 

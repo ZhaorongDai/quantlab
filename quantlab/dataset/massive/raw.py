@@ -8,9 +8,12 @@ directory of the download root::
 
     <download-dir>/massive/trades/2024/2024-11-29.csv.gz
     <download-dir>/massive/minute_aggs/2024/2024-11-29.csv.gz
+    <download-dir>/massive/trades/_watermark.json
     <download-dir>/massive/conditions/conditions_20261009T120000000000.json
 
-and beside them the trade-condition table, one snapshot per download run.
+and beside them each data type's watermark (the day a run over several days
+is complete through) and the trade-condition table, one snapshot per
+download run.
 The client (``quantlab.acquisition.massive.client``) writes this tree, and
 ``quantlab.dataset.massive.trade_bars`` reads it; both take every path from
 here.
@@ -38,6 +41,8 @@ from pathlib import Path
 
 import polars as pl
 
+from quantlab.utils.atomic import write_json_atomically
+
 #: The vendor directory under the download root.
 VENDOR_DIR = "massive"
 
@@ -51,6 +56,9 @@ DATA_TYPES: dict[str, str] = {
     "minute_aggs": "us_stocks_sip/minute_aggs_v1",
     "day_aggs": "us_stocks_sip/day_aggs_v1",
 }
+
+#: Name of a data type's watermark file, in its directory.
+WATERMARK_FILE = "_watermark.json"
 
 #: The directory of the trade-condition table snapshots.
 CONDITIONS_DIR = "conditions"
@@ -154,6 +162,43 @@ def raw_days(vendor_root: str | Path, data_type: str) -> list[date]:
     if not root.exists():
         return []
     return sorted(date.fromisoformat(path.name.removesuffix(".csv.gz")) for path in root.glob("*/*.csv.gz"))
+
+
+def read_watermark(vendor_root: str | Path, data_type: str) -> date | None:
+    """Return the day a data type's downloads are complete through, or ``None``.
+
+    Every trading day up to the watermark was downloaded and verified. A
+    trade file may since have been deleted by
+    its conversion: the watermark, not the files present, says what was
+    downloaded.
+
+    Examples
+    --------
+    >>> write_watermark(root, "trades", date(2024, 11, 29))
+    >>> read_watermark(root, "trades")
+    datetime.date(2024, 11, 29)
+    """
+    path = Path(vendor_root) / _data_type(data_type) / WATERMARK_FILE
+    if not path.exists():
+        return None
+    return date.fromisoformat(json.loads(path.read_text(encoding="utf-8"))["through"])
+
+
+def write_watermark(vendor_root: str | Path, data_type: str, through: date) -> None:
+    """Record that a data type's downloads are complete through ``through``.
+
+    Examples
+    --------
+    Writes ``/data/quantlab/downloads/massive/trades/_watermark.json``::
+
+        write_watermark("/data/quantlab/downloads/massive", "trades", date(2024, 11, 29))
+    """
+    write_json_atomically(
+        Path(vendor_root) / _data_type(data_type) / WATERMARK_FILE,
+        {"data_type": data_type, "through": through.isoformat()},
+        indent=2,
+        sort_keys=True,
+    )
 
 
 def conditions_file(vendor_root: str | Path, pulled_at: datetime) -> Path:
