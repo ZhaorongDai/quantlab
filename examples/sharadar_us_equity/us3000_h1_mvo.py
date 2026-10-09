@@ -38,7 +38,8 @@ Steps::
 
 ``prepare-day`` brings to the last SEP bar the stores ``predict_day.py``
 does not extend: the roster price store (the run's price dataset), the full
-masked Barra store (whose ``estu`` is the universe) and the membership. Run
+masked Barra store (whose ``estu`` is the universe), the model's style
+store (a slice of it) and the membership. Run
 it on the server with ``QUANTLAB_DATA_DIR=/data/quantlab``.
 """
 
@@ -304,6 +305,27 @@ def fold_checkpoint(fold: int | None) -> Path:
     return path
 
 
+def append_feature_barra() -> int:
+    """Append the masked store's new bars of the 12 styles to ``FEATURE_BARRA``, on its own symbols.
+
+    The feature store stays a slice of the masked store, never computed on
+    its own; ``predict_day.py`` then finds it current. Returns the bars appended.
+    """
+    stored = xr.open_zarr(FEATURE_BARRA)
+    last = pd.Timestamp(stored["timestamp"].values[-1])
+    full = xr.open_zarr(EXPOSURES)
+    new = full[list(STYLES)].sel(timestamp=full["timestamp"] > np.datetime64(last))
+    if new.sizes["timestamp"] == 0:
+        return 0
+    new = new.reindex(symbol=stored["symbol"].values).load()
+    for name in new.data_vars:
+        new[name].encoding = {}
+    new.to_zarr(FEATURE_BARRA, append_dim="timestamp")
+    end = str(pd.Timestamp(new["timestamp"].values[-1]).date())
+    Path(f"{FEATURE_BARRA}.range.json").write_text(json.dumps({"start": START, "end": end}))
+    return int(new.sizes["timestamp"])
+
+
 # %% Every morning: the stores predict_day.py does not extend
 def prepare_day() -> dict:
     prices = price_dataset()
@@ -313,9 +335,11 @@ def prepare_day() -> dict:
     _, end = barra.store_range()
     if pd.Timestamp(end) < last:
         barra.extend(last)
+    styles = append_feature_barra()
     members = membership()
     members.update()
     done = {
+        "feature_barra_appended": styles,
         "t": str(last.date()),
         "prices": str(prices.config.zarr_file_path),
         "barra_store": barra.store_range(),
