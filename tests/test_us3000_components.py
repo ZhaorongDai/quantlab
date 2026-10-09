@@ -99,3 +99,15 @@ def test_a_member_return_is_the_return_blanked_outside_membership_and_rebuilds(s
     rebuilt = rebuild(label.get_config())
     assert type(rebuilt) is MemberReturn
     assert rebuilt.config.factor.config.kwargs["members_store"] == str(tmp_path / "members.zarr")
+
+
+def test_a_security_entering_the_universe_after_the_build_is_added_on_update(tmp_path):
+    store = tmp_path / "barra.zarr"
+    _estu_store(store, DAYS[:3], [[1, 1], [1, 1], [1, 1]])  # SYNTHETIC
+    _members(tmp_path, store).update()
+    # 303 enters on the last two bars (integer symbol axis).
+    _estu_store(store, DAYS, [[1, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 1], [1, 1, 1]], symbols=(101, 202, 303))  # SYNTHETIC
+
+    panel = _members(tmp_path, store).update().panel("2024-01-08", "2024-01-10")["is_member"]
+
+    assert panel.sel(symbol=303).values.tolist() == [False, True, True]

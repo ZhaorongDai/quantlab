@@ -1808,13 +1808,15 @@ class BaseDataset(Component, ABC):
         window = self._raw_data_to_xr_window(start, end, symbols=None)
         if "symbol" not in window.coords:
             return {}
-        present = {str(label) for label in window["symbol"].values.tolist()}
+        # Compared as text, selected by the window's own label (an int axis
+        # is not indexable by the text).
+        present = {str(label): label for label in window["symbol"].values.tolist()}
 
         counts: dict[str, int] = {}
         for symbol in wanted:
             if symbol not in present:
                 continue
-            column = window.sel(symbol=symbol)
+            column = window.sel(symbol=present[symbol])
             observed = None
             for variable in column.data_vars.values():
                 notnull = variable.notnull()
