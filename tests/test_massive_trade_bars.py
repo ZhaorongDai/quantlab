@@ -10,10 +10,12 @@ assertions on the panel. What is locked here:
 - each raw ``(date, ticker)`` maps to its permaticker as traded that day:
   a renamed security is one column, a reused ticker is two, a fund maps
   through SFP, and a ticker that maps to nothing is counted and dropped;
-- a cell without an eligible trade has NaN prices and zero volume and
+- a cell without an eligible trade has NaN prices and zero volumes and
   ``n_trades``, a permaticker without a trade that day too;
 - the condition rules and the correction filter reach the store, and the
-  per-day statistics land in the sidecar.
+  per-day statistics land in the sidecar;
+- (#239) every Trade bar variable is in the store: dollar, tick-rule buy and
+  sell, off-exchange and odd-lot volume, the tick carried across bars.
 
 Every value is SYNTHETIC.
 """
@@ -100,7 +102,7 @@ def _raw(tmp_path: Path) -> tuple[Path, Path]:
             trade_line("AAA", _utc(HALF_DAY, "14:30:10"), 10.0, 100, conditions="14,41", sequence=1),  # SYNTHETIC
             trade_line("AAA", _utc(HALF_DAY, "14:30:20"), 15.0, 7, conditions="37", sequence=2),  # SYNTHETIC
             trade_line("AAA", _utc(HALF_DAY, "14:30:30"), 12.0, 50, correction=1, sequence=3),  # SYNTHETIC
-            trade_line("AAA", _utc(HALF_DAY, "14:31:00"), 11.0, 20, sequence=4),  # SYNTHETIC
+            trade_line("AAA", _utc(HALF_DAY, "14:31:00"), 11.0, 20, sequence=4, trf_id=201),  # SYNTHETIC
             trade_line("AAA", _utc(HALF_DAY, "17:59:30"), 13.0, 30, sequence=5),  # SYNTHETIC
             trade_line("AAA", _utc(HALF_DAY, "18:30:00"), 14.0, 40, sequence=6),  # SYNTHETIC
             trade_line("FFF", _utc(HALF_DAY, "14:35:00"), 50.0, 5, sequence=7),  # SYNTHETIC
@@ -145,7 +147,10 @@ def test_the_store_is_on_the_permaticker_axis_with_the_trade_bar_variables(conve
     _, panel = converted
     assert panel.symbol.values.tolist() == [101, 202, 303, 404, 505]
     assert panel.symbol.dtype == np.int64
-    assert set(panel.data_vars) == {"open", "high", "low", "close", "volume", "n_trades"}
+    assert set(panel.data_vars) == {
+        "open", "high", "low", "close", "volume", "dollar_volume", "n_trades",
+        "buy_volume", "sell_volume", "offexchange_volume", "oddlot_volume",
+    }
     assert all(panel[name].dtype == np.float64 for name in panel.data_vars)
 
 
@@ -213,6 +218,7 @@ def test_an_unmapped_ticker_is_counted_and_dropped(converted):
     assert half["unmapped"] == {"ZZZ": {"trades": 2, "reason": "no permaticker"}}
     assert (half["unmapped_tickers"], half["unmapped_trades"]) == (1, 2)
     assert (half["trades_in"], half["dropped_correction"], half["outside_session"]) == (12, 1, 1)
+    assert (half["dropped_unknown_condition"], half["volume_ineligible"]) == (0, 0)
     assert stats["days"]["2024-11-27"]["unmapped"]["ZZZ"]["trades"] == 1
     assert stats["settings"] == {"bar_interval": "1m", "session_start": "09:30", "session_end": "16:00"}
 
@@ -228,3 +234,23 @@ def test_a_one_day_store(tmp_path):
 def test_symbols_are_refused(tmp_path):
     with pytest.raises(ValueError, match="permaticker"):
         _dataset(tmp_path, symbols=("AAA",))
+
+
+def test_every_trade_bar_variable_reaches_the_store(converted):
+    _, panel = converted
+    first = _cell(panel, 101, _utc(HALF_DAY, "14:31"))
+    # 10.0 x 100 opens the session (neither side: had the day before's 11.0 carried over, it
+    # would be a sell); the odd lot 15.0 x 7 is an up-tick (buy);
+    # 11.0 x 20, through a TRF, a down-tick (sell); the corrected 12.0 counts for nothing.
+    assert first["dollar_volume"] == 10.0 * 100 + 15.0 * 7 + 11.0 * 20
+    assert (first["buy_volume"], first["sell_volume"], first["volume"]) == (7.0, 20.0, 127.0)
+    assert (first["offexchange_volume"], first["oddlot_volume"]) == (20.0, 27.0)
+    # 13.0 x 30 hours later is an up-tick from 11.0: the tick carries across bars.
+    last = _cell(panel, 101, _utc(HALF_DAY, "18:00"))
+    assert (last["buy_volume"], last["sell_volume"]) == (30.0, 0.0)
+    # A bar without a trade: every volume is zero.
+    empty = _cell(panel, 101, _utc(HALF_DAY, "14:40"))
+    assert [empty[k] for k in ("dollar_volume", "buy_volume", "sell_volume", "offexchange_volume",
+                               "oddlot_volume")] == [0.0] * 5
+    # The session's first trade counts in neither split, so buy + sell <= volume.
+    assert bool((panel["buy_volume"] + panel["sell_volume"] <= panel["volume"]).all())

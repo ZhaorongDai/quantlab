@@ -30,14 +30,26 @@ The rules:
   trade later corrected, code 1), so a correction keeps the trade at its
   corrected values. A null ``correction`` is a regular trade. A trade with a
   condition the table does not know is dropped too; both are counted.
-- **A bar without an eligible trade** has null prices and zero ``volume``
-  and ``n_trades``, never a carried price.
+- **Volumes are over the volume-eligible trades**, as floats (recent years
+  carry fractional shares): ``dollar_volume`` is price times size (VWAP is
+  ``dollar_volume / volume``), ``offexchange_volume`` the size of trades
+  reported through a TRF (``trf_id`` non-zero), ``oddlot_volume`` of trades
+  under 100 shares.
+- **The tick rule** signs each volume-eligible trade against the price of
+  the volume-eligible trade before it in the same session: an up-tick is a
+  buy, a down-tick a sell, and a zero tick takes the side of the last
+  non-zero tick. The previous price carries across bars but not across
+  sessions; a session's first trade, and zero ticks before its first
+  non-zero tick, count in neither ``buy_volume`` nor ``sell_volume``, so
+  their sum may be less than ``volume``.
+- **A bar without an eligible trade** has null prices and zero volumes and
+  ``n_trades``, never a carried price.
 
 Examples
 --------
 >>> bars, stats = TradeBarResampler("1m").resample_with_stats(trades, conditions, sessions)
 >>> bars.columns
-['symbol', 'date', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'n_trades']
+['symbol', 'date', 'timestamp', 'open', 'high', 'low', 'close', 'volume', 'dollar_volume', 'n_trades', 'buy_volume', 'sell_volume', 'offexchange_volume', 'oddlot_volume']
 """
 
 from __future__ import annotations
@@ -49,10 +61,37 @@ from quantlab.enums.data import BAR_INTERVAL_SECONDS
 
 #: The bar variables, in order, after the ``symbol``, ``date`` and
 #: ``timestamp`` keys.
-TRADE_BAR_VARIABLES = ("open", "high", "low", "close", "volume", "n_trades")
+TRADE_BAR_VARIABLES = (
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "dollar_volume",
+    "n_trades",
+    "buy_volume",
+    "sell_volume",
+    "offexchange_volume",
+    "oddlot_volume",
+)
+
+#: The bar variables that are sums over trades: zero, never null, on a bar
+#: without an eligible trade.
+TRADE_BAR_SUMS = tuple(name for name in TRADE_BAR_VARIABLES if name not in ("open", "high", "low", "close"))
 
 #: The count columns of the per-``(date, symbol)`` stats, after the keys.
-TRADE_STATS_COUNTS = ("trades_in", "dropped_correction", "dropped_unknown_condition", "outside_session")
+#: ``volume_ineligible`` counts the trades kept whose conditions exclude them
+#: from volume (and so from every volume variable).
+TRADE_STATS_COUNTS = (
+    "trades_in",
+    "dropped_correction",
+    "dropped_unknown_condition",
+    "outside_session",
+    "volume_ineligible",
+)
+
+#: Trades under this many shares are odd lots.
+ROUND_LOT = 100
 
 #: The ``correction`` codes a kept trade carries: a regular trade, and the
 #: corrected print of a trade that was later corrected.
@@ -161,7 +200,8 @@ class TradeBarResampler:
             Columns ``symbol``, ``date`` (the session date), ``conditions``
             (comma-separated ids, or null), ``correction``, ``price``,
             ``size``, ``sip_timestamp`` (Int64 nanoseconds since the epoch,
-            UTC) and ``sequence_number``.
+            UTC), ``sequence_number`` and ``trf_id`` (0 or null when not
+            reported through a TRF).
         conditions : pl.DataFrame
             The condition table, as ``read_conditions`` returns it.
         sessions : pl.DataFrame
@@ -174,8 +214,8 @@ class TradeBarResampler:
             Columns ``symbol``, ``date``, ``timestamp`` and
             ``TRADE_BAR_VARIABLES``: every bar of the session for each
             symbol with at least one record on that date, sorted by symbol
-            and label. Prices are null where no trade was eligible;
-            ``volume`` is Float64, ``n_trades`` Int64.
+            and label. Prices are null where no trade was eligible; the
+            volumes are Float64, ``n_trades`` Int64.
         stats : pl.DataFrame
             Columns ``date``, ``symbol`` and ``TRADE_STATS_COUNTS`` (Int64),
             one row per ``(date, symbol)`` with a record.
@@ -218,6 +258,9 @@ class TradeBarResampler:
                 corrected.sum().cast(pl.Int64).alias("dropped_correction"),
                 unknown.sum().cast(pl.Int64).alias("dropped_unknown_condition"),
                 outside.sum().cast(pl.Int64).alias("outside_session"),
+                (~corrected & ~unknown & ~outside & ~pl.col("updates_volume")).sum().cast(pl.Int64).alias(
+                    "volume_ineligible"
+                ),
             )
             .sort("date", "symbol")
         )
@@ -232,22 +275,39 @@ class TradeBarResampler:
             .cast(pl.Datetime("ns"))
             .alias("timestamp")
         ).sort("symbol", "sip_timestamp", "sequence_number")
+        volume_ok = pl.col("updates_volume")
+        session = ("symbol", "date")
+        # The tick rule over the volume-eligible trades of each session: the
+        # previous such trade's price, the sign of the change, and a zero
+        # tick taking the last non-zero one's side.
+        previous = pl.when(volume_ok).then(pl.col("price")).shift(1).forward_fill().over(session)
+        tick = pl.when(volume_ok).then((pl.col("price") - previous).sign()).replace(0, None)
+        kept = kept.with_columns(tick.forward_fill().over(session).alias("_side"))
         price_oc = pl.col("price").filter(pl.col("updates_open_close"))
         price_hl = pl.col("price").filter(pl.col("updates_high_low"))
-        volume_ok = pl.col("updates_volume")
+        size = pl.col("size").cast(pl.Float64)
+
+        def volume_where(condition: pl.Expr) -> pl.Expr:
+            return size.filter(volume_ok & condition.fill_null(False)).sum()
+
         observed = kept.group_by("symbol", "date", "timestamp", maintain_order=True).agg(
             price_oc.first().alias("open"),
             price_hl.max().alias("high"),
             price_hl.min().alias("low"),
             price_oc.last().alias("close"),
-            pl.col("size").filter(volume_ok).sum().cast(pl.Float64).alias("volume"),
+            volume_where(pl.lit(True)).alias("volume"),
+            (pl.col("price") * size).filter(volume_ok).sum().alias("dollar_volume"),
             volume_ok.sum().cast(pl.Int64).alias("n_trades"),
+            volume_where(pl.col("_side") == 1).alias("buy_volume"),
+            volume_where(pl.col("_side") == -1).alias("sell_volume"),
+            volume_where(pl.col("trf_id").fill_null(0) != 0).alias("offexchange_volume"),
+            volume_where(size < ROUND_LOT).alias("oddlot_volume"),
         )
 
         grid = records.select("symbol", "date").unique().join(self.labels(sessions).lazy(), on="date", how="inner")
         bars = (
             grid.join(observed, on=["symbol", "date", "timestamp"], how="left")
-            .with_columns(pl.col("volume").fill_null(0.0), pl.col("n_trades").fill_null(0))
+            .with_columns(pl.col(name).fill_null(0) for name in TRADE_BAR_SUMS)
             .select("symbol", "date", "timestamp", *TRADE_BAR_VARIABLES)
             .sort("symbol", "timestamp")
         )

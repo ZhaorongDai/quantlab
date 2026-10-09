@@ -88,7 +88,16 @@ TRADE_COLUMNS: dict[str, pl.DataType] = {
 }
 
 #: The trade columns a Trade bar conversion reads.
-TRADE_BAR_INPUTS = ("ticker", "conditions", "correction", "price", "sequence_number", "sip_timestamp", "size")
+TRADE_BAR_INPUTS = (
+    "ticker",
+    "conditions",
+    "correction",
+    "price",
+    "sequence_number",
+    "sip_timestamp",
+    "size",
+    "trf_id",
+)
 
 #: The columns of a minute- or day-aggregate file, in the vendor's order.
 #: ``window_start`` is the bar's start, nanoseconds since the epoch, UTC.

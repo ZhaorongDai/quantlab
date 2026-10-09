@@ -17,7 +17,15 @@ values:
 - open and close are the first and last eligible trade by ``sip_timestamp``,
   ties broken by ``sequence_number``;
 - a bar without an eligible trade has null prices, zero volume and zero
-  ``n_trades``; a bar with volume-only trades has volume but null prices.
+  ``n_trades``; a bar with volume-only trades has volume but null prices;
+- (#239) ``dollar_volume`` is price times size, ``offexchange_volume`` the
+  size of TRF trades and ``oddlot_volume`` of trades under 100 shares,
+  fractional ones included, all over the volume-eligible trades;
+- (#239) ``buy_volume`` and ``sell_volume`` by the tick rule over the
+  volume-eligible trades: up-tick buy, down-tick sell, a zero tick takes the
+  previous non-zero tick's side, carried across bars of a session but not
+  across sessions; a session's first trade, and zero ticks before any
+  non-zero one, count in neither.
 
 Every value is SYNTHETIC; condition ids, names and rules are VERBATIM from
 Massive's ``/v3/reference/conditions`` (pulled 2026-10-09).
@@ -37,24 +45,25 @@ OPEN = datetime(2024, 1, 24, 14, 30)
 CLOSE = datetime(2024, 1, 24, 14, 33)
 
 
-def _ns(text: str) -> int:
-    """Nanoseconds since the epoch of a naive-UTC ``HH:MM:SS[.f]`` on DAY."""
-    moment = datetime.fromisoformat(f"2024-01-24T{text}")
+def _ns(text: str, day: date = DAY) -> int:
+    """Nanoseconds since the epoch of a naive-UTC ``HH:MM:SS[.f]`` on ``day``."""
+    moment = datetime.fromisoformat(f"{day.isoformat()}T{text}")
     return int((moment - datetime(1970, 1, 1)).total_seconds() * 1_000_000) * 1000
 
 
-def _trades(rows: list[tuple]) -> pl.DataFrame:
-    """``(symbol, time, price, size, conditions, correction, sequence)`` rows of DAY."""
+def _trades(rows: list[tuple], day: date = DAY) -> pl.DataFrame:
+    """``(symbol, time, price, size, conditions, correction, sequence[, trf_id])`` rows of ``day``."""
     return pl.DataFrame(
         {
             "symbol": [r[0] for r in rows],
-            "date": [DAY] * len(rows),
+            "date": [day] * len(rows),
             "conditions": [r[4] for r in rows],
             "correction": [r[5] for r in rows],
             "price": [r[2] for r in rows],
             "sequence_number": [r[6] for r in rows],
-            "sip_timestamp": [_ns(r[1]) for r in rows],
+            "sip_timestamp": [_ns(r[1], day) for r in rows],
             "size": [float(r[3]) for r in rows],
+            "trf_id": [r[7] if len(r) > 7 else 0 for r in rows],
         },
         schema={
             "symbol": pl.String,
@@ -65,6 +74,7 @@ def _trades(rows: list[tuple]) -> pl.DataFrame:
             "sequence_number": pl.Int64,
             "sip_timestamp": pl.Int64,
             "size": pl.Float64,
+            "trf_id": pl.Int64,
         },
     )
 
@@ -174,6 +184,7 @@ def test_corrected_and_unknown_condition_trades_are_dropped_and_counted():
         "dropped_correction": 2,
         "dropped_unknown_condition": 1,
         "outside_session": 1,
+        "volume_ineligible": 0,
     }
 
 
@@ -212,3 +223,105 @@ def test_an_unknown_bar_interval_is_refused():
 
     with pytest.raises(ValueError, match="bar interval"):
         TradeBarResampler("7m")
+
+
+# -- #239: dollar, off-exchange, odd-lot volume and the tick rule ------------
+
+
+def test_the_tick_rule_signs_volume_with_zero_tick_chains_carried_across_bars():
+    bars, _ = _resample(
+        [
+            ("AAA", "14:30:10", 10.0, 100, None, 0, 1),  # first of the session: neither
+            ("AAA", "14:30:20", 10.5, 200, None, 0, 2),  # up: buy
+            ("AAA", "14:30:30", 10.5, 300, None, 0, 3),  # zero, after up: buy
+            ("AAA", "14:30:40", 10.2, 400, None, 0, 4),  # down: sell
+            ("AAA", "14:31:10", 10.2, 500, None, 0, 5),  # zero, carried into the next bar: sell
+            ("AAA", "14:31:20", 10.2, 50, None, 0, 6),  # zero again: sell
+            ("AAA", "14:31:30", 10.3, 60, None, 0, 7),  # up: buy
+            ("AAA", "14:31:35", 99.0, 80, "16", 0, 8),  # counts for nothing: not a tick
+            ("AAA", "14:31:40", 10.1, 7, "37", 0, 9),  # odd lot, volume only: down from 10.3, sell
+            ("AAA", "14:31:50", 10.1, 10, None, 0, 10),  # zero: sell
+        ]
+    )
+    first, second = _bar(bars, "AAA", "14:31"), _bar(bars, "AAA", "14:32")
+    assert (first["buy_volume"], first["sell_volume"], first["volume"]) == (500.0, 400.0, 1000.0)
+    assert (second["buy_volume"], second["sell_volume"], second["volume"]) == (60.0, 567.0, 627.0)
+    assert (_bar(bars, "AAA", "14:33")["buy_volume"], _bar(bars, "AAA", "14:33")["sell_volume"]) == (0.0, 0.0)
+
+
+def test_zero_ticks_before_any_price_change_count_in_neither_split():
+    bars, _ = _resample(
+        [
+            ("AAA", "14:30:10", 10.0, 100, None, 0, 1),
+            ("AAA", "14:30:20", 10.0, 200, None, 0, 2),  # zero, no non-zero tick yet
+            ("AAA", "14:30:30", 9.9, 300, None, 0, 3),  # down
+        ]
+    )
+    bar = _bar(bars, "AAA", "14:31")
+    assert (bar["buy_volume"], bar["sell_volume"], bar["volume"]) == (0.0, 300.0, 600.0)
+
+
+def test_the_tick_resets_across_sessions():
+    from quantlab.dataset.massive.resample import TradeBarResampler
+
+    next_day = date(2024, 1, 25)
+    trades = pl.concat(
+        [
+            _trades([("AAA", "14:30:10", 10.0, 100, None, 0, 1), ("AAA", "14:30:20", 10.5, 100, None, 0, 2)]),
+            # The next session's first trade is above yesterday's last, and its
+            # second a zero tick: neither counts.
+            _trades([("AAA", "14:30:10", 11.0, 300, None, 0, 1), ("AAA", "14:30:20", 11.0, 400, None, 0, 2)], next_day),
+        ]
+    )
+    sessions = pl.DataFrame(
+        {"date": [DAY, next_day], "open": [OPEN, datetime(2024, 1, 25, 14, 30)],
+         "close": [CLOSE, datetime(2024, 1, 25, 14, 33)]},
+        schema={"date": pl.Date, "open": pl.Datetime("ns"), "close": pl.Datetime("ns")},
+    )
+    bars, _ = TradeBarResampler("1m").resample_with_stats(trades, conditions_frame(), sessions)
+    (row,) = bars.filter(pl.col("timestamp") == datetime(2024, 1, 25, 14, 31)).to_dicts()
+    assert (row["buy_volume"], row["sell_volume"], row["volume"]) == (0.0, 0.0, 700.0)
+    (row,) = bars.filter(pl.col("timestamp") == datetime(2024, 1, 24, 14, 31)).to_dicts()
+    assert (row["buy_volume"], row["sell_volume"]) == (100.0, 0.0)
+
+
+def test_dollar_offexchange_and_fractional_oddlot_volume():
+    bars, _ = _resample(
+        [
+            ("AAA", "14:30:10", 10.0, 100, None, 0, 1),
+            ("AAA", "14:30:20", 10.5, 0.5, None, 0, 2),  # fractional: an odd lot, not truncated
+            ("AAA", "14:30:30", 11.0, 200, None, 0, 3, 201),  # reported through a TRF
+            ("AAA", "14:30:40", 12.0, 30, "37", 0, 4, 202),  # odd lot through a TRF
+            ("AAA", "14:30:50", 50.0, 40, "16", 0, 5, 201),  # counts for nothing
+        ]
+    )
+    bar = _bar(bars, "AAA", "14:31")
+    assert bar["volume"] == 330.5
+    assert bar["dollar_volume"] == 10.0 * 100 + 10.5 * 0.5 + 11.0 * 200 + 12.0 * 30
+    assert bar["offexchange_volume"] == 230.0
+    assert bar["oddlot_volume"] == 30.5
+    empty = _bar(bars, "AAA", "14:32")
+    assert [empty[k] for k in ("dollar_volume", "offexchange_volume", "oddlot_volume", "buy_volume")] == [0.0] * 4
+
+
+def test_trades_excluded_from_volume_are_counted():
+    _, stats = _resample(
+        [
+            ("AAA", "14:30:10", 10.0, 100, None, 0, 1),
+            ("AAA", "14:30:20", 70.0, 20, "38", 0, 2),  # prices only
+            ("AAA", "14:30:30", 99.0, 30, "16", 0, 3),  # nothing
+        ]
+    )
+    assert stats["volume_ineligible"].to_list() == [2]
+
+
+def test_the_bar_columns():
+    from quantlab.dataset.massive.resample import TRADE_BAR_VARIABLES
+
+    bars, _ = _resample([("AAA", "14:30:10", 10.0, 100, None, 0, 1)])
+    assert bars.columns == ["symbol", "date", "timestamp", *TRADE_BAR_VARIABLES]
+    assert TRADE_BAR_VARIABLES == (
+        "open", "high", "low", "close", "volume", "dollar_volume", "n_trades",
+        "buy_volume", "sell_volume", "offexchange_volume", "oddlot_volume",
+    )
+    assert all(bars[name].dtype == pl.Float64 for name in TRADE_BAR_VARIABLES if name != "n_trades")

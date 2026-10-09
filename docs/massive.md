@@ -71,12 +71,24 @@ MassiveTradeBarDataset(config).from_raw_data_chunked(granularity="day")
 panel = MassiveTradeBarDataset(config).panel("2016-11-25", "2016-11-26")
 ```
 
-The panel holds `open`, `high`, `low`, `close`, `volume` and `n_trades` on `(timestamp, symbol)`:
+The panel holds, on `(timestamp, symbol)`:
+
+| variable | what it is |
+|---|---|
+| `open`, `high`, `low`, `close` | prices of the trades eligible for the matching update rule |
+| `volume`, `n_trades` | size and count of the volume-eligible trades |
+| `dollar_volume` | price times size of the volume-eligible trades; VWAP is `dollar_volume / volume` |
+| `buy_volume`, `sell_volume` | volume signed by the tick rule (below) |
+| `offexchange_volume` | volume reported through a TRF (`trf_id` non-zero) |
+| `oddlot_volume` | volume of trades under 100 shares, fractional ones included |
+
+Volumes are floats, so fractional shares are not truncated.
 
 - **Counting.** Each trade counts towards high/low, open/close and volume separately, by the consolidated update rules of all its conditions (Massive's condition table). Corrected and cancelled trades (every `correction` but 0, a regular trade, and 12, the corrected print that replaces a trade), and trades with a condition the table does not know, are dropped.
 - **Time.** Bars are cut on `sip_timestamp`, right-closed and labelled at their end: the bar labelled 14:31 UTC covers trades after 14:30 up to and including 14:31.
 - **Session.** The regular session of the XNYS calendar, half days included (`session_start`/`session_end` set another window).
-- **Empty bars.** A bar without an eligible trade has NaN prices and zero `volume` and `n_trades`; a bar of volume-only trades (odd lots, for example) has volume and NaN prices.
-- **Symbols.** Each raw `(date, ticker)` is mapped to its permaticker as traded that day, through Sharadar's SEP tickers and then SFP's. A ticker that maps to nothing is dropped, logged and recorded in the sidecar `<store>.massive_stats.json`, with the day's trade counts and what each rule dropped.
+- **Tick rule.** Each volume-eligible trade is compared with the price of the volume-eligible trade before it in the same session: an up-tick is a buy, a down-tick a sell, a zero tick takes the side of the last non-zero tick. The previous price carries across bars but not across sessions; a session's first trade, and zero ticks before its first price change, count in neither split, so `buy_volume + sell_volume` may be less than `volume` (about 1% of the volume on 2016-11-25).
+- **Empty bars.** A bar without an eligible trade has NaN prices and zero volumes and `n_trades`; a bar of volume-only trades (odd lots, for example) has volume and NaN prices.
+- **Symbols.** Each raw `(date, ticker)` is mapped to its permaticker as traded that day, through Sharadar's SEP tickers and then SFP's. A ticker that maps to nothing is dropped, logged and recorded in the sidecar `<store>.massive_stats.json`, with the day's counts: `trades_in`, `dropped_correction`, `dropped_unknown_condition`, `outside_session`, `volume_ineligible` (kept, but no condition lets it count for volume), `unmapped_tickers` and `unmapped_trades`.
 
 Convert one day per window: a day of the whole market is tens of millions of trades (a 2016 half day, 14 million trades, peaks at about 5 GB of memory).

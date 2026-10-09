@@ -16,11 +16,11 @@ the dense ``(timestamp, symbol)`` panel the store holds (ADR 0030).
   is logged, counted and dropped. If two tickers of one day map to one
   permaticker, the one with more trades is kept and the other is counted
   as unmapped.
-- **A cell without an eligible trade** has NaN prices and zero ``volume``
-  and ``n_trades``; a permaticker on the axis that did not trade on a day
-  is zero volume on every bar of it.
+- **A cell without an eligible trade** has NaN prices and zero volumes and
+  ``n_trades``; a permaticker on the axis that did not trade on a day is
+  zero volume on every bar of it.
 - **Per-day statistics** (trades in, dropped by each rule, outside the
-  session, unmapped tickers) are written to the JSON sidecar
+  session, excluded from volume, unmapped tickers) are written to the JSON sidecar
   ``<store>.massive_stats.json`` (``stats_path``), merged day by day.
 
 Convert one day per window (``granularity="day"``): a day of the whole
@@ -64,6 +64,7 @@ from quantlab.dataset.massive.raw import (
     read_trades,
 )
 from quantlab.dataset.massive.resample import (
+    TRADE_BAR_SUMS,
     TRADE_BAR_VARIABLES,
     TRADE_STATS_COUNTS,
     TradeBarResampler,
@@ -78,9 +79,6 @@ STATS_SUFFIX = ".massive_stats.json"
 
 #: The Sharadar tables whose tickers map a raw ticker, in order: stocks, then funds.
 MAPPING_TABLES = ("sep", "sfp")
-
-#: Variables a cell without a trade holds as 0 rather than NaN.
-_COUNT_VARIABLES = ("volume", "n_trades")
 
 
 @dataclass(frozen=True)
@@ -109,8 +107,8 @@ class MassiveTradeBarDataset(StockDataset):
     --------
     >>> ds = MassiveTradeBarDataset(config).from_raw_data_chunked(granularity="day")
     >>> panel = ds.panel("2024-11-29", "2024-11-30")
-    >>> sorted(panel.data_vars)
-    ['close', 'high', 'low', 'n_trades', 'open', 'volume']
+    >>> list(panel.data_vars)
+    ['open', 'high', 'low', 'close', 'volume', 'dollar_volume', 'n_trades', 'buy_volume', 'sell_volume', 'offexchange_volume', 'oddlot_volume']
     """
 
     #: The config class used to rebuild the dataset from a saved ``config.json``.
@@ -341,7 +339,7 @@ class MassiveTradeBarDataset(StockDataset):
             grid = grid.join(pl.concat(frames), on=["timestamp", "symbol"], how="left")
         else:
             grid = grid.with_columns(pl.lit(None, dtype=pl.Float64).alias(name) for name in TRADE_BAR_VARIABLES)
-        grid = grid.with_columns(pl.col(name).fill_null(0) for name in _COUNT_VARIABLES).sort("timestamp", "_position")
+        grid = grid.with_columns(pl.col(name).fill_null(0) for name in TRADE_BAR_SUMS).sort("timestamp", "_position")
 
         timestamps = labels["timestamp"].to_list()
         shape = (len(timestamps), len(symbols))
@@ -367,5 +365,5 @@ class MassiveTradeBarDataset(StockDataset):
         return data
 
     def _widen_fill_values(self) -> dict:
-        """Return 0 for the counts of a permaticker added to an existing store; prices stay NaN."""
-        return {name: 0.0 for name in _COUNT_VARIABLES}
+        """Return 0 for the volumes and counts of a permaticker added to an existing store; prices stay NaN."""
+        return {name: 0.0 for name in TRADE_BAR_SUMS}
