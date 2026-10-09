@@ -306,6 +306,12 @@ class BaseDataset(Component, ABC):
     #: ``NEW_LISTING_STRATEGIES``, which is what the command line offers.
     _AUTOMATIC = object()
 
+    #: Each variable's ``ResampleMethod`` for ``resample(freq)`` without
+    #: ``how``; ``None`` makes ``how`` required. A dataset whose variables
+    #: each have one right aggregation (bars: first, max, min, last, sum)
+    #: declares it here.
+    DEFAULT_RESAMPLE_HOW: dict[str, str] | None = None
+
     #: Maximum number of symbols named in a new-listing log message.
     NEW_LISTING_REPORT_LIMIT: int = 20
 
@@ -641,7 +647,7 @@ class BaseDataset(Component, ABC):
         return other
 
     def resample(
-        self, freq: str, how: dict[str, str] | str
+        self, freq: str, how: dict[str, str] | str | None = None
     ) -> Self:
         """Return a copy of this dataset whose panel is resampled onto ``freq``.
 
@@ -659,9 +665,10 @@ class BaseDataset(Component, ABC):
         ----------
         freq : str
             A ``ResampleFrequency`` token, coarser than the panel's bars.
-        how : dict[str, str] or str
+        how : dict[str, str] or str, optional
             One ``ResampleMethod`` for every variable, or a
-            ``{variable: method}`` dict naming every variable.
+            ``{variable: method}`` dict naming every variable. ``None``
+            uses ``DEFAULT_RESAMPLE_HOW``.
 
         Returns
         -------
@@ -671,9 +678,10 @@ class BaseDataset(Component, ABC):
         Raises
         ------
         ValueError
-            If ``freq`` or a method is not a known token, or, when this
-            dataset holds a panel, if ``freq`` is not coarser than its bars
-            or ``how`` does not name every variable.
+            If ``freq`` or a method is not a known token, if ``how`` is
+            omitted and the dataset declares no ``DEFAULT_RESAMPLE_HOW``,
+            or, when this dataset holds a panel, if ``freq`` is not coarser
+            than its bars or ``how`` does not name every variable.
 
         Examples
         --------
@@ -685,7 +693,19 @@ class BaseDataset(Component, ABC):
         2
         >>> minute.panel("2024-01-02", "2024-01-03").sizes["timestamp"]
         780
+
+        A dataset that declares ``DEFAULT_RESAMPLE_HOW`` needs no ``how``::
+
+            hourly = MassiveTradeBarDataset(config).resample("1h")
         """
+        if how is None:
+            if self.DEFAULT_RESAMPLE_HOW is None:
+                raise ValueError(
+                    f"{self.class_name}.resample({freq!r}): pass how, one "
+                    f"method for every variable or a {{variable: method}} "
+                    f"dict; this dataset declares no DEFAULT_RESAMPLE_HOW."
+                )
+            how = dict(self.DEFAULT_RESAMPLE_HOW)
         other = self.copy()
         other.config = dataclasses.replace(
             other.config, resample_freq=freq, resample_how=how

@@ -121,8 +121,8 @@ def _dataset(tmp_path: Path, start=FULL_DAY, end=HALF_DAY, **overrides):
     from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
 
     massive, sharadar = _raw(tmp_path)
+    overrides.setdefault("zarr_file_path", str(tmp_path / "zarrs" / "massive_trade_bars_1m.zarr"))
     config = MassiveTradeBarsDatasetConfig(
-        zarr_file_path=str(tmp_path / "zarrs" / "massive_trade_bars_1m.zarr"),
         raw_data_dir_path=str(massive),
         sharadar_dir=str(sharadar),
         start_date=start.isoformat(),
@@ -220,7 +220,8 @@ def test_an_unmapped_ticker_is_counted_and_dropped(converted):
     assert (half["trades_in"], half["dropped_correction"], half["outside_session"]) == (12, 1, 1)
     assert (half["dropped_unknown_condition"], half["volume_ineligible"]) == (0, 0)
     assert stats["days"]["2024-11-27"]["unmapped"]["ZZZ"]["trades"] == 1
-    assert stats["settings"] == {"bar_interval": "1m", "session_start": "09:30", "session_end": "16:00"}
+    assert {key: stats["settings"][key] for key in ("bar_interval", "session_start", "session_end", "permatickers")} == {
+        "bar_interval": "1m", "session_start": "09:30", "session_end": "16:00", "permatickers": None}
 
 
 def test_a_one_day_store(tmp_path):
@@ -254,3 +255,166 @@ def test_every_trade_bar_variable_reaches_the_store(converted):
                                "oddlot_volume")] == [0.0] * 5
     # The session's first trade counts in neither split, so buy + sell <= volume.
     assert bool((panel["buy_volume"] + panel["sell_volume"] <= panel["volume"]).all())
+
+
+# -- #242: day-by-day appends, recorded settings, any interval, Resample --------
+
+
+def _whole(ds):
+    """The store's whole panel with its symbols sorted, loaded."""
+    panel = ds.panel("2024-11-27", "2024-11-30").load()
+    return panel.sel(symbol=sorted(panel.symbol.values.tolist()))
+
+
+def test_two_days_appended_one_at_a_time_equal_one_two_day_conversion(tmp_path):
+    import json
+
+    import xarray as xr
+
+    whole = _dataset(tmp_path / "whole")
+    whole.from_raw_data_chunked(granularity="day")
+
+    first = _dataset(tmp_path / "daily", start=FULL_DAY, end=FULL_DAY)
+    first.from_raw_data_chunked(granularity="day")
+    assert sorted(_whole(first).symbol.values.tolist()) == [101, 202, 303]
+    # The next day brings permatickers the store has not seen (404, 505).
+    second = _dataset(tmp_path / "daily", start=HALF_DAY, end=HALF_DAY)
+    second.update(granularity="day")
+
+    xr.testing.assert_identical(_whole(second), _whole(whole))
+    days = json.loads(second.stats_path.read_text())["days"]
+    assert sorted(days) == ["2024-11-27", "2024-11-29"]
+    # Appending the same day again changes nothing.
+    _dataset(tmp_path / "daily", start=HALF_DAY, end=HALF_DAY).update(granularity="day")
+    xr.testing.assert_identical(_whole(second), _whole(whole))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"session_start": "10:00"}, {"permatickers": (101,)}],
+)
+def test_an_append_under_other_settings_is_refused(tmp_path, change):
+    first = _dataset(tmp_path, start=FULL_DAY, end=FULL_DAY)
+    first.from_raw_data_chunked(granularity="day")
+    before = _whole(first)
+    with pytest.raises(ValueError, match=next(iter(change))):
+        _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY, **change).update(granularity="day")
+    import xarray as xr
+
+    xr.testing.assert_identical(_whole(first), before)
+
+
+def test_the_store_name_follows_the_interval():
+    from quantlab.dataset.massive.trade_bars import trade_bar_store_name
+
+    assert trade_bar_store_name("1m") == "massive_trade_bars_1m.zarr"
+    assert trade_bar_store_name("1s") == "massive_trade_bars_1s.zarr"
+
+
+def test_one_second_bars_of_a_roster_over_a_window(tmp_path):
+    import json
+
+    ds = _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY, bar_interval="1s", permatickers=(101, 505),
+                  zarr_file_path=str(tmp_path / "zarrs" / "massive_trade_bars_1s.zarr"))
+    ds.from_raw_data_chunked(granularity="day")
+    panel = ds.panel("2024-11-29", "2024-11-30")
+    assert panel.symbol.values.tolist() == [101, 505]
+    assert panel.sizes["timestamp"] == 3.5 * 3600  # the half day, second by second
+    # 11.0 at 14:31:00 exactly is the bar labelled 14:31:00; 15.0 (odd lot) at 14:30:20.
+    assert _cell(panel, 101, _utc(HALF_DAY, "14:31:00"))["close"] == 11.0
+    assert _cell(panel, 101, _utc(HALF_DAY, "14:30:20"))["volume"] == 7.0
+    assert _cell(panel, 505, _utc(HALF_DAY, "14:35:00"))["close"] == 50.0
+    day = json.loads(ds.stats_path.read_text())["days"]["2024-11-29"]
+    assert day["outside_roster_trades"] == 3  # NEW, RRR (404), RRS (303)
+    assert day["trades_in"] == 12  # every trade of the file
+
+
+def test_a_rebuild_is_refused_and_a_left_over_sidecar_too(tmp_path):
+    ds = _dataset(tmp_path, start=FULL_DAY, end=FULL_DAY)
+    ds.from_raw_data_chunked(granularity="day")
+    with pytest.raises(ValueError, match="rebuild"):
+        _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY).from_raw_data_chunked(
+            granularity="day", on_new_listing="rebuild")
+    import shutil
+
+    shutil.rmtree(ds.config.zarr_file_path)
+    with pytest.raises(ValueError, match="left from a store that is gone"):
+        _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY).from_raw_data_chunked(granularity="day")
+
+
+def test_coarser_bars_are_cut_with_the_stores_session_window(tmp_path):
+    from dataclasses import replace
+
+    import xarray as xr
+
+    from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
+
+    ds = _converted(tmp_path, "1m")
+    expected = ds.resample("1h").panel("2024-11-27", "2024-11-30").load()
+    reader = MassiveTradeBarDataset(replace(ds.config, session_start="10:00"))
+    xr.testing.assert_identical(reader.resample("1h").panel("2024-11-27", "2024-11-30").load(), expected)
+
+
+def _converted(tmp_path, interval):
+    ds = _dataset(tmp_path / interval, bar_interval=interval)
+    ds.from_raw_data_chunked(granularity="day")
+    return ds
+
+
+@pytest.mark.parametrize("freq", ["5m", "30m"])
+def test_one_minute_bars_resampled_equal_a_direct_conversion(tmp_path, freq):
+    import xarray as xr
+
+    resampled = _converted(tmp_path, "1m").resample(freq).panel("2024-11-27", "2024-11-30").load()
+    expected = _converted(tmp_path, freq).panel("2024-11-27", "2024-11-30").load()
+    xr.testing.assert_identical(resampled, expected)
+
+
+def test_hourly_bars_end_with_the_half_hour_up_to_the_close(tmp_path):
+    import xarray as xr
+
+    # Conversions stop at 30m; an hour from 1m bars equals an hour from 30m bars.
+    hourly = _converted(tmp_path, "1m").resample("1h").panel("2024-11-27", "2024-11-30").load()
+    from_30m = _converted(tmp_path, "30m").resample("1h").panel("2024-11-27", "2024-11-30").load()
+    xr.testing.assert_identical(hourly, from_30m)
+    # 09:30-16:00 is 6.5 hours: the last bar is the half hour up to the close.
+    labels = pd.DatetimeIndex(hourly.timestamp.values)
+    assert labels[labels.normalize() == pd.Timestamp(FULL_DAY)][-2:].tolist() == [
+        pd.Timestamp("2024-11-27 20:30"), pd.Timestamp("2024-11-27 21:00")]
+    assert _cell(hourly, 101, _utc(FULL_DAY, "21:00"))["close"] == 11.0
+
+
+def test_daily_bars_are_one_per_session(tmp_path):
+    daily = _converted(tmp_path, "1m").resample("1d").panel("2024-11-27", "2024-11-30").load()
+    assert pd.DatetimeIndex(daily.timestamp.values).tolist() == [pd.Timestamp(FULL_DAY), pd.Timestamp(HALF_DAY)]
+    bar = _cell(daily, 101, pd.Timestamp(HALF_DAY))
+    assert (bar["open"], bar["high"], bar["low"], bar["close"], bar["volume"]) == (10.0, 13.0, 10.0, 13.0, 157.0)
+
+
+def test_reads_are_fingerprinted_with_the_store_settings(tmp_path):
+    from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
+    from quantlab.runs.record import DataRecorder
+
+    def fingerprint(ds) -> dict:
+        with DataRecorder(keys=[(ds, "trades")]) as recorder:
+            ds.panel("2024-11-27", "2024-11-30")
+        (entry,) = recorder.records["trades"]
+        return entry
+
+    market = _dataset(tmp_path / "market")
+    market.from_raw_data_chunked(granularity="day")
+    entry = fingerprint(market)
+    assert entry["settings"]["bar_interval"] == "1m"
+    assert entry["settings"]["session_start"] == "09:30"
+    assert entry["settings"]["permatickers"] is None
+    assert entry == fingerprint(MassiveTradeBarDataset(market.config))
+    # A reader with other settings records the store's.
+    from dataclasses import replace
+
+    assert fingerprint(MassiveTradeBarDataset(replace(market.config, session_start="10:00"))) == entry
+
+    roster = _dataset(tmp_path / "roster", permatickers=(101, 202, 303, 404, 505))
+    roster.from_raw_data_chunked(granularity="day")
+    other = fingerprint(roster)
+    assert other["variable_digests"] == entry["variable_digests"]  # every symbol is on the roster
+    assert other["digest"] != entry["digest"]

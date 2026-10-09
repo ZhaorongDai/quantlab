@@ -13,9 +13,13 @@ The rules:
 - **Time is** ``sip_timestamp``, when the SIP published the trade, so a bar
   holds only trades the market could see by its end.
 - **Bars are right-closed and labelled at their end.** With session open
-  ``o`` and bar length ``d``, bar ``k`` covers ``(o + (k-1)d, o + kd]`` for
-  ``k = 1..N``: a trade exactly on a boundary belongs to the bar ending
-  there; one exactly at the open is before the session.
+  ``o``, close ``c`` and bar length ``d``, bar ``k`` covers
+  ``(o + (k-1)d, min(o + kd, c)]`` for ``k = 1..ceil((c - o) / d)``: a trade
+  exactly on a boundary belongs to the bar ending there; one exactly at the
+  open is before the session; when ``d`` does not divide the session, the
+  last bar is the part up to the close, labelled at the close
+  (``quantlab.utils.resample.session_labels`` cuts coarser bars the same
+  way).
 - **Each trade counts towards high/low, open/close and volume separately**,
   by the consolidated update rules of its conditions (the condition table,
   ``quantlab.dataset.massive.raw.read_conditions``): it counts towards one
@@ -140,8 +144,8 @@ class TradeBarResampler:
         -------
         pl.DataFrame
             Columns ``date`` and ``timestamp`` (``Datetime("ns")``): for each
-            session ``open + k * interval`` for ``k = 1..N``, the last at or
-            before the close, sorted.
+            session ``open + k * interval`` while before the close, then the
+            close, sorted.
 
         Examples
         --------
@@ -149,15 +153,21 @@ class TradeBarResampler:
         [datetime.datetime(2024, 1, 24, 14, 31)]
         """
         interval = pl.duration(nanoseconds=self.interval_ns)
+        close = pl.col("close").cast(pl.Datetime("ns"))
+        # The full bars before the close, then the close itself: the last bar
+        # is cut there when the interval does not divide the session.
         return (
             sessions.select(
                 "date",
-                pl.datetime_ranges(
-                    pl.col("open").cast(pl.Datetime("ns")) + interval,
-                    pl.col("close").cast(pl.Datetime("ns")),
-                    interval=f"{self.interval_ns}ns",
-                    time_unit="ns",
-                    closed="both",
+                pl.concat_list(
+                    pl.datetime_ranges(
+                        pl.col("open").cast(pl.Datetime("ns")) + interval,
+                        close,
+                        interval=f"{self.interval_ns}ns",
+                        time_unit="ns",
+                        closed="left",
+                    ),
+                    close,
                 ).alias("timestamp"),
             )
             .explode("timestamp", empty_as_null=True)
@@ -268,9 +278,9 @@ class TradeBarResampler:
         kept = records.filter(~corrected & ~unknown & ~outside)
         step = self.interval_ns
         kept = kept.with_columns(
-            (
-                pl.col("_open")
-                + (pl.col("sip_timestamp") - pl.col("_open") + step - 1) // step * step
+            pl.min_horizontal(
+                pl.col("_open") + (pl.col("sip_timestamp") - pl.col("_open") + step - 1) // step * step,
+                pl.col("_close"),
             )
             .cast(pl.Datetime("ns"))
             .alias("timestamp")

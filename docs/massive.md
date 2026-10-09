@@ -92,3 +92,34 @@ Volumes are floats, so fractional shares are not truncated.
 - **Symbols.** Each raw `(date, ticker)` is mapped to its permaticker as traded that day, through Sharadar's SEP tickers and then SFP's. A ticker that maps to nothing is dropped, logged and recorded in the sidecar `<store>.massive_stats.json`, with the day's counts: `trades_in`, `dropped_correction`, `dropped_unknown_condition`, `outside_session`, `volume_ineligible` (kept, but no condition lets it count for volume), `unmapped_tickers` and `unmapped_trades`.
 
 Convert one day per window: a day of the whole market is tens of millions of trades (a 2016 half day, 14 million trades, peaks at about 5 GB of memory).
+
+## Growing the store, other intervals, coarser bars
+
+The store grows one day at a time. A config whose range holds the next day, passed to `update`, appends it; the backfill and a daily update are the same call:
+
+```python
+from dataclasses import replace
+
+day = replace(config, start_date="2016-11-28", end_date="2016-11-28")
+MassiveTradeBarDataset(day).update(granularity="day")
+```
+
+The symbol axis is the store's own plus the day's new permatickers, which get zero volume and NaN prices over the earlier days, their real values: a converted day puts every permaticker that traded on it on the axis. Once a day is converted its raw trade file is no longer needed. Two days appended this way equal one two-day conversion (checked on 2016-11-25 and 2016-11-28, 7,520 permatickers).
+
+The bar interval, the session window, the roster and the counting rules are the store's identity: they are recorded in the sidecar, carried in every read's data fingerprint, and a conversion into a store recorded with other settings is refused before anything is written. Each interval has its own store, named by `trade_bar_store_name(interval)` (`massive_trade_bars_1s.zarr`, ...). Any `BarInterval` from 1s to 30m converts directly; `permatickers` restricts a conversion to a roster, so finer bars stay small:
+
+```python
+fine = replace(config, zarr_file_path="/data/quantlab/zarrs/massive_trade_bars_1s.zarr",
+               bar_interval="1s", permatickers=(199059, 194726),
+               start_date="2016-11-25", end_date="2016-11-25")
+```
+
+Trades of mapped securities off the roster are counted per day as `outside_roster_trades`.
+
+Coarser bars come from Resample with no mapping: each variable declares its aggregation (`open` first, `high` max, `low` min, `close` last, the volumes and `n_trades` sum), and bars are cut per session, right-closed from the open and labelled at their end, the last one cut at the close (an hour of a 09:30-16:00 session ends with the half hour 15:30-16:00); `"1d"` is one bar per session, labelled with its date:
+
+```python
+hourly = MassiveTradeBarDataset(config).resample("1h").panel("2016-11-25", "2016-11-26")
+```
+
+`resample("5m")` of the one-minute store equals converting the trades at 5m: bit for bit on every variable but `dollar_volume`, whose sums are added in another order (relative differences up to 4e-16 on 2016-11-25 and 2016-11-28).

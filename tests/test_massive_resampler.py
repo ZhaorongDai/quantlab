@@ -325,3 +325,13 @@ def test_the_bar_columns():
         "buy_volume", "sell_volume", "offexchange_volume", "oddlot_volume",
     )
     assert all(bars[name].dtype == pl.Float64 for name in TRADE_BAR_VARIABLES if name != "n_trades")
+
+
+def test_an_interval_that_does_not_divide_the_session_ends_with_a_partial_bar_at_the_close():
+    bars, _ = _resample(
+        [("AAA", "14:31:30", 10.0, 1, None, 0, 1), ("AAA", "14:32:30", 11.0, 2, None, 0, 2)], interval="5m"
+    )
+    # The 14:30-14:33 session in 5-minute bars: one partial bar, labelled at the close.
+    assert bars["timestamp"].to_list() == [datetime(2024, 1, 24, 14, 33)]
+    bar = _bar(bars, "AAA", "14:33")
+    assert (bar["open"], bar["close"], bar["volume"]) == (10.0, 11.0, 3.0)

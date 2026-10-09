@@ -284,6 +284,18 @@ class MassiveTradeBarsDatasetConfig(DatasetConfig):
     ... )
     >>> cfg.frequency, cfg.vendor, cfg.bar_interval
     ('tick', 'massive', '1m')
+
+    One-second bars of a roster over a window, in a store of their own::
+
+        MassiveTradeBarsDatasetConfig(
+            zarr_file_path="/data/zarrs/massive_trade_bars_1s.zarr",
+            raw_data_dir_path="/data/downloads/massive",
+            sharadar_dir="/data/downloads/sharadar",
+            start_date="2024-11-29",
+            end_date="2024-11-29",
+            bar_interval="1s",
+            permatickers=(199059, 194726),
+        )
     """
 
     #: Always US equity for this vendor.
@@ -301,6 +313,9 @@ class MassiveTradeBarsDatasetConfig(DatasetConfig):
     session_start: str = "09:30"
     #: End of the session window, US/Eastern wall clock ``HH:MM``.
     session_end: str = "16:00"
+    #: The permatickers to convert (a roster); ``None`` converts every
+    #: security that maps.
+    permatickers: tuple[int, ...] | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
