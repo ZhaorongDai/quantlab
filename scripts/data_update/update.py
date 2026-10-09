@@ -7,6 +7,9 @@ holding ``<stem>.zarr``, its README.md and a ``component.json``: the component's
 (``quantlab.core.component.rebuild``). Actions:
 
 - ``sharadar``: ``scripts/sharadar/update.py`` (every Sharadar table);
+
+A step with ``allow_failure: true`` that raises is recorded as failed and the run goes
+on; whether the day is ready is still decided by the ``ready`` stores.
 - ``fred``: download the FRED series, then ``update()`` the store in the named folder;
 - ``benchmarks``: ``scripts/sharadar/price_return_benchmark.py --refresh``;
 - ``update``: ``update()`` the dataset of a store folder;
@@ -174,9 +177,17 @@ class Update:
     def run_stage(self, stage: dict) -> None:
         for step in stage["steps"]:
             (action, value), = step.items()
-            kwargs = value if isinstance(value, dict) else {"store": value}
+            kwargs = dict(value) if isinstance(value, dict) else {"store": value}
+            allow_failure = kwargs.pop("allow_failure", False)
             began = time.perf_counter()
-            result = getattr(self, action)(**kwargs)
+            try:
+                result = getattr(self, action)(**kwargs)
+            except Exception as error:
+                if not allow_failure:
+                    raise
+                # Readiness is decided by the `ready` stores, not by this step.
+                logger.opt(exception=error).warning(f"{stage['name']}: {action} failed; continuing")
+                result = f"failed: {error!r}"
             record = {"stage": stage["name"], "action": action, **kwargs, "result": result,
                       "seconds": round(time.perf_counter() - began, 1)}
             self.steps.append(record)

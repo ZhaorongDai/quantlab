@@ -14,6 +14,7 @@
 #   update:     a dataset rebuilt from <folder>/component.json, update()
 #   mirror:     append the source dataset's new bars to a store copying its variables
 #   extend:     a factor or factor risk model rebuilt from <folder>/component.json, to t
+# A step with `allow_failure: true` is recorded as failed when it raises, and the run goes on.
 
 # Stores that must hold t after the raw stage; until they do, the raw stage is retried.
 ready:
@@ -26,7 +27,8 @@ ready:
 stages:
   - name: raw
     steps:
-      - sharadar: {args: [--rebuild-dropped]}
+      # A table no strategy reads may fail (sharadar_holdings_1d, #245); the ready stores decide.
+      - sharadar: {args: [--rebuild-dropped], allow_failure: true}
       - fred: {series: [DTB3], start: "1954-01-04", store: market/fred/fred_dtb3_1d}
       - benchmarks: {tickers: [vt, spy, acwi]}
   - name: market
