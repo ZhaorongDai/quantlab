@@ -96,6 +96,16 @@ CONDITIONS_URL = "https://api.massive.com/v3/reference/conditions"
 #: Bytes read from the store per chunk.
 _CHUNK = 1 << 20
 
+#: S3 error codes of a request Massive refused.
+_FORBIDDEN = ("401", "403", "AccessDenied", "Forbidden")
+
+#: S3 error codes of credentials Massive does not know.
+_BAD_CREDENTIALS = ("InvalidAccessKeyId", "SignatureDoesNotMatch")
+
+#: Days before today within which a 403 on a month with nothing listed yet
+#: is taken as not published yet, rather than outside the plan's window.
+_RECENT_DAYS = 7
+
 #: S3 error codes of throttling; retried like any transport error.
 _THROTTLING = ("SlowDown", "503", "429", "Throttling", "ThrottlingException", "RequestLimitExceeded")
 
@@ -187,6 +197,14 @@ class ObjectStore(Protocol):
 class S3ObjectStore:
     """``ObjectStore`` over Massive's S3 endpoint, signed by boto3.
 
+    Massive answers 404 for a missing day inside the plan's window (a
+    holiday) and 403 for every day outside it, at both ends: before the
+    oldest day, and after the newest published one (today before it is
+    published, the future). On a 403, ``size`` lists the key's month: a day
+    after the newest listed day, or a recent day of a month with nothing
+    listed yet, is not published yet; any other is outside the plan's
+    window; a refused listing means the credentials were refused.
+
     Parameters
     ----------
     credentials : MassiveCredentials
@@ -195,6 +213,8 @@ class S3ObjectStore:
         The connection pool's size; at least the streams in flight.
     client : botocore S3 client, optional
         A client to use instead of one made from ``credentials``.
+    today : callable, optional
+        Today's date in New York; the system clock's when omitted.
 
     Examples
     --------
@@ -204,9 +224,15 @@ class S3ObjectStore:
     """
 
     def __init__(
-        self, credentials: MassiveCredentials, *, max_connections: int = 16, client: Any | None = None
+        self,
+        credentials: MassiveCredentials,
+        *,
+        max_connections: int = 16,
+        client: Any | None = None,
+        today: Callable[[], date] | None = None,
     ) -> None:
         """Create the boto3 client; see the class docstring."""
+        self._today = today if today is not None else _new_york_today
         if client is not None:
             self._client = client
             return
@@ -235,7 +261,7 @@ class S3ObjectStore:
             code = str(error.response.get("Error", {}).get("Code", ""))
             if code in ("404", "NoSuchKey", "NotFound"):
                 return MassiveNotPublishedError(f"Massive has no {key!r} (not a trading day, or not published yet).")
-            if code in ("401", "403", "AccessDenied", "Forbidden", "InvalidAccessKeyId", "SignatureDoesNotMatch"):
+            if code in _FORBIDDEN or code in _BAD_CREDENTIALS:
                 return MassiveEntitlementError(
                     f"Massive refused {key!r} ({code}): the S3 credentials were rejected, or the day "
                     f"is outside the plan's window."
@@ -257,10 +283,38 @@ class S3ObjectStore:
             store = S3ObjectStore(MassiveCredentials.from_env())
             store.size(s3_key("trades", date(2016, 11, 25)))  # 217911421
         """
+        from botocore.exceptions import ClientError
+
         try:
             return int(self._client.head_object(Bucket=BUCKET, Key=key)["ContentLength"])
+        except ClientError as error:
+            code = str(error.response.get("Error", {}).get("Code", ""))
+            raise (self._forbidden(key, code) if code in _FORBIDDEN else self._translate(error, key)) from error
         except Exception as error:
             raise self._translate(error, key) from error
+
+    def _forbidden(self, key: str, code: str) -> Exception:
+        """Tell a 403 on ``key`` apart by listing its month; see the class docstring."""
+        from botocore.exceptions import BotoCoreError, ClientError
+
+        prefix, name = key.rsplit("/", 1)
+        day = date.fromisoformat(name[:10])
+        try:
+            listed = self._client.list_objects_v2(Bucket=BUCKET, Prefix=f"{prefix}/").get("Contents", [])
+        except ClientError as error:
+            return MassiveEntitlementError(
+                f"Massive refused {key!r} ({code}) and the listing of its month "
+                f"({error.response.get('Error', {}).get('Code', '')}): the S3 credentials were rejected."
+            )
+        except (BotoCoreError, OSError) as error:
+            return MassiveTransportError(f"{type(error).__name__} listing {prefix!r}: {error}")
+        days = [date.fromisoformat(item["Key"].rsplit("/", 1)[1][:10]) for item in listed]
+        if (days and day > max(days)) or (not days and day >= self._today() - timedelta(days=_RECENT_DAYS)):
+            return MassiveNotPublishedError(f"Massive has not published {key!r} yet.")
+        return MassiveEntitlementError(
+            f"Massive refused {key!r} ({code}): the day is outside the plan's window "
+            f"(before the oldest day it serves)."
+        )
 
     def read(self, key: str, start: int, stop: int) -> Iterable[bytes]:
         """Yield the bytes ``start`` up to ``stop`` of the object in chunks from one ranged GET.
@@ -743,6 +797,13 @@ class MassiveClient:
         write_json_atomically(path, records)
         logger.info(f"Massive: {len(records)} condition(s) -> {path}.")
         return path
+
+
+def _new_york_today() -> date:
+    """Return today's date in New York."""
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(ZoneInfo("America/New_York")).date()
 
 
 def _sessions(start: date, end: date) -> list[date]:

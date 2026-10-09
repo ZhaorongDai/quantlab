@@ -431,12 +431,16 @@ class FakeS3:
     """A boto3 S3 client stand-in answering from one object.
 
     ``errors`` (error codes) are raised by HEAD requests first, in order;
-    ``get_errors`` likewise by ranged GETs.
+    ``get_errors`` likewise by ranged GETs, ``list_errors`` by listings.
+    ``listed`` are the keys a listing returns, filtered by prefix.
     """
 
-    def __init__(self, body: bytes, errors: list[str] | None = None, get_errors: list[str] | None = None):
+    def __init__(self, body: bytes, errors: list[str] | None = None, get_errors: list[str] | None = None,
+                 listed: list[str] | None = None, list_errors: list[str] | None = None):
         self.body = body
-        self.errors = {"HeadObject": list(errors or []), "GetObject": list(get_errors or [])}
+        self.listed = listed or []
+        self.errors = {"HeadObject": list(errors or []), "GetObject": list(get_errors or []),
+                       "ListObjectsV2": list(list_errors or [])}
         self.ranges: list[str] = []
         self._lock = threading.Lock()
 
@@ -452,6 +456,10 @@ class FakeS3:
         self._raise("HeadObject")
         return {"ContentLength": len(self.body)}
 
+    def list_objects_v2(self, Bucket, Prefix):
+        self._raise("ListObjectsV2")
+        return {"Contents": [{"Key": key} for key in self.listed if key.startswith(Prefix)]}
+
     def get_object(self, Bucket, Key, Range):
         import io
 
@@ -464,10 +472,10 @@ class FakeS3:
         return {"Body": StreamingBody(io.BytesIO(part), len(part))}
 
 
-def _s3_client(s3, sleeps, **settings):
+def _s3_client(s3, sleeps, today=date(2024, 12, 2), **settings):
     from quantlab.acquisition.massive.client import MassiveCredentials, S3ObjectStore
 
-    store = S3ObjectStore(MassiveCredentials("k", "i", "s"), client=s3)
+    store = S3ObjectStore(MassiveCredentials("k", "i", "s"), client=s3, today=lambda: today)
     return _client(store, sleeps=sleeps, **settings)
 
 
@@ -499,11 +507,66 @@ def test_s3_refusals_and_missing_keys_are_told_apart(env, tmp_path):
     sleeps: list[float] = []
     with pytest.raises(MassiveNotPublishedError):
         _s3_client(FakeS3(BODY, ["NoSuchKey"]), sleeps).download_day("trades", DAY, tmp_path)
-    with pytest.raises(MassiveEntitlementError, match="window"):
-        _s3_client(FakeS3(BODY, ["403"]), sleeps).download_day("trades", DAY, tmp_path)
-    with pytest.raises(MassiveEntitlementError):
-        _s3_client(FakeS3(BODY, ["AccessDenied"]), sleeps).download_day("trades", DAY, tmp_path)
+    with pytest.raises(MassiveEntitlementError, match="credentials"):
+        _s3_client(FakeS3(BODY, ["403"], list_errors=["403"]), sleeps).download_day("trades", DAY, tmp_path)
+    with pytest.raises(MassiveEntitlementError, match="credentials"):
+        _s3_client(FakeS3(BODY, ["InvalidAccessKeyId"]), sleeps).download_day("trades", DAY, tmp_path)
     assert sleeps == []
+
+
+# Massive answers 404 for a missing day inside the plan's window (a holiday), and 403 for
+# every day outside it: before the oldest day, and after the newest published one (today
+# before it is published, the future). A listing of the month tells the two ends apart.
+MONTH = [_key(day) for day in (date(2024, 11, 25), date(2024, 11, 26), date(2024, 11, 27))]
+
+
+def test_a_day_after_the_newest_published_is_not_published_yet(env, tmp_path):
+    from quantlab.acquisition.massive.client import MassiveNotPublishedError
+
+    s3 = FakeS3(BODY, ["403"], listed=MONTH)
+    with pytest.raises(MassiveNotPublishedError, match="not published"):
+        _s3_client(s3, [], today=date(2024, 11, 29)).download_day("trades", date(2024, 11, 29), tmp_path)
+
+
+def test_a_recent_day_of_a_month_with_nothing_published_yet_is_not_published(env, tmp_path):
+    from quantlab.acquisition.massive.client import MassiveNotPublishedError
+
+    with pytest.raises(MassiveNotPublishedError):
+        _s3_client(FakeS3(BODY, ["403"]), [], today=date(2024, 12, 3)).download_day(
+            "trades", date(2024, 12, 2), tmp_path)
+
+
+def test_a_day_before_the_oldest_published_is_outside_the_plan(env, tmp_path):
+    from quantlab.acquisition.massive.client import MassiveEntitlementError
+
+    with pytest.raises(MassiveEntitlementError, match="window"):
+        _s3_client(FakeS3(BODY, ["403"], listed=MONTH), []).download_day("trades", date(2024, 11, 22), tmp_path)
+    # A whole month before the window lists nothing.
+    with pytest.raises(MassiveEntitlementError, match="window"):
+        _s3_client(FakeS3(BODY, ["403"]), [], today=date(2026, 10, 9)).download_day(
+            "trades", date(2016, 9, 30), tmp_path)
+
+
+def test_a_run_up_to_today_stops_at_the_newest_published_day(env, tmp_path):
+    from quantlab.dataset.massive.raw import read_watermark
+
+    published = {_key(day): gzip_text([TRADE_HEADER, "A,,0,12,1,1,10.0,1,1,100,1,0,0"]) for day in WEEK[:3]}
+
+    class Store(FakeS3):
+        def head_object(self, Bucket, Key):
+            if Key not in published:
+                from botocore.exceptions import ClientError
+
+                raise ClientError({"Error": {"Code": "403", "Message": "Forbidden"}}, "HeadObject")
+            self.body = published[Key]
+            return {"ContentLength": len(self.body)}
+
+    s3 = Store(b"", listed=list(published))
+    days = list(_s3_client(s3, [], today=date(2024, 11, 29), files=1).download_days(
+        "trades", WEEK[0], date(2024, 11, 29), tmp_path))
+    assert [(d.day, d.published) for d in days] == [(WEEK[0], True), (WEEK[1], True), (WEEK[2], True),
+                                                    (WEEK[3], False)]
+    assert read_watermark(tmp_path / "massive", "trades") == WEEK[2]
 
 
 def test_concurrency_settings_are_checked(env):
