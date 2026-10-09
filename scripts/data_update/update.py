@@ -89,8 +89,14 @@ def stores_read(item) -> set[Path]:
     """The stores a component reads: every dataset's and factor's store below it."""
     paths = set()
     for _, part in walk_components(item):
-        if isinstance(part, (BaseDataset, Factor)) and getattr(part, "store_path", None):
-            paths.add(Path(part.store_path).absolute())
+        if not isinstance(part, (BaseDataset, Factor)):
+            continue
+        try:
+            store = part.store_path
+        except ValueError:  # a merged dataset is a view; its inputs are walked too
+            continue
+        if store:
+            paths.add(Path(store).absolute())
     return paths
 
 
