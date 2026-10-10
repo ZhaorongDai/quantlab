@@ -78,7 +78,8 @@ class ChunkedFactor(Factor):
     that way; with ``None`` the range is computed whole when it fits in
     ``memory_budget()``, and otherwise cut at the coarsest granularity
     whose largest chunk, warm-up included, fits. What a bar of a symbol
-    takes is the wrapped factor's ``cell_bytes()``.
+    takes is the wrapped factor's ``cell_bytes()``, and the symbols are the
+    ones it outputs (``output_symbols()``), not its dataset's.
 
     There is no store of its own: ``store_path``, ``store_range`` and
     ``read`` are the wrapped factor's, so a model can read either.
@@ -188,6 +189,16 @@ class ChunkedFactor(Factor):
     def stored_symbols(self) -> list:
         """Return the symbol axis of the wrapped factor's store."""
         return self.config.factor.stored_symbols()
+
+    def output_symbols(self) -> list:
+        """Return the symbols the wrapped factor outputs; see ``Factor.output_symbols``.
+
+        Examples
+        --------
+        >>> chunked.output_symbols() == alpha158.output_symbols()
+        True
+        """
+        return self.config.factor.output_symbols()
 
     def read(self, start, end, symbols=None) -> xr.Dataset:
         """Return the wrapped factor's store from ``start`` to ``end``; see ``Factor.read``."""
@@ -353,8 +364,8 @@ class ChunkedFactor(Factor):
         return TimeChunkPlanner(granularity).plan_from_timestamps(bars)
 
     def _symbol_count(self) -> int:
-        """Return the number of symbols of the wrapped factor's dataset."""
-        return len(self.config.dataset.stored_symbols())
+        """Return the number of symbols the wrapped factor outputs."""
+        return len(self.output_symbols())
 
     def _peak_bytes(self, bars: int) -> int:
         """Return the peak bytes a chunk of ``bars`` bars takes, its warm-up included."""

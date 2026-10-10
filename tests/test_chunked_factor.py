@@ -25,10 +25,14 @@ from KunQuant.Stage import Function
 import quantlab.factor.predefined.chunked as chunked_module
 from quantlab.core.component import rebuild
 from quantlab.dataset.memory import FrameDataset
-from quantlab.factor.config import ChunkedConfig, FactorConfig, PolarsFactorConfig
+from quantlab.factor.config import (
+    ChunkedConfig, FactorConfig, NeutralizedConfig, PolarsFactorConfig, RosterConfig,
+)
 from quantlab.factor.kunquant import FactorKunQuant
 from quantlab.factor.predefined.chunked import ChunkedFactor
 from quantlab.factor.predefined.momentum import Momentum
+from quantlab.factor.predefined.neutralized import NeutralizedFactor
+from quantlab.factor.predefined.roster import RosterFactor
 
 _T = 91
 _TIMES = np.datetime64("2024-01-01") + np.arange(_T).astype("timedelta64[D]")
@@ -251,3 +255,65 @@ def test_the_wrapper_rebuilds_from_its_config(tmp_path, prices):
 
     assert again == wrapper
     assert again.config.granularity == "month"
+
+
+# --- the symbols a chunk is sized on (#251) --------------------------------
+
+
+def _wide_exposures(tmp_path) -> FrameDataset:
+    """Market cap and industry of the five priced symbols and ten more."""
+    symbols = [*_SYMBOLS, *(f"X{i}" for i in range(10))]
+    shape = (_T, len(symbols))
+    return FrameDataset(xr.Dataset(
+        {
+            "marketcap": (("timestamp", "symbol"), np.full(shape, 1e9)),
+            "industry": (("timestamp", "symbol"), np.tile(np.arange(len(symbols)) % 2, (_T, 1)).astype(float)),
+        },
+        coords={"timestamp": _TIMES, "symbol": symbols},
+    )).to_zarr(tmp_path / "exposures.zarr")
+
+
+def _neutral(tmp_path, prices) -> NeutralizedFactor:
+    """The five-symbol ``RollingMean`` neutralized against fifteen symbols' exposures."""
+    return NeutralizedFactor(NeutralizedConfig(
+        factor=_kunquant(prices, tmp_path / "inner.zarr"), dataset=_wide_exposures(tmp_path),
+        file_path=str(tmp_path / "neutral.zarr"), njobs=2,
+    ))
+
+
+def test_a_plain_factor_outputs_its_datasets_symbols(tmp_path, prices):
+    inner = _kunquant(prices, tmp_path / "chunked.zarr")
+
+    assert inner.output_symbols() == _SYMBOLS
+    assert ChunkedFactor(ChunkedConfig(factor=inner)).output_symbols() == _SYMBOLS
+
+
+def test_a_neutralized_factor_outputs_its_inner_factors_symbols(tmp_path, prices):
+    neutral = _neutral(tmp_path, prices)
+
+    assert len(neutral.config.dataset.stored_symbols()) == 15
+    assert neutral.output_symbols() == _SYMBOLS
+
+
+def test_a_roster_factor_outputs_the_kept_roster(tmp_path, prices):
+    roster = FrameDataset(xr.Dataset(
+        {"Close": (("timestamp", "symbol"), np.ones((_T, 3)))},
+        coords={"timestamp": _TIMES, "symbol": ["DDD", "BBB", "ZZZ"]},
+    )).to_zarr(tmp_path / "roster.zarr")
+    factor = RosterFactor(RosterConfig(factor=_kunquant(prices, tmp_path / "x.zarr"), roster=roster))
+
+    assert factor.output_symbols() == ["BBB", "DDD"]
+
+
+def test_a_neutralized_factor_is_sized_on_its_inner_factors_symbols(tmp_path, prices, monkeypatch):
+    neutral = _neutral(tmp_path, prices)
+    peak, _ = neutral.cell_bytes()
+    # Room for the whole range on the five output symbols, not on all fifteen.
+    monkeypatch.setattr(chunked_module, "memory_budget", lambda: (_T + neutral.warmup_bars) * 5 * peak)
+
+    wrapper = ChunkedFactor(ChunkedConfig(factor=neutral))
+
+    assert wrapper.plan(_START, _END)[0] is None
+    # The exposures' fifteen symbols, the old count, would have cut it.
+    monkeypatch.setattr(wrapper, "output_symbols", neutral.config.dataset.stored_symbols)
+    assert wrapper.plan(_START, _END)[0] is not None

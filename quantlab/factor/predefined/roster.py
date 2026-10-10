@@ -126,6 +126,19 @@ class RosterFactor(Factor):
                 f"wrapped factor instead."
             )
 
+    def output_symbols(self) -> list:
+        """Return the wrapped factor's output symbols on the roster, in the wrapped factor's order.
+
+        Unlike ``read``, nothing is logged: sizing a computation is not a read.
+
+        Examples
+        --------
+        >>> factor.output_symbols()
+        [2, 4]
+        """
+        listed = pd.Index(self.config.roster.stored_symbols())
+        return on_roster(pd.Index(self.config.factor.output_symbols()), listed)
+
     def read(self, start, end, symbols=None) -> xr.Dataset:
         """Return the wrapped factor's store from ``start`` to ``end`` on the roster.
 

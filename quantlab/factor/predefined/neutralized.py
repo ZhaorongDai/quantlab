@@ -119,6 +119,16 @@ class NeutralizedFactor(Factor):
         """Return the wrapped factor's output names."""
         return tuple(self.config.factor.get_factor_names())
 
+    def output_symbols(self) -> list:
+        """Return the wrapped factor's output symbols, not the exposures'.
+
+        Examples
+        --------
+        >>> neutral.output_symbols() == alpha158.output_symbols()
+        True
+        """
+        return self.config.factor.output_symbols()
+
     def _validate_config(self) -> None:
         """Refuse bad regressors, a warm-up, resampling or an unknown factor name.
 

@@ -692,6 +692,21 @@ class Factor(Component, ABC):
                 f"with that factor."
             )
 
+    def output_symbols(self) -> list:
+        """Return the symbols ``compute`` outputs, without computing anything.
+
+        The symbol axis of ``config.dataset``'s store here. A factor whose
+        dataset is not where its symbols come from (a wrapper reading its
+        exposures, or keeping a roster) overrides it.
+        ``quantlab.factor.predefined.chunked`` sizes its chunks on it.
+
+        Examples
+        --------
+        >>> factor.output_symbols()[:2]
+        ['S0USDT', 'S1USDT']
+        """
+        return self.config.dataset.stored_symbols()
+
     def stored_symbols(self) -> list:
         """Return the symbol axis of the store ``read`` reads, in axis order.
 
