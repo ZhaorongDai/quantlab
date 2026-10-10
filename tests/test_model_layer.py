@@ -282,3 +282,27 @@ def test_num_null_is_zero_on_a_dense_panel(tmp_path):
     model.collect()
 
     assert model.num_null == 0
+
+
+def test_to_array_sorts_both_axes_follows_the_variable_order_and_keeps_the_common_dtype(tmp_path):
+    model = OneBarRecordingHead(_make_config(
+        tmp_path, factor_values={"zeta": 1.0}, label_values={"ret_30": 30.0},
+    ))
+    panel = xr.Dataset(
+        {
+            # float32, laid out (symbol, timestamp)
+            "b": (("symbol", "timestamp"), np.array([[1, 2], [3, 4]], dtype=np.float32)),
+            "a": (("timestamp", "symbol"), np.array([[10.0, 20.0], [30.0, 40.0]])),
+        },
+        coords={
+            "timestamp": np.array(["2024-01-02", "2024-01-01"], dtype="datetime64[ns]"),
+            "symbol": ["Y", "X"],
+        },
+    )
+
+    x = model.to_array(panel, ["b", "a"])
+
+    # timestamps 01-01, 01-02; symbols X, Y
+    np.testing.assert_array_equal(x[..., 0], [[4.0, 2.0], [3.0, 1.0]])
+    np.testing.assert_array_equal(x[..., 1], [[40.0, 30.0], [20.0, 10.0]])
+    assert x.dtype == np.float64 and x.flags["C_CONTIGUOUS"]

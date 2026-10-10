@@ -821,14 +821,18 @@ class BaseModel(Component, ABC):
         >>> np.allclose(x[..., 0], panel["f_b"].values)
         True
         """
-        return (
-            data[variables]
-            .to_dataarray()
-            .sortby(["timestamp", "symbol"])
-            .sel(variable=variables)
-            .transpose("timestamp", "symbol", "variable")
-            .values
+        # One preallocated array filled a variable at a time: the peak is the
+        # result itself, not the several full copies of a stacked DataArray.
+        data = data[variables]
+        if not all(data.indexes[axis].is_monotonic_increasing for axis in ("timestamp", "symbol")):
+            data = data.sortby(["timestamp", "symbol"])
+        out = np.empty(
+            (data.sizes["timestamp"], data.sizes["symbol"], len(variables)),
+            dtype=np.result_type(*(data[name].dtype for name in variables)),
         )
+        for i, name in enumerate(variables):
+            out[..., i] = data[name].transpose("timestamp", "symbol").values
+        return out
 
     @staticmethod
     def _jsonable_symbol(symbol):
