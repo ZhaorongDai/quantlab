@@ -111,6 +111,20 @@ logs to `<data-dir>/logs/data_update/<date>.log`:
 
 `update_daily.sh now` runs it at once.
 
+Each run ends with an e-mail in Chinese: the state and t of the status file in the subject, its
+steps in the body, and the log's last lines when the update did not exit 0.
+`scripts/notify/send_mail.py` sends it over SMTP with the settings in `~/.config/quantlab/mail.env`
+(readable by the owner only); without them nothing is sent, and a failed send never fails the run.
+The paper trading (quantlab-ibkr `live_daily.sh`) sends its own mails with the same script.
+
+```bash
+# ~/.config/quantlab/mail.env
+QUANTLAB_SMTP_HOST=smtp.163.com          # default; port 465 (SSL) by default, 587 uses STARTTLS
+QUANTLAB_SMTP_USER=<sending account>
+QUANTLAB_SMTP_PASSWORD=<its SMTP authorisation code>
+QUANTLAB_MAIL_TO=<recipients, comma separated>
+```
+
 ## Add a store
 
 1. Build the store in its folder (`<category>/<group>/<stem>/<stem>.zarr`) and save its component

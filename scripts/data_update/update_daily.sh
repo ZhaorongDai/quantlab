@@ -11,8 +11,13 @@
 # <data-dir>/update_status.json; the paper trading (quantlab-ibkr live_daily.sh) waits
 # for "done" on its day. `update_daily.sh now` runs it at once.
 #
+# Each run ends with an e-mail (in Chinese) of the status file and the log's tail,
+# sent by scripts/notify/send_mail.py; a missing or failing mail setup never fails the run.
+#
 # Environment (files readable by the owner only):
 #   ~/.config/quantlab/sharadar.env  SHARADAR_API_KEY
+#   ~/.config/quantlab/mail.env      QUANTLAB_SMTP_USER, QUANTLAB_SMTP_PASSWORD,
+#                                    QUANTLAB_MAIL_TO (see scripts/notify/send_mail.py)
 # Overrides: DATA_DIR, QUANTLAB_DIR, CPUS, UPDATE_FLAGS (e.g. "--dry-run").
 set -u
 
@@ -37,7 +42,24 @@ run_update() {
         --data-dir "$DATA_DIR" --download-dir "$DATA_DIR/downloads" ${UPDATE_FLAGS:-}) >> "$log_file" 2>&1
     local status=$?
     echo "$(ny '+%F %T %Z') data update: exit $status" >> "$log_file"
+    notify "$status"
     return "$status"
+}
+
+# E-mail the outcome: the status file (state, t, steps) and the log's last lines.
+notify() {
+    local flags=""
+    [ "$1" -eq 0 ] || flags="--log $log_file --tail 80"
+    case "${UPDATE_FLAGS:-}" in *--dry-run*|*--stage*|*--check*) return 0 ;; esac
+    (load_env "$HOME/.config/quantlab/mail.env"
+     # shellcheck disable=SC2086
+     "$PY" "$QUANTLAB_DIR/scripts/notify/send_mail.py" --subject "【quantlab 数据更新】$(ny +%F) exit $1" \
+         --update-status "$DATA_DIR/update_status.json" $flags) >> "$log_file" 2>&1 || true
+}
+
+load_env() {
+    # shellcheck disable=SC1090
+    [ -r "$1" ] && { set -a; . "$1"; set +a; }
 }
 
 case "${1:-cron}" in
