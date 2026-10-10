@@ -15,7 +15,7 @@ Massive's raw tier is one vendor file per data type and trading day, pulled by
 ``MassiveClient``, not the symbol-batched hive tree an ``Acquisition``
 writes. The descriptor therefore names no acquisition class and no config
 factory: ``registry.run()`` refuses it, and the download is the client's
-(a backfill script under ``scripts/massive/`` is planned).
+(``scripts/massive/backfill.py``).
 
 Examples
 --------

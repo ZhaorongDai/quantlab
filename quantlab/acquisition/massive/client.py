@@ -540,7 +540,9 @@ class MassiveClient:
         ``files`` files are in flight at once, one being fetched with all
         ``streams`` byte ranges while the others are verified, and the days are yielded in date order as they finish, so a
         caller converting day d while d+1 downloads keeps only a few files
-        ahead. Only XNYS sessions are asked for: weekends and holidays are
+        ahead: a day is started only once the caller has moved past the day
+        ``files`` before it, so however slow the caller, the day it holds and
+        at most ``files - 1`` after it are on disk. Only XNYS sessions are asked for: weekends and holidays are
         not. A session Massive has no file for (not published yet) is
         yielded unpublished and skipped. Each published day moves the data
         type's watermark to it (``raw.read_watermark``) while no earlier day
@@ -595,18 +597,35 @@ class MassiveClient:
         # every range in flight, of every file, stops at its next chunk.
         abort = threading.Event()
 
-        def attempt(day: date) -> tuple[date, tuple[Path, int, float] | None]:
+        # joblib dispatches the next day when a worker finishes, not when the
+        # caller takes a result, so a day waits here until the caller has
+        # moved past every day ``files`` or more before it: the day being
+        # converted and at most ``files - 1`` after it are on disk.
+        handed = threading.Condition()
+        consumed = 0
+
+        def moved_past() -> None:
+            nonlocal consumed
+            with handed:
+                consumed += 1
+                handed.notify_all()
+
+        def attempt(index: int, day: date) -> tuple[date, tuple[Path, int, float] | None]:
+            with handed:
+                while index >= consumed + self.files and not abort.is_set():
+                    handed.wait(timeout=1.0)
+            if abort.is_set():
+                raise _Aborted
             try:
                 return day, self._timed(data_type, day, download_root, fetching, abort)
             except MassiveNotPublishedError:
                 return day, None
 
         # Threads, as every fan-out in quantlab: the files wait on the network.
-        # Results come back in date order; only ``files`` days are dispatched
-        # ahead of the one the caller is on.
+        # Results come back in date order.
         outcomes = Parallel(
             n_jobs=self.files, backend="threading", return_as="generator", pre_dispatch="n_jobs", batch_size=1
-        )(delayed(attempt)(day) for day in days)
+        )(delayed(attempt)(index, day) for index, day in enumerate(days))
         complete = True
         try:
             for day, outcome in outcomes:
@@ -614,13 +633,17 @@ class MassiveClient:
                     complete = False
                     logger.info(f"Massive: no {data_type} file for {day} yet (not published).")
                     yield DayDownload(day, None)
+                    moved_past()
                     continue
                 path, fetched, seconds = outcome
                 if complete:
                     write_watermark(vendor_root, data_type, day)
                 yield DayDownload(day, path, fetched, seconds)
+                moved_past()
         finally:
             abort.set()
+            with handed:
+                handed.notify_all()
 
     def _timed(
         self, data_type: str, day: date, download_root: str | Path, fetching: threading.Lock, abort: threading.Event

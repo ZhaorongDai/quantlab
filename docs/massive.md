@@ -52,7 +52,20 @@ A session Massive has no file for yet comes back with `published` false and is s
 
 Concurrency is set on the client: one file is fetched at a time in `streams` byte ranges (default 16), while up to `files - 1` earlier ones are verified (`files` defaults to 4). Verifying decodes the whole gzip on one core and takes about twice as long as fetching: on the training server on 2026-10-09 a 2 GB trade file of 2025 fetched in 33 s at 16 streams and decoded in 81 s. Ranged reads from the server with the vendor reached directly: 1 stream 9 MB/s, 4 streams 35, 8 streams 54, 16 streams 40 to 61, 32 streams 72 MB/s.
 
-The download script (a backfill from the oldest day, download and conversion pipelined) is not written yet; `registry.run()` refuses Massive, as it refuses Sharadar.
+`download_days` starts a day only once its caller has moved past the day `files` before it, so however slow the conversion, the day being converted and at most `files - 1` after it are on disk. `registry.run()` refuses Massive, as it refuses Sharadar: the download is the backfill script's (below).
+
+## The backfill script
+
+`scripts/massive/backfill.py` builds the whole-market one-minute store, oldest day first (the oldest days are the ones about to leave the rolling window):
+
+```bash
+uv run python scripts/massive/backfill.py \
+    --download-dir /data/quantlab/downloads --data-dir /data/quantlab
+```
+
+For each XNYS session from `--start` (default: the oldest day the plan serves today) to `--end` (default: today in New York) it downloads the trade file while the next few days download behind it (`--files`, default 4; `--streams`, default 16), makes sure the day's minute and day aggregate files are there, appends the day to `<data-dir>/market/massive/massive_trade_bars_1m/massive_trade_bars_1m.zarr` (beside a `README.md`), and then deletes the raw trade file with `MassiveTradeBarDataset.delete_converted_trades`: only once the store holds the day (`converted_through`, read from the chunk ledger) and the day was checked against Massive's minute bars. The run stops at the first session Massive has not published (today before it publishes, or a late file), since the store only grows at its end. A day that could not be checked keeps its trade file and is listed at the end; aggregate files and condition snapshots are never deleted. Tickers map through the Sharadar raw tier in `--sharadar-dir` (default `<download-dir>/sharadar`). Each day prints the bytes fetched, the conversion time, the agreement with Massive's bars, whether the raw file was deleted, the days done and left, the sustained MB/s and an ETA from the pace of the last 20 days.
+
+An interrupted run is rerun with the same arguments: trade files already on disk are converted first (or deleted, when the store holds them already), and downloads go on after the store's last day and each data type's watermark. A rerun with nothing new downloads and converts nothing. Both directories must be outside the repository; the script refuses one inside it.
 
 ## Building and reading the panel
 

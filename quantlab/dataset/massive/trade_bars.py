@@ -34,7 +34,8 @@ the dense ``(timestamp, symbol)`` panel the store holds (ADR 0030).
   symbol axis is the store's own plus the day's new permatickers (zero
   volume and NaN prices over the days before), so a backfill and a daily
   update are the same operation. The raw trade file of a converted day may
-  be deleted.
+  be deleted: ``delete_converted_trades`` deletes it once the store holds
+  the day (``converted_through``) and the day passed its vendor check.
 - **The settings are the store's identity.** The bar interval, the session
   window, the roster and the counting rules (``_build_settings``) are
   recorded in the sidecar and in every read's data fingerprint; a
@@ -100,7 +101,12 @@ from quantlab.dataset.massive.resample import (
     TRADE_STATS_COUNTS,
     TradeBarResampler,
 )
-from quantlab.dataset.massive.vendor_check import NO_MINUTE_AGGREGATES, NOT_ONE_MINUTE, check_minute_bars
+from quantlab.dataset.massive.vendor_check import (
+    CHECKED,
+    NO_MINUTE_AGGREGATES,
+    NOT_ONE_MINUTE,
+    check_minute_bars,
+)
 from quantlab.dataset.sharadar.permatickers import PermatickerResolver
 from quantlab.dataset.stock import StockDataset
 from quantlab.utils.atomic import write_json_atomically
@@ -452,6 +458,72 @@ class MassiveTradeBarDataset(StockDataset):
         )
         return check
 
+    def converted_through(self) -> date | None:
+        """Return the last day the store holds, from its chunk ledger, or ``None`` without one.
+
+        Days are appended in date order, so every day up to this one that
+        has a raw trade file is in the store. The statistics sidecar is not
+        consulted: it is written before a day's bars, so a crash between the
+        two leaves a day it records and the store lacks.
+
+        Examples
+        --------
+        After appending 2024-11-29, this returns ``date(2024, 11, 29)``::
+
+            MassiveTradeBarDataset(config).update(granularity="day").converted_through()
+        """
+        from quantlab.dataset._support.ledger import ChunkLedger
+
+        if not Path(self.config.zarr_file_path).exists():
+            return None
+        last_end = ChunkLedger(ChunkLedger.default_path(self.config.zarr_file_path)).last_end
+        return None if last_end is None else pd.Timestamp(last_end).date()
+
+    def delete_converted_trades(self, day: date) -> bool:
+        """Delete the raw trade file of ``day`` if the store holds the day and it passed its vendor check.
+
+        The day must be on or before ``converted_through`` and recorded in the
+        statistics sidecar with a vendor check that ran
+        (``vendor_check.CHECKED``): its bars compared with Massive's minute
+        aggregates, whatever the differences. Otherwise the file is kept, so
+        the day can be converted or checked again without a download. The
+        minute and day aggregate files are never deleted (ADR 0030).
+
+        Parameters
+        ----------
+        day : date
+            The trading day.
+
+        Returns
+        -------
+        bool
+            Whether a file was deleted; ``False`` when it was kept or is gone.
+
+        Examples
+        --------
+        With Massive's minute aggregates of the day in the raw tier, the
+        second call deletes the day's trade file and returns ``True``::
+
+            ds = MassiveTradeBarDataset(config).update(granularity="day")
+            ds.delete_converted_trades(date(2024, 11, 29))
+        """
+        path = raw_file(self.config.raw_data_dir_path, self.DATA_TYPE, day)
+        if not path.exists():
+            return False
+        through = self.converted_through()
+        if through is None or day > through:
+            logger.info(f"{self.class_name}: {day} is not in {self.config.zarr_file_path!r}; keeping {str(path)!r}.")
+            return False
+        status = self._recorded_days().get(day.isoformat(), {}).get("vendor_check", {}).get("status")
+        if status != CHECKED:
+            logger.warning(
+                f"{self.class_name}: {day} was not checked against Massive's minute bars ({status!r}); "
+                f"keeping {str(path)!r}."
+            )
+            return False
+        path.unlink()
+        return True
+
     def _write_stats(self, days: dict[date, dict]) -> None:
         """Merge the statistics of ``days`` into the sidecar, with the settings."""
         payload = {"days": {}}
@@ -486,11 +558,13 @@ class MassiveTradeBarDataset(StockDataset):
             )
         stored = self._stored_symbol_axis(self.config.zarr_file_path)
         # A day the store holds already has its permatickers on the axis, and
-        # its window is skipped: it is not converted again to find them.
-        converted = set((self._recorded_days() if stored is not None else {}))
+        # its window is skipped: it is not converted again to find them. The
+        # ledger says which days those are, not the sidecar, which a crash
+        # may have left one day ahead of the store.
+        through = self.converted_through() if stored is not None else None
         symbols: set[int] = set()
         for day in days:
-            if day.isoformat() not in converted:
+            if through is None or day > through:
                 symbols.update(self._day(day).bars["symbol"].unique().to_list())
         if not symbols and stored is None:
             raise ValueError(

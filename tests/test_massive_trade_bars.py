@@ -527,3 +527,77 @@ def test_the_auctions_reach_the_store_and_a_daily_resample_gives_the_official_cl
     daily = _cell(ds.resample("1d").panel("2024-11-29", "2024-11-30").load(), 101, pd.Timestamp(HALF_DAY))
     assert (daily["close"], daily["close_auction_price"], daily["open_auction_price"]) == (13.0, 13.5, 10.0)
     assert (daily["volume"], daily["close_auction_volume"]) == (2030.0, 5000.0)
+
+
+# -- #243: what the backfill may delete, and a resume after a crash -----------
+
+
+def _with_vendor_bars(tmp_path, day: date = HALF_DAY):
+    """The fixture raw tier with Massive's minute bars of ``day``; the dataset of that day."""
+    from tests.massive_fixtures import write_aggregates
+
+    ds = _dataset(tmp_path, start=day, end=day)
+    write_aggregates(Path(ds.config.raw_data_dir_path), day, _vendor_bars(day))
+    return ds
+
+
+def test_a_converted_and_checked_days_trades_are_deleted_and_its_aggregates_kept(tmp_path):
+    from quantlab.dataset.massive.raw import raw_file
+
+    ds = _with_vendor_bars(tmp_path)
+    massive = Path(ds.config.raw_data_dir_path)
+    assert ds.converted_through() is None
+    ds.update(granularity="day")
+    assert ds.converted_through() == HALF_DAY
+    before = _whole(ds)
+    assert ds.delete_converted_trades(HALF_DAY) is True
+    assert not raw_file(massive, "trades", HALF_DAY).exists()
+    assert raw_file(massive, "minute_aggs", HALF_DAY).exists()
+    assert raw_file(massive, "trades", FULL_DAY).exists()
+    # The store is whole without its raw file, and deleting again is a no-op.
+    assert _whole(ds).identical(before)
+    assert ds.delete_converted_trades(HALF_DAY) is False
+
+
+def test_the_trades_of_a_day_not_checked_against_vendor_bars_are_kept(tmp_path):
+    from quantlab.dataset.massive.raw import raw_file
+
+    ds = _dataset(tmp_path, start=HALF_DAY, end=HALF_DAY)
+    ds.update(granularity="day")
+    assert ds.delete_converted_trades(HALF_DAY) is False
+    assert raw_file(Path(ds.config.raw_data_dir_path), "trades", HALF_DAY).exists()
+
+
+def test_the_trades_of_a_day_the_store_does_not_hold_are_kept(tmp_path):
+    from quantlab.dataset.massive.raw import raw_file
+
+    ds = _with_vendor_bars(tmp_path, FULL_DAY)
+    ds.update(granularity="day")
+    assert ds.delete_converted_trades(HALF_DAY) is False
+    assert raw_file(Path(ds.config.raw_data_dir_path), "trades", HALF_DAY).exists()
+
+
+def test_a_day_recorded_in_the_sidecar_but_never_appended_is_kept_and_converted_on_resume(tmp_path):
+    import json
+
+    import xarray as xr
+
+    from quantlab.dataset.massive.raw import raw_file
+
+    whole = _dataset(tmp_path / "whole")
+    whole.from_raw_data_chunked(granularity="day")
+
+    _with_vendor_bars(tmp_path / "daily", FULL_DAY).update(granularity="day")
+    # A crash after the day's statistics were written and before its bars were:
+    # the sidecar records the half day, the store and its ledger do not.
+    ds = _with_vendor_bars(tmp_path / "daily", HALF_DAY)
+    payload = json.loads(ds.stats_path.read_text())
+    payload["days"]["2024-11-29"] = {**payload["days"]["2024-11-27"]}
+    ds.stats_path.write_text(json.dumps(payload))
+    assert ds.converted_through() == FULL_DAY
+    assert ds.delete_converted_trades(HALF_DAY) is False
+    assert raw_file(Path(ds.config.raw_data_dir_path), "trades", HALF_DAY).exists()
+
+    # The rerun converts it, its new permatickers (404, 505) included.
+    ds.update(granularity="day")
+    xr.testing.assert_identical(_whole(ds), _whole(whole))

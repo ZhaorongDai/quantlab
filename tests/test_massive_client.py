@@ -13,7 +13,7 @@ Seam 3 of spec #237, with the S3 and HTTP layers faked. What is locked here:
 - a run over several days asks only for XNYS sessions, fetches several files
   at once, oldest first, skips a day Massive has not published yet without
   moving the watermark past it, records a watermark per data type and
-  resumes after it;
+  resumes after it, and runs at most ``files`` days ahead of its caller;
 - "not published" (404), "not entitled" (403) and a transport error are told
   apart, and a transport error, throttling included, is retried after a
   back-off;
@@ -412,6 +412,21 @@ def test_a_late_file_holds_the_watermark_and_is_asked_for_again(env, tmp_path):
     assert [d.day for d in days] == WEEK[1:]
     assert [d.fetched_bytes > 0 for d in days] == [True, False, False]
     assert read_watermark(tmp_path / "massive", "trades") == WEEK[-1]
+
+
+def test_downloads_run_at_most_files_days_ahead_of_the_caller(env, tmp_path):
+    import time
+
+    # Eight sessions; the caller holds the first (converting it) and asks for no more.
+    days = [date(2024, 12, d) for d in (2, 3, 4, 5, 6, 9, 10, 11)]
+    store = _week_store(days=days)
+    run = _client(store, files=2).download_days("trades", days[0], days[-1], tmp_path)
+    first = next(run)
+    time.sleep(0.3)
+    # The day being converted and one more: never a week of raw trades on disk.
+    assert first.day == days[0]
+    assert sorted(set(store.heads)) == [_key(days[0]), _key(days[1])]
+    assert [d.day for d in run] == days[1:]
 
 
 def test_a_day_outside_the_plan_fails_the_run_saying_so(env, tmp_path):
