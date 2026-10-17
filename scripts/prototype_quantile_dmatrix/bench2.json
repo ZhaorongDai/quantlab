@@ -1,0 +1,111 @@
+{
+  "env": {
+    "OMP_NUM_THREADS": null,
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "OMP_PROC_BIND": null,
+    "OMP_PLACES": null,
+    "affinity": 64,
+    "params": {
+      "tree_method": "hist",
+      "eta": 0.05,
+      "max_depth": 3,
+      "subsample": 0.8,
+      "colsample_bytree": 0.8,
+      "eval_metric": "rmse",
+      "seed": 0,
+      "objective": "reg:squarederror",
+      "min_child_weight": 200,
+      "nthread": 32,
+      "device": "cuda"
+    }
+  },
+  "gpu_dmatrix": {
+    "build_s": 104.0,
+    "fit_s": 38.6,
+    "fit_peak_mib": 20072
+  },
+  "gpu_qdm_ref_dmatrix": {
+    "error": "XGBoostError: [23:11:34] /__w/xgboost/xgboost/src/common/device_vector.cu:53: Memory allocation error on worker 0: std::bad_alloc: cudaErrorMemoryAllocation: out of memory\n- Free memory: 1.05963GB\n- Requested memory: 2.40404GB\n- Reserved by the pool: 0B\n- Used by the pool: 0B\n\nStack trace:\n  [bt] (0) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0x21ec5c) [0x7143f521ec5c]\n  [bt] (1) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0xaaf3a6) [0x7143f5aaf3a6]\n  [bt] (2) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0xc8836c) [0x7143f5c8836c]\n  [bt] (3) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0xc8acea) [0x7143f5c8acea]\n  [bt] (4) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0xc8014c) [0x7143f5c8014c]\n  [bt] (5) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0xc83eb0) [0x7143f5c83eb0]\n  [bt] (6) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0xd0112b) [0x7143f5d0112b]\n  [bt] (7) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0x5e0b39) [0x7143f55e0b39]\n  [bt] (8) /home/zhrdai/projects/quantlab2/.venv/lib/python3.13/site-packages/xgboost/lib/libxgboost.so(+0x536e1a) [0x7143f5536e1a]\n\n"
+  },
+  "gpu_qdm_500000": {
+    "batches": 28,
+    "build_s": 7.6,
+    "build_peak_mib": 21646,
+    "fit_s": 30.3,
+    "fit_peak_mib": 14546,
+    "cuts_identical_to_dmatrix": false,
+    "num_cuts": [
+      91500,
+      91500
+    ],
+    "cuts_differing_share": 0.9678907103825136
+  },
+  "gpu_qdm_1000000": {
+    "batches": 14,
+    "build_s": 6.5,
+    "build_peak_mib": 14620,
+    "fit_s": 30.4,
+    "fit_peak_mib": 15248,
+    "cuts_identical_to_dmatrix": false,
+    "num_cuts": [
+      91500,
+      91500
+    ],
+    "cuts_differing_share": 0.9671147540983607
+  },
+  "gpu_qdm_2000000": {
+    "batches": 7,
+    "build_s": 9.2,
+    "build_peak_mib": 16280,
+    "fit_s": 30.4,
+    "fit_peak_mib": 16896,
+    "cuts_identical_to_dmatrix": false,
+    "num_cuts": [
+      91500,
+      91500
+    ],
+    "cuts_differing_share": 0.9634972677595628
+  },
+  "cpu_threads": {
+    "rows": 2000000,
+    "timings": {
+      "1": {
+        "dmatrix_s": 12.1,
+        "qdm_s": 115.2
+      },
+      "16": {
+        "dmatrix_s": 12.2,
+        "qdm_s": 115.9
+      },
+      "64": {
+        "dmatrix_s": 12.5,
+        "qdm_s": 116.3
+      }
+    }
+  },
+  "test_dmatrix": {
+    "rank_ic": 0.027655451877490012,
+    "identical_to_dmatrix": true,
+    "max_abs_diff": 0.0,
+    "corr": 0.9999999999999998
+  },
+  "test_qdm_500000": {
+    "rank_ic": 0.027404166178031587,
+    "identical_to_dmatrix": false,
+    "max_abs_diff": 0.04875977337360382,
+    "corr": 0.9898980948768161
+  },
+  "test_qdm_1000000": {
+    "rank_ic": 0.026640231365454486,
+    "identical_to_dmatrix": false,
+    "max_abs_diff": 0.07825976610183716,
+    "corr": 0.9881612061260059
+  },
+  "test_qdm_2000000": {
+    "rank_ic": 0.02686872437170491,
+    "identical_to_dmatrix": false,
+    "max_abs_diff": 0.0525796115398407,
+    "corr": 0.9895636303143996
+  }
+}
