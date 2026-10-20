@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from quantlab.dataset.massive.day_bars import MassiveDayBarDataset
     from quantlab.dataset.massive.permaticker_bars import PermatickerDayBarDataset, PermatickerTradeBarDataset
     from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
+    from quantlab.dataset.raw import IndexConstituentDataset
 
 
 @dataclass(kw_only=True, frozen=True)
@@ -1265,6 +1266,52 @@ class FileConstituentDatasetConfig(ConstituentDatasetConfig):
     #: Wikipedia page cache, the CRSP reference tables, Sharadar's S&P 500
     #: table).
     cache_dir: str
+
+
+@dataclass(kw_only=True, frozen=True)
+class LiquidConstituentDatasetConfig(ConstituentDatasetConfig):
+    """Config of a liquid universe: the members of another universe whose dollar volume clears a floor.
+
+    ``members`` and ``prices`` keep their own configs, both component
+    fields. A symbol is a member at bar t when ``members`` holds it at t and
+    the median of ``price_variable`` times ``volume_variable`` over the
+    ``window`` bars before t, of which at least ``min_bars`` are priced, is
+    at least ``floor``.
+
+    Examples
+    --------
+    With ``us3000`` the estimation-universe membership and ``prices`` the SEP
+    store with its bad prints masked:
+
+    >>> cfg = LiquidConstituentDatasetConfig(
+    ...     zarr_file_path="/data/universe/us3000/membership_liquid_1m/membership_liquid_1m.zarr",
+    ...     members=us3000,
+    ...     prices=prices,
+    ...     floor=1e6,
+    ... )
+    >>> cfg.window, cfg.min_bars, cfg.price_floor
+    (60, 45, None)
+    """
+
+    #: The universe filtered: a membership dataset whose ``is_member`` the
+    #: liquid universe is a subset of.
+    members: "IndexConstituentDataset" = component()
+    #: The prices dollar volume is read from, on the members' symbol axis;
+    #: bad prints masked (``BadPrintMaskedDataset``) so a wrong price adds no
+    #: dollar volume.
+    prices: "BaseDataset" = component()
+    #: Lowest median dollar volume of a member, in the prices' currency.
+    floor: float
+    #: Bars before t the median is taken over.
+    window: int = 60
+    #: Fewest priced bars in the window for a median; with fewer, not a member.
+    min_bars: int = 45
+    #: Lowest price of a member on the bar before t; ``None`` sets none.
+    price_floor: float | None = None
+    #: The unadjusted price, on the same share basis as ``volume_variable``.
+    price_variable: str = "close"
+    #: The traded volume.
+    volume_variable: str = "volume"
 
 
 @dataclass(kw_only=True, frozen=True)
