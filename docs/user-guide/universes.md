@@ -88,8 +88,9 @@ ones, so those days stay non-member (what was known at the time). The shared sto
 unadjusted `close` times `volume`, over the `window` bars before t is at least `floor`.
 Bar t is not read, so membership at t is known at t's open. A bar without a price (a halt,
 or a bad print masked by `BadPrintMaskedDataset`, which is how `prices` should be passed)
-has no dollar volume rather than zero, and fewer than `min_bars` priced bars in the window
-is not a member; `price_floor`, off by default, also requires the previous bar's price.
+has no dollar volume rather than zero, while a priced bar on which nothing traded counts as
+$0. Fewer than `min_bars` priced bars in the window, or a member the prices do not hold, is
+not a member; `price_floor`, off by default, also requires the previous bar's price.
 Set the floor from the book the universe has to carry, not from backtest returns: an
 order of at most 5% of a day's volume needs a floor of 20 times the position per name.
 The config is a {py:class}`~quantlab.dataset.config.LiquidConstituentDatasetConfig`

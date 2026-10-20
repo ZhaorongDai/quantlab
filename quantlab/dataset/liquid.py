@@ -6,8 +6,10 @@ bar t when the universe holds it at t and the median dollar volume (the
 unadjusted price times the volume) of the ``window`` bars before t is at
 least ``floor``. Bar t itself is not read, so membership at t is known at
 t's open. A bar without a price (a halt, a bad print masked by
-``BadPrintMaskedDataset``) has no dollar volume rather than zero, and a
-window with fewer than ``min_bars`` priced bars is not a member. The floor
+``BadPrintMaskedDataset``) has no dollar volume rather than zero, while a
+priced bar with no volume (nothing traded) counts as $0; a window with fewer
+than ``min_bars`` priced bars is not a member, and so is a member the prices
+do not hold. The floor
 is set by the book the universe must carry (an order of at most 5% of a
 day's volume: 20 times the position per name), not by backtest return.
 
@@ -17,6 +19,10 @@ this dataset.
 
 Examples
 --------
+The shared store of the us3000 at a $1M floor, with ``us3000`` the
+``EstuConstituentDataset`` and ``sep`` the Sharadar SEP dataset, each rebuilt
+from its store's ``component.json``:
+
 >>> from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 >>> from quantlab.dataset.config import LiquidConstituentDatasetConfig
 >>> liquid = LiquidConstituentDataset(LiquidConstituentDatasetConfig(
@@ -27,7 +33,7 @@ Examples
 ...     floor=1e6,
 ... ))
 >>> liquid.update().panel("2026-10-19", "2026-10-19")["is_member"].sum().item()
-2726
+2740
 """
 
 from __future__ import annotations
@@ -65,7 +71,8 @@ class LiquidConstituentDataset(IndexConstituentDataset):
         If ``members`` is not a membership dataset.
     ValueError
         If ``floor`` is negative, ``window`` below 1, or ``min_bars``
-        outside ``1 .. window``.
+        outside ``1 .. window``; when built, if the prices hold no bar in
+        the universe's dates.
 
     Examples
     --------
@@ -126,18 +133,26 @@ class LiquidConstituentDataset(IndexConstituentDataset):
             read_from = config.prices.bar_before(first, config.window)
         except InsufficientHistoryError as short:
             read_from = config.prices.bar_before(first, short.available) if short.available else first
+        # A member the prices do not hold (a vendor dropped it) has no dollar volume, so it is not a member.
+        held = set(config.prices.stored_symbols())
         prices = config.prices.panel(
-            read_from, last, symbols=symbols, variables=[config.price_variable, config.volume_variable]
-        ).transpose("timestamp", "symbol")
+            read_from, last, symbols=[s for s in symbols if s in held],
+            variables=[config.price_variable, config.volume_variable],
+        ).reindex(symbol=symbols).transpose("timestamp", "symbol")
         price = prices[config.price_variable].values.astype(float)
         dollar = price * prices[config.volume_variable].values
         # The median of rows t - window .. t - 1: bottleneck's window ends on its row, so shift it down one.
-        typical = _previous(bn.move_median(dollar, config.window, min_count=config.min_bars, axis=0))
-        liquid = typical >= config.floor
+        median_dollar = _previous(bn.move_median(dollar, config.window, min_count=config.min_bars, axis=0))
+        liquid = median_dollar >= config.floor
         if config.price_floor is not None:
             liquid &= _previous(price) >= config.price_floor
         bars = prices["timestamp"].values
         on_days = (bars >= days[0]) & (bars <= days[-1])
+        if not on_days.any():
+            raise ValueError(
+                f"{self.class_name}: the prices hold no bar from {first.date()} to {last.date()}, the "
+                f"universe's dates ({config.prices.stores()}); update the prices first."
+            )
         member = universe.sel(timestamp=bars[on_days]).values & liquid[on_days]
         return member_runs(member, bars[on_days], symbols)
 

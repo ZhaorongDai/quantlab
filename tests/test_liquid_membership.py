@@ -172,3 +172,12 @@ def test_the_dataset_comes_back_from_its_component_json(tmp_path):
         150.0, 6, 3, 0.25,
     )
     assert _member_bars(back.from_raw_data().get_xarray_dataset()["is_member"], C) == list(range(13, len(DAYS)))
+
+
+def test_a_member_the_prices_do_not_hold_is_not_a_member(tmp_path):
+    # E is in the universe but not in the price store (a vendor dropped it).
+    prices = _prices().drop_sel(symbol=SYMBOLS[E])
+    panel = _liquid(tmp_path, _price_dataset(tmp_path, prices)).from_raw_data().get_xarray_dataset()["is_member"]
+
+    assert _member_bars(panel, E) == []
+    assert _member_bars(panel, A) == list(range(FIRST_MEMBER_BAR, len(DAYS)))
