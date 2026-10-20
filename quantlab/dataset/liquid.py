@@ -27,7 +27,6 @@ from its store's ``component.json``:
 >>> from quantlab.dataset.config import LiquidConstituentDatasetConfig
 >>> liquid = LiquidConstituentDataset(LiquidConstituentDatasetConfig(
 ...     zarr_file_path="/data/universe/us3000/membership_liquid_1m/membership_liquid_1m.zarr",
-...     cache_dir="/data/downloads/sharadar",
 ...     members=us3000,
 ...     prices=BadPrintMaskedDataset([sep]),
 ...     floor=1e6,
@@ -84,7 +83,7 @@ class LiquidConstituentDataset(IndexConstituentDataset):
 
     >>> prices = FrameDataset(FrameDatasetConfig(zarr_file_path="data/prices.zarr"))
     >>> liquid = LiquidConstituentDataset(LiquidConstituentDatasetConfig(
-    ...     zarr_file_path="data/liquid.zarr", cache_dir="data",
+    ...     zarr_file_path="data/liquid.zarr",
     ...     members=universe, prices=prices, floor=150.0, window=6, min_bars=3,
     ... ))
     >>> liquid.from_raw_data().get_xarray_dataset()["is_member"].sel(timestamp=days).to_pandas()

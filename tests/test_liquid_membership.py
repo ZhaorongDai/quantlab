@@ -81,7 +81,6 @@ def _universe(tmp_path, n_days: int = len(DAYS)) -> CommonStockConstituentDatase
     _universe_store(store, n_days)
     return CommonStockConstituentDataset(ConstituentDatasetConfig(
         zarr_file_path=str(tmp_path / "universe.zarr"),
-        cache_dir=str(tmp_path),
         kwargs={"price_store": str(store)},
     )).update()
 
@@ -89,7 +88,6 @@ def _universe(tmp_path, n_days: int = len(DAYS)) -> CommonStockConstituentDatase
 def _liquid(tmp_path, prices, n_days: int = len(DAYS), **params) -> LiquidConstituentDataset:
     return LiquidConstituentDataset(LiquidConstituentDatasetConfig(
         zarr_file_path=str(tmp_path / "liquid.zarr"),
-        cache_dir=str(tmp_path),
         members=_universe(tmp_path, n_days),
         prices=prices,
         floor=150.0,

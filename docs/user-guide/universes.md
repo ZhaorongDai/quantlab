@@ -107,11 +107,11 @@ The config is a {py:class}`~quantlab.dataset.config.LiquidConstituentDatasetConf
 ...     coords={"timestamp": days, "symbol": np.array([1, 2])},
 ... ).to_zarr("data/prices.zarr", mode="w")
 >>> universe = CommonStockConstituentDataset(ConstituentDatasetConfig(
-...     zarr_file_path="data/universe.zarr", cache_dir="data",
+...     zarr_file_path="data/universe.zarr",
 ...     kwargs={"price_store": "data/prices.zarr"},
 ... )).update()
 >>> liquid = LiquidConstituentDataset(LiquidConstituentDatasetConfig(
-...     zarr_file_path="data/liquid.zarr", cache_dir="data",
+...     zarr_file_path="data/liquid.zarr",
 ...     members=universe, prices=FrameDataset(FrameDatasetConfig(zarr_file_path="data/prices.zarr")),
 ...     floor=150.0, window=6, min_bars=3,
 ... ))
