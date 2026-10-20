@@ -103,23 +103,23 @@ class LiquidConstituentDataset(IndexConstituentDataset):
     config_cls = LiquidConstituentDatasetConfig
 
     def _normalize_config(self, config: LiquidConstituentDatasetConfig) -> LiquidConstituentDatasetConfig:
-        """Check the rule and record the universe's first date (the coverage start), then normalise."""
+        """Check the universe (the coverage hook reads it), normalise as the base class does, check the rule."""
         if not isinstance(config.members, IndexConstituentDataset):
             raise TypeError(
                 f"{self.class_name}: members must be a membership dataset (IndexConstituentDataset), "
                 f"got {type(config.members).__name__}."
             )
+        config = super()._normalize_config(config)
         if config.floor < 0 or config.window < 1 or not 1 <= config.min_bars <= config.window:
             raise ValueError(
                 f"{self.class_name}: needs floor >= 0, window >= 1 and 1 <= min_bars <= window; got "
                 f"floor={config.floor}, window={config.window}, min_bars={config.min_bars}."
             )
-        self._first_day = config.members.config.start_date
-        return super()._normalize_config(config)
+        return config
 
-    def _pit_coverage_start(self) -> str:
+    def _pit_coverage_start(self, config: LiquidConstituentDatasetConfig) -> str:
         """Return the universe's first date."""
-        return self._first_day
+        return config.members.config.start_date
 
     def _build_intervals(self) -> pl.DataFrame:
         """Return one ``symbol``/``start_date``/``end_date`` row per run of member bars."""
