@@ -296,13 +296,33 @@ reads a factor store's Zarr panel, such as the daily session statistics of minut
 as panel variables. Its config holds the store's path and an optional `prefix` put before
 every output's name, and nothing else; it reads by date range, never rebuilds the factor
 that wrote the store, and is not resampled. Merged with a price dataset through
-`MergedDataset`, the outputs become columns beside the prices. Two inputs holding a
-column of the same name raise when the panel is read, so give each store its own prefix.
+`MergedDataset`, the outputs become columns beside the prices. The merge raises only
+when a cell holds a value in two inputs; columns of the same name over different dates or
+symbols merge into one column. The prefix is how two sources are kept apart: give each
+store its own, so its outputs never share a name with another input's.
 
 ```python
+>>> import tempfile
+>>> from pathlib import Path
+>>> import pandas as pd
 >>> from quantlab.dataset.config import FactorStoreDatasetConfig
 >>> from quantlab.dataset.factor_store import FactorStoreDataset
->>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr", prefix="hf_"))
+>>> from quantlab.dataset.memory import FrameDataset
+>>> from quantlab.dataset.merged import MergedDataset
+>>> days = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+>>> path = str(Path(tempfile.mkdtemp()) / "stats.zarr")
+>>> _ = FrameDataset(pd.DataFrame({
+...     "timestamp": days.repeat(2),
+...     "symbol": ["AAA", "BBB"] * 3,
+...     "rvol": [0.011, 0.020, 0.013, None, 0.012, 0.018],
+...     "skew": [0.1, -0.2, 0.3, 0.0, -0.1, 0.2],
+... })).to_zarr(path)
+>>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path=path, prefix="hf_"))
+>>> prices = FrameDataset(pd.DataFrame({
+...     "timestamp": days.repeat(2),
+...     "symbol": ["AAA", "BBB"] * 3,
+...     "close": [10.0, 20.0, 11.0, 21.0, 12.0, 22.0],
+... }))
 >>> merged = MergedDataset([prices, stats]).panel("2024-01-02", "2024-01-04")
 >>> list(merged.data_vars)
 ['close', 'hf_rvol', 'hf_skew']

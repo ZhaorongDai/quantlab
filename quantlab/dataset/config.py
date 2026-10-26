@@ -1407,6 +1407,7 @@ class FactorStoreDatasetConfig(FrozenConfig):
 
     Examples
     --------
+    >>> from quantlab.dataset.config import FactorStoreDatasetConfig
     >>> cfg = FactorStoreDatasetConfig(zarr_file_path="factors/market/stats/stats.zarr")
     >>> cfg.prefix
     ''

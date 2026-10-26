@@ -24,8 +24,10 @@ class FactorStoreDataset(MarketDataset):
     over those dates, each named ``prefix + output``; ``symbols`` and
     ``variables`` select by the panel's (prefixed) names, as on any dataset.
     Merged with a price dataset through ``MergedDataset``, the outputs become
-    columns beside the prices; a name both inputs hold is the merge's error,
-    so a prefix keeps two stores' outputs of the same name apart.
+    columns beside the prices. The merge refuses a cell that holds a value
+    in two inputs, while same-named columns over different dates or symbols
+    merge into one, so a prefix is how two stores' outputs of the same name
+    are kept apart.
 
     The store is read as it is. The dataset never rebuilds or asks the
     factor that wrote it, so it serves any panel on ``(timestamp, symbol)``
@@ -41,15 +43,36 @@ class FactorStoreDataset(MarketDataset):
     config : FactorStoreDatasetConfig
         The store's Zarr path and the optional prefix.
 
+    Notes
+    -----
+    The config holds only the path and the prefix: a store is read as
+    stored, with no date bounds, conversion or resample in the config.
+    The base class's ``_normalize_config``, ``store_path``, ``store_uses``
+    and ``_resamples_on_read`` read the date and resample fields a dataset
+    config otherwise has, so this class overrides them to name the store
+    and read it on its own bars, and ``resample`` refuses.
+
     Examples
     --------
-    ``stats.zarr`` holds two outputs, ``rvol`` and ``skew``, for ``AAA``
-    and ``BBB`` on 2024-01-02 to 2024-01-04; BBB has no ``rvol`` on
-    2024-01-03:
+    A store of two outputs, ``rvol`` and ``skew``, for ``AAA`` and ``BBB``
+    over three days; BBB has no ``rvol`` on 2024-01-03:
 
-    >>> stats = FactorStoreDataset(
-    ...     FactorStoreDatasetConfig(zarr_file_path="stats.zarr", prefix="hf_")
-    ... )
+    >>> import tempfile
+    >>> from pathlib import Path
+    >>> import pandas as pd
+    >>> from quantlab.dataset.config import FactorStoreDatasetConfig
+    >>> from quantlab.dataset.factor_store import FactorStoreDataset
+    >>> from quantlab.dataset.memory import FrameDataset
+    >>> from quantlab.dataset.merged import MergedDataset
+    >>> days = pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-04"])
+    >>> path = str(Path(tempfile.mkdtemp()) / "stats.zarr")
+    >>> _ = FrameDataset(pd.DataFrame({
+    ...     "timestamp": days.repeat(2),
+    ...     "symbol": ["AAA", "BBB"] * 3,
+    ...     "rvol": [0.011, 0.020, 0.013, None, 0.012, 0.018],
+    ...     "skew": [0.1, -0.2, 0.3, 0.0, -0.1, 0.2],
+    ... })).to_zarr(path)
+    >>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path=path, prefix="hf_"))
     >>> panel = stats.panel("2024-01-02", "2024-01-03")
     >>> list(panel.data_vars)
     ['hf_rvol', 'hf_skew']
@@ -59,9 +82,14 @@ class FactorStoreDataset(MarketDataset):
     2024-01-02  0.011  0.02
     2024-01-03  0.013   NaN
 
-    Merged with ``prices``, a ``FrameDataset`` holding ``close`` for the
-    same days and symbols, the missing statistic leaves the price alone:
+    Merged with prices of the same days and symbols, the missing statistic
+    leaves the price alone:
 
+    >>> prices = FrameDataset(pd.DataFrame({
+    ...     "timestamp": days.repeat(2),
+    ...     "symbol": ["AAA", "BBB"] * 3,
+    ...     "close": [10.0, 20.0, 11.0, 21.0, 12.0, 22.0],
+    ... }))
     >>> merged = MergedDataset([prices, stats]).panel("2024-01-02", "2024-01-04")
     >>> list(merged.data_vars)
     ['close', 'hf_rvol', 'hf_skew']
@@ -91,7 +119,9 @@ class FactorStoreDataset(MarketDataset):
 
         Examples
         --------
-        >>> stats.store_path
+        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
+        >>> from quantlab.dataset.factor_store import FactorStoreDataset
+        >>> FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr")).store_path
         'stats.zarr'
         """
         return self.config.zarr_file_path
@@ -105,13 +135,22 @@ class FactorStoreDataset(MarketDataset):
 
         Examples
         --------
-        >>> stats.store_uses()
+        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
+        >>> from quantlab.dataset.factor_store import FactorStoreDataset
+        >>> FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr")).store_uses()
         (StoreUse(path='stats.zarr', relation='reads', handle=None),)
         """
         return (StoreUse(self.store_path, READS),)
 
     def resample(self, freq: str, how=None):
         """Refuse: a factor store is read on the bars it was written on.
+
+        Parameters
+        ----------
+        freq : str
+            The frequency asked for; only named in the error.
+        how : dict[str, str] or str, optional
+            The aggregation asked for; not used.
 
         Raises
         ------
@@ -120,6 +159,9 @@ class FactorStoreDataset(MarketDataset):
 
         Examples
         --------
+        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
+        >>> from quantlab.dataset.factor_store import FactorStoreDataset
+        >>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr"))
         >>> stats.resample("1w", "last")
         Traceback (most recent call last):
         ValueError: FactorStoreDataset.resample('1w'): a factor store is not resampled; ...
@@ -138,10 +180,28 @@ class FactorStoreDataset(MarketDataset):
         n : int
             Maximum number of rows.
 
+        Returns
+        -------
+        polars.LazyFrame
+            Up to ``n`` rows, with ``timestamp`` and ``symbol`` as columns and
+            every output named ``prefix + output``.
+
         Examples
         --------
+        >>> import tempfile
+        >>> from pathlib import Path
+        >>> import pandas as pd
+        >>> import xarray as xr
+        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
+        >>> from quantlab.dataset.factor_store import FactorStoreDataset
+        >>> path = str(Path(tempfile.mkdtemp()) / "stats.zarr")
+        >>> _ = xr.Dataset(
+        ...     {"rvol": (("timestamp", "symbol"), [[0.011, 0.020]])},
+        ...     coords={"timestamp": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA", "BBB"]},
+        ... ).to_zarr(path)
+        >>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path=path, prefix="hf_"))
         >>> stats.head(1).collect_schema().names()
-        ['timestamp', 'symbol', 'hf_rvol', 'hf_skew']
+        ['timestamp', 'symbol', 'hf_rvol']
         """
         frame = super().head(n)
         names = [c for c in frame.collect_schema().names() if c not in ("timestamp", "symbol")]
