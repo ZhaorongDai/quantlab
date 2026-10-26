@@ -146,6 +146,30 @@ def test_an_unfinished_entry_is_compiled_again(compiles, monkeypatch, tmp_path) 
     assert (entry / kunquant_compile._COMPLETE).exists()
 
 
+def test_a_compile_that_finishes_after_another_process_keeps_its_entry(monkeypatch, tmp_path) -> None:
+    # Processes compiling the same graph at once: another one renames its entry into place
+    # while this one is still compiling. Removing that intact entry to put this one's in its
+    # place would pull the library from under a third process loading it meanwhile.
+    monkeypatch.setenv(CACHE_ENV, str(tmp_path / "cache"))
+    monkeypatch.setattr(kunquant_compile, "_LIBRARIES", {})
+    compile_sources = kunquant_compile._compile_sources
+    written = {}
+
+    def finishes_second(*args, **kwargs):
+        library = compile_sources(*args, **kwargs)
+        _compile_in_another_process()
+        (entry,) = [path for path in (tmp_path / "cache").iterdir() if not path.name.startswith(".")]
+        written["inode"] = (entry / library.name).stat().st_ino
+        return library
+
+    monkeypatch.setattr(kunquant_compile, "_compile_sources", finishes_second)
+    lib = compile_graphs(_entry(), "Scaled")
+    (entry,) = [path for path in (tmp_path / "cache").iterdir() if not path.name.startswith(".")]
+    (library,) = [path for path in entry.iterdir() if path.name.startswith("Scaled.")]
+    assert library.stat().st_ino == written["inode"]
+    np.testing.assert_array_equal(_run(lib), np.arange(24, dtype=np.float32).reshape(3, 8) * 2)
+
+
 def test_an_empty_cache_variable_writes_nothing(compiles, monkeypatch, tmp_path) -> None:
     monkeypatch.setenv(CACHE_ENV, "")
     compile_graphs(_entry(), "Scaled")

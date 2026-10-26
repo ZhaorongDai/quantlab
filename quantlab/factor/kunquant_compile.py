@@ -51,6 +51,9 @@ CACHE_FORMAT = 1
 #: The marker file that makes an entry complete, holding the library's digest.
 _COMPLETE = "complete"
 
+#: Times a compiled entry is renamed into place when a damaged entry is in the way.
+_RENAME_ATTEMPTS = 3
+
 #: The libraries loaded in this process, by key.
 _LIBRARIES: dict[str, kr.Library] = {}
 
@@ -249,9 +252,11 @@ def _compile_entry(
 
     The staging directory becomes the entry by one rename, after its
     ``complete`` marker is written, so no process sees a half-written entry.
-    A damaged or unfinished entry left at the key is removed first; when
-    another process renamed its own entry into place meanwhile, that one is
-    kept and this one dropped.
+    The rename fails when an entry is at the key already: an intact one
+    (another process finished the same entry first) is loaded and this one
+    dropped, and only a damaged or unfinished one is removed before the
+    rename is tried again. An intact entry is never removed, as another
+    process may be loading it.
     """
     directory.mkdir(parents=True, exist_ok=True)
     entry = directory / key
@@ -262,12 +267,15 @@ def _compile_entry(
             if path != library:
                 path.unlink()
         (staging / _COMPLETE).write_text(json.dumps({"sha256": _digest(library)}))
-        if entry.exists():
-            shutil.rmtree(entry, ignore_errors=True)
-        try:
-            staging.rename(entry)
-        except OSError:  # another process finished the same entry first
-            pass
+        for _ in range(_RENAME_ATTEMPTS):
+            try:
+                staging.rename(entry)
+                break
+            except OSError:  # an entry is at the key already
+                lib = _load_entry(entry, libname, compiler)
+                if lib is not None:
+                    return lib
+                shutil.rmtree(entry, ignore_errors=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     lib = _load_entry(entry, libname, compiler)
