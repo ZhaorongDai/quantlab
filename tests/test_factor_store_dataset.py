@@ -70,8 +70,10 @@ def test_a_prefix_renames_every_output_and_selects_by_the_prefixed_name(factor_s
 
     assert sorted(panel.data_vars) == ["hf_rvol", "hf_skew"]
     stored = _stored(factor_store).sel(timestamp=slice("2024-01-02", "2024-01-05"))
-    np.testing.assert_array_equal(panel["hf_rvol"].values, stored["rvol"].values)
+    for name in ("rvol", "skew"):
+        np.testing.assert_array_equal(panel[f"hf_{name}"].values, stored[name].values)
     assert list(only.data_vars) == ["hf_skew"]
+    np.testing.assert_array_equal(only["hf_skew"].values, stored["skew"].values)
     assert sorted(ds.head(1).collect_schema().names()) == ["hf_rvol", "hf_skew", "symbol", "timestamp"]
 
 
@@ -102,6 +104,11 @@ def test_merged_with_prices_the_panel_carries_both_inputs_columns(factor_store, 
     only = merged.panel("2024-01-02", "2024-01-05", variables=["close", "hf_rvol"])
 
     assert sorted(panel.data_vars) == ["close", "hf_rvol", "hf_skew"]
+    stored = _stored(factor_store).sel(timestamp=slice("2024-01-02", "2024-01-05"))
+    prices = _prices(tmp_path).panel("2024-01-02", "2024-01-05")
+    for name in ("rvol", "skew"):
+        np.testing.assert_array_equal(panel[f"hf_{name}"].sel(symbol=stored["symbol"]).values, stored[name].values)
+    np.testing.assert_array_equal(panel["close"].sel(symbol=prices["symbol"]).values, prices["close"].values)
     assert np.isnan(panel["hf_rvol"].sel(timestamp="2024-01-03", symbol="BBB").item())
     assert not np.isnan(panel["close"].sel(timestamp="2024-01-03", symbol="BBB").item())
     assert list(only.data_vars) == ["close", "hf_rvol"]
@@ -132,6 +139,16 @@ def test_a_rebuilt_dataset_gives_the_same_panel(factor_store, tmp_path):
         rebuilt_merge.panel("2024-01-02", "2024-01-05"),
         merged.panel("2024-01-02", "2024-01-05"),
     )
+
+
+def test_the_calendar_and_bar_arithmetic_are_the_stored_days(factor_store, tmp_path):
+    ds = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path=factor_store, prefix="hf_"))
+    merged = MergedDataset([_prices(tmp_path), ds])
+
+    assert list(ds.calendar(DAYS[0], DAYS[-1])) == list(DAYS)
+    assert ds.bar_before(DAYS[3], 2) == DAYS[1]
+    assert ds.bar_after(DAYS[1], 2) == DAYS[3]
+    assert list(merged.calendar(DAYS[0], DAYS[-1])) == list(DAYS)
 
 
 def test_the_dataset_is_not_resampled(factor_store):
