@@ -291,6 +291,34 @@ variables as the factor reading them expects (`adjClose` and so on for
 `Alpha158Stock`). A `FrameDataset` has no build path and refuses stream-mode factors;
 `to_zarr(path)` writes it to a new store.
 
+**Stored factor panels.** {py:class}`~quantlab.dataset.factor_store.FactorStoreDataset`
+reads a factor store's Zarr panel, such as the daily session statistics of minute bars,
+as panel variables. Its config holds the store's path and an optional `prefix` put before
+every output's name, and nothing else; it reads by date range, never rebuilds the factor
+that wrote the store, and is not resampled. Merged with a price dataset through
+`MergedDataset`, the outputs become columns beside the prices. Two inputs holding a
+column of the same name raise when the panel is read, so give each store its own prefix.
+
+```python
+>>> from quantlab.dataset.config import FactorStoreDatasetConfig
+>>> from quantlab.dataset.factor_store import FactorStoreDataset
+>>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr", prefix="hf_"))
+>>> merged = MergedDataset([prices, stats]).panel("2024-01-02", "2024-01-04")
+>>> list(merged.data_vars)
+['close', 'hf_rvol', 'hf_skew']
+>>> merged["hf_rvol"].to_pandas()
+symbol        AAA    BBB
+timestamp
+2024-01-02  0.011  0.020
+2024-01-03  0.013    NaN
+2024-01-04  0.012  0.018
+```
+
+A missing statistic is a NaN cell, so the prices of the same bar are untouched. The
+dataset shifts nothing: the value stored at day t is read beside day t's prices, so a
+store read through it must hold at day t only what is known at day t's close. Aligning
+the values is the job of whoever builds the store.
+
 ## Storage backends
 
 A dataset delegates persistence to a *backend*, which knows how data is stored rather than
