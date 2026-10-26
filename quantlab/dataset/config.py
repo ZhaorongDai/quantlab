@@ -1398,6 +1398,33 @@ class FrameDatasetConfig(BaseDatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
+class FactorStoreDatasetConfig(FrozenConfig):
+    """Config of a dataset reading a factor store's panel as its columns.
+
+    The store's Zarr path and an optional prefix put before every output's
+    name, and nothing else: the store is read as it is, whatever built it,
+    over the dates each ``panel`` call asks for.
+
+    Examples
+    --------
+    >>> from quantlab.dataset.config import FactorStoreDatasetConfig
+    >>> cfg = FactorStoreDatasetConfig(zarr_file_path="factors/market/stats/stats.zarr")
+    >>> cfg.prefix
+    ''
+    >>> sorted(cfg.to_dict())
+    ['name', 'prefix', 'zarr_file_path']
+    """
+
+    #: Path of the factor store's Zarr panel.
+    zarr_file_path: str
+    #: Put before every output's name in the panel (``"hf_"`` reads ``rvol``
+    #: as ``hf_rvol``); empty keeps the stored names.
+    prefix: str = ""
+    #: Dotted import path of the dataset class; filled by the config setter.
+    name: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
 class MassiveShortInterestConfig(MassiveRestPanelConfig):
     """Config of the Massive short interest panel on the permaticker axis.
 

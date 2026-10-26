@@ -10,6 +10,8 @@ Read your data
 Use ``FrameDataset`` for in-memory frames, ``StockDataset`` for compatible
 vendor price files, and ``SharadarStockDataset`` for Sharadar daily prices.
 The Sharadar panel uses permanent security identifiers rather than tickers.
+``FactorStoreDataset`` reads a stored factor panel as columns, to merge
+beside prices with ``MergedDataset``.
 
 .. autosummary::
    :toctree: generated
@@ -18,8 +20,11 @@ The Sharadar panel uses permanent security identifiers rather than tickers.
    quantlab.dataset.memory.FrameDataset
    quantlab.dataset.stock.StockDataset
    quantlab.dataset.sharadar.stock.SharadarStockDataset
+   quantlab.dataset.factor_store.FactorStoreDataset
+   quantlab.dataset.merged.MergedDataset
    quantlab.dataset.config.SharadarDatasetConfig
    quantlab.dataset.config.FrameDatasetConfig
+   quantlab.dataset.config.FactorStoreDatasetConfig
    quantlab.dataset.config.DatasetConfig
 
 Extend the dataset API
