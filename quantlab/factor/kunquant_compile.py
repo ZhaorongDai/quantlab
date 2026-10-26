@@ -18,10 +18,13 @@ The cache directory is ``$QUANTLAB_KUNQUANT_CACHE``, else
 empty ``QUANTLAB_KUNQUANT_CACHE`` keeps libraries in the process only. Each
 entry is a directory named by the key holding the library and a ``complete``
 marker with the library's digest; an entry without the marker, or whose
-library does not match it, is compiled again. Deleting the directory clears
-the cache.
+library does not match it, is compiled again. Processes compiling the same
+graph at once publish its entry one at a time under a lock file beside it
+(``.<key>.lock``), and an intact entry is never removed. Deleting the
+directory clears the cache.
 """
 
+import contextlib
 import dataclasses
 import functools
 import hashlib
@@ -34,7 +37,13 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections.abc import Iterator
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
 
 import KunQuant.runner.KunRunner as kr
 from KunQuant.Driver import KunCompilerConfig, compileit as generate_sources
@@ -51,8 +60,6 @@ CACHE_FORMAT = 1
 #: The marker file that makes an entry complete, holding the library's digest.
 _COMPLETE = "complete"
 
-#: Times a compiled entry is renamed into place when a damaged entry is in the way.
-_RENAME_ATTEMPTS = 3
 
 #: The libraries loaded in this process, by key.
 _LIBRARIES: dict[str, kr.Library] = {}
@@ -252,11 +259,12 @@ def _compile_entry(
 
     The staging directory becomes the entry by one rename, after its
     ``complete`` marker is written, so no process sees a half-written entry.
-    The rename fails when an entry is at the key already: an intact one
-    (another process finished the same entry first) is loaded and this one
-    dropped, and only a damaged or unfinished one is removed before the
-    rename is tried again. An intact entry is never removed, as another
-    process may be loading it.
+    Processes compiling the same graph compile side by side, then publish one
+    at a time under the key's lock file: an intact entry already in place
+    (another process finished first) is loaded and this one dropped; anything
+    else at the key (a damaged or unfinished entry, a stray file) is removed
+    before the rename. An intact entry is never removed, so a process loading
+    it outside the lock always finds it.
     """
     directory.mkdir(parents=True, exist_ok=True)
     entry = directory / key
@@ -267,21 +275,43 @@ def _compile_entry(
             if path != library:
                 path.unlink()
         (staging / _COMPLETE).write_text(json.dumps({"sha256": _digest(library)}))
-        for _ in range(_RENAME_ATTEMPTS):
-            try:
-                staging.rename(entry)
-                break
-            except OSError:  # an entry is at the key already
-                lib = _load_entry(entry, libname, compiler)
-                if lib is not None:
-                    return lib
-                shutil.rmtree(entry, ignore_errors=True)
+        with _locked(directory / f".{key}.lock"):
+            lib = _load_entry(entry, libname, compiler)
+            if lib is not None:
+                return lib
+            _remove(entry)
+            staging.rename(entry)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
     lib = _load_entry(entry, libname, compiler)
     if lib is None:
         raise RuntimeError(f"compile_graphs: the library compiled into {entry} cannot be loaded.")
     return lib
+
+
+@contextlib.contextmanager
+def _locked(path: Path) -> Iterator[None]:
+    """Hold an exclusive lock on the file ``path`` (created if missing) across processes.
+
+    Without ``fcntl`` (Windows) the lock is a no-op.
+    """
+    with open(path, "a") as handle:
+        if fcntl is None:
+            yield
+            return
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def _remove(path: Path) -> None:
+    """Remove whatever is at ``path``: a directory tree, a file or a link; nothing when it is missing."""
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
 
 
 def _compile_in_temp(graphs: Graphs, libname: str, compiler: "cfake.CppCompilerConfig") -> kr.Library:
