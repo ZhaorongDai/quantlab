@@ -18,14 +18,16 @@ Two views share the mapping, one per store on the Massive ticker:
 ``PermatickerTradeBarDataset`` over the one-minute Trade bars
 (``MassiveTradeBarDataset``) and ``PermatickerDayBarDataset`` over Massive's
 Day aggregates (``MassiveDayBarDataset``, #353). A view is a drop-in
-``MarketDataset``: ``panel``, ``resample`` (the mapped bars are aggregated as
-the store's are, per session), the calendar and the KunQuant export are the
-store's dataset's, and the tradable and delisting bars ``MarketDataset``'s
-rules over its own panel. Only the ticker columns the map names are read
-from the store. A read records the store (through the store's dataset) and
-the map's rows in an open ``DataRecorder``. A view has no store of its own
-and no build path: its input is the store's dataset (``inputs()``), and the
-store and the Ticker map are updated by their own steps.
+``MarketDataset``, and a ``DatasetView`` of the store's dataset (``inputs()``):
+the calendar, resample labels, tradable bars and KunQuant export are the
+store's dataset's; ``resample`` aggregates the mapped bars as the store's
+are, per session; the symbols are the permatickers the map names; and the
+delisting bars are ``MarketDataset``'s rule over the view's own panel, since
+a later price is looked up by permaticker. Only the ticker columns the map
+names are read from the store. A read records the store (through the store's
+dataset) and the map's rows in an open ``DataRecorder``. A view has no store
+of its own and no build path: the store and the Ticker map are updated by
+their own steps.
 
 Examples
 --------
@@ -57,6 +59,7 @@ from quantlab.dataset.config import PermatickerDayBarsConfig, PermatickerTradeBa
 from quantlab.dataset.massive.day_bars import DAY_BAR_RESAMPLE_HOW, MassiveDayBarDataset
 from quantlab.dataset.massive.ticker_map import RULES_VERSION, TickerMap
 from quantlab.dataset.massive.trade_bars import TRADE_BAR_RESAMPLE_HOW, MassiveTradeBarDataset
+from quantlab.dataset.view import DatasetView
 from quantlab.runs.record import record_read
 from quantlab.utils.date_range import check_range
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -64,7 +67,7 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 __all__ = ["PermatickerDataset", "PermatickerDayBarDataset", "PermatickerTradeBarDataset"]
 
 
-class PermatickerDataset(MarketDataset):
+class PermatickerDataset(DatasetView):
     """A store on the Massive ticker axis read on the permaticker axis; see the module docstring.
 
     A subclass names the config field holding the store's dataset
@@ -190,9 +193,6 @@ class PermatickerDataset(MarketDataset):
             resample_how=None if config.resample_how is None else dict(config.resample_how),
             name=self.import_path,
         )
-
-    def _on_config_installed(self) -> None:
-        """Nothing to set up: the view holds no data."""
 
     # -- reading ----------------------------------------------------------------
 
@@ -451,7 +451,7 @@ class PermatickerDataset(MarketDataset):
         """
         return type(self)(dataclasses.replace(self.config, resample_freq=freq, resample_how=how))
 
-    # -- the store dataset's market rules ---------------------------------------
+    # -- what the view changes about the store dataset's answers ---------------
 
     def _calendar(self) -> pd.DatetimeIndex:
         """Return the store dataset's calendar, on this view's resampled bars when resampled."""
@@ -460,13 +460,13 @@ class PermatickerDataset(MarketDataset):
             return calendar
         return pd.DatetimeIndex(np.unique(self.resample_labels(calendar.values, self.config.resample_freq)))
 
-    def resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
-        """Return the bars the store's dataset cuts ``timestamps`` into."""
-        return self.ticker_bars.resample_labels(timestamps, freq)
+    #: ``MarketDataset``'s delisting rule over the view's own panel: a later
+    #: price is looked up by permaticker here, not by ticker in the store.
+    delisting_bars = MarketDataset.delisting_bars
 
-    def _to_kunquant(self, data: xr.Dataset, data_columns: tuple[str, ...]) -> tuple[dict, np.ndarray, np.ndarray]:
-        """Export the columns as the store's dataset does."""
-        return self.ticker_bars._to_kunquant(data, data_columns)
+    def _own_delisting_symbols(self) -> list:
+        """Return none: the view delists by ``MarketDataset``'s rule, not a rule of its own."""
+        return []
 
     def copy(self) -> Self:
         """Return a view over a copy of the store's dataset and the same map's config.
