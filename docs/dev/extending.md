@@ -303,6 +303,12 @@ and {py:class}`~quantlab.dataset.raw.RawMarketDataset` add the build path (`from
 `save`, `from_raw_data_chunked`, `update`) for a dataset that converts raw files into a
 store it owns.
 
+Every dataset that is not a view is a *leaf*, built from raw data or not. A leaf overrides
+a root member only to change how it reads; setting `config_cls` (its config class) or
+`COLUMN_MAP` (its column names) declares the leaf and is not an override. Add a new leaf to
+the table in `tests/test_dataset_leaf_overrides.py` with one reason per root member it
+overrides: the test fails on an override the table does not list.
+
 ### Market bars
 
 Subclass {py:class}`~quantlab.dataset.raw.RawMarketDataset` and implement three hooks:
@@ -399,7 +405,8 @@ Further hooks:
 - **Config checks.** Override `_normalize_config(config)`: call the parent first, check the
   result and return a new config made with `dataclasses.replace`. It runs on every
   assignment, so an invalid config is refused when the dataset is created. Do not redefine
-  the `config` property.
+  the `config` property. State derived from the config (a resolved filter, a calendar, a
+  cache) is reset in `_on_config_installed()`, which runs once the new config is accepted.
 - **Registry.** Name the class as the `dataset_cls` of the vendor's capability, so that
   `convert()` reaches it.
 
@@ -449,17 +456,29 @@ bound only a raw build and live on
 {py:class}`~quantlab.dataset.config.RawDatasetConfig`. The root config,
 {py:class}`~quantlab.dataset.config.BaseDatasetConfig`, holds the store path and the
 `name` the config setter fills, and the root class reads the Zarr store at that path
-between the requested dates. A leaf overrides a root member only to change how it reads:
-the factor store puts a prefix on every output, the mapped bars refuse a day mapped by a
-ticker map that has since changed, and the in-memory panel opens no store.
+between the requested dates.
 
-- A leaf whose bars do not come from its own Zarr store (a panel held in memory, a store
-  written from another dataset) does not override `panel`. It overrides
-  `_open_bars(start, end)`, which returns every symbol and variable from `start` to `end`;
-  `panel` applies the query and the run record.
-  {py:class}`~quantlab.dataset.memory.FrameDataset` is the example.
-- A *view* only reads other datasets and keeps no store; it inherits
-  {py:class}`~quantlab.dataset.view.DatasetView` (see [A dataset view](#a-dataset-view)).
+Such a leaf overrides only the members whose read changes:
+
+- Bars that come from somewhere else (a panel held in memory, a store written from another
+  dataset, a store read under a prefix): override `_open_bars(start, end)`, which returns
+  every symbol and variable from `start` to `end`, not `panel`, which applies the query
+  and the run record. Override `_calendar`, `head` and `stored_symbols` too when they
+  would otherwise read a store the leaf does not have, and `_to_kunquant` to export its
+  columns. {py:class}`~quantlab.dataset.factor_store.FactorStoreDataset` puts a prefix on
+  every output this way; {py:class}`~quantlab.dataset.memory.FrameDataset` opens no store
+  at all (its `_read_store()` is `None`).
+- A store that can be stale: refuse it where it is opened (`_open_store`, `_open_bars`),
+  as the mapped bars refuse a day mapped by a ticker map that has since changed, and
+  record what the values do not show (the map's rules) in `_build_settings()`.
+- Config fields of its own: check them in `_normalize_config` and reset derived state in
+  `_on_config_installed`, as for a raw-built leaf (see Config checks above).
+- A panel held in memory also defines its identity: `__init__`, `__eq__` and `copy`, and
+  `persist_with_run`/`resolve_run_config` to write the panel with a run and read it back.
+
+[Internals](internals.md#dataset-leaves) describes the default read and every kind of
+override. A *view* only reads other datasets and keeps no store; it inherits
+{py:class}`~quantlab.dataset.view.DatasetView` (see [A dataset view](#a-dataset-view)).
 
 ### A dataset view
 
