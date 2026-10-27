@@ -39,6 +39,7 @@ from quantlab.dataset.raw import IndexConstituentDataset, RawDataset, RawMarketD
 from quantlab.dataset.roster import RosterDataset
 from quantlab.dataset.spot import SpotKlineDataset
 from quantlab.dataset.stock import StockDataset
+from quantlab.dataset.view import DatasetView
 
 #: The build path: every member a dataset needs only to convert raw files into its store.
 BUILD_MEMBERS = (
@@ -161,6 +162,7 @@ def test_the_raw_roots_own_the_build_path_and_their_abstract_methods() -> None:
     assert BaseDataset.__abstractmethods__ == frozenset()
     assert RawDataset.__abstractmethods__ == frozenset({"_raw_data_to_xr"})
     assert MarketDataset.__abstractmethods__ == frozenset({"_to_kunquant"})
+    assert DatasetView.__abstractmethods__ == frozenset({"panel"})
     assert RawMarketDataset.__abstractmethods__ == frozenset(
         {"_raw_data_to_xr", "_raw_data_to_xr_window", "_to_kunquant"}
     )
@@ -168,6 +170,22 @@ def test_the_raw_roots_own_the_build_path_and_their_abstract_methods() -> None:
         assert issubclass(cls, RawMarketDataset)
     assert issubclass(IndexConstituentDataset, RawDataset)
     assert not issubclass(IndexConstituentDataset, MarketDataset)
+
+
+#: The store members a view answers on ``DatasetView``; the root class answers them for a leaf only.
+VIEW_DECIDED_MEMBERS = frozenset({"store_path", "store_uses", "resample"})
+
+
+def test_the_read_root_describes_a_leaf_only() -> None:
+    """``DatasetView`` decides a view's store and resampling; the root class never asks ``inputs()``."""
+    assert VIEW_DECIDED_MEMBERS <= set(DatasetView.__dict__)
+    for name in VIEW_DECIDED_MEMBERS:
+        member = BaseDataset.__dict__[name]
+        source = inspect.getsource(member.fget if isinstance(member, property) else member)
+        code = source.split('"""')[-1]
+        assert "inputs()" not in code, f"BaseDataset.{name} asks inputs()"
+    assert BaseDataset.inputs.__qualname__ == "BaseDataset.inputs"
+    assert BaseDataset.__dict__["inputs"](None) == ()
 
 
 def test_market_only_members_stay_on_market_dataset() -> None:

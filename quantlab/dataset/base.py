@@ -588,7 +588,7 @@ class BaseDataset(Component, ABC):
         ``_resample_<freq>`` added to the name, so the resampled panel never
         overwrites the source bars; until that store is saved, its requests
         read the source store (see ``stores``). A view keeps no store of its
-        own: ``None``.
+        own (``DatasetView.store_path`` is ``None``).
 
         Examples
         --------
@@ -596,11 +596,7 @@ class BaseDataset(Component, ABC):
         'data/klines.zarr'
         >>> ds.resample("1d", "last").store_path
         'data/klines_resample_1d.zarr'
-        >>> RosterDataset(ds, membership).store_path is None
-        True
         """
-        if self.inputs():
-            return None
         return resample_store_path(
             self.config.zarr_file_path, self.config.resample_freq
         )
@@ -613,7 +609,8 @@ class BaseDataset(Component, ABC):
         inputs, and keeps no store (a roster cut, a merge, a mapping). A view
         declares its inputs here; what a dataset merely holds in its config
         to write its store (``MappedTradeBarDataset``'s source view) is not
-        an input. ``store_uses`` and ``stores`` follow the declaration.
+        an input. A view inherits ``DatasetView``; ``stores`` walks the
+        inputs it declares here.
 
         Returns
         -------
@@ -637,12 +634,11 @@ class BaseDataset(Component, ABC):
         resamples on read; a panel held in memory reads no store (a
         ``"reads"`` use without a path). A resampled
         dataset's store is written from the source store, so that is a
-        ``"source"`` use as well. A view uses no store itself: its inputs
-        declare theirs. A component the dataset holds that is not one of
-        its inputs (``MappedTradeBarDataset``'s source view, the ticker map
-        of a ``PermatickerTradeBarDataset``) is one it is only built from
-        (``BuiltFrom``), so every store under it is a source, not read on a
-        day. See ``Component.store_uses``; nothing is opened.
+        ``"source"`` use as well. A component the dataset holds
+        (``MappedTradeBarDataset``'s source view) is one it is only built
+        from (``BuiltFrom``), so every store under it is a source, not read
+        on a day. A view answers this on ``DatasetView``: its inputs declare
+        the stores it reads. See ``Component.store_uses``; nothing is opened.
 
         Returns
         -------
@@ -652,18 +648,12 @@ class BaseDataset(Component, ABC):
         --------
         >>> ds.store_uses()
         (StoreUse(path='data/klines.zarr', relation='reads', handle=None),)
-        >>> RosterDataset(ds, membership).store_uses()   # its inputs declare theirs
-        ()
         """
-        inputs = {id(dataset) for dataset in self.inputs()}
-        uses: list = [
-            BuiltFrom(child) for _, child in child_components(self) if id(child) not in inputs
-        ]
-        if not inputs:
-            store = self._read_store()
-            uses.append(StoreUse(store, READS))
-            if store is not None and self.config.resample_freq is not None:
-                uses.append(StoreUse(self.config.zarr_file_path, SOURCE))
+        uses: list = [BuiltFrom(child) for _, child in child_components(self)]
+        store = self._read_store()
+        uses.append(StoreUse(store, READS))
+        if store is not None and self.config.resample_freq is not None:
+            uses.append(StoreUse(self.config.zarr_file_path, SOURCE))
         return tuple(uses)
 
     def stores(self) -> list[str]:
@@ -774,11 +764,6 @@ class BaseDataset(Component, ABC):
 
             hourly = MassiveTradeBarDataset(config).resample("1h")
         """
-        if self.inputs():
-            raise ValueError(
-                f"{self.class_name}.resample(): a view of its inputs is not "
-                f"resampled; resample each input, then wrap them."
-            )
         if how is None:
             if self.DEFAULT_RESAMPLE_HOW is None:
                 raise ValueError(
