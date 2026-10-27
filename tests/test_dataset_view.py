@@ -73,7 +73,7 @@ FORWARDED = _read_interface() - NOT_FORWARDED
 #: The read-interface members each view defines itself; the root forwards the rest.
 OWN_MEMBERS = {
     RosterDataset: {"stored_symbols", "_own_delisting_symbols"},
-    # the symbols are permatickers: the ticker-keyed store's rows and lookup are not the view's
+    # the symbols are permatickers: the ticker-keyed store's rows are mapped to them, its lookup is not the view's
     PermatickerDataset: {
         "stored_symbols", "_calendar", "delisting_bars", "_own_delisting_symbols", "head", "ticker_lookup",
     },

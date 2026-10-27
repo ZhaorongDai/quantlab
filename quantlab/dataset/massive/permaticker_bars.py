@@ -271,11 +271,10 @@ class PermatickerDataset(DatasetView):
         """
         first, last = check_range(start, end, f"{self.class_name}.columns()")
         rows = self._map_rows(first, last).filter(pl.col("date").is_between(first.date(), last.date()))
-        volumes = self._day_volumes(rows)
         chosen = [
             (day, ticker, permaticker)
-            for (day,), frame in rows.partition_by("date", as_dict=True).items()
-            for ticker, permaticker in self._choose(frame, volumes.get(day, {}))
+            for day, pairs in self._day_choices(rows).items()
+            for ticker, permaticker in pairs
         ]
         schema = {"date": pl.Date, "ticker": pl.String, "permaticker": pl.Int64}
         return pl.DataFrame(chosen, schema=schema, orient="row").sort("date", "permaticker")
@@ -289,7 +288,7 @@ class PermatickerDataset(DatasetView):
         tickers = sort_symbol_axis(rows["ticker"].unique().to_list())
         bars = self.ticker_bars.panel(start, end, symbols=tickers, variables=variables)
         self._record_map(rows, start, end)
-        volumes = self._day_volumes(rows)
+        choices = self._day_choices(rows)
 
         axis = (
             list(dict.fromkeys(int(s) for s in symbols))
@@ -299,17 +298,15 @@ class PermatickerDataset(DatasetView):
         fills = self.no_bar_fills()
         timestamps = bars["timestamp"].values
         days = pd.DatetimeIndex(self.ticker_bars.resample_labels(timestamps, "1d")).date if timestamps.size else []
-        by_day = {day: frame for (day,), frame in rows.partition_by("date", as_dict=True).items()}
         pieces = []
         missing = []
         for day in sorted(set(days)):
             at = np.flatnonzero(np.asarray(days) == day)
             piece = bars.isel(timestamp=at)
-            day_rows = by_day.get(day)
-            if day_rows is None:
+            chosen = choices.get(day)
+            if chosen is None:
                 missing.append(day)
-                day_rows = rows.clear()
-            chosen = self._choose(day_rows, volumes.get(day, {}))
+                chosen = []
             piece = piece.sel(symbol=[ticker for ticker, _ in chosen]).assign_coords(
                 symbol=np.array([permaticker for _, permaticker in chosen], dtype=np.int64)
             )
@@ -325,6 +322,17 @@ class PermatickerDataset(DatasetView):
         else:
             panel = xr.concat(pieces, dim="timestamp")
         return panel
+
+    def _day_choices(self, rows: pl.DataFrame) -> dict[date, list[tuple[str, int]]]:
+        """Return ``{day: [(ticker, permaticker), ...]}``, each day's columns, of the map's ``rows``.
+
+        A day without a row in ``rows`` is left out.
+        """
+        volumes = self._day_volumes(rows)
+        return {
+            day: self._choose(frame, volumes.get(day, {}))
+            for (day,), frame in rows.partition_by("date", as_dict=True).items()
+        }
 
     def _day_volumes(self, rows: pl.DataFrame) -> dict:
         """Return ``{day: {ticker: volume}}`` of the whole session days on which two tickers share a permaticker.
@@ -484,24 +492,46 @@ class PermatickerDataset(DatasetView):
         return None
 
     def head(self, n: int) -> pl.LazyFrame:
-        """Refuse: the view keeps no store, and the store's rows are on the Massive ticker axis.
+        """Return the store's first ``n`` rows on the permaticker axis.
 
-        Raises
-        ------
-        NotImplementedError
-            Always; read ``panel`` for the view's rows.
+        Each row's Massive ticker is mapped to the permaticker whose column
+        it is that day, as ``panel`` maps it; a row whose ticker holds no
+        column that day is dropped, so fewer than ``n`` rows may come back.
+        The columns and dtypes are the store's, but ``symbol`` is the int64
+        permaticker.
+
+        Parameters
+        ----------
+        n : int
+            The number of store rows to read.
+
+        Returns
+        -------
+        pl.LazyFrame
+            The mapped rows, in the store's order.
 
         Examples
         --------
-        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``)::
+        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``),
+        whose store's first rows are eight tickers at 2024-11-27 14:31 and 14:32::
 
-            bars.head(1)
-            # NotImplementedError: PermatickerTradeBarDataset.head(): the view keeps no store ...
+            bars.head(12).collect()["symbol"].to_list()   # AAA, OLD, RRR, then AAA
+            # [101, 202, 303, 101]
         """
-        raise NotImplementedError(
-            f"{self.class_name}.head(): the view keeps no store, and its store's rows are on "
-            f"the Massive ticker axis, not the permaticker axis; read panel() instead."
-        )
+        frame = self.ticker_bars.head(n).collect()
+        if not frame.height:
+            return frame.with_columns(pl.col("symbol").cast(pl.Int64)).lazy()
+        timestamps = frame["timestamp"].to_numpy()
+        days = pd.DatetimeIndex(self.ticker_bars.resample_labels(timestamps, "1d")).date
+        first, last = pd.Timestamp(min(days)), pd.Timestamp(max(days))
+        rows = self._map_rows(first, last).filter(pl.col("date").is_between(first.date(), last.date()))
+        column = {
+            (day, ticker): permaticker
+            for day, pairs in self._day_choices(rows).items()
+            for ticker, permaticker in pairs
+        }
+        symbols = pl.Series("symbol", [column.get(key) for key in zip(days, frame["symbol"])], dtype=pl.Int64)
+        return frame.with_columns(symbols).filter(pl.col("symbol").is_not_null()).lazy()
 
     def copy(self) -> Self:
         """Return a view over a copy of the store's dataset and the same map's config.

@@ -223,10 +223,47 @@ def test_the_ticker_stores_rows_and_lookup_are_not_the_views(built):
     RED under: ``head`` and ``ticker_lookup`` answered by the store on the Massive ticker.
     """
     trade_bars, _, dataset = built
-    assert trade_bars.head(1).collect().height == 1
+    assert trade_bars.head(1).collect()["symbol"].to_list() == ["AAA"]
     assert dataset.ticker_lookup() is None
-    with pytest.raises(NotImplementedError, match="keeps no store"):
-        dataset.head(1)
+    assert dataset.head(1).collect()["symbol"].to_list() == [101]
+
+
+def test_head_maps_the_stores_first_rows_to_permatickers(built):
+    """The store's first rows, 2024-11-27 14:31 and 14:32 over eight tickers, read as permatickers.
+
+    That day AAA is 101, OLD 202 and RRR 303; AAB, FFF, NEW, RRS and ZZZ have
+    no permaticker and are dropped. RED under: a refused ``head``, or rows on
+    the Massive ticker.
+    """
+    trade_bars, _, dataset = built
+    rows = dataset.head(12).collect()
+    assert rows["symbol"].to_list() == [101, 202, 303, 101]
+    assert rows["symbol"].dtype == pl.Int64
+    assert rows.drop("symbol").schema == trade_bars.head(0).collect().drop("symbol").schema
+    assert rows.filter(pl.col("symbol") == 101)["close"].to_list()[0] == 10.0
+    assert dataset.head(0).collect_schema().names() == trade_bars.head(0).collect_schema().names()
+
+
+def test_a_merge_with_the_view_reads_chosen_variables(built, tmp_path):
+    """A merge reads each input's column names from ``head``, so the view merges by variable.
+
+    RED under: ``head`` refused, which a merge asked for ``variables`` calls.
+    """
+    from quantlab.dataset.memory import FrameDataset
+    from quantlab.dataset.merged import MergedDataset
+
+    _, _, dataset = built
+    times = pd.DatetimeIndex(["2024-11-27 14:31", "2024-11-27 14:32"])
+    other = FrameDataset(xr.Dataset(
+        {"flag": (("timestamp", "symbol"), np.ones((2, 1)))},
+        coords={"timestamp": times, "symbol": ["SPY"]},
+    )).to_zarr(tmp_path / "other.zarr")
+
+    panel = MergedDataset([dataset, other]).panel("2024-11-27", "2024-11-30", variables=["close", "flag"])
+
+    assert sorted(panel.data_vars) == ["close", "flag"]
+    assert float(panel["close"].sel(symbol=101, timestamp="2024-11-27 14:31")) == 10.0
+    assert float(panel["flag"].sel(symbol="SPY", timestamp="2024-11-27 14:31")) == 1.0
 
 
 def test_the_busier_ticker_is_decided_over_the_whole_day(built):
