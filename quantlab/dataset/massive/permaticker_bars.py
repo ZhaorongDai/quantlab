@@ -468,9 +468,34 @@ class PermatickerDataset(DatasetView):
             return calendar
         return pd.DatetimeIndex(np.unique(self.resample_labels(calendar.values, self.config.resample_freq)))
 
-    #: ``MarketDataset``'s delisting rule over the view's own panel: a later
-    #: price is looked up by permaticker here, not by ticker in the store.
-    delisting_bars = MarketDataset.delisting_bars
+    def delisting_bars(self, prices: xr.Dataset, valuation_column: str) -> xr.DataArray:
+        """Mark, in a price panel, the last bar of each permaticker that delisted in it.
+
+        ``MarketDataset``'s rule over the view's own panel: a later price is
+        looked up by permaticker here, not by ticker in the store, so a
+        company whose ticker changed is not delisted at the change.
+
+        Parameters
+        ----------
+        prices : xr.Dataset
+            A panel of this view on ``(timestamp, symbol)``.
+        valuation_column : str
+            The price the portfolio is valued at.
+
+        Returns
+        -------
+        xr.DataArray
+            Booleans on the panel's ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        With ``bars`` a permaticker view built beforehand (``PermatickerDayBarDataset``)::
+
+            prices = bars.panel("2024-01-02", "2024-01-31")
+            marks = bars.delisting_bars(prices, "close")
+            marks.sel(symbol=202).values.nonzero()  # the last bar OLD traded
+        """
+        return MarketDataset.delisting_bars(self, prices, valuation_column)
 
     def _own_delisting_symbols(self) -> list:
         """Return none: the view delists by ``MarketDataset``'s rule, not a rule of its own."""
