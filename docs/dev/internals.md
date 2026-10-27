@@ -252,16 +252,19 @@ The forwarded members are the read interface of `MarketDataset` except `panel`: 
 calendar (`_calendar`, behind `calendar`, `bar_before` and `bar_after`),
 `resample_labels`, `ticker_lookup`, `stored_symbols`, `head`, `own_names`,
 `shared_name_map`, `tradable_bars`, `delisting_bars`, `_own_delisting_symbols` and
-`_to_kunquant`. With one input, `DatasetView` answers each from the input `_source()`
-returns. With several inputs `_source()` returns `None` and each member raises
-`NotImplementedError` naming the member and the view: the calendar of a merge is a union
-and a market rule belongs to the input holding the symbol, so no single-input default is
-right there. `panel` is abstract.
+`_to_kunquant`. With one input, `DatasetView` by default answers each from the input
+`_source()` returns, and a view overrides the members it changes (`RosterDataset` its
+stored symbols, `PermatickerDataset` its symbol axis, calendar and rows). With several
+inputs `_source()` returns `None` and each member raises `NotImplementedError` naming the
+member and the view: the calendar of a merge is a union and a market rule belongs to the
+input holding the symbol, so no single-input default is right there. `panel` is abstract.
 
 Whether a dataset delists symbols by a rule of its own is the explicit hook
 `_own_delisting_symbols()`, empty on `MarketDataset`. A leaf with such a rule returns the
-symbols it rules, a single-input view forwards the hook, and `MergedDataset` combines its
-inputs' answers, so a leaf's rule survives any stack of views. Views compose: a roster over
+symbols it rules (a leaf that overrides `delisting_bars` and not the hook raises
+`TypeError` when its class is defined), a single-input view forwards the hook, and
+`MergedDataset` combines its inputs' answers, so a leaf's rule survives any stack of views.
+Views compose: a roster over
 a bad-print mask over a merge answers its calendar, market rules and store uses through
 each layer. `tests/test_dataset_view.py` locks the forwarding rule and
 `tests/test_dataset_hierarchy.py` the class layout; writing a view is described in

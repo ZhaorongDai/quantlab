@@ -33,8 +33,10 @@ from quantlab.dataset.base import MarketDataset, TickerLookup
 class DatasetView(MarketDataset):
     """Root class of the datasets that read other datasets and keep no store.
 
-    With one input, every member of the read interface but ``panel`` is the
-    input's, through the view:
+    With one input, every member of the read interface but ``panel`` is by
+    default the input's, through the view; a subclass overrides the members
+    it changes (``RosterDataset`` its stored symbols, ``PermatickerDataset``
+    its symbol axis, calendar and rows):
 
     ==============================  ========================================
     ``calendar``, ``bar_before``,   the input's calendar (``_calendar``)

@@ -468,8 +468,8 @@ dataset it reads is used: a roster cut, a merge, a bad-print mask.
 3. defines `panel`, the one abstract member: what the view changes about its inputs' panels;
 4. overrides only the other members it changes.
 
-With one input, `DatasetView` answers every other member of the read interface from that
-input: the calendar (`_calendar`, and through it `calendar`, `bar_before`, `bar_after`),
+With one input, `DatasetView` by default answers every other member of the read interface
+from that input, until the view overrides it (step 4): the calendar (`_calendar`, and through it `calendar`, `bar_before`, `bar_after`),
 `resample_labels`, `ticker_lookup`, `stored_symbols`, `head`, `own_names`,
 `shared_name_map`, `tradable_bars`, `delisting_bars`, `_own_delisting_symbols` and the
 KunQuant export (`_to_kunquant`). A market rule added to `MarketDataset` later reaches the
