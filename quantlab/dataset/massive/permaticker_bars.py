@@ -17,15 +17,17 @@ dense ``(timestamp, symbol)`` panel on the permaticker axis:
 Two views share the mapping, one per store on the Massive ticker:
 ``PermatickerTradeBarDataset`` over the one-minute Trade bars
 (``MassiveTradeBarDataset``) and ``PermatickerDayBarDataset`` over Massive's
-Day aggregates (``MassiveDayBarDataset``, #353). A view is a drop-in
-``MarketDataset``: ``panel``, ``resample`` (the mapped bars are aggregated as
-the store's are, per session), the calendar and the KunQuant export are the
-store's dataset's, and the tradable and delisting bars ``MarketDataset``'s
-rules over its own panel. Only the ticker columns the map names are read
-from the store. A read records the store (through the store's dataset) and
-the map's rows in an open ``DataRecorder``. A view has no store of its own
-and no build path: its input is the store's dataset (``inputs()``), and the
-store and the Ticker map are updated by their own steps.
+Day aggregates (``MassiveDayBarDataset``). A view is a drop-in
+``MarketDataset``, and a ``DatasetView`` of the store's dataset (``inputs()``):
+the calendar, resample labels, tradable bars and KunQuant export are the
+store's dataset's; ``resample`` aggregates the mapped bars as the store's
+are, per session; the symbols are the permatickers the map names; and the
+delisting bars are ``MarketDataset``'s rule over the view's own panel, since
+a later price is looked up by permaticker. Only the ticker columns the map
+names are read from the store. A read records the store (through the store's
+dataset) and the map's rows in an open ``DataRecorder``. A view has no store
+of its own and no build path: the store and the Ticker map are updated by
+their own steps.
 
 Examples
 --------
@@ -57,6 +59,7 @@ from quantlab.dataset.config import PermatickerDayBarsConfig, PermatickerTradeBa
 from quantlab.dataset.massive.day_bars import DAY_BAR_RESAMPLE_HOW, MassiveDayBarDataset
 from quantlab.dataset.massive.ticker_map import RULES_VERSION, TickerMap
 from quantlab.dataset.massive.trade_bars import TRADE_BAR_RESAMPLE_HOW, MassiveTradeBarDataset
+from quantlab.dataset.view import DatasetView
 from quantlab.runs.record import record_read
 from quantlab.utils.date_range import check_range
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -64,7 +67,7 @@ from quantlab.utils.symbol_axis import sort_symbol_axis
 __all__ = ["PermatickerDataset", "PermatickerDayBarDataset", "PermatickerTradeBarDataset"]
 
 
-class PermatickerDataset(MarketDataset):
+class PermatickerDataset(DatasetView):
     """A store on the Massive ticker axis read on the permaticker axis; see the module docstring.
 
     A subclass names the config field holding the store's dataset
@@ -191,9 +194,6 @@ class PermatickerDataset(MarketDataset):
             name=self.import_path,
         )
 
-    def _on_config_installed(self) -> None:
-        """Nothing to set up: the view holds no data."""
-
     # -- reading ----------------------------------------------------------------
 
     def _map_rows(self, first: pd.Timestamp, last: pd.Timestamp) -> pl.DataFrame:
@@ -271,11 +271,10 @@ class PermatickerDataset(MarketDataset):
         """
         first, last = check_range(start, end, f"{self.class_name}.columns()")
         rows = self._map_rows(first, last).filter(pl.col("date").is_between(first.date(), last.date()))
-        volumes = self._day_volumes(rows)
         chosen = [
             (day, ticker, permaticker)
-            for (day,), frame in rows.partition_by("date", as_dict=True).items()
-            for ticker, permaticker in self._choose(frame, volumes.get(day, {}))
+            for day, pairs in self._day_choices(rows).items()
+            for ticker, permaticker in pairs
         ]
         schema = {"date": pl.Date, "ticker": pl.String, "permaticker": pl.Int64}
         return pl.DataFrame(chosen, schema=schema, orient="row").sort("date", "permaticker")
@@ -289,7 +288,7 @@ class PermatickerDataset(MarketDataset):
         tickers = sort_symbol_axis(rows["ticker"].unique().to_list())
         bars = self.ticker_bars.panel(start, end, symbols=tickers, variables=variables)
         self._record_map(rows, start, end)
-        volumes = self._day_volumes(rows)
+        choices = self._day_choices(rows)
 
         axis = (
             list(dict.fromkeys(int(s) for s in symbols))
@@ -299,17 +298,15 @@ class PermatickerDataset(MarketDataset):
         fills = self.no_bar_fills()
         timestamps = bars["timestamp"].values
         days = pd.DatetimeIndex(self.ticker_bars.resample_labels(timestamps, "1d")).date if timestamps.size else []
-        by_day = {day: frame for (day,), frame in rows.partition_by("date", as_dict=True).items()}
         pieces = []
         missing = []
         for day in sorted(set(days)):
             at = np.flatnonzero(np.asarray(days) == day)
             piece = bars.isel(timestamp=at)
-            day_rows = by_day.get(day)
-            if day_rows is None:
+            chosen = choices.get(day)
+            if chosen is None:
                 missing.append(day)
-                day_rows = rows.clear()
-            chosen = self._choose(day_rows, volumes.get(day, {}))
+                chosen = []
             piece = piece.sel(symbol=[ticker for ticker, _ in chosen]).assign_coords(
                 symbol=np.array([permaticker for _, permaticker in chosen], dtype=np.int64)
             )
@@ -325,6 +322,17 @@ class PermatickerDataset(MarketDataset):
         else:
             panel = xr.concat(pieces, dim="timestamp")
         return panel
+
+    def _day_choices(self, rows: pl.DataFrame) -> dict[date, list[tuple[str, int]]]:
+        """Return ``{day: [(ticker, permaticker), ...]}``, each day's columns, of the map's ``rows``.
+
+        A day without a row in ``rows`` is left out.
+        """
+        volumes = self._day_volumes(rows)
+        return {
+            day: self._choose(frame, volumes.get(day, {}))
+            for (day,), frame in rows.partition_by("date", as_dict=True).items()
+        }
 
     def _day_volumes(self, rows: pl.DataFrame) -> dict:
         """Return ``{day: {ticker: volume}}`` of the whole session days on which two tickers share a permaticker.
@@ -451,7 +459,7 @@ class PermatickerDataset(MarketDataset):
         """
         return type(self)(dataclasses.replace(self.config, resample_freq=freq, resample_how=how))
 
-    # -- the store dataset's market rules ---------------------------------------
+    # -- what the view changes about the store dataset's answers ---------------
 
     def _calendar(self) -> pd.DatetimeIndex:
         """Return the store dataset's calendar, on this view's resampled bars when resampled."""
@@ -460,13 +468,95 @@ class PermatickerDataset(MarketDataset):
             return calendar
         return pd.DatetimeIndex(np.unique(self.resample_labels(calendar.values, self.config.resample_freq)))
 
-    def resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
-        """Return the bars the store's dataset cuts ``timestamps`` into."""
-        return self.ticker_bars.resample_labels(timestamps, freq)
+    def delisting_bars(self, prices: xr.Dataset, valuation_column: str) -> xr.DataArray:
+        """Mark, in a price panel, the last bar of each permaticker that delisted in it.
 
-    def _to_kunquant(self, data: xr.Dataset, data_columns: tuple[str, ...]) -> tuple[dict, np.ndarray, np.ndarray]:
-        """Export the columns as the store's dataset does."""
-        return self.ticker_bars._to_kunquant(data, data_columns)
+        ``MarketDataset``'s rule over the view's own panel: a later price is
+        looked up by permaticker here, not by ticker in the store, so a
+        company whose ticker changed is not delisted at the change.
+
+        Parameters
+        ----------
+        prices : xr.Dataset
+            A panel of this view on ``(timestamp, symbol)``.
+        valuation_column : str
+            The price the portfolio is valued at.
+
+        Returns
+        -------
+        xr.DataArray
+            Booleans on the panel's ``(timestamp, symbol)``.
+
+        Examples
+        --------
+        With ``bars`` a permaticker view built beforehand (``PermatickerDayBarDataset``)::
+
+            prices = bars.panel("2024-01-02", "2024-01-31")
+            marks = bars.delisting_bars(prices, "close")
+            marks.sel(symbol=202).values.nonzero()  # the last bar OLD traded
+        """
+        return MarketDataset.delisting_bars(self, prices, valuation_column)
+
+    def _own_delisting_symbols(self) -> list:
+        """Return none: the view delists by ``MarketDataset``'s rule, not a rule of its own."""
+        return []
+
+    def ticker_lookup(self) -> None:
+        """Return ``None``: no lookup names permatickers, so they are shown as they are.
+
+        The store's lookup, if it had one, would name Massive tickers, not
+        this view's symbols.
+
+        Examples
+        --------
+        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``)::
+
+            bars.ticker_lookup() is None
+            # True
+        """
+        return None
+
+    def head(self, n: int) -> pl.LazyFrame:
+        """Return the store's first ``n`` rows on the permaticker axis.
+
+        Each row's Massive ticker is mapped to the permaticker whose column
+        it is that day, as ``panel`` maps it; a row whose ticker holds no
+        column that day is dropped, so fewer than ``n`` rows may come back.
+        The columns and dtypes are the store's, but ``symbol`` is the int64
+        permaticker.
+
+        Parameters
+        ----------
+        n : int
+            The number of store rows to read.
+
+        Returns
+        -------
+        pl.LazyFrame
+            The mapped rows, in the store's order.
+
+        Examples
+        --------
+        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``),
+        whose store's first rows are eight tickers at 2024-11-27 14:31 and 14:32::
+
+            bars.head(12).collect()["symbol"].to_list()   # AAA, OLD, RRR, then AAA
+            # [101, 202, 303, 101]
+        """
+        frame = self.ticker_bars.head(n).collect()
+        if not frame.height:
+            return frame.with_columns(pl.col("symbol").cast(pl.Int64)).lazy()
+        timestamps = frame["timestamp"].to_numpy()
+        days = pd.DatetimeIndex(self.ticker_bars.resample_labels(timestamps, "1d")).date
+        first, last = pd.Timestamp(min(days)), pd.Timestamp(max(days))
+        rows = self._map_rows(first, last).filter(pl.col("date").is_between(first.date(), last.date()))
+        column = {
+            (day, ticker): permaticker
+            for day, pairs in self._day_choices(rows).items()
+            for ticker, permaticker in pairs
+        }
+        symbols = pl.Series("symbol", [column.get(key) for key in zip(days, frame["symbol"])], dtype=pl.Int64)
+        return frame.with_columns(symbols).filter(pl.col("symbol").is_not_null()).lazy()
 
     def copy(self) -> Self:
         """Return a view over a copy of the store's dataset and the same map's config.

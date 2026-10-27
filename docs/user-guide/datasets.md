@@ -35,6 +35,12 @@ a *view* reads other datasets and keeps no store
 ({py:class}`~quantlab.dataset.roster.RosterDataset`,
 {py:class}`~quantlab.dataset.merged.MergedDataset`,
 {py:class}`~quantlab.dataset.bad_prints.BadPrintMaskedDataset`).
+{py:class}`~quantlab.dataset.view.DatasetView` is the root class of views: by default a
+view over one input answers every read member but `panel` from that input, and overrides
+the members it changes (`RosterDataset` its stored symbols, the permaticker views their
+symbol axis and calendar). A view over several inputs (`MergedDataset`) defines every
+member itself: the calendar is the inputs' union, and each market rule is answered by the
+inputs holding the symbol.
 
 `panel(start, end)` returns the stored bars from `start` to `end`, both inclusive. It
 opens the store lazily on every call, keeps nothing on the dataset and leaves the config

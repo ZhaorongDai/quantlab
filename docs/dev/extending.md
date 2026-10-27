@@ -451,11 +451,79 @@ methods to refuse.
   and `_resamples_on_read()` when `panel` should resample those bars; `panel` applies the
   query, the resample and the run record.
   {py:class}`~quantlab.dataset.memory.FrameDataset` is the example.
-- A *view* only composes other datasets. It overrides `panel`, passes the request on,
-  records nothing itself and declares the datasets it reads with `inputs()`. Its
-  `store_path` is `None`, `store_uses()` declares nothing of its own, and `stores()` names
-  its inputs' stores. A component the view's store is only built from is declared a source
-  (`BuiltFrom`), not read on a day. See [Internals](internals.md#date-ranged-stores).
+- A *view* only reads other datasets and keeps no store; it inherits
+  {py:class}`~quantlab.dataset.view.DatasetView` (see [A dataset view](#a-dataset-view)).
+
+### A dataset view
+
+A dataset view reads other datasets, its inputs, keeps no store and drops in wherever the
+dataset it reads is used: a roster cut, a merge, a bad-print mask.
+{py:class}`~quantlab.dataset.view.DatasetView` is its root class, as `FactorView` and
+`PredictorView` are in the factor and model layers. A view:
+
+1. inherits `DatasetView` and declares `config_cls`, a frozen config that holds its inputs in
+   component fields (a `name` field and nothing else is required; a view reads no date or
+   resample field);
+2. declares its inputs with `inputs()`, in order;
+3. defines `panel`, the one abstract member: what the view changes about its inputs' panels;
+4. overrides only the other members it changes.
+
+With one input, `DatasetView` by default answers every other member of the read interface
+from that input, until the view overrides it (step 4): the calendar (`_calendar`, and through it `calendar`, `bar_before`, `bar_after`),
+`resample_labels`, `ticker_lookup`, `stored_symbols`, `head`, `own_names`,
+`shared_name_map`, `tradable_bars`, `delisting_bars`, `_own_delisting_symbols` and the
+KunQuant export (`_to_kunquant`). A market rule added to `MarketDataset` later reaches the
+view without an edit. A view that reads a second dataset only for something it defines
+itself (the membership `RosterDataset` cuts by) overrides `_source()` to name the input it
+forwards to.
+
+With several inputs there is no input to answer from, so each of those members raises
+`NotImplementedError`, naming the member and the view, until the view defines it. A view
+of several inputs defines every forwarded member: `MergedDataset` answers the calendar as
+its inputs' union and each market rule by the input holding the symbol. A subclass of such
+a view (`BadPrintMaskedDataset` under `MergedDataset`) inherits those answers and changes
+only `panel`.
+
+`DatasetView` also decides the store: `store_path` is `None`, `store_uses()` declares no
+store of its own (its inputs declare the stores it reads, so `stores()` names them; a
+component it holds that is not an input is declared `BuiltFrom`), and `resample` refuses:
+resample each input, then wrap them. A view that does resample, by bars of its own, overrides
+`resample` (`PermatickerDataset`).
+
+```python
+from dataclasses import dataclass
+
+import xarray as xr
+
+from quantlab.core.component import component
+from quantlab.core.config import FrozenConfig
+from quantlab.dataset.base import MarketDataset
+from quantlab.dataset.view import DatasetView
+
+
+@dataclass(kw_only=True, frozen=True)
+class ScaledDatasetConfig(FrozenConfig):
+    dataset: MarketDataset = component()
+    scale: float = 1.0
+    name: str | None = None
+
+
+class ScaledDataset(DatasetView):
+    """Every variable of the input times ``scale``."""
+
+    config_cls = ScaledDatasetConfig
+
+    def inputs(self):
+        return (self.config.dataset,)
+
+    def panel(self, start, end, symbols=None, variables=None) -> xr.Dataset:
+        return self.config.dataset.panel(start, end, symbols, variables) * self.config.scale
+```
+
+`tests/test_dataset_view.py` locks these rules: it collects the forwarded members from
+`MarketDataset` itself, checks the one-input forward and the several-input raise for each,
+that `MergedDataset` defines every one, and that the single-input views define only what
+they change. See [Internals](internals.md#dataset-views).
 
 ## A storage backend
 

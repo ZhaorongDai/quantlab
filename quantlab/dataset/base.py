@@ -588,7 +588,7 @@ class BaseDataset(Component, ABC):
         ``_resample_<freq>`` added to the name, so the resampled panel never
         overwrites the source bars; until that store is saved, its requests
         read the source store (see ``stores``). A view keeps no store of its
-        own: ``None``.
+        own (``DatasetView.store_path`` is ``None``).
 
         Examples
         --------
@@ -596,11 +596,7 @@ class BaseDataset(Component, ABC):
         'data/klines.zarr'
         >>> ds.resample("1d", "last").store_path
         'data/klines_resample_1d.zarr'
-        >>> RosterDataset(ds, membership).store_path is None
-        True
         """
-        if self.inputs():
-            return None
         return resample_store_path(
             self.config.zarr_file_path, self.config.resample_freq
         )
@@ -613,7 +609,8 @@ class BaseDataset(Component, ABC):
         inputs, and keeps no store (a roster cut, a merge, a mapping). A view
         declares its inputs here; what a dataset merely holds in its config
         to write its store (``MappedTradeBarDataset``'s source view) is not
-        an input. ``store_uses`` and ``stores`` follow the declaration.
+        an input. A view inherits ``DatasetView``; ``stores`` walks the
+        inputs it declares here.
 
         Returns
         -------
@@ -637,12 +634,11 @@ class BaseDataset(Component, ABC):
         resamples on read; a panel held in memory reads no store (a
         ``"reads"`` use without a path). A resampled
         dataset's store is written from the source store, so that is a
-        ``"source"`` use as well. A view uses no store itself: its inputs
-        declare theirs. A component the dataset holds that is not one of
-        its inputs (``MappedTradeBarDataset``'s source view, the ticker map
-        of a ``PermatickerTradeBarDataset``) is one it is only built from
-        (``BuiltFrom``), so every store under it is a source, not read on a
-        day. See ``Component.store_uses``; nothing is opened.
+        ``"source"`` use as well. A component the dataset holds
+        (``MappedTradeBarDataset``'s source view) is one it is only built
+        from (``BuiltFrom``), so every store under it is a source, not read
+        on a day. A view answers this on ``DatasetView``: its inputs declare
+        the stores it reads. See ``Component.store_uses``; nothing is opened.
 
         Returns
         -------
@@ -652,18 +648,12 @@ class BaseDataset(Component, ABC):
         --------
         >>> ds.store_uses()
         (StoreUse(path='data/klines.zarr', relation='reads', handle=None),)
-        >>> RosterDataset(ds, membership).store_uses()   # its inputs declare theirs
-        ()
         """
-        inputs = {id(dataset) for dataset in self.inputs()}
-        uses: list = [
-            BuiltFrom(child) for _, child in child_components(self) if id(child) not in inputs
-        ]
-        if not inputs:
-            store = self._read_store()
-            uses.append(StoreUse(store, READS))
-            if store is not None and self.config.resample_freq is not None:
-                uses.append(StoreUse(self.config.zarr_file_path, SOURCE))
+        uses: list = [BuiltFrom(child) for _, child in child_components(self)]
+        store = self._read_store()
+        uses.append(StoreUse(store, READS))
+        if store is not None and self.config.resample_freq is not None:
+            uses.append(StoreUse(self.config.zarr_file_path, SOURCE))
         return tuple(uses)
 
     def stores(self) -> list[str]:
@@ -774,11 +764,6 @@ class BaseDataset(Component, ABC):
 
             hourly = MassiveTradeBarDataset(config).resample("1h")
         """
-        if self.inputs():
-            raise ValueError(
-                f"{self.class_name}.resample(): a view of its inputs is not "
-                f"resampled; resample each input, then wrap them."
-            )
         if how is None:
             if self.DEFAULT_RESAMPLE_HOW is None:
                 raise ValueError(
@@ -1435,6 +1420,35 @@ class MarketDataset(BaseDataset):
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = DatasetConfig
 
+    #: Whether this class reads other datasets and answers for them (a view).
+    #: A view forwards ``_own_delisting_symbols`` to its inputs, so it may
+    #: change ``delisting_bars`` alone; a leaf may not.
+    _is_view = False
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a leaf that overrides ``delisting_bars`` but not ``_own_delisting_symbols``.
+
+        A view asks a leaf for its delisting rule only on the symbols
+        ``_own_delisting_symbols`` returns, none on this root, so such a
+        leaf's rule would be dropped by every view over it.
+
+        Raises
+        ------
+        TypeError
+            If ``cls`` is not a view, overrides ``delisting_bars``, and keeps
+            the root's ``_own_delisting_symbols``.
+        """
+        super().__init_subclass__(**kwargs)
+        if (
+            not cls._is_view
+            and cls.delisting_bars is not MarketDataset.delisting_bars
+            and cls._own_delisting_symbols is MarketDataset._own_delisting_symbols
+        ):
+            raise TypeError(
+                f"{cls.__name__} overrides delisting_bars but not _own_delisting_symbols: "
+                "return the symbols its rule judges, or views over it drop the rule."
+            )
+
     def tradable_bars(self, prices: xr.Dataset, fill_column: str) -> xr.DataArray:
         """Mark, in a price panel, which symbols can be traded at each bar.
 
@@ -1479,7 +1493,9 @@ class MarketDataset(BaseDataset):
         is the delisting row, whose adjusted close already carries the
         delisting return (or, when CRSP gives no return on a no-price
         delisting row, the last priced day before it). A dataset that knows
-        more (a halt without a later price, say) overrides this.
+        more (a halt without a later price, say) overrides this, and declares
+        the symbols its rule judges in ``_own_delisting_symbols`` so the
+        views over it ask it about them.
 
         Parameters
         ----------
@@ -1535,16 +1551,15 @@ class MarketDataset(BaseDataset):
     def _own_delisting_symbols(self) -> list:
         """Return the symbols this dataset delists by a rule of its own, not the default.
 
-        All of its stored symbols when its class overrides
-        ``delisting_bars``, else none. A view that passes the rule on
-        answers for its inputs instead (``RosterDataset``,
-        ``MergedDataset``), so a view over a dataset with the default rule
-        declares none; ``MergedDataset.delisting_bars`` asks an input only
-        on these symbols.
+        None here. A dataset that overrides ``delisting_bars`` with a rule
+        of its own (a vendor's delisting dates) must also override this hook
+        to return the symbols that rule judges; a leaf that does not is
+        refused when its class is defined. A view answers for its inputs
+        (``DatasetView`` forwards it, ``MergedDataset`` combines them), so a
+        leaf's rule survives any stack of views; ``MergedDataset.delisting_bars``
+        asks an input only on these symbols.
         """
-        if type(self).delisting_bars is MarketDataset.delisting_bars:
-            return []
-        return self.stored_symbols()
+        return []
 
     def _priced_after(self, end: pd.Timestamp, column: str, symbols) -> np.ndarray:
         """Whether each of ``symbols`` has a valid ``column`` price after ``end`` in the dataset.

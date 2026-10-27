@@ -30,14 +30,16 @@ beside prices with ``MergedDataset``.
 Extend the dataset API
 ----------------------
 
-``MarketDataset`` defines the interface for custom market datasets. Use a
-concrete dataset above for ordinary price queries.
+``MarketDataset`` defines the interface for custom market datasets, and
+``DatasetView`` the one for datasets that read other datasets and keep no
+store. Use a concrete dataset above for ordinary price queries.
 
 .. autosummary::
    :toctree: generated
    :nosignatures:
 
    quantlab.dataset.base.MarketDataset
+   quantlab.dataset.view.DatasetView
 
 Universes and data locations
 ----------------------------
