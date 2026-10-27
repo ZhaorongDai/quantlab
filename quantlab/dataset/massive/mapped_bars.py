@@ -192,7 +192,9 @@ class MappedPermatickerDataset(MarketDataset):
                 f"{self.class_name}: source must be a {self.SOURCE_CLS.__name__}, got "
                 f"{type(config.source).__name__}."
             )
-        return dataclasses.replace(super()._normalize_config(config), zarr_file_path=str(config.zarr_file_path))
+        return dataclasses.replace(
+            super()._normalize_config(config), zarr_file_path=str(config.zarr_file_path)
+        )
 
     @property
     def source(self) -> PermatickerDataset:
