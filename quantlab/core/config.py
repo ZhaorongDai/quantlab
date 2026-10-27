@@ -58,6 +58,6 @@ class FrozenConfig:
         --------
         >>> from quantlab.dataset.config import BaseDatasetConfig
         >>> sorted(BaseDatasetConfig(zarr_file_path="stock.zarr").to_dict())
-        ['end_date', 'kwargs', 'name', 'resample_freq', 'resample_how', 'start_date', 'symbols', 'zarr_file_path']
+        ['end_date', 'kwargs', 'name', 'start_date', 'symbols', 'zarr_file_path']
         """
         return config_to_dict(self)

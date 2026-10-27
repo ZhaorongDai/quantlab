@@ -447,9 +447,8 @@ methods to refuse.
 
 - A leaf whose bars do not come from its own Zarr store (a panel held in memory, a store
   written from another dataset) does not override `panel`. It overrides
-  `_open_bars(start, end)`, which returns every symbol and variable from `start` to `end`,
-  and `_resamples_on_read()` when `panel` should resample those bars; `panel` applies the
-  query, the resample and the run record.
+  `_open_bars(start, end)`, which returns every symbol and variable from `start` to `end`;
+  `panel` applies the query and the run record.
   {py:class}`~quantlab.dataset.memory.FrameDataset` is the example.
 - A *view* only reads other datasets and keeps no store; it inherits
   {py:class}`~quantlab.dataset.view.DatasetView` (see [A dataset view](#a-dataset-view)).
@@ -462,8 +461,8 @@ dataset it reads is used: a roster cut, a merge, a bad-print mask.
 `PredictorView` are in the factor and model layers. A view:
 
 1. inherits `DatasetView` and declares `config_cls`, a frozen config that holds its inputs in
-   component fields (a `name` field and nothing else is required; a view reads no date or
-   resample field);
+   component fields (a `name` field and nothing else is required; a view reads no date
+   field);
 2. declares its inputs with `inputs()`, in order;
 3. defines `panel`, the one abstract member: what the view changes about its inputs' panels;
 4. overrides only the other members it changes.
@@ -486,9 +485,7 @@ only `panel`.
 
 `DatasetView` also decides the store: `store_path` is `None`, `store_uses()` declares no
 store of its own (its inputs declare the stores it reads, so `stores()` names them; a
-component it holds that is not an input is declared `BuiltFrom`), and `resample` refuses:
-resample each input, then wrap them. A view that does resample, by bars of its own, overrides
-`resample` (`PermatickerDataset`).
+component it holds that is not an input is declared `BuiltFrom`).
 
 ```python
 from dataclasses import dataclass
@@ -603,8 +600,8 @@ round trip give:
 ```
 
 The build path (`from_raw_data`, `save`) goes through `data_backend`. The read path opens
-the store through a fresh instance of `type(data_backend)`, and `copy()` and `resample()`
-give the copy a backend of the same type, so a backend class must construct without
+the store through a fresh instance of `type(data_backend)`, and `copy()` gives the copy a
+backend of the same type, so a backend class must construct without
 arguments. For a medium that does not hold an xarray object, implement all nine methods;
 {py:class}`~quantlab.backend.parquet.PlBackend` is the reference for a table-shaped medium,
 and its `get_xarray_dataset(indexes)` shows how to turn named columns into dimensions.

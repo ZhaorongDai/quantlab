@@ -188,35 +188,6 @@ class RawDataset(BaseDataset):
         other.config = copy.deepcopy(self.config)
         return other
 
-    def resample(self, freq: str, how: dict[str, str] | str | None = None) -> Self:
-        """Return a copy resampled onto ``freq``, holding the built panel resampled.
-
-        As ``BaseDataset.resample``; when this dataset holds a panel it
-        built, the copy holds that panel resampled, in memory of its own, so
-        ``save()`` writes it. A resampled dataset cannot be built from raw
-        files: ``from_raw_data``, ``from_raw_data_chunked`` and ``update``
-        refuse. ``save()`` writes to ``store_path``, the resampled store
-        beside the source.
-
-        Raises
-        ------
-        ValueError
-            As ``BaseDataset.resample``, or, when this dataset holds a panel,
-            if ``freq`` is not coarser than its bars or ``how`` does not name
-            every variable.
-
-        Examples
-        --------
-        >>> built = DemoDataset(minute_config).from_raw_data()
-        >>> built.resample("1d", "last").get_xarray_dataset().sizes["timestamp"]
-        2
-        """
-        other = super().resample(freq, how)
-        if self._holds_data():
-            other.data_backend.to_internal(self.data_backend.get_xarray_dataset())
-            other._apply_resample()
-        return other
-
     def _store_backend(self) -> XrBackend:
         """Return a fresh backend of ``data_backend``'s type, so reads go through the medium written."""
         return type(self.data_backend)()
@@ -330,46 +301,11 @@ class RawDataset(BaseDataset):
             ["symbol", "timestamp"]
         ).symbol.values.tolist()
 
-    def _holds_data(self) -> bool:
-        """Return whether the storage backend holds a panel."""
-        try:
-            self.data_backend.data
-        except AttributeError:
-            return False
-        return True
-
-    def _refuse_if_resampled(self, method: str) -> None:
-        """Raise if ``method`` is called on a resampled dataset.
-
-        Raises
-        ------
-        ValueError
-            If ``config.resample_freq`` is set.
-        """
-        if self.config.resample_freq is not None:
-            raise ValueError(
-                f"{self.class_name}.{method}(): a resampled dataset "
-                f"(resample_freq={self.config.resample_freq!r}) is a view of "
-                f"its source store and cannot be built from raw files. Build "
-                f"or update the source dataset, then resample it."
-            )
-
-    def _apply_resample(self) -> None:
-        """Replace the held panel with its resample, per the config."""
-        if self.config.resample_freq is None:
-            return
-        self.data_backend.to_internal(
-            self._resample_panel(self.data_backend.get_xarray_dataset())
-        )
-
     def save(self, **kwargs):
         """Narrow the built panel to the config's range and write it to Zarr.
 
-        The write replaces the whole store directory at ``store_path``: the
-        config's ``zarr_file_path``, or the resampled store beside it when
-        the dataset is resampled. A resampled dataset that holds no panel
-        writes the resample of its whole source store, narrowed to the
-        config's range.
+        The write replaces the whole store directory at ``store_path``, the
+        config's ``zarr_file_path``.
 
         Parameters
         ----------
@@ -383,17 +319,8 @@ class RawDataset(BaseDataset):
         >>> DemoDataset(config).from_raw_data().save()
         >>> Path(config.zarr_file_path).is_dir()
         True
-        >>> DemoDataset(minute_config).resample("1d", "last").save()
-        >>> Path(minute_config.zarr_file_path.replace(".zarr", "_resample_1d.zarr")).is_dir()
-        True
         """
         with Timer(f"{self.__class__.__name__}: save"):
-            if self.config.resample_freq is not None and not self._holds_data():
-                self.data_backend.to_internal(
-                    self._resample_panel(
-                        self._open_store(self.config.zarr_file_path)
-                    )
-                )
             self._filter()
             self.data_backend.create(
                 self.store_path, fill_values=self._widen_fill_values(), **kwargs
@@ -440,7 +367,6 @@ class RawDataset(BaseDataset):
         >>> list(ds.get_xarray_dataset().data_vars)  # cleaning adds the flag
         ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
         """
-        self._refuse_if_resampled("from_raw_data")
         data = self._raw_data_to_xr()
         data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
@@ -592,7 +518,6 @@ class RawDataset(BaseDataset):
         >>> ds.last_chunk_result.windows_written
         1
         """
-        self._refuse_if_resampled("from_raw_data_chunked")
         from quantlab.dataset._support.ledger import ChunkLedger, TimeChunkPlanner
 
         # The private marker is accepted by identity; the error lists only the

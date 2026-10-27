@@ -149,10 +149,3 @@ def test_the_calendar_and_bar_arithmetic_are_the_stored_days(factor_store, tmp_p
     assert ds.bar_before(DAYS[3], 2) == DAYS[1]
     assert ds.bar_after(DAYS[1], 2) == DAYS[3]
     assert list(merged.calendar(DAYS[0], DAYS[-1])) == list(DAYS)
-
-
-def test_the_dataset_is_not_resampled(factor_store):
-    ds = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path=factor_store))
-
-    with pytest.raises(ValueError, match="not resampled"):
-        ds.resample("1w", "last")

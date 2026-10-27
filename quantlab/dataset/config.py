@@ -29,7 +29,6 @@ from quantlab.enums.data import (
     BarInterval,
     Frequency,
     Market,
-    ResampleFrequency,
     Vendor,
 )
 
@@ -76,13 +75,6 @@ class BaseDatasetConfig(FrozenConfig):
     #: Free-form options a specific dataset class may read (for example
     #: ``data_type`` for tick data). ``None`` is treated as empty.
     kwargs: dict | None = None
-    #: Bar size the panel is resampled onto when it is requested or saved;
-    #: ``None`` keeps the store's own bars. Set by ``resample()``.
-    resample_freq: ResampleFrequency | None = None
-    #: How each variable is aggregated into a resampled bar: one
-    #: ``ResampleMethod`` for every variable, or a ``{variable: method}``
-    #: dict naming every variable. Required when ``resample_freq`` is set.
-    resample_how: dict[str, str] | str | None = None
 
     #: Dotted import path of the dataset class; filled by the config setter
     #: and used to rebuild the dataset from its serialised config.
@@ -372,8 +364,7 @@ class PermatickerTradeBarsConfig(FrozenConfig):
     """Config of the Trade bars read on the permaticker axis through the Ticker map.
 
     The view holds no store of its own; ``trade_bars`` and ``ticker_map``
-    keep their own configs, both component fields. ``resample_freq`` and
-    ``resample_how`` are set by ``PermatickerTradeBarDataset.resample``.
+    keep their own configs, both component fields.
 
     Examples
     --------
@@ -382,17 +373,13 @@ class PermatickerTradeBarsConfig(FrozenConfig):
 
     >>> cfg = PermatickerTradeBarsConfig(trade_bars=trade_bars, ticker_map=ticker_map)
     >>> sorted(cfg.to_dict())
-    ['name', 'resample_freq', 'resample_how', 'ticker_map', 'trade_bars']
+    ['name', 'ticker_map', 'trade_bars']
     """
 
     #: The Trade bar store on the Massive ticker axis.
     trade_bars: "MassiveTradeBarDataset" = component()
     #: The map from each day's Massive ticker to its permaticker.
     ticker_map: "TickerMap" = component()
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Trade bars' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -401,9 +388,8 @@ class PermatickerTradeBarsConfig(FrozenConfig):
 class MappedTradeBarsConfig(FrozenConfig):
     """Config of the Trade bars mapped onto permatickers and kept in a store of their own.
 
-    ``source`` is the permaticker view the store is written from (its own
-    bars, not resampled); ``zarr_file_path`` is the store. ``resample_freq``
-    and ``resample_how`` are set by ``MappedTradeBarDataset.resample``.
+    ``source`` is the permaticker view the store is written from;
+    ``zarr_file_path`` is the store.
 
     Examples
     --------
@@ -411,17 +397,13 @@ class MappedTradeBarsConfig(FrozenConfig):
 
     >>> cfg = MappedTradeBarsConfig(source=bars, zarr_file_path="/data/massive_permaticker_bars_1m.zarr")
     >>> sorted(cfg.to_dict())
-    ['name', 'resample_freq', 'resample_how', 'source', 'zarr_file_path']
+    ['name', 'source', 'zarr_file_path']
     """
 
     #: The permaticker view the store is written from.
     source: "PermatickerTradeBarDataset" = component()
     #: The store of the mapped bars.
     zarr_file_path: str
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Trade bars' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -440,17 +422,13 @@ class PermatickerDayBarsConfig(FrozenConfig):
 
         cfg = PermatickerDayBarsConfig(day_bars=day_bars, ticker_map=ticker_map)
         sorted(cfg.to_dict())
-        # ['day_bars', 'name', 'resample_freq', 'resample_how', 'ticker_map']
+        # ['day_bars', 'name', 'ticker_map']
     """
 
     #: The Day aggregate store on the Massive ticker axis.
     day_bars: "MassiveDayBarDataset" = component()
     #: The map from each day's Massive ticker to its permaticker.
     ticker_map: "TickerMap" = component()
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Day aggregates' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -459,8 +437,8 @@ class PermatickerDayBarsConfig(FrozenConfig):
 class MappedDayBarsConfig(FrozenConfig):
     """Config of the Day aggregates mapped onto permatickers, adjusted and kept in a store.
 
-    ``source`` is the permaticker view the store is written from (its own
-    bars, not resampled); ``zarr_file_path`` is the store. The adjusted
+    ``source`` is the permaticker view the store is written from;
+    ``zarr_file_path`` is the store. The adjusted
     prices are chained from Massive's split and dividend pulls in the raw
     tier of ``source``'s Day aggregates. ``sep``, when given, is
     SEP's store the adjusted returns are checked against, within
@@ -472,7 +450,7 @@ class MappedDayBarsConfig(FrozenConfig):
 
         cfg = MappedDayBarsConfig(source=bars, sep=sep, zarr_file_path="/data/massive_permaticker_day_bars_1d.zarr")
         sorted(cfg.to_dict())
-        # ['check_tolerance', 'name', 'resample_freq', 'resample_how', 'sep', 'source', 'zarr_file_path']
+        # ['check_tolerance', 'name', 'sep', 'source', 'zarr_file_path']
     """
 
     #: The permaticker view the store is written from.
@@ -484,10 +462,6 @@ class MappedDayBarsConfig(FrozenConfig):
     #: The largest difference of two daily adjusted returns that is not a disagreement, on top of
     #: what SEP's rounding of its closes to 0.001 allows.
     check_tolerance: float = 1e-4
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Day aggregates' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -1381,7 +1355,7 @@ class FrameDatasetConfig(BaseDatasetConfig):
     ``FrameDataset`` built from it reads that store into memory (the rebuild path of a
     saved backtest run, whose ``config.json`` names the store relative to the run
     directory). The dates and symbols are unused, as there is nothing to convert from
-    raw files; the resample fields are set by ``resample()`` as on any dataset.
+    raw files.
 
     Examples
     --------

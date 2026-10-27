@@ -235,18 +235,19 @@ carries a {py:class}`~quantlab.core.store_uses.RangedStoreHandle` (`store_range(
 A dataset is a *leaf* or a *view*. A leaf answers `panel` from a store of its own, or a
 panel held in memory; a store written from other datasets is still a leaf's. A view reads
 other datasets, its inputs, and keeps no store. The dataset root class
-({py:class}`~quantlab.dataset.base.BaseDataset`) describes a leaf only: its `store_path`,
-`store_uses` and `resample` read the leaf's config, and its `inputs()` returns nothing, so
-the store walk reaches every dataset. Every view inherits
+({py:class}`~quantlab.dataset.base.BaseDataset`) describes a leaf only: its `store_path`
+and `store_uses` read the leaf's config, and its `inputs()` returns nothing, so the store
+walk reaches every dataset. A dataset is read on the bars of its store and is not
+resampled; a factor is (`Factor.resample`), cutting its bars as the dataset's
+`resample_labels` says. Every view inherits
 {py:class}`~quantlab.dataset.view.DatasetView`, a `MarketDataset` that holds the view
 decisions:
 
 - `store_path` is `None`: a view keeps no store;
 - `store_uses()` declares no store of its own; its inputs declare the stores it reads, and
   the walk reaches them, so `stores()` names its inputs' stores;
-- `resample` refuses, since resampling a view means resampling its inputs;
-- the config sets only `name`: the root class's date and resample fields are not read, so a
-  view's config holds only its inputs and its own options.
+- the config sets only `name`: the root class's date fields are not read, so a view's
+  config holds only its inputs and its own options.
 
 The forwarded members are the read interface of `MarketDataset` except `panel`: the
 calendar (`_calendar`, behind `calendar`, `bar_before` and `bar_after`),
@@ -296,8 +297,7 @@ Nothing decides what to fingerprint: data is recorded where it is read. A run op
 while it is open:
 
 - `BaseDataset.panel(start, end, symbols=None, variables=None)` on a leaf dataset, keyed by
-  the store the leaf declares it reads (its own, or the source store while a resampled
-  dataset resamples on read);
+  the store the leaf declares it reads;
 - `Factor.read(start, end)`, a factor store;
 - `RiskStore.read(start, end)`, the regression or estimate store of a factor risk model,
   read by the decision inputs for the covariance estimator and by the backtest's factor

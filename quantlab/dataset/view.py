@@ -55,7 +55,6 @@ class DatasetView(MarketDataset):
     ``store_path``                  ``None``: a view keeps no store
     ``store_uses``                  none of its own; its inputs declare the
                                     stores it reads
-    ``resample``                    refused: resample the inputs instead
     ==============================  ========================================
 
     With several inputs there is no input to answer from: each member above
@@ -72,7 +71,7 @@ class DatasetView(MarketDataset):
     ----------
     config : FrozenConfig
         The view's config, holding its inputs in component fields. Only
-        ``name`` is filled in; the view reads no date or resample field.
+        ``name`` is filled in; the view reads no date field.
 
     Examples
     --------
@@ -104,7 +103,7 @@ class DatasetView(MarketDataset):
     _is_view = True
 
     def _normalize_config(self, config):
-        """Return ``config`` with ``name`` set; a view's config has no date or resample field."""
+        """Return ``config`` with ``name`` set; a view's config has no date field."""
         return dataclasses.replace(config, name=self.import_path)
 
     def _source(self) -> "MarketDataset | None":
@@ -180,25 +179,6 @@ class DatasetView(MarketDataset):
         inputs = {id(dataset) for dataset in self.inputs()}
         return tuple(
             BuiltFrom(child) for _, child in child_components(self) if id(child) not in inputs
-        )
-
-    def resample(self, freq: str, how=None):
-        """Refuse: a view is not resampled; resample its inputs, then wrap them.
-
-        Raises
-        ------
-        ValueError
-            Always.
-
-        Examples
-        --------
-        >>> view.resample("1d", "last")
-        Traceback (most recent call last):
-        ValueError: Halved.resample(): a view of its inputs is not resampled; ...
-        """
-        raise ValueError(
-            f"{self.class_name}.resample(): a view of its inputs is not "
-            f"resampled; resample each input, then wrap them."
         )
 
     def _calendar(self) -> pd.DatetimeIndex:

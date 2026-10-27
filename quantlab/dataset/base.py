@@ -27,18 +27,13 @@ import polars as pl
 import xarray as xr
 
 from quantlab.core.component import Component, child_components
-from quantlab.core.store_uses import READS, SOURCE, BuiltFrom, StoreUse, walk_store_uses
+from quantlab.core.store_uses import READS, BuiltFrom, StoreUse, walk_store_uses
 from quantlab.dataset.config import BaseDatasetConfig, DatasetConfig
-from quantlab.backend.resample import resample_on_read, resample_panel
 from quantlab.backend.zarr import XrBackend
 from quantlab.enums.constant import Date
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.runs.record import record_read
-from quantlab.utils.resample import (
-    clock_labels,
-    resample_store_path,
-    validate_resample_config,
-)
+from quantlab.utils.resample import clock_labels
 
 
 class InsufficientHistoryError(ValueError):
@@ -361,8 +356,8 @@ class BaseDataset(Component, ABC):
     configuration.
 
     ``calendar``, ``bar_before`` and ``bar_after`` help select trading bars.
-    ``resample`` provides a dataset at a different frequency. To convert raw
-    vendor files into a new store, use a ``RawDataset`` subclass instead.
+    To convert raw vendor files into a new store, use a ``RawDataset``
+    subclass instead.
 
     Parameters
     ----------
@@ -382,15 +377,7 @@ class BaseDataset(Component, ABC):
     subclass whose ``_raw_data_to_xr`` returns six business days of
     synthetic OHLCV bars for ``AAA``, ``BBB`` and ``CCC``, built with a
     ``DatasetConfig`` covering ``2024-01-02`` to ``2024-01-05``.
-    ``minute_config`` is the same kind of config over a store of two days
-    of 390 one-minute bars, used by the ``resample`` examples.
     """
-
-    #: Each variable's ``ResampleMethod`` for ``resample(freq)`` without
-    #: ``how``; ``None`` makes ``how`` required. A dataset whose variables
-    #: each have one right aggregation (bars: first, max, min, last, sum)
-    #: declares it here.
-    DEFAULT_RESAMPLE_HOW: dict[str, str] | None = None
 
     def __init__(self, config: BaseDatasetConfig):
         """Initialize the dataset; see the class docstring for parameters."""
@@ -511,8 +498,7 @@ class BaseDataset(Component, ABC):
         ``Date.END_DATE``. Both dates must be ISO ``YYYY-MM-DD`` strings; a
         ``datetime.date`` is accepted and converted. Later code compares
         dates as plain strings, so a value such as ``"2007-2-1"`` would
-        silently compare wrong; it is refused here instead. The resample
-        fields are checked.
+        silently compare wrong; it is refused here instead.
 
         A subclass that validates or completes its config overrides this,
         calls ``super()._normalize_config(config)`` first and returns a new
@@ -534,8 +520,7 @@ class BaseDataset(Component, ABC):
         Raises
         ------
         ValueError
-            If a date is not an ISO ``YYYY-MM-DD`` date, or the resample
-            fields are invalid.
+            If a date is not an ISO ``YYYY-MM-DD`` date.
 
         Examples
         --------
@@ -549,9 +534,6 @@ class BaseDataset(Component, ABC):
             Date.START_DATE if config.start_date is None else config.start_date
         )
         end_date = Date.END_DATE if config.end_date is None else config.end_date
-        validate_resample_config(
-            config.resample_freq, config.resample_how, self.class_name
-        )
         return dataclasses.replace(
             config,
             name=self.import_path,
@@ -583,23 +565,15 @@ class BaseDataset(Component, ABC):
     def store_path(self) -> str | None:
         """Return the Zarr store this dataset keeps its own bars in, or ``None``.
 
-        This is ``config.zarr_file_path`` for a dataset that is not
-        resampled. A resampled dataset uses a store beside it with
-        ``_resample_<freq>`` added to the name, so the resampled panel never
-        overwrites the source bars; until that store is saved, its requests
-        read the source store (see ``stores``). A view keeps no store of its
-        own (``DatasetView.store_path`` is ``None``).
+        This is ``config.zarr_file_path``. A view keeps no store of its own
+        (``DatasetView.store_path`` is ``None``).
 
         Examples
         --------
         >>> ds.store_path
         'data/klines.zarr'
-        >>> ds.resample("1d", "last").store_path
-        'data/klines_resample_1d.zarr'
         """
-        return resample_store_path(
-            self.config.zarr_file_path, self.config.resample_freq
-        )
+        return self.config.zarr_file_path
 
     def inputs(self) -> tuple["BaseDataset", ...]:
         """Return the datasets this dataset's panel reads through: ``()`` for a leaf.
@@ -629,12 +603,9 @@ class BaseDataset(Component, ABC):
     def store_uses(self) -> tuple:
         """Return the stores this dataset uses itself: a leaf reads its store.
 
-        A leaf reads one store (``"reads"``): ``store_path``, or the source
-        store (``config.zarr_file_path``) while a resampled dataset
-        resamples on read; a panel held in memory reads no store (a
-        ``"reads"`` use without a path). A resampled
-        dataset's store is written from the source store, so that is a
-        ``"source"`` use as well. A component the dataset holds
+        A leaf reads one store (``"reads"``): ``store_path``; a panel held
+        in memory reads no store (a ``"reads"`` use without a path). A
+        component the dataset holds
         (``MappedTradeBarDataset``'s source view) is one it is only built
         from (``BuiltFrom``), so every store under it is a source, not read
         on a day. A view answers this on ``DatasetView``: its inputs declare
@@ -650,18 +621,14 @@ class BaseDataset(Component, ABC):
         (StoreUse(path='data/klines.zarr', relation='reads', handle=None),)
         """
         uses: list = [BuiltFrom(child) for _, child in child_components(self)]
-        store = self._read_store()
-        uses.append(StoreUse(store, READS))
-        if store is not None and self.config.resample_freq is not None:
-            uses.append(StoreUse(self.config.zarr_file_path, SOURCE))
+        uses.append(StoreUse(self._read_store(), READS))
         return tuple(uses)
 
     def stores(self) -> list[str]:
         """Return the stores this dataset's panel reads, in order.
 
         The ``"reads"`` uses of the tree under the dataset, itself included
-        (``walk_store_uses`` over ``store_uses``): a leaf's store, or the
-        source store while a resampled dataset resamples on read; a view's
+        (``walk_store_uses`` over ``store_uses``): a leaf's store; a view's
         inputs' stores, each listed once; none for a panel held in memory.
         The read seam records the store it names, and the live day
         (``quantlab.backtest.live.input_stores``) checks these stores hold
@@ -676,8 +643,6 @@ class BaseDataset(Component, ABC):
         --------
         >>> ds.stores()
         ['data/klines.zarr']
-        >>> ds.resample("1d", "last").stores()  # no resampled store saved yet
-        ['data/klines.zarr']
         >>> RosterDataset(ds, membership).stores()
         ['data/klines.zarr', 'data/membership.zarr']
         """
@@ -687,13 +652,11 @@ class BaseDataset(Component, ABC):
         ]
 
     def _read_store(self) -> str | None:
-        """Return the store a leaf's panel opens: the source store while it resamples on read.
+        """Return the store a leaf's panel opens: ``store_path``.
 
         ``None`` for a leaf whose panel is held in memory. Only asked of a
         leaf (``store_uses`` declares it).
         """
-        if self._resamples_on_read():
-            return self.config.zarr_file_path
         return self.store_path
 
     def _stores_text(self) -> str:
@@ -716,74 +679,12 @@ class BaseDataset(Component, ABC):
         other.config = copy.deepcopy(self.config)
         return other
 
-    def resample(
-        self, freq: str, how: dict[str, str] | str | None = None
-    ) -> Self:
-        """Return a copy of this dataset whose panel is resampled onto ``freq``.
-
-        The copy's config carries ``resample_freq=freq`` and
-        ``resample_how=how``; ``panel()`` and ``bar_before()`` on it answer
-        on the resampled bars, from the resampled store beside the source
-        (``store_path``) once one is saved, otherwise by resampling the
-        source store on read. This dataset is not changed. A view is not
-        resampled: resample its inputs, then wrap them.
-
-        Parameters
-        ----------
-        freq : str
-            A ``ResampleFrequency`` token, coarser than the panel's bars.
-        how : dict[str, str] or str, optional
-            One ``ResampleMethod`` for every variable, or a
-            ``{variable: method}`` dict naming every variable. ``None``
-            uses ``DEFAULT_RESAMPLE_HOW``.
-
-        Returns
-        -------
-        Self
-            A new dataset of the same class.
-
-        Raises
-        ------
-        ValueError
-            If the dataset is a view, if ``freq`` or a method is not a known
-            token, or if ``how`` is omitted and the dataset declares no
-            ``DEFAULT_RESAMPLE_HOW``.
-
-        Examples
-        --------
-        >>> minute = DemoDataset(minute_config)
-        >>> daily = minute.resample("1d", {"open": "first", "high": "max",
-        ...                               "low": "min", "close": "last",
-        ...                               "volume": "sum"})
-        >>> daily.panel("2024-01-02", "2024-01-03").sizes["timestamp"]
-        2
-        >>> minute.panel("2024-01-02", "2024-01-03").sizes["timestamp"]
-        780
-
-        A dataset that declares ``DEFAULT_RESAMPLE_HOW`` needs no ``how``::
-
-            hourly = MassiveTradeBarDataset(config).resample("1h")
-        """
-        if how is None:
-            if self.DEFAULT_RESAMPLE_HOW is None:
-                raise ValueError(
-                    f"{self.class_name}.resample({freq!r}): pass how, one "
-                    f"method for every variable or a {{variable: method}} "
-                    f"dict; this dataset declares no DEFAULT_RESAMPLE_HOW."
-                )
-            how = dict(self.DEFAULT_RESAMPLE_HOW)
-        other = self.copy()
-        other.config = dataclasses.replace(
-            other.config, resample_freq=freq, resample_how=how
-        )
-        return other
-
     def resample_labels(self, timestamps: np.ndarray, freq: str) -> np.ndarray:
         """Return the bar each source timestamp belongs to when resampled.
 
-        How this dataset cuts its bars onto ``freq``: its own resample, a
-        factor computed on it (``Factor.resample``) and a view over it all
-        cut them here, so they agree. The default floors each timestamp on
+        How this dataset's bars are cut onto ``freq``: a factor computed on
+        it (``Factor.resample``) and a view over it cut them here, so they
+        agree. The default floors each timestamp on
         the UTC clock, labelling a bar at its start; that suits bars stamped
         at their open time and daily stores stamped at midnight. A dataset
         whose bars follow trading sessions, or are labelled at their end,
@@ -811,35 +712,6 @@ class BaseDataset(Component, ABC):
         """
         return clock_labels(timestamps, freq)
 
-    def _resample_panel(self, data: xr.Dataset) -> xr.Dataset:
-        """Return ``data`` aggregated onto ``config.resample_freq`` bars.
-
-        ``data`` is not changed; the grouping runs in a backend of its own.
-        A config without ``resample_how`` aggregates as
-        ``DEFAULT_RESAMPLE_HOW`` says.
-        """
-        return resample_panel(
-            data, self.config.resample_freq, self._resample_how(),
-            self.resample_labels, self.class_name,
-        )
-
-    def _resample_how(self) -> "dict[str, str] | str":
-        """Return ``config.resample_how``, or ``DEFAULT_RESAMPLE_HOW`` without one."""
-        return self.config.resample_how or dict(self.DEFAULT_RESAMPLE_HOW or {})
-
-    def _resamples_on_read(self) -> bool:
-        """Return whether ``panel`` resamples the bars ``_open_bars`` opens.
-
-        True for a resampled dataset whose own store has not been saved: its
-        requests read the source store and resample the part they need. A
-        leaf whose bars are already on its resampled bars, or one that never
-        keeps a resampled store, overrides this.
-        """
-        return (
-            self.config.resample_freq is not None
-            and not Path(self.store_path).exists()
-        )
-
     def _store_backend(self) -> XrBackend:
         """Return a fresh backend to open a store through: an ``XrBackend``.
 
@@ -857,10 +729,9 @@ class BaseDataset(Component, ABC):
 
         The one hook of the read seam where leaf datasets differ: how their
         bars are opened. ``panel`` does everything else (the symbol and
-        variable query, resample on read, recording), so an override returns
-        every symbol and variable, at the bars the dataset reads before any
-        resample on read (the source store's when ``_resamples_on_read``),
-        opened lazily where it can. This one opens the Zarr store.
+        variable query, recording), so an override returns every symbol and
+        variable, opened lazily where it can. This one opens the Zarr store
+        at ``store_path``.
 
         Parameters
         ----------
@@ -915,10 +786,8 @@ class BaseDataset(Component, ABC):
         Select symbols and variables without changing the dataset configuration.
         A date-only ``end``, such as ``"2024-01-05"``, includes every bar that day.
 
-        Stored data is opened lazily. A resampled dataset reads its saved resampled
-        store when available; otherwise it loads and aggregates the required
-        source bars. During a recorded run, the data read is tracked automatically
-        so later runs can detect changed inputs.
+        Stored data is opened lazily. During a recorded run, the data read is
+        tracked automatically so later runs can detect changed inputs.
 
         Parameters
         ----------
@@ -963,32 +832,15 @@ class BaseDataset(Component, ABC):
         """
         check_range(start, end, f"{self.class_name}.panel()")
         window = slice(as_label(start), as_label(end))
-        if not self._resamples_on_read():
-            data = self._query(self._open_bars(window.start, window.stop), symbols, variables)
-            panel = XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
-            record_read(
-                self, panel, symbols=symbols, variables=variables,
-                store=self._read_store(),
-                reread=lambda: self.panel(start, end, symbols, variables),
-                settings=self._build_settings(),
-            )
-            return panel
-        # Symbols are cut before the aggregation; resample_how names every
-        # source variable, so the variables are cut afterwards.
-        source, data = resample_on_read(
-            lambda first, last: self._query(self._open_bars(first, last), symbols, None),
-            start, end, self.config.resample_freq, self._resample_how(),
-            self.resample_labels, self.class_name,
-        )
-        data = self._query(data, None, variables)
-        read = self._query(source, None, variables)
-        # The resampled panel is computed, not stored: the source bars are the read.
+        data = self._query(self._open_bars(window.start, window.stop), symbols, variables)
+        panel = XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
         record_read(
-            self, read, symbols=symbols, variables=variables,
-            store=self._read_store(), reread=lambda: read,
+            self, panel, symbols=symbols, variables=variables,
+            store=self._read_store(),
+            reread=lambda: self.panel(start, end, symbols, variables),
             settings=self._build_settings(),
         )
-        return XrBackend().to_internal(data).get_xarray_dataset(["timestamp", "symbol"])
+        return panel
 
     def _build_settings(self) -> dict | None:
         """Return the settings the store was built with that its values do not show.
@@ -1019,8 +871,7 @@ class BaseDataset(Component, ABC):
         """Return the bars from ``start`` to ``end``, both inclusive, timestamps only.
 
         The calendar ``bar_before`` and ``bar_after`` count on: the store's
-        own timestamps, or the resampled bars of a resampled dataset. Only
-        the timestamps are read, so it is not a data read a
+        own timestamps. Only the timestamps are read, so it is not a data read a
         ``DataRecorder`` records; ``panel`` is.
 
         Parameters
@@ -1055,8 +906,8 @@ class BaseDataset(Component, ABC):
         The calendar is the store's own timestamps, so gaps such as
         weekends and holidays are skipped rather than counted. The bars
         before ``date`` are those stamped strictly earlier; ``n=1`` is the
-        last of them. ``n=0`` returns ``date`` itself. A resampled dataset
-        counts its resampled bars. Only the timestamps are read.
+        last of them. ``n=0`` returns ``date`` itself. Only the timestamps
+        are read.
 
         Parameters
         ----------
@@ -1100,8 +951,7 @@ class BaseDataset(Component, ABC):
         the first of them. ``n=0`` returns ``date`` itself. When fewer than
         ``n`` bars follow ``date`` the calendar's last bar is returned, and
         ``date`` itself when none follow, so the result is never before
-        ``date``. A resampled dataset counts its resampled bars. Only the
-        timestamps are read.
+        ``date``. Only the timestamps are read.
 
         Parameters
         ----------
@@ -1131,11 +981,7 @@ class BaseDataset(Component, ABC):
 
     def _calendar(self) -> pd.DatetimeIndex:
         """Return the sorted timestamps requests are answered on."""
-        timestamps = self._open_store(self._read_store())["timestamp"].values
-        if not self._resamples_on_read():
-            return pd.DatetimeIndex(timestamps)
-        labels = self.resample_labels(timestamps, self.config.resample_freq)
-        return pd.DatetimeIndex(np.unique(labels))
+        return pd.DatetimeIndex(self._open_store(self._read_store())["timestamp"].values)
 
     @classmethod
     def from_config(cls, config: dict, run_dir: "str | os.PathLike | None" = None) -> Self:

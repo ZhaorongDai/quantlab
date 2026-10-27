@@ -1,11 +1,11 @@
 """Shared pieces of the resample contract: config checks, bucket labels, paths.
 
 A *resample* aggregates a ``(timestamp, symbol)`` panel onto a coarser
-regular time grid, one aggregation method per variable. Datasets and factors
-carry the request in their config (``resample_freq`` and ``resample_how``),
-map each source timestamp to the bar it belongs to, and hand the grouping to
-their storage backend. The helpers here are the parts of that contract both
-layers share; the backend's ``resample`` does the grouping itself.
+regular time grid, one aggregation method per variable. A factor carries the
+request in its config (``resample_freq`` and ``resample_how``), its dataset
+maps each source timestamp to the bar it belongs to (``resample_labels``),
+and the storage backend does the grouping (its ``resample``). The helpers
+here are the parts of that contract the layers share.
 """
 
 from pathlib import Path

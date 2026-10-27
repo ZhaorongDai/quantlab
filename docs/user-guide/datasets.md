@@ -249,28 +249,13 @@ Roster symbols the store lacks are left out and counted in a log line. Factors o
 are read through {py:class}`~quantlab.factor.predefined.roster.RosterFactor`; see
 [Universes](universes.md#reading-whole-market-data-on-a-roster).
 
-**Resampling.** `resample(freq, how)` returns a copy whose `panel()` and `bar_before()`
-answer on coarser bars, for example minute bars into daily bars. `how` names one method
-per variable (`first`, `last`, `max`, `min`, `sum`, `mean`, `count`) or one for every
-variable; NaN cells are skipped.
-
-```python
->>> minute = SpotKlineDataset(config)
->>> daily = minute.resample("1d", {"Open": "first", "Close": "last", "Volume": "sum"})
->>> daily.panel("2024-01-02", "2024-01-03")["Close"].to_pandas()
-symbol      AAAUSDT  BBBUSDT
-timestamp                   
-2024-01-02      4.0     40.0
-2024-01-03      8.0     80.0
->>> daily.bar_before("2024-01-03", 1), minute.bar_before("2024-01-03", 1)
-(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-02 00:03:00'))
-```
-
-Bars are cut on the UTC clock and labelled at their start; `NbboPanelDataset` cuts by
-NYSE session instead, so its daily bars line up with daily stores. `save()` on a resampled
-dataset writes a store beside the source, `<name>_resample_<freq>.zarr`, which later reads
-with the same `resample_freq` open instead of resampling again. That store is a cache:
-rebuilding the source does not refresh it.
+**Coarser bars.** A dataset is read on the bars of its store and is not resampled. To
+aggregate minute bars into daily ones, resample a factor computed on the dataset
+(`Factor.resample`, see [Factors](factors.md)). The dataset decides how its bars are cut:
+`resample_labels(timestamps, freq)` returns the coarser bar each timestamp belongs to.
+Bars are cut on the UTC clock and labelled at their start; `NbboPanelDataset` and
+`MassiveTradeBarDataset` cut by NYSE session instead, so their daily bars line up with
+daily stores.
 
 **Your own data.** {py:class}`~quantlab.dataset.memory.FrameDataset` holds a panel handed
 over at construction, from a long-format pandas or polars frame or an xarray panel, with
@@ -300,8 +285,8 @@ variables as the factor reading them expects (`adjClose` and so on for
 **Stored factor panels.** {py:class}`~quantlab.dataset.factor_store.FactorStoreDataset`
 reads a factor store's Zarr panel, such as the daily session statistics of minute bars,
 as panel variables. Its config holds the store's path and an optional `prefix` put before
-every output's name, and nothing else; it reads by date range, never rebuilds the factor
-that wrote the store, and is not resampled. Merged with a price dataset through
+every output's name, and nothing else; it reads by date range and never rebuilds the
+factor that wrote the store. Merged with a price dataset through
 `MergedDataset`, the outputs become columns beside the prices. The merge raises only
 when a cell holds a value in two inputs; columns of the same name over different dates or
 symbols merge into one column. The prefix is how two sources are kept apart: give each

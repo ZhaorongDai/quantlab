@@ -19,7 +19,10 @@ reads a store nobody here built.
 """
 
 import dataclasses
+import importlib
 import inspect
+import json
+import pkgutil
 from pathlib import Path
 
 import numpy as np
@@ -173,11 +176,11 @@ def test_the_raw_roots_own_the_build_path_and_their_abstract_methods() -> None:
 
 
 #: The store members a view answers on ``DatasetView``; the root class answers them for a leaf only.
-VIEW_DECIDED_MEMBERS = frozenset({"store_path", "store_uses", "resample"})
+VIEW_DECIDED_MEMBERS = frozenset({"store_path", "store_uses"})
 
 
 def test_the_read_root_describes_a_leaf_only() -> None:
-    """``DatasetView`` decides a view's store and resampling; the root class never asks ``inputs()``."""
+    """``DatasetView`` decides a view's store; the root class never asks ``inputs()``."""
     assert VIEW_DECIDED_MEMBERS <= set(DatasetView.__dict__)
     for name in VIEW_DECIDED_MEMBERS:
         member = BaseDataset.__dict__[name]
@@ -247,3 +250,51 @@ def test_the_dataset_modules_expose_the_split_classes() -> None:
     assert not hasattr(base_module, "Dataset")
     for name in ("RawDataset", "RawMarketDataset", "IndexConstituentDataset", "ConversionResult"):
         assert hasattr(raw_module, name) and not hasattr(base_module, name)
+
+
+def _dataset_layer() -> tuple[list[type], list[type]]:
+    """Every dataset class and every config dataclass the dataset layer defines."""
+    import quantlab.dataset as package
+
+    defined = {
+        value
+        for info in pkgutil.walk_packages(package.__path__, "quantlab.dataset.")
+        for value in vars(importlib.import_module(info.name)).values()
+        if isinstance(value, type) and value.__module__.startswith("quantlab.dataset")
+    }
+    datasets = [cls for cls in defined if issubclass(cls, BaseDataset)]
+    configs = [cls for cls in defined if dataclasses.is_dataclass(cls) and cls.__name__.endswith("Config")]
+    return datasets, configs
+
+
+def test_no_dataset_is_resampled() -> None:
+    """Only factors resample; a dataset keeps ``resample_labels``, which a factor cuts its bars with."""
+    datasets, _ = _dataset_layer()
+    assert {BaseDataset, FrameDataset, MappedTradeBarDataset, PermatickerTradeBarDataset} <= set(datasets)
+    assert sorted(cls.__qualname__ for cls in datasets if hasattr(cls, "resample")) == []
+    assert sorted(cls.__qualname__ for cls in datasets if hasattr(cls, "DEFAULT_RESAMPLE_HOW")) == []
+    assert all(hasattr(cls, "resample_labels") for cls in datasets)
+
+
+def test_no_dataset_config_has_a_resample_field() -> None:
+    _, configs = _dataset_layer()
+    assert {BaseDatasetConfig, DatasetConfig} <= set(configs)
+    leaked = sorted(
+        cls.__qualname__ for cls in configs
+        if {"resample_freq", "resample_how"} & {spec.name for spec in dataclasses.fields(cls)}
+    )
+    assert leaked == []
+
+
+@pytest.mark.parametrize(("key", "value"), [("resample_freq", "1d"), ("resample_how", "last")])
+def test_a_saved_dataset_config_holding_a_resample_field_is_refused(tmp_path: Path, key: str, value: str) -> None:
+    """A stale saved config fails on rebuild with the unknown-key error, not silently changed."""
+    dataset = StockDataset(DatasetConfig(
+        zarr_file_path=str(tmp_path / "stock.zarr"), raw_data_dir_path=str(tmp_path / "raw"),
+        market="us_equity", frequency="1d",
+    ))
+    saved = json.loads(json.dumps(dataset.get_config()))
+    assert StockDataset.from_config(saved) == dataset
+
+    with pytest.raises(ValueError, match=rf"unknown key\(s\) '{key}'"):
+        StockDataset.from_config({**saved, key: value})
