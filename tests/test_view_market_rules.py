@@ -33,8 +33,9 @@ RULES = tuple(
     if not name.startswith("_") and not hasattr(BaseDataset, name) and name != "to_kunquant"
 )
 
-#: The views that read market datasets and must pass their rules on.
-VIEWS = (RosterDataset, MergedDataset)
+#: The views that read market datasets and must pass their rules on by hand; a
+#: ``DatasetView`` over one input passes them on by default (``tests/test_dataset_view.py``).
+VIEWS = (MergedDataset,)
 
 
 @pytest.mark.parametrize("rule", RULES)
