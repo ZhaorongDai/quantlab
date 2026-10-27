@@ -217,6 +217,18 @@ def test_the_view_has_no_store(built):
     assert not hasattr(dataset, "update") and not hasattr(dataset, "save")
 
 
+def test_the_ticker_stores_rows_and_lookup_are_not_the_views(built):
+    """The view's symbols are permatickers, so the store's ticker-keyed rows and names are not passed on.
+
+    RED under: ``head`` and ``ticker_lookup`` answered by the store on the Massive ticker.
+    """
+    trade_bars, _, dataset = built
+    assert trade_bars.head(1).collect().height == 1
+    assert dataset.ticker_lookup() is None
+    with pytest.raises(NotImplementedError, match="keeps no store"):
+        dataset.head(1)
+
+
 def test_the_busier_ticker_is_decided_over_the_whole_day(built):
     """A request for a few bars keeps the day's busier ticker, AAA, not AAB.
 

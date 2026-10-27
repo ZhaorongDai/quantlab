@@ -17,7 +17,7 @@ dense ``(timestamp, symbol)`` panel on the permaticker axis:
 Two views share the mapping, one per store on the Massive ticker:
 ``PermatickerTradeBarDataset`` over the one-minute Trade bars
 (``MassiveTradeBarDataset``) and ``PermatickerDayBarDataset`` over Massive's
-Day aggregates (``MassiveDayBarDataset``, #353). A view is a drop-in
+Day aggregates (``MassiveDayBarDataset``). A view is a drop-in
 ``MarketDataset``, and a ``DatasetView`` of the store's dataset (``inputs()``):
 the calendar, resample labels, tradable bars and KunQuant export are the
 store's dataset's; ``resample`` aggregates the mapped bars as the store's
@@ -467,6 +467,41 @@ class PermatickerDataset(DatasetView):
     def _own_delisting_symbols(self) -> list:
         """Return none: the view delists by ``MarketDataset``'s rule, not a rule of its own."""
         return []
+
+    def ticker_lookup(self) -> None:
+        """Return ``None``: no lookup names permatickers, so they are shown as they are.
+
+        The store's lookup, if it had one, would name Massive tickers, not
+        this view's symbols.
+
+        Examples
+        --------
+        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``)::
+
+            bars.ticker_lookup() is None
+            # True
+        """
+        return None
+
+    def head(self, n: int) -> pl.LazyFrame:
+        """Refuse: the view keeps no store, and the store's rows are on the Massive ticker axis.
+
+        Raises
+        ------
+        NotImplementedError
+            Always; read ``panel`` for the view's rows.
+
+        Examples
+        --------
+        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``)::
+
+            bars.head(1)
+            # NotImplementedError: PermatickerTradeBarDataset.head(): the view keeps no store ...
+        """
+        raise NotImplementedError(
+            f"{self.class_name}.head(): the view keeps no store, and its store's rows are on "
+            f"the Massive ticker axis, not the permaticker axis; read panel() instead."
+        )
 
     def copy(self) -> Self:
         """Return a view over a copy of the store's dataset and the same map's config.

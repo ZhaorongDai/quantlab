@@ -73,7 +73,10 @@ FORWARDED = _read_interface() - NOT_FORWARDED
 #: The read-interface members each view defines itself; the root forwards the rest.
 OWN_MEMBERS = {
     RosterDataset: {"stored_symbols", "_own_delisting_symbols"},
-    PermatickerDataset: {"stored_symbols", "_calendar", "delisting_bars", "_own_delisting_symbols"},
+    # the symbols are permatickers: the ticker-keyed store's rows and lookup are not the view's
+    PermatickerDataset: {
+        "stored_symbols", "_calendar", "delisting_bars", "_own_delisting_symbols", "head", "ticker_lookup",
+    },
     # a merge has several inputs, so it answers every member itself
     MergedDataset: FORWARDED,
     BadPrintMaskedDataset: set(),
@@ -189,15 +192,102 @@ def test_a_roster_answers_from_the_wrapped_dataset_not_the_roster(stores):
     assert view.head(0).collect_schema().names() == prices.head(0).collect_schema().names()
 
 
-@pytest.mark.parametrize("kind", ["test view", "roster"])
+def _view(kind, prices, roster):
+    """``(view, inputs)``: a view of ``kind`` over the stores, and the datasets it reads."""
+    if kind == "test view":
+        return _View(prices), [prices]
+    if kind == "roster":
+        return RosterDataset(prices, roster), [prices, roster]
+    if kind == "merge":
+        return MergedDataset([prices, roster]), [prices, roster]
+    return BadPrintMaskedDataset([prices, roster]), [prices, roster]
+
+
+@pytest.mark.parametrize("kind", ["test view", "roster", "merge", "bad-print mask"])
 def test_a_view_has_no_store_reads_its_inputs_and_is_not_resampled(stores, kind):
     prices, roster = stores
-    view = _View(prices) if kind == "test view" else RosterDataset(prices, roster)
+    view, inputs = _view(kind, prices, roster)
 
     assert view.store_path is None
     assert view.store_uses() == ()
-    inputs = [prices] + ([roster] if kind == "roster" else [])
     found = [(use.component, use.use.relation) for use in walk_store_uses(view)]
     assert found == [(dataset, "reads") for dataset in inputs]
     with pytest.raises(ValueError, match="resample each input"):
         view.resample("1d", "last")
+
+
+def test_a_permaticker_view_has_no_store_and_reads_the_ticker_store(tmp_path):
+    """The store on the Massive ticker is read; the Ticker map is only built from.
+
+    The view resamples itself (tickers are mapped before bars of different
+    days are combined), so only the store declaration is locked here.
+    """
+    from quantlab.dataset.config import MassiveTradeBarsDatasetConfig, TickerMapConfig
+    from quantlab.dataset.massive.permaticker_bars import PermatickerTradeBarDataset
+    from quantlab.dataset.massive.ticker_map import TickerMap
+    from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
+
+    trade_bars = MassiveTradeBarDataset(MassiveTradeBarsDatasetConfig(
+        zarr_file_path=str(tmp_path / "trades.zarr"), raw_data_dir_path=str(tmp_path / "raw"),
+    ))
+    ticker_map = TickerMap(TickerMapConfig(
+        path=str(tmp_path / "map"), massive_dir=str(tmp_path / "raw"), sharadar_dir=str(tmp_path / "sharadar"),
+    ))
+    view = PermatickerTradeBarDataset(trade_bars, ticker_map)
+
+    assert view.store_path is None
+    assert [type(use).__name__ for use in view.store_uses()] == ["BuiltFrom"]
+    assert view.stores() == [trade_bars.store_path]
+
+
+# -- a leaf's own delisting rule reaches the views -----------------------------
+
+
+def _library_market_datasets() -> set[type]:
+    """Every ``MarketDataset`` subclass defined in ``quantlab.dataset``, its modules all imported."""
+    import importlib
+    import pkgutil
+
+    import quantlab.dataset
+
+    for info in pkgutil.walk_packages(quantlab.dataset.__path__, "quantlab.dataset."):
+        importlib.import_module(info.name)
+    found, todo = set(), [MarketDataset]
+    while todo:
+        for subclass in todo.pop().__subclasses__():
+            if subclass not in found:
+                found.add(subclass)
+                todo.append(subclass)
+    return {cls for cls in found if cls.__module__.startswith("quantlab.dataset")}
+
+
+def _rules_without_their_symbols(classes) -> list[str]:
+    """The leaves that override ``delisting_bars`` but leave ``_own_delisting_symbols`` the root's."""
+    return sorted(
+        cls.__name__
+        for cls in classes
+        if not issubclass(cls, DatasetView)
+        and cls.delisting_bars is not MarketDataset.delisting_bars
+        and cls._own_delisting_symbols is MarketDataset._own_delisting_symbols
+    )
+
+
+def test_a_leaf_with_its_own_delisting_rule_declares_the_symbols_it_rules():
+    """A view asks a leaf for its rule only on ``_own_delisting_symbols``, which is none on the root.
+
+    RED under: a leaf in the library that overrides ``delisting_bars`` alone,
+    whose rule every view over it would silently drop.
+    """
+
+    class RuleOnly(MarketDataset):
+        def delisting_bars(self, prices, valuation_column):
+            return MarketDataset.delisting_bars(self, prices, valuation_column)
+
+    class RuleAndSymbols(RuleOnly):
+        def _own_delisting_symbols(self):
+            return self.stored_symbols()
+
+    assert _rules_without_their_symbols([RuleOnly, RuleAndSymbols]) == ["RuleOnly"]
+    library = _library_market_datasets()
+    assert {RosterDataset, PermatickerDataset, MergedDataset, FrameDataset} <= library
+    assert _rules_without_their_symbols(library) == []

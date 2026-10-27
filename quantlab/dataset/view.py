@@ -48,7 +48,7 @@ class DatasetView(MarketDataset):
     ``tradable_bars``               the input's
     ``delisting_bars``              the input's
     ``_own_delisting_symbols``      the input's
-    ``to_kunquant``                 the input's export (``_to_kunquant``)
+    ``_to_kunquant``                the input's export, behind ``to_kunquant``
     ``panel``                       abstract: what the view changes
     ``store_path``                  ``None``: a view keeps no store
     ``store_uses``                  none of its own; its inputs declare the
@@ -77,13 +77,22 @@ class DatasetView(MarketDataset):
     With ``prices`` a ``FrameDataset`` of daily closes written to a store
     (``to_zarr``):
 
+    >>> from dataclasses import dataclass
+    >>> from quantlab.core.component import component
+    >>> from quantlab.core.config import FrozenConfig
+    >>> @dataclass(kw_only=True, frozen=True)
+    ... class HalvedConfig(FrozenConfig):
+    ...     dataset: MarketDataset = component()
+    ...     name: str | None = None
     >>> class Halved(DatasetView):
-    ...     config_cls = MergedDatasetConfig
+    ...     config_cls = HalvedConfig
     ...     def inputs(self):
-    ...         return tuple(self.config.datasets)
+    ...         return (self.config.dataset,)
     ...     def panel(self, start, end, symbols=None, variables=None):
-    ...         return prices.panel(start, end, symbols, variables) / 2
-    >>> view = Halved(MergedDatasetConfig(datasets=[prices]))
+    ...         return self.config.dataset.panel(start, end, symbols, variables) / 2
+    >>> view = Halved(HalvedConfig(dataset=prices))
+    >>> view.inputs() == (prices,)
+    True
     >>> view.calendar("2024-01-01", "2024-01-31").equals(prices.calendar("2024-01-01", "2024-01-31"))
     True
     >>> view.store_path is None
@@ -198,7 +207,7 @@ class DatasetView(MarketDataset):
         Examples
         --------
         >>> stamps = prices.calendar("2024-01-01", "2024-01-31").values
-        >>> (view.resample_labels(stamps, "1d") == prices.resample_labels(stamps, "1d")).all()
+        >>> bool((view.resample_labels(stamps, "1d") == prices.resample_labels(stamps, "1d")).all())
         True
         """
         return self._answering("resample_labels").resample_labels(timestamps, freq)

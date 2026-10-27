@@ -6,7 +6,8 @@ without losing the old one, how files are written atomically, how date-ranged st
 store declarations and dataset views work, how data fingerprints and code records tie a
 run to what it read and ran, and how models and ensembles share one evaluation and one
 walk-forward training. It is for contributors who change these parts or add a component
-that has to cooperate with them. The behaviour users see is described in the [user guide](../user-guide/index.md).
+that has to cooperate with them. The behaviour users see is described in the
+[user guide](../user-guide/index.md).
 
 ## Resumable downloads
 
