@@ -9,8 +9,12 @@ and different variables (prices and quotes), across dataset classes. A cell
 holding a value in more than one input is an error, never resolved by input
 order, and so are inputs with different bar spacing.
 
-``MergedDataset`` is itself a ``MarketDataset``, so any consumer of a dataset
-accepts it. A factor config given a list of datasets builds one.
+``MergedDataset`` is a ``DatasetView`` and so a ``MarketDataset``: any
+consumer of a dataset accepts it. A factor config given a list of datasets
+builds one. With several inputs there is no single input to answer from, so
+the merge defines every member of the read interface itself: the calendar is
+the inputs' union, and each market rule is answered by the inputs holding
+the symbol.
 """
 
 from itertools import combinations
@@ -24,10 +28,11 @@ import xarray as xr
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset.config import MergedDatasetConfig
 from quantlab.dataset.base import BaseDataset, MarketDataset, SymbolName, TickerLookup
+from quantlab.dataset.view import DatasetView
 from quantlab.utils.date_range import check_range
 
 
-class MergedDataset(MarketDataset):
+class MergedDataset(DatasetView):
     """A read-only view merging several datasets into one panel.
 
     ``panel(start, end, symbols)`` asks every input for the same range,
@@ -37,6 +42,11 @@ class MergedDataset(MarketDataset):
     no data, so it has no build path; its inputs are its ``inputs()`` and
     its ``stores()`` theirs. It is not resampled (``resample`` refuses a
     view): build, save or resample its inputs instead.
+
+    As a view of several inputs it defines every member of the read
+    interface that ``DatasetView`` forwards for a single input, so a member
+    added to the read interface raises on a merge until it is given an
+    answer here.
 
     Parameters
     ----------
@@ -340,7 +350,8 @@ class MergedDataset(MarketDataset):
             prices = BadPrintMaskedDataset([sep])
             prices.tradable_bars(prices.panel("2023-03-10", "2023-03-28"), "adjOpen")
         """
-        tradable = super().tradable_bars(prices, fill_column)
+        # The default rule judges the merged panel itself; DatasetView's forward has no single input.
+        tradable = MarketDataset.tradable_bars(self, prices, fill_column)
         for dataset in self.datasets:
             if isinstance(dataset, MarketDataset):
                 tradable = tradable & dataset.tradable_bars(prices, fill_column)
@@ -383,7 +394,7 @@ class MergedDataset(MarketDataset):
             marks = prices.delisting_bars(prices.panel("2024-01-02", "2024-01-31"), "adjClose")
             marks.sel(symbol=1).values.nonzero()  # the bar of 2024-01-08
         """
-        marks = super().delisting_bars(prices, valuation_column)
+        marks = MarketDataset.delisting_bars(self, prices, valuation_column)
         symbols = pd.Index(prices.symbol.values)
         for dataset in self.datasets:
             if not isinstance(dataset, MarketDataset):
@@ -414,6 +425,19 @@ class MergedDataset(MarketDataset):
         ['close']
         """
         return list(names)
+
+    def shared_name_map(self, names) -> dict[str, str]:
+        """Return no renaming: the merged panel already holds the shared names.
+
+        Each input is renamed to the shared names in ``panel``; the merge
+        renames nothing further.
+
+        Examples
+        --------
+        >>> MergedDataset([spot, held]).shared_name_map(["close", "volume"])
+        {}
+        """
+        return {}
 
     def _to_kunquant(
         self, data: xr.Dataset, data_columns: tuple[str, ...]

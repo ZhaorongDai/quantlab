@@ -1479,7 +1479,9 @@ class MarketDataset(BaseDataset):
         is the delisting row, whose adjusted close already carries the
         delisting return (or, when CRSP gives no return on a no-price
         delisting row, the last priced day before it). A dataset that knows
-        more (a halt without a later price, say) overrides this.
+        more (a halt without a later price, say) overrides this, and declares
+        the symbols its rule judges in ``_own_delisting_symbols`` so the
+        views over it ask it about them.
 
         Parameters
         ----------
@@ -1535,16 +1537,14 @@ class MarketDataset(BaseDataset):
     def _own_delisting_symbols(self) -> list:
         """Return the symbols this dataset delists by a rule of its own, not the default.
 
-        All of its stored symbols when its class overrides
-        ``delisting_bars``, else none. A view that passes the rule on
-        answers for its inputs instead (``RosterDataset``,
-        ``MergedDataset``), so a view over a dataset with the default rule
-        declares none; ``MergedDataset.delisting_bars`` asks an input only
-        on these symbols.
+        None here. A dataset that overrides ``delisting_bars`` with a rule
+        of its own (a vendor's delisting dates) also overrides this hook to
+        return the symbols that rule judges. A view answers for its inputs
+        (``DatasetView`` forwards it, ``MergedDataset`` combines them), so a
+        leaf's rule survives any stack of views; ``MergedDataset.delisting_bars``
+        asks an input only on these symbols.
         """
-        if type(self).delisting_bars is MarketDataset.delisting_bars:
-            return []
-        return self.stored_symbols()
+        return []
 
     def _priced_after(self, end: pd.Timestamp, column: str, symbols) -> np.ndarray:
         """Whether each of ``symbols`` has a valid ``column`` price after ``end`` in the dataset.

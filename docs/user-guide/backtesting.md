@@ -336,8 +336,9 @@ the way a market would be:
   a target and the weight held right after its fill.
 - **Delisting settlements.** A symbol whose valuation prices stop inside the window is
   delisted on its last valued bar (`MarketDataset.delisting_bars`). A price dataset that
-  knows more, such as a vendor's delisting dates, overrides the rule, and a merged price
-  source (`BadPrintMaskedDataset`) adds that dataset's marks on the symbols it holds. On the next bar
+  knows more, such as a vendor's delisting dates, overrides the rule and returns the
+  symbols it judges from `_own_delisting_symbols`; any view over it, such as the merged
+  price source (`BadPrintMaskedDataset`), adds that dataset's marks on those symbols. On the next bar
   a holding in it is settled into cash at its last valuation price, with no fee or slippage.
 - **Listings.** A symbol with no prices at the start of the window that was never held is
   treated as not yet listed and trades once its prices begin.

@@ -14,7 +14,10 @@ What is locked here, and what turns it red:
 - a view has no store, its inputs declare the stores it reads, and it is not
   resampled;
 - ``RosterDataset`` is a view and defines, of the read interface, only what
-  it changes about symbols; everything else is its wrapped dataset's.
+  it changes about symbols; everything else is its wrapped dataset's;
+- ``MergedDataset`` is a view of several inputs and defines every forwarded
+  member, so a member added to ``MarketDataset`` fails here until the merge
+  answers it; ``BadPrintMaskedDataset`` changes only the merge's panel.
 
 Synthetic and offline; each view's own behaviour is locked in its suite.
 """
@@ -29,7 +32,9 @@ import xarray as xr
 from quantlab.core.store_uses import walk_store_uses
 from quantlab.dataset.base import BaseDataset, MarketDataset
 from quantlab.dataset.config import MergedDatasetConfig
+from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.memory import FrameDataset
+from quantlab.dataset.merged import MergedDataset
 from quantlab.dataset.roster import RosterDataset
 from quantlab.dataset.view import DatasetView
 
@@ -67,6 +72,9 @@ FORWARDED = _read_interface() - NOT_FORWARDED
 #: The read-interface members each view defines itself; the root forwards the rest.
 OWN_MEMBERS = {
     RosterDataset: {"stored_symbols", "_own_delisting_symbols"},
+    # a merge has several inputs, so it answers every member itself
+    MergedDataset: FORWARDED,
+    BadPrintMaskedDataset: set(),
 }
 
 
