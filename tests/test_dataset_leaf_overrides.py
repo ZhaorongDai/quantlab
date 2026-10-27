@@ -59,7 +59,6 @@ LEAF_OVERRIDES: dict[str, dict[str, str]] = {
         "__init__": "holds a panel in memory, or reads the store its config names",
         "__eq__": "is identified by its held panel as well as its config",
         "__hash__": "stays unhashable, as defining __eq__ makes it",
-        "copy": "copies the config and keeps the same held panel",
         "_read_store": "reads no store: requests read the held panel",
         "_open_bars": "slices the held panel",
         "_calendar": "is the held panel's timestamps",

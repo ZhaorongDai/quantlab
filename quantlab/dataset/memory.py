@@ -159,29 +159,11 @@ class FrameDataset(MarketDataset):
         """Return the panel this dataset holds."""
         return self._panel
 
-    def copy(self) -> Self:
-        """Return a copy with its own config, holding the same panel.
-
-        The panel is shared, not duplicated: no method of this dataset changes it.
-
-        Examples
-        --------
-        >>> import pandas as pd
-        >>> from quantlab.dataset.memory import FrameDataset
-        >>> frame = pd.DataFrame({
-        ...     "timestamp": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
-        ...     "symbol": ["AAA", "BBB", "AAA"], "close": [10.0, 20.0, 11.0]})
-        >>> ds = FrameDataset(frame)
-        >>> other = ds.copy()
-        >>> other == ds, other.config is ds.config
-        (True, False)
-        """
-        return super().copy()
-
     def to_zarr(self, path: "str | os.PathLike") -> Self:
         """Write the held panel to a new Zarr store and return a dataset reading it.
 
-        The panel is written as held. This dataset is not changed. A backtest run directory's copies of held panels are written this way.
+        The panel is written as held. This dataset is not changed. A backtest
+        run directory's copies of held panels are written this way.
 
         Parameters
         ----------
