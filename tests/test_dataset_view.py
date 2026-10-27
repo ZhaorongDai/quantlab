@@ -29,6 +29,7 @@ import xarray as xr
 from quantlab.core.store_uses import walk_store_uses
 from quantlab.dataset.base import BaseDataset, MarketDataset
 from quantlab.dataset.config import MergedDatasetConfig
+from quantlab.dataset.massive.permaticker_bars import PermatickerDataset
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.roster import RosterDataset
 from quantlab.dataset.view import DatasetView
@@ -67,6 +68,7 @@ FORWARDED = _read_interface() - NOT_FORWARDED
 #: The read-interface members each view defines itself; the root forwards the rest.
 OWN_MEMBERS = {
     RosterDataset: {"stored_symbols", "_own_delisting_symbols"},
+    PermatickerDataset: {"stored_symbols", "_calendar", "delisting_bars", "_own_delisting_symbols"},
 }
 
 

@@ -235,6 +235,18 @@ def test_the_view_has_the_trade_bars_calendar_and_market_rules(built):
     assert dataset.delisting_bars(panel, "close").dims == ("timestamp", "symbol")
 
 
+def test_a_symbol_priced_after_the_panel_is_not_delisted(built):
+    """101 (AAA) trades again on the half day, so a panel of the full day does not delist it.
+
+    RED under: the Trade bar store's delisting rule answering for the view, which
+    looks for later prices of permatickers on the Massive ticker axis.
+    """
+    _, _, dataset = built
+    panel = dataset.panel("2024-11-27", "2024-11-27 23:59")
+    marks = dataset.delisting_bars(panel, "close")
+    assert not bool(marks.sel(symbol=101).any())
+
+
 def test_a_resampled_view_counts_its_own_bars(built):
     """The daily resample's calendar is one bar per session, as its panel.
 
