@@ -16,7 +16,6 @@ A dataset that keeps a store of its own, even one written from other
 datasets, is a leaf, not a view.
 """
 
-import dataclasses
 from abc import abstractmethod
 from collections.abc import Sequence
 
@@ -71,7 +70,7 @@ class DatasetView(MarketDataset):
     ----------
     config : FrozenConfig
         The view's config, holding its inputs in component fields. Only
-        ``name`` is filled in; the view reads no date field.
+        ``name`` is filled in.
 
     Examples
     --------
@@ -101,10 +100,6 @@ class DatasetView(MarketDataset):
     """
 
     _is_view = True
-
-    def _normalize_config(self, config):
-        """Return ``config`` with ``name`` set; a view's config has no date field."""
-        return dataclasses.replace(config, name=self.import_path)
 
     def _source(self) -> "MarketDataset | None":
         """Return the input the read interface is answered from: the only one, else ``None``."""

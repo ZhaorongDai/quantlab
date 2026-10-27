@@ -33,7 +33,13 @@ import xarray as xr
 from conftest import WHOLE_STORE
 from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.base import BaseDataset, MarketDataset
-from quantlab.dataset.config import BaseDatasetConfig, ConstituentDatasetConfig, DatasetConfig, FileConstituentDatasetConfig
+from quantlab.dataset.config import (
+    BaseDatasetConfig,
+    ConstituentDatasetConfig,
+    DatasetConfig,
+    FileConstituentDatasetConfig,
+    RawDatasetConfig,
+)
 from quantlab.dataset.massive.mapped_bars import MappedDayBarDataset, MappedPermatickerDataset, MappedTradeBarDataset
 from quantlab.dataset.massive.permaticker_bars import PermatickerDayBarDataset, PermatickerTradeBarDataset
 from quantlab.dataset.memory import FrameDataset
@@ -88,8 +94,11 @@ NOT_RAW = (
 )
 
 # The market-only `DatasetConfig` fields that must NOT be on the shared
-# `BaseDatasetConfig`: `vendor` names whose raw market files the directory holds.
+# `RawDatasetConfig`: `vendor` names whose raw market files the directory holds.
 MARKET_ONLY_CONFIG_FIELDS = {"raw_data_dir_path", "market", "frequency", "vendor"}
+
+#: The fields that bound only a raw build, on the configs of datasets built from raw data.
+BUILD_CONFIG_FIELDS = {"start_date", "end_date", "symbols", "kwargs"}
 
 # `ConstituentDatasetConfig` adds the cached source directory and the `as_of`
 # that pins a membership panel's right edge.
@@ -199,15 +208,41 @@ def test_market_only_members_stay_on_market_dataset() -> None:
 
 
 def test_market_only_config_fields_stay_off_the_shared_base() -> None:
-    assert issubclass(DatasetConfig, BaseDatasetConfig)
-    assert issubclass(ConstituentDatasetConfig, BaseDatasetConfig)
-    base_fields = {f.name for f in dataclasses.fields(BaseDatasetConfig)}
+    assert issubclass(DatasetConfig, RawDatasetConfig)
+    assert issubclass(ConstituentDatasetConfig, RawDatasetConfig)
+    base_fields = {f.name for f in dataclasses.fields(RawDatasetConfig)}
     market_fields = {f.name for f in dataclasses.fields(DatasetConfig)}
     constituent_fields = {f.name for f in dataclasses.fields(ConstituentDatasetConfig)}
     assert market_fields - base_fields == MARKET_ONLY_CONFIG_FIELDS
     assert constituent_fields - base_fields == CONSTITUENT_ONLY_CONFIG_FIELDS
     file_fields = {f.name for f in dataclasses.fields(FileConstituentDatasetConfig)}
     assert file_fields - constituent_fields == FILE_CONSTITUENT_ONLY_CONFIG_FIELDS
+
+
+def test_the_root_dataset_config_holds_only_the_store_path_and_the_name() -> None:
+    assert {f.name for f in dataclasses.fields(BaseDatasetConfig)} == {"zarr_file_path", "name"}
+    assert issubclass(RawDatasetConfig, BaseDatasetConfig)
+
+
+def test_only_configs_of_raw_built_datasets_have_the_build_fields() -> None:
+    """The dates, ``symbols`` and ``kwargs`` bound only a raw build, so no other config carries them."""
+    _, configs = _dataset_layer()
+    assert {f.name for f in dataclasses.fields(RawDatasetConfig)} - {"zarr_file_path", "name"} == BUILD_CONFIG_FIELDS
+    leaked = sorted(
+        cls.__qualname__ for cls in configs
+        if BUILD_CONFIG_FIELDS & {spec.name for spec in dataclasses.fields(cls)} and not issubclass(cls, RawDatasetConfig)
+    )
+    assert leaked == []
+
+
+def test_only_raw_built_configs_are_date_normalised(tmp_path: Path) -> None:
+    """A raw build fills an open-ended date; a config without dates is never asked for them."""
+    raw = PanelDataset(RawDatasetConfig(zarr_file_path=str(tmp_path / "a.zarr")))
+    assert (raw.config.start_date, raw.config.end_date) == ("1900-01-01", "2100-01-01")
+    with pytest.raises(ValueError, match="start_date must be an ISO"):
+        PanelDataset(RawDatasetConfig(zarr_file_path=str(tmp_path / "a.zarr"), start_date="01/02/2024"))
+    reader = BaseDataset(BaseDatasetConfig(zarr_file_path=str(tmp_path / "a.zarr")))
+    assert reader.config == BaseDatasetConfig(zarr_file_path=str(tmp_path / "a.zarr"), name=reader.import_path)
 
 
 def test_a_raw_dataset_assigns_its_backend_before_its_config() -> None:
@@ -218,7 +253,7 @@ def test_a_raw_dataset_assigns_its_backend_before_its_config() -> None:
 
 def test_non_market_raw_dataset_round_trips(tmp_path: Path) -> None:
     """`from_raw_data()` -> `save()` -> `panel()` with one abstract method implemented; bool survives Zarr."""
-    config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "panel" / "membership.zarr"))
+    config = RawDatasetConfig(zarr_file_path=str(tmp_path / "panel" / "membership.zarr"))
 
     PanelDataset(config).from_raw_data().save()
     result = PanelDataset(config).panel(*WHOLE_STORE)
@@ -231,10 +266,10 @@ def test_non_market_raw_dataset_round_trips(tmp_path: Path) -> None:
 
 def test_the_read_root_reads_a_store_alone(tmp_path: Path) -> None:
     """A `BaseDataset` is a complete reader of a store: no build path is needed to read."""
-    config = BaseDatasetConfig(zarr_file_path=str(tmp_path / "membership.zarr"))
+    config = RawDatasetConfig(zarr_file_path=str(tmp_path / "membership.zarr"))
     PanelDataset(config).from_raw_data().save()
 
-    reader = BaseDataset(config)
+    reader = BaseDataset(BaseDatasetConfig(zarr_file_path=config.zarr_file_path))
 
     xr.testing.assert_identical(reader.panel(*WHOLE_STORE).load(), PanelDataset(config).panel(*WHOLE_STORE).load())
     assert reader.bar_before("2024-01-03", 2) == pd.Timestamp("2024-01-01")

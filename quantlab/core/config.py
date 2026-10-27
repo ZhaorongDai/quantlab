@@ -31,8 +31,8 @@ class FrozenConfig:
 
     Examples
     --------
-    >>> from quantlab.dataset.config import BaseDatasetConfig
-    >>> cfg = BaseDatasetConfig(zarr_file_path="stock.zarr", symbols=["AAPL"])
+    >>> from quantlab.dataset.config import RawDatasetConfig
+    >>> cfg = RawDatasetConfig(zarr_file_path="stock.zarr", symbols=["AAPL"])
     >>> cfg.symbols
     ('AAPL',)
     >>> cfg.symbols = ("MSFT",)
@@ -56,8 +56,8 @@ class FrozenConfig:
 
         Examples
         --------
-        >>> from quantlab.dataset.config import BaseDatasetConfig
-        >>> sorted(BaseDatasetConfig(zarr_file_path="stock.zarr").to_dict())
+        >>> from quantlab.dataset.config import RawDatasetConfig
+        >>> sorted(RawDatasetConfig(zarr_file_path="stock.zarr").to_dict())
         ['end_date', 'kwargs', 'name', 'start_date', 'symbols', 'zarr_file_path']
         """
         return config_to_dict(self)

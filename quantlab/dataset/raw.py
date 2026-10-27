@@ -30,6 +30,7 @@ raw dataset and has none of these methods.
 
 import copy
 import dataclasses
+import datetime
 import os
 import shutil
 from abc import abstractmethod
@@ -46,7 +47,7 @@ from loguru import logger
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data, clean_membership_panel
 from quantlab.dataset.base import BaseDataset, MarketDataset
-from quantlab.dataset.config import BaseDatasetConfig, ConstituentDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig, RawDatasetConfig
 from quantlab.enums.constant import Date
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -125,7 +126,7 @@ class RawDataset(BaseDataset):
 
     Parameters
     ----------
-    config : BaseDatasetConfig
+    config : RawDatasetConfig
         The dataset config. It is not modified: the dataset holds a
         normalised copy; see the ``config`` property.
 
@@ -155,7 +156,7 @@ class RawDataset(BaseDataset):
     ``BaseDataset``.
     """
 
-    def __init__(self, config: BaseDatasetConfig):
+    def __init__(self, config: RawDatasetConfig):
         """Initialize the dataset; see the class docstring for parameters.
 
         The backend is created before the config is assigned because a
@@ -187,6 +188,70 @@ class RawDataset(BaseDataset):
         other.last_chunk_result = None
         other.config = copy.deepcopy(self.config)
         return other
+
+    def _normalize_config(self, config: RawDatasetConfig) -> RawDatasetConfig:
+        """Return ``config`` with ``name`` set and its build dates filled and checked.
+
+        A missing ``start_date`` or ``end_date`` falls back to
+        ``Date.START_DATE`` or ``Date.END_DATE``. Both dates must be ISO
+        ``YYYY-MM-DD`` strings; a ``datetime.date`` is accepted and
+        converted. Later code compares dates as plain strings, so a value
+        such as ``"2007-2-1"`` would silently compare wrong; it is refused
+        here instead.
+
+        Parameters
+        ----------
+        config : RawDatasetConfig
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        RawDatasetConfig
+            A new config of the same class.
+
+        Raises
+        ------
+        ValueError
+            If a date is not an ISO ``YYYY-MM-DD`` date.
+
+        Examples
+        --------
+        >>> ds._normalize_config(dataclasses.replace(ds.config, start_date=None)).start_date
+        '1900-01-01'
+        >>> ds._normalize_config(
+        ...     dataclasses.replace(ds.config, start_date="01/02/2024")
+        ... )
+        Traceback (most recent call last):
+        ValueError: DemoDataset: start_date must be an ISO YYYY-MM-DD date ...
+        """
+        config = super()._normalize_config(config)
+        start_date = Date.START_DATE if config.start_date is None else config.start_date
+        end_date = Date.END_DATE if config.end_date is None else config.end_date
+        return dataclasses.replace(
+            config,
+            start_date=self._normalize_date(start_date, "start_date"),
+            end_date=self._normalize_date(end_date, "end_date"),
+        )
+
+    def _normalize_date(self, value: str, field_name: str) -> str:
+        """Return ``value`` as a zero-padded ISO date string.
+
+        ``field_name`` is used only in the error message.
+
+        Raises
+        ------
+        ValueError
+            If ``value`` is not an ISO ``YYYY-MM-DD`` date.
+        """
+        try:
+            return datetime.date.fromisoformat(str(value)).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{self.class_name}: {field_name} must be an ISO YYYY-MM-DD "
+                f"date string, got {value!r}. Dates are compared "
+                f"lexicographically throughout this pipeline, so a non-ISO "
+                f"value compares wrong rather than failing to match."
+            ) from exc
 
     def _store_backend(self) -> XrBackend:
         """Return a fresh backend of ``data_backend``'s type, so reads go through the medium written."""

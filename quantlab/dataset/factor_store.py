@@ -6,13 +6,10 @@ variables, optionally under a prefix, so a ``MergedDataset`` puts them
 beside a price dataset's columns.
 """
 
-import dataclasses
-
 import numpy as np
 import polars as pl
 import xarray as xr
 
-from quantlab.core.store_uses import READS, StoreUse
 from quantlab.dataset.base import MarketDataset
 from quantlab.dataset.config import FactorStoreDatasetConfig
 
@@ -46,10 +43,10 @@ class FactorStoreDataset(MarketDataset):
     Notes
     -----
     The config holds only the path and the prefix: a store is read as
-    stored, with no date bounds or conversion in the config. The base
-    class's ``_normalize_config`` fills the date fields a dataset config
-    otherwise has, so this class overrides it, and its ``store_path`` and
-    ``store_uses`` name the store.
+    stored, with no date bounds or conversion in the config. The class
+    changes only how the store is read: ``_open_bars`` and ``head`` put the
+    prefix on every output, and ``_to_kunquant`` exports the columns under
+    those names.
 
     Examples
     --------
@@ -107,39 +104,6 @@ class FactorStoreDataset(MarketDataset):
 
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = FactorStoreDatasetConfig
-
-    def _normalize_config(self, config: FactorStoreDatasetConfig) -> FactorStoreDatasetConfig:
-        """Return ``config`` with ``name`` set to this class's import path."""
-        return dataclasses.replace(config, name=self.import_path)
-
-    @property
-    def store_path(self) -> str:
-        """Return the factor store's Zarr path.
-
-        Examples
-        --------
-        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
-        >>> from quantlab.dataset.factor_store import FactorStoreDataset
-        >>> FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr")).store_path
-        'stats.zarr'
-        """
-        return self.config.zarr_file_path
-
-    def store_uses(self) -> tuple:
-        """Return the one store the panel reads: the factor store.
-
-        Returns
-        -------
-        tuple of StoreUse
-
-        Examples
-        --------
-        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
-        >>> from quantlab.dataset.factor_store import FactorStoreDataset
-        >>> FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr")).store_uses()
-        (StoreUse(path='stats.zarr', relation='reads', handle=None),)
-        """
-        return (StoreUse(self.store_path, READS),)
 
     def head(self, n: int) -> pl.LazyFrame:
         """Return at most ``n`` rows of the store, its outputs under the prefix.

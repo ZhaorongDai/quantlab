@@ -180,7 +180,7 @@ class PermatickerDataset(DatasetView):
             raise ValueError(
                 f"{self.class_name}: ticker_map must be a TickerMap, got {type(config.ticker_map).__name__}."
             )
-        return dataclasses.replace(config, name=self.import_path)
+        return super()._normalize_config(config)
 
     # -- reading ----------------------------------------------------------------
 

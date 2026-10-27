@@ -46,7 +46,7 @@ NOT_FORWARDED = {
     "calendar", "bar_before", "bar_after", "to_kunquant", "to_shared_names",
     "stores", "_stores_text", "_priced_after",
     # the config and the component lifecycle
-    "config", "class_name", "_normalize_config", "_normalize_date",
+    "config", "class_name", "_normalize_config",
     "_on_config_installed", "from_config", "persist_with_run", "resolve_run_config",
     "_build_settings",
     # a leaf's store reads

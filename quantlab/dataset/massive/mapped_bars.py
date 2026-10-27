@@ -192,14 +192,7 @@ class MappedPermatickerDataset(MarketDataset):
                 f"{self.class_name}: source must be a {self.SOURCE_CLS.__name__}, got "
                 f"{type(config.source).__name__}."
             )
-        return dataclasses.replace(
-            config,
-            zarr_file_path=str(config.zarr_file_path),
-            name=self.import_path,
-        )
-
-    def _on_config_installed(self) -> None:
-        """Nothing to set up: the store is opened per read."""
+        return dataclasses.replace(super()._normalize_config(config), zarr_file_path=str(config.zarr_file_path))
 
     @property
     def source(self) -> PermatickerDataset:
@@ -213,19 +206,6 @@ class MappedPermatickerDataset(MarketDataset):
             # True
         """
         return self.config.source
-
-    @property
-    def store_path(self) -> str:
-        """The store of the mapped bars.
-
-        Examples
-        --------
-        With ``mapped`` the mapped store of the class example::
-
-            mapped.store_path
-            # 'mapped.zarr'
-        """
-        return self.config.zarr_file_path
 
     @property
     def sidecar_path(self) -> Path:

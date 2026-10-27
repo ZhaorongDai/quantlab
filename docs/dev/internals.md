@@ -246,8 +246,8 @@ decisions:
 - `store_path` is `None`: a view keeps no store;
 - `store_uses()` declares no store of its own; its inputs declare the stores it reads, and
   the walk reaches them, so `stores()` names its inputs' stores;
-- the config sets only `name`: the root class's date fields are not read, so a view's
-  config holds only its inputs and its own options.
+- the config normalisation sets only `name`, as on the root class; a view's config holds
+  only its inputs and its own options.
 
 The forwarded members are the read interface of `MarketDataset` except `panel`: the
 calendar (`_calendar`, behind `calendar`, `bar_before` and `bar_after`),

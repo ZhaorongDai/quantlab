@@ -409,10 +409,11 @@ A subclass that leaves out a required hook cannot be instantiated.
 
 The default cleaning step (`_clean`) requires `open`, `high`, `low`, `close` and `volume`
 and adds `anomaly_flag`. A panel without price columns derives from `RawDataset`, uses
-{py:class}`~quantlab.dataset.config.BaseDatasetConfig` and overrides `_clean`:
+{py:class}`~quantlab.dataset.config.RawDatasetConfig` (the store path plus the build
+dates, `symbols` and `kwargs`) and overrides `_clean`:
 
 ```python
->>> from quantlab.dataset.config import BaseDatasetConfig
+>>> from quantlab.dataset.config import RawDatasetConfig
 >>> from quantlab.dataset.raw import RawDataset
 >>> from quantlab.dataset._support.cleaning import clean_membership_panel
 >>> class InIndexDataset(RawDataset):
@@ -424,7 +425,7 @@ and adds `anomaly_flag`. A panel without price columns derives from `RawDataset`
 ...     def _clean(self, data: xr.Dataset) -> xr.Dataset:
 ...         return clean_membership_panel(data)
 ...
->>> member_config = BaseDatasetConfig(zarr_file_path=str(root / "member.zarr"))
+>>> member_config = RawDatasetConfig(zarr_file_path=str(root / "member.zarr"))
 >>> InIndexDataset(member_config).from_raw_data().save()
 >>> InIndexDataset(member_config).panel("2024-01-02", "2024-01-04")["is_member"].to_pandas()
 symbol       AAA   BBB
@@ -443,7 +444,14 @@ point-in-time rule, the trading calendar, the axes and the windows.
 ### Datasets that build nothing
 
 A dataset that converts no raw files derives from the read root alone and has no build
-methods to refuse.
+methods to refuse. Its config holds no build dates, `symbols` or `kwargs` either: those
+bound only a raw build and live on
+{py:class}`~quantlab.dataset.config.RawDatasetConfig`. The root config,
+{py:class}`~quantlab.dataset.config.BaseDatasetConfig`, holds the store path and the
+`name` the config setter fills, and the root class reads the Zarr store at that path
+between the requested dates. A leaf overrides a root member only to change how it reads:
+the factor store puts a prefix on every output, the mapped bars refuse a day mapped by a
+ticker map that has since changed, and the in-memory panel opens no store.
 
 - A leaf whose bars do not come from its own Zarr store (a panel held in memory, a store
   written from another dataset) does not override `panel`. It overrides

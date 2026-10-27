@@ -98,13 +98,19 @@ dataset = StockDataset(config)
 
 `raw_data_dir_path` is the raw tier and `zarr_file_path` the store. The dates and
 `symbols` bound what the build path converts and `save()` writes; a request takes its
-range as arguments and ignores them. `kwargs` holds dataset-specific options.
+range as arguments and ignores them. `kwargs` holds dataset-specific options. These build
+fields belong to the configs of datasets converted from raw data
+({py:class}`~quantlab.dataset.config.RawDatasetConfig` and the configs deriving from it);
+a dataset that converts nothing, such as a panel held in memory or a factor store read as
+columns, has a config without them.
 
 Configs are frozen; make a changed one with `dataclasses.replace`. The dataset keeps a
 normalised copy: `name` is filled in with the class's dotted import path, which is how a
-saved config is rebuilt into the same class, and a missing date becomes `1900-01-01` or
-`2100-01-01`. Dates must be zero-padded ISO strings, because every date comparison in the
-pipeline is a string comparison; `"2024-2-29"` is refused with a `ValueError`.
+saved config is rebuilt into the same class. A saved config holding a key its class does
+not have is refused. For a dataset built from raw data, a missing date becomes
+`1900-01-01` or `2100-01-01`, and dates must be zero-padded ISO strings, because every
+date comparison in the pipeline is a string comparison; `"2024-2-29"` is refused with a
+`ValueError`.
 
 ## Available datasets
 

@@ -30,7 +30,6 @@ from quantlab.core.component import Component, child_components
 from quantlab.core.store_uses import READS, BuiltFrom, StoreUse, walk_store_uses
 from quantlab.dataset.config import BaseDatasetConfig, DatasetConfig
 from quantlab.backend.zarr import XrBackend
-from quantlab.enums.constant import Date
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.runs.record import record_read
 from quantlab.utils.resample import clock_labels
@@ -445,10 +444,8 @@ class BaseDataset(Component, ABC):
 
         Examples
         --------
-        >>> ds.config.start_date, ds.config.end_date
-        ('2024-01-02', '2024-01-05')
-        >>> ds.config.name
-        '__main__.DemoDataset'
+        >>> ds.config.zarr_file_path, ds.config.name
+        ('data/klines.zarr', '__main__.DemoDataset')
         """
         return self._config
 
@@ -472,10 +469,10 @@ class BaseDataset(Component, ABC):
 
         Examples
         --------
-        >>> config = dataclasses.replace(ds.config, start_date=None)
+        >>> config = dataclasses.replace(ds.config, name=None)
         >>> ds.config = config
-        >>> config.start_date, ds.config.start_date
-        (None, '1900-01-01')
+        >>> config.name, ds.config.name
+        (None, '__main__.DemoDataset')
         """
         self._config = self._normalize_config(config)
         self._on_config_installed()
@@ -491,21 +488,15 @@ class BaseDataset(Component, ABC):
         """
 
     def _normalize_config(self, config: BaseDatasetConfig) -> BaseDatasetConfig:
-        """Return ``config`` with its defaults filled in and its dates checked.
-
-        ``name`` is set to the class's import path. A missing ``start_date``
-        or ``end_date`` falls back to ``Date.START_DATE`` or
-        ``Date.END_DATE``. Both dates must be ISO ``YYYY-MM-DD`` strings; a
-        ``datetime.date`` is accepted and converted. Later code compares
-        dates as plain strings, so a value such as ``"2007-2-1"`` would
-        silently compare wrong; it is refused here instead.
+        """Return ``config`` with ``name`` set to the class's import path.
 
         A subclass that validates or completes its config overrides this,
         calls ``super()._normalize_config(config)`` first and returns a new
         config built with ``dataclasses.replace``. It runs before the result
         is installed, so it reads the config it is given, never
         ``self.config``, and changes nothing on ``self``; state derived from
-        the config is reset in ``_on_config_installed``.
+        the config is reset in ``_on_config_installed``. ``RawDataset``
+        extends it to fill and check the build dates.
 
         Parameters
         ----------
@@ -517,49 +508,12 @@ class BaseDataset(Component, ABC):
         BaseDatasetConfig
             A new config of the same class.
 
-        Raises
-        ------
-        ValueError
-            If a date is not an ISO ``YYYY-MM-DD`` date.
-
         Examples
         --------
-        >>> ds._normalize_config(
-        ...     dataclasses.replace(ds.config, start_date="01/02/2024")
-        ... )
-        Traceback (most recent call last):
-        ValueError: DemoDataset: start_date must be an ISO YYYY-MM-DD date ...
+        >>> ds._normalize_config(dataclasses.replace(ds.config, name=None)).name
+        '__main__.DemoDataset'
         """
-        start_date = (
-            Date.START_DATE if config.start_date is None else config.start_date
-        )
-        end_date = Date.END_DATE if config.end_date is None else config.end_date
-        return dataclasses.replace(
-            config,
-            name=self.import_path,
-            start_date=self._normalize_date(start_date, "start_date"),
-            end_date=self._normalize_date(end_date, "end_date"),
-        )
-
-    def _normalize_date(self, value: str, field_name: str) -> str:
-        """Return ``value`` as a zero-padded ISO date string.
-
-        ``field_name`` is used only in the error message.
-
-        Raises
-        ------
-        ValueError
-            If ``value`` is not an ISO ``YYYY-MM-DD`` date.
-        """
-        try:
-            return datetime.date.fromisoformat(str(value)).isoformat()
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                f"{self.class_name}: {field_name} must be an ISO YYYY-MM-DD "
-                f"date string, got {value!r}. Dates are compared "
-                f"lexicographically throughout this pipeline, so a non-ISO "
-                f"value compares wrong rather than failing to match."
-            ) from exc
+        return dataclasses.replace(config, name=self.import_path)
 
     @property
     def store_path(self) -> str | None:
@@ -667,7 +621,7 @@ class BaseDataset(Component, ABC):
         """Return a copy with its own config.
 
         The config is deep-copied, so the copy shares no mutable state with
-        this object, not even a ``kwargs`` dict.
+        this object.
 
         Examples
         --------

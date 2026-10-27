@@ -224,3 +224,12 @@ def test_a_path_backed_frame_dataset_round_trips_through_the_loader(tmp_path, st
 def test_the_loader_refuses_a_frame_dataset_held_only_in_memory(store):
     with pytest.raises(ValueError, match="zarr_file_path"):
         rebuild(FrameDataset(store).get_config())
+
+
+@pytest.mark.parametrize("key", ["start_date", "end_date"])
+def test_a_saved_config_holding_a_date_field_is_refused(tmp_path, store, key):
+    """The dates bound only a raw build; a held panel has none, so a stale saved one fails loudly."""
+    saved = FrameDataset(store).to_zarr(tmp_path / "held.zarr").get_config()
+
+    with pytest.raises(ValueError, match=rf"unknown key\(s\) '{key}'"):
+        rebuild({**saved, key: "2024-01-02"})

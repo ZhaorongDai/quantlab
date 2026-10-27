@@ -42,17 +42,44 @@ if TYPE_CHECKING:
 
 @dataclass(kw_only=True, frozen=True)
 class BaseDatasetConfig(FrozenConfig):
-    """Configure a dataset's stored location and raw-data conversion options.
+    """Configure where a dataset keeps its store.
+
+    What every stored dataset config has: the store's path and the name of
+    the dataset class. A read takes its own dates and symbol selection from
+    ``panel``, so nothing here limits it. A dataset converted from raw data
+    has a config deriving from ``RawDatasetConfig``, which adds the bounds of
+    the conversion.
+
+    Examples
+    --------
+    >>> cfg = BaseDatasetConfig(zarr_file_path="/data/universe/membership.zarr")
+    >>> sorted(cfg.to_dict())
+    ['name', 'zarr_file_path']
+    """
+
+    #: Path of the Zarr store the dataset reads from and writes to.
+    zarr_file_path: str
+
+    #: Dotted import path of the dataset class; filled by the config setter
+    #: and used to rebuild the dataset from its serialised config.
+    name: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
+class RawDatasetConfig(BaseDatasetConfig):
+    """Configure a dataset converted from raw data, and the bounds of the conversion.
 
     Build dates and symbols limit which raw records are converted by
     ``from_raw_data``, ``from_raw_data_chunked`` or ``update``. They do not
     limit reads: ``panel`` takes its own dates and symbol selection.
+    The dataset fills an open-ended date (``None``) with the library's
+    first or last date and refuses a date that is not ISO ``YYYY-MM-DD``.
     For market prices, use ``DatasetConfig`` to also specify market and
     frequency.
 
     Examples
     --------
-    >>> cfg = BaseDatasetConfig(
+    >>> cfg = RawDatasetConfig(
     ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
     ...     start_date="2020-01-01",
     ...     end_date="2020-12-31",
@@ -62,8 +89,6 @@ class BaseDatasetConfig(FrozenConfig):
     (None, None)
     """
 
-    #: Path of the Zarr store the dataset reads from and writes to.
-    zarr_file_path: str
     #: First date to convert from raw files, inclusive. ``None`` means no
     #: lower bound.
     start_date: str | None = None
@@ -76,13 +101,9 @@ class BaseDatasetConfig(FrozenConfig):
     #: ``data_type`` for tick data). ``None`` is treated as empty.
     kwargs: dict | None = None
 
-    #: Dotted import path of the dataset class; filled by the config setter
-    #: and used to rebuild the dataset from its serialised config.
-    name: str | None = None
-
 
 @dataclass(kw_only=True, frozen=True)
-class DatasetConfig(BaseDatasetConfig):
+class DatasetConfig(RawDatasetConfig):
     """Configure market data and the vendor files used to build it.
 
     ``zarr_file_path`` names the stored panel; ``raw_data_dir_path`` names
@@ -1194,7 +1215,7 @@ class FredRateConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
-class ConstituentDatasetConfig(BaseDatasetConfig):
+class ConstituentDatasetConfig(RawDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 
     A cell is True when the symbol was a member of the index on that date.
@@ -1354,14 +1375,16 @@ class FrameDatasetConfig(BaseDatasetConfig):
     A config that names a store is how the panel comes back from disk: a
     ``FrameDataset`` built from it reads that store into memory (the rebuild path of a
     saved backtest run, whose ``config.json`` names the store relative to the run
-    directory). The dates and symbols are unused, as there is nothing to convert from
-    raw files.
+    directory). Nothing is converted from raw files, so there are no build dates or
+    symbols.
 
     Examples
     --------
     >>> cfg = FrameDatasetConfig()
     >>> cfg.zarr_file_path is None
     True
+    >>> sorted(cfg.to_dict())
+    ['name', 'zarr_file_path']
     >>> FrameDatasetConfig(zarr_file_path="copies/prices.zarr").zarr_file_path
     'copies/prices.zarr'
     """
