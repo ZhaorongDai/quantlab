@@ -99,6 +99,8 @@ class DatasetView(MarketDataset):
     True
     """
 
+    _is_view = True
+
     def _normalize_config(self, config):
         """Return ``config`` with ``name`` set; a view's config has no date or resample field."""
         return dataclasses.replace(config, name=self.import_path)

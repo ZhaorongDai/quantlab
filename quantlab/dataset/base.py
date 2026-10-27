@@ -1420,6 +1420,35 @@ class MarketDataset(BaseDataset):
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = DatasetConfig
 
+    #: Whether this class reads other datasets and answers for them (a view).
+    #: A view forwards ``_own_delisting_symbols`` to its inputs, so it may
+    #: change ``delisting_bars`` alone; a leaf may not.
+    _is_view = False
+
+    def __init_subclass__(cls, **kwargs):
+        """Refuse a leaf that overrides ``delisting_bars`` but not ``_own_delisting_symbols``.
+
+        A view asks a leaf for its delisting rule only on the symbols
+        ``_own_delisting_symbols`` returns, none on this root, so such a
+        leaf's rule would be dropped by every view over it.
+
+        Raises
+        ------
+        TypeError
+            If ``cls`` is not a view, overrides ``delisting_bars``, and keeps
+            the root's ``_own_delisting_symbols``.
+        """
+        super().__init_subclass__(**kwargs)
+        if (
+            not cls._is_view
+            and cls.delisting_bars is not MarketDataset.delisting_bars
+            and cls._own_delisting_symbols is MarketDataset._own_delisting_symbols
+        ):
+            raise TypeError(
+                f"{cls.__name__} overrides delisting_bars but not _own_delisting_symbols: "
+                "return the symbols its rule judges, or views over it drop the rule."
+            )
+
     def tradable_bars(self, prices: xr.Dataset, fill_column: str) -> xr.DataArray:
         """Mark, in a price panel, which symbols can be traded at each bar.
 
@@ -1523,8 +1552,9 @@ class MarketDataset(BaseDataset):
         """Return the symbols this dataset delists by a rule of its own, not the default.
 
         None here. A dataset that overrides ``delisting_bars`` with a rule
-        of its own (a vendor's delisting dates) also overrides this hook to
-        return the symbols that rule judges. A view answers for its inputs
+        of its own (a vendor's delisting dates) must also override this hook
+        to return the symbols that rule judges; a leaf that does not is
+        refused when its class is defined. A view answers for its inputs
         (``DatasetView`` forwards it, ``MergedDataset`` combines them), so a
         leaf's rule survives any stack of views; ``MergedDataset.delisting_bars``
         asks an input only on these symbols.

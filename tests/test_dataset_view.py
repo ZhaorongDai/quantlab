@@ -243,51 +243,28 @@ def test_a_permaticker_view_has_no_store_and_reads_the_ticker_store(tmp_path):
 # -- a leaf's own delisting rule reaches the views -----------------------------
 
 
-def _library_market_datasets() -> set[type]:
-    """Every ``MarketDataset`` subclass defined in ``quantlab.dataset``, its modules all imported."""
-    import importlib
-    import pkgutil
-
-    import quantlab.dataset
-
-    for info in pkgutil.walk_packages(quantlab.dataset.__path__, "quantlab.dataset."):
-        importlib.import_module(info.name)
-    found, todo = set(), [MarketDataset]
-    while todo:
-        for subclass in todo.pop().__subclasses__():
-            if subclass not in found:
-                found.add(subclass)
-                todo.append(subclass)
-    return {cls for cls in found if cls.__module__.startswith("quantlab.dataset")}
-
-
-def _rules_without_their_symbols(classes) -> list[str]:
-    """The leaves that override ``delisting_bars`` but leave ``_own_delisting_symbols`` the root's."""
-    return sorted(
-        cls.__name__
-        for cls in classes
-        if not issubclass(cls, DatasetView)
-        and cls.delisting_bars is not MarketDataset.delisting_bars
-        and cls._own_delisting_symbols is MarketDataset._own_delisting_symbols
-    )
-
-
-def test_a_leaf_with_its_own_delisting_rule_declares_the_symbols_it_rules():
+def test_a_leaf_with_its_own_delisting_rule_must_declare_the_symbols_it_rules():
     """A view asks a leaf for its rule only on ``_own_delisting_symbols``, which is none on the root.
 
-    RED under: a leaf in the library that overrides ``delisting_bars`` alone,
-    whose rule every view over it would silently drop.
+    RED under: a leaf that overrides ``delisting_bars`` alone is defined
+    without error, and every view over it silently drops its rule.
     """
+    with pytest.raises(TypeError, match="RuleOnly"):
 
-    class RuleOnly(MarketDataset):
+        class RuleOnly(MarketDataset):
+            def delisting_bars(self, prices, valuation_column):
+                return MarketDataset.delisting_bars(self, prices, valuation_column)
+
+    class RuleAndSymbols(MarketDataset):
         def delisting_bars(self, prices, valuation_column):
             return MarketDataset.delisting_bars(self, prices, valuation_column)
 
-    class RuleAndSymbols(RuleOnly):
         def _own_delisting_symbols(self):
             return self.stored_symbols()
 
-    assert _rules_without_their_symbols([RuleOnly, RuleAndSymbols]) == ["RuleOnly"]
-    library = _library_market_datasets()
-    assert {RosterDataset, PermatickerDataset, MergedDataset, FrameDataset} <= library
-    assert _rules_without_their_symbols(library) == []
+    class ViewRule(DatasetView):
+        def delisting_bars(self, prices, valuation_column):
+            return MarketDataset.delisting_bars(self, prices, valuation_column)
+
+    assert RuleAndSymbols._own_delisting_symbols is not MarketDataset._own_delisting_symbols
+    assert ViewRule._own_delisting_symbols is DatasetView._own_delisting_symbols
