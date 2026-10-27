@@ -40,8 +40,7 @@ class MergedDataset(DatasetView):
     value in two inputs, and outer-joins them. ``bar_before`` counts bars on
     the union of the inputs' calendars. The merged view holds no store and
     no data, so it has no build path; its inputs are its ``inputs()`` and
-    its ``stores()`` theirs. It is not resampled (``resample`` refuses a
-    view): build, save or resample its inputs instead.
+    its ``stores()`` theirs.
 
     As a view of several inputs it defines every member of the read
     interface that ``DatasetView`` forwards for a single input, so a member
@@ -291,8 +290,7 @@ class MergedDataset(DatasetView):
             listed = ", ".join(f"{k}: {v}" for k, v in spacings.items())
             raise ValueError(
                 f"{self.class_name}: the inputs have different bar spacing "
-                f"({listed}). Only panels on the same bars are merged; "
-                f"resample the finer inputs first."
+                f"({listed}). Only panels on the same bars are merged."
             )
 
     def _calendar(self) -> pd.DatetimeIndex:

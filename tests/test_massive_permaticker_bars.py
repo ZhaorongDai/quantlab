@@ -174,23 +174,6 @@ def test_a_symbol_and_variable_request(built):
     assert _cell(narrow, 303, _utc(HALF_DAY, "14:32"))["close"] == 31.0
 
 
-def test_a_resampled_panel_equals_resampling_the_permaticker_panel(built):
-    from quantlab.backend.zarr import XrBackend
-
-    trade_bars, _, dataset = built
-    minute = dataset.panel("2024-11-27", "2024-11-30")
-    labels = pd.Series(trade_bars.resample_labels(minute.timestamp.values, "1h"), index=minute.timestamp.values)
-    expected = XrBackend().to_internal(minute).resample(labels, dict(trade_bars.DEFAULT_RESAMPLE_HOW)).data
-    hourly = dataset.resample("1h").panel("2024-11-27", "2024-11-30")
-    xr.testing.assert_identical(hourly.load(), expected.sel(timestamp=hourly.timestamp).load())
-    # A security without a ticker conflict reads as its ticker's hourly bars.
-    store = trade_bars.resample("1h").panel("2024-11-27", "2024-11-27T23:59").sel(symbol="RRR")
-    np.testing.assert_array_equal(
-        hourly["close"].sel(symbol=303, timestamp=slice("2024-11-27", "2024-11-27T23:59")).values,
-        store["close"].values,
-    )
-
-
 def test_the_data_fingerprint_records_both_stores(built):
     from quantlab.runs.record import DataRecorder
 
@@ -294,17 +277,3 @@ def test_a_symbol_priced_after_the_panel_is_not_delisted(built):
     panel = dataset.panel("2024-11-27", "2024-11-27 23:59")
     marks = dataset.delisting_bars(panel, "close")
     assert not bool(marks.sel(symbol=101).any())
-
-
-def test_a_resampled_view_counts_its_own_bars(built):
-    """The daily resample's calendar is one bar per session, as its panel.
-
-    RED under: the Trade bar store's one-minute calendar answering for the resampled view.
-    """
-    daily = built[2].resample("1d")
-
-    calendar = daily.calendar("2024-11-27", "2024-11-30")
-
-    assert len(calendar) == 2
-    assert calendar.equals(daily.panel("2024-11-27", "2024-11-30").indexes["timestamp"])
-    assert daily.bar_before(calendar[1], 1) == calendar[0]

@@ -98,13 +98,19 @@ dataset = StockDataset(config)
 
 `raw_data_dir_path` is the raw tier and `zarr_file_path` the store. The dates and
 `symbols` bound what the build path converts and `save()` writes; a request takes its
-range as arguments and ignores them. `kwargs` holds dataset-specific options.
+range as arguments and ignores them. `kwargs` holds dataset-specific options. These build
+fields belong to the configs of datasets converted from raw data
+({py:class}`~quantlab.dataset.config.RawDatasetConfig` and the configs deriving from it);
+a dataset that converts nothing, such as a panel held in memory or a factor store read as
+columns, has a config without them.
 
 Configs are frozen; make a changed one with `dataclasses.replace`. The dataset keeps a
 normalised copy: `name` is filled in with the class's dotted import path, which is how a
-saved config is rebuilt into the same class, and a missing date becomes `1900-01-01` or
-`2100-01-01`. Dates must be zero-padded ISO strings, because every date comparison in the
-pipeline is a string comparison; `"2024-2-29"` is refused with a `ValueError`.
+saved config is rebuilt into the same class. A saved config holding a key its class does
+not have is refused. For a dataset built from raw data, a missing date becomes
+`1900-01-01` or `2100-01-01`, and dates must be zero-padded ISO strings, because every
+date comparison in the pipeline is a string comparison; `"2024-2-29"` is refused with a
+`ValueError`.
 
 ## Available datasets
 
@@ -249,28 +255,13 @@ Roster symbols the store lacks are left out and counted in a log line. Factors o
 are read through {py:class}`~quantlab.factor.predefined.roster.RosterFactor`; see
 [Universes](universes.md#reading-whole-market-data-on-a-roster).
 
-**Resampling.** `resample(freq, how)` returns a copy whose `panel()` and `bar_before()`
-answer on coarser bars, for example minute bars into daily bars. `how` names one method
-per variable (`first`, `last`, `max`, `min`, `sum`, `mean`, `count`) or one for every
-variable; NaN cells are skipped.
-
-```python
->>> minute = SpotKlineDataset(config)
->>> daily = minute.resample("1d", {"Open": "first", "Close": "last", "Volume": "sum"})
->>> daily.panel("2024-01-02", "2024-01-03")["Close"].to_pandas()
-symbol      AAAUSDT  BBBUSDT
-timestamp                   
-2024-01-02      4.0     40.0
-2024-01-03      8.0     80.0
->>> daily.bar_before("2024-01-03", 1), minute.bar_before("2024-01-03", 1)
-(Timestamp('2024-01-02 00:00:00'), Timestamp('2024-01-02 00:03:00'))
-```
-
-Bars are cut on the UTC clock and labelled at their start; `NbboPanelDataset` cuts by
-NYSE session instead, so its daily bars line up with daily stores. `save()` on a resampled
-dataset writes a store beside the source, `<name>_resample_<freq>.zarr`, which later reads
-with the same `resample_freq` open instead of resampling again. That store is a cache:
-rebuilding the source does not refresh it.
+**Coarser bars.** A dataset is read on the bars of its store and is not resampled. To
+aggregate minute bars into daily ones, resample a factor computed on the dataset
+(`Factor.resample`, see [Factors](factors.md)). The dataset decides how its bars are cut:
+`resample_labels(timestamps, freq)` returns the coarser bar each timestamp belongs to.
+Bars are cut on the UTC clock and labelled at their start; `NbboPanelDataset` and
+`MassiveTradeBarDataset` cut by NYSE session instead, so their daily bars line up with
+daily stores.
 
 **Your own data.** {py:class}`~quantlab.dataset.memory.FrameDataset` holds a panel handed
 over at construction, from a long-format pandas or polars frame or an xarray panel, with
@@ -300,8 +291,8 @@ variables as the factor reading them expects (`adjClose` and so on for
 **Stored factor panels.** {py:class}`~quantlab.dataset.factor_store.FactorStoreDataset`
 reads a factor store's Zarr panel, such as the daily session statistics of minute bars,
 as panel variables. Its config holds the store's path and an optional `prefix` put before
-every output's name, and nothing else; it reads by date range, never rebuilds the factor
-that wrote the store, and is not resampled. Merged with a price dataset through
+every output's name, and nothing else; it reads by date range and never rebuilds the
+factor that wrote the store. Merged with a price dataset through
 `MergedDataset`, the outputs become columns beside the prices. The merge raises only
 when a cell holds a value in two inputs; columns of the same name over different dates or
 symbols merge into one column. The prefix is how two sources are kept apart: give each

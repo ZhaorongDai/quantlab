@@ -20,8 +20,7 @@ Two views share the mapping, one per store on the Massive ticker:
 Day aggregates (``MassiveDayBarDataset``). A view is a drop-in
 ``MarketDataset``, and a ``DatasetView`` of the store's dataset (``inputs()``):
 the calendar, resample labels, tradable bars and KunQuant export are the
-store's dataset's; ``resample`` aggregates the mapped bars as the store's
-are, per session; the symbols are the permatickers the map names; and the
+store's dataset's; the symbols are the permatickers the map names; and the
 delisting bars are ``MarketDataset``'s rule over the view's own panel, since
 a later price is looked up by permaticker. Only the ticker columns the map
 names are read from the store. A read records the store (through the store's
@@ -36,7 +35,6 @@ aggregate dataset and ``ticker_map`` the Ticker map::
 
     bars = PermatickerTradeBarDataset(trade_bars, ticker_map)
     panel = bars.panel("2020-03-02", "2020-03-03")      # permatickers
-    hourly = bars.resample("1h").panel("2020-03-02", "2020-03-03")
     daily = PermatickerDayBarDataset(day_bars, ticker_map).panel("2020-03-02", "2020-03-06")
 """
 
@@ -53,12 +51,11 @@ import polars as pl
 import xarray as xr
 from loguru import logger
 
-from quantlab.backend.resample import resample_on_read
 from quantlab.dataset.base import MarketDataset
 from quantlab.dataset.config import PermatickerDayBarsConfig, PermatickerTradeBarsConfig
-from quantlab.dataset.massive.day_bars import DAY_BAR_RESAMPLE_HOW, MassiveDayBarDataset
+from quantlab.dataset.massive.day_bars import MassiveDayBarDataset
 from quantlab.dataset.massive.ticker_map import RULES_VERSION, TickerMap
-from quantlab.dataset.massive.trade_bars import TRADE_BAR_RESAMPLE_HOW, MassiveTradeBarDataset
+from quantlab.dataset.massive.trade_bars import MassiveTradeBarDataset
 from quantlab.dataset.view import DatasetView
 from quantlab.runs.record import record_read
 from quantlab.utils.date_range import check_range
@@ -179,20 +176,11 @@ class PermatickerDataset(DatasetView):
                 f"{self.class_name}: {self.SOURCE_FIELD} must be a {self.SOURCE_CLS.__name__}, got "
                 f"{type(source).__name__}."
             )
-        if source.config.resample_freq is not None:
-            raise ValueError(
-                f"{self.class_name}: {self.SOURCE_FIELD} must read the store's own bars; resample this view "
-                f"instead, so tickers are mapped before bars of different days are combined."
-            )
         if not isinstance(config.ticker_map, TickerMap):
             raise ValueError(
                 f"{self.class_name}: ticker_map must be a TickerMap, got {type(config.ticker_map).__name__}."
             )
-        return dataclasses.replace(
-            config,
-            resample_how=None if config.resample_how is None else dict(config.resample_how),
-            name=self.import_path,
-        )
+        return super()._normalize_config(config)
 
     # -- reading ----------------------------------------------------------------
 
@@ -425,48 +413,13 @@ class PermatickerDataset(DatasetView):
             bars.panel("2024-11-27", "2024-11-30", symbols=[303], variables=["close"])["symbol"].values.tolist()
             # [303]
         """
-        freq = self.config.resample_freq
-        if freq is None:
-            return self._mapped_panel(start, end, symbols, variables)
-        check_range(start, end, f"{self.class_name}.panel()")
-        _, data = resample_on_read(
-            lambda first, last: self._mapped_panel(first, last, symbols, None),
-            start, end, freq, self._resample_how(), self.resample_labels, self.class_name,
-        )
-        return data if variables is None else data[list(variables)]
-
-    def resample(self, freq: str, how: dict[str, str] | None = None) -> Self:
-        """Return this view on ``freq`` bars, the mapped bars aggregated per session.
-
-        Parameters
-        ----------
-        freq : str
-            A ``ResampleFrequency`` token, coarser than the store's bars.
-        how : dict[str, str], optional
-            ``{variable: method}``; ``None`` uses the store's defaults.
-
-        Returns
-        -------
-        PermatickerDataset
-            A new view.
-
-        Examples
-        --------
-        With ``bars`` a permaticker view built beforehand (``PermatickerTradeBarDataset``)::
-
-            bars.resample("1h").panel("2024-11-27", "2024-11-30").sizes["timestamp"]
-            # 11
-        """
-        return type(self)(dataclasses.replace(self.config, resample_freq=freq, resample_how=how))
+        return self._mapped_panel(start, end, symbols, variables)
 
     # -- what the view changes about the store dataset's answers ---------------
 
     def _calendar(self) -> pd.DatetimeIndex:
-        """Return the store dataset's calendar, on this view's resampled bars when resampled."""
-        calendar = self.ticker_bars._calendar()
-        if self.config.resample_freq is None:
-            return calendar
-        return pd.DatetimeIndex(np.unique(self.resample_labels(calendar.values, self.config.resample_freq)))
+        """Return the store dataset's calendar."""
+        return self.ticker_bars._calendar()
 
     def delisting_bars(self, prices: xr.Dataset, valuation_column: str) -> xr.DataArray:
         """Mark, in a price panel, the last bar of each permaticker that delisted in it.
@@ -601,9 +554,6 @@ class PermatickerTradeBarDataset(PermatickerDataset):
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = PermatickerTradeBarsConfig
 
-    #: ``resample(freq)`` aggregates each variable as the Trade bars do.
-    DEFAULT_RESAMPLE_HOW = TRADE_BAR_RESAMPLE_HOW
-
     SOURCE_FIELD = "trade_bars"
     SOURCE_CLS = MassiveTradeBarDataset
 
@@ -655,9 +605,6 @@ class PermatickerDayBarDataset(PermatickerDataset):
 
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = PermatickerDayBarsConfig
-
-    #: ``resample(freq)`` aggregates each variable as the Day aggregates do.
-    DEFAULT_RESAMPLE_HOW = DAY_BAR_RESAMPLE_HOW
 
     SOURCE_FIELD = "day_bars"
     SOURCE_CLS = MassiveDayBarDataset

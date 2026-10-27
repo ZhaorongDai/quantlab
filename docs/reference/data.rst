@@ -26,6 +26,8 @@ beside prices with ``MergedDataset``.
    quantlab.dataset.config.FrameDatasetConfig
    quantlab.dataset.config.FactorStoreDatasetConfig
    quantlab.dataset.config.DatasetConfig
+   quantlab.dataset.config.RawDatasetConfig
+   quantlab.dataset.config.BaseDatasetConfig
 
 Extend the dataset API
 ----------------------

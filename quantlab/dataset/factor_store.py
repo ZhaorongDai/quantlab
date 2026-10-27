@@ -6,13 +6,10 @@ variables, optionally under a prefix, so a ``MergedDataset`` puts them
 beside a price dataset's columns.
 """
 
-import dataclasses
-
 import numpy as np
 import polars as pl
 import xarray as xr
 
-from quantlab.core.store_uses import READS, StoreUse
 from quantlab.dataset.base import MarketDataset
 from quantlab.dataset.config import FactorStoreDatasetConfig
 
@@ -31,7 +28,7 @@ class FactorStoreDataset(MarketDataset):
 
     The store is read as it is. The dataset never rebuilds or asks the
     factor that wrote it, so it serves any panel on ``(timestamp, symbol)``
-    whatever built it, and it is not resampled. A missing value stays NaN.
+    whatever built it. A missing value stays NaN.
 
     **Look-ahead contract.** The dataset shifts nothing: the value stored at
     day t is read as day t's value, beside day t's prices. A store read
@@ -46,11 +43,10 @@ class FactorStoreDataset(MarketDataset):
     Notes
     -----
     The config holds only the path and the prefix: a store is read as
-    stored, with no date bounds, conversion or resample in the config.
-    The base class's ``_normalize_config``, ``store_path``, ``store_uses``
-    and ``_resamples_on_read`` read the date and resample fields a dataset
-    config otherwise has, so this class overrides them to name the store
-    and read it on its own bars, and ``resample`` refuses.
+    stored, with no date bounds or conversion in the config. The class
+    changes only how the store is read: ``_open_bars`` and ``head`` put the
+    prefix on every output, and ``_to_kunquant`` exports the columns under
+    those names.
 
     Examples
     --------
@@ -109,69 +105,6 @@ class FactorStoreDataset(MarketDataset):
     #: The config class used to rebuild this dataset from a saved config.
     config_cls = FactorStoreDatasetConfig
 
-    def _normalize_config(self, config: FactorStoreDatasetConfig) -> FactorStoreDatasetConfig:
-        """Return ``config`` with ``name`` set to this class's import path."""
-        return dataclasses.replace(config, name=self.import_path)
-
-    @property
-    def store_path(self) -> str:
-        """Return the factor store's Zarr path.
-
-        Examples
-        --------
-        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
-        >>> from quantlab.dataset.factor_store import FactorStoreDataset
-        >>> FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr")).store_path
-        'stats.zarr'
-        """
-        return self.config.zarr_file_path
-
-    def store_uses(self) -> tuple:
-        """Return the one store the panel reads: the factor store.
-
-        Returns
-        -------
-        tuple of StoreUse
-
-        Examples
-        --------
-        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
-        >>> from quantlab.dataset.factor_store import FactorStoreDataset
-        >>> FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr")).store_uses()
-        (StoreUse(path='stats.zarr', relation='reads', handle=None),)
-        """
-        return (StoreUse(self.store_path, READS),)
-
-    def resample(self, freq: str, how=None):
-        """Refuse: a factor store is read on the bars it was written on.
-
-        Parameters
-        ----------
-        freq : str
-            The frequency asked for; only named in the error.
-        how : dict[str, str] or str, optional
-            The aggregation asked for; not used.
-
-        Raises
-        ------
-        ValueError
-            Always; write a store on the bars wanted instead.
-
-        Examples
-        --------
-        >>> from quantlab.dataset.config import FactorStoreDatasetConfig
-        >>> from quantlab.dataset.factor_store import FactorStoreDataset
-        >>> stats = FactorStoreDataset(FactorStoreDatasetConfig(zarr_file_path="stats.zarr"))
-        >>> stats.resample("1w", "last")
-        Traceback (most recent call last):
-        ValueError: FactorStoreDataset.resample('1w'): a factor store is not resampled; ...
-        """
-        raise ValueError(
-            f"{self.class_name}.resample({freq!r}): a factor store is not "
-            f"resampled; it is read on the bars it was written on. Write a "
-            f"store on the bars wanted instead."
-        )
-
     def head(self, n: int) -> pl.LazyFrame:
         """Return at most ``n`` rows of the store, its outputs under the prefix.
 
@@ -206,10 +139,6 @@ class FactorStoreDataset(MarketDataset):
         frame = super().head(n)
         names = [c for c in frame.collect_schema().names() if c not in ("timestamp", "symbol")]
         return frame.rename(self._prefixed(names))
-
-    def _resamples_on_read(self) -> bool:
-        """Return ``False``: the store is read on its own bars."""
-        return False
 
     def _prefixed(self, names) -> dict[str, str]:
         """Return ``{stored name: panel name}`` for the store's ``names``."""

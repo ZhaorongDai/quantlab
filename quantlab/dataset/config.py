@@ -29,7 +29,6 @@ from quantlab.enums.data import (
     BarInterval,
     Frequency,
     Market,
-    ResampleFrequency,
     Vendor,
 )
 
@@ -43,17 +42,44 @@ if TYPE_CHECKING:
 
 @dataclass(kw_only=True, frozen=True)
 class BaseDatasetConfig(FrozenConfig):
-    """Configure a dataset's stored location and raw-data conversion options.
+    """Configure where a dataset keeps its store.
+
+    What every stored dataset config has: the store's path and the name of
+    the dataset class. A read takes its own dates and symbol selection from
+    ``panel``, so nothing here limits it. A dataset converted from raw data
+    has a config deriving from ``RawDatasetConfig``, which adds the bounds of
+    the conversion.
+
+    Examples
+    --------
+    >>> cfg = BaseDatasetConfig(zarr_file_path="/data/universe/membership.zarr")
+    >>> sorted(cfg.to_dict())
+    ['name', 'zarr_file_path']
+    """
+
+    #: Path of the Zarr store the dataset reads from and writes to.
+    zarr_file_path: str
+
+    #: Dotted import path of the dataset class; filled by the config setter
+    #: and used to rebuild the dataset from its serialised config.
+    name: str | None = None
+
+
+@dataclass(kw_only=True, frozen=True)
+class RawDatasetConfig(BaseDatasetConfig):
+    """Configure a dataset converted from raw data, and the bounds of the conversion.
 
     Build dates and symbols limit which raw records are converted by
     ``from_raw_data``, ``from_raw_data_chunked`` or ``update``. They do not
     limit reads: ``panel`` takes its own dates and symbol selection.
+    The dataset fills an open-ended date (``None``) with the library's
+    first or last date and refuses a date that is not ISO ``YYYY-MM-DD``.
     For market prices, use ``DatasetConfig`` to also specify market and
     frequency.
 
     Examples
     --------
-    >>> cfg = BaseDatasetConfig(
+    >>> cfg = RawDatasetConfig(
     ...     zarr_file_path="/data/us_equity/1d/stock.zarr",
     ...     start_date="2020-01-01",
     ...     end_date="2020-12-31",
@@ -63,8 +89,6 @@ class BaseDatasetConfig(FrozenConfig):
     (None, None)
     """
 
-    #: Path of the Zarr store the dataset reads from and writes to.
-    zarr_file_path: str
     #: First date to convert from raw files, inclusive. ``None`` means no
     #: lower bound.
     start_date: str | None = None
@@ -76,21 +100,10 @@ class BaseDatasetConfig(FrozenConfig):
     #: Free-form options a specific dataset class may read (for example
     #: ``data_type`` for tick data). ``None`` is treated as empty.
     kwargs: dict | None = None
-    #: Bar size the panel is resampled onto when it is requested or saved;
-    #: ``None`` keeps the store's own bars. Set by ``resample()``.
-    resample_freq: ResampleFrequency | None = None
-    #: How each variable is aggregated into a resampled bar: one
-    #: ``ResampleMethod`` for every variable, or a ``{variable: method}``
-    #: dict naming every variable. Required when ``resample_freq`` is set.
-    resample_how: dict[str, str] | str | None = None
-
-    #: Dotted import path of the dataset class; filled by the config setter
-    #: and used to rebuild the dataset from its serialised config.
-    name: str | None = None
 
 
 @dataclass(kw_only=True, frozen=True)
-class DatasetConfig(BaseDatasetConfig):
+class DatasetConfig(RawDatasetConfig):
     """Configure market data and the vendor files used to build it.
 
     ``zarr_file_path`` names the stored panel; ``raw_data_dir_path`` names
@@ -372,8 +385,7 @@ class PermatickerTradeBarsConfig(FrozenConfig):
     """Config of the Trade bars read on the permaticker axis through the Ticker map.
 
     The view holds no store of its own; ``trade_bars`` and ``ticker_map``
-    keep their own configs, both component fields. ``resample_freq`` and
-    ``resample_how`` are set by ``PermatickerTradeBarDataset.resample``.
+    keep their own configs, both component fields.
 
     Examples
     --------
@@ -382,17 +394,13 @@ class PermatickerTradeBarsConfig(FrozenConfig):
 
     >>> cfg = PermatickerTradeBarsConfig(trade_bars=trade_bars, ticker_map=ticker_map)
     >>> sorted(cfg.to_dict())
-    ['name', 'resample_freq', 'resample_how', 'ticker_map', 'trade_bars']
+    ['name', 'ticker_map', 'trade_bars']
     """
 
     #: The Trade bar store on the Massive ticker axis.
     trade_bars: "MassiveTradeBarDataset" = component()
     #: The map from each day's Massive ticker to its permaticker.
     ticker_map: "TickerMap" = component()
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Trade bars' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -401,9 +409,8 @@ class PermatickerTradeBarsConfig(FrozenConfig):
 class MappedTradeBarsConfig(FrozenConfig):
     """Config of the Trade bars mapped onto permatickers and kept in a store of their own.
 
-    ``source`` is the permaticker view the store is written from (its own
-    bars, not resampled); ``zarr_file_path`` is the store. ``resample_freq``
-    and ``resample_how`` are set by ``MappedTradeBarDataset.resample``.
+    ``source`` is the permaticker view the store is written from;
+    ``zarr_file_path`` is the store.
 
     Examples
     --------
@@ -411,17 +418,13 @@ class MappedTradeBarsConfig(FrozenConfig):
 
     >>> cfg = MappedTradeBarsConfig(source=bars, zarr_file_path="/data/massive_permaticker_bars_1m.zarr")
     >>> sorted(cfg.to_dict())
-    ['name', 'resample_freq', 'resample_how', 'source', 'zarr_file_path']
+    ['name', 'source', 'zarr_file_path']
     """
 
     #: The permaticker view the store is written from.
     source: "PermatickerTradeBarDataset" = component()
     #: The store of the mapped bars.
     zarr_file_path: str
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Trade bars' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -440,17 +443,13 @@ class PermatickerDayBarsConfig(FrozenConfig):
 
         cfg = PermatickerDayBarsConfig(day_bars=day_bars, ticker_map=ticker_map)
         sorted(cfg.to_dict())
-        # ['day_bars', 'name', 'resample_freq', 'resample_how', 'ticker_map']
+        # ['day_bars', 'name', 'ticker_map']
     """
 
     #: The Day aggregate store on the Massive ticker axis.
     day_bars: "MassiveDayBarDataset" = component()
     #: The map from each day's Massive ticker to its permaticker.
     ticker_map: "TickerMap" = component()
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Day aggregates' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -459,8 +458,8 @@ class PermatickerDayBarsConfig(FrozenConfig):
 class MappedDayBarsConfig(FrozenConfig):
     """Config of the Day aggregates mapped onto permatickers, adjusted and kept in a store.
 
-    ``source`` is the permaticker view the store is written from (its own
-    bars, not resampled); ``zarr_file_path`` is the store. The adjusted
+    ``source`` is the permaticker view the store is written from;
+    ``zarr_file_path`` is the store. The adjusted
     prices are chained from Massive's split and dividend pulls in the raw
     tier of ``source``'s Day aggregates. ``sep``, when given, is
     SEP's store the adjusted returns are checked against, within
@@ -472,7 +471,7 @@ class MappedDayBarsConfig(FrozenConfig):
 
         cfg = MappedDayBarsConfig(source=bars, sep=sep, zarr_file_path="/data/massive_permaticker_day_bars_1d.zarr")
         sorted(cfg.to_dict())
-        # ['check_tolerance', 'name', 'resample_freq', 'resample_how', 'sep', 'source', 'zarr_file_path']
+        # ['check_tolerance', 'name', 'sep', 'source', 'zarr_file_path']
     """
 
     #: The permaticker view the store is written from.
@@ -484,10 +483,6 @@ class MappedDayBarsConfig(FrozenConfig):
     #: The largest difference of two daily adjusted returns that is not a disagreement, on top of
     #: what SEP's rounding of its closes to 0.001 allows.
     check_tolerance: float = 1e-4
-    #: The coarser bars the panel is resampled to; ``None`` for the store's bars.
-    resample_freq: str | None = None
-    #: ``{variable: method}`` of the resample; ``None`` for the Day aggregates' defaults.
-    resample_how: dict | None = None
     #: Dotted import path of the dataset class; filled by the config setter.
     name: str | None = None
 
@@ -1220,7 +1215,7 @@ class FredRateConfig(DatasetConfig):
 
 
 @dataclass(kw_only=True, frozen=True)
-class ConstituentDatasetConfig(BaseDatasetConfig):
+class ConstituentDatasetConfig(RawDatasetConfig):
     """Config of an index-membership panel (a boolean mask over time and symbol).
 
     A cell is True when the symbol was a member of the index on that date.
@@ -1380,14 +1375,16 @@ class FrameDatasetConfig(BaseDatasetConfig):
     A config that names a store is how the panel comes back from disk: a
     ``FrameDataset`` built from it reads that store into memory (the rebuild path of a
     saved backtest run, whose ``config.json`` names the store relative to the run
-    directory). The dates and symbols are unused, as there is nothing to convert from
-    raw files; the resample fields are set by ``resample()`` as on any dataset.
+    directory). Nothing is converted from raw files, so there are no build dates or
+    symbols.
 
     Examples
     --------
     >>> cfg = FrameDatasetConfig()
     >>> cfg.zarr_file_path is None
     True
+    >>> sorted(cfg.to_dict())
+    ['name', 'zarr_file_path']
     >>> FrameDatasetConfig(zarr_file_path="copies/prices.zarr").zarr_file_path
     'copies/prices.zarr'
     """

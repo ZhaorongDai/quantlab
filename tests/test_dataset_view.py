@@ -11,8 +11,7 @@ What is locked here, and what turns it red:
 - ``DatasetView`` (``quantlab/dataset/view.py``) answers each forwarded member
   from its one input, and with several inputs raises for each one, naming the
   member and the view; ``panel`` is abstract;
-- a view has no store, its inputs declare the stores it reads, and it is not
-  resampled;
+- a view has no store, and its inputs declare the stores it reads;
 - ``RosterDataset`` is a view and defines, of the read interface, only what
   it changes about symbols; everything else is its wrapped dataset's;
 - ``MergedDataset`` is a view of several inputs and defines every forwarded
@@ -42,17 +41,16 @@ from quantlab.dataset.view import DatasetView
 #: Root members that are not forwarded, by why.
 NOT_FORWARDED = {
     # what a view defines or decides itself
-    "panel", "inputs", "store_path", "store_uses", "resample", "copy",
+    "panel", "inputs", "store_path", "store_uses", "copy",
     # answered by the root through the forwarded members
     "calendar", "bar_before", "bar_after", "to_kunquant", "to_shared_names",
     "stores", "_stores_text", "_priced_after",
     # the config and the component lifecycle
-    "config", "class_name", "_normalize_config", "_normalize_date",
+    "config", "class_name", "_normalize_config",
     "_on_config_installed", "from_config", "persist_with_run", "resolve_run_config",
     "_build_settings",
     # a leaf's store reads
-    "_read_store", "_resample_panel", "_resample_how", "_resamples_on_read",
-    "_store_backend", "_open_store", "_open_bars", "_query", "_stored_symbol_axis",
+    "_read_store", "_store_backend", "_open_store", "_open_bars", "_query", "_stored_symbol_axis",
     "_kunquant_arrays",
 }
 
@@ -204,7 +202,7 @@ def _view(kind, prices, roster):
 
 
 @pytest.mark.parametrize("kind", ["test view", "roster", "merge", "bad-print mask"])
-def test_a_view_has_no_store_reads_its_inputs_and_is_not_resampled(stores, kind):
+def test_a_view_has_no_store_and_reads_its_inputs(stores, kind):
     prices, roster = stores
     view, inputs = _view(kind, prices, roster)
 
@@ -212,16 +210,10 @@ def test_a_view_has_no_store_reads_its_inputs_and_is_not_resampled(stores, kind)
     assert view.store_uses() == ()
     found = [(use.component, use.use.relation) for use in walk_store_uses(view)]
     assert found == [(dataset, "reads") for dataset in inputs]
-    with pytest.raises(ValueError, match="resample each input"):
-        view.resample("1d", "last")
 
 
 def test_a_permaticker_view_has_no_store_and_reads_the_ticker_store(tmp_path):
-    """The store on the Massive ticker is read; the Ticker map is only built from.
-
-    The view resamples itself (tickers are mapped before bars of different
-    days are combined), so only the store declaration is locked here.
-    """
+    """The store on the Massive ticker is read; the Ticker map is only built from."""
     from quantlab.dataset.config import MassiveTradeBarsDatasetConfig, TickerMapConfig
     from quantlab.dataset.massive.permaticker_bars import PermatickerTradeBarDataset
     from quantlab.dataset.massive.ticker_map import TickerMap

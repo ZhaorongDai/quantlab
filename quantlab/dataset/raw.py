@@ -30,6 +30,7 @@ raw dataset and has none of these methods.
 
 import copy
 import dataclasses
+import datetime
 import os
 import shutil
 from abc import abstractmethod
@@ -46,7 +47,7 @@ from loguru import logger
 from quantlab.backend.zarr import XrBackend
 from quantlab.dataset._support.cleaning import clean_market_data, clean_membership_panel
 from quantlab.dataset.base import BaseDataset, MarketDataset
-from quantlab.dataset.config import BaseDatasetConfig, ConstituentDatasetConfig
+from quantlab.dataset.config import ConstituentDatasetConfig, RawDatasetConfig
 from quantlab.enums.constant import Date
 from quantlab.utils.progress import CancelToken, ProgressEvent, ProgressReporter
 from quantlab.utils.symbol_axis import sort_symbol_axis
@@ -125,7 +126,7 @@ class RawDataset(BaseDataset):
 
     Parameters
     ----------
-    config : BaseDatasetConfig
+    config : RawDatasetConfig
         The dataset config. It is not modified: the dataset holds a
         normalised copy; see the ``config`` property.
 
@@ -155,7 +156,7 @@ class RawDataset(BaseDataset):
     ``BaseDataset``.
     """
 
-    def __init__(self, config: BaseDatasetConfig):
+    def __init__(self, config: RawDatasetConfig):
         """Initialize the dataset; see the class docstring for parameters.
 
         The backend is created before the config is assigned because a
@@ -188,34 +189,69 @@ class RawDataset(BaseDataset):
         other.config = copy.deepcopy(self.config)
         return other
 
-    def resample(self, freq: str, how: dict[str, str] | str | None = None) -> Self:
-        """Return a copy resampled onto ``freq``, holding the built panel resampled.
+    def _normalize_config(self, config: RawDatasetConfig) -> RawDatasetConfig:
+        """Return ``config`` with ``name`` set and its build dates filled and checked.
 
-        As ``BaseDataset.resample``; when this dataset holds a panel it
-        built, the copy holds that panel resampled, in memory of its own, so
-        ``save()`` writes it. A resampled dataset cannot be built from raw
-        files: ``from_raw_data``, ``from_raw_data_chunked`` and ``update``
-        refuse. ``save()`` writes to ``store_path``, the resampled store
-        beside the source.
+        A missing ``start_date`` or ``end_date`` falls back to
+        ``Date.START_DATE`` or ``Date.END_DATE``. Both dates must be ISO
+        ``YYYY-MM-DD`` strings; a ``datetime.date`` is accepted and
+        converted. Later code compares dates as plain strings, so a value
+        such as ``"2007-2-1"`` would silently compare wrong; it is refused
+        here instead.
+
+        Parameters
+        ----------
+        config : RawDatasetConfig
+            The config to normalise. It is not modified.
+
+        Returns
+        -------
+        RawDatasetConfig
+            A new config of the same class.
 
         Raises
         ------
         ValueError
-            As ``BaseDataset.resample``, or, when this dataset holds a panel,
-            if ``freq`` is not coarser than its bars or ``how`` does not name
-            every variable.
+            If a date is not an ISO ``YYYY-MM-DD`` date.
 
         Examples
         --------
-        >>> built = DemoDataset(minute_config).from_raw_data()
-        >>> built.resample("1d", "last").get_xarray_dataset().sizes["timestamp"]
-        2
+        >>> ds._normalize_config(dataclasses.replace(ds.config, start_date=None)).start_date
+        '1900-01-01'
+        >>> ds._normalize_config(
+        ...     dataclasses.replace(ds.config, start_date="01/02/2024")
+        ... )
+        Traceback (most recent call last):
+        ValueError: DemoDataset: start_date must be an ISO YYYY-MM-DD date ...
         """
-        other = super().resample(freq, how)
-        if self._holds_data():
-            other.data_backend.to_internal(self.data_backend.get_xarray_dataset())
-            other._apply_resample()
-        return other
+        config = super()._normalize_config(config)
+        start_date = Date.START_DATE if config.start_date is None else config.start_date
+        end_date = Date.END_DATE if config.end_date is None else config.end_date
+        return dataclasses.replace(
+            config,
+            start_date=self._normalize_date(start_date, "start_date"),
+            end_date=self._normalize_date(end_date, "end_date"),
+        )
+
+    def _normalize_date(self, value: str, field_name: str) -> str:
+        """Return ``value`` as a zero-padded ISO date string.
+
+        ``field_name`` is used only in the error message.
+
+        Raises
+        ------
+        ValueError
+            If ``value`` is not an ISO ``YYYY-MM-DD`` date.
+        """
+        try:
+            return datetime.date.fromisoformat(str(value)).isoformat()
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"{self.class_name}: {field_name} must be an ISO YYYY-MM-DD "
+                f"date string, got {value!r}. Dates are compared "
+                f"lexicographically throughout this pipeline, so a non-ISO "
+                f"value compares wrong rather than failing to match."
+            ) from exc
 
     def _store_backend(self) -> XrBackend:
         """Return a fresh backend of ``data_backend``'s type, so reads go through the medium written."""
@@ -330,46 +366,11 @@ class RawDataset(BaseDataset):
             ["symbol", "timestamp"]
         ).symbol.values.tolist()
 
-    def _holds_data(self) -> bool:
-        """Return whether the storage backend holds a panel."""
-        try:
-            self.data_backend.data
-        except AttributeError:
-            return False
-        return True
-
-    def _refuse_if_resampled(self, method: str) -> None:
-        """Raise if ``method`` is called on a resampled dataset.
-
-        Raises
-        ------
-        ValueError
-            If ``config.resample_freq`` is set.
-        """
-        if self.config.resample_freq is not None:
-            raise ValueError(
-                f"{self.class_name}.{method}(): a resampled dataset "
-                f"(resample_freq={self.config.resample_freq!r}) is a view of "
-                f"its source store and cannot be built from raw files. Build "
-                f"or update the source dataset, then resample it."
-            )
-
-    def _apply_resample(self) -> None:
-        """Replace the held panel with its resample, per the config."""
-        if self.config.resample_freq is None:
-            return
-        self.data_backend.to_internal(
-            self._resample_panel(self.data_backend.get_xarray_dataset())
-        )
-
     def save(self, **kwargs):
         """Narrow the built panel to the config's range and write it to Zarr.
 
-        The write replaces the whole store directory at ``store_path``: the
-        config's ``zarr_file_path``, or the resampled store beside it when
-        the dataset is resampled. A resampled dataset that holds no panel
-        writes the resample of its whole source store, narrowed to the
-        config's range.
+        The write replaces the whole store directory at ``store_path``, the
+        config's ``zarr_file_path``.
 
         Parameters
         ----------
@@ -383,17 +384,8 @@ class RawDataset(BaseDataset):
         >>> DemoDataset(config).from_raw_data().save()
         >>> Path(config.zarr_file_path).is_dir()
         True
-        >>> DemoDataset(minute_config).resample("1d", "last").save()
-        >>> Path(minute_config.zarr_file_path.replace(".zarr", "_resample_1d.zarr")).is_dir()
-        True
         """
         with Timer(f"{self.__class__.__name__}: save"):
-            if self.config.resample_freq is not None and not self._holds_data():
-                self.data_backend.to_internal(
-                    self._resample_panel(
-                        self._open_store(self.config.zarr_file_path)
-                    )
-                )
             self._filter()
             self.data_backend.create(
                 self.store_path, fill_values=self._widen_fill_values(), **kwargs
@@ -440,7 +432,6 @@ class RawDataset(BaseDataset):
         >>> list(ds.get_xarray_dataset().data_vars)  # cleaning adds the flag
         ['open', 'high', 'low', 'close', 'volume', 'anomaly_flag']
         """
-        self._refuse_if_resampled("from_raw_data")
         data = self._raw_data_to_xr()
         data = self._clean(data)
         self.data_backend.to_internal(data)  # type: ignore
@@ -592,7 +583,6 @@ class RawDataset(BaseDataset):
         >>> ds.last_chunk_result.windows_written
         1
         """
-        self._refuse_if_resampled("from_raw_data_chunked")
         from quantlab.dataset._support.ledger import ChunkLedger, TimeChunkPlanner
 
         # The private marker is accepted by identity; the error lists only the
