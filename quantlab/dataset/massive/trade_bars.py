@@ -194,7 +194,7 @@ class MassiveTradeBarDataset(StockDataset):
 
     Parameters
     ----------
-    dataset_config : MassiveTradeBarsDatasetConfig
+    config : MassiveTradeBarsDatasetConfig
         The raw tier, the store, the date range, the bar size, the session
         window and the roster.
 

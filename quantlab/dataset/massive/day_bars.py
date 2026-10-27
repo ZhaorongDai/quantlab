@@ -71,7 +71,7 @@ class MassiveDayBarDataset(StockDataset):
 
     Parameters
     ----------
-    dataset_config : MassiveDayBarsDatasetConfig
+    config : MassiveDayBarsDatasetConfig
         The raw tier, the store and the date range.
 
     Examples
