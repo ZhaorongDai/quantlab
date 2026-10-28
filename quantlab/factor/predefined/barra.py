@@ -82,6 +82,7 @@ from __future__ import annotations
 import platform
 import warnings
 from dataclasses import dataclass, fields
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -106,6 +107,7 @@ from quantlab.dataset.base import (
     bar_before_on,
     stores_text,
 )
+from quantlab.dataset.merged import MergedDataset
 from quantlab.factor.config import FactorConfig
 from quantlab.factor.kunquant import BATCH_OPTIONS, FactorKunQuant
 from quantlab.factor.kunquant_compile import compile_graphs
@@ -621,6 +623,13 @@ def _present(value: OpBase) -> OpBase:
     return SetInfOrNanToValue(value * 0.0 + 1.0, 0.0)
 
 
+def _leaves(dataset) -> list:
+    """Return the inputs of ``dataset`` that are not merges, merges opened recursively."""
+    if isinstance(dataset, MergedDataset):
+        return [leaf for one in dataset.datasets for leaf in _leaves(one)]
+    return [dataset]
+
+
 def _holds(dataset, name: str) -> bool:
     """Return whether ``dataset`` holds the shared variable ``name``, read from its store schema."""
     names = dataset.head(0).collect_schema().names()
@@ -1011,12 +1020,13 @@ class BarraStyle(FactorKunQuant):
     def _price_bars(self) -> pd.DatetimeIndex:
         """Return the bars of the inputs holding ``price_column``, every one, sorted.
 
-        The dataset itself when it is not a merge. The inputs are found by
-        their store schemas and only their timestamps are read.
+        The inputs are the dataset's leaves, a merge inside a merge opened
+        too, so an input merged beside the prices does not add its dates;
+        the dataset itself when it is not a merge. They are found by their
+        store schemas and only their timestamps are read.
         """
         price = self._parameters().price_column
-        dataset = self.config.dataset
-        inputs = [one for one in getattr(dataset, "datasets", (dataset,)) if _holds(one, price)]
+        inputs = [one for one in _leaves(self.config.dataset) if _holds(one, price)]
         calendars = [one.calendar(_EARLIEST, _LATEST).values for one in inputs]
         return pd.DatetimeIndex(np.unique(np.concatenate(calendars)) if calendars else [])
 
@@ -1050,7 +1060,9 @@ class BarraStyle(FactorKunQuant):
         return self._OUTPUTS
 
     def _validate_config(self) -> None:
-        """Refuse stream mode, and columns or outputs the parameters do not produce."""
+        """Refuse stream mode, resampling, and columns or outputs the parameters do not produce."""
+        if self.config.resample_freq is not None:
+            self._refuse_resample()
         if self.config.mode != "batch":
             raise ValueError(
                 f"{self.class_name} is batch only: its exposures are standardized "
@@ -1067,6 +1079,30 @@ class BarraStyle(FactorKunQuant):
         unknown = sorted(set(self.get_factor_names()) - set(self._OUTPUTS))
         if unknown:
             raise ValueError(f"{self.class_name} received unknown factor_names: {unknown}")
+
+    def resample(self, freq: str, how: dict[str, str] | str) -> Self:
+        """Refuse: the inputs are daily, and no bar coarser than a day exists.
+
+        Raises
+        ------
+        ValueError
+            Always.
+
+        Examples
+        --------
+        >>> barra.resample("1d", "last")
+        Traceback (most recent call last):
+        ValueError: BarraStyle cannot be resampled: ...
+        """
+        self._refuse_resample()
+
+    def _refuse_resample(self) -> None:
+        """Raise the error a resampled BarraStyle is refused with."""
+        raise ValueError(
+            f"{self.class_name} cannot be resampled: its inputs (fundamentals, "
+            f"market cap) are daily and no bar coarser than a day exists, and "
+            f"its calendar counts the price inputs' bars as they are."
+        )
 
     def init_stream(self):
         """Refuse: ``BarraStyle`` has no streaming graph.
