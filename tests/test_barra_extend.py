@@ -10,7 +10,12 @@ What is locked here, and what turns it red:
 - the same with the rate a single ``risk_free_symbol`` whose calendar holds
   dates without trading (FRED's DTB3 on 2025-01-09 and Good Fridays): the
   warm-up is counted in bars with a price, so the dates only the rate has do
-  not shorten it (#252: counted on the merged calendar, RSTR fell short).
+  not shorten it (#252: counted on the merged calendar, RSTR fell short);
+- with that rate symbol the factor calendar is the bars of its output, the
+  price inputs' bars without the dates only the rate has: ``calendar``,
+  ``bar_before`` and ``bar_after`` skip those dates, and a chunked
+  computation is on the same bars as the whole one (on the merged calendar
+  it allocated a row for each, never written).
 
 Synthetic panels of tests/test_barra_style.py; CPU-only and offline.
 """
@@ -24,6 +29,7 @@ import xarray as xr
 
 from quantlab.dataset.config import DatasetConfig
 from quantlab.dataset.stock import StockDataset
+from quantlab.factor.chunking import ChunkedBuilder
 from quantlab.factor.predefined.barra import BarraStyle, BarraStyleParameters
 from tests.test_barra_style import _KWARGS, _T, _config, _inputs, _store
 
@@ -87,3 +93,18 @@ def test_an_extended_bar_equals_the_whole_computation(tmp_path, built_to, rate):
         for name in stored.data_vars
     }
     assert {name: n for name, n in wrong.items() if n} == {}
+
+
+def test_with_a_rate_symbol_the_calendar_is_the_output_bars(tmp_path):
+    factor = BarraStyle(_rate_symbol_config(tmp_path))
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*warm-up bar\(s\) (with a price )?are needed", category=UserWarning)
+        whole = factor.compute(BARS[0], BARS[-1])
+        chunked = ChunkedBuilder(factor, granularity="month").compute(BARS[0], BARS[-1])
+    assert factor.calendar(BARS[0], BARS[-1]).equals(pd.DatetimeIndex(whole["timestamp"].values))
+    saturday = RATE_ONLY_DAYS[0]
+    assert factor.bar_after(saturday - pd.Timedelta(days=1), 1) == saturday + pd.Timedelta(days=2)
+    assert factor.bar_before(saturday + pd.Timedelta(days=2), 1) == saturday - pd.Timedelta(days=1)
+    assert pd.DatetimeIndex(chunked["timestamp"].values).equals(pd.DatetimeIndex(whole["timestamp"].values))
+    for name in whole.data_vars:
+        np.testing.assert_allclose(chunked[name].values, whole[name].values, rtol=1e-9, atol=1e-12, equal_nan=True)
