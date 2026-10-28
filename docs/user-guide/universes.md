@@ -91,6 +91,10 @@ or a bad print masked by `BadPrintMaskedDataset`, which is how `prices` should b
 has no dollar volume rather than zero, while a priced bar on which nothing traded counts as
 $0. Fewer than `min_bars` priced bars in the window, or a member the prices do not hold, is
 not a member; `price_floor`, off by default, also requires the previous bar's price.
+The prices must be daily, one bar a date; intraday bars are refused. The panel runs to the
+last price bar, so days on which no member clears the floor read `False` for every symbol,
+and a floor no member ever clears gives a panel without symbols, on which every symbol reads
+`False`.
 Set the floor from the book the universe has to carry, not from backtest returns: an
 order of at most 5% of a day's volume needs a floor of 20 times the position per name.
 The config is a {py:class}`~quantlab.dataset.config.LiquidConstituentDatasetConfig`

@@ -57,6 +57,10 @@ class LiquidConstituentDataset(IndexConstituentDataset):
     days inside a run (a weekend) read as member. The coverage starts where
     the universe's does; the prices are read from ``window`` bars before it,
     so the first bars have a full window when the prices go back that far.
+    It ends on the last price bar in the universe's dates, so days on which
+    no member clears the floor stay on the panel; a floor no member ever
+    clears gives a panel without symbols. The prices are daily, one bar a
+    date: membership is a date's, known at its open.
 
     Parameters
     ----------
@@ -71,7 +75,7 @@ class LiquidConstituentDataset(IndexConstituentDataset):
     ValueError
         If ``floor`` is negative, ``window`` below 1, or ``min_bars``
         outside ``1 .. window``; when built, if the prices hold no bar in
-        the universe's dates.
+        the universe's dates or hold intraday bars.
 
     Examples
     --------
@@ -121,6 +125,12 @@ class LiquidConstituentDataset(IndexConstituentDataset):
         """Return the universe's first date."""
         return config.members.config.start_date
 
+    def _pit_coverage_end(self, config: LiquidConstituentDatasetConfig) -> str | None:
+        """Return the last price bar on the universe's dates: the rule is observed through it, members or not."""
+        days = config.members.calendar(config.start_date, config.end_date)
+        bars = config.prices.calendar(days[0], days[-1]) if len(days) else days
+        return bars[-1].strftime("%Y-%m-%d") if len(bars) else None
+
     def _build_intervals(self) -> pl.DataFrame:
         """Return one ``symbol``/``start_date``/``end_date`` row per run of member bars."""
         config = self.config
@@ -132,6 +142,15 @@ class LiquidConstituentDataset(IndexConstituentDataset):
             read_from = config.prices.bar_before(first, config.window)
         except InsufficientHistoryError as short:
             read_from = config.prices.bar_before(first, short.available) if short.available else first
+        stamps = config.prices.calendar(read_from, last)
+        if (stamps != stamps.normalize()).any():
+            # Membership is a date's, read on the universe's midnight days: an intraday bar's would
+            # hold from its date's open, before the bar.
+            raise ValueError(
+                f"{self.class_name}: needs daily prices, one bar a date stamped at midnight; "
+                f"{config.prices.stores()} hold bars at other times (intraday bars, or daily bars "
+                f"stamped at the close)."
+            )
         # A member the prices do not hold (a vendor dropped it) has no dollar volume, so it is not a member.
         held = set(config.prices.stored_symbols())
         prices = config.prices.panel(

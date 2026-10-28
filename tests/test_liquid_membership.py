@@ -19,11 +19,15 @@ Every value is SYNTHETIC.
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
+import pytest
 import xarray as xr
 
 from quantlab.core.store_folder import load_component, save_component
+from quantlab.dataset.bad_prints import BadPrintMaskedDataset
 from quantlab.dataset.common_stock import CommonStockConstituentDataset
 from quantlab.dataset.config import ConstituentDatasetConfig, FrameDatasetConfig, LiquidConstituentDatasetConfig
 from quantlab.dataset.liquid import LiquidConstituentDataset
@@ -119,8 +123,8 @@ def test_a_member_clears_the_floor_on_the_median_dollar_volume_before_the_bar(tm
     assert not panel.sel(timestamp=DAYS[:FIRST_MEMBER_BAR]).any()
     assert panel["timestamp"].values[-1] == DAYS[-1]
     assert _member_bars(panel, A) == every_bar
-    # One bar of 10,000 among 100s: the median stays at 100.
-    assert _member_bars(panel, B) == []
+    # One bar of 10,000 among 100s: the median stays at 100, so B is never a member and not on the axis.
+    assert SYMBOLS[B] not in panel["symbol"].values
     # Bars 7..12 hold three 100s and three 1,000s on bar 13 (median 550); a window
     # holding the bar itself would have let C in on bar 12.
     assert _member_bars(panel, C) == list(range(13, len(DAYS)))
@@ -155,7 +159,7 @@ def test_update_appends_the_new_bars_as_a_build_from_scratch_has_them(tmp_path):
     after = updated.panel(DAYS[0], DAYS[-1])["is_member"].load()
     expected = rebuilt.get_xarray_dataset()["is_member"]
     assert after["timestamp"].values[-1] == DAYS[-1]
-    xr.testing.assert_equal(after.sel(symbol=expected["symbol"]), expected)
+    xr.testing.assert_equal(after, expected)
     assert _member_bars(after, C) == list(range(13, len(DAYS)))
 
 
@@ -177,5 +181,58 @@ def test_a_member_the_prices_do_not_hold_is_not_a_member(tmp_path):
     prices = _prices().drop_sel(symbol=SYMBOLS[E])
     panel = _liquid(tmp_path, _price_dataset(tmp_path, prices)).from_raw_data().get_xarray_dataset()["is_member"]
 
-    assert _member_bars(panel, E) == []
+    assert SYMBOLS[E] not in panel["symbol"].values
     assert _member_bars(panel, A) == list(range(FIRST_MEMBER_BAR, len(DAYS)))
+
+
+def test_bars_on_which_no_member_clears_the_floor_stay_on_the_panel(tmp_path):
+    prices = _prices()
+    # Nothing trades from bar 8: A's window holds three zeros on bar 11 (a median of 100), and
+    # from bar 12 every window holds at least four, a median of 0.
+    prices["volume"][8:, :] = 0
+    panel = _liquid(tmp_path, _price_dataset(tmp_path, prices)).from_raw_data().get_xarray_dataset()["is_member"]
+
+    assert panel["timestamp"].values[-1] == DAYS[-1]
+    assert not panel.sel(timestamp=DAYS[12:]).any()
+    assert _member_bars(panel, A) == list(range(FIRST_MEMBER_BAR, 11))
+
+
+def test_a_floor_no_member_clears_gives_a_panel_without_symbols(tmp_path):
+    prices = _price_dataset(tmp_path, _prices())
+    liquid = _liquid(tmp_path, prices)
+    never = LiquidConstituentDataset(dataclasses.replace(liquid.config, floor=1e12)).update()
+    panel = never.panel(DAYS[0], DAYS[-1])["is_member"].load()
+
+    assert panel["symbol"].size == 0
+    assert panel["symbol"].dtype == np.int64  # the universe's axis type, so its symbols can be asked about
+    assert (panel["timestamp"].values[0], panel["timestamp"].values[-1]) == (DAYS[0], DAYS[-1])
+    # No symbol is a member: asking about the universe's symbols answers False, not a wrong-axis error.
+    assert not never.is_member_at(DAYS[FIRST_MEMBER_BAR:], SYMBOLS).any()
+
+
+def test_prices_masked_over_several_stores_read_the_symbols_of_every_store(tmp_path):
+    # The documented way to pass prices, here over two stores: the price store and a caps store.
+    caps = xr.Dataset(
+        {"marketcap": (("timestamp", "symbol"), np.ones((len(DAYS), len(SYMBOLS))))},  # SYNTHETIC
+        coords={"timestamp": DAYS, "symbol": SYMBOLS},
+    )
+    caps.to_zarr(tmp_path / "caps.zarr", mode="w")
+    masked = BadPrintMaskedDataset(
+        [_price_dataset(tmp_path, _prices()), FrameDataset(FrameDatasetConfig(zarr_file_path=str(tmp_path / "caps.zarr")))],
+        price_variable="close", volume_variable="volume",
+    )
+    panel = _liquid(tmp_path, masked).from_raw_data().get_xarray_dataset()["is_member"]
+
+    assert _member_bars(panel, A) == list(range(FIRST_MEMBER_BAR, len(DAYS)))
+    assert _member_bars(panel, C) == list(range(13, len(DAYS)))
+
+
+def test_intraday_prices_are_refused(tmp_path):
+    # Two bars a day, at 10:00 and 15:00: a bar's membership would not be known at its date's open.
+    daily = _prices()
+    hours = pd.DatetimeIndex([d + pd.Timedelta(hours=h) for d in DAYS for h in (10, 15)])
+    intraday = daily.isel(timestamp=np.repeat(np.arange(len(DAYS)), 2)).assign_coords(timestamp=hours)
+    liquid = _liquid(tmp_path, _price_dataset(tmp_path, intraday))
+
+    with pytest.raises(ValueError, match="needs daily prices"):
+        liquid.from_raw_data()

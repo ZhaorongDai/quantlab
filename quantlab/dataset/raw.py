@@ -1352,7 +1352,8 @@ class IndexConstituentDataset(RawDataset):
 
     A subclass implements two hooks: ``_pit_coverage_start`` (the earliest
     date the source can answer membership for) and ``_build_intervals`` (the
-    membership intervals). Everything else is shared. Config normalisation
+    membership intervals); it may override a third, ``_pit_coverage_end``
+    (the last date it has observed). Everything else is shared. Config normalisation
     raises ``start_date`` to the coverage start, ``_densify`` turns the
     intervals into the ``is_member`` grid, and ``_clean`` validates the panel
     instead of running the price-data (OHLCV) cleaner. The class derives
@@ -1499,8 +1500,10 @@ class IndexConstituentDataset(RawDataset):
 
         The first date is ``max(config.start_date, coverage start)``. The
         last date is ``min(config.end_date, horizon)``. ``horizon`` is the
-        latest date in the table; if any interval is still open it is
-        extended to ``config.as_of``, or to today when ``as_of`` is unset.
+        coverage end (``_pit_coverage_end``) when the source gives one, so
+        dates on which no symbol is a member stay on the panel; otherwise it
+        is the latest date in the table, and if any interval is still open it
+        is extended to ``config.as_of``, or to today when ``as_of`` is unset.
         Set ``as_of`` when the panel must be reproducible. Cutting back an
         explicitly requested ``end_date`` logs a warning; the inherited
         default (``Date.END_DATE``) is cut back silently. Each interval
@@ -1522,13 +1525,14 @@ class IndexConstituentDataset(RawDataset):
         Raises
         ------
         ValueError
-            If the table is empty, any row has a null ``start_date``, or the
-            resolved date range is empty.
+            If the table is empty without a coverage end, any row has a null
+            ``start_date``, or the resolved date range is empty.
         """
         rows = intervals.select(
             ["symbol", "start_date", "end_date"]
         ).to_dicts()
-        if not rows:
+        coverage_end = self._pit_coverage_end(self.config)
+        if not rows and coverage_end is None:
             raise ValueError(
                 f"{self.class_name}: the membership-interval table is empty; "
                 f"there is no membership history to densify."
@@ -1560,29 +1564,32 @@ class IndexConstituentDataset(RawDataset):
             max(self.config.start_date, self._pit_coverage_start(self.config))
         )
 
-        observed = max(
-            pd.Timestamp(row["start_date"]) for row in rows
-        )
-        closed_ends = [
-            pd.Timestamp(row["end_date"])
-            for row in rows
-            if row["end_date"] is not None
-        ]
-        if closed_ends:
-            observed = max(observed, max(closed_ends))
-        has_open_membership = any(row["end_date"] is None for row in rows)
-        if has_open_membership:
-            # An open membership is still current, so the last recorded change
-            # is only a lower bound on the last date. config.as_of fixes it;
-            # without it today's date is used, which is not reproducible.
-            today = (
-                pd.Timestamp(self.config.as_of)
-                if self.config.as_of is not None
-                else pd.Timestamp.today().normalize()
-            )
-            horizon = max(observed, today)
+        if coverage_end is not None:
+            horizon = pd.Timestamp(coverage_end)
         else:
-            horizon = observed
+            observed = max(
+                pd.Timestamp(row["start_date"]) for row in rows
+            )
+            closed_ends = [
+                pd.Timestamp(row["end_date"])
+                for row in rows
+                if row["end_date"] is not None
+            ]
+            if closed_ends:
+                observed = max(observed, max(closed_ends))
+            has_open_membership = any(row["end_date"] is None for row in rows)
+            if has_open_membership:
+                # An open membership is still current, so the last recorded change
+                # is only a lower bound on the last date. config.as_of fixes it;
+                # without it today's date is used, which is not reproducible.
+                today = (
+                    pd.Timestamp(self.config.as_of)
+                    if self.config.as_of is not None
+                    else pd.Timestamp.today().normalize()
+                )
+                horizon = max(observed, today)
+            else:
+                horizon = observed
 
         requested_right = pd.Timestamp(self.config.end_date)
         right = min(requested_right, horizon)
@@ -1619,9 +1626,11 @@ class IndexConstituentDataset(RawDataset):
             mask = (timestamps >= start) & (timestamps <= end)
             values[mask, column_of[row["symbol"]]] = True
 
+        # An empty table keeps its symbol column's type, so the empty axis is the one asked about.
+        axis = np.asarray(symbols) if symbols else intervals["symbol"].to_numpy()
         return xr.Dataset(
             {"is_member": (["timestamp", "symbol"], values)},
-            coords={"timestamp": timestamps, "symbol": np.asarray(symbols)},
+            coords={"timestamp": timestamps, "symbol": axis},
         )
 
     @abstractmethod
@@ -1632,6 +1641,18 @@ class IndexConstituentDataset(RawDataset):
         It reads ``config``, not ``self.config``: normalisation calls it on
         a config not yet installed, and it changes nothing on ``self``.
         """
+
+    def _pit_coverage_end(self, config: ConstituentDatasetConfig) -> str | None:
+        """Return the ISO date of the last day the source has observed, or None to read it off the intervals.
+
+        A source whose intervals end where its observations do (the last
+        membership change, an open interval running to ``as_of``) keeps the
+        default. One that observes days on which no symbol is a member gives
+        its last observed day, so those days stay on the panel and a source
+        with no member at all still has one. It reads ``config``, as
+        ``_pit_coverage_start`` does.
+        """
+        return None
 
     @abstractmethod
     def _build_intervals(self) -> pl.DataFrame:
@@ -1690,7 +1711,9 @@ class IndexConstituentDataset(RawDataset):
         timestamps = pd.DatetimeIndex(np.asarray(timestamps))
         symbols = np.asarray(symbols)
         owner = owner or type(self).__name__
-        if len(symbols) and not pd.Index(symbols).isin(self.stored_symbols()).any():
+        stored = self.stored_symbols()
+        # A panel without symbols (no member ever) answers False for any symbol, on either axis type.
+        if len(symbols) and len(stored) and not pd.Index(symbols).isin(stored).any():
             raise ValueError(
                 f"{owner}: none of the {len(symbols)} symbol(s) asked about is on the "
                 f"symbol axis of {type(self).__name__}'s store (labels {symbols[:3].tolist()} "

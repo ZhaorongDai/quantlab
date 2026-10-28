@@ -15,7 +15,12 @@ compatibility shims or config migrations.
   `floor`. Bar t is not read, so membership at t is known at t's open; an unpriced bar has no
   dollar volume, and fewer than `min_bars` priced bars, or a member the prices do not hold,
   is not a member (defaults `window=60`, `min_bars=45`); `price_floor`, off by default, also
-  requires the previous bar's price.
+  requires the previous bar's price. The prices must be daily; the panel runs to their last
+  bar, days without a member included.
+- A membership dataset may override `_pit_coverage_end(config)`, the last date its source has
+  observed: the panel then runs to it, days on which no symbol is a member included, and an
+  empty interval table gives a panel without symbols instead of raising. The default reads
+  the horizon off the intervals as before.
 - The `LibraryModel` training target `"cs_rank_gauss"`
   (`quantlab.model.torch_training.cs_rank_gauss`): each bar's rank-Gauss (van der Waerden)
   score of the label, `Phi^-1(rank / (n + 1))` with ties averaged, beside `"cs_rank"` and
