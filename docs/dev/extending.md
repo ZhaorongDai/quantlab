@@ -1000,7 +1000,7 @@ in training), `_transform_feature` (clip to ±3, NaN to 0), `_transform_target` 
 (`epochs`, `lr`, `batch_size`, `num_workers`, `pin_memory`, `prefetch`, `panel_device`,
 `panel_dtype`, `early_stopping`, `early_stopping_patience`), so read the head's own keys
 by name rather than splatting the dict into the network. {py:mod}`quantlab.model.torch_training`
-has helpers: `masked_mse`, `cs_rank_norm`, `cs_zscore`, `drop_extreme` and
+has helpers: `masked_mse`, `cs_rank_norm`, `cs_rank_gauss`, `cs_zscore`, `drop_extreme` and
 `TrainLossThreshold`.
 
 {py:class}`~quantlab.model.predefined.gats.GATsRegressor` and
