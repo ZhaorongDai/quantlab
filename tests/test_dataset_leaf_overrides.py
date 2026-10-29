@@ -90,6 +90,9 @@ LEAF_OVERRIDES: dict[str, dict[str, str]] = {
     "CrspMarketConstituentDataset": {},
     "CommonStockConstituentDataset": {},
     "EstuConstituentDataset": {},
+    "LiquidConstituentDataset": {
+        "_normalize_config": "checks the universe it filters before the base normalisation and the liquidity rule after it",
+    },
     "SharadarSP500ConstituentDataset": {},
     "StockDataset": {"_to_kunquant": _EXPORTS_COLUMNS},
     "SpotKlineDataset": {"_to_kunquant": "renames the vendor columns to the shared names and exports them"},

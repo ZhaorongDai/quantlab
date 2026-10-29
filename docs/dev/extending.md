@@ -230,6 +230,10 @@ boundary from it. A real fetcher inherits the Wikipedia change-log parser and se
 overrides `fetch_changes` so that it runs offline. The panel subclasses
 {py:class}`~quantlab.dataset.raw.IndexConstituentDataset`; it reads the fetcher's cache, so it
 takes a {py:class}`~quantlab.dataset.config.FileConstituentDatasetConfig` (`config_cls`).
+It implements `_pit_coverage_start`, the first date the source answers for, and
+`_build_intervals`. The panel ends on the intervals' last date (or `as_of` while one is
+open); a source that observes days on which no symbol is a member also overrides
+`_pit_coverage_end(config)` with its last observed date, so those days stay on the panel.
 
 ```python
 >>> import os, tempfile
@@ -1000,7 +1004,7 @@ in training), `_transform_feature` (clip to ±3, NaN to 0), `_transform_target` 
 (`epochs`, `lr`, `batch_size`, `num_workers`, `pin_memory`, `prefetch`, `panel_device`,
 `panel_dtype`, `early_stopping`, `early_stopping_patience`), so read the head's own keys
 by name rather than splatting the dict into the network. {py:mod}`quantlab.model.torch_training`
-has helpers: `masked_mse`, `cs_rank_norm`, `cs_zscore`, `drop_extreme` and
+has helpers: `masked_mse`, `cs_rank_norm`, `cs_rank_gauss`, `cs_zscore`, `drop_extreme` and
 `TrainLossThreshold`.
 
 {py:class}`~quantlab.model.predefined.gats.GATsRegressor` and
