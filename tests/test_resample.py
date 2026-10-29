@@ -143,6 +143,46 @@ def test_xr_backend_resample_count_and_mean():
     assert backend.data["Close"].values[0].tolist() == [3.5, 35.0]
 
 
+def test_xr_backend_resample_an_all_nan_bar():
+    panel = _minute_panel()[["Close"]]
+    panel["Close"][:BARS_PER_DAY, 0] = np.nan  # every bar of day one, first symbol
+    labels = _labels(panel["timestamp"].values)
+
+    for method in ("first", "last", "max", "min", "mean"):
+        daily = XrBackend().to_internal(panel).resample(labels, {"Close": method}).data
+        assert np.isnan(daily["Close"].values[0, 0]), method
+        assert not np.isnan(daily["Close"].values[0, 1]), method
+    daily = XrBackend().to_internal(panel).resample(labels, {"Close": "sum"}).data
+    assert daily["Close"].values[0].tolist() == [0.0, 210.0]
+    daily = XrBackend().to_internal(panel).resample(labels, {"Close": "count"}).data
+    assert daily["Close"].values[0].tolist() == [0, 6]
+    assert daily["Close"].dtype == np.dtype("int64")
+
+
+def test_xr_backend_resample_keeps_layout_attrs_and_untimed_variables():
+    panel = _minute_panel()[["Close"]]
+    panel["Close"].attrs["unit"] = "usd"
+    panel["Weight"] = ("symbol", [0.25, 0.75])
+    panel["Close_T"] = panel["Close"].transpose("symbol", "timestamp")
+    panel.attrs["source"] = "demo"
+    labels = _labels(panel["timestamp"].values)
+
+    daily = XrBackend().to_internal(panel).resample(
+        labels, {"Close": "last", "Weight": "last", "Close_T": "last"}
+    ).data
+
+    assert daily["Close"].attrs == {"unit": "usd"}
+    assert daily.attrs == {"source": "demo"}
+    assert daily["Weight"].values.tolist() == [0.25, 0.75]
+    assert tuple(daily["Close_T"].dims) == ("timestamp", "symbol")
+    assert daily["Close_T"].values[:, 1].tolist() == [60.0, 120.0, 180.0]
+    assert daily["symbol"].values.tolist() == SYMBOLS
+
+    untimed = panel[["Weight"]].assign_coords(timestamp=panel["timestamp"])
+    daily = XrBackend().to_internal(untimed).resample(labels, {"Weight": "last"}).data
+    assert daily.sizes == {"symbol": 2, "timestamp": DAYS}
+
+
 def test_xr_backend_resample_refuses_a_missing_label_or_method():
     panel = _minute_panel()[["Close"]]
     backend = XrBackend().to_internal(panel)
