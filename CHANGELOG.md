@@ -8,6 +8,19 @@ compatibility shims or config migrations.
 
 ### Added
 
+- `LivePredictionStore.panel(start, end)`, the live predictions of a date range on
+  `(timestamp, symbol)`, and `LivePredictionStore.check_owner(run)`, the reader's check that
+  the store holds the predictions of that run's current checkpoint and labels.
+- `BaseDataset.last_bar()`, the last bar of a dataset's calendar (or `None`);
+  `quantlab.backtest.live.last_bar` answers with it.
+- `DecisionInputs.from_run` takes an open `BacktestRun` as well as a directory, and
+  `price_dataset=`, the run's price dataset already rebuilt by the caller, so a process reading
+  the run itself opens it once and reads one price dataset.
+- `TickerLookup.listings(symbols, day)` and `Listing`: the ticker and primary exchange of each
+  symbol as of a day, `None` when unknown, for code that sends orders. The Sharadar ticker
+  sidecar records each permaticker's current exchange from TICKERS on its current ticker's span,
+  and `SharadarTickerLookup.listings` reads it; a merged dataset lists each symbol through the
+  first input that knows its ticker.
 - `LiquidConstituentDataset` (`quantlab.dataset.liquid`, config
   `LiquidConstituentDatasetConfig`): a liquid universe, the members of another membership
   panel (`members`, such as the us3000 `EstuConstituentDataset`) whose median dollar volume,

@@ -222,6 +222,17 @@ lookup.names([194817], date(2022, 6, 8))  # [SymbolName(ticker='FB', company='FA
 lookup.label([194817], date(2022, 6, 9))  # ['META']
 ```
 
+The sidecar also records the exchange each permaticker is listed on now (TICKERS' `exchange`:
+`NYSE`, `NASDAQ`, `NYSEMKT`, `NYSEARCA`, `BATS`), on its current ticker's span. `listings`
+answers for code that sends orders: the ticker and primary exchange as of a day, `None` where
+either is unknown (a permaticker the sidecar does not know, or an earlier ticker, whose
+exchange TICKERS does not keep), and it raises when the sidecar is missing rather than
+falling back to the ids:
+
+```python
+lookup.listings([194817], date(2026, 10, 7))  # [Listing(ticker='META', exchange='NASDAQ')]
+```
+
 {py:func}`~quantlab.dataset.sharadar.stores.write_ticker_sidecars` writes the sidecars of existing
 stores from the raw tier without downloading.
 

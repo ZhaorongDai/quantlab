@@ -14,7 +14,9 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.dataset.bad_prints import BadPrintMaskedDataset
-from quantlab.dataset.base import SymbolName, TickerLookup
+import pytest
+
+from quantlab.dataset.base import Listing, SymbolName, TickerLookup
 from quantlab.dataset.memory import FrameDataset
 from quantlab.dataset.merged import MergedDataset
 
@@ -28,6 +30,12 @@ class _Fixed(TickerLookup):
 
     def names(self, symbols, day):
         return [self.known.get(s, SymbolName(str(s))) for s in symbols]
+
+    def listings(self, symbols, day):
+        return [
+            Listing(self.known[s].ticker, "NYSE") if s in self.known else Listing(None, None)
+            for s in symbols
+        ]
 
 
 class _Named(FrameDataset):
@@ -76,3 +84,24 @@ def test_a_bad_print_masked_view_names_symbols_as_its_inputs_do():
     prices = _dataset([1, 2], {1: SymbolName("AAA", "Aaa Inc")})
     lookup = BadPrintMaskedDataset([prices], price_variable="close", volume_variable="close").ticker_lookup()
     assert lookup.names([1, 2], DAY) == [SymbolName("AAA", "Aaa Inc"), SymbolName("2", None)]
+
+
+def test_each_symbol_is_listed_by_the_input_whose_lookup_lists_it():
+    index = _dataset([1, 2], {1: SymbolName("AAA")})
+    etf = _dataset([3], {3: SymbolName("SPY")})
+    lookup = MergedDataset([index, etf]).ticker_lookup()
+    assert lookup.listings([3, 1, 2], DAY) == [
+        Listing("SPY", "NYSE"), Listing("AAA", "NYSE"), Listing(None, None),
+    ]
+
+
+def test_a_merge_lists_nothing_when_an_input_lookup_records_no_listings():
+    class _NamesOnly(TickerLookup):
+        def names(self, symbols, day):
+            return [SymbolName("AAA") for _ in symbols]
+
+    index = _dataset([1], {1: SymbolName("AAA")})
+    other = _dataset([2])
+    other.lookup = _NamesOnly()
+    with pytest.raises(NotImplementedError, match="_NamesOnly records no listings"):
+        MergedDataset([index, other]).ticker_lookup().listings([2], DAY)

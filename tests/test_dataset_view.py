@@ -43,7 +43,7 @@ NOT_FORWARDED = {
     # what a view defines or decides itself
     "panel", "inputs", "store_path", "store_uses", "copy",
     # answered by the root through the forwarded members
-    "calendar", "bar_before", "bar_after", "to_kunquant", "to_shared_names",
+    "calendar", "bar_before", "bar_after", "last_bar", "to_kunquant", "to_shared_names",
     "stores", "_stores_text", "_priced_after",
     # the config and the component lifecycle
     "config", "class_name", "_normalize_config",

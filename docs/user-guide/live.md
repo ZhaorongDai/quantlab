@@ -17,7 +17,9 @@ The run directory is the strategy's recipe: it rebuilds the backtester
 ({py:meth}`~quantlab.runs.backtest_run.BacktestRun.rebuild_backtester`), and its trained unit
 holds the checkpoint.
 
-1. **The bar.** t is the last bar of the run's price dataset.
+1. **The bar.** t is the last bar of the run's price dataset
+   ({py:meth}`~quantlab.dataset.base.BaseDataset.last_bar`), the bar an executor reading the
+   same dataset decides.
 2. **The inputs.** Every component declares the stores it uses
    ({py:class}`~quantlab.core.store_uses.StoreUse`): `reads` (read on the day), `owns` (written
    by date range and extended by it) or `source` (its store is written from it). The job walks
@@ -64,7 +66,9 @@ features). One bar is appended per run. The symbol axis is the union of every ro
 new ones appended at the end; a new symbol's earlier rows are NaN. The attributes match a
 run's prediction panel, so {py:meth}`PredictionPanel.read <quantlab.runs.prediction_panel.PredictionPanel.read>`
 reads the whole store, and they name the run directory and checkpoint: a store holds one run
-and one checkpoint, and a writer with another is refused.
+and one checkpoint, and a writer with another is refused. A reader checks the same with `check_owner(run_dir)`, which
+compares the store with the run's current checkpoint and labels, so a retrained checkpoint
+under the same run directory is refused too.
 
 Beside the store, `<store>.rows.json` holds each row's record: when it was written, the
 checkpoint, what the prediction read (digests by component path), what the job did to each
@@ -79,6 +83,8 @@ store = LivePredictionStore("/data/quantlab/live/my_strategy/live_predictions.za
 store.has("2026-10-07")                 # True once the job has run
 row = store.row("2026-10-07")           # Dataset: ret_5 on (symbol,)
 store.record("2026-10-07")["checkpoint"]
+store.panel("2026-10-01", "2026-10-07")  # Dataset: ret_5 on (timestamp, symbol)
+store.check_owner(run_dir)              # ValueError unless the rows are this run's checkpoint's
 # Or without quantlab:
 xr.open_zarr(store.path).sel(timestamp="2026-10-07")["ret_5"]
 ```

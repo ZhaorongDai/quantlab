@@ -55,9 +55,10 @@ import pandas as pd
 import xarray as xr
 
 from quantlab.backend.zarr import XrBackend
+from quantlab.runs.backtest_run import BacktestRun
 from quantlab.runs.prediction_panel import LabelSpec, PredictionPanel
 from quantlab.utils.atomic import write_json_atomically
-from quantlab.utils.date_range import bar_label
+from quantlab.utils.date_range import bar_label, last_moment
 from quantlab.utils.jsonable import to_jsonable
 
 __all__ = ["LivePredictionStore"]
@@ -193,6 +194,48 @@ class LivePredictionStore:
         row.attrs = {}
         return row
 
+    def panel(self, start=None, end=None) -> xr.Dataset:
+        """The predictions of the bars from ``start`` to ``end``, loaded.
+
+        The range read a replay of a live segment needs, without knowing the
+        store's layout: one variable per label on ``(timestamp, symbol)``,
+        the store's whole symbol axis, no attributes. A range holding no bar
+        gives a panel without timestamps.
+
+        Parameters
+        ----------
+        start, end : str or datetime-like, optional
+            The first and last bar, both inclusive; the store's first and
+            last by default. A date-only ``end`` includes every bar of that
+            day.
+
+        Returns
+        -------
+        xr.Dataset
+
+        Raises
+        ------
+        FileNotFoundError
+            If the store has not been written.
+
+        Examples
+        --------
+        >>> panel = LivePredictionStore("live/live_predictions.zarr").panel("2026-10-07")
+        >>> panel["ret_5"].dims, panel.sizes["timestamp"]
+        (('timestamp', 'symbol'), 1)
+        """
+        if not self.exists:
+            raise FileNotFoundError(f"{self.path} has not been written: no live prediction yet")
+        first = None if start is None else pd.Timestamp(start)
+        last = None if end is None else last_moment(end)
+        data = self._open()
+        panel = data.sel(timestamp=slice(first, last)).load()
+        panel = panel.drop_vars([c for c in panel.coords if c not in _DIMS])
+        panel.attrs = {}
+        for name in panel.data_vars:
+            panel[name].attrs = {}
+        return panel
+
     def records(self) -> dict:
         """Every row's record, keyed by bar label (see the module docstring).
 
@@ -286,6 +329,49 @@ class LivePredictionStore:
                 f"{self.path} holds the predictions of another run: {'; '.join(differ)}. "
                 f"Write to a new store."
             )
+
+    def check_owner(self, run) -> None:
+        """Refuse a reader whose run is not the one the store's rows were predicted for.
+
+        The reader-side counterpart of ``check_header``: the store must hold
+        the predictions of ``run`` (its directory), of the checkpoint its
+        trained unit holds now and of its label specs. A retrained checkpoint
+        under the same run directory is refused too, since its rows belong
+        to the old one. Nothing is checked before the first ``append``.
+
+        Parameters
+        ----------
+        run : BacktestRun, str or os.PathLike
+            The backtest run, open or by its directory.
+
+        Raises
+        ------
+        ValueError
+            If the run has no model's predictions, or (as ``check_header``)
+            naming each attribute that differs.
+
+        Examples
+        --------
+        >>> LivePredictionStore("live/live_predictions.zarr").check_owner(other_run_dir)
+        Traceback (most recent call last):
+        ValueError: live/live_predictions.zarr holds the predictions of another run: run_dir ...
+        """
+        if not isinstance(run, BacktestRun):
+            run = BacktestRun.open(run)
+        unit = run.trained_run()
+        if not run.has_predictions or unit is None:
+            raise ValueError(
+                f"{run.path} has no model's predictions, so no live prediction store "
+                f"belongs to it"
+            )
+        self.check_header(
+            self.header(
+                run.predictions().labels,
+                run_dir=run.path,
+                checkpoint=unit.checkpoint,
+                trained_run=unit.path,
+            )
+        )
 
     def append(self, row: xr.Dataset, header: Mapping, record: Mapping) -> None:
         """Append one bar's predictions, then its record.

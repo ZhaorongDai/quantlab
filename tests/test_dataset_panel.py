@@ -209,6 +209,29 @@ def test_bar_after_skips_calendar_gaps(tmp_path):
     assert ds.bar_after("2024-01-05", 1) == pd.Timestamp("2024-01-08")
 
 
+def test_last_bar_is_the_last_bar_of_the_store(dataset):
+    # The 60-day store starting 2024-01-01 ends on 2024-02-29.
+    assert dataset.last_bar() == pd.Timestamp("2024-02-29")
+
+
+def test_last_bar_of_an_empty_store_is_none(tmp_path):
+    store = tmp_path / "klines.zarr"
+    xr.Dataset(
+        {"Close": (["timestamp", "symbol"], np.ones((0, 1)))},
+        coords={"timestamp": pd.DatetimeIndex([]), "symbol": ["AUSDT"]},
+    ).to_zarr(store, mode="w")
+    ds = SpotKlineDataset(
+        DatasetConfig(
+            raw_data_dir_path=str(tmp_path / "raw"),
+            zarr_file_path=str(store),
+            market="crypto_spot",
+            frequency="1d",
+        )
+    )
+
+    assert ds.last_bar() is None
+
+
 # -- minute bars ------------------------------------------------------------------
 
 #: The minute store's variables.

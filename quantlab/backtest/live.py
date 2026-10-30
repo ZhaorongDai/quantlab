@@ -74,7 +74,6 @@ from quantlab.backend.zarr import XrBackend
 from quantlab.core.component import walk_components
 from quantlab.core.store_uses import OWNS, READS, FoundStoreUse, RangedStoreHandle, walk_store_uses
 from quantlab.dataset.base import BaseDataset
-from quantlab.enums.constant import Date
 from quantlab.runs.backtest_run import BacktestRun
 from quantlab.runs.live_predictions import LivePredictionStore
 from quantlab.runs.record import DataRecorder
@@ -169,13 +168,15 @@ class LivePrediction:
 def last_bar(dataset: BaseDataset) -> pd.Timestamp | None:
     """Return the last bar of ``dataset``'s calendar, or None for an empty store.
 
+    ``dataset.last_bar()``, so the bar this job predicts and the bar an
+    executor reading the dataset decides are one function's answer.
+
     Examples
     --------
     >>> last_bar(prices)
     Timestamp('2026-10-07 00:00:00')
     """
-    bars = dataset.calendar(Date.START_DATE, Date.END_DATE)
-    return bars[-1] if len(bars) else None
+    return dataset.last_bar()
 
 
 def _holds(dataset: BaseDataset, bar: pd.Timestamp) -> bool:

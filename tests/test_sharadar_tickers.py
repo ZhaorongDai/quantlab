@@ -32,7 +32,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from quantlab.dataset.base import SymbolName
+from quantlab.dataset.base import Listing, SymbolName
 from tests.sharadar_fixtures import (
     ACTIONS_COLUMNS,
     SEP_COLUMNS,
@@ -69,7 +69,9 @@ SEP_ROWS = (
     + [sep_row("BBB", day, 20.0 - i / 4) for i, day in enumerate(DAYS)]  # SYNTHETIC
 )
 TICKERS_ROWS = [
-    tickers_row("SEP", 303, "META", name="META PLATFORMS INC", relatedtickers="FB"),  # SYNTHETIC
+    tickers_row(
+        "SEP", 303, "META", name="META PLATFORMS INC", relatedtickers="FB", exchange="NASDAQ"
+    ),  # SYNTHETIC
     tickers_row("SEP", 101, "AAA", name="AAA CORP", isdelisted="Y"),  # SYNTHETIC
     tickers_row("SEP", 202, "BBB", name="BBB HOLDINGS"),  # SYNTHETIC
     # Another table's row of a reused ticker never names a SEP permaticker.
@@ -184,11 +186,13 @@ def test_a_change_into_a_ticker_since_reused_names_the_security_that_left_it(tmp
     )
     payload = ticker_sidecar_payload(vendor_root, "sep", [401, 402])
     assert payload["intervals"]["401"] == [
-        {"start": None, "ticker": "A", "company": "A CO"},
-        {"start": DAYS[1], "ticker": "X", "company": "X OLD CO"},
-        {"start": DAYS[3], "ticker": "Y", "company": "Y CO"},
+        {"start": None, "ticker": "A", "company": "A CO", "exchange": None},
+        {"start": DAYS[1], "ticker": "X", "company": "X OLD CO", "exchange": None},
+        {"start": DAYS[3], "ticker": "Y", "company": "Y CO", "exchange": "NYSE"},
     ]
-    assert payload["intervals"]["402"] == [{"start": None, "ticker": "X", "company": "X NEW CO"}]
+    assert payload["intervals"]["402"] == [
+        {"start": None, "ticker": "X", "company": "X NEW CO", "exchange": "NYSE"}
+    ]
 
 
 def test_an_old_ticker_without_its_company_names_no_company(tmp_path):
@@ -218,6 +222,31 @@ def test_a_store_without_a_sidecar_reads_as_its_ids(tmp_path):
 
     lookup = SharadarTickerLookup(tmp_path / "absent.zarr.sharadar_tickers.json")
     assert lookup.label([303, 101], _day(DAYS[0])) == ["303", "101"]
+
+
+def test_listings_give_the_ticker_and_the_primary_exchange_as_of_a_day(built):
+    lookup = built[0].ticker_lookup()
+    # TICKERS records the exchange a security is listed on now, so the
+    # current ticker's span carries it; an earlier ticker's exchange is unknown.
+    assert lookup.listings([303, 101, 202], _day(DAYS[5])) == [
+        Listing("META", "NASDAQ"), Listing("AAA", "NYSE"), Listing("BBB", "NYSE"),
+    ]
+    assert lookup.listings([303, 202], _day(DAYS[2])) == [Listing("FB", None), Listing("BBX", None)]
+
+
+def test_a_permaticker_the_sidecar_does_not_know_has_no_listing(built):
+    lookup = built[0].ticker_lookup()
+    assert lookup.listings([np.int64(999), 101], _day(DAYS[0])) == [
+        Listing(None, None), Listing("AAA", "NYSE"),
+    ]
+
+
+def test_listings_refuse_a_store_without_a_sidecar(tmp_path):
+    from quantlab.dataset.sharadar.tickers import SharadarTickerLookup
+
+    lookup = SharadarTickerLookup(tmp_path / "absent.zarr.sharadar_tickers.json")
+    with pytest.raises(FileNotFoundError, match="absent.zarr.sharadar_tickers.json"):
+        lookup.listings([303], _day(DAYS[0]))
 
 
 def _tree_digest(path: Path) -> str:

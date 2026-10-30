@@ -268,6 +268,22 @@ def test_from_run_rebuilds_inputs_that_reproduce_the_runs_weights(run, request):
     assert np.isfinite(weights.values).any()
 
 
+def test_from_run_takes_an_open_run_and_the_callers_price_dataset(model_run):
+    from quantlab.portfolio.decision_inputs import DecisionInputs
+
+    run = BacktestRun.open(model_run.run_dir)
+    prices = run.rebuild("price_dataset")
+    inputs = DecisionInputs.from_run(run, price_dataset=prices)
+
+    assert inputs.dataset is prices  # one dataset per process, not a second rebuild
+    by_path = DecisionInputs.from_run(model_run.run_dir)
+    assert (inputs.constructor, inputs.anchor, inputs.rebalance_periods) == (
+        by_path.constructor, by_path.anchor, by_path.rebalance_periods
+    )
+    predictions = run.predictions().predictions
+    xr.testing.assert_equal(inputs.weights(predictions), by_path.weights(predictions))
+
+
 def test_from_run_refuses_a_run_without_a_prediction_panel(tmp_path, model_run):
     from quantlab.portfolio.decision_inputs import DecisionInputs
 

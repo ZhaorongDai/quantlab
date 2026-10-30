@@ -29,6 +29,7 @@ import xarray as xr
 from quantlab.core.component import Component, child_components
 from quantlab.core.store_uses import READS, BuiltFrom, StoreUse, walk_store_uses
 from quantlab.dataset.config import BaseDatasetConfig, DatasetConfig
+from quantlab.enums.constant import Date
 from quantlab.backend.zarr import XrBackend
 from quantlab.utils.date_range import as_label, check_range
 from quantlab.runs.record import record_read
@@ -269,6 +270,29 @@ class SymbolName:
     company: str | None = None
 
 
+@dataclass(frozen=True)
+class Listing:
+    """Where one symbol traded on one day: its ticker and primary exchange.
+
+    ``TickerLookup.listings`` returns one per symbol, for code that sends
+    orders (an executor maps a symbol to a broker's contract by them). Unlike
+    a ``SymbolName``, nothing is filled in: an unknown ticker or exchange is
+    ``None``, never the symbol id.
+
+    Examples
+    --------
+    >>> Listing(ticker="META", exchange="NASDAQ")
+    Listing(ticker='META', exchange='NASDAQ')
+    """
+
+    #: The ticker the symbol traded under that day, or ``None`` when unknown.
+    ticker: str | None
+    #: The vendor's name of the exchange the symbol was listed on that day
+    #: (Sharadar: ``NYSE``, ``NASDAQ``, ``NYSEMKT``, ``NYSEARCA``, ``BATS``),
+    #: or ``None`` when unknown.
+    exchange: str | None = None
+
+
 class TickerLookup(ABC):
     """Names a dataset's symbol ids as of a day: the ticker and company in use.
 
@@ -319,6 +343,41 @@ class TickerLookup(ABC):
         >>> Fixed().names([13407, 99999], date(2024, 1, 2))
         [SymbolName(ticker='META', company='Meta Platforms'), SymbolName(ticker='99999', company=None)]
         """
+
+    def listings(self, symbols: Sequence, day: datetime.date) -> list[Listing]:
+        """Return the ticker and primary exchange of each of ``symbols`` on ``day``, in order.
+
+        The strict counterpart of ``names``, for code that trades: a symbol
+        the lookup cannot place gets ``Listing(None, None)`` rather than its
+        id, and a source that cannot be read raises. The base class records
+        no listings.
+
+        Parameters
+        ----------
+        symbols : Sequence
+            Symbol ids as on the panel's ``symbol`` axis.
+        day : datetime.date
+            The date whose listings to use.
+
+        Returns
+        -------
+        list of Listing
+            One listing per input, in the input's order.
+
+        Raises
+        ------
+        NotImplementedError
+            If the lookup records no listings.
+
+        Examples
+        --------
+        >>> Fixed().listings([13407], date(2024, 1, 2))
+        Traceback (most recent call last):
+        NotImplementedError: Fixed records no listings ...
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} records no listings (ticker and exchange as of a day)"
+        )
 
     def label(self, symbols: Sequence, day: datetime.date) -> list[str]:
         """Return the ticker of each of ``symbols`` on ``day``, in order.
@@ -932,6 +991,26 @@ class BaseDataset(Component, ABC):
         Timestamp('2024-02-29 00:00:00')
         """
         return bar_after_on(lambda _target: self._calendar(), date, n, self.class_name)
+
+    def last_bar(self) -> pd.Timestamp | None:
+        """Return the last bar of this dataset's calendar, or ``None`` for an empty store.
+
+        The bar a daily job works on once the vendor update has run: the
+        live prediction job predicts it, and an executor trading the run
+        decides it. Only the timestamps are read.
+
+        Returns
+        -------
+        pd.Timestamp or None
+            The calendar's last timestamp.
+
+        Examples
+        --------
+        >>> ds.last_bar()  # the store ends on 2024-02-29
+        Timestamp('2024-02-29 00:00:00')
+        """
+        bars = self.calendar(Date.START_DATE, Date.END_DATE)
+        return bars[-1] if len(bars) else None
 
     def _calendar(self) -> pd.DatetimeIndex:
         """Return the sorted timestamps requests are answered on."""
